@@ -1,0 +1,26 @@
+# proskrnl — modern Win32/NT style (ReactOS / Windows Research Kernel).
+# clang-format controls layout only; it cannot enforce PascalCase naming —
+# see CLAUDE.md for the naming rules.
+---
+Language:        Cpp
+BasedOnStyle:    LLVM
+Standard:        c++03            # closest freestanding-C match clang-format offers
+
+# NT/Windows layout
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ColumnLimit:     100
+BreakBeforeBraces: Allman         # opening brace on its own line, as in WRK/ReactOS
+PointerAlignment: Right           # NTSTATUS Foo(PVOID *Bar)
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+IndentCaseLabels: false
+SpaceAfterCStyleCast: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+SortIncludes:    false           # NT headers are order-sensitive (ntdef before others)
+AlignConsecutiveMacros: true     # struct-offset static_assert tables stay readable
+...

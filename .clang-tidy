@@ -1,0 +1,14 @@
+# proskrnl — starter clang-tidy for freestanding kernel C.
+# Naming checks are intentionally OFF: proskrnl uses Win32/NT PascalCase
+# (see CLAUDE.md), which readability-identifier-naming can't model cleanly.
+# Tighten as M1 code lands.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  misc-*,
+  -bugprone-easily-swappable-parameters,
+  -misc-no-recursion,
+  -clang-analyzer-security.insecureAPI.*
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*'
+FormatStyle: file

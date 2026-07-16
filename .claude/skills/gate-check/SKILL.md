@@ -1,0 +1,34 @@
+---
+name: gate-check
+description: Review the current diff against proskrnl's constitution (docs/09-constitution.md) and the G1-G7 PR gates (docs/CONTRIBUTING.md), flagging boundary violations before commit. Use before committing kernel/abi/driver changes, or when the user asks to "check the gates" / "is this constitutional".
+---
+
+# gate-check
+
+Review the working-tree diff for violations of proskrnl's hard gates. LLM contributors violate these by default, so be adversarial — assume a violation is present and try to find it.
+
+## Steps
+
+1. Get the diff: `git diff HEAD` (and `git diff --cached` if staged). If the user passed `$ARGUMENTS`, treat it as a path/ref to scope the review.
+2. Read `docs/09-constitution.md` and `docs/CONTRIBUTING.md` for the current canonical wording — do not rely on memory of the gates.
+3. Evaluate the diff against each gate below. For each, output **PASS** / **FAIL** / **N/A** with a one-line reason and `file:line` evidence.
+
+## Gates
+
+- **G1 — Boundary only.** Does it reproduce NT behavior *exactly* only at the observable boundary (`Nt*` semantics Wine uses; PEB/TEB/RTL_USER_PROCESS_PARAMETERS/KUSER_SHARED_DATA; NT file semantics)? Flag any Microsoft-compatible reproduction of *non-boundary* internals.
+- **G2 — No NT-absent entities in core.** Anything NT lacks entering `kernel/`, `abi/`, `arch/`, `fs/`, or the `Nt*` surface? Watch for IRQL, a separate cache manager (`Cc`), DPCs, fine-grained locks, PnP/IRP, POSIX idioms. The only allowed NT-absent additions are new devices/processes at the *outside* of the boundary, and each must have a `docs/10-hacks-ledger.md` entry (see `/log-hack`).
+- **G3 — Stupidly correct.** Any copy-on-write, page eviction / deferred writeback, multiple dispatcher locks, SMP/preemption assumptions, or Paged/NonPaged pool split? Each must be justified in `docs/03-nt-deviations.md` against user-observable semantics — never performance.
+- **G4 — Generated contract.** Any hand-typed or model-recalled numeric constant in `abi/` (NTSTATUS, info-class numbers, struct offsets, flags)? These must come from `tools/gen_abi.py` over Wine headers, with `static_assert(offsetof(...) == ...)`. Flag magic numbers.
+- **G5 — Test first.** Does new boundary behavior have a `tests/ntapi/` test that is green on Wine/Windows *preceding* the kernel code? Flag kernel behavior added without a prior test.
+- **G6 — Conviction by differential test.** Is any fix justified only by "sanitizer/assert went quiet" rather than a passing differential/conformance test?
+- **G7 — Additive & removable.** Is any out-of-core feature (GUI, WOW64, ROS shell) wired in such that deleting its directories would not restore the core intact?
+
+## Provenance (also fail-worthy — see docs/11-licensing.md)
+
+- GPL-source translation into kernel/drivers (drivers must come from public specs).
+- Kernel reference material other than Wine headers + official MS docs (no ReactOS/leaked source/model memory).
+- Missing `docs/provenance.md` entry for a new borrowed component.
+
+## Output
+
+End with a verdict: **READY** (all applicable gates pass) or **BLOCKED** (list the failing gates). Be concrete and cite lines; do not soften a real violation.
