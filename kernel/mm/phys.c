@@ -12,6 +12,11 @@ static inline uint64_t *MiFrameToVirtual(uint64_t physical)
     return (uint64_t *)(uintptr_t)(MiHhdmOffset + physical);
 }
 
+void *MiPhysicalToVirtual(uint64_t physical)
+{
+    return (void *)(uintptr_t)(MiHhdmOffset + physical);
+}
+
 void MiFreePage(uint64_t page)
 {
     /* Thread the free list through the frames themselves: store the old head

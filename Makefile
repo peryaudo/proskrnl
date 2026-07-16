@@ -33,11 +33,24 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
 CSRC := kernel/init/main.c \
         kernel/init/panic.c \
         kernel/lib/dbgprint.c \
+        kernel/lib/string.c \
         kernel/mm/phys.c \
+        kernel/mm/pool.c \
+        kernel/ke/sched.c \
+        kernel/ke/thread.c \
+        kernel/ke/wait.c \
+        kernel/ke/event.c \
+        kernel/ke/mutex.c \
+        kernel/ke/sema.c \
+        kernel/ke/timer.c \
+        kernel/ke/irq.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
-        arch/x86_64/lapic.c
-ASRC := arch/x86_64/trap.S
+        arch/x86_64/lapic.c \
+        arch/x86_64/mmu.c \
+        tests/kmt/m2_dispatcher.c
+ASRC := arch/x86_64/trap.S \
+        arch/x86_64/ctxswitch.S
 OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
 
 all: $(IMG)
@@ -63,6 +76,11 @@ run: $(IMG)
 clean:
 	rm -rf $(BUILD)
 
+# Regenerate the abi/ contract headers from Wine's headers (Art. 4 / G4).
+# Never hand-edit abi/ — this target is the only writer.
+gen-abi:
+	python3 tools/gen_abi.py
+
 # Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
 # naming (PascalCase, NT prefixes) is on you and on review.
 format:
@@ -72,4 +90,4 @@ format:
 tidy:
 	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
 
-.PHONY: all run clean format tidy
+.PHONY: all run clean format tidy gen-abi

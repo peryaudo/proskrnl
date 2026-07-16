@@ -43,6 +43,11 @@ SECTIONS
         *(COMMON)
     } :data
 
+    /* End of everything loaded/zeroed in memory; mmu.c maps the image up to
+     * here when it builds the kernel's own page tables (M2). */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    KiImageEnd = .;
+
     /DISCARD/ : {
         *(.eh_frame*)
         *(.note .note.*)

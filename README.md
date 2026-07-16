@@ -81,17 +81,26 @@ than local macOS Wine. Also used: **python3** (the `tools/gen_*.py` generators, 
 
 ## Status
 
-**M1 complete.** The repository began as a **constitution** — documents that fix the design
+**M2 complete.** The repository began as a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
-them (start at `docs/09`). The kernel now boots via Limine into long mode, catches CPU
-exceptions with a register-dumping panic handler, ticks on the LAPIC timer, and manages
-physical page frames:
+them (start at `docs/09`). On top of the M1 bring-up (Limine boot, register-dumping panic
+handler, physical page frames), the kernel now runs real multithreading: its own page
+tables, a single kernel pool (Art. 3: one pool), kernel threads with a 32-level priority
+scheduler under one dispatcher lock (uniprocessor, no kernel preemption), and the NT
+dispatcher — notification/synchronization events, mutexes (recursion, abandonment),
+semaphores, notification/synchronization/periodic timers, and `KeWaitForSingleObject` /
+`KeWaitForMultipleObjects` wait-any/wait-all with timeouts on a PIT-calibrated 1 ms clock.
+All `Ke*` signatures match Wine's ntoskrnl exports; `abi/ntstatus.h` and `abi/ntdef.h` are
+generated from Wine's headers by `tools/gen_abi.py` (Art. 4 — no hand-typed constants).
+The in-kernel `tests/kmt` suite (ping-pong, wait-all atomicity, abandonment, timed waits,
+priority ordering) is the milestone's proof:
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M1 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M2 PASS on serial
 ```
 
-Next: **M2** — in-kernel threads, the dispatcher, and `KeWaitFor*` (`docs/02`).
+Next: **M3** — Ob: object manager, handle table, `\Device`/`\??` namespace; minimal KASAN
+(`docs/02`).
 
 ## License
 
