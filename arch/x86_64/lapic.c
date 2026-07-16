@@ -24,36 +24,42 @@
 
 #define LAPIC_TMR_PERIODIC (1u << 17)
 
-extern uint64_t isr_stub_table[]; /* trap.S */
+extern uint64_t KiTrapThunkTable[]; /* trap.S */
 
-static volatile uint64_t ticks;
+volatile uint64_t KeTickCount;
 
-void lapic_eoi(void) { wrmsr(X2APIC_EOI, 0); }
-uint64_t timer_ticks(void) { return ticks; }
-void timer_tick(void) { ticks++; }
+void HalEndOfInterrupt(void)
+{
+    __writemsr(X2APIC_EOI, 0);
+}
 
-void timer_init(void)
+void KeUpdateTickCount(void)
+{
+    KeTickCount++;
+}
+
+void HalInitializeTimer(void)
 {
     /* Mask both halves of the legacy 8259 PIC so no stray IRQ arrives on a
      * vector that overlaps a CPU exception. */
-    outb(0x21, 0xFF);
-    outb(0xA1, 0xFF);
+    __outbyte(0x21, 0xFF);
+    __outbyte(0xA1, 0xFF);
 
     /* Enable xAPIC, then x2APIC (staged, as the SDM recommends). */
-    uint64_t base = rdmsr(IA32_APIC_BASE);
-    base |= APIC_BASE_EN;
-    wrmsr(IA32_APIC_BASE, base);
-    base |= APIC_BASE_EXTD;
-    wrmsr(IA32_APIC_BASE, base);
+    uint64_t ApicBase = __readmsr(IA32_APIC_BASE);
+    ApicBase |= APIC_BASE_EN;
+    __writemsr(IA32_APIC_BASE, ApicBase);
+    ApicBase |= APIC_BASE_EXTD;
+    __writemsr(IA32_APIC_BASE, ApicBase);
 
     /* Enable the LAPIC; route spurious interrupts to vector 0xFF. */
-    wrmsr(X2APIC_SVR, 0x100 | 0xFF);
+    __writemsr(X2APIC_SVR, 0x100 | 0xFF);
 
-    idt_set_gate(TIMER_VECTOR, isr_stub_table[TIMER_VECTOR]);
+    KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
-    wrmsr(X2APIC_TMR_DIV, 0x3); /* divide by 16 */
-    wrmsr(X2APIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
-    wrmsr(X2APIC_TMR_INIT, 1000000);
+    __writemsr(X2APIC_TMR_DIV, 0x3); /* divide by 16 */
+    __writemsr(X2APIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
+    __writemsr(X2APIC_TMR_INIT, 1000000);
 
     __asm__ volatile("sti");
 }

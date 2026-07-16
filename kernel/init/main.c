@@ -2,8 +2,8 @@
  *
  * Limine enters here in 64-bit long mode with a stack set up. M1 brings up the
  * boot essentials and proves the "Done when" criteria over serial (docs/02):
- * boots, an exception dumps registers, and (S4+) the timer ticks. Real
- * per-department init arrives in later milestones.
+ * boots, an exception dumps registers, and the timer ticks. Real per-department
+ * init arrives in later milestones.
  */
 #include <stdint.h>
 
@@ -14,79 +14,82 @@
 #include "arch/x86_64/lapic.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/phys.h"
+#include "kernel/init/panic.h"
 
-__attribute__((used, section(".limine_requests_start_marker")))
-static volatile uint64_t limine_requests_start[4] = LIMINE_REQUESTS_START_MARKER;
+__attribute__((
+    used, section(".limine_requests_start_marker"))) static volatile uint64_t LiRequestsStart[4] =
+    LIMINE_REQUESTS_START_MARKER;
 
-__attribute__((used, section(".limine_requests")))
-static volatile uint64_t limine_base_revision[3] = LIMINE_BASE_REVISION(3);
+__attribute__((used, section(".limine_requests"))) static volatile uint64_t LiBaseRevision[3] =
+    LIMINE_BASE_REVISION(3);
 
 /* Higher-half direct-map offset (phys->virt) and the physical memory map, for
  * the page-frame allocator. */
-__attribute__((used, section(".limine_requests")))
-static volatile struct limine_hhdm_request hhdm_request = {
+__attribute__((
+    used, section(".limine_requests"))) static volatile struct limine_hhdm_request LiHhdmRequest = {
     .id = LIMINE_HHDM_REQUEST_ID,
     .revision = 0,
 };
 
-__attribute__((used, section(".limine_requests")))
-static volatile struct limine_memmap_request memmap_request = {
+__attribute__((
+    used,
+    section(".limine_requests"))) static volatile struct limine_memmap_request LiMemmapRequest = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0,
 };
 
-__attribute__((used, section(".limine_requests_end_marker")))
-static volatile uint64_t limine_requests_end[2] = LIMINE_REQUESTS_END_MARKER;
+__attribute__((used,
+               section(".limine_requests_end_marker"))) static volatile uint64_t LiRequestsEnd[2] =
+    LIMINE_REQUESTS_END_MARKER;
 
-__attribute__((noreturn)) static void halt(void)
+__attribute__((noreturn)) static void KiIdleLoop(void)
 {
-    for (;;) {
+    for (;;)
+    {
         __asm__ volatile("hlt");
     }
 }
 
-void kmain(void)
+void KiSystemStartup(void)
 {
-    serial_init();
+    HalInitializeSerial();
 
-    if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) {
-        kprintf("[PANIC] Limine base revision 3 unsupported\n");
-        qemu_exit(1);
-        halt();
+    if (!LIMINE_BASE_REVISION_SUPPORTED(LiBaseRevision))
+    {
+        KiPanic("Limine base revision 3 unsupported");
     }
-    kprintf("[KTEST] boot PASS\n");
+    DbgPrint("[KTEST] boot PASS\n");
 
-    idt_init();
-    kprintf("[KTEST] idt PASS\n");
+    KiInitializeIdt();
+    DbgPrint("[KTEST] idt PASS\n");
 
-    /* Demonstrate the exception path: a breakpoint traps into the panic
+    /* Demonstrate the exception path: a breakpoint traps into the bugcheck
      * handler, which dumps registers over serial, then resumes (docs/02). */
     __asm__ volatile("int3");
-    kprintf("[KTEST] trap-recovered PASS\n");
+    DbgPrint("[KTEST] trap-recovered PASS\n");
 
-    timer_init();
-    while (timer_ticks() < 10) {
+    HalInitializeTimer();
+    while (KeTickCount < 10)
+    {
         __asm__ volatile("hlt");
     }
     __asm__ volatile("cli");
-    kprintf("[KTEST] timer PASS (%lu ticks)\n", timer_ticks());
+    DbgPrint("[KTEST] timer PASS (%lu ticks)\n", KeTickCount);
 
-    if (hhdm_request.response == 0 || memmap_request.response == 0) {
-        kprintf("[PANIC] missing HHDM/memmap response from Limine\n");
-        qemu_exit(1);
-        halt();
+    if (LiHhdmRequest.response == 0 || LiMemmapRequest.response == 0)
+    {
+        KiPanic("missing HHDM/memmap response from Limine");
     }
-    phys_init(hhdm_request.response->offset, memmap_request.response);
-    kprintf("[KTEST] phys: %lu frames usable (%lu MiB)\n",
-            phys_total_count(), phys_total_count() * PAGE_SIZE / (1024 * 1024));
-    if (!phys_selftest()) {
-        kprintf("[PANIC] phys allocator self-test failed\n");
-        qemu_exit(1);
-        halt();
+    MmInitializePhysicalMemory(LiHhdmRequest.response->offset, LiMemmapRequest.response);
+    DbgPrint("[KTEST] phys: %lu frames usable (%lu MiB)\n", MmGetTotalPageCount(),
+             MmGetTotalPageCount() * PAGE_SIZE / (1024 * 1024));
+    if (!MiTestPhysicalAllocator())
+    {
+        KiPanic("phys allocator self-test failed");
     }
-    kprintf("[KTEST] phys PASS\n");
+    DbgPrint("[KTEST] phys PASS\n");
 
-    kprintf("[KTEST] M1 PASS\n");
-    qemu_exit(0);
-    halt();
+    DbgPrint("[KTEST] M1 PASS\n");
+    HalpQemuExit(0);
+    KiIdleLoop();
 }

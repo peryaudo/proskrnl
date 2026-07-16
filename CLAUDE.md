@@ -31,7 +31,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 ## Toolchain & code style (decided; formalized here)
 
 - **Compiler: clang** (+ LLD + `llvm-*` binutils), cross-targeting `--target=x86_64-elf -ffreestanding`. Chosen over GCC because it cross-compiles from any host (Linux/macOS/arm64) without building a per-host cross-toolchain. **x86_64 only** (`docs/adr/0006-x64-only.md`).
-- **Style: modern Win32/NT** as in ReactOS / the Windows Research Kernel — **PascalCase** functions, types, and locals; `NTSTATUS` returns; **not** Linux-kernel `snake_case`; no strict systems Hungarian. Formatting via `.clang-format` (bracing/indent/pointer alignment only — it cannot enforce naming).
+- **Style: modern Win32/NT** as in ReactOS / the Windows Research Kernel — **PascalCase** functions (`KeInitializeIdt`), `UPPER_SNAKE` typedefs (`KTRAP_FRAME`), PascalCase locals; **not** Linux-kernel `snake_case`; no strict systems Hungarian. Full rules + rename map in **`docs/15-code-style.md`**. Layout enforced by `.clang-format` / `make format` (naming is on you). When editing kernel C, match the NT name of a thing (`KeBugCheck`, not `panic`).
 - **Kernel code uses NT department prefixes** `Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`/`Se` so it cross-references Windows Internals (`docs/04-repository-layout.md`).
 - **Machine-verdict log lines use fixed prefixes** `[KTEST]` / `[PANIC]` / `[ASSERT]`, kept separate from human free-text. Under LLM-driven dev the panic dump is the debugger (Art. 9).
 - Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter."

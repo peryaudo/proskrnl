@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *.c|*.h|*.hpp|*.cpp|*.cc|*.S) command -v clang-format >/dev/null && clang-format -i \"$f\";; esac; } 2>/dev/null || true",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *.c|*.h|*.hpp|*.cpp|*.cc) CF=\"$(command -v clang-format || echo /opt/homebrew/opt/llvm/bin/clang-format)\"; [ -x \"$CF\" ] && \"$CF\" -i \"$f\";; esac; } 2>/dev/null || true",
             "statusMessage": "clang-format"
           }
         ]

@@ -1,62 +1,62 @@
-/* arch/x86_64/trap.S — CPU exception entry stubs (vectors 0..31).
+/* arch/x86_64/trap.S — CPU exception entry stubs (vectors 0..31) + LAPIC timer.
  *
- * Each stub normalises the stack to a `struct trap_frame` (trap.h): push a
- * dummy error code where the CPU does not, push the vector number, save the GP
- * registers, then call trap_handler with a pointer to the frame. Vectors that
- * push a hardware error code (8,10-14,17,21) use ISR_ERR; the rest ISR_NOERR.
+ * Each stub normalises the stack to a KTRAP_FRAME (trap.h): push a dummy error
+ * code where the CPU does not, push the vector number, save the GP registers,
+ * then call KiDispatchTrap with a pointer to the frame. Vectors that push a
+ * hardware error code (8,10-14,17,21) use KI_TRAP_ERR; the rest KI_TRAP_NOERR.
  */
     .section .text
 
-    .macro ISR_NOERR num
-    .global isr\num
-isr\num:
+    .macro KI_TRAP_NOERR num
+    .global KiTrap\num
+KiTrap\num:
     pushq $0
     pushq $\num
-    jmp isr_common
+    jmp KiTrapCommon
     .endm
 
-    .macro ISR_ERR num
-    .global isr\num
-isr\num:
+    .macro KI_TRAP_ERR num
+    .global KiTrap\num
+KiTrap\num:
     pushq $\num
-    jmp isr_common
+    jmp KiTrapCommon
     .endm
 
-    ISR_NOERR 0
-    ISR_NOERR 1
-    ISR_NOERR 2
-    ISR_NOERR 3
-    ISR_NOERR 4
-    ISR_NOERR 5
-    ISR_NOERR 6
-    ISR_NOERR 7
-    ISR_ERR   8
-    ISR_NOERR 9
-    ISR_ERR   10
-    ISR_ERR   11
-    ISR_ERR   12
-    ISR_ERR   13
-    ISR_ERR   14
-    ISR_NOERR 15
-    ISR_NOERR 16
-    ISR_ERR   17
-    ISR_NOERR 18
-    ISR_NOERR 19
-    ISR_NOERR 20
-    ISR_ERR   21
-    ISR_NOERR 22
-    ISR_NOERR 23
-    ISR_NOERR 24
-    ISR_NOERR 25
-    ISR_NOERR 26
-    ISR_NOERR 27
-    ISR_NOERR 28
-    ISR_NOERR 29
-    ISR_NOERR 30
-    ISR_NOERR 31
-    ISR_NOERR 32          /* LAPIC timer IRQ (M1) */
+    KI_TRAP_NOERR 0
+    KI_TRAP_NOERR 1
+    KI_TRAP_NOERR 2
+    KI_TRAP_NOERR 3
+    KI_TRAP_NOERR 4
+    KI_TRAP_NOERR 5
+    KI_TRAP_NOERR 6
+    KI_TRAP_NOERR 7
+    KI_TRAP_ERR   8
+    KI_TRAP_NOERR 9
+    KI_TRAP_ERR   10
+    KI_TRAP_ERR   11
+    KI_TRAP_ERR   12
+    KI_TRAP_ERR   13
+    KI_TRAP_ERR   14
+    KI_TRAP_NOERR 15
+    KI_TRAP_NOERR 16
+    KI_TRAP_ERR   17
+    KI_TRAP_NOERR 18
+    KI_TRAP_NOERR 19
+    KI_TRAP_NOERR 20
+    KI_TRAP_ERR   21
+    KI_TRAP_NOERR 22
+    KI_TRAP_NOERR 23
+    KI_TRAP_NOERR 24
+    KI_TRAP_NOERR 25
+    KI_TRAP_NOERR 26
+    KI_TRAP_NOERR 27
+    KI_TRAP_NOERR 28
+    KI_TRAP_NOERR 29
+    KI_TRAP_NOERR 30
+    KI_TRAP_NOERR 31
+    KI_TRAP_NOERR 32          /* LAPIC timer IRQ (M1) */
 
-isr_common:
+KiTrapCommon:
     push %rax
     push %rbx
     push %rcx
@@ -72,8 +72,8 @@ isr_common:
     push %r13
     push %r14
     push %r15
-    mov %rsp, %rdi          /* &trap_frame */
-    call trap_handler
+    mov %rsp, %rdi          /* PKTRAP_FRAME */
+    call KiDispatchTrap
     pop %r15
     pop %r14
     pop %r13
@@ -95,10 +95,10 @@ isr_common:
     /* Table of stub addresses, indexed by vector, for idt.c. */
     .section .rodata
     .align 8
-    .global isr_stub_table
-isr_stub_table:
-    .quad isr0,  isr1,  isr2,  isr3,  isr4,  isr5,  isr6,  isr7
-    .quad isr8,  isr9,  isr10, isr11, isr12, isr13, isr14, isr15
-    .quad isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23
-    .quad isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31
-    .quad isr32
+    .global KiTrapThunkTable
+KiTrapThunkTable:
+    .quad KiTrap0,  KiTrap1,  KiTrap2,  KiTrap3,  KiTrap4,  KiTrap5,  KiTrap6,  KiTrap7
+    .quad KiTrap8,  KiTrap9,  KiTrap10, KiTrap11, KiTrap12, KiTrap13, KiTrap14, KiTrap15
+    .quad KiTrap16, KiTrap17, KiTrap18, KiTrap19, KiTrap20, KiTrap21, KiTrap22, KiTrap23
+    .quad KiTrap24, KiTrap25, KiTrap26, KiTrap27, KiTrap28, KiTrap29, KiTrap30, KiTrap31
+    .quad KiTrap32

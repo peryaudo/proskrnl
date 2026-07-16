@@ -5,120 +5,201 @@
 #include <stdint.h>
 #include <stddef.h>
 
-static void emit_str(const char *s)
+static void DbgpEmitString(const char *String)
 {
-    for (; *s != '\0'; s++) {
-        if (*s == '\n') {
-            serial_putc('\r');
+    for (; *String != '\0'; String++)
+    {
+        if (*String == '\n')
+        {
+            HalPutChar('\r');
         }
-        serial_putc(*s);
+        HalPutChar(*String);
     }
 }
 
-/* Unsigned integer in `base`, with optional field width, pad char, and the
+/* Unsigned integer in `Base`, with optional field width, pad char, and the
  * "0x"/"0X" alternate-form prefix. */
-static void emit_uint(uint64_t val, unsigned base, int upper,
-                      int width, char pad, int alt)
+static void DbgpEmitUnsigned(uint64_t Value, unsigned Base, int Upper, int Width, char Pad, int Alt)
 {
-    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    char buf[32];
-    int n = 0;
+    const char *Digits = Upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char Buffer[32];
+    int Count = 0;
 
-    if (val == 0) {
-        buf[n++] = '0';
+    if (Value == 0)
+    {
+        Buffer[Count++] = '0';
     }
-    while (val != 0) {
-        buf[n++] = digits[val % base];
-        val /= base;
-    }
-
-    int prefix = (alt && base == 16) ? 2 : 0;
-    int len = n + prefix;
-
-    if (pad == '0') {
-        if (prefix) { serial_putc('0'); serial_putc(upper ? 'X' : 'x'); }
-        for (int w = len; w < width; w++) serial_putc('0');
-    } else {
-        for (int w = len; w < width; w++) serial_putc(' ');
-        if (prefix) { serial_putc('0'); serial_putc(upper ? 'X' : 'x'); }
+    while (Value != 0)
+    {
+        Buffer[Count++] = Digits[Value % Base];
+        Value /= Base;
     }
 
-    while (n > 0) {
-        serial_putc(buf[--n]);
+    int Prefix = (Alt && Base == 16) ? 2 : 0;
+    int Length = Count + Prefix;
+
+    if (Pad == '0')
+    {
+        if (Prefix)
+        {
+            HalPutChar('0');
+            HalPutChar(Upper ? 'X' : 'x');
+        }
+        for (int W = Length; W < Width; W++)
+        {
+            HalPutChar('0');
+        }
+    }
+    else
+    {
+        for (int W = Length; W < Width; W++)
+        {
+            HalPutChar(' ');
+        }
+        if (Prefix)
+        {
+            HalPutChar('0');
+            HalPutChar(Upper ? 'X' : 'x');
+        }
+    }
+
+    while (Count > 0)
+    {
+        HalPutChar(Buffer[--Count]);
     }
 }
 
-void kvprintf(const char *fmt, va_list ap)
+void DbgPrintV(const char *Format, va_list Args)
 {
-    for (; *fmt != '\0'; fmt++) {
-        if (*fmt != '%') {
-            if (*fmt == '\n') serial_putc('\r');
-            serial_putc(*fmt);
+    for (; *Format != '\0'; Format++)
+    {
+        if (*Format != '%')
+        {
+            if (*Format == '\n')
+            {
+                HalPutChar('\r');
+            }
+            HalPutChar(*Format);
             continue;
         }
-        fmt++;
+        Format++;
 
-        int alt = 0;
-        char pad = ' ';
-        for (;;) {
-            if (*fmt == '#') { alt = 1; fmt++; }
-            else if (*fmt == '0') { pad = '0'; fmt++; }
-            else break;
+        int Alt = 0;
+        char Pad = ' ';
+        for (;;)
+        {
+            if (*Format == '#')
+            {
+                Alt = 1;
+                Format++;
+            }
+            else if (*Format == '0')
+            {
+                Pad = '0';
+                Format++;
+            }
+            else
+                break;
         }
 
-        int width = 0;
-        while (*fmt >= '0' && *fmt <= '9') {
-            width = width * 10 + (*fmt - '0');
-            fmt++;
+        int Width = 0;
+        while (*Format >= '0' && *Format <= '9')
+        {
+            Width = Width * 10 + (*Format - '0');
+            Format++;
         }
 
-        int lng = 0; /* 0=int 1=long 2=long long 3=size_t */
-        if (*fmt == 'l') { lng = 1; fmt++; if (*fmt == 'l') { lng = 2; fmt++; } }
-        else if (*fmt == 'z') { lng = 3; fmt++; }
+        int Long = 0; /* 0=int 1=long 2=long long 3=size_t */
+        if (*Format == 'l')
+        {
+            Long = 1;
+            Format++;
+            if (*Format == 'l')
+            {
+                Long = 2;
+                Format++;
+            }
+        }
+        else if (*Format == 'z')
+        {
+            Long = 3;
+            Format++;
+        }
 
-        switch (*fmt) {
-        case '%': serial_putc('%'); break;
-        case 'c': serial_putc((char)va_arg(ap, int)); break;
-        case 's': { const char *s = va_arg(ap, const char *); emit_str(s ? s : "(null)"); break; }
-        case 'd': case 'i': {
-            long long v;
-            if (lng == 0) v = va_arg(ap, int);
-            else if (lng == 1) v = va_arg(ap, long);
-            else if (lng == 2) v = va_arg(ap, long long);
-            else v = va_arg(ap, long);
-            if (v < 0) {
-                serial_putc('-');
-                emit_uint((uint64_t)(-v), 10, 0, width > 0 ? width - 1 : 0, pad, 0);
-            } else {
-                emit_uint((uint64_t)v, 10, 0, width, pad, 0);
+        switch (*Format)
+        {
+        case '%':
+            HalPutChar('%');
+            break;
+        case 'c':
+            HalPutChar((char)va_arg(Args, int));
+            break;
+        case 's':
+        {
+            const char *String = va_arg(Args, const char *);
+            DbgpEmitString(String ? String : "(null)");
+            break;
+        }
+        case 'd':
+        case 'i':
+        {
+            long long Value;
+            if (Long == 0)
+                Value = va_arg(Args, int);
+            else if (Long == 1)
+                Value = va_arg(Args, long);
+            else if (Long == 2)
+                Value = va_arg(Args, long long);
+            else
+                Value = va_arg(Args, long);
+            if (Value < 0)
+            {
+                HalPutChar('-');
+                DbgpEmitUnsigned((uint64_t)(-Value), 10, 0, Width > 0 ? Width - 1 : 0, Pad, 0);
+            }
+            else
+            {
+                DbgpEmitUnsigned((uint64_t)Value, 10, 0, Width, Pad, 0);
             }
             break;
         }
-        case 'u': case 'x': case 'X': {
-            unsigned long long v;
-            if (lng == 0) v = va_arg(ap, unsigned int);
-            else if (lng == 1) v = va_arg(ap, unsigned long);
-            else if (lng == 2) v = va_arg(ap, unsigned long long);
-            else v = va_arg(ap, size_t);
-            unsigned base = (*fmt == 'u') ? 10 : 16;
-            emit_uint(v, base, (*fmt == 'X'), width, pad, alt);
+        case 'u':
+        case 'x':
+        case 'X':
+        {
+            unsigned long long Value;
+            if (Long == 0)
+                Value = va_arg(Args, unsigned int);
+            else if (Long == 1)
+                Value = va_arg(Args, unsigned long);
+            else if (Long == 2)
+                Value = va_arg(Args, unsigned long long);
+            else
+                Value = va_arg(Args, size_t);
+            unsigned Base = (*Format == 'u') ? 10 : 16;
+            DbgpEmitUnsigned(Value, Base, (*Format == 'X'), Width, Pad, Alt);
             break;
         }
-        case 'p': {
-            void *p = va_arg(ap, void *);
-            emit_uint((uint64_t)(uintptr_t)p, 16, 0, width, pad, 1);
+        case 'p':
+        {
+            void *Pointer = va_arg(Args, void *);
+            DbgpEmitUnsigned((uint64_t)(uintptr_t)Pointer, 16, 0, Width, Pad, 1);
             break;
         }
-        case '\0': return;
-        default: serial_putc('%'); serial_putc(*fmt); break;
+        case '\0':
+            return;
+        default:
+            HalPutChar('%');
+            HalPutChar(*Format);
+            break;
         }
     }
 }
 
-void kprintf(const char *fmt, ...)
+void DbgPrint(const char *Format, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    kvprintf(fmt, ap);
-    va_end(ap);
+    va_list Args;
+    va_start(Args, Format);
+    DbgPrintV(Format, Args);
+    va_end(Args);
 }

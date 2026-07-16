@@ -8,6 +8,7 @@
 LLVM ?= /opt/homebrew/opt/llvm/bin
 CC   := $(LLVM)/clang
 LD   := ld.lld
+CLANG_FORMAT ?= $(LLVM)/clang-format
 
 BUILD  := build
 KERNEL := $(BUILD)/proskrnl
@@ -61,4 +62,9 @@ run: $(IMG)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run clean
+# Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
+# naming (PascalCase, NT prefixes) is on you and on review.
+format:
+	$(CLANG_FORMAT) -i $(shell find kernel arch -name '*.[ch]')
+
+.PHONY: all run clean format

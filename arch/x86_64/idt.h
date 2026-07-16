@@ -5,9 +5,9 @@
 #include <stdint.h>
 
 /* Install the CPU exception vectors (0..31) and load the IDT. */
-void idt_init(void);
+void KiInitializeIdt(void);
 
-/* Set one 64-bit interrupt gate. Used by idt_init and later by the timer. */
-void idt_set_gate(int vector, uint64_t handler);
+/* Set one 64-bit interrupt gate. Used by KiInitializeIdt and by the timer. */
+void KiSetInterruptGate(int Vector, uint64_t Handler);
 
 #endif /* PROSKRNL_ARCH_X86_64_IDT_H */

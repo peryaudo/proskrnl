@@ -2,8 +2,8 @@
 #ifndef PROSKRNL_ARCH_X86_64_SERIAL_H
 #define PROSKRNL_ARCH_X86_64_SERIAL_H
 
-void serial_init(void);
-void serial_putc(char c);
-void serial_puts(const char *s);
+void HalInitializeSerial(void);
+void HalPutChar(char Char);
+void HalPutString(const char *String);
 
 #endif /* PROSKRNL_ARCH_X86_64_SERIAL_H */

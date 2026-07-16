@@ -55,6 +55,8 @@ stated as hard gates.
 
 ## Style / structure
 
+- **Modern Win32/NT code style** (PascalCase, `UPPER_SNAKE` typedefs, NT names; not Linux
+  `snake_case`). Full rules + `make format` in **`docs/15-code-style.md`**.
 - Match NT department prefixes for kernel code (`Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`), so code
   cross-references Windows Internals.
 - Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter."

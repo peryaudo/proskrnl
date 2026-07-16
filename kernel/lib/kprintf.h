@@ -6,7 +6,7 @@
 
 #include <stdarg.h>
 
-void kprintf(const char *fmt, ...);
-void kvprintf(const char *fmt, va_list ap);
+void DbgPrint(const char *Format, ...);
+void DbgPrintV(const char *Format, va_list Args);
 
 #endif /* PROSKRNL_KERNEL_LIB_KPRINTF_H */

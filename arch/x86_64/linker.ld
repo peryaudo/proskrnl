@@ -1,7 +1,7 @@
 /* proskrnl higher-half kernel link script (Limine, x86-64). ADR 0010.
  * Limine loads the ELF at -2GiB and enters at ENTRY in 64-bit long mode. */
 OUTPUT_FORMAT(elf64-x86-64)
-ENTRY(kmain)
+ENTRY(KiSystemStartup)
 
 PHDRS
 {

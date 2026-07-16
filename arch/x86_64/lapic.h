@@ -6,15 +6,17 @@
 
 #define TIMER_VECTOR 32
 
+/* Monotonic tick counter, bumped by the timer interrupt (NT's KeTickCount). */
+extern volatile uint64_t KeTickCount;
+
 /* Enable the LAPIC (x2APIC / MSR access — no MMIO mapping needed), mask the
  * legacy 8259 PIC, install the timer gate, and start the periodic timer. */
-void timer_init(void);
+void HalInitializeTimer(void);
 
 /* Signal end-of-interrupt to the LAPIC (called from the timer handler). */
-void lapic_eoi(void);
+void HalEndOfInterrupt(void);
 
-/* Monotonic tick counter and its bump (from the timer interrupt). */
-uint64_t timer_ticks(void);
-void     timer_tick(void);
+/* Advance KeTickCount (called from the timer interrupt). */
+void KeUpdateTickCount(void);
 
 #endif /* PROSKRNL_ARCH_X86_64_LAPIC_H */
