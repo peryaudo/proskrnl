@@ -16,7 +16,7 @@ directly in `arch/`. The missing directories testify to the dropped tax.
 
 ```
 proskrnl/
-├── Makefile / meson.build
+├── Makefile                        # kernel + thin superbuild (ADR 0009)
 ├── README.md
 ├── docs/                            # this constitution
 │   ├── 00-overview.md … 13-glossary.md
@@ -157,6 +157,20 @@ proskrnl/
 ├── licenses/                        # LGPL / (GPL if ROS shell used) / MAP.md
 └── LICENSE                          # kernel license — FIX BEFORE M13
 ```
+
+## Build model (federated — ADR 0009)
+
+Three independently-built components joined by **artifacts, not build graphs**: the kernel
+(our **Make** build, clang `--target=x86_64-elf -ffreestanding`), Wine (its *own* autotools,
+wrapped by `user/wine/build.sh`), and — at M16/M17 only — the ReactOS shell (its *own*
+CMake/RosBE). Each foreign project builds itself into PE binaries; `tools/mkimage.sh` bakes
+those plus the kernel into the FAT32 image. The top-level `Makefile` is a thin orchestrator
+(build kernel → run `build.sh` → run `mkimage.sh`), not a single graph that owns everything.
+
+The rule this encodes: **never port Wine or ROS into our build system.** Their build risk
+(flag-combination extraction — `docs/06`, `docs/12`) lives inside their native builds and is
+independent of ours; the clean PE-artifact seam is the same clean boundary the whole project
+rests on.
 
 ## Size expectations
 
