@@ -20,6 +20,9 @@ void MiInitializePhysicalMemory(uint64_t hhdmOffset, struct limine_memmap_respon
 uint64_t MiAllocatePage(void);
 void MiFreePage(uint64_t page);
 
+/* Reach a physical frame's contents through the higher-half direct map. */
+void *MiPhysicalToVirtual(uint64_t physical);
+
 uint64_t MiGetFreePageCount(void);
 uint64_t MiGetTotalPageCount(void);
 

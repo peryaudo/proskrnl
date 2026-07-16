@@ -10,7 +10,7 @@ set -uo pipefail
 IMG="${1:?usage: qemu.sh <hdd>}"
 LOG="${LOG:-build/serial.log}"
 TIMEOUT="${TIMEOUT:-30}"
-PASS_RE="${PASS_RE:-\[KTEST\] M1 PASS}"
+PASS_RE="${PASS_RE:-\[KTEST\] M2 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 

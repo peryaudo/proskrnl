@@ -14,11 +14,14 @@ Checks: >
   -misc-no-recursion,
   -misc-use-internal-linkage,
   -misc-include-cleaner,
+  -misc-unused-parameters,
   -clang-analyzer-security.insecureAPI.*
 # Disabled and why: branch-clone false-positives on type-varying va_arg dispatch;
 # use-internal-linkage can't see asm/linker (ENTRY) references, so it wrongly
 # flags KiSystemStartup/KiDispatchTrap; include-cleaner is noisy IWYU for
-# freestanding code; easily-swappable-parameters/no-recursion are style noise.
+# freestanding code; easily-swappable-parameters/no-recursion are style noise;
+# unused-parameters is unavoidable under docs/15 (NT signatures fix the
+# parameter lists — increment/wait/waitMode are meaningless under Art. 3).
 WarningsAsErrors: ''
 HeaderFilterRegex: '(kernel|arch)/'
 FormatStyle: file

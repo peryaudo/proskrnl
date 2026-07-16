@@ -7,9 +7,9 @@
  */
 #include "kernel/init/panic.h"
 #include "kernel/lib/dbgprint.h"
+#include "kernel/ke/ke.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
-#include "arch/x86_64/lapic.h"
 
 #include <stdint.h>
 
@@ -101,15 +101,13 @@ __attribute__((noreturn)) static void KiHalt(void)
     }
 }
 
-/* Called from trap.S for every CPU exception (vectors 0..31) and the timer. */
+/* Called from trap.S for every CPU exception (vectors 0..31) and every IRQ. */
 void KiDispatchTrap(PKTRAP_FRAME trapFrame)
 {
-    /* IRQs (>= 32) dispatch here too for now; a dedicated irq.c arrives with
-     * the M2 scheduler. The LAPIC timer just bumps the tick counter. */
-    if (trapFrame->vector == TIMER_VECTOR)
+    /* Hardware interrupts route to Ke's dispatcher (kernel/ke/irq.c). */
+    if (trapFrame->vector >= 32)
     {
-        KiUpdateTickCount();
-        KiEndOfInterrupt();
+        KiDispatchInterrupt(trapFrame->vector);
         return;
     }
 

@@ -1,22 +1,16 @@
-/* arch/x86_64/lapic.h — Local APIC + its periodic timer (M1). */
+/* arch/x86_64/lapic.h — Local APIC + the periodic clock interrupt (M1/M2). */
 #ifndef PROSKRNL_ARCH_X86_64_LAPIC_H
 #define PROSKRNL_ARCH_X86_64_LAPIC_H
 
-#include <stdint.h>
-
 #define TIMER_VECTOR 32
 
-/* Monotonic tick counter, bumped by the timer interrupt (NT's KeTickCount). */
-extern volatile uint64_t KeTickCount;
-
 /* Enable the LAPIC (x2APIC / MSR access — no MMIO mapping needed), mask the
- * legacy 8259 PIC, install the timer gate, and start the periodic timer. */
-void KiInitializeTimer(void);
+ * legacy 8259 PIC, calibrate the LAPIC timer against the PIT, start it
+ * periodic at 1 ms, and enable interrupts. The tick lands in
+ * kernel/ke/timer.c (KiUpdateClock) via kernel/ke/irq.c. */
+void KiInitializeClock(void);
 
-/* Signal end-of-interrupt to the LAPIC (called from the timer handler). */
+/* Signal end-of-interrupt to the LAPIC. */
 void KiEndOfInterrupt(void);
-
-/* Advance KeTickCount (called from the timer interrupt). */
-void KiUpdateTickCount(void);
 
 #endif /* PROSKRNL_ARCH_X86_64_LAPIC_H */
