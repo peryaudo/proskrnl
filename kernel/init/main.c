@@ -52,7 +52,7 @@ __attribute__((noreturn)) static void KiIdleLoop(void)
 
 void KiSystemStartup(void)
 {
-    HalInitializeSerial();
+    HalpInitializeSerial();
 
     if (!LIMINE_BASE_REVISION_SUPPORTED(LiBaseRevision))
     {
@@ -68,7 +68,7 @@ void KiSystemStartup(void)
     __asm__ volatile("int3");
     DbgPrint("[KTEST] trap-recovered PASS\n");
 
-    HalInitializeTimer();
+    HalpInitializeTimer();
     while (KeTickCount < 10)
     {
         __asm__ volatile("hlt");
@@ -80,9 +80,9 @@ void KiSystemStartup(void)
     {
         KiPanic("missing HHDM/memmap response from Limine");
     }
-    MmInitializePhysicalMemory(LiHhdmRequest.response->offset, LiMemmapRequest.response);
-    DbgPrint("[KTEST] phys: %lu frames usable (%lu MiB)\n", MmGetTotalPageCount(),
-             MmGetTotalPageCount() * PAGE_SIZE / (1024 * 1024));
+    MiInitializePhysicalMemory(LiHhdmRequest.response->offset, LiMemmapRequest.response);
+    DbgPrint("[KTEST] phys: %lu frames usable (%lu MiB)\n", MiGetTotalPageCount(),
+             MiGetTotalPageCount() * PAGE_SIZE / (1024 * 1024));
     if (!MiTestPhysicalAllocator())
     {
         KiPanic("phys allocator self-test failed");

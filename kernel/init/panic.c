@@ -108,8 +108,8 @@ void KiDispatchTrap(PKTRAP_FRAME TrapFrame)
      * the M2 scheduler. The LAPIC timer just bumps the tick counter. */
     if (TrapFrame->Vector == TIMER_VECTOR)
     {
-        KeUpdateTickCount();
-        HalEndOfInterrupt();
+        KiUpdateTickCount();
+        HalpEndOfInterrupt();
         return;
     }
 

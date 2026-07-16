@@ -28,6 +28,12 @@ So a fatal-error helper that takes a *string* may **not** be called `KeBugCheck`
 signature is `KeBugCheck(ULONG)`) — it is `KiPanic(const char *)` (`KiPanic` is absent from
 Wine, hence free). Want a different argument list? Use a different name. Period.
 
+The same logic governs the prefix: the page-frame primitives are `Mi*` (`MiAllocatePage`,
+`MiFreePage`), **not** `Mm*` — Wine has no `MmAllocatePage`, so a public-looking `Mm` name
+would falsely imply an exported contract. Non-exported internals take the `i`/`p` prefix.
+A name that *is* a real export keeps it and matches the signature: `DbgPrint` stays
+`DbgPrint` but returns `NTSTATUS`, not `void`; `KeTickCount` stays a global.
+
 ## Naming
 
 | Kind | Convention | Examples |
@@ -76,11 +82,11 @@ The M1 bring-up was first written in Linux style and converted to this guide:
 | Linux-style (was) | NT-style (now) |
 |---|---|
 | `kmain` | `KiSystemStartup` |
-| `serial_init` / `serial_putc` / `serial_puts` | `HalInitializeSerial` / `HalPutChar` / `HalPutString` |
-| `outb` / `inb` / `rdmsr` / `wrmsr` | `__outbyte` / `__inbyte` / `__readmsr` / `__writemsr` |
-| `kprintf` / `kvprintf` | `DbgPrint` / `DbgPrintV` |
+| `serial_init` / `serial_putc` / `serial_puts` | `HalpInitializeSerial` / `HalpPutChar` / `HalpPutString` (not exported → `Halp`) |
+| `outb` / `inb` / `rdmsr` / `wrmsr` | `__outbyte` / `__inbyte` / `__readmsr` / `__writemsr` (MSVC intrinsic names) |
+| `kprintf` / `kvprintf` | `DbgPrint` (real export → `NTSTATUS` return) / private `DbgpPrintV` |
 | `panic(const char *)` | `KiPanic(const char *)` — *not* `KeBugCheck`, whose real signature is `KeBugCheck(ULONG)` |
 | `trap_handler` / `struct trap_frame` | `KiDispatchTrap` / `KTRAP_FRAME` |
 | `idt_init` / `idt_set_gate` | `KiInitializeIdt` / `KiSetInterruptGate` |
-| `timer_init` / `lapic_eoi` / `timer_tick(s)` | `HalInitializeTimer` / `HalEndOfInterrupt` / `KeUpdateTickCount` / `KeTickCount` |
-| `phys_init` / `phys_alloc` / `phys_free` | `MmInitializePhysicalMemory` / `MmAllocatePage` / `MmFreePage` |
+| `timer_init` / `lapic_eoi` / `timer_tick(s)` | `HalpInitializeTimer` / `HalpEndOfInterrupt` / `KiUpdateTickCount` / `KeTickCount` (real export) |
+| `phys_init` / `phys_alloc` / `phys_free` | `MiInitializePhysicalMemory` / `MiAllocatePage` / `MiFreePage` (internal → `Mi`) |

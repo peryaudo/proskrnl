@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare metal / a VM and runs the **unmodified Wine PE user-mode stack** (ntdll, kernelbase, user32, gdi32, …). We reimplement only the clean, observable boundary — the `Nt*` syscall surface plus PEB/TEB/file semantics that an unprivileged `.exe` can see — and reuse Wine above it and self-written virtio drivers below it. It is **not** a Windows clone or a ReactOS competitor.
 
-**Status: pre-M1.** The repo is currently a *constitution* — design docs that fix decisions before implementation. There is no kernel source, build system, or tests yet.
+**Status: M1 complete; M2 next.** Boots via Limine into long mode, IDT + register-dumping panic handler, LAPIC timer, physical page allocator. `make run` → `[KTEST] M1 PASS`. Build with **Make** (ADR 0009), boot via **Limine** (ADR 0010); toolchain in the README "Prerequisites". M2 is in-kernel threads + dispatcher + `KeWaitFor*` (`docs/02`). *(Keep this line current — see Workflow.)*
 
 ## Read before writing code (hard rules, not guidance)
 
@@ -41,6 +41,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **Feature branches + PRs; every change must satisfy gates G1–G7.** Run `/gate-check` on a diff before committing.
 - `abi/` constants: regenerate with `/gen-abi`, never hand-edit.
 - Introducing an NT-absent device/process: log it with `/log-hack` before/with the code.
+- **On completing a milestone**, update the **Status** line above *and* the README "Status" section (current milestone, `make run` verdict, what's next); confirm `make run` is green. Milestone progress lives in exactly those two places — keep them in sync.
 
 ## Key docs
 

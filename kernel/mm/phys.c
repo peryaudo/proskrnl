@@ -12,7 +12,7 @@ static inline uint64_t *MiFrameToVirtual(uint64_t Physical)
     return (uint64_t *)(uintptr_t)(MiHhdmOffset + Physical);
 }
 
-void MmFreePage(uint64_t Page)
+void MiFreePage(uint64_t Page)
 {
     /* Thread the free list through the frames themselves: store the old head
      * in this frame, then make this frame the new head. */
@@ -21,7 +21,7 @@ void MmFreePage(uint64_t Page)
     MiFreePageCount++;
 }
 
-uint64_t MmAllocatePage(void)
+uint64_t MiAllocatePage(void)
 {
     if (MiFreeListHead == 0)
     {
@@ -33,16 +33,16 @@ uint64_t MmAllocatePage(void)
     return Page;
 }
 
-uint64_t MmGetFreePageCount(void)
+uint64_t MiGetFreePageCount(void)
 {
     return MiFreePageCount;
 }
-uint64_t MmGetTotalPageCount(void)
+uint64_t MiGetTotalPageCount(void)
 {
     return MiTotalPageCount;
 }
 
-void MmInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap)
+void MiInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap)
 {
     MiHhdmOffset = HhdmOffset;
     MiFreeListHead = 0;
@@ -60,12 +60,12 @@ void MmInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_respon
         uint64_t End = (Entry->base + Entry->length) & ~(uint64_t)(PAGE_SIZE - 1);
         for (uint64_t Page = Base; Page + PAGE_SIZE <= End; Page += PAGE_SIZE)
         {
-            /* Skip the NULL frame so MmAllocatePage()==0 unambiguously means OOM. */
+            /* Skip the NULL frame so MiAllocatePage()==0 unambiguously means OOM. */
             if (Page == 0)
             {
                 continue;
             }
-            MmFreePage(Page);
+            MiFreePage(Page);
             MiTotalPageCount++;
         }
     }
@@ -75,8 +75,8 @@ int MiTestPhysicalAllocator(void)
 {
     uint64_t Before = MiFreePageCount;
 
-    uint64_t A = MmAllocatePage();
-    uint64_t B = MmAllocatePage();
+    uint64_t A = MiAllocatePage();
+    uint64_t B = MiAllocatePage();
     if (A == 0 || B == 0 || A == B)
     {
         return 0;
@@ -92,14 +92,14 @@ int MiTestPhysicalAllocator(void)
     }
 
     /* LIFO reuse: free A then B; the next alloc must return B. */
-    MmFreePage(A);
-    MmFreePage(B);
-    uint64_t C = MmAllocatePage();
+    MiFreePage(A);
+    MiFreePage(B);
+    uint64_t C = MiAllocatePage();
     if (C != B)
     {
         return 0;
     }
-    MmFreePage(C);
+    MiFreePage(C);
 
     return MiFreePageCount == Before;
 }

@@ -2,6 +2,7 @@
 #include "kernel/lib/kprintf.h"
 #include "arch/x86_64/serial.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -11,9 +12,9 @@ static void DbgpEmitString(const char *String)
     {
         if (*String == '\n')
         {
-            HalPutChar('\r');
+            HalpPutChar('\r');
         }
-        HalPutChar(*String);
+        HalpPutChar(*String);
     }
 }
 
@@ -42,34 +43,34 @@ static void DbgpEmitUnsigned(uint64_t Value, unsigned Base, int Upper, int Width
     {
         if (Prefix)
         {
-            HalPutChar('0');
-            HalPutChar(Upper ? 'X' : 'x');
+            HalpPutChar('0');
+            HalpPutChar(Upper ? 'X' : 'x');
         }
         for (int W = Length; W < Width; W++)
         {
-            HalPutChar('0');
+            HalpPutChar('0');
         }
     }
     else
     {
         for (int W = Length; W < Width; W++)
         {
-            HalPutChar(' ');
+            HalpPutChar(' ');
         }
         if (Prefix)
         {
-            HalPutChar('0');
-            HalPutChar(Upper ? 'X' : 'x');
+            HalpPutChar('0');
+            HalpPutChar(Upper ? 'X' : 'x');
         }
     }
 
     while (Count > 0)
     {
-        HalPutChar(Buffer[--Count]);
+        HalpPutChar(Buffer[--Count]);
     }
 }
 
-void DbgPrintV(const char *Format, va_list Args)
+static void DbgpPrintV(const char *Format, va_list Args)
 {
     for (; *Format != '\0'; Format++)
     {
@@ -77,9 +78,9 @@ void DbgPrintV(const char *Format, va_list Args)
         {
             if (*Format == '\n')
             {
-                HalPutChar('\r');
+                HalpPutChar('\r');
             }
-            HalPutChar(*Format);
+            HalpPutChar(*Format);
             continue;
         }
         Format++;
@@ -129,10 +130,10 @@ void DbgPrintV(const char *Format, va_list Args)
         switch (*Format)
         {
         case '%':
-            HalPutChar('%');
+            HalpPutChar('%');
             break;
         case 'c':
-            HalPutChar((char)va_arg(Args, int));
+            HalpPutChar((char)va_arg(Args, int));
             break;
         case 's':
         {
@@ -154,7 +155,7 @@ void DbgPrintV(const char *Format, va_list Args)
                 Value = va_arg(Args, long);
             if (Value < 0)
             {
-                HalPutChar('-');
+                HalpPutChar('-');
                 DbgpEmitUnsigned((uint64_t)(-Value), 10, 0, Width > 0 ? Width - 1 : 0, Pad, 0);
             }
             else
@@ -189,17 +190,18 @@ void DbgPrintV(const char *Format, va_list Args)
         case '\0':
             return;
         default:
-            HalPutChar('%');
-            HalPutChar(*Format);
+            HalpPutChar('%');
+            HalpPutChar(*Format);
             break;
         }
     }
 }
 
-void DbgPrint(const char *Format, ...)
+int DbgPrint(const char *Format, ...)
 {
     va_list Args;
     va_start(Args, Format);
-    DbgPrintV(Format, Args);
+    DbgpPrintV(Format, Args);
     va_end(Args);
+    return 0; /* STATUS_SUCCESS */
 }

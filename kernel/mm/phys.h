@@ -14,14 +14,14 @@
 struct limine_memmap_response; /* forward */
 
 /* Seed the allocator from Limine's memory map; HhdmOffset maps phys->virt. */
-void MmInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap);
+void MiInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap);
 
-/* Allocate / free one physical frame. MmAllocatePage returns 0 when OOM. */
-uint64_t MmAllocatePage(void);
-void MmFreePage(uint64_t Page);
+/* Allocate / free one physical frame. MiAllocatePage returns 0 when OOM. */
+uint64_t MiAllocatePage(void);
+void MiFreePage(uint64_t Page);
 
-uint64_t MmGetFreePageCount(void);
-uint64_t MmGetTotalPageCount(void);
+uint64_t MiGetFreePageCount(void);
+uint64_t MiGetTotalPageCount(void);
 
 /* In-kernel self-test (kmt-style): alloc, write/read a pattern via HHDM, free,
  * check LIFO reuse and the free count. Returns 1 on pass. */

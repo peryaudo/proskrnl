@@ -11,12 +11,12 @@ extern volatile uint64_t KeTickCount;
 
 /* Enable the LAPIC (x2APIC / MSR access — no MMIO mapping needed), mask the
  * legacy 8259 PIC, install the timer gate, and start the periodic timer. */
-void HalInitializeTimer(void);
+void HalpInitializeTimer(void);
 
 /* Signal end-of-interrupt to the LAPIC (called from the timer handler). */
-void HalEndOfInterrupt(void);
+void HalpEndOfInterrupt(void);
 
 /* Advance KeTickCount (called from the timer interrupt). */
-void KeUpdateTickCount(void);
+void KiUpdateTickCount(void);
 
 #endif /* PROSKRNL_ARCH_X86_64_LAPIC_H */

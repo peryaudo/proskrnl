@@ -5,7 +5,7 @@
 
 #define COM1 0x3F8
 
-void HalInitializeSerial(void)
+void HalpInitializeSerial(void)
 {
     __outbyte(COM1 + 1, 0x00); /* disable interrupts                       */
     __outbyte(COM1 + 3, 0x80); /* DLAB: set baud divisor                   */
@@ -21,7 +21,7 @@ static int HalpTransmitReady(void)
     return __inbyte(COM1 + 5) & 0x20; /* line status: transmit holding empty */
 }
 
-void HalPutChar(char Char)
+void HalpPutChar(char Char)
 {
     while (!HalpTransmitReady())
     {
@@ -29,14 +29,14 @@ void HalPutChar(char Char)
     __outbyte(COM1, (uint8_t)Char);
 }
 
-void HalPutString(const char *String)
+void HalpPutString(const char *String)
 {
     for (; *String != '\0'; String++)
     {
         if (*String == '\n')
         {
-            HalPutChar('\r');
+            HalpPutChar('\r');
         }
-        HalPutChar(*String);
+        HalpPutChar(*String);
     }
 }
