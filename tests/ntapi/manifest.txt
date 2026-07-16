@@ -1,0 +1,23 @@
+# tests/ntapi/manifest.txt
+#
+# Tests expected to build, run, and PASS on the proskrnl target as of the
+# current milestone (modulo their todo_proskrnl blocks). Everything under
+# tests/ntapi/ NOT listed here is oracle-only for now.
+#
+# One test path per line, relative to tests/ntapi/, without the .c suffix.
+# '#' comments and blank lines are ignored.
+#
+# Adding a line is the LAST step of implementing an Nt* (docs/09 Art. 5,
+# docs/14): it flips the test from "oracle-only spec" to "proskrnl must not
+# regress this". The oracle target ignores this file and runs everything.
+#
+# The milestone map is pre-drawn (commented) so each Nt* has an obvious final
+# step. Uncomment as the kernel implements the behaviour.
+
+# --- M4: user mode + first syscalls ---
+# sem_wait/notification_event     # NtCreateEvent / NtWaitForSingleObject / NtSetEvent / NtResetEvent
+# sem_mm/reserve_commit           # NtAllocateVirtualMemory: reserve then commit
+
+# --- M6: I/O manager + FAT32 ---
+# sem_file/share_modes            # conflicting share mode -> STATUS_SHARING_VIOLATION
+# sem_file/delete_on_close        # FILE_DELETE_ON_CLOSE semantics

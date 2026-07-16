@@ -57,7 +57,9 @@ field-filling) a test written just after is acceptable.
 
 This test asset is **the single most important thing an LLM can be asked to produce** — it
 is where the model is strongest (broad knowledge of Windows behaviour) and where the
-project's life is decided.
+project's life is decided. The harness API, the `todo_proskrnl` convention, the manifest,
+and the runner are specified concretely in **`docs/14-test-harness.md`** (and skeletoned in
+`tests/`).
 
 ## Wine's test suite is our conformance suite
 

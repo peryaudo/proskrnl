@@ -1,0 +1,88 @@
+/*
+ * ntapi.h — portable ntapi test harness.
+ *
+ * One source, two build modes (see docs/14-test-harness.md). The Makefile
+ * defines exactly one of:
+ *
+ *   NTAPI_ORACLE    build as a Windows PE .exe; Nt* from the host ntdll;
+ *                   contract headers = the oracle's (winternl.h); the truth.
+ *   NTAPI_PROSKRNL  build as a freestanding flat binary for proskrnl (M4+);
+ *                   Nt* from tests/ntapi/syscall/; contract headers = abi/.
+ *
+ * The header switch below is a conformance check: the same test compiling and
+ * passing in both modes proves abi/ agrees with the oracle. Never include both
+ * header sets in one build.
+ */
+#ifndef NTAPI_H
+#define NTAPI_H
+
+#if defined(NTAPI_ORACLE) == defined(NTAPI_PROSKRNL)
+#  error "define exactly one of NTAPI_ORACLE / NTAPI_PROSKRNL"
+#endif
+
+#if defined(NTAPI_ORACLE)
+/* The oracle defines truth: use the system's own NT headers, never abi/. */
+#  include <windows.h>
+#  include <winternl.h>
+#elif defined(NTAPI_PROSKRNL)
+/* proskrnl's generated contract (Article 4). Present from M4. */
+#  include "abi/ntstatus.h"
+#  include "abi/ntdef.h"
+/* further abi/ headers are pulled in per-test as the surface grows */
+#endif
+
+/* ---- harness state ------------------------------------------------------ */
+
+struct ntapi_state
+{
+    const char *Name;
+    int         Failures;         /* hard assertion failures                */
+    int         TodoUnexpected;   /* todo_proskrnl block that unexpectedly passed */
+    int         Skips;
+    int         TodoDepth;        /* >0 while inside a todo_proskrnl block   */
+};
+
+extern struct ntapi_state NtapiState;
+
+/* Implemented per-mode in ntapi.c. */
+void ntapi_out(const char *Text);                 /* oracle: stdout; proskrnl: serial */
+void ntapi_okv(int Cond, const char *File, int Line, const char *Fmt, ...);
+void ntapi_skipv(const char *File, int Line, const char *Fmt, ...);
+int  ntapi_finish(void);                           /* emit [KTEST] verdict, return exit code */
+void ntapi_exit(int Code);                          /* oracle: exit(); proskrnl: isa-debug-exit */
+
+/* ---- test entry point --------------------------------------------------- */
+
+#define START_TEST(name)                                                      \
+    struct ntapi_state NtapiState = { #name, 0, 0, 0, 0 };                     \
+    static void ntapi_body(void);                                             \
+    int main(void)                                                            \
+    {                                                                         \
+        ntapi_body();                                                        \
+        ntapi_exit(ntapi_finish());                                          \
+        return 0;                                                            \
+    }                                                                         \
+    static void ntapi_body(void)
+
+/* ---- assertions --------------------------------------------------------- */
+
+/* ok(cond, fmt, ...) — one assertion. Counts + logs [ASSERT] file:line on failure. */
+#define ok(cond, ...) ntapi_okv((cond) != 0, __FILE__, __LINE__, __VA_ARGS__)
+
+#define skip(...)     ntapi_skipv(__FILE__, __LINE__, __VA_ARGS__)
+
+/*
+ * todo_proskrnl { ... } — assertions expected to fail on proskrnl (not yet
+ * correct) but that MUST pass on the oracle. Mirrors Wine's todo_wine:
+ *   oracle:   transparent — the block must pass.
+ *   proskrnl: an ok() failure inside is expected (not counted); an ok() that
+ *             unexpectedly passes is flagged (delete the tag — hold the kernel
+ *             to the behaviour now).
+ * Prefer this only for a test that is otherwise LIVE in the manifest. A wholly
+ * unimplemented Nt* belongs out of the manifest, not wrapped in todo_proskrnl.
+ */
+#define todo_proskrnl                                                         \
+    for (NtapiState.TodoDepth++; NtapiState.TodoDepth;                        \
+         NtapiState.TodoDepth--)
+
+#endif /* NTAPI_H */
