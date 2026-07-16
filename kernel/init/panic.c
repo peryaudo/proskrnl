@@ -9,6 +9,7 @@
 #include "kernel/lib/kprintf.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/lapic.h"
 
 #include <stdint.h>
 
@@ -86,6 +87,14 @@ __attribute__((noreturn)) static void die(void)
 /* Called from trap.S for every CPU exception (vectors 0..31). */
 void trap_handler(struct trap_frame *tf)
 {
+    /* IRQs (>= 32) dispatch here too for now; a dedicated irq.c arrives with
+     * the M2 scheduler. The LAPIC timer just bumps the tick counter. */
+    if (tf->vector == TIMER_VECTOR) {
+        timer_tick();
+        lapic_eoi();
+        return;
+    }
+
     /* #BP is a trap: RIP already points past int3, so dump and resume. This is
      * how M1 demonstrates "an exception dumps registers over serial" while
      * keeping the run green. Every other vector is fatal. */

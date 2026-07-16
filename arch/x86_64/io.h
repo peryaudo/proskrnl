@@ -16,6 +16,19 @@ static inline uint8_t inb(uint16_t port)
     return ret;
 }
 
+static inline uint64_t rdmsr(uint32_t msr)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t val)
+{
+    __asm__ volatile("wrmsr"
+                     : : "c"(msr), "a"((uint32_t)val), "d"((uint32_t)(val >> 32)));
+}
+
 /* QEMU isa-debug-exit (iobase 0xf4): host exit code becomes (code << 1) | 1,
  * so it can never be 0 — the real M1 verdict is the [KTEST] line on serial
  * (docs/08). This just terminates the VM promptly. */

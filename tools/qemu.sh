@@ -16,6 +16,7 @@ mkdir -p "$(dirname "$LOG")"
 
 qemu-system-x86_64 \
     -M q35 \
+    -cpu max \
     -m 256M \
     -no-reboot \
     -display none \

@@ -11,6 +11,7 @@
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/idt.h"
+#include "arch/x86_64/lapic.h"
 #include "kernel/lib/kprintf.h"
 
 __attribute__((used, section(".limine_requests_start_marker")))
@@ -18,6 +19,13 @@ static volatile uint64_t limine_requests_start[4] = LIMINE_REQUESTS_START_MARKER
 
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[3] = LIMINE_BASE_REVISION(3);
+
+/* Ask Limine for the higher-half direct-map offset (used to reach LAPIC MMIO). */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
+    .revision = 0,
+};
 
 __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end[2] = LIMINE_REQUESTS_END_MARKER;
@@ -47,6 +55,13 @@ void kmain(void)
      * handler, which dumps registers over serial, then resumes (docs/02). */
     __asm__ volatile("int3");
     kprintf("[KTEST] trap-recovered PASS\n");
+
+    timer_init();
+    while (timer_ticks() < 10) {
+        __asm__ volatile("hlt");
+    }
+    __asm__ volatile("cli");
+    kprintf("[KTEST] timer PASS (%lu ticks)\n", timer_ticks());
 
     qemu_exit(0);
     halt();

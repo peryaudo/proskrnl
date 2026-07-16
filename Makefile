@@ -32,7 +32,8 @@ CSRC := kernel/init/main.c \
         kernel/init/panic.c \
         kernel/lib/kprintf.c \
         arch/x86_64/serial.c \
-        arch/x86_64/idt.c
+        arch/x86_64/idt.c \
+        arch/x86_64/lapic.c
 ASRC := arch/x86_64/trap.S
 OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
 
