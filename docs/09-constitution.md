@@ -53,10 +53,14 @@ dangerous than wrong ones because they hide. Structure layouts carry
 
 ## Article 5 — Tests precede kernel code
 
-For any boundary behaviour, a `tests/ntapi/` test that is **green on Wine/Windows** exists
-*before* the kernel implements it (M0b). "Done" is defined by that test, not by the code
-compiling. Semantic bugs caught in M3 cost hours; the same bug found at M13 costs months
-and is un-triageable across four suspects.
+For any boundary behaviour, a `tests/ntapi/` test that is **green on the Wine/Windows
+oracle** exists *before* the kernel implements it. "Done" is defined by that test passing on
+proskrnl, not by the code compiling. This is a per-milestone discipline, not an upfront
+phase: each milestone adds only the cases for the `Nt*` it implements, and the proskrnl run
+is gated by a `todo_proskrnl` manifest so it stays green-or-regression (see `docs/08`).
+Contract-shaped behaviour (event/IOSB ordering, wait semantics, share modes) *must* be
+tested first, or the implementation certifies its own bug. Semantic bugs caught in M3 cost
+hours; the same bug found at M13 costs months and is un-triageable across four suspects.
 
 ## Article 6 — Only a differential test convicts
 

@@ -5,25 +5,19 @@ written." The empirical effort split is roughly: **M1–M6 = 40%, M7 alone = 30%
 M8–M16 = 30%**. M7 is both the biggest mountain and the biggest return.
 
 Ordering rules that matter:
-- **M0 exists** (below) but may be skipped in favour of the "stupidly correct" constitution,
-  which removes the difficulty M0 would teach. See `docs/09` and `docs/12`.
+- **No separate "prerequisites" phase.** There is no M0. The xv6 labs a prep phase would
+  have run are unnecessary under Article 3 — you never write COW, eviction, or fine-grained
+  locking, so there is nothing to rehearse. The QEMU build→run→exit-code→log harness is the
+  first task *of M1*, proven on a trivial payload before any kernel logic. See `docs/12`.
 - **RAM-disk before real Mm** (M5 seeds it) to break the Mm↔Io circular dependency.
-- **Semantic tests are assets before M7.** Every `Nt*` behaviour gets a user-mode test,
-  green on Wine/Windows, *before* the kernel implements it. See `docs/08`.
+- **Test-first, per milestone (Article 5).** For each milestone, write the `tests/ntapi/`
+  cases for exactly the `Nt*` it implements, green them on the Wine/Windows oracle *first*,
+  then implement until they pass on proskrnl. Do not author the whole boundary suite up
+  front. The suite grows monotonically, and the proskrnl run is gated by a `todo_proskrnl`
+  manifest so it is always green-or-regression rather than a sea of expected reds. See
+  `docs/08`.
 - **The critical path to calc.exe deliberately excludes npfs/condrv/conhost/cmd.** See
   the GUI note below and `docs/07`.
-
----
-
-## M0 — Prerequisites (optional, see docs/12)
-
-- **M0a:** MIT 6.1810 xv6 labs, especially pgtbl / traps / cow / lock / mmap. Builds a
-  mental oracle for the parts that are otherwise unfamiliar. *May be skipped* if T4's
-  constitution is adopted, because the hard parts (COW, eviction, fine locking) are then
-  never written.
-- **M0b:** write `tests/ntapi/` and make it green on Linux + Wine (and Windows if
-  possible). This makes the specification executable *before* any kernel code exists.
-- **M0c:** establish the QEMU loop (build → run → exit code → log) on a Hello World.
 
 ---
 
@@ -31,6 +25,9 @@ Ordering rules that matter:
 Minimal loader path (Limine/Multiboot2) into long mode; serial console; IDT/exception
 handlers; timer interrupt; physical page allocator. NT loader protocol is unnecessary
 (binary compat dropped), so ride an existing boot protocol.
+**Do first:** get the QEMU loop (build → run → `isa-debug-exit` code → serial log) green on
+a trivial "hello over serial" payload *before* writing kernel logic, so the harness is never
+a variable while you debug (see `docs/08`).
 **Done when:** boots in QEMU; an exception dumps registers over serial; the timer ticks.
 **Do on day one:** thick panic handler (register dump, stack trace, last syscall) — this
 is the LLM's eyes for the rest of the project.

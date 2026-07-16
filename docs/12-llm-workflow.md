@@ -75,18 +75,22 @@ headers + MS docs if a permissive license is wanted.
 4. **You design the 3 hard files; the LLM writes them.** The reverse kills the project.
 5. **M2–M6 tests must be green before M7.**
 
-## If you insist on "no M0, LLM does everything, now"
+## Why there is no M0 "learn first" phase
 
-Legitimate under time pressure — motivation is non-fungible, and "start now" can be the
-correct expected-value move even if M0 is cheap in the abstract. But then two levers matter
-more than anything, and both are decided *today*, not learned over months:
+Starting implementation immediately is the correct expected-value move — motivation is
+non-fungible — and the two things a prep phase would have bought are better bought by
+decisions made *today*, not learned over months:
 
 - **Make Article 3 a constitution, not a choice.** It deletes the difficulty of the code
-  you cannot review. This *replaces* M0a — you needn't learn to write COW because you don't
-  write COW.
+  you cannot review — exactly what the xv6 labs would have rehearsed. You needn't learn to
+  write COW because you never write COW.
 - **Pull calc.exe off the npfs critical path** (wineserver-lite over shared-section+events;
   npfs/cmd after the calculator). Faster pixels ⇒ sustained motivation ⇒ lower attrition,
   which is the real killer.
+
+The test harness a prep phase would have front-loaded is not skipped — it moves *into* each
+milestone as the test-first discipline (Article 5, `docs/08`), so it is built exactly when
+and where it is needed rather than as a monolith up front.
 
 Honest odds to "calc.exe on screen": **~7%**, dominated by attrition and world-first
 novelty, *not* by having made a wrong decision. Raising it to ~12–15% comes from

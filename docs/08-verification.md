@@ -17,20 +17,47 @@ implementation. proskrnl has an unusually good one:
 Any two agreeing pins the third. This is **triangulation**, and it is only possible
 because the boundary is observable.
 
-## Tests are assets *before* the code exists (M0b)
+## Tests are assets *before* the code exists
 
-Write `tests/ntapi/` and make it green on **Linux + Wine (and Windows where possible)**
-*before* the kernel implements the corresponding `Nt*`. This makes the specification
-executable ahead of the implementation:
+Writing the test first is not process purity — it is that the boundary is *observable*, so
+the test is the executable spec, and writing it first stops the LLM from encoding what it
+*built* instead of what NT *does*. Four things make this concrete.
+
+**A portable harness.** `tests/ntapi/` is a thin, self-checking harness with its own minimal
+`ok()`/`START_TEST` shim, deliberately built so the **same source** compiles two ways: as an
+ordinary Windows `.exe` (runs on Windows and on Wine-on-Linux — the oracle) and as a
+freestanding flat binary against proskrnl's pre-ntdll kernel (the M4 test client). This
+portability is the whole reason `ntapi` exists apart from Wine's own tests, which link the
+full PE user-mode stack and therefore cannot run on proskrnl until M7. `ntapi` is the only
+oracle you can run against the M1–M6 kernel.
+
+**Per-milestone, not up front.** Do not author the whole boundary suite before M1 and watch
+it stay red for months — that gives the loop no gradient. For each milestone, write exactly
+the cases for the `Nt*` it is about to implement, green them on the oracle first, then
+implement until they are green on proskrnl. The buckets grow milestone by milestone:
 
 - `sem_mm/` — reserve/commit behaviour, guard-page stack growth, (later) COW separation.
 - `sem_file/` — share modes, info classes, async + APC completion.
 - `sem_wait/` — wait-all/any, alertable waits, APC interruption of waits.
 
-When the kernel later implements these, "done" already has a definition, and triangulation
-holds from the first commit. **This is the single most important thing an LLM can be asked
-to produce** — it is where the model is strongest (broad knowledge of Windows behaviour)
-and where the project's life is decided.
+**Two run targets, one manifest.** Every case runs green on the **oracle** target
+(Wine/Windows) from the day it is written — that is the spec being executable ahead of the
+code. The **proskrnl** target runs only the slice implemented so far, gated by a
+`todo_proskrnl` manifest (borrow Wine's own `todo_wine` idea): a not-yet-implemented case is
+*tagged out*, never failing. So the proskrnl run is always **green-or-real-regression**, and
+a red there always means something broke — the only way red stays meaningful across a dozen
+milestones.
+
+**Contract-shaped tests first; boring surface can come after.** The bugs that kill this
+project are wrong-*contract* bugs (e.g. signalling the event before writing the IOSB) —
+memory-safe, no crash, invisible to sanitizers. For those (IOSB/event ordering, wait-all/any
++ APC interruption, share-mode + delete-on-close) the test *must* precede the kernel code, or
+the implementation certifies its own mistake. For mechanical surface (info-class
+field-filling) a test written just after is acceptable.
+
+This test asset is **the single most important thing an LLM can be asked to produce** — it
+is where the model is strongest (broad knowledge of Windows behaviour) and where the
+project's life is decided.
 
 ## Wine's test suite is our conformance suite
 
@@ -38,6 +65,10 @@ Wine's tests are a **third-party, Windows-verified, legally-clean** specificatio
 boundary. The moment M7 lands Wine's ntdll, that suite becomes proskrnl's conformance
 suite. `user32/tests/msg.c` is the GUI trophy — passing it means 30 years of message-order
 compatibility hold on our kernel.
+
+At that point `tests/ntapi/` has served its purpose as the M1–M6 scaffold: Wine's suite is
+the richer oracle, and `ntapi`'s portable harness lives on as the base for the differential
+fuzzer below, not as a parallel suite to keep maintaining.
 
 ## Differential fuzzing (the hidden weapon)
 

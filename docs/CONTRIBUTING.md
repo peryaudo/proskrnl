@@ -32,8 +32,10 @@ stated as hard gates.
   All generated from Wine headers via `tools/gen_abi.py`; layouts carry `static_assert`
   offsets. (Art. 4)
 
-- **G5 — Test first.** A boundary behaviour needs a `tests/ntapi/` test green on
-  Wine/Windows *before* the kernel implements it. (Art. 5)
+- **G5 — Test first.** A boundary behaviour needs a `tests/ntapi/` test green on the
+  Wine/Windows oracle *before* the kernel implements it, and green on proskrnl before the
+  change is "done"; not-yet-implemented cases are tagged `todo_proskrnl`, never left
+  failing. (Art. 5, `docs/08`)
 
 - **G6 — Conviction by differential test.** Sanitizers/asserts name suspects; only a
   passing differential/conformance test closes an issue. "Sanitizer went quiet" is not a
