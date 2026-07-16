@@ -48,8 +48,33 @@ observable syscall surface — except placed on bare metal instead of on a host 
 
 1. `docs/00-overview.md` — the design in one sitting.
 2. `docs/09-constitution.md` — **the hard rules. Read before writing a line of code.**
-3. `docs/02-milestones.md` — the plan, M0 through WOW64.
+3. `docs/02-milestones.md` — the plan, M1 through WOW64.
 4. `docs/13-glossary.md` — if terms like IRQL, APC, or "section object" are unfamiliar.
+
+## Prerequisites (development toolchain)
+
+macOS / Homebrew (Apple Silicon or Intel). Install everything with `brew bundle` (reads
+`./Brewfile`), or the M1-critical set directly:
+
+```sh
+brew install llvm lld qemu limine mtools
+```
+
+- **llvm + lld** — the freestanding cross-toolchain: `clang --target=x86_64-elf`,
+  `llvm-objcopy`, and `ld.lld` (macOS's own `ld` is Mach-O only). Homebrew's `llvm` is
+  **keg-only** *and does not ship `ld.lld`* — point the build at `/opt/homebrew/opt/llvm/bin`
+  and install **`lld` separately**.
+- **qemu** — `qemu-system-x86_64`, the run/test loop (`docs/08`). On Apple Silicon the
+  x86-64 guest runs under TCG emulation (no HVF) — correct, just slower.
+- **limine** — the bootloader (ADR 0010); provides the `limine` deploy tool.
+- **mtools** — `mformat`/`mcopy`, to build the FAT32 boot image without mounting
+  (`tools/mkimage.sh`).
+
+For the ntapi **oracle** test target (from M2, not needed for M1): **mingw-w64** builds the
+tests as a Windows `.exe` (`docs/14`) and **wine-stable** runs it — though on Apple Silicon
+that path goes through Rosetta and is finicky; Linux/CI or Windows is smoother. Also used:
+**python3** (the `tools/gen_*.py` generators, from M4) and **GNU make** (ships with the
+Xcode Command Line Tools).
 
 ## Status
 
