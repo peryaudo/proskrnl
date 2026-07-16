@@ -1,0 +1,177 @@
+# 04 — Planned Repository Layout
+
+The tree is a projection of the design. Three principles shape it:
+
+1. **NT prefixes become department names.** Ke/Mm/Ob/Ps/Io/Cm mirror Windows Internals,
+   so the code cross-references the book and reads as a teaching artifact.
+2. **ABI-forming headers are physically isolated.** Only `abi/` holds contracts; changing
+   anything there is a compatibility break. Everything else is free to be rewritten. This
+   is the structural fence against building ReactOS's prison.
+3. **Tests are first-class.** `tests/` is top-level and expected to be *larger* than the
+   kernel. That is healthy here, not bloat.
+
+Notably absent — and their absence *is* the design: **no `hal/`, no `cc/`, no
+`irql`/`dpc` in `ke/`.** The page cache lives in `mm/pagecache.c`; platform code is
+directly in `arch/`. The missing directories testify to the dropped tax.
+
+```
+proskrnl/
+├── Makefile / meson.build
+├── README.md
+├── docs/                            # this constitution
+│   ├── 00-overview.md … 13-glossary.md
+│   ├── CONTRIBUTING.md
+│   └── adr/                         # architecture decision records
+│
+├── abi/                             # ★ the CONTRACT. kernel+user shared. generated where possible.
+│   ├── ntstatus.h                   # NTSTATUS values (match real NT)
+│   ├── ntdef.h                      # UNICODE_STRING, OBJECT_ATTRIBUTES, LARGE_INTEGER…
+│   ├── ntpebteb.h                   # PEB/TEB layout (byte-exact; static_assert offsets)
+│   ├── ntpsapi.h                    # RTL_USER_PROCESS_PARAMETERS
+│   ├── ntioapi.h                    # IO_STATUS_BLOCK, FILE_*_INFORMATION classes
+│   ├── ntmmapi.h                    # MEM_RESERVE/COMMIT, PAGE_* protection
+│   ├── ntkeapi.h                    # KUSER_SHARED_DATA
+│   ├── ntregapi.h                   # KEY_*_INFORMATION
+│   └── syscall_numbers.h            # our own numbers (the one part free to invent)
+│
+├── kernel/
+│   ├── init/
+│   │   ├── main.c                   # KiSystemStartup-equiv: per-department phase init
+│   │   └── initrd.c                 # M5 seed RAM-disk
+│   ├── ke/                          # M1–M2
+│   │   ├── sched.c                  # scheduler (internals free; keep it simple)
+│   │   ├── thread.c                 # KTHREAD, context-switch high half
+│   │   ├── wait.c                   # ★ DISPATCHER_HEADER, wait blocks, WaitFor*
+│   │   ├── event.c / mutex.c / sema.c / timer.c
+│   │   ├── apc.c                    # ★ kernel/user APC queues + delivery
+│   │   └── irq.c                    # interrupt dispatch (no IRQL; plain top/bottom half)
+│   ├── ob/                          # M3
+│   │   ├── object.c                 # type system, refcount, create/delete
+│   │   ├── handle.c                 # handle table (array + lock)
+│   │   ├── namespace.c              # \Device, \??, directories, symlinks
+│   │   └── wait.c                   # handle→object resolution for NtWaitFor*
+│   ├── mm/                          # M4–M5
+│   │   ├── phys.c                   # physical page allocator
+│   │   ├── pool.c                   # kernel heap (single pool, no Paged/NonPaged split)
+│   │   ├── vad.c                    # address-space interval management
+│   │   ├── virtual.c                # NtAllocate/Protect/FreeVirtualMemory
+│   │   ├── section.c                # ★ sections: anonymous / file / image
+│   │   ├── pecoff.c                 # PE parser for image sections
+│   │   ├── fault.c                  # page fault: (later) COW, guard pages, demand-zero
+│   │   └── pagecache.c              # ★ unified page cache (stands in for Cc)
+│   ├── ps/                          # M4, M7
+│   │   ├── process.c                # EPROCESS-equiv, NtCreateUserProcess
+│   │   ├── thread.c                 # ETHREAD-equiv, TEB allocation
+│   │   ├── peb.c                    # PEB/ProcessParameters build (follows abi/ strictly)
+│   │   └── usermode.c               # ★ return path to KiUser{Exception,Apc}Dispatcher
+│   ├── io/                          # M6
+│   │   ├── file.c                   # FILE_OBJECT, NtCreateFile path resolution
+│   │   ├── rw.c                     # NtRead/WriteFile, async skeleton
+│   │   ├── async.c                  # ★ completion record (non-IRP), IOSB, APC/event/port
+│   │   ├── ioctl.c                  # NtDeviceIoControlFile / NtFsControlFile
+│   │   ├── query.c                  # NtQuery{Information,Directory}File info classes
+│   │   ├── completion.c             # I/O completion ports
+│   │   └── vfs.h                    # internal driver IF (file_operations-style; FREE)
+│   ├── cm/                          # M8
+│   │   ├── registry.c               # NtCreateKey/SetValueKey/QueryValueKey
+│   │   └── hive.c                   # persistence (our own format)
+│   ├── se/
+│   │   └── stub.c                   # always-allow + correctly-shaped token
+│   ├── win32k/                      # ★ ROUTE (b) ONLY — absent under route (a)
+│   │   └── (see docs/07)            #   present only if desktop state moves into kernel
+│   └── syscall/
+│       ├── table.c                  # function table (SSDT-equiv)
+│       ├── entry.S                  # syscall/sysret entry
+│       └── uaccess.c                # user-pointer validation, fault-trapping copy in/out
+│
+├── arch/x86_64/                     # thin — HAL is absorbed here
+│   ├── boot.S                       # Limine entry, long-mode scaffold
+│   ├── trap.S / idt.c               # low-level exception/interrupt
+│   ├── ctxswitch.S
+│   ├── mmu.c                        # page-table ops
+│   └── lapic.c / hpet.c             # direct hardware (not abstracted)
+│
+├── drivers/                         # all statically linked; implement vfs.h directly
+│   ├── virtio/
+│   │   ├── virtqueue.c              # shared ring
+│   │   ├── blk.c / console.c / input.c
+│   │   └── gpu.c                    # M11: 2D scanout
+│   ├── condrv.c                     # M9: ConDrv-style console device
+│   ├── fb.c                         # M11: \Device\Fb0            ★ HACK-001
+│   └── hid.c                        # M11: \Device\Input0         ★ HACK-002
+│
+├── fs/
+│   ├── fat32/
+│   │   ├── fat.c / dir.c / file.c
+│   │   └── ntsem.c                  # ★ share modes, case-insensitivity, del-on-close, locks
+│   └── npfs/                        # M9 (OFF the calc critical path)
+│       └── pipe.c                   # byte/message mode, listen/connect
+│
+├── user/                            # user-mode side
+│   ├── ntdll-stubs/
+│   │   └── syscall_stubs.S          # generated from abi/syscall_numbers.h
+│   ├── smss/                        # initial process: mount hive, set \??, launch next
+│   │   └── firstboot.c              # runs wineboot.exe on first boot (GUI path)
+│   ├── wine/                        # Wine is a submodule; this is build glue
+│   │   ├── patches/                 # unixlib→syscall swaps; keep MINIMAL (the "hack meter")
+│   │   ├── winefb.drv/              # ★ display backend written AS a Wine driver
+│   │   │   ├── init.c               #   user_driver_funcs table
+│   │   │   ├── display.c            #   mode enumeration, \Device\Fb0 map, desktop create
+│   │   │   ├── blit.c               #   dibdrv output → scanout
+│   │   │   ├── cursor.c
+│   │   │   └── input.c              #   \Device\Input0 → input injection
+│   │   ├── build.sh                 # partial build: ntdll + needed DLLs only
+│   │   └── build-server.sh          # wineserver-lite build (route (a))
+│   └── init-tests/                  # M4–M6 flat-binary / minimal-PE test clients
+│
+├── third_party/
+│   └── wine/                        # submodule, SHA-pinned (fork on GitHub recommended)
+│
+├── system/                          # "furniture": data, not code (GUI/desktop era)
+│   └── skel/
+│       └── layout.txt               # C:\Program Files, Documents and Settings, …
+│
+├── tests/                           # ★ first-class, expected to exceed kernel size
+│   ├── kmt/                         # in-kernel unit tests (M2–M3: wait/apc/ob)
+│   ├── ntapi/                       # user-mode conformance tests (also run on Windows/Wine)
+│   │   ├── sem_file/                # share modes, info classes, async+APC
+│   │   ├── sem_mm/                  # reserve/commit, guard pages, (later) COW
+│   │   └── sem_wait/                # wait-all/any, alertable, APC interruption
+│   ├── fuzz/                        # differential fuzzer: random Nt* sequences vs. Windows
+│   ├── wine-tests/                  # imported Wine tests + todo_ ledger
+│   │   ├── user32/                  #   msg.c is the trophy
+│   │   └── gdi32/
+│   ├── gui/
+│   │   ├── screenshot.c             # FB hash / PPM dump
+│   │   ├── golden/                  # expected images (desktop.ppm is the goal)
+│   │   └── shell/run-desktop.sh
+│   └── run/                         # QEMU launch → serial capture → verdict
+│
+├── tools/
+│   ├── mkimage.sh                   # build FAT32 image (NLS, hive, Wine DLLs, skel)
+│   ├── gen_syscalls.py              # numbers → stubs + table
+│   ├── gen_abi.py                   # ★ generate abi/ numeric values from Wine headers
+│   └── qemu.sh                      # launch config (virtio-fixed, headless, exit-device)
+│
+├── docs/adr/                        # (listed above)
+├── licenses/                        # LGPL / (GPL if ROS shell used) / MAP.md
+└── LICENSE                          # kernel license — FIX BEFORE M13
+```
+
+## Size expectations
+
+- `kernel/` ≈ 30k lines; `arch/` + `drivers/` + `fs/` ≈ 10k; GUI plumbing (M11–M15) ≈ 8k;
+  M16 ≈ 1.5k; `tests/` (self-authored) ≈ 18k. **Self-written total ≈ 70k**, realistically
+  **100–140k** after error paths, info-class tails, `#ifdef` mud, and debug scaffolding.
+- **Borrowed** (Wine PE, Wine tests, stripped wineserver, optional ROS shell/INF) ≈ 1.5M+.
+  Leverage ≈ **25×**. See `docs/12` for the size analysis and where difficulty concentrates
+  (the ~7k lines of `mm/{section,fault,pagecache}` + `ke/{wait,apc}` + `ps/usermode` are
+  10% of the code and ~50% of the effort).
+
+## How the tree maps to milestones
+
+M1 = `arch/` + `init/` · M2 = `ke/` · M3 = `ob/` · M4 = `syscall/` + user split ·
+M5 = `mm/section+fault+pagecache` · M6 = `io/` + `fs/fat32` + `drivers/virtio/blk` ·
+M7 = `ps/usermode+peb` + `user/wine` · M8 = `cm/` + `smss` · M9 = `fs/npfs` + `condrv` ·
+M11 = `drivers/{gpu,fb,hid}` · M12–M15 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
+Progress is visible as a coloring of the tree.
