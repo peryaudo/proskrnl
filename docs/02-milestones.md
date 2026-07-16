@@ -30,7 +30,9 @@ a trivial "hello over serial" payload *before* writing kernel logic, so the harn
 a variable while you debug (see `docs/08`).
 **Done when:** boots in QEMU; an exception dumps registers over serial; the timer ticks.
 **Do on day one:** thick panic handler (register dump, stack trace, last syscall) — this
-is the LLM's eyes for the rest of the project.
+is the LLM's eyes for the rest of the project. Turn on **UBSan in trap mode** the same day
+(`-fsanitize=undefined -fsanitize-trap=undefined`): no runtime library needed, a violation
+emits `ud2`, and the panic handler above reports the site (`docs/08`).
 
 ## M2 — In-kernel multithreading
 Kernel page-table management; pool allocator; kernel threads + context switch; priority
@@ -42,6 +44,10 @@ correctly.
 ## M3 — Ob: handles and namespace
 Object manager (type system, refcount, handle table); `\Device` and `\??` namespaces;
 `NTSTATUS` conventions. Move M2's dispatcher objects under Ob.
+**Add here:** **minimal KASAN** (~1000 lines: shadow memory + `__asan_load/store` hooks +
+pool redzones). Handle tables and object refcounts are the LLM's favourite bug site and
+exactly what KASAN catches — the highest-return sanitizer, so it earns its keep the moment
+Ob exists (`docs/08`).
 **Done when:** a named event opened from two places resolves to one object; closing a
 handle drops the ref correctly.
 
