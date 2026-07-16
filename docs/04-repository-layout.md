@@ -133,7 +133,11 @@ proskrnl/
 │
 ├── tests/                           # ★ first-class, expected to exceed kernel size
 │   ├── kmt/                         # in-kernel unit tests (M2–M3: wait/apc/ob)
-│   ├── ntapi/                       # user-mode conformance tests (also run on Windows/Wine)
+│   ├── ntapi/                       # portable Nt* conformance; oracle .exe + proskrnl (docs/14)
+│   │   ├── ntapi.h                  # harness API: START_TEST / ok / todo_proskrnl / skip
+│   │   ├── ntapi.c                  # per-mode I/O + [KTEST]/[ASSERT] verdicts (M4 seam)
+│   │   ├── manifest.txt             # tests that must be GREEN on proskrnl now
+│   │   ├── syscall/                 # M4: proskrnl-mode syscall stubs (empty until then)
 │   │   ├── sem_file/                # share modes, info classes, async+APC
 │   │   ├── sem_mm/                  # reserve/commit, guard pages, (later) COW
 │   │   └── sem_wait/                # wait-all/any, alertable, APC interruption
@@ -145,7 +149,7 @@ proskrnl/
 │   │   ├── screenshot.c             # FB hash / PPM dump
 │   │   ├── golden/                  # expected images (desktop.ppm is the goal)
 │   │   └── shell/run-desktop.sh
-│   └── run/                         # QEMU launch → serial capture → verdict
+│   └── run/                         # runner: oracle (.exe) + proskrnl (QEMU→serial→verdict)
 │
 ├── tools/
 │   ├── mkimage.sh                   # build FAT32 image (NLS, hive, Wine DLLs, skel)
