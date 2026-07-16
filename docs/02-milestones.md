@@ -22,9 +22,11 @@ Ordering rules that matter:
 ---
 
 ## M1 — Boot and kernel scaffold
-Minimal loader path (Limine/Multiboot2) into long mode; serial console; IDT/exception
-handlers; timer interrupt; physical page allocator. NT loader protocol is unnecessary
-(binary compat dropped), so ride an existing boot protocol.
+Boot via **Limine** (ADR 0010): it hands off in 64-bit long mode with a higher-half map,
+memory map, and framebuffer already set up, so `boot.S` is a thin entry stub — no 32→long-
+mode trampoline to hand-write (the exact fiddly asm an LLM gets subtly wrong). Then: serial
+console; IDT/exception handlers; timer interrupt; physical page allocator. NT loader protocol
+is unnecessary (binary compat dropped), so ride an existing boot protocol.
 **Do first:** get the QEMU loop (build → run → `isa-debug-exit` code → serial log) green on
 a trivial "hello over serial" payload *before* writing kernel logic, so the harness is never
 a variable while you debug (see `docs/08`).

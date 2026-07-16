@@ -135,12 +135,15 @@ Everything normalizes to **non-interactive, finite-time, exit-code + log**:
 timeout 60 qemu-system-x86_64 \
     -display none -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -kernel build/proskrnl \
-    -drive file=build/disk.img,if=virtio,format=raw \
+    -drive file=build/proskrnl.hdd,if=virtio,format=raw \
     -no-reboot 2>&1 | tee build/serial.log
 echo "exit: $?"
 ```
 
+- **Limine boot image** — `build/proskrnl.hdd` is a FAT32 image with the Limine bootloader
+  installed and the kernel (plus any test payload / FS) baked in by `tools/mkimage.sh`.
+  Limine hands off in long mode, so there is no `-kernel` direct-load and no 32→64
+  trampoline (ADR 0010).
 - **isa-debug-exit** — the kernel writes a value to port 0xf4; QEMU exits with a derived
   code. In-kernel test verdicts reach the host as a process exit code.
 - **timeout + -no-reboot** — hang, panic, and success all become finite-time processes
