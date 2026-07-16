@@ -4,7 +4,7 @@
  * GDT of our own yet — a real GDT + TSS arrives with user mode at M4. */
 #include "arch/x86_64/idt.h"
 
-typedef struct _KIDTENTRY
+typedef struct
 {
     uint16_t offsetLow;
     uint16_t selector;
@@ -15,7 +15,7 @@ typedef struct _KIDTENTRY
     uint32_t reserved;
 } __attribute__((packed)) KIDTENTRY, *PKIDTENTRY;
 
-typedef struct _KDESCRIPTOR
+typedef struct
 {
     uint16_t limit;
     uint64_t base;

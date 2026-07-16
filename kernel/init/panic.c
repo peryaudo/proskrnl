@@ -6,7 +6,7 @@
  * UBSan traps (#UD) both land here.
  */
 #include "kernel/init/panic.h"
-#include "kernel/lib/kprintf.h"
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/lapic.h"

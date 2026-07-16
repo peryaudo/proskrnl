@@ -12,7 +12,7 @@
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/lapic.h"
-#include "kernel/lib/kprintf.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/mm/phys.h"
 #include "kernel/init/panic.h"
 
@@ -82,7 +82,7 @@ void KiSystemStartup(void)
     }
     MiInitializePhysicalMemory(LiHhdmRequest.response->offset, LiMemmapRequest.response);
     DbgPrint("[KTEST] phys: %lu frames usable (%lu MiB)\n", MiGetTotalPageCount(),
-             MiGetTotalPageCount() * PAGE_SIZE / (1024 * 1024));
+             MiGetTotalPageCount() * PAGE_SIZE / (1024ULL * 1024));
     if (!MiTestPhysicalAllocator())
     {
         KiPanic("phys allocator self-test failed");

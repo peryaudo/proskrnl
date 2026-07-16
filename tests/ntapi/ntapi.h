@@ -37,12 +37,12 @@ struct ntapi_state
 {
     const char *name;
     int         failures;         /* hard assertion failures                */
-    int         todoUnexpected;   /* todo_proskrnl block that unexpectedly passed */
+    int         todo_unexpected;   /* todo_proskrnl block that unexpectedly passed */
     int         skips;
-    int         todoDepth;        /* >0 while inside a todo_proskrnl block   */
+    int         todo_depth;        /* >0 while inside a todo_proskrnl block   */
 };
 
-extern struct ntapi_state NtapiState;
+extern struct ntapi_state ntapi_ctx;
 
 /* Implemented per-mode in ntapi.c. */
 void ntapi_out(const char *text);                 /* oracle: stdout; proskrnl: serial */
@@ -54,7 +54,7 @@ void ntapi_exit(int code);                          /* oracle: exit(); proskrnl:
 /* ---- test entry point --------------------------------------------------- */
 
 #define START_TEST(name)                                                      \
-    struct ntapi_state NtapiState = { #name, 0, 0, 0, 0 };                     \
+    struct ntapi_state ntapi_ctx = { #name, 0, 0, 0, 0 };                     \
     static void ntapi_body(void);                                             \
     int main(void)                                                            \
     {                                                                         \
@@ -82,7 +82,7 @@ void ntapi_exit(int code);                          /* oracle: exit(); proskrnl:
  * unimplemented Nt* belongs out of the manifest, not wrapped in todo_proskrnl.
  */
 #define todo_proskrnl                                                         \
-    for (NtapiState.todoDepth++; NtapiState.todoDepth;                        \
-         NtapiState.todoDepth--)
+    for (ntapi_ctx.todo_depth++; ntapi_ctx.todo_depth;                        \
+         ntapi_ctx.todo_depth--)
 
 #endif /* NTAPI_H */

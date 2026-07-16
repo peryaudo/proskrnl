@@ -1,0 +1,11 @@
+# Tests follow Wine test style (snake_case; mirrors dlls/*/tests), not the NT
+# kernel casing of docs/15 — so the identifier-naming check is off here. Test
+# files also forward-declare Windows API names (NtCreateEvent, …) that must keep
+# their PascalCase, which a naming rule would wrongly flag.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  -readability-identifier-naming
+WarningsAsErrors: ''
+HeaderFilterRegex: 'tests/'
+FormatStyle: file

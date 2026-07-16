@@ -39,7 +39,7 @@ A name that *is* a real export keeps it and matches the signature: `DbgPrint` st
 | Kind | Convention | Examples |
 |---|---|---|
 | **Functions** | `PascalCase`, 2–3 letter subsystem prefix; a lowercase `i`/`p` marks *internal/private* | `KeInitializeIdt`, `MiAllocatePage`, `KiDispatchTrap`, `KiQemuExit` |
-| **Types** (typedefs) | `UPPER_SNAKE`, with a `_Name` struct tag and a `PName` pointer typedef | `typedef struct _KTRAP_FRAME { … } KTRAP_FRAME, *PKTRAP_FRAME;` |
+| **Types** (typedefs) | `UPPER_SNAKE` typedef + a `PName` pointer typedef; anonymous struct tag (a `_Name` tag is a reserved identifier) | `typedef struct { … } KTRAP_FRAME, *PKTRAP_FRAME;` |
 | **Locals / parameters** | `camelCase`, no strict systems Hungarian | `status`, `trapFrame`, `pageFrame`, `length` |
 | **Struct members** | `camelCase` | `frame->errorCode`, `entry->offsetLow` |
 | **Globals** (incl. file-scope `static`) | `PascalCase` with subsystem prefix | `KeTickCount`, `KiLastSystemCall`, `MiFreeListHead` |
@@ -82,8 +82,15 @@ right-aligned pointers, no include reordering. Run it:
 make format          # clang-format -i over all kernel C (uses the llvm keg)
 ```
 
-clang-format governs layout only — it cannot enforce the naming above, so the naming rules
-are on you (and on review). A `PostToolUse` hook formats edited files automatically.
+clang-format governs *layout*; the *naming* rules above are enforced by **`make tidy`**
+(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`) — the kernel is
+warning-clean, and CI/review should keep it so. A `PostToolUse` hook formats edited files
+automatically.
+
+**Tests are exempt.** `tests/` follows **Wine test style** (snake_case functions like `ok`,
+`START_TEST`, `ntapi_out`; distilled from `dlls/*/tests`), and forward-declares Windows API
+names that must keep their PascalCase — so `tests/.clang-tidy` turns the naming check off
+there. Don't apply the kernel casing to test code.
 
 ## The M1 rename (reference)
 
@@ -93,7 +100,7 @@ The M1 bring-up was first written in Linux style and converted to this guide:
 |---|---|
 | `kmain` | `KiSystemStartup` |
 | `serial_init` / `serial_putc` / `serial_puts` | `KiInitializeSerial` / `KiSerialPutChar` / `KiSerialPutString` (no HAL → `Ki`) |
-| `outb` / `inb` / `rdmsr` / `wrmsr` | `__outbyte` / `__inbyte` / `__readmsr` / `__writemsr` (MSVC intrinsic names) |
+| `outb` / `inb` / `rdmsr` / `wrmsr` | `KiOutByte` / `KiInByte` / `KiReadMsr` / `KiWriteMsr` (we hand-roll them; `__`-names are reserved) |
 | `kprintf` / `kvprintf` | `DbgPrint` (real export → `NTSTATUS` return) / private `DbgpPrintV` |
 | `panic(const char *)` | `KiPanic(const char *)` — *not* `KeBugCheck`, whose real signature is `KeBugCheck(ULONG)` |
 | `trap_handler` / `struct trap_frame` | `KiDispatchTrap` / `KTRAP_FRAME` |

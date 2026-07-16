@@ -9,6 +9,7 @@ LLVM ?= /opt/homebrew/opt/llvm/bin
 CC   := $(LLVM)/clang
 LD   := ld.lld
 CLANG_FORMAT ?= $(LLVM)/clang-format
+CLANG_TIDY   ?= $(LLVM)/clang-tidy
 
 BUILD  := build
 KERNEL := $(BUILD)/proskrnl
@@ -31,7 +32,7 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
 
 CSRC := kernel/init/main.c \
         kernel/init/panic.c \
-        kernel/lib/kprintf.c \
+        kernel/lib/dbgprint.c \
         kernel/mm/phys.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
@@ -67,4 +68,8 @@ clean:
 format:
 	$(CLANG_FORMAT) -i $(shell find kernel arch -name '*.[ch]')
 
-.PHONY: all run clean format
+# Enforce the docs/15 naming rules (and correctness lints) via clang-tidy.
+tidy:
+	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
+
+.PHONY: all run clean format tidy

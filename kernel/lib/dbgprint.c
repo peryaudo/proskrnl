@@ -1,5 +1,5 @@
-/* kernel/lib/kprintf.c — see kprintf.h. Writes straight to COM1. */
-#include "kernel/lib/kprintf.h"
+/* kernel/lib/dbgprint.c — see dbgprint.h. Writes straight to COM1. */
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/serial.h"
 
 #include <stdarg.h>
@@ -147,11 +147,9 @@ static void DbgpPrintV(const char *format, va_list args)
             long long value;
             if (lng == 0)
                 value = va_arg(args, int);
-            else if (lng == 1)
-                value = va_arg(args, long);
             else if (lng == 2)
                 value = va_arg(args, long long);
-            else
+            else /* l or z: both long-sized on LP64 */
                 value = va_arg(args, long);
             if (value < 0)
             {
@@ -171,12 +169,10 @@ static void DbgpPrintV(const char *format, va_list args)
             unsigned long long value;
             if (lng == 0)
                 value = va_arg(args, unsigned int);
-            else if (lng == 1)
-                value = va_arg(args, unsigned long);
             else if (lng == 2)
                 value = va_arg(args, unsigned long long);
-            else
-                value = va_arg(args, size_t);
+            else /* l or z: both unsigned-long-sized on LP64 */
+                value = va_arg(args, unsigned long);
             unsigned base = (*format == 'u') ? 10 : 16;
             DbgpEmitUnsigned(value, base, (*format == 'X'), width, pad, alt);
             break;

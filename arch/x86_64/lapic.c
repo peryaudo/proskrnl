@@ -30,7 +30,7 @@ volatile uint64_t KeTickCount;
 
 void KiEndOfInterrupt(void)
 {
-    __writemsr(X2APIC_EOI, 0);
+    KiWriteMsr(X2APIC_EOI, 0);
 }
 
 void KiUpdateTickCount(void)
@@ -42,24 +42,24 @@ void KiInitializeTimer(void)
 {
     /* Mask both halves of the legacy 8259 PIC so no stray IRQ arrives on a
      * vector that overlaps a CPU exception. */
-    __outbyte(0x21, 0xFF);
-    __outbyte(0xA1, 0xFF);
+    KiOutByte(0x21, 0xFF);
+    KiOutByte(0xA1, 0xFF);
 
     /* Enable xAPIC, then x2APIC (staged, as the SDM recommends). */
-    uint64_t apicBase = __readmsr(IA32_APIC_BASE);
+    uint64_t apicBase = KiReadMsr(IA32_APIC_BASE);
     apicBase |= APIC_BASE_EN;
-    __writemsr(IA32_APIC_BASE, apicBase);
+    KiWriteMsr(IA32_APIC_BASE, apicBase);
     apicBase |= APIC_BASE_EXTD;
-    __writemsr(IA32_APIC_BASE, apicBase);
+    KiWriteMsr(IA32_APIC_BASE, apicBase);
 
     /* Enable the LAPIC; route spurious interrupts to vector 0xFF. */
-    __writemsr(X2APIC_SVR, 0x100 | 0xFF);
+    KiWriteMsr(X2APIC_SVR, 0x100 | 0xFF);
 
     KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
-    __writemsr(X2APIC_TMR_DIV, 0x3); /* divide by 16 */
-    __writemsr(X2APIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
-    __writemsr(X2APIC_TMR_INIT, 1000000);
+    KiWriteMsr(X2APIC_TMR_DIV, 0x3); /* divide by 16 */
+    KiWriteMsr(X2APIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
+    KiWriteMsr(X2APIC_TMR_INIT, 1000000);
 
     __asm__ volatile("sti");
 }

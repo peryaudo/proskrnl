@@ -1,14 +1,52 @@
-# proskrnl — starter clang-tidy for freestanding kernel C.
-# Naming checks are intentionally OFF: proskrnl uses Win32/NT PascalCase
-# (see CLAUDE.md), which readability-identifier-naming can't model cleanly.
-# Tighten as M1 code lands.
+# proskrnl — clang-tidy for freestanding kernel C.
+#
+# Enforces the Win32/NT casing of docs/15 via readability-identifier-naming
+# (run `make tidy`), plus a starter set of correctness checks. Tests use Wine
+# test style (snake_case) and have their own tests/.clang-tidy that turns the
+# naming check off. Third-party headers are excluded via HeaderFilterRegex.
 Checks: >
   clang-analyzer-*,
   bugprone-*,
   misc-*,
+  readability-identifier-naming,
   -bugprone-easily-swappable-parameters,
+  -bugprone-branch-clone,
   -misc-no-recursion,
+  -misc-use-internal-linkage,
+  -misc-include-cleaner,
   -clang-analyzer-security.insecureAPI.*
+# Disabled and why: branch-clone false-positives on type-varying va_arg dispatch;
+# use-internal-linkage can't see asm/linker (ENTRY) references, so it wrongly
+# flags KiSystemStartup/KiDispatchTrap; include-cleaner is noisy IWYU for
+# freestanding code; easily-swappable-parameters/no-recursion are style noise.
 WarningsAsErrors: ''
-HeaderFilterRegex: '.*'
+HeaderFilterRegex: '(kernel|arch)/'
 FormatStyle: file
+CheckOptions:
+  # Names of code and types.
+  - key: readability-identifier-naming.FunctionCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
+  # Runtime values -> camelCase.
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalConstantCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalPointerCase
+    value: camelBack
+  - key: readability-identifier-naming.MemberCase
+    value: camelBack
+  # Module globals (incl. file-scope static) -> PascalCase, prefixed.
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticVariableCase
+    value: CamelCase
