@@ -81,9 +81,17 @@ than local macOS Wine. Also used: **python3** (the `tools/gen_*.py` generators, 
 
 ## Status
 
-Pre-M1. This repository is currently a **constitution**: a set of documents that fix
-the design decisions before implementation begins, so that neither a human nor an LLM
-contributor can quietly erode them.
+**M1 complete.** The repository began as a **constitution** — documents that fix the design
+decisions before implementation, so neither a human nor an LLM contributor can quietly erode
+them (start at `docs/09`). The kernel now boots via Limine into long mode, catches CPU
+exceptions with a register-dumping panic handler, ticks on the LAPIC timer, and manages
+physical page frames:
+
+```sh
+make run     # build the image, boot headless in QEMU, verify [KTEST] M1 PASS on serial
+```
+
+Next: **M2** — in-kernel threads, the dispatcher, and `KeWaitFor*` (`docs/02`).
 
 ## License
 
