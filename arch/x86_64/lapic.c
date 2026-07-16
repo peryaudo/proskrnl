@@ -28,7 +28,7 @@ extern uint64_t KiTrapThunkTable[]; /* trap.S */
 
 volatile uint64_t KeTickCount;
 
-void HalpEndOfInterrupt(void)
+void KiEndOfInterrupt(void)
 {
     __writemsr(X2APIC_EOI, 0);
 }
@@ -38,7 +38,7 @@ void KiUpdateTickCount(void)
     KeTickCount++;
 }
 
-void HalpInitializeTimer(void)
+void KiInitializeTimer(void)
 {
     /* Mask both halves of the legacy 8259 PIC so no stray IRQ arrives on a
      * vector that overlaps a CPU exception. */

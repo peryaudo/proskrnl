@@ -12,9 +12,9 @@ static void DbgpEmitString(const char *String)
     {
         if (*String == '\n')
         {
-            HalpPutChar('\r');
+            KiSerialPutChar('\r');
         }
-        HalpPutChar(*String);
+        KiSerialPutChar(*String);
     }
 }
 
@@ -43,30 +43,30 @@ static void DbgpEmitUnsigned(uint64_t Value, unsigned Base, int Upper, int Width
     {
         if (Prefix)
         {
-            HalpPutChar('0');
-            HalpPutChar(Upper ? 'X' : 'x');
+            KiSerialPutChar('0');
+            KiSerialPutChar(Upper ? 'X' : 'x');
         }
         for (int W = Length; W < Width; W++)
         {
-            HalpPutChar('0');
+            KiSerialPutChar('0');
         }
     }
     else
     {
         for (int W = Length; W < Width; W++)
         {
-            HalpPutChar(' ');
+            KiSerialPutChar(' ');
         }
         if (Prefix)
         {
-            HalpPutChar('0');
-            HalpPutChar(Upper ? 'X' : 'x');
+            KiSerialPutChar('0');
+            KiSerialPutChar(Upper ? 'X' : 'x');
         }
     }
 
     while (Count > 0)
     {
-        HalpPutChar(Buffer[--Count]);
+        KiSerialPutChar(Buffer[--Count]);
     }
 }
 
@@ -78,9 +78,9 @@ static void DbgpPrintV(const char *Format, va_list Args)
         {
             if (*Format == '\n')
             {
-                HalpPutChar('\r');
+                KiSerialPutChar('\r');
             }
-            HalpPutChar(*Format);
+            KiSerialPutChar(*Format);
             continue;
         }
         Format++;
@@ -130,10 +130,10 @@ static void DbgpPrintV(const char *Format, va_list Args)
         switch (*Format)
         {
         case '%':
-            HalpPutChar('%');
+            KiSerialPutChar('%');
             break;
         case 'c':
-            HalpPutChar((char)va_arg(Args, int));
+            KiSerialPutChar((char)va_arg(Args, int));
             break;
         case 's':
         {
@@ -155,7 +155,7 @@ static void DbgpPrintV(const char *Format, va_list Args)
                 Value = va_arg(Args, long);
             if (Value < 0)
             {
-                HalpPutChar('-');
+                KiSerialPutChar('-');
                 DbgpEmitUnsigned((uint64_t)(-Value), 10, 0, Width > 0 ? Width - 1 : 0, Pad, 0);
             }
             else
@@ -190,8 +190,8 @@ static void DbgpPrintV(const char *Format, va_list Args)
         case '\0':
             return;
         default:
-            HalpPutChar('%');
-            HalpPutChar(*Format);
+            KiSerialPutChar('%');
+            KiSerialPutChar(*Format);
             break;
         }
     }

@@ -52,7 +52,7 @@ __attribute__((noreturn)) static void KiIdleLoop(void)
 
 void KiSystemStartup(void)
 {
-    HalpInitializeSerial();
+    KiInitializeSerial();
 
     if (!LIMINE_BASE_REVISION_SUPPORTED(LiBaseRevision))
     {
@@ -68,7 +68,7 @@ void KiSystemStartup(void)
     __asm__ volatile("int3");
     DbgPrint("[KTEST] trap-recovered PASS\n");
 
-    HalpInitializeTimer();
+    KiInitializeTimer();
     while (KeTickCount < 10)
     {
         __asm__ volatile("hlt");
@@ -90,6 +90,6 @@ void KiSystemStartup(void)
     DbgPrint("[KTEST] phys PASS\n");
 
     DbgPrint("[KTEST] M1 PASS\n");
-    HalpQemuExit(0);
+    KiQemuExit(0);
     KiIdleLoop();
 }

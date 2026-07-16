@@ -31,7 +31,7 @@ static inline void __writemsr(uint32_t Register, uint64_t Value)
 /* QEMU isa-debug-exit (iobase 0xf4): host exit code becomes (Code << 1) | 1, so
  * it can never be 0 — the real M1 verdict is the [KTEST] line on serial
  * (docs/08). This just terminates the VM promptly. */
-static inline void HalpQemuExit(uint8_t Code)
+static inline void KiQemuExit(uint8_t Code)
 {
     __outbyte(0xf4, Code);
 }

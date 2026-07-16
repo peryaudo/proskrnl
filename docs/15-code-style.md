@@ -15,10 +15,10 @@ WRK" is about the naming shape, never about where a line came from.
 If an identifier is a real NT name, it carries a real NT contract. Silently giving it a
 different signature is exactly the boundary erosion the constitution exists to stop.
 
-> **Before naming a function with an `Nt`/`Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`/`Hal`/`Rtl`/`Zw`
+> **Before naming a function with an `Nt`/`Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`/`Rtl`/`Zw`
 > name, grep the Wine tree for it.** If it exists, match its signature exactly. If it does
-> not, the name is free — but prefer an internal `Ki`/`Mi`/`Hal p`-style name for things NT
-> does not export.
+> not, the name is free — but prefer an internal `Ki`/`Mi`-style name for things NT does not
+> export.
 
 ```sh
 grep -rn "KeBugCheck" third_party/wine/   # -> void WINAPI KeBugCheck(ULONG code)
@@ -38,7 +38,7 @@ A name that *is* a real export keeps it and matches the signature: `DbgPrint` st
 
 | Kind | Convention | Examples |
 |---|---|---|
-| **Functions** | `PascalCase`, 2–3 letter subsystem prefix; a lowercase `i`/`p` marks *internal/private* | `KeInitializeIdt`, `MmAllocatePage`, `KiDispatchTrap`, `HalpQemuExit` |
+| **Functions** | `PascalCase`, 2–3 letter subsystem prefix; a lowercase `i`/`p` marks *internal/private* | `KeInitializeIdt`, `MiAllocatePage`, `KiDispatchTrap`, `KiQemuExit` |
 | **Types** (typedefs) | `UPPER_SNAKE`, with a `_Name` struct tag and a `PName` pointer typedef | `typedef struct _KTRAP_FRAME { … } KTRAP_FRAME, *PKTRAP_FRAME;` |
 | **Locals / parameters** | `PascalCase` (see note), no strict systems Hungarian | `Status`, `TrapFrame`, `PageFrame`, `Length` |
 | **Globals** | `PascalCase` with subsystem prefix | `KeTickCount`, `KiLastSystemCall` |
@@ -46,9 +46,17 @@ A name that *is* a real export keeps it and matches the signature: `DbgPrint` st
 | **Files** | lowercase, terse (as in NT) | `idt.c`, `lapic.c`, `phys.c` |
 
 **Subsystem prefixes** (the department names of `docs/04`): `Ke` kernel, `Mm` memory, `Ob`
-objects, `Ps` process, `Io` I/O, `Cm` config/registry, `Se` security, `Hal` hardware layer
-(absorbed into `arch/`), `Rtl` runtime library, `Kd` kernel debug, `Nt`/`Zw` the syscall
-boundary. Internal helpers add `i`/`p`: `Ki*`, `Mi*`, `Iop*`, `Halp*`.
+objects, `Ps` process, `Io` I/O, `Cm` config/registry, `Se` security, `Rtl` runtime library,
+`Kd` kernel debug, `Nt`/`Zw` the syscall boundary. Internal helpers add `i`/`p`: `Ki*`,
+`Mi*`, `Iop*`.
+
+**There is no `Hal` prefix.** The HAL is deliberately absorbed into `arch/` (`docs/04`,
+`docs/00` scope), so hardware-facing boot primitives — serial, LAPIC timer, port I/O,
+machine control — are **`Ki`** (kernel-internal), not `Hal`/`Halp`. **Default to `Ki`;** use
+a department prefix only when the code *clearly* belongs to that department. The page-frame
+allocator is `Mi` because it lives in `kernel/mm/phys.c` — the earliest-built floor of the
+Mm department (M4–M5), and `Mi` = Mm-internal. (If a real `Kd` kernel-debug subsystem is
+later built, the serial/`DbgPrint` transport can migrate from `Ki` to `Kd`.)
 
 - **No strict systems Hungarian.** `PLIST_ENTRY Head`, not `lpHead`; `ULONG Length`, not
   `cbLength`. The pointer typedef prefixes NT already bakes into type names (`P…`) suffice.
@@ -82,11 +90,11 @@ The M1 bring-up was first written in Linux style and converted to this guide:
 | Linux-style (was) | NT-style (now) |
 |---|---|
 | `kmain` | `KiSystemStartup` |
-| `serial_init` / `serial_putc` / `serial_puts` | `HalpInitializeSerial` / `HalpPutChar` / `HalpPutString` (not exported → `Halp`) |
+| `serial_init` / `serial_putc` / `serial_puts` | `KiInitializeSerial` / `KiSerialPutChar` / `KiSerialPutString` (no HAL → `Ki`) |
 | `outb` / `inb` / `rdmsr` / `wrmsr` | `__outbyte` / `__inbyte` / `__readmsr` / `__writemsr` (MSVC intrinsic names) |
 | `kprintf` / `kvprintf` | `DbgPrint` (real export → `NTSTATUS` return) / private `DbgpPrintV` |
 | `panic(const char *)` | `KiPanic(const char *)` — *not* `KeBugCheck`, whose real signature is `KeBugCheck(ULONG)` |
 | `trap_handler` / `struct trap_frame` | `KiDispatchTrap` / `KTRAP_FRAME` |
 | `idt_init` / `idt_set_gate` | `KiInitializeIdt` / `KiSetInterruptGate` |
-| `timer_init` / `lapic_eoi` / `timer_tick(s)` | `HalpInitializeTimer` / `HalpEndOfInterrupt` / `KiUpdateTickCount` / `KeTickCount` (real export) |
+| `timer_init` / `lapic_eoi` / `timer_tick(s)` | `KiInitializeTimer` / `KiEndOfInterrupt` / `KiUpdateTickCount` / `KeTickCount` (real export) |
 | `phys_init` / `phys_alloc` / `phys_free` | `MiInitializePhysicalMemory` / `MiAllocatePage` / `MiFreePage` (internal → `Mi`) |

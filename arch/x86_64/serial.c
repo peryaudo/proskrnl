@@ -5,7 +5,7 @@
 
 #define COM1 0x3F8
 
-void HalpInitializeSerial(void)
+void KiInitializeSerial(void)
 {
     __outbyte(COM1 + 1, 0x00); /* disable interrupts                       */
     __outbyte(COM1 + 3, 0x80); /* DLAB: set baud divisor                   */
@@ -16,27 +16,27 @@ void HalpInitializeSerial(void)
     __outbyte(COM1 + 4, 0x0B); /* RTS/DSR set, OUT2 (needed for IRQs later)*/
 }
 
-static int HalpTransmitReady(void)
+static int KiSerialTransmitReady(void)
 {
     return __inbyte(COM1 + 5) & 0x20; /* line status: transmit holding empty */
 }
 
-void HalpPutChar(char Char)
+void KiSerialPutChar(char Char)
 {
-    while (!HalpTransmitReady())
+    while (!KiSerialTransmitReady())
     {
     }
     __outbyte(COM1, (uint8_t)Char);
 }
 
-void HalpPutString(const char *String)
+void KiSerialPutString(const char *String)
 {
     for (; *String != '\0'; String++)
     {
         if (*String == '\n')
         {
-            HalpPutChar('\r');
+            KiSerialPutChar('\r');
         }
-        HalpPutChar(*String);
+        KiSerialPutChar(*String);
     }
 }

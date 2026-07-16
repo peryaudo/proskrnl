@@ -94,7 +94,7 @@ static void KiDumpStackTrace(uint64_t Rbp)
 
 __attribute__((noreturn)) static void KiHalt(void)
 {
-    HalpQemuExit(1);
+    KiQemuExit(1);
     for (;;)
     {
         __asm__ volatile("hlt");
@@ -109,7 +109,7 @@ void KiDispatchTrap(PKTRAP_FRAME TrapFrame)
     if (TrapFrame->Vector == TIMER_VECTOR)
     {
         KiUpdateTickCount();
-        HalpEndOfInterrupt();
+        KiEndOfInterrupt();
         return;
     }
 
