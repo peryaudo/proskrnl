@@ -57,7 +57,7 @@ macOS / Homebrew (Apple Silicon or Intel). Install everything with `brew bundle`
 `./Brewfile`), or the M1-critical set directly:
 
 ```sh
-brew install llvm lld qemu limine mtools
+brew install llvm lld qemu limine mtools gptfdisk
 ```
 
 - **llvm + lld** — the freestanding cross-toolchain: `clang --target=x86_64-elf`,
@@ -67,8 +67,10 @@ brew install llvm lld qemu limine mtools
 - **qemu** — `qemu-system-x86_64`, the run/test loop (`docs/08`). On Apple Silicon the
   x86-64 guest runs under TCG emulation (no HVF) — correct, just slower.
 - **limine** — the bootloader (ADR 0010); provides the `limine` deploy tool.
-- **mtools** — `mformat`/`mcopy`, to build the FAT32 boot image without mounting
+- **mtools** — `mformat`/`mcopy`, to populate the FAT32 ESP without mounting
   (`tools/mkimage.sh`).
+- **gptfdisk** — `sgdisk`, to lay down the GPT + BIOS-boot partition the Limine BIOS
+  image needs (`tools/mkimage.sh`).
 
 For the ntapi **oracle** test target (from M2, not needed for M1): **mingw-w64** builds the
 tests as a Windows `.exe` (`docs/14`) and a **Wine** runtime runs it. Homebrew's `wine-*`

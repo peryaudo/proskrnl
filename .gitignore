@@ -1,0 +1,5 @@
+# Build output
+/build/
+
+# Personal Claude Code config (if ever created)
+CLAUDE.local.md
