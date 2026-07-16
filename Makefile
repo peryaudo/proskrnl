@@ -18,6 +18,8 @@ CFLAGS := -std=c11 -target x86_64-unknown-none \
           -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-pie -fno-pic -m64 -march=x86-64 -mno-red-zone -mcmodel=kernel \
           -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+          -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
+          -fsanitize=undefined -fsanitize-trap=undefined \
           -O2 -g -Wall -Wextra -Wno-unused-parameter \
           -I. -Ithird_party/limine
 
@@ -27,12 +29,20 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
            -z max-page-size=0x1000 --build-id=none
 
 CSRC := kernel/init/main.c \
-        arch/x86_64/serial.c
-OBJ  := $(CSRC:%.c=$(BUILD)/%.o)
+        kernel/init/panic.c \
+        kernel/lib/kprintf.c \
+        arch/x86_64/serial.c \
+        arch/x86_64/idt.c
+ASRC := arch/x86_64/trap.S
+OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
 
 all: $(IMG)
 
 $(BUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: %.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

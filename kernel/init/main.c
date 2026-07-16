@@ -1,19 +1,18 @@
-/* kernel/init/main.c — kernel entry (M1 S0).
+/* kernel/init/main.c — kernel entry (M1).
  *
- * Limine enters here in 64-bit long mode with a stack already set up. For S0
- * this only proves the toolchain + boot + QEMU loop: init serial, confirm the
- * Limine base revision, emit the [KTEST] verdict, and exit the VM (docs/08).
- * Real per-department init lands in later M1 slices.
+ * Limine enters here in 64-bit long mode with a stack set up. M1 brings up the
+ * boot essentials and proves the "Done when" criteria over serial (docs/02):
+ * boots, an exception dumps registers, and (S4+) the timer ticks. Real
+ * per-department init arrives in later milestones.
  */
 #include <stdint.h>
 
 #include "limine.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/idt.h"
+#include "kernel/lib/kprintf.h"
 
-/* Limine request block. The markers bound the region Limine scans; the base
- * revision tag negotiates protocol v3. Placed in dedicated sections so the
- * linker keeps them (arch/x86_64/linker.ld). */
 __attribute__((used, section(".limine_requests_start_marker")))
 static volatile uint64_t limine_requests_start[4] = LIMINE_REQUESTS_START_MARKER;
 
@@ -23,7 +22,7 @@ static volatile uint64_t limine_base_revision[3] = LIMINE_BASE_REVISION(3);
 __attribute__((used, section(".limine_requests_end_marker")))
 static volatile uint64_t limine_requests_end[2] = LIMINE_REQUESTS_END_MARKER;
 
-static void halt(void)
+__attribute__((noreturn)) static void halt(void)
 {
     for (;;) {
         __asm__ volatile("hlt");
@@ -35,12 +34,19 @@ void kmain(void)
     serial_init();
 
     if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) {
-        serial_puts("[PANIC] Limine base revision 3 unsupported\n");
+        kprintf("[PANIC] Limine base revision 3 unsupported\n");
         qemu_exit(1);
         halt();
     }
+    kprintf("[KTEST] boot PASS\n");
 
-    serial_puts("[KTEST] boot PASS\n");
+    idt_init();
+    kprintf("[KTEST] idt PASS\n");
+
+    /* Demonstrate the exception path: a breakpoint traps into the panic
+     * handler, which dumps registers over serial, then resumes (docs/02). */
+    __asm__ volatile("int3");
+    kprintf("[KTEST] trap-recovered PASS\n");
 
     qemu_exit(0);
     halt();
