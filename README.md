@@ -71,10 +71,11 @@ brew install llvm lld qemu limine mtools
   (`tools/mkimage.sh`).
 
 For the ntapi **oracle** test target (from M2, not needed for M1): **mingw-w64** builds the
-tests as a Windows `.exe` (`docs/14`) and **wine-stable** runs it — though on Apple Silicon
-that path goes through Rosetta and is finicky; Linux/CI or Windows is smoother. Also used:
-**python3** (the `tools/gen_*.py` generators, from M4) and **GNU make** (ships with the
-Xcode Command Line Tools).
+tests as a Windows `.exe` (`docs/14`) and a **Wine** runtime runs it. Homebrew's `wine-*`
+casks are deprecated (they fail macOS Gatekeeper) — on Apple Silicon use the Game Porting
+Toolkit's `wine64`, or better, run the oracle target on Linux/CI or Windows, which is smoother
+than local macOS Wine. Also used: **python3** (the `tools/gen_*.py` generators, from M4) and
+**GNU make** (ships with the Xcode Command Line Tools).
 
 ## Status
 

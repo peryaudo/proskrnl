@@ -14,7 +14,11 @@ brew "mtools"  # mformat/mcopy — build the FAT32 boot image without mounting (
 
 # ── ntapi oracle test target (from M2; not required for M1) ──────────
 brew "mingw-w64"     # build ntapi tests as a Windows .exe (docs/14)
-cask "wine-stable"   # run the oracle .exe — finicky on Apple Silicon; Linux/CI is smoother
+# Wine (to RUN the oracle .exe) is intentionally NOT pinned here:
+#   - Homebrew's wine-stable/-devel/-staging casks are DEPRECATED (fail macOS
+#     Gatekeeper; disabled 2026-09-01) and collide with an existing wine.
+#   - On Apple Silicon, use the Game Porting Toolkit's wine64, or better run the
+#     oracle target on Linux/CI or Windows (docs/14). See README "Prerequisites".
 
 # ── Codegen / build driver ───────────────────────────────────────────
 brew "python"  # tools/gen_abi.py, tools/gen_syscalls.py (used from M4)
