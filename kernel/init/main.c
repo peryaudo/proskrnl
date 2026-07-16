@@ -13,6 +13,7 @@
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/lapic.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/mm/phys.h"
 
 __attribute__((used, section(".limine_requests_start_marker")))
 static volatile uint64_t limine_requests_start[4] = LIMINE_REQUESTS_START_MARKER;
@@ -20,10 +21,17 @@ static volatile uint64_t limine_requests_start[4] = LIMINE_REQUESTS_START_MARKER
 __attribute__((used, section(".limine_requests")))
 static volatile uint64_t limine_base_revision[3] = LIMINE_BASE_REVISION(3);
 
-/* Ask Limine for the higher-half direct-map offset (used to reach LAPIC MMIO). */
+/* Higher-half direct-map offset (phys->virt) and the physical memory map, for
+ * the page-frame allocator. */
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_hhdm_request hhdm_request = {
     .id = LIMINE_HHDM_REQUEST_ID,
+    .revision = 0,
+};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
     .revision = 0,
 };
 
@@ -63,6 +71,22 @@ void kmain(void)
     __asm__ volatile("cli");
     kprintf("[KTEST] timer PASS (%lu ticks)\n", timer_ticks());
 
+    if (hhdm_request.response == 0 || memmap_request.response == 0) {
+        kprintf("[PANIC] missing HHDM/memmap response from Limine\n");
+        qemu_exit(1);
+        halt();
+    }
+    phys_init(hhdm_request.response->offset, memmap_request.response);
+    kprintf("[KTEST] phys: %lu frames usable (%lu MiB)\n",
+            phys_total_count(), phys_total_count() * PAGE_SIZE / (1024 * 1024));
+    if (!phys_selftest()) {
+        kprintf("[PANIC] phys allocator self-test failed\n");
+        qemu_exit(1);
+        halt();
+    }
+    kprintf("[KTEST] phys PASS\n");
+
+    kprintf("[KTEST] M1 PASS\n");
     qemu_exit(0);
     halt();
 }

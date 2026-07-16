@@ -10,7 +10,7 @@ set -uo pipefail
 IMG="${1:?usage: qemu.sh <hdd>}"
 LOG="${LOG:-build/serial.log}"
 TIMEOUT="${TIMEOUT:-30}"
-PASS_RE='\[KTEST\] boot PASS'
+PASS_RE="${PASS_RE:-\[KTEST\] M1 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
@@ -35,9 +35,9 @@ echo "--- serial log ($LOG) ---"
 cat "$LOG" || true
 echo "--------------------------"
 if grep -q "$PASS_RE" "$LOG"; then
-    echo "== M1 S0: PASS =="
+    echo "== run: PASS =="
     exit 0
 else
-    echo "== M1 S0: FAIL (no '[KTEST] boot PASS' on serial) =="
+    echo "== run: FAIL (verdict '$PASS_RE' not found on serial) =="
     exit 1
 fi
