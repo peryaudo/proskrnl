@@ -13,12 +13,12 @@
 
 struct limine_memmap_response; /* forward */
 
-/* Seed the allocator from Limine's memory map; HhdmOffset maps phys->virt. */
-void MiInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap);
+/* Seed the allocator from Limine's memory map; hhdmOffset maps phys->virt. */
+void MiInitializePhysicalMemory(uint64_t hhdmOffset, struct limine_memmap_response *memoryMap);
 
 /* Allocate / free one physical frame. MiAllocatePage returns 0 when OOM. */
 uint64_t MiAllocatePage(void);
-void MiFreePage(uint64_t Page);
+void MiFreePage(uint64_t page);
 
 uint64_t MiGetFreePageCount(void);
 uint64_t MiGetTotalPageCount(void);

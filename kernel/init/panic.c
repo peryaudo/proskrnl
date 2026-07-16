@@ -15,9 +15,9 @@
 
 uint64_t KiLastSystemCall = ~(uint64_t)0;
 
-static const char *KiExceptionName(uint64_t Vector)
+static const char *KiExceptionName(uint64_t vector)
 {
-    switch (Vector)
+    switch (vector)
     {
     case 0:
         return "#DE divide error";
@@ -40,55 +40,55 @@ static const char *KiExceptionName(uint64_t Vector)
     }
 }
 
-static void KiDumpTrapFrame(const char *Tag, PKTRAP_FRAME TrapFrame)
+static void KiDumpTrapFrame(const char *tag, PKTRAP_FRAME trapFrame)
 {
-    DbgPrint("%s vector=%lu (%s) err=%#lx\n", Tag, TrapFrame->Vector,
-             KiExceptionName(TrapFrame->Vector), TrapFrame->ErrorCode);
-    DbgPrint("  RIP=%#018lx CS=%#lx RFLAGS=%#lx\n", TrapFrame->Rip, TrapFrame->SegCs,
-             TrapFrame->EFlags);
-    DbgPrint("  RSP=%#018lx SS=%#lx last_syscall=%#lx\n", TrapFrame->Rsp, TrapFrame->SegSs,
+    DbgPrint("%s vector=%lu (%s) err=%#lx\n", tag, trapFrame->vector,
+             KiExceptionName(trapFrame->vector), trapFrame->errorCode);
+    DbgPrint("  RIP=%#018lx CS=%#lx RFLAGS=%#lx\n", trapFrame->rip, trapFrame->segCs,
+             trapFrame->eflags);
+    DbgPrint("  RSP=%#018lx SS=%#lx last_syscall=%#lx\n", trapFrame->rsp, trapFrame->segSs,
              KiLastSystemCall);
-    DbgPrint("  RAX=%#018lx RBX=%#018lx RCX=%#018lx RDX=%#018lx\n", TrapFrame->Rax, TrapFrame->Rbx,
-             TrapFrame->Rcx, TrapFrame->Rdx);
-    DbgPrint("  RSI=%#018lx RDI=%#018lx RBP=%#018lx\n", TrapFrame->Rsi, TrapFrame->Rdi,
-             TrapFrame->Rbp);
-    DbgPrint("  R8 =%#018lx R9 =%#018lx R10=%#018lx R11=%#018lx\n", TrapFrame->R8, TrapFrame->R9,
-             TrapFrame->R10, TrapFrame->R11);
-    DbgPrint("  R12=%#018lx R13=%#018lx R14=%#018lx R15=%#018lx\n", TrapFrame->R12, TrapFrame->R13,
-             TrapFrame->R14, TrapFrame->R15);
-    if (TrapFrame->Vector == 14)
+    DbgPrint("  RAX=%#018lx RBX=%#018lx RCX=%#018lx RDX=%#018lx\n", trapFrame->rax, trapFrame->rbx,
+             trapFrame->rcx, trapFrame->rdx);
+    DbgPrint("  RSI=%#018lx RDI=%#018lx RBP=%#018lx\n", trapFrame->rsi, trapFrame->rdi,
+             trapFrame->rbp);
+    DbgPrint("  r8 =%#018lx r9 =%#018lx r10=%#018lx r11=%#018lx\n", trapFrame->r8, trapFrame->r9,
+             trapFrame->r10, trapFrame->r11);
+    DbgPrint("  r12=%#018lx r13=%#018lx r14=%#018lx r15=%#018lx\n", trapFrame->r12, trapFrame->r13,
+             trapFrame->r14, trapFrame->r15);
+    if (trapFrame->vector == 14)
     {
-        uint64_t Cr2;
-        __asm__ volatile("mov %%cr2, %0" : "=r"(Cr2));
-        DbgPrint("  CR2=%#018lx\n", Cr2);
+        uint64_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        DbgPrint("  CR2=%#018lx\n", cr2);
     }
 }
 
 /* Walk the saved-RBP chain. Kernel stacks live in Limine's higher-half direct
  * map (top bit set), so bound the walk to canonical higher-half to avoid
  * chasing a wild pointer into a recursive fault. */
-static void KiDumpStackTrace(uint64_t Rbp)
+static void KiDumpStackTrace(uint64_t rbp)
 {
     DbgPrint("  stack trace (rbp chain):\n");
-    for (int Index = 0; Index < 16; Index++)
+    for (int index = 0; index < 16; index++)
     {
-        if (Rbp < 0xffff800000000000ULL || (Rbp & 0x7) != 0)
+        if (rbp < 0xffff800000000000ULL || (rbp & 0x7) != 0)
         {
             break;
         }
-        uint64_t *Frame = (uint64_t *)(uintptr_t)Rbp;
-        uint64_t SavedRbp = Frame[0];
-        uint64_t ReturnAddress = Frame[1];
-        if (ReturnAddress == 0)
+        uint64_t *frame = (uint64_t *)(uintptr_t)rbp;
+        uint64_t savedRbp = frame[0];
+        uint64_t returnAddress = frame[1];
+        if (returnAddress == 0)
         {
             break;
         }
-        DbgPrint("    [%d] %#018lx\n", Index, ReturnAddress);
-        if (SavedRbp <= Rbp)
+        DbgPrint("    [%d] %#018lx\n", index, returnAddress);
+        if (savedRbp <= rbp)
         {
             break; /* frame pointers must grow upward */
         }
-        Rbp = SavedRbp;
+        rbp = savedRbp;
     }
 }
 
@@ -102,11 +102,11 @@ __attribute__((noreturn)) static void KiHalt(void)
 }
 
 /* Called from trap.S for every CPU exception (vectors 0..31) and the timer. */
-void KiDispatchTrap(PKTRAP_FRAME TrapFrame)
+void KiDispatchTrap(PKTRAP_FRAME trapFrame)
 {
     /* IRQs (>= 32) dispatch here too for now; a dedicated irq.c arrives with
      * the M2 scheduler. The LAPIC timer just bumps the tick counter. */
-    if (TrapFrame->Vector == TIMER_VECTOR)
+    if (trapFrame->vector == TIMER_VECTOR)
     {
         KiUpdateTickCount();
         KiEndOfInterrupt();
@@ -116,20 +116,20 @@ void KiDispatchTrap(PKTRAP_FRAME TrapFrame)
     /* #BP is a trap: RIP already points past int3, so dump and resume. This is
      * how M1 demonstrates "an exception dumps registers over serial" while
      * keeping the run green. Every other vector is fatal. */
-    if (TrapFrame->Vector == 3)
+    if (trapFrame->vector == 3)
     {
-        KiDumpTrapFrame("[KTEST] trap", TrapFrame);
+        KiDumpTrapFrame("[KTEST] trap", trapFrame);
         return;
     }
 
-    KiDumpTrapFrame("[PANIC]", TrapFrame);
-    KiDumpStackTrace(TrapFrame->Rbp);
+    KiDumpTrapFrame("[PANIC]", trapFrame);
+    KiDumpStackTrace(trapFrame->rbp);
     DbgPrint("[PANIC] unhandled exception; halting\n");
     KiHalt();
 }
 
-__attribute__((noreturn)) void KiPanic(const char *Message)
+__attribute__((noreturn)) void KiPanic(const char *message)
 {
-    DbgPrint("[PANIC] %s\n", Message);
+    DbgPrint("[PANIC] %s\n", message);
     KiHalt();
 }

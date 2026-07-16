@@ -13,45 +13,45 @@
 #define PFX_ASSERT "[ASSERT] "
 #define PFX_KTEST  "[KTEST] "
 
-static void ntapi_vout(const char *Fmt, va_list Ap)
+static void ntapi_vout(const char *fmt, va_list ap)
 {
-    char Buf[512];
+    char buf[512];
 #if defined(NTAPI_ORACLE)
     /* host vsnprintf is available and correct; the oracle is allowed libc. */
     extern int vsnprintf(char *, unsigned long, const char *, va_list);
-    vsnprintf(Buf, sizeof Buf, Fmt, Ap);
+    vsnprintf(buf, sizeof buf, fmt, ap);
 #elif defined(NTAPI_PROSKRNL)
     /* M4: implement a tiny freestanding vsnprintf (or reuse the kernel's
      * mini-printf) here. Until the proskrnl target is built, this seam is
      * never reached. */
-    Buf[0] = '\0';
-    (void)Fmt; (void)Ap;
+    buf[0] = '\0';
+    (void)fmt; (void)ap;
 #endif
-    ntapi_out(Buf);
+    ntapi_out(buf);
 }
 
-static void ntapi_outf(const char *Fmt, ...)
+static void ntapi_outf(const char *fmt, ...)
 {
-    va_list Ap;
-    va_start(Ap, Fmt);
-    ntapi_vout(Fmt, Ap);
-    va_end(Ap);
+    va_list ap;
+    va_start(ap, fmt);
+    ntapi_vout(fmt, ap);
+    va_end(ap);
 }
 
-void ntapi_okv(int Cond, const char *File, int Line, const char *Fmt, ...)
+void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
 {
-    if (NtapiState.TodoDepth > 0)
+    if (NtapiState.todoDepth > 0)
     {
 #if defined(NTAPI_PROSKRNL)
         /* Inside todo_proskrnl on the target: failure is expected (silent);
          * an unexpected pass means the tag is stale. */
-        if (Cond)
+        if (cond)
         {
-            NtapiState.TodoUnexpected++;
+            NtapiState.todoUnexpected++;
             ntapi_outf(PFX_ASSERT "%s:%d: todo_proskrnl succeeded (remove the tag): ",
-                       File, Line);
+                       file, line);
             {
-                va_list Ap; va_start(Ap, Fmt); ntapi_vout(Fmt, Ap); va_end(Ap);
+                va_list ap; va_start(ap, fmt); ntapi_vout(fmt, ap); va_end(ap);
             }
             ntapi_out("\n");
         }
@@ -60,36 +60,36 @@ void ntapi_okv(int Cond, const char *File, int Line, const char *Fmt, ...)
         /* oracle: todo_proskrnl is transparent — fall through to normal check. */
     }
 
-    if (!Cond)
+    if (!cond)
     {
-        NtapiState.Failures++;
-        ntapi_outf(PFX_ASSERT "%s:%d: ", File, Line);
+        NtapiState.failures++;
+        ntapi_outf(PFX_ASSERT "%s:%d: ", file, line);
         {
-            va_list Ap; va_start(Ap, Fmt); ntapi_vout(Fmt, Ap); va_end(Ap);
+            va_list ap; va_start(ap, fmt); ntapi_vout(fmt, ap); va_end(ap);
         }
         ntapi_out("\n");
     }
 }
 
-void ntapi_skipv(const char *File, int Line, const char *Fmt, ...)
+void ntapi_skipv(const char *file, int line, const char *fmt, ...)
 {
-    NtapiState.Skips++;
-    ntapi_outf("[SKIP] %s:%d: ", File, Line);
+    NtapiState.skips++;
+    ntapi_outf("[SKIP] %s:%d: ", file, line);
     {
-        va_list Ap; va_start(Ap, Fmt); ntapi_vout(Fmt, Ap); va_end(Ap);
+        va_list ap; va_start(ap, fmt); ntapi_vout(fmt, ap); va_end(ap);
     }
     ntapi_out("\n");
 }
 
 int ntapi_finish(void)
 {
-    if (NtapiState.Failures == 0 && NtapiState.TodoUnexpected == 0)
+    if (NtapiState.failures == 0 && NtapiState.todoUnexpected == 0)
     {
-        ntapi_outf(PFX_KTEST "%s PASS\n", NtapiState.Name);
+        ntapi_outf(PFX_KTEST "%s PASS\n", NtapiState.name);
         return 0;
     }
     ntapi_outf(PFX_KTEST "%s FAIL failures=%d todo_unexpected=%d\n",
-               NtapiState.Name, NtapiState.Failures, NtapiState.TodoUnexpected);
+               NtapiState.name, NtapiState.failures, NtapiState.todoUnexpected);
     return 1;
 }
 
@@ -97,33 +97,33 @@ int ntapi_finish(void)
 
 #if defined(NTAPI_ORACLE)
 
-void ntapi_out(const char *Text)
+void ntapi_out(const char *text)
 {
     extern int fputs(const char *, void *);
     extern void *stdout;
-    fputs(Text, stdout);
+    fputs(text, stdout);
 }
 
-void ntapi_exit(int Code)
+void ntapi_exit(int code)
 {
     extern void exit(int);
-    exit(Code);
+    exit(code);
 }
 
 #elif defined(NTAPI_PROSKRNL)
 
-void ntapi_out(const char *Text)
+void ntapi_out(const char *text)
 {
-    /* M4: write Text to the serial console (the same path the kernel's
+    /* M4: write text to the serial console (the same path the kernel's
      * [PANIC]/[KTEST] lines take). */
-    (void)Text;
+    (void)text;
 }
 
-void ntapi_exit(int Code)
+void ntapi_exit(int code)
 {
     /* M4: write the verdict to the isa-debug-exit port (iobase 0xf4) so QEMU
      * exits with a derived code; tests/run/run.sh reads it (docs/08). */
-    (void)Code;
+    (void)code;
     for (;;) { /* halt */ }
 }
 

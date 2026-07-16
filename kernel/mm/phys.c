@@ -7,17 +7,17 @@ static uint64_t MiFreeListHead; /* phys addr of top free frame; 0 == empty */
 static uint64_t MiFreePageCount;
 static uint64_t MiTotalPageCount;
 
-static inline uint64_t *MiFrameToVirtual(uint64_t Physical)
+static inline uint64_t *MiFrameToVirtual(uint64_t physical)
 {
-    return (uint64_t *)(uintptr_t)(MiHhdmOffset + Physical);
+    return (uint64_t *)(uintptr_t)(MiHhdmOffset + physical);
 }
 
-void MiFreePage(uint64_t Page)
+void MiFreePage(uint64_t page)
 {
     /* Thread the free list through the frames themselves: store the old head
      * in this frame, then make this frame the new head. */
-    *MiFrameToVirtual(Page) = MiFreeListHead;
-    MiFreeListHead = Page;
+    *MiFrameToVirtual(page) = MiFreeListHead;
+    MiFreeListHead = page;
     MiFreePageCount++;
 }
 
@@ -27,10 +27,10 @@ uint64_t MiAllocatePage(void)
     {
         return 0;
     }
-    uint64_t Page = MiFreeListHead;
-    MiFreeListHead = *MiFrameToVirtual(Page);
+    uint64_t page = MiFreeListHead;
+    MiFreeListHead = *MiFrameToVirtual(page);
     MiFreePageCount--;
-    return Page;
+    return page;
 }
 
 uint64_t MiGetFreePageCount(void)
@@ -42,30 +42,30 @@ uint64_t MiGetTotalPageCount(void)
     return MiTotalPageCount;
 }
 
-void MiInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_response *MemoryMap)
+void MiInitializePhysicalMemory(uint64_t hhdmOffset, struct limine_memmap_response *memoryMap)
 {
-    MiHhdmOffset = HhdmOffset;
+    MiHhdmOffset = hhdmOffset;
     MiFreeListHead = 0;
     MiFreePageCount = 0;
     MiTotalPageCount = 0;
 
-    for (uint64_t i = 0; i < MemoryMap->entry_count; i++)
+    for (uint64_t i = 0; i < memoryMap->entry_count; i++)
     {
-        struct limine_memmap_entry *Entry = MemoryMap->entries[i];
-        if (Entry->type != LIMINE_MEMMAP_USABLE)
+        struct limine_memmap_entry *entry = memoryMap->entries[i];
+        if (entry->type != LIMINE_MEMMAP_USABLE)
         {
             continue;
         }
-        uint64_t Base = (Entry->base + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-        uint64_t End = (Entry->base + Entry->length) & ~(uint64_t)(PAGE_SIZE - 1);
-        for (uint64_t Page = Base; Page + PAGE_SIZE <= End; Page += PAGE_SIZE)
+        uint64_t base = (entry->base + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t end = (entry->base + entry->length) & ~(uint64_t)(PAGE_SIZE - 1);
+        for (uint64_t page = base; page + PAGE_SIZE <= end; page += PAGE_SIZE)
         {
             /* Skip the NULL frame so MiAllocatePage()==0 unambiguously means OOM. */
-            if (Page == 0)
+            if (page == 0)
             {
                 continue;
             }
-            MiFreePage(Page);
+            MiFreePage(page);
             MiTotalPageCount++;
         }
     }
@@ -73,33 +73,33 @@ void MiInitializePhysicalMemory(uint64_t HhdmOffset, struct limine_memmap_respon
 
 int MiTestPhysicalAllocator(void)
 {
-    uint64_t Before = MiFreePageCount;
+    uint64_t before = MiFreePageCount;
 
-    uint64_t A = MiAllocatePage();
-    uint64_t B = MiAllocatePage();
-    if (A == 0 || B == 0 || A == B)
+    uint64_t a = MiAllocatePage();
+    uint64_t b = MiAllocatePage();
+    if (a == 0 || b == 0 || a == b)
     {
         return 0;
     }
 
     /* Read/write the frame through the HHDM. */
-    volatile uint64_t *Virtual = MiFrameToVirtual(A);
-    Virtual[0] = 0xDEADBEEFCAFEBABEULL;
-    Virtual[511] = 0x0123456789ABCDEFULL;
-    if (Virtual[0] != 0xDEADBEEFCAFEBABEULL || Virtual[511] != 0x0123456789ABCDEFULL)
+    volatile uint64_t *mapped = MiFrameToVirtual(a);
+    mapped[0] = 0xDEADBEEFCAFEBABEULL;
+    mapped[511] = 0x0123456789ABCDEFULL;
+    if (mapped[0] != 0xDEADBEEFCAFEBABEULL || mapped[511] != 0x0123456789ABCDEFULL)
     {
         return 0;
     }
 
-    /* LIFO reuse: free A then B; the next alloc must return B. */
-    MiFreePage(A);
-    MiFreePage(B);
-    uint64_t C = MiAllocatePage();
-    if (C != B)
+    /* LIFO reuse: free a then b; the next alloc must return b. */
+    MiFreePage(a);
+    MiFreePage(b);
+    uint64_t c = MiAllocatePage();
+    if (c != b)
     {
         return 0;
     }
-    MiFreePage(C);
+    MiFreePage(c);
 
-    return MiFreePageCount == Before;
+    return MiFreePageCount == before;
 }

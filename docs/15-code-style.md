@@ -40,8 +40,9 @@ A name that *is* a real export keeps it and matches the signature: `DbgPrint` st
 |---|---|---|
 | **Functions** | `PascalCase`, 2–3 letter subsystem prefix; a lowercase `i`/`p` marks *internal/private* | `KeInitializeIdt`, `MiAllocatePage`, `KiDispatchTrap`, `KiQemuExit` |
 | **Types** (typedefs) | `UPPER_SNAKE`, with a `_Name` struct tag and a `PName` pointer typedef | `typedef struct _KTRAP_FRAME { … } KTRAP_FRAME, *PKTRAP_FRAME;` |
-| **Locals / parameters** | `PascalCase` (see note), no strict systems Hungarian | `Status`, `TrapFrame`, `PageFrame`, `Length` |
-| **Globals** | `PascalCase` with subsystem prefix | `KeTickCount`, `KiLastSystemCall` |
+| **Locals / parameters** | `camelCase`, no strict systems Hungarian | `status`, `trapFrame`, `pageFrame`, `length` |
+| **Struct members** | `camelCase` | `frame->errorCode`, `entry->offsetLow` |
+| **Globals** (incl. file-scope `static`) | `PascalCase` with subsystem prefix | `KeTickCount`, `KiLastSystemCall`, `MiFreeListHead` |
 | **Macros / constants / hardware regs** | `UPPER_SNAKE` | `PAGE_SIZE`, `TIMER_VECTOR`, `IA32_APIC_BASE` |
 | **Files** | lowercase, terse (as in NT) | `idt.c`, `lapic.c`, `phys.c` |
 
@@ -62,11 +63,12 @@ later built, the serial/`DbgPrint` transport can migrate from `Ki` to `Kd`.)
   `cbLength`. The pointer typedef prefixes NT already bakes into type names (`P…`) suffice.
 - **No Linux idioms.** No `snake_case` identifiers, no `foo_t`, no `struct foo *foo`.
 
-> **Note on local variables.** This follows the classic NT *kernel* convention:
-> `PascalCase` (capital first) locals — `NTSTATUS Status; ULONG Index;` — so locals, params,
-> functions, and members share one casing. (App/C++/C# code more often uses `camelCase`
-> locals; that is a different tradition. If the team prefers `camelCase` locals, change this
-> row and re-run — it is the one soft call here.)
+> **The casing rule in one line:** anything that holds a runtime *value* — locals,
+> parameters, struct members — is `camelCase`; *names of code and types* — functions,
+> typedefs, macros — are `PascalCase`/`UPPER_SNAKE`; module **globals** (including file-scope
+> `static`) keep a `PascalCase` subsystem prefix so they stand out from locals
+> (`KeTickCount`, `MiFreeListHead`). This departs from classic NT, which PascalCases locals
+> and members too — a deliberate project choice for readability.
 
 - Numeric ABI constants are **generated**, never named by hand (Article 4, `docs/09`).
 

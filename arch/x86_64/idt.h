@@ -8,6 +8,6 @@
 void KiInitializeIdt(void);
 
 /* Set one 64-bit interrupt gate. Used by KiInitializeIdt and by the timer. */
-void KiSetInterruptGate(int Vector, uint64_t Handler);
+void KiSetInterruptGate(int vector, uint64_t handler);
 
 #endif /* PROSKRNL_ARCH_X86_64_IDT_H */

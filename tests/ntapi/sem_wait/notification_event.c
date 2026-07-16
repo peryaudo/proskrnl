@@ -25,33 +25,33 @@ NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
 
 /* wait with a zero timeout: returns STATUS_SUCCESS if signalled now, else
  * STATUS_TIMEOUT. Never blocks. */
-static NTSTATUS wait_now(HANDLE Event)
+static NTSTATUS wait_now(HANDLE event)
 {
-    LARGE_INTEGER Zero;
-    Zero.QuadPart = 0;
-    return NtWaitForSingleObject(Event, FALSE, &Zero);
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    return NtWaitForSingleObject(event, FALSE, &zero);
 }
 
 START_TEST(notification_event)
 {
-    HANDLE Event;
-    NTSTATUS Status;
+    HANDLE event;
+    NTSTATUS status;
 
     /* NotificationEvent, initially signalled. */
-    Status = NtCreateEvent(&Event, EVENT_ALL_ACCESS, NULL, NotificationEvent, TRUE);
-    ok(Status == STATUS_SUCCESS, "NtCreateEvent -> %08lx", (unsigned long)Status);
+    status = NtCreateEvent(&event, EVENT_ALL_ACCESS, NULL, NotificationEvent, TRUE);
+    ok(status == STATUS_SUCCESS, "NtCreateEvent -> %08lx", (unsigned long)status);
 
     /* Signalled state persists: two consecutive waits both succeed, no reset. */
-    ok(wait_now(Event) == STATUS_SUCCESS, "1st wait on signalled notification event");
-    ok(wait_now(Event) == STATUS_SUCCESS, "2nd wait must still succeed (no auto-reset)");
+    ok(wait_now(event) == STATUS_SUCCESS, "1st wait on signalled notification event");
+    ok(wait_now(event) == STATUS_SUCCESS, "2nd wait must still succeed (no auto-reset)");
 
     /* After an explicit reset, a zero-timeout wait must time out. */
-    NtResetEvent(Event, NULL);
-    ok(wait_now(Event) == STATUS_TIMEOUT, "wait after reset must time out");
+    NtResetEvent(event, NULL);
+    ok(wait_now(event) == STATUS_TIMEOUT, "wait after reset must time out");
 
     /* Set again releases waiters until the next reset. */
-    NtSetEvent(Event, NULL);
-    ok(wait_now(Event) == STATUS_SUCCESS, "wait after set succeeds");
+    NtSetEvent(event, NULL);
+    ok(wait_now(event) == STATUS_SUCCESS, "wait after set succeeds");
 
     /*
      * Example of the convention: suppose proskrnl's very first NtSetEvent does
@@ -59,12 +59,12 @@ START_TEST(notification_event)
      * Keep the test live (it guards everything above) but mark the one corner:
      */
     {
-        LONG Previous = -1;
-        NtSetEvent(Event, &Previous);
+        LONG previous = -1;
+        NtSetEvent(event, &previous);
         todo_proskrnl {
-            ok(Previous == 1, "NtSetEvent returns previous signalled state");
+            ok(previous == 1, "NtSetEvent returns previous signalled state");
         }
     }
 
-    NtClose(Event);
+    NtClose(event);
 }

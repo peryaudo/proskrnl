@@ -12,6 +12,6 @@
  * syscall entry path (M4) updates it. -1 until then. */
 extern uint64_t KiLastSystemCall;
 
-__attribute__((noreturn)) void KiPanic(const char *Message);
+__attribute__((noreturn)) void KiPanic(const char *message);
 
 #endif /* PROSKRNL_KERNEL_INIT_PANIC_H */

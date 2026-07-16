@@ -35,21 +35,21 @@
 
 struct ntapi_state
 {
-    const char *Name;
-    int         Failures;         /* hard assertion failures                */
-    int         TodoUnexpected;   /* todo_proskrnl block that unexpectedly passed */
-    int         Skips;
-    int         TodoDepth;        /* >0 while inside a todo_proskrnl block   */
+    const char *name;
+    int         failures;         /* hard assertion failures                */
+    int         todoUnexpected;   /* todo_proskrnl block that unexpectedly passed */
+    int         skips;
+    int         todoDepth;        /* >0 while inside a todo_proskrnl block   */
 };
 
 extern struct ntapi_state NtapiState;
 
 /* Implemented per-mode in ntapi.c. */
-void ntapi_out(const char *Text);                 /* oracle: stdout; proskrnl: serial */
-void ntapi_okv(int Cond, const char *File, int Line, const char *Fmt, ...);
-void ntapi_skipv(const char *File, int Line, const char *Fmt, ...);
+void ntapi_out(const char *text);                 /* oracle: stdout; proskrnl: serial */
+void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...);
+void ntapi_skipv(const char *file, int line, const char *fmt, ...);
 int  ntapi_finish(void);                           /* emit [KTEST] verdict, return exit code */
-void ntapi_exit(int Code);                          /* oracle: exit(); proskrnl: isa-debug-exit */
+void ntapi_exit(int code);                          /* oracle: exit(); proskrnl: isa-debug-exit */
 
 /* ---- test entry point --------------------------------------------------- */
 
@@ -82,7 +82,7 @@ void ntapi_exit(int Code);                          /* oracle: exit(); proskrnl:
  * unimplemented Nt* belongs out of the manifest, not wrapped in todo_proskrnl.
  */
 #define todo_proskrnl                                                         \
-    for (NtapiState.TodoDepth++; NtapiState.TodoDepth;                        \
-         NtapiState.TodoDepth--)
+    for (NtapiState.todoDepth++; NtapiState.todoDepth;                        \
+         NtapiState.todoDepth--)
 
 #endif /* NTAPI_H */

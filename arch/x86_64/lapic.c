@@ -46,11 +46,11 @@ void KiInitializeTimer(void)
     __outbyte(0xA1, 0xFF);
 
     /* Enable xAPIC, then x2APIC (staged, as the SDM recommends). */
-    uint64_t ApicBase = __readmsr(IA32_APIC_BASE);
-    ApicBase |= APIC_BASE_EN;
-    __writemsr(IA32_APIC_BASE, ApicBase);
-    ApicBase |= APIC_BASE_EXTD;
-    __writemsr(IA32_APIC_BASE, ApicBase);
+    uint64_t apicBase = __readmsr(IA32_APIC_BASE);
+    apicBase |= APIC_BASE_EN;
+    __writemsr(IA32_APIC_BASE, apicBase);
+    apicBase |= APIC_BASE_EXTD;
+    __writemsr(IA32_APIC_BASE, apicBase);
 
     /* Enable the LAPIC; route spurious interrupts to vector 0xFF. */
     __writemsr(X2APIC_SVR, 0x100 | 0xFF);

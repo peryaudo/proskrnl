@@ -6,161 +6,161 @@
 #include <stdint.h>
 #include <stddef.h>
 
-static void DbgpEmitString(const char *String)
+static void DbgpEmitString(const char *str)
 {
-    for (; *String != '\0'; String++)
+    for (; *str != '\0'; str++)
     {
-        if (*String == '\n')
+        if (*str == '\n')
         {
             KiSerialPutChar('\r');
         }
-        KiSerialPutChar(*String);
+        KiSerialPutChar(*str);
     }
 }
 
-/* Unsigned integer in `Base`, with optional field width, pad char, and the
+/* Unsigned integer in `base`, with optional field width, pad char, and the
  * "0x"/"0X" alternate-form prefix. */
-static void DbgpEmitUnsigned(uint64_t Value, unsigned Base, int Upper, int Width, char Pad, int Alt)
+static void DbgpEmitUnsigned(uint64_t value, unsigned base, int upper, int width, char pad, int alt)
 {
-    const char *Digits = Upper ? "0123456789ABCDEF" : "0123456789abcdef";
-    char Buffer[32];
-    int Count = 0;
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char buffer[32];
+    int count = 0;
 
-    if (Value == 0)
+    if (value == 0)
     {
-        Buffer[Count++] = '0';
+        buffer[count++] = '0';
     }
-    while (Value != 0)
+    while (value != 0)
     {
-        Buffer[Count++] = Digits[Value % Base];
-        Value /= Base;
+        buffer[count++] = digits[value % base];
+        value /= base;
     }
 
-    int Prefix = (Alt && Base == 16) ? 2 : 0;
-    int Length = Count + Prefix;
+    int prefix = (alt && base == 16) ? 2 : 0;
+    int length = count + prefix;
 
-    if (Pad == '0')
+    if (pad == '0')
     {
-        if (Prefix)
+        if (prefix)
         {
             KiSerialPutChar('0');
-            KiSerialPutChar(Upper ? 'X' : 'x');
+            KiSerialPutChar(upper ? 'X' : 'x');
         }
-        for (int W = Length; W < Width; W++)
+        for (int w = length; w < width; w++)
         {
             KiSerialPutChar('0');
         }
     }
     else
     {
-        for (int W = Length; W < Width; W++)
+        for (int w = length; w < width; w++)
         {
             KiSerialPutChar(' ');
         }
-        if (Prefix)
+        if (prefix)
         {
             KiSerialPutChar('0');
-            KiSerialPutChar(Upper ? 'X' : 'x');
+            KiSerialPutChar(upper ? 'X' : 'x');
         }
     }
 
-    while (Count > 0)
+    while (count > 0)
     {
-        KiSerialPutChar(Buffer[--Count]);
+        KiSerialPutChar(buffer[--count]);
     }
 }
 
-static void DbgpPrintV(const char *Format, va_list Args)
+static void DbgpPrintV(const char *format, va_list args)
 {
-    for (; *Format != '\0'; Format++)
+    for (; *format != '\0'; format++)
     {
-        if (*Format != '%')
+        if (*format != '%')
         {
-            if (*Format == '\n')
+            if (*format == '\n')
             {
                 KiSerialPutChar('\r');
             }
-            KiSerialPutChar(*Format);
+            KiSerialPutChar(*format);
             continue;
         }
-        Format++;
+        format++;
 
-        int Alt = 0;
-        char Pad = ' ';
+        int alt = 0;
+        char pad = ' ';
         for (;;)
         {
-            if (*Format == '#')
+            if (*format == '#')
             {
-                Alt = 1;
-                Format++;
+                alt = 1;
+                format++;
             }
-            else if (*Format == '0')
+            else if (*format == '0')
             {
-                Pad = '0';
-                Format++;
+                pad = '0';
+                format++;
             }
             else
                 break;
         }
 
-        int Width = 0;
-        while (*Format >= '0' && *Format <= '9')
+        int width = 0;
+        while (*format >= '0' && *format <= '9')
         {
-            Width = Width * 10 + (*Format - '0');
-            Format++;
+            width = width * 10 + (*format - '0');
+            format++;
         }
 
-        int Long = 0; /* 0=int 1=long 2=long long 3=size_t */
-        if (*Format == 'l')
+        int lng = 0; /* 0=int 1=long 2=long long 3=size_t */
+        if (*format == 'l')
         {
-            Long = 1;
-            Format++;
-            if (*Format == 'l')
+            lng = 1;
+            format++;
+            if (*format == 'l')
             {
-                Long = 2;
-                Format++;
+                lng = 2;
+                format++;
             }
         }
-        else if (*Format == 'z')
+        else if (*format == 'z')
         {
-            Long = 3;
-            Format++;
+            lng = 3;
+            format++;
         }
 
-        switch (*Format)
+        switch (*format)
         {
         case '%':
             KiSerialPutChar('%');
             break;
         case 'c':
-            KiSerialPutChar((char)va_arg(Args, int));
+            KiSerialPutChar((char)va_arg(args, int));
             break;
         case 's':
         {
-            const char *String = va_arg(Args, const char *);
-            DbgpEmitString(String ? String : "(null)");
+            const char *str = va_arg(args, const char *);
+            DbgpEmitString(str ? str : "(null)");
             break;
         }
         case 'd':
         case 'i':
         {
-            long long Value;
-            if (Long == 0)
-                Value = va_arg(Args, int);
-            else if (Long == 1)
-                Value = va_arg(Args, long);
-            else if (Long == 2)
-                Value = va_arg(Args, long long);
+            long long value;
+            if (lng == 0)
+                value = va_arg(args, int);
+            else if (lng == 1)
+                value = va_arg(args, long);
+            else if (lng == 2)
+                value = va_arg(args, long long);
             else
-                Value = va_arg(Args, long);
-            if (Value < 0)
+                value = va_arg(args, long);
+            if (value < 0)
             {
                 KiSerialPutChar('-');
-                DbgpEmitUnsigned((uint64_t)(-Value), 10, 0, Width > 0 ? Width - 1 : 0, Pad, 0);
+                DbgpEmitUnsigned((uint64_t)(-value), 10, 0, width > 0 ? width - 1 : 0, pad, 0);
             }
             else
             {
-                DbgpEmitUnsigned((uint64_t)Value, 10, 0, Width, Pad, 0);
+                DbgpEmitUnsigned((uint64_t)value, 10, 0, width, pad, 0);
             }
             break;
         }
@@ -168,40 +168,40 @@ static void DbgpPrintV(const char *Format, va_list Args)
         case 'x':
         case 'X':
         {
-            unsigned long long Value;
-            if (Long == 0)
-                Value = va_arg(Args, unsigned int);
-            else if (Long == 1)
-                Value = va_arg(Args, unsigned long);
-            else if (Long == 2)
-                Value = va_arg(Args, unsigned long long);
+            unsigned long long value;
+            if (lng == 0)
+                value = va_arg(args, unsigned int);
+            else if (lng == 1)
+                value = va_arg(args, unsigned long);
+            else if (lng == 2)
+                value = va_arg(args, unsigned long long);
             else
-                Value = va_arg(Args, size_t);
-            unsigned Base = (*Format == 'u') ? 10 : 16;
-            DbgpEmitUnsigned(Value, Base, (*Format == 'X'), Width, Pad, Alt);
+                value = va_arg(args, size_t);
+            unsigned base = (*format == 'u') ? 10 : 16;
+            DbgpEmitUnsigned(value, base, (*format == 'X'), width, pad, alt);
             break;
         }
         case 'p':
         {
-            void *Pointer = va_arg(Args, void *);
-            DbgpEmitUnsigned((uint64_t)(uintptr_t)Pointer, 16, 0, Width, Pad, 1);
+            void *pointer = va_arg(args, void *);
+            DbgpEmitUnsigned((uint64_t)(uintptr_t)pointer, 16, 0, width, pad, 1);
             break;
         }
         case '\0':
             return;
         default:
             KiSerialPutChar('%');
-            KiSerialPutChar(*Format);
+            KiSerialPutChar(*format);
             break;
         }
     }
 }
 
-int DbgPrint(const char *Format, ...)
+int DbgPrint(const char *format, ...)
 {
-    va_list Args;
-    va_start(Args, Format);
-    DbgpPrintV(Format, Args);
-    va_end(Args);
+    va_list args;
+    va_start(args, format);
+    DbgpPrintV(format, args);
+    va_end(args);
     return 0; /* STATUS_SUCCESS */
 }

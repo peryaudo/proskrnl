@@ -1,5 +1,5 @@
 /* arch/x86_64/trap.h — CPU trap frame (M1). Field order matches the push
- * sequence in trap.S: GP registers (R15..Rax), then vector + error code, then
+ * sequence in trap.S: GP registers (r15..rax), then vector + error code, then
  * the CPU-pushed interrupt frame. */
 #ifndef PROSKRNL_ARCH_X86_64_TRAP_H
 #define PROSKRNL_ARCH_X86_64_TRAP_H
@@ -8,14 +8,14 @@
 
 typedef struct _KTRAP_FRAME
 {
-    uint64_t R15, R14, R13, R12, R11, R10, R9, R8;
-    uint64_t Rbp, Rdi, Rsi, Rdx, Rcx, Rbx, Rax;
-    uint64_t Vector;
-    uint64_t ErrorCode;
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t vector;
+    uint64_t errorCode;
     /* pushed by the CPU on interrupt/exception */
-    uint64_t Rip, SegCs, EFlags, Rsp, SegSs;
+    uint64_t rip, segCs, eflags, rsp, segSs;
 } KTRAP_FRAME, *PKTRAP_FRAME;
 
-void KiDispatchTrap(PKTRAP_FRAME TrapFrame);
+void KiDispatchTrap(PKTRAP_FRAME trapFrame);
 
 #endif /* PROSKRNL_ARCH_X86_64_TRAP_H */

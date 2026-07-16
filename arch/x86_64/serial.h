@@ -3,7 +3,7 @@
 #define PROSKRNL_ARCH_X86_64_SERIAL_H
 
 void KiInitializeSerial(void);
-void KiSerialPutChar(char Char);
-void KiSerialPutString(const char *String);
+void KiSerialPutChar(char ch);
+void KiSerialPutString(const char *str);
 
 #endif /* PROSKRNL_ARCH_X86_64_SERIAL_H */

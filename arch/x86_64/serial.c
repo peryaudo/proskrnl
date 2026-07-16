@@ -21,22 +21,22 @@ static int KiSerialTransmitReady(void)
     return __inbyte(COM1 + 5) & 0x20; /* line status: transmit holding empty */
 }
 
-void KiSerialPutChar(char Char)
+void KiSerialPutChar(char ch)
 {
     while (!KiSerialTransmitReady())
     {
     }
-    __outbyte(COM1, (uint8_t)Char);
+    __outbyte(COM1, (uint8_t)ch);
 }
 
-void KiSerialPutString(const char *String)
+void KiSerialPutString(const char *str)
 {
-    for (; *String != '\0'; String++)
+    for (; *str != '\0'; str++)
     {
-        if (*String == '\n')
+        if (*str == '\n')
         {
             KiSerialPutChar('\r');
         }
-        KiSerialPutChar(*String);
+        KiSerialPutChar(*str);
     }
 }

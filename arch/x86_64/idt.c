@@ -6,19 +6,19 @@
 
 typedef struct _KIDTENTRY
 {
-    uint16_t OffsetLow;
-    uint16_t Selector;
-    uint8_t Ist;
-    uint8_t TypeAttributes;
-    uint16_t OffsetMiddle;
-    uint32_t OffsetHigh;
-    uint32_t Reserved;
+    uint16_t offsetLow;
+    uint16_t selector;
+    uint8_t ist;
+    uint8_t typeAttributes;
+    uint16_t offsetMiddle;
+    uint32_t offsetHigh;
+    uint32_t reserved;
 } __attribute__((packed)) KIDTENTRY, *PKIDTENTRY;
 
 typedef struct _KDESCRIPTOR
 {
-    uint16_t Limit;
-    uint64_t Base;
+    uint16_t limit;
+    uint64_t base;
 } __attribute__((packed)) KDESCRIPTOR;
 
 static KIDTENTRY KiIdt[256];
@@ -26,26 +26,26 @@ static uint16_t KiKernelCs;
 
 extern uint64_t KiTrapThunkTable[]; /* trap.S */
 
-void KiSetInterruptGate(int Vector, uint64_t Handler)
+void KiSetInterruptGate(int vector, uint64_t handler)
 {
-    KiIdt[Vector].OffsetLow = (uint16_t)(Handler & 0xFFFF);
-    KiIdt[Vector].Selector = KiKernelCs;
-    KiIdt[Vector].Ist = 0;
-    KiIdt[Vector].TypeAttributes = 0x8E; /* present, DPL 0, 64-bit interrupt gate */
-    KiIdt[Vector].OffsetMiddle = (uint16_t)((Handler >> 16) & 0xFFFF);
-    KiIdt[Vector].OffsetHigh = (uint32_t)((Handler >> 32) & 0xFFFFFFFF);
-    KiIdt[Vector].Reserved = 0;
+    KiIdt[vector].offsetLow = (uint16_t)(handler & 0xFFFF);
+    KiIdt[vector].selector = KiKernelCs;
+    KiIdt[vector].ist = 0;
+    KiIdt[vector].typeAttributes = 0x8E; /* present, DPL 0, 64-bit interrupt gate */
+    KiIdt[vector].offsetMiddle = (uint16_t)((handler >> 16) & 0xFFFF);
+    KiIdt[vector].offsetHigh = (uint32_t)((handler >> 32) & 0xFFFFFFFF);
+    KiIdt[vector].reserved = 0;
 }
 
 void KiInitializeIdt(void)
 {
     __asm__ volatile("mov %%cs, %0" : "=r"(KiKernelCs));
 
-    for (int Vector = 0; Vector < 32; Vector++)
+    for (int vector = 0; vector < 32; vector++)
     {
-        KiSetInterruptGate(Vector, KiTrapThunkTable[Vector]);
+        KiSetInterruptGate(vector, KiTrapThunkTable[vector]);
     }
 
-    KDESCRIPTOR Descriptor = {(uint16_t)(sizeof(KiIdt) - 1), (uint64_t)(uintptr_t)KiIdt};
-    __asm__ volatile("lidt %0" : : "m"(Descriptor));
+    KDESCRIPTOR descriptor = {(uint16_t)(sizeof(KiIdt) - 1), (uint64_t)(uintptr_t)KiIdt};
+    __asm__ volatile("lidt %0" : : "m"(descriptor));
 }
