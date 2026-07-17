@@ -29,6 +29,25 @@
 #define MEM_MAPPED 0x00040000
 #define MEM_WRITE_WATCH 0x00200000
 
+/* Section allocation attributes + access rights (M5), extracted from
+ * wine/include/winnt.h. */
+#define SEC_FILE 0x00800000
+#define SEC_IMAGE 0x01000000
+#define SEC_RESERVE 0x04000000
+#define SEC_COMMIT 0x08000000
+#define SEC_NOCACHE 0x10000000
+#define SEC_WRITECOMBINE 0x40000000
+#define SEC_LARGE_PAGES 0x80000000
+#define MEM_IMAGE SEC_IMAGE
+#define SECTION_QUERY 0x0001
+#define SECTION_MAP_WRITE 0x0002
+#define SECTION_MAP_READ 0x0004
+#define SECTION_MAP_EXECUTE 0x0008
+#define SECTION_EXTEND_SIZE 0x0010
+#define SECTION_MAP_EXECUTE_EXPLICIT 0x0020
+#define SECTION_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|0x01f)
+#define AT_ROUND_TO_PAGE 0x40000000
+
 /* Extracted verbatim from wine/include/winnt.h; the static_asserts pin
  * the x64 layout the boundary depends on. */
 typedef struct {
@@ -76,10 +95,79 @@ typedef enum {
 #endif
 } MEMORY_INFORMATION_CLASS;
 
-/* The M4 Mm Nt* surface; signatures extracted verbatim from
+/* Section enums/structs (M5), extracted verbatim from
+ * wine/include/winternl.h; static_asserts pin the x64 layout. */
+typedef enum {
+    ViewShare = 1,
+    ViewUnmap = 2
+} SECTION_INHERIT;
+
+typedef enum {
+  SectionBasicInformation,
+  SectionImageInformation,
+  SectionRelocationInformation,
+  SectionOriginalBaseInformation,
+  SectionInternalImageInformation
+} SECTION_INFORMATION_CLASS;
+
+typedef struct {
+  PVOID BaseAddress;
+  ULONG Attributes;
+  LARGE_INTEGER Size;
+} SECTION_BASIC_INFORMATION, *PSECTION_BASIC_INFORMATION;
+
+typedef struct {
+  PVOID TransferAddress;
+  ULONG ZeroBits;
+  SIZE_T MaximumStackSize;
+  SIZE_T CommittedStackSize;
+  ULONG SubSystemType;
+  USHORT MinorSubsystemVersion;
+  USHORT MajorSubsystemVersion;
+  USHORT MajorOperatingSystemVersion;
+  USHORT MinorOperatingSystemVersion;
+  USHORT ImageCharacteristics;
+  USHORT DllCharacteristics;
+  USHORT Machine;
+  BOOLEAN ImageContainsCode;
+  union
+  {
+      UCHAR ImageFlags;
+      struct
+      {
+          UCHAR ComPlusNativeReady        : 1;
+          UCHAR ComPlusILOnly             : 1;
+          UCHAR ImageDynamicallyRelocated : 1;
+          UCHAR ImageMappedFlat           : 1;
+          UCHAR BaseBelow4gb              : 1;
+          UCHAR ComPlusPrefer32bit        : 1;
+          UCHAR Reserved                  : 2;
+      } DUMMYSTRUCTNAME;
+  } DUMMYUNIONNAME;
+  ULONG LoaderFlags;
+  ULONG ImageFileSize;
+  ULONG CheckSum;
+} SECTION_IMAGE_INFORMATION, *PSECTION_IMAGE_INFORMATION;
+
+_Static_assert(sizeof(SECTION_BASIC_INFORMATION) == 24, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_BASIC_INFORMATION, Attributes) == 8, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_BASIC_INFORMATION, Size) == 16, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(sizeof(SECTION_IMAGE_INFORMATION) == 64, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, MaximumStackSize) == 16, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, SubSystemType) == 32, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, Machine) == 48, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, LoaderFlags) == 52, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMAGE_INFORMATION x64 layout");
+
+/* The M4+M5 Mm Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
 NTSTATUS NtAllocateVirtualMemory(HANDLE,PVOID*,ULONG_PTR,SIZE_T*,ULONG,ULONG);
 NTSTATUS NtFreeVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG);
 NTSTATUS NtQueryVirtualMemory(HANDLE,LPCVOID,MEMORY_INFORMATION_CLASS,PVOID,SIZE_T,SIZE_T*);
+NTSTATUS NtCreateSection(HANDLE*,ACCESS_MASK,const OBJECT_ATTRIBUTES*,const LARGE_INTEGER*,ULONG,ULONG,HANDLE);
+NTSTATUS NtOpenSection(HANDLE*,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
+NTSTATUS NtMapViewOfSection(HANDLE,HANDLE,PVOID*,ULONG_PTR,SIZE_T,const LARGE_INTEGER*,SIZE_T*,SECTION_INHERIT,ULONG,ULONG);
+NTSTATUS NtUnmapViewOfSection(HANDLE,PVOID);
+NTSTATUS NtQuerySection(HANDLE,SECTION_INFORMATION_CLASS,PVOID,SIZE_T,SIZE_T*);
 
 #endif /* PROSKRNL_ABI_NTMMAPI_H */

@@ -36,7 +36,12 @@
 #define NTSYS_NtQueryVirtualMemory 27
 #define NTSYS_NtTerminateProcess 28
 #define NTSYS_NtDisplayString 29
+#define NTSYS_NtCreateSection 30
+#define NTSYS_NtOpenSection 31
+#define NTSYS_NtMapViewOfSection 32
+#define NTSYS_NtUnmapViewOfSection 33
+#define NTSYS_NtQuerySection 34
 
-#define NTSYS_SYSCALL_COUNT 30
+#define NTSYS_SYSCALL_COUNT 35
 
 #endif /* PROSKRNL_ABI_SYSCALL_NUMBERS_H */
