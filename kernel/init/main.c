@@ -22,6 +22,7 @@
 #include "kernel/ob/ob.h"
 #include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/initrd.h"
 #include "tests/kmt/kmt.h"
 
 __attribute__((
@@ -78,11 +79,43 @@ static int KiStringEquals(const char *a, const char *b)
     return *a == *b;
 }
 
-/* Run every boot module as a user process (M4). A module's cmdline string
- * declares its expected outcome: "expect=0" must exit STATUS_SUCCESS,
- * "expect=av" must be contained as a user-mode access violation (the crash
- * test — its containment IS the milestone's "a user crash is process
- * termination, not a kernel fault"). Returns failure count. */
+static int KiStringStartsWith(const char *s, const char *prefix)
+{
+    while (*prefix != '\0' && *s == *prefix)
+    {
+        s++;
+        prefix++;
+    }
+    return *prefix == '\0';
+}
+
+/* Register every boot module as a RAM-disk file (M5: the seed read-only FS
+ * that image and data sections map from). Call before the module runner —
+ * and before the scheduler needs nothing, so early is fine. */
+static void KiRegisterBootModules(void)
+{
+    if (LiModuleRequest.response == 0)
+    {
+        return;
+    }
+    for (uint64_t i = 0; i < LiModuleRequest.response->module_count; i++)
+    {
+        struct limine_file *module = LiModuleRequest.response->modules[i];
+        const char *path = module->path != 0 ? module->path : "?";
+        if (KiRegisterRamdiskFile(path, module->address, module->size) == 0)
+        {
+            KiPanic("KiRegisterBootModules: ramdisk table full / out of pool");
+        }
+    }
+}
+
+/* Run every PROGRAM boot module as a user process (M4/M5). A module whose
+ * cmdline starts with "expect=" is a program declaring its expected outcome:
+ * "expect=0" must exit STATUS_SUCCESS, "expect=av" must be contained as a
+ * user-mode access violation (the crash test — its containment IS M4's "a
+ * user crash is process termination, not a kernel fault"). Any other
+ * cmdline (e.g. "initrd") marks a data file: registered, never run.
+ * Returns failure count. */
 static int KiRunBootModules(void)
 {
     if (LiModuleRequest.response == 0)
@@ -95,9 +128,16 @@ static int KiRunBootModules(void)
         struct limine_file *module = LiModuleRequest.response->modules[i];
         const char *path = module->path != 0 ? module->path : "?";
         const char *expect = module->string != 0 ? module->string : "expect=0";
+        if (!KiStringStartsWith(expect, "expect="))
+        {
+            continue; /* a RAM-disk data file, not a program */
+        }
+
+        PKI_RAMDISK_FILE file = KiFindRamdiskFile(KiRamdiskBasename(path));
+        ASSERT(file != 0); /* KiRegisterBootModules registered every module */
 
         NTSTATUS exitStatus = 0;
-        NTSTATUS runStatus = PsRunBootModule(path, module->address, module->size, &exitStatus);
+        NTSTATUS runStatus = PsRunBootModule(file, &exitStatus);
 
         BOOLEAN pass;
         if (KiStringEquals(expect, "expect=av"))
@@ -128,14 +168,19 @@ static void KiTestMainThread(void *context)
     int m3Failures = kmt_run_m3();
     DbgPrint(m3Failures == 0 ? "[KTEST] M3 PASS\n" : "[KTEST] M3 FAIL failures=%d\n", m3Failures);
 
-    /* M4: the mm/VAD engine in kernel mode, then the real ring-3 clients as
-     * boot modules (user memory + a waited-on event via syscalls, and a
-     * contained crash — docs/02's "Done when"). */
+    /* M4: the mm/VAD engine in kernel mode. */
     int m4Failures = kmt_run_m4();
-    m4Failures += KiRunBootModules();
     DbgPrint(m4Failures == 0 ? "[KTEST] M4 PASS\n" : "[KTEST] M4 FAIL failures=%d\n", m4Failures);
 
-    int total = m2Failures + m3Failures + m4Failures;
+    /* M5: sections + image mapping in kernel mode (kmt), then the ring-3
+     * clients as boot modules — including the PE client the section-based
+     * loader maps and runs, and M4's flat binaries (docs/02's "Done when":
+     * NtCreateSection + NtMapViewOfSection maps a PE image). */
+    int m5Failures = kmt_run_m5();
+    m5Failures += KiRunBootModules();
+    DbgPrint(m5Failures == 0 ? "[KTEST] M5 PASS\n" : "[KTEST] M5 FAIL failures=%d\n", m5Failures);
+
+    int total = m2Failures + m3Failures + m4Failures + m5Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
@@ -207,6 +252,11 @@ void KiSystemStartup(void)
      * from. Every thread carries a process, so this precedes the scheduler. */
     PsInitializeProcessSubsystem();
     DbgPrint("[KTEST] ps PASS\n");
+
+    /* M5: every boot module becomes a RAM-disk file (the seed read-only FS
+     * sections map images and data from — docs/02). */
+    KiRegisterBootModules();
+    DbgPrint("[KTEST] initrd PASS\n");
 
     /* Dispatcher structures must exist before the first clock interrupt. */
     KiInitializeTimerList();

@@ -22,6 +22,12 @@ sem_ob/handle_life              # (same: NtClose/NtDuplicateObject conventions)
 sem_ob/sync_objects             # (same: Nt-level event/mutant/semaphore semantics)
 sem_mm/reserve_commit           # NtAllocateVirtualMemory: reserve then commit
 
+# --- M5: sections + image mapping ---
+sem_mm/anonymous_section        # NtCreateSection/NtMapViewOfSection/NtUnmapViewOfSection/NtQuerySection
+sem_mm/stack_growth             # guard-page stack growth (survival + TIB bracketing)
+# sem_mm/guard_pages            # oracle-only: observing the fault needs the M7 dispatcher
+# sem_mm/image_section          # oracle-only: image sections need NtCreateFile (M6)
+
 # --- M6: I/O manager + FAT32 ---
 # sem_file/share_modes            # conflicting share mode -> STATUS_SHARING_VIOLATION
 # sem_file/delete_on_close        # FILE_DELETE_ON_CLOSE semantics

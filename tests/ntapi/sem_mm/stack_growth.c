@@ -20,16 +20,18 @@
 #include "abi/ntpsapi.h" /* NT_TIB (generated; offsets pinned by asserts) */
 #endif
 
-static NT_TIB *get_tib(void)
+/* volatile: on a growing kernel (proskrnl, Windows) StackLimit is rewritten
+ * behind this code's back; without it the compiler may fold the loads. */
+static volatile NT_TIB *get_tib(void)
 {
 #if defined(NTAPI_ORACLE)
-    return (NT_TIB *)NtCurrentTeb();
+    return (volatile NT_TIB *)NtCurrentTeb();
 #else
     /* The TEB begins with the NT_TIB and gs points at it in user mode;
      * NT_TIB.Self (gs:0x30) is the TEB's linear address. */
     void *self;
     __asm__ volatile("mov %%gs:0x30, %0" : "=r"(self));
-    return (NT_TIB *)self;
+    return (volatile NT_TIB *)self;
 #endif
 }
 
@@ -59,7 +61,7 @@ __attribute__((noinline)) static char *recurse(int depth, char *deepest)
 
 START_TEST(stack_growth)
 {
-    NT_TIB *tib = get_tib();
+    volatile NT_TIB *tib = get_tib();
     char *limit_before, *limit_after, *deepest;
     char probe;
 

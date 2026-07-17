@@ -54,6 +54,7 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySection(HANDLE, ULONG, PVOID, SIZE_T, SIZE_T *);
 
 #elif defined(NTAPI_PROSKRNL)
 #include "abi/ntmmapi.h"
+#include "abi/ntobapi.h" /* NtClose */
 
 #define MEMORY_BASIC_INFO_CLASS  MemoryBasicInformation
 #define SECTION_BASIC_INFO_CLASS SectionBasicInformation

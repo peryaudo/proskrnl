@@ -56,6 +56,7 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
 
 CSRC := kernel/init/main.c \
         kernel/init/panic.c \
+        kernel/init/initrd.c \
         kernel/lib/dbgprint.c \
         kernel/lib/string.c \
         kernel/lib/rtl.c \
@@ -76,6 +77,9 @@ CSRC := kernel/init/main.c \
         kernel/ob/sync.c \
         kernel/ob/wait.c \
         kernel/mm/virtual.c \
+        kernel/mm/section.c \
+        kernel/mm/pecoff.c \
+        kernel/mm/fault.c \
         kernel/ps/process.c \
         kernel/ps/display.c \
         kernel/syscall/table.c \
@@ -87,7 +91,8 @@ CSRC := kernel/init/main.c \
         arch/x86_64/mmu.c \
         tests/kmt/m2_dispatcher.c \
         tests/kmt/m3_ob.c \
-        tests/kmt/m4_usermode.c
+        tests/kmt/m4_usermode.c \
+        tests/kmt/m5_section.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S
@@ -108,11 +113,27 @@ ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
 # crt0 must lead the link so _start lands at image offset 0 (user.ld).
 USER_RT   := $(BUILD)/user/init-tests/crt0.o \
              $(BUILD)/user/init-tests/syscall_stubs.o
-MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin
+MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
+             $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/sample.dat
 # Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
-# reads the cmdline as the module's expected outcome (kernel/init/main.c).
+# reads the cmdline as the module's expected outcome, or "initrd" for a
+# RAM-disk data file that is registered but never run (kernel/init/main.c).
 MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
-                $(BUILD)/modules/crash.bin=expect=av
+                $(BUILD)/modules/crash.bin=expect=av \
+                $(BUILD)/modules/pe_smoke.exe=expect=0 \
+                $(BUILD)/modules/sample.dat=initrd
+
+# --- M5 PE user client + RAM-disk seed data --------------------------------
+# The PE client is a real PE32+ image the kernel loads through SEC_IMAGE
+# sections (docs/02 M5 "Done when"). mingw provides the PE container;
+# -mabi=sysv keeps the code on the SysV calling convention the generated
+# syscall stubs use (the NT x64 convention arrives with the M7 ntdll stubs).
+# --dynamicbase keeps the .reloc directory so the kmt relocation test has
+# something to chew on.
+MINGW ?= x86_64-w64-mingw32-gcc
+PECFLAGS := -std=c11 -mabi=sysv -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -O1 -g0 -Wall -Wextra -Wno-unused-parameter -I. \
+            -Wl,--entry=pe_start -Wl,--dynamicbase -Wl,--pic-executable -Wl,--high-entropy-va
 
 all: $(IMG)
 
@@ -152,6 +173,16 @@ $(BUILD)/modules/%.bin: $(BUILD)/user/init-tests/%.o $(USER_RT) user/init-tests/
 	@mkdir -p $(dir $@)
 	$(LD) $(ULDFLAGS) $(USER_RT) $< -o $(@:.bin=.elf)
 	$(OBJCOPY) -O binary $(@:.bin=.elf) $@
+
+$(BUILD)/modules/pe_smoke.exe: user/init-tests/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
+	@mkdir -p $(dir $@)
+	$(MINGW) $(PECFLAGS) $^ -o $@
+
+# A deterministic, non-page-multiple data file for the kmt M5 mapped-view /
+# read consistency test (any bytes do; the size exercises EOF zero-fill).
+$(BUILD)/modules/sample.dat:
+	@mkdir -p $(dir $@)
+	python3 -c "import sys; sys.stdout.buffer.write((bytes(range(256)) * 20)[:5000] + b'proskrnl-sample-END')" > $@
 
 $(IMG): $(KERNEL) $(MODULES) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS)

@@ -110,7 +110,12 @@ proskrnl() {
     # shellcheck disable=SC2086
     $cc $ucflags -c "$NTAPI/ntapi.c" -o "$build/ntapi.o"
 
+    # The M5 RAM-disk seed files (built by make with the kernel): kmt's
+    # image/file section tests read them; they are data, never run.
     local specs=() names=()
+    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+        [[ -f "$seed" ]] && specs+=("$seed=initrd")
+    done
     while read -r rel _rest; do
         local name bin
         name="$(basename "$rel")"
@@ -133,7 +138,7 @@ proskrnl() {
     "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/proskrnl-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] M4 PASS" TIMEOUT="${TIMEOUT:-60}" \
+    LOG="$log" PASS_RE="\[KTEST\] M5 PASS" TIMEOUT="${TIMEOUT:-60}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     local fails=0
