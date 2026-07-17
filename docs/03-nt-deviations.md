@@ -56,6 +56,8 @@ third-party drivers, we owe that contract to no one, and SMP becomes ordinary fu
 | **Cm hive format** | `NtCreateKey`/value semantics | our own on-disk format; no MS hive binary compat |
 | **EPROCESS/ETHREAD** | exist as internal structs | layout entirely ours; nobody reads it (no drivers) |
 | **DPC/IRQL surface** | absent, not stubbed | callers don't exist (no drivers) |
+| **Generic access mapping** (M3) | `GENERIC_*`/`MAXIMUM_ALLOWED` accepted everywhere a `DesiredAccess` goes | any generic bit grants the type's FULL access mask instead of NT's per-type `GENERIC_MAPPING` — an over-grant, consistent with always-allow Se. Handle-granted access is still enforced per use (`EVENT_MODIFY_STATE` etc., pinned by `tests/ntapi/sem_ob/`) |
+| **Name case folding** (M3) | `OBJ_CASE_INSENSITIVE` honoured per lookup | upcasing is ASCII-only; NT carries a full Unicode upcase table. Kernel-created names are ASCII, so this is unobservable until user mode invents non-ASCII object names |
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
