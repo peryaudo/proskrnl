@@ -79,7 +79,8 @@ CSRC := kernel/init/main.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
         arch/x86_64/mmu.c \
-        tests/kmt/m2_dispatcher.c
+        tests/kmt/m2_dispatcher.c \
+        tests/kmt/m3_ob.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S
 OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)

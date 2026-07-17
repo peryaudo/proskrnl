@@ -56,19 +56,22 @@ __attribute__((used,
                section(".limine_requests_end_marker"))) static volatile uint64_t LiRequestsEnd[2] =
     LIMINE_REQUESTS_END_MARKER;
 
-/* The M2 payload, run on a real kernel thread (waits need a schedulable
- * context). Ends the QEMU run with the whole-milestone verdict (docs/08). */
+/* The in-kernel suites, run on a real kernel thread (waits need a
+ * schedulable context). Ends the QEMU run with the milestone verdict
+ * (docs/08): M3 PASS requires the M2 suite to stay green too. */
 static void KiTestMainThread(void *context)
 {
-    int failures = kmt_run_m2();
-    if (failures == 0)
+    int m2Failures = kmt_run_m2();
+    DbgPrint(m2Failures == 0 ? "[KTEST] M2 PASS\n" : "[KTEST] M2 FAIL failures=%d\n", m2Failures);
+    int m3Failures = kmt_run_m3();
+    if (m2Failures == 0 && m3Failures == 0)
     {
-        DbgPrint("[KTEST] M2 PASS\n");
+        DbgPrint("[KTEST] M3 PASS\n");
         KiQemuExit(0);
     }
     else
     {
-        DbgPrint("[KTEST] M2 FAIL failures=%d\n", failures);
+        DbgPrint("[KTEST] M3 FAIL failures=%d\n", m3Failures);
         KiQemuExit(1);
     }
     /* The debug-exit teardown is asynchronous; do not run past it. */
