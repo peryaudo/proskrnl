@@ -107,8 +107,26 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
 
 /* --- handle.c ------------------------------------------------------------- */
 
-/* Create a handle to `body`: bumps handleCount and takes the handle's
- * pointer reference. attributes keeps the OBJ_* bits worth remembering. */
+/* One handle table (M4: per process, embedded in EPROCESS; handle values
+ * resolve against the CURRENT thread's process). The entry array layout is
+ * private to handle.c. */
+typedef struct
+{
+    PVOID entries; /* OBP_HANDLE_ENTRY[capacity], private to handle.c */
+    ULONG capacity;
+    ULONG inUse;
+} OBP_HANDLE_TABLE, *POBP_HANDLE_TABLE;
+
+void ObpInitializeHandleTable(POBP_HANDLE_TABLE table);
+/* Close every live entry (process termination, in thread context). */
+void ObpCloseAllHandles(POBP_HANDLE_TABLE table);
+/* Free the (already emptied) table storage. */
+void ObpDeleteHandleTable(POBP_HANDLE_TABLE table);
+
+/* Create a handle to `body` in the current process's table: bumps
+ * handleCount and takes the handle's pointer reference. attributes keeps
+ * the OBJ_* bits worth remembering. handleOut is probed for a UserMode
+ * caller (every create/open/duplicate path funnels through here). */
 NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes,
                          PHANDLE handleOut);
 

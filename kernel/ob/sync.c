@@ -12,6 +12,7 @@
  */
 #include "kernel/ob/ob.h"
 #include "kernel/ke/ke.h"
+#include "kernel/syscall/uaccess.h"
 #include "kernel/init/panic.h"
 
 OBJECT_TYPE ObpEventType = {
@@ -47,6 +48,18 @@ OBJECT_TYPE ObpSemaphoreType = {
     .waitable = TRUE,
     .deleteProcedure = 0,
 };
+
+/* Probe an optional out-parameter for a UserMode caller (no-op in KernelMode);
+ * every Nt* below funnels its writes through one of these before touching the
+ * object, matching NT's ProbeForWrite-first discipline. */
+static NTSTATUS ObpProbeOptional(void *pointer, ULONG size, ULONG alignment)
+{
+    if (pointer == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForWrite(pointer, size, alignment);
+}
 
 /* --- events ---------------------------------------------------------------- */
 
@@ -96,6 +109,18 @@ static LONG ObpResetEvent(PRKEVENT event)
 static NTSTATUS ObpEventStateOperation(HANDLE handle, OBP_EVENT_OPERATION operation,
                                        LONG *previousState)
 {
+    /* Probe the optional out-parameter before touching the object, as NT's
+     * ProbeForWrite does — a bad user pointer is STATUS_ACCESS_VIOLATION and
+     * the event is left unchanged (no-op for KernelMode callers). */
+    if (previousState != 0)
+    {
+        NTSTATUS probe =
+            KiProbeForWrite(previousState, sizeof(*previousState), sizeof(*previousState));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+    }
     PVOID body;
     NTSTATUS status =
         ObReferenceObjectByHandle(handle, EVENT_MODIFY_STATE, &ObpEventType, KernelMode, &body, 0);
@@ -142,6 +167,15 @@ NTSTATUS NtQueryEvent(HANDLE handle, EVENT_INFORMATION_CLASS informationClass, P
     if (length != sizeof(EVENT_BASIC_INFORMATION))
     {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS probe = ObpProbeOptional(buffer, sizeof(EVENT_BASIC_INFORMATION), sizeof(LONG));
+    if (NT_SUCCESS(probe))
+    {
+        probe = ObpProbeOptional(returnLength, sizeof(*returnLength), sizeof(*returnLength));
+    }
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
     }
     PVOID body;
     NTSTATUS status =
@@ -200,6 +234,12 @@ NTSTATUS NtOpenMutant(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTE
 
 NTSTATUS NtReleaseMutant(HANDLE handle, PLONG previousCount)
 {
+    NTSTATUS probe =
+        ObpProbeOptional(previousCount, sizeof(*previousCount), sizeof(*previousCount));
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
+    }
     PVOID body;
     /* Releasing needs no specific access right: ownership IS the check. */
     NTSTATUS status = ObReferenceObjectByHandle(handle, 0, &ObpMutantType, KernelMode, &body, 0);
@@ -232,6 +272,15 @@ NTSTATUS NtQueryMutant(HANDLE handle, MUTANT_INFORMATION_CLASS informationClass,
     if (length != sizeof(MUTANT_BASIC_INFORMATION))
     {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS probe = ObpProbeOptional(buffer, sizeof(MUTANT_BASIC_INFORMATION), sizeof(LONG));
+    if (NT_SUCCESS(probe))
+    {
+        probe = ObpProbeOptional(returnLength, sizeof(*returnLength), sizeof(*returnLength));
+    }
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
     }
     PVOID body;
     NTSTATUS status =
@@ -291,6 +340,12 @@ NTSTATUS NtReleaseSemaphore(HANDLE handle, ULONG releaseCount, PULONG previousCo
     {
         return STATUS_INVALID_PARAMETER;
     }
+    NTSTATUS probe =
+        ObpProbeOptional(previousCount, sizeof(*previousCount), sizeof(*previousCount));
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
+    }
     PVOID body;
     NTSTATUS status = ObReferenceObjectByHandle(handle, SEMAPHORE_MODIFY_STATE, &ObpSemaphoreType,
                                                 KernelMode, &body, 0);
@@ -326,6 +381,15 @@ NTSTATUS NtQuerySemaphore(HANDLE handle, SEMAPHORE_INFORMATION_CLASS information
     if (length != sizeof(SEMAPHORE_BASIC_INFORMATION))
     {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS probe = ObpProbeOptional(buffer, sizeof(SEMAPHORE_BASIC_INFORMATION), sizeof(ULONG));
+    if (NT_SUCCESS(probe))
+    {
+        probe = ObpProbeOptional(returnLength, sizeof(*returnLength), sizeof(*returnLength));
+    }
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
     }
     PVOID body;
     NTSTATUS status = ObReferenceObjectByHandle(handle, SEMAPHORE_QUERY_STATE, &ObpSemaphoreType,

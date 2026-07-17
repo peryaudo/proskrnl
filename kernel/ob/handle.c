@@ -1,14 +1,17 @@
-/* kernel/ob/handle.c — the handle table (M3).
+/* kernel/ob/handle.c — the handle table (M3; per-process since M4).
  *
  * NT's 3-level tables and pushlocks are unnecessary (docs/05): one growable
- * array of {object, grantedAccess, attributes} entries suffices. There is
- * one table for the whole kernel until Ps brings processes (M4), at which
- * point it becomes the per-process table. Handle values are (index + 1) * 4
+ * array of {object, grantedAccess, attributes} entries suffices. Since M4
+ * the table lives inside EPROCESS and handle values resolve against the
+ * CURRENT thread's process (kernel threads resolve against the system
+ * process, so kmt callers keep working). Handle values are (index + 1) * 4
  * — NT's multiple-of-4 convention, never 0 — and the low two bits of an
  * incoming handle are ignored, as NT ignores its tag bits.
  */
 #include "kernel/ob/ob.h"
+#include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
+#include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
@@ -16,14 +19,37 @@ typedef struct
 {
     PVOID body; /* 0 = free slot */
     ACCESS_MASK grantedAccess;
-    ULONG attributes; /* OBJ_INHERIT etc., for M4's inheritance */
+    ULONG attributes; /* OBJ_INHERIT etc., for later inheritance */
 } OBP_HANDLE_ENTRY, *POBP_HANDLE_ENTRY;
 
 #define OBP_INITIAL_HANDLE_CAPACITY 64
 
-static POBP_HANDLE_ENTRY ObpHandleEntries;
-static ULONG ObpHandleCapacity;
-static ULONG ObpHandlesInUse;
+/* Handles belong to the calling thread's process (docs/05: the handle table
+ * became per-process the moment Ps existed). */
+static POBP_HANDLE_TABLE ObpCurrentTable(void)
+{
+    PEPROCESS process = KeGetCurrentThread()->process;
+    ASSERT(process != 0);
+    return &process->handleTable;
+}
+
+void ObpInitializeHandleTable(POBP_HANDLE_TABLE table)
+{
+    table->entries = 0;
+    table->capacity = 0;
+    table->inUse = 0;
+}
+
+void ObpDeleteHandleTable(POBP_HANDLE_TABLE table)
+{
+    ASSERT(table->inUse == 0);
+    if (table->entries != 0)
+    {
+        MiFreePool(table->entries);
+        table->entries = 0;
+        table->capacity = 0;
+    }
+}
 
 ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
 {
@@ -41,17 +67,18 @@ ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
  * free. The low two bits are NT's user-mode tag bits — ignored. */
 static POBP_HANDLE_ENTRY ObpEntryFromHandle(HANDLE handle)
 {
+    POBP_HANDLE_TABLE table = ObpCurrentTable();
     ULONG_PTR value = (ULONG_PTR)handle & ~(ULONG_PTR)3;
     if (value == 0)
     {
         return 0;
     }
     ULONG_PTR index = value / 4 - 1;
-    if (index >= ObpHandleCapacity)
+    if (index >= table->capacity)
     {
         return 0;
     }
-    POBP_HANDLE_ENTRY entry = &ObpHandleEntries[index];
+    POBP_HANDLE_ENTRY entry = (POBP_HANDLE_ENTRY)table->entries + index;
     return entry->body != 0 ? entry : 0;
 }
 
@@ -62,38 +89,49 @@ static HANDLE ObpHandleFromIndex(ULONG index)
 
 NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes, PHANDLE handleOut)
 {
-    if (ObpHandleEntries == 0)
+    POBP_HANDLE_TABLE table = ObpCurrentTable();
+
+    /* Every create/open/duplicate writes its result through here, so this is
+     * THE choke point for the out-handle user probe. */
+    NTSTATUS probeStatus = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
+    if (!NT_SUCCESS(probeStatus))
     {
-        ObpHandleCapacity = OBP_INITIAL_HANDLE_CAPACITY;
-        ObpHandleEntries = MiAllocatePool(ObpHandleCapacity * sizeof(OBP_HANDLE_ENTRY));
-        if (ObpHandleEntries == 0)
+        return probeStatus;
+    }
+
+    if (table->entries == 0)
+    {
+        table->capacity = OBP_INITIAL_HANDLE_CAPACITY;
+        table->entries = MiAllocatePool(table->capacity * sizeof(OBP_HANDLE_ENTRY));
+        if (table->entries == 0)
         {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     }
-    if (ObpHandlesInUse == ObpHandleCapacity)
+    if (table->inUse == table->capacity)
     {
-        ULONG newCapacity = ObpHandleCapacity * 2;
+        ULONG newCapacity = table->capacity * 2;
         POBP_HANDLE_ENTRY grown = MiAllocatePool(newCapacity * sizeof(OBP_HANDLE_ENTRY));
         if (grown == 0)
         {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        memcpy(grown, ObpHandleEntries, ObpHandleCapacity * sizeof(OBP_HANDLE_ENTRY));
-        MiFreePool(ObpHandleEntries);
-        ObpHandleEntries = grown;
-        ObpHandleCapacity = newCapacity;
+        memcpy(grown, table->entries, table->capacity * sizeof(OBP_HANDLE_ENTRY));
+        MiFreePool(table->entries);
+        table->entries = grown;
+        table->capacity = newCapacity;
     }
 
-    for (ULONG index = 0; index < ObpHandleCapacity; index++)
+    POBP_HANDLE_ENTRY entries = table->entries;
+    for (ULONG index = 0; index < table->capacity; index++)
     {
-        POBP_HANDLE_ENTRY entry = &ObpHandleEntries[index];
+        POBP_HANDLE_ENTRY entry = &entries[index];
         if (entry->body == 0)
         {
             entry->body = body;
             entry->grantedAccess = grantedAccess;
             entry->attributes = attributes;
-            ObpHandlesInUse++;
+            table->inUse++;
             ObfReferenceObject(body); /* the handle's pointer reference */
             ObpGetHeader(body)->handleCount++;
             *handleOut = ObpHandleFromIndex(index);
@@ -132,14 +170,14 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
 
 /* Close one table entry: retire a temporary object's name on the last
  * handle, then drop the handle's pointer reference. */
-static void ObpCloseHandleEntry(POBP_HANDLE_ENTRY entry)
+static void ObpCloseHandleEntryIn(POBP_HANDLE_TABLE table, POBP_HANDLE_ENTRY entry)
 {
     PVOID body = entry->body;
     POBJECT_HEADER header = ObpGetHeader(body);
 
     entry->body = 0;
-    ASSERT(ObpHandlesInUse > 0);
-    ObpHandlesInUse--;
+    ASSERT(table->inUse > 0);
+    table->inUse--;
 
     ASSERT(header->handleCount > 0);
     header->handleCount--;
@@ -148,6 +186,24 @@ static void ObpCloseHandleEntry(POBP_HANDLE_ENTRY entry)
         ObpUnlinkObjectName(header);
     }
     ObDereferenceObject(body);
+}
+
+static void ObpCloseHandleEntry(POBP_HANDLE_ENTRY entry)
+{
+    ObpCloseHandleEntryIn(ObpCurrentTable(), entry);
+}
+
+void ObpCloseAllHandles(POBP_HANDLE_TABLE table)
+{
+    POBP_HANDLE_ENTRY entries = table->entries;
+    for (ULONG index = 0; index < table->capacity && table->inUse > 0; index++)
+    {
+        if (entries[index].body != 0)
+        {
+            ObpCloseHandleEntryIn(table, &entries[index]);
+        }
+    }
+    ASSERT(table->inUse == 0);
 }
 
 NTSTATUS NtClose(HANDLE handle)

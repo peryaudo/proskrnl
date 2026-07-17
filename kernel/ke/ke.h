@@ -28,6 +28,7 @@
 #define KI_OBJECT_NOTIFICATION_EVENT    0
 #define KI_OBJECT_SYNCHRONIZATION_EVENT 1
 #define KI_OBJECT_MUTANT                2
+#define KI_OBJECT_PROCESS               3 /* Wine assigns no value; 3 is a free internal tag */
 #define KI_OBJECT_SEMAPHORE             5
 #define KI_OBJECT_THREAD                6
 #define KI_OBJECT_NOTIFICATION_TIMER    8
@@ -136,6 +137,8 @@ typedef enum
  * the DISPATCHER_HEADER must come first (threads are waitable, signalled at
  * termination like a notification object) and kernelStack's offset is welded
  * into arch/x86_64/ctxswitch.S. */
+struct EPROCESS; /* kernel/ps/ps.h */
+
 struct KTHREAD
 {
     DISPATCHER_HEADER header;
@@ -144,6 +147,15 @@ struct KTHREAD
     int state;
     KPRIORITY priority;
     LIST_ENTRY readyListEntry;
+
+    /* M4: the owning process (never 0 once Ps is up — kernel threads belong
+     * to PsInitialSystemProcess), the ring-crossing state the context switch
+     * programs (stack top for TSS.RSP0/syscall entry, TEB for the user GS
+     * base), and the mode the current kernel entry came from. */
+    struct EPROCESS *process;
+    uint64_t stackTop; /* kernel stack top; 0 only for the boot/idle thread */
+    void *teb;         /* user-space TEB, 0 for kernel-only threads */
+    KPROCESSOR_MODE previousMode;
 
     /* wait machinery */
     NTSTATUS waitStatus;
@@ -191,6 +203,11 @@ PKTHREAD KeGetCurrentThread(void);
 /* --- thread.c ------------------------------------------------------------ */
 
 PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *startContext);
+/* M4: a thread bound to a specific process (0 = the system process) and,
+ * for user threads, its TEB — both must be final before the thread is
+ * readied, because the context switch programs CR3/GS from them. */
+PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void *startContext,
+                          struct EPROCESS *process, void *teb);
 __attribute__((noreturn)) void KiTerminateThread(void);
 void KiDeleteThread(PKTHREAD thread); /* thread must be terminated */
 

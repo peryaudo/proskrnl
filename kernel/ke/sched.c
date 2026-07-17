@@ -12,8 +12,11 @@
  * every queue is empty.
  */
 #include "kernel/ke/ke.h"
+#include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
 #include "kernel/lib/string.h"
+#include "arch/x86_64/gdt.h"
+#include "arch/x86_64/io.h"
 
 PKTHREAD KiCurrentThread;
 
@@ -47,6 +50,11 @@ void KiInitializeScheduler(void)
     KiInitializeDispatcherHeader(&KiIdleThread.header, KI_OBJECT_THREAD, 0);
     KiIdleThread.state = KI_THREAD_STATE_RUNNING;
     KiIdleThread.priority = 0;
+    /* The boot context: a system thread on Limine's stack. stackTop stays 0
+     * (the idle thread never leads to a ring crossing). */
+    KiIdleThread.process = PsInitialSystemProcess;
+    KiIdleThread.previousMode = KernelMode;
+    ASSERT(KiIdleThread.process != 0); /* Ps init precedes the scheduler */
     InitializeListHead(&KiIdleThread.mutantListHead);
     KeInitializeTimerEx(&KiIdleThread.timer, NotificationTimer);
     KiCurrentThread = &KiIdleThread;
@@ -92,6 +100,27 @@ static PKTHREAD KiSelectNextThread(void)
     return thread;
 }
 
+/* Program the machine for `next` (M4): the ring-crossing stack (TSS.RSP0 +
+ * the syscall entry stack), the user GS base (its TEB), and CR3 when the
+ * address space changes. Under Art. 3 this is the ONLY place hardware
+ * thread state changes — context switches happen nowhere else. */
+static void KiLoadThreadHardwareState(PKTHREAD next)
+{
+    if (next->stackTop != 0)
+    {
+        KiSetKernelStack(next->stackTop);
+    }
+    KiSetUserGsBase((uint64_t)(uintptr_t)next->teb);
+
+    uint64_t pml4 = next->process->addressSpace.pml4Physical;
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    if (cr3 != pml4)
+    {
+        __asm__ volatile("mov %0, %%cr3" : : "r"(pml4) : "memory");
+    }
+}
+
 /* Switch to the best ready thread (or idle). The caller has already put the
  * current thread where it belongs (wait lists, ready queue, or nowhere for
  * termination/idle); lock held on entry and on return. */
@@ -112,6 +141,7 @@ void KiSwapToNext(void)
     }
     next->state = KI_THREAD_STATE_RUNNING;
     KiCurrentThread = next;
+    KiLoadThreadHardwareState(next);
     KiSwapContext(old, next);
     /* Now back on `old`'s stack, someone having switched to us again. */
 }

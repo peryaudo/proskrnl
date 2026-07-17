@@ -8,6 +8,8 @@
 #include "kernel/init/panic.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/ke/ke.h"
+#include "kernel/ps/ps.h"
+#include "abi/ntstatus.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
 
@@ -101,6 +103,26 @@ __attribute__((noreturn)) static void KiHalt(void)
     }
 }
 
+/* Map a contained user-mode exception vector to the NTSTATUS the process
+ * dies with (what a debugger/parent would observe). */
+static NTSTATUS KiUserFaultStatus(uint64_t vector)
+{
+    switch (vector)
+    {
+    case 0:
+        return STATUS_INTEGER_DIVIDE_BY_ZERO;
+    case 6:
+        return STATUS_ILLEGAL_INSTRUCTION;
+    case 3:
+        return STATUS_BREAKPOINT;
+    case 12: /* #SS */
+    case 14: /* #PF */
+        return STATUS_ACCESS_VIOLATION;
+    default:
+        return STATUS_ACCESS_VIOLATION;
+    }
+}
+
 /* Called from trap.S for every CPU exception (vectors 0..31) and every IRQ. */
 void KiDispatchTrap(PKTRAP_FRAME trapFrame)
 {
@@ -118,6 +140,18 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     {
         KiDumpTrapFrame("[KTEST] trap", trapFrame);
         return;
+    }
+
+    /* M4: a fault taken IN ring 3 is contained as process termination, never
+     * a kernel fault (docs/02 "a user crash is contained"). The dump still
+     * prints — the panic handler is the debugger (Art. 9) — but with a
+     * [USERFAULT] prefix and then the offending process exits. */
+    if ((trapFrame->segCs & 3) == 3)
+    {
+        KiDumpTrapFrame("[USERFAULT]", trapFrame);
+        DbgPrint("[USERFAULT] pid image '%s'; terminating process\n",
+                 KeGetCurrentThread()->process->imageName);
+        PspExitCurrentProcess(KiUserFaultStatus(trapFrame->vector));
     }
 
     KiDumpTrapFrame("[PANIC]", trapFrame);
