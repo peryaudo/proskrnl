@@ -56,6 +56,9 @@ static uint64_t MiEnsureTable(uint64_t *entry)
 
 static void MiMapPageInternal(uint64_t virtualAddress, uint64_t physicalAddress, uint64_t flags)
 {
+    uint64_t pageMask = ((flags & PTE_LARGE) ? LARGE_PAGE_SIZE : PAGE_SIZE) - 1;
+    ASSERT((virtualAddress & pageMask) == 0);
+    ASSERT((physicalAddress & pageMask) == 0);
     int pml4Index = (int)((virtualAddress >> 39) & 0x1FF);
     int pdptIndex = (int)((virtualAddress >> 30) & 0x1FF);
     int pdIndex = (int)((virtualAddress >> 21) & 0x1FF);

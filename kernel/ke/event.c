@@ -6,6 +6,15 @@
  * Signatures per Wine's ntoskrnl exports (dlls/ntoskrnl.exe/sync.c).
  */
 #include "kernel/ke/ke.h"
+#include "kernel/init/panic.h"
+
+/* Wrong-object bugs (a semaphore passed as an event, a stale pointer) show up
+ * as an alien type tag before they corrupt a wait list. */
+static void KiAssertIsEvent(PRKEVENT event)
+{
+    ASSERT(event->header.type == KI_OBJECT_NOTIFICATION_EVENT ||
+           event->header.type == KI_OBJECT_SYNCHRONIZATION_EVENT);
+}
 
 void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state)
 {
@@ -20,6 +29,7 @@ void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state)
 LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait)
 {
     uint64_t flags = KiAcquireDispatcherLock();
+    KiAssertIsEvent(event);
     LONG previous = event->header.signalState;
     event->header.signalState = 1;
     KiWaitTest(&event->header);
@@ -30,6 +40,7 @@ LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait)
 LONG KeResetEvent(PRKEVENT event)
 {
     uint64_t flags = KiAcquireDispatcherLock();
+    KiAssertIsEvent(event);
     LONG previous = event->header.signalState;
     event->header.signalState = 0;
     KiReleaseDispatcherLock(flags);

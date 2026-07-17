@@ -22,6 +22,8 @@ _Static_assert(offsetof(KTHREAD, kernelStack) == 24,
  * dispatcher lock held (see KiSwapToNext); release it, run, terminate. */
 static void KiThreadStartup(void)
 {
+    ASSERT(KiCurrentThread->state == KI_THREAD_STATE_RUNNING);
+    ASSERT(KiCurrentThread->startRoutine != 0);
     /* RFLAGS: IF | the always-one reserved bit. */
     KiReleaseDispatcherLock(0x202);
     KiCurrentThread->startRoutine(KiCurrentThread->startContext);
@@ -60,6 +62,9 @@ PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *
     {
         *--stackPointer = 0; /* rbp, rbx, r12..r15 */
     }
+    /* 8 slots below a 16-aligned top: KiSwapContext's 6 pops + ret leave
+     * rsp % 16 == 8 at KiThreadStartup entry, as the ABI requires. */
+    ASSERT(((uintptr_t)stackPointer & 0xF) == 0);
     thread->kernelStack = (uint64_t)(uintptr_t)stackPointer;
 
     uint64_t flags = KiAcquireDispatcherLock();
@@ -92,6 +97,7 @@ __attribute__((noreturn)) void KiTerminateThread(void)
 
 void KiDeleteThread(PKTHREAD thread)
 {
+    ASSERT(thread != KiCurrentThread);
     if (thread->state != KI_THREAD_STATE_TERMINATED)
     {
         KiPanic("KiDeleteThread: thread not terminated");

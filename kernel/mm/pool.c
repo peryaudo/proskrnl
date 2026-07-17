@@ -54,6 +54,9 @@ uint64_t MiGetPoolBytesInUse(void)
 /* Insert a free block keeping address order, then coalesce with both sides. */
 static void MiInsertFreeBlock(PMI_POOL_HEADER block)
 {
+    ASSERT(block->size >= MI_POOL_MIN_SPLIT && (block->size & (MI_POOL_ALIGN - 1)) == 0);
+    ASSERT((uint64_t)(uintptr_t)block >= MI_POOL_BASE &&
+           (uint64_t)(uintptr_t)block + block->size <= MiPoolEnd);
     block->magic = MI_POOL_FREE_MAGIC;
 
     PMI_POOL_HEADER *link = &MiPoolFreeList;
@@ -175,6 +178,7 @@ void MiFreePool(void *pointer)
     {
         KiPanic("MiFreePool: bad block (double free or corruption)");
     }
+    ASSERT(MiPoolBytesInUse >= block->size);
     MiPoolBytesInUse -= block->size;
     MiInsertFreeBlock(block);
 }

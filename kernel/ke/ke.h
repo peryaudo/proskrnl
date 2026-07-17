@@ -170,6 +170,15 @@ void KiInitializeScheduler(void);
 uint64_t KiAcquireDispatcherLock(void);
 void KiReleaseDispatcherLock(uint64_t flags);
 
+/* The lock IS interrupt disable (uniprocessor, Art. 3), so lock-held-only
+ * internals can ASSERT on RFLAGS.IF directly. */
+static inline BOOLEAN KiIsDispatcherLockHeld(void)
+{
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0" : "=r"(flags));
+    return (flags & 0x200) == 0; /* IF clear */
+}
+
 /* Dispatcher-lock-held internals. */
 void KiReadyThread(PKTHREAD thread);
 void KiSwapToNext(void); /* current must already be re-stated; lock held */

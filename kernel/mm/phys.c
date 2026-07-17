@@ -1,5 +1,6 @@
 /* kernel/mm/phys.c — physical page frame allocator (M1). See phys.h. */
 #include "kernel/mm/phys.h"
+#include "kernel/init/panic.h"
 #include "limine.h"
 
 static uint64_t MiHhdmOffset;   /* phys -> virt offset (HHDM) */
@@ -19,6 +20,8 @@ void *MiPhysicalToVirtual(uint64_t physical)
 
 void MiFreePage(uint64_t page)
 {
+    ASSERT(page != 0); /* frame 0 is reserved as the OOM sentinel */
+    ASSERT((page & (PAGE_SIZE - 1)) == 0);
     /* Thread the free list through the frames themselves: store the old head
      * in this frame, then make this frame the new head. */
     *MiFrameToVirtual(page) = MiFreeListHead;
@@ -32,8 +35,11 @@ uint64_t MiAllocatePage(void)
     {
         return 0;
     }
+    ASSERT(MiFreePageCount > 0); /* count and list must agree */
     uint64_t page = MiFreeListHead;
     MiFreeListHead = *MiFrameToVirtual(page);
+    /* A misaligned next-link means someone scribbled over a free frame. */
+    ASSERT((MiFreeListHead & (PAGE_SIZE - 1)) == 0);
     MiFreePageCount--;
     return page;
 }

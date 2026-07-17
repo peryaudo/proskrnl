@@ -3,6 +3,7 @@
  * Gate selector is the current %cs (whatever Limine handed us) so we need no
  * GDT of our own yet — a real GDT + TSS arrives with user mode at M4. */
 #include "arch/x86_64/idt.h"
+#include "kernel/init/panic.h"
 
 typedef struct
 {
@@ -28,6 +29,8 @@ extern uint64_t KiTrapThunkTable[]; /* trap.S */
 
 void KiSetInterruptGate(int vector, uint64_t handler)
 {
+    ASSERT(vector >= 0 && vector < 256);
+    ASSERT(handler != 0);
     KiIdt[vector].offsetLow = (uint16_t)(handler & 0xFFFF);
     KiIdt[vector].selector = KiKernelCs;
     KiIdt[vector].ist = 0;
