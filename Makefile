@@ -29,7 +29,7 @@ CFLAGS := -std=c11 -target x86_64-unknown-none \
           -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
           -fsanitize=undefined -fsanitize-trap=undefined \
           -O2 -g -Wall -Wextra -Wno-unused-parameter \
-          -I. -Ithird_party/limine
+          -I. -Ithird_party/limine-protocol/include
 
 # Minimal KASAN (M3, docs/08): outline checks only (call-threshold=0) so the
 # hooks in kernel/mm/kasan.c can range-check against the pool; stack/global
