@@ -75,32 +75,86 @@ CSRC := kernel/init/main.c \
         kernel/ob/namespace.c \
         kernel/ob/sync.c \
         kernel/ob/wait.c \
+        kernel/mm/virtual.c \
+        kernel/ps/process.c \
+        kernel/ps/display.c \
+        kernel/syscall/table.c \
+        kernel/syscall/uaccess.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
+        arch/x86_64/gdt.c \
         arch/x86_64/mmu.c \
         tests/kmt/m2_dispatcher.c \
-        tests/kmt/m3_ob.c
+        tests/kmt/m3_ob.c \
+        tests/kmt/m4_usermode.c
 ASRC := arch/x86_64/trap.S \
-        arch/x86_64/ctxswitch.S
+        arch/x86_64/ctxswitch.S \
+        kernel/syscall/entry.S
 OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
+
+# --- M4 user-mode flat binaries (boot modules) ---------------------------
+# Freestanding ring-3 clients (docs/02: "the test client is a flat binary").
+# Same clang cross-target as the kernel, but ring-3 code may keep the red
+# zone and needs no kernel code model. Linked at PSP_IMAGE_BASE via user.ld,
+# then llvm-objcopy'd to a raw binary the kernel maps and jumps into.
+OBJCOPY   := $(LLVM)/llvm-objcopy
+UCFLAGS   := -std=c11 -target x86_64-unknown-none -ffreestanding \
+             -fno-stack-protector -fno-pie -fno-pic -m64 -march=x86-64 \
+             -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+             -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
+ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
+
+# crt0 must lead the link so _start lands at image offset 0 (user.ld).
+USER_RT   := $(BUILD)/user/init-tests/crt0.o \
+             $(BUILD)/user/init-tests/syscall_stubs.o
+MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin
+# Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
+# reads the cmdline as the module's expected outcome (kernel/init/main.c).
+MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
+                $(BUILD)/modules/crash.bin=expect=av
 
 all: $(IMG)
 
+# -MMD/-MP emit a .d beside each .o so a changed header rebuilds its dependents
+# (without this, editing e.g. ke.h silently left stale objects — a whole class
+# of layout-mismatch bugs).
+DEPFLAGS := -MMD -MP
+
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(KASAN_FLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(KASAN_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.S
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(KERNEL): $(OBJ) arch/x86_64/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) $(OBJ) -o $@
 
-$(IMG): $(KERNEL) tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG)
+# User client objects (own flags; not the kernel's KASAN/kernel-cmodel build).
+$(BUILD)/user/init-tests/%.o: user/init-tests/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD)/user/init-tests/%.o: user/init-tests/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+# The generated syscall stubs live under tests/ntapi/syscall (shared with the
+# ntapi proskrnl target); build them into the user runtime.
+$(BUILD)/user/init-tests/syscall_stubs.o: tests/ntapi/syscall/syscall_stubs.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/modules/%.bin: $(BUILD)/user/init-tests/%.o $(USER_RT) user/init-tests/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(ULDFLAGS) $(USER_RT) $< -o $(@:.bin=.elf)
+	$(OBJCOPY) -O binary $(@:.bin=.elf) $@
+
+$(IMG): $(KERNEL) $(MODULES) tools/mkimage.sh arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS)
 
 run: $(IMG)
 	tools/qemu.sh $(IMG)
@@ -124,3 +178,6 @@ tidy:
 	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
 
 .PHONY: all run clean format tidy gen-abi
+
+# Header dependency files emitted by -MMD (see DEPFLAGS).
+-include $(OBJ:.o=.d)

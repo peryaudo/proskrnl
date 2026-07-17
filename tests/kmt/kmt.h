@@ -43,4 +43,8 @@ int kmt_run_m2(void);
 /* The M3 suite (tests/kmt/m3_ob.c). Returns total failures. */
 int kmt_run_m3(void);
 
+/* The M4 suite (tests/kmt/m4_usermode.c): the mm/VAD engine exercised in
+ * kernel mode, ahead of the ring-3 boot-module clients. Returns failures. */
+int kmt_run_m4(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
