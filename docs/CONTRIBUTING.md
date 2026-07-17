@@ -70,6 +70,12 @@ Build against the thick panic handler and structured logs (Art. 9). Under LLM-dr
 development the panic dump is the debugger; a change that degrades diagnostics is a
 regression.
 
+State invariants with **`ASSERT(exp)`** (`kernel/init/panic.h`) as you write kernel code —
+it is always compiled in, fatal, and emits the `[ASSERT] file:line: expr` verdict plus a
+stack trace. Invariant asserts are the highest-value verification tool per line
+(`docs/08`); a PR that adds nontrivial kernel state machinery without asserting its
+invariants is leaving the cheapest defence unbuilt.
+
 ## A note to LLM agents specifically
 
 You are trained mostly on Linux and on ReactOS. You will, unprompted, want to add IRQL,

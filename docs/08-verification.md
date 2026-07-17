@@ -111,6 +111,13 @@ the LLM-driven loop (whose only eyes are the logs) does not chase a lie.
   *semantic* invariants a sanitizer cannot express:
   `ASSERT(!(iosb->Status == STATUS_PENDING && event_signaled));` These catch exactly the
   wrong-contract bugs. Have the LLM write many; it is good at this.
+  The macro is real: **`ASSERT(exp)` in `kernel/init/panic.h`** — always compiled in
+  (there is no free build), fatal through the panic path, printing the machine-greppable
+  `[ASSERT] file:line: expr` verdict plus an rbp-chain stack trace (Art. 9: the dump is
+  the debugger). **New kernel code states its invariants with `ASSERT` as it is written**
+  — lock-held preconditions, state transitions, type tags, count/list agreement (see
+  `kernel/ke/` and `kernel/lib/list.h` for the pattern). Per Art. 6, a firing assert
+  *names a suspect*; only a differential test convicts.
 - **Self-checking stress tests** — the only reliable guard for Mm consistency: N threads
   each write via mmap, read via `ReadFile`, write via `WriteFile`, read via mmap, verifying
   a known pattern every time. Mm consistency bugs surface *only* in this form — and
