@@ -136,25 +136,31 @@ smoother than local macOS Wine.
 
 ## Status
 
-**M2 complete.** The repository began as a **constitution** — documents that fix the design
+**M3 complete.** The repository began as a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
-them (start at `docs/09`). On top of the M1 bring-up (Limine boot, register-dumping panic
-handler, physical page frames), the kernel now runs real multithreading: its own page
-tables, a single kernel pool (Art. 3: one pool), kernel threads with a 32-level priority
-scheduler under one dispatcher lock (uniprocessor, no kernel preemption), and the NT
-dispatcher — notification/synchronization events, mutexes (recursion, abandonment),
-semaphores, notification/synchronization/periodic timers, and `KeWaitForSingleObject` /
-`KeWaitForMultipleObjects` wait-any/wait-all with timeouts on a PIT-calibrated 1 ms clock.
-All `Ke*` signatures match Wine's ntoskrnl exports; `abi/ntstatus.h` and `abi/ntdef.h` are
-generated from Wine's headers by `tools/gen_abi.py` (Art. 4 — no hand-typed constants).
-The in-kernel `tests/kmt` suite (ping-pong, wait-all atomicity, abandonment, timed waits,
-priority ordering) is the milestone's proof:
+them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
+physical page frames) and the M2 multithreading core (own page tables, one pool, 32-level
+priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`
+wait-any/wait-all with timeouts), the kernel now has the **object manager**: a type system
+with refcounted object headers, a growable handle table, and the `\`-rooted namespace
+(`\Device`, `\??`, `\BaseNamedObjects`, directories, symbolic links, `OBJ_CASE_INSENSITIVE`
+/ `OBJ_OPENIF` / relative opens). M2's dispatcher objects moved under Ob: `NtCreateEvent` /
+`NtOpenEvent` / mutant / semaphore / `NtClose` / `NtDuplicateObject` / `NtWaitFor*` are
+implemented with NT NTSTATUS conventions, callable from kernel threads until the M4 syscall
+boundary lands. **Minimal KASAN** (shadow memory over the pool, outline `__asan_*` hooks,
+red zones; `docs/08`) is compiled in and catches OOB/use-after-free in the handle-table and
+refcount paths on demand. The `Nt*` semantics were pinned FIRST on the Wine oracle
+(`tests/ntapi/sem_ob/`, Art. 5) and mirrored by the in-kernel `tests/kmt` suite; `abi/`
+(`ntstatus.h`, `ntdef.h`, `ntobapi.h`) stays generated from Wine's headers by
+`tools/gen_abi.py` (Art. 4 — no hand-typed constants, down to the `Nt*` prototypes):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M2 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M3 PASS on serial
+tests/run/run.sh oracle   # the same contracts, green against Wine/Windows ntdll
 ```
 
-Next: **M3** — Ob: object manager, handle table, `\Device`/`\??` namespace; minimal KASAN
+Next: **M4** — user mode and the syscall boundary: address-space separation,
+`syscall/sysret`, TEB, `NtAllocateVirtualMemory`, first flat-binary test client
 (`docs/02`).
 
 ## License
