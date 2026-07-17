@@ -16,6 +16,10 @@
 
 # --- M4: user mode + first syscalls ---
 # sem_wait/notification_event     # NtCreateEvent / NtWaitForSingleObject / NtSetEvent / NtResetEvent
+# sem_ob/named_event              # M3 kernel is ready; lights up when the M4 syscall stubs land
+# sem_ob/namespace                # (same: directories, symlinks, relative opens)
+# sem_ob/handle_life              # (same: NtClose/NtDuplicateObject conventions)
+# sem_ob/sync_objects             # (same: Nt-level event/mutant/semaphore semantics)
 # sem_mm/reserve_commit           # NtAllocateVirtualMemory: reserve then commit
 
 # --- M6: I/O manager + FAT32 ---
