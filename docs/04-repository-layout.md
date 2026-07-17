@@ -159,7 +159,7 @@ proskrnl/
 │
 ├── docs/adr/                        # (listed above)
 ├── licenses/                        # LGPL / (GPL if ROS shell used) / MAP.md
-└── LICENSE                          # kernel license — FIX BEFORE M13
+└── LICENSE                          # GPL-2.0 (kernel license)
 ```
 
 ## Build model (federated — ADR 0009)

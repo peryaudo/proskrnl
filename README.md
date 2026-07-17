@@ -159,5 +159,6 @@ Next: **M3** — Ob: object manager, handle table, `\Device`/`\??` namespace; mi
 
 ## License
 
-To be fixed **before M13** (see `docs/11-licensing.md`). The kernel/user boundary is a
-process boundary, which keeps the kernel's license free of the LGPL/GPL user-mode code.
+**GPL-2.0** — see [`LICENSE`](LICENSE) and `docs/11-licensing.md`. Third-party components
+keep their own licenses (Wine is LGPL-2.1; the vendored Limine header is BSD-2-Clause);
+the kernel/user process boundary keeps user-mode code out of the kernel image.

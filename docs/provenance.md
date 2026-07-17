@@ -13,3 +13,4 @@ leaked Windows source, never model memory.
 | `kernel/mm/` (phys, pool), `kernel/ke/` scheduler/wait internals | Original, written to Art. 3 (one lock, one pool, no preemption). |
 | `arch/x86_64/` (IDT, LAPIC/x2APIC, PIT calibration, paging, context switch) | Original, from public hardware documentation (Intel SDM, OSDev-common PIT/LAPIC facts) and the Limine boot protocol (`third_party/limine/limine.h`, BSD-licensed header). |
 | `tests/` | Original; harness style modelled on Wine's test conventions (`ok()`, snake_case), no Wine test code copied yet. |
+| `LICENSE` | Verbatim GPL-2.0 license text fetched from the canonical FSF source (`https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt`), not model-recalled. |
