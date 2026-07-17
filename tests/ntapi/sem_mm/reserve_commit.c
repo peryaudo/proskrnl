@@ -1,0 +1,191 @@
+/*
+ * sem_mm/reserve_commit.c — the NtAllocateVirtualMemory reserve/commit
+ * two-step and its NtFreeVirtualMemory / NtQueryVirtualMemory conventions
+ * (M4, docs/02).
+ *
+ * Distilled from Wine's dlls/ntdll/tests/virtual.c (the decommit/release
+ * rounding corners are those exact ok()s) plus the parameter and
+ * MemoryBasicInformation conventions of Wine's implementation
+ * (dlls/ntdll/unix/virtual.c). Everything here is green on the pinned Wine
+ * oracle before the kernel implements it (Art. 5).
+ */
+#include "util.h"
+
+START_TEST(reserve_commit)
+{
+    NTSTATUS status;
+    char *base, *p;
+    void *addr;
+    SIZE_T size, retlen;
+    MEMORY_BASIC_INFORMATION mbi;
+
+    /* --- parameter conventions ------------------------------------------ */
+
+    addr = NULL;
+    size = 0;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE | MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_INVALID_PARAMETER, "zero size -> %08lx", (unsigned long)status);
+
+    addr = NULL;
+    size = 0x1000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, 0, PAGE_READWRITE);
+    ok(status == STATUS_INVALID_PARAMETER, "type 0 -> %08lx", (unsigned long)status);
+
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_DECOMMIT, PAGE_READWRITE);
+    ok(status == STATUS_INVALID_PARAMETER, "bad type bits -> %08lx", (unsigned long)status);
+
+    /* --- reserve, then query the reserved region ------------------------- */
+
+    base = NULL;
+    size = 0x10000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), (void **)&base, 0, &size, MEM_RESERVE,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "reserve -> %08lx", (unsigned long)status);
+    ok(((ULONG_PTR)base & 0xFFFF) == 0, "base %p not 64K aligned", base);
+    ok(size == 0x10000, "reserve size %lx", (unsigned long)size);
+
+    retlen = 0;
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi), &retlen);
+    ok(status == STATUS_SUCCESS, "query reserved -> %08lx", (unsigned long)status);
+    ok(retlen == sizeof(mbi), "query retlen %lu", (unsigned long)retlen);
+    ok(mbi.BaseAddress == base, "BaseAddress %p, expected %p", mbi.BaseAddress, base);
+    ok(mbi.AllocationBase == base, "AllocationBase %p, expected %p", mbi.AllocationBase, base);
+    ok(mbi.AllocationProtect == PAGE_READWRITE, "AllocationProtect %lx",
+       (unsigned long)mbi.AllocationProtect);
+    ok(mbi.RegionSize == 0x10000, "RegionSize %lx", (unsigned long)mbi.RegionSize);
+    ok(mbi.State == MEM_RESERVE, "State %lx", (unsigned long)mbi.State);
+    ok(mbi.Protect == 0, "reserved Protect %lx, expected 0", (unsigned long)mbi.Protect);
+    ok(mbi.Type == MEM_PRIVATE, "Type %lx", (unsigned long)mbi.Type);
+
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi) - 1, &retlen);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "short query buffer -> %08lx", (unsigned long)status);
+
+    /* --- commit inside the reservation; addresses round to pages --------- */
+
+    p = base + 0x1000 + 0x123;
+    size = 0x1000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), (void **)&p, 0, &size, MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "commit -> %08lx", (unsigned long)status);
+    ok(p == base + 0x1000, "commit base %p, expected %p", p, base + 0x1000);
+    ok(size == 0x2000, "commit size %lx, expected 2000", (unsigned long)size);
+
+    p[0] = 0x5a; /* the committed pages must be usable... */
+    p[0x1FFF] = (char)0xa5;
+    ok(p[0] == 0x5a && p[0x1FFF] == (char)0xa5, "committed memory not readable back");
+    ok(p[0x100] == 0, "...and demand-zeroed, got %02x", p[0x100]);
+
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base + 0x1000, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi), NULL);
+    ok(status == STATUS_SUCCESS, "query committed -> %08lx", (unsigned long)status);
+    ok(mbi.State == MEM_COMMIT, "committed State %lx", (unsigned long)mbi.State);
+    ok(mbi.Protect == PAGE_READWRITE, "committed Protect %lx", (unsigned long)mbi.Protect);
+    ok(mbi.AllocationBase == base, "committed AllocationBase %p", mbi.AllocationBase);
+    ok(mbi.RegionSize == 0x2000, "committed RegionSize %lx", (unsigned long)mbi.RegionSize);
+
+    /* The still-reserved head and tail runs bracket the committed pages. */
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi), NULL);
+    ok(status == STATUS_SUCCESS, "query head -> %08lx", (unsigned long)status);
+    ok(mbi.State == MEM_RESERVE && mbi.RegionSize == 0x1000, "head State %lx RegionSize %lx",
+       (unsigned long)mbi.State, (unsigned long)mbi.RegionSize);
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base + 0x3000, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi), NULL);
+    ok(status == STATUS_SUCCESS, "query tail -> %08lx", (unsigned long)status);
+    ok(mbi.State == MEM_RESERVE && mbi.RegionSize == 0xD000, "tail State %lx RegionSize %lx",
+       (unsigned long)mbi.State, (unsigned long)mbi.RegionSize);
+
+    /* Re-committing committed pages succeeds. */
+    p = base + 0x1000;
+    size = 0x2000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), (void **)&p, 0, &size, MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "re-commit -> %08lx", (unsigned long)status);
+    ok(p[0] == 0x5a, "re-commit wiped the page");
+
+    /* A new reservation may not overlap: the 64k rounding makes base+0x1000
+     * conflict (Wine's own test case). */
+    p = base + 0x1000;
+    size = 0x1000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), (void **)&p, 0, &size,
+                                     MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ok(status == STATUS_CONFLICTING_ADDRESSES, "overlapping reserve -> %08lx",
+       (unsigned long)status);
+
+    /* --- the decommit / release rounding corners (Wine's virtual.c) ------ */
+
+    p = base;
+    size = 0x10000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), (void **)&p, 0, &size, MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "commit whole region -> %08lx", (unsigned long)status);
+
+    size = 2;
+    addr = base + 0x1FFF;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_DECOMMIT);
+    ok(status == STATUS_SUCCESS, "decommit straddle -> %08lx", (unsigned long)status);
+    ok(size == 0x2000, "decommit size %lx, expected 2000", (unsigned long)size);
+    ok(addr == base + 0x1000, "decommit addr %p, expected %p", addr, base + 0x1000);
+
+    size = 0;
+    addr = base + 0x1001;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_DECOMMIT);
+    ok(status == STATUS_FREE_VM_NOT_AT_BASE, "zero-size decommit off base -> %08lx",
+       (unsigned long)status);
+    ok(size == 0 && addr == base + 0x1001, "failed decommit changed addr/size");
+
+    size = 0;
+    addr = base + 0xFFE;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_DECOMMIT);
+    ok(status == STATUS_SUCCESS, "zero-size decommit at base -> %08lx", (unsigned long)status);
+    ok(size == 0, "zero-size decommit size %lx", (unsigned long)size);
+    ok(addr == base, "zero-size decommit addr %p, expected %p", addr, base);
+
+    size = 0;
+    addr = base + 0x1001;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    ok(status == STATUS_FREE_VM_NOT_AT_BASE, "release off base -> %08lx", (unsigned long)status);
+
+    size = 0x20000;
+    addr = base;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    ok(status == STATUS_UNABLE_TO_FREE_VM, "oversize release -> %08lx", (unsigned long)status);
+
+    size = 0;
+    addr = base + 0xFFF;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    ok(status == STATUS_SUCCESS, "release -> %08lx", (unsigned long)status);
+    ok(size == 0x10000, "release size %lx, expected 10000", (unsigned long)size);
+    ok(addr == base, "release addr %p, expected %p", addr, base);
+
+    /* --- after the release ------------------------------------------------ */
+
+    status = NtQueryVirtualMemory(NtCurrentProcess(), base, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                  sizeof(mbi), NULL);
+    ok(status == STATUS_SUCCESS, "query freed -> %08lx", (unsigned long)status);
+    ok(mbi.State == MEM_FREE, "freed State %lx", (unsigned long)mbi.State);
+    ok(mbi.Protect == PAGE_NOACCESS, "freed Protect %lx", (unsigned long)mbi.Protect);
+    ok(mbi.AllocationBase == 0, "freed AllocationBase %p", mbi.AllocationBase);
+    ok(mbi.AllocationProtect == 0 && mbi.Type == 0, "freed AllocationProtect/Type %lx/%lx",
+       (unsigned long)mbi.AllocationProtect, (unsigned long)mbi.Type);
+
+    addr = base;
+    size = 0;
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    ok(status == STATUS_MEMORY_NOT_ALLOCATED, "double release -> %08lx", (unsigned long)status);
+
+    /* An explicit-base reserve rounds the base down to the granularity. */
+    addr = base + 0x1234;
+    size = 0x1000;
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "explicit reserve -> %08lx", (unsigned long)status);
+    ok(addr == base, "explicit reserve base %p, expected %p", addr, base);
+    ok(size == 0x3000, "explicit reserve size %lx, expected 3000", (unsigned long)size);
+    status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    ok(status == STATUS_SUCCESS, "cleanup release -> %08lx", (unsigned long)status);
+}
