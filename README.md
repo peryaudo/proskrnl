@@ -137,36 +137,46 @@ local macOS Wine.
 
 ## Status
 
-**M4 complete.** The repository began as a **constitution** — documents that fix the design
+**M5 complete.** The repository began as a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
 them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
 physical page frames), the M2 multithreading core (own page tables, one pool, 32-level
 priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`),
-and the M3 **object manager** (refcounted headers + type system, growable handle table, the
-`\`-rooted namespace), the kernel now crosses into **user mode**. M4 adds its own GDT + TSS
-and a `syscall`/`sysret` boundary (`kernel/syscall/`, whose numbers and stubs are generated
-by `tools/gen_syscalls.py` so the user and kernel sides can never disagree); per-process
-address spaces (`kernel/ps`, `EPROCESS`) that separate user memory while sharing the kernel
-half by copying the frozen kernel PML4; a per-process handle table; `Nt{Allocate,Free,Query}
-VirtualMemory` over a reserve/commit VAD list (`kernel/mm/virtual.c`); TEB allocation with a
-byte-exact `NT_TIB`; `NtTerminateProcess` and `NtDisplayString`; user-pointer probing so a
-bad pointer becomes `STATUS_ACCESS_VIOLATION` (`kernel/syscall/uaccess.c`); and containment
-of a user-mode fault as process termination rather than a kernel fault. The test client is a
-**flat binary** issuing raw syscalls, run as a Limine boot module (`user/init-tests/`).
-**Minimal KASAN** (shadow over the pool, outline `__asan_*` hooks, red zones; `docs/08`)
-stays compiled in. The mm semantics were pinned FIRST on the Wine oracle
-(`tests/ntapi/sem_mm/`, Art. 5); `abi/` (now also `ntmmapi.h`, `ntpsapi.h`,
-`syscall_numbers.h`) stays generated from Wine's headers by `tools/gen_abi.py` +
-`tools/gen_syscalls.py` (Art. 4 — no hand-typed constants):
+the M3 **object manager** (refcounted headers + type system, growable handle table, the
+`\`-rooted namespace), and the M4 **user-mode/syscall boundary** (own GDT/TSS +
+`syscall`/`sysret`, per-process address spaces and handle tables, the reserve/commit VAD
+engine, TEB allocation, user-fault containment), the kernel now maps **sections**. M5 seeds
+a RAM-disk — boot modules become a trivial read-only FS (`kernel/init/initrd.c`) whose
+resident pages are the first form of the unified page cache, breaking the Mm↔Io circular
+dependency — and builds **section objects** on top (`kernel/mm/section.c`): anonymous
+`SEC_COMMIT` sections whose zeroed frames exist from creation and are genuinely shared by
+every view (no COW — Art. 3), read-only file-backed sections that map the page cache
+directly (mapped-view/read consistency is structural, not enforced), and `SEC_IMAGE`
+sections over a PE parser (`kernel/mm/pecoff.c`, layouts from the generated `abi/ntimage.h`)
+where every map is a full private copy with per-PE-section protection and `.reloc`
+processing when the preferred base is taken (`STATUS_IMAGE_NOT_AT_BASE`). The user surface
+is `NtCreateSection` / `NtOpenSection` / `NtMapViewOfSection` (10 arguments — the syscall
+path now carries stack arguments 7..10) / `NtUnmapViewOfSection` / `NtQuerySection`, all
+named/shareable through the Ob namespace. Process stacks became NT-shaped: reserve +
+committed top + `PAGE_GUARD` page, grown a page at a time by the new user-fault path
+(`kernel/mm/fault.c`) which also updates `NT_TIB.StackLimit`; a PE boot module
+(`user/init-tests/pe_smoke.c`, a real PE32+ the kernel loads through the section engines)
+proves image mapping, per-section protection, relocation and stack growth end to end. The
+section semantics were pinned FIRST on the Wine oracle (`tests/ntapi/sem_mm/`, Art. 5);
+`abi/` (now also `ntimage.h` and the section slice of `ntmmapi.h`) stays generated from
+Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no hand-typed
+constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M4 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M5 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 ```
 
-Next: **M5** — sections and image mapping: a seed RAM-disk, `NtCreateSection` /
-`NtMapViewOfSection`, PE image sections, and guard-page stack growth (`docs/02`).
+Next: **M6** — the I/O manager and a real filesystem: async I/O skeleton, `NtCreateFile` /
+`NtReadFile` / `NtWriteFile` and the main info classes, a virtio-blk driver, FAT32, and the
+NT file semantics (share modes, case-insensitivity, delete-on-close) — after which M5's
+image mapping works from an on-disk file (`docs/02`).
 
 ## License
 
