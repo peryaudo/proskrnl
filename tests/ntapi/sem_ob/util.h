@@ -92,6 +92,18 @@ typedef enum _WAIT_TYPE
 #define SYMBOLIC_LINK_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0x1)
 #endif
 
+#elif defined(NTAPI_PROSKRNL)
+#include "abi/ntobapi.h"
+
+#define EVENT_BASIC_INFO_CLASS     EventBasicInformation
+#define MUTANT_BASIC_INFO_CLASS    MutantBasicInformation
+#define SEMAPHORE_BASIC_INFO_CLASS SemaphoreBasicInformation
+#endif
+
+/* The tests fill these with snake_case fields and pass them to NtQuery*; the
+ * layout matches the generated abi/ntobapi.h structs byte-for-byte (the size
+ * the info-class length checks demand), so one definition serves both modes.
+ * A static_assert in proskrnl mode keeps that agreement honest. */
 typedef struct
 {
     LONG event_type; /* EVENT_TYPE */
@@ -111,16 +123,11 @@ typedef struct
     ULONG maximum_count;
 } ob_semaphore_basic_info;
 
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntobapi.h"
-
-#define EVENT_BASIC_INFO_CLASS     EventBasicInformation
-#define MUTANT_BASIC_INFO_CLASS    MutantBasicInformation
-#define SEMAPHORE_BASIC_INFO_CLASS SemaphoreBasicInformation
-
-typedef EVENT_BASIC_INFORMATION ob_event_basic_info;
-typedef MUTANT_BASIC_INFORMATION ob_mutant_basic_info;
-typedef SEMAPHORE_BASIC_INFORMATION ob_semaphore_basic_info;
+#if defined(NTAPI_PROSKRNL)
+_Static_assert(sizeof(ob_event_basic_info) == sizeof(EVENT_BASIC_INFORMATION),
+               "ob_event_basic_info must match the abi layout");
+_Static_assert(sizeof(ob_semaphore_basic_info) == sizeof(SEMAPHORE_BASIC_INFORMATION),
+               "ob_semaphore_basic_info must match the abi layout");
 #endif
 
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
