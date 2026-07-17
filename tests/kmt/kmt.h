@@ -40,4 +40,7 @@ extern int kmt_failures; /* total across the run */
 /* The M2 suite (tests/kmt/m2_dispatcher.c). Returns total failures. */
 int kmt_run_m2(void);
 
+/* The M3 suite (tests/kmt/m3_ob.c). Returns total failures. */
+int kmt_run_m3(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
