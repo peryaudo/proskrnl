@@ -40,6 +40,7 @@ CSRC := kernel/init/main.c \
         kernel/init/panic.c \
         kernel/lib/dbgprint.c \
         kernel/lib/string.c \
+        kernel/lib/rtl.c \
         kernel/mm/phys.c \
         kernel/mm/pool.c \
         kernel/ke/sched.c \
@@ -50,6 +51,11 @@ CSRC := kernel/init/main.c \
         kernel/ke/sema.c \
         kernel/ke/timer.c \
         kernel/ke/irq.c \
+        kernel/ob/object.c \
+        kernel/ob/handle.c \
+        kernel/ob/namespace.c \
+        kernel/ob/sync.c \
+        kernel/ob/wait.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \

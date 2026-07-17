@@ -18,6 +18,7 @@
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
+#include "kernel/ob/ob.h"
 #include "kernel/init/panic.h"
 #include "tests/kmt/kmt.h"
 
@@ -125,6 +126,10 @@ void KiSystemStartup(void)
         KiPanic("pool self-test failed");
     }
     DbgPrint("[KTEST] pool PASS\n");
+
+    /* M3: the object manager and its namespace roots, on top of the pool. */
+    ObpInitializeObjectManager();
+    DbgPrint("[KTEST] ob PASS\n");
 
     /* Dispatcher structures must exist before the first clock interrupt. */
     KiInitializeTimerList();
