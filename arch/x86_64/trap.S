@@ -57,6 +57,12 @@ KiTrap\num:
     KI_TRAP_NOERR 32          /* LAPIC timer IRQ (M1) */
 
 KiTrapCommon:
+    /* From ring 3 (M4): GS still holds the user TEB base; swap to the KPCR.
+     * The CPU-pushed CS sits above the vector + error code slots. */
+    testq $3, 24(%rsp)
+    jz 1f
+    swapgs
+1:
     push %rax
     push %rbx
     push %rcx
@@ -90,6 +96,11 @@ KiTrapCommon:
     pop %rbx
     pop %rax
     add $16, %rsp          /* discard vector + error code */
+    /* Returning to ring 3: give GS back to the user TEB base. */
+    testq $3, 8(%rsp)
+    jz 2f
+    swapgs
+2:
     iretq
 
     /* Table of stub addresses, indexed by vector, for idt.c. */

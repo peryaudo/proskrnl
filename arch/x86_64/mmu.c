@@ -15,6 +15,7 @@
 
 #define PTE_PRESENT (1ULL << 0)
 #define PTE_WRITE   (1ULL << 1)
+#define PTE_USER    (1ULL << 2)
 #define PTE_LARGE   (1ULL << 7) /* PS: 2 MiB page in a PDE */
 #define PTE_NX      (1ULL << 63)
 #define PTE_ADDRESS 0x000FFFFFFFFFF000ULL
@@ -24,7 +25,8 @@
 #define IA32_EFER     0xC0000080
 #define IA32_EFER_NXE (1ULL << 11)
 
-static uint64_t MiKernelPml4; /* physical address of the kernel PML4 */
+static uint64_t MiKernelPml4;    /* physical address of the kernel PML4 */
+static int MiKernelPml4IsFrozen; /* set before the first process PML4 copy */
 
 static uint64_t *MiTableEntry(uint64_t tablePhysical, int index)
 {
@@ -32,8 +34,10 @@ static uint64_t *MiTableEntry(uint64_t tablePhysical, int index)
 }
 
 /* Get the page table one level down from *entry, allocating it if absent.
- * Returns the physical address of the lower table. */
-static uint64_t MiEnsureTable(uint64_t *entry)
+ * Returns the physical address of the lower table. tableFlags carries the
+ * permissive intermediate-entry bits (user walks add PTE_USER; the leaf
+ * decides the effective protection). */
+static uint64_t MiEnsureTable(uint64_t *entry, uint64_t tableFlags)
 {
     if (*entry & PTE_PRESENT)
     {
@@ -49,8 +53,7 @@ static uint64_t MiEnsureTable(uint64_t *entry)
         KiPanic("MiEnsureTable: out of physical pages");
     }
     memset(MiPhysicalToVirtual(table), 0, PAGE_SIZE);
-    /* Intermediate entries stay maximally permissive; the leaf decides. */
-    *entry = table | PTE_PRESENT | PTE_WRITE;
+    *entry = table | tableFlags;
     return table;
 }
 
@@ -64,8 +67,16 @@ static void MiMapPageInternal(uint64_t virtualAddress, uint64_t physicalAddress,
     int pdIndex = (int)((virtualAddress >> 21) & 0x1FF);
     int ptIndex = (int)((virtualAddress >> 12) & 0x1FF);
 
-    uint64_t pdpt = MiEnsureTable(MiTableEntry(MiKernelPml4, pml4Index));
-    uint64_t pd = MiEnsureTable(MiTableEntry(pdpt, pdptIndex));
+    /* Process PML4s share the kernel half by copying the boot-time top-level
+     * entries (MiCreateUserPml4); a new kernel PML4 slot after that copy
+     * would be invisible to every existing process. */
+    uint64_t *pml4Entry = MiTableEntry(MiKernelPml4, pml4Index);
+    if (MiKernelPml4IsFrozen && (*pml4Entry & PTE_PRESENT) == 0)
+    {
+        KiPanic("MiMapPage: new kernel PML4 slot after the kernel half was frozen");
+    }
+    uint64_t pdpt = MiEnsureTable(pml4Entry, PTE_PRESENT | PTE_WRITE);
+    uint64_t pd = MiEnsureTable(MiTableEntry(pdpt, pdptIndex), PTE_PRESENT | PTE_WRITE);
     uint64_t *pde = MiTableEntry(pd, pdIndex);
 
     if (flags & PTE_LARGE)
@@ -78,7 +89,7 @@ static void MiMapPageInternal(uint64_t virtualAddress, uint64_t physicalAddress,
         return;
     }
 
-    uint64_t pt = MiEnsureTable(pde);
+    uint64_t pt = MiEnsureTable(pde, PTE_PRESENT | PTE_WRITE);
     uint64_t *pte = MiTableEntry(pt, ptIndex);
     if (*pte & PTE_PRESENT)
     {
@@ -194,6 +205,165 @@ void MiInitializeVirtualMemory(uint64_t kernelPhysicalBase, uint64_t kernelVirtu
     /* NX needs EFER.NXE (Limine usually sets it; do not rely on that). */
     KiWriteMsr(IA32_EFER, KiReadMsr(IA32_EFER) | IA32_EFER_NXE);
     __asm__ volatile("mov %0, %%cr3" : : "r"(MiKernelPml4) : "memory");
+}
+
+/* --- per-process address spaces (M4) --------------------------------------- */
+
+uint64_t MiGetKernelPml4(void)
+{
+    return MiKernelPml4;
+}
+
+void MiFreezeKernelPml4(void)
+{
+    MiKernelPml4IsFrozen = 1;
+}
+
+uint64_t MiCreateUserPml4(void)
+{
+    ASSERT(MiKernelPml4IsFrozen);
+    uint64_t pml4 = MiAllocatePage();
+    if (pml4 == 0)
+    {
+        return 0;
+    }
+    uint64_t *table = MiPhysicalToVirtual(pml4);
+    const uint64_t *kernelTable = MiPhysicalToVirtual(MiKernelPml4);
+    memset(table, 0, PAGE_SIZE / 2);
+    /* Share the kernel half: the upper 256 slots point at the SAME PDPTs. */
+    memcpy(table + 256, kernelTable + 256, PAGE_SIZE / 2);
+    return pml4;
+}
+
+/* Free a user-half page-table subtree at `level` (3 = PDPT under a PML4E). */
+static void MipFreeTableTree(uint64_t tablePhysical, int level)
+{
+    uint64_t *table = MiPhysicalToVirtual(tablePhysical);
+    if (level > 1)
+    {
+        for (int index = 0; index < 512; index++)
+        {
+            if (table[index] & PTE_PRESENT)
+            {
+                ASSERT((table[index] & PTE_LARGE) == 0); /* user maps are 4 KiB only */
+                MipFreeTableTree(table[index] & PTE_ADDRESS, level - 1);
+            }
+        }
+    }
+    else
+    {
+        /* Leaf table: the process's own frames must already be unmapped by
+         * mm/virtual.c teardown; a survivor is a leaked-frame bug. */
+        for (int index = 0; index < 512; index++)
+        {
+            ASSERT(table[index] == 0);
+        }
+    }
+    MiFreePage(tablePhysical);
+}
+
+void MiDeleteUserPml4(uint64_t pml4Physical)
+{
+    ASSERT(pml4Physical != MiKernelPml4);
+    uint64_t *table = MiPhysicalToVirtual(pml4Physical);
+    for (int index = 0; index < 256; index++) /* user half only */
+    {
+        if (table[index] & PTE_PRESENT)
+        {
+            MipFreeTableTree(table[index] & PTE_ADDRESS, 3);
+        }
+    }
+    MiFreePage(pml4Physical);
+}
+
+void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t physicalAddress,
+                   int present, int writable, int executable)
+{
+    ASSERT((virtualAddress & (PAGE_SIZE - 1)) == 0);
+    ASSERT((physicalAddress & (PAGE_SIZE - 1)) == 0);
+    ASSERT(virtualAddress < (1ULL << 47)); /* canonical user half */
+
+    uint64_t tableFlags = PTE_PRESENT | PTE_WRITE | PTE_USER;
+    uint64_t pdpt = MiEnsureTable(MiTableEntry(pml4Physical, (int)((virtualAddress >> 39) & 0x1FF)),
+                                  tableFlags);
+    uint64_t pd =
+        MiEnsureTable(MiTableEntry(pdpt, (int)((virtualAddress >> 30) & 0x1FF)), tableFlags);
+    uint64_t pt =
+        MiEnsureTable(MiTableEntry(pd, (int)((virtualAddress >> 21) & 0x1FF)), tableFlags);
+    uint64_t *pte = MiTableEntry(pt, (int)((virtualAddress >> 12) & 0x1FF));
+    if (*pte != 0)
+    {
+        KiPanic("MiMapUserPage: user address already mapped");
+    }
+    /* A not-present mapping (PAGE_NOACCESS commit) keeps the frame address in
+     * the PTE — hardware ignores every bit while P is clear — so teardown and
+     * queries can still find the committed frame. */
+    uint64_t entry = physicalAddress | PTE_USER;
+    if (present)
+    {
+        entry |= PTE_PRESENT;
+    }
+    if (writable)
+    {
+        entry |= PTE_WRITE;
+    }
+    if (!executable)
+    {
+        entry |= PTE_NX;
+    }
+    *pte = entry;
+    __asm__ volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
+}
+
+/* Return the live PTE slot for a user address, or 0 when a level is absent. */
+static uint64_t *MipFindUserEntry(uint64_t pml4Physical, uint64_t virtualAddress)
+{
+    uint64_t *entry = MiTableEntry(pml4Physical, (int)((virtualAddress >> 39) & 0x1FF));
+    if (!(*entry & PTE_PRESENT))
+    {
+        return 0;
+    }
+    entry = MiTableEntry(*entry & PTE_ADDRESS, (int)((virtualAddress >> 30) & 0x1FF));
+    if (!(*entry & PTE_PRESENT))
+    {
+        return 0;
+    }
+    entry = MiTableEntry(*entry & PTE_ADDRESS, (int)((virtualAddress >> 21) & 0x1FF));
+    if (!(*entry & PTE_PRESENT))
+    {
+        return 0;
+    }
+    return MiTableEntry(*entry & PTE_ADDRESS, (int)((virtualAddress >> 12) & 0x1FF));
+}
+
+void MiUnmapUserPage(uint64_t pml4Physical, uint64_t virtualAddress)
+{
+    uint64_t *pte = MipFindUserEntry(pml4Physical, virtualAddress);
+    if (pte == 0 || *pte == 0)
+    {
+        KiPanic("MiUnmapUserPage: user address not mapped");
+    }
+    *pte = 0;
+    __asm__ volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
+}
+
+uint64_t MiTranslateUserPage(uint64_t pml4Physical, uint64_t virtualAddress, int *writable,
+                             int *present)
+{
+    uint64_t *pte = MipFindUserEntry(pml4Physical, virtualAddress);
+    if (pte == 0 || *pte == 0)
+    {
+        return 0;
+    }
+    if (writable != 0)
+    {
+        *writable = (*pte & PTE_WRITE) != 0;
+    }
+    if (present != 0)
+    {
+        *present = (*pte & PTE_PRESENT) != 0;
+    }
+    return *pte & PTE_ADDRESS;
 }
 
 int MiTestVirtualMemory(void)
