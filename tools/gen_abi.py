@@ -215,6 +215,16 @@ typedef void *HANDLE;
 typedef HANDLE *PHANDLE;
 typedef ULONG ACCESS_MASK;
 
+/* Win32-flavoured aliases some contract structs/prototypes are written in
+ * (Wine's winnt.h MEMORY_BASIC_INFORMATION, winternl.h Nt* prototypes). */
+typedef ULONG DWORD;
+typedef PVOID LPVOID;
+typedef const void *LPCVOID;
+typedef ULONG_PTR SIZE_T, *PSIZE_T;
+
+/* Anonymous-union spelling used verbatim inside extracted structs. */
+#define DUMMYUNIONNAME
+
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
 typedef CCHAR KPROCESSOR_MODE;
@@ -257,6 +267,8 @@ _Static_assert(sizeof(LIST_ENTRY) == 16, "LIST_ENTRY is two pointers");
 _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
 _Static_assert(sizeof(WCHAR) == 2, "WCHAR is UTF-16");
 _Static_assert(sizeof(HANDLE) == 8, "x86_64: HANDLE is pointer-sized");
+_Static_assert(sizeof(DWORD) == 4, "LLP64: DWORD is 4 bytes");
+_Static_assert(sizeof(SIZE_T) == 8, "x86_64: SIZE_T is 8 bytes");
 """
 
     ob_asserts = """\
@@ -369,6 +381,152 @@ def gen_ntobapi(wine: Path) -> str:
     )
 
 
+# The M4 Mm surface (docs/02): the reserve/commit two-step and its query.
+NTMMAPI_FUNCTIONS = [
+    "NtAllocateVirtualMemory",
+    "NtFreeVirtualMemory",
+    "NtQueryVirtualMemory",
+]
+
+
+def gen_ntmmapi(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+
+    mem_flags = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "PAGE_NOACCESS",
+            "PAGE_READONLY",
+            "PAGE_READWRITE",
+            "PAGE_WRITECOPY",
+            "PAGE_EXECUTE",
+            "PAGE_EXECUTE_READ",
+            "PAGE_EXECUTE_READWRITE",
+            "PAGE_EXECUTE_WRITECOPY",
+            "PAGE_GUARD",
+            "PAGE_NOCACHE",
+            "MEM_COMMIT",
+            "MEM_RESERVE",
+            "MEM_RESET",
+            "MEM_TOP_DOWN",
+            "MEM_DECOMMIT",
+            "MEM_RELEASE",
+            "MEM_FREE",
+            "MEM_PRIVATE",
+            "MEM_MAPPED",
+            "MEM_WRITE_WATCH",
+        ],
+    )
+
+    mbi = extract_struct(winnt, "_MEMORY_BASIC_INFORMATION", "MEMORY_BASIC_INFORMATION")
+    info_class = extract_enum(
+        winternl, "_MEMORY_INFORMATION_CLASS", "MEMORY_INFORMATION_CLASS"
+    )
+    prototypes = extract_prototypes(winternl, NTMMAPI_FUNCTIONS)
+
+    mbi_asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(MEMORY_BASIC_INFORMATION) == 48, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, AllocationBase) == 8, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, AllocationProtect) == 16, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, RegionSize) == 24, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, State) == 32, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Protect) == 36, "MEMORY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INFORMATION x64 layout");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntmmapi.h", source="wine/include/{winnt.h,winternl.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTMMAPI_H\n"
+        + "#define PROSKRNL_ABI_NTMMAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* Allocation/protection flags, extracted from wine/include/winnt.h. */\n"
+        + mem_flags
+        + "\n\n/* Extracted verbatim from wine/include/winnt.h; the static_asserts pin\n"
+        + " * the x64 layout the boundary depends on. */\n"
+        + mbi
+        + "\n\n"
+        + mbi_asserts
+        + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
+        + info_class
+        + "\n\n/* The M4 Mm Nt* surface; signatures extracted verbatim from\n"
+        + " * wine/include/winternl.h (linkage macros dropped). */\n"
+        + prototypes
+        + "\n\n#endif /* PROSKRNL_ABI_NTMMAPI_H */\n"
+    )
+
+
+# The M4 Ps surface: process termination (the flat-binary exit path) plus
+# NtDisplayString (the flat-binary test-output path, docs/14).
+NTPSAPI_FUNCTIONS = [
+    "NtTerminateProcess",
+    "NtDisplayString",
+]
+
+
+def gen_ntpsapi(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+
+    process_rights = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "PROCESS_TERMINATE",
+            "PROCESS_CREATE_THREAD",
+            "PROCESS_VM_OPERATION",
+            "PROCESS_VM_READ",
+            "PROCESS_VM_WRITE",
+            "PROCESS_QUERY_INFORMATION",
+            "PROCESS_SET_INFORMATION",
+            "PROCESS_SUSPEND_RESUME",
+            "PROCESS_QUERY_LIMITED_INFORMATION",
+            "PROCESS_ALL_ACCESS",
+        ],
+    )
+
+    nt_tib = extract_struct(winnt, "_NT_TIB", "NT_TIB")
+    client_id = extract_struct(winternl, "_CLIENT_ID", "CLIENT_ID")
+    prototypes = extract_prototypes(winternl, NTPSAPI_FUNCTIONS)
+
+    tib_asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(NT_TIB) == 56, "NT_TIB x64 layout");
+_Static_assert(offsetof(NT_TIB, StackBase) == 8, "NT_TIB x64 layout");
+_Static_assert(offsetof(NT_TIB, StackLimit) == 16, "NT_TIB x64 layout");
+_Static_assert(offsetof(NT_TIB, ArbitraryUserPointer) == 40, "NT_TIB x64 layout");
+_Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntpsapi.h", source="wine/include/{winnt.h,winternl.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTPSAPI_H\n"
+        + "#define PROSKRNL_ABI_NTPSAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* Process access rights, extracted from wine/include/winnt.h. */\n"
+        + process_rights
+        + "\n\n/* The TEB begins with an NT_TIB (the one TEB slice the M4 boundary\n"
+        + " * carries; the full byte-exact TEB/PEB arrive with M7). Extracted\n"
+        + " * verbatim from wine/include/winnt.h; asserts pin the x64 layout. */\n"
+        + "struct _EXCEPTION_REGISTRATION_RECORD;\n"
+        + nt_tib
+        + "\n\n"
+        + tib_asserts
+        + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
+        + client_id
+        + "\n\n/* The M4 Ps Nt* surface; signatures extracted verbatim from\n"
+        + " * wine/include/winternl.h (linkage macros dropped). */\n"
+        + prototypes
+        + "\n\n#endif /* PROSKRNL_ABI_NTPSAPI_H */\n"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     root = Path(__file__).resolve().parent.parent
@@ -381,6 +539,8 @@ def main() -> None:
         ("ntdef.h", gen_ntdef(args.wine)),
         ("ntstatus.h", gen_ntstatus(args.wine)),
         ("ntobapi.h", gen_ntobapi(args.wine)),
+        ("ntmmapi.h", gen_ntmmapi(args.wine)),
+        ("ntpsapi.h", gen_ntpsapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
         print(f"gen_abi: wrote abi/{name}")

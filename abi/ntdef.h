@@ -27,6 +27,16 @@ typedef void *HANDLE;
 typedef HANDLE *PHANDLE;
 typedef ULONG ACCESS_MASK;
 
+/* Win32-flavoured aliases some contract structs/prototypes are written in
+ * (Wine's winnt.h MEMORY_BASIC_INFORMATION, winternl.h Nt* prototypes). */
+typedef ULONG DWORD;
+typedef PVOID LPVOID;
+typedef const void *LPCVOID;
+typedef ULONG_PTR SIZE_T, *PSIZE_T;
+
+/* Anonymous-union spelling used verbatim inside extracted structs. */
+#define DUMMYUNIONNAME
+
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
 typedef CCHAR KPROCESSOR_MODE;
@@ -69,6 +79,8 @@ _Static_assert(sizeof(LIST_ENTRY) == 16, "LIST_ENTRY is two pointers");
 _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
 _Static_assert(sizeof(WCHAR) == 2, "WCHAR is UTF-16");
 _Static_assert(sizeof(HANDLE) == 8, "x86_64: HANDLE is pointer-sized");
+_Static_assert(sizeof(DWORD) == 4, "LLP64: DWORD is 4 bytes");
+_Static_assert(sizeof(SIZE_T) == 8, "x86_64: SIZE_T is 8 bytes");
 
 /* Contract enums, extracted verbatim from wine/include/ntdef.h. */
 typedef enum {
