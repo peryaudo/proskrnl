@@ -46,21 +46,70 @@ def gen_ntstatus(wine: Path) -> str:
     )
 
 
+def extract_defines(src: str, source_name: str, names: list[str]) -> str:
+    """Pull `#define NAME value` lines verbatim, in the order given (so a
+    definition may reference an earlier one). Values are never retyped."""
+    lines = []
+    for name in names:
+        match = re.search(
+            r"^#define\s+" + re.escape(name) + r"\s+(.+?)\s*$", src, re.M
+        )
+        if not match:
+            sys.exit(f"gen_abi: #define {name} not found in {source_name}")
+        lines.append(f"#define {name} {match.group(1)}")
+    return "\n".join(lines)
+
+
+def extract_struct(src: str, tag: str, typedef: str) -> str:
+    """Pull one `typedef struct _TAG { ... } NAME, *PNAME...;` body verbatim.
+    The reserved `_TAG` tag is dropped; members are kept byte-for-byte."""
+    match = re.search(
+        r"typedef struct " + tag + r"\s*\{(.*?)\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
+        src,
+        re.S,
+    )
+    if not match:
+        sys.exit(f"gen_abi: struct {typedef} not found")
+    return "typedef struct {" + match.group(1) + "} " + match.group(2).strip() + ";"
+
+
+def extract_prototypes(src: str, names: list[str]) -> str:
+    """Pull `NTSYSAPI <ret> WINAPI Nt*(...)` prototypes verbatim from Wine's
+    winternl.h, dropping the Windows linkage macros (signatures are contract;
+    calling convention on x86_64 kernel builds is the platform default)."""
+    lines = []
+    for name in names:
+        match = re.search(
+            r"^NTSYSAPI\s+([\w* ]+?)\s+(?:WINAPI|NTAPI)\s+" + name + r"\s*\((.*)\);\s*$",
+            src,
+            re.M,
+        )
+        if not match:
+            sys.exit(f"gen_abi: prototype {name} not found in winternl.h")
+        ret, args = match.group(1).strip(), match.group(2).strip()
+        lines.append(f"{ret} {name}({args});")
+    return "\n".join(lines)
+
+
 def extract_enum(src: str, tag: str, typedef: str) -> str:
     """Pull one `typedef enum _TAG { ... } NAME;` block verbatim (values are
     positional, so the body must come from the Wine header, not from memory).
     The reserved `_TAG` struct tag is dropped; the body is kept byte-for-byte."""
     match = re.search(
-        r"typedef enum " + tag + r"\s*\{(.*?)\}\s*" + typedef + r"\s*;", src, re.S
+        r"typedef enum " + tag + r"\s*\{(.*?)\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
+        src,
+        re.S,
     )
     if not match:
         sys.exit(f"gen_abi: enum {typedef} not found")
-    return "typedef enum {" + match.group(1) + "} " + typedef + ";"
+    return "typedef enum {" + match.group(1) + "} " + match.group(2).strip() + ";"
 
 
 def gen_ntdef(wine: Path) -> str:
     ntdef = (wine / "include/ntdef.h").read_text()
     winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+    wdm = (wine / "include/ddk/wdm.h").read_text()
 
     enums = "\n\n".join(
         extract_enum(ntdef, tag, typedef)
@@ -76,6 +125,73 @@ def gen_ntdef(wine: Path) -> str:
         sys.exit("gen_abi: MAXIMUM_WAIT_OBJECTS not found")
     max_wait = match.group(1)
 
+    # M3 (Ob): name/handle structs verbatim from Wine, values never retyped.
+    ob_structs = "\n\n".join(
+        [
+            extract_struct(winternl, "_UNICODE_STRING", "UNICODE_STRING"),
+            extract_struct(winternl, "_OBJECT_ATTRIBUTES", "OBJECT_ATTRIBUTES"),
+        ]
+    )
+    obj_flags = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "OBJ_INHERIT",
+            "OBJ_PERMANENT",
+            "OBJ_EXCLUSIVE",
+            "OBJ_CASE_INSENSITIVE",
+            "OBJ_OPENIF",
+            "OBJ_OPENLINK",
+            "OBJ_KERNEL_HANDLE",
+        ],
+    ) + "\n" + extract_defines(winternl, "winternl.h", ["NtCurrentProcess()"])
+    access_rights = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "DELETE",
+            "READ_CONTROL",
+            "WRITE_DAC",
+            "WRITE_OWNER",
+            "SYNCHRONIZE",
+            "STANDARD_RIGHTS_REQUIRED",
+            "STANDARD_RIGHTS_READ",
+            "STANDARD_RIGHTS_WRITE",
+            "STANDARD_RIGHTS_EXECUTE",
+            "STANDARD_RIGHTS_ALL",
+            "SPECIFIC_RIGHTS_ALL",
+            "GENERIC_READ",
+            "GENERIC_WRITE",
+            "GENERIC_EXECUTE",
+            "GENERIC_ALL",
+            "MAXIMUM_ALLOWED",
+            "EVENT_QUERY_STATE",
+            "EVENT_MODIFY_STATE",
+            "EVENT_ALL_ACCESS",
+            "SEMAPHORE_QUERY_STATE",
+            "SEMAPHORE_MODIFY_STATE",
+            "SEMAPHORE_ALL_ACCESS",
+            "MUTANT_QUERY_STATE",
+            "MUTANT_ALL_ACCESS",
+            "DUPLICATE_CLOSE_SOURCE",
+            "DUPLICATE_SAME_ACCESS",
+            "DUPLICATE_SAME_ATTRIBUTES",
+        ],
+    )
+    directory_rights = extract_defines(
+        wdm,
+        "ddk/wdm.h",
+        [
+            "DIRECTORY_QUERY",
+            "DIRECTORY_TRAVERSE",
+            "DIRECTORY_CREATE_OBJECT",
+            "DIRECTORY_CREATE_SUBDIRECTORY",
+            "DIRECTORY_ALL_ACCESS",
+            "SYMBOLIC_LINK_QUERY",
+            "SYMBOLIC_LINK_ALL_ACCESS",
+        ],
+    )
+
     scaffold = """\
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
@@ -90,6 +206,14 @@ typedef long long LONGLONG;
 typedef unsigned long long ULONGLONG;
 typedef void *PVOID;
 typedef ULONGLONG ULONG_PTR;
+
+typedef LONG *PLONG;
+typedef ULONG *PULONG;
+typedef unsigned short WCHAR, *PWCHAR, *PWSTR;
+typedef const WCHAR *PCWSTR;
+typedef void *HANDLE;
+typedef HANDLE *PHANDLE;
+typedef ULONG ACCESS_MASK;
 
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
@@ -131,11 +255,27 @@ _Static_assert(sizeof(PVOID) == 8, "x86_64: pointers are 8 bytes");
 _Static_assert(sizeof(LARGE_INTEGER) == 8, "LARGE_INTEGER is 8 bytes");
 _Static_assert(sizeof(LIST_ENTRY) == 16, "LIST_ENTRY is two pointers");
 _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
+_Static_assert(sizeof(WCHAR) == 2, "WCHAR is UTF-16");
+_Static_assert(sizeof(HANDLE) == 8, "x86_64: HANDLE is pointer-sized");
+"""
+
+    ob_asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(UNICODE_STRING) == 16, "UNICODE_STRING x64 layout");
+_Static_assert(offsetof(UNICODE_STRING, MaximumLength) == 2, "UNICODE_STRING x64 layout");
+_Static_assert(offsetof(UNICODE_STRING, Buffer) == 8, "UNICODE_STRING x64 layout");
+_Static_assert(sizeof(OBJECT_ATTRIBUTES) == 48, "OBJECT_ATTRIBUTES x64 layout");
+_Static_assert(offsetof(OBJECT_ATTRIBUTES, RootDirectory) == 8, "OBJECT_ATTRIBUTES x64 layout");
+_Static_assert(offsetof(OBJECT_ATTRIBUTES, ObjectName) == 16, "OBJECT_ATTRIBUTES x64 layout");
+_Static_assert(offsetof(OBJECT_ATTRIBUTES, Attributes) == 24, "OBJECT_ATTRIBUTES x64 layout");
+_Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityDescriptor) == 32, "OBJECT_ATTRIBUTES x64 layout");
+_Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityQualityOfService) == 40, "OBJECT_ATTRIBUTES x64 layout");
 """
 
     return (
         BANNER.format(
-            name="abi/ntdef.h", source="wine/include/{ntdef.h,winnt.h}"
+            name="abi/ntdef.h",
+            source="wine/include/{ntdef.h,winnt.h,winternl.h,ddk/wdm.h}",
         )
         + "#ifndef PROSKRNL_ABI_NTDEF_H\n"
         + "#define PROSKRNL_ABI_NTDEF_H\n\n"
@@ -144,7 +284,88 @@ _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
         + enums
         + "\n\n/* Extracted from wine/include/winnt.h. */\n"
         + f"#define MAXIMUM_WAIT_OBJECTS {max_wait}\n"
-        + "\n#endif /* PROSKRNL_ABI_NTDEF_H */\n"
+        + "\n/* Ob name/handle structs, extracted verbatim from wine/include/winternl.h;\n"
+        + " * the static_asserts below pin the x64 layout the boundary depends on. */\n"
+        + ob_structs
+        + "\n\n"
+        + ob_asserts
+        + "\n/* Object-attribute flags, extracted from wine/include/winternl.h. */\n"
+        + obj_flags
+        + "\n\n/* Access rights, extracted from wine/include/winnt.h. */\n"
+        + access_rights
+        + "\n\n/* Directory/symlink access rights, extracted from wine/include/ddk/wdm.h. */\n"
+        + directory_rights
+        + "\n\n#endif /* PROSKRNL_ABI_NTDEF_H */\n"
+    )
+
+
+# The M3 Nt* surface (docs/02): Ob lifetime (close/duplicate), the dispatcher
+# objects moved under Ob (event/mutant/semaphore), handle-based waits, and the
+# namespace (directory/symbolic link). Prototypes are extracted verbatim from
+# Wine's winternl.h so no signature is ever recalled from memory (Art. 4).
+NTOBAPI_FUNCTIONS = [
+    "NtClose",
+    "NtDuplicateObject",
+    "NtMakeTemporaryObject",
+    "NtCreateEvent",
+    "NtOpenEvent",
+    "NtSetEvent",
+    "NtResetEvent",
+    "NtClearEvent",
+    "NtPulseEvent",
+    "NtQueryEvent",
+    "NtCreateMutant",
+    "NtOpenMutant",
+    "NtReleaseMutant",
+    "NtQueryMutant",
+    "NtCreateSemaphore",
+    "NtOpenSemaphore",
+    "NtReleaseSemaphore",
+    "NtQuerySemaphore",
+    "NtWaitForSingleObject",
+    "NtWaitForMultipleObjects",
+    "NtCreateDirectoryObject",
+    "NtOpenDirectoryObject",
+    "NtCreateSymbolicLinkObject",
+    "NtOpenSymbolicLinkObject",
+    "NtQuerySymbolicLinkObject",
+]
+
+
+def gen_ntobapi(wine: Path) -> str:
+    winternl = (wine / "include/winternl.h").read_text()
+
+    enums = "\n\n".join(
+        extract_enum(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_EVENT_INFORMATION_CLASS", "EVENT_INFORMATION_CLASS"),
+            ("_MUTANT_INFORMATION_CLASS", "MUTANT_INFORMATION_CLASS"),
+            ("_SEMAPHORE_INFORMATION_CLASS", "SEMAPHORE_INFORMATION_CLASS"),
+        ]
+    )
+    structs = "\n\n".join(
+        extract_struct(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_EVENT_BASIC_INFORMATION", "EVENT_BASIC_INFORMATION"),
+            ("_MUTANT_BASIC_INFORMATION", "MUTANT_BASIC_INFORMATION"),
+            ("_SEMAPHORE_BASIC_INFORMATION", "SEMAPHORE_BASIC_INFORMATION"),
+        ]
+    )
+    prototypes = extract_prototypes(winternl, NTOBAPI_FUNCTIONS)
+
+    return (
+        BANNER.format(name="abi/ntobapi.h", source="wine/include/winternl.h")
+        + "#ifndef PROSKRNL_ABI_NTOBAPI_H\n"
+        + "#define PROSKRNL_ABI_NTOBAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* Information classes, extracted verbatim from wine/include/winternl.h. */\n"
+        + enums
+        + "\n\n"
+        + structs
+        + "\n\n/* The M3 Nt* surface; signatures extracted verbatim from\n"
+        + " * wine/include/winternl.h (linkage macros dropped). */\n"
+        + prototypes
+        + "\n\n#endif /* PROSKRNL_ABI_NTOBAPI_H */\n"
     )
 
 
@@ -159,6 +380,7 @@ def main() -> None:
     for name, text in [
         ("ntdef.h", gen_ntdef(args.wine)),
         ("ntstatus.h", gen_ntstatus(args.wine)),
+        ("ntobapi.h", gen_ntobapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
         print(f"gen_abi: wrote abi/{name}")
