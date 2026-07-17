@@ -48,9 +48,8 @@ stated as hard gates.
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
   specifications** (virtio/AHCI/NVMe/xHCI/USB).
-- Kernel-code reference material, if a permissive kernel license is intended, is limited to
-  **Wine headers and official Microsoft documentation** — not ReactOS, not Windows leaked
-  source, not model memory.
+- Kernel-code reference material is limited to **Wine headers and official Microsoft
+  documentation** — not ReactOS, not Windows leaked source, not model memory.
 - Record component provenance in `docs/provenance.md`.
 
 ## Style / structure

@@ -124,6 +124,6 @@ if GUI collapses, subtract the ledger entries and the CUI kernel remains untouch
 - **Fonts** — statically linking FreeType into PE means peeling Wine's unix-assuming build;
   metrics must match (dialog layout depends on them). Same FreeType + fonts as Wine-on-Linux
   ⇒ same numbers ⇒ oracle exists.
-- **License** — under route (a), wineserver-lite stays a separate LGPL process, so the
-  kernel license is unconstrained. (Route (b) would embed LGPL in the kernel — decide before
-  attempting it.)
+- **License** — under route (a), wineserver-lite stays a separate LGPL process, outside the
+  GPL-2.0 kernel image. (Route (b) would embed LGPL-2.1 code in the kernel — compatible with
+  GPL-2.0, so not license-blocked; route (a) is preferred on engineering grounds alone.)

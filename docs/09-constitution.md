@@ -78,10 +78,11 @@ they are addition, never mutation.
 
 ## Article 8 — Fix the license before it fixes you
 
-The kernel's license must be chosen **before M13** (before any Wine/ReactOS-derived code
-could enter the kernel image under route (b), and before the LLM-provenance risk
-materializes). Under route (a), the kernel/user boundary is a process boundary and the
-kernel license is unconstrained. See `docs/11`.
+Fixed: the kernel is **GPL-2.0** (see `LICENSE`), settled well before M13 — before any
+Wine/ReactOS-derived code could enter the kernel image under route (b), and before the
+LLM-provenance risk materializes. The provenance discipline of `docs/11` (reference
+material limited to Wine headers + MS docs, generated `abi/`, drivers from public specs)
+applies unchanged.
 
 ## Article 9 — Debugging is infrastructure, built first
 

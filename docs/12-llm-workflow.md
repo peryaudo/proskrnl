@@ -55,8 +55,9 @@ was already catchable at M3.
 
 The same GPL-contamination risk discussed for Linux-driver translation recurs *inside the
 kernel*: "implement `NtQueryInformationFile`" may surface ReactOS-derived (GPLv2) code from
-training data. Fix the license first; restrict kernel-code reference material to Wine
-headers + MS docs if a permissive license is wanted.
+training data. The kernel license is fixed at **GPL-2.0** (see `docs/11`), which neutralizes
+the *license* risk; the reference-material restriction (Wine headers + MS docs only) stands
+regardless, so provenance and attribution stay traceable.
 
 ## Effort/leverage reality
 
