@@ -13,14 +13,16 @@
 #include "../ntapi.h"
 
 /* Prototypes winternl.h omits (declared as Wine's own ntdll tests do). In
- * proskrnl mode these come from abi/ntkeapi.h instead. */
+ * proskrnl mode they come from the generated abi/ntobapi.h. */
 #if defined(NTAPI_ORACLE)
-NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
-                                      EVENT_TYPE, BOOLEAN);
+NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, EVENT_TYPE,
+                                      BOOLEAN);
 NTSYSAPI NTSTATUS NTAPI NtSetEvent(HANDLE, PLONG);
 NTSYSAPI NTSTATUS NTAPI NtResetEvent(HANDLE, PLONG);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
 NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
+#elif defined(NTAPI_PROSKRNL)
+#include "abi/ntobapi.h"
 #endif
 
 /* wait with a zero timeout: returns STATUS_SUCCESS if signalled now, else
@@ -53,17 +55,13 @@ START_TEST(notification_event)
     NtSetEvent(event, NULL);
     ok(wait_now(event) == STATUS_SUCCESS, "wait after set succeeds");
 
-    /*
-     * Example of the convention: suppose proskrnl's very first NtSetEvent does
-     * not yet return the previous state via the optional second parameter.
-     * Keep the test live (it guards everything above) but mark the one corner:
-     */
+    /* NtSetEvent returns the previous signalled state via the optional second
+     * parameter (proskrnl implements this since M4 — the tag that once marked
+     * it not-yet-done is gone, so the kernel is now held to it). */
     {
         LONG previous = -1;
         NtSetEvent(event, &previous);
-        todo_proskrnl {
-            ok(previous == 1, "NtSetEvent returns previous signalled state");
-        }
+        ok(previous == 1, "NtSetEvent returns previous signalled state");
     }
 
     NtClose(event);
