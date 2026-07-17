@@ -34,8 +34,13 @@ typedef PVOID LPVOID;
 typedef const void *LPCVOID;
 typedef ULONG_PTR SIZE_T, *PSIZE_T;
 
-/* Anonymous-union spelling used verbatim inside extracted structs. */
+/* Win32 base names used verbatim inside extracted structs (winnt.h). */
+typedef unsigned short WORD;
+typedef unsigned char BYTE;
+
+/* Anonymous-union/-struct spellings used verbatim inside extracted structs. */
 #define DUMMYUNIONNAME
+#define DUMMYSTRUCTNAME
 
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
@@ -81,6 +86,8 @@ _Static_assert(sizeof(WCHAR) == 2, "WCHAR is UTF-16");
 _Static_assert(sizeof(HANDLE) == 8, "x86_64: HANDLE is pointer-sized");
 _Static_assert(sizeof(DWORD) == 4, "LLP64: DWORD is 4 bytes");
 _Static_assert(sizeof(SIZE_T) == 8, "x86_64: SIZE_T is 8 bytes");
+_Static_assert(sizeof(WORD) == 2, "Win32: WORD is 2 bytes");
+_Static_assert(sizeof(BYTE) == 1, "Win32: BYTE is 1 byte");
 
 /* Contract enums, extracted verbatim from wine/include/ntdef.h. */
 typedef enum {

@@ -59,6 +59,12 @@ SYSCALLS = [
     ("NtQueryVirtualMemory", 6),
     ("NtTerminateProcess", 2),
     ("NtDisplayString", 1),
+    # M5 section surface
+    ("NtCreateSection", 7),
+    ("NtOpenSection", 3),
+    ("NtMapViewOfSection", 10),
+    ("NtUnmapViewOfSection", 2),
+    ("NtQuerySection", 5),
 ]
 
 BANNER = """\
@@ -106,16 +112,19 @@ def gen_stubs() -> str:
         )
     return (
         BANNER.format(name="tests/ntapi/syscall/syscall_stubs.S")
-        + "/* User-mode Nt* stubs for the proskrnl ntapi target and the M4 flat-\n"
-        + " * binary clients (docs/14). Calling convention: the stub is an\n"
-        + " * ordinary SysV C function; the kernel reads arguments 1-6 from\n"
-        + " * rdi/rsi/rdx/r10/r8/r9 (rcx is clobbered by the syscall instruction,\n"
-        + " * so it moves to r10 - the same dance the NT x64 convention does) and\n"
-        + " * argument 7 from the caller's stack at [rsp+8]. Number in eax;\n"
-        + " * NTSTATUS back in eax. */\n"
+        + "/* User-mode Nt* stubs for the proskrnl ntapi target and the M4+ user\n"
+        + " * clients (docs/14). Calling convention: the stub is an ordinary SysV\n"
+        + " * C function; the kernel reads arguments 1-6 from rdi/rsi/rdx/r10/r8/r9\n"
+        + " * (rcx is clobbered by the syscall instruction, so it moves to r10 -\n"
+        + " * the same dance the NT x64 convention does) and arguments 7..10 from\n"
+        + " * the caller's stack at [rsp+8..32]. Number in eax; NTSTATUS back in\n"
+        + " * eax. The M5 PE clients assemble this same file with a COFF-targeting\n"
+        + " * gas, which has no .note.GNU-stack - hence the __ELF__ guard. */\n"
         + "    .section .text\n"
         + "\n".join(stubs)
-        + '\n    .section .note.GNU-stack, "", @progbits\n'
+        + "\n#ifdef __ELF__\n"
+        + '    .section .note.GNU-stack, "", @progbits\n'
+        + "#endif\n"
     )
 
 

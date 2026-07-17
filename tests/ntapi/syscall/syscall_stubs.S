@@ -3,13 +3,14 @@
  * regenerate with:
  *     python3 tools/gen_syscalls.py
  */
-/* User-mode Nt* stubs for the proskrnl ntapi target and the M4 flat-
- * binary clients (docs/14). Calling convention: the stub is an
- * ordinary SysV C function; the kernel reads arguments 1-6 from
- * rdi/rsi/rdx/r10/r8/r9 (rcx is clobbered by the syscall instruction,
- * so it moves to r10 - the same dance the NT x64 convention does) and
- * argument 7 from the caller's stack at [rsp+8]. Number in eax;
- * NTSTATUS back in eax. */
+/* User-mode Nt* stubs for the proskrnl ntapi target and the M4+ user
+ * clients (docs/14). Calling convention: the stub is an ordinary SysV
+ * C function; the kernel reads arguments 1-6 from rdi/rsi/rdx/r10/r8/r9
+ * (rcx is clobbered by the syscall instruction, so it moves to r10 -
+ * the same dance the NT x64 convention does) and arguments 7..10 from
+ * the caller's stack at [rsp+8..32]. Number in eax; NTSTATUS back in
+ * eax. The M5 PE clients assemble this same file with a COFF-targeting
+ * gas, which has no .note.GNU-stack - hence the __ELF__ guard. */
     .section .text
     .global NtClose
 NtClose:
@@ -221,4 +222,41 @@ NtDisplayString:
     syscall
     ret
 
+    .global NtCreateSection
+NtCreateSection:
+    mov %rcx, %r10
+    mov $30, %eax
+    syscall
+    ret
+
+    .global NtOpenSection
+NtOpenSection:
+    mov %rcx, %r10
+    mov $31, %eax
+    syscall
+    ret
+
+    .global NtMapViewOfSection
+NtMapViewOfSection:
+    mov %rcx, %r10
+    mov $32, %eax
+    syscall
+    ret
+
+    .global NtUnmapViewOfSection
+NtUnmapViewOfSection:
+    mov %rcx, %r10
+    mov $33, %eax
+    syscall
+    ret
+
+    .global NtQuerySection
+NtQuerySection:
+    mov %rcx, %r10
+    mov $34, %eax
+    syscall
+    ret
+
+#ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
+#endif

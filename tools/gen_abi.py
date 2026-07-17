@@ -222,8 +222,13 @@ typedef PVOID LPVOID;
 typedef const void *LPCVOID;
 typedef ULONG_PTR SIZE_T, *PSIZE_T;
 
-/* Anonymous-union spelling used verbatim inside extracted structs. */
+/* Win32 base names used verbatim inside extracted structs (winnt.h). */
+typedef unsigned short WORD;
+typedef unsigned char BYTE;
+
+/* Anonymous-union/-struct spellings used verbatim inside extracted structs. */
 #define DUMMYUNIONNAME
+#define DUMMYSTRUCTNAME
 
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
@@ -269,6 +274,8 @@ _Static_assert(sizeof(WCHAR) == 2, "WCHAR is UTF-16");
 _Static_assert(sizeof(HANDLE) == 8, "x86_64: HANDLE is pointer-sized");
 _Static_assert(sizeof(DWORD) == 4, "LLP64: DWORD is 4 bytes");
 _Static_assert(sizeof(SIZE_T) == 8, "x86_64: SIZE_T is 8 bytes");
+_Static_assert(sizeof(WORD) == 2, "Win32: WORD is 2 bytes");
+_Static_assert(sizeof(BYTE) == 1, "Win32: BYTE is 1 byte");
 """
 
     ob_asserts = """\
@@ -382,10 +389,16 @@ def gen_ntobapi(wine: Path) -> str:
 
 
 # The M4 Mm surface (docs/02): the reserve/commit two-step and its query.
+# M5 adds the section surface: create/open/map/unmap/query (docs/02).
 NTMMAPI_FUNCTIONS = [
     "NtAllocateVirtualMemory",
     "NtFreeVirtualMemory",
     "NtQueryVirtualMemory",
+    "NtCreateSection",
+    "NtOpenSection",
+    "NtMapViewOfSection",
+    "NtUnmapViewOfSection",
+    "NtQuerySection",
 ]
 
 
@@ -420,9 +433,47 @@ def gen_ntmmapi(wine: Path) -> str:
         ],
     )
 
+    # M5 (sections): allocation attributes + section access rights (winnt.h).
+    sec_flags = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "SEC_FILE",
+            "SEC_IMAGE",
+            "SEC_RESERVE",
+            "SEC_COMMIT",
+            "SEC_NOCACHE",
+            "SEC_WRITECOMBINE",
+            "SEC_LARGE_PAGES",
+            "MEM_IMAGE",
+            "SECTION_QUERY",
+            "SECTION_MAP_WRITE",
+            "SECTION_MAP_READ",
+            "SECTION_MAP_EXECUTE",
+            "SECTION_EXTEND_SIZE",
+            "SECTION_MAP_EXECUTE_EXPLICIT",
+            "SECTION_ALL_ACCESS",
+            "AT_ROUND_TO_PAGE",
+        ],
+    )
+
     mbi = extract_struct(winnt, "_MEMORY_BASIC_INFORMATION", "MEMORY_BASIC_INFORMATION")
     info_class = extract_enum(
         winternl, "_MEMORY_INFORMATION_CLASS", "MEMORY_INFORMATION_CLASS"
+    )
+    section_enums = "\n\n".join(
+        extract_enum(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_SECTION_INHERIT", "SECTION_INHERIT"),
+            ("_SECTION_INFORMATION_CLASS", "SECTION_INFORMATION_CLASS"),
+        ]
+    )
+    section_structs = "\n\n".join(
+        extract_struct(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_SECTION_BASIC_INFORMATION", "SECTION_BASIC_INFORMATION"),
+            ("_SECTION_IMAGE_INFORMATION", "SECTION_IMAGE_INFORMATION"),
+        ]
     )
     prototypes = extract_prototypes(winternl, NTMMAPI_FUNCTIONS)
 
@@ -437,6 +488,18 @@ _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Protect) == 36, "MEMORY_BASIC_
 _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INFORMATION x64 layout");
 """
 
+    section_asserts = """\
+_Static_assert(sizeof(SECTION_BASIC_INFORMATION) == 24, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_BASIC_INFORMATION, Attributes) == 8, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_BASIC_INFORMATION, Size) == 16, "SECTION_BASIC_INFORMATION x64 layout");
+_Static_assert(sizeof(SECTION_IMAGE_INFORMATION) == 64, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, MaximumStackSize) == 16, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, SubSystemType) == 32, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, Machine) == 48, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, LoaderFlags) == 52, "SECTION_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMAGE_INFORMATION x64 layout");
+"""
+
     return (
         BANNER.format(
             name="abi/ntmmapi.h", source="wine/include/{winnt.h,winternl.h}"
@@ -446,6 +509,9 @@ _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INF
         + '#include "abi/ntdef.h"\n\n'
         + "/* Allocation/protection flags, extracted from wine/include/winnt.h. */\n"
         + mem_flags
+        + "\n\n/* Section allocation attributes + access rights (M5), extracted from\n"
+        + " * wine/include/winnt.h. */\n"
+        + sec_flags
         + "\n\n/* Extracted verbatim from wine/include/winnt.h; the static_asserts pin\n"
         + " * the x64 layout the boundary depends on. */\n"
         + mbi
@@ -453,10 +519,98 @@ _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INF
         + mbi_asserts
         + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
         + info_class
-        + "\n\n/* The M4 Mm Nt* surface; signatures extracted verbatim from\n"
+        + "\n\n/* Section enums/structs (M5), extracted verbatim from\n"
+        + " * wine/include/winternl.h; static_asserts pin the x64 layout. */\n"
+        + section_enums
+        + "\n\n"
+        + section_structs
+        + "\n\n"
+        + section_asserts
+        + "\n/* The M4+M5 Mm Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTMMAPI_H */\n"
+    )
+
+
+# The PE/COFF on-disk format (M5 image sections): structures and constants
+# extracted verbatim from wine/include/winnt.h (the same layout Microsoft
+# documents in the PE/COFF specification). x86_64 only (ADR 0006), so only
+# the 64-bit optional header is carried.
+def gen_ntimage(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+
+    signatures = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "IMAGE_DOS_SIGNATURE",
+            "IMAGE_NT_SIGNATURE",
+            "IMAGE_NT_OPTIONAL_HDR64_MAGIC",
+            "IMAGE_FILE_MACHINE_AMD64",
+            "IMAGE_FILE_RELOCS_STRIPPED",
+            "IMAGE_FILE_EXECUTABLE_IMAGE",
+            "IMAGE_FILE_DLL",
+            "IMAGE_NUMBEROF_DIRECTORY_ENTRIES",
+            "IMAGE_SIZEOF_SHORT_NAME",
+            "IMAGE_SIZEOF_SECTION_HEADER",
+            "IMAGE_DIRECTORY_ENTRY_BASERELOC",
+            "IMAGE_SCN_CNT_CODE",
+            "IMAGE_SCN_CNT_INITIALIZED_DATA",
+            "IMAGE_SCN_CNT_UNINITIALIZED_DATA",
+            "IMAGE_SCN_MEM_SHARED",
+            "IMAGE_SCN_MEM_EXECUTE",
+            "IMAGE_SCN_MEM_READ",
+            "IMAGE_SCN_MEM_WRITE",
+            "IMAGE_REL_BASED_ABSOLUTE",
+            "IMAGE_REL_BASED_HIGHLOW",
+            "IMAGE_REL_BASED_DIR64",
+            "IMAGE_SUBSYSTEM_NATIVE",
+            "IMAGE_SUBSYSTEM_WINDOWS_GUI",
+            "IMAGE_SUBSYSTEM_WINDOWS_CUI",
+            "IMAGE_FIRST_SECTION(ntheader)",
+        ],
+    )
+
+    structs = "\n\n".join(
+        extract_struct(winnt, tag, typedef)
+        for tag, typedef in [
+            ("_IMAGE_DOS_HEADER", "IMAGE_DOS_HEADER"),
+            ("_IMAGE_FILE_HEADER", "IMAGE_FILE_HEADER"),
+            ("_IMAGE_DATA_DIRECTORY", "IMAGE_DATA_DIRECTORY"),
+            ("_IMAGE_OPTIONAL_HEADER64", "IMAGE_OPTIONAL_HEADER64"),
+            ("_IMAGE_NT_HEADERS64", "IMAGE_NT_HEADERS64"),
+            ("_IMAGE_SECTION_HEADER", "IMAGE_SECTION_HEADER"),
+            ("_IMAGE_BASE_RELOCATION", "IMAGE_BASE_RELOCATION"),
+        ]
+    )
+
+    asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(IMAGE_DOS_HEADER) == 64, "IMAGE_DOS_HEADER layout");
+_Static_assert(offsetof(IMAGE_DOS_HEADER, e_lfanew) == 0x3c, "IMAGE_DOS_HEADER layout");
+_Static_assert(sizeof(IMAGE_FILE_HEADER) == 20, "IMAGE_FILE_HEADER layout");
+_Static_assert(sizeof(IMAGE_OPTIONAL_HEADER64) == 240, "IMAGE_OPTIONAL_HEADER64 layout");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, ImageBase) == 24, "IMAGE_OPTIONAL_HEADER64 layout");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve) == 72, "IMAGE_OPTIONAL_HEADER64 layout");
+_Static_assert(offsetof(IMAGE_NT_HEADERS64, OptionalHeader) == 24, "IMAGE_NT_HEADERS64 layout");
+_Static_assert(sizeof(IMAGE_SECTION_HEADER) == IMAGE_SIZEOF_SECTION_HEADER, "IMAGE_SECTION_HEADER layout");
+_Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout");
+"""
+
+    return (
+        BANNER.format(name="abi/ntimage.h", source="wine/include/winnt.h")
+        + "#ifndef PROSKRNL_ABI_NTIMAGE_H\n"
+        + "#define PROSKRNL_ABI_NTIMAGE_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* PE/COFF signatures and flags, extracted from wine/include/winnt.h. */\n"
+        + signatures
+        + "\n\n/* PE/COFF structures, extracted verbatim from wine/include/winnt.h;\n"
+        + " * the static_asserts pin the on-disk layout. */\n"
+        + structs
+        + "\n\n"
+        + asserts
+        + "\n#endif /* PROSKRNL_ABI_NTIMAGE_H */\n"
     )
 
 
@@ -540,6 +694,7 @@ def main() -> None:
         ("ntstatus.h", gen_ntstatus(args.wine)),
         ("ntobapi.h", gen_ntobapi(args.wine)),
         ("ntmmapi.h", gen_ntmmapi(args.wine)),
+        ("ntimage.h", gen_ntimage(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
