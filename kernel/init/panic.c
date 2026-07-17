@@ -131,3 +131,11 @@ __attribute__((noreturn)) void KiPanic(const char *message)
     DbgPrint("[PANIC] %s\n", message);
     KiHalt();
 }
+
+__attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line)
+{
+    DbgPrint("[ASSERT] %s:%d: %s\n", file, line, expression);
+    KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
+    DbgPrint("[PANIC] assertion failed; halting\n");
+    KiHalt();
+}

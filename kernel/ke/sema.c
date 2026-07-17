@@ -21,6 +21,7 @@ void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit)
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait)
 {
     uint64_t flags = KiAcquireDispatcherLock();
+    ASSERT(semaphore->header.type == KI_OBJECT_SEMAPHORE);
     LONG previous = semaphore->header.signalState;
     if (count < 1 || previous + count > semaphore->limit || previous + count < previous)
     {

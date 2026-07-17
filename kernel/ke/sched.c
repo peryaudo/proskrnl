@@ -63,6 +63,11 @@ void KiReadyThread(PKTHREAD thread)
     {
         KiPanic("KiReadyThread: the idle thread never queues");
     }
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(thread->priority >= 0 && thread->priority < KI_PRIORITY_LEVELS);
+    /* READY would double-queue its readyListEntry; TERMINATED never runs again. */
+    ASSERT(thread->state != KI_THREAD_STATE_READY);
+    ASSERT(thread->state != KI_THREAD_STATE_TERMINATED);
     thread->state = KI_THREAD_STATE_READY;
     InsertTailList(&KiReadyQueues[thread->priority], &thread->readyListEntry);
     KiReadySummary |= 1U << thread->priority;
@@ -78,6 +83,8 @@ static PKTHREAD KiSelectNextThread(void)
     int level = 31 - __builtin_clz(KiReadySummary);
     PKTHREAD thread =
         CONTAINING_RECORD(RemoveHeadList(&KiReadyQueues[level]), KTHREAD, readyListEntry);
+    ASSERT(thread->state == KI_THREAD_STATE_READY);
+    ASSERT(thread->priority == level); /* queue and summary bit agree */
     if (IsListEmpty(&KiReadyQueues[level]))
     {
         KiReadySummary &= ~(1U << level);
@@ -91,6 +98,8 @@ static PKTHREAD KiSelectNextThread(void)
 void KiSwapToNext(void)
 {
     PKTHREAD old = KiCurrentThread;
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(old->state != KI_THREAD_STATE_RUNNING); /* caller re-states first */
     PKTHREAD next = KiSelectNextThread();
     if (next == 0)
     {

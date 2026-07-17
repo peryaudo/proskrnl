@@ -47,6 +47,8 @@ uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
 
 void KiInsertTimer(PKTIMER timer, uint64_t dueInterruptTime)
 {
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(timer->header.inserted == 0); /* double insert corrupts the list */
     timer->dueTime.QuadPart = dueInterruptTime;
     timer->header.inserted = 1;
 
@@ -62,12 +64,15 @@ void KiInsertTimer(PKTIMER timer, uint64_t dueInterruptTime)
 
 void KiRemoveTimer(PKTIMER timer)
 {
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(timer->header.inserted != 0);
     RemoveEntryList(&timer->timerListEntry);
     timer->header.inserted = 0;
 }
 
 void KiUpdateClock(void)
 {
+    ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
     KeTickCount++;
     KiInterruptTime += KI_100NS_PER_TICK;
 

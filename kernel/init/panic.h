@@ -13,5 +13,20 @@
 extern uint64_t KiLastSystemCall;
 
 __attribute__((noreturn)) void KiPanic(const char *message);
+__attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line);
+
+/* ASSERT — a checked kernel invariant; failure is fatal (invariant asserts are
+ * the highest-value verification tool, docs/08). Always compiled in: there is
+ * no free build, and under Art. 9 the resulting dump is the debugger. The
+ * failure line carries the machine-greppable [ASSERT] file:line prefix.
+ * (NT's checked-build ASSERT shape; ours never continues.) */
+#define ASSERT(exp)                                                                                \
+    do                                                                                             \
+    {                                                                                              \
+        if (!(exp))                                                                                \
+        {                                                                                          \
+            KiAssertFail(#exp, __FILE__, __LINE__);                                                \
+        }                                                                                          \
+    } while (0)
 
 #endif /* PROSKRNL_KERNEL_INIT_PANIC_H */

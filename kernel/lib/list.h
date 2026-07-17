@@ -8,6 +8,7 @@
 #define PROSKRNL_KERNEL_LIB_LIST_H
 
 #include "abi/ntdef.h"
+#include "kernel/init/panic.h"
 #include <stddef.h>
 
 #define CONTAINING_RECORD(address, type, field)                                                    \
@@ -27,6 +28,9 @@ static inline BOOLEAN IsListEmpty(const LIST_ENTRY *head)
 static inline void InsertTailList(PLIST_ENTRY head, PLIST_ENTRY entry)
 {
     PLIST_ENTRY last = head->Blink;
+    /* The head's links must agree with its neighbours (NT's checked-build
+     * list corruption check) — catches scribbles and use-after-remove. */
+    ASSERT(last->Flink == head && head->Flink->Blink == head);
     entry->Flink = head;
     entry->Blink = last;
     last->Flink = entry;
@@ -36,6 +40,7 @@ static inline void InsertTailList(PLIST_ENTRY head, PLIST_ENTRY entry)
 static inline void InsertHeadList(PLIST_ENTRY head, PLIST_ENTRY entry)
 {
     PLIST_ENTRY first = head->Flink;
+    ASSERT(first->Blink == head && head->Blink->Flink == head);
     entry->Flink = first;
     entry->Blink = head;
     first->Blink = entry;
@@ -47,6 +52,8 @@ static inline BOOLEAN RemoveEntryList(PLIST_ENTRY entry)
 {
     PLIST_ENTRY previous = entry->Blink;
     PLIST_ENTRY next = entry->Flink;
+    /* Both neighbours must still point at the entry — catches double-remove. */
+    ASSERT(previous->Flink == entry && next->Blink == entry);
     previous->Flink = next;
     next->Blink = previous;
     return previous == next;
@@ -55,6 +62,7 @@ static inline BOOLEAN RemoveEntryList(PLIST_ENTRY entry)
 static inline PLIST_ENTRY RemoveHeadList(PLIST_ENTRY head)
 {
     PLIST_ENTRY entry = head->Flink;
+    ASSERT(!IsListEmpty(head));
     RemoveEntryList(entry);
     return entry;
 }

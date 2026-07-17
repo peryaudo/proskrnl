@@ -53,6 +53,7 @@ static int KiSatisfyObject(PDISPATCHER_HEADER object, PKTHREAD thread)
         object->signalState = 0;
         return 0;
     case KI_OBJECT_SEMAPHORE:
+        ASSERT(object->signalState > 0); /* a wait may only consume a count */
         object->signalState--;
         return 0;
     case KI_OBJECT_MUTANT:
@@ -78,6 +79,7 @@ static int KiSatisfyObject(PDISPATCHER_HEADER object, PKTHREAD thread)
  * make it runnable. Lock held. */
 static void KiUnwaitThread(PKTHREAD thread, NTSTATUS status)
 {
+    ASSERT(thread->state == KI_THREAD_STATE_WAITING);
     for (PKWAIT_BLOCK block = thread->waitBlockList; block != 0; block = block->nextWaitBlock)
     {
         RemoveEntryList(&block->waitListEntry);
@@ -128,6 +130,7 @@ static NTSTATUS KiSatisfyWaitAll(PKTHREAD thread)
 
 void KiWaitTest(PDISPATCHER_HEADER object)
 {
+    ASSERT(KiIsDispatcherLockHeld());
 restart:
     if (object->signalState <= 0)
     {
@@ -161,6 +164,7 @@ restart:
 
 LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned)
 {
+    ASSERT(mutant->header.type == KI_OBJECT_MUTANT);
     LONG previous = mutant->header.signalState;
     if (abandoned)
     {
@@ -175,6 +179,7 @@ LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned)
             KiPanic("KeReleaseMutex: caller does not own the mutex "
                     "(STATUS_MUTANT_NOT_OWNED)");
         }
+        ASSERT(mutant->header.signalState <= 0); /* owned: 0 or recursion-negative */
         mutant->header.signalState++;
     }
     if (mutant->header.signalState == 1)
@@ -219,6 +224,7 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
     {
         KiPanic("KeWaitForMultipleObjects: invalid object count");
     }
+    ASSERT(waitType == WaitAny || waitType == WaitAll);
     PKWAIT_BLOCK blocks = waitBlockArray;
     if (blocks == 0)
     {
