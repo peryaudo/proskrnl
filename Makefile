@@ -4,8 +4,14 @@
 #   make run        build + boot in QEMU, check the [KTEST] verdict on serial
 #   make clean
 
-# Homebrew llvm is keg-only and not on PATH; point at it explicitly (README).
+# Toolchain: clang + ld.lld (README "Prerequisites"). On macOS, Homebrew's
+# llvm is keg-only and not on PATH — point at it explicitly. On Linux, the
+# distro clang/lld are on PATH. Override with `make LLVM=/path/to/bin`.
+ifeq ($(shell uname -s),Darwin)
 LLVM ?= /opt/homebrew/opt/llvm/bin
+else
+LLVM ?= $(patsubst %/,%,$(dir $(shell command -v clang)))
+endif
 CC   := $(LLVM)/clang
 LD   := ld.lld
 CLANG_FORMAT ?= $(LLVM)/clang-format

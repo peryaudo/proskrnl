@@ -9,6 +9,14 @@ set -uo pipefail
 
 IMG="${1:?usage: qemu.sh <hdd>}"
 LOG="${LOG:-build/serial.log}"
+
+# TCG only gained x2APIC — the kernel's clock — in QEMU 9.0 (Ubuntu 24.04 LTS
+# ships 8.2). Fail fast instead of hanging silently in timer calibration.
+QEMU_MAJOR="$(qemu-system-x86_64 --version | sed -n 's/.*version \([0-9]*\).*/\1/p' | head -1)"
+if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
+    echo "qemu.sh: QEMU $QEMU_MAJOR.x lacks TCG x2APIC (need >= 9.0, README \"Prerequisites\")" >&2
+    exit 1
+fi
 TIMEOUT="${TIMEOUT:-30}"
 PASS_RE="${PASS_RE:-\[KTEST\] M2 PASS}"
 mkdir -p "$(dirname "$LOG")"

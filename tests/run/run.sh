@@ -55,7 +55,8 @@ oracle() {
             -lntdll -o "$exe"
         out="$("$WINE" "$exe" 2>&1 || true)"
         echo "$out"
-        echo "$out" | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
+        # tr -d '\r': the .exe's CRT writes CRLF; wine passes it through verbatim.
+        echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
     done < <(all_tests)
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
