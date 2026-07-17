@@ -14,10 +14,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CONF="$HERE/../arch/x86_64/limine.conf"
 SIZE_MB="${SIZE_MB:-64}"
 
-# Limine's data dir (limine-bios.sys, BOOTX64.EFI): $LIMINE_SHARE override,
-# else Homebrew's keg (macOS), else the usual Linux install prefixes.
+# Limine's data dir (limine-bios.sys, BOOTX64.EFI) and `limine` deploy tool:
+# the pinned third_party/limine submodule (binary release branch; built by
+# tools/setup_linux.sh) is preferred, then $LIMINE_SHARE / $LIMINE overrides,
+# then Homebrew's keg (macOS), then the usual Linux install prefixes.
 find_limine_share() {
     local d
+    d="$HERE/../third_party/limine"
+    [[ -f "$d/limine-bios.sys" ]] && { echo "$d"; return 0; }
     if command -v brew >/dev/null 2>&1; then
         d="$(brew --prefix limine 2>/dev/null)/share/limine"
         [[ -f "$d/limine-bios.sys" ]] && { echo "$d"; return 0; }
@@ -29,9 +33,18 @@ find_limine_share() {
 }
 LIMINE_SHARE="${LIMINE_SHARE:-$(find_limine_share)}" || {
     echo "mkimage: Limine data dir not found (no limine-bios.sys)." >&2
-    echo "         Install Limine (README \"Prerequisites\") or set LIMINE_SHARE." >&2
+    echo "         Run tools/setup_linux.sh (or install Limine per the README" >&2
+    echo "         \"Prerequisites\") or set LIMINE_SHARE." >&2
     exit 1
 }
+find_limine_tool() {
+    if [[ -x "$HERE/../third_party/limine/limine" ]]; then
+        echo "$HERE/../third_party/limine/limine"
+    else
+        echo "limine"
+    fi
+}
+LIMINE="${LIMINE:-$(find_limine_tool)}"
 # p1 = BIOS boot partition (EF02, sectors 2048..4095 = 1 MiB) for Limine's stage.
 # p2 = ESP (EF00, FAT32) from sector 4096; mtools targets it at a byte offset.
 ESP_OFF=2097152    # 4096 * 512
@@ -55,6 +68,6 @@ mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
 # Install the Limine BIOS boot stage into the BIOS-boot partition.
-limine bios-install "$IMG"
+"$LIMINE" bios-install "$IMG"
 
 echo "mkimage: built $IMG (${SIZE_MB} MiB, GPT/FAT32)"

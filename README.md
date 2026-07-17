@@ -60,6 +60,15 @@ both — clang + lld (freestanding cross-toolchain), QEMU (the run/test loop,
 (`tools/mkimage.sh` builds the GPT/FAT32 image without mounting), GNU make,
 and python3 (the `tools/gen_*.py` generators).
 
+The version-sensitive dependencies are **pinned git submodules** under
+`third_party/` so every environment builds against the same bits: `limine`
+(bootloader stages + deploy tool, a `-binary` release branch), `limine-protocol`
+(the kernel-facing boot-protocol header), `qemu` (the official GitHub mirror,
+pinned ≥ 9.0 — see below), and `wine` (both the `abi/` generation source *and*
+the ntapi oracle runtime). `tools/mkimage.sh`, `tools/qemu.sh`, and
+`tests/run/run.sh` all prefer the in-tree builds automatically and fall back to
+host tools on PATH.
+
 ### macOS (Homebrew)
 
 Install everything with `brew bundle` (reads `./Brewfile`), or the M1-critical
@@ -76,63 +85,55 @@ brew install llvm lld qemu limine mtools gptfdisk
 - **qemu** — `qemu-system-x86_64`, the run/test loop (`docs/08`). On Apple Silicon the
   x86-64 guest runs under TCG emulation (no HVF) — correct, just slower.
 - **limine** — the bootloader (ADR 0010); provides the `limine` deploy tool.
+  Optional: the pinned `third_party/limine` submodule works on macOS too
+  (`git submodule update --init third_party/limine{,-protocol} && make -C
+  third_party/limine limine`) and takes precedence over the brew keg.
 - **mtools** — `mformat`/`mcopy`, to populate the FAT32 ESP without mounting
   (`tools/mkimage.sh`).
 - **gptfdisk** — `sgdisk`, to lay down the GPT + BIOS-boot partition the Limine BIOS
   image needs (`tools/mkimage.sh`).
 
-### Linux (Debian/Ubuntu)
+### Linux (Ubuntu 24.04)
+
+One command:
 
 ```sh
-sudo apt install clang lld llvm make gdisk mtools
+tools/setup_linux.sh
 ```
 
-(`gdisk` is Debian's package name for gptfdisk's `sgdisk`; the distro clang/lld
-on PATH are used as-is — no keg-only dance needed.)
+It installs the apt toolchain (clang/lld, make, gdisk, mtools, mingw-w64, the
+QEMU/Wine build dependencies) and then builds the pinned `third_party/`
+submodules **in place** — no `sudo make install`, nothing on PATH to conflict
+with distro packages:
 
-**QEMU must be ≥ 9.0.** The kernel's clock drives the LAPIC timer in x2APIC
-mode, and QEMU's TCG emulation only gained x2APIC in 9.0 — on Ubuntu 24.04
-LTS's QEMU 8.2 the calibration silently reads a dead timer and `make run`
-hangs after `[KTEST] pool PASS`. A distro package ≥ 9.0 (Ubuntu ≥ 24.10,
-recent Fedora/Arch) is fine: `sudo apt install qemu-system-x86`. On 24.04,
-build from source instead:
+- **limine** — the deploy tool is one `cc` invocation; the BIOS/UEFI boot
+  stages come prebuilt on the pinned `-binary` release branch (upstream's
+  intended integration), so no autotools/nasm and no network-fetching
+  bootstrap.
+- **qemu** — **QEMU must be ≥ 9.0**: the kernel's clock drives the LAPIC timer
+  in x2APIC mode, and QEMU's TCG only gained x2APIC in 9.0 — on Ubuntu 24.04
+  LTS's QEMU 8.2 the calibration silently reads a dead timer and `make run`
+  hangs after `[KTEST] pool PASS`. 24.04 ships 8.2, so the pinned submodule
+  (official GitHub mirror, `x86_64-softmmu` only) is built instead of trusting
+  the distro.
+- **wine** — the ntapi oracle runtime, built (64-bit only, no GUI/font
+  dependencies) from the very same pinned tree `abi/` is generated from, so
+  the oracle and the contract cannot version-diverge.
 
-```sh
-sudo apt install ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
-                 flex bison python3-venv
-curl -LO https://download.qemu.org/qemu-10.0.2.tar.xz && tar xf qemu-10.0.2.tar.xz
-cd qemu-10.0.2 && mkdir build && cd build
-../configure --target-list=x86_64-softmmu --disable-docs --disable-user
-make -j"$(nproc)" && sudo make install
-```
-
-**Limine** is not packaged in Ubuntu 24.04 LTS — build the deploy tool and boot
-files from the v12.x branch (keep the major version in step with
-`third_party/limine/README.md`; needs `git autoconf automake nasm` on top of
-the packages above):
-
-```sh
-git clone --depth 1 --branch v12.x https://github.com/limine-bootloader/limine.git
-cd limine
-./bootstrap
-./configure --enable-bios --enable-uefi-x86-64 \
-    CC_FOR_TARGET=clang LD_FOR_TARGET=ld.lld OBJCOPY_FOR_TARGET=llvm-objcopy \
-    OBJDUMP_FOR_TARGET=llvm-objdump READELF_FOR_TARGET=llvm-readelf
-make && sudo make install    # /usr/local/bin/limine + /usr/local/share/limine
-```
-
-(On a distro that does package Limine — Arch, Fedora, Ubuntu ≥ 24.10 —
-`tools/mkimage.sh` finds `/usr/share/limine` automatically; `LIMINE_SHARE`
-overrides the search either way.)
+The first run takes a while (QEMU and Wine are real builds); re-runs skip
+finished work. A distro QEMU ≥ 9.0 (Ubuntu ≥ 24.10, recent Fedora/Arch) also
+works — the runner scripts prefer the in-tree builds and fall back to PATH,
+and `QEMU=`, `WINE=`, `LIMINE=`/`LIMINE_SHARE=` override either way.
 
 ### ntapi oracle target (both hosts; from M2, not needed for M1)
 
 **mingw-w64** builds the tests as a Windows `.exe` (`docs/14`) and a **Wine**
-runtime runs it. On Linux: `sudo apt install gcc-mingw-w64-x86-64 wine` and run
-`tests/run/run.sh oracle`. On macOS, Homebrew's `wine-*` casks are deprecated
-(they fail macOS Gatekeeper) — on Apple Silicon use the Game Porting Toolkit's
-`wine64`, or better, run the oracle target on Linux/CI or Windows, which is
-smoother than local macOS Wine.
+runtime runs it: `tests/run/run.sh oracle`. On Linux both come from
+`tools/setup_linux.sh` (the oracle wine is the pinned `third_party/wine` — see
+above). On macOS, Homebrew's `wine-*` casks are deprecated (they fail macOS
+Gatekeeper) — on Apple Silicon use the Game Porting Toolkit's `wine64`, or
+better, run the oracle target on Linux/CI or Windows, which is smoother than
+local macOS Wine.
 
 ## Status
 

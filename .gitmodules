@@ -2,3 +2,18 @@
 	path = third_party/wine
 	url = git@github.com:peryaudo/wine.git
 	branch = proskrnl-target
+	ignore = dirty
+[submodule "third_party/limine"]
+	path = third_party/limine
+	url = https://github.com/limine-bootloader/limine.git
+	shallow = true
+	ignore = dirty
+[submodule "third_party/qemu"]
+	path = third_party/qemu
+	url = https://github.com/qemu/qemu.git
+	shallow = true
+	ignore = dirty
+[submodule "third_party/limine-protocol"]
+	path = third_party/limine-protocol
+	url = https://github.com/limine-bootloader/limine-protocol.git
+	shallow = true

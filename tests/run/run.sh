@@ -27,7 +27,19 @@ BUILD="$ROOT/build/tests"
 MODE="${1:-}"
 
 : "${CC_ORACLE:=x86_64-w64-mingw32-gcc}"   # override for a different mingw
-: "${WINE:=wine}"                          # runner for the .exe when not on Windows
+
+# The oracle wine: PREFER the pinned third_party/wine build (built in-tree by
+# tools/setup_linux.sh) so the oracle can never diverge from the Wine version
+# the abi/ contract is generated from; $WINE overrides, host wine is the
+# fallback.
+find_wine() {
+    local w
+    for w in "$ROOT/third_party/wine/wine64" "$ROOT/third_party/wine/wine"; do
+        [[ -x "$w" ]] && { echo "$w"; return 0; }
+    done
+    echo "wine"
+}
+: "${WINE:=$(find_wine)}"                  # runner for the .exe when not on Windows
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself).
