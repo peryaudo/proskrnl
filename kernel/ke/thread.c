@@ -7,6 +7,7 @@
  * internal KiCreateThread.
  */
 #include "kernel/ke/ke.h"
+#include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
 #include "kernel/init/panic.h"
 
@@ -32,6 +33,12 @@ static void KiThreadStartup(void)
 
 PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *startContext)
 {
+    return KiCreateThreadEx(priority, startRoutine, startContext, 0, 0);
+}
+
+PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void *startContext,
+                          struct EPROCESS *process, void *teb)
+{
     if (priority < 0 || priority >= KI_PRIORITY_LEVELS)
     {
         KiPanic("KiCreateThread: priority out of range");
@@ -45,6 +52,11 @@ PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *
 
     KiInitializeDispatcherHeader(&thread->header, KI_OBJECT_THREAD, 0);
     thread->stackBase = stack;
+    thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;
+    thread->process = process != 0 ? process : PsInitialSystemProcess;
+    thread->teb = teb;
+    thread->previousMode = KernelMode;
+    ASSERT(thread->process != 0); /* Ps init precedes every thread */
     thread->priority = priority;
     thread->startRoutine = startRoutine;
     thread->startContext = startContext;
