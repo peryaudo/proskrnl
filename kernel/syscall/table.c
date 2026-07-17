@@ -23,7 +23,10 @@
 #include "abi/syscall_numbers.h"
 
 typedef NTSTATUS (*KI_SERVICE_ROUTINE)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t);
+                                       uint64_t, uint64_t, uint64_t, uint64_t);
+
+/* The widest service so far: NtMapViewOfSection's 10 arguments (M5). */
+#define KI_MAX_SYSCALL_ARGUMENTS 10
 
 typedef struct
 {
@@ -63,12 +66,14 @@ __attribute__((no_sanitize("function"))) int64_t KiSystemService(uint64_t number
     thread->previousMode = UserMode;
 
     NTSTATUS status;
-    uint64_t argument7 = 0;
+    uint64_t stackArguments[KI_MAX_SYSCALL_ARGUMENTS - 6] = {0};
     if (descriptor->argumentCount > 6)
     {
-        /* Argument 7 sits above the stub's return address on the user
-         * stack, exactly where a SysV caller placed it. */
-        status = KiCopyFromUser(&argument7, (const void *)(userRsp + 8), sizeof(argument7));
+        /* Arguments 7..10 sit above the stub's return address on the user
+         * stack, exactly where a SysV caller placed them. */
+        ASSERT(descriptor->argumentCount <= KI_MAX_SYSCALL_ARGUMENTS);
+        status = KiCopyFromUser(stackArguments, (const void *)(userRsp + 8),
+                                (uint64_t)(descriptor->argumentCount - 6) * sizeof(uint64_t));
         if (!NT_SUCCESS(status))
         {
             thread->previousMode = KernelMode;
@@ -76,7 +81,9 @@ __attribute__((no_sanitize("function"))) int64_t KiSystemService(uint64_t number
         }
     }
 
-    status = descriptor->service(args[0], args[1], args[2], args[3], args[4], args[5], argument7);
+    status =
+        descriptor->service(args[0], args[1], args[2], args[3], args[4], args[5], stackArguments[0],
+                            stackArguments[1], stackArguments[2], stackArguments[3]);
 
     /* A service that terminated the calling thread never returns here. */
     thread->previousMode = KernelMode;

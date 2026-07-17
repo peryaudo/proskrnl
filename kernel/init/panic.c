@@ -9,6 +9,7 @@
 #include "kernel/lib/dbgprint.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
+#include "kernel/mm/fault.h"
 #include "abi/ntstatus.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
@@ -143,15 +144,28 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     }
 
     /* M4: a fault taken IN ring 3 is contained as process termination, never
-     * a kernel fault (docs/02 "a user crash is contained"). The dump still
-     * prints — the panic handler is the debugger (Art. 9) — but with a
+     * a kernel fault (docs/02 "a user crash is contained"). M5 slots one
+     * resolvable case in front: a guard-page touch (stack growth), which
+     * resumes the process silently. The dump still prints for everything
+     * fatal — the panic handler is the debugger (Art. 9) — but with a
      * [USERFAULT] prefix and then the offending process exits. */
     if ((trapFrame->segCs & 3) == 3)
     {
+        NTSTATUS faultStatus = KiUserFaultStatus(trapFrame->vector);
+        if (trapFrame->vector == 14)
+        {
+            uint64_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            faultStatus = MiHandleUserFault(cr2);
+            if (faultStatus == STATUS_SUCCESS)
+            {
+                return; /* guard consumed / stack grown: resume ring 3 */
+            }
+        }
         KiDumpTrapFrame("[USERFAULT]", trapFrame);
         DbgPrint("[USERFAULT] pid image '%s'; terminating process\n",
                  KeGetCurrentThread()->process->imageName);
-        PspExitCurrentProcess(KiUserFaultStatus(trapFrame->vector));
+        PspExitCurrentProcess(faultStatus);
     }
 
     KiDumpTrapFrame("[PANIC]", trapFrame);

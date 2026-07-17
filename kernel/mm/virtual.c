@@ -19,15 +19,25 @@
 #include "abi/ntstatus.h"
 
 /* One reservation: [base, base + size), page-granular, with one protection
- * word per page (0 = reserved-only, else the committed PAGE_* value). */
-typedef struct
+ * word per page (0 = reserved-only, else the committed PAGE_* value —
+ * possibly carrying PAGE_GUARD, in which case the frame is mapped
+ * not-present until the guard fires). M5 adds mapped views: `type` is
+ * MEM_PRIVATE for NtAllocateVirtualMemory memory, MEM_MAPPED/MEM_IMAGE for
+ * section views; a view pins its Section object (one reference, owned by
+ * the VAD, released when the VAD dies) and `ownsFrames` says whether
+ * decommit returns the frames to the allocator (private memory and image
+ * full copies) or leaves them alone (shared data-section frames). */
+struct MI_VAD
 {
     LIST_ENTRY listEntry; /* on MI_ADDRESS_SPACE.vadListHead, ascending */
     uint64_t base;
     uint64_t size;
     ULONG allocationProtect;
     PULONG pageProtect;
-} MI_VAD, *PMI_VAD;
+    ULONG type;        /* MEM_PRIVATE / MEM_MAPPED / MEM_IMAGE */
+    PVOID sectionBody; /* referenced Section body; 0 for private */
+    BOOLEAN ownsFrames;
+};
 
 #define MI_LOWEST_USER_ADDRESS 0x10000ULL /* NT never allocates the first 64K */
 
@@ -67,10 +77,16 @@ static NTSTATUS MiCheckPageProtect(ULONG protect)
 static void MiProtectToPteBits(ULONG protect, int *present, int *writable, int *executable)
 {
     ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
-    *present = bits != PAGE_NOACCESS;
-    *writable = bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE;
-    *executable =
-        bits == PAGE_EXECUTE || bits == PAGE_EXECUTE_READ || bits == PAGE_EXECUTE_READWRITE;
+    /* A guard page is committed but mapped not-present so the first touch
+     * traps (mm/fault.c clears the guard and remaps). */
+    *present = bits != PAGE_NOACCESS && (protect & PAGE_GUARD) == 0;
+    /* The WRITECOPY flavours appear on image views only (M5); every mapping
+     * is already a private full copy (Art. 3: no COW), so they are plain
+     * writable here — only the reported protection keeps the NT name. */
+    *writable = bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE ||
+                bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
+    *executable = bits == PAGE_EXECUTE || bits == PAGE_EXECUTE_READ ||
+                  bits == PAGE_EXECUTE_READWRITE || bits == PAGE_EXECUTE_WRITECOPY;
 }
 
 /* The VAD containing `address`, or 0. */
@@ -191,7 +207,10 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
             uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
             ASSERT(frame != 0);
             MiUnmapUserPage(space->pml4Physical, page);
-            MiFreePage(frame);
+            if (vad->ownsFrames)
+            {
+                MiFreePage(frame);
+            }
             vad->pageProtect[index] = 0;
         }
     }
@@ -200,6 +219,10 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
 static void MiUnlinkAndFreeVad(PMI_VAD vad)
 {
     RemoveEntryList(&vad->listEntry);
+    if (vad->sectionBody != 0)
+    {
+        ObDereferenceObject(vad->sectionBody); /* the view's pin on the section */
+    }
     MiFreePool(vad->pageProtect);
     MiFreePool(vad);
 }
@@ -214,6 +237,9 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->base = base;
     vad->size = size;
     vad->allocationProtect = allocationProtect;
+    vad->type = MEM_PRIVATE;
+    vad->sectionBody = 0;
+    vad->ownsFrames = TRUE;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
     {
@@ -346,6 +372,13 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
         {
             return STATUS_NOT_MAPPED_VIEW;
         }
+        if (vad->type != MEM_PRIVATE)
+        {
+            /* SEC_COMMIT views are fully committed at map time; committing
+             * over them is a no-op NT reports as such (SEC_RESERVE commit
+             * arrives with a real pagefile, post-M5). */
+            return STATUS_ALREADY_COMMITTED;
+        }
         status = MiCommitPages(space, vad, base, size, protect);
         if (!NT_SUCCESS(status))
         {
@@ -377,6 +410,12 @@ NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *
     if (vad == 0)
     {
         return STATUS_MEMORY_NOT_ALLOCATED;
+    }
+    if (vad->type != MEM_PRIVATE)
+    {
+        /* A section view is unmapped, never freed (Wine: !is_view_valloc ->
+         * STATUS_INVALID_PARAMETER; pinned by sem_mm/anonymous_section). */
+        return STATUS_INVALID_PARAMETER;
     }
     if (size == 0 && base != vad->base)
     {
@@ -504,15 +543,148 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
     info->RegionSize = (uint64_t)(last - first + 1) * PAGE_SIZE;
     info->State = protect != 0 ? MEM_COMMIT : MEM_RESERVE;
     info->Protect = protect;
-    info->Type = MEM_PRIVATE;
+    info->Type = vad->type;
     return STATUS_SUCCESS;
+}
+
+/* --- section-view plumbing (virtual.h; used by mm/section.c) ---------------- */
+
+uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size)
+{
+    return MiFindFreeRegion(space, MiRoundUp(size, PAGE_SIZE));
+}
+
+BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size)
+{
+    if (base < MI_LOWEST_USER_ADDRESS || base + size < base || base + size > KI_USER_SPACE_LIMIT)
+    {
+        return FALSE;
+    }
+    return MiRangeIsFree(space, base, MiRoundUp(size, PAGE_SIZE));
+}
+
+PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
+                          ULONG allocationProtect, ULONG vadType, PVOID sectionBody,
+                          BOOLEAN ownsFrames)
+{
+    ASSERT(vadType == MEM_MAPPED || vadType == MEM_IMAGE);
+    ASSERT(sectionBody != 0);
+    PMI_VAD vad = MiCreateVad(base, MiRoundUp(size, PAGE_SIZE), allocationProtect);
+    if (vad == 0)
+    {
+        return 0;
+    }
+    vad->type = vadType;
+    vad->sectionBody = sectionBody;
+    vad->ownsFrames = ownsFrames;
+    MiInsertVad(space, vad);
+    return vad;
+}
+
+void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,
+                        uint64_t frame, ULONG protect)
+{
+    ULONG index = (ULONG)((virtualAddress - vad->base) / PAGE_SIZE);
+    ASSERT(virtualAddress >= vad->base && index < MiVadPageCount(vad));
+    ASSERT(vad->pageProtect[index] == 0); /* views commit each page exactly once */
+    int present, writable, executable;
+    MiProtectToPteBits(protect, &present, &writable, &executable);
+    MiMapUserPage(space->pml4Physical, virtualAddress, frame, present, writable, executable);
+    vad->pageProtect[index] = protect;
+}
+
+void MiDeleteMappedVad(PMI_ADDRESS_SPACE space, PMI_VAD vad)
+{
+    MiDecommitPages(space, vad, vad->base, vad->size);
+    MiUnlinkAndFreeVad(vad);
+}
+
+NTSTATUS MiUnmapView(PMI_ADDRESS_SPACE space, uint64_t address)
+{
+    PMI_VAD vad = MiFindVad(space, MiRoundDown(address, PAGE_SIZE));
+    if (vad == 0 || vad->type == MEM_PRIVATE)
+    {
+        return STATUS_NOT_MAPPED_VIEW;
+    }
+    MiDeleteMappedVad(space, vad);
+    return STATUS_SUCCESS;
+}
+
+void MiCopyToUserRange(PMI_ADDRESS_SPACE space, uint64_t userBase, const void *source,
+                       uint64_t length)
+{
+    const char *from = source;
+    uint64_t copied = 0;
+    while (copied < length)
+    {
+        uint64_t va = userBase + copied;
+        uint64_t pageOffset = va & (PAGE_SIZE - 1);
+        uint64_t chunk = PAGE_SIZE - pageOffset;
+        if (chunk > length - copied)
+        {
+            chunk = length - copied;
+        }
+        uint64_t frame = MiTranslateUserPage(space->pml4Physical, va - pageOffset, 0, 0);
+        ASSERT(frame != 0);
+        memcpy((char *)MiPhysicalToVirtual(frame) + pageOffset, from + copied, chunk);
+        copied += chunk;
+    }
+}
+
+void MiZeroUserRange(PMI_ADDRESS_SPACE space, uint64_t userBase, uint64_t length)
+{
+    uint64_t zeroed = 0;
+    while (zeroed < length)
+    {
+        uint64_t va = userBase + zeroed;
+        uint64_t pageOffset = va & (PAGE_SIZE - 1);
+        uint64_t chunk = PAGE_SIZE - pageOffset;
+        if (chunk > length - zeroed)
+        {
+            chunk = length - zeroed;
+        }
+        uint64_t frame = MiTranslateUserPage(space->pml4Physical, va - pageOffset, 0, 0);
+        ASSERT(frame != 0);
+        memset((char *)MiPhysicalToVirtual(frame) + pageOffset, 0, chunk);
+        zeroed += chunk;
+    }
+}
+
+/* --- guard pages (virtual.h; used by mm/fault.c) ---------------------------- */
+
+BOOLEAN MiClearGuardPage(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
+{
+    ASSERT((pageAddress & (PAGE_SIZE - 1)) == 0);
+    PMI_VAD vad = MiFindVad(space, pageAddress);
+    if (vad == 0)
+    {
+        return FALSE;
+    }
+    ULONG index = (ULONG)((pageAddress - vad->base) / PAGE_SIZE);
+    ULONG protect = vad->pageProtect[index];
+    if (protect == 0 || (protect & PAGE_GUARD) == 0)
+    {
+        return FALSE;
+    }
+    /* One-shot: drop the guard bit and make the (already committed) frame
+     * an ordinary present page. */
+    uint64_t frame = MiTranslateUserPage(space->pml4Physical, pageAddress, 0, 0);
+    ASSERT(frame != 0);
+    ULONG newProtect = protect & ~(ULONG)PAGE_GUARD;
+    int present, writable, executable;
+    MiProtectToPteBits(newProtect, &present, &writable, &executable);
+    MiUnmapUserPage(space->pml4Physical, pageAddress);
+    MiMapUserPage(space->pml4Physical, pageAddress, frame, present, writable, executable);
+    vad->pageProtect[index] = newProtect;
+    return TRUE;
 }
 
 /* --- the Nt* surface -------------------------------------------------------- */
 
-/* Resolve a process-handle argument. M4: the pseudo-handle or a real handle
- * to a Process object; *referenced tells the caller to dereference. */
-static NTSTATUS MipReferenceProcess(HANDLE processHandle, ACCESS_MASK desiredAccess,
+/* Resolve a process-handle argument (virtual.h): the pseudo-handle or a real
+ * handle to a Process object; *referenced tells the caller to dereference.
+ * Shared with the section Nt* in mm/section.c (M5). */
+NTSTATUS MiReferenceProcessByHandle(HANDLE processHandle, ACCESS_MASK desiredAccess,
                                     PEPROCESS *process, BOOLEAN *referenced)
 {
     if (processHandle == NtCurrentProcess())
@@ -556,7 +728,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
 
     PEPROCESS target;
     BOOLEAN referenced;
-    status = MipReferenceProcess(process, PROCESS_VM_OPERATION, &target, &referenced);
+    status = MiReferenceProcessByHandle(process, PROCESS_VM_OPERATION, &target, &referenced);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -591,7 +763,7 @@ NTSTATUS NtFreeVirtualMemory(HANDLE process, PVOID *baseInOut, SIZE_T *sizeInOut
 
     PEPROCESS target;
     BOOLEAN referenced;
-    status = MipReferenceProcess(process, PROCESS_VM_OPERATION, &target, &referenced);
+    status = MiReferenceProcessByHandle(process, PROCESS_VM_OPERATION, &target, &referenced);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -636,7 +808,7 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
 
     PEPROCESS target;
     BOOLEAN referenced;
-    status = MipReferenceProcess(process, PROCESS_QUERY_INFORMATION, &target, &referenced);
+    status = MiReferenceProcessByHandle(process, PROCESS_QUERY_INFORMATION, &target, &referenced);
     if (!NT_SUCCESS(status))
     {
         return status;

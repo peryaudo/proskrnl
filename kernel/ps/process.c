@@ -9,17 +9,23 @@
 #include "kernel/ps/ps.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
+#include "kernel/mm/section.h"
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/mmu.h"
 
+#include "abi/ntimage.h"
+
 #include <stddef.h>
 
 PEPROCESS PsInitialSystemProcess;
 
-#define PSP_USER_STACK_SIZE (64ULL * 1024)
+/* Default stack shape for flat binaries (a PE brings its own sizes): the
+ * NT x64 defaults — 1 MiB reserved, 64 KiB committed up front. */
+#define PSP_STACK_RESERVE (1024ULL * 1024)
+#define PSP_STACK_COMMIT  (64ULL * 1024)
 
 /* Deleting a process (last reference gone) tears down what termination left:
  * the parked KTHREAD, the handle-table storage, and the address space. Runs
@@ -88,34 +94,88 @@ static NTSTATUS PspAllocateUserRegion(PEPROCESS process, uint64_t requestedBase,
     return status;
 }
 
-/* Copy into user pages through the HHDM (the target may not be the current
- * address space). The range must be freshly committed. */
-static void PspCopyToUserPages(PEPROCESS process, uint64_t userBase, const void *source,
-                               uint64_t length)
+/* Build the NT-shaped main-thread stack (M5, docs/02 "guard-page stack
+ * growth"): reserve the whole region, commit `commit` bytes at the top, and
+ * arm one PAGE_GUARD page below them; mm/fault.c grows the committed slice
+ * downward a guard at a time. Publishes the region on the EPROCESS for the
+ * fault path. */
+static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
+                                     uint64_t *stackTopOut, uint64_t *stackLimitOut)
 {
-    const char *from = source;
-    uint64_t copied = 0;
-    while (copied < length)
+    reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
+    commit = (commit + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
+    if (commit < PAGE_SIZE)
     {
-        uint64_t va = userBase + copied;
-        uint64_t pageOffset = va & (PAGE_SIZE - 1);
-        uint64_t chunk = PAGE_SIZE - pageOffset;
-        if (chunk > length - copied)
-        {
-            chunk = length - copied;
-        }
-        uint64_t frame =
-            MiTranslateUserPage(process->addressSpace.pml4Physical, va - pageOffset, 0, 0);
-        ASSERT(frame != 0);
-        memcpy((char *)MiPhysicalToVirtual(frame) + pageOffset, from + copied, chunk);
-        copied += chunk;
+        commit = PAGE_SIZE;
     }
+    /* Leave room for the guard page and at least one page of growth. */
+    if (commit > reserve - 2ULL * PAGE_SIZE)
+    {
+        commit = reserve - 2ULL * PAGE_SIZE;
+    }
+
+    PVOID base = 0;
+    SIZE_T size = reserve;
+    NTSTATUS status =
+        MiAllocateVirtualMemory(&process->addressSpace, &base, &size, MEM_RESERVE, PAGE_READWRITE);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t stackBottom = (uint64_t)(uintptr_t)base;
+    uint64_t stackTop = stackBottom + reserve;
+
+    PVOID commitBase = (PVOID)(uintptr_t)(stackTop - commit);
+    size = commit;
+    status = MiAllocateVirtualMemory(&process->addressSpace, &commitBase, &size, MEM_COMMIT,
+                                     PAGE_READWRITE);
+    if (NT_SUCCESS(status))
+    {
+        PVOID guardBase = (PVOID)(uintptr_t)(stackTop - commit - PAGE_SIZE);
+        size = PAGE_SIZE;
+        status = MiAllocateVirtualMemory(&process->addressSpace, &guardBase, &size, MEM_COMMIT,
+                                         PAGE_READWRITE | PAGE_GUARD);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status; /* PspDeleteProcess unwinds the reservation */
+    }
+
+    process->stackAllocationBase = stackBottom;
+    process->stackBase = stackTop;
+    *stackTopOut = stackTop;
+    *stackLimitOut = stackTop - commit; /* lowest committed non-guard page */
+    return STATUS_SUCCESS;
 }
 
-NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t imageSize,
-                              PEPROCESS *processOut)
+/* Map a PE program through the section machinery — NtCreateSection +
+ * NtMapViewOfSection's engines mapping the image IS the M5 milestone
+ * artifact (docs/02). Returns the entry point and the image's stack shape. */
+static NTSTATUS PspMapImage(PEPROCESS process, PKI_RAMDISK_FILE file, uint64_t *entryOut,
+                            uint64_t *stackReserveOut, uint64_t *stackCommitOut)
 {
-    if (imageSize == 0)
+    PMI_SECTION section;
+    NTSTATUS status = MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t base = 0;
+    uint64_t viewSize = 0;
+    status = MiMapViewOfSection(section, &process->addressSpace, &base, 0, &viewSize, PAGE_EXECUTE);
+    if (NT_SUCCESS(status)) /* STATUS_IMAGE_NOT_AT_BASE is a success code */
+    {
+        *entryOut = base + section->image->entryRva;
+        *stackReserveOut = section->image->stackReserve;
+        *stackCommitOut = section->image->stackCommit;
+    }
+    ObDereferenceObject(section); /* the view holds its own pin */
+    return NT_SUCCESS(status) ? STATUS_SUCCESS : status;
+}
+
+NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
+{
+    if (file == 0 || file->size == 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -129,7 +189,7 @@ NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t
     PEPROCESS process = body;
     KiInitializeDispatcherHeader(&process->header, KI_OBJECT_PROCESS, 0);
     ObpInitializeHandleTable(&process->handleTable);
-    process->imageName = imageName;
+    process->imageName = file->name;
 
     status = MiCreateAddressSpace(&process->addressSpace);
     if (!NT_SUCCESS(status))
@@ -138,17 +198,43 @@ NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t
         return status;
     }
 
-    /* The image at its fixed flat-binary base, RWX (a flat binary carries no
-     * section table to say better — the PE loader that will is M5/M7). */
-    uint64_t imageBase;
-    status = PspAllocateUserRegion(process, PSP_IMAGE_BASE, imageSize, PAGE_EXECUTE_READWRITE,
-                                   &imageBase);
+    uint64_t entry = 0;
+    uint64_t stackReserve = PSP_STACK_RESERVE;
+    uint64_t stackCommit = PSP_STACK_COMMIT;
+    const unsigned char *magic = file->data;
+    if (file->size >= 2 && magic[0] == 'M' && magic[1] == 'Z')
+    {
+        /* A PE image: loaded through a SEC_IMAGE section (M5). */
+        status = PspMapImage(process, file, &entry, &stackReserve, &stackCommit);
+        if (NT_SUCCESS(status) && stackReserve == 0)
+        {
+            stackReserve = PSP_STACK_RESERVE;
+        }
+        if (NT_SUCCESS(status) && stackReserve < 4ULL * PAGE_SIZE)
+        {
+            stackReserve = 4ULL * PAGE_SIZE;
+        }
+    }
+    else
+    {
+        /* An M4 flat binary at its fixed base, RWX (it carries no section
+         * table to say better); its entry point is its first byte. */
+        uint64_t imageBase;
+        status = PspAllocateUserRegion(process, PSP_IMAGE_BASE, file->size, PAGE_EXECUTE_READWRITE,
+                                       &imageBase);
+        if (NT_SUCCESS(status))
+        {
+            MiCopyToUserRange(&process->addressSpace, imageBase, file->data, file->size);
+            entry = imageBase;
+        }
+    }
 
     /* Stack and TEB anywhere convenient (the engine's bottom-up scan). */
-    uint64_t stackBase = 0;
+    uint64_t stackTop = 0;
+    uint64_t stackLimit = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspAllocateUserRegion(process, 0, PSP_USER_STACK_SIZE, PAGE_READWRITE, &stackBase);
+        status = PspAllocateUserStack(process, stackReserve, stackCommit, &stackTop, &stackLimit);
     }
     uint64_t tebBase = 0;
     if (NT_SUCCESS(status))
@@ -161,20 +247,18 @@ NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t
         return status;
     }
 
-    PspCopyToUserPages(process, imageBase, image, imageSize);
-
     /* The TEB begins with the NT_TIB (abi/ntpsapi.h pins the layout). The
-     * remaining TEB fields arrive with M7. */
-    uint64_t stackTop = stackBase + PSP_USER_STACK_SIZE;
+     * remaining TEB fields arrive with M7. StackLimit is the lowest
+     * committed non-guard page; mm/fault.c lowers it as the stack grows. */
     uint64_t tebFrame = MiTranslateUserPage(process->addressSpace.pml4Physical, tebBase, 0, 0);
     ASSERT(tebFrame != 0);
     NT_TIB *tib = MiPhysicalToVirtual(tebFrame);
     tib->StackBase = (PVOID)(uintptr_t)stackTop;
-    tib->StackLimit = (PVOID)(uintptr_t)stackBase;
+    tib->StackLimit = (PVOID)(uintptr_t)stackLimit;
     tib->Self = (struct _NT_TIB *)(uintptr_t)tebBase;
 
     process->teb = (void *)(uintptr_t)tebBase;
-    process->entryRip = imageBase;
+    process->entryRip = entry;
     process->entryRsp = stackTop;
 
     /* Everything the context switch and startup read is final; ready it. */
@@ -183,11 +267,10 @@ NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t
     return STATUS_SUCCESS;
 }
 
-NTSTATUS PsRunBootModule(const char *imageName, const void *image, uint64_t imageSize,
-                         NTSTATUS *exitStatusOut)
+NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
-    NTSTATUS status = PspCreateUserProcess(imageName, image, imageSize, &process);
+    NTSTATUS status = PspCreateUserProcess(file, &process);
     if (!NT_SUCCESS(status))
     {
         return status;
