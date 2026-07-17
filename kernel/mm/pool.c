@@ -8,13 +8,12 @@
  */
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h"
+#include "kernel/mm/kasan.h"
 #include "arch/x86_64/mmu.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
 #include <stddef.h>
-
-#define MI_POOL_BASE 0xFFFFA00000000000ULL
 
 #define MI_POOL_ALLOCATED_MAGIC 0x504F4F4C41ULL /* "POOLA" */
 #define MI_POOL_FREE_MAGIC      0x504F4F4C46ULL /* "POOLF" */
@@ -44,6 +43,7 @@ void MiInitializePool(void)
     MiPoolFreeList = 0;
     MiPoolEnd = MI_POOL_BASE;
     MiPoolBytesInUse = 0;
+    MiKasanInitialize();
 }
 
 uint64_t MiGetPoolBytesInUse(void)
@@ -106,6 +106,7 @@ static int MiExpandPool(uint64_t bytesNeeded)
         }
         MiMapPage(MiPoolEnd, frame, 1);
         MiPoolEnd += PAGE_SIZE;
+        MiKasanCoverPool(MiPoolEnd); /* new heap starts shadow-poisoned */
     }
     block->size = pages * PAGE_SIZE;
     MiInsertFreeBlock(block);
@@ -154,7 +155,11 @@ void *MiAllocatePool(uint64_t numberOfBytes)
                 block->magic = MI_POOL_ALLOCATED_MAGIC;
                 MiPoolBytesInUse += block->size;
                 void *data = (char *)block + MI_POOL_ALIGN;
-                memset(data, 0, block->size - MI_POOL_ALIGN);
+                /* Unpoison before zeroing — memset checks its ranges — and
+                 * zero only the caller-visible bytes: the red-zone tail is
+                 * unreachable for instrumented code either way. */
+                MiKasanMarkAllocated(data, numberOfBytes, block->size);
+                memset(data, 0, numberOfBytes);
                 return data;
             }
             link = &block->nextFree;
@@ -180,6 +185,7 @@ void MiFreePool(void *pointer)
     }
     ASSERT(MiPoolBytesInUse >= block->size);
     MiPoolBytesInUse -= block->size;
+    MiKasanMarkFreed(block, block->size);
     MiInsertFreeBlock(block);
 }
 

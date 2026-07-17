@@ -31,6 +31,24 @@ CFLAGS := -std=c11 -target x86_64-unknown-none \
           -O2 -g -Wall -Wextra -Wno-unused-parameter \
           -I. -Ithird_party/limine
 
+# Minimal KASAN (M3, docs/08): outline checks only (call-threshold=0) so the
+# hooks in kernel/mm/kasan.c can range-check against the pool; stack/global
+# instrumentation stays off (only the pool is shadowed). pool.c and kasan.c
+# manage the poison and are exempt. clang allows -fsanitize=kernel-address
+# only under an OS triple, so instrumented TUs override to linux-gnu — the
+# same freestanding-under-a-linux-triple arrangement the Linux kernel builds
+# with; codegen (SysV, ELF, kernel code model) is unchanged.
+KASAN_FLAGS := -target x86_64-unknown-linux-gnu \
+               -fsanitize=kernel-address \
+               -mllvm -asan-instrumentation-with-call-threshold=0 \
+               -mllvm -asan-stack=0 \
+               -mllvm -asan-globals=0
+$(BUILD)/kernel/mm/pool.o: KASAN_FLAGS :=
+$(BUILD)/kernel/mm/kasan.o: KASAN_FLAGS :=
+# string.c checks explicitly via MiKasanCheckRange (the pool memsets memory
+# whose shadow is mid-transition, so compiler instrumentation would misfire).
+$(BUILD)/kernel/lib/string.o: KASAN_FLAGS :=
+
 # Invoke the ELF ld.lld directly — the clang driver on a Darwin host defaults to
 # the Mach-O ld64.lld flavor even for a bare-metal target.
 LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
@@ -43,6 +61,7 @@ CSRC := kernel/init/main.c \
         kernel/lib/rtl.c \
         kernel/mm/phys.c \
         kernel/mm/pool.c \
+        kernel/mm/kasan.c \
         kernel/ke/sched.c \
         kernel/ke/thread.c \
         kernel/ke/wait.c \
@@ -69,7 +88,7 @@ all: $(IMG)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(KASAN_FLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.S
 	@mkdir -p $(dir $@)

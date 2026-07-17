@@ -11,6 +11,9 @@
 
 #include <stdint.h>
 
+/* Where the heap lives; kasan.c derives its shadow placement from this. */
+#define MI_POOL_BASE 0xFFFFA00000000000ULL
+
 void MiInitializePool(void);
 
 /* Allocate / free pool memory. 16-byte aligned; returns 0 when out of memory.
