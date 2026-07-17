@@ -4,12 +4,20 @@
  * initialization into calls to these four functions; the C ABI requires a
  * freestanding environment to provide them. Their names are fixed by the
  * compiler, so the docs/15 naming rules are waived here (NOLINT).
+ *
+ * KASAN (M3): this file is compiled UNINSTRUMENTED — the pool manages its
+ * own poisoning and calls memset on memory whose shadow is mid-transition —
+ * so each function checks its ranges explicitly instead (the interceptor
+ * arrangement the Linux kernel uses). MiKasanCheckRange range-checks against
+ * the pool and is a no-op for every other address.
  */
 #include "kernel/lib/string.h"
+#include "kernel/mm/kasan.h"
 
 void *memset(void *destination, int value,
              size_t length) /* NOLINT(readability-identifier-naming) */
 {
+    MiKasanCheckRange(destination, length, 1, __builtin_return_address(0));
     unsigned char *out = destination;
     for (size_t i = 0; i < length; i++)
     {
@@ -21,6 +29,8 @@ void *memset(void *destination, int value,
 void *memcpy(void *destination, const void *source,
              size_t length) /* NOLINT(readability-identifier-naming) */
 {
+    MiKasanCheckRange(destination, length, 1, __builtin_return_address(0));
+    MiKasanCheckRange((void *)source, length, 0, __builtin_return_address(0));
     unsigned char *out = destination;
     const unsigned char *in = source;
     for (size_t i = 0; i < length; i++)
@@ -33,6 +43,8 @@ void *memcpy(void *destination, const void *source,
 void *memmove(void *destination, const void *source,
               size_t length) /* NOLINT(readability-identifier-naming) */
 {
+    MiKasanCheckRange(destination, length, 1, __builtin_return_address(0));
+    MiKasanCheckRange((void *)source, length, 0, __builtin_return_address(0));
     unsigned char *out = destination;
     const unsigned char *in = source;
     if (out < in)
@@ -55,6 +67,8 @@ void *memmove(void *destination, const void *source,
 int memcmp(const void *left, const void *right,
            size_t length) /* NOLINT(readability-identifier-naming) */
 {
+    MiKasanCheckRange((void *)left, length, 0, __builtin_return_address(0));
+    MiKasanCheckRange((void *)right, length, 0, __builtin_return_address(0));
     const unsigned char *a = left;
     const unsigned char *b = right;
     for (size_t i = 0; i < length; i++)
