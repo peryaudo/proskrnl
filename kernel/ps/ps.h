@@ -17,6 +17,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/mm/virtual.h"
+#include "kernel/init/initrd.h"
 
 typedef struct EPROCESS
 {
@@ -25,9 +26,13 @@ typedef struct EPROCESS
     OBP_HANDLE_TABLE handleTable;
     NTSTATUS exitStatus;
     PKTHREAD mainThread; /* M4: exactly one thread per user process */
-    uint64_t entryRip;   /* flat-binary entry state, set before the */
+    uint64_t entryRip;   /* user entry state, set before the */
     uint64_t entryRsp;   /* thread is readied */
     void *teb;
+    /* The main thread's stack region [reserve base, top): mm/fault.c grows
+     * it a guard page at a time (M5, docs/02 "guard-page stack growth"). */
+    uint64_t stackAllocationBase;
+    uint64_t stackBase;    /* the top; NT names the high end StackBase */
     const char *imageName; /* for dumps; storage owned by the caller */
 } EPROCESS, *PEPROCESS;
 
@@ -42,24 +47,24 @@ extern PEPROCESS PsInitialSystemProcess;
  * before the scheduler exists so every thread can carry a process. */
 void PsInitializeProcessSubsystem(void);
 
-/* Build a user process around a flat binary image: map it at the fixed
- * flat-binary base, give it a stack and a TEB (NT_TIB filled), and ready
- * its single thread. The caller owns the returned creator reference. */
-NTSTATUS PspCreateUserProcess(const char *imageName, const void *image, uint64_t imageSize,
-                              PEPROCESS *processOut);
+/* Build a user process around a RAM-disk image: a PE (M5 — loaded through a
+ * SEC_IMAGE section, entry and stack sizes from its headers) or a flat
+ * binary (M4 — copied to the fixed flat-binary base). Either way it gets an
+ * NT-shaped guard-page stack and a TEB (NT_TIB filled), and its single
+ * thread is readied. The caller owns the returned creator reference. */
+NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
  * exit status, signal the process object, never return. The user-fault
  * containment path (panic.c) and NtTerminateProcess both land here. */
 __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus);
 
-/* Where the flat binary is mapped; its entry point is its first byte. */
+/* Where a flat binary is mapped; its entry point is its first byte. */
 #define PSP_IMAGE_BASE 0x400000ULL
 
-/* Run one flat-binary boot module to completion from a kernel thread: create
- * the process, wait for it, and return its exit NTSTATUS. `imageName` is used
- * only for dumps. */
-NTSTATUS PsRunBootModule(const char *imageName, const void *image, uint64_t imageSize,
-                         NTSTATUS *exitStatusOut);
+/* Run one boot-module program (PE or flat binary, already registered as a
+ * RAM-disk file) to completion from a kernel thread: create the process,
+ * wait for it, and return its exit NTSTATUS. */
+NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut);
 
 #endif /* PROSKRNL_KERNEL_PS_PS_H */
