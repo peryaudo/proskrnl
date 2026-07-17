@@ -137,32 +137,36 @@ local macOS Wine.
 
 ## Status
 
-**M3 complete.** The repository began as a **constitution** — documents that fix the design
+**M4 complete.** The repository began as a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
 them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
-physical page frames) and the M2 multithreading core (own page tables, one pool, 32-level
-priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`
-wait-any/wait-all with timeouts), the kernel now has the **object manager**: a type system
-with refcounted object headers, a growable handle table, and the `\`-rooted namespace
-(`\Device`, `\??`, `\BaseNamedObjects`, directories, symbolic links, `OBJ_CASE_INSENSITIVE`
-/ `OBJ_OPENIF` / relative opens). M2's dispatcher objects moved under Ob: `NtCreateEvent` /
-`NtOpenEvent` / mutant / semaphore / `NtClose` / `NtDuplicateObject` / `NtWaitFor*` are
-implemented with NT NTSTATUS conventions, callable from kernel threads until the M4 syscall
-boundary lands. **Minimal KASAN** (shadow memory over the pool, outline `__asan_*` hooks,
-red zones; `docs/08`) is compiled in and catches OOB/use-after-free in the handle-table and
-refcount paths on demand. The `Nt*` semantics were pinned FIRST on the Wine oracle
-(`tests/ntapi/sem_ob/`, Art. 5) and mirrored by the in-kernel `tests/kmt` suite; `abi/`
-(`ntstatus.h`, `ntdef.h`, `ntobapi.h`) stays generated from Wine's headers by
-`tools/gen_abi.py` (Art. 4 — no hand-typed constants, down to the `Nt*` prototypes):
+physical page frames), the M2 multithreading core (own page tables, one pool, 32-level
+priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`),
+and the M3 **object manager** (refcounted headers + type system, growable handle table, the
+`\`-rooted namespace), the kernel now crosses into **user mode**. M4 adds its own GDT + TSS
+and a `syscall`/`sysret` boundary (`kernel/syscall/`, whose numbers and stubs are generated
+by `tools/gen_syscalls.py` so the user and kernel sides can never disagree); per-process
+address spaces (`kernel/ps`, `EPROCESS`) that separate user memory while sharing the kernel
+half by copying the frozen kernel PML4; a per-process handle table; `Nt{Allocate,Free,Query}
+VirtualMemory` over a reserve/commit VAD list (`kernel/mm/virtual.c`); TEB allocation with a
+byte-exact `NT_TIB`; `NtTerminateProcess` and `NtDisplayString`; user-pointer probing so a
+bad pointer becomes `STATUS_ACCESS_VIOLATION` (`kernel/syscall/uaccess.c`); and containment
+of a user-mode fault as process termination rather than a kernel fault. The test client is a
+**flat binary** issuing raw syscalls, run as a Limine boot module (`user/init-tests/`).
+**Minimal KASAN** (shadow over the pool, outline `__asan_*` hooks, red zones; `docs/08`)
+stays compiled in. The mm semantics were pinned FIRST on the Wine oracle
+(`tests/ntapi/sem_mm/`, Art. 5); `abi/` (now also `ntmmapi.h`, `ntpsapi.h`,
+`syscall_numbers.h`) stays generated from Wine's headers by `tools/gen_abi.py` +
+`tools/gen_syscalls.py` (Art. 4 — no hand-typed constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M3 PASS on serial
-tests/run/run.sh oracle   # the same contracts, green against Wine/Windows ntdll
+make run     # build the image, boot headless in QEMU, verify [KTEST] M4 PASS on serial
+tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
+tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 ```
 
-Next: **M4** — user mode and the syscall boundary: address-space separation,
-`syscall/sysret`, TEB, `NtAllocateVirtualMemory`, first flat-binary test client
-(`docs/02`).
+Next: **M5** — sections and image mapping: a seed RAM-disk, `NtCreateSection` /
+`NtMapViewOfSection`, PE image sections, and guard-page stack growth (`docs/02`).
 
 ## License
 
