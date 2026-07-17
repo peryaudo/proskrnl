@@ -7,6 +7,13 @@
  */
 #include "ntapi.h"
 #include <stdarg.h>
+#if defined(NTAPI_ORACLE)
+/* The oracle is allowed libc (docs/14); host headers stay gated to this mode
+ * so the proskrnl build remains freestanding. (Hand-rolled externs do not
+ * link against mingw's CRT, where stdout is a macro over __acrt_iob_func.) */
+#  include <stdio.h>
+#  include <stdlib.h>
+#endif
 
 /* Structured verdict prefixes — kept machine-greppable, separate from any
  * human free-text (docs/08). tests/run/ greps exactly these. */
@@ -18,7 +25,6 @@ static void ntapi_vout(const char *fmt, va_list ap)
     char buf[512];
 #if defined(NTAPI_ORACLE)
     /* host vsnprintf is available and correct; the oracle is allowed libc. */
-    extern int vsnprintf(char *, unsigned long, const char *, va_list);
     vsnprintf(buf, sizeof buf, fmt, ap);
 #elif defined(NTAPI_PROSKRNL)
     /* M4: implement a tiny freestanding vsnprintf (or reuse the kernel's
@@ -99,14 +105,11 @@ int ntapi_finish(void)
 
 void ntapi_out(const char *text)
 {
-    extern int fputs(const char *, void *);
-    extern void *stdout;
     fputs(text, stdout);
 }
 
 void ntapi_exit(int code)
 {
-    extern void exit(int);
     exit(code);
 }
 

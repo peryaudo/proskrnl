@@ -21,9 +21,25 @@
 #endif
 
 #if defined(NTAPI_ORACLE)
-/* The oracle defines truth: use the system's own NT headers, never abi/. */
+/* The oracle defines truth: use the system's own NT headers, never abi/.
+ * WIN32_NO_STATUS + <ntstatus.h> is Microsoft's documented dance for the
+ * full STATUS_* set (winnt.h alone defines only a subset); Wine's own ntdll
+ * tests do the same. The #undef is for mingw-w64, whose ntstatus.h is
+ * itself gated on WIN32_NO_STATUS being unset. */
+#  define WIN32_NO_STATUS
 #  include <windows.h>
 #  include <winternl.h>
+#  undef WIN32_NO_STATUS
+#  include <ntstatus.h>
+
+/* winternl.h omits the dispatcher-object enums (they live in the WDK's
+ * ntdef.h, which cannot coexist with windows.h); declared here as Wine's
+ * winternl.h and Microsoft's NtCreateEvent documentation define them. */
+typedef enum _EVENT_TYPE
+{
+    NotificationEvent = 0,
+    SynchronizationEvent = 1
+} EVENT_TYPE;
 #elif defined(NTAPI_PROSKRNL)
 /* proskrnl's generated contract (Article 4). Present from M4. */
 #  include "abi/ntstatus.h"

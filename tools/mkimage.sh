@@ -12,15 +12,34 @@ KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd>}"
 IMG="${2:?usage: mkimage.sh <kernel-elf> <out-hdd>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CONF="$HERE/../arch/x86_64/limine.conf"
-LIMINE_SHARE="$(brew --prefix limine)/share/limine"
 SIZE_MB="${SIZE_MB:-64}"
+
+# Limine's data dir (limine-bios.sys, BOOTX64.EFI): $LIMINE_SHARE override,
+# else Homebrew's keg (macOS), else the usual Linux install prefixes.
+find_limine_share() {
+    local d
+    if command -v brew >/dev/null 2>&1; then
+        d="$(brew --prefix limine 2>/dev/null)/share/limine"
+        [[ -f "$d/limine-bios.sys" ]] && { echo "$d"; return 0; }
+    fi
+    for d in /usr/local/share/limine /usr/share/limine; do
+        [[ -f "$d/limine-bios.sys" ]] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+LIMINE_SHARE="${LIMINE_SHARE:-$(find_limine_share)}" || {
+    echo "mkimage: Limine data dir not found (no limine-bios.sys)." >&2
+    echo "         Install Limine (README \"Prerequisites\") or set LIMINE_SHARE." >&2
+    exit 1
+}
 # p1 = BIOS boot partition (EF02, sectors 2048..4095 = 1 MiB) for Limine's stage.
 # p2 = ESP (EF00, FAT32) from sector 4096; mtools targets it at a byte offset.
 ESP_OFF=2097152    # 4096 * 512
 
 mkdir -p "$(dirname "$IMG")"
 rm -f "$IMG"
-dd if=/dev/zero of="$IMG" bs=1m count="$SIZE_MB" 2>/dev/null
+# bs=1048576: BSD dd spells 1 MiB "1m", GNU dd "1M" — the byte count is portable.
+dd if=/dev/zero of="$IMG" bs=1048576 count="$SIZE_MB" 2>/dev/null
 
 # GPT: a BIOS-boot partition (required for Limine BIOS on GPT) + a FAT32 ESP.
 sgdisk "$IMG" \
