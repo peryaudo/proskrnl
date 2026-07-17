@@ -1,18 +1,38 @@
 #!/usr/bin/env bash
 # mkimage.sh — build a Limine BIOS-bootable disk image (ADR 0010).
 #
-#   mkimage.sh <kernel-elf> <out-hdd>
+#   mkimage.sh <kernel-elf> <out-hdd> [<module.bin>=<cmdline> ...]
 #
 # Canonical Limine recipe: a GPT disk with one ESP-typed FAT partition; format
 # and populate it, then install the Limine BIOS stage. Needs sgdisk (gptfdisk)
 # + mtools + the limine deploy tool. See docs/04 "Build model".
+#
+# M4: any extra "<module.bin>=<cmdline>" arguments are baked in as Limine boot
+# modules (the flat-binary user clients, docs/02). Each becomes module_path +
+# module_string lines appended to a generated copy of limine.conf; the kernel
+# reads the cmdline as the module's expected outcome (kernel/init/main.c).
 set -euo pipefail
 
-KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd>}"
-IMG="${2:?usage: mkimage.sh <kernel-elf> <out-hdd>}"
+KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...]}"
+IMG="${2:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...]}"
+shift 2 || true
+MODULE_SPECS=("$@")
 HERE="$(cd "$(dirname "$0")" && pwd)"
-CONF="$HERE/../arch/x86_64/limine.conf"
+CONF_BASE="$HERE/../arch/x86_64/limine.conf"
 SIZE_MB="${SIZE_MB:-64}"
+
+# Build the effective config: the checked-in base plus one module_path /
+# module_string pair per requested module.
+CONF="$(mktemp)"
+trap 'rm -f "$CONF"' EXIT
+cp "$CONF_BASE" "$CONF"
+for spec in "${MODULE_SPECS[@]}"; do
+    modfile="${spec%%=*}"
+    modstring="${spec#*=}"
+    base="$(basename "$modfile")"
+    printf '    module_path: boot():/%s\n' "$base" >> "$CONF"
+    printf '    module_string: %s\n' "$modstring" >> "$CONF"
+done
 
 # Limine's data dir (limine-bios.sys, BOOTX64.EFI) and `limine` deploy tool:
 # the pinned third_party/limine submodule (binary release branch; built by
@@ -65,6 +85,10 @@ mmd     -i "$IMG@@$ESP_OFF" ::/EFI ::/EFI/BOOT 2>/dev/null || true
 mcopy   -i "$IMG@@$ESP_OFF" "$KERNEL"                       ::/proskrnl
 mcopy   -i "$IMG@@$ESP_OFF" "$CONF"                         ::/limine.conf
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
+for spec in "${MODULE_SPECS[@]}"; do
+    modfile="${spec%%=*}"
+    mcopy -i "$IMG@@$ESP_OFF" "$modfile" "::/$(basename "$modfile")"
+done
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
 # Install the Limine BIOS boot stage into the BIOS-boot partition.
