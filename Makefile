@@ -112,6 +112,7 @@ clean:
 # Never hand-edit abi/ — this target is the only writer.
 gen-abi:
 	python3 tools/gen_abi.py
+	python3 tools/gen_syscalls.py
 
 # Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
 # naming (PascalCase, NT prefixes) is on you and on review.
