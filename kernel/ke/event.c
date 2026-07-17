@@ -37,6 +37,21 @@ LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait)
     return previous;
 }
 
+/* NtPulseEvent's engine: release the waiters satisfiable right now, leave
+ * the event non-signalled. Internal Ki name — Wine exports no KePulseEvent
+ * (docs/15: absent from the Wine tree means the NT name is not taken). */
+LONG KiPulseEvent(PRKEVENT event)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    KiAssertIsEvent(event);
+    LONG previous = event->header.signalState;
+    event->header.signalState = 1;
+    KiWaitTest(&event->header);
+    event->header.signalState = 0;
+    KiReleaseDispatcherLock(flags);
+    return previous;
+}
+
 LONG KeResetEvent(PRKEVENT event)
 {
     uint64_t flags = KiAcquireDispatcherLock();

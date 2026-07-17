@@ -217,6 +217,7 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
 
 void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state);
 LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait);
+LONG KiPulseEvent(PRKEVENT event); /* release current waiters, end unsignalled */
 LONG KeResetEvent(PRKEVENT event);
 void KeClearEvent(PRKEVENT event);
 LONG KeReadStateEvent(PRKEVENT event);
