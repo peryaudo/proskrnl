@@ -47,4 +47,10 @@ int kmt_run_m3(void);
  * kernel mode, ahead of the ring-3 boot-module clients. Returns failures. */
 int kmt_run_m4(void);
 
+/* The M5 suite (tests/kmt/m5_section.c): section objects — anonymous view
+ * sharing, RAM-disk file mapping + read consistency, PE image mapping with
+ * relocation, guard-page bookkeeping — driven against a scratch address
+ * space. Returns failures. */
+int kmt_run_m5(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
