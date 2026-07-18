@@ -11,6 +11,10 @@
  * userRsp + 8). Returns the NTSTATUS, sign-extended for the stub. */
 int64_t KiSystemService(uint64_t number, const uint64_t *args, uint64_t userRsp);
 
+/* Service name for a syscall number ("?" if out of range) — the panic dump
+ * prints it next to the raw last-syscall number (Art. 9). */
+const char *KiSystemCallName(uint64_t number);
+
 /* entry.S: first descent into ring 3 (kernel/ps). KERNEL_GS_BASE must
  * already carry the thread's TEB; the kernel stack is abandoned. */
 __attribute__((noreturn)) void KiEnterUserMode(uint64_t rip, uint64_t rsp);

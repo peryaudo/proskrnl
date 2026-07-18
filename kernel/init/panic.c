@@ -10,6 +10,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
 #include "kernel/mm/fault.h"
+#include "kernel/syscall/syscall.h"
 #include "abi/ntstatus.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
@@ -104,6 +105,47 @@ __attribute__((noreturn)) static void KiHalt(void)
     }
 }
 
+/* A fault while dumping must not loop into an endless dump cascade: every
+ * fatal path latches here first, and a second fatal entry halts after one
+ * line. The first dump is the one that matters (Art. 9). */
+static int KiPanicInProgress;
+
+static void KiPanicLatch(void)
+{
+    if (KiPanicInProgress)
+    {
+        DbgPrint("[PANIC] recursive fault during panic; halting\n");
+        KiHalt();
+    }
+    KiPanicInProgress = 1;
+}
+
+/* Who and when: the identity block every fatal dump (and the #BP demo dump)
+ * carries so a log line never needs out-of-band context — uptime, current
+ * thread/process, kernel stack bounds (put next to the dumped RSP, a stack
+ * overflow becomes visually obvious), and the last syscall by NAME. */
+static void KiDumpSystemState(void)
+{
+    DbgPrint("  uptime=%lums\n", (uint64_t)KeTickCount);
+    PKTHREAD thread = KiCurrentThread; /* 0 before the scheduler exists */
+    if (thread != 0)
+    {
+        DbgPrint("  thread=%p state=%d prio=%d prevmode=%d\n", (void *)thread, thread->state,
+                 (int)thread->priority, (int)thread->previousMode);
+        if (thread->process != 0)
+        {
+            DbgPrint("  process=%p image='%s'\n", (void *)thread->process,
+                     thread->process->imageName != 0 ? thread->process->imageName : "?");
+        }
+        DbgPrint("  kstack base=%p top=%#lx\n", thread->stackBase, thread->stackTop);
+    }
+    if (KiLastSystemCall != ~(uint64_t)0)
+    {
+        DbgPrint("  last_syscall=%#lx (%s)\n", KiLastSystemCall,
+                 KiSystemCallName(KiLastSystemCall));
+    }
+}
+
 /* Map a contained user-mode exception vector to the NTSTATUS the process
  * dies with (what a debugger/parent would observe). */
 static NTSTATUS KiUserFaultStatus(uint64_t vector)
@@ -140,6 +182,8 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     if (trapFrame->vector == 3)
     {
         KiDumpTrapFrame("[KTEST] trap", trapFrame);
+        KiDumpStackTrace(trapFrame->rbp);
+        KiDumpSystemState();
         return;
     }
 
@@ -168,22 +212,29 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         PspExitCurrentProcess(faultStatus);
     }
 
+    KiPanicLatch();
     KiDumpTrapFrame("[PANIC]", trapFrame);
     KiDumpStackTrace(trapFrame->rbp);
+    KiDumpSystemState();
     DbgPrint("[PANIC] unhandled exception; halting\n");
     KiHalt();
 }
 
 __attribute__((noreturn)) void KiPanic(const char *message)
 {
+    KiPanicLatch();
     DbgPrint("[PANIC] %s\n", message);
+    KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
+    KiDumpSystemState();
     KiHalt();
 }
 
 __attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line)
 {
+    KiPanicLatch();
     DbgPrint("[ASSERT] %s:%d: %s\n", file, line, expression);
     KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
+    KiDumpSystemState();
     DbgPrint("[PANIC] assertion failed; halting\n");
     KiHalt();
 }

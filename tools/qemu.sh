@@ -52,7 +52,11 @@ kill "$KPID" 2>/dev/null || true
 wait "$KPID" 2>/dev/null || true
 
 echo "--- serial log ($LOG) ---"
-cat "$LOG" || true
+# Display-time symbolization (Art. 9): annotate dump addresses with symbols
+# from the build's DWARF. The verdict grep below stays on the RAW log file —
+# the symbolizer only decorates what a reader (the LLM loop) sees.
+"$HERE/symbolize.py" --kernel "$HERE/../build/proskrnl" \
+    --moduledir "$HERE/../build/modules" < "$LOG" || cat "$LOG" || true
 echo "--------------------------"
 if grep -q "$PASS_RE" "$LOG"; then
     echo "== run: PASS =="

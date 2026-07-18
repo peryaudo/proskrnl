@@ -141,6 +141,12 @@ proskrnl() {
     LOG="$log" PASS_RE="\[KTEST\] M5 PASS" TIMEOUT="${TIMEOUT:-60}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
+    # Symbolized sidecar for a human/LLM reading a failure (Art. 9); the
+    # verdict greps below stay on the raw log.
+    "$ROOT/tools/symbolize.py" --kernel "$kernel" --moduledir "$build" \
+        --moduledir "$ROOT/build/modules" < "$log" \
+        > "$ROOT/build/tests/proskrnl-serial.sym.log" 2>/dev/null || true
+
     local fails=0
     for name in "${names[@]}"; do
         if grep -qE "^\[KTEST\] $name PASS$" "$log" 2>/dev/null; then
