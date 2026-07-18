@@ -25,6 +25,7 @@ sem_mm/reserve_commit           # NtAllocateVirtualMemory: reserve then commit
 # --- M5: sections + image mapping ---
 sem_mm/anonymous_section        # NtCreateSection/NtMapViewOfSection/NtUnmapViewOfSection/NtQuerySection
 sem_mm/stack_growth             # guard-page stack growth (survival + TIB bracketing)
+sem_mm/section_stress           # self-checking anonymous-section stress (docs/08; M6 grows it to the full view/ReadFile/WriteFile form)
 # sem_mm/guard_pages            # oracle-only: observing the fault needs the M7 dispatcher
 # sem_mm/image_section          # oracle-only: image sections need NtCreateFile (M6)
 
