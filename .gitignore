@@ -3,3 +3,7 @@
 
 # Personal Claude Code config (if ever created)
 CLAUDE.local.md
+
+# Python bytecode (tools/, tests/fuzz/)
+__pycache__/
+*.pyc

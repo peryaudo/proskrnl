@@ -75,6 +75,164 @@ BANNER = """\
  */
 """
 
+# ---------------------------------------------------------------------------
+# Differential-fuzzer op model (docs/08 "Differential fuzzing", tests/fuzz/).
+#
+# One model, two generated consumers — tests/fuzz/gen/fuzz_model.h (the C
+# interpreter's decode tables) and tests/fuzz/gen/fuzz_model.py (the Python
+# generator's view of the same shapes) — so the program encoder and decoder
+# cannot drift, exactly like SYSCALLS above.
+#
+# G4 note: the Python side never sees a numeric ABI value. Choice-table
+# entries are SYMBOLIC C expressions resolved per build mode by the same
+# header switch every ntapi test uses (oracle: winternl.h et al.; proskrnl:
+# generated abi/). Python only ever handles table sizes and indices.
+#
+# An entry marked avoid=True is excluded from default generation (it hits a
+# documented docs/03 deviation); fuzz.py --allow-avoid includes it, which is
+# also how the fuzzer's own detection path is exercised (tests/fuzz/README).
+
+FUZZ_SLOT_COUNT = 16  # handle slots in the interpreter
+
+# Object names the interpreter can pass (index 0 = anonymous / no name).
+# Tags drive generation policy only; the strings become u"" literals in the
+# interpreter. Deliberately includes syntactically bad and missing paths.
+FUZZ_NAMES = [
+    ("none", None),
+    ("valid", "\\\\BaseNamedObjects\\\\fz0"),
+    ("valid", "\\\\BaseNamedObjects\\\\fz1"),
+    ("valid", "\\\\BaseNamedObjects\\\\fz2"),
+    ("valid", "\\\\BaseNamedObjects\\\\fz3"),
+    ("subdir", "\\\\BaseNamedObjects\\\\fzsub"),
+    ("subitem", "\\\\BaseNamedObjects\\\\fzsub\\\\fz4"),
+    ("bad", "fz_relative"),
+    ("bad", ""),
+    ("bad", "\\\\BaseNamedObjects\\\\fznodir\\\\x"),
+    ("root", "\\\\"),
+    ("basedir", "\\\\BaseNamedObjects"),
+]
+
+# Choice tables: name -> (c_type, [(c_expr, avoid), ...]). c_type None marks a
+# semantic table: no C array is emitted, only the index space (the interpreter
+# defines the meaning of each index itself, e.g. buffer-length shapes).
+FUZZ_CHOICES = {
+    "access_event": ("ACCESS_MASK", [
+        ("EVENT_ALL_ACCESS", False),
+        ("EVENT_MODIFY_STATE|SYNCHRONIZE", False),
+        ("EVENT_MODIFY_STATE", False),
+        ("EVENT_QUERY_STATE", False),
+        ("SYNCHRONIZE", False),
+        ("0", False),
+        # docs/03 "Generic access mapping": proskrnl over-grants generic bits.
+        ("GENERIC_READ", True),
+        ("GENERIC_ALL", True),
+    ]),
+    "access_mutant": ("ACCESS_MASK", [
+        ("MUTANT_ALL_ACCESS", False),
+        ("MUTANT_QUERY_STATE|SYNCHRONIZE", False),
+        ("MUTANT_QUERY_STATE", False),
+        ("SYNCHRONIZE", False),
+        ("0", False),
+        ("GENERIC_READ", True),
+    ]),
+    "access_semaphore": ("ACCESS_MASK", [
+        ("SEMAPHORE_ALL_ACCESS", False),
+        ("SEMAPHORE_MODIFY_STATE|SYNCHRONIZE", False),
+        ("SEMAPHORE_MODIFY_STATE", False),
+        ("SEMAPHORE_QUERY_STATE", False),
+        ("SYNCHRONIZE", False),
+        ("0", False),
+        ("GENERIC_READ", True),
+    ]),
+    "access_directory": ("ACCESS_MASK", [
+        ("DIRECTORY_ALL_ACCESS", False),
+        ("DIRECTORY_QUERY", False),
+        ("DIRECTORY_QUERY|DIRECTORY_TRAVERSE", False),
+        ("DIRECTORY_CREATE_OBJECT", False),
+        ("0", False),
+    ]),
+    "access_symlink": ("ACCESS_MASK", [
+        ("SYMBOLIC_LINK_ALL_ACCESS", False),
+        ("SYMBOLIC_LINK_QUERY", False),
+        ("0", False),
+    ]),
+    "objflags": ("ULONG", [
+        ("OBJ_CASE_INSENSITIVE", False),
+        ("0", False),
+        ("OBJ_CASE_INSENSITIVE|OBJ_OPENIF", False),
+    ]),
+    "event_type": ("EVENT_TYPE", [
+        ("NotificationEvent", False),
+        ("SynchronizationEvent", False),
+    ]),
+    "bool": ("BOOLEAN", [("0", False), ("1", False)]),
+    # Boundary-biased plain integers (not ABI constants).
+    "long": ("LONG", [
+        ("0", False), ("1", False), ("2", False), ("5", False),
+        ("0x7fffffff", False), ("-1", False),
+    ]),
+    "ulong": ("ULONG", [
+        ("1", False), ("2", False), ("0", False), ("0x7fffffff", False),
+    ]),
+    "wait_type": ("WAIT_TYPE", [("WaitAny", False), ("WaitAll", False)]),
+    "dup_options": ("ULONG", [
+        ("DUPLICATE_SAME_ACCESS", False),
+        ("0", False),
+        ("DUPLICATE_SAME_ATTRIBUTES", False),
+        ("DUPLICATE_CLOSE_SOURCE", False),
+    ]),
+    # Semantic: buffer-length shape for NtQuery* (exact / zero / one short /
+    # oversized). Meaning lives in interp.c. No NULL/wild buffer in v1 — an
+    # asymmetric unprobed deref would crash the harness process and lose the
+    # rest of the batch (plan: no wild pointers in v1).
+    "len": (None, [
+        ("FZ_LEN_EXACT", False),
+        ("FZ_LEN_ZERO", False),
+        ("FZ_LEN_SHORT", False),
+        ("FZ_LEN_LONG", False),
+    ]),
+}
+
+# Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
+# carries one byte per operand; the kind fixes its valid range.
+FUZZ_OPS = [
+    # (op name, Nt* it drives, [operand kinds])
+    ("create_event", "NtCreateEvent",
+     ["slot_out", "ch_access_event", "name", "ch_objflags", "ch_event_type", "ch_bool"]),
+    ("open_event", "NtOpenEvent", ["slot_out", "ch_access_event", "name", "ch_objflags"]),
+    ("set_event", "NtSetEvent", ["slot_in", "ch_bool"]),
+    ("reset_event", "NtResetEvent", ["slot_in", "ch_bool"]),
+    ("clear_event", "NtClearEvent", ["slot_in"]),
+    ("pulse_event", "NtPulseEvent", ["slot_in", "ch_bool"]),
+    ("query_event", "NtQueryEvent", ["slot_in", "ch_len"]),
+    ("create_mutant", "NtCreateMutant",
+     ["slot_out", "ch_access_mutant", "name", "ch_objflags", "ch_bool"]),
+    ("open_mutant", "NtOpenMutant", ["slot_out", "ch_access_mutant", "name", "ch_objflags"]),
+    ("release_mutant", "NtReleaseMutant", ["slot_in", "ch_bool"]),
+    ("query_mutant", "NtQueryMutant", ["slot_in", "ch_len"]),
+    ("create_semaphore", "NtCreateSemaphore",
+     ["slot_out", "ch_access_semaphore", "name", "ch_objflags", "ch_long", "ch_long"]),
+    ("open_semaphore", "NtOpenSemaphore",
+     ["slot_out", "ch_access_semaphore", "name", "ch_objflags"]),
+    ("release_semaphore", "NtReleaseSemaphore", ["slot_in", "ch_ulong", "ch_bool"]),
+    ("query_semaphore", "NtQuerySemaphore", ["slot_in", "ch_len"]),
+    ("wait_single", "NtWaitForSingleObject", ["slot_in"]),
+    ("wait_multiple", "NtWaitForMultipleObjects", ["slot_in", "slot_in", "ch_wait_type"]),
+    ("close", "NtClose", ["slot_in"]),
+    ("duplicate", "NtDuplicateObject",
+     ["slot_in", "slot_out", "ch_access_event", "ch_dup_options"]),
+    ("make_temporary", "NtMakeTemporaryObject", ["slot_in"]),
+    ("create_directory", "NtCreateDirectoryObject",
+     ["slot_out", "ch_access_directory", "name", "ch_objflags"]),
+    ("open_directory", "NtOpenDirectoryObject",
+     ["slot_out", "ch_access_directory", "name", "ch_objflags"]),
+    ("create_symlink", "NtCreateSymbolicLinkObject",
+     ["slot_out", "ch_access_symlink", "name", "ch_objflags", "name"]),
+    ("open_symlink", "NtOpenSymbolicLinkObject",
+     ["slot_out", "ch_access_symlink", "name", "ch_objflags"]),
+    ("query_symlink", "NtQuerySymbolicLinkObject", ["slot_in", "ch_len"]),
+]
+
 
 def gen_numbers() -> str:
     lines = [f"#define NTSYS_{name} {number}" for number, (name, _) in enumerate(SYSCALLS)]
@@ -128,12 +286,112 @@ def gen_stubs() -> str:
     )
 
 
+def _operand_kinds():
+    """Ordered unique operand-kind names across FUZZ_OPS, for a C enum."""
+    seen = []
+    for _op, _nt, kinds in FUZZ_OPS:
+        for k in kinds:
+            if k not in seen:
+                seen.append(k)
+    return seen
+
+
+def gen_fuzz_model_h() -> str:
+    lines = [BANNER.format(name="tests/fuzz/gen/fuzz_model.h")]
+    lines.append("#ifndef PROSKRNL_FUZZ_MODEL_H")
+    lines.append("#define PROSKRNL_FUZZ_MODEL_H\n")
+    lines.append("/* Decode tables for tests/fuzz/interp.c. The choice arrays below hold")
+    lines.append(" * SYMBOLIC constants resolved by whichever header set the build mode")
+    lines.append(" * pulled in (NTAPI_ORACLE vs NTAPI_PROSKRNL) — no numeric ABI value")
+    lines.append(" * appears here or in the Python generator (G4). */\n")
+
+    lines.append(f"#define FZ_SLOT_COUNT {FUZZ_SLOT_COUNT}")
+    lines.append(f"#define FZ_NAME_COUNT {len(FUZZ_NAMES)}\n")
+
+    # Operand-kind enum.
+    lines.append("typedef enum {")
+    for k in _operand_kinds():
+        lines.append(f"    FZ_OPND_{k.upper()},")
+    lines.append("} FzOperandKind;\n")
+
+    # Opcode enum.
+    lines.append("typedef enum {")
+    for op, _nt, _k in FUZZ_OPS:
+        lines.append(f"    FZ_OP_{op.upper()},")
+    lines.append(f"    FZ_OP_COUNT")
+    lines.append("} FzOpcode;\n")
+
+    # Per-op operand-kind arrays + count, for the generic decode loop.
+    lines.append("typedef struct { const FzOperandKind *kinds; int count; "
+                 "const char *nt_name; } FzOpDesc;")
+    for op, _nt, kinds in FUZZ_OPS:
+        if kinds:
+            arr = ", ".join(f"FZ_OPND_{k.upper()}" for k in kinds)
+            lines.append(f"static const FzOperandKind fz_kinds_{op}[] = {{ {arr} }};")
+        else:
+            lines.append(f"static const FzOperandKind fz_kinds_{op}[1];")
+    lines.append("static const FzOpDesc fz_ops[FZ_OP_COUNT] = {")
+    for op, nt, kinds in FUZZ_OPS:
+        lines.append(f"    [FZ_OP_{op.upper()}] = {{ fz_kinds_{op}, {len(kinds)}, \"{nt}\" }},")
+    lines.append("};\n")
+
+    # Choice tables (symbolic). Semantic tables (c_type None) get only a size.
+    for name, (ctype, entries) in FUZZ_CHOICES.items():
+        lines.append(f"#define FZ_CH_{name.upper()}_COUNT {len(entries)}")
+        if ctype is not None:
+            arr = ", ".join(f"({ctype})({expr})" for expr, _avoid in entries)
+            lines.append(f"static const {ctype} fz_ch_{name}[] = {{ {arr} }};")
+    lines.append("")
+
+    # Name table: the strings themselves (u"" literals) live in interp.c so it
+    # controls the char16_t typing; here we only fix the count (above).
+    lines.append("#endif /* PROSKRNL_FUZZ_MODEL_H */")
+    return "\n".join(lines) + "\n"
+
+
+def gen_fuzz_model_py() -> str:
+    out = ['"""fuzz_model.py - GENERATED by tools/gen_syscalls.py. DO NOT EDIT.',
+           "",
+           "The Python generator's view of the fuzz op model. Mirrors",
+           "tests/fuzz/gen/fuzz_model.h so encoder and decoder cannot drift.",
+           "Only shapes (kinds, counts, indices) live here — never ABI values.",
+           '"""',
+           "",
+           f"SLOT_COUNT = {FUZZ_SLOT_COUNT}",
+           ""]
+    # Name tags (for generation policy) — not the strings.
+    out.append("# (index, tag) for each object name; index 0 = anonymous.")
+    out.append("NAME_TAGS = [")
+    for i, (tag, _s) in enumerate(FUZZ_NAMES):
+        out.append(f"    ({i}, {tag!r}),")
+    out.append("]")
+    out.append("")
+    # Choice sizes + which indices are 'avoid'.
+    out.append("# table name -> (count, [avoid indices])")
+    out.append("CHOICES = {")
+    for name, (_ctype, entries) in FUZZ_CHOICES.items():
+        avoid = [i for i, (_e, a) in enumerate(entries) if a]
+        out.append(f"    {name!r}: ({len(entries)}, {avoid!r}),")
+    out.append("}")
+    out.append("")
+    # Ops: name -> (opcode index, [operand kinds]).
+    out.append("# op name -> (opcode, [operand kind strings])")
+    out.append("OPS = [")
+    for i, (op, nt, kinds) in enumerate(FUZZ_OPS):
+        out.append(f"    ({op!r}, {i}, {nt!r}, {kinds!r}),")
+    out.append("]")
+    out.append("")
+    return "\n".join(out)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     for path, text in [
         (root / "abi/syscall_numbers.h", gen_numbers()),
         (root / "kernel/syscall/table.inc", gen_table_inc()),
         (root / "tests/ntapi/syscall/syscall_stubs.S", gen_stubs()),
+        (root / "tests/fuzz/gen/fuzz_model.h", gen_fuzz_model_h()),
+        (root / "tests/fuzz/gen/fuzz_model.py", gen_fuzz_model_py()),
     ]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)

@@ -161,8 +161,14 @@ proskrnl() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
+# both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
+# reuses the exact build recipes above. All args after `fuzz` are forwarded.
+fuzz() { exec "$ROOT/tests/fuzz/fuzz.py" "$@"; }
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
-    *) echo "usage: $0 {oracle|proskrnl}" >&2; exit 2 ;;
+    fuzz)     fuzz "${@:2}" ;;
+    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]}" >&2; exit 2 ;;
 esac

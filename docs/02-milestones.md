@@ -16,6 +16,10 @@ Ordering rules that matter:
   front. The suite grows monotonically, and the proskrnl run is gated by a `todo_proskrnl`
   manifest so it is always green-or-regression rather than a sea of expected reds. See
   `docs/08`.
+- **The differential fuzzer is available from M5, not gated to M7.** Its prerequisites — the
+  one-source/two-mode `ntapi` harness, the generated syscall list, the deterministic
+  serial-log verdict — all exist from M4/M5, so it was built early (`tests/fuzz/`, `docs/08`)
+  and its op model grows with each milestone's new `Nt*`. Run it with `tests/run/run.sh fuzz`.
 - **The critical path to calc.exe deliberately excludes npfs/condrv/conhost/cmd.** See
   the GUI note below and `docs/07`.
 
