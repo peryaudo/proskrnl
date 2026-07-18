@@ -203,6 +203,13 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
         ObfReferenceObject(current);
     }
     int reparses = 0;
+    /* TRUE once the most recent reparse substituted a FINAL-component symbolic
+     * link. A create cannot then materialize a new object at the link's target:
+     * NT requires the target to already exist, so a free leaf reached this way
+     * is STATUS_OBJECT_PATH_NOT_FOUND, not a creatable leaf. An INTERMEDIATE
+     * link (path continues past it, e.g. \??\C:\file) leaves this FALSE, so
+     * creating under it still works. Matches the pinned third_party/wine. */
+    BOOLEAN reparsedFinal = FALSE;
 
     for (;;)
     {
@@ -238,8 +245,10 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
         PVOID child = ObpFindEntry(current, &component, caseInsensitive);
         if (child == 0)
         {
-            if (!isFinal)
+            if (!isFinal || reparsedFinal)
             {
+                /* A missing intermediate, or a missing target reached by
+                 * following a final-component symlink: no creatable leaf. */
                 ObDereferenceObject(current);
                 return STATUS_OBJECT_PATH_NOT_FOUND;
             }
@@ -251,7 +260,11 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
 
         if (ObpGetHeader(child)->type == &ObpSymbolicLinkType && (!isFinal || followFinalLink))
         {
-            /* Substitute the target for the consumed prefix and restart. */
+            /* Substitute the target for the consumed prefix and restart. Record
+             * whether this reparse consumed the FINAL component (isFinal): the
+             * target then stands in for the whole name, so a missing leaf under
+             * it is a path error rather than a creatable spot. */
+            reparsedFinal = isFinal;
             POBP_SYMBOLIC_LINK link = child;
             if (++reparses > OBP_MAX_REPARSES)
             {
@@ -354,7 +367,14 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
     PVOID found, parent;
     UNICODE_STRING leaf;
     PWSTR reparseBuffer;
-    NTSTATUS status = ObpLookupName(attributes, TRUE, &found, &parent, &leaf, &reparseBuffer);
+    /* Creating a symbolic link does NOT follow a link already at the final name
+     * (else you could never observe a name collision between two links) — an
+     * existing entry there is a collision. Every other create follows a final
+     * link, as an open would. Matches the pinned third_party/wine; docs/09
+     * Art. 6. */
+    BOOLEAN followFinalLink = (type != &ObpSymbolicLinkType);
+    NTSTATUS status =
+        ObpLookupName(attributes, followFinalLink, &found, &parent, &leaf, &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         goto out;
@@ -564,7 +584,15 @@ NTSTATUS NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_
     }
     else
     {
+        /* An OBJ_OPENIF reuse of an existing link keeps its own target; the
+         * fresh copy is unused. Unlike every other object type, NT reports that
+         * reuse as plain STATUS_SUCCESS, not STATUS_OBJECT_NAME_EXISTS — match
+         * the pinned third_party/wine (docs/09 Art. 6). */
         MiFreePool(copy);
+        if (status == STATUS_OBJECT_NAME_EXISTS)
+        {
+            status = STATUS_SUCCESS;
+        }
     }
     return status;
 }
