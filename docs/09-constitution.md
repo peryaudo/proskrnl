@@ -51,6 +51,19 @@ values from an LLM's memory.** The model's plausible-but-approximate constants a
 dangerous than wrong ones because they hide. Structure layouts carry
 `static_assert(offsetof(...) == ...)` so a mismatch fails at compile time.
 
+The same instinct applies **outside `abi/`**, where constants cannot be generated but can
+be cited. Any hand-typed constant whose value is fixed by an external contract — hardware
+register numbers and bit layouts (x86_64 MSRs, LAPIC, page tables, UART, PIT, virtio…),
+on-disk formats (PE/COFF, FAT32), NT magic addresses and limits — must be
+**cross-checked against a trusted source at introduction time, and that source named in a
+comment in the same file** so a reader can re-verify the value without trusting the
+author. Trusted sources are: the pinned Wine tree (`third_party/wine`, path + symbol),
+official Microsoft documentation, the vendor specification (Intel SDM section, device
+datasheet, the virtio spec), or the pinned QEMU tree (`third_party/qemu`, the device
+model we actually run against) as a runtime cross-check. A bare number recalled from
+model memory is a violation **even when it happens to be right** — an uncited constant is
+indistinguishable from a hallucinated one.
+
 ## Article 5 — Tests precede kernel code
 
 For any boundary behaviour, a `tests/ntapi/` test that is **green on the Wine/Windows

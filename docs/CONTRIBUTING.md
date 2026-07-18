@@ -44,6 +44,15 @@ stated as hard gates.
 - **G7 — Additive & removable.** Anything outside the CUI core (GUI, WOW64, ROS shell) must
   be subtractable without touching the core. (Art. 7)
 
+- **G8 — Constants cite a trusted source.** Every hand-typed constant whose value is fixed
+  by an external contract (hardware registers/bits, on-disk formats, NT magic addresses —
+  anything not covered by the generated `abi/`) is cross-checked at introduction time and
+  carries a comment, in the same file, naming where a reader can re-verify it: the pinned
+  Wine tree (path + symbol), official Microsoft documentation, the vendor spec (Intel
+  SDM / datasheet / virtio spec), or the pinned QEMU tree. An uncited externally-fixed
+  constant is rejected even if correct — it is indistinguishable from a hallucinated one.
+  (Art. 4)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
@@ -79,8 +88,10 @@ invariants is leaving the cheapest defence unbuilt.
 ## A note to LLM agents specifically
 
 You are trained mostly on Linux and on ReactOS. You will, unprompted, want to add IRQL,
-split the cache into a separate Cc, introduce fine-grained locks and COW, and recall
-`STATUS_*` constants from memory. **Each of these violates a gate.** When in doubt, prefer
+split the cache into a separate Cc, introduce fine-grained locks and COW, recall
+`STATUS_*` constants from memory, and type hardware register numbers that are "well
+known" to you without citing where they can be checked. **Each of these violates a
+gate.** When in doubt, prefer
 the simplest thing that passes the boundary tests, and leave optimizations and NT-faithful
 internals unbuilt. The project's difficulty is not the code you can write; it is the
 boundary you must not erode.
