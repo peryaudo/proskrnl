@@ -1,47 +1,31 @@
 # tests/fuzz/known_divergences.txt — the differential-fuzzer baseline.
 #
 # The fuzzer's rule is "difference == bug". This file is the set of
-# root-divergence signatures already KNOWN — proskrnl-vs-Wine differences that
-# are documented and awaiting disposition. The fuzzer ignores these and fails
-# only on a NEW signature, so `tests/run/run.sh fuzz` is a green regression gate
-# whose baseline is a visible, cited backlog rather than a silence (docs/09
-# Art. 6 — a difference that is merely hidden is not a difference that is fixed).
+# root-divergence signatures already KNOWN and, for whatever reason, not fixed
+# yet. The fuzzer ignores these and fails only on a NEW signature, so
+# `tests/run/run.sh fuzz` is a green regression gate whose baseline is a
+# visible, cited backlog rather than a silence (docs/09 Art. 6 — a difference
+# merely hidden is not a difference fixed).
+#
+# Wine is the operative oracle (docs/09 Art. 6): every signature here is a
+# proskrnl BUG by definition — a baseline entry is a scheduling decision ("not
+# fixed yet"), never a question about whether Wine is right. Prefer fixing over
+# baselining: pin the Wine behaviour with a tests/ntapi/ case (Art. 5), then
+# change the kernel, then delete the line here.
 #
 # A signature is (NtName, oracle_status, proskrnl_status): the first differing
 # call in a program (everything after it is cascade from divergent state).
 # Format, one per line:
 #     <NtName> oracle=<hexstatus> proskrnl=<hexstatus>   # disposition note
-#
-# Every line MUST carry a note. Removing a line turns that divergence back into
-# a hard failure — do that once it is fixed or convicted by a tests/ntapi test.
-#
-# Wine is the operative oracle (docs/09 Art. 6): every signature here is a
-# proskrnl BUG by definition — a baseline entry is a scheduling decision ("not
-# fixed yet"), never a question about whether Wine is right. `--names named` /
-# `--names malformed` surface a larger namespace error-classification backlog
-# that is deliberately NOT baselined here (enumeration of bugs still to fix,
-# not a gate).
+# Every line MUST carry a note.
 #
 # status legend (abi/ntstatus.h): c0000008 INVALID_HANDLE, c000000d
 # INVALID_PARAMETER, c0000022 ACCESS_DENIED, c0000024 OBJECT_TYPE_MISMATCH,
 # c0000033 OBJECT_NAME_INVALID, c000003b OBJECT_PATH_SYNTAX_BAD.
 
-# NtMakeTemporaryObject: proskrnl does not require DELETE access to clear the
-# permanent flag; Wine reports ACCESS_DENIED when the handle lacks it. Bug:
-# the DELETE-access check is the contract; pin in tests/ntapi and fix.
-NtMakeTemporaryObject oracle=c0000022 proskrnl=00000000
-
-# NtOpen* with a NULL/empty ObjectName: proskrnl returns OBJECT_NAME_INVALID,
-# Wine returns OBJECT_PATH_SYNTAX_BAD. Bug: wrong error-status classification.
-NtOpenEvent oracle=c000003b proskrnl=c0000033
-NtOpenMutant oracle=c000003b proskrnl=c0000033
-NtOpenSemaphore oracle=c000003b proskrnl=c0000033
-NtOpenDirectoryObject oracle=c000003b proskrnl=c0000033
-NtOpenSymbolicLinkObject oracle=c000003b proskrnl=c0000033
-
-# NtReleaseSemaphore validates ReleaseCount==0 -> INVALID_PARAMETER BEFORE
-# resolving the handle (kernel/ob/sync.c), so a bad handle with count 0 reports
-# INVALID_PARAMETER where Wine reports the handle error. Bug: wrong ordering.
-NtReleaseSemaphore oracle=c0000008 proskrnl=c000000d
-NtReleaseSemaphore oracle=c0000022 proskrnl=c000000d
-NtReleaseSemaphore oracle=c0000024 proskrnl=c000000d
+# Currently EMPTY: the anonymous-object policy is at full parity with Wine. The
+# nine original signatures were fixed and are pinned by tests/ntapi/sem_ob/
+# {sync_objects (NtReleaseSemaphore ordering), make_temporary (DELETE access),
+# open_errors (NtOpen* name-error classification)}. `--names named` / `--names
+# malformed` still surface the wider namespace error-classification backlog;
+# those are enumerated as bugs to fix, deliberately not baselined here.
