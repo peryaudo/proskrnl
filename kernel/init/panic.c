@@ -6,6 +6,7 @@
  * UBSan traps (#UD) both land here.
  */
 #include "kernel/init/panic.h"
+#include "kernel/init/trace.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
@@ -144,6 +145,7 @@ static void KiDumpSystemState(void)
         DbgPrint("  last_syscall=%#lx (%s)\n", KiLastSystemCall,
                  KiSystemCallName(KiLastSystemCall));
     }
+    KiDumpTraceRing();
 }
 
 /* Map a contained user-mode exception vector to the NTSTATUS the process
@@ -196,9 +198,9 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     if ((trapFrame->segCs & 3) == 3)
     {
         NTSTATUS faultStatus = KiUserFaultStatus(trapFrame->vector);
+        uint64_t cr2 = 0;
         if (trapFrame->vector == 14)
         {
-            uint64_t cr2;
             __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
             faultStatus = MiHandleUserFault(cr2);
             if (faultStatus == STATUS_SUCCESS)
@@ -206,6 +208,7 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
                 return; /* guard consumed / stack grown: resume ring 3 */
             }
         }
+        KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
         KiDumpTrapFrame("[USERFAULT]", trapFrame);
         DbgPrint("[USERFAULT] pid image '%s'; terminating process\n",
                  KeGetCurrentThread()->process->imageName);

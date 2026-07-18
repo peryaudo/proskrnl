@@ -10,6 +10,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/trace.h"
 
 #include <stddef.h>
 
@@ -79,6 +80,10 @@ PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void
     ASSERT(((uintptr_t)stackPointer & 0xF) == 0);
     thread->kernelStack = (uint64_t)(uintptr_t)stackPointer;
 
+    /* startRoutine names the thread in the replayed ring (the display-time
+     * symbolizer resolves it to the function). */
+    KiTraceEvent(KiTraceThreadCreate, (uint64_t)(uintptr_t)thread,
+                 (uint64_t)(uintptr_t)startRoutine, (uint64_t)(uintptr_t)thread->process);
     uint64_t flags = KiAcquireDispatcherLock();
     KiReadyThread(thread);
     KiReleaseDispatcherLock(flags);
@@ -89,6 +94,7 @@ __attribute__((noreturn)) void KiTerminateThread(void)
 {
     KiAcquireDispatcherLock(); /* released forever with this context */
     PKTHREAD thread = KiCurrentThread;
+    KiTraceEvent(KiTraceThreadExit, (uint64_t)(uintptr_t)thread, 0, 0);
 
     /* NT semantics: dying while owning mutants abandons them — each is fully
      * released (whatever the recursion depth) and the next acquirer is told

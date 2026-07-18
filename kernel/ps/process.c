@@ -14,6 +14,7 @@
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/trace.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntimage.h"
@@ -295,6 +296,8 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
      * torn down later by PspDeleteProcess — we are still running on it. */
     ObpCloseAllHandles(&process->handleTable);
     process->exitStatus = exitStatus;
+    KiTraceEvent(KiTraceProcessExit, (uint64_t)(uintptr_t)process, (uint64_t)(uint32_t)exitStatus,
+                 0);
 
     uint64_t flags = KiAcquireDispatcherLock();
     process->header.signalState = 1; /* never reset: joins always satisfy */

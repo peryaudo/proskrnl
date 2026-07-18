@@ -187,6 +187,12 @@ static void KiTestMainThread(void *context)
     m5Failures += libFailures;
     DbgPrint(m5Failures == 0 ? "[KTEST] M5 PASS\n" : "[KTEST] M5 FAIL failures=%d\n", m5Failures);
 
+    /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
+     * system state INCLUDING a populated trace ring — every green run shows
+     * what a real panic dump would look like after the whole boot suite
+     * (Art. 9: eyeball the debugger's output without breaking the verdict). */
+    __asm__ volatile("int3");
+
     int total = m2Failures + m3Failures + m4Failures + m5Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
