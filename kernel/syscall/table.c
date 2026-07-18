@@ -16,6 +16,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/trace.h"
 
 #include "abi/ntobapi.h"
 #include "abi/ntmmapi.h"
@@ -64,6 +65,7 @@ __attribute__((no_sanitize("function"))) int64_t KiSystemService(uint64_t number
                                                                  uint64_t userRsp)
 {
     KiLastSystemCall = number;
+    KiTraceEvent(KiTraceSyscall, number, args[0], args[1]);
     if (number >= NTSYS_SYSCALL_COUNT)
     {
         return (int64_t)STATUS_INVALID_SYSTEM_SERVICE;

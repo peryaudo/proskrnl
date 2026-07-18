@@ -14,6 +14,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/trace.h"
 #include "kernel/lib/string.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/io.h"
@@ -141,6 +142,7 @@ void KiSwapToNext(void)
     }
     next->state = KI_THREAD_STATE_RUNNING;
     KiCurrentThread = next;
+    KiTraceEvent(KiTraceSwap, (uint64_t)(uintptr_t)old, (uint64_t)(uintptr_t)next, 0);
     KiLoadThreadHardwareState(next);
     KiSwapContext(old, next);
     /* Now back on `old`'s stack, someone having switched to us again. */
