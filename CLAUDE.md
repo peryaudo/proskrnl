@@ -10,12 +10,13 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 
 ## Read before writing code (hard rules, not guidance)
 
-`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The nine constitution articles map to PR gates G1–G7. Key ones you will violate by default:
+`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The nine constitution articles map to PR gates G1–G8. Key ones you will violate by default:
 
 - **G1 / Art. 1 — Boundary only.** Reproduce NT behavior *exactly* only at the observable boundary (`Nt*` semantics Wine uses; PEB/TEB/RTL_USER_PROCESS_PARAMETERS/KUSER_SHARED_DATA layout; NT file semantics). Reproduce nothing else in Microsoft-compatible form.
 - **G2 / Art. 2 — No NT-absent entities in the core.** Never add to `kernel/`, `abi/`, `arch/`, `fs/`, or the `Nt*` surface anything NT lacks. GUI-only exception: a new device or new process at the *outside* of the boundary, logged in `docs/10-hacks-ledger.md` (use `/log-hack`).
 - **G3 / Art. 3 — Stupidly correct.** Mandates, not choices: **no copy-on-write; no eviction / immediate writeback; one dispatcher lock, uniprocessor, no kernel preemption; one pool.** Any deviation goes in `docs/03-nt-deviations.md`, justified against user-observable semantics — never performance.
 - **G4 / Art. 4 — Generate the contract; never recall it.** Every numeric value in `abi/` (NTSTATUS, info-class numbers, struct offsets, flags) is generated from Wine headers via `tools/gen_abi.py` (`/gen-abi`). **No hand-typed constants. No `STATUS_*`/offset values from your memory** — plausible-but-approximate constants are worse than wrong ones. Layouts carry `static_assert(offsetof(...) == ...)`.
+- **G8 / Art. 4 — Constants cite a trusted source.** Any hand-typed constant fixed by an external contract *outside* `abi/` (MSRs, LAPIC/UART/PIT registers, page-table bits, PE fields, NT magic addresses) must be cross-checked at introduction and carry a comment naming where to re-verify it: pinned Wine tree (path + symbol), official MS docs, vendor spec (Intel SDM / datasheet / virtio), or the pinned QEMU tree. An uncited externally-fixed constant is rejected even if correct.
 - **G5 / Art. 5 — Test first.** A boundary behavior needs a `tests/ntapi/` test green on Wine/Windows *before* the kernel implements it. "Done" = test passing, not code compiling.
 - **G6 / Art. 6 — Only a differential test convicts.** Sanitizers/asserts name suspects; only a passing differential/conformance test closes an issue. "The sanitizer went quiet" is not a fix.
 - **G7 / Art. 7 — Additive & removable.** Everything outside the CUI core (GUI, WOW64, ROS shell) must be subtractable without touching the core.
@@ -40,7 +41,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 
 ## Workflow
 
-- **Feature branches + PRs; every change must satisfy gates G1–G7.** Run `/gate-check` on a diff before committing.
+- **Feature branches + PRs; every change must satisfy gates G1–G8.** Run `/gate-check` on a diff before committing.
 - `abi/` constants: regenerate with `/gen-abi`, never hand-edit.
 - Introducing an NT-absent device/process: log it with `/log-hack` before/with the code.
 - **On completing a milestone**, update the **Status** line above *and* the README "Status" section (current milestone, `make run` verdict, what's next); confirm `make run` is green. Milestone progress lives in exactly those two places — keep them in sync.
