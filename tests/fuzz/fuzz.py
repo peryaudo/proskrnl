@@ -99,6 +99,8 @@ def gen_operand(rng, kind, live, allow_avoid):
         return rng.randrange(M.SLOT_COUNT)
     if kind == "name":
         return rng.choices(range(NAME_COUNT), weights=NAME_WEIGHTS, k=1)[0]
+    if kind == "fname":
+        return rng.randrange(len(M.FNAME_TAGS))
     assert kind.startswith("ch_"), kind
     return _pick_choice(rng, kind[3:], allow_avoid)
 
