@@ -185,12 +185,16 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
     }
     if (remaining.Length == 0)
     {
-        /* The name was "\" or empty: no leaf to create or open. */
-        if (rootReferenced)
+        /* The name was exactly "\": it denotes the starting directory itself
+         * (the namespace root for an absolute name). Return it as the found
+         * object — a create then sees it exists (collision), an open type-checks
+         * it. Matches the pinned third_party/wine; docs/09 Art. 6. */
+        if (!rootReferenced)
         {
-            ObDereferenceObject(rootBody);
+            ObfReferenceObject(rootBody);
         }
-        return STATUS_OBJECT_NAME_INVALID;
+        *foundBody = rootBody;
+        return STATUS_SUCCESS;
     }
 
     PVOID current = rootBody; /* holds a reference iff rootReferenced */
@@ -251,8 +255,11 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             POBP_SYMBOLIC_LINK link = child;
             if (++reparses > OBP_MAX_REPARSES)
             {
+                /* A symbolic-link loop or an over-long reparse chain: NT gives
+                 * up with STATUS_INVALID_PARAMETER. Matches the pinned
+                 * third_party/wine; docs/09 Art. 6. */
                 ObDereferenceObject(current);
-                return STATUS_OBJECT_NAME_INVALID;
+                return STATUS_INVALID_PARAMETER;
             }
             ULONG targetUnits = link->target.Length / sizeof(WCHAR);
             ULONG restUnits = remaining.Length / sizeof(WCHAR);
@@ -327,9 +334,12 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
 {
     ACCESS_MASK granted = ObpMapDesiredAccess(type, desiredAccess);
 
-    if (attributes == 0 || attributes->ObjectName == 0)
+    if (attributes == 0 || attributes->ObjectName == 0 || attributes->ObjectName->Length == 0)
     {
-        /* Unnamed: allocate, hand out one handle, drop the creator's ref. */
+        /* Unnamed: no ObjectName, or a present-but-empty (zero-length) one,
+         * which NT treats as unnamed on create (it is only OPEN that rejects an
+         * empty name as a path). Allocate, hand out one handle, drop the
+         * creator's ref. Matches the pinned third_party/wine; docs/09 Art. 6. */
         NTSTATUS status = ObpAllocateObject(type, bodySize, body);
         if (!NT_SUCCESS(status))
         {
