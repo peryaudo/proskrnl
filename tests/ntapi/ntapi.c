@@ -26,6 +26,36 @@
 #define PFX_KTEST  "[KTEST] "
 
 #if defined(NTAPI_PROSKRNL)
+/* Freestanding mem* — the flat binary links no libc, but the tests (and the
+ * compiler, implicitly) may call these. External linkage on purpose so
+ * compiler-emitted references resolve too. */
+void *memset(void *destination, int value, unsigned long length)
+{
+    unsigned char *out = destination;
+    for (unsigned long i = 0; i < length; i++)
+        out[i] = (unsigned char)value;
+    return destination;
+}
+
+void *memcpy(void *destination, const void *source, unsigned long length)
+{
+    unsigned char *out = destination;
+    const unsigned char *in = source;
+    for (unsigned long i = 0; i < length; i++)
+        out[i] = in[i];
+    return destination;
+}
+
+int memcmp(const void *left, const void *right, unsigned long length)
+{
+    const unsigned char *a = left;
+    const unsigned char *b = right;
+    for (unsigned long i = 0; i < length; i++)
+        if (a[i] != b[i])
+            return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+
 /* A tiny freestanding vsnprintf covering exactly what the tests' ok() format
  * strings use: %s %c %d/%i %u %x/%X %p, the l/ll/z length modifiers, and a
  * leading 0 / width / # flag. Mirrors the kernel's DbgPrint (docs/08); kept
@@ -199,7 +229,8 @@ void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
         if (cond)
         {
             ntapi_ctx.todo_unexpected++;
-            ntapi_printf(PFX_ASSERT "%s:%d: todo_proskrnl succeeded (remove the tag): ", file, line);
+            ntapi_printf(PFX_ASSERT "%s:%d: todo_proskrnl succeeded (remove the tag): ", file,
+                         line);
             {
                 va_list ap;
                 va_start(ap, fmt);
@@ -248,7 +279,7 @@ int ntapi_finish(void)
         return 0;
     }
     ntapi_printf(PFX_KTEST "%s FAIL failures=%d todo_unexpected=%d\n", ntapi_ctx.name,
-               ntapi_ctx.failures, ntapi_ctx.todo_unexpected);
+                 ntapi_ctx.failures, ntapi_ctx.todo_unexpected);
     return 1;
 }
 
