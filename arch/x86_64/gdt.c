@@ -4,6 +4,15 @@
  * carry the privilege level, the L (64-bit) bit, and presence. What actually
  * matters is the selector LAYOUT (syscall/sysret derive CS/SS from STAR by
  * fixed offsets) and the TSS (RSP0 = the ring-crossing stack).
+ *
+ * Constants cross-check: Intel SDM Vol. 3A, "Protection" (segment descriptor
+ * access bytes 0x9A/0x92/0xFA/0xF2, L bit 53, TSS descriptor type 0x89) and
+ * "Task Management" (the 104-byte 64-bit TSS layout); SDM Vol. 2B SYSCALL/
+ * SYSRET (CS/SS derivation from STAR[47:32] / STAR[63:48]); the MSR numbers
+ * are in SDM Vol. 4 and mirrored by the pinned QEMU (third_party/qemu)
+ * target/i386/cpu.h: MSR_EFER 0xC0000080 (SCE bit 0), MSR_STAR 0xC0000081,
+ * MSR_LSTAR 0xC0000082, MSR_FMASK 0xC0000084, MSR_GSBASE 0xC0000101,
+ * MSR_KERNELGSBASE 0xC0000102.
  */
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/io.h"
@@ -20,7 +29,9 @@
 #define IA32_KERNEL_GS_BASE 0xC0000102
 
 /* RFLAGS bits cleared on syscall entry: IF (the entry stub runs lock-free
- * until it is on the kernel stack), plus TF/DF/AC hygiene. */
+ * until it is on the kernel stack), plus TF/DF/IOPL/NT/AC hygiene
+ * (bits 8-10, 12-14, 18 — SDM Vol. 1, EFLAGS). Our choice, not a spec
+ * value: SFMASK may clear any bits. */
 #define KI_SYSCALL_RFLAGS_MASK 0x47700ULL
 
 KIPCR KiPcr;

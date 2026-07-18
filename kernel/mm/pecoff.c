@@ -2,7 +2,9 @@
  *
  * Behaviour reference: Wine's server/mapping.c get_image_params and
  * dlls/ntdll/unix/virtual.c map_image_into_view (reference for behaviour,
- * not code) + the public PE/COFF specification. Only the boundary-shaped
+ * not code) + the public PE/COFF specification
+ * (https://learn.microsoft.com/en-us/windows/win32/debug/pe-format).
+ * Only the boundary-shaped
  * subset is validated: PE32+ (x86_64), page-aligned sections. Native-
  * subsystem flat images (SectionAlignment < page) stay unimplemented.
  */

@@ -2,7 +2,8 @@
  * docs/04). x86_64 PE32+ only (ADR 0006).
  *
  * The on-disk format comes from the generated abi/ntimage.h (Wine's winnt.h
- * — the same layout Microsoft's PE/COFF specification documents); this
+ * — the same layout Microsoft's PE/COFF specification documents:
+ * https://learn.microsoft.com/en-us/windows/win32/debug/pe-format); this
  * header is the parsed, validated summary an image section carries. The
  * validation statuses at the boundary (STATUS_INVALID_IMAGE_NOT_MZ for a
  * non-MZ file) are pinned by tests/ntapi/sem_mm/image_section.c.

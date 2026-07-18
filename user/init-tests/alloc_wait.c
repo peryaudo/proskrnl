@@ -33,7 +33,9 @@ static void say(const char *ascii)
 
 int main(void)
 {
-    /* TEB self-check: gs:[0x30] is NT_TIB.Self and must point at the TEB. */
+    /* TEB self-check: gs:[0x30] is NT_TIB.Self (offset pinned by the
+     * offsetof(NT_TIB, Self) == 48 static_assert in abi/ntpsapi.h) and must
+     * point at the TEB. */
     void *self;
     __asm__ volatile("mov %%gs:0x30, %0" : "=r"(self));
     if (self == 0)

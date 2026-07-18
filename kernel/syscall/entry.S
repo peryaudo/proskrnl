@@ -62,7 +62,7 @@ KiEnterUserMode:
     cli
     pushq $(KI_GDT_USER_DS | 3) /* SS */
     pushq %rsi                  /* RSP */
-    pushq $0x202                /* RFLAGS: IF | reserved-1 */
+    pushq $0x202                /* RFLAGS: IF (bit 9) | always-1 bit 1 (SDM Vol. 1, EFLAGS) */
     pushq $(KI_GDT_USER_CS | 3) /* CS */
     pushq %rdi                  /* RIP */
     swapgs

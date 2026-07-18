@@ -303,6 +303,9 @@ static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, u
         const USHORT *entries = (const USHORT *)(cursor + sizeof(IMAGE_BASE_RELOCATION));
         for (ULONG i = 0; i < count; i++)
         {
+            /* Each entry is 16 bits: type in bits 15:12, page offset in bits
+             * 11:0 (Microsoft PE Format spec, "The .reloc Section";
+             * https://learn.microsoft.com/en-us/windows/win32/debug/pe-format). */
             USHORT entry = entries[i];
             ULONG offset = entry & 0xFFF;
             uint64_t va = base + block.VirtualAddress + offset;

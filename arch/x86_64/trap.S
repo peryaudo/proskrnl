@@ -4,6 +4,10 @@
  * code where the CPU does not, push the vector number, save the GP registers,
  * then call KiDispatchTrap with a pointer to the frame. Vectors that push a
  * hardware error code (8,10-14,17,21) use KI_TRAP_ERR; the rest KI_TRAP_NOERR.
+ *
+ * The error-code vector set is Intel SDM Vol. 3A, "Interrupt and Exception
+ * Handling", exception summary table: #DF(8), #TS(10), #NP(11), #SS(12),
+ * #GP(13), #PF(14), #AC(17), #CP(21) push an error code; all others do not.
  */
     .section .text
 

@@ -41,6 +41,8 @@ static void say(const char *ascii)
 
 /* volatile: the KERNEL rewrites NT_TIB.StackLimit behind this code's back as
  * the stack grows; without it the compiler may fold the before/after loads. */
+/* gs:[0x30] is NT_TIB.Self — offset pinned by the offsetof(NT_TIB, Self)
+ * == 48 static_assert in abi/ntpsapi.h. */
 static volatile NT_TIB *get_tib(void)
 {
     void *self;
