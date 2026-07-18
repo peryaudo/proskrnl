@@ -413,9 +413,18 @@ out:
 NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attributes,
                              ACCESS_MASK desiredAccess, PHANDLE handleOut)
 {
-    if (attributes == 0 || attributes->ObjectName == 0)
+    /* No attributes at all is a parameter error; a present attributes block with
+     * no name is a (degenerate) path — an empty path fails as syntax, so NT
+     * reports STATUS_OBJECT_PATH_SYNTAX_BAD, the same as an empty-string name
+     * (which ObpLookupName rejects below). Matches the pinned third_party/wine;
+     * docs/09 Art. 6. */
+    if (attributes == 0)
     {
-        return STATUS_OBJECT_NAME_INVALID;
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (attributes->ObjectName == 0)
+    {
+        return STATUS_OBJECT_PATH_SYNTAX_BAD;
     }
     PVOID found, parent;
     UNICODE_STRING leaf;

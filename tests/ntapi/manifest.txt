@@ -21,6 +21,7 @@ sem_ob/namespace                # (same: directories, symlinks, relative opens)
 sem_ob/handle_life              # (same: NtClose/NtDuplicateObject conventions)
 sem_ob/sync_objects             # (same: Nt-level event/mutant/semaphore semantics)
 sem_ob/make_temporary           # NtMakeTemporaryObject requires DELETE access
+sem_ob/open_errors              # NtOpen* name-error classification (NULL/empty name, NULL attributes)
 sem_mm/reserve_commit           # NtAllocateVirtualMemory: reserve then commit
 
 # --- M5: sections + image mapping ---
