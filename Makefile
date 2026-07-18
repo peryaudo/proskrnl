@@ -89,6 +89,7 @@ CSRC := kernel/init/main.c \
         arch/x86_64/lapic.c \
         arch/x86_64/gdt.c \
         arch/x86_64/mmu.c \
+        tests/kmt/lib.c \
         tests/kmt/m2_dispatcher.c \
         tests/kmt/m3_ob.c \
         tests/kmt/m4_usermode.c \

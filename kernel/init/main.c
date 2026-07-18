@@ -163,6 +163,10 @@ static int KiRunBootModules(void)
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
 static void KiTestMainThread(void *context)
 {
+    int libFailures = kmt_run_lib();
+    DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",
+             libFailures);
+
     int m2Failures = kmt_run_m2();
     DbgPrint(m2Failures == 0 ? "[KTEST] M2 PASS\n" : "[KTEST] M2 FAIL failures=%d\n", m2Failures);
     int m3Failures = kmt_run_m3();
@@ -178,6 +182,9 @@ static void KiTestMainThread(void *context)
      * NtCreateSection + NtMapViewOfSection maps a PE image). */
     int m5Failures = kmt_run_m5();
     m5Failures += KiRunBootModules();
+    /* The final milestone line is the verdict tools/qemu.sh greps for, so it
+     * aggregates every suite this run — a lib failure must flip it too. */
+    m5Failures += libFailures;
     DbgPrint(m5Failures == 0 ? "[KTEST] M5 PASS\n" : "[KTEST] M5 FAIL failures=%d\n", m5Failures);
 
     int total = m2Failures + m3Failures + m4Failures + m5Failures;
