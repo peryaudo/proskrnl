@@ -12,6 +12,9 @@ static const void *dangler_name = W("\\BaseNamedObjects\\prsk_nse_dangler");
 static const void *missing_tgt = W("\\BaseNamedObjects\\prsk_nse_missing");
 static const void *base_name = W("\\BaseNamedObjects");
 static const void *root_name = W("\\");
+static const void *evt_name = W("\\BaseNamedObjects\\prsk_nse_evt");
+static const void *evt_child = W("\\BaseNamedObjects\\prsk_nse_evt\\child");
+static const void *evt_missing = W("\\BaseNamedObjects\\prsk_nse_evt_absent");
 
 START_TEST(namespace_errors)
 {
@@ -93,5 +96,32 @@ START_TEST(namespace_errors)
            (unsigned long)status);
         NtClose(dlink);
     }
+    NtClose(h);
+
+    /* Opening an existing object with a zero DesiredAccess is ACCESS_DENIED
+     * (the object is found first, so it outranks a name error); a missing name
+     * still reports NAME_NOT_FOUND. */
+    init_ustr(&name, evt_name);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    status = NtCreateEvent(&h, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+    ok(status == STATUS_SUCCESS, "create nse_evt -> %08lx", (unsigned long)status);
+    status = NtOpenEvent(&h2, 0, &attr);
+    ok(status == STATUS_ACCESS_DENIED, "open access 0 -> %08lx", (unsigned long)status);
+    init_ustr(&name, evt_missing);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    status = NtOpenEvent(&h2, 0, &attr);
+    ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "open missing access 0 -> %08lx",
+       (unsigned long)status);
+
+    /* A non-directory object mid-path: create through it is TYPE_MISMATCH, open
+     * through it is NAME_NOT_FOUND (nse_evt is an event, not a container). */
+    init_ustr(&name, evt_child);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+    ok(status == STATUS_OBJECT_TYPE_MISMATCH, "create under non-dir -> %08lx",
+       (unsigned long)status);
+    status = NtOpenEvent(&h2, EVENT_ALL_ACCESS, &attr);
+    ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "open under non-dir -> %08lx",
+       (unsigned long)status);
     NtClose(h);
 }
