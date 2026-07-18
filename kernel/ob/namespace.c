@@ -139,8 +139,8 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
  * must be freed by the caller AFTER it is done with *leafName. */
 static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN followFinalLink,
-                              PVOID *foundBody, PVOID *parentBody, UNICODE_STRING *leafName,
-                              PWSTR *reparseBuffer)
+                              BOOLEAN forCreate, PVOID *foundBody, PVOID *parentBody,
+                              UNICODE_STRING *leafName, PWSTR *reparseBuffer)
 {
     *foundBody = 0;
     *parentBody = 0;
@@ -329,9 +329,12 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
 
         if (ObpGetHeader(child)->type != &ObpDirectoryType)
         {
-            /* A non-container met mid-path. */
+            /* A non-container met mid-path: the path cannot continue through it.
+             * NT reports this differently for the two callers — a create sees a
+             * wrong-typed component (TYPE_MISMATCH), an open sees the leaf as
+             * unreachable (NAME_NOT_FOUND). Matches the pinned third_party/wine. */
             ObDereferenceObject(current);
-            return STATUS_OBJECT_PATH_NOT_FOUND;
+            return forCreate ? STATUS_OBJECT_TYPE_MISMATCH : STATUS_OBJECT_NAME_NOT_FOUND;
         }
         ObfReferenceObject(child);
         ObDereferenceObject(current);
@@ -374,7 +377,7 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
      * Art. 6. */
     BOOLEAN followFinalLink = (type != &ObpSymbolicLinkType);
     NTSTATUS status =
-        ObpLookupName(attributes, followFinalLink, &found, &parent, &leaf, &reparseBuffer);
+        ObpLookupName(attributes, followFinalLink, TRUE, &found, &parent, &leaf, &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         goto out;
@@ -464,7 +467,7 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
     BOOLEAN followFinalLink =
         type != &ObpSymbolicLinkType && (attributes->Attributes & OBJ_OPENLINK) == 0;
     NTSTATUS status =
-        ObpLookupName(attributes, followFinalLink, &found, &parent, &leaf, &reparseBuffer);
+        ObpLookupName(attributes, followFinalLink, FALSE, &found, &parent, &leaf, &reparseBuffer);
     if (reparseBuffer != 0)
     {
         MiFreePool(reparseBuffer);
@@ -482,6 +485,15 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
     {
         ObDereferenceObject(found);
         return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    /* An open must request at least one access right; NT rejects a zero
+     * DesiredAccess on an existing object with ACCESS_DENIED (the object was
+     * found, so this outranks a name error). Matches the pinned third_party/wine;
+     * docs/09 Art. 6. */
+    if (desiredAccess == 0)
+    {
+        ObDereferenceObject(found);
+        return STATUS_ACCESS_DENIED;
     }
     status = ObpCreateHandle(found, ObpMapDesiredAccess(ObpGetHeader(found)->type, desiredAccess),
                              attributes->Attributes, handleOut);
