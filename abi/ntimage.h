@@ -32,7 +32,7 @@
 #define IMAGE_SUBSYSTEM_NATIVE 1
 #define IMAGE_SUBSYSTEM_WINDOWS_GUI 2	/* Windows GUI subsystem */
 #define IMAGE_SUBSYSTEM_WINDOWS_CUI 3	/* Windows character subsystem */
-#define IMAGE_FIRST_SECTION(ntheader) \
+#define IMAGE_FIRST_SECTION(ntheader)  ((PIMAGE_SECTION_HEADER)((ULONG_PTR)&(ntheader)->OptionalHeader + (ntheader)->FileHeader.SizeOfOptionalHeader))
 
 /* PE/COFF structures, extracted verbatim from wine/include/winnt.h;
  * the static_asserts pin the on-disk layout. */

@@ -9,6 +9,7 @@
  * dlls/ntdll/unix/virtual.c are the reference for behaviour, not code).
  */
 #include "kernel/mm/section.h"
+#include "kernel/mm/pagecache.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ps/ps.h"
@@ -19,10 +20,20 @@
 
 #include "abi/ntstatus.h"
 
+/* kernel/io/file.c: the Mm<->Io seam for file-backed sections (M6). NT has
+ * the same layering: Mm calls into Io for the file side of a section.
+ * IopBuildSectionBacking resolves a file HANDLE into an MI_SECTION_BACKING
+ * (cache loaded, raw bytes snapshotted for SEC_IMAGE, File referenced,
+ * mapping-count raised); IopSectionBackingReleased drops the mapping count
+ * when a section (or a failed create) lets go. */
+NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULONG pageProtection,
+                                MI_SECTION_BACKING *backing);
+void IopSectionBackingReleased(PVOID fileObjectBody);
+
 static void MipDeleteSection(PVOID body)
 {
     PMI_SECTION section = body;
-    if (section->frames != 0 && section->ownsFrames)
+    if (section->frames != 0)
     {
         for (ULONG i = 0; i < section->pageCount; i++)
         {
@@ -33,9 +44,18 @@ static void MipDeleteSection(PVOID body)
         }
         MiFreePool(section->frames);
     }
+    if (section->rawData != 0 && section->ownsRawData)
+    {
+        MiFreePool((void *)(uintptr_t)section->rawData);
+    }
     if (section->image != 0)
     {
         MiFreePool(section->image);
+    }
+    if (section->fileObject != 0)
+    {
+        IopSectionBackingReleased(section->fileObject);
+        ObDereferenceObject(section->fileObject);
     }
 }
 
@@ -48,72 +68,34 @@ OBJECT_TYPE MiSectionType = {
 
 /* --- creation --------------------------------------------------------------- */
 
-/* Fill (or reuse) a RAM-disk file's page cache: fresh frames, file bytes
- * copied in, the tail page zero-filled past EOF (the NT rule a mapped view
- * makes observable). The cache is the M5 unified page cache: every section
- * over the file shares it, and KiReadRamdiskFile reads through it, so a
- * mapped view and a read can never disagree (docs/02's consistency test). */
-static NTSTATUS MipEnsureFileCache(PKI_RAMDISK_FILE file)
-{
-    if (file->pageCache != 0)
-    {
-        return STATUS_SUCCESS;
-    }
-    ULONG pageCount = (ULONG)((file->size + PAGE_SIZE - 1) / PAGE_SIZE);
-    uint64_t *frames = MiAllocatePool((uint64_t)pageCount * sizeof(uint64_t));
-    if (frames == 0)
-    {
-        return STATUS_NO_MEMORY;
-    }
-    for (ULONG i = 0; i < pageCount; i++)
-    {
-        frames[i] = MiAllocatePage();
-        if (frames[i] == 0)
-        {
-            while (i > 0)
-            {
-                MiFreePage(frames[--i]);
-            }
-            MiFreePool(frames);
-            return STATUS_NO_MEMORY;
-        }
-        uint64_t chunk = file->size - (uint64_t)i * PAGE_SIZE;
-        if (chunk > PAGE_SIZE)
-        {
-            chunk = PAGE_SIZE;
-        }
-        char *page = MiPhysicalToVirtual(frames[i]);
-        memcpy(page, (const char *)file->data + (uint64_t)i * PAGE_SIZE, chunk);
-        memset(page + chunk, 0, PAGE_SIZE - chunk);
-    }
-    file->pageCache = frames;
-    return STATUS_SUCCESS;
-}
-
 /* Build a section's contents into `scratch` (nothing Ob-visible yet, so
- * every failure unwinds cleanly). Validation order and statuses follow
- * Wine's server/mapping.c get_mapping_flags + create_mapping. */
+ * every failure unwinds cleanly — including a backing whose rawData we were
+ * handed ownership of). Validation order and statuses follow Wine's
+ * server/mapping.c get_mapping_flags + create_mapping. */
 static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximumSize,
-                                ULONG pageProtection, ULONG attributes, PKI_RAMDISK_FILE file)
+                                ULONG pageProtection, ULONG attributes,
+                                const MI_SECTION_BACKING *backing)
 {
     memset(scratch, 0, sizeof(*scratch));
     scratch->pageProtection = pageProtection;
-    scratch->file = file;
 
     switch (attributes & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_FILE))
     {
     case SEC_IMAGE:
-        if (file == 0)
+        if (backing == 0 || backing->rawData == 0)
         {
             return STATUS_INVALID_FILE_FOR_SECTION;
         }
         scratch->attributes = SEC_FILE | SEC_IMAGE;
+        scratch->rawData = backing->rawData;
+        scratch->rawSize = backing->rawSize;
+        scratch->ownsRawData = backing->ownsRawData;
         scratch->image = MiAllocatePool(sizeof(MI_IMAGE_INFO));
         if (scratch->image == 0)
         {
             return STATUS_NO_MEMORY;
         }
-        NTSTATUS status = MiParseImage(file->data, file->size, scratch->image);
+        NTSTATUS status = MiParseImage(backing->rawData, backing->rawSize, scratch->image);
         if (!NT_SUCCESS(status))
         {
             MiFreePool(scratch->image);
@@ -129,23 +111,31 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
 
     case SEC_RESERVE:
         /* Commit-on-demand section pages need a pagefile-shaped commit
-         * ledger; nothing before M6+ needs one. Loud, not wrong. */
+         * ledger; nothing before M7+ needs one. Loud, not wrong. */
         return STATUS_NOT_IMPLEMENTED;
 
     default:
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (file != 0)
+    if (backing != 0 && backing->cache != 0)
     {
-        /* File-backed data section over the read-only RAM-disk (kernel
-         * callers only until NtCreateFile lands at M6). */
-        uint64_t size = file->size;
+        /* File-backed data section: views map the file's unified page cache,
+         * so a view and a read/write can never disagree (docs/02's
+         * consistency test — structural under Art. 3). */
+        PMI_PAGE_CACHE cache = backing->cache;
+        uint64_t size = cache->fileSize;
         if (maximumSize != 0 && maximumSize->QuadPart != 0)
         {
-            if (maximumSize->QuadPart < 0 || (uint64_t)maximumSize->QuadPart > file->size)
+            if (maximumSize->QuadPart < 0)
             {
-                return STATUS_SECTION_TOO_BIG; /* growing needs a writable file */
+                return STATUS_SECTION_TOO_BIG;
+            }
+            if ((uint64_t)maximumSize->QuadPart > cache->fileSize)
+            {
+                /* NT would extend a writable file here; no caller needs it
+                 * yet. Loud, not wrong (Art. 3). */
+                return STATUS_NOT_IMPLEMENTED;
             }
             size = (uint64_t)maximumSize->QuadPart;
         }
@@ -153,16 +143,10 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         {
             return STATUS_MAPPED_FILE_SIZE_ZERO;
         }
-        NTSTATUS cacheStatus = MipEnsureFileCache(file);
-        if (!NT_SUCCESS(cacheStatus))
-        {
-            return cacheStatus;
-        }
         scratch->attributes = SEC_FILE;
         scratch->size = size;
         scratch->pageCount = (ULONG)((size + PAGE_SIZE - 1) / PAGE_SIZE);
-        scratch->frames = file->pageCache;
-        scratch->ownsFrames = FALSE;
+        scratch->cache = cache;
         return STATUS_SUCCESS;
     }
 
@@ -180,7 +164,6 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
     {
         return STATUS_NO_MEMORY;
     }
-    scratch->ownsFrames = TRUE;
     for (ULONG i = 0; i < scratch->pageCount; i++)
     {
         scratch->frames[i] = MiAllocatePage();
@@ -199,13 +182,24 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
     return STATUS_SUCCESS;
 }
 
-NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection, ULONG attributes,
-                         PKI_RAMDISK_FILE file, PMI_SECTION *sectionOut)
+NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
+                               ULONG attributes, const MI_SECTION_BACKING *backing,
+                               PMI_SECTION *sectionOut)
 {
     MI_SECTION scratch;
-    NTSTATUS status = MipBuildSection(&scratch, maximumSize, pageProtection, attributes, file);
+    NTSTATUS status = MipBuildSection(&scratch, maximumSize, pageProtection, attributes, backing);
     if (!NT_SUCCESS(status))
     {
+        /* rawData ownership passed on call: free it on the paths that did
+         * not stash it in scratch (a stashed copy is freed below). */
+        if (backing != 0 && backing->ownsRawData && scratch.rawData == 0)
+        {
+            MiFreePool((void *)(uintptr_t)backing->rawData);
+        }
+        else if (scratch.rawData != 0)
+        {
+            MipDeleteSection(&scratch);
+        }
         return status;
     }
     PVOID body;
@@ -215,9 +209,43 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
         MipDeleteSection(&scratch);
         return status;
     }
+    if (backing != 0 && backing->fileObject != 0)
+    {
+        scratch.fileObject = backing->fileObject;
+        ObfReferenceObject(scratch.fileObject);
+    }
     memcpy(body, &scratch, sizeof(scratch));
     *sectionOut = body;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection, ULONG attributes,
+                         PKI_RAMDISK_FILE file, PMI_SECTION *sectionOut)
+{
+    MI_SECTION_BACKING backing;
+    memset(&backing, 0, sizeof(backing));
+    if (file != 0)
+    {
+        if ((attributes & SEC_IMAGE) == 0)
+        {
+            /* Data sections map the file's cache; image sections read the
+             * raw module bytes directly and need no cache. */
+            NTSTATUS status = KiEnsureRamdiskCache(file);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            backing.cache = &file->cache;
+        }
+        backing.rawData = file->data; /* borrowed: the module outlives everything */
+        backing.rawSize = file->size;
+    }
+    if (file == 0 && (attributes & SEC_IMAGE) != 0)
+    {
+        return STATUS_INVALID_FILE_FOR_SECTION;
+    }
+    return MiCreateBackedSection(maximumSize, pageProtection, attributes,
+                                 file != 0 ? &backing : 0, sectionOut);
 }
 
 /* --- mapping ----------------------------------------------------------------- */
@@ -288,7 +316,7 @@ static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, u
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
-    const char *cursor = (const char *)section->file->data + fileOffset;
+    const char *cursor = (const char *)section->rawData + fileOffset;
     const char *end = cursor + image->relocSize;
 
     while (cursor + sizeof(IMAGE_BASE_RELOCATION) <= end)
@@ -346,7 +374,7 @@ static NTSTATUS MipCommitImageRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_SE
     }
     if (rawSize != 0)
     {
-        MiCopyToUserRange(space, va, (const char *)section->file->data + rawOffset, rawSize);
+        MiCopyToUserRange(space, va, (const char *)section->rawData + rawOffset, rawSize);
     }
     return STATUS_SUCCESS;
 }
@@ -398,9 +426,9 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
     /* Headers first (read-only), then each PE section with its own
      * protection; everything is copied — no COW, no demand paging. */
     ULONG headerBytes = image->sizeOfHeaders;
-    if (headerBytes > section->file->size)
+    if (headerBytes > section->rawSize)
     {
-        headerBytes = (ULONG)section->file->size;
+        headerBytes = (ULONG)section->rawSize;
     }
     ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
     NTSTATUS status =
@@ -488,9 +516,13 @@ NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64
 
     ULONG firstPage = (ULONG)(offset / PAGE_SIZE);
     ULONG pageCount = (ULONG)(size / PAGE_SIZE);
+    /* File-backed data sections map the file's page cache; anonymous
+     * sections map their own frames. */
+    const uint64_t *frames = section->cache != 0 ? section->cache->frames : section->frames;
+    ASSERT(section->cache == 0 || firstPage + pageCount <= section->cache->pageCount);
     for (ULONG i = 0; i < pageCount; i++)
     {
-        uint64_t frame = section->frames[firstPage + i];
+        uint64_t frame = frames[firstPage + i];
         if (privateCopy)
         {
             uint64_t copy = MiAllocatePage();
@@ -571,12 +603,6 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
     {
         return status;
     }
-    if (file != 0)
-    {
-        /* There are no File objects before the M6 I/O manager, so no handle
-         * can name one; kernel-internal file sections use MiCreateSection. */
-        return STATUS_OBJECT_TYPE_MISMATCH;
-    }
 
     LARGE_INTEGER capturedSize;
     const LARGE_INTEGER *sizeArg = 0;
@@ -590,13 +616,40 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
         sizeArg = &capturedSize;
     }
 
+    /* A file handle brings the M6 Io backing: the file's page cache for
+     * data sections, a raw-bytes snapshot for SEC_IMAGE. */
+    MI_SECTION_BACKING backing;
+    BOOLEAN haveBacking = FALSE;
+    if (file != 0)
+    {
+        status = IopBuildSectionBacking(file, secFlags, protect, &backing);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        haveBacking = TRUE;
+    }
+
     /* Build first (fallible), then bind the name/handle (Ob) and move the
      * contents in — a name collision under OBJ_OPENIF must not disturb the
      * existing object. */
     MI_SECTION scratch;
-    status = MipBuildSection(&scratch, sizeArg, protect, secFlags, 0);
+    status = MipBuildSection(&scratch, sizeArg, protect, secFlags, haveBacking ? &backing : 0);
     if (!NT_SUCCESS(status))
     {
+        if (haveBacking)
+        {
+            if (backing.ownsRawData && scratch.rawData == 0)
+            {
+                MiFreePool((void *)(uintptr_t)backing.rawData);
+            }
+            else if (scratch.rawData != 0)
+            {
+                MipDeleteSection(&scratch);
+            }
+            IopSectionBackingReleased(backing.fileObject);
+            ObDereferenceObject(backing.fileObject);
+        }
         return status;
     }
 
@@ -605,11 +658,24 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
         ObpCreateObjectWithHandle(&MiSectionType, sizeof(MI_SECTION), attr, access, &body, handle);
     if (status == STATUS_SUCCESS)
     {
+        if (haveBacking)
+        {
+            scratch.fileObject = backing.fileObject;
+            ObfReferenceObject(scratch.fileObject); /* the section's pin */
+        }
         memcpy(body, &scratch, sizeof(scratch));
     }
     else
     {
         MipDeleteSection(&scratch); /* OBJ_OPENIF hit an existing object, or failure */
+        if (haveBacking)
+        {
+            IopSectionBackingReleased(backing.fileObject);
+        }
+    }
+    if (haveBacking)
+    {
+        ObDereferenceObject(backing.fileObject); /* IopBuildSectionBacking's reference */
     }
     return status;
 }

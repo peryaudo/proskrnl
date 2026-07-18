@@ -9,9 +9,10 @@
 #include "abi/ntstatus.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
+#include "kernel/mm/pagecache.h"
 #include "kernel/lib/string.h"
 
-#define KI_RAMDISK_MAX_FILES 16
+#define KI_RAMDISK_MAX_FILES 32
 
 static KI_RAMDISK_FILE KiRamdiskFiles[KI_RAMDISK_MAX_FILES];
 static ULONG KiRamdiskFileCount;
@@ -72,7 +73,7 @@ PKI_RAMDISK_FILE KiRegisterRamdiskFile(const char *path, const void *data, uint6
     file->name = name;
     file->data = data;
     file->size = size;
-    file->pageCache = 0;
+    MiInitializePageCache(&file->cache);
     return file;
 }
 
@@ -88,6 +89,21 @@ PKI_RAMDISK_FILE KiFindRamdiskFile(const char *name)
     return 0;
 }
 
+NTSTATUS KiEnsureRamdiskCache(PKI_RAMDISK_FILE file)
+{
+    if (file->cache.frames != 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = MiResizePageCache(&file->cache, file->size);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    MiCacheWrite(&file->cache, 0, file->data, file->size);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS KiReadRamdiskFile(const KI_RAMDISK_FILE *file, uint64_t offset, void *buffer,
                            uint64_t length, uint64_t *bytesRead)
 {
@@ -101,24 +117,11 @@ NTSTATUS KiReadRamdiskFile(const KI_RAMDISK_FILE *file, uint64_t offset, void *b
         length = file->size - offset;
     }
 
-    if (file->pageCache != 0)
+    if (file->cache.frames != 0)
     {
-        /* Through the page cache (one page at a time via the HHDM), so a
-         * read always sees exactly what a mapped view sees. */
-        uint64_t copied = 0;
-        while (copied < length)
-        {
-            uint64_t position = offset + copied;
-            uint64_t pageOffset = position & (PAGE_SIZE - 1);
-            uint64_t chunk = PAGE_SIZE - pageOffset;
-            if (chunk > length - copied)
-            {
-                chunk = length - copied;
-            }
-            const char *page = MiPhysicalToVirtual(file->pageCache[position / PAGE_SIZE]);
-            memcpy((char *)buffer + copied, page + pageOffset, chunk);
-            copied += chunk;
-        }
+        /* Through the page cache, so a read always sees exactly what a
+         * mapped view sees. */
+        MiCacheRead(&file->cache, offset, buffer, length);
     }
     else
     {

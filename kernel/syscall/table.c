@@ -20,14 +20,16 @@
 
 #include "abi/ntobapi.h"
 #include "abi/ntmmapi.h"
+#include "abi/ntioapi.h"
 #include "abi/ntpsapi.h"
 #include "abi/syscall_numbers.h"
 
 typedef NTSTATUS (*KI_SERVICE_ROUTINE)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t, uint64_t, uint64_t);
+                                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
-/* The widest service so far: NtMapViewOfSection's 10 arguments (M5). */
-#define KI_MAX_SYSCALL_ARGUMENTS 10
+/* The widest service so far: NtCreateFile's / NtQueryDirectoryFile's 11
+ * arguments (M6). */
+#define KI_MAX_SYSCALL_ARGUMENTS 11
 
 typedef struct
 {
@@ -92,9 +94,9 @@ __attribute__((no_sanitize("function"))) int64_t KiSystemService(uint64_t number
         }
     }
 
-    status =
-        descriptor->service(args[0], args[1], args[2], args[3], args[4], args[5], stackArguments[0],
-                            stackArguments[1], stackArguments[2], stackArguments[3]);
+    status = descriptor->service(args[0], args[1], args[2], args[3], args[4], args[5],
+                                 stackArguments[0], stackArguments[1], stackArguments[2],
+                                 stackArguments[3], stackArguments[4]);
 
     /* A service that terminated the calling thread never returns here. */
     thread->previousMode = KernelMode;

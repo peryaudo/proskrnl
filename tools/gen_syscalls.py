@@ -65,6 +65,18 @@ SYSCALLS = [
     ("NtMapViewOfSection", 10),
     ("NtUnmapViewOfSection", 2),
     ("NtQuerySection", 5),
+    # M6 Io surface
+    ("NtCreateFile", 11),
+    ("NtOpenFile", 6),
+    ("NtReadFile", 9),
+    ("NtWriteFile", 9),
+    ("NtQueryInformationFile", 5),
+    ("NtSetInformationFile", 5),
+    ("NtQueryDirectoryFile", 11),
+    ("NtQueryAttributesFile", 2),
+    ("NtFlushBuffersFile", 2),
+    ("NtLockFile", 10),
+    ("NtUnlockFile", 5),
 ]
 
 BANNER = """\
@@ -110,6 +122,16 @@ FUZZ_NAMES = [
     ("bad", "\\\\BaseNamedObjects\\\\fznodir\\\\x"),
     ("root", "\\\\"),
     ("basedir", "\\\\BaseNamedObjects"),
+]
+
+# File paths the M6 file ops use (index space only; the strings live in
+# interp.c). Tag "valid" = creatable under \??\C:\fuzz; "badpath" = missing
+# intermediate directory.
+FUZZ_FILE_NAMES = [
+    ("valid", "\\??\\C:\\fuzz\\fa.dat"),
+    ("valid", "\\??\\C:\\fuzz\\fb.dat"),
+    ("valid", "\\??\\C:\\fuzz\\Fuzz Long Name.Dat"),
+    ("badpath", "\\??\\C:\\fuzz\\nodir\\x.dat"),
 ]
 
 # Choice tables: name -> (c_type, [(c_expr, avoid), ...]). c_type None marks a
@@ -181,6 +203,40 @@ FUZZ_CHOICES = {
         ("DUPLICATE_SAME_ATTRIBUTES", False),
         ("DUPLICATE_CLOSE_SOURCE", False),
     ]),
+    # M6 file ops. Access/share/disposition kept to combinations whose
+    # statuses the sem_file suite pins; GENERIC_* stays out (the docs/03
+    # generic-mapping deviation would diverge).
+    "access_file": ("ACCESS_MASK", [
+        ("FILE_GENERIC_READ | FILE_GENERIC_WRITE", False),
+        ("FILE_GENERIC_READ", False),
+        ("FILE_READ_ATTRIBUTES | SYNCHRONIZE", False),
+        ("FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE", False),
+    ]),
+    "share_file": ("ULONG", [
+        ("0", False),
+        ("FILE_SHARE_READ", False),
+        ("FILE_SHARE_READ | FILE_SHARE_WRITE", False),
+        ("FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE", False),
+    ]),
+    "disposition_file": ("ULONG", [
+        ("FILE_OPEN", False),
+        ("FILE_CREATE", False),
+        ("FILE_OPEN_IF", False),
+        ("FILE_OVERWRITE_IF", False),
+    ]),
+    # Semantic: transfer size / offset shapes; meanings live in interp.c.
+    "iolen": (None, [
+        ("FZ_IOLEN_ZERO", False),
+        ("FZ_IOLEN_ONE", False),
+        ("FZ_IOLEN_MID", False),
+        ("FZ_IOLEN_BIG", False),
+    ]),
+    "iooff": (None, [
+        ("FZ_IOOFF_ZERO", False),
+        ("FZ_IOOFF_ONE", False),
+        ("FZ_IOOFF_SECTOR", False),
+        ("FZ_IOOFF_FAR", False),
+    ]),
     # Semantic: buffer-length shape for NtQuery* (exact / zero / one short /
     # oversized). Meaning lives in interp.c. No NULL/wild buffer in v1 — an
     # asymmetric unprobed deref would crash the harness process and lose the
@@ -231,6 +287,13 @@ FUZZ_OPS = [
     ("open_symlink", "NtOpenSymbolicLinkObject",
      ["slot_out", "ch_access_symlink", "name", "ch_objflags"]),
     ("query_symlink", "NtQuerySymbolicLinkObject", ["slot_in", "ch_len"]),
+    # M6 file surface (paths under \??\C:\fuzz; per-program scrub in interp.c)
+    ("create_file", "NtCreateFile",
+     ["slot_out", "ch_access_file", "fname", "ch_share_file", "ch_disposition_file"]),
+    ("read_file", "NtReadFile", ["slot_in", "ch_iolen", "ch_iooff"]),
+    ("write_file", "NtWriteFile", ["slot_in", "ch_iolen", "ch_iooff"]),
+    ("set_eof_file", "NtSetInformationFile", ["slot_in", "ch_iooff"]),
+    ("query_standard_file", "NtQueryInformationFile", ["slot_in"]),
 ]
 
 
@@ -306,7 +369,8 @@ def gen_fuzz_model_h() -> str:
     lines.append(" * appears here or in the Python generator (G4). */\n")
 
     lines.append(f"#define FZ_SLOT_COUNT {FUZZ_SLOT_COUNT}")
-    lines.append(f"#define FZ_NAME_COUNT {len(FUZZ_NAMES)}\n")
+    lines.append(f"#define FZ_NAME_COUNT {len(FUZZ_NAMES)}")
+    lines.append(f"#define FZ_FNAME_COUNT {len(FUZZ_FILE_NAMES)}\n")
 
     # Operand-kind enum.
     lines.append("typedef enum {")
@@ -363,6 +427,12 @@ def gen_fuzz_model_py() -> str:
     out.append("# (index, tag) for each object name; index 0 = anonymous.")
     out.append("NAME_TAGS = [")
     for i, (tag, _s) in enumerate(FUZZ_NAMES):
+        out.append(f"    ({i}, {tag!r}),")
+    out.append("]")
+    out.append("")
+    out.append("# (index, tag) for each M6 file path.")
+    out.append("FNAME_TAGS = [")
+    for i, (tag, _s) in enumerate(FUZZ_FILE_NAMES):
         out.append(f"    ({i}, {tag!r}),")
     out.append("]")
     out.append("")

@@ -48,15 +48,19 @@ def gen_ntstatus(wine: Path) -> str:
 
 def extract_defines(src: str, source_name: str, names: list[str]) -> str:
     """Pull `#define NAME value` lines verbatim, in the order given (so a
-    definition may reference an earlier one). Values are never retyped."""
+    definition may reference an earlier one). Backslash-continued definitions
+    (e.g. winnt.h's FILE_GENERIC_READ) are joined. Values are never retyped."""
     lines = []
     for name in names:
         match = re.search(
-            r"^#define\s+" + re.escape(name) + r"\s+(.+?)\s*$", src, re.M
+            r"^#define\s+" + re.escape(name) + r"\s+((?:[^\n]*\\\n)*[^\n]*?)\s*$",
+            src,
+            re.M,
         )
         if not match:
             sys.exit(f"gen_abi: #define {name} not found in {source_name}")
-        lines.append(f"#define {name} {match.group(1)}")
+        value = re.sub(r"\s*\\\n\s*", " ", match.group(1))
+        lines.append(f"#define {name} {value}")
     return "\n".join(lines)
 
 
@@ -195,6 +199,7 @@ def gen_ntdef(wine: Path) -> str:
     scaffold = """\
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
+typedef char CHAR;
 typedef signed char CCHAR;
 typedef unsigned char UCHAR;
 typedef unsigned char BOOLEAN;
@@ -614,6 +619,181 @@ _Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout
     )
 
 
+# The M6 Io surface (docs/02): NtCreateFile/NtOpenFile, read/write with the
+# async-completion protocol shapes (IOSB, APC routine), the main info
+# classes, directory enumeration, flush, and byte-range locks.
+NTIOAPI_FUNCTIONS = [
+    "NtCreateFile",
+    "NtOpenFile",
+    "NtReadFile",
+    "NtWriteFile",
+    "NtQueryInformationFile",
+    "NtSetInformationFile",
+    "NtQueryDirectoryFile",
+    "NtQueryAttributesFile",
+    "NtFlushBuffersFile",
+    "NtLockFile",
+    "NtUnlockFile",
+]
+
+
+def extract_typedef_line(src: str, source_name: str, name: str) -> str:
+    """Pull a one-line `typedef ... NAME ...;` verbatim (used for the
+    PIO_APC_ROUTINE function-pointer type), dropping the WINAPI macro."""
+    match = re.search(r"^typedef[^\n;]*\b" + re.escape(name) + r"\b[^\n;]*;\s*$", src, re.M)
+    if not match:
+        sys.exit(f"gen_abi: typedef {name} not found in {source_name}")
+    return match.group(0).strip().replace("WINAPI ", "").replace("CALLBACK ", "")
+
+
+def gen_ntioapi(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+
+    access_rights = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "ANYSIZE_ARRAY",
+            "FILE_READ_DATA",
+            "FILE_LIST_DIRECTORY",
+            "FILE_WRITE_DATA",
+            "FILE_ADD_FILE",
+            "FILE_APPEND_DATA",
+            "FILE_ADD_SUBDIRECTORY",
+            "FILE_READ_EA",
+            "FILE_WRITE_EA",
+            "FILE_EXECUTE",
+            "FILE_TRAVERSE",
+            "FILE_DELETE_CHILD",
+            "FILE_READ_ATTRIBUTES",
+            "FILE_WRITE_ATTRIBUTES",
+            "FILE_ALL_ACCESS",
+            "FILE_GENERIC_READ",
+            "FILE_GENERIC_WRITE",
+            "FILE_GENERIC_EXECUTE",
+            "FILE_SHARE_READ",
+            "FILE_SHARE_WRITE",
+            "FILE_SHARE_DELETE",
+            "FILE_ATTRIBUTE_READONLY",
+            "FILE_ATTRIBUTE_HIDDEN",
+            "FILE_ATTRIBUTE_SYSTEM",
+            "FILE_ATTRIBUTE_DIRECTORY",
+            "FILE_ATTRIBUTE_ARCHIVE",
+            "FILE_ATTRIBUTE_NORMAL",
+        ],
+    )
+
+    create_flags = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            # NtCreateFile options
+            "FILE_DIRECTORY_FILE",
+            "FILE_WRITE_THROUGH",
+            "FILE_SEQUENTIAL_ONLY",
+            "FILE_SYNCHRONOUS_IO_ALERT",
+            "FILE_SYNCHRONOUS_IO_NONALERT",
+            "FILE_NON_DIRECTORY_FILE",
+            "FILE_RANDOM_ACCESS",
+            "FILE_DELETE_ON_CLOSE",
+            "FILE_OPEN_REPARSE_POINT",
+            # IO_STATUS_BLOCK.Information values for create/open
+            "FILE_SUPERSEDED",
+            "FILE_OPENED",
+            "FILE_CREATED",
+            "FILE_OVERWRITTEN",
+            "FILE_EXISTS",
+            "FILE_DOES_NOT_EXIST",
+            # create dispositions
+            "FILE_SUPERSEDE",
+            "FILE_OPEN",
+            "FILE_CREATE",
+            "FILE_OPEN_IF",
+            "FILE_OVERWRITE",
+            "FILE_OVERWRITE_IF",
+            "FILE_MAXIMUM_DISPOSITION",
+        ],
+    )
+
+    iosb = extract_struct(winternl, "_IO_STATUS_BLOCK", "IO_STATUS_BLOCK")
+    apc_routine = extract_typedef_line(winternl, "winternl.h", "PIO_APC_ROUTINE")
+    info_class = extract_enum(
+        winternl, "_FILE_INFORMATION_CLASS", "FILE_INFORMATION_CLASS"
+    )
+    structs = "\n\n".join(
+        extract_struct(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_FILE_DIRECTORY_INFORMATION", "FILE_DIRECTORY_INFORMATION"),
+            ("_FILE_FULL_DIRECTORY_INFORMATION", "FILE_FULL_DIRECTORY_INFORMATION"),
+            ("_FILE_BOTH_DIRECTORY_INFORMATION", "FILE_BOTH_DIRECTORY_INFORMATION"),
+            ("_FILE_BASIC_INFORMATION", "FILE_BASIC_INFORMATION"),
+            ("_FILE_STANDARD_INFORMATION", "FILE_STANDARD_INFORMATION"),
+            ("_FILE_INTERNAL_INFORMATION", "FILE_INTERNAL_INFORMATION"),
+            ("_FILE_EA_INFORMATION", "FILE_EA_INFORMATION"),
+            ("_FILE_ACCESS_INFORMATION", "FILE_ACCESS_INFORMATION"),
+            ("_FILE_NAME_INFORMATION", "FILE_NAME_INFORMATION"),
+            ("_FILE_NAMES_INFORMATION", "FILE_NAMES_INFORMATION"),
+            ("_FILE_DISPOSITION_INFORMATION", "FILE_DISPOSITION_INFORMATION"),
+            ("_FILE_POSITION_INFORMATION", "FILE_POSITION_INFORMATION"),
+            ("_FILE_MODE_INFORMATION", "FILE_MODE_INFORMATION"),
+            ("_FILE_ALIGNMENT_INFORMATION", "FILE_ALIGNMENT_INFORMATION"),
+            ("_FILE_ALLOCATION_INFORMATION", "FILE_ALLOCATION_INFORMATION"),
+            ("_FILE_END_OF_FILE_INFORMATION", "FILE_END_OF_FILE_INFORMATION"),
+            ("_FILE_NETWORK_OPEN_INFORMATION", "FILE_NETWORK_OPEN_INFORMATION"),
+            ("_FILE_ATTRIBUTE_TAG_INFORMATION", "FILE_ATTRIBUTE_TAG_INFORMATION"),
+            ("_FILE_ALL_INFORMATION", "FILE_ALL_INFORMATION"),
+        ]
+    )
+    prototypes = extract_prototypes(winternl, NTIOAPI_FUNCTIONS)
+
+    asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(IO_STATUS_BLOCK) == 16, "IO_STATUS_BLOCK x64 layout");
+_Static_assert(offsetof(IO_STATUS_BLOCK, Information) == 8, "IO_STATUS_BLOCK x64 layout");
+_Static_assert(sizeof(FILE_BASIC_INFORMATION) == 40, "FILE_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_BASIC_INFORMATION, FileAttributes) == 32, "FILE_BASIC_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_STANDARD_INFORMATION) == 24, "FILE_STANDARD_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_STANDARD_INFORMATION, DeletePending) == 20, "FILE_STANDARD_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_DIRECTORY_INFORMATION, FileName) == 64, "FILE_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName) == 68, "FILE_FULL_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, ShortName) == 70, "FILE_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntioapi.h", source="wine/include/{winnt.h,winternl.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTIOAPI_H\n"
+        + "#define PROSKRNL_ABI_NTIOAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* File access rights, share modes, and attributes, extracted from\n"
+        + " * wine/include/winnt.h. */\n"
+        + access_rights
+        + "\n\n/* Create options/dispositions and IOSB Information values, extracted\n"
+        + " * from wine/include/winternl.h. */\n"
+        + create_flags
+        + "\n\n/* The async-completion protocol shapes (docs/03: IOSB timing is a kept\n"
+        + " * contract), extracted verbatim from wine/include/winternl.h. */\n"
+        + iosb
+        + "\n\n"
+        + apc_routine
+        + "\n\n/* Extracted verbatim from wine/include/winternl.h. */\n"
+        + info_class
+        + "\n\n"
+        + structs
+        + "\n\n"
+        + asserts
+        + "\n/* The M6 Io Nt* surface; signatures extracted verbatim from\n"
+        + " * wine/include/winternl.h (linkage macros dropped). */\n"
+        + prototypes
+        + "\n\n#endif /* PROSKRNL_ABI_NTIOAPI_H */\n"
+    )
+
+
 # The M4 Ps surface: process termination (the flat-binary exit path) plus
 # NtDisplayString (the flat-binary test-output path, docs/14).
 NTPSAPI_FUNCTIONS = [
@@ -695,6 +875,7 @@ def main() -> None:
         ("ntobapi.h", gen_ntobapi(args.wine)),
         ("ntmmapi.h", gen_ntmmapi(args.wine)),
         ("ntimage.h", gen_ntimage(args.wine)),
+        ("ntioapi.h", gen_ntioapi(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
