@@ -112,6 +112,7 @@ OBJCOPY   := $(LLVM)/llvm-objcopy
 UCFLAGS   := -std=c11 -target x86_64-unknown-none -ffreestanding \
              -fno-stack-protector -fno-pie -fno-pic -m64 -march=x86-64 \
              -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+             -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
              -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
 ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
 

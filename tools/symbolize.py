@@ -27,9 +27,13 @@ import sys
 KERNEL_ADDR_RE = re.compile(r"0xffffffff8[0-9a-f]{7}\b")
 
 # Flat user binaries link at PSP_IMAGE_BASE 0x400000 (kernel/ps/ps.h); only
-# annotate them on lines that are user-dump output to avoid false hits.
+# annotate them on lines that are user-dump output to avoid false hits: lines
+# carrying a [USERFAULT]/[TRACE] tag, user-trace entries, and the indented
+# register lines of a [USERFAULT] dump block (tracked statefully below).
 USER_ADDR_RE = re.compile(r"0x0{10}[4-7][0-9a-f]{5}\b")
 USER_LINE_RE = re.compile(r"\[USERFAULT\]|\[TRACE\]|^\s+u\[\d+\]")
+USER_BLOCK_START_RE = re.compile(r"\[USERFAULT\] vector=")
+INDENTED_RE = re.compile(r"^\s")
 
 # Return addresses point after the call site: symbolize addr-1 there so the
 # annotation names the caller line, not the next one. Stack-trace entries and
@@ -182,12 +186,18 @@ def main():
         pass
     module_resolvers = {}
 
+    in_userfault_block = False
     for index, line in enumerate(lines):
+        if USER_BLOCK_START_RE.search(line):
+            in_userfault_block = True
+        elif not INDENTED_RE.match(line):
+            in_userfault_block = False
         is_return_address = RET_ADDR_LINE_RE.search(line) is not None
         if kernel_resolver is not None and KERNEL_ADDR_RE.search(line):
             line = annotate_line(line, KERNEL_ADDR_RE, kernel_resolver,
                                  is_return_address)
-        if args.moduledir and USER_LINE_RE.search(line) \
+        if args.moduledir \
+                and (in_userfault_block or USER_LINE_RE.search(line)) \
                 and USER_ADDR_RE.search(line):
             image = nearest_image_name(lines, index)
             if image is not None:

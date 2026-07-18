@@ -98,8 +98,9 @@ proskrnl() {
 
     local ucflags="-std=c11 -target x86_64-unknown-none -ffreestanding \
         -fno-stack-protector -fno-pie -fno-pic -m64 -march=x86-64 \
-        -mno-mmx -mno-sse -mno-sse2 -mno-80387 -O2 -g -I$ROOT -I$NTAPI \
-        -DNTAPI_PROSKRNL"
+        -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
+        -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
+        -O2 -g -I$ROOT -I$NTAPI -DNTAPI_PROSKRNL"
     local uldflags="-m elf_x86_64 -static -T $ROOT/user/init-tests/user.ld --build-id=none"
 
     # Shared runtime objects (crt0 + generated stubs + harness).
