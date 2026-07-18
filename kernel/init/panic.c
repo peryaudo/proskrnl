@@ -108,8 +108,9 @@ __attribute__((noreturn)) static void KiHalt(void)
 
 /* A fault while dumping must not loop into an endless dump cascade: every
  * fatal path latches here first, and a second fatal entry halts after one
- * line. The first dump is the one that matters (Art. 9). */
-static int KiPanicInProgress;
+ * line. The first dump is the one that matters (Art. 9). Non-static: KASAN
+ * suppresses its reports while this is set (see panic.h). */
+int KiPanicInProgress;
 
 static void KiPanicLatch(void)
 {
@@ -121,6 +122,16 @@ static void KiPanicLatch(void)
     KiPanicInProgress = 1;
 }
 
+/* The dump runs when kernel state may already be smashed (a stack overflow
+ * ploughs through adjacent pool objects — including the current KTHREAD).
+ * Before chasing a pointer read out of such memory, require it to at least
+ * be canonical higher-half; a garbage value would re-fault and the latch
+ * would truncate the dump. Best-effort, not proof of validity. */
+static int KiLooksLikeKernelPointer(const void *pointer)
+{
+    return (uint64_t)(uintptr_t)pointer >= 0xffff800000000000ULL;
+}
+
 /* Who and when: the identity block every fatal dump (and the #BP demo dump)
  * carries so a log line never needs out-of-band context — uptime, current
  * thread/process, kernel stack bounds (put next to the dumped RSP, a stack
@@ -129,14 +140,15 @@ static void KiDumpSystemState(void)
 {
     DbgPrint("  uptime=%lums\n", (uint64_t)KeTickCount);
     PKTHREAD thread = KiCurrentThread; /* 0 before the scheduler exists */
-    if (thread != 0)
+    if (thread != 0 && KiLooksLikeKernelPointer(thread))
     {
         DbgPrint("  thread=%p state=%d prio=%d prevmode=%d\n", (void *)thread, thread->state,
                  (int)thread->priority, (int)thread->previousMode);
-        if (thread->process != 0)
+        if (KiLooksLikeKernelPointer(thread->process))
         {
+            const char *imageName = thread->process->imageName;
             DbgPrint("  process=%p image='%s'\n", (void *)thread->process,
-                     thread->process->imageName != 0 ? thread->process->imageName : "?");
+                     imageName != 0 && KiLooksLikeKernelPointer(imageName) ? imageName : "?");
         }
         DbgPrint("  kstack base=%p top=%#lx\n", thread->stackBase, thread->stackTop);
     }
@@ -219,6 +231,13 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     KiDumpTrapFrame("[PANIC]", trapFrame);
     KiDumpStackTrace(trapFrame->rbp);
     KiDumpSystemState();
+    if (trapFrame->vector == 8)
+    {
+        /* We got here on the IST stack (idt.c); the dumped RSP is where the
+         * faulted stack stood. */
+        DbgPrint("[PANIC] #DF: compare RSP with the kstack bounds above — "
+                 "likely kernel stack overflow\n");
+    }
     DbgPrint("[PANIC] unhandled exception; halting\n");
     KiHalt();
 }

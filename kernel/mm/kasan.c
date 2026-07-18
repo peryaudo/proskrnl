@@ -122,6 +122,14 @@ static void MiKasanReport(uint64_t address, uint64_t size, int isWrite, void *ca
         (*MiKasanReportCounter)++;
         return;
     }
+    /* Mid-panic the dump code deliberately reads best-effort (e.g. the RBP
+     * walk of an overflowed stack crosses redzones); re-panicking here would
+     * trip the recursion latch and truncate the one dump that matters
+     * (Art. 9). The first report wins; stay quiet during it. */
+    if (KiPanicInProgress)
+    {
+        return;
+    }
     unsigned char shadowValue = *MiKasanShadowFor(address);
     DbgPrint("[KASAN] invalid %s of %lu bytes at %p (shadow %02x, caller %p)\n",
              isWrite ? "write" : "read", (unsigned long)size, (void *)(uintptr_t)address,

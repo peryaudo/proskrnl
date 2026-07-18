@@ -56,6 +56,10 @@ typedef struct
 
 static KTSS KiTss;
 
+/* Dedicated #DF stack (see KI_IST_DOUBLE_FAULT in gdt.h): 8 KiB is plenty
+ * for one trap frame + the dump path; 16-byte aligned per the ABI. */
+static uint8_t KiDoubleFaultStack[8192] __attribute__((aligned(16)));
+
 /* 5 slots + the 16-byte TSS descriptor (2 slots). */
 static uint64_t KiGdt[8];
 
@@ -98,6 +102,10 @@ void KiInitializeGdt(void)
     KiGdt[KI_GDT_TSS / 8 + 1] = base >> 32;
 
     KiTss.ioMapBase = sizeof(KiTss); /* no I/O permission map */
+    /* ist[] is TSS.IST1..IST7 (SDM Vol. 3A Fig. 8-11); slot n-1 backs the
+     * gates whose IST field is n (idt.c arms #DF with KI_IST_DOUBLE_FAULT). */
+    KiTss.ist[KI_IST_DOUBLE_FAULT - 1] =
+        (uint64_t)(uintptr_t)KiDoubleFaultStack + sizeof(KiDoubleFaultStack);
 
     KDESCRIPTOR descriptor = {(uint16_t)(sizeof(KiGdt) - 1), (uint64_t)(uintptr_t)KiGdt};
     __asm__ volatile("lgdt %0" : : "m"(descriptor));

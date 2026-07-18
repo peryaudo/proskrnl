@@ -12,6 +12,11 @@
  * syscall entry path (M4) updates it. -1 until then. */
 extern uint64_t KiLastSystemCall;
 
+/* Nonzero once a fatal dump has started (the recursion latch). KASAN checks
+ * it to stay quiet mid-dump — the dump's best-effort reads (an overflowed
+ * stack's RBP chain) may legitimately cross poisoned pool bytes. */
+extern int KiPanicInProgress;
+
 __attribute__((noreturn)) void KiPanic(const char *message);
 __attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line);
 

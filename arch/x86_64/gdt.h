@@ -22,6 +22,12 @@
 #define KI_GDT_USER_CS   0x20
 #define KI_GDT_TSS       0x28
 
+/* IST slot (1-based, TSS.IST[n-1]) for #DF: a kernel-stack overflow must
+ * land the dump on a known-good stack instead of triple-faulting silently
+ * (Art. 9 — the panic dump is the debugger). Intel SDM Vol. 3A §6.14.5
+ * "Interrupt Stack Table". */
+#define KI_IST_DOUBLE_FAULT 1
+
 #define KI_USER_CS_SELECTOR (KI_GDT_USER_CS | 3)
 #define KI_USER_DS_SELECTOR (KI_GDT_USER_DS | 3)
 
