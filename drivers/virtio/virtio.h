@@ -1,0 +1,155 @@
+/* drivers/virtio/virtio.h — virtio 1.x over the modern PCI transport (M6).
+ *
+ * Written from the OASIS specification "Virtual I/O Device (VIRTIO) Version
+ * 1.2", Committee Specification 01 (virtio-v1.2-cs01) — cited per section
+ * below — with the pinned third_party/qemu as the runtime cross-check
+ * (docs/09 Art. 4 / gate G8). Provenance: public spec only (docs/11).
+ *
+ * Scope: exactly what a polling, uniprocessor, no-MSI-X driver needs — the
+ * split virtqueue, the common/notify/device config capabilities, and the
+ * status/feature handshake. No interrupts: requests are submitted and the
+ * used ring is polled (Art. 3: synchronous under the hood).
+ */
+#ifndef PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
+#define PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+/* --- device status (virtio 1.2 cs01 §2.1) -------------------------------- */
+#define VIRTIO_STATUS_ACKNOWLEDGE        1
+#define VIRTIO_STATUS_DRIVER             2
+#define VIRTIO_STATUS_DRIVER_OK          4
+#define VIRTIO_STATUS_FEATURES_OK        8
+#define VIRTIO_STATUS_DEVICE_NEEDS_RESET 64
+#define VIRTIO_STATUS_FAILED             128
+
+/* --- reserved feature bits (virtio 1.2 cs01 §6) --------------------------- */
+#define VIRTIO_F_VERSION_1 32ULL
+
+/* --- split virtqueue (virtio 1.2 cs01 §2.7) ------------------------------- */
+
+/* §2.7.5: 16 bytes per descriptor. */
+typedef struct
+{
+    uint64_t addr; /* le64 guest-physical buffer address */
+    uint32_t len;  /* le32 */
+    uint16_t flags;
+    uint16_t next; /* valid iff flags & VIRTQ_DESC_F_NEXT */
+} VIRTQ_DESC;
+_Static_assert(sizeof(VIRTQ_DESC) == 16, "virtq_desc is 16 bytes (virtio 1.2 cs01 §2.7.5)");
+
+#define VIRTQ_DESC_F_NEXT  1 /* §2.7.5 */
+#define VIRTQ_DESC_F_WRITE 2 /* §2.7.5: device write-only buffer */
+
+/* §2.7.6: avail ring — le16 flags, le16 idx, le16 ring[qsize]. */
+typedef struct
+{
+    uint16_t flags;
+    uint16_t idx;
+    uint16_t ring[]; /* qsize entries */
+} VIRTQ_AVAIL;
+
+/* §2.7.8: used ring — le16 flags, le16 idx, {le32 id, le32 len}[qsize]. */
+typedef struct
+{
+    uint32_t id;
+    uint32_t len;
+} VIRTQ_USED_ELEM;
+_Static_assert(sizeof(VIRTQ_USED_ELEM) == 8, "used elem is 8 bytes (virtio 1.2 cs01 §2.7.8)");
+
+typedef struct
+{
+    uint16_t flags;
+    uint16_t idx;
+    VIRTQ_USED_ELEM ring[]; /* qsize entries */
+} VIRTQ_USED;
+
+/* --- PCI transport (virtio 1.2 cs01 §4.1) --------------------------------- */
+
+#define VIRTIO_PCI_VENDOR                     0x1AF4 /* §4.1.2 */
+#define VIRTIO_PCI_DEVICE_ID_MIN              0x1000 /* §4.1.2: 0x1000..0x107F are virtio */
+#define VIRTIO_PCI_DEVICE_ID_MAX              0x107F
+#define VIRTIO_PCI_DEVICE_ID_BLK_TRANSITIONAL 0x1001 /* §4.1.2.1 */
+#define VIRTIO_PCI_DEVICE_ID_MODERN_BASE      0x1040 /* §4.1.2: 0x1040 + type */
+
+/* Vendor-specific capability layout (virtio 1.2 cs01 §4.1.4); cap_vndr is
+ * PCI capability ID 0x09 (PCI Local Bus Spec 3.0 §6.7 vendor-specific). */
+#define VIRTIO_PCI_CAP_VNDR_ID    0x09
+#define VIRTIO_PCI_CAP_COMMON_CFG 1 /* §4.1.4 cfg_type values */
+#define VIRTIO_PCI_CAP_NOTIFY_CFG 2
+#define VIRTIO_PCI_CAP_ISR_CFG    3
+#define VIRTIO_PCI_CAP_DEVICE_CFG 4
+#define VIRTIO_PCI_CAP_PCI_CFG    5
+
+/* virtio_pci_cap config-space byte offsets (§4.1.4). */
+#define VIRTIO_PCI_CAP_OFF_CFG_TYPE          3
+#define VIRTIO_PCI_CAP_OFF_BAR               4
+#define VIRTIO_PCI_CAP_OFF_OFFSET            8
+#define VIRTIO_PCI_CAP_OFF_LENGTH            12
+#define VIRTIO_PCI_NOTIFY_CAP_OFF_MULTIPLIER 16 /* §4.1.4.4 notify_off_multiplier */
+
+/* Common configuration structure (virtio 1.2 cs01 §4.1.4.3); the offsets
+ * follow the spec's packed little-endian struct (all fields naturally
+ * aligned — pinned by the static_asserts on the struct below). */
+typedef struct
+{
+    volatile uint32_t deviceFeatureSelect; /* 0x00 */
+    volatile uint32_t deviceFeature;       /* 0x04 */
+    volatile uint32_t driverFeatureSelect; /* 0x08 */
+    volatile uint32_t driverFeature;       /* 0x0C */
+    volatile uint16_t configMsixVector;    /* 0x10 */
+    volatile uint16_t numQueues;           /* 0x12 */
+    volatile uint8_t deviceStatus;         /* 0x14: writing 0 resets (§4.1.4.3) */
+    volatile uint8_t configGeneration;     /* 0x15 */
+    volatile uint16_t queueSelect;         /* 0x16 */
+    volatile uint16_t queueSize;           /* 0x18 */
+    volatile uint16_t queueMsixVector;     /* 0x1A */
+    volatile uint16_t queueEnable;         /* 0x1C */
+    volatile uint16_t queueNotifyOff;      /* 0x1E */
+    volatile uint64_t queueDesc;           /* 0x20 */
+    volatile uint64_t queueDriver;         /* 0x28 */
+    volatile uint64_t queueDevice;         /* 0x30 */
+} VIRTIO_PCI_COMMON_CFG;
+_Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, deviceStatus) == 0x14,
+               "common cfg layout (virtio 1.2 cs01 §4.1.4.3)");
+_Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, queueNotifyOff) == 0x1E,
+               "common cfg layout (virtio 1.2 cs01 §4.1.4.3)");
+_Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, queueDevice) == 0x30,
+               "common cfg layout (virtio 1.2 cs01 §4.1.4.3)");
+
+/* --- one polled split virtqueue (virtqueue.c) ------------------------------ */
+
+typedef struct
+{
+    uint16_t queueSize;
+    uint16_t freeHead;    /* head of the free-descriptor chain */
+    uint16_t lastUsedIdx; /* our private used-ring cursor (§2.7.14) */
+    VIRTQ_DESC *desc;     /* descriptor area (one frame) */
+    VIRTQ_AVAIL *avail;   /* driver area (one frame) */
+    VIRTQ_USED *used;     /* device area (one frame) */
+    uint64_t descPhysical;
+    uint64_t availPhysical;
+    uint64_t usedPhysical;
+    volatile uint16_t *notify; /* this queue's notify address (mapped MMIO) */
+    uint16_t queueIndex;
+} VIO_VIRTQUEUE;
+
+/* Allocate the three ring areas (one 4 KiB frame each — enough for any
+ * queue size <= 256 at the §2.7 area sizes) and set up the free list.
+ * Caps queueSize at 256 so the areas fit their frames. */
+int VioInitializeVirtqueue(VIO_VIRTQUEUE *queue, uint16_t queueIndex, uint16_t queueSize);
+
+/* Submit one 3-part chain (header / data / status per the caller's flags)
+ * and poll the used ring until it completes (§2.7.13 submission barriers,
+ * §2.7.14 polling). Returns 0 on poll timeout, 1 on completion. */
+typedef struct
+{
+    uint64_t physical;
+    uint32_t length;
+    int deviceWrites; /* VIRTQ_DESC_F_WRITE */
+} VIO_SEGMENT;
+
+int VioSubmitAndPoll(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segmentCount);
+
+#endif /* PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H */

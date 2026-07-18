@@ -16,6 +16,30 @@ static inline uint8_t KiInByte(uint16_t port)
     return value;
 }
 
+static inline void KiOutWord(uint16_t port, uint16_t value)
+{
+    __asm__ volatile("outw %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint16_t KiInWord(uint16_t port)
+{
+    uint16_t value;
+    __asm__ volatile("inw %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+static inline void KiOutLong(uint16_t port, uint32_t value)
+{
+    __asm__ volatile("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline uint32_t KiInLong(uint16_t port)
+{
+    uint32_t value;
+    __asm__ volatile("inl %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
 static inline uint64_t KiReadMsr(uint32_t msr)
 {
     uint32_t low, high;
