@@ -30,32 +30,34 @@ as M6+ lands.
 
 ## Scope: the name-space levels
 
-The dispatcher-object + handle-table + wait/query core is where proskrnl and
-Wine already agree. The object *namespace* is not: proskrnl still maps
-malformed / nested / colliding paths to *different error statuses* than Wine
-(`OBJECT_NAME_INVALID` vs `INVALID_PARAMETER` vs `PATH_SYNTAX_BAD` vs
-`PATH_NOT_FOUND` vs `ACCESS_DENIED`). **Wine is the operative oracle (docs/09
-Art. 6): every one of those differences is a proskrnl bug to fix** — the
-boundary consumer is Wine's own PE stack, so there is no "maybe real Windows
-differs" question to ask first. The namespace backlog is simply larger than one
-change, so generation has three levels (`--names`):
+Generation has three name-space levels (`--names`):
 
 - **`anon`** (default) — anonymous objects only. A clean, converging baseline
-  that makes the fuzzer a green regression gate today.
-- **`named`** — adds valid names (collisions, reopens, nesting).
+  that makes the fuzzer a green regression gate: the dispatcher-object +
+  handle-table + wait/query core plus every anonymous create/close path.
+- **`named`** — adds valid names (collisions, reopens, nesting, symbolic links).
 - **`malformed`** — adds deliberately-bad names (empty, relative, missing dir,
   the root, a directory used as a leaf).
 
-`named` and `malformed` surface the namespace error-status backlog on purpose;
-those runs enumerate bugs still to fix (Art. 5: pin each on the oracle, then fix
-the kernel), and are **not** baselined.
+**Wine is the operative oracle (docs/09 Art. 6): a divergence from Wine is a
+proskrnl bug.** The `named`/`malformed` modes were used to find and fix the
+object-namespace corners — empty/`"\"` names, symbolic-link collision, reparse
+targets, `OBJ_OPENIF` status, zero-access opens, non-directory path components,
+link loops — now pinned by `tests/ntapi/sem_ob/namespace_errors`. What those two
+modes still surface is the *adversarial* residue: the exact error code for
+pathological symbolic-link graphs and the same name reused across incompatible
+object types — inputs Wine's PE stack never produces and that do not minimize
+below ~13 calls. That residue is a documented, deferred deviation
+(`docs/03-nt-deviations.md`, "Adversarial namespace error classification"), not a
+green-gate target, which is why the default stays `anon`. Run `--names named`
+to explore it; treat its findings against that docs/03 entry.
 
 ## Running
 
 ```
 tests/run/run.sh fuzz                      # default batch (64 programs × ≤32 calls, --names anon)
 tests/run/run.sh fuzz --seed 7 --programs 256
-tests/run/run.sh fuzz --names named        # explore the namespace backlog
+tests/run/run.sh fuzz --names named        # exercise the object namespace (docs/03 residue)
 tests/run/run.sh fuzz --replay build/tests/fuzz/repro/fuzz_<id>.blob
 ```
 
@@ -89,18 +91,22 @@ proskrnl).
 
 ## The known-divergence baseline
 
-`known_divergences.txt` is the set of root-divergence signatures already known
-and documented — proskrnl-vs-Wine differences awaiting disposition. The fuzzer
-ignores these and fails only on a **new** signature, so the default run is a
-green regression gate whose baseline is a *visible, cited backlog of bugs still
-to fix* rather than a silence (docs/09 Art. 6 — a difference merely hidden is
-not a difference fixed). Wine is the operative oracle, so every entry is a
-proskrnl bug by definition; a baseline line is a scheduling decision ("not fixed
-yet"), never a verdict question. Every line carries a note; removing a line
-turns that divergence back into a hard failure, which is what you do when you
-fix it. The `anon` baseline ships with 9 signatures to fix
-(MakeTemporaryObject's DELETE-access check, open-by-null-name status
-classification, and NtReleaseSemaphore's validation ordering).
+`known_divergences.txt` is the set of root-divergence signatures the default
+(`anon`) run is allowed to still show. The fuzzer ignores these and fails only
+on a **new** signature, so the default is a green regression gate whose baseline
+is a *visible, cited* list rather than a silence (docs/09 Art. 6 — a difference
+merely hidden is not a difference fixed). Wine is the operative oracle, so every
+entry is a proskrnl bug; a baseline line is a scheduling decision ("not fixed
+yet"), never a verdict question. Removing a line turns that divergence back into
+a hard failure, which is what you do when you fix it.
+
+The `anon` baseline is currently **empty**: the default policy is at full parity
+with Wine. (Its history: nine signatures fixed in the first follow-up —
+MakeTemporaryObject's DELETE-access check, open-by-null-name status, and
+NtReleaseSemaphore ordering — and eight namespace corners fixed in the second,
+pinned by `tests/ntapi/sem_ob/namespace_errors`.) The `named`/`malformed` modes
+are not baselined; their residual adversarial-namespace divergences are the
+deferred deviation documented in `docs/03-nt-deviations.md`.
 
 ## Conviction (docs/09 Art. 6)
 
