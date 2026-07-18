@@ -31,12 +31,14 @@ as M6+ lands.
 ## Scope: the name-space levels
 
 The dispatcher-object + handle-table + wait/query core is where proskrnl and
-Wine already agree. The object *namespace* is not: proskrnl and Wine map
-malformed / nested / colliding paths to *different error statuses*
+Wine already agree. The object *namespace* is not: proskrnl still maps
+malformed / nested / colliding paths to *different error statuses* than Wine
 (`OBJECT_NAME_INVALID` vs `INVALID_PARAMETER` vs `PATH_SYNTAX_BAD` vs
-`PATH_NOT_FOUND` vs `ACCESS_DENIED`), and which matches real Windows is not yet
-verified — docs/08 calls Wine an *approximate* oracle, so that space needs a
-real-Windows triage, not a guess. So generation has three levels (`--names`):
+`PATH_NOT_FOUND` vs `ACCESS_DENIED`). **Wine is the operative oracle (docs/09
+Art. 6): every one of those differences is a proskrnl bug to fix** — the
+boundary consumer is Wine's own PE stack, so there is no "maybe real Windows
+differs" question to ask first. The namespace backlog is simply larger than one
+change, so generation has three levels (`--names`):
 
 - **`anon`** (default) — anonymous objects only. A clean, converging baseline
   that makes the fuzzer a green regression gate today.
@@ -45,7 +47,8 @@ real-Windows triage, not a guess. So generation has three levels (`--names`):
   the root, a directory used as a leaf).
 
 `named` and `malformed` surface the namespace error-status backlog on purpose;
-those runs are exploration to triage, not a gate, and are **not** baselined.
+those runs enumerate bugs still to fix (Art. 5: pin each on the oracle, then fix
+the kernel), and are **not** baselined.
 
 ## Running
 
@@ -89,21 +92,24 @@ proskrnl).
 `known_divergences.txt` is the set of root-divergence signatures already known
 and documented — proskrnl-vs-Wine differences awaiting disposition. The fuzzer
 ignores these and fails only on a **new** signature, so the default run is a
-green regression gate whose baseline is a *visible, cited backlog* rather than a
-silence (docs/09 Art. 6 — a difference merely hidden is not a difference fixed).
-Every line carries a note; removing a line turns that divergence back into a hard
-failure, which is what you do once it is fixed or convicted. The `anon` baseline
-ships with 9 signatures (MakeTemporaryObject's DELETE-access check, open-by-
-null-name status classification, and NtReleaseSemaphore's validation ordering).
+green regression gate whose baseline is a *visible, cited backlog of bugs still
+to fix* rather than a silence (docs/09 Art. 6 — a difference merely hidden is
+not a difference fixed). Wine is the operative oracle, so every entry is a
+proskrnl bug by definition; a baseline line is a scheduling decision ("not fixed
+yet"), never a verdict question. Every line carries a note; removing a line
+turns that divergence back into a hard failure, which is what you do when you
+fix it. The `anon` baseline ships with 9 signatures to fix
+(MakeTemporaryObject's DELETE-access check, open-by-null-name status
+classification, and NtReleaseSemaphore's validation ordering).
 
 ## Conviction (docs/09 Art. 6)
 
 This tool *names a suspect* and hands over a minimized reproducer. A new
-divergence is dispositioned one of two ways: (a) curate a permanent
-`tests/ntapi/` regression test with the oracle-observed values as the expected
-side and add it to `tests/ntapi/manifest.txt` — the conviction; or (b) if it is
-a proskrnl-vs-Wine difference pending a real-Windows check, add the signature to
-`known_divergences.txt` with a note. Only a passing differential test convicts.
+divergence is a proskrnl bug (Wine is the operative oracle): fix it now — pin
+the Wine behaviour with a permanent `tests/ntapi/` case first (Art. 5), then
+change the kernel — or, only if it cannot be fixed now, add the signature to
+`known_divergences.txt` with a note so it stays a visible debt. Only a passing
+differential test convicts.
 
 ## Verifying the fuzzer itself
 
