@@ -48,6 +48,15 @@ static const KI_SERVICE_DESCRIPTOR KiServiceTable[] = {
 _Static_assert(sizeof(KiServiceTable) / sizeof(KiServiceTable[0]) == NTSYS_SYSCALL_COUNT,
                "table.inc and syscall_numbers.h must come from the same generation");
 
+const char *KiSystemCallName(uint64_t number)
+{
+    if (number >= NTSYS_SYSCALL_COUNT)
+    {
+        return "?";
+    }
+    return KiServiceTable[number].name;
+}
+
 /* The indirect call crosses function types by design (see the table); keep
  * UBSan's function-type check out of this one call site. */
 __attribute__((no_sanitize("function"))) int64_t KiSystemService(uint64_t number,
