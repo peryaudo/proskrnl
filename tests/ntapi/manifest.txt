@@ -18,6 +18,7 @@
 sem_wait/notification_event     # NtCreateEvent / NtWaitForSingleObject / NtSetEvent / NtResetEvent
 sem_ob/named_event              # M3 kernel is ready; lights up when the M4 syscall stubs land
 sem_ob/namespace                # (same: directories, symlinks, relative opens)
+sem_ob/namespace_errors         # namespace corner cases (fuzzer-found; Wine-matched)
 sem_ob/handle_life              # (same: NtClose/NtDuplicateObject conventions)
 sem_ob/sync_objects             # (same: Nt-level event/mutant/semaphore semantics)
 sem_ob/make_temporary           # NtMakeTemporaryObject requires DELETE access
