@@ -14,6 +14,7 @@
 
 #define FZ_SLOT_COUNT 16
 #define FZ_NAME_COUNT 12
+#define FZ_FNAME_COUNT 4
 
 typedef enum {
     FZ_OPND_SLOT_OUT,
@@ -32,6 +33,12 @@ typedef enum {
     FZ_OPND_CH_DUP_OPTIONS,
     FZ_OPND_CH_ACCESS_DIRECTORY,
     FZ_OPND_CH_ACCESS_SYMLINK,
+    FZ_OPND_CH_ACCESS_FILE,
+    FZ_OPND_FNAME,
+    FZ_OPND_CH_SHARE_FILE,
+    FZ_OPND_CH_DISPOSITION_FILE,
+    FZ_OPND_CH_IOLEN,
+    FZ_OPND_CH_IOOFF,
 } FzOperandKind;
 
 typedef enum {
@@ -60,6 +67,11 @@ typedef enum {
     FZ_OP_CREATE_SYMLINK,
     FZ_OP_OPEN_SYMLINK,
     FZ_OP_QUERY_SYMLINK,
+    FZ_OP_CREATE_FILE,
+    FZ_OP_READ_FILE,
+    FZ_OP_WRITE_FILE,
+    FZ_OP_SET_EOF_FILE,
+    FZ_OP_QUERY_STANDARD_FILE,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -89,6 +101,11 @@ static const FzOperandKind fz_kinds_open_directory[] = { FZ_OPND_SLOT_OUT, FZ_OP
 static const FzOperandKind fz_kinds_create_symlink[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_SYMLINK, FZ_OPND_NAME, FZ_OPND_CH_OBJFLAGS, FZ_OPND_NAME };
 static const FzOperandKind fz_kinds_open_symlink[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_SYMLINK, FZ_OPND_NAME, FZ_OPND_CH_OBJFLAGS };
 static const FzOperandKind fz_kinds_query_symlink[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_create_file[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_FILE, FZ_OPND_FNAME, FZ_OPND_CH_SHARE_FILE, FZ_OPND_CH_DISPOSITION_FILE };
+static const FzOperandKind fz_kinds_read_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOLEN, FZ_OPND_CH_IOOFF };
+static const FzOperandKind fz_kinds_write_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOLEN, FZ_OPND_CH_IOOFF };
+static const FzOperandKind fz_kinds_set_eof_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOOFF };
+static const FzOperandKind fz_kinds_query_standard_file[] = { FZ_OPND_SLOT_IN };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -115,6 +132,11 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_SYMLINK] = { fz_kinds_create_symlink, 5, "NtCreateSymbolicLinkObject" },
     [FZ_OP_OPEN_SYMLINK] = { fz_kinds_open_symlink, 4, "NtOpenSymbolicLinkObject" },
     [FZ_OP_QUERY_SYMLINK] = { fz_kinds_query_symlink, 2, "NtQuerySymbolicLinkObject" },
+    [FZ_OP_CREATE_FILE] = { fz_kinds_create_file, 5, "NtCreateFile" },
+    [FZ_OP_READ_FILE] = { fz_kinds_read_file, 3, "NtReadFile" },
+    [FZ_OP_WRITE_FILE] = { fz_kinds_write_file, 3, "NtWriteFile" },
+    [FZ_OP_SET_EOF_FILE] = { fz_kinds_set_eof_file, 2, "NtSetInformationFile" },
+    [FZ_OP_QUERY_STANDARD_FILE] = { fz_kinds_query_standard_file, 1, "NtQueryInformationFile" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -141,6 +163,14 @@ static const ULONG fz_ch_ulong[] = { (ULONG)(1), (ULONG)(2), (ULONG)(0), (ULONG)
 static const WAIT_TYPE fz_ch_wait_type[] = { (WAIT_TYPE)(WaitAny), (WAIT_TYPE)(WaitAll) };
 #define FZ_CH_DUP_OPTIONS_COUNT 4
 static const ULONG fz_ch_dup_options[] = { (ULONG)(DUPLICATE_SAME_ACCESS), (ULONG)(0), (ULONG)(DUPLICATE_SAME_ATTRIBUTES), (ULONG)(DUPLICATE_CLOSE_SOURCE) };
+#define FZ_CH_ACCESS_FILE_COUNT 4
+static const ACCESS_MASK fz_ch_access_file[] = { (ACCESS_MASK)(FILE_GENERIC_READ | FILE_GENERIC_WRITE), (ACCESS_MASK)(FILE_GENERIC_READ), (ACCESS_MASK)(FILE_READ_ATTRIBUTES | SYNCHRONIZE), (ACCESS_MASK)(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE) };
+#define FZ_CH_SHARE_FILE_COUNT 4
+static const ULONG fz_ch_share_file[] = { (ULONG)(0), (ULONG)(FILE_SHARE_READ), (ULONG)(FILE_SHARE_READ | FILE_SHARE_WRITE), (ULONG)(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE) };
+#define FZ_CH_DISPOSITION_FILE_COUNT 4
+static const ULONG fz_ch_disposition_file[] = { (ULONG)(FILE_OPEN), (ULONG)(FILE_CREATE), (ULONG)(FILE_OPEN_IF), (ULONG)(FILE_OVERWRITE_IF) };
+#define FZ_CH_IOLEN_COUNT 4
+#define FZ_CH_IOOFF_COUNT 4
 #define FZ_CH_LEN_COUNT 4
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */

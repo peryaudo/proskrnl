@@ -23,6 +23,14 @@ NAME_TAGS = [
     (11, 'basedir'),
 ]
 
+# (index, tag) for each M6 file path.
+FNAME_TAGS = [
+    (0, 'valid'),
+    (1, 'valid'),
+    (2, 'valid'),
+    (3, 'badpath'),
+]
+
 # table name -> (count, [avoid indices])
 CHOICES = {
     'access_event': (8, [6, 7]),
@@ -37,6 +45,11 @@ CHOICES = {
     'ulong': (4, []),
     'wait_type': (2, []),
     'dup_options': (4, []),
+    'access_file': (4, []),
+    'share_file': (4, []),
+    'disposition_file': (4, []),
+    'iolen': (4, []),
+    'iooff': (4, []),
     'len': (4, []),
 }
 
@@ -67,4 +80,9 @@ OPS = [
     ('create_symlink', 22, 'NtCreateSymbolicLinkObject', ['slot_out', 'ch_access_symlink', 'name', 'ch_objflags', 'name']),
     ('open_symlink', 23, 'NtOpenSymbolicLinkObject', ['slot_out', 'ch_access_symlink', 'name', 'ch_objflags']),
     ('query_symlink', 24, 'NtQuerySymbolicLinkObject', ['slot_in', 'ch_len']),
+    ('create_file', 25, 'NtCreateFile', ['slot_out', 'ch_access_file', 'fname', 'ch_share_file', 'ch_disposition_file']),
+    ('read_file', 26, 'NtReadFile', ['slot_in', 'ch_iolen', 'ch_iooff']),
+    ('write_file', 27, 'NtWriteFile', ['slot_in', 'ch_iolen', 'ch_iooff']),
+    ('set_eof_file', 28, 'NtSetInformationFile', ['slot_in', 'ch_iooff']),
+    ('query_standard_file', 29, 'NtQueryInformationFile', ['slot_in']),
 ]

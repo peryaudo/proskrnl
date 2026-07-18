@@ -26,6 +26,9 @@
  */
 #include "ntapi.h"
 #include "sem_ob/util.h" /* Nt* prototypes (oracle), abi (proskrnl), init_ustr/init_attr, ob_* structs */
+#if defined(NTAPI_PROSKRNL)
+#include "abi/ntioapi.h" /* the M6 file surface (must precede fuzz_model.h) */
+#endif
 #include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
 
 /* The program blob, emitted by fuzz.py as build/tests/fuzz/fuzz_programs.c and
@@ -56,6 +59,68 @@ static const void *fz_names[FZ_NAME_COUNT] = {
 };
 _Static_assert(sizeof(fz_names) / sizeof(fz_names[0]) == FZ_NAME_COUNT,
                "fz_names must match FUZZ_NAMES in tools/gen_syscalls.py");
+
+/* M6 file paths; order/tags MUST match FUZZ_FILE_NAMES in tools/gen_syscalls.py. */
+static const void *fz_fnames[FZ_FNAME_COUNT] = {
+    W("\\??\\C:\\fuzz\\fa.dat"),
+    W("\\??\\C:\\fuzz\\fb.dat"),
+    W("\\??\\C:\\fuzz\\Fuzz Long Name.Dat"),
+    W("\\??\\C:\\fuzz\\nodir\\x.dat"),
+};
+
+#if defined(NTAPI_ORACLE)
+/* File-surface prototypes mingw's winternl.h omits (as wine/include/winternl.h). */
+NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID,
+                                   ULONG, PLARGE_INTEGER, PULONG);
+NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
+                                    const void *, ULONG, PLARGE_INTEGER, PULONG);
+#endif
+
+/* iolen / iooff shape indices (semantic tables; see FUZZ_CHOICES). */
+enum
+{
+    FZ_IOLEN_ZERO = 0,
+    FZ_IOLEN_ONE,
+    FZ_IOLEN_MID,
+    FZ_IOLEN_BIG
+};
+enum
+{
+    FZ_IOOFF_ZERO = 0,
+    FZ_IOOFF_ONE,
+    FZ_IOOFF_SECTOR,
+    FZ_IOOFF_FAR
+};
+
+static ULONG fz_iolen(unsigned shape)
+{
+    switch (shape)
+    {
+    case FZ_IOLEN_ONE:
+        return 1;
+    case FZ_IOLEN_MID:
+        return 100;
+    case FZ_IOLEN_BIG:
+        return 5000;
+    default:
+        return 0;
+    }
+}
+
+static unsigned long long fz_iooff(unsigned shape)
+{
+    switch (shape)
+    {
+    case FZ_IOOFF_ONE:
+        return 1;
+    case FZ_IOOFF_SECTOR:
+        return 512;
+    case FZ_IOOFF_FAR:
+        return 8192;
+    default:
+        return 0;
+    }
+}
 
 /* Length-shape indices for ch_len (semantic table; see FUZZ_CHOICES["len"]). */
 enum
@@ -88,6 +153,51 @@ static void fz_reset_slots(void)
             NtClose(fz_slots[i]);
             fz_slots[i] = NULL;
         }
+    }
+}
+
+/* Forward decls: reset/setup for the M6 fuzz files (defined below) and the
+ * success predicate they use. */
+static int fz_ok(NTSTATUS st);
+static void fz_reset_files(void);
+static void fz_setup_files(void);
+
+/* Scrub the fuzz files between programs (files, unlike handles, persist) and
+ * make sure \??\C:\fuzz exists before the first program. Uses only the
+ * file surface both sides implement. */
+static void fz_setup_files(void)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    HANDLE dir = NULL;
+    init_ustr(&name, W("\\??\\C:\\fuzz"));
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    NTSTATUS st = NtCreateFile(&dir, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &iosb, NULL,
+                               FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               FILE_OPEN_IF, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                               NULL, 0);
+    if (fz_ok(st))
+        NtClose(dir);
+}
+
+static void fz_reset_files(void)
+{
+    for (int i = 0; i < FZ_FNAME_COUNT; i++)
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        IO_STATUS_BLOCK iosb;
+        HANDLE handle = NULL;
+        init_ustr(&name, fz_fnames[i]);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        NTSTATUS st = NtCreateFile(&handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   FILE_OPEN, FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE |
+                                   FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+        if (fz_ok(st))
+            NtClose(handle);
     }
 }
 
@@ -143,6 +253,18 @@ static unsigned long long fz_resolve(FzOperandKind kind, unsigned char b)
         return fz_ch_dup_options[b % FZ_CH_DUP_OPTIONS_COUNT];
     case FZ_OPND_CH_LEN:
         return b % FZ_CH_LEN_COUNT;
+    case FZ_OPND_FNAME:
+        return b % FZ_FNAME_COUNT;
+    case FZ_OPND_CH_ACCESS_FILE:
+        return fz_ch_access_file[b % FZ_CH_ACCESS_FILE_COUNT];
+    case FZ_OPND_CH_SHARE_FILE:
+        return fz_ch_share_file[b % FZ_CH_SHARE_FILE_COUNT];
+    case FZ_OPND_CH_DISPOSITION_FILE:
+        return fz_ch_disposition_file[b % FZ_CH_DISPOSITION_FILE_COUNT];
+    case FZ_OPND_CH_IOLEN:
+        return b % FZ_CH_IOLEN_COUNT;
+    case FZ_OPND_CH_IOOFF:
+        return b % FZ_CH_IOOFF_COUNT;
     }
     return 0;
 }
@@ -451,6 +573,98 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_CREATE_FILE:
+    {
+        OBJECT_ATTRIBUTES attr;
+        UNICODE_STRING ustr;
+        IO_STATUS_BLOCK iosb;
+        HANDLE handle = NULL;
+        init_ustr(&ustr, fz_fnames[a[2]]);
+        init_attr(&attr, NULL, &ustr, OBJ_CASE_INSENSITIVE);
+        iosb.Information = 0;
+        st = NtCreateFile(&handle, (ACCESS_MASK)a[1], &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                          (ULONG)a[3], (ULONG)a[4],
+                          FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
+        if (fz_ok(st))
+        {
+            fz_slots[a[0]] = handle;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x info=%u slot=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)iosb.Information, (unsigned)a[0]);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_READ_FILE:
+    {
+        static char io_buffer[8192];
+        IO_STATUS_BLOCK iosb;
+        LARGE_INTEGER off;
+        ULONG len = fz_iolen((unsigned)a[1]);
+        if (len > sizeof(io_buffer))
+            len = sizeof(io_buffer);
+        off.QuadPart = (LONGLONG)fz_iooff((unsigned)a[2]);
+        fz_bzero(io_buffer, sizeof(io_buffer));
+        iosb.Information = 0;
+        st = NtReadFile(fz_slots[a[0]], NULL, NULL, NULL, &iosb, io_buffer, len, &off, NULL);
+        if (fz_ok(st))
+        {
+            unsigned sum = 0;
+            for (ULONG i = 0; i < (ULONG)iosb.Information && i < sizeof(io_buffer); i++)
+                sum = (sum + (unsigned char)io_buffer[i]) & 0xFFFF;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x n=%u sum=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)iosb.Information, sum);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_WRITE_FILE:
+    {
+        static char io_buffer[8192];
+        IO_STATUS_BLOCK iosb;
+        LARGE_INTEGER off;
+        ULONG len = fz_iolen((unsigned)a[1]);
+        if (len > sizeof(io_buffer))
+            len = sizeof(io_buffer);
+        off.QuadPart = (LONGLONG)fz_iooff((unsigned)a[2]);
+        /* Deterministic pattern: a function of (offset, index, length). */
+        for (ULONG i = 0; i < len; i++)
+            io_buffer[i] = (char)((unsigned)off.QuadPart + i * 13u + len);
+        iosb.Information = 0;
+        st = NtWriteFile(fz_slots[a[0]], NULL, NULL, NULL, &iosb, io_buffer, len, &off, NULL);
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x n=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)iosb.Information);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_SET_EOF_FILE:
+    {
+        IO_STATUS_BLOCK iosb;
+        FILE_END_OF_FILE_INFORMATION eof;
+        eof.EndOfFile.QuadPart = (LONGLONG)fz_iooff((unsigned)a[1]);
+        st = NtSetInformationFile(fz_slots[a[0]], &iosb, &eof, sizeof(eof),
+                                  FileEndOfFileInformation);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_STANDARD_FILE:
+    {
+        IO_STATUS_BLOCK iosb;
+        FILE_STANDARD_INFORMATION std;
+        fz_bzero(&std, sizeof(std));
+        st = NtQueryInformationFile(fz_slots[a[0]], &iosb, &std, sizeof(std),
+                                    FileStandardInformation);
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x eof=%u links=%u dir=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)std.EndOfFile.QuadPart,
+                         (unsigned)std.NumberOfLinks, (unsigned)std.Directory);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
     default:
         ntapi_printf("[FUZZ] p%u c%u ??? op=%d\n", prog, call, op);
         break;
@@ -482,6 +696,8 @@ START_TEST(fuzz_interp)
     unsigned programCount = rd_u32(p + 4);
     p += 8;
 
+    fz_setup_files();
+
     for (unsigned pi = 0; pi < programCount && p < end; pi++)
     {
         if (p + 6 > end)
@@ -494,6 +710,7 @@ START_TEST(fuzz_interp)
         p += 6;
 
         fz_reset_slots();
+        fz_reset_files();
         ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
 
         for (unsigned ci = 0; ci < callCount; ci++)
