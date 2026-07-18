@@ -62,6 +62,7 @@ extern struct ntapi_state ntapi_ctx;
 
 /* Implemented per-mode in ntapi.c. */
 void ntapi_out(const char *text);                 /* oracle: stdout; proskrnl: serial */
+void ntapi_printf(const char *fmt, ...);          /* formatted line to the same sink (tests/fuzz) */
 void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...);
 void ntapi_skipv(const char *file, int line, const char *fmt, ...);
 int  ntapi_finish(void);                           /* emit [KTEST] verdict, return exit code */

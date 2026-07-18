@@ -181,7 +181,7 @@ static void ntapi_vout(const char *fmt, va_list ap)
     ntapi_out(buf);
 }
 
-static void ntapi_outf(const char *fmt, ...)
+void ntapi_printf(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -199,7 +199,7 @@ void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
         if (cond)
         {
             ntapi_ctx.todo_unexpected++;
-            ntapi_outf(PFX_ASSERT "%s:%d: todo_proskrnl succeeded (remove the tag): ", file, line);
+            ntapi_printf(PFX_ASSERT "%s:%d: todo_proskrnl succeeded (remove the tag): ", file, line);
             {
                 va_list ap;
                 va_start(ap, fmt);
@@ -216,7 +216,7 @@ void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
     if (!cond)
     {
         ntapi_ctx.failures++;
-        ntapi_outf(PFX_ASSERT "%s:%d: ", file, line);
+        ntapi_printf(PFX_ASSERT "%s:%d: ", file, line);
         {
             va_list ap;
             va_start(ap, fmt);
@@ -230,7 +230,7 @@ void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
 void ntapi_skipv(const char *file, int line, const char *fmt, ...)
 {
     ntapi_ctx.skips++;
-    ntapi_outf("[SKIP] %s:%d: ", file, line);
+    ntapi_printf("[SKIP] %s:%d: ", file, line);
     {
         va_list ap;
         va_start(ap, fmt);
@@ -244,10 +244,10 @@ int ntapi_finish(void)
 {
     if (ntapi_ctx.failures == 0 && ntapi_ctx.todo_unexpected == 0)
     {
-        ntapi_outf(PFX_KTEST "%s PASS\n", ntapi_ctx.name);
+        ntapi_printf(PFX_KTEST "%s PASS\n", ntapi_ctx.name);
         return 0;
     }
-    ntapi_outf(PFX_KTEST "%s FAIL failures=%d todo_unexpected=%d\n", ntapi_ctx.name,
+    ntapi_printf(PFX_KTEST "%s FAIL failures=%d todo_unexpected=%d\n", ntapi_ctx.name,
                ntapi_ctx.failures, ntapi_ctx.todo_unexpected);
     return 1;
 }

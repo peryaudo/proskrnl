@@ -70,24 +70,39 @@ compatibility hold on our kernel.
 
 At that point `tests/ntapi/` has served its purpose as the M1–M6 scaffold: Wine's suite is
 the richer oracle, and `ntapi`'s portable harness lives on as the base for the differential
-fuzzer below, not as a parallel suite to keep maintaining.
+fuzzer below (already built — see the next section), not as a parallel suite to keep
+maintaining.
 
 ## Differential fuzzing (the hidden weapon)
 
-Because the same `tests/ntapi/` binary runs on Windows and on proskrnl, add a random
-`Nt*`-sequence generator:
+Because the same harness runs on Windows/Wine and on proskrnl, a random `Nt*`-sequence
+generator triangulates the two automatically:
 
 ```
 generate random Nt* call sequence
-  ├── run on real Windows  -> NTSTATUS list + output buffers
-  └── run on proskrnl      -> NTSTATUS list + output buffers
+  ├── run on the oracle (Wine/Windows)  -> normalized [FUZZ] trace
+  └── run on proskrnl                   -> normalized [FUZZ] trace
 difference == bug
 ```
 
 This is triangulation, automated — and an ideal LLM task (mechanical oracle, explicit
-failure, boring). Cost is just the generator (`tests/fuzz/`, a few hundred lines) atop the
-existing `ntapi` harness; no syzkaller-scale build required. It works *only* because the
-boundary is observable — the final dividend of the boundary choice.
+failure, boring). It works *only* because the boundary is observable — the final dividend of
+the boundary choice.
+
+**Implemented at `tests/fuzz/` (a few hundred lines atop the `ntapi` harness); run it with
+`tests/run/run.sh fuzz`.** It arrived after M5 — every prerequisite (the one-source/two-mode
+harness, the generated syscall list, the deterministic serial-log verdict) exists from M4/M5,
+so it need not wait for M7. One interpreter binary (`interp.c`), built in both `ntapi` modes,
+executes a compact program blob and prints a *normalized* trace per call: never a raw handle
+or address (those differ by ASLR/VA layout), only slot-occupancy flags and the contract
+payload (statuses, previous-states, counts, info-class fields, lengths), and only on
+`NT_SUCCESS` (output params are undefined on error). The op model is generated from the same
+`tools/gen_syscalls.py` list that defines the syscall table, so each milestone's new `Nt*`
+becomes fuzzable the day it lands, and generator and interpreter cannot drift. A Python driver
+(`fuzz.py`) generates, builds both sides, diffs, and — on a divergence whose signature is not
+already in the `known_divergences.txt` baseline — minimizes the program and emits a repro. Per
+Art. 6 a new divergence is dispositioned by a `tests/ntapi/` conviction or a cited baseline
+entry, never silence.
 
 ## Sanitizers: make silent corruption loud, not "find bugs"
 

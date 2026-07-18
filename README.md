@@ -171,7 +171,16 @@ constants):
 make run     # build the image, boot headless in QEMU, verify [KTEST] M5 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
+tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 ```
+
+The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") also lands with
+M5 — every prerequisite exists from M4/M5, so it need not wait for M7. It generates random
+`Nt*` sequences, runs each on the Wine oracle and on proskrnl, and flags any divergence in
+the normalized result trace; its op model is generated from the same syscall list, so each
+milestone's new calls become fuzzable immediately. A checked-in `known_divergences.txt`
+baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
+gaps it surfaces.
 
 Next: **M6** — the I/O manager and a real filesystem: async I/O skeleton, `NtCreateFile` /
 `NtReadFile` / `NtWriteFile` and the main info classes, a virtio-blk driver, FAT32, and the

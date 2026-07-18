@@ -1,0 +1,533 @@
+/*
+ * interp.c — the differential-fuzzer interpreter (docs/08 "Differential
+ * fuzzing"; tests/fuzz/README.md).
+ *
+ * One source, two build modes — exactly like every ntapi test (docs/14):
+ *   NTAPI_ORACLE    a Windows PE .exe; Nt* from the host ntdll (run under the
+ *                   pinned third_party/wine); contract headers = the oracle's.
+ *   NTAPI_PROSKRNL  a freestanding flat binary; Nt* from tests/ntapi/syscall/;
+ *                   contract headers = generated abi/.
+ *
+ * It decodes a compact program blob (built into the binary as fuzz_programs[]
+ * by tests/fuzz/fuzz.py) and runs each program's Nt* call sequence, printing
+ * ONE normalized [FUZZ] trace line per call. The line carries only
+ * cross-implementation-stable data: never a raw handle or address (those
+ * differ by ASLR / VA layout), only slot-occupancy flags and the contract
+ * payload (statuses, previous-states, counts, info-class fields, lengths).
+ * fuzz.py diffs the two sides' [FUZZ] streams verbatim; a difference is a bug.
+ *
+ * The decode is table-driven from tests/fuzz/gen/fuzz_model.h (generated with
+ * the same tools/gen_syscalls.py that emits the syscall table), so this
+ * interpreter and the Python generator cannot drift. Only the per-op EXECUTE
+ * switch below is hand-written.
+ *
+ * Determinism: single-threaded, every wait is zero-timeout (never blocks), no
+ * NtDisplayString / NtTerminateProcess opcodes (the harness owns output+exit).
+ */
+#include "ntapi.h"
+#include "sem_ob/util.h" /* Nt* prototypes (oracle), abi (proskrnl), init_ustr/init_attr, ob_* structs */
+#include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
+
+/* The program blob, emitted by fuzz.py as build/tests/fuzz/fuzz_programs.c and
+ * linked in. Format (little-endian): "PFZ1", u32 program_count, then per
+ * program { u32 id, u16 call_count, calls }, each call { u8 opcode, u8 per
+ * operand } per fz_ops[opcode]. */
+extern const unsigned char fuzz_programs[];
+extern const unsigned int fuzz_programs_len;
+
+/* Object names the interpreter can pass; index 0 = anonymous (no name). Order
+ * and tags MUST match FUZZ_NAMES in tools/gen_syscalls.py (the static_assert on
+ * the count is the tripwire if they drift). These are test object names, not an
+ * ABI contract, so they live here as u"" (char16_t) literals — 2 bytes/unit in
+ * both build modes, as the sem_ob tests spell them. */
+static const void *fz_names[FZ_NAME_COUNT] = {
+    NULL,                                /* none / anonymous              */
+    W("\\BaseNamedObjects\\fz0"),        /* valid                         */
+    W("\\BaseNamedObjects\\fz1"),        /* valid                         */
+    W("\\BaseNamedObjects\\fz2"),        /* valid                         */
+    W("\\BaseNamedObjects\\fz3"),        /* valid                         */
+    W("\\BaseNamedObjects\\fzsub"),      /* subdir (create as directory)  */
+    W("\\BaseNamedObjects\\fzsub\\fz4"), /* item under the subdir         */
+    W("fz_relative"),                    /* bad: no leading backslash     */
+    W(""),                               /* bad: empty                    */
+    W("\\BaseNamedObjects\\fznodir\\x"), /* bad: missing directory        */
+    W("\\"),                             /* the namespace root            */
+    W("\\BaseNamedObjects"),             /* an existing directory itself  */
+};
+_Static_assert(sizeof(fz_names) / sizeof(fz_names[0]) == FZ_NAME_COUNT,
+               "fz_names must match FUZZ_NAMES in tools/gen_syscalls.py");
+
+/* Length-shape indices for ch_len (semantic table; see FUZZ_CHOICES["len"]). */
+enum
+{
+    FZ_LEN_EXACT = 0,
+    FZ_LEN_ZERO,
+    FZ_LEN_SHORT,
+    FZ_LEN_LONG
+};
+
+/* ---- interpreter state -------------------------------------------------- */
+
+static HANDLE fz_slots[FZ_SLOT_COUNT];
+
+static void fz_bzero(void *p, unsigned long n)
+{
+    unsigned char *b = (unsigned char *)p;
+    for (unsigned long i = 0; i < n; i++)
+        b[i] = 0;
+}
+
+/* Close every open slot between programs so named objects do not survive into
+ * the next program — keeps programs independent and the trace deterministic. */
+static void fz_reset_slots(void)
+{
+    for (int i = 0; i < FZ_SLOT_COUNT; i++)
+    {
+        if (fz_slots[i] != NULL)
+        {
+            NtClose(fz_slots[i]);
+            fz_slots[i] = NULL;
+        }
+    }
+}
+
+/* Fill OBJECT_ATTRIBUTES for a name index; index 0 → anonymous (NULL name). */
+static POBJECT_ATTRIBUTES fz_build_attr(OBJECT_ATTRIBUTES *attr, UNICODE_STRING *ustr,
+                                        unsigned nameIndex, ULONG objFlags)
+{
+    if (nameIndex == 0 || fz_names[nameIndex] == NULL)
+    {
+        init_attr(attr, NULL, NULL, objFlags);
+        return attr;
+    }
+    init_ustr(ustr, fz_names[nameIndex]);
+    init_attr(attr, NULL, ustr, objFlags);
+    return attr;
+}
+
+/* Resolve one operand byte to its value: slot/name kinds → an index, choice
+ * kinds → the symbolic constant from the generated table (or, for ch_len, the
+ * shape index). The value space per kind is fixed by the model. */
+static unsigned long long fz_resolve(FzOperandKind kind, unsigned char b)
+{
+    switch (kind)
+    {
+    case FZ_OPND_SLOT_IN:
+    case FZ_OPND_SLOT_OUT:
+        return b % FZ_SLOT_COUNT;
+    case FZ_OPND_NAME:
+        return b % FZ_NAME_COUNT;
+    case FZ_OPND_CH_ACCESS_EVENT:
+        return fz_ch_access_event[b % FZ_CH_ACCESS_EVENT_COUNT];
+    case FZ_OPND_CH_ACCESS_MUTANT:
+        return fz_ch_access_mutant[b % FZ_CH_ACCESS_MUTANT_COUNT];
+    case FZ_OPND_CH_ACCESS_SEMAPHORE:
+        return fz_ch_access_semaphore[b % FZ_CH_ACCESS_SEMAPHORE_COUNT];
+    case FZ_OPND_CH_ACCESS_DIRECTORY:
+        return fz_ch_access_directory[b % FZ_CH_ACCESS_DIRECTORY_COUNT];
+    case FZ_OPND_CH_ACCESS_SYMLINK:
+        return fz_ch_access_symlink[b % FZ_CH_ACCESS_SYMLINK_COUNT];
+    case FZ_OPND_CH_OBJFLAGS:
+        return fz_ch_objflags[b % FZ_CH_OBJFLAGS_COUNT];
+    case FZ_OPND_CH_EVENT_TYPE:
+        return fz_ch_event_type[b % FZ_CH_EVENT_TYPE_COUNT];
+    case FZ_OPND_CH_BOOL:
+        return fz_ch_bool[b % FZ_CH_BOOL_COUNT];
+    case FZ_OPND_CH_LONG:
+        return (unsigned long long)(long long)fz_ch_long[b % FZ_CH_LONG_COUNT];
+    case FZ_OPND_CH_ULONG:
+        return fz_ch_ulong[b % FZ_CH_ULONG_COUNT];
+    case FZ_OPND_CH_WAIT_TYPE:
+        return fz_ch_wait_type[b % FZ_CH_WAIT_TYPE_COUNT];
+    case FZ_OPND_CH_DUP_OPTIONS:
+        return fz_ch_dup_options[b % FZ_CH_DUP_OPTIONS_COUNT];
+    case FZ_OPND_CH_LEN:
+        return b % FZ_CH_LEN_COUNT;
+    }
+    return 0;
+}
+
+/* NtQuery* buffer length for a shape, given the natural struct size. */
+static ULONG fz_query_len(unsigned shape, ULONG structSize)
+{
+    switch (shape)
+    {
+    case FZ_LEN_ZERO:
+        return 0;
+    case FZ_LEN_SHORT:
+        return structSize > 0 ? structSize - 1 : 0;
+    case FZ_LEN_LONG:
+        return structSize + 16;
+    case FZ_LEN_EXACT:
+    default:
+        return structSize;
+    }
+}
+
+/* NT_SUCCESS: a success or informational status (high bit clear). NT writes a
+ * call's output parameters ONLY on such a status; on an error the outputs are
+ * indeterminate and are NOT part of the contract — so the trace must print them
+ * only when fz_ok() holds, else two implementations' incidental error-path
+ * writes (e.g. Wine touching PreviousCount on STATUS_INVALID_HANDLE) would read
+ * as false divergences. Below the status line, only success carries payload. */
+static int fz_ok(NTSTATUS st)
+{
+    return st >= 0;
+}
+
+/* A handle-yielding create/open: on success print slot occupancy (never the
+ * handle value — that differs by implementation); on failure, status only. */
+static void fz_trace_handle(unsigned prog, unsigned call, const char *nt, NTSTATUS st,
+                            unsigned slot, HANDLE h)
+{
+    if (fz_ok(st))
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x h%u=%d\n", prog, call, nt, (unsigned)st, slot,
+                     h != NULL ? 1 : 0);
+    else
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+}
+
+/* A previous-state op (set/reset/pulse event, release mutant/semaphore): the
+ * previous count is contract only on success. */
+static void fz_trace_prev(unsigned prog, unsigned call, const char *nt, NTSTATUS st, LONG prev)
+{
+    if (fz_ok(st))
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x prev=%d\n", prog, call, nt, (unsigned)st,
+                     (int)prev);
+    else
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+}
+
+/* ---- execute one call --------------------------------------------------- */
+
+static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long long *a)
+{
+    const char *nt = fz_ops[op].nt_name;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING ustr;
+    NTSTATUS st;
+    HANDLE h;
+
+    switch (op)
+    {
+    case FZ_OP_CREATE_EVENT:
+        h = NULL;
+        st = NtCreateEvent(&h, (ACCESS_MASK)a[1],
+                           fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]),
+                           (EVENT_TYPE)a[4], (BOOLEAN)a[5]);
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_OPEN_EVENT:
+        h = NULL;
+        st = NtOpenEvent(&h, (ACCESS_MASK)a[1],
+                         fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_SET_EVENT:
+    {
+        LONG prev = 0;
+        st = NtSetEvent(fz_slots[a[0]], &prev);
+        fz_trace_prev(prog, call, nt, st, prev);
+        break;
+    }
+    case FZ_OP_RESET_EVENT:
+    {
+        LONG prev = 0;
+        st = NtResetEvent(fz_slots[a[0]], &prev);
+        fz_trace_prev(prog, call, nt, st, prev);
+        break;
+    }
+    case FZ_OP_PULSE_EVENT:
+    {
+        LONG prev = 0;
+        st = NtPulseEvent(fz_slots[a[0]], &prev);
+        fz_trace_prev(prog, call, nt, st, prev);
+        break;
+    }
+    case FZ_OP_CLEAR_EVENT:
+        st = NtClearEvent(fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_QUERY_EVENT:
+    {
+        unsigned char buf[64];
+        ULONG retLen = 0;
+        fz_bzero(buf, sizeof buf);
+        st =
+            NtQueryEvent(fz_slots[a[0]], EVENT_BASIC_INFO_CLASS, buf,
+                         fz_query_len((unsigned)a[1], (ULONG)sizeof(ob_event_basic_info)), &retLen);
+        if (fz_ok(st))
+        {
+            const ob_event_basic_info *info = (const ob_event_basic_info *)buf;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u type=%d state=%d\n", prog, call, nt,
+                         (unsigned)st, (unsigned)retLen, (int)info->event_type,
+                         (int)info->event_state);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_CREATE_MUTANT:
+        h = NULL;
+        st =
+            NtCreateMutant(&h, (ACCESS_MASK)a[1],
+                           fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]), (BOOLEAN)a[4]);
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_OPEN_MUTANT:
+        h = NULL;
+        st = NtOpenMutant(&h, (ACCESS_MASK)a[1],
+                          fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_RELEASE_MUTANT:
+    {
+        LONG prev = 0;
+        st = NtReleaseMutant(fz_slots[a[0]], &prev);
+        fz_trace_prev(prog, call, nt, st, prev);
+        break;
+    }
+    case FZ_OP_QUERY_MUTANT:
+    {
+        unsigned char buf[64];
+        ULONG retLen = 0;
+        fz_bzero(buf, sizeof buf);
+        st = NtQueryMutant(fz_slots[a[0]], MUTANT_BASIC_INFO_CLASS, buf,
+                           fz_query_len((unsigned)a[1], (ULONG)sizeof(ob_mutant_basic_info)),
+                           &retLen);
+        if (fz_ok(st))
+        {
+            const ob_mutant_basic_info *info = (const ob_mutant_basic_info *)buf;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u count=%d owned=%d abandoned=%d\n", prog,
+                         call, nt, (unsigned)st, (unsigned)retLen, (int)info->current_count,
+                         (int)info->owned_by_caller, (int)info->abandoned_state);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_CREATE_SEMAPHORE:
+        h = NULL;
+        st = NtCreateSemaphore(&h, (ACCESS_MASK)a[1],
+                               fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]), (LONG)a[4],
+                               (LONG)a[5]);
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_OPEN_SEMAPHORE:
+        h = NULL;
+        st = NtOpenSemaphore(&h, (ACCESS_MASK)a[1],
+                             fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_RELEASE_SEMAPHORE:
+    {
+        LONG prev = 0;
+        st = NtReleaseSemaphore(fz_slots[a[0]], (ULONG)a[1], (PULONG)&prev);
+        fz_trace_prev(prog, call, nt, st, prev);
+        break;
+    }
+    case FZ_OP_QUERY_SEMAPHORE:
+    {
+        unsigned char buf[64];
+        ULONG retLen = 0;
+        fz_bzero(buf, sizeof buf);
+        st = NtQuerySemaphore(fz_slots[a[0]], SEMAPHORE_BASIC_INFO_CLASS, buf,
+                              fz_query_len((unsigned)a[1], (ULONG)sizeof(ob_semaphore_basic_info)),
+                              &retLen);
+        if (fz_ok(st))
+        {
+            const ob_semaphore_basic_info *info = (const ob_semaphore_basic_info *)buf;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u count=%u max=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)retLen, (unsigned)info->current_count,
+                         (unsigned)info->maximum_count);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_WAIT_SINGLE:
+        st = wait_now(fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_WAIT_MULTIPLE:
+    {
+        HANDLE hs[2];
+        LARGE_INTEGER zero;
+        zero.QuadPart = 0;
+        hs[0] = fz_slots[a[0]];
+        hs[1] = fz_slots[a[1]];
+        st = NtWaitForMultipleObjects(2, hs, (WAIT_TYPE)a[2], FALSE, &zero);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_CLOSE:
+        st = NtClose(fz_slots[a[0]]);
+        if (fz_ok(st))
+            fz_slots[a[0]] = NULL;
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_DUPLICATE:
+        h = NULL;
+        st = NtDuplicateObject(NtCurrentProcess(), fz_slots[a[0]], NtCurrentProcess(), &h,
+                               (ACCESS_MASK)a[2], 0, (ULONG)a[3]);
+        if (fz_ok(st))
+            fz_slots[a[1]] = h;
+        /* DUPLICATE_CLOSE_SOURCE invalidates the source handle: drop the slot so
+         * a later op cannot alias a reused handle value (nondeterminism guard). */
+        if (fz_ok(st) && ((ULONG)a[3] & DUPLICATE_CLOSE_SOURCE))
+            fz_slots[a[0]] = NULL;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[1], h);
+        break;
+    case FZ_OP_MAKE_TEMPORARY:
+        st = NtMakeTemporaryObject(fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_CREATE_DIRECTORY:
+        h = NULL;
+        st = NtCreateDirectoryObject(&h, (ACCESS_MASK)a[1],
+                                     fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_OPEN_DIRECTORY:
+        h = NULL;
+        st = NtOpenDirectoryObject(&h, (ACCESS_MASK)a[1],
+                                   fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_CREATE_SYMLINK:
+    {
+        UNICODE_STRING target;
+        /* Operand a[4] is the link target name; anonymous index → empty target. */
+        const void *tstr = fz_names[a[4]] ? fz_names[a[4]] : W("");
+        init_ustr(&target, tstr);
+        h = NULL;
+        st = NtCreateSymbolicLinkObject(&h, (ACCESS_MASK)a[1],
+                                        fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]),
+                                        &target);
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    }
+    case FZ_OP_OPEN_SYMLINK:
+        h = NULL;
+        st = NtOpenSymbolicLinkObject(&h, (ACCESS_MASK)a[1],
+                                      fz_build_attr(&attr, &ustr, (unsigned)a[2], (ULONG)a[3]));
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_QUERY_SYMLINK:
+    {
+        WCHAR tbuf[128];
+        UNICODE_STRING target;
+        ULONG retLen = 0;
+        fz_bzero(tbuf, sizeof tbuf);
+        target.Length = 0;
+        /* Shape drives the caller's MaximumLength (zero shape → too small). */
+        target.MaximumLength = (a[1] == FZ_LEN_ZERO) ? 0 : (USHORT)sizeof(tbuf);
+        target.Buffer = tbuf;
+        st = NtQuerySymbolicLinkObject(fz_slots[a[0]], &target, &retLen);
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u tlen=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)retLen, (unsigned)target.Length);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    default:
+        ntapi_printf("[FUZZ] p%u c%u ??? op=%d\n", prog, call, op);
+        break;
+    }
+}
+
+/* ---- blob decode + driver loop ------------------------------------------ */
+
+static unsigned rd_u16(const unsigned char *p)
+{
+    return (unsigned)p[0] | ((unsigned)p[1] << 8);
+}
+
+static unsigned rd_u32(const unsigned char *p)
+{
+    return (unsigned)p[0] | ((unsigned)p[1] << 8) | ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
+}
+
+START_TEST(fuzz_interp)
+{
+    const unsigned char *p = fuzz_programs;
+    const unsigned char *end = fuzz_programs + fuzz_programs_len;
+
+    if (fuzz_programs_len < 8 || p[0] != 'P' || p[1] != 'F' || p[2] != 'Z' || p[3] != '1')
+    {
+        ok(0, "fuzz_programs blob missing or bad magic (len=%u)", fuzz_programs_len);
+        return;
+    }
+    unsigned programCount = rd_u32(p + 4);
+    p += 8;
+
+    for (unsigned pi = 0; pi < programCount && p < end; pi++)
+    {
+        if (p + 6 > end)
+        {
+            ok(0, "truncated program header at program %u", pi);
+            return;
+        }
+        unsigned id = rd_u32(p);
+        unsigned callCount = rd_u16(p + 4);
+        p += 6;
+
+        fz_reset_slots();
+        ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
+
+        for (unsigned ci = 0; ci < callCount; ci++)
+        {
+            if (p >= end)
+            {
+                ok(0, "truncated call stream at program %u call %u", pi, ci);
+                return;
+            }
+            int op = *p++;
+            if (op < 0 || op >= FZ_OP_COUNT)
+            {
+                ok(0, "bad opcode %d at program %u call %u", op, pi, ci);
+                return;
+            }
+            int nOperands = fz_ops[op].count;
+            if (p + nOperands > end)
+            {
+                ok(0, "truncated operands at program %u call %u", pi, ci);
+                return;
+            }
+            unsigned long long operands[8];
+            for (int k = 0; k < nOperands; k++)
+                operands[k] = fz_resolve(fz_ops[op].kinds[k], p[k]);
+            p += nOperands;
+
+            fz_exec(pi, ci, op, operands);
+        }
+
+        ntapi_printf("[FUZZ] p%u end\n", pi);
+    }
+
+    fz_reset_slots();
+    ntapi_printf("[FUZZ] batch end n=%u\n", programCount);
+    /* No ok() failures unless the blob was malformed: the verdict is the diff
+     * of the [FUZZ] lines, computed host-side by fuzz.py. */
+}
