@@ -11,7 +11,10 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
 #include "kernel/mm/fault.h"
+#include "kernel/mm/phys.h"
 #include "kernel/syscall/syscall.h"
+#include "kernel/syscall/uaccess.h"
+#include "arch/x86_64/mmu.h"
 #include "abi/ntstatus.h"
 #include "arch/x86_64/trap.h"
 #include "arch/x86_64/io.h"
@@ -160,6 +163,58 @@ static void KiDumpSystemState(void)
     KiDumpTraceRing();
 }
 
+/* Walk the faulting process's USER RBP chain (user modules build with
+ * forced frame pointers; crt0.S zeroes RBP as the terminator). Each frame's
+ * two qwords are probed through the page tables first — the uaccess.c
+ * pattern, sound under Art. 3 (no paging/eviction, uniprocessor, and we run
+ * on the faulting thread's CR3 with no SMAP) — so a wild chain prints fewer
+ * frames instead of re-faulting. */
+static void KiDumpUserStackTrace(uint64_t rbp)
+{
+    PKTHREAD thread = KiCurrentThread;
+    if (thread == 0 || !KiLooksLikeKernelPointer(thread->process))
+    {
+        return;
+    }
+    uint64_t pml4 = thread->process->addressSpace.pml4Physical;
+    DbgPrint("  user stack trace (rbp chain):\n");
+    for (int index = 0; index < 16; index++)
+    {
+        if (rbp == 0 || (rbp & 0x7) != 0 || rbp + 16 > KI_USER_SPACE_LIMIT)
+        {
+            break;
+        }
+        int probeOk = 1;
+        for (uint64_t page = rbp & ~(uint64_t)(PAGE_SIZE - 1);
+             page <= ((rbp + 15) & ~(uint64_t)(PAGE_SIZE - 1)); page += PAGE_SIZE)
+        {
+            int writable = 0;
+            int present = 0;
+            if (MiTranslateUserPage(pml4, page, &writable, &present) == 0 || !present)
+            {
+                probeOk = 0;
+                break;
+            }
+        }
+        if (!probeOk)
+        {
+            break;
+        }
+        uint64_t savedRbp = ((const uint64_t *)(uintptr_t)rbp)[0];
+        uint64_t returnAddress = ((const uint64_t *)(uintptr_t)rbp)[1];
+        if (returnAddress == 0)
+        {
+            break;
+        }
+        DbgPrint("    u[%d] %#018lx\n", index, returnAddress);
+        if (savedRbp <= rbp)
+        {
+            break; /* frame pointers must grow upward */
+        }
+        rbp = savedRbp;
+    }
+}
+
 /* Map a contained user-mode exception vector to the NTSTATUS the process
  * dies with (what a debugger/parent would observe). */
 static NTSTATUS KiUserFaultStatus(uint64_t vector)
@@ -222,8 +277,14 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         }
         KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
         KiDumpTrapFrame("[USERFAULT]", trapFrame);
-        DbgPrint("[USERFAULT] pid image '%s'; terminating process\n",
-                 KeGetCurrentThread()->process->imageName);
+        KiDumpUserStackTrace(trapFrame->rbp);
+        /* Entry + stack bounds make every user address in the dump an
+         * offset a reader can compute (flat binaries: entry == image base;
+         * tools/symbolize.py resolves against the module's .elf). */
+        PEPROCESS process = KeGetCurrentThread()->process;
+        DbgPrint("[USERFAULT] entry=%#018lx stack=[%#018lx,%#018lx)\n", process->entryRip,
+                 process->stackAllocationBase, process->stackBase);
+        DbgPrint("[USERFAULT] pid image '%s'; terminating process\n", process->imageName);
         PspExitCurrentProcess(faultStatus);
     }
 
