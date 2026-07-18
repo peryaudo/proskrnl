@@ -132,6 +132,9 @@ static void KiPanicLatch(void)
  * would truncate the dump. Best-effort, not proof of validity. */
 static int KiLooksLikeKernelPointer(const void *pointer)
 {
+    /* Lowest canonical higher-half address for 48-bit virtual addressing
+     * (Intel SDM Vol. 1 §3.3.7.1 "Canonical Addressing") — same bound the
+     * kernel RBP walk above uses. */
     return (uint64_t)(uintptr_t)pointer >= 0xffff800000000000ULL;
 }
 
