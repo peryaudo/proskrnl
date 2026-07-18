@@ -10,12 +10,16 @@ An oracle is anything that tells you the correct answer independently of your
 implementation. proskrnl has an unusually good one:
 
 - **Real Windows** — unfixed, high-value, but opaque.
-- **Wine** — transparent but approximate.
+- **Wine** — transparent, and **the operative oracle** (Art. 6): "approximate" only
+  relative to real Windows, which is not what proskrnl runs. The boundary consumer is
+  Wine's own PE stack, so Wine's observed behaviour *is* the contract — a divergence from
+  the pinned `third_party/wine` is a proskrnl bug by definition, never a question to park.
 - **proskrnl** — a *third* independent implementation: transparent, instrumentable,
   deterministic.
 
 Any two agreeing pins the third. This is **triangulation**, and it is only possible
-because the boundary is observable.
+because the boundary is observable. Real Windows serves as the extra triangulation point
+when Wine's own behaviour is unstable, not as an excuse to second-guess Wine.
 
 ## Tests are assets *before* the code exists
 

@@ -82,6 +82,19 @@ conformance test (against Windows or Wine) is a **conviction**. "The sanitizer w
 is never a completion criterion. Do not accept a fix that silences a report without a test
 proving the contract now holds.
 
+**Wine is the operative oracle; a divergence from Wine is a proskrnl bug, full stop.**
+Wine is "approximate" only relative to real Windows — but proskrnl's boundary consumer is
+not real Windows, it is **Wine's own PE user-mode stack**, which was written against, and
+continuously tested against, exactly the behaviour Wine's ntdll observes. Matching Wine at
+the boundary is therefore the definition of correct for this project; if Wine and real
+Windows ever disagree, that is Wine's upstream bug to fix on Wine's schedule, and proskrnl
+tracks Wine (the pinned `third_party/wine`) either way. So there is no "maybe real Windows
+differs" escape hatch for leaving a divergence open: do not spend time re-verifying Wine
+against Windows before accepting a divergence as a bug, and never park a divergence as
+"awaiting real-Windows triage". Real Windows remains useful the other way around — as a
+*third* triangulation point when Wine's own behaviour is unstable across versions — but a
+tie between proskrnl and Wine is always broken in Wine's favour.
+
 ## Article 7 — Additive and removable
 
 Every feature outside the CUI core (all of GUI, WOW64, the optional ReactOS shell) must be

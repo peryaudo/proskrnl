@@ -8,7 +8,7 @@ in BOTH ntapi modes, run each side, and diff the normalized [FUZZ] traces:
     generate programs (seed) -> blob
       +- oracle  : mingw .exe under pinned third_party/wine  -> [FUZZ] trace
       +- proskrnl: clang flat binary as a Limine boot module -> [FUZZ] trace
-    difference (after suppressions) == bug
+    difference (minus the known-divergence baseline) == bug
 
 On a divergence the offending program is minimized by greedy call removal and a
 re-runnable repro is written under build/tests/fuzz/repro/ (docs/09 Art. 6: the
@@ -54,26 +54,16 @@ import random  # noqa: E402
 
 NAME_COUNT = len(M.NAME_TAGS)
 
-# Weight each object-name index by its tag. v1 default generation stays inside
-# the name space the sem_ob tests already pin as correct on proskrnl:
-# anonymous, valid names (real collisions/opens), and nested directory items.
-# The deliberately-MALFORMED names (empty, relative, missing-dir, the namespace
-# root, an existing directory used as a leaf) are weight 0 by default: proskrnl
-# vs Wine disagree on the *error status* they map to (OBJECT_NAME_INVALID vs
-# INVALID_PARAMETER/PATH_SYNTAX_BAD/ACCESS_DENIED), and which one matches real
-# Windows is unverified (docs/08: Wine is an *approximate* oracle; that needs a
-# real-Windows triage, not a guess). --malformed-names lifts the weights to
-# surface that space deliberately. See README "Scope".
 # Object-name generation policy, by level. proskrnl and Wine agree on the
-# dispatcher-object + handle-table + wait/query core, but diverge widely on the
-# *error status* they map malformed / nested / colliding namespace paths to
-# (OBJECT_NAME_INVALID vs INVALID_PARAMETER vs PATH_SYNTAX_BAD vs PATH_NOT_FOUND
-# vs ACCESS_DENIED), and which one matches real Windows is unverified (docs/08:
-# Wine is an *approximate* oracle — that space needs a real-Windows triage, not
-# a guess). So the DEFAULT policy is anonymous objects only: a clean, converging
-# green baseline that makes the fuzzer a real regression gate today. --named
-# adds valid names; --malformed-names adds the deliberately-bad ones. Both wider
-# levels surface divergences to triage (see README "Scope").
+# dispatcher-object + handle-table + wait/query core, but proskrnl still maps
+# malformed / nested / colliding namespace paths to different *error statuses*
+# than Wine (OBJECT_NAME_INVALID vs INVALID_PARAMETER vs PATH_SYNTAX_BAD vs
+# PATH_NOT_FOUND vs ACCESS_DENIED). Wine is the operative oracle (docs/09
+# Art. 6), so each of those is a proskrnl bug to fix — the backlog is just
+# larger than one change. The DEFAULT policy is anonymous objects only: a
+# clean, converging green gate today. --names named adds valid names;
+# --names malformed adds the deliberately-bad ones. Both wider levels
+# enumerate the bugs still to fix (see README "Scope").
 _NAME_WEIGHTS_BY_LEVEL = {
     "anon": {"none": 1},  # everything else 0
     "named": {"none": 3, "valid": 8, "subdir": 3, "subitem": 4},
@@ -288,9 +278,10 @@ def _status_of(line):
 def load_baseline():
     """Known-divergence baseline (tests/fuzz/known_divergences.txt): the set of
     root-divergence signatures (NtName, oracle_status, proskrnl_status) that are
-    already documented as proskrnl-vs-Wine differences awaiting real-Windows
-    triage. The fuzzer ignores these and fails only on a NEW signature — so it is
-    a green regression gate whose baseline is a visible, cited backlog, not a
+    already documented as bugs still to fix (Wine is the operative oracle,
+    docs/09 Art. 6 — a divergence from Wine is a proskrnl bug by definition).
+    The fuzzer ignores these and fails only on a NEW signature — so it is a
+    green regression gate whose baseline is a visible, cited backlog, not a
     silence. File format, one per line:
         <NtName> oracle=<hexstatus> proskrnl=<hexstatus>   # citation
     """
@@ -419,9 +410,10 @@ def emit_repro(pid, calls, sig):
             _name, nt, kinds = OP_BY_INDEX[opcode]
             f.write("c%d %-26s %s\n" % (ci, nt, list(zip(kinds, operands))))
     print("\nRepro written:\n  %s\n  %s" % (blob_path, listing))
-    print("Disposition (docs/09 Art. 6): either curate a tests/ntapi/ regression that\n"
-          "convicts proskrnl, or — if this is a proskrnl-vs-Wine difference pending a\n"
-          "real-Windows check — add the signature to known_divergences.txt with a note.")
+    print("Disposition (docs/09 Art. 6, Wine is the operative oracle — this is a\n"
+          "proskrnl bug): pin the Wine behaviour with a tests/ntapi/ case, fix the\n"
+          "kernel; only if it cannot be fixed now, add the signature to\n"
+          "known_divergences.txt with a note so it stays a visible debt.")
 
 
 def decode_blob(path):
@@ -454,9 +446,9 @@ def main():
     ap.add_argument("--calls", type=int, default=32)
     ap.add_argument("--allow-avoid", action="store_true")
     ap.add_argument("--names", choices=("anon", "named", "malformed"), default="anon",
-                    help="object-name space: anon (default, the clean green baseline); named "
-                         "(valid names); malformed (adds bad names). named/malformed surface "
-                         "error-status divergences to triage vs real Windows (see README)")
+                    help="object-name space: anon (default, the clean green gate); named "
+                         "(valid names); malformed (adds bad names). named/malformed enumerate "
+                         "the error-status bugs still to fix (see README)")
     ap.add_argument("--self-check", action="store_true")
     ap.add_argument("--oracle-only", action="store_true")
     ap.add_argument("--replay")
