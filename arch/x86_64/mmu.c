@@ -5,6 +5,12 @@
  * Limine-reported physical base; all of physical memory is re-mapped at the
  * HHDM offset with 2 MiB pages (RW + NX). Page-table frames come from
  * MiAllocatePage and are reached through the HHDM.
+ *
+ * Constants cross-check: Intel SDM Vol. 3A, "Paging" — 4-level PTE bit
+ * layout (P bit 0, R/W bit 1, U/S bit 2, PS bit 7, XD bit 63, address bits
+ * 51:12 = 0x000FFFFFFFFFF000, 9-bit index per level starting at bit 12) —
+ * and the IA32_EFER register there (NXE bit 11; also QEMU
+ * target/i386/cpu.h MSR_EFER_NXE).
  */
 #include "arch/x86_64/mmu.h"
 #include "arch/x86_64/io.h"

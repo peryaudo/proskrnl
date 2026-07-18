@@ -21,7 +21,9 @@
 #include "abi/ntdef.h"
 
 /* Highest user address + 1 (Wine's x86_64 user_space_limit shape: the
- * canonical low half minus the 64 KiB no-man's-land under the kernel). */
+ * canonical low half minus the 64 KiB no-man's-land under the kernel).
+ * Cross-check: third_party/wine dlls/ntdll/unix/virtual.c,
+ * `user_space_limit = (void *)0x7fffffff0000`. */
 #define KI_USER_SPACE_LIMIT 0x00007FFFFFFF0000ULL
 
 /* ExGetPreviousMode — real NT export (wine/include/ddk/wdm.h): the mode the

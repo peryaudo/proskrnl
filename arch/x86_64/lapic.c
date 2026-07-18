@@ -8,6 +8,17 @@
  * frequency is CPU-dependent, so it is calibrated once against the PIT
  * (channel 2, gated one-shot — the classic dance), then programmed periodic.
  * The tick itself is handled in kernel/ke/timer.c (KiUpdateClock).
+ *
+ * Constants cross-check: Intel SDM Vol. 3A, "Advanced Programmable Interrupt
+ * Controller (APIC)" (xAPIC register offsets, LVT/SVR/divide bit layouts,
+ * IA32_APIC_BASE, and the x2APIC MSR mapping 0x800 + offset>>4); Intel 8254
+ * datasheet + IBM PC/AT port 0x61 for the PIT side. The pinned QEMU we run
+ * on (third_party/qemu) decodes the same values in hw/intc/apic.c
+ * (register index = MSR - 0x800: EOI 0x0B, SVR 0x0F, LVT timer 0x32,
+ * initial/current count 0x38/0x39, divide 0x3E), target/i386/cpu.h
+ * (MSR_IA32_APICBASE 0x1B, ENABLE bit 11, EXTD bit 10),
+ * include/hw/timer/i8254.h (PIT_FREQ 1193182), and hw/audio/pcspk.c
+ * (port 0x61: bit 0 = channel-2 gate, bit 5 = channel-2 OUT).
  */
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/idt.h"
@@ -35,7 +46,8 @@
 #define PIT_CHANNEL2 0x42
 #define PIT_COMMAND  0x43
 #define PIT_GATE     0x61
-/* 1.193182 MHz PIT clock ticks in 10 ms. */
+/* 1.193182 MHz PIT clock (QEMU include/hw/timer/i8254.h PIT_FREQ) in 10 ms:
+ * 1193182 / 100 = 11931.82, rounded. */
 #define PIT_10MS_COUNT 11932
 
 extern uint64_t KiTrapThunkTable[]; /* trap.S */

@@ -30,7 +30,9 @@ typedef struct
 typedef struct MI_VAD MI_VAD, *PMI_VAD;
 
 /* NT reserves on 64 KiB boundaries (MEM_RESERVE rounds down to this); the
- * value is the documented Win32 allocation granularity. */
+ * value is the documented Win32 allocation granularity
+ * (SYSTEM_INFO.dwAllocationGranularity). Cross-check: third_party/wine
+ * dlls/ntdll/unix/virtual.c, `granularity_mask = 0xffff`. */
 #define MI_ALLOCATION_GRANULARITY 0x10000ULL
 
 NTSTATUS MiCreateAddressSpace(PMI_ADDRESS_SPACE space);

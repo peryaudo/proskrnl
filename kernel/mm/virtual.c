@@ -39,7 +39,9 @@ struct MI_VAD
     BOOLEAN ownsFrames;
 };
 
-#define MI_LOWEST_USER_ADDRESS 0x10000ULL /* NT never allocates the first 64K */
+/* NT never allocates the first 64K. Cross-check: third_party/wine
+ * dlls/ntdll/unix/virtual.c, `address_space_start = (void *)0x10000`. */
+#define MI_LOWEST_USER_ADDRESS 0x10000ULL
 
 static uint64_t MiRoundDown(uint64_t value, uint64_t align)
 {

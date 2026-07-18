@@ -28,8 +28,9 @@ static inline void KiWriteMsr(uint32_t msr, uint64_t value)
     __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
 }
 
-/* QEMU isa-debug-exit (iobase 0xf4): host exit code becomes (code << 1) | 1, so
- * it can never be 0 — the real M1 verdict is the [KTEST] line on serial
+/* QEMU isa-debug-exit (iobase 0xf4, set in tools/qemu.sh): host exit code
+ * becomes (code << 1) | 1 — see third_party/qemu hw/misc/debugexit.c — so
+ * it can never be 0; the real M1 verdict is the [KTEST] line on serial
  * (docs/08). This just terminates the VM promptly. */
 static inline void KiQemuExit(uint8_t code)
 {

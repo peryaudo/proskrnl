@@ -131,7 +131,9 @@ typedef enum
 #define KI_THREAD_STATE_WAITING    3
 #define KI_THREAD_STATE_TERMINATED 4
 
-#define KI_PRIORITY_LEVELS 32 /* KPRIORITY 0..31, NT's range */
+/* KPRIORITY 0..31, NT's range (Microsoft "Scheduling Priorities",
+ * https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities). */
+#define KI_PRIORITY_LEVELS 32
 
 /* Internal layout is entirely ours (docs/03); only two shapes are pinned:
  * the DISPATCHER_HEADER must come first (threads are waitable, signalled at

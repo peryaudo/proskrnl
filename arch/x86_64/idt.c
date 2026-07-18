@@ -1,7 +1,11 @@
 /* arch/x86_64/idt.c — interrupt descriptor table (M1).
  *
  * Gate selector is the current %cs (whatever Limine handed us) so we need no
- * GDT of our own yet — a real GDT + TSS arrives with user mode at M4. */
+ * GDT of our own yet — a real GDT + TSS arrives with user mode at M4.
+ *
+ * Constants cross-check: Intel SDM Vol. 3A, "Interrupt and Exception
+ * Handling" — the 16-byte 64-bit IDT gate descriptor layout and its
+ * type/attribute byte (0x8E = present, DPL 0, 64-bit interrupt gate). */
 #include "arch/x86_64/idt.h"
 #include "kernel/init/panic.h"
 
