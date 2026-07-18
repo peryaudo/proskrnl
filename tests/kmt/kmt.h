@@ -37,6 +37,10 @@ extern int kmt_failures; /* total across the run */
         DbgPrint("[KTEST] %s %s\n", #test_fn, kmt_failures == kmt_before ? "PASS" : "FAIL");       \
     } while (0)
 
+/* The kernel/lib unit suite (tests/kmt/lib.c): LIST_ENTRY primitives, Rtl
+ * counted strings, mem* intrinsics. Returns failures. */
+int kmt_run_lib(void);
+
 /* The M2 suite (tests/kmt/m2_dispatcher.c). Returns total failures. */
 int kmt_run_m2(void);
 
