@@ -61,8 +61,12 @@ void ObDereferenceObject(PVOID body)
 
 NTSTATUS NtMakeTemporaryObject(HANDLE handle)
 {
+    /* Clearing the permanent flag is a delete-class operation: NT requires
+     * DELETE access on the handle, so a handle without it is ACCESS_DENIED even
+     * though the object is reachable. Matches the pinned third_party/wine
+     * (NtMakeTemporaryObject opens with DELETE); docs/09 Art. 6. */
     PVOID body;
-    NTSTATUS status = ObReferenceObjectByHandle(handle, 0, 0, KernelMode, &body, 0);
+    NTSTATUS status = ObReferenceObjectByHandle(handle, DELETE, 0, KernelMode, &body, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
