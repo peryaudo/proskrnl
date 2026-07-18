@@ -7,6 +7,9 @@
 #include "util.h"
 
 static const void *link_name = W("\\BaseNamedObjects\\prsk_nse_link");
+static const void *link2_name = W("\\BaseNamedObjects\\prsk_nse_link2");
+static const void *dangler_name = W("\\BaseNamedObjects\\prsk_nse_dangler");
+static const void *missing_tgt = W("\\BaseNamedObjects\\prsk_nse_missing");
 static const void *base_name = W("\\BaseNamedObjects");
 static const void *root_name = W("\\");
 
@@ -59,5 +62,36 @@ START_TEST(namespace_errors)
        (unsigned long)status);
     NtClose(h);
 
-    (void)base_name;
+    /* Creating a symbolic link does not follow a link already at the name:
+     * a duplicate is a collision, and OBJ_OPENIF reuse is plain SUCCESS (not
+     * STATUS_OBJECT_NAME_EXISTS, unlike every other object type). */
+    init_ustr(&name, link2_name);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    init_ustr(&target, base_name);
+    status = NtCreateSymbolicLinkObject(&h, SYMBOLIC_LINK_ALL_ACCESS, &attr, &target);
+    ok(status == STATUS_SUCCESS, "create link2 -> %08lx", (unsigned long)status);
+    status = NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_ALL_ACCESS, &attr, &target);
+    ok(status == STATUS_OBJECT_NAME_COLLISION, "duplicate link -> %08lx", (unsigned long)status);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE | OBJ_OPENIF);
+    status = NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_ALL_ACCESS, &attr, &target);
+    ok(status == STATUS_SUCCESS, "link OPENIF reopen -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(h2);
+
+    /* Creating a non-link object whose name is a symlink to a not-yet-existing
+     * target: NT follows the final link but will not materialize the object at
+     * the missing target, so it is PATH_NOT_FOUND, not a silent create. */
+    {
+        HANDLE dlink;
+        init_ustr(&name, dangler_name);
+        init_ustr(&target, missing_tgt);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        status = NtCreateSymbolicLinkObject(&dlink, SYMBOLIC_LINK_ALL_ACCESS, &attr, &target);
+        ok(status == STATUS_SUCCESS, "create dangling link -> %08lx", (unsigned long)status);
+        status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+        ok(status == STATUS_OBJECT_PATH_NOT_FOUND, "create over link to missing target -> %08lx",
+           (unsigned long)status);
+        NtClose(dlink);
+    }
+    NtClose(h);
 }
