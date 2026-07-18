@@ -72,8 +72,18 @@ Async I/O skeleton (IOSB update rules, APC/event completion); `NtCreateFile/Read
 WriteFile/QueryInformationFile/QueryDirectoryFile` main info classes; virtio-blk driver;
 FAT32. NT-specific semantics land here: share modes, case-insensitivity, delete-on-close,
 byte-range locks.
+**Do first:** the self-checking Mm stress test (`docs/08`) — write via a mapped view, read
+via `NtReadFile`, write via `NtWriteFile`, read via the view again, verifying a known
+pattern every time. It needs this milestone's `NtReadFile`/`NtWriteFile`, so it becomes
+expressible exactly here; write it and green it on the oracle *before* any Io code
+(Article 5). It is M6's acceptance test for mapped-view/read-write coherence — Mm
+consistency bugs surface *only* in this form, and reliably do (`docs/08`) — and it stays
+in the suite as a permanent regression guard. Until M7 (`NtCreateThread`) it runs
+single-threaded; sequential view/read/write interleavings already convict coherence bugs.
+The anonymous-section slice of it, `sem_mm/section_stress`, runs from M5.
 **Done when:** the file-semantics suite is green (e.g. share-mode violation →
-`STATUS_SHARING_VIOLATION`); M5's image mapping works from an on-disk file.
+`STATUS_SHARING_VIOLATION`); M5's image mapping works from an on-disk file; the Mm
+stress test is green on proskrnl.
 
 ## M7 — NtCreateUserProcess + Wine ntdll ⛰️ (the mountain)
 PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA layout; `NtCreateUserProcess`;
