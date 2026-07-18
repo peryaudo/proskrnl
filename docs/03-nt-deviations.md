@@ -60,6 +60,44 @@ third-party drivers, we owe that contract to no one, and SMP becomes ordinary fu
 | **Name case folding** (M3) | `OBJ_CASE_INSENSITIVE` honoured per lookup | upcasing is ASCII-only; NT carries a full Unicode upcase table. Kernel-created names are ASCII, so this is unobservable until user mode invents non-ASCII object names |
 | **Adversarial namespace error classification** (M3) | the ordinary namespace contract (`tests/ntapi/sem_ob/namespace{,_errors}`): missing leaf / missing intermediate / collision / type mismatch / empty-and-root names / symbolic-link resolution and loops all match Wine exactly | the *exact* `NTSTATUS` among the several "namespace is malformed or conflicting" codes for deliberately pathological inputs — a graph of symbolic links pointing at each other or at wrong-typed objects, the *same* name created under several incompatible object types — can still differ from Wine. Wine's PE stack only ever uses well-formed, type-stable namespace paths (`\BaseNamedObjects\Name`, `\??\C:`), so these sequences (the differential fuzzer's `--names named`/`malformed` modes construct them; they do not minimize below ~13 calls) are unobservable in practice. Fixing them byte-exact is deferred object-manager work, not a boundary Wine depends on |
 
+## M6 file-surface notes (Io + FAT32)
+
+The file boundary is pinned test-first against the pinned Wine (Art. 5/6:
+`tests/ntapi/sem_file/`). Three kinds of notes fall out:
+
+**Wine-pinned choices that differ from real NT** (Wine is the operative oracle — these are
+correct by definition here, listed so nobody "fixes" them against Windows folklore):
+
+| Behaviour | Pinned Wine value (proskrnl matches) |
+|---|---|
+| Unsupported `FILE_INFORMATION_CLASS` in `NtQuery/SetInformationFile` | `STATUS_NOT_IMPLEMENTED` (real NT: `STATUS_INVALID_INFO_CLASS`) |
+| `NtLockFile` with non-NULL `ApcRoutine`/`IoStatusBlock`/`Key`; `NtUnlockFile` with non-NULL `Key` | `STATUS_NOT_IMPLEMENTED` — only the bare form is implemented; Wine's own PE stack never passes them |
+| Byte-range lock conflict under FailImmediately | `STATUS_FILE_LOCK_CONFLICT` |
+| `FileEndOfFileInformation` through a handle without `FILE_WRITE_DATA` | shrink → `STATUS_INVALID_PARAMETER`, grow → `STATUS_INVALID_HANDLE` (fuzzer-found; artifacts of Wine's unix backend, pinned by `sem_file/info_classes`) |
+| `NtQueryDirectoryFile` mask binding | the mask binds to the handle; a NULL mask on a later call reuses the stored one; a first-scan empty result is `STATUS_NO_SUCH_FILE`, later ones `STATUS_NO_MORE_FILES` |
+| `FILE_BOTH_DIR_INFORMATION.ShortName` | left empty (Wine's unix backend reports none; not pinned by tests either way) |
+
+**NT behaviours the pinned Wine cannot express** (its unix backend under-implements them;
+proskrnl implements the NT form — unobservable by Wine's PE stack, which never relies on
+them, and excluded from the differential fuzzer's op model):
+
+- `FILE_STANDARD_INFORMATION.DeletePending` reports TRUE once a delete disposition is set
+  (Wine reports FALSE).
+- A new open while a delete disposition is pending fails with `STATUS_DELETE_PENDING`
+  (Wine lets it succeed and defers the unlink).
+
+**Internal simplifications** (unobservable, Art. 3):
+
+- **No RTC driver yet:** file timestamps derive from a fixed base date plus uptime —
+  present, ordered, monotonic; no test may compare them across hosts.
+- **Windows' `DIR_NTRes` lower-case hints are not used:** any name that is not already an
+  exact upper-case 8.3 name gets an LFN run (spec-conformant; preserves case exactly).
+- **FSInfo free-count is not maintained** (the FAT spec marks it advisory and requires
+  validation anyway).
+- **Mapped-view dirty pages** are written back on `NtFlushBuffersFile` and at file close,
+  not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
+  through immediately).
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:

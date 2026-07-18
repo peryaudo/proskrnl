@@ -137,55 +137,62 @@ local macOS Wine.
 
 ## Status
 
-**M5 complete.** The repository began as a **constitution** — documents that fix the design
+**M6 complete.** The repository began as a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
 them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
 physical page frames), the M2 multithreading core (own page tables, one pool, 32-level
 priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`),
 the M3 **object manager** (refcounted headers + type system, growable handle table, the
-`\`-rooted namespace), and the M4 **user-mode/syscall boundary** (own GDT/TSS +
+`\`-rooted namespace), the M4 **user-mode/syscall boundary** (own GDT/TSS +
 `syscall`/`sysret`, per-process address spaces and handle tables, the reserve/commit VAD
-engine, TEB allocation, user-fault containment), the kernel now maps **sections**. M5 seeds
-a RAM-disk — boot modules become a trivial read-only FS (`kernel/init/initrd.c`) whose
-resident pages are the first form of the unified page cache, breaking the Mm↔Io circular
-dependency — and builds **section objects** on top (`kernel/mm/section.c`): anonymous
-`SEC_COMMIT` sections whose zeroed frames exist from creation and are genuinely shared by
-every view (no COW — Art. 3), read-only file-backed sections that map the page cache
-directly (mapped-view/read consistency is structural, not enforced), and `SEC_IMAGE`
-sections over a PE parser (`kernel/mm/pecoff.c`, layouts from the generated `abi/ntimage.h`)
-where every map is a full private copy with per-PE-section protection and `.reloc`
-processing when the preferred base is taken (`STATUS_IMAGE_NOT_AT_BASE`). The user surface
-is `NtCreateSection` / `NtOpenSection` / `NtMapViewOfSection` (10 arguments — the syscall
-path now carries stack arguments 7..10) / `NtUnmapViewOfSection` / `NtQuerySection`, all
-named/shareable through the Ob namespace. Process stacks became NT-shaped: reserve +
-committed top + `PAGE_GUARD` page, grown a page at a time by the new user-fault path
-(`kernel/mm/fault.c`) which also updates `NT_TIB.StackLimit`; a PE boot module
-(`user/init-tests/pe_smoke.c`, a real PE32+ the kernel loads through the section engines)
-proves image mapping, per-section protection, relocation and stack growth end to end. The
-section semantics were pinned FIRST on the Wine oracle (`tests/ntapi/sem_mm/`, Art. 5);
-`abi/` (now also `ntimage.h` and the section slice of `ntmmapi.h`) stays generated from
+engine, TEB allocation, user-fault containment), and the M5 **section engine** (anonymous /
+file-backed / `SEC_IMAGE` sections, the PE32+ parser, NT-shaped guard-page stacks), the
+kernel now has a real storage stack. M6 adds a **virtio-blk driver** over the modern
+virtio-pci transport (`drivers/pci.c`, `drivers/virtio/` — a polled split virtqueue,
+written from the OASIS virtio 1.2 specification with per-constant citations, the pinned
+QEMU as runtime cross-check), **FAT32 read/write** on the GPT boot disk (`fs/fat32/` —
+BPB/FAT-chain/long-file-name handling per the Microsoft FAT specification; one FCB per
+on-disk file carries the NT share/lock/delete state), and the **I/O manager**
+(`kernel/io/` — Device and File object types, a namespace parse hook so
+`NtCreateFile("\??\C:\...")` resolves through the `C:` symlink into the FS, an internal
+`file_operations`-style vfs, and no IRP — docs/03). File data lives in the generalized
+**unified page cache** (`kernel/mm/pagecache.c`): `NtReadFile`/`NtWriteFile` copy through
+the very frames data sections map, so the mapped-view/read/write coherence stress test
+(`tests/ntapi/sem_mm/file_coherence.c`, the docs/08 "self-checking stress test") is
+structural rather than lucky, and every write goes straight to disk (immediate writeback,
+Art. 3). The surface — `NtCreateFile`/`NtOpenFile`/`NtReadFile`/`NtWriteFile`/
+`NtQueryInformationFile`/`NtSetInformationFile`/`NtQueryDirectoryFile`/
+`NtQueryAttributesFile`/`NtFlushBuffersFile`/`NtLockFile`/`NtUnlockFile` — carries the NT
+file semantics this project exists for: share modes (`STATUS_SHARING_VIOLATION`),
+case-insensitive lookup with case-preserving long names, delete-on-close and
+`FileDispositionInformation`, byte-range locks, and the async-completion contract (IOSB
+written before the completion event fires), all pinned FIRST on the Wine oracle
+(`tests/ntapi/sem_file/`, Art. 5) and green on the kernel; `NtCreateSection(SEC_IMAGE)`
+now maps images from on-disk files. `abi/` (now also `ntioapi.h`) stays generated from
 Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no hand-typed
 constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M5 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M6 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 ```
 
-The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") also lands with
-M5 — every prerequisite exists from M4/M5, so it need not wait for M7. It generates random
+The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") generates random
 `Nt*` sequences, runs each on the Wine oracle and on proskrnl, and flags any divergence in
-the normalized result trace; its op model is generated from the same syscall list, so each
-milestone's new calls become fuzzable immediately. A checked-in `known_divergences.txt`
+the normalized result trace; its op model is generated from the same syscall list, so the
+M6 file surface became fuzzable the day it landed — and promptly convicted two real
+divergences (a wrong-access `FileEndOfFileInformation` status pair and unwaitable file
+handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergences.txt`
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M6** — the I/O manager and a real filesystem: async I/O skeleton, `NtCreateFile` /
-`NtReadFile` / `NtWriteFile` and the main info classes, a virtio-blk driver, FAT32, and the
-NT file semantics (share modes, case-insensitivity, delete-on-close) — after which M5's
-image mapping works from an on-disk file (`docs/02`).
+Next: **M7** — `NtCreateUserProcess` + Wine's ntdll, the mountain: byte-exact
+PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA, thread creation, the
+`KiUserExceptionDispatcher`/`KiUserApcDispatcher` return protocol, and Wine's ntdll PE
+brought up with its unixlib replaced by our syscall stubs — after which "the rest of Wine
+is data" (`docs/02`).
 
 ## License
 
