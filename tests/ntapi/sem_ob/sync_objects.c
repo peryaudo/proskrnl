@@ -111,6 +111,50 @@ START_TEST(sync_objects)
     ok(wait_now(sem) == STATUS_TIMEOUT, "semaphore count exceeded its releases");
     NtClose(sem);
 
+    /* NtReleaseSemaphore resolves the HANDLE before it looks at ReleaseCount,
+     * and a zero count is a legal no-op — never STATUS_INVALID_PARAMETER. So a
+     * bad/wrong-type/under-privileged handle reports the handle error even when
+     * count is 0. (Wine semantics; docs/09 Art. 6.) */
+    {
+        HANDLE roSem, closed, ev;
+        status = NtCreateSemaphore(&sem, SEMAPHORE_ALL_ACCESS, NULL, 1, 2);
+        ok(status == STATUS_SUCCESS, "create for release checks -> %08lx", (unsigned long)status);
+
+        /* count 0 on a valid handle: success, previous count reported, unchanged. */
+        uprev = 99;
+        status = NtReleaseSemaphore(sem, 0, &uprev);
+        ok(status == STATUS_SUCCESS, "release count 0 -> %08lx", (unsigned long)status);
+        ok(uprev == 1, "release-0 previous %lu, expected 1", (unsigned long)uprev);
+        status = NtReleaseSemaphore(sem, 0, &uprev);
+        ok(uprev == 1, "release-0 did not change the count (%lu)", (unsigned long)uprev);
+
+        /* invalid handle + count 0: INVALID_HANDLE, not INVALID_PARAMETER. */
+        status = NtCreateSemaphore(&closed, SEMAPHORE_ALL_ACCESS, NULL, 0, 1);
+        ok(status == STATUS_SUCCESS, "create-then-close -> %08lx", (unsigned long)status);
+        NtClose(closed);
+        status = NtReleaseSemaphore(closed, 0, NULL);
+        ok(status == STATUS_INVALID_HANDLE, "release closed handle count 0 -> %08lx",
+           (unsigned long)status);
+
+        /* wrong-type handle + count 0: OBJECT_TYPE_MISMATCH, not INVALID_PARAMETER. */
+        status = NtCreateEvent(&ev, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+        ok(status == STATUS_SUCCESS, "create event -> %08lx", (unsigned long)status);
+        status = NtReleaseSemaphore(ev, 0, NULL);
+        ok(status == STATUS_OBJECT_TYPE_MISMATCH, "release event count 0 -> %08lx",
+           (unsigned long)status);
+        NtClose(ev);
+
+        /* handle without SEMAPHORE_MODIFY_STATE + count 0: ACCESS_DENIED. */
+        status = NtDuplicateObject(NtCurrentProcess(), sem, NtCurrentProcess(), &roSem,
+                                   SEMAPHORE_QUERY_STATE, 0, 0);
+        ok(status == STATUS_SUCCESS, "duplicate query-only -> %08lx", (unsigned long)status);
+        status = NtReleaseSemaphore(roSem, 0, NULL);
+        ok(status == STATUS_ACCESS_DENIED, "release without MODIFY_STATE count 0 -> %08lx",
+           (unsigned long)status);
+        NtClose(roSem);
+        NtClose(sem);
+    }
+
     /* Wait-multiple parameter conventions: zero or >MAXIMUM_WAIT_OBJECTS
      * handles is STATUS_INVALID_PARAMETER_1; wait-any reports the INDEX of
      * the satisfying object. */
@@ -130,8 +174,7 @@ START_TEST(sync_objects)
         ok(status == STATUS_INVALID_PARAMETER_1, "count 0 -> %08lx", (unsigned long)status);
         for (i = 0; i < MAXIMUM_WAIT_OBJECTS + 1; i++)
             many[i] = pair[0];
-        status =
-            NtWaitForMultipleObjects(MAXIMUM_WAIT_OBJECTS + 1, many, WaitAny, FALSE, &zero);
+        status = NtWaitForMultipleObjects(MAXIMUM_WAIT_OBJECTS + 1, many, WaitAny, FALSE, &zero);
         ok(status == STATUS_INVALID_PARAMETER_1, "count 65 -> %08lx", (unsigned long)status);
 
         status = NtWaitForMultipleObjects(2, pair, WaitAny, FALSE, &zero);

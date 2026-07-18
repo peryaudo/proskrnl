@@ -336,10 +336,12 @@ NTSTATUS NtOpenSemaphore(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIB
 
 NTSTATUS NtReleaseSemaphore(HANDLE handle, ULONG releaseCount, PULONG previousCount)
 {
-    if (releaseCount == 0 || releaseCount > (ULONG)0x7FFFFFFF)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
+    /* The handle is resolved BEFORE ReleaseCount is examined: a bad, wrong-type
+     * or under-privileged handle reports the handle error regardless of the
+     * count. ReleaseCount == 0 is a legal no-op (returns the current count),
+     * never STATUS_INVALID_PARAMETER; a count that would exceed the limit is
+     * STATUS_SEMAPHORE_LIMIT_EXCEEDED. Matches the pinned third_party/wine
+     * (dlls/ntdll -> server release_semaphore); docs/09 Art. 6. */
     NTSTATUS probe =
         ObpProbeOptional(previousCount, sizeof(*previousCount), sizeof(*previousCount));
     if (!NT_SUCCESS(probe))
@@ -355,14 +357,19 @@ NTSTATUS NtReleaseSemaphore(HANDLE handle, ULONG releaseCount, PULONG previousCo
     }
     PKSEMAPHORE semaphore = body;
     /* Ke panics on over-release (kernel callers are in-tree); the Nt surface
-     * reports it. No preemption: the check cannot go stale before the call. */
+     * reports it. No preemption: the check cannot go stale before the call.
+     * Unsigned compare so a high-bit count reads as "huge" -> limit exceeded,
+     * as the server's unsigned arithmetic does, not as a negative LONG. */
     LONG previous = semaphore->header.signalState;
-    if ((LONG)releaseCount > semaphore->limit - previous)
+    if (releaseCount > (ULONG)(semaphore->limit - previous))
     {
         ObDereferenceObject(body);
         return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
     }
-    KeReleaseSemaphore(semaphore, 0, (LONG)releaseCount, FALSE);
+    if (releaseCount != 0)
+    {
+        KeReleaseSemaphore(semaphore, 0, (LONG)releaseCount, FALSE);
+    }
     if (previousCount != 0)
     {
         *previousCount = (ULONG)previous;
