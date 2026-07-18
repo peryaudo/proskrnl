@@ -48,6 +48,9 @@ $(BUILD)/kernel/mm/kasan.o: KASAN_FLAGS :=
 # string.c checks explicitly via MiKasanCheckRange (the pool memsets memory
 # whose shadow is mid-transition, so compiler instrumentation would misfire).
 $(BUILD)/kernel/lib/string.o: KASAN_FLAGS :=
+# The panic path is the debugger (Art. 9): its best-effort reads (walking an
+# overflowed stack's RBP chain across redzones) must never re-enter KASAN.
+$(BUILD)/kernel/init/panic.o: KASAN_FLAGS :=
 
 # Invoke the ELF ld.lld directly — the clang driver on a Darwin host defaults to
 # the Mach-O ld64.lld flavor even for a bare-metal target.
