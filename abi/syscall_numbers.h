@@ -41,7 +41,18 @@
 #define NTSYS_NtMapViewOfSection 32
 #define NTSYS_NtUnmapViewOfSection 33
 #define NTSYS_NtQuerySection 34
+#define NTSYS_NtCreateFile 35
+#define NTSYS_NtOpenFile 36
+#define NTSYS_NtReadFile 37
+#define NTSYS_NtWriteFile 38
+#define NTSYS_NtQueryInformationFile 39
+#define NTSYS_NtSetInformationFile 40
+#define NTSYS_NtQueryDirectoryFile 41
+#define NTSYS_NtQueryAttributesFile 42
+#define NTSYS_NtFlushBuffersFile 43
+#define NTSYS_NtLockFile 44
+#define NTSYS_NtUnlockFile 45
 
-#define NTSYS_SYSCALL_COUNT 35
+#define NTSYS_SYSCALL_COUNT 46
 
 #endif /* PROSKRNL_ABI_SYSCALL_NUMBERS_H */

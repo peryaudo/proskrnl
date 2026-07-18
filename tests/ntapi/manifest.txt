@@ -33,5 +33,14 @@ sem_mm/section_stress           # self-checking anonymous-section stress (docs/0
 # sem_mm/image_section          # oracle-only: image sections need NtCreateFile (M6)
 
 # --- M6: I/O manager + FAT32 ---
-# sem_file/share_modes            # conflicting share mode -> STATUS_SHARING_VIOLATION
-# sem_file/delete_on_close        # FILE_DELETE_ON_CLOSE semantics
+sem_file/create_basic           # NtCreateFile dispositions, typing, relative opens, case rules
+sem_file/read_write             # NtRead/WriteFile IOSB rules, positions, EOF, event completion
+sem_file/share_modes            # conflicting share mode -> STATUS_SHARING_VIOLATION
+sem_file/delete_on_close        # FILE_DELETE_ON_CLOSE + FileDispositionInformation
+sem_file/byte_locks             # NtLockFile/NtUnlockFile byte-range locks
+sem_file/info_classes           # NtQuery/SetInformationFile main info classes
+sem_file/query_dir              # NtQueryDirectoryFile enumeration, masks, "."/".."
+sem_mm/file_coherence           # THE Mm stress test: view/ReadFile/WriteFile coherence (docs/02 M6)
+# sem_file/apc_completion       # oracle-only: user APC delivery arrives with M7 (KiUserApcDispatcher)
+# sem_mm/image_section          # oracle-only: its oracle half leans on Win32 file APIs; the
+#                               # on-disk image path is covered by tests/kmt/m6_io.c

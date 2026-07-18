@@ -7,6 +7,7 @@
 
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
+typedef char CHAR;
 typedef signed char CCHAR;
 typedef unsigned char UCHAR;
 typedef unsigned char BOOLEAN;

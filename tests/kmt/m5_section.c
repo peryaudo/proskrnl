@@ -134,7 +134,7 @@ static void test_file_section_consistency(void)
         PMI_SECTION warmup = 0;
         ok(MiCreateSection(0, PAGE_READONLY, SEC_COMMIT, file, &warmup) == STATUS_SUCCESS,
            "warm-up section");
-        ok(file->pageCache != 0, "no page cache after file section creation");
+        ok(file->cache.frames != 0, "no page cache after file section creation");
         ObDereferenceObject(warmup);
     }
 

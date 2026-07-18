@@ -84,10 +84,21 @@ CSRC := kernel/init/main.c \
         kernel/mm/section.c \
         kernel/mm/pecoff.c \
         kernel/mm/fault.c \
+        kernel/mm/pagecache.c \
         kernel/ps/process.c \
         kernel/ps/display.c \
+        kernel/io/file.c \
+        kernel/io/rw.c \
+        kernel/io/query.c \
+        kernel/io/lock.c \
         kernel/syscall/table.c \
         kernel/syscall/uaccess.c \
+        drivers/pci.c \
+        drivers/virtio/virtqueue.c \
+        drivers/virtio/blk.c \
+        fs/fat32/fat.c \
+        fs/fat32/dir.c \
+        fs/fat32/file.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
@@ -97,7 +108,8 @@ CSRC := kernel/init/main.c \
         tests/kmt/m2_dispatcher.c \
         tests/kmt/m3_ob.c \
         tests/kmt/m4_usermode.c \
-        tests/kmt/m5_section.c
+        tests/kmt/m5_section.c \
+        tests/kmt/m6_io.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S
@@ -208,7 +220,7 @@ gen-abi:
 # Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
 # naming (PascalCase, NT prefixes) is on you and on review.
 format:
-	$(CLANG_FORMAT) -i $(shell find kernel arch -name '*.[ch]')
+	$(CLANG_FORMAT) -i $(shell find kernel arch drivers fs -name '*.[ch]')
 
 # Enforce the docs/15 naming rules (and correctness lints) via clang-tidy.
 tidy:

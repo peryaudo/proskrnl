@@ -1,5 +1,5 @@
 /* kernel/mm/section.h — section objects: anonymous, file-backed, and PE
- * image (M5, docs/02).
+ * image (M5; file-backed generalized over the M6 I/O manager).
  *
  * The boundary is NT's: a Section is an Ob object created/opened by
  * NtCreateSection/NtOpenSection, mapped and unmapped as views via
@@ -10,11 +10,11 @@
  *  - Anonymous SEC_COMMIT sections allocate ALL their (zeroed) frames at
  *    creation; every view maps those same frames — genuine sharing, no COW,
  *    no demand paging, nothing to page out.
- *  - File-backed sections run over the M5 RAM-disk: the file's pages live in
- *    its page cache (initrd.h), filled once, shared by every view, and read
- *    by KiReadRamdiskFile — mapped-view/read consistency is structural.
- *  - SEC_IMAGE sections parse the PE up front (pecoff.h); each map is a full
- *    private copy (Art. 3: "private/image mappings copy fully on map") with
+ *  - File-backed data sections map the file's unified page cache
+ *    (mm/pagecache.h) — the same frames NtReadFile/NtWriteFile copy through
+ *    (M6), so mapped-view/read-write consistency is structural.
+ *  - SEC_IMAGE sections parse the PE up front (pecoff.h) from a contiguous
+ *    raw-bytes snapshot; each map is a full private copy (Art. 3) with
  *    relocations applied when the preferred base is taken
  *    (STATUS_IMAGE_NOT_AT_BASE) and per-PE-section page protection.
  */
@@ -26,7 +26,21 @@
 #include "kernel/ob/ob.h"
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/pecoff.h"
+#include "kernel/mm/pagecache.h"
 #include "kernel/init/initrd.h"
+
+/* What a file-backed section is built over (filled by the caller: the
+ * RAM-disk shim below, or the M6 Io manager for real File objects). */
+typedef struct
+{
+    PMI_PAGE_CACHE cache; /* data sections: the frames views map */
+    const void *rawData;  /* SEC_IMAGE: contiguous raw file bytes */
+    uint64_t rawSize;
+    BOOLEAN ownsRawData; /* ownership of rawData passes to Mm ON CALL —
+                          * freed on failure too */
+    PVOID fileObject;    /* Ob File body the section pins (may be 0);
+                          * referenced on success */
+} MI_SECTION_BACKING;
 
 typedef struct
 {
@@ -34,21 +48,28 @@ typedef struct
     ULONG pageProtection; /* creation protection */
     uint64_t size;        /* section byte size (page-rounded when anonymous) */
     ULONG pageCount;
-    uint64_t *frames;            /* data sections: one frame per page. Anonymous: owned
-                                  * by the section; file-backed: the file's page cache
-                                  * (owned by the RAM-disk file). 0 for images. */
-    BOOLEAN ownsFrames;          /* the delete procedure frees `frames` */
-    const KI_RAMDISK_FILE *file; /* backing file; 0 = pagefile-backed */
-    MI_IMAGE_INFO *image;        /* SEC_IMAGE: parsed PE metadata (pool) */
+    uint64_t *frames;     /* anonymous sections: one owned frame per page */
+    PMI_PAGE_CACHE cache; /* file-backed data sections: the file's page cache */
+    const void *rawData;  /* image sections: raw file bytes for copy/reloc */
+    uint64_t rawSize;
+    BOOLEAN ownsRawData;
+    PVOID fileObject;     /* referenced backing File object body; 0 = none */
+    MI_IMAGE_INFO *image; /* SEC_IMAGE: parsed PE metadata (pool) */
 } MI_SECTION, *PMI_SECTION;
 
 extern OBJECT_TYPE MiSectionType;
 
-/* Kernel-internal creation (unnamed, creator-referenced): what Ps uses to
- * build a process image and what the Nt surface funnels into. `file` backs
- * SEC_IMAGE and file data sections; 0 with SEC_COMMIT is anonymous. */
+/* Kernel-internal creation (unnamed, creator-referenced) over the M5
+ * RAM-disk: what Ps uses to run boot modules and what kmt exercises.
+ * `file` backs SEC_IMAGE and file data sections; 0 with SEC_COMMIT is
+ * anonymous. */
 NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection, ULONG attributes,
                          PKI_RAMDISK_FILE file, PMI_SECTION *sectionOut);
+
+/* General form over an explicit backing (the M6 NtCreateFile path). */
+NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
+                               ULONG attributes, const MI_SECTION_BACKING *backing,
+                               PMI_SECTION *sectionOut);
 
 /* Map a view (data or image) into `space`. *baseInOut = 0 picks an address
  * (an image prefers its header base; taken -> relocated + the success status

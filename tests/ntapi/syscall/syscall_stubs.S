@@ -257,6 +257,83 @@ NtQuerySection:
     syscall
     ret
 
+    .global NtCreateFile
+NtCreateFile:
+    mov %rcx, %r10
+    mov $35, %eax
+    syscall
+    ret
+
+    .global NtOpenFile
+NtOpenFile:
+    mov %rcx, %r10
+    mov $36, %eax
+    syscall
+    ret
+
+    .global NtReadFile
+NtReadFile:
+    mov %rcx, %r10
+    mov $37, %eax
+    syscall
+    ret
+
+    .global NtWriteFile
+NtWriteFile:
+    mov %rcx, %r10
+    mov $38, %eax
+    syscall
+    ret
+
+    .global NtQueryInformationFile
+NtQueryInformationFile:
+    mov %rcx, %r10
+    mov $39, %eax
+    syscall
+    ret
+
+    .global NtSetInformationFile
+NtSetInformationFile:
+    mov %rcx, %r10
+    mov $40, %eax
+    syscall
+    ret
+
+    .global NtQueryDirectoryFile
+NtQueryDirectoryFile:
+    mov %rcx, %r10
+    mov $41, %eax
+    syscall
+    ret
+
+    .global NtQueryAttributesFile
+NtQueryAttributesFile:
+    mov %rcx, %r10
+    mov $42, %eax
+    syscall
+    ret
+
+    .global NtFlushBuffersFile
+NtFlushBuffersFile:
+    mov %rcx, %r10
+    mov $43, %eax
+    syscall
+    ret
+
+    .global NtLockFile
+NtLockFile:
+    mov %rcx, %r10
+    mov $44, %eax
+    syscall
+    ret
+
+    .global NtUnlockFile
+NtUnlockFile:
+    mov %rcx, %r10
+    mov $45, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

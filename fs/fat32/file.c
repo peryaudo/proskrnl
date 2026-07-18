@@ -1,0 +1,667 @@
+/* fs/fat32/file.c — file data over the unified page cache, cluster sizing,
+ * and the IO_VFS_OPS table the Io manager drives (see fat.h, kernel/io/vfs.h).
+ *
+ * NT semantics (share modes, delete-pending checks, case-insensitivity)
+ * live where NT puts them: the FS calls the Io layer's share-access
+ * accounting at the create point; the delete rules are enforced in
+ * SetDisposition/Cleanup here (docs/04 "ntsem" concern, folded into the ops).
+ */
+#include "fs/fat32/fat.h"
+#include "kernel/io/io.h"
+#include "kernel/mm/pool.h"
+#include "kernel/mm/phys.h"
+#include "kernel/lib/string.h"
+#include "kernel/init/panic.h"
+#include "abi/ntstatus.h"
+
+static uint64_t FatClusterBytes(PFAT_VOLUME volume)
+{
+    return (uint64_t)volume->sectorsPerCluster * volume->bytesPerSector;
+}
+
+/* --- data <-> disk --------------------------------------------------------- */
+
+NTSTATUS FatEnsureCache(PFAT_FCB fcb)
+{
+    ASSERT(!fcb->isDirectory);
+    if (fcb->cacheLoaded)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = MiResizePageCache(&fcb->cache, fcb->fileSize);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Sector-at-a-time into the cache pages: 512 divides 4096, so a sector
+     * never straddles a page. */
+    PFAT_VOLUME volume = fcb->volume;
+    ULONG cluster = fcb->firstCluster;
+    uint64_t position = 0;
+    while (cluster != 0 && position < fcb->fileSize)
+    {
+        uint64_t clusterSector = FatClusterToSector(volume, cluster);
+        for (ULONG s = 0; s < volume->sectorsPerCluster && position < fcb->fileSize;
+             s++, position += FAT_SECTOR_SIZE)
+        {
+            char *page = MiPhysicalToVirtual(fcb->cache.frames[position / PAGE_SIZE]);
+            status = FatReadSector(volume, clusterSector + s, page + (position % PAGE_SIZE));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+        }
+        cluster = FatGetNextCluster(volume, cluster);
+    }
+    fcb->cacheLoaded = TRUE;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
+{
+    ASSERT(fcb->cacheLoaded);
+    PFAT_VOLUME volume = fcb->volume;
+    uint64_t clusterBytes = FatClusterBytes(volume);
+    if (length == 0 || offset >= fcb->fileSize)
+    {
+        return STATUS_SUCCESS;
+    }
+    if (length > fcb->fileSize - offset)
+    {
+        length = fcb->fileSize - offset;
+    }
+
+    uint64_t firstByte = offset & ~(uint64_t)(FAT_SECTOR_SIZE - 1);
+    uint64_t endByte = offset + length;
+    ULONG clusterIndex = (ULONG)(firstByte / clusterBytes);
+    ULONG cluster = FatWalkChain(volume, fcb->firstCluster, clusterIndex);
+
+    for (uint64_t position = firstByte; position < endByte && cluster != 0;)
+    {
+        uint64_t clusterSector = FatClusterToSector(volume, cluster);
+        ULONG sectorInCluster = (ULONG)((position % clusterBytes) / FAT_SECTOR_SIZE);
+        for (; sectorInCluster < volume->sectorsPerCluster && position < endByte;
+             sectorInCluster++, position += FAT_SECTOR_SIZE)
+        {
+            const char *page = MiPhysicalToVirtual(fcb->cache.frames[position / PAGE_SIZE]);
+            NTSTATUS status = FatWriteSector(volume, clusterSector + sectorInCluster,
+                                             page + (position % PAGE_SIZE));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+        }
+        cluster = FatGetNextCluster(volume, cluster);
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
+{
+    ASSERT(!fcb->isDirectory);
+    PFAT_VOLUME volume = fcb->volume;
+    uint64_t clusterBytes = FatClusterBytes(volume);
+    if (newSize > 0xFFFFFFFFULL) /* spec §6.4: 32-bit DIR_FileSize */
+    {
+        return STATUS_DISK_FULL;
+    }
+    NTSTATUS status = FatEnsureCache(fcb);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    ULONG haveClusters = FatChainLength(volume, fcb->firstCluster);
+    ULONG wantClusters = (ULONG)((newSize + clusterBytes - 1) / clusterBytes);
+
+    if (wantClusters > haveClusters)
+    {
+        ULONG last =
+            haveClusters != 0 ? FatWalkChain(volume, fcb->firstCluster, haveClusters - 1) : 0;
+        unsigned char zero[FAT_SECTOR_SIZE];
+        memset(zero, 0, sizeof(zero));
+        for (ULONG i = haveClusters; i < wantClusters; i++)
+        {
+            ULONG fresh;
+            status = FatAllocateCluster(volume, last, &fresh);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            /* Zero-fill on disk immediately so the extension reads as
+             * zeroes even across a remount (Art. 3: immediate writeback). */
+            for (ULONG s = 0; s < volume->sectorsPerCluster; s++)
+            {
+                NTSTATUS ws = FatWriteSector(volume, FatClusterToSector(volume, fresh) + s, zero);
+                if (!NT_SUCCESS(ws))
+                {
+                    return ws;
+                }
+            }
+            if (fcb->firstCluster == 0)
+            {
+                fcb->firstCluster = fresh;
+            }
+            last = fresh;
+        }
+    }
+    else if (wantClusters < haveClusters)
+    {
+        if (wantClusters == 0)
+        {
+            FatFreeChain(volume, fcb->firstCluster);
+            fcb->firstCluster = 0;
+        }
+        else
+        {
+            ULONG lastKept = FatWalkChain(volume, fcb->firstCluster, wantClusters - 1);
+            ULONG firstFreed = FatGetNextCluster(volume, lastKept);
+            FatSetFatEntry(volume, lastKept, FAT_ENTRY_MASK); /* EOC */
+            if (firstFreed != 0)
+            {
+                FatFreeChain(volume, firstFreed);
+            }
+        }
+    }
+
+    status = MiResizePageCache(&fcb->cache, newSize);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    fcb->fileSize = newSize;
+
+    LARGE_INTEGER now = FatCurrentNtTime();
+    FatNtTimeToFatTime(now, &fcb->writeDate, &fcb->writeTime);
+    return FatFlushFcbMetadata(fcb);
+}
+
+/* --- vfs ops ---------------------------------------------------------------- */
+
+static PFAT_FCB FatFcbOf(PFILE_OBJECT file)
+{
+    return (PFAT_FCB)file->fsContext;
+}
+
+/* Map FILE_ATTRIBUTE_* to the FAT attribute byte (files get ARCHIVE, the
+ * classic FAT dirty-bit convention). */
+static UCHAR FatAttributesFromNt(ULONG ntAttributes, BOOLEAN directory)
+{
+    UCHAR attributes = directory ? FAT_ATTR_DIRECTORY : FAT_ATTR_ARCHIVE;
+    if (ntAttributes & FILE_ATTRIBUTE_READONLY)
+    {
+        attributes |= FAT_ATTR_READ_ONLY;
+    }
+    if (ntAttributes & FILE_ATTRIBUTE_HIDDEN)
+    {
+        attributes |= FAT_ATTR_HIDDEN;
+    }
+    if (ntAttributes & FILE_ATTRIBUTE_SYSTEM)
+    {
+        attributes |= FAT_ATTR_SYSTEM;
+    }
+    return attributes;
+}
+
+static ULONG FatAttributesToNt(UCHAR fatAttributes)
+{
+    ULONG attributes = 0;
+    if (fatAttributes & FAT_ATTR_READ_ONLY)
+    {
+        attributes |= FILE_ATTRIBUTE_READONLY;
+    }
+    if (fatAttributes & FAT_ATTR_HIDDEN)
+    {
+        attributes |= FILE_ATTRIBUTE_HIDDEN;
+    }
+    if (fatAttributes & FAT_ATTR_SYSTEM)
+    {
+        attributes |= FILE_ATTRIBUTE_SYSTEM;
+    }
+    if (fatAttributes & FAT_ATTR_DIRECTORY)
+    {
+        attributes |= FILE_ATTRIBUTE_DIRECTORY;
+    }
+    if (fatAttributes & FAT_ATTR_ARCHIVE)
+    {
+        attributes |= FILE_ATTRIBUTE_ARCHIVE;
+    }
+    return attributes != 0 ? attributes : FILE_ATTRIBUTE_NORMAL;
+}
+
+/* Walk `path` (no leading backslash; empty = root) from `base` down to the
+ * final component. Returns the referenced parent and the leaf name; a path
+ * naming the root returns *parentOut = 0 and the referenced root in
+ * *foundOut. */
+static NTSTATUS FatResolveParent(PFAT_FCB base, const UNICODE_STRING *path, PFAT_FCB *parentOut,
+                                 UNICODE_STRING *leafOut, BOOLEAN *trailingSlashOut)
+{
+    UNICODE_STRING remaining = *path;
+    *trailingSlashOut = FALSE;
+
+    /* Strip one trailing backslash ("dir\" opens the directory). */
+    if (remaining.Length >= sizeof(WCHAR) &&
+        remaining.Buffer[remaining.Length / sizeof(WCHAR) - 1] == '\\')
+    {
+        remaining.Length -= sizeof(WCHAR);
+        *trailingSlashOut = TRUE;
+    }
+
+    PFAT_FCB current = base;
+    FatReferenceFcb(current);
+    for (;;)
+    {
+        /* Split the next component. */
+        ULONG units = remaining.Length / sizeof(WCHAR);
+        if (units == 0)
+        {
+            *parentOut = current; /* empty leaf: the caller opens `current` */
+            leafOut->Buffer = 0;
+            leafOut->Length = 0;
+            leafOut->MaximumLength = 0;
+            return STATUS_SUCCESS;
+        }
+        ULONG i;
+        for (i = 0; i < units && remaining.Buffer[i] != '\\'; i++)
+        {
+        }
+        if (i == 0)
+        {
+            FatDereferenceFcb(current);
+            return STATUS_OBJECT_NAME_INVALID; /* empty component ("a\\\\b") */
+        }
+        UNICODE_STRING component;
+        component.Buffer = remaining.Buffer;
+        component.Length = (USHORT)(i * sizeof(WCHAR));
+        component.MaximumLength = component.Length;
+        BOOLEAN isFinal = i == units;
+        if (isFinal)
+        {
+            *parentOut = current;
+            *leafOut = component;
+            return STATUS_SUCCESS;
+        }
+        remaining.Buffer += i + 1;
+        remaining.Length = (USHORT)((units - i - 1) * sizeof(WCHAR));
+
+        PFAT_FCB child;
+        NTSTATUS status = FatLookup(current, &component, &child);
+        FatDereferenceFcb(current);
+        if (!NT_SUCCESS(status))
+        {
+            return status == STATUS_OBJECT_NAME_NOT_FOUND ? STATUS_OBJECT_PATH_NOT_FOUND : status;
+        }
+        if (!child->isDirectory)
+        {
+            FatDereferenceFcb(child);
+            return STATUS_OBJECT_PATH_NOT_FOUND;
+        }
+        current = child;
+    }
+}
+
+static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
+                             PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
+                             ULONG fileAttributes, ULONG disposition, ULONG options,
+                             ULONG_PTR *information)
+{
+    PFAT_VOLUME volume = device->context;
+    PFAT_FCB base = relativeTo != 0 ? FatFcbOf(relativeTo) : volume->root;
+    if (relativeTo != 0 && !base->isDirectory)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PFAT_FCB parent;
+    UNICODE_STRING leaf;
+    BOOLEAN trailingSlash;
+    NTSTATUS status = FatResolveParent(base, path, &parent, &leaf, &trailingSlash);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PFAT_FCB fcb = 0;
+    BOOLEAN created = FALSE;
+    if (leaf.Length == 0)
+    {
+        /* The path named `parent` itself (the root, or "dir\"). */
+        fcb = parent;
+        parent = 0;
+    }
+    else
+    {
+        status = FatLookup(parent, &leaf, &fcb);
+        if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+        {
+            /* Missing leaf: create if the disposition says so. */
+            if (disposition == FILE_OPEN || disposition == FILE_OVERWRITE)
+            {
+                FatDereferenceFcb(parent);
+                return STATUS_OBJECT_NAME_NOT_FOUND;
+            }
+            BOOLEAN directory = (options & FILE_DIRECTORY_FILE) != 0;
+            if (directory && trailingSlash)
+            {
+                trailingSlash = FALSE;
+            }
+            status = FatCreateEntry(
+                parent, &leaf, directory,
+                (UCHAR)(FatAttributesFromNt(fileAttributes, directory) & ~FAT_ATTR_DIRECTORY),
+                &fcb);
+            created = TRUE;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            FatDereferenceFcb(parent);
+            return status;
+        }
+        FatDereferenceFcb(parent);
+        parent = 0;
+    }
+
+    /* --- the NT open rules, in NT's order ---------------------------------- */
+    if (!created)
+    {
+        if (fcb->header.deletePending)
+        {
+            FatDereferenceFcb(fcb);
+            return STATUS_DELETE_PENDING;
+        }
+        if (disposition == FILE_CREATE)
+        {
+            FatDereferenceFcb(fcb);
+            return STATUS_OBJECT_NAME_COLLISION;
+        }
+    }
+    if (fcb->isDirectory && (options & FILE_NON_DIRECTORY_FILE))
+    {
+        FatDereferenceFcb(fcb);
+        return STATUS_FILE_IS_A_DIRECTORY;
+    }
+    if (!fcb->isDirectory && ((options & FILE_DIRECTORY_FILE) || trailingSlash))
+    {
+        FatDereferenceFcb(fcb);
+        return trailingSlash ? STATUS_OBJECT_NAME_INVALID : STATUS_NOT_A_DIRECTORY;
+    }
+    if (fcb->isDirectory && (disposition == FILE_OVERWRITE || disposition == FILE_OVERWRITE_IF ||
+                             disposition == FILE_SUPERSEDE))
+    {
+        FatDereferenceFcb(fcb);
+        return STATUS_FILE_IS_A_DIRECTORY;
+    }
+    /* Write access to a read-only file is refused at open (NT rule). */
+    if (!created && (fcb->attributes & FAT_ATTR_READ_ONLY) &&
+        (grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)))
+    {
+        FatDereferenceFcb(fcb);
+        return STATUS_ACCESS_DENIED;
+    }
+
+    /* Share modes: the NT point — after existence and typing, before any
+     * overwrite side effect. */
+    status = IoCheckShareAccess(grantedAccess, shareAccess, &fcb->header);
+    if (!NT_SUCCESS(status))
+    {
+        FatDereferenceFcb(fcb);
+        return status;
+    }
+    IoSetShareAccess(grantedAccess, shareAccess, &fcb->header);
+    file->shareCounted = TRUE;
+
+    /* Overwrite/supersede truncates. */
+    if (!created && !fcb->isDirectory &&
+        (disposition == FILE_OVERWRITE || disposition == FILE_OVERWRITE_IF ||
+         disposition == FILE_SUPERSEDE))
+    {
+        status = FatSetFileSize(fcb, 0);
+        if (!NT_SUCCESS(status))
+        {
+            IoRemoveShareAccess(grantedAccess, shareAccess, &fcb->header);
+            file->shareCounted = FALSE;
+            FatDereferenceFcb(fcb);
+            return status;
+        }
+        fcb->attributes = FatAttributesFromNt(fileAttributes, FALSE);
+        FatFlushFcbMetadata(fcb);
+        *information = disposition == FILE_SUPERSEDE ? FILE_SUPERSEDED : FILE_OVERWRITTEN;
+    }
+    else
+    {
+        *information = created ? FILE_CREATED : FILE_OPENED;
+    }
+
+    file->fsContext = fcb;
+    file->fcb = &fcb->header;
+    file->isDirectory = fcb->isDirectory;
+    return STATUS_SUCCESS;
+}
+
+static void FatVfsCleanup(PFILE_OBJECT file)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    /* The Io layer released this open's share slots and locks already; the
+     * FS applies delete-on-close / disposition when the LAST open goes. */
+    BOOLEAN wantDelete = file->deleteOnClose || fcb->header.deletePending;
+    if (!wantDelete || fcb->header.shareAccess.openCount != 0 || fcb->isRoot)
+    {
+        return;
+    }
+    if (fcb->isDirectory)
+    {
+        BOOLEAN empty;
+        if (!NT_SUCCESS(FatIsDirectoryEmpty(fcb, &empty)) || !empty)
+        {
+            return; /* a non-empty directory silently survives (NT rule) */
+        }
+    }
+    if (fcb->header.sectionCount != 0)
+    {
+        return; /* live mapped sections pin the file */
+    }
+    FatDeleteEntry(fcb);
+    fcb->header.deletePending = FALSE;
+    MiResizePageCache(&fcb->cache, 0);
+    fcb->cacheLoaded = FALSE;
+}
+
+static void FatVfsClose(PFILE_OBJECT file)
+{
+    FatDereferenceFcb(FatFcbOf(file));
+}
+
+static NTSTATUS FatVfsGetCache(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->isDirectory)
+    {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    NTSTATUS status = FatEnsureCache(fcb);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *cache = &fcb->cache;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS FatVfsWritebackRange(PFILE_OBJECT file, uint64_t offset, uint64_t length)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    LARGE_INTEGER now = FatCurrentNtTime();
+    FatNtTimeToFatTime(now, &fcb->writeDate, &fcb->writeTime);
+    NTSTATUS status = FatWritebackRange(fcb, offset, length);
+    if (NT_SUCCESS(status))
+    {
+        status = FatFlushFcbMetadata(fcb);
+    }
+    return status;
+}
+
+static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->isDirectory)
+    {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    return FatSetFileSize(fcb, endOfFile);
+}
+
+static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    uint64_t clusterBytes = FatClusterBytes(fcb->volume);
+    info->creationTime = FatTimeToNtTime(fcb->createDate, fcb->createTime, fcb->createTimeTenth);
+    info->lastAccessTime = FatTimeToNtTime(fcb->accessDate, 0, 0);
+    info->lastWriteTime = FatTimeToNtTime(fcb->writeDate, fcb->writeTime, 0);
+    info->endOfFile = fcb->fileSize;
+    info->allocationSize = (fcb->fileSize + clusterBytes - 1) / clusterBytes * clusterBytes;
+    info->fileAttributes = FatAttributesToNt(fcb->attributes);
+    info->isDirectory = fcb->isDirectory;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *basic)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (basic->FileAttributes != 0)
+    {
+        UCHAR keep = (UCHAR)(fcb->attributes & (FAT_ATTR_DIRECTORY | FAT_ATTR_ARCHIVE));
+        fcb->attributes = (UCHAR)(FatAttributesFromNt(basic->FileAttributes, FALSE) &
+                                  ~(FAT_ATTR_DIRECTORY | FAT_ATTR_ARCHIVE));
+        fcb->attributes |= keep;
+    }
+    /* Time fields: 0 = leave unchanged, -1 = NT's "disable implicit
+     * updates" (also left unchanged here). */
+    if (basic->LastWriteTime.QuadPart > 0)
+    {
+        FatNtTimeToFatTime(basic->LastWriteTime, &fcb->writeDate, &fcb->writeTime);
+    }
+    if (basic->CreationTime.QuadPart > 0)
+    {
+        FatNtTimeToFatTime(basic->CreationTime, &fcb->createDate, &fcb->createTime);
+    }
+    if (basic->LastAccessTime.QuadPart > 0)
+    {
+        USHORT ignoredTime;
+        FatNtTimeToFatTime(basic->LastAccessTime, &fcb->accessDate, &ignoredTime);
+    }
+    return FatFlushFcbMetadata(fcb);
+}
+
+static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->isRoot)
+    {
+        return STATUS_CANNOT_DELETE;
+    }
+    if (!deleteFile)
+    {
+        fcb->header.deletePending = FALSE;
+        return STATUS_SUCCESS;
+    }
+    if (fcb->attributes & FAT_ATTR_READ_ONLY)
+    {
+        return STATUS_CANNOT_DELETE;
+    }
+    if (fcb->header.sectionCount != 0)
+    {
+        return STATUS_CANNOT_DELETE; /* mapped (the pinned Wine rule too) */
+    }
+    if (fcb->isDirectory)
+    {
+        BOOLEAN empty;
+        NTSTATUS status = FatIsDirectoryEmpty(fcb, &empty);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (!empty)
+        {
+            return STATUS_DIRECTORY_NOT_EMPTY;
+        }
+    }
+    fcb->header.deletePending = TRUE;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS FatVfsReadDirectory(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENTRY *entry)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (!fcb->isDirectory)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    return FatReadDirectoryEntry(fcb, cursor, entry);
+}
+
+static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
+{
+    /* Reconstruct "\a\b\c" by walking the parent chain. */
+    PFAT_FCB chain[64];
+    ULONG depth = 0;
+    for (PFAT_FCB fcb = FatFcbOf(file); fcb != 0 && !fcb->isRoot; fcb = fcb->parent)
+    {
+        if (depth == 64)
+        {
+            return STATUS_OBJECT_PATH_INVALID;
+        }
+        chain[depth++] = fcb;
+    }
+
+    ULONG lengthBytes = 0;
+    if (depth == 0)
+    {
+        lengthBytes = sizeof(WCHAR); /* the root is "\" */
+    }
+    for (ULONG i = 0; i < depth; i++)
+    {
+        lengthBytes += sizeof(WCHAR) + chain[i]->longName.Length;
+    }
+    *lengthOut = lengthBytes;
+
+    ULONG written = 0;
+    for (ULONG i = depth; i > 0; i--)
+    {
+        if (written + sizeof(WCHAR) <= capacity)
+        {
+            buffer[written / sizeof(WCHAR)] = '\\';
+        }
+        written += sizeof(WCHAR);
+        PFAT_FCB fcb = chain[i - 1];
+        ULONG copy = fcb->longName.Length;
+        if (written + copy > capacity)
+        {
+            copy = capacity > written ? capacity - written : 0;
+        }
+        memcpy((char *)buffer + written, fcb->longName.Buffer, copy);
+        written += fcb->longName.Length;
+    }
+    if (depth == 0)
+    {
+        if (capacity >= sizeof(WCHAR))
+        {
+            buffer[0] = '\\';
+        }
+        written = sizeof(WCHAR);
+    }
+    return written <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
+}
+
+const IO_VFS_OPS FatVfsOps = {
+    .Create = FatVfsCreate,
+    .Cleanup = FatVfsCleanup,
+    .Close = FatVfsClose,
+    .GetCache = FatVfsGetCache,
+    .WritebackRange = FatVfsWritebackRange,
+    .SetEndOfFile = FatVfsSetEndOfFile,
+    .GetInfo = FatVfsGetInfo,
+    .SetBasic = FatVfsSetBasic,
+    .SetDisposition = FatVfsSetDisposition,
+    .ReadDirectory = FatVfsReadDirectory,
+    .QueryName = FatVfsQueryName,
+};

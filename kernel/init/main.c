@@ -21,6 +21,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/ps/ps.h"
+#include "kernel/io/io.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "tests/kmt/kmt.h"
@@ -163,6 +164,11 @@ static int KiRunBootModules(void)
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
 static void KiTestMainThread(void *context)
 {
+    /* M6 phase 2: mount the boot volume and publish it in the namespace —
+     * needs a thread (handle tables live on the process). Everything after
+     * this point, including the ring-3 boot modules, can open \??\C:. */
+    IoMountBootVolume();
+
     int libFailures = kmt_run_lib();
     DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",
              libFailures);
@@ -182,10 +188,14 @@ static void KiTestMainThread(void *context)
      * NtCreateSection + NtMapViewOfSection maps a PE image). */
     int m5Failures = kmt_run_m5();
     m5Failures += KiRunBootModules();
-    /* The final milestone line is the verdict tools/qemu.sh greps for, so it
-     * aggregates every suite this run — a lib failure must flip it too. */
-    m5Failures += libFailures;
     DbgPrint(m5Failures == 0 ? "[KTEST] M5 PASS\n" : "[KTEST] M5 FAIL failures=%d\n", m5Failures);
+
+    /* M6: the I/O manager + FAT32 over virtio-blk (docs/02). The final
+     * milestone line is the verdict tools/qemu.sh greps for, so it
+     * aggregates every suite this run — a lib failure must flip it too. */
+    int m6Failures = kmt_run_m6();
+    m6Failures += libFailures;
+    DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
 
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
@@ -193,7 +203,7 @@ static void KiTestMainThread(void *context)
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = m2Failures + m3Failures + m4Failures + m5Failures;
+    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
@@ -259,6 +269,12 @@ void KiSystemStartup(void)
     /* M3: the object manager and its namespace roots, on top of the pool. */
     ObpInitializeObjectManager();
     DbgPrint("[KTEST] ob PASS\n");
+
+    /* M6 phase 1: probe virtio-blk and map its MMIO window. Must precede
+     * Ps: the window may claim a fresh kernel PML4 slot, and
+     * MiFreezeKernelPml4 happens inside PsInitializeProcessSubsystem. */
+    IoInitializeTransport();
+    DbgPrint("[KTEST] io PASS\n");
 
     /* M4: the system process (owns the kernel address space + the kernel
      * handle table) and the kernel-PML4 freeze process page tables copy

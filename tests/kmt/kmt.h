@@ -57,4 +57,10 @@ int kmt_run_m4(void);
  * space. Returns failures. */
 int kmt_run_m5(void);
 
+/* The M6 suite (tests/kmt/m6_io.c): virtio-blk sector I/O, the mounted
+ * FAT32 volume through the Nt* file surface (create/read/write/enumerate/
+ * delete round trips), and a SEC_IMAGE section created from an on-disk
+ * file. Returns failures. */
+int kmt_run_m6(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */

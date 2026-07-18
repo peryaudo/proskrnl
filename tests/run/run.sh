@@ -139,7 +139,7 @@ proskrnl() {
     "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/proskrnl-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] M5 PASS" TIMEOUT="${TIMEOUT:-60}" \
+    LOG="$log" PASS_RE="\[KTEST\] M6 PASS" TIMEOUT="${TIMEOUT:-60}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # Symbolized sidecar for a human/LLM reading a failure (Art. 9); the

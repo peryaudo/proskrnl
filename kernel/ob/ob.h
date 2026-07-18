@@ -48,6 +48,9 @@ typedef struct OBJECT_TYPE
     ACCESS_MASK validAccess;             /* the type's *_ALL_ACCESS mask */
     BOOLEAN waitable;                    /* body begins with a DISPATCHER_HEADER */
     void (*deleteProcedure)(PVOID body); /* last ref dropped; may be 0 */
+    void (*closeProcedure)(PVOID body);  /* LAST handle closed (M6: Io cleanup —
+                                          * share release, delete-on-close);
+                                          * NT's CloseProcedure concept. May be 0. */
 } OBJECT_TYPE, *POBJECT_TYPE;
 
 extern OBJECT_TYPE ObpDirectoryType;
@@ -154,5 +157,15 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
 /* Retire an object's name: unlink from its directory, drop the name's and
  * the directory's references. Idempotent via parentDirectory == 0. */
 void ObpUnlinkObjectName(POBJECT_HEADER header);
+
+/* Resolve a path that may cross into a parse object (M6: an Io Device —
+ * NT's ParseProcedure concept). On success *parseObject is the referenced
+ * object of `parseType` and *remainingName is whatever the walk did not
+ * consume (empty when the path named the object itself); it may point into
+ * *reparseBuffer, which the caller frees AFTER copying. A path resolving to
+ * an object of any other type is STATUS_OBJECT_TYPE_MISMATCH. */
+NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE parseType,
+                              PVOID *parseObject, UNICODE_STRING *remainingName,
+                              PWSTR *reparseBuffer);
 
 #endif /* PROSKRNL_KERNEL_OB_OB_H */

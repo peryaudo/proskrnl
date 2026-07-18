@@ -181,9 +181,20 @@ static void ObpCloseHandleEntryIn(POBP_HANDLE_TABLE table, POBP_HANDLE_ENTRY ent
 
     ASSERT(header->handleCount > 0);
     header->handleCount--;
-    if (header->handleCount == 0 && !header->permanent)
+    if (header->handleCount == 0)
     {
-        ObpUnlinkObjectName(header);
+        /* NT's CloseProcedure moment: the last handle is gone but references
+         * may keep the object alive (M6 Io cleanup runs here — share-mode
+         * release and delete-on-close belong to handle lifetime, not object
+         * lifetime). */
+        if (header->type->closeProcedure != 0)
+        {
+            header->type->closeProcedure(body);
+        }
+        if (!header->permanent)
+        {
+            ObpUnlinkObjectName(header);
+        }
     }
     ObDereferenceObject(body);
 }

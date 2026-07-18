@@ -30,7 +30,7 @@ if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
     exit 1
 fi
 TIMEOUT="${TIMEOUT:-30}"
-PASS_RE="${PASS_RE:-\[KTEST\] M5 PASS}"
+PASS_RE="${PASS_RE:-\[KTEST\] M6 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 

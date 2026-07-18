@@ -139,8 +139,9 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
  * must be freed by the caller AFTER it is done with *leafName. */
 static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN followFinalLink,
-                              BOOLEAN forCreate, PVOID *foundBody, PVOID *parentBody,
-                              UNICODE_STRING *leafName, PWSTR *reparseBuffer)
+                              BOOLEAN forCreate, POBJECT_TYPE parseType, PVOID *foundBody,
+                              PVOID *parentBody, UNICODE_STRING *leafName,
+                              UNICODE_STRING *parseRemaining, PWSTR *reparseBuffer)
 {
     *foundBody = 0;
     *parentBody = 0;
@@ -226,23 +227,43 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
         }
         component.Length = (USHORT)(i * sizeof(WCHAR));
         BOOLEAN isFinal = (i == units);
+        BOOLEAN trailingEmpty = FALSE; /* "name\" — a bare trailing '\' */
         if (!isFinal)
         {
             remaining.Buffer += i + 1;
             remaining.Length -= (USHORT)((i + 1) * sizeof(WCHAR));
+            trailingEmpty = remaining.Length == 0;
         }
         else
         {
             remaining.Length = 0;
         }
-        if (component.Length == 0 || (!isFinal && remaining.Length == 0))
+        if (component.Length == 0)
         {
-            /* Empty component: "\\a\\\\b", trailing '\', etc. */
+            /* Empty component: "\\a\\\\b" etc. */
             ObDereferenceObject(current);
             return STATUS_OBJECT_NAME_INVALID;
         }
 
         PVOID child = ObpFindEntry(current, &component, caseInsensitive);
+        if (child != 0 && parseType != 0 && ObpGetHeader(child)->type == parseType)
+        {
+            /* A parse object (M6: an Io Device): the walk stops here and the
+             * rest of the name — possibly empty, possibly a bare trailing
+             * backslash — belongs to the object's own parser (the FS).
+             * NT's ParseProcedure concept. */
+            ObfReferenceObject(child);
+            ObDereferenceObject(current);
+            *foundBody = child;
+            *parseRemaining = remaining;
+            return STATUS_SUCCESS;
+        }
+        if (trailingEmpty)
+        {
+            /* Trailing '\' on a non-parse path: invalid, as before. */
+            ObDereferenceObject(current);
+            return STATUS_OBJECT_NAME_INVALID;
+        }
         if (child == 0)
         {
             if (!isFinal || reparsedFinal)
@@ -376,8 +397,8 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
      * link, as an open would. Matches the pinned third_party/wine; docs/09
      * Art. 6. */
     BOOLEAN followFinalLink = (type != &ObpSymbolicLinkType);
-    NTSTATUS status =
-        ObpLookupName(attributes, followFinalLink, TRUE, &found, &parent, &leaf, &reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, followFinalLink, TRUE, 0, &found, &parent, &leaf,
+                                    0, &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         goto out;
@@ -466,8 +487,8 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
      * itself; any other open follows a final link to its target. */
     BOOLEAN followFinalLink =
         type != &ObpSymbolicLinkType && (attributes->Attributes & OBJ_OPENLINK) == 0;
-    NTSTATUS status =
-        ObpLookupName(attributes, followFinalLink, FALSE, &found, &parent, &leaf, &reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, followFinalLink, FALSE, 0, &found, &parent, &leaf,
+                                    0, &reparseBuffer);
     if (reparseBuffer != 0)
     {
         MiFreePool(reparseBuffer);
@@ -499,6 +520,64 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
                              attributes->Attributes, handleOut);
     ObDereferenceObject(found);
     return status;
+}
+
+NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE parseType,
+                              PVOID *parseObject, UNICODE_STRING *remainingName,
+                              PWSTR *reparseBuffer)
+{
+    if (attributes == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (attributes->ObjectName == 0)
+    {
+        return STATUS_OBJECT_PATH_SYNTAX_BAD;
+    }
+    PVOID found, parent;
+    UNICODE_STRING leaf;
+    UNICODE_STRING remaining;
+    remaining.Buffer = 0;
+    remaining.Length = 0;
+    remaining.MaximumLength = 0;
+    NTSTATUS status = ObpLookupName(attributes, TRUE, FALSE, parseType, &found, &parent, &leaf,
+                                    &remaining, reparseBuffer);
+    if (!NT_SUCCESS(status))
+    {
+        if (*reparseBuffer != 0)
+        {
+            MiFreePool(*reparseBuffer);
+            *reparseBuffer = 0;
+        }
+        return status;
+    }
+    if (found == 0)
+    {
+        ObDereferenceObject(parent);
+        if (*reparseBuffer != 0)
+        {
+            MiFreePool(*reparseBuffer);
+            *reparseBuffer = 0;
+        }
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    if (ObpGetHeader(found)->type != parseType)
+    {
+        /* The whole path resolved to some other object: NtCreateFile on an
+         * event etc. */
+        ObDereferenceObject(found);
+        if (*reparseBuffer != 0)
+        {
+            MiFreePool(*reparseBuffer);
+            *reparseBuffer = 0;
+        }
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    *parseObject = found;
+    /* remainingName may point into the caller's name or *reparseBuffer —
+     * the caller copies what it needs before freeing the buffer. */
+    *remainingName = remaining;
+    return STATUS_SUCCESS;
 }
 
 /* --- initialization ------------------------------------------------------- */
