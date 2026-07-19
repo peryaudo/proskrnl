@@ -130,6 +130,22 @@ void KiInitializeGdt(void)
                      : "rax", "memory");
     __asm__ volatile("ltr %0" : : "r"((uint16_t)KI_GDT_TSS));
 
+    /* M7: enable SSE for ring 3 (Wine's PE ntdll is compiled with it) and
+     * for the context switch's FXSAVE/FXRSTOR of the per-thread XMM state.
+     * CR4.OSFXSR (bit 9) legalizes SSE + gives FXSAVE the XMM registers;
+     * CR4.OSXMMEXCPT (bit 10) routes unmasked SSE exceptions to #XM.
+     * CR0.MP (bit 1) set, CR0.EM (bit 2) and CR0.TS (bit 3) clear — no
+     * lazy-FPU trapping; the switch saves eagerly (Intel SDM Vol. 3A
+     * "System Programming For Instruction Set Extensions" / Vol. 1 10.5).
+     * Kernel code itself stays -mno-sse. */
+    uint64_t cr = 0;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr));
+    cr |= (1ULL << 9) | (1ULL << 10);
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr));
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr));
+    cr = (cr | (1ULL << 1)) & ~((1ULL << 2) | (1ULL << 3));
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr));
+
     /* GS = the PCR while in kernel mode; KERNEL_GS_BASE holds the outgoing
      * user GS base (the TEB), swapped at every crossing. */
     KiWriteMsr(IA32_GS_BASE, (uint64_t)(uintptr_t)&KiPcr);
