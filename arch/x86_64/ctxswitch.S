@@ -10,6 +10,7 @@
  * land in KiThreadStartup.
  */
 #define KTHREAD_KERNEL_STACK 24
+#define KTHREAD_FX_AREA      32
 
     .section .text
     .global KiSwapContext
@@ -20,8 +21,14 @@ KiSwapContext:
     push %r13
     push %r14
     push %r15
+    /* M7: the x87/SSE state is part of a thread's context too — NT preserves
+     * the MS-ABI nonvolatile XMM6-15 across syscalls/waits, and kernel code
+     * (-mno-sse) never saves them per-call. FXSAVE/FXRSTOR image in KTHREAD
+     * (Intel SDM Vol. 1 "FXSAVE Area"; offset pinned in kernel/ke/thread.c). */
+    fxsave64 KTHREAD_FX_AREA(%rdi)
     mov %rsp, KTHREAD_KERNEL_STACK(%rdi)
     mov KTHREAD_KERNEL_STACK(%rsi), %rsp
+    fxrstor64 KTHREAD_FX_AREA(%rsi)
     pop %r15
     pop %r14
     pop %r13

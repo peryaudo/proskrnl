@@ -9,6 +9,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
+#include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
 
@@ -19,6 +20,19 @@
 /* ctxswitch.S restores RSP from this slot; keep the offsets welded. */
 _Static_assert(offsetof(KTHREAD, kernelStack) == 24,
                "KTHREAD.kernelStack offset must match ctxswitch.S");
+_Static_assert(offsetof(KTHREAD, fxArea) == 32, "KTHREAD.fxArea offset must match ctxswitch.S");
+
+/* Seed a thread's FXSAVE image with the NT initial x87/SSE state, so the
+ * first FXRSTOR on switch-in is well-defined: x87 control word 0x27f and
+ * MXCSR 0x1f80 (the values Wine's ntdll seeds new-thread CONTEXTs with —
+ * third_party/wine dlls/ntdll/unix/signal_x86_64.c init_syscall_frame; field
+ * offsets per the FXSAVE image, Intel SDM Vol. 1 "FXSAVE Area"). */
+static void KiInitializeThreadFxArea(PKTHREAD thread)
+{
+    memset(thread->fxArea, 0, sizeof(thread->fxArea));
+    *(uint16_t *)(thread->fxArea + 0) = 0x27f;   /* FCW */
+    *(uint32_t *)(thread->fxArea + 24) = 0x1f80; /* MXCSR */
+}
 
 /* First code of every thread, reached by KiSwapContext's ret with the
  * dispatcher lock held (see KiSwapToNext); release it, run, terminate. */
@@ -70,6 +84,7 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     }
 
     KiInitializeDispatcherHeader(&thread->header, KI_OBJECT_THREAD, 0);
+    KiInitializeThreadFxArea(thread);
     thread->state = KI_THREAD_STATE_INITIALIZED; /* readied by KiReadyCreatedThread */
     thread->stackBase = stack;
     thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;

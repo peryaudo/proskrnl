@@ -164,6 +164,14 @@ struct KTHREAD
 {
     DISPATCHER_HEADER header;
     uint64_t kernelStack; /* saved RSP while off-CPU; ctxswitch.S offset 24 */
+    /* M7: the thread's x87/SSE state, FXSAVE image layout (Intel SDM Vol. 1
+     * "FXSAVE Area"). Saved/restored by KiSwapContext (ctxswitch.S offset 32)
+     * because NT preserves the MS-ABI nonvolatile XMM6-15 across syscalls and
+     * waits — kernel code never touches SSE (-mno-sse), but the NEXT user
+     * thread does. 16-byte-aligned as fxsave64 requires (the pool returns
+     * 16-aligned blocks and offset 32 keeps it). KiInitializeThreadFxArea
+     * seeds the NT initial state. */
+    __attribute__((aligned(16))) unsigned char fxArea[512];
     void *stackBase;
     int state;
     KPRIORITY priority;
