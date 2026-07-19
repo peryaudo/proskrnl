@@ -309,6 +309,27 @@ FUZZ_CHOICES = {
         ("FZ_LEN_SHORT", False),
         ("FZ_LEN_LONG", False),
     ]),
+    # M7 Wine bring-up: NtGetNlsSectionPtr's type/id space. Types are the
+    # generated NLS_SECTION_* (abi/ntpsapi.h; oracle mode declares them as
+    # wine/dlls/ntdll/locale_private.h does); 1 is an unknown type
+    # (parameter validation). Ids mix the shipped tables (case table id 0,
+    # codepages 437/1252, NormalizationC, the IDNA table id 13 Wine
+    # hard-codes) with misses (no c_000/c_9999 file).
+    "nls_type": ("ULONG", [
+        ("NLS_SECTION_CASEMAP", False),
+        ("NLS_SECTION_CODEPAGE", False),
+        ("NLS_SECTION_SORTKEYS", False),
+        ("NLS_SECTION_NORMALIZE", False),
+        ("1", False),
+    ]),
+    "nls_id": ("ULONG", [
+        ("0", False),
+        ("437", False),
+        ("1252", False),
+        ("NormalizationC", False),
+        ("13", False),
+        ("9999", False),
+    ]),
     # M7: page protections for NtProtectVirtualMemory. The WRITECOPY flavours
     # need a backing file (rejected for private memory on both sides) and stay
     # out; these five are the private-memory-valid set the reprotect accepts.
@@ -374,6 +395,9 @@ FUZZ_OPS = [
     ("query_process_basic", "NtQueryInformationProcess", ["ch_len"]),
     ("query_system_basic", "NtQuerySystemInformation", ["ch_len"]),
     ("protect_memory", "NtProtectVirtualMemory", ["ch_protect_page"]),
+    # M7 Wine bring-up: the NLS data services ntdll's locale_init issues.
+    ("init_nls", "NtInitializeNlsFiles", []),
+    ("get_nls_section", "NtGetNlsSectionPtr", ["ch_nls_type", "ch_nls_id"]),
 ]
 
 

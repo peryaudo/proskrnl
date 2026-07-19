@@ -51,6 +51,8 @@ CHOICES = {
     'iolen': (4, []),
     'iooff': (4, []),
     'len': (4, []),
+    'nls_type': (5, []),
+    'nls_id': (6, []),
     'protect_page': (5, []),
 }
 
@@ -89,4 +91,6 @@ OPS = [
     ('query_process_basic', 30, 'NtQueryInformationProcess', ['ch_len']),
     ('query_system_basic', 31, 'NtQuerySystemInformation', ['ch_len']),
     ('protect_memory', 32, 'NtProtectVirtualMemory', ['ch_protect_page']),
+    ('init_nls', 33, 'NtInitializeNlsFiles', []),
+    ('get_nls_section', 34, 'NtGetNlsSectionPtr', ['ch_nls_type', 'ch_nls_id']),
 ]

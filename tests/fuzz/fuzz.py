@@ -242,6 +242,13 @@ def build_proskrnl(blob_c):
         if os.path.exists(seed):
             specs.append(seed + "=initrd")
     specs.append(binf + "=expect=0")
+    # The M7 NLS data files, so the NtInitializeNlsFiles/NtGetNlsSectionPtr
+    # ops see the same pinned-Wine tables on both sides.
+    for nls in ("locale", "l_intl", "c_1252", "c_437", "sortdefault",
+                "normnfc", "normnfd", "normnfkc", "normnfkd", "normidna"):
+        path = os.path.join(ROOT, "third_party", "wine", "nls", nls + ".nls")
+        if os.path.exists(path):
+            specs.append("win:" + path + "=windows/system32/" + nls + ".nls")
     subprocess.run([os.path.join(ROOT, "tools", "mkimage.sh"), kernel, img] + specs,
                    check=True, stdout=subprocess.DEVNULL)
     return img

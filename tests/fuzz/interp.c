@@ -31,13 +31,24 @@
 #include "abi/ntmmapi.h" /* PAGE_* for the protect op (must precede fuzz_model.h) */
 #include "abi/ntpsapi.h" /* NtQueryInformationProcess + PROCESS_BASIC_INFORMATION */
 #endif
-#include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
-
 #if defined(NTAPI_ORACLE)
 /* Prototypes winternl.h omits (as wine/include/winternl.h declares them). */
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE_T *, ULONG, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, PULONG);
+NTSYSAPI NTSTATUS NTAPI NtInitializeNlsFiles(void **, LCID *, LARGE_INTEGER *);
+NTSYSAPI NTSTATUS NTAPI NtGetNlsSectionPtr(ULONG, ULONG, void *, void **, SIZE_T *);
+/* NtGetNlsSectionPtr's section types, as wine/dlls/ntdll/locale_private.h
+ * defines them (winternl.h omits the enum; NORM_FORM comes via windows.h).
+ * Before fuzz_model.h: its nls choice tables name these. */
+enum nls_section_type
+{
+    NLS_SECTION_SORTKEYS = 9,
+    NLS_SECTION_CASEMAP = 10,
+    NLS_SECTION_CODEPAGE = 11,
+    NLS_SECTION_NORMALIZE = 12
+};
 #endif
+#include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
 
 /* The program blob, emitted by fuzz.py as build/tests/fuzz/fuzz_programs.c and
  * linked in. Format (little-endian): "PFZ1", u32 program_count, then per
@@ -301,6 +312,10 @@ static unsigned long long fz_resolve(FzOperandKind kind, unsigned char b)
         return b % FZ_CH_IOOFF_COUNT;
     case FZ_OPND_CH_PROTECT_PAGE:
         return fz_ch_protect_page[b % FZ_CH_PROTECT_PAGE_COUNT];
+    case FZ_OPND_CH_NLS_TYPE:
+        return fz_ch_nls_type[b % FZ_CH_NLS_TYPE_COUNT];
+    case FZ_OPND_CH_NLS_ID:
+        return fz_ch_nls_id[b % FZ_CH_NLS_ID_COUNT];
     }
     return 0;
 }
@@ -750,6 +765,36 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         if (fz_ok(st))
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x old=%08x\n", prog, call, nt, (unsigned)st,
                          (unsigned)oldProtect);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_INIT_NLS:
+    {
+        void *base = NULL;
+        LCID lcid = 0;
+        LARGE_INTEGER nlsSize;
+        nlsSize.QuadPart = 0;
+        st = NtInitializeNlsFiles(&base, &lcid, &nlsSize);
+        /* base is ASLR and the lcid follows the oracle host's locale; only
+         * the status and the mapped size (the same pinned locale.nls on both
+         * sides) are contract. */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x size=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)nlsSize.QuadPart);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_GET_NLS_SECTION:
+    {
+        void *ptr = NULL;
+        SIZE_T nlsSize = 0;
+        st = NtGetNlsSectionPtr((ULONG)a[0], (ULONG)a[1], NULL, &ptr, &nlsSize);
+        /* status + size only (the pointer is ASLR). */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x size=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)nlsSize);
         else
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
