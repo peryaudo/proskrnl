@@ -137,6 +137,16 @@ patched. Concretely:
 - **NT-absent additions stay out of Wine PE code** (Art. 2). GUI-route additions are *new,
   removable files* (e.g. `winefb.drv`), governed by Arts. 2 and 7 — additions, never
   mutations of existing Wine code.
+- **Every fork commit is dormant under regular Wine.** The pinned tree is simultaneously
+  the oracle, the shipped-userland source, and the `abi/` contract source (`docs/06` "One
+  tree, three roles"), so a seam change must be invisible when a unixlib is present:
+  either runtime-dormant (behind `!__wine_unix_call_dispatcher` — the sanctioned pattern)
+  or additive-by-construction (a new file / new build target the oracle never executes;
+  wineserver-lite is a new target, never an in-place stripping of `server/`). The
+  compile-time `PROSKRNL_TARGET` hatch (`docs/06`) may be enacted only together with the
+  split-build amendment there. A green `tests/run/run.sh oracle` on the new pin is
+  required evidence for every pin bump — the oracle running the patched tree IS the
+  dormancy check.
 - **Each modification is one logical commit** on `proskrnl-target` whose message states
   what it changes, why the unixlib seam (and not the kernel) is the right place, and its
   upstream disposition: `upstreamable` (generic enough for winehq), `proskrnl-only`

@@ -12,7 +12,12 @@
 #                               TCG x2APIC; Ubuntu 24.04 ships 8.2)
 #   third_party/wine            the ntapi oracle's wine — the SAME pinned
 #                               tree abi/ is generated from, so the oracle
-#                               can never diverge from the contract
+#                               can never diverge from the contract. It is
+#                               also the source of the PE dlls + nls files
+#                               baked onto proskrnl's boot volume (Makefile
+#                               WINFILES): one build is oracle, shipped
+#                               userland, and dormancy check at once
+#                               (docs/06 "One tree, three roles")
 #
 # tools/{mkimage,qemu}.sh and tests/run/run.sh pick these up automatically.
 # Idempotent: finished builds are skipped; re-run after a submodule bump.
@@ -53,6 +58,11 @@ else
     make -C third_party/qemu/build -j"$(nproc)"
 fi
 
+# One wine build, three roles (docs/06): the ntapi/fuzz oracle, the source of
+# the PE dlls + nls files shipped on proskrnl's disk (Makefile WINFILES), and
+# — because the pinned fork's seam commits are dormant under a live unixlib —
+# the continuous proof that the patched PE ntdll behaves identically on
+# regular Wine.
 echo "== wine: the ntapi oracle (64-bit only, no GUI/font deps) =="
 if [[ -x third_party/wine/wine64 || -x third_party/wine/wine ]]; then
     echo "   already built — skipping"

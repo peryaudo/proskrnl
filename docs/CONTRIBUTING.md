@@ -61,9 +61,15 @@ stated as hard gates.
   `third_party/wine` — no patches directory, no vendored diffs, no build-time patching.
   Each modification is one logical commit carrying a header (what it changes / why the
   seam is the right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
-  `temporary`-until-a-named-feature). The hack meter is the submodule diff vs. the winehq
-  merge-base; a PR that bumps the pin states the old → new line counts and justifies any
-  growth. (Art. 10)
+  `temporary`-until-a-named-feature). Every commit must be **dormant under regular Wine**
+  (runtime `!__wine_unix_call_dispatcher` guard, or a new file/build target the oracle
+  never executes — docs/06 "One tree, three roles"): the pinned tree is also the oracle,
+  and the oracle must keep testing the exact bytes proskrnl ships. The hack meter is the
+  submodule diff vs. the winehq base (`tools/hack_meter.sh`; the base is the fork's
+  `master` branch, fast-forwarded to the new winehq commit in the same push that rebases
+  `proskrnl-target` onto it); a PR that bumps the pin states the old → new line counts,
+  justifies any growth, and re-runs `tests/run/run.sh oracle` against the new pin,
+  stating so. (Art. 10)
 
 ## Provenance rules (see docs/11)
 
