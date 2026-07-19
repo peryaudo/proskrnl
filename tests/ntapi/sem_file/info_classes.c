@@ -155,6 +155,30 @@ START_TEST(info_classes)
         NtClose(weak);
     }
 
+    /* --- ...but an OVERWRITE-disposition handle CAN (pinned Wine, fuzzer-
+     * found): the server grants FILE_OVERWRITE/FILE_OVERWRITE_IF handles
+     * FILE_WRITE_ATTRIBUTES (server/file.c create_file), which makes the
+     * backing writable — so set-EOF succeeds in both directions even when
+     * the caller asked for read access only. */
+    {
+        HANDLE weak;
+        FILE_END_OF_FILE_INFORMATION eof2;
+        scrub_file(dir, W("eofweak.bin"));
+        status = open_file(&weak, dir, W("eofweak.bin"), FILE_GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OVERWRITE_IF, 0, &iosb);
+        ok(status == STATUS_SUCCESS, "overwrite-if read-only open -> %08lx", (unsigned long)status);
+        eof2.EndOfFile.QuadPart = 4096; /* grow */
+        status = NtSetInformationFile(weak, &iosb, &eof2, sizeof(eof2), FileEndOfFileInformation);
+        ok(status == STATUS_SUCCESS, "eof grow on overwrite-if handle -> %08lx",
+           (unsigned long)status);
+        eof2.EndOfFile.QuadPart = 1; /* shrink */
+        status = NtSetInformationFile(weak, &iosb, &eof2, sizeof(eof2), FileEndOfFileInformation);
+        ok(status == STATUS_SUCCESS, "eof shrink on overwrite-if handle -> %08lx",
+           (unsigned long)status);
+        NtClose(weak);
+        scrub_file(dir, W("eofweak.bin"));
+    }
+
     /* --- a directory handle reports directory-ness. ------------------------ */
     status = NtQueryInformationFile(dir, &iosb, &std, sizeof(std), FileStandardInformation);
     ok(status == STATUS_SUCCESS, "query dir standard -> %08lx", (unsigned long)status);

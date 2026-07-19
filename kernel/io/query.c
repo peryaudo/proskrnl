@@ -174,7 +174,13 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
  * behaviour nonetheless (Art. 6). */
 static NTSTATUS IopCheckSetEofAccess(PFILE_OBJECT file, uint64_t target)
 {
-    if (file->grantedAccess & FILE_WRITE_DATA)
+    /* Wine gates set-EOF on the unix fd being writable, which any of the
+     * write-ish access bits produces (server/file.h FILE_UNIX_WRITE_ACCESS =
+     * WRITE_DATA | APPEND_DATA | WRITE_ATTRIBUTES | WRITE_EA; fd.c rw_mode) —
+     * including the implicit FILE_WRITE_ATTRIBUTES an overwrite disposition
+     * granted (kernel/io/file.c). */
+    if (file->grantedAccess &
+        (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA))
     {
         return STATUS_SUCCESS;
     }

@@ -245,9 +245,27 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     }
 
     POBJECT_TYPE type = ObpGetHeader(source->body)->type;
-    ACCESS_MASK granted = (options & DUPLICATE_SAME_ACCESS)
-                              ? source->grantedAccess
-                              : ObpMapDesiredAccess(type, desiredAccess);
+    /* Duplication maps generic wishes but grants SPECIFIC bits verbatim —
+     * never filtered by the type's valid mask (Wine server/handle.c
+     * duplicate_handle -> map_access keeps non-generic bits untouched;
+     * sem_ob/handle_life pins the observable: a directory duplicate asking
+     * event rights carries SYNCHRONIZE past a wait's access check). The
+     * generic wish keeps the documented docs/03 over-grant deviation. */
+    ACCESS_MASK granted;
+    if (options & DUPLICATE_SAME_ACCESS)
+    {
+        granted = source->grantedAccess;
+    }
+    else
+    {
+        const ACCESS_MASK generics =
+            GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED;
+        granted = desiredAccess & ~generics;
+        if (desiredAccess & generics)
+        {
+            granted |= type->validAccess;
+        }
+    }
     ULONG newAttributes = (options & DUPLICATE_SAME_ATTRIBUTES) ? source->attributes : attributes;
 
     NTSTATUS status = STATUS_SUCCESS;

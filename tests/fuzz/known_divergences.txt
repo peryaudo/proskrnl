@@ -23,9 +23,19 @@
 # INVALID_PARAMETER, c0000022 ACCESS_DENIED, c0000024 OBJECT_TYPE_MISMATCH,
 # c0000033 OBJECT_NAME_INVALID, c000003b OBJECT_PATH_SYNTAX_BAD.
 
-# Currently EMPTY: the anonymous-object policy is at full parity with Wine. The
-# nine original signatures were fixed and are pinned by tests/ntapi/sem_ob/
+# The nine original signatures were fixed and are pinned by tests/ntapi/sem_ob/
 # {sync_objects (NtReleaseSemaphore ordering), make_temporary (DELETE access),
 # open_errors (NtOpen* name-error classification)}. `--names named` / `--names
 # malformed` still surface the wider namespace error-classification backlog;
 # those are enumerated as bugs to fix, deliberately not baselined here.
+
+# Waits on non-dispatcher objects (M7 fuzzer sweep, seed 99): wineserver parks
+# ANY object on a wait queue — a directory simply never signals — so a
+# multi-wait scans past it and reports the LATER invalid handle; NT (and
+# proskrnl, kernel/ob) reject the non-waitable object itself with
+# OBJECT_TYPE_MISMATCH. The handle-ACCESS half of the original signature (dup
+# granting SYNCHRONIZE verbatim) WAS a proskrnl bug and is fixed + pinned
+# (sem_ob/handle_life); this residue is the wineserver-vs-NT waitability
+# wrinkle, recorded in docs/03 "M7 fuzzer notes" — todo_proskrnl in the same
+# test keeps it visible.
+NtWaitForMultipleObjects oracle=c0000008 proskrnl=c0000024   # waitable-anything wineserver wrinkle; docs/03

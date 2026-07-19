@@ -273,6 +273,14 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     }
 
     ACCESS_MASK granted = ObpMapDesiredAccess(&IoFileObjectType, desiredAccess);
+    /* Overwrite dispositions carry an implicit FILE_WRITE_ATTRIBUTES grant
+     * (Wine server/file.c create_file: FILE_OVERWRITE / FILE_OVERWRITE_IF do
+     * `access |= FILE_WRITE_ATTRIBUTES`), which also makes the handle's
+     * backing writable for set-EOF (sem_file/info_classes pins this). */
+    if (disposition == FILE_OVERWRITE || disposition == FILE_OVERWRITE_IF)
+    {
+        granted |= FILE_WRITE_ATTRIBUTES;
+    }
 
     /* Resolve the device + FS-remaining path. RootDirectory may be an open
      * directory File (a relative open) or an Ob container. */

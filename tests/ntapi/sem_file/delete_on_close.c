@@ -159,5 +159,43 @@ START_TEST(delete_on_close)
                        FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
     ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "subdir gone -> %08lx", (unsigned long)status);
 
+    /* The unlink waits for the truly-LAST open — even one that requested no
+     * data access and so imposed no share constraints (pinned Wine, fuzzer-
+     * found: the inode's unlink runs when its fd list empties,
+     * server/fd.c). A delete-on-close handle closing while an attributes-
+     * only open remains leaves the file alive and re-openable; the file
+     * finally goes when that open closes too. */
+    {
+        HANDLE weak = NULL, killer = NULL;
+        scrub_file(dir, W("linger.txt"));
+        status = open_file(&h1, dir, W("linger.txt"), FILE_GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_CREATE, 0,
+                           &iosb);
+        ok(status == STATUS_SUCCESS, "create linger.txt -> %08lx", (unsigned long)status);
+        NtClose(h1);
+        status = open_file(&weak, dir, W("linger.txt"), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                           FILE_SHARE_READ, FILE_OPEN, 0, &iosb);
+        ok(status == STATUS_SUCCESS, "attributes-only open -> %08lx", (unsigned long)status);
+        status = open_file(&killer, dir, W("linger.txt"), DELETE | SYNCHRONIZE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                           FILE_DELETE_ON_CLOSE, &iosb);
+        ok(status == STATUS_SUCCESS, "delete-on-close open beside it -> %08lx",
+           (unsigned long)status);
+        NtClose(killer); /* intent latched; the attributes-only open defers it */
+        status =
+            open_file(&h1, dir, W("linger.txt"), FILE_GENERIC_READ,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0, &iosb);
+        ok(status == STATUS_SUCCESS, "file still openable while deferred -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            NtClose(h1);
+        NtClose(weak); /* the last open: the deferred unlink applies */
+        status =
+            open_file(&h1, dir, W("linger.txt"), FILE_GENERIC_READ,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0, &iosb);
+        ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "linger.txt gone after last close -> %08lx",
+           (unsigned long)status);
+    }
+
     NtClose(dir);
 }

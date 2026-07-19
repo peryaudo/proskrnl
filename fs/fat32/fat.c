@@ -243,6 +243,8 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     fcb->fileSize = FatRead32(sfn + 28);
     MiInitializePageCache(&fcb->cache);
     fcb->cacheLoaded = FALSE;
+    fcb->openObjectCount = 0;
+    fcb->unlinkPending = FALSE;
 
     PWSTR nameCopy = MiAllocatePool(longName->Length);
     if (nameCopy == 0)
@@ -562,6 +564,8 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     root->longName.MaximumLength = 0;
     MiInitializePageCache(&root->cache);
     root->cacheLoaded = FALSE;
+    root->openObjectCount = 0;
+    root->unlinkPending = FALSE;
     InsertTailList(&volume->fcbList, &root->volumeEntry);
     volume->root = root;
 
