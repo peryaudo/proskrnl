@@ -128,10 +128,65 @@ against the pinned Wine tree. Notes that fall out:
   ntdll's `loader_init` builds them itself (the NT contract — the kernel must *not*
   pre-populate them). Only the fields ntdll reads before that point (`ImageBaseAddress`,
   `ProcessParameters`, the version fields, the `NT_TIB`) are seeded.
-- The NLS section services (`NtInitializeNlsFiles`, `NtGetNlsSectionPtr`) and the registry
-  slice (`NtOpenKey`, `NtQueryValueKey`) return graceful failures until the data (Cm at M8,
-  the NLS files with the Wine bring-up) exists; ntdll's `locale_init`/`load_global_options`
-  tolerate that (degraded, non-crashing) by design.
+- The registry slice (`NtOpenKey`, `NtQueryValueKey`) returns graceful failures until Cm
+  (M8) exists; ntdll's `load_global_options`/`version_init` tolerate that (degraded,
+  non-crashing) by design.
+
+### M7 Wine bring-up notes (the unmodified PE ntdll running hello.exe)
+
+What the kernel had to provide — beyond the return protocol above — for Wine's own
+`ntdll.dll` (+ the `kernel32`/`kernelbase` its `loader_init` hard-loads) to run a process
+end to end. Each is behaviour the PE side *observably depends on*, cross-checked against
+the pinned tree:
+
+- **The initial-thread protocol is the NT CONTEXT shape**: the kernel builds a `CONTEXT`
+  (Rip = `RtlUserThreadStart`, Rcx = entry, Rdx = PEB, Rsp = `StackBase - 0x28`) on the
+  user stack and enters `LdrInitializeThunk` with `rcx = &CONTEXT`, `rsp = &CONTEXT - 8` —
+  the exact frame Wine's unix `init_syscall_frame` hands over. Both dispatcher frames now
+  carry the machine frame their `.seh_pushframe` unwind info reads (`exc_stack_layout`
+  at `+0x590`, `apc_stack_layout` at `+0x530`), and APC delivery uses the full
+  `apc_stack_layout` (routine + args in `P1Home..P4Home`, `KCONTINUE_ARGUMENT` at
+  `+0x4f0`).
+- **TEB and PEB live in 4-page blocks** (`dlls/ntdll/unix/virtual.c virtual_alloc_teb` /
+  `virtual_alloc_first_teb`): the PE side keeps per-thread state *behind* the TEB proper
+  (`debug_info` at `teb+0x2000+sizeof(TEB32)`) and reads relative to the PEB. The TEB also
+  seeds `ActivationContextStackPointer`, the `StaticUnicodeString` buffer, and the x64
+  no-exception-list marker, as Wine's `init_teb` does — `actctx.c` dereferences them
+  without checking.
+- **The initial stack commit is at least 64 KiB** regardless of the PE header's
+  `SizeOfStackCommit`: `signal_start_thread` zeroes `0xf000` bytes below the initial
+  CONTEXT before `NtContinue`, deeper than a minimal 1-page commit.
+- **NLS data is real**: `NtInitializeNlsFiles` maps `locale.nls` and reports the fixed
+  en-US system LCID `0x409` (the fallback Wine's `init_locale` reports with no configuring
+  host locale); its size argument is left **untouched** (Wine never writes it — pinned by
+  `sem_ps/nls_files`). `NtGetNlsSectionPtr` maps `l_intl.nls` / `c_%03u.nls` /
+  `sortdefault.nls` / `norm*.nls` from `C:\windows\system32` (`kernelbase` parses the
+  sortkey table unconditionally at attach). All of it is baked onto the boot volume from
+  the pinned tree's `nls/` by the build (Makefile `WINFILES`).
+- **User threads carry their x87/SSE state**: Wine's PE dlls are compiled with SSE, so
+  CR4.OSFXSR is on and `KiSwapContext` FXSAVEs/FXRSTORs per thread; exception/APC CONTEXTs
+  capture the live `FltSave` and `NtContinue`/`NtSetContextThread` restore it.
+
+### M7 fuzzer notes (pre-existing wrinkles the widened op mix surfaced)
+
+- **Set-EOF rides any write-ish access bit**, and overwrite dispositions carry an implicit
+  one: Wine's server grants `FILE_OVERWRITE`/`FILE_OVERWRITE_IF` handles
+  `FILE_WRITE_ATTRIBUTES` (`server/file.c create_file`) and gates `set_fd_eof` only on the
+  unix fd being writable (`FILE_UNIX_WRITE_ACCESS`). Pinned in `sem_file/info_classes`;
+  the kernel mirrors both.
+- **A delete-on-close unlink waits for the truly-last open**, data access or not: Wine
+  unlinks when the inode's fd list empties, so an attributes-only open (which imposes no
+  share constraints) still defers the unlink, and the intent survives the deleting
+  handle's own close. The FAT FCB now latches `unlinkPending` and applies it at the last
+  open's cleanup.
+- **`NtDuplicateObject` grants specific access bits verbatim** — generic bits are mapped,
+  but nothing is filtered by the type's valid mask (`server/handle.c duplicate_handle`);
+  pinned in `sem_ob/handle_life`.
+- **Waits on non-dispatcher objects** stay NT-shaped, diverging from wineserver: wineserver
+  parks *any* object on a wait queue (a directory just never signals), so a multi-wait
+  scans past it to report a later bad handle; proskrnl keeps `STATUS_OBJECT_TYPE_MISMATCH`
+  for the non-waitable object itself. Baselined in `tests/fuzz/known_divergences.txt`,
+  kept visible by a `todo_proskrnl` in `sem_ob/handle_life`.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
