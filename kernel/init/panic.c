@@ -283,15 +283,15 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
          * KiUserExceptionDispatcher (docs/02 "the SEH test") — the fault
          * becomes a structured exception the user handler can catch, rather
          * than immediate process death. Only when the process resolved a
-         * dispatcher; otherwise fall through to the contained-death path. */
+         * dispatcher; otherwise fall through to the contained-death path.
+         * Trace BEFORE dispatch rewrites the frame, so the ring shows the
+         * faulting RIP, not the dispatcher's. */
+        KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
         if (KeGetCurrentThread()->process->userExceptionDispatcher != 0 &&
             PspDispatchUserException(trapFrame, (ULONG)faultStatus, cr2))
         {
-            KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
             return; /* iretq into the user exception dispatcher */
         }
-
-        KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
         KiDumpTrapFrame("[USERFAULT]", trapFrame);
         KiDumpUserStackTrace(trapFrame->rbp);
         /* Entry + stack bounds make every user address in the dump an
