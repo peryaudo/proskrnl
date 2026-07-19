@@ -15,6 +15,8 @@
 #include "kernel/mm/section.h"
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/io/io.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
@@ -69,6 +71,8 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->userExceptionDispatcher = 0;
     process->userApcDispatcher = 0;
     process->ldrInitializeThunk = 0;
+    process->rtlUserThreadStart = 0;
+    process->ntdllBase = 0;
     process->activeThreadCount = 0;
     process->nextThreadId = 0;
     InitializeListHead(&process->threadListHead);
@@ -194,6 +198,39 @@ static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, ui
     {
         process->ldrInitializeThunk = base + rva;
     }
+    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
+                              "RtlUserThreadStart");
+    if (rva != 0)
+    {
+        process->rtlUserThreadStart = base + rva;
+    }
+}
+
+/* Map an already-built image section into `process`. Returns the entry point
+ * + the PE-declared stack shape. */
+static NTSTATUS PspMapImageSection(PEPROCESS process, PMI_SECTION section, uint64_t *entryOut,
+                                   uint64_t *baseOut, uint64_t *stackReserveOut,
+                                   uint64_t *stackCommitOut)
+{
+    uint64_t base = 0;
+    uint64_t viewSize = 0;
+    NTSTATUS status =
+        MiMapViewOfSection(section, &process->addressSpace, &base, 0, &viewSize, PAGE_EXECUTE);
+    if (!NT_SUCCESS(status)) /* STATUS_IMAGE_NOT_AT_BASE is a success code */
+    {
+        return status;
+    }
+    *entryOut = base + section->image->entryRva;
+    *baseOut = base;
+    if (stackReserveOut != 0)
+    {
+        *stackReserveOut = section->image->stackReserve;
+    }
+    if (stackCommitOut != 0)
+    {
+        *stackCommitOut = section->image->stackCommit;
+    }
+    return STATUS_SUCCESS;
 }
 
 /* Map a PE program through the section machinery (M5). Also resolves the M7
@@ -207,19 +244,14 @@ static NTSTATUS PspMapImage(PEPROCESS process, PKI_RAMDISK_FILE file, uint64_t *
     {
         return status;
     }
-    uint64_t base = 0;
-    uint64_t viewSize = 0;
-    status = MiMapViewOfSection(section, &process->addressSpace, &base, 0, &viewSize, PAGE_EXECUTE);
-    if (NT_SUCCESS(status)) /* STATUS_IMAGE_NOT_AT_BASE is a success code */
+    status =
+        PspMapImageSection(process, section, entryOut, baseOut, stackReserveOut, stackCommitOut);
+    if (NT_SUCCESS(status))
     {
-        *entryOut = base + section->image->entryRva;
-        *baseOut = base;
-        *stackReserveOut = section->image->stackReserve;
-        *stackCommitOut = section->image->stackCommit;
-        PspResolveUserDispatchers(process, section, base);
+        PspResolveUserDispatchers(process, section, *baseOut);
     }
     ObDereferenceObject(section); /* the view holds its own pin */
-    return NT_SUCCESS(status) ? STATUS_SUCCESS : status;
+    return status;
 }
 
 NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
@@ -358,6 +390,164 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
 
     KiReadyCreatedThread(main);
     *processOut = process;
+    return STATUS_SUCCESS;
+}
+
+/* Build a user process the way NtCreateUserProcess will: the executable AND
+ * the system DLL (ntdll) mapped from the boot volume, the ring-3 dispatchers
+ * resolved from ntdll's exports, and the initial thread started on the NT
+ * CONTEXT protocol through LdrInitializeThunk (kernel/ps/usermode.c). This is
+ * the M7 Wine bring-up path: an unmodified PE ntdll takes over from
+ * LdrInitializeThunk on. `exeNtPath` is the namespace path (\??\C:\...);
+ * `imageDosPath` the DOS path ntdll sees in ProcessParameters. */
+#define PSP_NTDLL_PATH WSTR("\\??\\C:\\windows\\system32\\ntdll.dll")
+
+NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath,
+                             PEPROCESS *processOut)
+{
+    PMI_SECTION exeSection;
+    NTSTATUS status = IoOpenImageSection(exeNtPath, &exeSection);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PMI_SECTION ntdllSection;
+    status = IoOpenImageSection(PSP_NTDLL_PATH, &ntdllSection);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(exeSection);
+        return status;
+    }
+
+    PVOID body;
+    status = ObpAllocateObject(&PspProcessType, sizeof(EPROCESS), &body);
+    if (!NT_SUCCESS(status))
+    {
+        goto out_sections;
+    }
+    PEPROCESS process = body;
+    KiInitializeDispatcherHeader(&process->header, KI_OBJECT_PROCESS, 0);
+    ObpInitializeHandleTable(&process->handleTable);
+    process->imageName = imageDosPath;
+    PspInitializeProcessCommon(process);
+    process->uniqueProcessId = PspAllocateProcessId();
+
+    status = MiCreateAddressSpace(&process->addressSpace);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(process);
+        goto out_sections;
+    }
+
+    /* The executable first (it prefers its header base), then ntdll. */
+    uint64_t entry = 0;
+    uint64_t imageBase = 0;
+    uint64_t stackReserve = PSP_STACK_RESERVE;
+    uint64_t stackCommit = PSP_STACK_COMMIT;
+    status =
+        PspMapImageSection(process, exeSection, &entry, &imageBase, &stackReserve, &stackCommit);
+    uint64_t ntdllEntry = 0;
+    uint64_t ntdllBase = 0;
+    if (NT_SUCCESS(status))
+    {
+        status = PspMapImageSection(process, ntdllSection, &ntdllEntry, &ntdllBase, 0, 0);
+    }
+    if (NT_SUCCESS(status))
+    {
+        /* The return-protocol entry points come from ntdll, exactly as NT
+         * resolves its KeUser* globals from the system DLL's exports. */
+        PspResolveUserDispatchers(process, ntdllSection, ntdllBase);
+        process->ntdllBase = ntdllBase;
+        if (process->ldrInitializeThunk == 0 || process->rtlUserThreadStart == 0)
+        {
+            status = STATUS_ENTRYPOINT_NOT_FOUND;
+        }
+    }
+    if (NT_SUCCESS(status) && stackReserve < 4ULL * PAGE_SIZE)
+    {
+        stackReserve = PSP_STACK_RESERVE;
+    }
+    /* Wine's ntdll assumes the initial commit its own loader would have
+     * made: signal_start_thread (dlls/ntdll/signal_x86_64.c) zeroes 0xf000
+     * bytes below the initial CONTEXT before NtContinue, deeper than a
+     * minimal PE-header SizeOfStackCommit. Commit at least the 64 KiB every
+     * additional thread gets (kernel/ps/thread.c). */
+    if (NT_SUCCESS(status) && stackCommit < PSP_STACK_COMMIT)
+    {
+        stackCommit = PSP_STACK_COMMIT;
+    }
+
+    uint64_t stackTop = 0;
+    uint64_t stackLimit = 0;
+    if (NT_SUCCESS(status))
+    {
+        status = PspAllocateUserStack(process, stackReserve, stackCommit, &stackTop, &stackLimit);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = PspMapSharedUserData(process);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = PspBuildPeb(process, imageBase, imageDosPath, imageDosPath);
+    }
+    uint64_t tebBase = 0;
+    if (NT_SUCCESS(status))
+    {
+        process->nextThreadId = 0;
+        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
+                             ++process->nextThreadId, &tebBase);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(process); /* PspDeleteProcess unwinds the rest */
+        goto out_sections;
+    }
+
+    process->teb = (void *)(uintptr_t)tebBase;
+    process->entryRip = entry;
+    process->entryRsp = stackTop;
+    process->activeThreadCount = 1;
+
+    PKTHREAD main = KiCreateThreadSuspended(8, PspUserThreadStartup, 0, process, process->teb);
+    if (main == 0)
+    {
+        ObDereferenceObject(process);
+        status = STATUS_NO_MEMORY;
+        goto out_sections;
+    }
+    /* The NT protocol (PspEnterUserThread): CONTEXT.Rcx = the image entry,
+     * CONTEXT.Rdx = the PEB — what Wine's unix loader seeds for the first
+     * thread (init_syscall_frame) and RtlUserThreadStart expects. */
+    main->userStartRip = 0;
+    main->userStartArg1 = entry;
+    main->userStartArg2 = process->pebBase;
+    main->userStartRsp = (stackTop - 0x28) & ~(uint64_t)0xf;
+    process->mainThread = main;
+
+    KiReadyCreatedThread(main);
+    *processOut = process;
+    status = STATUS_SUCCESS;
+
+out_sections:
+    ObDereferenceObject(ntdllSection); /* the views hold their own pins */
+    ObDereferenceObject(exeSection);
+    return status;
+}
+
+/* Run a Wine-loaded PE to completion (the M7 acceptance runner). */
+NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, NTSTATUS *exitStatusOut)
+{
+    PEPROCESS process;
+    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, &process);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = KeWaitForSingleObject(process, Executive, KernelMode, FALSE, 0);
+    ASSERT(status == STATUS_SUCCESS);
+    *exitStatusOut = process->exitStatus;
+    ObDereferenceObject(process);
     return STATUS_SUCCESS;
 }
 

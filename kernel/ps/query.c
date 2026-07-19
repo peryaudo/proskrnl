@@ -13,7 +13,10 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/mm/phys.h"
+#include "kernel/mm/section.h"
+#include "kernel/io/io.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
@@ -272,28 +275,203 @@ NTSTATUS NtQueryValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName,
     return STATUS_OBJECT_NAME_NOT_FOUND;
 }
 
-/* --- NLS (furniture; the data files arrive with the Wine integration) ----- */
+/* --- NLS (the data files ntdll's locale_init maps at startup) ------------- */
+
+/* Map one \??\C:\windows\system32 NLS data file read-only into the CURRENT
+ * process (both services below run on the caller's thread). Mirrors Wine's
+ * unix-side implementations, which open the file and map a PAGE_READONLY
+ * SEC_COMMIT section over it (third_party/wine dlls/ntdll/unix/env.c
+ * NtGetNlsSectionPtr / NtInitializeNlsFiles). */
+static NTSTATUS PspMapNlsFile(const WCHAR *fileName, uint64_t *baseOut, uint64_t *sizeOut)
+{
+    WCHAR path[64];
+    static const WCHAR prefix[] = WSTR("\\??\\C:\\windows\\system32\\");
+    size_t n = 0;
+    while (prefix[n] != 0)
+    {
+        path[n] = prefix[n];
+        n++;
+    }
+    for (size_t i = 0; fileName[i] != 0; i++)
+    {
+        ASSERT(n + 1 < sizeof(path) / sizeof(path[0]));
+        path[n++] = fileName[i];
+    }
+    path[n] = 0;
+
+    PMI_SECTION section;
+    NTSTATUS status = IoOpenDataSection(path, &section);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PEPROCESS process = KeGetCurrentThread()->process;
+    uint64_t base = 0;
+    uint64_t viewSize = 0;
+    status =
+        MiMapViewOfSection(section, &process->addressSpace, &base, 0, &viewSize, PAGE_READONLY);
+    ObDereferenceObject(section); /* the view holds its own pin */
+    if (NT_SUCCESS(status))
+    {
+        *baseOut = base;
+        *sizeOut = viewSize;
+    }
+    return status;
+}
 
 NTSTATUS NtInitializeNlsFiles(void **baseAddress, LCID *lcid, LARGE_INTEGER *size)
 {
-    (void)baseAddress;
-    (void)lcid;
+    NTSTATUS status = KiProbeForWrite(baseAddress, sizeof(*baseAddress), sizeof(void *));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(lcid, sizeof(*lcid), sizeof(LCID));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t base = 0;
+    uint64_t viewSize = 0;
+    status = PspMapNlsFile(WSTR("locale.nls"), &base, &viewSize);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *baseAddress = (void *)(uintptr_t)base;
+    /* The system locale: en-US, the fallback Wine's unix side reports when no
+     * host locale configures one (dlls/ntdll/unix/env.c init_locale:
+     * MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT)). The size argument is left
+     * untouched — Wine's implementation never writes it (sem_ps/nls_files
+     * pins this; locale_init passes a throwaway named `unused`). */
+    *lcid = 0x0409;
     (void)size;
-    /* locale_init tolerates a failure here and continues with a degraded (but
-     * non-crashing) codepage state (docs/03 M7 map); the real locale.nls
-     * mapping lands with the Wine bring-up. */
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS NtGetNlsSectionPtr(ULONG type, ULONG codePage, PVOID contextData, PVOID *sectionPointer,
                             PSIZE_T sectionSize)
 {
-    (void)type;
-    (void)codePage;
     (void)contextData;
-    (void)sectionPointer;
-    (void)sectionSize;
-    return STATUS_NOT_IMPLEMENTED;
+    NTSTATUS status = KiProbeForWrite(sectionPointer, sizeof(*sectionPointer), sizeof(void *));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(sectionSize, sizeof(*sectionSize), sizeof(SIZE_T));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* File names per type follow Wine's unix get_nls_file_path (dlls/ntdll/
+     * unix/env.c): l_intl.nls for the case table, c_%03u.nls per codepage,
+     * sortdefault.nls for the sortkey table kernelbase parses at attach,
+     * norm*.nls per normalization form. */
+    WCHAR name[32];
+    switch (type)
+    {
+    case NLS_SECTION_SORTKEYS:
+        if (codePage != 0)
+        {
+            return STATUS_INVALID_PARAMETER_1;
+        }
+        {
+            static const WCHAR sortName[] = WSTR("sortdefault.nls");
+            memcpy(name, sortName, sizeof(sortName));
+        }
+        break;
+    case NLS_SECTION_CASEMAP:
+        if (codePage != 0)
+        {
+            return STATUS_UNSUCCESSFUL;
+        }
+        {
+            static const WCHAR intl[] = WSTR("l_intl.nls");
+            memcpy(name, intl, sizeof(intl));
+        }
+        break;
+    case NLS_SECTION_CODEPAGE:
+    {
+        static const WCHAR digits[] = WSTR("0123456789");
+        WCHAR *p = name;
+        *p++ = 'c';
+        *p++ = '_';
+        WCHAR buffer[10];
+        int i = 0;
+        ULONG value = codePage;
+        do
+        {
+            buffer[i++] = digits[value % 10];
+            value /= 10;
+        } while (value != 0);
+        while (i < 3)
+        {
+            buffer[i++] = '0'; /* c_%03u */
+        }
+        while (i > 0)
+        {
+            *p++ = buffer[--i];
+        }
+        static const WCHAR suffix[] = WSTR(".nls");
+        memcpy(p, suffix, sizeof(suffix));
+        break;
+    }
+    case NLS_SECTION_NORMALIZE:
+        /* Normalization form -> file, per Wine's get_nls_file_path (the
+         * NORM_FORM values are generated into abi/ntpsapi.h; 13 is the IDNA
+         * table id Wine hard-codes the same way). An unknown form has no
+         * file: STATUS_OBJECT_NAME_NOT_FOUND, matching the oracle. */
+        switch (codePage)
+        {
+        case NormalizationC:
+        {
+            static const WCHAR n[] = WSTR("normnfc.nls");
+            memcpy(name, n, sizeof(n));
+            break;
+        }
+        case NormalizationD:
+        {
+            static const WCHAR n[] = WSTR("normnfd.nls");
+            memcpy(name, n, sizeof(n));
+            break;
+        }
+        case NormalizationKC:
+        {
+            static const WCHAR n[] = WSTR("normnfkc.nls");
+            memcpy(name, n, sizeof(n));
+            break;
+        }
+        case NormalizationKD:
+        {
+            static const WCHAR n[] = WSTR("normnfkd.nls");
+            memcpy(name, n, sizeof(n));
+            break;
+        }
+        case 13:
+        {
+            static const WCHAR n[] = WSTR("normidna.nls");
+            memcpy(name, n, sizeof(n));
+            break;
+        }
+        default:
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        }
+        break;
+    default:
+        /* Wine's get_nls_section_name: an unrecognized type is parameter
+         * validation, not a lookup miss. */
+        return STATUS_INVALID_PARAMETER_1;
+    }
+
+    uint64_t base = 0;
+    uint64_t viewSize = 0;
+    status = PspMapNlsFile(name, &base, &viewSize);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *sectionPointer = (void *)(uintptr_t)base;
+    *sectionSize = viewSize;
+    return STATUS_SUCCESS;
 }
 
 /* --- volume information (RtlSetCurrentDirectory_U at startup) -------------- */
