@@ -98,6 +98,19 @@ static void KiUnwaitThread(PKTHREAD thread, NTSTATUS status)
     KiReadyThread(thread);
 }
 
+void KiUnwaitThreadWithStatus(PKTHREAD thread, NTSTATUS status)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    KiUnwaitThread(thread, status);
+}
+
+void KiAlertWaitingThread(PKTHREAD thread)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(thread->state == KI_THREAD_STATE_WAITING);
+    KiUnwaitThread(thread, STATUS_ALERTED);
+}
+
 /* Are all objects of a wait-all thread simultaneously satisfiable? The
  * timeout timer block is deliberately outside waitBlockList. */
 static int KiIsWaitAllSatisfiable(PKTHREAD thread)
@@ -281,6 +294,21 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
         }
     }
 
+    /* Alertable + a user APC already queued: complete immediately with
+     * STATUS_USER_APC and deliver on the way back to ring 3 (M7). Checked
+     * before the zero-timeout early-out, as NT does. */
+    if (alertable && (thread->userApcPending || thread->alerted))
+    {
+        if (thread->userApcPending)
+        {
+            thread->apcDeliverPending = TRUE;
+        }
+        NTSTATUS alertStatus = thread->userApcPending ? STATUS_USER_APC : STATUS_ALERTED;
+        thread->alerted = FALSE;
+        KiReleaseDispatcherLock(flags);
+        return alertStatus;
+    }
+
     if (timeout != 0 && timeout->QuadPart == 0)
     {
         KiReleaseDispatcherLock(flags);
@@ -302,7 +330,9 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
         KiArmWaitTimeout(thread, timeout);
     }
 
+    thread->waitAlertable = alertable; /* M7: a user APC can complete it */
     NTSTATUS status = KiCommitWait(thread);
+    thread->waitAlertable = FALSE;
     KiReleaseDispatcherLock(flags);
     return status;
 }
