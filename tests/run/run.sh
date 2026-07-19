@@ -117,6 +117,12 @@ proskrnl() {
     for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
+    # The M7 NLS data files (sem_ps/nls_files): the same pinned-Wine tables
+    # the kernel serves from C:\windows\system32 (Makefile WINFILES).
+    for nls in locale l_intl c_1252 c_437 sortdefault normnfc normnfd normnfkc normnfkd normidna; do
+        [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
+            specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
+    done
     while read -r rel _rest; do
         local name bin
         name="$(basename "$rel")"

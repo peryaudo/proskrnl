@@ -26,6 +26,18 @@ NTSYSAPI NTSTATUS NTAPI NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER
 NTSYSAPI NTSTATUS NTAPI NtDelayExecution(BOOLEAN, const LARGE_INTEGER *);
 NTSYSAPI NTSTATUS NTAPI NtYieldExecution(void);
 NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
+NTSYSAPI NTSTATUS NTAPI NtInitializeNlsFiles(void **, LCID *, LARGE_INTEGER *);
+NTSYSAPI NTSTATUS NTAPI NtGetNlsSectionPtr(ULONG, ULONG, void *, void **, SIZE_T *);
+
+/* NtGetNlsSectionPtr's section types, as wine/dlls/ntdll/locale_private.h
+ * defines them (winternl.h omits the enum). */
+enum nls_section_type
+{
+    NLS_SECTION_SORTKEYS = 9,
+    NLS_SECTION_CASEMAP = 10,
+    NLS_SECTION_CODEPAGE = 11,
+    NLS_SECTION_NORMALIZE = 12
+};
 
 #define PS_ProcessBasicInformation   ProcessBasicInformation
 #define PS_SystemBasicInformation    SystemBasicInformation
