@@ -570,7 +570,10 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
                           BOOLEAN ownsFrames)
 {
     ASSERT(vadType == MEM_MAPPED || vadType == MEM_IMAGE);
-    ASSERT(sectionBody != 0);
+    /* A section-backed view pins its section body; a body-less mapped VAD is
+     * only valid when it does not own its frames (M7: the shared
+     * KUSER_SHARED_DATA page maps one kernel-owned frame with no section). */
+    ASSERT(sectionBody != 0 || !ownsFrames);
     PMI_VAD vad = MiCreateVad(base, MiRoundUp(size, PAGE_SIZE), allocationProtect);
     if (vad == 0)
     {
@@ -825,6 +828,98 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
         {
             *returnLength = sizeof(info);
         }
+    }
+    if (referenced)
+    {
+        ObDereferenceObject(target);
+    }
+    return status;
+}
+
+/* Change the protection of a committed run and report the previous protection
+ * (M7: ntdll's loader flips .text/.data protection during import fixups). The
+ * range must lie inside one VAD and be fully committed — the reprotect reuses
+ * the same frames (no COW, Art. 3), only rewriting the PTE bits. */
+NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
+                                ULONG newProtect, ULONG *oldProtectOut)
+{
+    NTSTATUS status = MiCheckPageProtect(newProtect);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t base = MiRoundDown(*baseInOut, PAGE_SIZE);
+    uint64_t end = MiRoundUp(*baseInOut + *sizeInOut, PAGE_SIZE);
+    if (end <= base)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    PMI_VAD vad = MiFindVad(space, base);
+    if (vad == 0 || end > vad->base + vad->size)
+    {
+        return STATUS_INVALID_ADDRESS; /* not a single committed region */
+    }
+
+    int present, writable, executable;
+    MiProtectToPteBits(newProtect, &present, &writable, &executable);
+    ULONG oldProtect = 0;
+    for (uint64_t page = base; page < end; page += PAGE_SIZE)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->pageProtect[index] == 0)
+        {
+            return STATUS_NOT_COMMITTED; /* NT: the whole range must be committed */
+        }
+        if (page == base)
+        {
+            oldProtect = vad->pageProtect[index];
+        }
+        uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
+        ASSERT(frame != 0);
+        MiUnmapUserPage(space->pml4Physical, page);
+        MiMapUserPage(space->pml4Physical, page, frame, present, writable, executable);
+        vad->pageProtect[index] = newProtect;
+    }
+    *baseInOut = base;
+    *sizeInOut = end - base;
+    *oldProtectOut = oldProtect;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtProtectVirtualMemory(HANDLE process, PVOID *baseInOut, SIZE_T *sizeInOut,
+                                ULONG newProtect, ULONG *oldProtect)
+{
+    NTSTATUS status = KiProbeForWrite(baseInOut, sizeof(*baseInOut), sizeof(*baseInOut));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(oldProtect, sizeof(*oldProtect), sizeof(*oldProtect));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PEPROCESS target;
+    BOOLEAN referenced;
+    status = MiReferenceProcessByHandle(process, PROCESS_VM_OPERATION, &target, &referenced);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    uint64_t base = (uint64_t)(uintptr_t)*baseInOut;
+    uint64_t size = *sizeInOut;
+    ULONG old = 0;
+    status = MiProtectVirtualMemory(&target->addressSpace, &base, &size, newProtect, &old);
+    if (NT_SUCCESS(status))
+    {
+        *baseInOut = (PVOID)(uintptr_t)base;
+        *sizeInOut = size;
+        *oldProtect = old;
     }
     if (referenced)
     {

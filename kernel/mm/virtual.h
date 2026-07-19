@@ -49,6 +49,9 @@ NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *
                              ULONG type);
 NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
                                    PMEMORY_BASIC_INFORMATION info);
+/* Reprotect a committed run (M7); reports the previous protection. */
+NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
+                                ULONG newProtect, ULONG *oldProtectOut);
 
 /* --- section-view plumbing (mm/section.c, M5) ------------------------------ */
 
