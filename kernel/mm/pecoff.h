@@ -38,6 +38,8 @@ typedef struct
     ULONG entryRva;
     ULONG relocRva; /* 0 = no relocation directory */
     ULONG relocSize;
+    ULONG exportRva; /* 0 = no export directory (M7: dispatcher lookup) */
+    ULONG exportSize;
     ULONG checksum;
     ULONG fileSize;
     USHORT machine;
@@ -56,5 +58,14 @@ typedef struct
 
 /* Parse + validate a PE image from its raw file bytes. */
 NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info);
+
+/* Resolve a named export to its RVA, reading from the image's RAW file bytes
+ * (M7: the loader finds LdrInitializeThunk / KiUser{Exception,Apc}Dispatcher
+ * in ntdll — or, for a native single-image client, in the image itself —
+ * exactly as NT does). Works pre-map: RVAs in the export tables are converted
+ * to file offsets via the parsed segment table, so the caller need not have
+ * the (non-current) target address space mapped. Returns 0 if not found. */
+uint32_t MiLookupImageExport(const void *rawData, uint64_t rawSize, const MI_IMAGE_INFO *info,
+                             const char *name);
 
 #endif /* PROSKRNL_KERNEL_MM_PECOFF_H */

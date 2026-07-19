@@ -128,6 +128,18 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
         }
     }
 
+    if (nt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
+    {
+        const IMAGE_DATA_DIRECTORY *dir =
+            &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (dir->Size != 0 && dir->VirtualAddress != 0 && dir->VirtualAddress < info->sizeOfImage &&
+            dir->Size <= info->sizeOfImage - dir->VirtualAddress)
+        {
+            info->exportRva = dir->VirtualAddress;
+            info->exportSize = dir->Size;
+        }
+    }
+
     /* Segments must sit above the headers, page-aligned, ascending and
      * non-overlapping — the map path commits every image page exactly once. */
     uint64_t nextFreeRva = (info->sizeOfHeaders + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
@@ -168,3 +180,97 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
 
     return STATUS_SUCCESS;
 }
+
+static int MipNameEquals(const char *a, const char *b)
+{
+    while (*a != '\0' && *a == *b)
+    {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+/* Convert an image RVA to a file offset via the parsed segments (export data
+ * lives in an initialized-data segment). Returns UINT64_MAX if the RVA is not
+ * backed by raw file bytes. */
+static uint64_t MipRvaToOffset(const MI_IMAGE_INFO *info, uint32_t rva)
+{
+    for (ULONG i = 0; i < info->segmentCount; i++)
+    {
+        const MI_IMAGE_SEGMENT *seg = &info->segments[i];
+        if (rva >= seg->virtualAddress && rva < seg->virtualAddress + seg->rawSize)
+        {
+            return seg->rawOffset + (rva - seg->virtualAddress);
+        }
+    }
+    /* RVAs inside the headers map 1:1 to file offsets. */
+    if (rva < info->sizeOfHeaders)
+    {
+        return rva;
+    }
+    return ~(uint64_t)0;
+}
+
+/* Read a value of type T at image RVA `rva` from the raw file, bounds-checked. */
+#define MIP_READ_RVA(type, out, rva)                                                               \
+    do                                                                                             \
+    {                                                                                              \
+        uint64_t off = MipRvaToOffset(info, (rva));                                                \
+        if (off == ~(uint64_t)0 || off + sizeof(type) > rawSize)                                   \
+        {                                                                                          \
+            return 0;                                                                              \
+        }                                                                                          \
+        memcpy(&(out), bytes + off, sizeof(type));                                                 \
+    } while (0)
+
+uint32_t MiLookupImageExport(const void *rawData, uint64_t rawSize, const MI_IMAGE_INFO *info,
+                             const char *name)
+{
+    if (info->exportRva == 0 || info->exportSize < sizeof(IMAGE_EXPORT_DIRECTORY))
+    {
+        return 0;
+    }
+    const char *bytes = rawData;
+    uint64_t exportOffset = MipRvaToOffset(info, info->exportRva);
+    if (exportOffset == ~(uint64_t)0 || exportOffset + sizeof(IMAGE_EXPORT_DIRECTORY) > rawSize)
+    {
+        return 0;
+    }
+    IMAGE_EXPORT_DIRECTORY exports;
+    memcpy(&exports, bytes + exportOffset, sizeof(exports));
+    if (exports.AddressOfNames == 0 || exports.AddressOfNameOrdinals == 0 ||
+        exports.AddressOfFunctions == 0)
+    {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < exports.NumberOfNames; i++)
+    {
+        uint32_t nameRva = 0;
+        MIP_READ_RVA(uint32_t, nameRva, exports.AddressOfNames + 4 * i);
+        uint64_t nameOffset = MipRvaToOffset(info, nameRva);
+        if (nameOffset == ~(uint64_t)0 || nameOffset >= rawSize)
+        {
+            continue;
+        }
+        /* The export name is NUL-terminated within the file (bounded by
+         * rawSize; MipNameEquals stops at the first mismatch or NUL). */
+        if (!MipNameEquals(name, bytes + nameOffset))
+        {
+            continue;
+        }
+        uint16_t ordinal = 0;
+        MIP_READ_RVA(uint16_t, ordinal, exports.AddressOfNameOrdinals + 2 * i);
+        if (ordinal >= exports.NumberOfFunctions)
+        {
+            return 0;
+        }
+        uint32_t functionRva = 0;
+        MIP_READ_RVA(uint32_t, functionRva, exports.AddressOfFunctions + 4 * ordinal);
+        return functionRva; /* the export's RVA (forwarders unsupported) */
+    }
+    return 0;
+}
+
+#undef MIP_READ_RVA
