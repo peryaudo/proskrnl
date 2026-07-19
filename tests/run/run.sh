@@ -31,7 +31,11 @@ MODE="${1:-}"
 # The oracle wine: PREFER the pinned third_party/wine build (built in-tree by
 # tools/setup_linux.sh) so the oracle can never diverge from the Wine version
 # the abi/ contract is generated from; $WINE overrides, host wine is the
-# fallback.
+# fallback. The pinned tree is the PATCHED proskrnl-target fork by design
+# (docs/06 "One tree, three roles"): every seam commit is dormant when a
+# unixlib is present, so running the oracle on it both enforces that dormancy
+# and exercises the identical PE ntdll.dll bytes the Makefile's WINFILES bake
+# onto proskrnl's boot volume.
 find_wine() {
     local w
     for w in "$ROOT/third_party/wine/wine64" "$ROOT/third_party/wine/wine"; do

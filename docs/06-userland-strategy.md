@@ -34,6 +34,58 @@ meter"** — if it grows, the design has drifted. What the diff may contain is g
 **Constitution Art. 10 / gate G9**: unixlib plumbing and build glue only, never PE-side
 behaviour, and never a change that masks a proskrnl divergence.
 
+## One tree, three roles: the dormancy invariant
+
+The single pinned tree serves three roles at once, deliberately:
+
+1. **Oracle** — built as regular Linux Wine; `tests/run/run.sh oracle` and the
+   differential fuzzer run against it (Art. 6: it is the behavioral spec).
+2. **Userland source** — the same build's PE artifacts (`ntdll.dll`,
+   `kernel32`/`kernelbase`) and `nls/` files are what `mkimage.sh` bakes onto proskrnl's
+   boot volume (Makefile `WINFILES`).
+3. **Contract source** — `tools/gen_abi.py` / `gen_syscalls.py` generate `abi/` and the
+   syscall ids from its headers.
+
+One pin keeps the three from drifting — and it means **the oracle tests the exact bytes
+proskrnl ships**: the `ntdll.dll` the oracle suite exercises under Wine is byte-for-byte
+the file on proskrnl's disk. That only works under one invariant:
+
+**Every fork commit is dormant under regular Wine**, by one of (in order of preference):
+
+1. **Runtime-dormant** — the change sits behind `if (!__wine_unix_call_dispatcher)`,
+   which is non-NULL whenever a unixlib loaded (always, under real Wine) and NULL only on
+   proskrnl, where no unixlib exists. Same bytes tested and shipped; zero gap. This is
+   the sanctioned seam mechanism and, as of M7, the only one in use.
+2. **Additive-by-construction** — new files / new build targets that never enter any
+   binary the oracle executes (the future `winefb.drv`; wineserver-lite). Sharp edge:
+   wineserver-lite must be a **new build target** assembled from the keep-list above,
+   never an in-place stripping of `server/` — that would mutate the oracle's wineserver
+   and corrupt the spec.
+3. **Compile-time-dormant** (escape hatch; documented here, built only when first
+   needed) — `#ifdef PROSKRNL_TARGET` with two out-of-tree build directories from the
+   **same pin**: an unflagged oracle build and a flagged target build. Still one tree,
+   one pin, one `abi/` source; the tested-vs-shipped delta narrows to exactly the
+   grep-auditable `#ifdef PROSKRNL_TARGET` regions. Enacting this hatch is a visible,
+   gated event: the same PR must amend this section and `tools/setup_linux.sh`.
+
+`run.sh oracle` running the **patched** tree is therefore intentional and load-bearing:
+a green oracle run is the continuous, empirical proof that every seam commit is
+behavior-neutral under Wine. Measure the meter with `tools/hack_meter.sh`. The base is
+the fork's own `master` branch, kept pointing at the winehq commit `proskrnl-target` is
+based on — a base bump fast-forwards `master` to the new winehq commit in the same push
+that rebases `proskrnl-target` onto it, so the meter derives entirely from the fork and
+no separate SHA needs recording.
+
+**Rejected: two submodules** (a vanilla `wine-oracle` + a patched `wine-target`, pinned
+to different branches). It downgrades the dormancy enforcement from empirical (the
+oracle *runs* the patched bytes) to a promise (nothing ever executes the patched PE code
+under a known-good host again), doubles the ~40-minute build, the disk, and the pin-bump
+ceremony, and creates a three-way drift hazard between the abi-generation, oracle, and
+target trees that would need its own merge-base-equality check — machinery to police a
+problem the split itself created. A worktree-of-the-merge-base variant is strictly worse:
+it pays the second build *and* loses tested-bytes even for dormant patches. If a
+non-dormant change ever becomes necessary, the answer is level 3 above, not a second pin.
+
 ## Checkout: submodule, pinned
 
 Wine lives at `third_party/wine` as a **git submodule**, SHA-pinned, so proskrnl commits
