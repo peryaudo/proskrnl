@@ -227,11 +227,11 @@ handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergenc
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M7** — `NtCreateUserProcess` + Wine's ntdll, the mountain: byte-exact
-PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA, thread creation, the
-`KiUserExceptionDispatcher`/`KiUserApcDispatcher` return protocol, and Wine's ntdll PE
-brought up with its unixlib replaced by our syscall stubs — after which "the rest of Wine
-is data" (`docs/02`).
+Next: **M8** — Cm (the registry) + the initial process chain: hive read/write in our own
+format, `NtCreateKey`/`NtSetValueKey`/`NtQueryValueKey`, the SYSTEM hive mounted at boot,
+and an smss-equivalent initial process that mounts the hive, sets the `\??` drive letters,
+and launches the next process — done when a value written by a user program survives
+reboot and boot completes as kernel → smss-equiv → test process (`docs/02`).
 
 ## License
 
