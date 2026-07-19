@@ -20,7 +20,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **G5 / Art. 5 — Test first.** A boundary behavior needs a `tests/ntapi/` test green on Wine/Windows *before* the kernel implements it. "Done" = test passing, not code compiling.
 - **G6 / Art. 6 — Only a differential test convicts.** Sanitizers/asserts name suspects; only a passing differential/conformance test closes an issue. "The sanitizer went quiet" is not a fix.
 - **G7 / Art. 7 — Additive & removable.** Everything outside the CUI core (GUI, WOW64, ROS shell) must be subtractable without touching the core.
-- **G9 / Art. 10 — Wine is patched only at the unixlib seam.** Wine modifications replace unixlib plumbing with syscall stubs (+ build glue), nothing else — committed on the submodule fork's `proskrnl-target` branch; `user/wine/patches/` is the mechanically exported diff (bookkeeping/hack meter only, never hand-edited or applied at build time). Never change PE-side observable behavior, and **never patch Wine to make a proskrnl divergence pass** — that fixes the oracle instead of the kernel (Art. 6). Every commit carries a what/why/upstream-disposition header; a PR growing the directory reports the hack-meter delta.
+- **G9 / Art. 10 — Wine is patched only at the unixlib seam.** Wine modifications replace unixlib plumbing with syscall stubs (+ build glue), nothing else — managed solely as commits on the fork's `proskrnl-target` branch pinned at `third_party/wine`; there is no patches directory, no vendored diffs, no build-time patching. Never change PE-side observable behavior, and **never patch Wine to make a proskrnl divergence pass** — that fixes the oracle instead of the kernel (Art. 6). Every commit carries a what/why/upstream-disposition header; the hack meter is the submodule diff vs. the winehq merge-base, and a pin-bump PR reports its delta.
 
 **LLM failure mode (called out in the docs):** you are trained mostly on Linux/ReactOS and will unprompted add IRQL, split the cache into a separate `Cc`, introduce fine-grained locks / COW, import POSIX idioms, and recall constants from memory. Each violates a gate. When in doubt, prefer the simplest thing that passes the boundary tests and leave NT-faithful internals and optimizations unbuilt.
 
@@ -38,7 +38,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **Kernel code uses NT department prefixes** `Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`/`Se` so it cross-references Windows Internals (`docs/04-repository-layout.md`).
 - **Machine-verdict log lines use fixed prefixes** `[KTEST]` / `[PANIC]` / `[ASSERT]`, kept separate from human free-text. Under LLM-driven dev the panic dump is the debugger (Art. 9).
 - **State invariants with `ASSERT(exp)`** (`kernel/init/panic.h`) as you write kernel code — always compiled in, fatal via the panic path, emits `[ASSERT] file:line: expr` + stack trace. Highest-value verification tool per line (docs/08): assert lock-held preconditions, state transitions, dispatcher type tags, count/list agreement (pattern: `kernel/ke/`, `kernel/lib/list.h`). A firing assert names a suspect; only a differential test convicts (Art. 6).
-- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter"; patch rules are gate G9 / Art. 10 (unixlib seam only; never mask a divergence).
+- Keep the Wine fork's diff vs. winehq **minimal** — its line count is the "hack meter"; Wine-modification rules are gate G9 / Art. 10 (commits on `proskrnl-target` only, unixlib seam only, never mask a divergence).
 
 ## Workflow
 
