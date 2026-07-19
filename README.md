@@ -137,7 +137,35 @@ local macOS Wine.
 
 ## Status
 
-**M6 complete.** The repository began as a **constitution** — documents that fix the design
+**M7 kernel boundary complete; Wine PE-side ntdll bring-up is the remaining M7 step.**
+M7 is the mountain: the process lifecycle and the ring-3 return protocol Wine's ntdll
+depends on. The syscall boundary now speaks the **NT x64 calling convention using the
+pinned Wine tree's own 64-bit syscall ids** (generated from `dlls/ntdll/ntsyscalls.h`),
+so an *unmodified* PE ntdll's thunks — which place that id in `eax` and execute a raw
+`syscall` — land on the right kernel service; `kernel/syscall/entry.S` synthesizes a full
+trap frame and returns via `iretq` so an arbitrary user context can be restored. On top of
+that the kernel now builds the **byte-exact PEB / TEB / `RTL_USER_PROCESS_PARAMETERS` /
+KUSER_SHARED_DATA** an unmodified ntdll reads (`kernel/ps/peb.c`; the shared page mapped at
+NT's fixed `0x7ffe0000` with `SystemCall == 0`, keeping Wine's thunks on the raw-syscall
+path), creates **user threads** as first-class Ob objects (`kernel/ps/thread.c` —
+`NtCreateThreadEx`, join via handle, `NtQueryInformationThread`), delivers **user-mode
+APCs** through `KiUserApcDispatcher` at alertable points (`kernel/ke/apc.c`), and implements
+the **exception/return protocol** (`kernel/ps/usermode.c`): a contained fault (or
+`NtRaiseException`) is delivered to the process's `KiUserExceptionDispatcher` with an
+`EXCEPTION_RECORD` + `CONTEXT` laid out exactly where Wine's dispatcher reads them, and
+`NtContinue` / `NtContinueEx` resume an arbitrary context. The dispatcher entry points are
+resolved from the image's export table exactly as they will be from ntdll
+(`kernel/mm/pecoff.c`). The acceptance artifact is a real PE client,
+`user/init-tests/m7_smoke.exe`, that drives the whole boundary from ring 3 — reading the
+kernel-built PEB/TEB/KUSER_SHARED_DATA, creating and joining a second thread, taking a
+delivered APC, flipping page protection, and **catching an access violation in its own
+`KiUserExceptionDispatcher` and resuming via `NtContinue`** (the milestone's SEH test) —
+and exits cleanly, giving `[KTEST] M7 PASS`. The remaining M7 work is bringing in Wine's PE
+ntdll itself (the fork's unixlib→syscall seam, kernel32/kernelbase, the NLS files) so
+Wine's own `hello.exe` boots; the kernel boundary it needs is in place and demonstrated.
+
+**Everything below describes the M1–M6 foundation this builds on.** The repository began as
+a **constitution** — documents that fix the design
 decisions before implementation, so neither a human nor an LLM contributor can quietly erode
 them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
 physical page frames), the M2 multithreading core (own page tables, one pool, 32-level
@@ -173,7 +201,7 @@ Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no ha
 constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M6 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M7 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
