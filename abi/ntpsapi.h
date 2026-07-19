@@ -92,6 +92,24 @@ typedef struct {
     ULONGLONG      Reserved[2];
 } KCONTINUE_ARGUMENT, *PKCONTINUE_ARGUMENT;
 #define KCONTINUE_FLAG_TEST_ALERT 0x01
+#define KCONTINUE_FLAG_DELIVER_APC 0x02
+
+/* NtGetNlsSectionPtr types, extracted verbatim from
+ * wine/dlls/ntdll/locale_private.h. */
+typedef enum {
+    NLS_SECTION_SORTKEYS = 9,
+    NLS_SECTION_CASEMAP = 10,
+    NLS_SECTION_CODEPAGE = 11,
+    NLS_SECTION_NORMALIZE = 12
+} NLS_SECTION_TYPE;
+
+typedef enum {
+    NormalizationOther  = 0,
+    NormalizationC      = 0x1,
+    NormalizationD      = 0x2,
+    NormalizationKC     = 0x5,
+    NormalizationKD     = 0x6
+} NORM_FORM;
 
 typedef enum {
     ProcessBasicInformation = 0,

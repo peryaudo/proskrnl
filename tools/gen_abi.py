@@ -1317,8 +1317,25 @@ def gen_ntpsapi(wine: Path) -> str:
         + "\n\n"
         + extract_struct(winternl, "_KCONTINUE_ARGUMENT", "KCONTINUE_ARGUMENT")
         + "\n"
-        + extract_defines(winternl, "winternl.h", ["KCONTINUE_FLAG_TEST_ALERT"])
+        + extract_defines(winternl, "winternl.h",
+                          ["KCONTINUE_FLAG_TEST_ALERT", "KCONTINUE_FLAG_DELIVER_APC"])
     )
+
+    # M7 Wine bring-up: the NLS section types ntdll's locale_init passes to
+    # NtGetNlsSectionPtr. Wine keeps them in dlls/ntdll/locale_private.h (a
+    # plain enum, both sides of the boundary include it); extracted verbatim.
+    locale_private = (wine / "dlls/ntdll/locale_private.h").read_text()
+    match = re.search(r"enum nls_section_type\s*\{(.*?)\}\s*;", locale_private, re.S)
+    if not match:
+        sys.exit("gen_abi: enum nls_section_type not found in locale_private.h")
+    nls_sections = ("/* NtGetNlsSectionPtr types, extracted verbatim from\n"
+                    " * wine/dlls/ntdll/locale_private.h. */\n"
+                    "typedef enum {" + match.group(1) + "} NLS_SECTION_TYPE;")
+
+    # The normalization-form ids NtGetNlsSectionPtr's NLS_SECTION_NORMALIZE
+    # takes (wine/dlls/ntdll/unix/env.c get_nls_file_path switches on them).
+    winnls = (wine / "include/winnls.h").read_text()
+    nls_sections += "\n\n" + extract_enum(winnls, "_NORM_FORM", "NORM_FORM")
 
     tib_asserts = """\
 #include <stddef.h>
@@ -1361,6 +1378,8 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + "\n\n/* M7: info classes + creation attributes, extracted verbatim from\n"
         + " * wine/include/winternl.h. */\n"
         + kcontinue
+        + "\n\n"
+        + nls_sections
         + "\n\n"
         + info_enums
         + "\n\n"
