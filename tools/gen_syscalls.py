@@ -309,6 +309,16 @@ FUZZ_CHOICES = {
         ("FZ_LEN_SHORT", False),
         ("FZ_LEN_LONG", False),
     ]),
+    # M7: page protections for NtProtectVirtualMemory. The WRITECOPY flavours
+    # need a backing file (rejected for private memory on both sides) and stay
+    # out; these five are the private-memory-valid set the reprotect accepts.
+    "protect_page": ("ULONG", [
+        ("PAGE_NOACCESS", False),
+        ("PAGE_READONLY", False),
+        ("PAGE_READWRITE", False),
+        ("PAGE_EXECUTE_READ", False),
+        ("PAGE_EXECUTE_READWRITE", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -356,6 +366,14 @@ FUZZ_OPS = [
     ("write_file", "NtWriteFile", ["slot_in", "ch_iolen", "ch_iooff"]),
     ("set_eof_file", "NtSetInformationFile", ["slot_in", "ch_iooff"]),
     ("query_standard_file", "NtQueryInformationFile", ["slot_in"]),
+    # M7 mechanical Ps/Mm surface (the pieces a flat interpreter can drive
+    # deterministically — process/system information length-checking and the
+    # in-place reprotect). The stateful M7 surface (threads, the KiUser*
+    # return protocol, APC delivery) needs the ntdll-resolved dispatchers a
+    # flat binary cannot export and is covered by the m7_smoke.exe module.
+    ("query_process_basic", "NtQueryInformationProcess", ["ch_len"]),
+    ("query_system_basic", "NtQuerySystemInformation", ["ch_len"]),
+    ("protect_memory", "NtProtectVirtualMemory", ["ch_protect_page"]),
 ]
 
 

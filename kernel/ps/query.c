@@ -52,8 +52,17 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
     {
     case ProcessBasicInformation:
     {
+        /* NT wants the length EXACT: a short buffer is rejected, and an
+         * over-long one is still filled but reported as INFO_LENGTH_MISMATCH
+         * (Wine dlls/ntdll/unix/process.c: the `if (size > sizeof(...)) ret =
+         * STATUS_INFO_LENGTH_MISMATCH` after the memcpy). returnLength is the
+         * needed size in every case. Pinned by sem_ps/process_query. */
         if (length < sizeof(PROCESS_BASIC_INFORMATION))
         {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(PROCESS_BASIC_INFORMATION);
+            }
             status = STATUS_INFO_LENGTH_MISMATCH;
             break;
         }
@@ -72,7 +81,8 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         {
             *returnLength = sizeof(info);
         }
-        status = STATUS_SUCCESS;
+        status = (length > sizeof(PROCESS_BASIC_INFORMATION)) ? STATUS_INFO_LENGTH_MISMATCH
+                                                              : STATUS_SUCCESS;
         break;
     }
     case ProcessDebugPort:
@@ -129,8 +139,16 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     {
     case SystemBasicInformation:
     {
-        if (length < sizeof(SYSTEM_BASIC_INFORMATION))
+        /* SystemBasicInformation wants an EXACT length — both under- and
+         * over-sized buffers are STATUS_INFO_LENGTH_MISMATCH (Wine
+         * dlls/ntdll/unix/system.c: `if (size == len) ...; else ret =
+         * STATUS_INFO_LENGTH_MISMATCH`). Pinned by sem_ps/process_query. */
+        if (length != sizeof(SYSTEM_BASIC_INFORMATION))
         {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(SYSTEM_BASIC_INFORMATION);
+            }
             return STATUS_INFO_LENGTH_MISMATCH;
         }
         NTSTATUS status =
@@ -228,7 +246,8 @@ NTSTATUS NtFlushInstructionCache(HANDLE process, LPCVOID base, SIZE_T length)
 
 /* --- registry (graceful failure until Cm at M8) --------------------------- */
 
-NTSTATUS NtOpenKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess, const OBJECT_ATTRIBUTES *attributes)
+NTSTATUS NtOpenKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
+                   const OBJECT_ATTRIBUTES *attributes)
 {
     (void)desiredAccess;
     (void)attributes;

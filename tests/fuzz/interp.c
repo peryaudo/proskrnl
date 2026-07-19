@@ -28,8 +28,16 @@
 #include "sem_ob/util.h" /* Nt* prototypes (oracle), abi (proskrnl), init_ustr/init_attr, ob_* structs */
 #if defined(NTAPI_PROSKRNL)
 #include "abi/ntioapi.h" /* the M6 file surface (must precede fuzz_model.h) */
+#include "abi/ntmmapi.h" /* PAGE_* for the protect op (must precede fuzz_model.h) */
+#include "abi/ntpsapi.h" /* NtQueryInformationProcess + PROCESS_BASIC_INFORMATION */
 #endif
 #include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
+
+#if defined(NTAPI_ORACLE)
+/* Prototypes winternl.h omits (as wine/include/winternl.h declares them). */
+NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE_T *, ULONG, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, PULONG);
+#endif
 
 /* The program blob, emitted by fuzz.py as build/tests/fuzz/fuzz_programs.c and
  * linked in. Format (little-endian): "PFZ1", u32 program_count, then per
@@ -173,10 +181,10 @@ static void fz_setup_files(void)
     HANDLE dir = NULL;
     init_ustr(&name, W("\\??\\C:\\fuzz"));
     init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-    NTSTATUS st = NtCreateFile(&dir, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &iosb, NULL,
-                               FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               FILE_OPEN_IF, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-                               NULL, 0);
+    NTSTATUS st =
+        NtCreateFile(&dir, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &iosb, NULL,
+                     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF,
+                     FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
     if (fz_ok(st))
         NtClose(dir);
 }
@@ -191,13 +199,39 @@ static void fz_reset_files(void)
         HANDLE handle = NULL;
         init_ustr(&name, fz_fnames[i]);
         init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-        NTSTATUS st = NtCreateFile(&handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL,
-                                   FILE_ATTRIBUTE_NORMAL,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                   FILE_OPEN, FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE |
-                                   FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+        NTSTATUS st = NtCreateFile(
+            &handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+            FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
         if (fz_ok(st))
             NtClose(handle);
+    }
+}
+
+/* A committed private scratch region for the M7 NtProtectVirtualMemory op: one
+ * VAD, fully committed, allocated once and reset to PAGE_READWRITE at each
+ * program start so protection state does not leak between programs. Its base
+ * differs across implementations (ASLR) and is never traced — only the status
+ * and the reported previous protection are contract. */
+#define FZ_PROTECT_REGION_SIZE 0x4000
+static void *fz_protect_base;
+
+static void fz_setup_protect(void)
+{
+    SIZE_T size = FZ_PROTECT_REGION_SIZE;
+    fz_protect_base = NULL;
+    NtAllocateVirtualMemory(NtCurrentProcess(), &fz_protect_base, 0, &size,
+                            MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+}
+
+static void fz_reset_protect(void)
+{
+    if (fz_protect_base != NULL)
+    {
+        void *base = fz_protect_base;
+        SIZE_T size = FZ_PROTECT_REGION_SIZE;
+        ULONG oldProtect = 0;
+        NtProtectVirtualMemory(NtCurrentProcess(), &base, &size, PAGE_READWRITE, &oldProtect);
     }
 }
 
@@ -265,6 +299,8 @@ static unsigned long long fz_resolve(FzOperandKind kind, unsigned char b)
         return b % FZ_CH_IOLEN_COUNT;
     case FZ_OPND_CH_IOOFF:
         return b % FZ_CH_IOOFF_COUNT;
+    case FZ_OPND_CH_PROTECT_PAGE:
+        return fz_ch_protect_page[b % FZ_CH_PROTECT_PAGE_COUNT];
     }
     return 0;
 }
@@ -665,6 +701,59 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_QUERY_PROCESS_BASIC:
+    {
+        PROCESS_BASIC_INFORMATION pbi;
+        ULONG retLen = 0;
+        fz_bzero(&pbi, sizeof(pbi));
+        st = NtQueryInformationProcess(NtCurrentProcess(), ProcessBasicInformation, &pbi,
+                                       fz_query_len((unsigned)a[0], (ULONG)sizeof(pbi)), &retLen);
+        /* rlen is contract; the PEB pointer / process id are not (they differ
+         * by VA layout and by pid source — a flat proskrnl process has no PEB,
+         * a Wine process does), so they are deliberately not traced. */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_SYSTEM_BASIC:
+    {
+        SYSTEM_BASIC_INFORMATION sbi;
+        ULONG retLen = 0;
+        fz_bzero(&sbi, sizeof(sbi));
+        st = NtQuerySystemInformation(SystemBasicInformation, &sbi,
+                                      fz_query_len((unsigned)a[0], (ULONG)sizeof(sbi)), &retLen);
+        /* Only status + rlen: NumberOfProcessors and the physical-page counts
+         * legitimately differ between the oracle host and proskrnl. */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_PROTECT_MEMORY:
+    {
+        if (fz_protect_base == NULL)
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s skip\n", prog, call, nt);
+            break;
+        }
+        void *base = fz_protect_base;
+        SIZE_T size = FZ_PROTECT_REGION_SIZE;
+        ULONG oldProtect = 0;
+        st = NtProtectVirtualMemory(NtCurrentProcess(), &base, &size, (ULONG)a[0], &oldProtect);
+        /* status + the reported previous protection are contract (the base is
+         * not — ASLR); the region is one fully-committed VAD on both sides. */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x old=%08x\n", prog, call, nt, (unsigned)st,
+                         (unsigned)oldProtect);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
     default:
         ntapi_printf("[FUZZ] p%u c%u ??? op=%d\n", prog, call, op);
         break;
@@ -697,6 +786,7 @@ START_TEST(fuzz_interp)
     p += 8;
 
     fz_setup_files();
+    fz_setup_protect();
 
     for (unsigned pi = 0; pi < programCount && p < end; pi++)
     {
@@ -711,6 +801,7 @@ START_TEST(fuzz_interp)
 
         fz_reset_slots();
         fz_reset_files();
+        fz_reset_protect();
         ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
 
         for (unsigned ci = 0; ci < callCount; ci++)

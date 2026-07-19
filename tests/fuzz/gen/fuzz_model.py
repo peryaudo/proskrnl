@@ -51,6 +51,7 @@ CHOICES = {
     'iolen': (4, []),
     'iooff': (4, []),
     'len': (4, []),
+    'protect_page': (5, []),
 }
 
 # op name -> (opcode, [operand kind strings])
@@ -85,4 +86,7 @@ OPS = [
     ('write_file', 27, 'NtWriteFile', ['slot_in', 'ch_iolen', 'ch_iooff']),
     ('set_eof_file', 28, 'NtSetInformationFile', ['slot_in', 'ch_iooff']),
     ('query_standard_file', 29, 'NtQueryInformationFile', ['slot_in']),
+    ('query_process_basic', 30, 'NtQueryInformationProcess', ['ch_len']),
+    ('query_system_basic', 31, 'NtQuerySystemInformation', ['ch_len']),
+    ('protect_memory', 32, 'NtProtectVirtualMemory', ['ch_protect_page']),
 ]
