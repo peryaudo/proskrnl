@@ -278,6 +278,19 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
                 return; /* guard consumed / stack grown: resume ring 3 */
             }
         }
+
+        /* M7: a first-chance user exception is delivered to the process's
+         * KiUserExceptionDispatcher (docs/02 "the SEH test") — the fault
+         * becomes a structured exception the user handler can catch, rather
+         * than immediate process death. Only when the process resolved a
+         * dispatcher; otherwise fall through to the contained-death path. */
+        if (KeGetCurrentThread()->process->userExceptionDispatcher != 0 &&
+            PspDispatchUserException(trapFrame, (ULONG)faultStatus, cr2))
+        {
+            KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
+            return; /* iretq into the user exception dispatcher */
+        }
+
         KiTraceEvent(KiTraceUserFault, trapFrame->vector, trapFrame->rip, cr2);
         KiDumpTrapFrame("[USERFAULT]", trapFrame);
         KiDumpUserStackTrace(trapFrame->rbp);
