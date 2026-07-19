@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mkimage.sh — build a Limine BIOS-bootable disk image (ADR 0010).
 #
-#   mkimage.sh <kernel-elf> <out-hdd> [<module.bin>=<cmdline> ...]
+#   mkimage.sh <kernel-elf> <out-hdd> [<module.bin>=<cmdline> ...] [win:<src>=<dest> ...]
 #
 # Canonical Limine recipe: a GPT disk with one ESP-typed FAT partition; format
 # and populate it, then install the Limine BIOS stage. Needs sgdisk (gptfdisk)
@@ -11,12 +11,26 @@
 # modules (the flat-binary user clients, docs/02). Each becomes module_path +
 # module_string lines appended to a generated copy of limine.conf; the kernel
 # reads the cmdline as the module's expected outcome (kernel/init/main.c).
+#
+# M7: a "win:<src>=<dest>" argument copies <src> onto the FAT volume at
+# /<dest> (intermediate directories created) WITHOUT registering a Limine
+# module — the same ESP partition is the kernel's FAT32 boot volume (\??\C:),
+# so this is how the Wine userland (windows/system32/ntdll.dll, the NLS
+# files) and hello.exe reach C:\ (kernel/init/main.c KiRunWineHello).
 set -euo pipefail
 
-KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...]}"
-IMG="${2:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...]}"
+KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...] [win:src=dest ...]}"
+IMG="${2:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...] [win:src=dest ...]}"
 shift 2 || true
-MODULE_SPECS=("$@")
+MODULE_SPECS=()
+WIN_SPECS=()
+for spec in "$@"; do
+    if [[ "$spec" == win:* ]]; then
+        WIN_SPECS+=("${spec#win:}")
+    else
+        MODULE_SPECS+=("$spec")
+    fi
+done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CONF_BASE="$HERE/../arch/x86_64/limine.conf"
 SIZE_MB="${SIZE_MB:-64}"
@@ -88,6 +102,21 @@ mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
 for spec in "${MODULE_SPECS[@]}"; do
     modfile="${spec%%=*}"
     mcopy -i "$IMG@@$ESP_OFF" "$modfile" "::/$(basename "$modfile")"
+done
+# M7: plain files onto the FAT volume (the Wine userland). Missing sources are
+# a hard error — a silently absent ntdll.dll would skip the Wine acceptance.
+for spec in "${WIN_SPECS[@]}"; do
+    src="${spec%%=*}"
+    dest="${spec#*=}"
+    [[ -f "$src" ]] || { echo "mkimage: win file missing: $src" >&2; exit 1; }
+    # Create each intermediate directory (mmd has no -p; ignore existing).
+    dir=""
+    IFS='/' read -ra parts <<< "$dest"
+    for ((i = 0; i < ${#parts[@]} - 1; i++)); do
+        dir="$dir/${parts[$i]}"
+        mmd -i "$IMG@@$ESP_OFF" "::$dir" 2>/dev/null || true
+    done
+    mcopy -i "$IMG@@$ESP_OFF" "$src" "::/$dest"
 done
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
