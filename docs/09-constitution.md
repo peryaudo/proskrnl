@@ -119,11 +119,19 @@ eyes. A cheap panic handler is the most expensive omission.
 
 ## Article 10 — Wine is patched only at the unixlib seam
 
-`user/wine/patches/` exists to do exactly one thing: replace the **unixlib side** — the
+Modifying Wine is permitted for exactly one thing: replacing the **unixlib side** — the
 host-facing plumbing under each PE DLL — with syscall stubs into proskrnl, plus the build
 glue the partial build needs (`docs/06`). The PE side's observable behaviour is **never**
 patched. Concretely:
 
+- **The operative change is a commit on the fork; `patches/` is bookkeeping only.** Every
+  Wine modification is committed to the pinned submodule (`third_party/wine`) on the
+  fork's `proskrnl-target` branch, and the superproject bumps the pin — that commit *is*
+  the change. `user/wine/patches/` is the **mechanically exported diff** of
+  `proskrnl-target` vs. the pinned winehq base — the hack meter and the reviewable
+  record. It is never hand-edited and never applied at build time; a patch file that
+  disagrees with the branch is a stale meter to regenerate, not an alternative change
+  mechanism.
 - **Never patch Wine to mask a kernel divergence.** Art. 6 makes a divergence from Wine a
   proskrnl bug, full stop. A patch that changes what Wine's PE code does so that proskrnl
   passes is fixing the *oracle* instead of the kernel — the one edit that silently
@@ -131,16 +139,17 @@ patched. Concretely:
 - **NT-absent additions stay out of Wine PE code** (Art. 2). GUI-route additions are *new,
   removable files* (e.g. `winefb.drv`), governed by Arts. 2 and 7 — additions, never
   mutations of existing Wine code.
-- **Each patch is one logical change with a header** stating what it changes, why the
-  unixlib seam (and not the kernel) is the right place, and its upstream disposition:
-  `upstreamable` (generic enough for winehq), `proskrnl-only` (permanently tied to our
-  transport), or `temporary` (until a named kernel feature lands — then it is deleted).
+- **Each modification is one logical commit** on `proskrnl-target`, mirrored by one
+  exported patch file, whose message/header states what it changes, why the unixlib seam
+  (and not the kernel) is the right place, and its upstream disposition: `upstreamable`
+  (generic enough for winehq), `proskrnl-only` (permanently tied to our transport), or
+  `temporary` (until a named kernel feature lands — then it is deleted).
 - **The hack meter is enforced in review.** A PR that grows `user/wine/patches/` states
   the old and new line counts and justifies the delta. Unjustified growth is rejected,
   exactly like an uncited constant.
-- **On a Wine submodule bump**, every patch is re-exported against the new pin and its
-  justification re-checked; one that no longer applies is re-derived from its header's
-  rationale, never force-merged blind.
+- **On a Wine base bump**, `proskrnl-target` is rebased onto the new winehq base and
+  `patches/` re-exported, with each commit's justification re-checked; one that no longer
+  applies is re-derived from its header's rationale, never force-merged blind.
 
 Licensing: patches are derivative of Wine (LGPL) and live under `user/`, on the far side
 of the process boundary; they never enter the kernel image (Art. 8, `docs/11`).

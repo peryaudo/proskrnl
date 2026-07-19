@@ -38,8 +38,10 @@ never PE-side behaviour, and never a patch that masks a proskrnl divergence.
 Wine lives at `third_party/wine` as a **git submodule**, SHA-pinned, so proskrnl commits
 and Wine commits correspond and `git bisect` works across both repos.
 
-- Prefer a **GitHub fork** as origin once unixlib work is substantial; branch
-  `proskrnl-target`. Keep `patches/` as the exported diff vs. winehq (the hack meter).
+- Origin is a **GitHub fork**; every Wine modification is a commit on its
+  `proskrnl-target` branch, pinned by the submodule — that commit is the operative
+  change. `patches/` is the mechanically exported diff vs. winehq: bookkeeping and hack
+  meter only, never hand-edited, never applied at build time (Art. 10 / gate G9).
 - Isolate at `third_party/` also for **license** clarity (Wine is LGPL; the process
   boundary keeps the kernel's license free — see `docs/11`).
 - Provide a **partial-build** mode in `build.sh` (ntdll + a few DLLs) from day one; M7

@@ -53,12 +53,15 @@ stated as hard gates.
   constant is rejected even if correct — it is indistinguishable from a hallucinated one.
   (Art. 4)
 
-- **G9 — Wine is patched only at the unixlib seam.** `user/wine/patches/` may replace the
-  unixlib side with proskrnl syscall stubs and adjust build glue — nothing else. No patch
-  may change PE-side observable behaviour, and above all no patch may exist to make a
-  proskrnl divergence pass: that fixes the oracle instead of the kernel (Art. 6). Each
-  patch is one logical change carrying a header (what it changes / why the seam is the
-  right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
+- **G9 — Wine is patched only at the unixlib seam.** Wine may be modified only to replace
+  the unixlib side with proskrnl syscall stubs and adjust build glue — nothing else. No
+  change may alter PE-side observable behaviour, and above all none may exist to make a
+  proskrnl divergence pass: that fixes the oracle instead of the kernel (Art. 6). The
+  operative change is a commit on the submodule fork's `proskrnl-target` branch (+ pin
+  bump); `user/wine/patches/` is the mechanically exported diff vs. the winehq base —
+  bookkeeping and hack meter only, never hand-edited, never applied at build time. Each
+  modification is one logical commit carrying a header (what it changes / why the seam is
+  the right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
   `temporary`-until-a-named-feature). A PR that grows the directory states old → new line
   counts and justifies the delta. (Art. 10)
 
