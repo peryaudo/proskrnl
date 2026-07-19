@@ -40,6 +40,24 @@ PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *
 PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void *startContext,
                           struct EPROCESS *process, void *teb)
 {
+    PKTHREAD thread = KiCreateThreadSuspended(priority, startRoutine, startContext, process, teb);
+    if (thread != 0)
+    {
+        KiReadyCreatedThread(thread);
+    }
+    return thread;
+}
+
+void KiReadyCreatedThread(PKTHREAD thread)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    KiReadyThread(thread);
+    KiReleaseDispatcherLock(flags);
+}
+
+PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *),
+                                 void *startContext, struct EPROCESS *process, void *teb)
+{
     if (priority < 0 || priority >= KI_PRIORITY_LEVELS)
     {
         KiPanic("KiCreateThread: priority out of range");
@@ -52,6 +70,7 @@ PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void
     }
 
     KiInitializeDispatcherHeader(&thread->header, KI_OBJECT_THREAD, 0);
+    thread->state = KI_THREAD_STATE_INITIALIZED; /* readied by KiReadyCreatedThread */
     thread->stackBase = stack;
     thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;
     thread->process = process != 0 ? process : PsInitialSystemProcess;
@@ -61,6 +80,19 @@ PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void
     thread->priority = priority;
     thread->startRoutine = startRoutine;
     thread->startContext = startContext;
+    thread->trapFrame = 0;
+    thread->userContextReplaced = FALSE;
+    thread->userApcPending = FALSE;
+    thread->apcDeliverPending = FALSE;
+    thread->alerted = FALSE;
+    thread->waitAlertable = FALSE;
+    thread->userStartRip = 0;
+    thread->userStartRsp = 0;
+    thread->userStartArg1 = 0;
+    thread->userStartArg2 = 0;
+    thread->threadObject = 0;
+    thread->exitStatus = STATUS_SUCCESS;
+    InitializeListHead(&thread->userApcListHead);
     InitializeListHead(&thread->mutantListHead);
     /* The thread's private timeout timer (wait.c arms it for timed waits). */
     KeInitializeTimerEx(&thread->timer, NotificationTimer);
@@ -81,12 +113,10 @@ PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void
     thread->kernelStack = (uint64_t)(uintptr_t)stackPointer;
 
     /* startRoutine names the thread in the replayed ring (the display-time
-     * symbolizer resolves it to the function). */
+     * symbolizer resolves it to the function). NOT readied here — the caller
+     * finalizes user-start state / the ETHREAD, then KiReadyCreatedThread. */
     KiTraceEvent(KiTraceThreadCreate, (uint64_t)(uintptr_t)thread,
                  (uint64_t)(uintptr_t)startRoutine, (uint64_t)(uintptr_t)thread->process);
-    uint64_t flags = KiAcquireDispatcherLock();
-    KiReadyThread(thread);
-    KiReleaseDispatcherLock(flags);
     return thread;
 }
 
@@ -116,9 +146,12 @@ __attribute__((noreturn)) void KiTerminateThread(void)
 void KiDeleteThread(PKTHREAD thread)
 {
     ASSERT(thread != KiCurrentThread);
-    if (thread->state != KI_THREAD_STATE_TERMINATED)
+    /* A terminated thread (normal exit) or one created suspended and never
+     * readied (M7 NtCreateThreadEx error path) is safe to free; anything
+     * ready/running/waiting would be a use-after-free bug. */
+    if (thread->state != KI_THREAD_STATE_TERMINATED && thread->state != KI_THREAD_STATE_INITIALIZED)
     {
-        KiPanic("KiDeleteThread: thread not terminated");
+        KiPanic("KiDeleteThread: thread still schedulable");
     }
     MiFreePool(thread->stackBase);
     MiFreePool(thread);

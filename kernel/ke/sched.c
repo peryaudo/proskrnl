@@ -56,6 +56,8 @@ void KiInitializeScheduler(void)
     KiIdleThread.process = PsInitialSystemProcess;
     KiIdleThread.previousMode = KernelMode;
     ASSERT(KiIdleThread.process != 0); /* Ps init precedes the scheduler */
+    KiIdleThread.trapFrame = 0;
+    InitializeListHead(&KiIdleThread.userApcListHead);
     InitializeListHead(&KiIdleThread.mutantListHead);
     KeInitializeTimerEx(&KiIdleThread.timer, NotificationTimer);
     KiCurrentThread = &KiIdleThread;

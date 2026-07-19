@@ -21,6 +21,7 @@
 #include "abi/ntdef.h"
 #include "abi/ntstatus.h"
 #include "kernel/lib/list.h"
+#include "arch/x86_64/trap.h"
 
 /* --- Dispatcher object types (DISPATCHER_HEADER.type) ------------------- */
 /* Values as Wine's ntoskrnl uses internally (dlls/ntoskrnl.exe/sync.c);
@@ -122,14 +123,32 @@ typedef enum
 } KWAIT_REASON;
 /* NOLINTEND(readability-identifier-naming) */
 
+/* --- APCs (M7) ----------------------------------------------------------- */
+
+/* A queued asynchronous procedure call. proskrnl needs only the USER-mode
+ * APC (docs/05 "APC delivery timing" is the forced part): delivered to a
+ * thread at an alertable wait / NtTestAlert, it runs KiUserApcDispatcher in
+ * ring 3 with (normalRoutine, arg1, arg2, arg3). Kernel-mode APCs and the
+ * special-kernel-APC machinery are NT internals nothing observes, so they
+ * are not built. */
+typedef struct KAPC
+{
+    LIST_ENTRY apcListEntry;  /* on the target thread's userApcListHead */
+    uint64_t normalRoutine;   /* user PNTAPCFUNC */
+    uint64_t normalContext;   /* arg1 */
+    uint64_t systemArgument1; /* arg2 */
+    uint64_t systemArgument2; /* arg3 */
+} KAPC, *PKAPC;
+
 /* --- Threads ------------------------------------------------------------- */
 
 #define KI_THREAD_WAIT_OBJECTS 3 /* embedded wait blocks (NT: THREAD_WAIT_OBJECTS) */
 
-#define KI_THREAD_STATE_READY      1
-#define KI_THREAD_STATE_RUNNING    2
-#define KI_THREAD_STATE_WAITING    3
-#define KI_THREAD_STATE_TERMINATED 4
+#define KI_THREAD_STATE_INITIALIZED 0 /* created suspended, never readied */
+#define KI_THREAD_STATE_READY       1
+#define KI_THREAD_STATE_RUNNING     2
+#define KI_THREAD_STATE_WAITING     3
+#define KI_THREAD_STATE_TERMINATED  4
 
 /* KPRIORITY 0..31, NT's range (Microsoft "Scheduling Priorities",
  * https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities). */
@@ -168,6 +187,34 @@ struct KTHREAD
     KTIMER timer; /* the thread's timeout timer */
 
     LIST_ENTRY mutantListHead; /* mutants owned; abandoned at termination */
+
+    /* M7: the current syscall/trap frame (entry.S publishes it), so the
+     * user-mode return protocol — NtContinue, NtRaiseException,
+     * NtGet/SetContextThread, APC/exception delivery — can rewrite the
+     * outgoing ring-3 register context. 0 while not in a ring-3-originated
+     * kernel entry. */
+    PKTRAP_FRAME trapFrame;
+    BOOLEAN userContextReplaced; /* a service rewrote trapFrame->rax itself */
+
+    /* M7: user-APC delivery (docs/05 "APC mechanism / delivery timing").
+     * Queued APCs run KiUserApcDispatcher in ring 3 at the next alertable
+     * wait / NtTestAlert; `alerted` is a pending NtAlertThread. */
+    LIST_ENTRY userApcListHead;
+    BOOLEAN userApcPending;    /* queue non-empty */
+    BOOLEAN apcDeliverPending; /* deliver one on the next ring-3 return */
+    BOOLEAN alerted;           /* NtAlertThread */
+    BOOLEAN waitAlertable;     /* the current wait is alertable */
+
+    /* M7: a user thread's initial ring-3 register state (NtCreateThreadEx /
+     * NtCreateUserProcess set these before readying it; PspUserThreadStartup
+     * descends to ring 3 with them). */
+    uint64_t userStartRip;
+    uint64_t userStartRsp;
+    uint64_t userStartArg1;
+    uint64_t userStartArg2;
+    void *threadObject; /* the Ob ETHREAD body (kernel/ps), 0 for kernel threads */
+
+    NTSTATUS exitStatus; /* published at thread termination */
 
     void (*startRoutine)(void *startContext);
     void *startContext;
@@ -210,6 +257,13 @@ PKTHREAD KiCreateThread(KPRIORITY priority, void (*startRoutine)(void *), void *
  * readied, because the context switch programs CR3/GS from them. */
 PKTHREAD KiCreateThreadEx(KPRIORITY priority, void (*startRoutine)(void *), void *startContext,
                           struct EPROCESS *process, void *teb);
+/* M7: build a thread WITHOUT readying it, so Ps can set its user-start state
+ * and thread object first (a user thread's ring-3 entry state and its ETHREAD
+ * must be final before the scheduler can pick it). Pair with
+ * KiReadyCreatedThread. Returns 0 on out-of-pool. */
+PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *),
+                                 void *startContext, struct EPROCESS *process, void *teb);
+void KiReadyCreatedThread(PKTHREAD thread);
 __attribute__((noreturn)) void KiTerminateThread(void);
 void KiDeleteThread(PKTHREAD thread); /* thread must be terminated */
 
@@ -219,6 +273,12 @@ void KiInitializeDispatcherHeader(PDISPATCHER_HEADER header, UCHAR type, LONG si
 
 /* Object became signalled (lock held): satisfy whatever waits it can. */
 void KiWaitTest(PDISPATCHER_HEADER object);
+
+/* Tear a waiting thread off its waits and ready it with `status` (lock held).
+ * Shared by the wake paths (APC/alert completion). */
+void KiUnwaitThreadWithStatus(PKTHREAD thread, NTSTATUS status);
+/* Complete an alertable wait with STATUS_ALERTED (lock held). */
+void KiAlertWaitingThread(PKTHREAD thread);
 
 /* Abandon-aware mutant release shared by KeReleaseMutex and termination. */
 LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned);
@@ -270,6 +330,24 @@ void KiRemoveTimer(PKTIMER timer);
 uint64_t KiComputeDueTime(PLARGE_INTEGER timeout);
 /* The clock tick: advance time, expire due timers. Interrupt context. */
 void KiUpdateClock(void);
+
+/* --- apc.c (M7) ---------------------------------------------------------- */
+
+/* Queue a user APC to `thread` (takes the dispatcher lock). The APC block is
+ * pool-owned; delivery/teardown frees it. Wakes an alertable wait. */
+void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc);
+
+/* Does the current thread have a user APC (or a pending alert) to deliver on
+ * the way back to ring 3? Called by the trap/syscall return path. */
+BOOLEAN KiUserApcPending(PKTHREAD thread);
+
+/* Deliver one pending user APC by rewriting the outgoing trap frame to enter
+ * KiUserApcDispatcher in ring 3 (kernel/ps/usermode.c). Lock NOT held. */
+void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame);
+
+/* Consume a pending alert for an alertable wait: returns TRUE (and clears it)
+ * if the thread was alerted or has a user APC queued. Lock held. */
+BOOLEAN KiTestAlertCurrentThread(void);
 
 /* --- irq.c --------------------------------------------------------------- */
 
