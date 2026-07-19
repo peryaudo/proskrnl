@@ -435,17 +435,33 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
     file->fsContext = fcb;
     file->fcb = &fcb->header;
     file->isDirectory = fcb->isDirectory;
+    fcb->openObjectCount++;
     return STATUS_SUCCESS;
 }
 
 static void FatVfsCleanup(PFILE_OBJECT file)
 {
     PFAT_FCB fcb = FatFcbOf(file);
+    ASSERT(fcb->openObjectCount > 0);
+    fcb->openObjectCount--;
     /* The Io layer released this open's share slots and locks already; the
-     * FS applies delete-on-close / disposition when the LAST open goes. */
-    BOOLEAN wantDelete = file->deleteOnClose || fcb->header.deletePending;
-    if (!wantDelete || fcb->header.shareAccess.openCount != 0 || fcb->isRoot)
+     * FS applies delete-on-close / disposition when the LAST open goes.
+     * "Last" counts EVERY open, not just data-access ones: the pinned Wine
+     * defers the unlink while any fd for the inode remains — even an
+     * attributes-only open — and applies it when the list empties
+     * (server/fd.c check_sharing ignores such opens for sharing, but the
+     * inode's closed-list unlink still waits for them). A delete intent
+     * whose own handle closes early is latched in unlinkPending rather than
+     * dropped (fuzzer-found: scrub-then-recreate reported FILE_CREATED where
+     * the oracle reports FILE_OVERWRITTEN). */
+    BOOLEAN wantDelete = file->deleteOnClose || fcb->header.deletePending || fcb->unlinkPending;
+    if (!wantDelete || fcb->isRoot)
     {
+        return;
+    }
+    if (fcb->openObjectCount != 0)
+    {
+        fcb->unlinkPending = TRUE; /* the last open's cleanup applies it */
         return;
     }
     if (fcb->isDirectory)
@@ -462,6 +478,7 @@ static void FatVfsCleanup(PFILE_OBJECT file)
     }
     FatDeleteEntry(fcb);
     fcb->header.deletePending = FALSE;
+    fcb->unlinkPending = FALSE;
     MiResizePageCache(&fcb->cache, 0);
     fcb->cacheLoaded = FALSE;
 }

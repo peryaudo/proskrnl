@@ -79,6 +79,13 @@ typedef struct FAT_FCB
     UNICODE_STRING longName; /* pool copy of the display name (case kept) */
     MI_PAGE_CACHE cache;     /* file data (files only) */
     BOOLEAN cacheLoaded;
+    /* Every live FILE_OBJECT bound to this FCB, data access or not (the
+     * share-slot openCount tracks only data-access opens). Wine's oracle
+     * defers a delete-on-close unlink while ANY open of the inode remains
+     * (server/fd.c: the unlink runs when the fd list empties), so the FS
+     * must know when the truly-last open leaves. */
+    LONG openObjectCount;
+    BOOLEAN unlinkPending; /* a delete intent deferred past its own close */
 } FAT_FCB, *PFAT_FCB;
 
 /* --- fat.c: mount, FAT chains, cluster allocation, sector I/O -------------- */

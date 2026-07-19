@@ -71,4 +71,45 @@ START_TEST(handle_life)
        (unsigned long)status);
     ok(wait_now(event) == STATUS_ACCESS_DENIED, "wait without SYNCHRONIZE succeeded");
     NtClose(event);
+
+    /* NtDuplicateObject grants the SPECIFIC bits as requested — it maps
+     * generic bits but never filters by the object type's valid mask
+     * (pinned Wine server/handle.c duplicate_handle -> map_access; fuzzer-
+     * found via a directory handle duplicated with event rights). The
+     * observable: a directory handle opened without SYNCHRONIZE fails a
+     * wait with ACCESS_DENIED, while its SYNCHRONIZE-requesting duplicate
+     * gets past the access check (the wait then dies on the second, invalid
+     * handle instead). */
+    {
+        HANDLE dir = NULL, waitable = NULL;
+        HANDLE handles[2];
+        LARGE_INTEGER zero;
+        status = NtCreateDirectoryObject(&dir, DIRECTORY_CREATE_OBJECT, NULL);
+        ok(status == STATUS_SUCCESS, "create anonymous directory -> %08lx", (unsigned long)status);
+        zero.QuadPart = 0;
+        handles[0] = dir;
+        handles[1] = NULL;
+        status = NtWaitForMultipleObjects(2, handles, WaitAll, FALSE, &zero);
+        ok(status == STATUS_ACCESS_DENIED, "wait on no-SYNCHRONIZE dir handle -> %08lx",
+           (unsigned long)status);
+        status = NtDuplicateObject(NtCurrentProcess(), dir, NtCurrentProcess(), &waitable,
+                                   EVENT_MODIFY_STATE | SYNCHRONIZE, 0, 0);
+        ok(status == STATUS_SUCCESS, "duplicate with event rights -> %08lx", (unsigned long)status);
+        handles[0] = waitable;
+        status = NtWaitForMultipleObjects(2, handles, WaitAll, FALSE, &zero);
+        /* The duplicate's SYNCHRONIZE gets past the access check on both
+         * sides; what happens NEXT is a wineserver-vs-NT wrinkle: wineserver
+         * parks any object on a wait queue (a directory just never
+         * signals), so the scan reaches the invalid second handle
+         * (INVALID_HANDLE); NT — and proskrnl — reject the non-dispatcher
+         * object itself (OBJECT_TYPE_MISMATCH). docs/03 "M7 fuzzer notes";
+         * baselined in tests/fuzz/known_divergences.txt. */
+        todo_proskrnl
+        {
+            ok(status == STATUS_INVALID_HANDLE, "wait past SYNCHRONIZE duplicate -> %08lx",
+               (unsigned long)status);
+        }
+        NtClose(waitable);
+        NtClose(dir);
+    }
 }
