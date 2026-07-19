@@ -67,7 +67,8 @@ void PspUserThreadStartup(void *context)
 {
     PKTHREAD tcb = KeGetCurrentThread();
     (void)context;
-    KiEnterUserMode(tcb->userStartRip, tcb->userStartRsp, tcb->userStartArg1, tcb->userStartArg2);
+    PspEnterUserThread(tcb); /* kernel/ps/usermode.c: the NT CONTEXT protocol
+                              * when ntdll is mapped, bare registers otherwise */
 }
 
 /* Build the ETHREAD wrapper for a KTHREAD and link it into the process. The

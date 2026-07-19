@@ -20,21 +20,24 @@ KiUserExceptionDispatcher:
     call m7_handle_exception
     ud2                      /* the handler NtContinue's away; never returns */
 
-/* KiUserApcDispatcher: entered with rcx = normalRoutine, rdx/r8/r9 = the three
- * APC arguments, and the saved CONTEXT at [rsp] (kernel/ps/usermode.c
- * KiDeliverUserApc). Run the routine (SysV) then NtContinue back to the saved
- * context. */
+/* KiUserApcDispatcher: entered on Wine's apc_stack_layout (kernel/ps/
+ * usermode.c KiDeliverUserApc, offsets pinned by the C_ASSERTs in
+ * third_party/wine dlls/ntdll/unix/signal_x86_64.c): rsp = the frame base
+ * with the saved CONTEXT at [rsp], the routine + arguments in its
+ * P1Home..P4Home slots (offsets 0x00..0x18), and the KCONTINUE_ARGUMENT to
+ * hand back to NtContinueEx at 0x4f0 — the same contract Wine's PE ntdll
+ * dispatcher consumes. Run the routine (SysV) then NtContinueEx back. */
     .global KiUserApcDispatcher
 KiUserApcDispatcher:
-    movq %rsp, %rbx          /* &CONTEXT (callee-saved across the call) */
-    movq %rcx, %rax          /* normalRoutine */
-    movq %rdx, %rdi          /* arg1 */
-    movq %r8, %rsi           /* arg2 */
-    movq %r9, %rdx           /* arg3 */
+    movq %rsp, %rbx          /* frame base (callee-saved across the call) */
+    movq 0x00(%rsp), %rdi    /* context->P1Home = arg1 */
+    movq 0x08(%rsp), %rsi    /* context->P2Home = arg2 */
+    movq 0x10(%rsp), %rdx    /* context->P3Home = arg3 */
+    movq 0x18(%rsp), %rax    /* context->P4Home = normalRoutine */
     call *%rax
     movq %rbx, %rdi          /* CONTEXT* */
-    xorl %esi, %esi          /* testAlert = FALSE */
-    call NtContinue
+    leaq 0x4f0(%rbx), %rsi   /* KCONTINUE_ARGUMENT* */
+    call NtContinueEx
     ud2
 
 /* void m7_trigger_av(void): store through a null pointer to raise a #PF. The

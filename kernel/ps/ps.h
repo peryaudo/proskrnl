@@ -47,6 +47,13 @@ typedef struct EPROCESS
     uint64_t userExceptionDispatcher;
     uint64_t userApcDispatcher;
     uint64_t ldrInitializeThunk;
+    /* M7 Wine bring-up: RtlUserThreadStart (also from ntdll's exports). When
+     * resolved, threads start on the NT protocol — a full CONTEXT on the user
+     * stack handed to LdrInitializeThunk, whose Rip is this and which ntdll
+     * reaches by NtContinue after loader_init (kernel/ps/usermode.c). 0 keeps
+     * the bare-register entry the native M4-M7 clients use. */
+    uint64_t rtlUserThreadStart;
+    uint64_t ntdllBase; /* where the system DLL mapped (0 = none loaded) */
 
     /* M7: all threads of the process (the main thread plus NtCreateThreadEx
      * threads). The process object signals when the last one exits. */
@@ -88,6 +95,15 @@ void PsInitializeProcessSubsystem(void);
  * NT-shaped guard-page stack and a TEB (NT_TIB filled), and its single
  * thread is readied. The caller owns the returned creator reference. */
 NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
+
+/* M7 Wine bring-up: build a process from an on-disk PE plus the on-disk
+ * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
+ * initial thread on the NT CONTEXT protocol. PsRunWineImage waits for exit.
+ * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
+ * handle table. */
+NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath,
+                             PEPROCESS *processOut);
+NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, NTSTATUS *exitStatusOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
  * exit status, signal the process object, never return. The user-fault
@@ -138,6 +154,11 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
 /* The first ring-3 descent of a user thread (shared by process/thread.c):
  * enters user mode at the KTHREAD's user-start register state. */
 void PspUserThreadStartup(void *context);
+
+/* First descent into ring 3 (kernel/ps/usermode.c): the NT initial-CONTEXT
+ * protocol through LdrInitializeThunk/RtlUserThreadStart when the process has
+ * a real ntdll, the bare-register entry otherwise. */
+__attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb);
 
 /* The Ps-level exit of the current user thread: signal its thread object,
  * unlink it from the process, and — when it was the last thread — publish the

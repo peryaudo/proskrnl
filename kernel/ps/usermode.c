@@ -23,6 +23,9 @@
  */
 #include "kernel/ps/ps.h"
 #include "kernel/mm/virtual.h"
+#include "kernel/mm/fault.h"
+#include "kernel/mm/phys.h"
+#include "arch/x86_64/mmu.h"
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
@@ -35,15 +38,103 @@
 #include "abi/ntpsapi.h"
 
 /* Wine's exc_stack_layout (third_party/wine dlls/ntdll/unix/signal_x86_64.c):
- * the exception dispatcher finds the CONTEXT at the base and the
- * EXCEPTION_RECORD 0x4f0 above it — pinned there by
+ * the exception dispatcher finds the CONTEXT at the base, the
+ * EXCEPTION_RECORD 0x4f0 above it, and the machine frame (the interrupted
+ * RIP/RSP its .seh_pushframe unwind info reads) at 0x590 — pinned there by
  *   C_ASSERT( offsetof(struct exc_stack_layout, rec) == 0x4f0 );
- * (and sizeof == 0x5c0, machine_frame at 0x590 for the full Wine layout).
- * KI_EXC_FRAME_SIZE over-allocates that. The native M7 client's dispatcher
- * reads only CONTEXT + rec; wiring the machine_frame at 0x590 is part of the
- * Wine-ntdll bring-up. */
+ *   C_ASSERT( offsetof(struct exc_stack_layout, machine_frame) == 0x590 );
+ *   C_ASSERT( sizeof(struct exc_stack_layout) == 0x5c0 );
+ * KI_EXC_FRAME_SIZE over-allocates that. */
 #define KI_EXC_RECORD_OFFSET 0x4f0
+#define KI_EXC_MACHINE_FRAME 0x590
 #define KI_EXC_FRAME_SIZE    0x600
+
+/* Wine's apc_stack_layout (same file): CONTEXT at the base with the APC
+ * routine + arguments in its P1Home..P4Home slots, the KCONTINUE_ARGUMENT
+ * KiUserApcDispatcher hands back to NtContinueEx at 0x4f0, and the machine
+ * frame at 0x530:
+ *   C_ASSERT( offsetof(struct apc_stack_layout, continue_arg) == 0x4f0 );
+ *   C_ASSERT( offsetof(struct apc_stack_layout, machine_frame) == 0x530 );
+ *   C_ASSERT( sizeof(struct apc_stack_layout) == 0x560 ); */
+#define KI_APC_CONTINUE_ARG  0x4f0
+#define KI_APC_MACHINE_FRAME 0x530
+#define KI_APC_FRAME_SIZE    0x560
+
+/* Wine's struct machine_frame (same file): the five iretq-shaped slots the
+ * dispatchers' .seh_pushframe unwind info reads (rip/cs/eflags/rsp/ss). */
+typedef struct
+{
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t eflags;
+    uint64_t rsp;
+    uint64_t ss;
+} KI_MACHINE_FRAME;
+
+/* Make [base, base+size) present-and-writable in the CURRENT address space
+ * before the kernel writes a dispatch frame there. A fresh or deep user stack
+ * may still be guard-paged: a ring-3 touch would grow it through
+ * MiHandleUserFault, but the kernel's own memcpy must not fault — so run the
+ * same growth logic per page up front (what NT does when it pushes a
+ * dispatcher frame onto a guarded stack). FALSE = truly unwritable. */
+static BOOLEAN KiMaterializeUserRange(uint64_t base, uint64_t size)
+{
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    uint64_t page = base & ~(uint64_t)(PAGE_SIZE - 1);
+    for (; page < base + size; page += PAGE_SIZE)
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            int writable = 0;
+            int present = 0;
+            uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, &writable, &present);
+            if (frame != 0 && present != 0 && writable != 0)
+            {
+                break;
+            }
+            if (attempt == 1 || !NT_SUCCESS(MiHandleUserFault(page)))
+            {
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+/* --- x87/SSE state <-> CONTEXT.FltSave ------------------------------------ */
+
+/* The user thread's x87/SSE registers are LIVE in the CPU whenever its kernel
+ * side runs (kernel code is -mno-sse and KiSwapContext restores the owner's
+ * state — kernel/ke/thread.c), so capturing into / restoring from a CONTEXT is
+ * a plain FXSAVE/FXRSTOR of the current CPU state. */
+
+/* MXCSR bits FXRSTOR accepts: the CPU's MXCSR_MASK, read once from a clean
+ * FXSAVE image (bytes 28-31; 0 means the default 0xffbf). Restoring a
+ * user-supplied MXCSR unmasked would #GP in ring 0 (Intel SDM Vol. 1
+ * "FXRSTOR"), so KiRestoreFxState filters through this. */
+static uint32_t KiMxcsrMask;
+
+static void KiCaptureFxState(CONTEXT *context)
+{
+    __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
+    memset(&area, 0, sizeof(area));
+    __asm__ volatile("fxsave64 %0" : "=m"(area));
+    if (KiMxcsrMask == 0)
+    {
+        KiMxcsrMask = area.MxCsr_Mask != 0 ? area.MxCsr_Mask : 0xffbf;
+    }
+    memcpy(&context->FltSave, &area, sizeof(area));
+    context->MxCsr = area.MxCsr;
+}
+
+static void KiRestoreFxState(const CONTEXT *context)
+{
+    __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
+    memcpy(&area, &context->FltSave, sizeof(area));
+    area.MxCsr = context->MxCsr & KiMxcsrMask;
+    area.MxCsr_Mask = KiMxcsrMask;
+    __asm__ volatile("fxrstor64 %0" : : "m"(area));
+}
 
 /* --- CONTEXT <-> KTRAP_FRAME --------------------------------------------- */
 
@@ -71,9 +162,7 @@ static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
     context->SegCs = (WORD)frame->segCs;
     context->SegSs = (WORD)frame->segSs;
     context->EFlags = (DWORD)frame->eflags;
-    context->MxCsr = 0x1f80;
-    context->FltSave.ControlWord = 0x27f;
-    context->FltSave.MxCsr = 0x1f80;
+    KiCaptureFxState(context);
 }
 
 /* Apply a user-supplied CONTEXT to the outgoing trap frame. Segment selectors
@@ -98,6 +187,10 @@ static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
     frame->r14 = context->R14;
     frame->r15 = context->R15;
     frame->rip = context->Rip;
+    if (context->ContextFlags & (CONTEXT_FLOATING_POINT & ~CONTEXT_AMD64))
+    {
+        KiRestoreFxState(context);
+    }
     frame->segCs = KI_USER_CS_SELECTOR;
     frame->segSs = KI_USER_DS_SELECTOR;
     /* Sanitize the RFLAGS a ring-3 CONTEXT may set (our security policy, not an
@@ -107,6 +200,54 @@ static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
      * IF on and the always-1 bit 1 (0x202), so NtContinue can never return to
      * ring 0, raise IOPL, or run with interrupts masked. */
     frame->eflags = (context->EFlags & 0x00000cd5ULL) | 0x202ULL;
+}
+
+/* --- the first descent into ring 3 ---------------------------------------- */
+
+/* Enter ring 3 for a fresh thread. Two protocols:
+ *
+ *   - NT (a real ntdll is mapped, process->rtlUserThreadStart resolved): build
+ *     the initial CONTEXT on the user stack — Rip = RtlUserThreadStart, Rcx =
+ *     the start routine, Rdx = its argument — and enter LdrInitializeThunk
+ *     with rcx = &CONTEXT. ntdll runs loader_init off it and NtContinue's
+ *     into RtlUserThreadStart. Shape cross-checked against the pinned Wine's
+ *     dlls/ntdll/unix/signal_x86_64.c init_syscall_frame (context.Rsp =
+ *     StackBase - 0x28; ctx 16-aligned below it; entry rsp = ctx - 8) and
+ *     dlls/ntdll/signal_x86_64.c LdrInitializeThunk.
+ *
+ *   - bare-register (no ntdll: the M4 flat binaries and the native PE
+ *     clients): enter at the resolved rip with rcx/rdx = the two arguments.
+ */
+__attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb)
+{
+    PEPROCESS process = tcb->process;
+    if (process->rtlUserThreadStart != 0 && process->ldrInitializeThunk != 0)
+    {
+        CONTEXT context;
+        memset(&context, 0, sizeof(context));
+        context.ContextFlags = CONTEXT_FULL;
+        context.Rcx = tcb->userStartArg1; /* the thread's start routine */
+        context.Rdx = tcb->userStartArg2; /* its argument */
+        context.Rsp = tcb->userStartRsp;
+        context.Rip = process->rtlUserThreadStart;
+        context.SegCs = KI_USER_CS_SELECTOR;
+        context.SegSs = KI_USER_DS_SELECTOR;
+        context.EFlags = 0x202;
+        context.MxCsr = 0x1f80;
+        context.FltSave.ControlWord = 0x27f;
+        context.FltSave.MxCsr = 0x1f80;
+
+        uint64_t contextAddr = (context.Rsp & ~(uint64_t)0xf) - sizeof(CONTEXT);
+        if (NT_SUCCESS(KiProbeForWrite((void *)contextAddr, sizeof(CONTEXT), sizeof(uint64_t))) &&
+            KiMaterializeUserRange(contextAddr, sizeof(CONTEXT)))
+        {
+            memcpy((void *)contextAddr, &context, sizeof(CONTEXT));
+            KiEnterUserMode(process->ldrInitializeThunk, contextAddr - 8, contextAddr, 0);
+        }
+        /* An unwritable fresh stack is a setup bug, not a user fault. */
+        KiPanic("PspEnterUserThread: initial user stack unwritable");
+    }
+    KiEnterUserMode(tcb->userStartRip, tcb->userStartRsp, tcb->userStartArg1, tcb->userStartArg2);
 }
 
 /* --- exception delivery --------------------------------------------------- */
@@ -132,13 +273,26 @@ static BOOLEAN KiEnterUserExceptionDispatcher(PKTRAP_FRAME trapFrame,
     sp -= KI_EXC_FRAME_SIZE;
     uint64_t frameBase = sp;
 
-    /* Probe the whole frame for write before touching user memory. */
-    if (!NT_SUCCESS(KiProbeForWrite((void *)frameBase, KI_EXC_FRAME_SIZE, sizeof(uint64_t))))
+    /* Probe the whole frame for write before touching user memory — and
+     * materialize it (a deep stack may still be guard pages; the kernel's
+     * own stores must not fault). */
+    if (!NT_SUCCESS(KiProbeForWrite((void *)frameBase, KI_EXC_FRAME_SIZE, sizeof(uint64_t))) ||
+        !KiMaterializeUserRange(frameBase, KI_EXC_FRAME_SIZE))
     {
         return FALSE;
     }
     memcpy((void *)frameBase, context, sizeof(CONTEXT));
     memcpy((void *)(frameBase + KI_EXC_RECORD_OFFSET), record, sizeof(EXCEPTION_RECORD));
+
+    /* The machine frame the dispatcher's .seh_pushframe unwind info reads:
+     * the interrupted RIP/RSP (Wine exc_stack_layout.machine_frame). */
+    KI_MACHINE_FRAME machineFrame;
+    machineFrame.rip = context->Rip;
+    machineFrame.cs = context->SegCs;
+    machineFrame.eflags = context->EFlags;
+    machineFrame.rsp = context->Rsp;
+    machineFrame.ss = context->SegSs;
+    memcpy((void *)(frameBase + KI_EXC_MACHINE_FRAME), &machineFrame, sizeof(machineFrame));
 
     trapFrame->rip = process->userExceptionDispatcher;
     trapFrame->rsp = frameBase;
@@ -201,29 +355,46 @@ void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame)
         return; /* no dispatcher / no routine: drop it (nothing to run) */
     }
 
-    /* Save the interrupted context and enter KiUserApcDispatcher with the APC
-     * arguments in the home registers and &CONTEXT in the slot at rsp
-     * (context sits at the new rsp; the dispatcher NtContinue's back to it). */
+    /* Save the interrupted context and enter KiUserApcDispatcher on Wine's
+     * apc_stack_layout: the CONTEXT at the frame base carries the routine +
+     * arguments in P1Home..P4Home, the KCONTINUE_ARGUMENT the dispatcher
+     * passes back to NtContinueEx sits at 0x4f0, and the machine frame its
+     * unwind info reads at 0x530 (offsets pinned at the top of this file). */
     CONTEXT context;
     KiTrapFrameToContext(trapFrame, &context);
+    context.P1Home = arg1;
+    context.P2Home = arg2;
+    context.P3Home = arg3;
+    context.P4Home = normalRoutine;
 
     uint64_t sp = trapFrame->rsp;
-    sp -= 0x20;
+    sp -= 0x20; /* skip the red zone */
     sp &= ~(uint64_t)0xf;
-    sp -= sizeof(CONTEXT);
-    uint64_t contextAddr = sp;
-    if (!NT_SUCCESS(KiProbeForWrite((void *)contextAddr, sizeof(CONTEXT), sizeof(uint64_t))))
+    sp -= KI_APC_FRAME_SIZE;
+    uint64_t frameBase = sp;
+    if (!NT_SUCCESS(KiProbeForWrite((void *)frameBase, KI_APC_FRAME_SIZE, sizeof(uint64_t))) ||
+        !KiMaterializeUserRange(frameBase, KI_APC_FRAME_SIZE))
     {
         return;
     }
-    memcpy((void *)contextAddr, &context, sizeof(CONTEXT));
+    memcpy((void *)frameBase, &context, sizeof(CONTEXT));
+
+    KCONTINUE_ARGUMENT continueArg;
+    memset(&continueArg, 0, sizeof(continueArg));
+    continueArg.ContinueType = KCONTINUE_RESUME;
+    continueArg.ContinueFlags = KCONTINUE_FLAG_TEST_ALERT | KCONTINUE_FLAG_DELIVER_APC;
+    memcpy((void *)(frameBase + KI_APC_CONTINUE_ARG), &continueArg, sizeof(continueArg));
+
+    KI_MACHINE_FRAME machineFrame;
+    machineFrame.rip = context.Rip;
+    machineFrame.cs = context.SegCs;
+    machineFrame.eflags = context.EFlags;
+    machineFrame.rsp = context.Rsp;
+    machineFrame.ss = context.SegSs;
+    memcpy((void *)(frameBase + KI_APC_MACHINE_FRAME), &machineFrame, sizeof(machineFrame));
 
     trapFrame->rip = process->userApcDispatcher;
-    trapFrame->rsp = contextAddr; /* CONTEXT is at [rsp] */
-    trapFrame->rcx = normalRoutine;
-    trapFrame->rdx = arg1;
-    trapFrame->r8 = arg2;
-    trapFrame->r9 = arg3;
+    trapFrame->rsp = frameBase; /* the apc_stack_layout base */
     trapFrame->segCs = KI_USER_CS_SELECTOR;
     trapFrame->segSs = KI_USER_DS_SELECTOR;
     trapFrame->eflags = 0x202;
