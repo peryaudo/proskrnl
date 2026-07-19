@@ -30,9 +30,12 @@ we want to catch.
 
 **Why `ntapi` exists at all**, given Wine already ships `dlls/ntdll/tests/*`: those link the
 full PE user-mode stack and cannot run until M7. `ntapi` is the *only* oracle that also runs
-on the M1–M6 kernel (a flat binary issuing raw syscalls). At M7 Wine's own suite becomes the
-richer conformance oracle (`docs/08`), and `ntapi` steps back from being a second hand-written
-suite to maintain.
+on the M1–M6 kernel (a flat binary issuing raw syscalls). At M7 Wine's own suite adds a
+richer conformance layer (`docs/08`) — it complements `ntapi`, it does not replace it.
+`ntapi` stays a permanently maintained first-class suite: it is the only one that runs on
+the bare kernel, and it is where every confirmed divergence — whether found by the
+differential fuzzer or by Wine's suite — is pinned as a deterministic regression test
+(Art. 6).
 
 The `ntapi` harness is also the base the **differential fuzzer** (`tests/fuzz/`, `docs/08`)
 is built on: its interpreter compiles in these same two modes, and its op model is generated
