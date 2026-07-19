@@ -39,6 +39,7 @@ typedef enum {
     FZ_OPND_CH_DISPOSITION_FILE,
     FZ_OPND_CH_IOLEN,
     FZ_OPND_CH_IOOFF,
+    FZ_OPND_CH_PROTECT_PAGE,
 } FzOperandKind;
 
 typedef enum {
@@ -72,6 +73,9 @@ typedef enum {
     FZ_OP_WRITE_FILE,
     FZ_OP_SET_EOF_FILE,
     FZ_OP_QUERY_STANDARD_FILE,
+    FZ_OP_QUERY_PROCESS_BASIC,
+    FZ_OP_QUERY_SYSTEM_BASIC,
+    FZ_OP_PROTECT_MEMORY,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -106,6 +110,9 @@ static const FzOperandKind fz_kinds_read_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_
 static const FzOperandKind fz_kinds_write_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOLEN, FZ_OPND_CH_IOOFF };
 static const FzOperandKind fz_kinds_set_eof_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOOFF };
 static const FzOperandKind fz_kinds_query_standard_file[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_query_process_basic[] = { FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_query_system_basic[] = { FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_protect_memory[] = { FZ_OPND_CH_PROTECT_PAGE };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -137,6 +144,9 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_WRITE_FILE] = { fz_kinds_write_file, 3, "NtWriteFile" },
     [FZ_OP_SET_EOF_FILE] = { fz_kinds_set_eof_file, 2, "NtSetInformationFile" },
     [FZ_OP_QUERY_STANDARD_FILE] = { fz_kinds_query_standard_file, 1, "NtQueryInformationFile" },
+    [FZ_OP_QUERY_PROCESS_BASIC] = { fz_kinds_query_process_basic, 1, "NtQueryInformationProcess" },
+    [FZ_OP_QUERY_SYSTEM_BASIC] = { fz_kinds_query_system_basic, 1, "NtQuerySystemInformation" },
+    [FZ_OP_PROTECT_MEMORY] = { fz_kinds_protect_memory, 1, "NtProtectVirtualMemory" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -172,5 +182,7 @@ static const ULONG fz_ch_disposition_file[] = { (ULONG)(FILE_OPEN), (ULONG)(FILE
 #define FZ_CH_IOLEN_COUNT 4
 #define FZ_CH_IOOFF_COUNT 4
 #define FZ_CH_LEN_COUNT 4
+#define FZ_CH_PROTECT_PAGE_COUNT 5
+static const ULONG fz_ch_protect_page[] = { (ULONG)(PAGE_NOACCESS), (ULONG)(PAGE_READONLY), (ULONG)(PAGE_READWRITE), (ULONG)(PAGE_EXECUTE_READ), (ULONG)(PAGE_EXECUTE_READWRITE) };
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */

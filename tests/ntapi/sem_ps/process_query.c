@@ -29,12 +29,28 @@ START_TEST(process_query)
                                        sizeof(pbi) - 1, NULL);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "short buffer -> %08lx", (unsigned long)status);
 
+    /* ProcessBasicInformation wants an EXACT length: a LARGER buffer is also
+     * STATUS_INFO_LENGTH_MISMATCH (Wine dlls/ntdll/unix/process.c:
+     * `if (size > sizeof(PROCESS_BASIC_INFORMATION)) ret = ..._MISMATCH`).
+     * Fuzzer-found (sem_ps was previously exact/short only). */
+    unsigned char pbi_big[sizeof(pbi) + 16];
+    status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessBasicInformation, pbi_big,
+                                       sizeof(pbi_big), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "oversized buffer -> %08lx", (unsigned long)status);
+
     /* --- SystemBasicInformation: allocation granularity ----------------- */
     PS_SYSTEM_BASIC_INFORMATION sbi;
     status = NtQuerySystemInformation(PS_SystemBasicInformation, &sbi, sizeof(sbi), &returnLength);
     ok(status == STATUS_SUCCESS, "SystemBasicInformation -> %08lx", (unsigned long)status);
     ok(sbi.AllocationGranularity == 0x10000, "allocation granularity %lu",
        (unsigned long)sbi.AllocationGranularity);
+
+    /* SystemBasicInformation also wants an EXACT length (Wine system.c:
+     * `if (size == len) ...; else ret = ..._MISMATCH`) — both under- and
+     * over-sized buffers are STATUS_INFO_LENGTH_MISMATCH. */
+    unsigned char sbi_big[sizeof(sbi) + 16];
+    status = NtQuerySystemInformation(PS_SystemBasicInformation, sbi_big, sizeof(sbi_big), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "system oversized -> %08lx", (unsigned long)status);
 
     /* --- NtQueryPerformanceCounter: monotonic, nonzero frequency -------- */
     LARGE_INTEGER first, second, frequency;
