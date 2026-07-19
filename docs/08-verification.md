@@ -72,10 +72,20 @@ boundary. The moment M7 lands Wine's ntdll, that suite becomes proskrnl's confor
 suite. `user32/tests/msg.c` is the GUI trophy — passing it means 30 years of message-order
 compatibility hold on our kernel.
 
-At that point `tests/ntapi/` has served its purpose as the M1–M6 scaffold: Wine's suite is
-the richer oracle, and `ntapi`'s portable harness lives on as the base for the differential
-fuzzer below (already built — see the next section), not as a parallel suite to keep
-maintaining.
+`tests/ntapi/` is **not** retired at that point — and the differential fuzzer never
+replaces it either. The three assets are complementary, permanently:
+
+- **`ntapi`** pins contract-shaped behaviours as small, deterministic, first-class tests
+  that run on the bare kernel via raw syscalls. It is also where every confirmed
+  divergence — found by the fuzzer or by Wine's suite — gets distilled into a permanent
+  regression test (Art. 6: only a differential test convicts, and the pin must outlive the
+  fix).
+- **The differential fuzzer** (next section, built on the same harness) explores the space
+  *between* the hand-written cases; its findings flow back into `ntapi` as pins.
+- **Wine's suite** adds third-party breadth through the full PE stack from M7 on.
+
+Each catches what the others structurally cannot; none subsumes another, and all three are
+maintained for the life of the project.
 
 ## Differential fuzzing (the hidden weapon)
 
