@@ -42,7 +42,7 @@ typedef struct
                           * referenced on success */
 } MI_SECTION_BACKING;
 
-typedef struct
+typedef struct MI_SECTION
 {
     ULONG attributes;     /* SEC_COMMIT / SEC_FILE / SEC_IMAGE as NT reports them */
     ULONG pageProtection; /* creation protection */

@@ -50,9 +50,9 @@ extern OBJECT_TYPE IoFileObjectType;
 typedef struct FILE_OBJECT
 {
     DISPATCHER_HEADER header; /* notification-event shape, always signaled */
-    PIO_DEVICE device; /* referenced via the Ob device body */
-    PIO_FCB fcb;       /* the FS's per-file node (fs/fat32 FAT_FCB) */
-    PVOID fsContext;   /* == fcb, typed for the FS's convenience */
+    PIO_DEVICE device;        /* referenced via the Ob device body */
+    PIO_FCB fcb;              /* the FS's per-file node (fs/fat32 FAT_FCB) */
+    PVOID fsContext;          /* == fcb, typed for the FS's convenience */
     BOOLEAN isDirectory;
     BOOLEAN synchronousIo; /* FILE_SYNCHRONOUS_IO_* at create */
     BOOLEAN deleteOnClose; /* FILE_DELETE_ON_CLOSE at create */
@@ -99,6 +99,15 @@ void IopReleaseAllLocks(PIO_FCB fcb, PFILE_OBJECT owner);
 
 /* Resolve a file handle with an access check. Caller dereferences. */
 NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut);
+
+/* Kernel-internal: open `ntPath` (e.g. \??\C:\windows\system32\ntdll.dll) and
+ * build a SEC_IMAGE section over it (the M7 process bootstrap + the NLS
+ * mapping syscalls use the data flavour below). The caller owns the returned
+ * section reference. Runs on a thread with a handle table (any process). */
+struct MI_SECTION; /* kernel/mm/section.h */
+NTSTATUS IoOpenImageSection(const WCHAR *ntPath, struct MI_SECTION **sectionOut);
+/* Same open, but a PAGE_READONLY data (SEC_COMMIT) section over the file. */
+NTSTATUS IoOpenDataSection(const WCHAR *ntPath, struct MI_SECTION **sectionOut);
 
 /* Complete one operation: write the IOSB, then signal the optional event —
  * in exactly that order (the docs/08 contract). `eventHandle` may be 0. */

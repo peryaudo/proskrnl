@@ -519,3 +519,60 @@ void IopSectionBackingReleased(PVOID fileObjectBody)
     ASSERT(file->fcb->sectionCount > 0);
     file->fcb->sectionCount--;
 }
+
+/* --- kernel-internal path -> section (the M7 process bootstrap + NLS) ------ */
+
+/* Open `ntPath` with a kernel-internal handle and wrap it in a section:
+ * SEC_IMAGE + PAGE_EXECUTE for images, SEC_COMMIT + PAGE_READONLY for data
+ * (the same shapes ntdll's own NtCreateSection calls use). The transient
+ * handle lives in the current process's handle table; the returned section
+ * reference is the caller's. */
+static NTSTATUS IopOpenFileSection(const WCHAR *ntPath, ULONG sectionAttributes,
+                                   ULONG pageProtection, PMI_SECTION *sectionOut)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, ntPath);
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* kernel pointers + a kernel handle */
+
+    HANDLE handle;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status =
+        IopCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, FILE_ATTRIBUTE_NORMAL,
+                      FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE);
+    if (NT_SUCCESS(status))
+    {
+        MI_SECTION_BACKING backing;
+        status = IopBuildSectionBacking(handle, sectionAttributes, pageProtection, &backing);
+        if (NT_SUCCESS(status))
+        {
+            status =
+                MiCreateBackedSection(0, pageProtection, sectionAttributes, &backing, sectionOut);
+            if (!NT_SUCCESS(status))
+            {
+                IopSectionBackingReleased(backing.fileObject);
+            }
+            ObDereferenceObject(backing.fileObject); /* the section holds its own */
+        }
+        NtClose(handle);
+    }
+    thread->previousMode = saved;
+    return status;
+}
+
+NTSTATUS IoOpenImageSection(const WCHAR *ntPath, PMI_SECTION *sectionOut)
+{
+    return IopOpenFileSection(ntPath, SEC_IMAGE, PAGE_EXECUTE, sectionOut);
+}
+
+NTSTATUS IoOpenDataSection(const WCHAR *ntPath, PMI_SECTION *sectionOut)
+{
+    return IopOpenFileSection(ntPath, SEC_COMMIT, PAGE_READONLY, sectionOut);
+}
