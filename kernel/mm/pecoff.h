@@ -16,7 +16,11 @@
 #include "abi/ntdef.h"
 #include "abi/ntimage.h"
 
-#define MI_IMAGE_MAX_SEGMENTS 16
+/* The Windows loader's own per-image section limit (Microsoft "PE Format",
+ * COFF File Header / NumberOfSections: "the Windows loader limits the number
+ * of sections to 96"). Wine's mingw-built PE dlls carry ~20 (debug sections
+ * included), so the M5-era 16 was too small for the M7 Wine bring-up. */
+#define MI_IMAGE_MAX_SEGMENTS 96
 
 /* One PE section ("segment" here — `section` is taken by the Ob object). */
 typedef struct
