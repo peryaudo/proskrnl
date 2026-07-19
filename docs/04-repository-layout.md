@@ -112,8 +112,9 @@ proskrnl/
 │   │   └── syscall_stubs.S          # generated from abi/syscall_numbers.h
 │   ├── smss/                        # initial process: mount hive, set \??, launch next
 │   │   └── firstboot.c              # runs wineboot.exe on first boot (GUI path)
-│   ├── wine/                        # Wine is a submodule; this is build glue
-│   │   ├── patches/                 # unixlib→syscall swaps; keep MINIMAL (the "hack meter")
+│   ├── wine/                        # build glue; Wine itself is the third_party/wine
+│   │   │                            #   submodule — unixlib→syscall swaps live as commits
+│   │   │                            #   on its proskrnl-target fork branch (Art. 10 / G9)
 │   │   ├── winefb.drv/              # ★ display backend written AS a Wine driver
 │   │   │   ├── init.c               #   user_driver_funcs table
 │   │   │   ├── display.c            #   mode enumeration, \Device\Fb0 map, desktop create

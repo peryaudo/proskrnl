@@ -28,10 +28,11 @@ replace the unixlib side with syscall stubs to our own kernel.** ntdll's Ldr (PE
 Rtl, and SEH unwind logic come along unchanged. This is precisely NT's own structure (a
 PE ntdll that syscalls), so it does not violate "no hacks."
 
-The unix-swap is done via `user/wine/patches/`. **The line count of that directory is the
-project's "hack meter"** — if it grows, the design has drifted. What may live there is
-governed by **Constitution Art. 10 / gate G9**: unixlib plumbing and build glue only,
-never PE-side behaviour, and never a patch that masks a proskrnl divergence.
+The unix-swap is done as commits on the Wine fork's `proskrnl-target` branch, pinned at
+`third_party/wine`. **The line count of that diff vs. winehq is the project's "hack
+meter"** — if it grows, the design has drifted. What the diff may contain is governed by
+**Constitution Art. 10 / gate G9**: unixlib plumbing and build glue only, never PE-side
+behaviour, and never a change that masks a proskrnl divergence.
 
 ## Checkout: submodule, pinned
 
@@ -39,9 +40,9 @@ Wine lives at `third_party/wine` as a **git submodule**, SHA-pinned, so proskrnl
 and Wine commits correspond and `git bisect` works across both repos.
 
 - Origin is a **GitHub fork**; every Wine modification is a commit on its
-  `proskrnl-target` branch, pinned by the submodule — that commit is the operative
-  change. `patches/` is the mechanically exported diff vs. winehq: bookkeeping and hack
-  meter only, never hand-edited, never applied at build time (Art. 10 / gate G9).
+  `proskrnl-target` branch, pinned by the submodule — there is no patches directory,
+  no vendored diffs, no build-time patching. The submodule diff vs. winehq is the hack
+  meter (Art. 10 / gate G9).
 - Isolate at `third_party/` also for **license** clarity (Wine is LGPL; the process
   boundary keeps the kernel's license free — see `docs/11`).
 - Provide a **partial-build** mode in `build.sh` (ntdll + a few DLLs) from day one; M7

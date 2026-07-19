@@ -56,14 +56,14 @@ stated as hard gates.
 - **G9 — Wine is patched only at the unixlib seam.** Wine may be modified only to replace
   the unixlib side with proskrnl syscall stubs and adjust build glue — nothing else. No
   change may alter PE-side observable behaviour, and above all none may exist to make a
-  proskrnl divergence pass: that fixes the oracle instead of the kernel (Art. 6). The
-  operative change is a commit on the submodule fork's `proskrnl-target` branch (+ pin
-  bump); `user/wine/patches/` is the mechanically exported diff vs. the winehq base —
-  bookkeeping and hack meter only, never hand-edited, never applied at build time. Each
-  modification is one logical commit carrying a header (what it changes / why the seam is
-  the right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
-  `temporary`-until-a-named-feature). A PR that grows the directory states old → new line
-  counts and justifies the delta. (Art. 10)
+  proskrnl divergence pass: that fixes the oracle instead of the kernel (Art. 6). All
+  modifications are commits on the fork's `proskrnl-target` branch, pinned at
+  `third_party/wine` — no patches directory, no vendored diffs, no build-time patching.
+  Each modification is one logical commit carrying a header (what it changes / why the
+  seam is the right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
+  `temporary`-until-a-named-feature). The hack meter is the submodule diff vs. the winehq
+  merge-base; a PR that bumps the pin states the old → new line counts and justifies any
+  growth. (Art. 10)
 
 ## Provenance rules (see docs/11)
 
@@ -79,8 +79,9 @@ stated as hard gates.
   `snake_case`). Full rules + `make format` in **`docs/15-code-style.md`**.
 - Match NT department prefixes for kernel code (`Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`), so code
   cross-references Windows Internals.
-- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter." The
-  binding rules for what may live there are gate G9 / Constitution Art. 10.
+- Keep the Wine fork's diff vs. winehq **minimal** — its line count is the project's
+  "hack meter." The binding rules for what it may contain are gate G9 / Constitution
+  Art. 10.
 - Put contract-bearing async logic in `io/async.c`; keep the free internal driver interface
   in `io/vfs.h`.
 - Machine-verdict log lines use fixed prefixes (`[KTEST]`, `[PANIC]`, `[ASSERT]`); keep them

@@ -11,8 +11,9 @@ exactly NT's own structure: a PE ntdll that syscalls.
 
 ## Decision
 Keep Wine's PE side unchanged. Replace only ntdll's unixlib side with syscall stubs to
-proskrnl. Wine is a SHA-pinned submodule at `third_party/wine`; swaps live in
-`user/wine/patches/`, whose size is the project's "hack meter."
+proskrnl. Wine is a SHA-pinned submodule at `third_party/wine`, pointing at the fork's
+`proskrnl-target` branch; swaps live as commits on that branch, and the size of its diff
+vs. winehq is the project's "hack meter" (Constitution Art. 10).
 
 ## Consequences
 - 30 years of Win32 compatibility arrive as data, for free (M7).
