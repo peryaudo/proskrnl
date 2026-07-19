@@ -53,6 +53,15 @@ stated as hard gates.
   constant is rejected even if correct — it is indistinguishable from a hallucinated one.
   (Art. 4)
 
+- **G9 — Wine is patched only at the unixlib seam.** `user/wine/patches/` may replace the
+  unixlib side with proskrnl syscall stubs and adjust build glue — nothing else. No patch
+  may change PE-side observable behaviour, and above all no patch may exist to make a
+  proskrnl divergence pass: that fixes the oracle instead of the kernel (Art. 6). Each
+  patch is one logical change carrying a header (what it changes / why the seam is the
+  right place / upstream disposition: `upstreamable`, `proskrnl-only`, or
+  `temporary`-until-a-named-feature). A PR that grows the directory states old → new line
+  counts and justifies the delta. (Art. 10)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
@@ -67,7 +76,8 @@ stated as hard gates.
   `snake_case`). Full rules + `make format` in **`docs/15-code-style.md`**.
 - Match NT department prefixes for kernel code (`Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`), so code
   cross-references Windows Internals.
-- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter."
+- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter." The
+  binding rules for what may live there are gate G9 / Constitution Art. 10.
 - Put contract-bearing async logic in `io/async.c`; keep the free internal driver interface
   in `io/vfs.h`.
 - Machine-verdict log lines use fixed prefixes (`[KTEST]`, `[PANIC]`, `[ASSERT]`); keep them

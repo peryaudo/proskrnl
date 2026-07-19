@@ -29,7 +29,9 @@ Rtl, and SEH unwind logic come along unchanged. This is precisely NT's own struc
 PE ntdll that syscalls), so it does not violate "no hacks."
 
 The unix-swap is done via `user/wine/patches/`. **The line count of that directory is the
-project's "hack meter"** — if it grows, the design has drifted.
+project's "hack meter"** — if it grows, the design has drifted. What may live there is
+governed by **Constitution Art. 10 / gate G9**: unixlib plumbing and build glue only,
+never PE-side behaviour, and never a patch that masks a proskrnl divergence.
 
 ## Checkout: submodule, pinned
 

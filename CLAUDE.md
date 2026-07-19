@@ -10,7 +10,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 
 ## Read before writing code (hard rules, not guidance)
 
-`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The nine constitution articles map to PR gates G1–G8. Key ones you will violate by default:
+`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The ten constitution articles map to PR gates G1–G9. Key ones you will violate by default:
 
 - **G1 / Art. 1 — Boundary only.** Reproduce NT behavior *exactly* only at the observable boundary (`Nt*` semantics Wine uses; PEB/TEB/RTL_USER_PROCESS_PARAMETERS/KUSER_SHARED_DATA layout; NT file semantics). Reproduce nothing else in Microsoft-compatible form.
 - **G2 / Art. 2 — No NT-absent entities in the core.** Never add to `kernel/`, `abi/`, `arch/`, `fs/`, or the `Nt*` surface anything NT lacks. GUI-only exception: a new device or new process at the *outside* of the boundary, logged in `docs/10-hacks-ledger.md` (use `/log-hack`).
@@ -20,6 +20,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **G5 / Art. 5 — Test first.** A boundary behavior needs a `tests/ntapi/` test green on Wine/Windows *before* the kernel implements it. "Done" = test passing, not code compiling.
 - **G6 / Art. 6 — Only a differential test convicts.** Sanitizers/asserts name suspects; only a passing differential/conformance test closes an issue. "The sanitizer went quiet" is not a fix.
 - **G7 / Art. 7 — Additive & removable.** Everything outside the CUI core (GUI, WOW64, ROS shell) must be subtractable without touching the core.
+- **G9 / Art. 10 — Wine is patched only at the unixlib seam.** `user/wine/patches/` replaces unixlib plumbing with syscall stubs (+ build glue), nothing else. Never change PE-side observable behavior, and **never patch Wine to make a proskrnl divergence pass** — that fixes the oracle instead of the kernel (Art. 6). Every patch carries a what/why/upstream-disposition header; a PR growing the directory reports the hack-meter delta.
 
 **LLM failure mode (called out in the docs):** you are trained mostly on Linux/ReactOS and will unprompted add IRQL, split the cache into a separate `Cc`, introduce fine-grained locks / COW, import POSIX idioms, and recall constants from memory. Each violates a gate. When in doubt, prefer the simplest thing that passes the boundary tests and leave NT-faithful internals and optimizations unbuilt.
 
@@ -37,11 +38,11 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **Kernel code uses NT department prefixes** `Ke`/`Mm`/`Ob`/`Ps`/`Io`/`Cm`/`Se` so it cross-references Windows Internals (`docs/04-repository-layout.md`).
 - **Machine-verdict log lines use fixed prefixes** `[KTEST]` / `[PANIC]` / `[ASSERT]`, kept separate from human free-text. Under LLM-driven dev the panic dump is the debugger (Art. 9).
 - **State invariants with `ASSERT(exp)`** (`kernel/init/panic.h`) as you write kernel code — always compiled in, fatal via the panic path, emits `[ASSERT] file:line: expr` + stack trace. Highest-value verification tool per line (docs/08): assert lock-held preconditions, state transitions, dispatcher type tags, count/list agreement (pattern: `kernel/ke/`, `kernel/lib/list.h`). A firing assert names a suspect; only a differential test convicts (Art. 6).
-- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter."
+- Keep `user/wine/patches/` **minimal** — its size is the project's "hack meter"; patch rules are gate G9 / Art. 10 (unixlib seam only; never mask a divergence).
 
 ## Workflow
 
-- **Feature branches + PRs; every change must satisfy gates G1–G8.** Run `/gate-check` on a diff before committing.
+- **Feature branches + PRs; every change must satisfy gates G1–G9.** Run `/gate-check` on a diff before committing.
 - `abi/` constants: regenerate with `/gen-abi`, never hand-edit.
 - Introducing an NT-absent device/process: log it with `/log-hack` before/with the code.
 - **On completing a milestone**, update the **Status** line above *and* the README "Status" section (current milestone, `make run` verdict, what's next); confirm `make run` is green. Milestone progress lives in exactly those two places — keep them in sync.
