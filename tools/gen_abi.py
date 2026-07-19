@@ -64,9 +64,11 @@ def extract_defines(src: str, source_name: str, names: list[str]) -> str:
     return "\n".join(lines)
 
 
-def extract_struct(src: str, tag: str, typedef: str) -> str:
+def extract_struct(src: str, tag: str, typedef: str, keep_tag: bool = False) -> str:
     """Pull one `typedef struct _TAG { ... } NAME, *PNAME...;` body verbatim.
-    The reserved `_TAG` tag is dropped; members are kept byte-for-byte."""
+    The reserved `_TAG` tag is dropped by default; members are kept
+    byte-for-byte. keep_tag preserves the tag so another header can carry a
+    forward declaration (`typedef struct _TAG NAME;`) of the same type."""
     match = re.search(
         r"typedef struct " + tag + r"\s*\{(.*?)\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
         src,
@@ -74,7 +76,8 @@ def extract_struct(src: str, tag: str, typedef: str) -> str:
     )
     if not match:
         sys.exit(f"gen_abi: struct {typedef} not found")
-    return "typedef struct {" + match.group(1) + "} " + match.group(2).strip() + ";"
+    intro = "typedef struct " + (tag + " " if keep_tag else "") + "{"
+    return intro + match.group(1) + "} " + match.group(2).strip() + ";"
 
 
 def extract_prototypes(src: str, names: list[str]) -> str:
@@ -92,6 +95,84 @@ def extract_prototypes(src: str, names: list[str]) -> str:
             sys.exit(f"gen_abi: prototype {name} not found in winternl.h")
         ret, args = match.group(1).strip(), match.group(2).strip()
         lines.append(f"{ret} {name}({args});")
+    return "\n".join(lines)
+
+
+def resolve_ifdef(text: str, macro: str, keep: bool) -> str:
+    """Resolve `#ifdef MACRO` / `#else` / `#endif` blocks in an extracted
+    struct body, keeping the branch selected by `keep`. Only used for
+    macros whose value is fixed by the project (e.g. __WINESRC__ selects
+    the real NT field names in PROCESS_BASIC_INFORMATION); the member
+    text itself stays byte-for-byte."""
+    out = []
+    stack = []  # each entry: (was_matching_macro, keeping_before, in_else)
+    keeping = True
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#ifdef"):
+            name = stripped.split()[1] if len(stripped.split()) > 1 else ""
+            if name == macro:
+                stack.append((True, keeping, False))
+                keeping = keeping and keep
+                continue
+            stack.append((False, keeping, False))
+        elif stripped.startswith("#else") and stack and stack[-1][0]:
+            matched, before, _ = stack[-1]
+            stack[-1] = (matched, before, True)
+            keeping = before and not keep
+            continue
+        elif stripped.startswith("#endif") and stack:
+            matched, before, _ = stack.pop()
+            if matched:
+                keeping = before
+                continue
+            keeping = before
+        if keeping:
+            out.append(line)
+    return "\n".join(out)
+
+
+# Offset-comment forms in Wine's headers: `/* 32bit/64bit */` (winternl.h
+# PEB/TEB), `/* 0x000 */` (wdm.h KUSER_SHARED_DATA), `/* 000 */` (winnt.h
+# AMD64_CONTEXT). Trailing prose after the offsets is allowed.
+OFFSET_COMMENT = re.compile(
+    r"/\*\s*(?:0x)?([0-9a-fA-F]*)\s*(?:(/)\s*(?:0x)?([0-9a-fA-F]*))?"
+    r"(?:\s[^*]*)?\*/"
+)
+MEMBER_DECL = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*;")
+
+
+def gen_offset_asserts(struct_text: str, typedef: str) -> str:
+    """Turn Wine's own per-member offset comments into _Static_asserts, so
+    every extracted layout is pinned against the exact source it came from
+    (Art. 4: the numbers are read from the Wine header, never retyped).
+    Only top-level, non-bitfield members with an x64 offset are pinned."""
+    lines = []
+    depth = 0
+    body = struct_text[struct_text.index("{") + 1 : struct_text.rindex("}")]
+    for line in body.splitlines():
+        at_top = depth == 0
+        depth += line.count("{") - line.count("}")
+        if not at_top or depth != 0:
+            continue  # inside (or entering/leaving) a nested union/struct
+        comment = OFFSET_COMMENT.search(line)
+        if not comment:
+            continue
+        offset = comment.group(3) if comment.group(2) else comment.group(1)
+        if not offset:
+            continue  # 32-bit-only column
+        decl = line[: comment.start()]
+        if ":" in decl:
+            continue  # bitfield: no offsetof
+        member = MEMBER_DECL.search(decl)
+        if not member:
+            continue
+        lines.append(
+            f"_Static_assert(offsetof({typedef}, {member.group(1)}) == 0x{offset.lower()}, "
+            f'"{typedef} x64 layout (offset comment in the Wine header)");'
+        )
+    if not lines:
+        sys.exit(f"gen_abi: no offset comments found for {typedef}")
     return "\n".join(lines)
 
 
@@ -148,7 +229,9 @@ def gen_ntdef(wine: Path) -> str:
             "OBJ_OPENLINK",
             "OBJ_KERNEL_HANDLE",
         ],
-    ) + "\n" + extract_defines(winternl, "winternl.h", ["NtCurrentProcess()"])
+    ) + "\n" + extract_defines(
+        winternl, "winternl.h", ["NtCurrentProcess()", "NtCurrentThread()"]
+    )
     access_rights = extract_defines(
         winnt,
         "winnt.h",
@@ -233,7 +316,13 @@ typedef unsigned char BYTE;
 
 /* Anonymous-union/-struct spellings used verbatim inside extracted structs. */
 #define DUMMYUNIONNAME
+#define DUMMYUNIONNAME2
+#define DUMMYUNIONNAME3
 #define DUMMYSTRUCTNAME
+#define DUMMYSTRUCTNAME2
+
+/* winnt.h: `#define VOID void`, used verbatim in extracted prototypes. */
+#define VOID void
 
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
@@ -404,6 +493,9 @@ NTMMAPI_FUNCTIONS = [
     "NtMapViewOfSection",
     "NtUnmapViewOfSection",
     "NtQuerySection",
+    # M7 (ntdll startup / loader paths)
+    "NtProtectVirtualMemory",
+    "NtFlushInstructionCache",
 ]
 
 
@@ -559,6 +651,7 @@ def gen_ntimage(wine: Path) -> str:
             "IMAGE_NUMBEROF_DIRECTORY_ENTRIES",
             "IMAGE_SIZEOF_SHORT_NAME",
             "IMAGE_SIZEOF_SECTION_HEADER",
+            "IMAGE_DIRECTORY_ENTRY_EXPORT",
             "IMAGE_DIRECTORY_ENTRY_BASERELOC",
             "IMAGE_SCN_CNT_CODE",
             "IMAGE_SCN_CNT_INITIALIZED_DATA",
@@ -587,6 +680,7 @@ def gen_ntimage(wine: Path) -> str:
             ("_IMAGE_NT_HEADERS64", "IMAGE_NT_HEADERS64"),
             ("_IMAGE_SECTION_HEADER", "IMAGE_SECTION_HEADER"),
             ("_IMAGE_BASE_RELOCATION", "IMAGE_BASE_RELOCATION"),
+            ("_IMAGE_EXPORT_DIRECTORY", "IMAGE_EXPORT_DIRECTORY"),
         ]
     )
 
@@ -601,6 +695,11 @@ _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve) == 72, "IMA
 _Static_assert(offsetof(IMAGE_NT_HEADERS64, OptionalHeader) == 24, "IMAGE_NT_HEADERS64 layout");
 _Static_assert(sizeof(IMAGE_SECTION_HEADER) == IMAGE_SIZEOF_SECTION_HEADER, "IMAGE_SECTION_HEADER layout");
 _Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout");
+_Static_assert(sizeof(IMAGE_EXPORT_DIRECTORY) == 40, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, NumberOfNames) == 24, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions) == 28, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames) == 32, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals) == 36, "IMAGE_EXPORT_DIRECTORY layout");
 """
 
     return (
@@ -634,13 +733,15 @@ NTIOAPI_FUNCTIONS = [
     "NtFlushBuffersFile",
     "NtLockFile",
     "NtUnlockFile",
+    # M7 (ntdll startup)
+    "NtQueryVolumeInformationFile",
 ]
 
 
 def extract_typedef_line(src: str, source_name: str, name: str) -> str:
     """Pull a one-line `typedef ... NAME ...;` verbatim (used for the
     PIO_APC_ROUTINE function-pointer type), dropping the WINAPI macro."""
-    match = re.search(r"^typedef[^\n;]*\b" + re.escape(name) + r"\b[^\n;]*;\s*$", src, re.M)
+    match = re.search(r"^typedef[^\n;]*\b" + re.escape(name) + r"\b[^\n;]*;", src, re.M)
     if not match:
         sys.exit(f"gen_abi: typedef {name} not found in {source_name}")
     return match.group(0).strip().replace("WINAPI ", "").replace("CALLBACK ", "")
@@ -716,6 +817,25 @@ def gen_ntioapi(wine: Path) -> str:
         ],
     )
 
+    winioctl = (wine / "include/winioctl.h").read_text()
+
+    # M7: NtQueryVolumeInformationFile (RtlSetCurrentDirectory_U issues it
+    # during ntdll startup — dlls/ntdll/env.c).
+    fs_info_class = extract_enum(winternl, "_FSINFOCLASS", "FS_INFORMATION_CLASS")
+    device_type_alias = extract_defines(winioctl, "winioctl.h", ["DEVICE_TYPE"])
+    fs_structs = "\n\n".join(
+        extract_struct(winioctl, tag, typedef)
+        for tag, typedef in [
+            ("_FILE_FS_VOLUME_INFORMATION", "FILE_FS_VOLUME_INFORMATION"),
+            ("_FILE_FS_SIZE_INFORMATION", "FILE_FS_SIZE_INFORMATION"),
+            ("_FILE_FS_DEVICE_INFORMATION", "FILE_FS_DEVICE_INFORMATION"),
+            ("_FILE_FS_ATTRIBUTE_INFORMATION", "FILE_FS_ATTRIBUTE_INFORMATION"),
+        ]
+    )
+    device_types = extract_defines(
+        winioctl, "winioctl.h", ["FILE_DEVICE_DISK", "FILE_DEVICE_FILE_SYSTEM"]
+    )
+
     iosb = extract_struct(winternl, "_IO_STATUS_BLOCK", "IO_STATUS_BLOCK")
     apc_routine = extract_typedef_line(winternl, "winternl.h", "PIO_APC_ROUTINE")
     info_class = extract_enum(
@@ -785,20 +905,292 @@ _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_
         + info_class
         + "\n\n"
         + structs
+        + "\n\n/* Volume information (M7: RtlSetCurrentDirectory_U queries it at\n"
+        + " * ntdll startup); enum from wine/include/winternl.h, structs and\n"
+        + " * device types from wine/include/winioctl.h. */\n"
+        + fs_info_class
+        + "\n\n"
+        + device_type_alias
+        + "\n\n"
+        + fs_structs
+        + "\n\n"
+        + device_types
         + "\n\n"
         + asserts
-        + "\n/* The M6 Io Nt* surface; signatures extracted verbatim from\n"
+        + "\n/* The M6+M7 Io Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTIOAPI_H */\n"
     )
 
 
-# The M4 Ps surface: process termination (the flat-binary exit path) plus
-# NtDisplayString (the flat-binary test-output path, docs/14).
+# The M7 user-visible structures (docs/00: PEB/TEB/RTL_USER_PROCESS_PARAMETERS
+# byte-for-byte — Wine's DLLs read the fields directly). Extracted verbatim
+# from wine/include/winternl.h; every member with an x64 offset comment in the
+# Wine header is pinned by a generated static_assert.
+def gen_ntpebteb(wine: Path) -> str:
+    winternl = (wine / "include/winternl.h").read_text()
+    guiddef = (wine / "include/guiddef.h").read_text()
+
+    guid = extract_struct(guiddef, "_GUID", "GUID")
+    small_structs = "\n\n".join(
+        [
+            extract_struct(winternl, "_CURDIR", "CURDIR"),
+            extract_struct(winternl, "RTL_DRIVE_LETTER_CURDIR", "RTL_DRIVE_LETTER_CURDIR"),
+            extract_struct(winternl, "tagRTL_BITMAP", "RTL_BITMAP"),
+            extract_struct(winternl, "_PEB_LDR_DATA", "PEB_LDR_DATA"),
+            extract_struct(winternl, "_GDI_TEB_BATCH", "GDI_TEB_BATCH"),
+            extract_struct(
+                winternl,
+                "_RTL_ACTIVATION_CONTEXT_STACK_FRAME",
+                "RTL_ACTIVATION_CONTEXT_STACK_FRAME",
+            ),
+            extract_struct(winternl, "_ACTIVATION_CONTEXT_STACK", "ACTIVATION_CONTEXT_STACK"),
+        ]
+    )
+    params = extract_struct(
+        winternl, "_RTL_USER_PROCESS_PARAMETERS", "RTL_USER_PROCESS_PARAMETERS", keep_tag=True
+    )
+    peb = extract_struct(winternl, "_PEB", "PEB", keep_tag=True)
+    teb = extract_struct(winternl, "_TEB", "TEB", keep_tag=True)
+    callback_proc = extract_typedef_line(winternl, "winternl.h", "KERNEL_CALLBACK_PROC")
+
+    scaffold = """\
+/* x86_64 only (ADR 0006): the extracted PEB/TEB carry #ifdef _WIN64 blocks
+ * verbatim; this build is always the 64-bit layout. */
+#ifndef _WIN64
+#define _WIN64 1
+#endif
+
+/* Win32 alias/opaque scaffold for extracted-struct member types. Only the
+ * pointer identity matters for layout; the pointees are not part of the M7
+ * boundary (nothing dereferences them across it). */
+typedef PVOID HMODULE;
+typedef ULONG_PTR KAFFINITY;
+typedef struct _RTL_CRITICAL_SECTION *PRTL_CRITICAL_SECTION;
+typedef struct _ACTIVATION_CONTEXT ACTIVATION_CONTEXT;
+typedef struct _TEB_ACTIVE_FRAME TEB_ACTIVE_FRAME;
+typedef struct _TEB_FLS_DATA TEB_FLS_DATA;
+typedef struct _CHPEV2_PROCESS_INFO CHPEV2_PROCESS_INFO;
+typedef struct _CHPE_V2_CPU_AREA_INFO CHPE_V2_CPU_AREA_INFO;
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntpebteb.h", source="wine/include/{winternl.h,guiddef.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTPEBTEB_H\n"
+        + "#define PROSKRNL_ABI_NTPEBTEB_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntpsapi.h" /* NT_TIB, CLIENT_ID */\n\n'
+        + scaffold
+        + "\n/* Extracted verbatim from wine/include/guiddef.h. */\n"
+        + guid
+        + "\n\n/* Extracted verbatim from wine/include/winternl.h. */\n"
+        + callback_proc
+        + "\n\n"
+        + small_structs
+        + "\n\n"
+        + params
+        + "\n\n"
+        + peb
+        + "\n\n"
+        + teb
+        + "\n\n#include <stddef.h>\n"
+        + "/* Layout pins, generated from the offset comments in the SAME Wine\n"
+        + " * header the structs were extracted from (Art. 4). */\n"
+        + gen_offset_asserts(peb, "PEB")
+        + "\n"
+        + gen_offset_asserts(teb, "TEB")
+        + "\n\n#endif /* PROSKRNL_ABI_NTPEBTEB_H */\n"
+    )
+
+
+# The M7 exception/context machinery (docs/02: KiUserExceptionDispatcher
+# return protocol; docs/05 Ps "usermode.c"): the x64 CONTEXT and
+# EXCEPTION_RECORD as Wine's winnt.h defines them.
+def gen_ntcontext(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+
+    flags = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "CONTEXT_AMD64",
+            "CONTEXT_AMD64_CONTROL",
+            "CONTEXT_AMD64_INTEGER",
+            "CONTEXT_AMD64_SEGMENTS",
+            "CONTEXT_AMD64_FLOATING_POINT",
+            "CONTEXT_AMD64_DEBUG_REGISTERS",
+            "CONTEXT_AMD64_FULL",
+            "CONTEXT_AMD64_ALL",
+            "EXCEPTION_MAXIMUM_PARAMETERS",
+            "EXCEPTION_NONCONTINUABLE",
+            "EXCEPTION_UNWINDING",
+            "EXCEPTION_EXIT_UNWIND",
+            "EXCEPTION_STACK_INVALID",
+            "EXCEPTION_NESTED_CALL",
+            "EXCEPTION_TARGET_UNWIND",
+            "EXCEPTION_COLLIDED_UNWIND",
+            "UNWIND_HISTORY_TABLE_SIZE",
+        ],
+    )
+
+    m128a = extract_struct(winnt, r"DECLSPEC_ALIGN\(16\) _M128A", "M128A")
+    xsave = extract_struct(winnt, "_XSAVE_FORMAT", "XSAVE_FORMAT")
+    context = extract_struct(winnt, r"DECLSPEC_ALIGN\(16\) _AMD64_CONTEXT", "AMD64_CONTEXT")
+    exception_record = extract_struct(winnt, "_EXCEPTION_RECORD", "EXCEPTION_RECORD")
+    exception_pointers = extract_struct(winnt, "_EXCEPTION_POINTERS", "EXCEPTION_POINTERS")
+    runtime_function = extract_struct(
+        winnt, "IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY", "IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY"
+    )
+
+    scaffold = """\
+#define DECLSPEC_ALIGN(x) __attribute__((aligned(x)))
+typedef ULONGLONG DWORD64, *PDWORD64;
+typedef ULONGLONG ULONG64;
+typedef int BOOL;
+"""
+
+    asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(CONTEXT) == 0x4d0, "AMD64 CONTEXT size (last member 0x4c8 + 8, aligned 16 — Wine offset comments)");
+_Static_assert(sizeof(EXCEPTION_RECORD) == 0x98, "EXCEPTION_RECORD x64 layout");
+_Static_assert(offsetof(EXCEPTION_RECORD, ExceptionAddress) == 0x10, "EXCEPTION_RECORD x64 layout");
+_Static_assert(offsetof(EXCEPTION_RECORD, ExceptionInformation) == 0x20, "EXCEPTION_RECORD x64 layout");
+"""
+
+    return (
+        BANNER.format(name="abi/ntcontext.h", source="wine/include/winnt.h")
+        + "#ifndef PROSKRNL_ABI_NTCONTEXT_H\n"
+        + "#define PROSKRNL_ABI_NTCONTEXT_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + scaffold
+        + "\n/* Extracted from wine/include/winnt.h. */\n"
+        + flags
+        + "\n\n"
+        + m128a
+        + "\n\n"
+        + xsave
+        + "\n\ntypedef XSAVE_FORMAT XMM_SAVE_AREA32, *PXMM_SAVE_AREA32;\n\n"
+        + runtime_function
+        + "\ntypedef IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;\n\n"
+        + context
+        + "\n\n/* x86_64 only (ADR 0006): AMD64_CONTEXT IS the CONTEXT, as Wine's\n"
+        + " * winnt.h typedefs under __x86_64__. */\n"
+        + "typedef AMD64_CONTEXT CONTEXT, *PCONTEXT;\n"
+        + "#define CONTEXT_CONTROL CONTEXT_AMD64_CONTROL\n"
+        + "#define CONTEXT_INTEGER CONTEXT_AMD64_INTEGER\n"
+        + "#define CONTEXT_SEGMENTS CONTEXT_AMD64_SEGMENTS\n"
+        + "#define CONTEXT_FLOATING_POINT CONTEXT_AMD64_FLOATING_POINT\n"
+        + "#define CONTEXT_DEBUG_REGISTERS CONTEXT_AMD64_DEBUG_REGISTERS\n"
+        + "#define CONTEXT_FULL CONTEXT_AMD64_FULL\n"
+        + "#define CONTEXT_ALL CONTEXT_AMD64_ALL\n\n"
+        + exception_record
+        + "\n\n"
+        + exception_pointers
+        + "\n\n"
+        + asserts
+        + "\n/* Layout pins, generated from the offset comments in the SAME Wine\n"
+        + " * header the struct was extracted from (Art. 4). */\n"
+        + gen_offset_asserts(context, "CONTEXT")
+        + "\n\n#endif /* PROSKRNL_ABI_NTCONTEXT_H */\n"
+    )
+
+
+# KUSER_SHARED_DATA (docs/00: byte-for-byte — read directly by Wine's PE
+# DLLs and by the ntdll syscall thunks at fixed user address 0x7ffe0000).
+def gen_ntkeapi(wine: Path) -> str:
+    wdm = (wine / "include/ddk/wdm.h").read_text()
+    winnt = (wine / "include/winnt.h").read_text()
+
+    defines = extract_defines(wdm, "ddk/wdm.h", ["PROCESSOR_FEATURE_MAX"]) + "\n" + extract_defines(
+        winnt, "winnt.h", ["MAXIMUM_XSTATE_FEATURES"]
+    )
+    enums = "\n\n".join(
+        [
+            extract_enum(wdm, "_NT_PRODUCT_TYPE", "NT_PRODUCT_TYPE"),
+            extract_enum(wdm, "_ALTERNATIVE_ARCHITECTURE_TYPE", "ALTERNATIVE_ARCHITECTURE_TYPE"),
+        ]
+    )
+    ksystem_time = extract_struct(wdm, "_KSYSTEM_TIME", "KSYSTEM_TIME")
+    xstate_feature = extract_struct(winnt, "_XSTATE_FEATURE", "XSTATE_FEATURE")
+    xstate_config = extract_struct(winnt, "_XSTATE_CONFIGURATION", "XSTATE_CONFIGURATION")
+    kusd = extract_struct(wdm, "_KUSER_SHARED_DATA", "KUSER_SHARED_DATA")
+
+    scaffold = """\
+typedef ULONGLONG ULONG64;
+typedef ULONGLONG DWORD64;
+"""
+
+    asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(KUSER_SHARED_DATA) == 0x738, "KUSER_SHARED_DATA size (C_ASSERT in wine/include/ddk/wdm.h)");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntkeapi.h", source="wine/include/{ddk/wdm.h,winnt.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTKEAPI_H\n"
+        + "#define PROSKRNL_ABI_NTKEAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + scaffold
+        + "\n/* Extracted from wine/include/ddk/wdm.h. */\n"
+        + defines
+        + "\n\n"
+        + enums
+        + "\n\n"
+        + ksystem_time
+        + "\n\n/* Extracted verbatim from wine/include/winnt.h (embedded in\n"
+        + " * KUSER_SHARED_DATA.XState). */\n"
+        + xstate_feature
+        + "\n\n"
+        + xstate_config
+        + "\n\n"
+        + kusd
+        + "\n\n"
+        + asserts
+        + "\n/* Layout pins, generated from the offset comments in the SAME Wine\n"
+        + " * header the struct was extracted from (Art. 4). */\n"
+        + gen_offset_asserts(kusd, "KUSER_SHARED_DATA")
+        + "\n\n#endif /* PROSKRNL_ABI_NTKEAPI_H */\n"
+    )
+
+
+# The M4 Ps surface (process termination, NtDisplayString) + the M7 surface:
+# thread/process creation, the user dispatcher return protocol, queries.
 NTPSAPI_FUNCTIONS = [
     "NtTerminateProcess",
     "NtDisplayString",
+    "NtCreateUserProcess",
+    "NtCreateThreadEx",
+    "NtOpenThread",
+    "NtResumeThread",
+    "NtSuspendThread",
+    "NtTerminateThread",
+    "NtAlertThread",
+    "NtTestAlert",
+    "NtYieldExecution",
+    "NtDelayExecution",
+    "NtQueueApcThread",
+    "NtContinue",
+    "NtRaiseException",
+    "NtQueryInformationProcess",
+    "NtSetInformationProcess",
+    "NtQueryInformationThread",
+    "NtSetInformationThread",
+    "NtQueryPerformanceCounter",
+    "NtQuerySystemInformation",
+    "NtQueryDefaultLocale",
+    "NtGetContextThread",
+    "NtSetContextThread",
+    "NtContinueEx",
+    "NtCallbackReturn",
+    "NtWaitForAlertByThreadId",
+    "NtAlertThreadByThreadId",
+    "NtInitializeNlsFiles",
+    "NtGetNlsSectionPtr",
 ]
 
 
@@ -820,12 +1212,113 @@ def gen_ntpsapi(wine: Path) -> str:
             "PROCESS_SUSPEND_RESUME",
             "PROCESS_QUERY_LIMITED_INFORMATION",
             "PROCESS_ALL_ACCESS",
+            # M7: thread access rights (winnt.h)
+            "THREAD_TERMINATE",
+            "THREAD_SUSPEND_RESUME",
+            "THREAD_GET_CONTEXT",
+            "THREAD_SET_CONTEXT",
+            "THREAD_SET_INFORMATION",
+            "THREAD_QUERY_INFORMATION",
+            "THREAD_SET_THREAD_TOKEN",
+            "THREAD_IMPERSONATE",
+            "THREAD_DIRECT_IMPERSONATION",
+            "THREAD_SET_LIMITED_INFORMATION",
+            "THREAD_QUERY_LIMITED_INFORMATION",
+            "THREAD_ALL_ACCESS",
         ],
     )
 
     nt_tib = extract_struct(winnt, "_NT_TIB", "NT_TIB")
     client_id = extract_struct(winternl, "_CLIENT_ID", "CLIENT_ID")
     prototypes = extract_prototypes(winternl, NTPSAPI_FUNCTIONS)
+
+    # M7: the info-class enums + basic-information shapes ntdll queries at
+    # startup, the NtCreateUserProcess attribute machinery, and the user-APC
+    # / thread-entry function-pointer types.
+    info_enums = "\n\n".join(
+        extract_enum(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_PROCESSINFOCLASS", "PROCESSINFOCLASS"),
+            ("_THREADINFOCLASS", "THREADINFOCLASS"),
+            ("_SYSTEM_INFORMATION_CLASS", "SYSTEM_INFORMATION_CLASS"),
+            ("_PS_CREATE_STATE", "PS_CREATE_STATE"),
+            ("_PS_ATTRIBUTE_NUM", "PS_ATTRIBUTE_NUM"),
+        ]
+    )
+    # PROCESS_BASIC_INFORMATION carries an #ifdef __WINESRC__ with the real
+    # NT field names; resolve it keeping that branch (same layout, named).
+    pbi = resolve_ifdef(
+        extract_struct(winternl, "_PROCESS_BASIC_INFORMATION", "PROCESS_BASIC_INFORMATION"),
+        "__WINESRC__",
+        True,
+    )
+    info_structs = "\n\n".join(
+        [
+            extract_struct(winternl, "_THREAD_BASIC_INFORMATION", "THREAD_BASIC_INFORMATION"),
+            pbi,
+            resolve_ifdef(
+                extract_struct(winternl, "_SYSTEM_BASIC_INFORMATION", "SYSTEM_BASIC_INFORMATION"),
+                "__WINESRC__",
+                True,
+            ),
+            resolve_ifdef(
+                extract_struct(winternl, "_SYSTEM_CPU_INFORMATION", "SYSTEM_CPU_INFORMATION"),
+                "__WINESRC__",
+                True,
+            ),
+            resolve_ifdef(
+                extract_struct(
+                    winternl, "_SYSTEM_TIMEOFDAY_INFORMATION", "SYSTEM_TIMEOFDAY_INFORMATION"
+                ),
+                "__WINESRC__",
+                True,
+            ),
+            extract_struct(winternl, "_PS_ATTRIBUTE", "PS_ATTRIBUTE"),
+            extract_struct(winternl, "_PS_ATTRIBUTE_LIST", "PS_ATTRIBUTE_LIST"),
+            extract_struct(winternl, "_PS_CREATE_INFO", "PS_CREATE_INFO"),
+        ]
+    )
+    ps_attribute_defines = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "PS_ATTRIBUTE_THREAD",
+            "PS_ATTRIBUTE_INPUT",
+            "PS_ATTRIBUTE_ADDITIVE",
+            "PS_ATTRIBUTE_PARENT_PROCESS",
+            "PS_ATTRIBUTE_DEBUG_PORT",
+            "PS_ATTRIBUTE_TOKEN",
+            "PS_ATTRIBUTE_CLIENT_ID",
+            "PS_ATTRIBUTE_TEB_ADDRESS",
+            "PS_ATTRIBUTE_IMAGE_NAME",
+            "PS_ATTRIBUTE_IMAGE_INFO",
+            "PS_ATTRIBUTE_MEMORY_RESERVE",
+            "PS_ATTRIBUTE_PRIORITY_CLASS",
+            "PS_ATTRIBUTE_ERROR_MODE",
+            "PS_ATTRIBUTE_STD_HANDLE_INFO",
+            "PS_ATTRIBUTE_HANDLE_LIST",
+            "PS_ATTRIBUTE_MACHINE_TYPE",
+            # NtCreateThreadEx flags
+            "THREAD_CREATE_FLAGS_CREATE_SUSPENDED",
+            "THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH",
+            "THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER",
+            # RTL_USER_PROCESS_PARAMETERS.Flags
+            "PROCESS_PARAMS_FLAG_NORMALIZED",
+        ],
+    )
+    function_pointers = "\n".join(
+        [
+            extract_typedef_line(winternl, "winternl.h", "PNTAPCFUNC"),
+            extract_typedef_line(winternl, "winternl.h", "PRTL_THREAD_START_ROUTINE"),
+        ]
+    )
+    kcontinue = (
+        extract_enum(winternl, "_KCONTINUE_TYPE", "KCONTINUE_TYPE")
+        + "\n\n"
+        + extract_struct(winternl, "_KCONTINUE_ARGUMENT", "KCONTINUE_ARGUMENT")
+        + "\n"
+        + extract_defines(winternl, "winternl.h", ["KCONTINUE_FLAG_TEST_ALERT"])
+    )
 
     tib_asserts = """\
 #include <stddef.h>
@@ -842,22 +1335,118 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         )
         + "#ifndef PROSKRNL_ABI_NTPSAPI_H\n"
         + "#define PROSKRNL_ABI_NTPSAPI_H\n\n"
-        + '#include "abi/ntdef.h"\n\n'
-        + "/* Process access rights, extracted from wine/include/winnt.h. */\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntcontext.h" /* CONTEXT/EXCEPTION_RECORD in prototypes */\n\n'
+        + "/* Win32 alias scaffold used by extracted prototypes. */\n"
+        + "typedef ULONG LCID, *PLCID;\n\n"
+        + "/* The byte-exact bodies live in abi/ntpebteb.h (same tags); these\n"
+        + " * forward typedefs let the structs/prototypes below reference them. */\n"
+        + "typedef struct _PEB PEB, *PPEB;\n"
+        + "typedef struct _TEB TEB, *PTEB;\n"
+        + "typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS,\n"
+        + "    *PRTL_USER_PROCESS_PARAMETERS;\n\n"
+        + "/* Process/thread access rights, extracted from wine/include/winnt.h. */\n"
         + process_rights
-        + "\n\n/* The TEB begins with an NT_TIB (the one TEB slice the M4 boundary\n"
-        + " * carries; the full byte-exact TEB/PEB arrive with M7). Extracted\n"
-        + " * verbatim from wine/include/winnt.h; asserts pin the x64 layout. */\n"
+        + "\n\n/* The TEB begins with an NT_TIB. Extracted verbatim from\n"
+        + " * wine/include/winnt.h; asserts pin the x64 layout. */\n"
         + "struct _EXCEPTION_REGISTRATION_RECORD;\n"
         + nt_tib
         + "\n\n"
         + tib_asserts
         + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
         + client_id
-        + "\n\n/* The M4 Ps Nt* surface; signatures extracted verbatim from\n"
+        + "\n\n/* M7: user-APC / thread-entry function-pointer types, extracted from\n"
+        + " * wine/include/winternl.h. */\n"
+        + function_pointers
+        + "\n\n/* M7: info classes + creation attributes, extracted verbatim from\n"
+        + " * wine/include/winternl.h. */\n"
+        + kcontinue
+        + "\n\n"
+        + info_enums
+        + "\n\n"
+        + ps_attribute_defines
+        + "\n\n"
+        + info_structs
+        + "\n\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTPSAPI_H */\n"
+    )
+
+
+# M7: the registry surface ntdll's startup touches (load_global_options,
+# version_init — dlls/ntdll/loader.c, version.c). Cm proper is M8; until then
+# the kernel's NtOpenKey fails gracefully, but the CONTRACT (classes, struct
+# shapes, statuses) is pinned now so the M8 implementation slots in under the
+# same abi.
+NTREGAPI_FUNCTIONS = [
+    "NtOpenKey",
+    "NtQueryValueKey",
+]
+
+
+def gen_ntregapi(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+
+    key_rights = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "KEY_QUERY_VALUE",
+            "KEY_SET_VALUE",
+            "KEY_CREATE_SUB_KEY",
+            "KEY_ENUMERATE_SUB_KEYS",
+            "KEY_NOTIFY",
+            "KEY_CREATE_LINK",
+            "KEY_WOW64_64KEY",
+            "KEY_WOW64_32KEY",
+            "KEY_WOW64_RES",
+            "KEY_READ",
+            "KEY_WRITE",
+            "KEY_EXECUTE",
+            "KEY_ALL_ACCESS",
+            "REG_NONE",
+            "REG_SZ",
+            "REG_EXPAND_SZ",
+            "REG_BINARY",
+            "REG_DWORD",
+            "REG_DWORD_LITTLE_ENDIAN",
+            "REG_DWORD_BIG_ENDIAN",
+            "REG_LINK",
+            "REG_MULTI_SZ",
+            "REG_QWORD",
+        ],
+    )
+    info_class = extract_enum(
+        winternl, "_KEY_VALUE_INFORMATION_CLASS", "KEY_VALUE_INFORMATION_CLASS"
+    )
+    structs = "\n\n".join(
+        extract_struct(winternl, tag, typedef)
+        for tag, typedef in [
+            ("_KEY_VALUE_FULL_INFORMATION", "KEY_VALUE_FULL_INFORMATION"),
+            ("_KEY_VALUE_PARTIAL_INFORMATION", "KEY_VALUE_PARTIAL_INFORMATION"),
+        ]
+    )
+    prototypes = extract_prototypes(winternl, NTREGAPI_FUNCTIONS)
+
+    return (
+        BANNER.format(
+            name="abi/ntregapi.h", source="wine/include/{winnt.h,winternl.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTREGAPI_H\n"
+        + "#define PROSKRNL_ABI_NTREGAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n\n'
+        + "/* Key access rights + value types, extracted from wine/include/winnt.h. */\n"
+        + key_rights
+        + "\n\n/* Extracted verbatim from wine/include/winternl.h. */\n"
+        + info_class
+        + "\n\n"
+        + structs
+        + "\n\n/* The M7 registry Nt* slice (graceful failure until Cm at M8);\n"
+        + " * signatures extracted verbatim from wine/include/winternl.h. */\n"
+        + prototypes
+        + "\n\n#endif /* PROSKRNL_ABI_NTREGAPI_H */\n"
     )
 
 
@@ -876,7 +1465,11 @@ def main() -> None:
         ("ntmmapi.h", gen_ntmmapi(args.wine)),
         ("ntimage.h", gen_ntimage(args.wine)),
         ("ntioapi.h", gen_ntioapi(args.wine)),
+        ("ntcontext.h", gen_ntcontext(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
+        ("ntpebteb.h", gen_ntpebteb(args.wine)),
+        ("ntkeapi.h", gen_ntkeapi(args.wine)),
+        ("ntregapi.h", gen_ntregapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
         print(f"gen_abi: wrote abi/{name}")

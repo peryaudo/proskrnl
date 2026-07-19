@@ -1,83 +1,145 @@
 #!/usr/bin/env python3
-"""gen_syscalls.py - generate the syscall number space and its two consumers.
+"""gen_syscalls.py - generate the syscall number space and its consumers.
 
-The syscall NUMBERS are the one part of the contract we are free to invent
-(docs/04: abi/syscall_numbers.h "our own numbers"): Windows renumbers its
-SSDT every release, so nothing above ntdll may depend on the values, and our
-own ntdll-stub layer (tests/ntapi/syscall/ now, user/ntdll-stubs at M7) is
-the only caller. What must NOT drift is the agreement between the user-mode
-stubs and the kernel table — so all three files come from the single list
-below and are never edited by hand:
+M7 pins the syscall NUMBERS to the pinned Wine tree's own 64-bit syscall id
+table (third_party/wine/dlls/ntdll/ntsyscalls.h, ALL_SYSCALLS under _WIN64):
+Wine's PE ntdll's Nt* exports are thunks that place that id in eax and
+execute a raw `syscall` instruction (include/wine/asm.h __ASM_SYSCALL_FUNC),
+so a kernel that speaks the same numbers runs the UNMODIFIED PE ntdll — the
+whole point of the boundary. The ids are extracted, never retyped (Art. 4),
+and change only with a Wine pin bump (which regenerates everything below).
 
-    abi/syscall_numbers.h            NTSYS_* number macros (kernel + user)
+Argument counts also come from that table (its per-entry stack-byte count /
+8 on x64), cross-checkable against the winternl.h prototypes abi/ carries.
+
+The IMPLEMENTED list below selects which ids get a real kernel handler and a
+user-mode test stub; every other Wine syscall id gets a logging
+STATUS_NOT_IMPLEMENTED row so an unimplemented syscall names itself on
+serial (the M7 debug loop: "which Nt* did ntdll want next").
+
+Generated files (never edit by hand; `make gen-abi` runs this):
+
+    abi/syscall_numbers.h            NTSYS_* id macros (kernel + user)
     kernel/syscall/table.inc         X-macro feeding kernel/syscall/table.c
-    tests/ntapi/syscall/syscall_stubs.S  user-mode Nt* stubs (SysV in, syscall out)
-
-Regenerate (also run by `make gen-abi`):
-
-    python3 tools/gen_syscalls.py
-
-Argument counts are those of the Wine winternl.h prototypes the abi/ headers
-carry; tools/gen_abi.py is the authority for the signatures themselves.
+    tests/ntapi/syscall/syscall_stubs.S  user-mode Nt* stubs (SysV in,
+                                         NT-x64-convention syscall out)
 """
 
+import re
+import sys
 from pathlib import Path
 
-# (name, argument count). Order defines the numbers - append only within a
-# milestone; renumbering is free until the M7 stub generator ships, then
-# append-only forever.
-SYSCALLS = [
+# The Nt* the kernel implements, grouped by the milestone that added them.
+# Ids and argument counts come from Wine's table; this list only SELECTS.
+IMPLEMENTED = [
     # M3 Ob surface, reachable from user mode as of M4
-    ("NtClose", 1),
-    ("NtDuplicateObject", 7),
-    ("NtMakeTemporaryObject", 1),
-    ("NtCreateEvent", 5),
-    ("NtOpenEvent", 3),
-    ("NtSetEvent", 2),
-    ("NtResetEvent", 2),
-    ("NtClearEvent", 1),
-    ("NtPulseEvent", 2),
-    ("NtQueryEvent", 5),
-    ("NtCreateMutant", 4),
-    ("NtOpenMutant", 3),
-    ("NtReleaseMutant", 2),
-    ("NtQueryMutant", 5),
-    ("NtCreateSemaphore", 5),
-    ("NtOpenSemaphore", 3),
-    ("NtReleaseSemaphore", 3),
-    ("NtQuerySemaphore", 5),
-    ("NtWaitForSingleObject", 3),
-    ("NtWaitForMultipleObjects", 5),
-    ("NtCreateDirectoryObject", 3),
-    ("NtOpenDirectoryObject", 3),
-    ("NtCreateSymbolicLinkObject", 4),
-    ("NtOpenSymbolicLinkObject", 3),
-    ("NtQuerySymbolicLinkObject", 3),
+    "NtClose",
+    "NtDuplicateObject",
+    "NtMakeTemporaryObject",
+    "NtCreateEvent",
+    "NtOpenEvent",
+    "NtSetEvent",
+    "NtResetEvent",
+    "NtClearEvent",
+    "NtPulseEvent",
+    "NtQueryEvent",
+    "NtCreateMutant",
+    "NtOpenMutant",
+    "NtReleaseMutant",
+    "NtQueryMutant",
+    "NtCreateSemaphore",
+    "NtOpenSemaphore",
+    "NtReleaseSemaphore",
+    "NtQuerySemaphore",
+    "NtWaitForSingleObject",
+    "NtWaitForMultipleObjects",
+    "NtCreateDirectoryObject",
+    "NtOpenDirectoryObject",
+    "NtCreateSymbolicLinkObject",
+    "NtOpenSymbolicLinkObject",
+    "NtQuerySymbolicLinkObject",
     # M4 Mm + Ps surface
-    ("NtAllocateVirtualMemory", 6),
-    ("NtFreeVirtualMemory", 4),
-    ("NtQueryVirtualMemory", 6),
-    ("NtTerminateProcess", 2),
-    ("NtDisplayString", 1),
+    "NtAllocateVirtualMemory",
+    "NtFreeVirtualMemory",
+    "NtQueryVirtualMemory",
+    "NtTerminateProcess",
+    "NtDisplayString",
     # M5 section surface
-    ("NtCreateSection", 7),
-    ("NtOpenSection", 3),
-    ("NtMapViewOfSection", 10),
-    ("NtUnmapViewOfSection", 2),
-    ("NtQuerySection", 5),
+    "NtCreateSection",
+    "NtOpenSection",
+    "NtMapViewOfSection",
+    "NtUnmapViewOfSection",
+    "NtQuerySection",
     # M6 Io surface
-    ("NtCreateFile", 11),
-    ("NtOpenFile", 6),
-    ("NtReadFile", 9),
-    ("NtWriteFile", 9),
-    ("NtQueryInformationFile", 5),
-    ("NtSetInformationFile", 5),
-    ("NtQueryDirectoryFile", 11),
-    ("NtQueryAttributesFile", 2),
-    ("NtFlushBuffersFile", 2),
-    ("NtLockFile", 10),
-    ("NtUnlockFile", 5),
+    "NtCreateFile",
+    "NtOpenFile",
+    "NtReadFile",
+    "NtWriteFile",
+    "NtQueryInformationFile",
+    "NtSetInformationFile",
+    "NtQueryDirectoryFile",
+    "NtQueryAttributesFile",
+    "NtFlushBuffersFile",
+    "NtLockFile",
+    "NtUnlockFile",
+    # M7 Ps/Ke surface: threads, the user dispatcher return protocol, the
+    # queries Wine's ntdll issues at startup
+    "NtCreateUserProcess",
+    "NtCreateThreadEx",
+    "NtOpenThread",
+    "NtResumeThread",
+    "NtSuspendThread",
+    "NtTerminateThread",
+    "NtAlertThread",
+    "NtTestAlert",
+    "NtYieldExecution",
+    "NtDelayExecution",
+    "NtQueueApcThread",
+    "NtContinue",
+    "NtRaiseException",
+    "NtQueryInformationProcess",
+    "NtSetInformationProcess",
+    "NtQueryInformationThread",
+    "NtSetInformationThread",
+    "NtQueryPerformanceCounter",
+    "NtQuerySystemInformation",
+    "NtQueryDefaultLocale",
+    "NtGetContextThread",
+    "NtSetContextThread",
+    "NtProtectVirtualMemory",
+    "NtFlushInstructionCache",
+    "NtContinueEx",
+    "NtCallbackReturn",
+    "NtWaitForAlertByThreadId",
+    "NtAlertThreadByThreadId",
+    # M7: ntdll startup services (NLS data, graceful-failure registry, the
+    # volume query RtlSetCurrentDirectory_U issues)
+    "NtInitializeNlsFiles",
+    "NtGetNlsSectionPtr",
+    "NtOpenKey",
+    "NtQueryValueKey",
+    "NtQueryVolumeInformationFile",
 ]
+
+
+def parse_wine_syscalls(root: Path):
+    """The 64-bit id table from the pinned Wine: [(id, name, argc)] in id
+    order, argc = stack bytes / 8 (x64: every argument is one slot)."""
+    src = (root / "third_party/wine/dlls/ntdll/ntsyscalls.h").read_text()
+    match = re.search(r"#ifdef _WIN64\n#define ALL_SYSCALLS \\\n(.*?)\n#else", src, re.S)
+    if not match:
+        sys.exit("gen_syscalls: ALL_SYSCALLS (_WIN64) not found in wine ntsyscalls.h")
+    entries = []
+    for sid, name, argbytes in re.findall(
+        r"SYSCALL_ENTRY\w*\(\s*(0x[0-9a-fA-F]+),\s*(\w+),\s*(\d+)\s*\)", match.group(1)
+    ):
+        entries.append((int(sid, 16), name, int(argbytes) // 8))
+    if len(entries) < 200:
+        sys.exit(f"gen_syscalls: extraction looks wrong ({len(entries)} entries)")
+    entries.sort()
+    if [e[0] for e in entries] != list(range(len(entries))):
+        sys.exit("gen_syscalls: wine 64-bit syscall ids are not dense")
+    return entries
 
 BANNER = """\
 /* {name} - GENERATED by tools/gen_syscalls.py.
@@ -297,49 +359,98 @@ FUZZ_OPS = [
 ]
 
 
-def gen_numbers() -> str:
-    lines = [f"#define NTSYS_{name} {number}" for number, (name, _) in enumerate(SYSCALLS)]
+def gen_numbers(wine_syscalls) -> str:
+    by_name = {name: (sid, argc) for sid, name, argc in wine_syscalls}
+    missing = [n for n in IMPLEMENTED if n not in by_name]
+    if missing:
+        sys.exit(f"gen_syscalls: not in wine's 64-bit table: {missing}")
+    lines = [f"#define NTSYS_{name} {by_name[name][0]:#06x}" for name in IMPLEMENTED]
     return (
         BANNER.format(name="abi/syscall_numbers.h")
         + "#ifndef PROSKRNL_ABI_SYSCALL_NUMBERS_H\n"
         + "#define PROSKRNL_ABI_SYSCALL_NUMBERS_H\n\n"
+        + "/* Ids are the pinned Wine tree's 64-bit syscall numbers\n"
+        + " * (third_party/wine/dlls/ntdll/ntsyscalls.h) - the values its PE\n"
+        + " * ntdll's thunks place in eax. Only implemented services are listed;\n"
+        + " * the kernel table covers the full id space (unimplemented ids log\n"
+        + " * and fail with STATUS_NOT_IMPLEMENTED). */\n"
         + "\n".join(lines)
-        + f"\n\n#define NTSYS_SYSCALL_COUNT {len(SYSCALLS)}\n"
+        + f"\n\n/* One past the highest Wine 64-bit syscall id. */\n"
+        + f"#define NTSYS_SYSCALL_LIMIT {len(wine_syscalls):#06x}\n"
         + "\n#endif /* PROSKRNL_ABI_SYSCALL_NUMBERS_H */\n"
     )
 
 
-def gen_table_inc() -> str:
-    lines = [f"KI_SYSCALL({name}, {argc})" for name, argc in SYSCALLS]
+def gen_table_inc(wine_syscalls) -> str:
+    implemented = set(IMPLEMENTED)
+    lines = []
+    for sid, name, argc in wine_syscalls:
+        if name in implemented:
+            lines.append(f"KI_SYSCALL({sid:#06x}, {name}, {argc})")
+        else:
+            lines.append(f"KI_SYSCALL_MISSING({sid:#06x}, {name}, {argc})")
     return (
         BANNER.format(name="kernel/syscall/table.inc")
-        + "/* X-macro: KI_SYSCALL(name, argumentCount), in syscall-number order.\n"
-        + " * kernel/syscall/table.c defines KI_SYSCALL and includes this file. */\n"
+        + "/* X-macros in Wine-64-bit-syscall-id order (ids dense from 0):\n"
+        + " *   KI_SYSCALL(id, name, argumentCount)          implemented service\n"
+        + " *   KI_SYSCALL_MISSING(id, name, argumentCount)  known id, no kernel\n"
+        + " *                                                service yet\n"
+        + " * kernel/syscall/table.c defines both and includes this file. */\n"
         + "\n".join(lines)
         + "\n"
     )
 
 
-def gen_stubs() -> str:
+def gen_stubs(wine_syscalls) -> str:
+    by_name = {name: (sid, argc) for sid, name, argc in wine_syscalls}
     stubs = []
-    for number, (name, _) in enumerate(SYSCALLS):
-        stubs.append(
-            f"    .global {name}\n"
-            f"{name}:\n"
-            f"    mov %rcx, %r10\n"
-            f"    mov ${number}, %eax\n"
-            f"    syscall\n"
-            f"    ret\n"
-        )
+    for name in IMPLEMENTED:
+        sid, argc = by_name[name]
+        body = [f"    .global {name}", f"{name}:"]
+        if argc <= 4:
+            # Register-only: permute SysV rdi/rsi/rdx/rcx into NT r10/rdx/r8/r9.
+            body += [
+                "    mov %rcx, %r9",
+                "    mov %rdx, %r8",
+                "    mov %rsi, %rdx",
+                "    mov %rdi, %r10",
+                f"    mov ${sid:#x}, %eax",
+                "    syscall",
+                "    ret",
+            ]
+        else:
+            # Build an NT-shaped stack: args 5+ live at [rsp+0x28+8n] at the
+            # syscall instruction. 0x68 bytes covers the 11-argument maximum.
+            body.append("    sub $0x68, %rsp")
+            body.append("    mov %r8, 0x28(%rsp)")   # NT arg5 = SysV r8
+            if argc >= 6:
+                body.append("    mov %r9, 0x30(%rsp)")  # NT arg6 = SysV r9
+            for extra in range(argc - 6):  # NT arg7+ = SysV stack args
+                body.append(f"    mov {0x70 + 8 * extra:#x}(%rsp), %rax")
+                body.append(f"    mov %rax, {0x38 + 8 * extra:#x}(%rsp)")
+            body += [
+                "    mov %rcx, %r9",
+                "    mov %rdx, %r8",
+                "    mov %rsi, %rdx",
+                "    mov %rdi, %r10",
+                f"    mov ${sid:#x}, %eax",
+                "    syscall",
+                "    add $0x68, %rsp",
+                "    ret",
+            ]
+        stubs.append("\n".join(body) + "\n")
     return (
         BANNER.format(name="tests/ntapi/syscall/syscall_stubs.S")
         + "/* User-mode Nt* stubs for the proskrnl ntapi target and the M4+ user\n"
-        + " * clients (docs/14). Calling convention: the stub is an ordinary SysV\n"
-        + " * C function; the kernel reads arguments 1-6 from rdi/rsi/rdx/r10/r8/r9\n"
-        + " * (rcx is clobbered by the syscall instruction, so it moves to r10 -\n"
-        + " * the same dance the NT x64 convention does) and arguments 7..10 from\n"
-        + " * the caller's stack at [rsp+8..32]. Number in eax; NTSTATUS back in\n"
-        + " * eax. The M5 PE clients assemble this same file with a COFF-targeting\n"
+        + " * clients (docs/14). The kernel speaks the NT x64 syscall convention\n"
+        + " * (M7) - the one Wine's PE ntdll thunks emit (include/wine/asm.h\n"
+        + " * __ASM_SYSCALL_FUNC): id in eax, arguments 1-4 in r10/rdx/r8/r9,\n"
+        + " * arguments 5+ on the user stack at [rsp+0x28+8n] (the Windows-ABI\n"
+        + " * caller frame: return address + 4 shadow slots), NTSTATUS in eax.\n"
+        + " * These stubs adapt a SysV caller (our freestanding clang tests /\n"
+        + " * -mabi=sysv PE clients) to that convention by permuting registers\n"
+        + " * and, for >4 arguments, building the NT-shaped stack area.\n"
+        + " * The M5 PE clients assemble this same file with a COFF-targeting\n"
         + " * gas, which has no .note.GNU-stack - hence the __ELF__ guard. */\n"
         + "    .section .text\n"
         + "\n".join(stubs)
@@ -456,10 +567,11 @@ def gen_fuzz_model_py() -> str:
 
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
+    wine_syscalls = parse_wine_syscalls(root)
     for path, text in [
-        (root / "abi/syscall_numbers.h", gen_numbers()),
-        (root / "kernel/syscall/table.inc", gen_table_inc()),
-        (root / "tests/ntapi/syscall/syscall_stubs.S", gen_stubs()),
+        (root / "abi/syscall_numbers.h", gen_numbers(wine_syscalls)),
+        (root / "kernel/syscall/table.inc", gen_table_inc(wine_syscalls)),
+        (root / "tests/ntapi/syscall/syscall_stubs.S", gen_stubs(wine_syscalls)),
         (root / "tests/fuzz/gen/fuzz_model.h", gen_fuzz_model_h()),
         (root / "tests/fuzz/gen/fuzz_model.py", gen_fuzz_model_py()),
     ]:

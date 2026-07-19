@@ -6,8 +6,19 @@
 #define PROSKRNL_ABI_NTPSAPI_H
 
 #include "abi/ntdef.h"
+#include "abi/ntcontext.h" /* CONTEXT/EXCEPTION_RECORD in prototypes */
 
-/* Process access rights, extracted from wine/include/winnt.h. */
+/* Win32 alias scaffold used by extracted prototypes. */
+typedef ULONG LCID, *PLCID;
+
+/* The byte-exact bodies live in abi/ntpebteb.h (same tags); these
+ * forward typedefs let the structs/prototypes below reference them. */
+typedef struct _PEB PEB, *PPEB;
+typedef struct _TEB TEB, *PTEB;
+typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS,
+    *PRTL_USER_PROCESS_PARAMETERS;
+
+/* Process/thread access rights, extracted from wine/include/winnt.h. */
 #define PROCESS_TERMINATE 0x0001
 #define PROCESS_CREATE_THREAD 0x0002
 #define PROCESS_VM_OPERATION 0x0008
@@ -18,10 +29,21 @@
 #define PROCESS_SUSPEND_RESUME 0x0800
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
 #define PROCESS_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE|0xffff)
+#define THREAD_TERMINATE 0x0001
+#define THREAD_SUSPEND_RESUME 0x0002
+#define THREAD_GET_CONTEXT 0x0008
+#define THREAD_SET_CONTEXT 0x0010
+#define THREAD_SET_INFORMATION 0x0020
+#define THREAD_QUERY_INFORMATION 0x0040
+#define THREAD_SET_THREAD_TOKEN 0x0080
+#define THREAD_IMPERSONATE 0x0100
+#define THREAD_DIRECT_IMPERSONATION 0x0200
+#define THREAD_SET_LIMITED_INFORMATION 0x0400
+#define THREAD_QUERY_LIMITED_INFORMATION 0x0800
+#define THREAD_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE|0xffff)
 
-/* The TEB begins with an NT_TIB (the one TEB slice the M4 boundary
- * carries; the full byte-exact TEB/PEB arrive with M7). Extracted
- * verbatim from wine/include/winnt.h; asserts pin the x64 layout. */
+/* The TEB begins with an NT_TIB. Extracted verbatim from
+ * wine/include/winnt.h; asserts pin the x64 layout. */
 struct _EXCEPTION_REGISTRATION_RECORD;
 typedef struct {
 	struct _EXCEPTION_REGISTRATION_RECORD *ExceptionList;
@@ -49,9 +71,714 @@ typedef struct {
    HANDLE UniqueThread;
 } CLIENT_ID, *PCLIENT_ID;
 
-/* The M4 Ps Nt* surface; signatures extracted verbatim from
+/* M7: user-APC / thread-entry function-pointer types, extracted from
+ * wine/include/winternl.h. */
+typedef void (*PNTAPCFUNC)(ULONG_PTR,ULONG_PTR,ULONG_PTR);
+typedef void (*PRTL_THREAD_START_ROUTINE)(LPVOID);
+
+/* M7: info classes + creation attributes, extracted verbatim from
+ * wine/include/winternl.h. */
+typedef enum {
+    KCONTINUE_UNWIND,
+    KCONTINUE_RESUME,
+    KCONTINUE_LONGJUMP,
+    KCONTINUE_SET,
+    KCONTINUE_LAST,
+} KCONTINUE_TYPE;
+
+typedef struct {
+    KCONTINUE_TYPE ContinueType;
+    ULONG          ContinueFlags;
+    ULONGLONG      Reserved[2];
+} KCONTINUE_ARGUMENT, *PKCONTINUE_ARGUMENT;
+#define KCONTINUE_FLAG_TEST_ALERT 0x01
+
+typedef enum {
+    ProcessBasicInformation = 0,
+    ProcessQuotaLimits = 1,
+    ProcessIoCounters = 2,
+    ProcessVmCounters = 3,
+    ProcessTimes = 4,
+    ProcessBasePriority = 5,
+    ProcessRaisePriority = 6,
+    ProcessDebugPort = 7,
+    ProcessExceptionPort = 8,
+    ProcessAccessToken = 9,
+    ProcessLdtInformation = 10,
+    ProcessLdtSize = 11,
+    ProcessDefaultHardErrorMode = 12,
+    ProcessIoPortHandlers = 13,
+    ProcessPooledUsageAndLimits = 14,
+    ProcessWorkingSetWatch = 15,
+    ProcessUserModeIOPL = 16,
+    ProcessEnableAlignmentFaultFixup = 17,
+    ProcessPriorityClass = 18,
+    ProcessWx86Information = 19,
+    ProcessHandleCount = 20,
+    ProcessAffinityMask = 21,
+    ProcessPriorityBoost = 22,
+    ProcessDeviceMap = 23,
+    ProcessSessionInformation = 24,
+    ProcessForegroundInformation = 25,
+    ProcessWow64Information = 26,
+    ProcessImageFileName = 27,
+    ProcessLUIDDeviceMapsEnabled = 28,
+    ProcessBreakOnTermination = 29,
+    ProcessDebugObjectHandle = 30,
+    ProcessDebugFlags = 31,
+    ProcessHandleTracing = 32,
+    ProcessIoPriority = 33,
+    ProcessExecuteFlags = 34,
+    ProcessTlsInformation = 35,
+    ProcessCookie = 36,
+    ProcessImageInformation = 37,
+    ProcessCycleTime = 38,
+    ProcessPagePriority = 39,
+    ProcessInstrumentationCallback = 40,
+    ProcessThreadStackAllocation = 41,
+    ProcessWorkingSetWatchEx = 42,
+    ProcessImageFileNameWin32 = 43,
+    ProcessImageFileMapping = 44,
+    ProcessAffinityUpdateMode = 45,
+    ProcessMemoryAllocationMode = 46,
+    ProcessGroupInformation = 47,
+    ProcessTokenVirtualizationEnabled = 48,
+    ProcessConsoleHostProcess = 49,
+    ProcessWindowInformation = 50,
+    ProcessHandleInformation = 51,
+    ProcessMitigationPolicy = 52,
+    ProcessDynamicFunctionTableInformation = 53,
+    ProcessHandleCheckingMode = 54,
+    ProcessKeepAliveCount = 55,
+    ProcessRevokeFileHandles = 56,
+    ProcessWorkingSetControl = 57,
+    ProcessHandleTable = 58,
+    ProcessCheckStackExtentsMode = 59,
+    ProcessCommandLineInformation = 60,
+    ProcessProtectionInformation = 61,
+    ProcessMemoryExhaustion = 62,
+    ProcessFaultInformation = 63,
+    ProcessTelemetryIdInformation = 64,
+    ProcessCommitReleaseInformation = 65,
+    ProcessDefaultCpuSetsInformation = 66,
+    ProcessAllowedCpuSetsInformation = 67,
+    ProcessSubsystemProcess = 68,
+    ProcessJobMemoryInformation = 69,
+    ProcessInPrivate = 70,
+    ProcessRaiseUMExceptionOnInvalidHandleClose = 71,
+    ProcessIumChallengeResponse = 72,
+    ProcessChildProcessInformation = 73,
+    ProcessHighGraphicsPriorityInformation = 74,
+    ProcessSubsystemInformation = 75,
+    ProcessEnergyValues = 76,
+    ProcessPowerThrottlingState = 77,
+    ProcessReserved3Information = 78,
+    ProcessWin32kSyscallFilterInformation = 79,
+    ProcessDisableSystemAllowedCpuSets = 80,
+    ProcessWakeInformation = 81,
+    ProcessEnergyTrackingState = 82,
+    ProcessManageWritesToExecutableMemory = 83,
+    ProcessCaptureTrustletLiveDump = 84,
+    ProcessTelemetryCoverage = 85,
+    ProcessEnclaveInformation = 86,
+    ProcessEnableReadWriteVmLogging = 87,
+    ProcessUptimeInformation = 88,
+    ProcessImageSection = 89,
+    ProcessDebugAuthInformation = 90,
+    ProcessSystemResourceManagement = 91,
+    ProcessSequenceNumber = 92,
+    ProcessLoaderDetour = 93,
+    ProcessSecurityDomainInformation = 94,
+    ProcessCombineSecurityDomainsInformation = 95,
+    ProcessEnableLogging = 96,
+    ProcessLeapSecondInformation = 97,
+    ProcessFiberShadowStackAllocation = 98,
+    ProcessFreeFiberShadowStackAllocation = 99,
+    ProcessAltSystemCallInformation = 100,
+    ProcessDynamicEHContinuationTargets = 101,
+    ProcessDynamicEnforcedCetCompatibleRanges = 102,
+    ProcessCreateStateChange = 103,
+    ProcessApplyStateChange = 104,
+    ProcessEnableOptionalXStateFeatures = 105,
+    ProcessAltPrefetchParam = 106,
+    ProcessAssignCpuPartitions = 107,
+    ProcessPriorityClassEx = 108,
+    ProcessMembershipInformation = 109,
+    ProcessEffectiveIoPriority = 110,
+    ProcessEffectivePagePriority = 111,
+    ProcessSchedulerSharedData = 112,
+    ProcessSlistRollbackInformation = 113,
+    ProcessNetworkIoCounters = 114,
+    ProcessFindFirstThreadByTebValue = 115,
+    ProcessEnclaveAddressSpaceRestriction = 116,
+    ProcessAvailableCpus = 117,
+    MaxProcessInfoClass,
+#ifdef __WINESRC__
+    ProcessWineMakeProcessSystem = 1000,
+    ProcessWineGrantAdminToken = 1002,
+#endif
+} PROCESSINFOCLASS;
+
+typedef enum {
+    ThreadBasicInformation = 0,
+    ThreadTimes = 1,
+    ThreadPriority = 2,
+    ThreadBasePriority = 3,
+    ThreadAffinityMask = 4,
+    ThreadImpersonationToken = 5,
+    ThreadDescriptorTableEntry = 6,
+    ThreadEnableAlignmentFaultFixup = 7,
+    ThreadEventPair_Reusable = 8,
+    ThreadQuerySetWin32StartAddress = 9,
+    ThreadZeroTlsCell = 10,
+    ThreadPerformanceCount = 11,
+    ThreadAmILastThread = 12,
+    ThreadIdealProcessor = 13,
+    ThreadPriorityBoost = 14,
+    ThreadSetTlsArrayAddress = 15,
+    ThreadIsIoPending = 16,
+    ThreadHideFromDebugger = 17,
+    ThreadBreakOnTermination = 18,
+    ThreadSwitchLegacyState = 19,
+    ThreadIsTerminated = 20,
+    ThreadLastSystemCall = 21,
+    ThreadIoPriority = 22,
+    ThreadCycleTime = 23,
+    ThreadPagePriority = 24,
+    ThreadActualBasePriority = 25,
+    ThreadTebInformation = 26,
+    ThreadCSwitchMon = 27,
+    ThreadCSwitchPmu = 28,
+    ThreadWow64Context = 29,
+    ThreadGroupInformation = 30,
+    ThreadUmsInformation = 31,
+    ThreadCounterProfiling = 32,
+    ThreadIdealProcessorEx = 33,
+    ThreadCpuAccountingInformation = 34,
+    ThreadSuspendCount = 35,
+    ThreadHeterogeneousCpuPolicy = 36,
+    ThreadContainerId = 37,
+    ThreadNameInformation = 38,
+    ThreadSelectedCpuSets = 39,
+    ThreadSystemThreadInformation = 40,
+    ThreadActualGroupAffinity = 41,
+    ThreadDynamicCodePolicyInfo = 42,
+    ThreadExplicitCaseSensitivity = 43,
+    ThreadWorkOnBehalfTicket = 44,
+    ThreadSubsystemInformation = 45,
+    ThreadDbgkWerReportActive = 46,
+    ThreadAttachContainer = 47,
+    ThreadManageWritesToExecutableMemory = 48,
+    ThreadPowerThrottlingState= 49,
+    ThreadWorkloadClass = 50,
+    ThreadCreateStateChange = 51,
+    ThreadApplyStateChange = 52,
+    ThreadStrongerBadHandleChecks = 53,
+    ThreadEffectiveIoPriority = 54,
+    ThreadEffectivePagePriority = 55,
+    ThreadUpdateLockOwnership = 56,
+    ThreadSchedulerSharedDataSlot = 57,
+    ThreadTebInformationAtomic = 58,
+    ThreadIndexInformation = 59,
+    MaxThreadInfoClass,
+#ifdef __WINESRC__
+    ThreadWineNativeThreadName = 1000,
+#endif
+} THREADINFOCLASS;
+
+typedef enum {
+    SystemBasicInformation = 0,
+    SystemCpuInformation = 1,
+    SystemPerformanceInformation = 2,
+    SystemTimeOfDayInformation = 3, /* was SystemTimeInformation */
+    SystemPathInformation = 4,
+    SystemProcessInformation = 5,
+    SystemCallCountInformation = 6,
+    SystemDeviceInformation = 7,
+    SystemProcessorPerformanceInformation = 8,
+    SystemFlagsInformation = 9,
+    SystemCallTimeInformation = 10,
+    SystemModuleInformation = 11,
+    SystemLocksInformation = 12,
+    SystemStackTraceInformation = 13,
+    SystemPagedPoolInformation = 14,
+    SystemNonPagedPoolInformation = 15,
+    SystemHandleInformation = 16,
+    SystemObjectInformation = 17,
+    SystemPageFileInformation = 18,
+    SystemVdmInstemulInformation = 19,
+    SystemVdmBopInformation = 20,
+    SystemFileCacheInformation = 21,
+    SystemPoolTagInformation = 22,
+    SystemInterruptInformation = 23,
+    SystemDpcBehaviorInformation = 24,
+    SystemFullMemoryInformation = 25,
+    SystemNotImplemented6 = 25,
+    SystemLoadGdiDriverInformation = 26,
+    SystemUnloadGdiDriverInformation = 27,
+    SystemTimeAdjustmentInformation = 28,
+    SystemTimeAdjustment = 28,
+    SystemSummaryMemoryInformation = 29,
+    SystemMirrorMemoryInformation = 30,
+    SystemPerformanceTraceInformation = 31,
+    SystemObsolete0 = 32,
+    SystemExceptionInformation = 33,
+    SystemCrashDumpStateInformation = 34,
+    SystemKernelDebuggerInformation = 35,
+    SystemContextSwitchInformation = 36,
+    SystemRegistryQuotaInformation = 37,
+    SystemExtendServiceTableInformation = 38,
+    SystemPrioritySeparation = 39,
+    SystemVerifierAddDriverInformation = 40,
+    SystemVerifierRemoveDriverInformation = 41,
+    SystemProcessorIdleInformation = 42,
+    SystemLegacyDriverInformation = 43,
+    SystemCurrentTimeZoneInformation = 44,
+    SystemLookasideInformation = 45,
+    SystemTimeSlipNotification = 46,
+    SystemSessionCreate = 47,
+    SystemSessionDetach = 48,
+    SystemSessionInformation = 49,
+    SystemRangeStartInformation = 50,
+    SystemVerifierInformation = 51,
+    SystemVerifierThunkExtend = 52,
+    SystemSessionProcessesInformation	= 53,
+    SystemLoadGdiDriverInSystemSpace = 54,
+    SystemNumaProcessorMap = 55,
+    SystemPrefetcherInformation = 56,
+    SystemExtendedProcessInformation = 57,
+    SystemRecommendedSharedDataAlignment = 58,
+    SystemComPlusPackage = 59,
+    SystemNumaAvailableMemory = 60,
+    SystemProcessorPowerInformation = 61,
+    SystemEmulationBasicInformation = 62,
+    SystemEmulationProcessorInformation = 63,
+    SystemExtendedHandleInformation = 64,
+    SystemLostDelayedWriteInformation = 65,
+    SystemBigPoolInformation = 66,
+    SystemSessionPoolTagInformation = 67,
+    SystemSessionMappedViewInformation = 68,
+    SystemHotpatchInformation = 69,
+    SystemObjectSecurityMode = 70,
+    SystemWatchdogTimerHandler = 71,
+    SystemWatchdogTimerInformation = 72,
+    SystemLogicalProcessorInformation = 73,
+    SystemWow64SharedInformationObsolete = 74,
+    SystemRegisterFirmwareTableInformationHandler = 75,
+    SystemFirmwareTableInformation = 76,
+    SystemModuleInformationEx = 77,
+    SystemVerifierTriageInformation = 78,
+    SystemSuperfetchInformation = 79,
+    SystemMemoryListInformation = 80,
+    SystemFileCacheInformationEx = 81,
+    SystemThreadPriorityClientIdInformation = 82,
+    SystemProcessorIdleCycleTimeInformation = 83,
+    SystemVerifierCancellationInformation = 84,
+    SystemProcessorPowerInformationEx = 85,
+    SystemRefTraceInformation = 86,
+    SystemSpecialPoolInformation = 87,
+    SystemProcessIdInformation = 88,
+    SystemErrorPortInformation = 89,
+    SystemBootEnvironmentInformation = 90,
+    SystemHypervisorInformation = 91,
+    SystemVerifierInformationEx = 92,
+    SystemTimeZoneInformation = 93,
+    SystemImageFileExecutionOptionsInformation = 94,
+    SystemCoverageInformation = 95,
+    SystemPrefetchPatchInformation = 96,
+    SystemVerifierFaultsInformation = 97,
+    SystemSystemPartitionInformation = 98,
+    SystemSystemDiskInformation = 99,
+    SystemProcessorPerformanceDistribution = 100,
+    SystemNumaProximityNodeInformation = 101,
+    SystemDynamicTimeZoneInformation = 102,
+    SystemCodeIntegrityInformation = 103,
+    SystemProcessorMicrocodeUpdateInformation = 104,
+    SystemProcessorBrandString = 105,
+    SystemVirtualAddressInformation = 106,
+    SystemLogicalProcessorInformationEx = 107,
+    SystemProcessorCycleTimeInformation = 108,
+    SystemStoreInformation = 109,
+    SystemRegistryAppendString = 110,
+    SystemAitSamplingValue = 111,
+    SystemVhdBootInformation = 112,
+    SystemCpuQuotaInformation = 113,
+    SystemNativeBasicInformation = 114,
+    SystemErrorPortTimeouts = 115,
+    SystemLowPriorityIoInformation = 116,
+    SystemTpmBootEntropyInformation = 117,
+    SystemVerifierCountersInformation = 118,
+    SystemPagedPoolInformationEx = 119,
+    SystemSystemPtesInformationEx = 120,
+    SystemNodeDistanceInformation = 121,
+    SystemAcpiAuditInformation = 122,
+    SystemBasicPerformanceInformation = 123,
+    SystemQueryPerformanceCounterInformation = 124,
+    SystemSessionBigPoolInformation = 125,
+    SystemBootGraphicsInformation = 126,
+    SystemScrubPhysicalMemoryInformation = 127,
+    SystemBadPageInformation = 128,
+    SystemProcessorProfileControlArea = 129,
+    SystemCombinePhysicalMemoryInformation = 130,
+    SystemEntropyInterruptTimingInformation = 131,
+    SystemConsoleInformation = 132,
+    SystemPlatformBinaryInformation = 133,
+    SystemPolicyInformation = 134,
+    SystemHypervisorProcessorCountInformation = 135,
+    SystemDeviceDataInformation = 136,
+    SystemDeviceDataEnumerationInformation = 137,
+    SystemMemoryTopologyInformation = 138,
+    SystemMemoryChannelInformation = 139,
+    SystemBootLogoInformation = 140,
+    SystemProcessorPerformanceInformationEx = 141,
+    SystemCriticalProcessErrorLogInformation = 142,
+    SystemSecureBootPolicyInformation = 143,
+    SystemPageFileInformationEx = 144,
+    SystemSecureBootInformation = 145,
+    SystemEntropyInterruptTimingRawInformation = 146,
+    SystemPortableWorkspaceEfiLauncherInformation = 147,
+    SystemFullProcessInformation = 148,
+    SystemKernelDebuggerInformationEx = 149,
+    SystemBootMetadataInformation = 150,
+    SystemSoftRebootInformation = 151,
+    SystemElamCertificateInformation = 152,
+    SystemOfflineDumpConfigInformation = 153,
+    SystemProcessorFeaturesInformation = 154,
+    SystemRegistryReconciliationInformation = 155,
+    SystemEdidInformation = 156,
+    SystemManufacturingInformation = 157,
+    SystemEnergyEstimationConfigInformation = 158,
+    SystemHypervisorDetailInformation = 159,
+    SystemProcessorCycleStatsInformation = 160,
+    SystemVmGenerationCountInformation = 161,
+    SystemTrustedPlatformModuleInformation = 162,
+    SystemKernelDebuggerFlags = 163,
+    SystemCodeIntegrityPolicyInformation = 164,
+    SystemIsolatedUserModeInformation = 165,
+    SystemHardwareSecurityTestInterfaceResultsInformation = 166,
+    SystemSingleModuleInformation = 167,
+    SystemAllowedCpuSetsInformation = 168,
+    SystemVsmProtectionInformation = 169,
+    SystemInterruptCpuSetsInformation = 170,
+    SystemSecureBootPolicyFullInformation = 171,
+    SystemCodeIntegrityPolicyFullInformation = 172,
+    SystemAffinitizedInterruptProcessorInformation = 173,
+    SystemRootSiloInformation = 174,
+    SystemCpuSetInformation = 175,
+    SystemCpuSetTagInformation = 176,
+    SystemWin32WerStartCallout = 177,
+    SystemSecureKernelProfileInformation = 178,
+    SystemCodeIntegrityPlatformManifestInformation = 179,
+    SystemInterruptSteeringInformation = 180,
+    SystemSupportedProcessorArchitectures = 181,
+    SystemMemoryUsageInformation = 182,
+    SystemCodeIntegrityCertificateInformation = 183,
+    SystemPhysicalMemoryInformation = 184,
+    SystemControlFlowTransition = 185,
+    SystemKernelDebuggingAllowed = 186,
+    SystemActivityModerationExeState = 187,
+    SystemActivityModerationUserSettings = 188,
+    SystemCodeIntegrityPoliciesFullInformation = 189,
+    SystemCodeIntegrityUnlockInformation = 190,
+    SystemIntegrityQuotaInformation = 191,
+    SystemFlushInformation = 192,
+    SystemProcessorIdleMaskInformation = 193,
+    SystemSecureDumpEncryptionInformation = 194,
+    SystemWriteConstraintInformation = 195,
+    SystemKernelVaShadowInformation = 196,
+    SystemHypervisorSharedPageInformation = 197,
+    SystemFirmwareBootPerformanceInformation = 198,
+    SystemCodeIntegrityVerificationInformation = 199,
+    SystemFirmwarePartitionInformation = 200,
+    SystemSpeculationControlInformation = 201,
+    SystemDmaGuardPolicyInformation = 202,
+    SystemEnclaveLaunchControlInformation = 203,
+    SystemWorkloadAllowedCpuSetsInformation = 204,
+    SystemCodeIntegrityUnlockModeInformation = 205,
+    SystemLeapSecondInformation = 206,
+    SystemFlags2Information = 207,
+    SystemSecurityModelInformation = 208,
+    SystemCodeIntegritySyntheticCacheInformation = 209,
+    SystemFeatureConfigurationInformation = 210,
+    SystemFeatureConfigurationSectionInformation = 211,
+    SystemFeatureUsageSubscriptionInformation = 212,
+    SystemSecureSpeculationControlInformation = 213,
+    SystemSpacesBootInformation = 214,
+    SystemFwRamdiskInformation = 215,
+    SystemWheaIpmiHardwareInformation = 216,
+    SystemDifSetRuleClassInformation = 217,
+    SystemDifClearRuleClassInformation = 218,
+    SystemDifApplyPluginVerificationOnDriver = 219,
+    SystemDifRemovePluginVerificationOnDriver = 220,
+    SystemShadowStackInformation = 221,
+    SystemBuildVersionInformation = 222,
+    SystemPoolLimitInformation = 223,
+    SystemCodeIntegrityAddDynamicStore = 224,
+    SystemCodeIntegrityClearDynamicStores = 225,
+    SystemDifPoolTrackingInformation = 226,
+    SystemPoolZeroingInformation = 227,
+    SystemDpcWatchdogInformation = 228,
+    SystemDpcWatchdogInformation2 = 229,
+    SystemSupportedProcessorArchitectures2 = 230,
+    SystemSingleProcessorRelationshipInformation = 231,
+    SystemXfgCheckFailureInformation = 232,
+    SystemIommuStateInformation = 233,
+    SystemHypervisorMinrootInformation = 234,
+    SystemHypervisorBootPagesInformation = 235,
+    SystemPointerAuthInformation = 236,
+    SystemSecureKernelDebuggerInformation = 237,
+    SystemOriginalImageFeatureInformation = 238,
+    SystemMemoryNumaInformation = 239,
+    SystemMemoryNumaPerformanceInformation = 240,
+    SystemCodeIntegritySignedPoliciesFullInformation = 241,
+    SystemSecureCoreInformation = 242,
+    SystemTrustedAppsRuntimeInformation = 243,
+    SystemBadPageInformationEx = 244,
+    SystemResourceDeadlockTimeout = 245,
+    SystemBreakOnContextUnwindFailureInformation = 246,
+    SystemOslRamdiskInformation = 247,
+    SystemCodeIntegrityPolicyManagementInformation = 248,
+    SystemMemoryNumaCacheInformation = 249,
+    SystemProcessorFeaturesBitMapInformation = 250,
+    SystemRefTraceInformationEx = 251,
+    SystemBasicProcessInformation = 252,
+    SystemHandleCountInformation = 253,
+#ifdef __WINESRC__
+    SystemWineVersionInformation = 1000,
+#endif
+} SYSTEM_INFORMATION_CLASS, *PSYSTEM_INFORMATION_CLASS;
+
+typedef enum {
+    PsCreateInitialState,
+    PsCreateFailOnFileOpen,
+    PsCreateFailOnSectionCreate,
+    PsCreateFailExeFormat,
+    PsCreateFailMachineMismatch,
+    PsCreateFailExeName,
+    PsCreateSuccess,
+    PsCreateMaximumStates
+} PS_CREATE_STATE;
+
+typedef enum {
+    PsAttributeParentProcess,
+    PsAttributeDebugPort,
+    PsAttributeToken,
+    PsAttributeClientId,
+    PsAttributeTebAddress,
+    PsAttributeImageName,
+    PsAttributeImageInfo,
+    PsAttributeMemoryReserve,
+    PsAttributePriorityClass,
+    PsAttributeErrorMode,
+    PsAttributeStdHandleInfo,
+    PsAttributeHandleList,
+    PsAttributeGroupAffinity,
+    PsAttributePreferredNode,
+    PsAttributeIdealProcessor,
+    PsAttributeUmsThread,
+    PsAttributeMitigationOptions,
+    PsAttributeProtectionLevel,
+    PsAttributeSecureProcess,
+    PsAttributeJobList,
+    PsAttributeChildProcessPolicy,
+    PsAttributeAllApplicationPackagesPolicy,
+    PsAttributeWin32kFilter,
+    PsAttributeSafeOpenPromptOriginClaim,
+    PsAttributeBnoIsolation,
+    PsAttributeDesktopAppPolicy,
+    PsAttributeChpe,
+    PsAttributeMitigationAuditOptions,
+    PsAttributeMachineType,
+    PsAttributeComponentFilter,
+    PsAttributeEnableOptionalXStateFeatures,
+    PsAttributeSupportedMachines,
+    PsAttributeSveVectorLength,
+    PsAttributeMax
+} PS_ATTRIBUTE_NUM;
+
+#define PS_ATTRIBUTE_THREAD 0x00010000
+#define PS_ATTRIBUTE_INPUT 0x00020000
+#define PS_ATTRIBUTE_ADDITIVE 0x00040000
+#define PS_ATTRIBUTE_PARENT_PROCESS (PsAttributeParentProcess | PS_ATTRIBUTE_INPUT | PS_ATTRIBUTE_ADDITIVE)
+#define PS_ATTRIBUTE_DEBUG_PORT (PsAttributeDebugPort | PS_ATTRIBUTE_INPUT | PS_ATTRIBUTE_ADDITIVE)
+#define PS_ATTRIBUTE_TOKEN (PsAttributeToken | PS_ATTRIBUTE_INPUT | PS_ATTRIBUTE_ADDITIVE)
+#define PS_ATTRIBUTE_CLIENT_ID (PsAttributeClientId | PS_ATTRIBUTE_THREAD)
+#define PS_ATTRIBUTE_TEB_ADDRESS (PsAttributeTebAddress | PS_ATTRIBUTE_THREAD)
+#define PS_ATTRIBUTE_IMAGE_NAME (PsAttributeImageName | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_IMAGE_INFO (PsAttributeImageInfo)
+#define PS_ATTRIBUTE_MEMORY_RESERVE (PsAttributeMemoryReserve | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_PRIORITY_CLASS (PsAttributePriorityClass | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_ERROR_MODE (PsAttributeErrorMode | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_STD_HANDLE_INFO (PsAttributeStdHandleInfo | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_HANDLE_LIST (PsAttributeHandleList | PS_ATTRIBUTE_INPUT)
+#define PS_ATTRIBUTE_MACHINE_TYPE (PsAttributeMachineType | PS_ATTRIBUTE_INPUT | PS_ATTRIBUTE_ADDITIVE)
+#define THREAD_CREATE_FLAGS_CREATE_SUSPENDED 0x00000001
+#define THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH 0x00000002
+#define THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER 0x00000004
+#define PROCESS_PARAMS_FLAG_NORMALIZED 0x00000001
+
+typedef struct {
+    NTSTATUS  ExitStatus;
+    PVOID     TebBaseAddress;
+    CLIENT_ID ClientId;
+    ULONG_PTR AffinityMask;
+    LONG      Priority;
+    LONG      BasePriority;
+} THREAD_BASIC_INFORMATION, *PTHREAD_BASIC_INFORMATION;
+
+typedef struct {
+    NTSTATUS  ExitStatus;
+    PEB      *PebBaseAddress;
+    ULONG_PTR AffinityMask;
+    LONG      BasePriority;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR InheritedFromUniqueProcessId;
+} PROCESS_BASIC_INFORMATION, *PPROCESS_BASIC_INFORMATION;
+
+typedef struct {
+    DWORD     unknown;
+    ULONG     KeMaximumIncrement;
+    ULONG     PageSize;
+    ULONG     MmNumberOfPhysicalPages;
+    ULONG     MmLowestPhysicalPage;
+    ULONG     MmHighestPhysicalPage;
+    ULONG_PTR AllocationGranularity;
+    PVOID     LowestUserAddress;
+    PVOID     HighestUserAddress;
+    ULONG_PTR ActiveProcessorsAffinityMask;
+    BYTE      NumberOfProcessors;
+} SYSTEM_BASIC_INFORMATION, *PSYSTEM_BASIC_INFORMATION;
+
+typedef struct {
+    USHORT ProcessorArchitecture;
+    USHORT ProcessorLevel;
+    USHORT ProcessorRevision;
+    USHORT MaximumProcessors;
+    ULONG  ProcessorFeatureBits;
+} SYSTEM_CPU_INFORMATION, *PSYSTEM_CPU_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER BootTime;
+    LARGE_INTEGER SystemTime;
+    LARGE_INTEGER TimeZoneBias;
+    ULONG TimeZoneId;
+    ULONG Reserved;
+    ULONGLONG BootTimeBias;
+    ULONGLONG SleepTimeBias;
+} SYSTEM_TIMEOFDAY_INFORMATION, *PSYSTEM_TIMEOFDAY_INFORMATION;
+
+typedef struct {
+    ULONG_PTR Attribute;
+    SIZE_T    Size;
+    union
+    {
+        ULONG_PTR Value;
+        void     *ValuePtr;
+    };
+    SIZE_T *ReturnLength;
+} PS_ATTRIBUTE;
+
+typedef struct {
+    SIZE_T       TotalLength;
+    PS_ATTRIBUTE Attributes[1];
+} PS_ATTRIBUTE_LIST, *PPS_ATTRIBUTE_LIST;
+
+typedef struct {
+    SIZE_T Size;
+    PS_CREATE_STATE State;
+    union
+    {
+        struct
+        {
+            union
+            {
+                ULONG InitFlags;
+                struct
+                {
+                    UCHAR WriteOutputOnExit : 1;
+                    UCHAR DetectManifest : 1;
+                    UCHAR IFEOSkipDebugger : 1;
+                    UCHAR IFEODoNotPropagateKeyState : 1;
+                    UCHAR SpareBits1 : 4;
+                    UCHAR SpareBits2 : 8;
+                    USHORT ProhibitedImageCharacteristics : 16;
+                };
+            };
+            ACCESS_MASK AdditionalFileAccess;
+        } InitState;
+        struct
+        {
+            HANDLE FileHandle;
+        } FailSection;
+        struct
+        {
+            USHORT DllCharacteristics;
+        } ExeFormat;
+        struct
+        {
+            HANDLE IFEOKey;
+        } ExeName;
+        struct
+        {
+            union
+            {
+                ULONG OutputFlags;
+                struct
+                {
+                    UCHAR ProtectedProcess : 1;
+                    UCHAR AddressSpaceOverride : 1;
+                    UCHAR DevOverrideEnabled : 1;
+                    UCHAR ManifestDetected : 1;
+                    UCHAR ProtectedProcessLight : 1;
+                    UCHAR SpareBits1 : 3;
+                    UCHAR SpareBits2 : 8;
+                    USHORT SpareBits3 : 16;
+                };
+            };
+            HANDLE FileHandle;
+            HANDLE SectionHandle;
+            ULONGLONG UserProcessParametersNative;
+            ULONG UserProcessParametersWow64;
+            ULONG CurrentParameterFlags;
+            ULONGLONG PebAddressNative;
+            ULONG PebAddressWow64;
+            ULONGLONG ManifestAddress;
+            ULONG ManifestSize;
+        } SuccessState;
+    };
+} PS_CREATE_INFO, *PPS_CREATE_INFO;
+
+/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
 NTSTATUS NtTerminateProcess(HANDLE,LONG);
 NTSTATUS NtDisplayString(PUNICODE_STRING);
+NTSTATUS NtCreateUserProcess(HANDLE*,HANDLE*,ACCESS_MASK,ACCESS_MASK,OBJECT_ATTRIBUTES*,OBJECT_ATTRIBUTES*,ULONG,ULONG,RTL_USER_PROCESS_PARAMETERS*,PS_CREATE_INFO*,PS_ATTRIBUTE_LIST*);
+NTSTATUS NtCreateThreadEx(HANDLE*,ACCESS_MASK,OBJECT_ATTRIBUTES*,HANDLE,PRTL_THREAD_START_ROUTINE,void*,ULONG,ULONG_PTR,SIZE_T,SIZE_T,PS_ATTRIBUTE_LIST*);
+NTSTATUS NtOpenThread(HANDLE*,ACCESS_MASK,const OBJECT_ATTRIBUTES*,const CLIENT_ID*);
+NTSTATUS NtResumeThread(HANDLE,PULONG);
+NTSTATUS NtSuspendThread(HANDLE,PULONG);
+NTSTATUS NtTerminateThread(HANDLE,LONG);
+NTSTATUS NtAlertThread(HANDLE ThreadHandle);
+NTSTATUS NtTestAlert(VOID);
+NTSTATUS NtYieldExecution(void);
+NTSTATUS NtDelayExecution(BOOLEAN,const LARGE_INTEGER*);
+NTSTATUS NtQueueApcThread(HANDLE,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
+NTSTATUS NtContinue(PCONTEXT,BOOLEAN);
+NTSTATUS NtRaiseException(PEXCEPTION_RECORD,PCONTEXT,BOOL);
+NTSTATUS NtQueryInformationProcess(HANDLE,PROCESSINFOCLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtSetInformationProcess(HANDLE,PROCESSINFOCLASS,PVOID,ULONG);
+NTSTATUS NtQueryInformationThread(HANDLE,THREADINFOCLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtSetInformationThread(HANDLE,THREADINFOCLASS,LPCVOID,ULONG);
+NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
+NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtQueryDefaultLocale(BOOLEAN,LCID*);
+NTSTATUS NtGetContextThread(HANDLE,CONTEXT*);
+NTSTATUS NtSetContextThread(HANDLE,const CONTEXT*);
+NTSTATUS NtContinueEx(CONTEXT*,KCONTINUE_ARGUMENT*);
+NTSTATUS NtCallbackReturn(PVOID,ULONG,NTSTATUS);
+NTSTATUS NtWaitForAlertByThreadId(const void*,const LARGE_INTEGER*);
+NTSTATUS NtAlertThreadByThreadId(HANDLE);
+NTSTATUS NtInitializeNlsFiles(void**,LCID*,LARGE_INTEGER*);
+NTSTATUS NtGetNlsSectionPtr(ULONG,ULONG,void*,void**,SIZE_T*);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */

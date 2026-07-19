@@ -305,6 +305,59 @@ typedef struct {
     FILE_NAME_INFORMATION      NameInformation;
 } FILE_ALL_INFORMATION, *PFILE_ALL_INFORMATION;
 
+/* Volume information (M7: RtlSetCurrentDirectory_U queries it at
+ * ntdll startup); enum from wine/include/winternl.h, structs and
+ * device types from wine/include/winioctl.h. */
+typedef enum {
+    FileFsVolumeInformation = 1,
+    FileFsLabelInformation,
+    FileFsSizeInformation,
+    FileFsDeviceInformation,
+    FileFsAttributeInformation,
+    FileFsControlInformation,
+    FileFsFullSizeInformation,
+    FileFsObjectIdInformation,
+    FileFsDriverPathInformation,
+    FileFsVolumeFlagsInformation,
+    FileFsSectorSizeInformation,
+    FileFsDataCopyInformation,
+    FileFsMetadataSizeInformation,
+    FileFsFullSizeInformationEx,
+    FileFsMaximumInformation
+} FS_INFORMATION_CLASS, *PFS_INFORMATION_CLASS;
+
+#define DEVICE_TYPE DWORD
+
+typedef struct {
+	LARGE_INTEGER	VolumeCreationTime;
+	ULONG		VolumeSerialNumber;
+	ULONG		VolumeLabelLength;
+	BOOLEAN		SupportsObjects;
+	WCHAR		VolumeLabel[1];
+} FILE_FS_VOLUME_INFORMATION, *PFILE_FS_VOLUME_INFORMATION;
+
+typedef struct {
+	LARGE_INTEGER	TotalAllocationUnits;
+	LARGE_INTEGER	AvailableAllocationUnits;
+	ULONG		SectorsPerAllocationUnit;
+	ULONG		BytesPerSector;
+} FILE_FS_SIZE_INFORMATION, *PFILE_FS_SIZE_INFORMATION;
+
+typedef struct {
+	DEVICE_TYPE DeviceType;
+	ULONG Characteristics;
+} FILE_FS_DEVICE_INFORMATION, *PFILE_FS_DEVICE_INFORMATION;
+
+typedef struct {
+	ULONG	FileSystemAttributes;
+	LONG	MaximumComponentNameLength;
+	ULONG	FileSystemNameLength;
+	WCHAR	FileSystemName[1];
+} FILE_FS_ATTRIBUTE_INFORMATION, *PFILE_FS_ATTRIBUTE_INFORMATION;
+
+#define FILE_DEVICE_DISK 0x00000007
+#define FILE_DEVICE_FILE_SYSTEM 0x00000009
+
 #include <stddef.h>
 _Static_assert(sizeof(IO_STATUS_BLOCK) == 16, "IO_STATUS_BLOCK x64 layout");
 _Static_assert(offsetof(IO_STATUS_BLOCK, Information) == 8, "IO_STATUS_BLOCK x64 layout");
@@ -319,7 +372,7 @@ _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_
 _Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
 
-/* The M6 Io Nt* surface; signatures extracted verbatim from
+/* The M6+M7 Io Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
 NTSTATUS NtCreateFile(PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES,PIO_STATUS_BLOCK,PLARGE_INTEGER,ULONG,ULONG,ULONG,ULONG,PVOID,ULONG);
 NTSTATUS NtOpenFile(PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES,PIO_STATUS_BLOCK,ULONG,ULONG);
@@ -332,5 +385,6 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES*,FILE_BASIC_INFORMATION*)
 NTSTATUS NtFlushBuffersFile(HANDLE,IO_STATUS_BLOCK*);
 NTSTATUS NtLockFile(HANDLE,HANDLE,PIO_APC_ROUTINE,void*,PIO_STATUS_BLOCK,PLARGE_INTEGER,PLARGE_INTEGER,ULONG*,BOOLEAN,BOOLEAN);
 NTSTATUS NtUnlockFile(HANDLE,PIO_STATUS_BLOCK,PLARGE_INTEGER,PLARGE_INTEGER,PULONG);
+NTSTATUS NtQueryVolumeInformationFile(HANDLE,PIO_STATUS_BLOCK,PVOID,ULONG,FS_INFORMATION_CLASS);
 
 #endif /* PROSKRNL_ABI_NTIOAPI_H */

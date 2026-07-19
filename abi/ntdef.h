@@ -41,7 +41,13 @@ typedef unsigned char BYTE;
 
 /* Anonymous-union/-struct spellings used verbatim inside extracted structs. */
 #define DUMMYUNIONNAME
+#define DUMMYUNIONNAME2
+#define DUMMYUNIONNAME3
 #define DUMMYSTRUCTNAME
+#define DUMMYSTRUCTNAME2
+
+/* winnt.h: `#define VOID void`, used verbatim in extracted prototypes. */
+#define VOID void
 
 typedef LONG NTSTATUS;
 typedef LONG KPRIORITY;
@@ -147,6 +153,7 @@ _Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityQualityOfService) == 40, "OBJ
 #define OBJ_OPENLINK 0x00000100
 #define OBJ_KERNEL_HANDLE 0x00000200
 #define NtCurrentProcess() ((HANDLE)~(ULONG_PTR)0)
+#define NtCurrentThread() ((HANDLE)~(ULONG_PTR)1)
 
 /* Access rights, extracted from wine/include/winnt.h. */
 #define DELETE 0x00010000
