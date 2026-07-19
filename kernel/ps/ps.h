@@ -25,16 +25,51 @@ typedef struct EPROCESS
     MI_ADDRESS_SPACE addressSpace;
     OBP_HANDLE_TABLE handleTable;
     NTSTATUS exitStatus;
-    PKTHREAD mainThread; /* M4: exactly one thread per user process */
+    PKTHREAD mainThread; /* M4: the first thread; M7 adds more via threadList */
     uint64_t entryRip;   /* user entry state, set before the */
     uint64_t entryRsp;   /* thread is readied */
-    void *teb;
+    void *teb;           /* the main thread's TEB (per-thread TEBs at M7) */
     /* The main thread's stack region [reserve base, top): mm/fault.c grows
      * it a guard page at a time (M5, docs/02 "guard-page stack growth"). */
     uint64_t stackAllocationBase;
     uint64_t stackBase;    /* the top; NT names the high end StackBase */
     const char *imageName; /* for dumps; storage owned by the caller */
+
+    /* M7: the user-visible process structures (docs/00 "byte-for-byte"). */
+    uint64_t pebBase;         /* user VA of the PEB (0 for the system process) */
+    uint64_t imageBase;       /* user VA the main image mapped at */
+    uint64_t uniqueProcessId; /* CLIENT_ID.UniqueProcess (a plain counter) */
+
+    /* M7: the ring-3 return-protocol entry points, resolved from the process's
+     * system DLL (ntdll) — or, for a native single-image client, from the
+     * image's own export table (kernel/mm/pecoff.c). NT keeps these in
+     * ntoskrnl's KeUser* globals; here they are per-process. 0 = unresolved. */
+    uint64_t userExceptionDispatcher;
+    uint64_t userApcDispatcher;
+    uint64_t ldrInitializeThunk;
+
+    /* M7: all threads of the process (the main thread plus NtCreateThreadEx
+     * threads). The process object signals when the last one exits. */
+    LIST_ENTRY threadListHead;
+    LONG activeThreadCount;
+    uint64_t nextThreadId; /* CLIENT_ID.UniqueThread source */
 } EPROCESS, *PEPROCESS;
+
+/* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
+ * ETHREAD internal layout is entirely ours (docs/05: "nobody reads it"). */
+typedef struct ETHREAD
+{
+    DISPATCHER_HEADER header; /* threads are waitable (join); signalled at exit */
+    PKTHREAD tcb;             /* the Ke thread */
+    PEPROCESS process;
+    LIST_ENTRY threadListEntry; /* on EPROCESS.threadListHead */
+    uint64_t uniqueThreadId;    /* CLIENT_ID.UniqueThread */
+    uint64_t tebBase;           /* this thread's TEB */
+    uint64_t stackAllocationBase;
+    uint64_t stackBase;
+} ETHREAD, *PETHREAD;
+
+extern OBJECT_TYPE PspThreadType;
 
 extern OBJECT_TYPE PspProcessType;
 
@@ -66,5 +101,59 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus);
  * RAM-disk file) to completion from a kernel thread: create the process,
  * wait for it, and return its exit NTSTATUS. */
 NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut);
+
+/* --- peb.c (M7) ---------------------------------------------------------- */
+
+/* Map the single shared KUSER_SHARED_DATA page at its NT-fixed user address
+ * (0x7ffe0000) into `process`, read-only. Wine's PE ntdll thunks and RTL read
+ * it directly (docs/00). Call once per process during creation. */
+NTSTATUS PspMapSharedUserData(PEPROCESS process);
+
+/* Fill the global KUSER_SHARED_DATA contents (called once at Ps init). The
+ * timer tick fields are refreshed lazily on read paths that need them. */
+void PspInitializeSharedUserData(void);
+
+/* Build the PEB + RTL_USER_PROCESS_PARAMETERS in `process`'s address space
+ * (user allocations, VAD-tracked). On success process->pebBase is set and the
+ * per-thread TEB's Peb pointer can be wired. `imageBase` is the mapped main
+ * image; `imagePath`/`commandLine` are NUL-terminated ASCII (converted to the
+ * UNICODE_STRING fields ntdll reads). */
+NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePath,
+                     const char *commandLine);
+
+/* Allocate + initialize a TEB for a thread: a full user page, NT_TIB filled
+ * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA. */
+NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
+                     uint64_t uniqueProcessId, uint64_t uniqueThreadId, uint64_t *tebOut);
+
+/* --- thread.c (M7) ------------------------------------------------------- */
+
+/* Create and ready an additional user thread in `process`: its own guard-page
+ * stack + TEB, entering ring 3 at `startRoutine(argument)` through the image's
+ * RtlUserThreadStart-shaped entry protocol (rcx=startRoutine, rdx=argument).
+ * Returns a handle in the CURRENT process's table. */
+NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
+                             BOOLEAN createSuspended, PHANDLE threadHandleOut);
+
+/* The first ring-3 descent of a user thread (shared by process/thread.c):
+ * enters user mode at the KTHREAD's user-start register state. */
+void PspUserThreadStartup(void *context);
+
+/* The Ps-level exit of the current user thread: signal its thread object,
+ * unlink it from the process, and — when it was the last thread — publish the
+ * process exit status and signal the process. Never returns. */
+__attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus);
+
+/* --- usermode.c (M7) ----------------------------------------------------- */
+
+/* Deliver a user-mode exception to the current thread by re-pointing its
+ * outgoing trap frame at the process's KiUserExceptionDispatcher, with an
+ * EXCEPTION_RECORD + CONTEXT pushed on the user stack (docs/02: the return
+ * protocol). Used by the fault path (a contained AV becomes a first-chance
+ * exception) and by NtRaiseException. Returns FALSE if no dispatcher is
+ * resolved (the process then dies, as before M7). */
+struct EXCEPTION_RECORD;
+BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode,
+                                 uint64_t faultAddress);
 
 #endif /* PROSKRNL_KERNEL_PS_PS_H */
