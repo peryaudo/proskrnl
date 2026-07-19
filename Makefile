@@ -74,6 +74,7 @@ CSRC := kernel/init/main.c \
         kernel/ke/mutex.c \
         kernel/ke/sema.c \
         kernel/ke/timer.c \
+        kernel/ke/apc.c \
         kernel/ke/irq.c \
         kernel/ob/object.c \
         kernel/ob/handle.c \
@@ -86,6 +87,10 @@ CSRC := kernel/init/main.c \
         kernel/mm/fault.c \
         kernel/mm/pagecache.c \
         kernel/ps/process.c \
+        kernel/ps/thread.c \
+        kernel/ps/peb.c \
+        kernel/ps/usermode.c \
+        kernel/ps/query.c \
         kernel/ps/display.c \
         kernel/io/file.c \
         kernel/io/rw.c \
@@ -132,13 +137,15 @@ ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
 USER_RT   := $(BUILD)/user/init-tests/crt0.o \
              $(BUILD)/user/init-tests/syscall_stubs.o
 MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
-             $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/sample.dat
+             $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/m7_smoke.exe \
+             $(BUILD)/modules/sample.dat
 # Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
 # reads the cmdline as the module's expected outcome, or "initrd" for a
 # RAM-disk data file that is registered but never run (kernel/init/main.c).
 MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
                 $(BUILD)/modules/crash.bin=expect=av \
                 $(BUILD)/modules/pe_smoke.exe=expect=0 \
+                $(BUILD)/modules/m7_smoke.exe=m7 \
                 $(BUILD)/modules/sample.dat=initrd
 
 # --- M5 PE user client + RAM-disk seed data --------------------------------
@@ -195,6 +202,15 @@ $(BUILD)/modules/%.bin: $(BUILD)/user/init-tests/%.o $(USER_RT) user/init-tests/
 $(BUILD)/modules/pe_smoke.exe: user/init-tests/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) $^ -o $@
+
+# The M7 PE client (docs/02 "Done when"): threads, PEB/TEB, the SEH test.
+# --export-all-symbols gives the image an export directory so the kernel's
+# loader can resolve KiUser{Exception,Apc}Dispatcher from it (as it will from
+# ntdll) — kernel/ps/process.c PspResolveUserDispatchers.
+$(BUILD)/modules/m7_smoke.exe: user/init-tests/m7_smoke.c user/init-tests/m7_dispatch.S \
+                               tests/ntapi/syscall/syscall_stubs.S
+	@mkdir -p $(dir $@)
+	$(MINGW) $(PECFLAGS) -Wl,--export-all-symbols $^ -o $@
 
 # A deterministic, non-page-multiple data file for the kmt M5 mapped-view /
 # read consistency test (any bytes do; the size exercises EOF zero-fill).

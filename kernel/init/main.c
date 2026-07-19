@@ -131,7 +131,7 @@ static int KiRunBootModules(void)
         const char *expect = module->string != 0 ? module->string : "expect=0";
         if (!KiStringStartsWith(expect, "expect="))
         {
-            continue; /* a RAM-disk data file, not a program */
+            continue; /* a RAM-disk data file or an M7 module, not an M5 program */
         }
 
         PKI_RAMDISK_FILE file = KiFindRamdiskFile(KiRamdiskBasename(path));
@@ -155,6 +155,49 @@ static int KiRunBootModules(void)
         {
             failures++;
         }
+    }
+    return failures;
+}
+
+/* Run the M7 boot modules (cmdline "m7"): a real PE process that drives the
+ * M7 boundary from ring 3 — threads, PEB/TEB/KUSER_SHARED_DATA, the user
+ * exception/APC dispatchers, NtContinue (docs/02 "Done when": hello.exe starts
+ * and exits; the SEH test passes). Each must exit STATUS_SUCCESS. */
+static int KiRunM7Modules(void)
+{
+    if (LiModuleRequest.response == 0)
+    {
+        return 0;
+    }
+    int failures = 0;
+    int ran = 0;
+    for (uint64_t i = 0; i < LiModuleRequest.response->module_count; i++)
+    {
+        struct limine_file *module = LiModuleRequest.response->modules[i];
+        const char *tag = module->string != 0 ? module->string : "";
+        if (!KiStringEquals(tag, "m7"))
+        {
+            continue;
+        }
+        const char *path = module->path != 0 ? module->path : "?";
+        PKI_RAMDISK_FILE file = KiFindRamdiskFile(KiRamdiskBasename(path));
+        ASSERT(file != 0);
+
+        NTSTATUS exitStatus = 0;
+        NTSTATUS runStatus = PsRunBootModule(file, &exitStatus);
+        BOOLEAN pass = NT_SUCCESS(runStatus) && exitStatus == 0;
+        DbgPrint("[KTEST] module %s %s (exit=%#lx)\n", path, pass ? "PASS" : "FAIL",
+                 (unsigned long)exitStatus);
+        ran++;
+        if (!pass)
+        {
+            failures++;
+        }
+    }
+    if (ran == 0)
+    {
+        DbgPrint("[KTEST] M7 no module ran\n");
+        return 1;
     }
     return failures;
 }
@@ -197,13 +240,19 @@ static void KiTestMainThread(void *context)
     m6Failures += libFailures;
     DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
 
+    /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
+     * protocol, driven by a real PE client (the mountain — docs/02). This is
+     * the milestone's acceptance artifact. */
+    int m7Failures = KiRunM7Modules();
+    DbgPrint(m7Failures == 0 ? "[KTEST] M7 PASS\n" : "[KTEST] M7 FAIL failures=%d\n", m7Failures);
+
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
      * what a real panic dump would look like after the whole boot suite
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures;
+    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

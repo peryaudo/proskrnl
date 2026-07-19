@@ -41,6 +41,13 @@ sem_file/byte_locks             # NtLockFile/NtUnlockFile byte-range locks
 sem_file/info_classes           # NtQuery/SetInformationFile main info classes
 sem_file/query_dir              # NtQueryDirectoryFile enumeration, masks, "."/".."
 sem_mm/file_coherence           # THE Mm stress test: view/ReadFile/WriteFile coherence (docs/02 M6)
-# sem_file/apc_completion       # oracle-only: user APC delivery arrives with M7 (KiUserApcDispatcher)
+
+# --- M7: NtCreateUserProcess + the user structures ---
+# The mechanical Ps/Ke query surface a flat binary can reach. The PE-only M7
+# boundary (byte-exact PEB/TEB, KiUser* return protocol, threads, APCs, the
+# SEH test) is exercised by the m7_smoke.exe boot module (kernel/init/main.c).
+sem_ps/process_query            # NtQueryInformationProcess/NtQuerySystemInformation, perf counter, delay/yield
+# sem_file/apc_completion       # oracle-only: a flat ntapi binary has no ntdll to export
+#                               # KiUserApcDispatcher; APC delivery is covered by m7_smoke.exe
 # sem_mm/image_section          # oracle-only: its oracle half leans on Win32 file APIs; the
 #                               # on-disk image path is covered by tests/kmt/m6_io.c
