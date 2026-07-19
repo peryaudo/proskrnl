@@ -1,6 +1,6 @@
 ---
 name: gate-check
-description: Review the current diff against proskrnl's constitution (docs/09-constitution.md) and the G1-G8 PR gates (docs/CONTRIBUTING.md), flagging boundary violations before commit. Use before committing kernel/abi/driver changes, or when the user asks to "check the gates" / "is this constitutional".
+description: Review the current diff against proskrnl's constitution (docs/09-constitution.md) and the G1-G9 PR gates (docs/CONTRIBUTING.md), flagging boundary violations before commit. Use before committing kernel/abi/driver changes, or when the user asks to "check the gates" / "is this constitutional".
 ---
 
 # gate-check
@@ -23,6 +23,7 @@ Review the working-tree diff for violations of proskrnl's hard gates. LLM contri
 - **G6 — Conviction by differential test.** Is any fix justified only by "sanitizer/assert went quiet" rather than a passing differential/conformance test?
 - **G7 — Additive & removable.** Is any out-of-core feature (GUI, WOW64, ROS shell) wired in such that deleting its directories would not restore the core intact?
 - **G8 — Constants cite a trusted source.** Does the diff introduce a hand-typed numeric constant whose value is fixed by an external contract (hardware register numbers/bit positions, MSRs, on-disk format fields, NT magic addresses/limits) without a comment in the same file naming a trusted source to re-verify it against (pinned Wine tree path + symbol, official MS docs, vendor spec — Intel SDM / datasheet / virtio — or the pinned QEMU tree)? Where feasible, actually re-verify the value against the cited source (grep `third_party/wine` / `third_party/qemu`) rather than trusting the comment. Purely internal choices (pool bases, KASAN shadow, our own syscall numbers) are exempt — but check they are not silently load-bearing for an external contract.
+- **G9 — Wine patched only at the unixlib seam.** Does the diff touch `user/wine/patches/`? If so: does any hunk change PE-side observable behaviour rather than unixlib plumbing or build glue? Does any patch exist to make a failing proskrnl differential test pass — i.e. does it edit the oracle instead of the kernel (cross-check Art. 6)? Does each patch carry the required header (what it changes / why the seam is the right place / upstream disposition: `upstreamable`, `proskrnl-only`, `temporary`-until-named-feature)? Does the PR description report the old → new hack-meter line counts with a justification for the delta?
 
 ## Provenance (also fail-worthy — see docs/11-licensing.md)
 

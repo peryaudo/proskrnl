@@ -117,6 +117,34 @@ pointers, last syscall number) and structured, machine-greppable log prefixes. U
 LLM-driven development the panic dump *is* the debugger and the logs are the model's only
 eyes. A cheap panic handler is the most expensive omission.
 
+## Article 10 — Wine is patched only at the unixlib seam
+
+`user/wine/patches/` exists to do exactly one thing: replace the **unixlib side** — the
+host-facing plumbing under each PE DLL — with syscall stubs into proskrnl, plus the build
+glue the partial build needs (`docs/06`). The PE side's observable behaviour is **never**
+patched. Concretely:
+
+- **Never patch Wine to mask a kernel divergence.** Art. 6 makes a divergence from Wine a
+  proskrnl bug, full stop. A patch that changes what Wine's PE code does so that proskrnl
+  passes is fixing the *oracle* instead of the kernel — the one edit that silently
+  invalidates the entire verification story. Fix the kernel.
+- **NT-absent additions stay out of Wine PE code** (Art. 2). GUI-route additions are *new,
+  removable files* (e.g. `winefb.drv`), governed by Arts. 2 and 7 — additions, never
+  mutations of existing Wine code.
+- **Each patch is one logical change with a header** stating what it changes, why the
+  unixlib seam (and not the kernel) is the right place, and its upstream disposition:
+  `upstreamable` (generic enough for winehq), `proskrnl-only` (permanently tied to our
+  transport), or `temporary` (until a named kernel feature lands — then it is deleted).
+- **The hack meter is enforced in review.** A PR that grows `user/wine/patches/` states
+  the old and new line counts and justifies the delta. Unjustified growth is rejected,
+  exactly like an uncited constant.
+- **On a Wine submodule bump**, every patch is re-exported against the new pin and its
+  justification re-checked; one that no longer applies is re-derived from its header's
+  rationale, never force-merged blind.
+
+Licensing: patches are derivative of Wine (LGPL) and live under `user/`, on the far side
+of the process boundary; they never enter the kernel image (Art. 8, `docs/11`).
+
 ---
 
 ## The through-line
@@ -124,5 +152,6 @@ eyes. A cheap panic handler is the most expensive omission.
 Every article is the same instinct applied to a different target: **avoid the dirty
 boundary, take the clean one.** T1 avoids the driver ABI; T2 avoids win32k's temporal
 protocol; Article 3 avoids the concurrency swamp; Article 4 avoids the model's unreliable
-memory; T7 avoids the undocumented shell seam. The project succeeds exactly insofar as
-these boundaries hold. Guard them.
+memory; T7 avoids the undocumented shell seam; Article 10 avoids quietly reshaping the
+oracle to fit the kernel. The project succeeds exactly insofar as these boundaries hold.
+Guard them.
