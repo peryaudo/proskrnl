@@ -137,7 +137,7 @@ local macOS Wine.
 
 ## Status
 
-**M7 kernel boundary complete; Wine PE-side ntdll bring-up is the remaining M7 step.**
+**M7 complete: the unmodified Wine PE ntdll boots `hello.exe` on the kernel.**
 M7 is the mountain: the process lifecycle and the ring-3 return protocol Wine's ntdll
 depends on. The syscall boundary now speaks the **NT x64 calling convention using the
 pinned Wine tree's own 64-bit syscall ids** (generated from `dlls/ntdll/ntsyscalls.h`),
@@ -160,9 +160,20 @@ resolved from the image's export table exactly as they will be from ntdll
 kernel-built PEB/TEB/KUSER_SHARED_DATA, creating and joining a second thread, taking a
 delivered APC, flipping page protection, and **catching an access violation in its own
 `KiUserExceptionDispatcher` and resuming via `NtContinue`** (the milestone's SEH test) —
-and exits cleanly, giving `[KTEST] M7 PASS`. The remaining M7 work is bringing in Wine's PE
-ntdll itself (the fork's unixlib→syscall seam, kernel32/kernelbase, the NLS files) so
-Wine's own `hello.exe` boots; the kernel boundary it needs is in place and demonstrated.
+and exits cleanly. On top of that boundary the **Wine bring-up itself** now runs: the
+pinned fork's `proskrnl-target` branch replaces ntdll's unixlib plumbing with
+null-dispatcher fallbacks (27 lines — the whole "hack meter" diff), and the build bakes
+the *unmodified* PE `ntdll.dll` + `kernel32`/`kernelbase` and the NLS files onto the FAT
+boot volume as `C:\windows\system32`. The kernel maps ntdll beside the executable, resolves
+`LdrInitializeThunk`/`RtlUserThreadStart`/`KiUser*` from **its** exports, and starts the
+first thread on the NT CONTEXT protocol; ntdll's own loader then runs the process — heap,
+TLS, NLS tables mapped via `NtInitializeNlsFiles`/`NtGetNlsSectionPtr`, `kernel32.dll`
+loaded from disk through `NtCreateSection(SEC_IMAGE)`. The acceptance client
+`user/hello/hello.exe` — a real MS-ABI PE **linked only against Wine's ntdll** — prints
+over `NtDisplayString`, then takes a deliberate access violation inside a
+`.seh_handler`-guarded frame and resumes through ntdll's real `KiUserExceptionDispatcher` →
+`RtlDispatchException` → `.pdata` unwind path (docs/02's SEH test), and exits 0:
+`[KTEST] module hello.exe PASS`, `[KTEST] M7 PASS`. After this, the rest of Wine is data.
 
 **Everything below describes the M1–M6 foundation this builds on.** The repository began as
 a **constitution** — documents that fix the design
