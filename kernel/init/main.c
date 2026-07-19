@@ -16,6 +16,7 @@
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/mmu.h"
 #include "kernel/lib/dbgprint.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
@@ -202,6 +203,46 @@ static int KiRunM7Modules(void)
     return failures;
 }
 
+/* Run the M7 Wine acceptance (docs/02 "Done when"): hello.exe from the boot
+ * volume, loaded beside the unmodified Wine PE ntdll.dll and started through
+ * LdrInitializeThunk — ntdll's loader runs the process, and hello's SEH test
+ * exercises KiUserExceptionDispatcher end to end. Exit 0 = PASS. */
+static int KiRunWineHello(void)
+{
+    /* The ntapi/fuzz images carry no Wine userland (tests/run/run.sh builds
+     * them without the windows/ tree); skip cleanly there. The `make run`
+     * image ships ntdll.dll + hello.exe (Makefile WINFILES), so a load
+     * failure on it IS a FAIL, not a skip. */
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus =
+        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\ntdll.dll"), &probe);
+    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
+    {
+        DbgPrint("[KTEST] module hello.exe SKIP (no ntdll.dll on the boot volume)\n");
+        return 0;
+    }
+    if (!NT_SUCCESS(probeStatus))
+    {
+        DbgPrint("[KTEST] module hello.exe FAIL (ntdll probe=%#lx)\n", (unsigned long)probeStatus);
+        return 1;
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", &exitStatus);
+    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] module hello.exe FAIL (create=%#lx)\n", (unsigned long)status);
+    }
+    else
+    {
+        DbgPrint("[KTEST] module hello.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
+                 (unsigned long)exitStatus);
+    }
+    return pass ? 0 : 1;
+}
+
 /* The in-kernel suites, run on a real kernel thread (waits need a
  * schedulable context). Ends the QEMU run with the milestone verdict
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
@@ -244,6 +285,8 @@ static void KiTestMainThread(void *context)
      * protocol, driven by a real PE client (the mountain — docs/02). This is
      * the milestone's acceptance artifact. */
     int m7Failures = KiRunM7Modules();
+    /* The Wine bring-up half of M7: the unmodified PE ntdll runs hello.exe. */
+    m7Failures += KiRunWineHello();
     DbgPrint(m7Failures == 0 ? "[KTEST] M7 PASS\n" : "[KTEST] M7 FAIL failures=%d\n", m7Failures);
 
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full

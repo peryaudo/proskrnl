@@ -177,8 +177,13 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePat
     MiFreePool(scratch);
 
     /* --- PEB -------------------------------------------------------------- */
+    /* A 4-page block, PEB at its base, rest committed zero — the shape Wine's
+     * own allocator gives it (third_party/wine dlls/ntdll/unix/virtual.c
+     * virtual_alloc_first_teb: the PEB occupies a TEB-sized 4*page block).
+     * PE-side ntdll addresses relative to the PEB (its debug-channel table
+     * sits pages behind it), so the block must be there to read. */
     PVOID pebBase = 0;
-    SIZE_T pebSize = PAGE_SIZE;
+    SIZE_T pebSize = 4 * PAGE_SIZE;
     status = MiAllocateVirtualMemory(space, &pebBase, &pebSize, MEM_RESERVE | MEM_COMMIT,
                                      PAGE_READWRITE);
     if (!NT_SUCCESS(status))
@@ -216,8 +221,14 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
                      uint64_t uniqueProcessId, uint64_t uniqueThreadId, uint64_t *tebOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
+    /* A 4-page block per TEB — Wine's PE ntdll keeps per-thread state BEHIND
+     * the TEB proper (the debug_info buffer at teb+0x2000+sizeof(TEB32);
+     * dlls/ntdll/thread.c get_info), and its unix allocator sizes every TEB
+     * block at 4 * page_size (dlls/ntdll/unix/virtual.c virtual_alloc_teb).
+     * The tail pages stay committed zero. */
     PVOID tebBase = 0;
-    SIZE_T tebSize = (sizeof(TEB) + PAGE_SIZE - 1) & ~(SIZE_T)(PAGE_SIZE - 1);
+    SIZE_T tebSize = 4 * PAGE_SIZE;
+    _Static_assert(sizeof(TEB) <= 2 * PAGE_SIZE, "TEB must fit its block");
     NTSTATUS status = MiAllocateVirtualMemory(space, &tebBase, &tebSize, MEM_RESERVE | MEM_COMMIT,
                                               PAGE_READWRITE);
     if (!NT_SUCCESS(status))
@@ -238,6 +249,22 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
     teb->Peb = (PEB *)(uintptr_t)process->pebBase;
     teb->ClientId.UniqueProcess = (HANDLE)(uintptr_t)uniqueProcessId;
     teb->ClientId.UniqueThread = (HANDLE)(uintptr_t)uniqueThreadId;
+    /* The self-referential furniture ntdll's RTL reads without checking,
+     * exactly as Wine's own TEB constructor seeds it (third_party/wine
+     * dlls/ntdll/unix/virtual.c init_teb): an empty activation-context
+     * stack (actctx.c walks ActivationContextStackPointer->ActiveFrame
+     * unconditionally), the static-string buffer, and the x64 no-exception
+     * list marker. All pointers are USER VAs into this same block. */
+    teb->Tib.ExceptionList = (void *)~(uintptr_t)0;
+    teb->ActivationContextStackPointer =
+        (ACTIVATION_CONTEXT_STACK *)(uintptr_t)(tebVa + offsetof(TEB, ActivationContextStack));
+    uint64_t frameListVa = tebVa + offsetof(TEB, ActivationContextStack) +
+                           offsetof(ACTIVATION_CONTEXT_STACK, FrameListCache);
+    teb->ActivationContextStack.FrameListCache.Flink =
+        teb->ActivationContextStack.FrameListCache.Blink = (LIST_ENTRY *)(uintptr_t)frameListVa;
+    teb->StaticUnicodeString.Buffer =
+        (WCHAR *)(uintptr_t)(tebVa + offsetof(TEB, StaticUnicodeBuffer));
+    teb->StaticUnicodeString.MaximumLength = sizeof(teb->StaticUnicodeBuffer);
 
     MiCopyToUserRange(space, tebVa, teb, sizeof(TEB));
     MiFreePool(teb);
