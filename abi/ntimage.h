@@ -18,6 +18,7 @@
 #define IMAGE_NUMBEROF_DIRECTORY_ENTRIES 16
 #define IMAGE_SIZEOF_SHORT_NAME 8
 #define IMAGE_SIZEOF_SECTION_HEADER 40
+#define IMAGE_DIRECTORY_ENTRY_EXPORT 0
 #define IMAGE_DIRECTORY_ENTRY_BASERELOC 5
 #define IMAGE_SCN_CNT_CODE 0x00000020
 #define IMAGE_SCN_CNT_INITIALIZED_DATA 0x00000040
@@ -134,6 +135,20 @@ typedef struct {
 	/* WORD	TypeOffset[1]; */
 } IMAGE_BASE_RELOCATION,*PIMAGE_BASE_RELOCATION;
 
+typedef struct {
+	DWORD	Characteristics;
+	DWORD	TimeDateStamp;
+	WORD	MajorVersion;
+	WORD	MinorVersion;
+	DWORD	Name;
+	DWORD	Base;
+	DWORD	NumberOfFunctions;
+	DWORD	NumberOfNames;
+	DWORD	AddressOfFunctions;
+	DWORD	AddressOfNames;
+	DWORD	AddressOfNameOrdinals;
+} IMAGE_EXPORT_DIRECTORY,*PIMAGE_EXPORT_DIRECTORY;
+
 #include <stddef.h>
 _Static_assert(sizeof(IMAGE_DOS_HEADER) == 64, "IMAGE_DOS_HEADER layout");
 _Static_assert(offsetof(IMAGE_DOS_HEADER, e_lfanew) == 0x3c, "IMAGE_DOS_HEADER layout");
@@ -144,5 +159,10 @@ _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve) == 72, "IMA
 _Static_assert(offsetof(IMAGE_NT_HEADERS64, OptionalHeader) == 24, "IMAGE_NT_HEADERS64 layout");
 _Static_assert(sizeof(IMAGE_SECTION_HEADER) == IMAGE_SIZEOF_SECTION_HEADER, "IMAGE_SECTION_HEADER layout");
 _Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout");
+_Static_assert(sizeof(IMAGE_EXPORT_DIRECTORY) == 40, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, NumberOfNames) == 24, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions) == 28, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames) == 32, "IMAGE_EXPORT_DIRECTORY layout");
+_Static_assert(offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals) == 36, "IMAGE_EXPORT_DIRECTORY layout");
 
 #endif /* PROSKRNL_ABI_NTIMAGE_H */
