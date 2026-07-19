@@ -218,8 +218,48 @@ $(BUILD)/modules/sample.dat:
 	@mkdir -p $(dir $@)
 	python3 -c "import sys; sys.stdout.buffer.write((bytes(range(256)) * 20)[:5000] + b'proskrnl-sample-END')" > $@
 
-$(IMG): $(KERNEL) $(MODULES) tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS)
+# --- M7 Wine userland on the boot volume -----------------------------------
+# The unmodified Wine PE ntdll (+ kernel32/kernelbase, which its loader_init
+# hard-loads) and the NLS files ntdll's locale_init maps, from the pinned
+# third_party/wine build (tools/setup_linux.sh; the SAME tree abi/ is
+# generated from). Baked onto the FAT boot volume as C:\windows\system32 via
+# mkimage's win: specs — not Limine modules. hello.exe is the acceptance
+# client: a real MS-ABI PE linked ONLY against Wine's ntdll import library
+# (docs/02 M7 "Done when").
+WINE_PE   := third_party/wine/dlls
+WINE_NLS  := third_party/wine/nls
+WINE_PE_DLLS := $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll \
+                $(WINE_PE)/kernel32/x86_64-windows/kernel32.dll \
+                $(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll
+$(WINE_PE_DLLS):
+	@echo "error: $@ missing - build the pinned Wine tree first (tools/setup_linux.sh)" >&2
+	@exit 1
+
+HELLO := $(BUILD)/modules/hello.exe
+$(HELLO): user/hello/hello.c user/hello/hello_seh.S $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=hello_start \
+	    user/hello/hello.c user/hello/hello_seh.S \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
+WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
+            win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
+            win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
+            win:$(WINE_NLS)/locale.nls=windows/system32/locale.nls \
+            win:$(WINE_NLS)/l_intl.nls=windows/system32/l_intl.nls \
+            win:$(WINE_NLS)/c_1252.nls=windows/system32/c_1252.nls \
+            win:$(WINE_NLS)/c_437.nls=windows/system32/c_437.nls \
+            win:$(WINE_NLS)/sortdefault.nls=windows/system32/sortdefault.nls \
+            win:$(WINE_NLS)/normnfc.nls=windows/system32/normnfc.nls \
+            win:$(WINE_NLS)/normnfd.nls=windows/system32/normnfd.nls \
+            win:$(WINE_NLS)/normnfkc.nls=windows/system32/normnfkc.nls \
+            win:$(WINE_NLS)/normnfkd.nls=windows/system32/normnfkd.nls \
+            win:$(WINE_NLS)/normidna.nls=windows/system32/normidna.nls \
+            win:$(HELLO)=hello.exe
+
+$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 run: $(IMG)
 	tools/qemu.sh $(IMG)
