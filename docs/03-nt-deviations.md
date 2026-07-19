@@ -98,6 +98,41 @@ them, and excluded from the differential fuzzer's op model):
   not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
   through immediately).
 
+## M7 process/return-protocol notes (Ps + the user boundary)
+
+The M7 boundary is the byte-exact PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA
+and the ring-3 return protocol (`KiUser{Exception,Apc}Dispatcher` + `NtContinue`), pinned
+against the pinned Wine tree. Notes that fall out:
+
+**Boundary choices matched to the pinned Wine tree (correct by definition here):**
+
+- Syscall numbers ARE the pinned Wine tree's own 64-bit ids
+  (`third_party/wine/dlls/ntdll/ntsyscalls.h`, `ALL_SYSCALLS` under `_WIN64`), not any
+  Windows build's — Wine renumbers its SSDT freely and its PE thunks hardcode the id, so
+  matching Wine's table is what lets the unmodified PE ntdll run. Regenerated on a pin bump.
+- KUSER_SHARED_DATA is mapped read-only at NT's fixed `0x7ffe0000` with `SystemCall == 0`,
+  so Wine's x86_64 thunks (`include/wine/asm.h`) always take the raw `syscall` path; the
+  `0x7ffe1000` dispatcher-pointer detour (a host-Wine-on-Linux need) is never mapped.
+- The exception frame layout (`CONTEXT` at the base, `EXCEPTION_RECORD` at `+0x4f0`) matches
+  Wine's `exc_stack_layout` (`dlls/ntdll/unix/signal_x86_64.c`).
+
+**Internal simplifications under no-preemption (Art. 3 — unobservable by the M7 clients):**
+
+- `NtGetContextThread`/`NtSetContextThread` and `NtRaiseException`/`NtContinue` operate on
+  the *calling* thread only. Capturing or setting a *running foreign* thread's context would
+  require stopping it, which the single-CPU no-preemption model cannot do without the
+  suspend machinery; foreign-thread `NtTerminateThread`/`NtTerminateProcess` are
+  `STATUS_NOT_IMPLEMENTED` for the same reason. The M7 clients (and ntdll's own startup)
+  only ever act on the current thread or join already-exiting ones.
+- The `PEB->Ldr`, `ProcessHeap`, `FastPebLock`, and TLS bitmaps are left null by the kernel:
+  ntdll's `loader_init` builds them itself (the NT contract — the kernel must *not*
+  pre-populate them). Only the fields ntdll reads before that point (`ImageBaseAddress`,
+  `ProcessParameters`, the version fields, the `NT_TIB`) are seeded.
+- The NLS section services (`NtInitializeNlsFiles`, `NtGetNlsSectionPtr`) and the registry
+  slice (`NtOpenKey`, `NtQueryValueKey`) return graceful failures until the data (Cm at M8,
+  the NLS files with the Wine bring-up) exists; ntdll's `locale_init`/`load_global_options`
+  tolerate that (degraded, non-crashing) by design.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
