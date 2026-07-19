@@ -47,6 +47,7 @@ sem_mm/file_coherence           # THE Mm stress test: view/ReadFile/WriteFile co
 # boundary (byte-exact PEB/TEB, KiUser* return protocol, threads, APCs, the
 # SEH test) is exercised by the m7_smoke.exe boot module (kernel/init/main.c).
 sem_ps/process_query            # NtQueryInformationProcess/NtQuerySystemInformation, perf counter, delay/yield
+sem_ps/nls_files                # NtInitializeNlsFiles/NtGetNlsSectionPtr (M7 Wine bring-up NLS data)
 # sem_file/apc_completion       # oracle-only: a flat ntapi binary has no ntdll to export
 #                               # KiUserApcDispatcher; APC delivery is covered by m7_smoke.exe
 # sem_mm/image_section          # oracle-only: its oracle half leans on Win32 file APIs; the
