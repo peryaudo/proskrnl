@@ -1,12 +1,28 @@
 /* drivers/condrv.c — the console driver (M9) + its serial transport.
  *
- * This file starts with \Device\Serial0: the COM1 UART published as a plain
- * stream device, both directions. That transport is HACK-004 (docs/10) — a
- * COM port is never real NT's interactive-console backend; it is subtracted
- * when the M11+ input/display path exists. The RX side polls: the blocking
- * Read drains the FIFO or naps 1 ms and retries (no IRQ4 routing exists,
- * and the clock already ticks at 1 kHz — Art. 3 simplest-correct; 16-byte
- * FIFO at 1 kHz sustains ~16 KB/s, far past interactive typing).
+ * Two devices live here:
+ *
+ * \Device\ConDrv — the real-NT/Wine console architecture (adopted, not
+ * invented — docs/10 "Non-hacks"): clients open Connection/Reference/
+ * Input/Output/ScreenBuffer by name (exactly the set the pinned
+ * kernelbase's console.c opens) and issue IOCTL_CONDRV_* through
+ * NtDeviceIoControlFile; plain Read/Write on console handles forward as
+ * IOCTL_CONDRV_READ_FILE/WRITE_FILE. The kernel is a message queue, not a
+ * console: every client verb is packaged as a CONDRV_SERVER_MSG and pumped
+ * to conhost through its \Device\ConDrv\Server handle (Read = next
+ * request, Write = id-matched reply — drivers/condrvproto.h), which is the
+ * proskrnl seam standing in for Wine's get_next_console_request wineserver
+ * call. One global console; the server file object is signaled while
+ * requests are queued so conhost's WaitForMultipleObjects works unchanged.
+ * A dead or absent conhost fails requests fast — boot never hangs on it.
+ *
+ * \Device\Serial0 — the COM1 UART published as a plain stream device, both
+ * directions. That transport is HACK-004 (docs/10) — a COM port is never
+ * real NT's interactive-console backend; it is subtracted when the M11+
+ * input/display path exists. The RX side polls: the blocking Read drains
+ * the FIFO or naps 1 ms and retries (no IRQ4 routing exists, and the clock
+ * already ticks at 1 kHz — Art. 3 simplest-correct; 16-byte FIFO at 1 kHz
+ * sustains ~16 KB/s, far past interactive typing).
  *
  * The TX side is raw — no '\n' -> '\r\n' mangling here: conhost owns the
  * console's line discipline. DbgPrint keeps its own KiSerialPutString path
@@ -14,10 +30,15 @@
  * tolerates by grepping unique markers (docs/08).
  */
 #include "drivers/condrv.h"
+#include "drivers/condrvproto.h"
 #include "kernel/io/io.h"
 #include "kernel/ke/ke.h"
+#include "kernel/ps/ps.h"
+#include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/list.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/serial.h"
 
@@ -137,9 +158,531 @@ static const IO_VFS_OPS CondrvSerialOps = {
     .Write = CondrvSerialWrite,
 };
 
+/* --- \Device\ConDrv: the console object -------------------------------------- */
+
+typedef enum
+{
+    CondrvOpenServer,
+    CondrvOpenConnection, /* also Reference: both name the console itself */
+    CondrvOpenInput,
+    CondrvOpenOutput,
+} CONDRV_OPEN_KIND;
+
+typedef struct CONDRV_OPEN
+{
+    CONDRV_OPEN_KIND kind;
+    ULONG outputId; /* screen-buffer id (kind == Output); 1 = conhost's
+                     * pre-created default buffer */
+} CONDRV_OPEN, *PCONDRV_OPEN;
+
+/* One in-flight client verb. Lives on the REQUESTER's kernel stack — the
+ * requester blocks on `done` for the whole round trip. */
+typedef struct CONDRV_REQUEST
+{
+    LIST_ENTRY listEntry;
+    uint64_t id;
+    ULONG code;
+    ULONG output;
+    const void *input;
+    ULONG inputLength;
+    void *outputBuffer;
+    ULONG outputCapacity;
+    NTSTATUS status;       /* reply */
+    ULONG_PTR information; /* reply payload bytes */
+    KEVENT done;
+} CONDRV_REQUEST, *PCONDRV_REQUEST;
+
+static struct
+{
+    PFILE_OBJECT serverFile; /* conhost's Server open; 0 = no console */
+    LIST_ENTRY requestQueue; /* queued, not yet fetched by conhost */
+    PCONDRV_REQUEST current; /* fetched, awaiting the reply */
+    uint64_t nextRequestId;
+    ULONG nextOutputId;   /* fresh screen-buffer ids (2+) */
+    KEVENT serverPresent; /* notification: a conhost attached */
+} CondrvConsole;
+
+static IO_FCB CondrvConsoleFcb;
+
+/* The server file object doubles as conhost's wait handle: signaled while
+ * requests are queued (its DISPATCHER_HEADER is event-shaped — io.h). */
+static void CondrvSignalServer(BOOLEAN pending)
+{
+    if (CondrvConsole.serverFile == 0)
+    {
+        return;
+    }
+    PKEVENT event = (PKEVENT)&CondrvConsole.serverFile->header;
+    if (pending)
+    {
+        KeSetEvent(event, 0, FALSE);
+    }
+    else
+    {
+        KeClearEvent(event);
+    }
+}
+
+/* Package one client verb, queue it, wake conhost, park until the reply. */
+static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG inputLength,
+                              void *outputBuffer, ULONG outputCapacity, ULONG_PTR *infoOut)
+{
+    if (CondrvConsole.serverFile == 0)
+    {
+        return STATUS_INVALID_DEVICE_STATE; /* no conhost: fail fast, never hang */
+    }
+    if (inputLength > CONDRV_SERVER_MAX_PAYLOAD)
+    {
+        return STATUS_INVALID_BUFFER_SIZE; /* protocol cap (condrvproto.h) */
+    }
+    if (outputCapacity > CONDRV_SERVER_MAX_PAYLOAD)
+    {
+        outputCapacity = CONDRV_SERVER_MAX_PAYLOAD; /* clamp: shorter reads */
+    }
+
+    CONDRV_REQUEST request;
+    request.id = ++CondrvConsole.nextRequestId;
+    request.code = code;
+    request.output = output;
+    request.input = input;
+    request.inputLength = inputLength;
+    request.outputBuffer = outputBuffer;
+    request.outputCapacity = outputCapacity;
+    request.status = STATUS_INVALID_DEVICE_STATE;
+    request.information = 0;
+    KeInitializeEvent(&request.done, NotificationEvent, FALSE);
+
+    InsertTailList(&CondrvConsole.requestQueue, &request.listEntry);
+    CondrvSignalServer(TRUE);
+    NTSTATUS waitStatus = KeWaitForSingleObject(&request.done, Executive, KernelMode, FALSE, 0);
+    ASSERT(waitStatus == STATUS_SUCCESS);
+
+    *infoOut = request.information;
+    return request.status;
+}
+
+/* conhost's request fetch: one CONDRV_SERVER_MSG (+ payload) per read;
+ * STATUS_PENDING = queue empty (wait on the handle). */
+static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
+{
+    if (CondrvConsole.current == 0)
+    {
+        if (IsListEmpty(&CondrvConsole.requestQueue))
+        {
+            CondrvSignalServer(FALSE);
+            return STATUS_PENDING;
+        }
+        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
+        CondrvConsole.current = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
+        if (IsListEmpty(&CondrvConsole.requestQueue))
+        {
+            CondrvSignalServer(FALSE);
+        }
+    }
+    PCONDRV_REQUEST request = CondrvConsole.current;
+    ULONG total = (ULONG)sizeof(CONDRV_SERVER_MSG) + request->inputLength;
+    if (length < total)
+    {
+        return STATUS_INVALID_BUFFER_SIZE; /* the glue always offers the
+                                            * full protocol buffer */
+    }
+    CONDRV_SERVER_MSG *message = buffer;
+    message->id = request->id;
+    message->code = request->code;
+    message->output = request->output;
+    message->inSize = request->inputLength;
+    message->outCapacity = request->outputCapacity;
+    if (request->inputLength != 0)
+    {
+        memcpy(message + 1, request->input, request->inputLength);
+    }
+    *infoOut = total;
+    return STATUS_SUCCESS;
+}
+
+/* conhost's reply: complete the in-flight request by id. */
+static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *infoOut)
+{
+    if (length < sizeof(CONDRV_SERVER_REPLY))
+    {
+        return STATUS_INVALID_BUFFER_SIZE;
+    }
+    const CONDRV_SERVER_REPLY *reply = buffer;
+    PCONDRV_REQUEST request = CondrvConsole.current;
+    if (request == 0 || request->id != reply->id || length < sizeof(*reply) + reply->outSize)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    ULONG copy = reply->outSize;
+    if (copy > request->outputCapacity)
+    {
+        copy = request->outputCapacity;
+    }
+    if (copy != 0)
+    {
+        memcpy(request->outputBuffer, reply + 1, copy);
+    }
+    request->status = reply->status;
+    request->information = copy;
+    CondrvConsole.current = 0;
+    KeSetEvent(&request->done, 0, FALSE);
+    *infoOut = length;
+    return STATUS_SUCCESS;
+}
+
+/* Server teardown: every queued and in-flight request fails — a dead
+ * conhost degrades the console, it never deadlocks a client. */
+static void CondrvServerGone(void)
+{
+    CondrvConsole.serverFile = 0;
+    KeClearEvent(&CondrvConsole.serverPresent);
+    if (CondrvConsole.current != 0)
+    {
+        CondrvConsole.current->status = STATUS_INVALID_DEVICE_STATE;
+        KeSetEvent(&CondrvConsole.current->done, 0, FALSE);
+        CondrvConsole.current = 0;
+    }
+    while (!IsListEmpty(&CondrvConsole.requestQueue))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
+        PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
+        request->status = STATUS_INVALID_DEVICE_STATE;
+        KeSetEvent(&request->done, 0, FALSE);
+    }
+}
+
+/* --- ConDrv vfs ops ---------------------------------------------------------- */
+
+static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
+                                    const UNICODE_STRING *path, PFILE_OBJECT relativeTo,
+                                    ACCESS_MASK grantedAccess, ULONG shareAccess,
+                                    ULONG fileAttributes, ULONG disposition, ULONG options,
+                                    ULONG_PTR *information)
+{
+    (void)device;
+    (void)relativeTo; /* a relative open (root = any console handle) names
+                       * the same single console */
+    (void)grantedAccess;
+    (void)shareAccess;
+    (void)fileAttributes;
+    (void)disposition; /* kernelbase opens Input/Output with FILE_CREATE */
+    (void)options;
+
+    UNICODE_STRING name;
+    CONDRV_OPEN_KIND kind;
+    BOOLEAN isScreenBuffer = FALSE;
+    RtlInitUnicodeString(&name, WSTR("Server"));
+    if (RtlEqualUnicodeString(path, &name, TRUE))
+    {
+        kind = CondrvOpenServer;
+    }
+    else if ((RtlInitUnicodeString(&name, WSTR("Connection")),
+              RtlEqualUnicodeString(path, &name, TRUE)) ||
+             (RtlInitUnicodeString(&name, WSTR("Reference")),
+              RtlEqualUnicodeString(path, &name, TRUE)))
+    {
+        kind = CondrvOpenConnection;
+    }
+    else if ((RtlInitUnicodeString(&name, WSTR("Input")), RtlEqualUnicodeString(path, &name, TRUE)))
+    {
+        kind = CondrvOpenInput;
+    }
+    else if ((RtlInitUnicodeString(&name, WSTR("Output")),
+              RtlEqualUnicodeString(path, &name, TRUE)))
+    {
+        kind = CondrvOpenOutput;
+    }
+    else if ((RtlInitUnicodeString(&name, WSTR("ScreenBuffer")),
+              RtlEqualUnicodeString(path, &name, TRUE)))
+    {
+        kind = CondrvOpenOutput;
+        isScreenBuffer = TRUE;
+    }
+    else
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    if (kind == CondrvOpenServer && CondrvConsole.serverFile != 0)
+    {
+        return STATUS_ACCESS_DENIED; /* one console server */
+    }
+
+    PCONDRV_OPEN open = MiAllocatePool(sizeof(CONDRV_OPEN));
+    if (open == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    open->kind = kind;
+    open->outputId = kind == CondrvOpenOutput ? 1 : 0;
+
+    if (isScreenBuffer)
+    {
+        /* A fresh screen buffer: allocate an id and have conhost create it
+         * (its INIT_OUTPUT path) before the open returns. */
+        open->outputId = ++CondrvConsole.nextOutputId;
+        ULONG_PTR ignored = 0;
+        NTSTATUS status =
+            CondrvForward(IOCTL_CONDRV_INIT_OUTPUT, open->outputId, 0, 0, 0, 0, &ignored);
+        if (!NT_SUCCESS(status))
+        {
+            MiFreePool(open);
+            return status;
+        }
+    }
+
+    file->fsContext = open;
+    file->fcb = &CondrvConsoleFcb;
+    file->isDirectory = FALSE;
+    if (kind == CondrvOpenServer)
+    {
+        CondrvConsole.serverFile = file;
+        /* Born signaled (io.h); the server handle signals "requests
+         * pending", so start clear. */
+        KeClearEvent((PKEVENT)&file->header);
+        KeSetEvent(&CondrvConsole.serverPresent, 0, FALSE);
+        DbgPrint("condrv: console server attached\n");
+    }
+    *information = FILE_OPENED;
+    return STATUS_SUCCESS;
+}
+
+static void CondrvConsoleCleanup(PFILE_OBJECT file)
+{
+    PCONDRV_OPEN open = file->fsContext;
+    if (open->kind == CondrvOpenServer && CondrvConsole.serverFile == file)
+    {
+        CondrvServerGone();
+    }
+    else if (open->kind == CondrvOpenOutput && open->outputId > 1 && CondrvConsole.serverFile != 0)
+    {
+        ULONG_PTR ignored = 0;
+        CondrvForward(IOCTL_CONDRV_CLOSE_OUTPUT, open->outputId, 0, 0, 0, 0, &ignored);
+    }
+}
+
+static void CondrvConsoleClose(PFILE_OBJECT file)
+{
+    MiFreePool(file->fsContext);
+}
+
+static NTSTATUS CondrvConsoleGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
+{
+    (void)file;
+    memset(info, 0, sizeof(*info));
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS CondrvConsoleQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity,
+                                       ULONG *lengthOut)
+{
+    (void)file;
+    static const WCHAR name[] = WSTR("\\Reference");
+    ULONG full = sizeof(name) - sizeof(WCHAR);
+    *lengthOut = full;
+    ULONG copy = full <= capacity ? full : capacity;
+    memcpy(buffer, name, copy);
+    return full <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
+}
+
+static NTSTATUS CondrvConsoleRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+{
+    PCONDRV_OPEN open = file->fsContext;
+    switch (open->kind)
+    {
+    case CondrvOpenServer:
+        return CondrvServerRead(buffer, length, infoOut);
+    case CondrvOpenInput:
+        /* ReadFile on a console handle: kernelbase's fallback path — the
+         * same cooked read the console server implements as READ_FILE. */
+        return CondrvForward(IOCTL_CONDRV_READ_FILE, 0, 0, 0, buffer, length, infoOut);
+    default:
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+}
+
+static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG length,
+                                   ULONG_PTR *infoOut)
+{
+    PCONDRV_OPEN open = file->fsContext;
+    switch (open->kind)
+    {
+    case CondrvOpenServer:
+        return CondrvServerWrite(buffer, length, infoOut);
+    case CondrvOpenOutput:
+    {
+        /* WriteFile on a console handle -> WRITE_FILE, chunked under the
+         * protocol payload cap so any write size succeeds. */
+        ULONG written = 0;
+        while (written < length || length == 0)
+        {
+            ULONG chunk = length - written;
+            if (chunk > CONDRV_SERVER_MAX_PAYLOAD)
+            {
+                chunk = (ULONG)CONDRV_SERVER_MAX_PAYLOAD;
+            }
+            ULONG_PTR ignored = 0;
+            NTSTATUS status =
+                CondrvForward(IOCTL_CONDRV_WRITE_FILE, open->outputId,
+                              (const unsigned char *)buffer + written, chunk, 0, 0, &ignored);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            written += chunk;
+            if (length == 0)
+            {
+                break;
+            }
+        }
+        *infoOut = written;
+        return STATUS_SUCCESS;
+    }
+    default:
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+}
+
+static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
+                                           ULONG inputLength, void *output, ULONG outputLength,
+                                           ULONG_PTR *infoOut)
+{
+    PCONDRV_OPEN open = file->fsContext;
+    if (open->kind == CondrvOpenServer)
+    {
+        /* conhost's own verbs on its server handle: input-thread setup and
+         * ctrl-event fanout. No client to deliver to yet — accept. */
+        if (code == IOCTL_CONDRV_SETUP_INPUT || code == IOCTL_CONDRV_CTRL_EVENT)
+        {
+            *infoOut = 0;
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (code == IOCTL_CONDRV_BIND_PID)
+    {
+        /* Wine's wineserver-side bookkeeping; one global console here. */
+        *infoOut = 0;
+        return STATUS_SUCCESS;
+    }
+    return CondrvForward(code, open->kind == CondrvOpenOutput ? open->outputId : 0, input,
+                         inputLength, output, outputLength, infoOut);
+}
+
+static const IO_VFS_OPS CondrvConsoleOps = {
+    .Create = CondrvConsoleCreate,
+    .Cleanup = CondrvConsoleCleanup,
+    .Close = CondrvConsoleClose,
+    .GetInfo = CondrvConsoleGetInfo,
+    .QueryName = CondrvConsoleQueryName,
+    .Read = CondrvConsoleRead,
+    .Write = CondrvConsoleWrite,
+    .DeviceControl = CondrvConsoleDeviceControl,
+};
+
+static PIO_DEVICE CondrvConsoleDevice;
+
+/* --- process console plumbing (kernel/ps seam) ------------------------------- */
+
+BOOLEAN CondrvWaitForServer(ULONG timeoutMilliseconds)
+{
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -(LONGLONG)timeoutMilliseconds * 10000;
+    return KeWaitForSingleObject(&CondrvConsole.serverPresent, Executive, KernelMode, FALSE,
+                                 &timeout) == STATUS_SUCCESS;
+}
+
+/* Build one ConDrv FILE_OBJECT of `kind` outside the NtCreateFile path (no
+ * name walk — the creator seeds a child that cannot open anything yet). */
+static NTSTATUS CondrvBuildOpen(CONDRV_OPEN_KIND kind, ULONG outputId, PFILE_OBJECT *fileOut)
+{
+    PCONDRV_OPEN open = MiAllocatePool(sizeof(CONDRV_OPEN));
+    if (open == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    open->kind = kind;
+    open->outputId = outputId;
+
+    PVOID body;
+    NTSTATUS status = ObpAllocateObject(&IoFileObjectType, sizeof(FILE_OBJECT), &body);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(open);
+        return status;
+    }
+    PFILE_OBJECT file = body;
+    KiInitializeDispatcherHeader(&file->header, KI_OBJECT_NOTIFICATION_EVENT, 1);
+    ObfReferenceObject(CondrvConsoleDevice);
+    file->device = CondrvConsoleDevice;
+    file->fsContext = open;
+    file->fcb = &CondrvConsoleFcb;
+    file->synchronousIo = TRUE;
+    file->grantedAccess = FILE_ALL_ACCESS;
+    file->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
+    *fileOut = file;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS CondrvCreateProcessHandles(struct EPROCESS *process, HANDLE *consoleOut, HANDLE *inOut,
+                                    HANDLE *outOut, HANDLE *errOut)
+{
+    if (CondrvConsoleDevice == 0)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    PFILE_OBJECT reference = 0;
+    PFILE_OBJECT input = 0;
+    PFILE_OBJECT output = 0;
+    NTSTATUS status = CondrvBuildOpen(CondrvOpenConnection, 0, &reference);
+    if (NT_SUCCESS(status))
+    {
+        status = CondrvBuildOpen(CondrvOpenInput, 0, &input);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = CondrvBuildOpen(CondrvOpenOutput, 1, &output);
+    }
+    POBP_HANDLE_TABLE table = &process->handleTable;
+    if (NT_SUCCESS(status))
+    {
+        status = ObpCreateHandleInTable(table, reference, FILE_ALL_ACCESS, 0, consoleOut);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = ObpCreateHandleInTable(table, input, FILE_ALL_ACCESS, 0, inOut);
+    }
+    if (NT_SUCCESS(status))
+    {
+        /* hStdOutput and hStdError share ONE output open — the shape
+         * kernelbase's own std-handle setup produces (DuplicateHandle). */
+        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, 0, outOut);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, 0, errOut);
+    }
+    /* The handles hold their own references (or nothing does: on failure
+     * the creator references drop everything, and ObpCloseAllHandles at
+     * process exit releases the seeded ones). */
+    if (reference != 0)
+    {
+        ObDereferenceObject(reference);
+    }
+    if (input != 0)
+    {
+        ObDereferenceObject(input);
+    }
+    if (output != 0)
+    {
+        ObDereferenceObject(output);
+    }
+    return status;
+}
+
 /* --- initialization ---------------------------------------------------------- */
 
-static void CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops)
+static PIO_DEVICE CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops)
 {
     UNICODE_STRING deviceName;
     OBJECT_ATTRIBUTES attributes;
@@ -161,10 +704,16 @@ static void CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops)
     device->ops = ops;
     device->context = 0;
     NtClose(handle);
+    return device;
 }
 
 void CondrvInitialize(void)
 {
     IopInitializeFcb(&CondrvSerialFcb);
+    IopInitializeFcb(&CondrvConsoleFcb);
+    InitializeListHead(&CondrvConsole.requestQueue);
+    CondrvConsole.nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
+    KeInitializeEvent(&CondrvConsole.serverPresent, NotificationEvent, FALSE);
     CondrvPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps);
+    CondrvConsoleDevice = CondrvPublishDevice(WSTR("\\Device\\ConDrv"), &CondrvConsoleOps);
 }

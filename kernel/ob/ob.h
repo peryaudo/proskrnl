@@ -133,6 +133,11 @@ void ObpDeleteHandleTable(POBP_HANDLE_TABLE table);
 NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes,
                          PHANDLE handleOut);
 
+/* Kernel-internal variant against an EXPLICIT table (M9: seeding a new
+ * process's console handles from the creator's context). No user probe. */
+NTSTATUS ObpCreateHandleInTable(POBP_HANDLE_TABLE table, PVOID body, ACCESS_MASK grantedAccess,
+                                ULONG attributes, PHANDLE handleOut);
+
 /* Map a caller's desired access onto a type: generic/maximum-allowed bits
  * grant the type's full mask (Se is always-allow, docs/05); specific bits
  * pass through filtered to the type's valid mask. */

@@ -89,8 +89,6 @@ static HANDLE ObpHandleFromIndex(ULONG index)
 
 NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes, PHANDLE handleOut)
 {
-    POBP_HANDLE_TABLE table = ObpCurrentTable();
-
     /* Every create/open/duplicate writes its result through here, so this is
      * THE choke point for the out-handle user probe. */
     NTSTATUS probeStatus = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
@@ -98,7 +96,15 @@ NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes
     {
         return probeStatus;
     }
+    return ObpCreateHandleInTable(ObpCurrentTable(), body, grantedAccess, attributes, handleOut);
+}
 
+/* Kernel-internal, table-explicit creation (M9: the console handles a
+ * process is born with live in ITS table, seeded by the creator —
+ * kernel pointers only, no probe). */
+NTSTATUS ObpCreateHandleInTable(POBP_HANDLE_TABLE table, PVOID body, ACCESS_MASK grantedAccess,
+                                ULONG attributes, PHANDLE handleOut)
+{
     if (table->entries == 0)
     {
         table->capacity = OBP_INITIAL_HANDLE_CAPACITY;
