@@ -8,8 +8,8 @@
 #define PROSKRNL_FUZZ_MODEL_H
 
 /* Decode tables for tests/fuzz/interp.c. The choice arrays below hold
- * SYMBOLIC constants resolved by whichever header set the build mode
- * pulled in (NTAPI_ORACLE vs NTAPI_PROSKRNL) — no numeric ABI value
+ * SYMBOLIC constants resolved by the system NT headers the single-binary
+ * ntapi build compiles against (docs/14) — no numeric ABI value
  * appears here or in the Python generator (G4). */
 
 #define FZ_SLOT_COUNT 16

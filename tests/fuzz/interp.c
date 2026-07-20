@@ -2,11 +2,10 @@
  * interp.c — the differential-fuzzer interpreter (docs/08 "Differential
  * fuzzing"; tests/fuzz/README.md).
  *
- * One source, two build modes — exactly like every ntapi test (docs/14):
- *   NTAPI_ORACLE    a Windows PE .exe; Nt* from the host ntdll (run under the
- *                   pinned third_party/wine); contract headers = the oracle's.
- *   NTAPI_PROSKRNL  a freestanding flat binary; Nt* from tests/ntapi/syscall/;
- *                   contract headers = generated abi/.
+ * One binary, both sides — exactly like every ntapi test (docs/14): a
+ * CRT-less mingw PE .exe against the system NT headers, run under the pinned
+ * third_party/wine (the oracle) and baked under C:\ntapi on the proskrnl
+ * image (the kernel's ntapi runner sweeps it like any test).
  *
  * It decodes a compact program blob (built into the binary as fuzz_programs[]
  * by tests/fuzz/fuzz.py) and runs each program's Nt* call sequence, printing
@@ -26,13 +25,6 @@
  */
 #include "ntapi.h"
 #include "sem_ob/util.h" /* Nt* prototypes (oracle), abi (proskrnl), init_ustr/init_attr, ob_* structs */
-#if defined(NTAPI_PROSKRNL)
-#include "abi/ntioapi.h"  /* the M6 file surface (must precede fuzz_model.h) */
-#include "abi/ntmmapi.h"  /* PAGE_* for the protect op (must precede fuzz_model.h) */
-#include "abi/ntpsapi.h"  /* NtQueryInformationProcess + PROCESS_BASIC_INFORMATION */
-#include "abi/ntregapi.h" /* the M8 Cm surface (must precede fuzz_model.h) */
-#endif
-#if defined(NTAPI_ORACLE)
 /* Prototypes winternl.h omits (as wine/include/winternl.h declares them). */
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE_T *, ULONG, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, PULONG);
@@ -48,7 +40,6 @@ enum nls_section_type
     NLS_SECTION_CODEPAGE = 11,
     NLS_SECTION_NORMALIZE = 12
 };
-#endif
 #include "tests/fuzz/gen/fuzz_model.h" /* FzOpcode, fz_ops[], choice tables */
 
 /* The program blob, emitted by fuzz.py as build/tests/fuzz/fuzz_programs.c and
@@ -97,7 +88,6 @@ static const void *fz_knames[FZ_KNAME_COUNT] = {
     W("\\Registry\\Machine\\Software\\fz_reg\\nokey\\x"),
 };
 
-#if defined(NTAPI_ORACLE)
 /* Registry prototypes mingw's winternl.h omits (as wine/include/winternl.h;
  * enum-typed class parameters as ULONG, like sem_reg/util.h). */
 NTSYSAPI NTSTATUS NTAPI NtCreateKey(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *, ULONG,
@@ -120,14 +110,6 @@ NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE);
 #define FZ_KV_BASIC_CLASS   0 /* KeyValueBasicInformation */
 #define FZ_KV_FULL_CLASS    1 /* KeyValueFullInformation */
 #define FZ_KV_PARTIAL_CLASS 2 /* KeyValuePartialInformation */
-#elif defined(NTAPI_PROSKRNL)
-#define FZ_KEY_BASIC_CLASS  KeyBasicInformation
-#define FZ_KEY_NODE_CLASS   KeyNodeInformation
-#define FZ_KEY_FULL_CLASS   KeyFullInformation
-#define FZ_KV_BASIC_CLASS   KeyValueBasicInformation
-#define FZ_KV_FULL_CLASS    KeyValueFullInformation
-#define FZ_KV_PARTIAL_CLASS KeyValuePartialInformation
-#endif
 
 /* Semantic-table indices for the M8 registry ops (FUZZ_CHOICES vname/vdata/
  * key_info/kv_info); meanings live here. */
@@ -220,13 +202,11 @@ static ULONG fz_vdata_bytes(unsigned shape, unsigned char *buf, ULONG cap)
     return len;
 }
 
-#if defined(NTAPI_ORACLE)
 /* File-surface prototypes mingw's winternl.h omits (as wine/include/winternl.h). */
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID,
                                    ULONG, PLARGE_INTEGER, PULONG);
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
                                     const void *, ULONG, PLARGE_INTEGER, PULONG);
-#endif
 
 /* iolen / iooff shape indices (semantic tables; see FUZZ_CHOICES). */
 enum
