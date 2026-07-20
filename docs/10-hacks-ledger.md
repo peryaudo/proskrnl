@@ -67,7 +67,8 @@ Retirement: if/when route (b) moves desktop state into kernel/win32k.
 ## HACK-004: serial-backed console (COM1 ↔ condrv)
 
 ```
-Status:     proposed
+Status:     active (M9: \Device\Serial0 over the UART, RX polled — no IRQ4;
+            conhost opens it as its tty both ways)
 Introduced: M9
 Not in NT:  conhost's input arrives from win32k's raw input path (i8042prt/kbdclass →
             win32k → conhost) and its output is drawn into a window. A COM port is never
