@@ -27,10 +27,10 @@ NtClose:
 
     .global NtDuplicateObject
 NtDuplicateObject:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
+    mov 0x80(%rsp), %rax
     mov %rax, 0x38(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -38,7 +38,7 @@ NtDuplicateObject:
     mov %rdi, %r10
     mov $0x3c, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtMakeTemporaryObject
@@ -53,7 +53,7 @@ NtMakeTemporaryObject:
 
     .global NtCreateEvent
 NtCreateEvent:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -61,7 +61,7 @@ NtCreateEvent:
     mov %rdi, %r10
     mov $0x48, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenEvent
@@ -116,7 +116,7 @@ NtPulseEvent:
 
     .global NtQueryEvent
 NtQueryEvent:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -124,7 +124,7 @@ NtQueryEvent:
     mov %rdi, %r10
     mov $0x56, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateMutant
@@ -159,7 +159,7 @@ NtReleaseMutant:
 
     .global NtQueryMutant
 NtQueryMutant:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -167,12 +167,12 @@ NtQueryMutant:
     mov %rdi, %r10
     mov $0xcb, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateSemaphore
 NtCreateSemaphore:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -180,7 +180,7 @@ NtCreateSemaphore:
     mov %rdi, %r10
     mov $0x89, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenSemaphore
@@ -205,7 +205,7 @@ NtReleaseSemaphore:
 
     .global NtQuerySemaphore
 NtQuerySemaphore:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -213,7 +213,7 @@ NtQuerySemaphore:
     mov %rdi, %r10
     mov $0xcd, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtWaitForSingleObject
@@ -228,7 +228,7 @@ NtWaitForSingleObject:
 
     .global NtWaitForMultipleObjects
 NtWaitForMultipleObjects:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -236,7 +236,7 @@ NtWaitForMultipleObjects:
     mov %rdi, %r10
     mov $0x5b, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateDirectoryObject
@@ -291,7 +291,7 @@ NtQuerySymbolicLinkObject:
 
     .global NtAllocateVirtualMemory
 NtAllocateVirtualMemory:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -300,7 +300,7 @@ NtAllocateVirtualMemory:
     mov %rdi, %r10
     mov $0x18, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtFreeVirtualMemory
@@ -315,7 +315,7 @@ NtFreeVirtualMemory:
 
     .global NtQueryVirtualMemory
 NtQueryVirtualMemory:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -324,7 +324,7 @@ NtQueryVirtualMemory:
     mov %rdi, %r10
     mov $0x23, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtTerminateProcess
@@ -349,10 +349,10 @@ NtDisplayString:
 
     .global NtCreateSection
 NtCreateSection:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
+    mov 0x80(%rsp), %rax
     mov %rax, 0x38(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -360,7 +360,7 @@ NtCreateSection:
     mov %rdi, %r10
     mov $0x4a, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenSection
@@ -375,16 +375,16 @@ NtOpenSection:
 
     .global NtMapViewOfSection
 NtMapViewOfSection:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
     mov %rax, 0x50(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -392,7 +392,7 @@ NtMapViewOfSection:
     mov %rdi, %r10
     mov $0x28, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtUnmapViewOfSection
@@ -407,7 +407,7 @@ NtUnmapViewOfSection:
 
     .global NtQuerySection
 NtQuerySection:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -415,23 +415,23 @@ NtQuerySection:
     mov %rdi, %r10
     mov $0x51, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateFile
 NtCreateFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
-    mov %rax, 0x50(%rsp)
+    mov %rax, 0x40(%rsp)
     mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov 0xa0(%rsp), %rax
     mov %rax, 0x58(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -439,12 +439,12 @@ NtCreateFile:
     mov %rdi, %r10
     mov $0x55, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenFile
 NtOpenFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -453,19 +453,19 @@ NtOpenFile:
     mov %rdi, %r10
     mov $0x33, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtReadFile
 NtReadFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
     mov %rax, 0x48(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -473,19 +473,19 @@ NtReadFile:
     mov %rdi, %r10
     mov $0x6, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtWriteFile
 NtWriteFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
     mov %rax, 0x48(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -493,12 +493,12 @@ NtWriteFile:
     mov %rdi, %r10
     mov $0x8, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryInformationFile
 NtQueryInformationFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -506,12 +506,12 @@ NtQueryInformationFile:
     mov %rdi, %r10
     mov $0x11, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtSetInformationFile
 NtSetInformationFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -519,23 +519,23 @@ NtSetInformationFile:
     mov %rdi, %r10
     mov $0x27, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryDirectoryFile
 NtQueryDirectoryFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
-    mov %rax, 0x50(%rsp)
+    mov %rax, 0x40(%rsp)
     mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov 0xa0(%rsp), %rax
     mov %rax, 0x58(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -543,7 +543,7 @@ NtQueryDirectoryFile:
     mov %rdi, %r10
     mov $0x35, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryAttributesFile
@@ -568,16 +568,16 @@ NtFlushBuffersFile:
 
     .global NtLockFile
 NtLockFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
     mov %rax, 0x50(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -585,12 +585,12 @@ NtLockFile:
     mov %rdi, %r10
     mov $0xac, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtUnlockFile
 NtUnlockFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -598,23 +598,23 @@ NtUnlockFile:
     mov %rdi, %r10
     mov $0x102, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateUserProcess
 NtCreateUserProcess:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
-    mov %rax, 0x50(%rsp)
+    mov %rax, 0x40(%rsp)
     mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov 0xa0(%rsp), %rax
     mov %rax, 0x58(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -622,23 +622,23 @@ NtCreateUserProcess:
     mov %rdi, %r10
     mov $0x8f, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateThreadEx
 NtCreateThreadEx:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
-    mov %rax, 0x38(%rsp)
-    mov 0x78(%rsp), %rax
-    mov %rax, 0x40(%rsp)
     mov 0x80(%rsp), %rax
-    mov %rax, 0x48(%rsp)
+    mov %rax, 0x38(%rsp)
     mov 0x88(%rsp), %rax
-    mov %rax, 0x50(%rsp)
+    mov %rax, 0x40(%rsp)
     mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov 0xa0(%rsp), %rax
     mov %rax, 0x58(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -646,7 +646,7 @@ NtCreateThreadEx:
     mov %rdi, %r10
     mov $0x8b, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenThread
@@ -731,7 +731,7 @@ NtDelayExecution:
 
     .global NtQueueApcThread
 NtQueueApcThread:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -739,7 +739,7 @@ NtQueueApcThread:
     mov %rdi, %r10
     mov $0x45, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtContinue
@@ -764,7 +764,7 @@ NtRaiseException:
 
     .global NtQueryInformationProcess
 NtQueryInformationProcess:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -772,7 +772,7 @@ NtQueryInformationProcess:
     mov %rdi, %r10
     mov $0x19, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtSetInformationProcess
@@ -787,7 +787,7 @@ NtSetInformationProcess:
 
     .global NtQueryInformationThread
 NtQueryInformationThread:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -795,7 +795,7 @@ NtQueryInformationThread:
     mov %rdi, %r10
     mov $0x25, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtSetInformationThread
@@ -860,7 +860,7 @@ NtSetContextThread:
 
     .global NtProtectVirtualMemory
 NtProtectVirtualMemory:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -868,7 +868,7 @@ NtProtectVirtualMemory:
     mov %rdi, %r10
     mov $0x50, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtFlushInstructionCache
@@ -933,7 +933,7 @@ NtInitializeNlsFiles:
 
     .global NtGetNlsSectionPtr
 NtGetNlsSectionPtr:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -941,12 +941,12 @@ NtGetNlsSectionPtr:
     mov %rdi, %r10
     mov $0xa1, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryVolumeInformationFile
 NtQueryVolumeInformationFile:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -954,15 +954,15 @@ NtQueryVolumeInformationFile:
     mov %rdi, %r10
     mov $0x49, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtCreateKey
 NtCreateKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
-    mov 0x70(%rsp), %rax
+    mov 0x80(%rsp), %rax
     mov %rax, 0x38(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -970,7 +970,7 @@ NtCreateKey:
     mov %rdi, %r10
     mov $0x1d, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtOpenKey
@@ -1015,7 +1015,7 @@ NtDeleteValueKey:
 
     .global NtSetValueKey
 NtSetValueKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -1024,12 +1024,12 @@ NtSetValueKey:
     mov %rdi, %r10
     mov $0x60, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryValueKey
 NtQueryValueKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -1038,12 +1038,12 @@ NtQueryValueKey:
     mov %rdi, %r10
     mov $0x17, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtEnumerateKey
 NtEnumerateKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -1052,12 +1052,12 @@ NtEnumerateKey:
     mov %rdi, %r10
     mov $0x32, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtEnumerateValueKey
 NtEnumerateValueKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %r9, 0x30(%rsp)
     mov %rcx, %r9
@@ -1066,12 +1066,12 @@ NtEnumerateValueKey:
     mov %rdi, %r10
     mov $0x13, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtQueryKey
 NtQueryKey:
-    sub $0x68, %rsp
+    sub $0x78, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
@@ -1079,7 +1079,7 @@ NtQueryKey:
     mov %rdi, %r10
     mov $0x16, %eax
     syscall
-    add $0x68, %rsp
+    add $0x78, %rsp
     ret
 
     .global NtFlushKey
@@ -1090,6 +1090,80 @@ NtFlushKey:
     mov %rdi, %r10
     mov $0x9a, %eax
     syscall
+    ret
+
+    .global NtDeviceIoControlFile
+NtDeviceIoControlFile:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x7, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtFsControlFile
+NtFsControlFile:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x39, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtCreateNamedPipeFile
+NtCreateNamedPipeFile:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov 0x98(%rsp), %rax
+    mov %rax, 0x50(%rsp)
+    mov 0xa0(%rsp), %rax
+    mov %rax, 0x58(%rsp)
+    mov 0xa8(%rsp), %rax
+    mov %rax, 0x60(%rsp)
+    mov 0xb0(%rsp), %rax
+    mov %rax, 0x68(%rsp)
+    mov 0xb8(%rsp), %rax
+    mov %rax, 0x70(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x85, %eax
+    syscall
+    add $0x78, %rsp
     ret
 
 #ifdef __ELF__

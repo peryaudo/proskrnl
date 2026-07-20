@@ -58,3 +58,9 @@ sem_reg/create_open             # NtCreateKey/NtOpenKey dispositions, case rules
 sem_reg/values                  # NtSet/Query/DeleteValueKey, value info classes, buffer statuses
 sem_reg/enum_key                # NtEnumerateKey/NtEnumerateValueKey/NtQueryKey
 sem_reg/delete                  # NtDeleteKey semantics, STATUS_KEY_DELETED, volatile keys
+
+# --- M9: npfs (named pipes) ---
+sem_pipe/create_pipe            # NtCreateNamedPipeFile, instances, connect, disconnect, broken
+sem_pipe/byte_mode              # byte-stream coalescing, short reads, nonblocking empty read
+sem_pipe/message_mode           # message framing, BUFFER_OVERFLOW partials, zero-byte messages
+# sem_pipe/pipe_blocking        # oracle-only: threads via kernel32; proskrnl twin = m9_smoke.exe

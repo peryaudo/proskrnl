@@ -479,8 +479,10 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
     {
         return status;
     }
-    if (file->isDirectory)
+    if (file->isDirectory || file->device->ops->GetCache == 0)
     {
+        /* Directories and cache-less stream devices (M9 pipes/console)
+         * cannot back a section. */
         ObDereferenceObject(file);
         return STATUS_INVALID_FILE_FOR_SECTION;
     }

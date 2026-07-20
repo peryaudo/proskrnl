@@ -24,6 +24,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/io/io.h"
 #include "kernel/cm/cm.h"
+#include "fs/npfs/npfs.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "tests/kmt/kmt.h"
@@ -289,6 +290,10 @@ static void KiTestMainThread(void *context)
      * needs a thread (handle tables live on the process). Everything after
      * this point, including the ring-3 boot modules, can open \??\C:. */
     IoMountBootVolume();
+
+    /* M9: the named-pipe FS (\Device\NamedPipe + \??\pipe). No disk
+     * dependency — only the namespace and this thread's handle table. */
+    NpfsInitialize();
 
     /* M8: bring up the registry — \Registry + the SYSTEM hive from the boot
      * volume (an absent/invalid hive starts empty: first boot). Needs the
