@@ -39,6 +39,7 @@ typedef struct
     uint64_t stackReserve;
     uint64_t stackCommit;
     ULONG sizeOfHeaders;
+    ULONG ntHeaderOffset; /* e_lfanew: the mapped-header ImageBase stamp (M10) */
     ULONG entryRva;
     ULONG relocRva; /* 0 = no relocation directory */
     ULONG relocSize;

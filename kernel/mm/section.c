@@ -244,8 +244,8 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
     {
         return STATUS_INVALID_FILE_FOR_SECTION;
     }
-    return MiCreateBackedSection(maximumSize, pageProtection, attributes,
-                                 file != 0 ? &backing : 0, sectionOut);
+    return MiCreateBackedSection(maximumSize, pageProtection, attributes, file != 0 ? &backing : 0,
+                                 sectionOut);
 }
 
 /* --- mapping ----------------------------------------------------------------- */
@@ -442,7 +442,23 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
     }
     if (NT_SUCCESS(status) && !atBase)
     {
-        status = MipRelocateImage(space, section, base, (int64_t)(base - image->preferredBase));
+        int64_t delta = (int64_t)(base - image->preferredBase);
+        status = MipRelocateImage(space, section, base, delta);
+        if (NT_SUCCESS(status))
+        {
+            /* The mapped header now claims the ACTUAL base — exactly what
+             * Wine's own mapper does after relocating (dlls/ntdll/unix/
+             * virtual.c map_image_into_view: OptionalHeader.ImageBase =
+             * map_addr). ntdll's PE-side loader keys its own
+             * perform_relocations off this field (loader.c: module == base
+             * → nothing to do), so leaving the preferred base here would
+             * relocate the copy a SECOND time. Adding the delta to the
+             * stored preferred base lands on `base`. */
+            MipAddDelta(space,
+                        base + image->ntHeaderOffset +
+                            offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase),
+                        8, delta);
+        }
     }
     if (!NT_SUCCESS(status))
     {
