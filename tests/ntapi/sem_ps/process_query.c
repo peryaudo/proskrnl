@@ -82,4 +82,26 @@ START_TEST(process_query)
 
     status = NtTestAlert();
     ok(status == STATUS_SUCCESS, "TestAlert -> %08lx", (unsigned long)status);
+
+    /* --- ProcessCookie: the RtlEncodePointer/RtlDecodePointer obfuscator.
+     * ntdll's get_process_cookie IGNORES this call's status (an
+     * uninitialized cookie poisons every encoded pointer — vectored
+     * handlers included), so the kernel must serve it: exactly
+     * sizeof(ULONG), nonzero, stable for the process's lifetime. -------- */
+    ULONG cookie = 0, cookie_again = 0;
+    status =
+        NtQueryInformationProcess(NtCurrentProcess(), ProcessCookie, &cookie, sizeof(cookie), NULL);
+    ok(status == STATUS_SUCCESS, "ProcessCookie -> %08lx", (unsigned long)status);
+    ok(cookie != 0, "ProcessCookie is zero");
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessCookie, &cookie_again,
+                                       sizeof(cookie_again), NULL);
+    ok(status == STATUS_SUCCESS, "ProcessCookie(2) -> %08lx", (unsigned long)status);
+    ok(cookie_again == cookie, "ProcessCookie unstable (%08lx -> %08lx)", (unsigned long)cookie,
+       (unsigned long)cookie_again);
+    /* The size must be exact (Wine dlls/ntdll/unix/process.c ProcessCookie). */
+    ULONGLONG wide_cookie = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessCookie, &wide_cookie,
+                                       sizeof(wide_cookie), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "ProcessCookie oversize -> %08lx",
+       (unsigned long)status);
 }

@@ -73,6 +73,14 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->pebBase = 0;
     process->imageBase = 0;
     process->uniqueProcessId = 0;
+    /* The ProcessCookie: ntdll's get_process_cookie feeds this straight
+     * into RtlEncodePointer/RtlDecodePointer WITHOUT checking the query's
+     * status, so every process must carry a stable nonzero value from
+     * birth (sem_ps/process_query pins the query). TSC bits are entropy
+     * enough — the cookie hardens nothing here; it only has to be
+     * self-consistent. */
+    ULONG cookie = (ULONG)__builtin_ia32_rdtsc();
+    process->cookie = cookie != 0 ? cookie : 0xd1ce; /* never 0: 0 means "unset" to ntdll */
     process->userExceptionDispatcher = 0;
     process->userApcDispatcher = 0;
     process->ldrInitializeThunk = 0;

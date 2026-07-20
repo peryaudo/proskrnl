@@ -351,18 +351,37 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
     {
         KiPanic("KeDelayExecutionThread: NULL interval");
     }
+    uint64_t flags = KiAcquireDispatcherLock();
+    PKTHREAD thread = KiCurrentThread;
+
+    /* Alertable + a user APC (or alert) already pending: complete
+     * immediately, exactly as the object waits do (sem_file/apc_completion
+     * pins the STATUS_USER_APC result and the delivery at this point). */
+    if (alertable && (thread->userApcPending || thread->alerted))
+    {
+        if (thread->userApcPending)
+        {
+            thread->apcDeliverPending = TRUE;
+        }
+        NTSTATUS alertStatus = thread->userApcPending ? STATUS_USER_APC : STATUS_ALERTED;
+        thread->alerted = FALSE;
+        KiReleaseDispatcherLock(flags);
+        return alertStatus;
+    }
+
     if (interval->QuadPart == 0)
     {
         /* NT: a zero delay yields the remainder of the timeslice. */
+        KiReleaseDispatcherLock(flags);
         KiYield();
         return STATUS_SUCCESS;
     }
 
-    uint64_t flags = KiAcquireDispatcherLock();
-    PKTHREAD thread = KiCurrentThread;
     thread->waitBlockList = 0; /* a pure timer wait */
     KiArmWaitTimeout(thread, interval);
+    thread->waitAlertable = alertable; /* a user APC can complete the delay */
     NTSTATUS status = KiCommitWait(thread);
+    thread->waitAlertable = FALSE;
     KiReleaseDispatcherLock(flags);
 
     return status == STATUS_TIMEOUT ? STATUS_SUCCESS : status;

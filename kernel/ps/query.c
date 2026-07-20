@@ -113,6 +113,41 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessCookie:
+    {
+        /* Own process only, size exactly ULONG (Wine
+         * dlls/ntdll/unix/process.c ProcessCookie). ntdll's
+         * get_process_cookie ignores this call's status, so failing it
+         * hands RtlEncodePointer an uninitialized obfuscator and every
+         * encoded pointer (vectored handlers first) goes wild — pinned by
+         * sem_ps/process_query. */
+        if (processHandle != NtCurrentProcess())
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        if (length != sizeof(ULONG))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(ULONG);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        memcpy(buffer, &process->cookie, sizeof(ULONG));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
     default:
         status = STATUS_NOT_IMPLEMENTED;
         break;
