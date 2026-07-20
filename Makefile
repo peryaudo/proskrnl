@@ -309,6 +309,32 @@ $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
+# M10: Wine's cmd.exe as a standalone CUI PE. The pinned tree's own PE build
+# provides the four cmd objects and the wrc-compiled resources UNMODIFIED
+# (programs/cmd/x86_64-windows, built by tools/setup_linux.sh); user/cmd/
+# supplies only the glue — the CRT entry plus the five user32 / four shell32
+# imports, stood in over ntdll/kernelbase (user32/shell32 are the M12 GUI
+# path, additive and absent here per Art. 7). Links the real ucrtbase +
+# advapi32 import libraries; both DLLs are baked (WINFILES below).
+WINE_CMD := third_party/wine/programs/cmd
+CMD := $(BUILD)/modules/cmd.exe
+$(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
+        $(WINE_CMD)/x86_64-windows/builtins.o $(WINE_CMD)/x86_64-windows/batch.o \
+        $(WINE_CMD)/x86_64-windows/directory.o $(WINE_CMD)/cmd.res $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff $(WINE_CMD)/cmd.res $(BUILD)/cmd.res.o
+	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=cmd_start \
+	    $(WINE_CMD)/x86_64-windows/wcmdmain.o $(WINE_CMD)/x86_64-windows/builtins.o \
+	    $(WINE_CMD)/x86_64-windows/batch.o $(WINE_CMD)/x86_64-windows/directory.o \
+	    user/cmd/proskrnl_glue.c $(BUILD)/cmd.res.o \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
 WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \

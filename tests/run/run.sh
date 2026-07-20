@@ -96,6 +96,21 @@ oracle() {
         # tr -d '\r': tolerate CRLF if a console handle translates.
         echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
     done < <(all_tests)
+
+    # M10: the standalone cmd.exe (Wine's cmd objects + user/cmd glue) is
+    # spec-checked off-target here — the same binary the console image bakes
+    # must behave under the oracle (docs/06 one-tree discipline).
+    make -C "$ROOT" build/modules/cmd.exe >/dev/null
+    local cmdexe="$ROOT/build/modules/cmd.exe" cmdout
+    cmdout="$(cd "$BUILD" && "$WINE" "$cmdexe" /c \
+        "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & del cmdsmoke.txt" \
+        2>/dev/null | tr -d '\r')"
+    if echo "$cmdout" | grep -q "smoke-echo" && echo "$cmdout" | grep -q "smoke-data"; then
+        echo "[KTEST] cmd-standalone PASS"
+    else
+        echo "[KTEST] cmd-standalone FAIL"
+        fails=$((fails+1))
+    fi
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
 }
