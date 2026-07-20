@@ -137,7 +137,36 @@ local macOS Wine.
 
 ## Status
 
-**M8 complete: the registry (Cm) is up and boot runs the real initial process chain —
+**M9 complete: named pipes, the ConDrv console, and Wine's conhost — the machine has an
+interactive console over the serial wire.** The Io layer grew optional stream ops beside
+the page-cache file path, and three services went live — `NtDeviceIoControlFile`,
+`NtFsControlFile`, and the 14-argument `NtCreateNamedPipeFile` (the new dispatch maximum).
+On them stand two new drivers. **npfs** (`fs/npfs/`) implements NT named-pipe semantics
+pinned test-first on the Wine oracle (`tests/ntapi/sem_pipe/`, green on Wine **and** the
+kernel): instance accounting under `MaximumInstances`, connect-before-listen
+(`FSCTL_PIPE_LISTEN` → `STATUS_PIPE_CONNECTED`), disconnect/broken-pipe status matrix,
+byte-stream coalescing with quota-blocked writes, and the message framing rpcrt4 will
+need — one message per read, `STATUS_BUFFER_OVERFLOW` partial reads, zero-byte messages,
+per-end read-mode switching; blocking rides plain KEVENTs under the one-lock no-preemption
+core. **condrv** (`drivers/condrv.c`) is the real-NT console architecture (docs/10
+"non-hacks"): clients open `\Device\ConDrv\{Connection,Reference,Input,Output,ScreenBuffer}`
+and speak the fully generated `IOCTL_CONDRV_*` surface (`abi/ntcondrv.h`); the kernel is a
+message queue that pumps every verb to **Wine's own conhost, ported** (`user/conhost/` —
+the pinned `conhost.c` with exactly its two wineserver call sites redirected onto a
+transport that mirrors wineserver's `get_next_console_request` semantics, including parked
+blocking reads). conhost's tty, both directions, is `\Device\Serial0` over the COM1 UART —
+the milestone's logged hack (HACK-004; RX is polled, no IRQ plumbing) — and new console
+processes are born with kernel-seeded `ConsoleHandle`/`hStd*` handles that unmodified
+kernelbase binds to. The bring-up also flushed three latent kernel bugs the Win32 surface
+was the first to hit (user-entry stack alignment vs. the NT convention, handle-blind
+`NtQueryInformationThread`, additional-thread stacks that never grew). Acceptance:
+`user/m9/m9_smoke.exe` drives threaded blocking pipes and a `WriteConsoleA` through
+kernelbase → ConDrv → conhost → serial inside `make run` (`[KTEST] M9 PASS`), and
+`tests/run/run.sh console` boots with the serial wire on a socket, **types** `ping`, and
+asserts conhost's line-discipline echo plus the byte-exact cooked line
+(`user/m9/m9_echo.exe`). Wrinkles and scope cuts: `docs/03` "M9 npfs/condrv notes".
+
+**The M8 foundation: the registry (Cm) and the real initial process chain —
 kernel → smss-equivalent → hello.exe.** The kernel grew its fourth NT department:
 `kernel/cm/` implements the `Nt*Key*` surface — `NtCreateKey`/`NtOpenKey`/`NtOpenKeyEx`/
 `NtQueryValueKey`/`NtSetValueKey`/`NtDeleteKey`/`NtDeleteValueKey`/`NtEnumerateKey`/
@@ -237,11 +266,12 @@ Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no ha
 constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M8 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M9 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 tests/run/run.sh persist    # the M8 acceptance: registry values survive a reboot (boot twice)
+tests/run/run.sh console    # the M9 acceptance: type into the serial console, watch conhost echo
 ```
 
 The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") generates random
@@ -253,11 +283,10 @@ handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergenc
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M9** — npfs, condrv, and the interactive console: the named-pipe FS (byte/message
-mode, listen/connect via `NtFsControlFile`), a ConDrv-style console device, a keyboard
-driver, and Wine's conhost — done when input echoes through conhost and the message-mode
-pipe client/server test rpcrt4 needs passes (`docs/02`; note it moves after the GUI path
-if calc.exe is pursued first).
+Next: **M10** — the full Wine CUI userland: kernelbase/kernel32 breadth, msvcrt, advapi32,
+rpcrt4 over the new named pipes, services.exe, and Wine's cmd.exe — done when cmd.exe
+prompts on the interactive console and pipes/redirection work (`docs/02`; the GUI path to
+calc.exe remains the documented alternative ordering).
 
 ## License
 
