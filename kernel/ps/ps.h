@@ -14,6 +14,8 @@
 
 #include "abi/ntdef.h"
 #include "abi/ntpsapi.h"
+#include "abi/ntmmapi.h"  /* SECTION_IMAGE_INFORMATION (M10 IMAGE_INFO write-back) */
+#include "abi/ntpebteb.h" /* RTL_USER_PROCESS_PARAMETERS (M10 params capture) */
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/mm/virtual.h"
@@ -124,6 +126,26 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
  * a running thread. */
 NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                              PEPROCESS *processOut, PETHREAD *threadOut);
+
+/* M10: the full-control variant NtCreateUserProcess uses. */
+struct PSP_CAPTURED_PARAMS; /* defined below (peb.c section) */
+typedef struct PSP_CREATE_OPTIONS
+{
+    /* Ownership taken — freed on every path. 0 = kernel-default params. */
+    struct PSP_CAPTURED_PARAMS *params;
+    BOOLEAN userParams; /* params came from ring 3: apply the console/std
+                         * fixups (server/process.c mirror) */
+    BOOLEAN console;    /* seed fresh ConDrv handles (kernel launches only) */
+    BOOLEAN createSuspended;
+    BOOLEAN inheritHandles;
+    const HANDLE *handleList; /* kernel copy; 0 = inherit-all */
+    ULONG handleCount;
+    SECTION_IMAGE_INFORMATION *imageInfoOut; /* optional, kernel pointer */
+} PSP_CREATE_OPTIONS;
+
+NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
+                               PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
+                               PETHREAD *threadOut);
 NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut);
 
@@ -140,7 +162,45 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus);
  * wait for it, and return its exit NTSTATUS. */
 NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut);
 
-/* --- peb.c (M7) ---------------------------------------------------------- */
+/* --- peb.c (M7; params passthrough M10) ----------------------------------- */
+
+/* The eight embedded strings of RTL_USER_PROCESS_PARAMETERS, in the order
+ * Wine's own builder lays them out (third_party/wine dlls/ntdll/env.c
+ * alloc_process_params). */
+enum
+{
+    PSP_PARAM_CURRENT_DIRECTORY = 0,
+    PSP_PARAM_DLL_PATH,
+    PSP_PARAM_IMAGE_PATH,
+    PSP_PARAM_COMMAND_LINE,
+    PSP_PARAM_WINDOW_TITLE,
+    PSP_PARAM_DESKTOP,
+    PSP_PARAM_SHELL_INFO,
+    PSP_PARAM_RUNTIME_INFO,
+    PSP_PARAM_COUNT
+};
+
+/* A kernel copy of a caller's RTL_USER_PROCESS_PARAMETERS (M10: the child
+ * observes the parent's block, not kernel defaults). The header's scalar
+ * fields are authoritative (ConsoleHandle/hStd* after the creation-time
+ * fixups); its string Buffers and Environment pointer are the PARENT's VAs
+ * and are dead — the pooled copies below are the truth, re-pointed into the
+ * child block by PspBuildPeb. */
+typedef struct PSP_CAPTURED_PARAMS
+{
+    RTL_USER_PROCESS_PARAMETERS header;
+    UNICODE_STRING strings[PSP_PARAM_COUNT]; /* pooled; Buffer 0 = absent */
+    WCHAR *environment;                      /* pooled double-NUL block; 0 = none */
+    SIZE_T environmentSize;                  /* bytes, including the final NUL */
+} PSP_CAPTURED_PARAMS;
+
+/* Capture a user-mode params block (probes; parent context). */
+NTSTATUS PspCaptureProcessParameters(const RTL_USER_PROCESS_PARAMETERS *userParams,
+                                     PSP_CAPTURED_PARAMS **capturedOut);
+/* Kernel-default params for kernel-launched images (ASCII inputs). */
+NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
+                               PSP_CAPTURED_PARAMS **capturedOut);
+void PspFreeCapturedParams(PSP_CAPTURED_PARAMS *captured);
 
 /* Map the single shared KUSER_SHARED_DATA page at its NT-fixed user address
  * (0x7ffe0000) into `process`, read-only. Wine's PE ntdll thunks and RTL read
@@ -154,10 +214,10 @@ void PspInitializeSharedUserData(void);
 /* Build the PEB + RTL_USER_PROCESS_PARAMETERS in `process`'s address space
  * (user allocations, VAD-tracked). On success process->pebBase is set and the
  * per-thread TEB's Peb pointer can be wired. `imageBase` is the mapped main
- * image; `imagePath`/`commandLine` are NUL-terminated ASCII (converted to the
- * UNICODE_STRING fields ntdll reads). */
-NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePath,
-                     const char *commandLine);
+ * image, from a captured params block (M10) whose header scalars —
+ * ConsoleHandle/hStd* included — are written through verbatim. Does not
+ * take ownership of `captured`. */
+NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured);
 
 /* Allocate + initialize a TEB for a thread: a full user page, NT_TIB filled
  * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA. */

@@ -292,3 +292,113 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     }
     return status;
 }
+
+/* --- M10: inheritance at process creation ---------------------------------- */
+
+/* Entry lookup against an EXPLICIT table (the parent's, from the creating
+ * thread's context) — ObpEntryFromHandle resolves against the current
+ * process only. */
+static POBP_HANDLE_ENTRY ObpEntryInTable(POBP_HANDLE_TABLE table, HANDLE handle)
+{
+    ULONG_PTR value = (ULONG_PTR)handle & ~(ULONG_PTR)3;
+    if (value == 0 || table->entries == 0)
+    {
+        return 0;
+    }
+    ULONG_PTR index = value / 4 - 1;
+    if (index >= table->capacity)
+    {
+        return 0;
+    }
+    POBP_HANDLE_ENTRY entry = (POBP_HANDLE_ENTRY)table->entries + index;
+    return entry->body != 0 ? entry : 0;
+}
+
+/* Copy one parent handle into the child AT THE SAME INDEX, if it exists, is
+ * inherit-marked, and the slot is still free — wineserver's inherit_handle
+ * (server/handle.c) exactly. */
+static void ObpInheritOne(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child, HANDLE handle)
+{
+    POBP_HANDLE_ENTRY source = ObpEntryInTable(parent, handle);
+    if (source == 0 || (source->attributes & OBJ_INHERIT) == 0)
+    {
+        return;
+    }
+    ULONG_PTR index = ((ULONG_PTR)handle & ~(ULONG_PTR)3) / 4 - 1;
+    POBP_HANDLE_ENTRY destination = (POBP_HANDLE_ENTRY)child->entries + index;
+    if (destination->body != 0)
+    {
+        return; /* listed twice / also a std handle */
+    }
+    *destination = *source;
+    ObfReferenceObject(source->body);
+    ObpGetHeader(source->body)->handleCount++;
+    child->inUse++;
+}
+
+NTSTATUS ObpInheritHandles(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child,
+                           const HANDLE *handleList, ULONG handleCount,
+                           const HANDLE stdHandles[3])
+{
+    ASSERT(child->inUse == 0); /* a fresh process's table */
+    if (parent->entries == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    if (child->entries == 0 || child->capacity < parent->capacity)
+    {
+        PVOID grown = MiAllocatePool(parent->capacity * sizeof(OBP_HANDLE_ENTRY));
+        if (grown == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        if (child->entries != 0)
+        {
+            MiFreePool(child->entries);
+        }
+        child->entries = grown;
+        child->capacity = parent->capacity;
+    }
+    memset(child->entries, 0, child->capacity * sizeof(OBP_HANDLE_ENTRY));
+
+    if (handleList == 0)
+    {
+        /* Inherit-all: every inherit-marked entry, same index. */
+        POBP_HANDLE_ENTRY sources = parent->entries;
+        POBP_HANDLE_ENTRY destinations = child->entries;
+        for (ULONG index = 0; index < parent->capacity; index++)
+        {
+            if (sources[index].body == 0 || (sources[index].attributes & OBJ_INHERIT) == 0)
+            {
+                continue;
+            }
+            destinations[index] = sources[index];
+            ObfReferenceObject(sources[index].body);
+            ObpGetHeader(sources[index].body)->handleCount++;
+            child->inUse++;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    for (ULONG i = 0; i < handleCount; i++)
+    {
+        ObpInheritOne(parent, child, handleList[i]);
+    }
+    for (int i = 0; i < 3; i++)
+    {
+        ObpInheritOne(parent, child, stdHandles[i]);
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HANDLE_TABLE child,
+                               BOOLEAN sameAttributes, PHANDLE handleOut)
+{
+    POBP_HANDLE_ENTRY entry = ObpEntryInTable(parent, source);
+    if (entry == 0)
+    {
+        return STATUS_INVALID_HANDLE;
+    }
+    return ObpCreateHandleInTable(child, entry->body, entry->grantedAccess,
+                                  sameAttributes ? entry->attributes : 0, handleOut);
+}

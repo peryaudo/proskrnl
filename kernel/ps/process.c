@@ -21,6 +21,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntimage.h"
@@ -346,7 +347,13 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
     }
     if (NT_SUCCESS(status) && isPe)
     {
-        status = PspBuildPeb(process, imageBase, process->imageName, process->imageName);
+        PSP_CAPTURED_PARAMS *defaults = 0;
+        status = PspBuildDefaultParams(process->imageName, process->imageName, &defaults);
+        if (NT_SUCCESS(status))
+        {
+            status = PspBuildPeb(process, imageBase, defaults);
+            PspFreeCapturedParams(defaults);
+        }
     }
     if (NT_SUCCESS(status) && isPe)
     {
@@ -419,13 +426,15 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
  * `imageDosPath` the DOS path ntdll sees in ProcessParameters. */
 #define PSP_NTDLL_PATH WSTR("\\??\\C:\\windows\\system32\\ntdll.dll")
 
-NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                             PEPROCESS *processOut, PETHREAD *threadOut)
+NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
+                               PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
+                               PETHREAD *threadOut)
 {
     PMI_SECTION exeSection;
     NTSTATUS status = IoOpenImageSection(exeNtPath, &exeSection);
     if (!NT_SUCCESS(status))
     {
+        PspFreeCapturedParams(options->params);
         return status;
     }
     PMI_SECTION ntdllSection;
@@ -433,14 +442,28 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     if (!NT_SUCCESS(status))
     {
         ObDereferenceObject(exeSection);
+        PspFreeCapturedParams(options->params);
         return status;
+    }
+
+    /* The child's parameters: the caller's captured block, or kernel
+     * defaults for kernel-launched images. Owned here from this point. */
+    PSP_CAPTURED_PARAMS *params = options->params;
+    options->params = 0;
+    if (params == 0)
+    {
+        status = PspBuildDefaultParams(imageDosPath, imageDosPath, &params);
+        if (!NT_SUCCESS(status))
+        {
+            goto out_sections;
+        }
     }
 
     PVOID body;
     status = ObpAllocateObject(&PspProcessType, sizeof(EPROCESS), &body);
     if (!NT_SUCCESS(status))
     {
-        goto out_sections;
+        goto out_params;
     }
     PEPROCESS process = body;
     KiInitializeDispatcherHeader(&process->header, KI_OBJECT_PROCESS, 0);
@@ -453,7 +476,68 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     if (!NT_SUCCESS(status))
     {
         ObDereferenceObject(process);
-        goto out_sections;
+        goto out_params;
+    }
+
+    /* --- M10: handle inheritance + the console/std fixups ------------------
+     * All in the PARENT's context, before anything else can fail — the spec
+     * is wineserver's copy_handle_table + new_process (server/handle.c,
+     * server/process.c), pinned by sem_ps/inherit.c. */
+    POBP_HANDLE_TABLE parentTable = &KeGetCurrentThread()->process->handleTable;
+    if (options->inheritHandles)
+    {
+        HANDLE stdHandles[3];
+        stdHandles[0] = params->header.hStdInput;
+        stdHandles[1] = params->header.hStdOutput;
+        stdHandles[2] = params->header.hStdError;
+        status = ObpInheritHandles(parentTable, &process->handleTable, options->handleList,
+                                   options->handleCount, stdHandles);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(process);
+            goto out_params;
+        }
+    }
+    if (options->userParams)
+    {
+        /* Inherit the process console, but keep pseudo handles (< 0) and 0
+         * (no console) as-is; a real handle is re-duplicated to a fresh
+         * child value written back into the child's params
+         * (server/process.c). */
+        HANDLE consoleHandle = params->header.ConsoleHandle;
+        if ((LONGLONG)(uintptr_t)consoleHandle > 0)
+        {
+            HANDLE duplicated = 0;
+            if (NT_SUCCESS(ObpDuplicateIntoTable(parentTable, consoleHandle, &process->handleTable,
+                                                 FALSE, &duplicated)))
+            {
+                params->header.ConsoleHandle = duplicated;
+            }
+            else
+            {
+                params->header.ConsoleHandle = 0;
+            }
+        }
+        if (!options->inheritHandles)
+        {
+            /* Not inheriting: the three std handles are still duplicated
+             * into the child, invalid ones tolerated (become 0). */
+            HANDLE *stdFields[3] = {&params->header.hStdInput, &params->header.hStdOutput,
+                                    &params->header.hStdError};
+            for (int i = 0; i < 3; i++)
+            {
+                HANDLE value = *stdFields[i];
+                if ((LONGLONG)(uintptr_t)value <= 0)
+                {
+                    continue;
+                }
+                HANDLE duplicated = 0;
+                *stdFields[i] = NT_SUCCESS(ObpDuplicateIntoTable(
+                                    parentTable, value, &process->handleTable, TRUE, &duplicated))
+                                    ? duplicated
+                                    : 0;
+            }
+        }
     }
 
     /* The executable first (it prefers its header base), then ntdll. */
@@ -505,15 +589,24 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
         status = PspMapSharedUserData(process);
     }
     /* M9: seed the console plumbing BEFORE the PEB so PspBuildPeb can write
-     * the handle values into the process parameters. */
-    if (NT_SUCCESS(status) && console)
+     * the handle values into the process parameters (kernel-launched console
+     * processes; user-created children carry the parent's console through
+     * the fixups above instead). */
+    if (NT_SUCCESS(status) && options->console)
     {
         status = CondrvCreateProcessHandles(process, &process->consoleHandle, &process->stdInput,
                                             &process->stdOutput, &process->stdError);
+        if (NT_SUCCESS(status))
+        {
+            params->header.ConsoleHandle = process->consoleHandle;
+            params->header.hStdInput = process->stdInput;
+            params->header.hStdOutput = process->stdOutput;
+            params->header.hStdError = process->stdError;
+        }
     }
     if (NT_SUCCESS(status))
     {
-        status = PspBuildPeb(process, imageBase, imageDosPath, imageDosPath);
+        status = PspBuildPeb(process, imageBase, params);
     }
     uint64_t tebBase = 0;
     if (NT_SUCCESS(status))
@@ -524,8 +617,11 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     }
     if (!NT_SUCCESS(status))
     {
+        /* Seeded/inherited handles must go before the table storage does
+         * (ObpDeleteHandleTable asserts an empty table). */
+        ObpCloseAllHandles(&process->handleTable);
         ObDereferenceObject(process); /* PspDeleteProcess unwinds the rest */
-        goto out_sections;
+        goto out_params;
     }
 
     process->teb = (void *)(uintptr_t)tebBase;
@@ -536,9 +632,10 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     PKTHREAD main = KiCreateThreadSuspended(8, PspUserThreadStartup, 0, process, process->teb);
     if (main == 0)
     {
+        ObpCloseAllHandles(&process->handleTable);
         ObDereferenceObject(process);
         status = STATUS_NO_MEMORY;
-        goto out_sections;
+        goto out_params;
     }
     /* The NT protocol (PspEnterUserThread): CONTEXT.Rcx = the image entry,
      * CONTEXT.Rdx = the PEB — what Wine's unix loader seeds for the first
@@ -561,20 +658,65 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     if (!NT_SUCCESS(status))
     {
         KiDeleteThread(main);
+        ObpCloseAllHandles(&process->handleTable);
         ObDereferenceObject(process);
-        goto out_sections;
+        goto out_params;
     }
     process->mainThread = 0;
 
-    KiReadyCreatedThread(main);
+    /* The image facts CreateProcess's PS_ATTRIBUTE_IMAGE_INFO write-back
+     * reports (abi SECTION_IMAGE_INFORMATION; source: the PE parse). */
+    if (options->imageInfoOut != 0)
+    {
+        const MI_IMAGE_INFO *image = exeSection->image;
+        SECTION_IMAGE_INFORMATION *info = options->imageInfoOut;
+        memset(info, 0, sizeof(*info));
+        info->TransferAddress = (PVOID)(uintptr_t)entry;
+        info->MaximumStackSize = image->stackReserve;
+        info->CommittedStackSize = image->stackCommit;
+        info->SubSystemType = image->subsystem;
+        info->MinorSubsystemVersion = image->subsystemMinor;
+        info->MajorSubsystemVersion = image->subsystemMajor;
+        info->MinorOperatingSystemVersion = image->osMinor;
+        info->MajorOperatingSystemVersion = image->osMajor;
+        info->ImageCharacteristics = image->characteristics;
+        info->DllCharacteristics = image->dllCharacteristics;
+        info->Machine = image->machine;
+        info->ImageContainsCode = image->containsCode;
+        info->CheckSum = image->checksum;
+        info->ImageFileSize = image->fileSize;
+    }
+
+    if (options->createSuspended)
+    {
+        /* THREAD_CREATE_FLAGS_CREATE_SUSPENDED: kernelbase resumes the
+         * initial thread itself after wiring the handles
+         * (dlls/kernelbase/process.c). */
+        main->suspendCount = 1;
+    }
+    else
+    {
+        KiReadyCreatedThread(main);
+    }
     *processOut = process;
     *threadOut = mainThreadObject;
     status = STATUS_SUCCESS;
 
+out_params:
+    PspFreeCapturedParams(params);
 out_sections:
     ObDereferenceObject(ntdllSection); /* the views hold their own pins */
     ObDereferenceObject(exeSection);
     return status;
+}
+
+NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+                             PEPROCESS *processOut, PETHREAD *threadOut)
+{
+    PSP_CREATE_OPTIONS options;
+    memset(&options, 0, sizeof(options));
+    options.console = console;
+    return PsCreateWineProcessEx(exeNtPath, imageDosPath, &options, processOut, threadOut);
 }
 
 /* Run a Wine-loaded PE to completion (the M7 acceptance runner). */
@@ -680,16 +822,16 @@ NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
     return STATUS_NOT_IMPLEMENTED; /* stopping a foreign process: unbuilt (Art. 3) */
 }
 
-/* NtCreateUserProcess: the common single-image spawn, wired for M8's
- * initial process chain (smss-equivalent -> next process). The caller names
- * the image via PS_ATTRIBUTE_IMAGE_NAME (an NT path, as ntdll passes it —
- * wine dlls/ntdll/unix/process.c NtCreateUserProcess reads the same
- * attribute) and gets real process + thread handles, the PS_CREATE_INFO
- * success state, and CLIENT_ID write-back when requested. Still unbuilt
- * (docs/03 M8 notes): caller-supplied process parameters (the PEB's
- * RTL_USER_PROCESS_PARAMETERS are kernel-built from the image path),
- * suspended creation, and the pre-success PS_CREATE_INFO stages — refused
- * loudly, never faked. */
+/* NtCreateUserProcess (M8 wired the initial chain; M10 the full
+ * CreateProcess contract). The caller names the image via
+ * PS_ATTRIBUTE_IMAGE_NAME (an NT path, as kernelbase's create_nt_process
+ * passes it — third_party/wine dlls/kernelbase/process.c) and gets real
+ * process + thread handles, its RTL_USER_PROCESS_PARAMETERS threaded into
+ * the child (with the wineserver console/std fixups), handle inheritance
+ * (inherit-all or PS_ATTRIBUTE_HANDLE_LIST), a suspended initial thread
+ * when THREAD_CREATE_FLAGS_CREATE_SUSPENDED, CLIENT_ID/IMAGE_INFO
+ * write-backs, and the PS_CREATE_INFO success state. Pinned by
+ * sem_ps/create_process.c + sem_ps/inherit.c. */
 NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS_MASK processAccess,
                              ACCESS_MASK threadAccess, OBJECT_ATTRIBUTES *processAttributes,
                              OBJECT_ATTRIBUTES *threadAttributes, ULONG processFlags,
@@ -698,7 +840,6 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
 {
     (void)processAttributes;
     (void)threadAttributes;
-    (void)processParameters; /* PEB params are kernel-built (docs/03) */
 
     if (processHandle == 0 || threadHandle == 0 || createInfo == 0)
     {
@@ -717,10 +858,20 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     {
         return status;
     }
-    if (processFlags != 0 || (threadFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0)
+    /* Flags: INHERIT_HANDLES is real; SUSPENDED is subsumed by the thread's
+     * own CREATE_SUSPENDED (kernelbase sets both for CREATE_SUSPENDED and
+     * skips its NtResumeThread — dlls/kernelbase/process.c). Anything else a
+     * caller sets is named on serial and refused (never faked — docs/03). */
+    if ((processFlags &
+         ~(ULONG)(PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED)) != 0)
     {
-        return STATUS_NOT_IMPLEMENTED; /* suspended/flagged creation: unbuilt */
+        DbgPrint("NtCreateUserProcess: unsupported process flags %#lx\n",
+                 (unsigned long)processFlags);
+        return STATUS_NOT_IMPLEMENTED;
     }
+    BOOLEAN inheritHandles = (processFlags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES) != 0;
+    BOOLEAN createSuspended = (threadFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0 ||
+                              (processFlags & PROCESS_CREATE_FLAGS_SUSPENDED) != 0;
 
     /* Walk the attribute list for the image name (+ optional CLIENT_ID
      * write-back); other attributes a Wine client passes are tolerated. */
@@ -748,6 +899,10 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     const WCHAR *imageNameUser = 0;
     SIZE_T imageNameBytes = 0;
     CLIENT_ID *clientIdOut = 0;
+    SECTION_IMAGE_INFORMATION *imageInfoUser = 0;
+    SIZE_T imageInfoBytes = 0;
+    const HANDLE *handleListUser = 0;
+    SIZE_T handleListBytes = 0;
     SIZE_T count = (totalLength - listHeader) / sizeof(PS_ATTRIBUTE);
     for (SIZE_T i = 0; i < count; i++)
     {
@@ -761,7 +916,18 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         case PS_ATTRIBUTE_CLIENT_ID:
             clientIdOut = attribute->ValuePtr;
             break;
+        case PS_ATTRIBUTE_IMAGE_INFO:
+            imageInfoUser = attribute->ValuePtr;
+            imageInfoBytes = attribute->Size;
+            break;
+        case PS_ATTRIBUTE_HANDLE_LIST:
+            handleListUser = attribute->ValuePtr;
+            handleListBytes = attribute->Size;
+            break;
         default:
+            /* Other input attributes a Wine client passes (PARENT_PROCESS,
+             * TOKEN, MACHINE_TYPE, JOB_LIST...) are tolerated, exactly as
+             * Wine's own implementation FIXMEs and continues. */
             break;
         }
     }
@@ -775,9 +941,51 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     {
         status = KiProbeForWrite(clientIdOut, sizeof(*clientIdOut), sizeof(uint64_t));
     }
+    if (NT_SUCCESS(status) && imageInfoUser != 0)
+    {
+        status = KiProbeForWrite(imageInfoUser, imageInfoBytes, 1);
+    }
+    if (NT_SUCCESS(status) && handleListUser != 0 && handleListBytes != 0)
+    {
+        if (handleListBytes % sizeof(HANDLE) != 0 || handleListBytes > 0x10000)
+        {
+            status = STATUS_INVALID_PARAMETER;
+        }
+        else
+        {
+            status = KiProbeForRead(handleListUser, handleListBytes, sizeof(HANDLE));
+        }
+    }
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+
+    /* Kernel copies of the caller's inputs before anything can block. */
+    HANDLE *handleList = 0;
+    ULONG handleCount = 0;
+    if (inheritHandles && handleListUser != 0 && handleListBytes != 0)
+    {
+        handleList = MiAllocatePool(handleListBytes);
+        if (handleList == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memcpy(handleList, handleListUser, handleListBytes);
+        handleCount = (ULONG)(handleListBytes / sizeof(HANDLE));
+    }
+    PSP_CAPTURED_PARAMS *captured = 0;
+    if (processParameters != 0)
+    {
+        status = PspCaptureProcessParameters(processParameters, &captured);
+        if (!NT_SUCCESS(status))
+        {
+            if (handleList != 0)
+            {
+                MiFreePool(handleList);
+            }
+            return status;
+        }
     }
 
     /* Pool copies: the NUL-terminated NT path, and the DOS-path spelling the
@@ -786,7 +994,8 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     WCHAR *ntPath = MiAllocatePool((imageNameChars + 1) * sizeof(WCHAR));
     if (ntPath == 0)
     {
-        return STATUS_INSUFFICIENT_RESOURCES;
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto out_inputs;
     }
     memcpy(ntPath, imageNameUser, imageNameBytes);
     ntPath[imageNameChars] = 0;
@@ -801,7 +1010,8 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     if (dosPath == 0)
     {
         MiFreePool(ntPath);
-        return STATUS_INSUFFICIENT_RESOURCES;
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto out_inputs;
     }
     for (SIZE_T i = dosSkip; i < imageNameChars; i++)
     {
@@ -811,12 +1021,27 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
 
     PEPROCESS process;
     PETHREAD threadObject;
-    /* M9: NtCreateUserProcess children inherit the (single) console —
-     * kernelbase in the child binds via the seeded ConsoleHandle. The main
-     * thread's ETHREAD (id 1, matching its TEB) is built inside
-     * PsCreateWineProcess before the thread is readied (M10). */
-    status = PsCreateWineProcess(ntPath, dosPath, TRUE, &process, &threadObject);
+    SECTION_IMAGE_INFORMATION imageInfo;
+    memset(&imageInfo, 0, sizeof(imageInfo));
+    {
+        PSP_CREATE_OPTIONS options;
+        memset(&options, 0, sizeof(options));
+        options.params = captured; /* ownership moves (freed on every path) */
+        options.userParams = captured != 0;
+        options.createSuspended = createSuspended;
+        options.inheritHandles = inheritHandles;
+        options.handleList = handleList;
+        options.handleCount = handleCount;
+        options.imageInfoOut = &imageInfo;
+        captured = 0;
+        status = PsCreateWineProcessEx(ntPath, dosPath, &options, &process, &threadObject);
+    }
     MiFreePool(ntPath);
+    if (handleList != 0)
+    {
+        MiFreePool(handleList);
+        handleList = 0;
+    }
     if (!NT_SUCCESS(status))
     {
         MiFreePool(dosPath);
@@ -840,6 +1065,13 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
             clientIdOut->UniqueProcess = (HANDLE)(uintptr_t)process->uniqueProcessId;
             clientIdOut->UniqueThread = (HANDLE)(uintptr_t)threadObject->uniqueThreadId;
         }
+        if (imageInfoUser != 0)
+        {
+            /* min(Size, actual) write-back, like every PS_ATTRIBUTE output
+             * (Wine update_attr_list shape). */
+            SIZE_T bytes = imageInfoBytes < sizeof(imageInfo) ? imageInfoBytes : sizeof(imageInfo);
+            memcpy(imageInfoUser, &imageInfo, bytes);
+        }
         PS_CREATE_INFO info;
         memset(&info, 0, sizeof(info));
         info.Size = sizeof(info);
@@ -857,5 +1089,13 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         ObDereferenceObject(threadObject);
     }
     ObDereferenceObject(process);
+    return status;
+
+out_inputs:
+    if (handleList != 0)
+    {
+        MiFreePool(handleList);
+    }
+    PspFreeCapturedParams(captured);
     return status;
 }
