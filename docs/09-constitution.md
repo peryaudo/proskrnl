@@ -18,10 +18,11 @@ observable from an unprivileged `.exe`, it is not part of the boundary and you a
 
 Never add to `kernel/`, `abi/`, `arch/`, `fs/`, or the existing `Nt*` surface anything NT
 does not have. The LLM is trained on Linux and will, unprompted, add IRQL, split the cache
-(Cc), or import POSIX idioms. **Reject these.** The permitted exception, for GUI only, is a
-*downgrade* of this rule, not a repeal: NT-absent things may be added **only as new devices
-or new processes at the outside of the boundary** (e.g. `\Device\Fb0`, wineserver-lite),
-never inside existing `Nt*` or Wine PE code. Every such addition is logged in
+(Cc), or import POSIX idioms. **Reject these.** The permitted exception, for the
+interactive console (M9) and GUI only, is a *downgrade* of this rule, not a repeal:
+NT-absent things may be added **only as new devices or new processes at the outside of the
+boundary** (e.g. the serial console backend, `\Device\Fb0`, wineserver-lite), never inside
+existing `Nt*` or Wine PE code. Every such addition is logged in
 `docs/10-hacks-ledger.md`.
 
 ## Article 3 — Stupidly correct before anything else

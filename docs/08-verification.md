@@ -188,9 +188,11 @@ echo "exit: $?"
   Keep machine-verdict output separate from human free-text. `tests/run/` greps these.
 
 At M7+ the same mechanism promotes: user-mode test exes (ntapi / Wine tests) write results
-to the console → condrv/virtio-console → host log; the runner hits the exit device. For
-GUI, `screendump` extends the loop to images. The loop's shape never changes — which is
-itself evidence the design is coherent.
+to the console → condrv → its COM1 serial backend (HACK-004, `docs/10`) → host log; the
+runner hits the exit device. At M9 the serial chardev becomes a socket/pty so the runner
+can also *write* keystrokes into the guest (the 16550 is bidirectional) and grep the echo —
+interactive-console tests without a display. For GUI, `screendump` extends the loop to
+images. The loop's shape never changes — which is itself evidence the design is coherent.
 
 GDB stub (`-s -S`) is available but *not* for the main loop (it's interactive); it's for a
 human chasing a hard bug. Invest instead in the **panic handler** (register dump, stack

@@ -64,6 +64,26 @@ Scope:      user/wine (stripped server build) ; transport via shared section + 2
 Retirement: if/when route (b) moves desktop state into kernel/win32k.
 ```
 
+## HACK-004: serial-backed console (COM1 ↔ condrv)
+
+```
+Status:     proposed
+Introduced: M9
+Not in NT:  conhost's input arrives from win32k's raw input path (i8042prt/kbdclass →
+            win32k → conhost) and its output is drawn into a window. A COM port is never
+            the interactive console's transport. (NT's EMS/SAC serial console is a
+            separate management channel, not condrv's backend.)
+Reason:     M9 needs interactive console I/O before any display or keyboard hardware
+            exists (both are M11+). The 16550 is bidirectional, already carries all
+            kernel output, and a socket/pty chardev keeps the headless scripted test
+            loop (docs/08) unchanged — the cheapest input source an LLM-driven runner
+            can drive deterministically.
+Scope:      drivers/condrv.c (backend hookup) ; arch/x86_64/serial.c (RX side)
+Retirement: when the real input path (\Device\Input0, M11 / HACK-002) exists and conhost
+            is GUI-ified (M15), delete the serial backend; condrv's transport becomes
+            the input queue + window like real NT.
+```
+
 ---
 
 ## Non-hacks (recorded here to prevent re-litigation)
@@ -73,7 +93,8 @@ ledger entry and no retirement condition:
 
 - **WOW64 / 32-bit support** — NT's real mechanism. Kernel cost is a few hundred lines; no
   `Nt*` semantics change.
-- **conhost + condrv** — real NT (Vista/Win8) architecture; adopted, not invented.
+- **conhost + condrv** — real NT (Vista/Win8) architecture; adopted, not invented. (Their
+  M9 *serial transport* is not NT, and is the logged item — HACK-004.)
 - **smss-equivalent initial process** — real NT boot structure.
 - **Section objects, APCs, unified waiting, handles** — the NT core we deliberately keep.
 - **Shared-section transport for wineserver-lite** — NT itself uses shared sections between

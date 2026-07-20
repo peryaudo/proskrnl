@@ -252,12 +252,15 @@ These are deviations from NT's *implementation*, never from its *observable sema
 Every one of these is unobservable from user mode, so none is a contract. See
 `docs/09-constitution.md`, which makes these *rules*, not options.
 
-## GUI-era additions that are NOT in NT (tracked as HACKs)
+## Console/GUI-era additions that are NOT in NT (tracked as HACKs)
 
 These are the only places we add something NT lacks. Each lives strictly at the boundary's
 *outside* (a new device or a new process), never inside the existing `Nt*` or Wine PE code,
 and each is logged in `docs/10-hacks-ledger.md`:
 
+- **serial-backed console** (HACK-004, M9) — condrv's transport is the COM1 UART in both
+  directions; real NT feeds conhost from win32k's raw input path and draws its output into
+  a window. Retired when the M11+ input/display path exists.
 - **`\Device\Fb0`** (HACK-001) — map the framebuffer to user mode; NT would own this via a
   display driver behind win32k.
 - **`\Device\Input0`** (HACK-002) — raw input stream to user mode; NT routes this through
