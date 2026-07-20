@@ -32,11 +32,13 @@
 #include "abi/syscall_numbers.h"
 
 typedef NTSTATUS (*KI_SERVICE_ROUTINE)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+                                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t, uint64_t);
 
-/* The widest service: the 11-argument NtCreateFile / NtQueryDirectoryFile
- * (M6) and NtCreateUserProcess / NtCreateThreadEx (M7). */
-#define KI_MAX_SYSCALL_ARGUMENTS 11
+/* The widest service: the 14-argument NtCreateNamedPipeFile (M9); before it
+ * the 11-argument NtCreateFile / NtQueryDirectoryFile (M6) and
+ * NtCreateUserProcess / NtCreateThreadEx (M7). */
+#define KI_MAX_SYSCALL_ARGUMENTS 14
 
 typedef struct
 {
@@ -122,7 +124,8 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
             status = descriptor->service(trapFrame->r10, trapFrame->rdx, trapFrame->r8,
                                          trapFrame->r9, stackArguments[0], stackArguments[1],
                                          stackArguments[2], stackArguments[3], stackArguments[4],
-                                         stackArguments[5], stackArguments[6]);
+                                         stackArguments[5], stackArguments[6], stackArguments[7],
+                                         stackArguments[8], stackArguments[9]);
         }
 
         thread->previousMode = KernelMode;
