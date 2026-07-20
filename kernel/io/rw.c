@@ -15,17 +15,50 @@
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
 
-/* A user-mode ApcRoutine needs the M7 KiUserApcDispatcher return path;
- * refuse loudly rather than dropping the completion (io.h). */
-static BOOLEAN IopApcUnsupported(PIO_APC_ROUTINE apcRoutine)
+/* The APC leg of the async-completion protocol (pinned by
+ * sem_file/apc_completion.c on the oracle): a transfer carrying a user
+ * ApcRoutine queues a user APC when the request completes — i.e. exactly
+ * when the IOSB is written — and KiUserApcDispatcher later calls
+ * PIO_APC_ROUTINE(ApcContext, iosb, reserved) at the next alertable wait.
+ * The block is allocated up front so completion itself cannot fail. */
+static NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
+                                        PIO_STATUS_BLOCK iosb, PKAPC *apcOut)
 {
-    return apcRoutine != 0 && ExGetPreviousMode() == UserMode;
+    *apcOut = 0;
+    if (apcRoutine == 0 || ExGetPreviousMode() != UserMode)
+    {
+        return STATUS_SUCCESS;
+    }
+    PKAPC apc = MiAllocatePool(sizeof(KAPC));
+    if (apc == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
+    apc->normalContext = (ULONG_PTR)apcContext;
+    apc->systemArgument1 = (ULONG_PTR)iosb; /* the caller's very IOSB */
+    apc->systemArgument2 = 0;               /* the reserved argument */
+    *apcOut = apc;
+    return STATUS_SUCCESS;
+}
+
+/* Write the IOSB / signal the event (IopCompleteRequest), then queue the
+ * completion APC — the IOSB is in place before the routine can run. */
+static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc, NTSTATUS status,
+                                    ULONG_PTR information)
+{
+    NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
+    if (apc != 0)
+    {
+        KiInsertQueueUserApc(KeGetCurrentThread(), apc);
+    }
+    return final;
 }
 
 /* Shared argument shaping for NtReadFile/NtWriteFile. */
 static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUTINE apc,
-                                 PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteOffset,
-                                 PFILE_OBJECT *fileOut, uint64_t *offsetOut)
+                                 PVOID apcContext, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteOffset,
+                                 PFILE_OBJECT *fileOut, uint64_t *offsetOut, PKAPC *apcOut)
 {
     if (iosb == 0)
     {
@@ -36,11 +69,6 @@ static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUT
     {
         return status;
     }
-    if (IopApcUnsupported(apc))
-    {
-        return STATUS_NOT_IMPLEMENTED;
-    }
-
     PFILE_OBJECT file;
     status = IopReferenceFileByHandle(handle, needed, &file);
     if (!NT_SUCCESS(status))
@@ -81,6 +109,13 @@ static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUT
         }
         offset = (uint64_t)captured.QuadPart;
     }
+    /* Last, so no failure path below needs to unwind it. */
+    status = IopPrepareCompletionApc(apc, apcContext, iosb, apcOut);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(file);
+        return status;
+    }
     *fileOut = file;
     *offsetOut = offset;
     return STATUS_SUCCESS;
@@ -90,12 +125,12 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
                     PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length, PLARGE_INTEGER byteOffset,
                     PULONG key)
 {
-    (void)apcContext;
     (void)key;
     PFILE_OBJECT file;
     uint64_t offset;
-    NTSTATUS status =
-        IopStartTransfer(handle, FILE_READ_DATA, apc, iosb, byteOffset, &file, &offset);
+    PKAPC apcBlock = 0;
+    NTSTATUS status = IopStartTransfer(handle, FILE_READ_DATA, apc, apcContext, iosb, byteOffset,
+                                       &file, &offset, &apcBlock);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -103,8 +138,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     status = KiProbeForWrite(buffer, length, 1);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file);
-        return status;
+        goto abandon;
     }
 
     /* M9 device path: a stream device (npfs/condrv/serial) reads through its
@@ -115,8 +149,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         void *bounce = length != 0 ? MiAllocatePool(length) : 0;
         if (length != 0 && bounce == 0)
         {
-            ObDereferenceObject(file);
-            return STATUS_INSUFFICIENT_RESOURCES;
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto abandon;
         }
         ULONG_PTR transferred = 0;
         status = file->device->ops->Read(file, bounce, length, &transferred);
@@ -130,7 +164,11 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
         {
-            status = IopCompleteRequest(iosb, event, status, transferred);
+            status = IopCompleteTransfer(iosb, event, apcBlock, status, transferred);
+        }
+        else
+        {
+            goto abandon;
         }
         ObDereferenceObject(file);
         return status;
@@ -140,15 +178,14 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file);
-        return status;
+        goto abandon;
     }
 
     if (offset >= cache->fileSize)
     {
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
-        status = IopCompleteRequest(iosb, event, STATUS_END_OF_FILE, 0);
+        status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_END_OF_FILE, 0);
         ObDereferenceObject(file);
         return status;
     }
@@ -162,7 +199,16 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + (LONGLONG)bytes;
     }
-    status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, (ULONG_PTR)bytes);
+    status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
+    ObDereferenceObject(file);
+    return status;
+
+abandon:
+    /* The request never completed (no IOSB write): the APC must not fire. */
+    if (apcBlock != 0)
+    {
+        MiFreePool(apcBlock);
+    }
     ObDereferenceObject(file);
     return status;
 }
@@ -171,12 +217,12 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
                      PIO_STATUS_BLOCK iosb, const void *buffer, ULONG length,
                      PLARGE_INTEGER byteOffset, PULONG key)
 {
-    (void)apcContext;
     (void)key;
     PFILE_OBJECT file;
     uint64_t offset;
-    NTSTATUS status =
-        IopStartTransfer(handle, FILE_WRITE_DATA, apc, iosb, byteOffset, &file, &offset);
+    PKAPC apcBlock = 0;
+    NTSTATUS status = IopStartTransfer(handle, FILE_WRITE_DATA, apc, apcContext, iosb, byteOffset,
+                                       &file, &offset, &apcBlock);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -184,8 +230,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     status = KiProbeForRead(buffer, length, 1);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file);
-        return status;
+        goto abandon;
     }
 
     /* M9 device path: stream devices write through their own (possibly
@@ -198,8 +243,8 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             bounce = MiAllocatePool(length);
             if (bounce == 0)
             {
-                ObDereferenceObject(file);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto abandon;
             }
             memcpy(bounce, buffer, length); /* probed above */
         }
@@ -211,7 +256,11 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         }
         if (NT_SUCCESS(status))
         {
-            status = IopCompleteRequest(iosb, event, status, transferred);
+            status = IopCompleteTransfer(iosb, event, apcBlock, status, transferred);
+        }
+        else
+        {
+            goto abandon;
         }
         ObDereferenceObject(file);
         return status;
@@ -221,8 +270,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file);
-        return status;
+        goto abandon;
     }
 
     /* A write past EOF extends the file; the gap reads as zeroes (the
@@ -232,8 +280,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         status = file->device->ops->SetEndOfFile(file, offset + length);
         if (!NT_SUCCESS(status))
         {
-            ObDereferenceObject(file);
-            return status;
+            goto abandon;
         }
     }
     if (length != 0)
@@ -242,15 +289,23 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         status = file->device->ops->WritebackRange(file, offset, length);
         if (!NT_SUCCESS(status))
         {
-            ObDereferenceObject(file);
-            return status;
+            goto abandon;
         }
     }
     if (file->synchronousIo)
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + length;
     }
-    status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, length);
+    status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
+    ObDereferenceObject(file);
+    return status;
+
+abandon:
+    /* The request never completed (no IOSB write): the APC must not fire. */
+    if (apcBlock != 0)
+    {
+        MiFreePool(apcBlock);
+    }
     ObDereferenceObject(file);
     return status;
 }

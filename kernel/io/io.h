@@ -10,11 +10,10 @@
  * table, and all I/O is synchronous under the hood (Art. 3), completing
  * before the syscall returns.
  *
- * APC completion: accepted at the boundary but deliverable only once M7
- * brings KiUserApcDispatcher; until then a user-mode ApcRoutine is refused
- * loudly (STATUS_NOT_IMPLEMENTED), never dropped silently. The oracle-side
- * spec already exists (sem_file/apc_completion.c, excluded from the
- * proskrnl manifest).
+ * APC completion (sem_file/apc_completion.c): a transfer carrying a user
+ * ApcRoutine queues a user APC when the request completes — the IOSB is
+ * written first — and the M7 KiUserApcDispatcher delivers it at the next
+ * alertable wait as PIO_APC_ROUTINE(ApcContext, iosb, reserved).
  */
 #ifndef PROSKRNL_KERNEL_IO_IO_H
 #define PROSKRNL_KERNEL_IO_IO_H
