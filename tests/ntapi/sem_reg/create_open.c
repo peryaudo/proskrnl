@@ -111,6 +111,31 @@ START_TEST(create_open)
             NtClose(event);
     }
 
+    /* Zero DesiredAccess: binding to an EXISTING key is refused (Wine
+     * server/handle.c alloc_handle: mapped access 0 -> ACCESS_DENIED), while
+     * CREATING a new key is exempt (the no-access-check path). Fuzzer-found. */
+    {
+        HANDLE zero;
+        ULONG zdisp = 0;
+        init_ustr(&name, base_path);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        status = NtOpenKey(&zero, 0, &attr);
+        ok(status == STATUS_ACCESS_DENIED, "zero-access open existing -> %08lx",
+           (unsigned long)status);
+        status = NtCreateKey(&zero, 0, &attr, 0, NULL, 0, &zdisp);
+        ok(status == STATUS_ACCESS_DENIED, "zero-access create existing -> %08lx",
+           (unsigned long)status);
+        init_ustr(&name, W("\\Registry\\Machine\\Software\\prsk_m8_create_open\\zeroed"));
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        status = NtCreateKey(&zero, 0, &attr, 0, NULL, 0, &zdisp);
+        ok(status == STATUS_SUCCESS && zdisp == REG_CREATED_NEW_KEY,
+           "zero-access create new -> %08lx disposition %lu", (unsigned long)status,
+           (unsigned long)zdisp);
+        if (NT_SUCCESS(status))
+            NtClose(zero);
+        reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_m8_create_open\\zeroed"));
+    }
+
     /* Cleanup: delete sub then base. */
     reg_delete_sub(base, W("sub"));
     status = NtDeleteKey(base);
