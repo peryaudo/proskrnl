@@ -139,6 +139,7 @@ ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
 USER_RT   := $(BUILD)/user/init-tests/crt0.o \
              $(BUILD)/user/init-tests/syscall_stubs.o
 MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
+             $(BUILD)/modules/m8_persist.bin \
              $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/m7_smoke.exe \
              $(BUILD)/modules/sample.dat
 # Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
@@ -146,6 +147,7 @@ MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
 # RAM-disk data file that is registered but never run (kernel/init/main.c).
 MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
                 $(BUILD)/modules/crash.bin=expect=av \
+                $(BUILD)/modules/m8_persist.bin=expect=0 \
                 $(BUILD)/modules/pe_smoke.exe=expect=0 \
                 $(BUILD)/modules/m7_smoke.exe=m7 \
                 $(BUILD)/modules/sample.dat=initrd

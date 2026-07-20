@@ -182,9 +182,39 @@ proskrnl() {
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
 fuzz() { exec "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 
+# The M8 persistence acceptance (docs/02 "a value written by a user program
+# survives reboot"): boot the SAME disk image twice. The m8_persist boot
+# module seeds registry values on boot 1 (hive absent) and byte-verifies them
+# — and the volatile key's absence — on boot 2, when the kernel has reloaded
+# the hive the first boot wrote.
+persist() {
+    make -C "$ROOT" >/dev/null
+    local img="$ROOT/build/tests/persist.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl.hdd" "$img"
+
+    local log1="$ROOT/build/tests/persist1.log" log2="$ROOT/build/tests/persist2.log"
+    LOG="$log1" TIMEOUT="${TIMEOUT:-60}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    if ! grep -q 'm8_persist: seeded' "$log1" || \
+       ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log1"; then
+        echo "== persist: FAIL (boot 1 did not seed; see $log1) =="
+        return 1
+    fi
+    LOG="$log2" TIMEOUT="${TIMEOUT:-60}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    if ! grep -q 'm8_persist: verified' "$log2" || \
+       ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log2" || \
+       ! grep -qE '^\[KTEST\] M8 PASS' "$log2"; then
+        echo "== persist: FAIL (boot 2 did not verify; see $log2) =="
+        return 1
+    fi
+    echo "== persist: PASS (seeded on boot 1, verified after reboot) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
     fuzz)     fuzz "${@:2}" ;;
-    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]}" >&2; exit 2 ;;
+    persist)  persist ;;
+    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]|persist}" >&2; exit 2 ;;
 esac
