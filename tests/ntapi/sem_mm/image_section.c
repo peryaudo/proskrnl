@@ -11,11 +11,8 @@
  */
 #include "util.h"
 
-#if defined(NTAPI_ORACLE)
-
 #include <windows.h>
-#include <stdio.h>
-#include <string.h>
+#include <string.h> /* declarations only: the .exe links no CRT (ntapi.c) */
 
 /* SECTION_IMAGE_INFORMATION with snake_case fields; layout as
  * wine/include/winternl.h (x64), which mingw's winternl.h omits. */
@@ -187,15 +184,3 @@ START_TEST(image_section)
         DeleteFileA(tmp_file);
     }
 }
-
-#elif defined(NTAPI_PROSKRNL)
-
-START_TEST(image_section)
-{
-    /* Creating an image section takes a file handle; proskrnl grows
-     * NtCreateFile at M6. The M5 kernel image path is proven by
-     * tests/kmt/m5_section.c and the PE boot module. */
-    skip("image sections need NtCreateFile (M6)");
-}
-
-#endif

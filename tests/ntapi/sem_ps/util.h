@@ -15,8 +15,6 @@
 
 #include "../ntapi.h"
 
-#if defined(NTAPI_ORACLE)
-
 #ifndef NtCurrentProcess
 #define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
 #endif
@@ -43,14 +41,5 @@ enum nls_section_type
 #define PS_SystemBasicInformation    SystemBasicInformation
 #define PS_PROCESS_BASIC_INFORMATION PROCESS_BASIC_INFORMATION
 #define PS_SYSTEM_BASIC_INFORMATION  SYSTEM_BASIC_INFORMATION
-
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntpsapi.h"
-
-#define PS_ProcessBasicInformation   ProcessBasicInformation
-#define PS_SystemBasicInformation    SystemBasicInformation
-#define PS_PROCESS_BASIC_INFORMATION PROCESS_BASIC_INFORMATION
-#define PS_SYSTEM_BASIC_INFORMATION  SYSTEM_BASIC_INFORMATION
-#endif
 
 #endif /* NTAPI_SEM_PS_UTIL_H */

@@ -19,9 +19,7 @@
 /* char16_t (2-byte) string literal, as Wine's tests spell it. */
 #define W(s) u##s
 
-#if defined(NTAPI_ORACLE)
-
-#include <string.h>   /* memcmp/memset; proskrnl mode gets them from ntapi.c */
+#include <string.h>   /* declarations only: the .exe links no CRT; ntapi.c defines them */
 #include <winioctl.h> /* CTL_CODE, FILE_DEVICE_NAMED_PIPE */
 
 /* Prototypes mingw's winternl.h omits (as wine/include/winternl.h). */
@@ -90,19 +88,6 @@ typedef struct
     ULONG ReadMode;
     ULONG CompletionMode;
 } SEM_FILE_PIPE_INFORMATION;
-
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntioapi.h"
-#include "abi/ntobapi.h" /* NtClose */
-#include "abi/ntpsapi.h" /* NtDelayExecution */
-
-typedef FILE_PIPE_INFORMATION SEM_FILE_PIPE_INFORMATION;
-
-/* Freestanding: no <string.h>; implementations live in ntapi.c. */
-void *memset(void *destination, int value, unsigned long length);
-void *memcpy(void *destination, const void *source, unsigned long length);
-int memcmp(const void *left, const void *right, unsigned long length);
-#endif
 
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
 static inline void init_ustr(UNICODE_STRING *str, const void *wide)

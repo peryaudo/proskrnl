@@ -1,10 +1,9 @@
 /*
  * sem_mm/util.h — shared helpers for the virtual-memory tests (M4–M5).
  *
- * Same two-mode arrangement as sem_ob/util.h: oracle mode declares the Nt*
- * prototypes winternl.h omits (as Wine's own ntdll tests do) and leans on the
- * system headers for the MEM_/PAGE_/SEC_ flags and the info structs; proskrnl
- * mode gets all of it from the generated abi/ntmmapi.h.
+ * Same arrangement as sem_ob/util.h: declares the Nt* prototypes winternl.h
+ * omits (as Wine's own ntdll tests do) and leans on the system headers for
+ * the MEM_/PAGE_/SEC_ flags and the info structs.
  */
 #ifndef NTAPI_SEM_MM_UTIL_H
 #define NTAPI_SEM_MM_UTIL_H
@@ -13,8 +12,6 @@
 
 /* char16_t (2-byte) string literal, as Wine's tests spell it. */
 #define W(s) u##s
-
-#if defined(NTAPI_ORACLE)
 
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE_T *, ULONG, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
@@ -52,30 +49,14 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySection(HANDLE, ULONG, PVOID, SIZE_T, SIZE_T *);
 #define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
 #endif
 
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntmmapi.h"
-#include "abi/ntobapi.h" /* NtClose */
-
-#define MEMORY_BASIC_INFO_CLASS  MemoryBasicInformation
-#define SECTION_BASIC_INFO_CLASS SectionBasicInformation
-#define SECTION_IMAGE_INFO_CLASS SectionImageInformation
-#endif
-
 /* The tests fill these with snake_case fields and pass them to NtQuerySection;
- * the layout matches SECTION_BASIC_INFORMATION byte-for-byte in both modes
- * (asserted against the generated header in proskrnl mode), so one definition
- * serves both. */
+ * the layout matches SECTION_BASIC_INFORMATION byte-for-byte. */
 typedef struct
 {
     PVOID base_address;
     ULONG attributes;
     LARGE_INTEGER size;
 } mm_section_basic_info;
-
-#if defined(NTAPI_PROSKRNL)
-_Static_assert(sizeof(mm_section_basic_info) == sizeof(SECTION_BASIC_INFORMATION),
-               "mm_section_basic_info must match the abi layout");
-#endif
 
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. (inline:
  * not every test in this bucket names objects.) */

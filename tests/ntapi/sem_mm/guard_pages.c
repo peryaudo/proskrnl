@@ -13,8 +13,6 @@
  */
 #include "util.h"
 
-#if defined(NTAPI_ORACLE)
-
 #include <windows.h>
 
 /* volatile: written from the exception handler mid-statement; without it the
@@ -91,15 +89,3 @@ START_TEST(guard_pages)
     status = NtFreeVirtualMemory(NtCurrentProcess(), &base, &size, MEM_RELEASE);
     ok(status == STATUS_SUCCESS, "release -> %08lx", (unsigned long)status);
 }
-
-#elif defined(NTAPI_PROSKRNL)
-
-START_TEST(guard_pages)
-{
-    /* Observing a guard fault from user mode needs the M7 exception
-     * dispatcher; the kernel's guard machinery is covered by stack_growth
-     * and tests/kmt/m5_section.c until then. */
-    skip("guard-fault observation needs the M7 user-mode dispatcher");
-}
-
-#endif

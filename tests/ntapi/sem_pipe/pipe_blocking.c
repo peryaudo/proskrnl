@@ -1,17 +1,10 @@
 /*
- * sem_pipe/pipe_blocking.c — blocking listen/read/write (M9). ORACLE-ONLY:
- * threads come from kernel32, so this test never enters the proskrnl
- * manifest (flat binaries are single-threaded); its proskrnl twin is the
- * m9_smoke.exe boot module, which threads through the real ntdll.
+ * sem_pipe/pipe_blocking.c — blocking listen/read/write (M9), threaded
+ * through kernel32's CreateThread on both sides (the test .exe links the
+ * pinned Wine kernel32/kernelbase; on proskrnl the loader attaches the same
+ * DLLs from C:\windows\system32).
  */
 #include "util.h"
-
-#ifdef NTAPI_PROSKRNL
-START_TEST(pipe_blocking)
-{
-    skip("threaded blocking test is oracle-only (see m9_smoke.exe)");
-}
-#else
 
 static DWORD WINAPI connect_thread(void *param)
 {
@@ -147,4 +140,3 @@ START_TEST(pipe_blocking)
     test_blocking_read();
     test_blocking_write();
 }
-#endif /* NTAPI_PROSKRNL */
