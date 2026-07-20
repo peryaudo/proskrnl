@@ -87,9 +87,18 @@
 #define NTSYS_NtAlertThreadByThreadId 0x0067
 #define NTSYS_NtInitializeNlsFiles 0x00a4
 #define NTSYS_NtGetNlsSectionPtr 0x00a1
-#define NTSYS_NtOpenKey 0x0012
-#define NTSYS_NtQueryValueKey 0x0017
 #define NTSYS_NtQueryVolumeInformationFile 0x0049
+#define NTSYS_NtCreateKey 0x001d
+#define NTSYS_NtOpenKey 0x0012
+#define NTSYS_NtOpenKeyEx 0x00b6
+#define NTSYS_NtDeleteKey 0x0094
+#define NTSYS_NtDeleteValueKey 0x0095
+#define NTSYS_NtSetValueKey 0x0060
+#define NTSYS_NtQueryValueKey 0x0017
+#define NTSYS_NtEnumerateKey 0x0032
+#define NTSYS_NtEnumerateValueKey 0x0013
+#define NTSYS_NtQueryKey 0x0016
+#define NTSYS_NtFlushKey 0x009a
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
