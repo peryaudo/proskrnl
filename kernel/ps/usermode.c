@@ -311,8 +311,11 @@ BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, ui
     record.ExceptionCode = exceptionCode;
     record.ExceptionAddress = (PVOID)(uintptr_t)trapFrame->rip;
     if (exceptionCode == (ULONG)STATUS_ACCESS_VIOLATION ||
-        exceptionCode == (ULONG)STATUS_IN_PAGE_ERROR)
+        exceptionCode == (ULONG)STATUS_IN_PAGE_ERROR ||
+        exceptionCode == (ULONG)STATUS_GUARD_PAGE_VIOLATION)
     {
+        /* Page-fault-family records carry [access, address] — a guard
+         * violation included (sem_mm/guard_pages pins the address). */
         record.NumberParameters = 2;
         record.ExceptionInformation[0] = 0; /* read (we do not decode the PF error code yet) */
         record.ExceptionInformation[1] = faultAddress;
