@@ -137,157 +137,30 @@ local macOS Wine.
 
 ## Status
 
-**M9 complete: named pipes, the ConDrv console, and Wine's conhost — the machine has an
-interactive console over the serial wire.** The Io layer grew optional stream ops beside
-the page-cache file path, and three services went live — `NtDeviceIoControlFile`,
-`NtFsControlFile`, and the 14-argument `NtCreateNamedPipeFile` (the new dispatch maximum).
-On them stand two new drivers. **npfs** (`fs/npfs/`) implements NT named-pipe semantics
-pinned test-first on the Wine oracle (`tests/ntapi/sem_pipe/`, green on Wine **and** the
-kernel): instance accounting under `MaximumInstances`, connect-before-listen
-(`FSCTL_PIPE_LISTEN` → `STATUS_PIPE_CONNECTED`), disconnect/broken-pipe status matrix,
-byte-stream coalescing with quota-blocked writes, and the message framing rpcrt4 will
-need — one message per read, `STATUS_BUFFER_OVERFLOW` partial reads, zero-byte messages,
-per-end read-mode switching; blocking rides plain KEVENTs under the one-lock no-preemption
-core. **condrv** (`drivers/condrv.c`) is the real-NT console architecture (docs/10
-"non-hacks"): clients open `\Device\ConDrv\{Connection,Reference,Input,Output,ScreenBuffer}`
-and speak the fully generated `IOCTL_CONDRV_*` surface (`abi/ntcondrv.h`); the kernel is a
-message queue that pumps every verb to **Wine's own conhost, compiled straight from the
-pinned tree** — its two wineserver call sites gained a runtime-dormant proskrnl leg as a
-fork commit on `proskrnl-target` (Art. 10; dead code under regular Wine), a transport that
-mirrors wineserver's `get_next_console_request` semantics, including parked blocking
-reads; `user/conhost/` carries only standalone-PE glue. conhost's tty, both directions, is `\Device\Serial0` over the COM1 UART —
-the milestone's logged hack (HACK-004; RX is polled, no IRQ plumbing) — and new console
-processes are born with kernel-seeded `ConsoleHandle`/`hStd*` handles that unmodified
-kernelbase binds to. The bring-up also flushed three latent kernel bugs the Win32 surface
-was the first to hit (user-entry stack alignment vs. the NT convention, handle-blind
-`NtQueryInformationThread`, additional-thread stacks that never grew). Acceptance:
-`user/m9/m9_smoke.exe` drives threaded blocking pipes and a `WriteConsoleA` through
-kernelbase → ConDrv → conhost → serial inside `make run` (`[KTEST] M9 PASS`), and
-`tests/run/run.sh console` boots with the serial wire on a socket, **types** `ping`, and
-asserts conhost's line-discipline echo plus the byte-exact cooked line
-(`user/m9/m9_echo.exe`). Wrinkles and scope cuts: `docs/03` "M9 npfs/condrv notes".
-
-**The M8 foundation: the registry (Cm) and the real initial process chain —
-kernel → smss-equivalent → hello.exe.** The kernel grew its fourth NT department:
-`kernel/cm/` implements the `Nt*Key*` surface — `NtCreateKey`/`NtOpenKey`/`NtOpenKeyEx`/
-`NtQueryValueKey`/`NtSetValueKey`/`NtDeleteKey`/`NtDeleteValueKey`/`NtEnumerateKey`/
-`NtEnumerateValueKey`/`NtQueryKey`/`NtFlushKey` — with the NT semantics pinned test-first
-on the Wine oracle (`tests/ntapi/sem_reg/`, green on Wine **and** on the kernel): open-if
-create with dispositions, always-case-insensitive lookup, sorted enumeration, the
-`STATUS_KEY_DELETED` stale-handle limbo, volatile keys, and the per-info-class
-`TOO_SMALL`/`OVERFLOW` buffer protocol. Persistence is deliberately the dumbest correct
-thing (Art. 3): the whole registry lives in the pool as a tree, and every successful
-mutation rewrites one hive file in **our own format** ("proskrnl hive v1",
-`kernel/cm/hive.c` — not Microsoft's regf; docs/03 "M8 Cm notes") through the ordinary
-write-through file path, so a mutation is on disk when its syscall returns and a torn
-rewrite is detected structurally (magic written last). The boot-twice harness
-`tests/run/run.sh persist` proves the milestone's acceptance: values written by a ring-3
-program on boot 1 are byte-verified after a reboot, and volatile keys are gone. On top of
-that, `NtCreateUserProcess` gained its common single-image spawn (image via
-`PS_ATTRIBUTE_IMAGE_NAME`, real process/thread handles, `CLIENT_ID` write-back), and the
-boot now runs NT's actual startup structure: the kernel launches `user/smss/smss.c` — a
-native ntdll-only PE that proves `\Registry` from ring 3, spawns `hello.exe` through
-`NtCreateUserProcess`, waits, and propagates its exit code — `[KTEST] module smss.exe
-PASS`, `[KTEST] M8 PASS`. The fuzzer's op model grew the ten registry services the same
-day (docs/08).
-
-**The M7 mountain this stands on: the unmodified Wine PE ntdll boots `hello.exe` on the
-kernel.**
-M7 is the mountain: the process lifecycle and the ring-3 return protocol Wine's ntdll
-depends on. The syscall boundary now speaks the **NT x64 calling convention using the
-pinned Wine tree's own 64-bit syscall ids** (generated from `dlls/ntdll/ntsyscalls.h`),
-so an *unmodified* PE ntdll's thunks — which place that id in `eax` and execute a raw
-`syscall` — land on the right kernel service; `kernel/syscall/entry.S` synthesizes a full
-trap frame and returns via `iretq` so an arbitrary user context can be restored. On top of
-that the kernel now builds the **byte-exact PEB / TEB / `RTL_USER_PROCESS_PARAMETERS` /
-KUSER_SHARED_DATA** an unmodified ntdll reads (`kernel/ps/peb.c`; the shared page mapped at
-NT's fixed `0x7ffe0000` with `SystemCall == 0`, keeping Wine's thunks on the raw-syscall
-path), creates **user threads** as first-class Ob objects (`kernel/ps/thread.c` —
-`NtCreateThreadEx`, join via handle, `NtQueryInformationThread`), delivers **user-mode
-APCs** through `KiUserApcDispatcher` at alertable points (`kernel/ke/apc.c`), and implements
-the **exception/return protocol** (`kernel/ps/usermode.c`): a contained fault (or
-`NtRaiseException`) is delivered to the process's `KiUserExceptionDispatcher` with an
-`EXCEPTION_RECORD` + `CONTEXT` laid out exactly where Wine's dispatcher reads them, and
-`NtContinue` / `NtContinueEx` resume an arbitrary context. The dispatcher entry points are
-resolved from the image's export table exactly as they will be from ntdll
-(`kernel/mm/pecoff.c`). The acceptance artifact is a real PE client,
-`user/init-tests/m7_smoke.exe`, that drives the whole boundary from ring 3 — reading the
-kernel-built PEB/TEB/KUSER_SHARED_DATA, creating and joining a second thread, taking a
-delivered APC, flipping page protection, and **catching an access violation in its own
-`KiUserExceptionDispatcher` and resuming via `NtContinue`** (the milestone's SEH test) —
-and exits cleanly. On top of that boundary the **Wine bring-up itself** now runs: the
-pinned fork's `proskrnl-target` branch replaces ntdll's unixlib plumbing with
-null-dispatcher fallbacks (27 lines — the whole "hack meter" diff), and the build bakes
-the *unmodified* PE `ntdll.dll` + `kernel32`/`kernelbase` and the NLS files onto the FAT
-boot volume as `C:\windows\system32`. The kernel maps ntdll beside the executable, resolves
-`LdrInitializeThunk`/`RtlUserThreadStart`/`KiUser*` from **its** exports, and starts the
-first thread on the NT CONTEXT protocol; ntdll's own loader then runs the process — heap,
-TLS, NLS tables mapped via `NtInitializeNlsFiles`/`NtGetNlsSectionPtr`, `kernel32.dll`
-loaded from disk through `NtCreateSection(SEC_IMAGE)`. The acceptance client
-`user/hello/hello.exe` — a real MS-ABI PE **linked only against Wine's ntdll** — prints
-over `NtDisplayString`, then takes a deliberate access violation inside a
-`.seh_handler`-guarded frame and resumes through ntdll's real `KiUserExceptionDispatcher` →
-`RtlDispatchException` → `.pdata` unwind path (docs/02's SEH test), and exits 0:
-`[KTEST] module hello.exe PASS`, `[KTEST] M7 PASS`. After this, the rest of Wine is data.
-
-**Everything below describes the M1–M6 foundation this builds on.** The repository began as
-a **constitution** — documents that fix the design
-decisions before implementation, so neither a human nor an LLM contributor can quietly erode
-them (start at `docs/09`). On the M1 bring-up (Limine boot, register-dumping panic handler,
-physical page frames), the M2 multithreading core (own page tables, one pool, 32-level
-priority scheduler under one dispatcher lock, the NT dispatcher objects and `KeWaitFor*`),
-the M3 **object manager** (refcounted headers + type system, growable handle table, the
-`\`-rooted namespace), the M4 **user-mode/syscall boundary** (own GDT/TSS +
-`syscall`/`sysret`, per-process address spaces and handle tables, the reserve/commit VAD
-engine, TEB allocation, user-fault containment), and the M5 **section engine** (anonymous /
-file-backed / `SEC_IMAGE` sections, the PE32+ parser, NT-shaped guard-page stacks), the
-kernel now has a real storage stack. M6 adds a **virtio-blk driver** over the modern
-virtio-pci transport (`drivers/pci.c`, `drivers/virtio/` — a polled split virtqueue,
-written from the OASIS virtio 1.2 specification with per-constant citations, the pinned
-QEMU as runtime cross-check), **FAT32 read/write** on the GPT boot disk (`fs/fat32/` —
-BPB/FAT-chain/long-file-name handling per the Microsoft FAT specification; one FCB per
-on-disk file carries the NT share/lock/delete state), and the **I/O manager**
-(`kernel/io/` — Device and File object types, a namespace parse hook so
-`NtCreateFile("\??\C:\...")` resolves through the `C:` symlink into the FS, an internal
-`file_operations`-style vfs, and no IRP — docs/03). File data lives in the generalized
-**unified page cache** (`kernel/mm/pagecache.c`): `NtReadFile`/`NtWriteFile` copy through
-the very frames data sections map, so the mapped-view/read/write coherence stress test
-(`tests/ntapi/sem_mm/file_coherence.c`, the docs/08 "self-checking stress test") is
-structural rather than lucky, and every write goes straight to disk (immediate writeback,
-Art. 3). The surface — `NtCreateFile`/`NtOpenFile`/`NtReadFile`/`NtWriteFile`/
-`NtQueryInformationFile`/`NtSetInformationFile`/`NtQueryDirectoryFile`/
-`NtQueryAttributesFile`/`NtFlushBuffersFile`/`NtLockFile`/`NtUnlockFile` — carries the NT
-file semantics this project exists for: share modes (`STATUS_SHARING_VIOLATION`),
-case-insensitive lookup with case-preserving long names, delete-on-close and
-`FileDispositionInformation`, byte-range locks, and the async-completion contract (IOSB
-written before the completion event fires), all pinned FIRST on the Wine oracle
-(`tests/ntapi/sem_file/`, Art. 5) and green on the kernel; `NtCreateSection(SEC_IMAGE)`
-now maps images from on-disk files. `abi/` (now also `ntioapi.h`) stays generated from
-Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no hand-typed
-constants):
-
-```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M9 PASS on serial
-tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
-tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
-tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
-tests/run/run.sh persist    # the M8 acceptance: registry values survive a reboot (boot twice)
-tests/run/run.sh console    # the M9 acceptance: type into the serial console, watch conhost echo
-```
-
-The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") generates random
-`Nt*` sequences, runs each on the Wine oracle and on proskrnl, and flags any divergence in
-the normalized result trace; its op model is generated from the same syscall list, so the
-M6 file surface became fuzzable the day it landed — and promptly convicted two real
-divergences (a wrong-access `FileEndOfFileInformation` status pair and unwaitable file
-handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergences.txt`
-baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
-gaps it surfaces.
-
-Next: **M10** — the full Wine CUI userland: kernelbase/kernel32 breadth, msvcrt, advapi32,
-rpcrt4 over the new named pipes, services.exe, and Wine's cmd.exe — done when cmd.exe
-prompts on the interactive console and pipes/redirection work (`docs/02`; the GUI path to
-calc.exe remains the documented alternative ordering).
+**M9 Complete** — proskrnl boots via Limine on x86-64 and runs the **unmodified Wine PE
+user-mode stack** — ntdll, kernel32/kernelbase, NLS files, and Wine's own conhost, all built
+from the pinned `third_party/wine` tree and baked onto the boot volume as `C:\windows\system32`
+— on its own reimplementation of the NT boundary: the NT x64 syscall convention with the pinned
+tree's own syscall ids, byte-exact PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA, user
+threads and user-mode APCs, and the exception/return protocol (`KiUserExceptionDispatcher`,
+`NtContinue`, `NtGet/SetContextThread`), so real PE clients pass the SEH test through ntdll's
+own dispatch/unwind path. Beneath that sit a 32-level priority scheduler with dispatcher objects
+and `KeWaitFor*` (one dispatcher lock, no preemption, one pool — Art. 3), the object manager
+with its `\`-rooted namespace, per-process address spaces with reserve/commit VADs and
+anonymous/file-backed/`SEC_IMAGE` sections, and a storage stack — a virtio-blk driver written
+from the OASIS spec, FAT32 read/write, and the unified write-through page cache — carrying full
+NT file semantics (share modes, case-insensitive lookup, delete-on-close, byte-range locks). The
+Cm registry (`kernel/cm/`, own "proskrnl hive v1" format) persists ring-3 writes across reboots;
+boot runs the real NT startup chain, kernel → smss → console programs, via
+`NtCreateUserProcess`; and named pipes (`fs/npfs/`, including the message framing rpcrt4 needs)
+plus the real-NT ConDrv console (`drivers/condrv.c` pumping Wine's conhost over the COM1 serial
+wire, HACK-004) make the machine interactive — you can type at it. Every boundary behavior is
+pinned test-first on the Wine oracle (Art. 5), `abi/` is fully generated from Wine's headers
+(`make gen-abi`, Art. 4), minimal KASAN stays compiled in, and the verdicts are green: `make
+run` → `[KTEST] M9 PASS`, and `tests/run/run.sh` `oracle` / `proskrnl` / `fuzz` / `persist` /
+`console` all pass. Per-milestone wrinkles and deviations live in `docs/03`; next is **M10** —
+the full Wine CUI userland up to cmd.exe prompting on the interactive console — or the GUI path
+first (`docs/02`).
 
 ## License
 
