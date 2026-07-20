@@ -50,6 +50,16 @@ void PspInitializeSharedUserData(void)
      * that is a host-Wine-on-Linux need, not ours). */
     kusd->SystemCall = 0;
 
+    /* M10: the time fields tick. Readers ignore TickCountMultiplier
+     * (dlls/kernelbase/sync.c GetTickCount64) but it is set once, as Wine's
+     * own page constructor does (dlls/ntdll/unix/virtual.c: 1 << 24, i.e.
+     * TickCount is already in milliseconds). Registering the page with Ke
+     * turns on the per-tick mirror (kernel/ke/timer.c); the explicit seed
+     * makes the fields nonzero before the first tick. */
+    kusd->TickCountMultiplier = 1 << 24;
+    KiUserSharedData = kusd;
+    KiSeedUserSharedDataTime();
+
     /* Version + machine fields ntdll/RTL read (docs/03 M7 startup map).
      * proskrnl reports as Windows 10.0 (the modern world Wine targets). */
     kusd->NtMajorVersion = 10;

@@ -15,8 +15,23 @@
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
 
+#include "abi/ntkeapi.h"
+
 volatile uint64_t KeTickCount;
 static volatile uint64_t KiInterruptTime; /* 100 ns units since boot */
+
+/* The KUSER_SHARED_DATA page, once Ps has built it (0 before that). */
+void *KiUserSharedData;
+
+/* System time base: a fixed date (2026-01-01) as 100 ns since 1601-01-01 —
+ * the same no-RTC rule as file timestamps (docs/03, fs/fat32/fat.c
+ * FatCurrentNtTime): present, ordered, monotonic; never compared to a wall
+ * clock. 155228 days 1601→2026: 425 years * 365 + 103 leap days (Gregorian
+ * rules per the MS FILETIME documentation,
+ * https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-filetime;
+ * cross-check: 1601→1970 is 134774 days — Wine server/fd.c ticks_1601_to_1970
+ * (369 * 365 + 89) — plus 20454 days 1970→2026). */
+#define KI_SYSTEM_TIME_BASE (155228ULL * 86400ULL * 10000000ULL)
 
 static LIST_ENTRY KiTimerListHead;
 
@@ -33,6 +48,47 @@ ULONGLONG KeQueryInterruptTime(void)
     ULONGLONG now = KiInterruptTime;
     KiReleaseDispatcherLock(flags);
     return now;
+}
+
+void KeQuerySystemTime(LARGE_INTEGER *time)
+{
+    time->QuadPart = (LONGLONG)(KI_SYSTEM_TIME_BASE + KeQueryInterruptTime());
+}
+
+/* One KSYSTEM_TIME store in the order Wine's readers expect: High2Time,
+ * LowPart, High1Time — a reader spins until High1 == High2 (third_party/wine
+ * dlls/kernelbase/sync.c GetTickCount64; writer: server/fd.c
+ * set_user_shared_data_time). volatile stores suffice on x86 (total store
+ * order — same argument as server/fd.c atomic_store_ulong). */
+static void KiWriteKSystemTime(volatile KSYSTEM_TIME *target, uint64_t value)
+{
+    target->High2Time = (LONG)(value >> 32);
+    target->LowPart = (ULONG)value;
+    target->High1Time = (LONG)(value >> 32);
+}
+
+/* Mirror the clocks into KUSER_SHARED_DATA. TickCount is milliseconds
+ * (server/fd.c: tick_count = monotonic_time / 10000; kernelbase's readers
+ * ignore TickCountMultiplier); SystemTime = the fixed base + uptime. */
+static void KiUpdateUserSharedDataTime(void)
+{
+    KUSER_SHARED_DATA *usd = KiUserSharedData;
+    if (usd == 0)
+    {
+        return;
+    }
+    uint64_t tickMs = KiInterruptTime / 10000;
+    KiWriteKSystemTime(&usd->InterruptTime, KiInterruptTime);
+    KiWriteKSystemTime(&usd->SystemTime, KI_SYSTEM_TIME_BASE + KiInterruptTime);
+    KiWriteKSystemTime(&usd->TickCount, tickMs);
+    usd->TickCountLowDeprecated = (ULONG)tickMs;
+}
+
+void KiSeedUserSharedDataTime(void)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    KiUpdateUserSharedDataTime();
+    KiReleaseDispatcherLock(flags);
 }
 
 uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
@@ -75,6 +131,7 @@ void KiUpdateClock(void)
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
     KeTickCount++;
     KiInterruptTime += KI_100NS_PER_TICK;
+    KiUpdateUserSharedDataTime();
 
     while (!IsListEmpty(&KiTimerListHead))
     {

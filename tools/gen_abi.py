@@ -1441,6 +1441,7 @@ NTPSAPI_FUNCTIONS = [
     "NtAlertThreadByThreadId",
     "NtInitializeNlsFiles",
     "NtGetNlsSectionPtr",
+    "NtQuerySystemTime",
 ]
 
 
