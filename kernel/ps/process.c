@@ -16,6 +16,7 @@
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/io/io.h"
+#include "drivers/condrv.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
@@ -80,6 +81,10 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->activeThreadCount = 0;
     process->nextThreadId = 0;
     InitializeListHead(&process->threadListHead);
+    process->consoleHandle = 0;
+    process->stdInput = 0;
+    process->stdOutput = 0;
+    process->stdError = 0;
 }
 
 void PsInitializeProcessSubsystem(void)
@@ -406,7 +411,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
  * `imageDosPath` the DOS path ntdll sees in ProcessParameters. */
 #define PSP_NTDLL_PATH WSTR("\\??\\C:\\windows\\system32\\ntdll.dll")
 
-NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath,
+NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                              PEPROCESS *processOut)
 {
     PMI_SECTION exeSection;
@@ -491,6 +496,13 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath,
     {
         status = PspMapSharedUserData(process);
     }
+    /* M9: seed the console plumbing BEFORE the PEB so PspBuildPeb can write
+     * the handle values into the process parameters. */
+    if (NT_SUCCESS(status) && console)
+    {
+        status = CondrvCreateProcessHandles(process, &process->consoleHandle, &process->stdInput,
+                                            &process->stdOutput, &process->stdError);
+    }
     if (NT_SUCCESS(status))
     {
         status = PspBuildPeb(process, imageBase, imageDosPath, imageDosPath);
@@ -540,10 +552,11 @@ out_sections:
 }
 
 /* Run a Wine-loaded PE to completion (the M7 acceptance runner). */
-NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, NTSTATUS *exitStatusOut)
+NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+                        NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
-    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, &process);
+    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, console, &process);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -769,7 +782,7 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     dosPath[imageNameChars - dosSkip] = 0;
 
     PEPROCESS process;
-    status = PsCreateWineProcess(ntPath, dosPath, &process);
+    status = PsCreateWineProcess(ntPath, dosPath, FALSE, &process);
     MiFreePool(ntPath);
     if (!NT_SUCCESS(status))
     {

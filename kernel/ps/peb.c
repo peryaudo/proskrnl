@@ -154,6 +154,16 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePat
     PSP_EMIT_STRING(WindowTitle, imagePath);
 #undef PSP_EMIT_STRING
 
+    /* M9: the console plumbing. A REAL handle value (not the CONSOLE_HANDLE_*
+     * alloc sentinels) makes kernelbase's init_console bind to the existing
+     * console — create_console_connection(params->ConsoleHandle) — and the
+     * seeded std handles are used as-is (third_party/wine
+     * dlls/kernelbase/console.c init_console). Zero = no console. */
+    params->ConsoleHandle = process->consoleHandle;
+    params->hStdInput = process->stdInput;
+    params->hStdOutput = process->stdOutput;
+    params->hStdError = process->stdError;
+
     /* Current directory "C:\\windows\\system32\\" with a trailing slash. */
     {
         WCHAR *dst = (WCHAR *)(scratch + heapOffset);

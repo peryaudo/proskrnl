@@ -62,6 +62,15 @@ typedef struct EPROCESS
     LIST_ENTRY threadListHead;
     LONG activeThreadCount;
     uint64_t nextThreadId; /* CLIENT_ID.UniqueThread source */
+
+    /* M9: the console handles seeded into THIS process's handle table at
+     * creation (drivers/condrv.c); 0 = not a console process. The values go
+     * into RTL_USER_PROCESS_PARAMETERS (ConsoleHandle/hStd*), where
+     * kernelbase's init_console finds them and binds to the console. */
+    HANDLE consoleHandle;
+    HANDLE stdInput;
+    HANDLE stdOutput;
+    HANDLE stdError;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
@@ -102,10 +111,12 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
  * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
  * initial thread on the NT CONTEXT protocol. PsRunWineImage waits for exit.
  * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
- * handle table. */
-NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath,
+ * handle table. `console` (M9) seeds ConDrv handles + the ConsoleHandle/
+ * hStd* process-parameter fields, so kernelbase binds to the console. */
+NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                              PEPROCESS *processOut);
-NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, NTSTATUS *exitStatusOut);
+NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+                        NTSTATUS *exitStatusOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
  * exit status, signal the process object, never return. The user-fault

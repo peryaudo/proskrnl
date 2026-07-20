@@ -232,7 +232,8 @@ static int KiRunWineHello(void)
     ObDereferenceObject(probe);
 
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", &exitStatus);
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", FALSE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
@@ -268,7 +269,7 @@ static int KiRunInitialChain(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                                     "C:\\windows\\system32\\smss.exe", &exitStatus);
+                                     "C:\\windows\\system32\\smss.exe", FALSE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
