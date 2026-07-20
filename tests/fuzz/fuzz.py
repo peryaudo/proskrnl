@@ -3,11 +3,13 @@
 
 Generate random Nt* call-sequence programs from the generated op model
 (tests/fuzz/gen/fuzz_model.py), build the one interpreter (tests/fuzz/interp.c)
-in BOTH ntapi modes, run each side, and diff the normalized [FUZZ] traces:
+as ONE CRT-less PE .exe (the single-binary ntapi shape, docs/14), run the SAME
+binary on each side, and diff the normalized [FUZZ] traces:
 
-    generate programs (seed) -> blob
-      +- oracle  : mingw .exe under pinned third_party/wine  -> [FUZZ] trace
-      +- proskrnl: clang flat binary as a Limine boot module -> [FUZZ] trace
+    generate programs (seed) -> blob -> fuzz_interp.exe
+      +- oracle  : run under the pinned third_party/wine     -> [FUZZ] trace
+      +- proskrnl: baked at C:\ntapi\interp.exe, swept by the
+                   kernel's ntapi runner under QEMU           -> [FUZZ] trace
     difference (minus the known-divergence baseline) == bug
 
 On a divergence the offending program is minimized by greedy call removal and a
@@ -184,12 +186,23 @@ def find_wine():
     return os.environ.get("WINE", "wine")
 
 
-def build_oracle(blob_c):
+WINE_PE = os.path.join(ROOT, "third_party", "wine", "dlls")
+WINE_LIBS = [os.path.join(WINE_PE, "kernel32", "x86_64-windows", "libkernel32.a"),
+             os.path.join(WINE_PE, "kernelbase", "x86_64-windows", "libkernelbase.a"),
+             os.path.join(WINE_PE, "ntdll", "x86_64-windows", "libntdll.a")]
+
+
+def build_interp(blob_c):
+    """One .exe for BOTH sides: the single-binary ntapi build (docs/14) —
+    CRT-less, entry ntapi_start, linked against the pinned Wine import
+    libs."""
     cc = os.environ.get("CC_ORACLE", "x86_64-w64-mingw32-gcc")
-    exe = os.path.join(BUILD, "oracle_fuzz.exe")
-    cmd = ([cc] + CFLAGS_COMMON + ["-DNTAPI_ORACLE",
-            os.path.join(FUZZ, "interp.c"), os.path.join(NTAPI, "ntapi.c"), blob_c,
-            "-lntdll", "-o", exe])
+    exe = os.path.join(BUILD, "fuzz_interp.exe")
+    cmd = ([cc] + CFLAGS_COMMON +
+           ["-ffreestanding", "-fno-builtin", "-nostdlib", "-nostartfiles",
+            "-Wl,--entry=ntapi_start",
+            os.path.join(FUZZ, "interp.c"), os.path.join(NTAPI, "ntapi.c"), blob_c]
+           + WINE_LIBS + ["-lgcc", "-o", exe])
     subprocess.run(cmd, check=True)
     return exe
 
@@ -201,16 +214,9 @@ def run_oracle(exe):
     return out.replace("\r", "")
 
 
-UCFLAGS = ("-std=c11 -target x86_64-unknown-none -ffreestanding -fno-stack-protector "
-           "-fno-pie -fno-pic -m64 -march=x86-64 -mno-mmx -mno-sse -mno-sse2 -mno-80387 "
-           "-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -O2 -g "
-           "-I" + ROOT + " -I" + NTAPI + " -DNTAPI_PROSKRNL").split()
-
-
-def build_proskrnl(blob_c):
-    llvm = os.path.dirname(_which("clang"))
-    cc = os.path.join(llvm, "clang")
-    objcopy = os.path.join(llvm, "llvm-objcopy")
+def build_proskrnl(exe):
+    """Bake the SAME interp .exe under C:\\ntapi beside the Wine PE userland;
+    the kernel's ntapi runner (kernel/init/main.c) sweeps and runs it."""
     kernel = os.path.join(ROOT, "build", "proskrnl")
     img = os.path.join(BUILD, "fuzz.hdd")
     os.makedirs(BUILD, exist_ok=True)
@@ -218,39 +224,25 @@ def build_proskrnl(blob_c):
     if not os.path.exists(kernel):
         subprocess.run(["make", "-C", ROOT], check=True, stdout=subprocess.DEVNULL)
 
-    def comp(src, obj):
-        subprocess.run([cc] + UCFLAGS + ["-c", src, "-o", obj], check=True)
-
-    comp(os.path.join(ROOT, "user", "init-tests", "crt0.S"), os.path.join(BUILD, "crt0.o"))
-    comp(os.path.join(NTAPI, "syscall", "syscall_stubs.S"), os.path.join(BUILD, "stubs.o"))
-    comp(os.path.join(NTAPI, "ntapi.c"), os.path.join(BUILD, "ntapi.o"))
-    comp(os.path.join(FUZZ, "interp.c"), os.path.join(BUILD, "interp.o"))
-    comp(blob_c, os.path.join(BUILD, "blob.o"))
-
-    elf = os.path.join(BUILD, "interp.elf")
-    subprocess.run(["ld.lld", "-m", "elf_x86_64", "-static",
-                    "-T", os.path.join(ROOT, "user", "init-tests", "user.ld"), "--build-id=none",
-                    os.path.join(BUILD, "crt0.o"), os.path.join(BUILD, "stubs.o"),
-                    os.path.join(BUILD, "ntapi.o"), os.path.join(BUILD, "interp.o"),
-                    os.path.join(BUILD, "blob.o"), "-o", elf], check=True)
-    binf = os.path.join(BUILD, "interp.bin")
-    subprocess.run([objcopy, "-O", "binary", elf, binf], check=True)
-
     # Seed the RAM disk with the same files the kernel's own kmt M5 suite reads,
-    # so the kernel reaches our boot module instead of failing before it.
+    # so the kernel reaches C:\ntapi instead of failing before it.
     specs = []
     for seed in (os.path.join(ROOT, "build", "modules", "pe_smoke.exe"),
                  os.path.join(ROOT, "build", "modules", "sample.dat")):
         if os.path.exists(seed):
             specs.append(seed + "=initrd")
-    specs.append(binf + "=expect=0")
-    # The M7 NLS data files, so the NtInitializeNlsFiles/NtGetNlsSectionPtr
-    # ops see the same pinned-Wine tables on both sides.
+    # The Wine PE userland the interp runs on, plus the NLS data files (the
+    # NtInitializeNlsFiles/NtGetNlsSectionPtr ops see the same pinned-Wine
+    # tables on both sides).
+    for dll in ("ntdll", "kernel32", "kernelbase"):
+        specs.append("win:" + os.path.join(WINE_PE, dll, "x86_64-windows", dll + ".dll")
+                     + "=windows/system32/" + dll + ".dll")
     for nls in ("locale", "l_intl", "c_1252", "c_437", "sortdefault",
                 "normnfc", "normnfd", "normnfkc", "normnfkd", "normidna"):
         path = os.path.join(ROOT, "third_party", "wine", "nls", nls + ".nls")
         if os.path.exists(path):
             specs.append("win:" + path + "=windows/system32/" + nls + ".nls")
+    specs.append("win:" + exe + "=ntapi/interp.exe")
     subprocess.run([os.path.join(ROOT, "tools", "mkimage.sh"), kernel, img] + specs,
                    check=True, stdout=subprocess.DEVNULL)
     return img
@@ -353,10 +345,11 @@ def root_divergences(oracle, prosk):
 def build_and_trace(batch, oracle_only=False):
     blob_c = os.path.join(BUILD, "fuzz_programs.c")
     write_blob_c(encode(batch), blob_c)
-    oracle = extract(run_oracle(build_oracle(blob_c)))
+    exe = build_interp(blob_c)
+    oracle = extract(run_oracle(exe))
     if oracle_only:
         return oracle, None
-    prosk = extract(run_proskrnl(build_proskrnl(blob_c)))
+    prosk = extract(run_proskrnl(build_proskrnl(exe)))
     return oracle, prosk
 
 
@@ -485,7 +478,7 @@ def main():
         # Same blob, oracle twice: any difference is a non-canonical trace leak.
         blob_c = os.path.join(BUILD, "fuzz_programs.c")
         write_blob_c(encode(batch), blob_c)
-        exe = build_oracle(blob_c)
+        exe = build_interp(blob_c)
         a = extract(run_oracle(exe))
         b = extract(run_oracle(exe))
         divs = root_divergences(a, b)

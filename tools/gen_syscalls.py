@@ -617,8 +617,8 @@ def gen_fuzz_model_h() -> str:
     lines.append("#ifndef PROSKRNL_FUZZ_MODEL_H")
     lines.append("#define PROSKRNL_FUZZ_MODEL_H\n")
     lines.append("/* Decode tables for tests/fuzz/interp.c. The choice arrays below hold")
-    lines.append(" * SYMBOLIC constants resolved by whichever header set the build mode")
-    lines.append(" * pulled in (NTAPI_ORACLE vs NTAPI_PROSKRNL) — no numeric ABI value")
+    lines.append(" * SYMBOLIC constants resolved by the system NT headers the single-binary")
+    lines.append(" * ntapi build compiles against (docs/14) — no numeric ABI value")
     lines.append(" * appears here or in the Python generator (G4). */\n")
 
     lines.append(f"#define FZ_SLOT_COUNT {FUZZ_SLOT_COUNT}")
