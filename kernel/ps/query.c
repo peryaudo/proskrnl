@@ -76,7 +76,11 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         }
         PROCESS_BASIC_INFORMATION info;
         memset(&info, 0, sizeof(info));
-        info.ExitStatus = STATUS_PENDING;
+        /* STATUS_PENDING while alive, the real code once the process object
+         * is signalled (what GetExitCodeProcess is built on — Wine
+         * dlls/kernelbase/process.c reads this field). The M8 smss chain
+         * propagates its child's code through here. */
+        info.ExitStatus = process->header.signalState != 0 ? process->exitStatus : STATUS_PENDING;
         info.PebBaseAddress = (PEB *)(uintptr_t)process->pebBase;
         info.UniqueProcessId = process->uniqueProcessId;
         memcpy(buffer, &info, sizeof(info));
