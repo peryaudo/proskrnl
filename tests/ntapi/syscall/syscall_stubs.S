@@ -944,6 +944,35 @@ NtGetNlsSectionPtr:
     add $0x68, %rsp
     ret
 
+    .global NtQueryVolumeInformationFile
+NtQueryVolumeInformationFile:
+    sub $0x68, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x49, %eax
+    syscall
+    add $0x68, %rsp
+    ret
+
+    .global NtCreateKey
+NtCreateKey:
+    sub $0x68, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x70(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x1d, %eax
+    syscall
+    add $0x68, %rsp
+    ret
+
     .global NtOpenKey
 NtOpenKey:
     mov %rcx, %r9
@@ -952,6 +981,50 @@ NtOpenKey:
     mov %rdi, %r10
     mov $0x12, %eax
     syscall
+    ret
+
+    .global NtOpenKeyEx
+NtOpenKeyEx:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xb6, %eax
+    syscall
+    ret
+
+    .global NtDeleteKey
+NtDeleteKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x94, %eax
+    syscall
+    ret
+
+    .global NtDeleteValueKey
+NtDeleteValueKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x95, %eax
+    syscall
+    ret
+
+    .global NtSetValueKey
+NtSetValueKey:
+    sub $0x68, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x60, %eax
+    syscall
+    add $0x68, %rsp
     ret
 
     .global NtQueryValueKey
@@ -968,17 +1041,55 @@ NtQueryValueKey:
     add $0x68, %rsp
     ret
 
-    .global NtQueryVolumeInformationFile
-NtQueryVolumeInformationFile:
+    .global NtEnumerateKey
+NtEnumerateKey:
+    sub $0x68, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x32, %eax
+    syscall
+    add $0x68, %rsp
+    ret
+
+    .global NtEnumerateValueKey
+NtEnumerateValueKey:
+    sub $0x68, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x13, %eax
+    syscall
+    add $0x68, %rsp
+    ret
+
+    .global NtQueryKey
+NtQueryKey:
     sub $0x68, %rsp
     mov %r8, 0x28(%rsp)
     mov %rcx, %r9
     mov %rdx, %r8
     mov %rsi, %rdx
     mov %rdi, %r10
-    mov $0x49, %eax
+    mov $0x16, %eax
     syscall
     add $0x68, %rsp
+    ret
+
+    .global NtFlushKey
+NtFlushKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9a, %eax
+    syscall
     ret
 
 #ifdef __ELF__

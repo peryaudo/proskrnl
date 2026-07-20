@@ -31,8 +31,27 @@
 #define REG_LINK 6	/* symbolic link (UNICODE) */
 #define REG_MULTI_SZ 7	/* multiple strings, delimited by \0, terminated by \0\0 (ASCII) */
 #define REG_QWORD 11	/* QWORD in little endian format */
+#define REG_OPTION_NON_VOLATILE 0x00000000
+#define REG_OPTION_VOLATILE 0x00000001
+#define REG_OPTION_CREATE_LINK 0x00000002
+#define REG_CREATED_NEW_KEY 0x00000001
+#define REG_OPENED_EXISTING_KEY 0x00000002
 
 /* Extracted verbatim from wine/include/winternl.h. */
+typedef enum {
+    KeyBasicInformation,
+    KeyNodeInformation,
+    KeyFullInformation,
+    KeyNameInformation,
+    KeyCachedInformation,
+    KeyFlagsInformation,
+    KeyVirtualizationInformation,
+    KeyHandleTagsInformation,
+    KeyTrustInformation,
+    KeyLayerInformation,
+    MaxKeyInfoClass
+} KEY_INFORMATION_CLASS;
+
 typedef enum {
     KeyValueBasicInformation,
     KeyValueFullInformation,
@@ -41,6 +60,44 @@ typedef enum {
     KeyValuePartialInformationAlign64,
     KeyValueLayerInformation,
 } KEY_VALUE_INFORMATION_CLASS;
+
+typedef struct {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         NameLength;
+    WCHAR         Name[1];
+} KEY_BASIC_INFORMATION, *PKEY_BASIC_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         ClassOffset;
+    ULONG         ClassLength;
+    ULONG         NameLength;
+    WCHAR         Name[1];
+   /* Class[1]; */
+} KEY_NODE_INFORMATION, *PKEY_NODE_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         ClassOffset;
+    ULONG         ClassLength;
+    ULONG         SubKeys;
+    ULONG         MaxNameLen;
+    ULONG         MaxClassLen;
+    ULONG         Values;
+    ULONG         MaxValueNameLen;
+    ULONG         MaxValueDataLen;
+    WCHAR         Class[1];
+} KEY_FULL_INFORMATION, *PKEY_FULL_INFORMATION;
+
+typedef struct {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG NameLength;
+    WCHAR Name[1];
+} KEY_VALUE_BASIC_INFORMATION, *PKEY_VALUE_BASIC_INFORMATION;
 
 typedef struct {
     ULONG TitleIndex;
@@ -58,9 +115,18 @@ typedef struct {
     UCHAR Data[1];
 } KEY_VALUE_PARTIAL_INFORMATION, *PKEY_VALUE_PARTIAL_INFORMATION;
 
-/* The M7 registry Nt* slice (graceful failure until Cm at M8);
+/* The Cm registry surface (M8);
  * signatures extracted verbatim from wine/include/winternl.h. */
+NTSTATUS NtCreateKey(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*,ULONG,const UNICODE_STRING*,ULONG,PULONG);
 NTSTATUS NtOpenKey(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES *);
+NTSTATUS NtOpenKeyEx(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*,ULONG);
+NTSTATUS NtDeleteKey(HANDLE);
+NTSTATUS NtDeleteValueKey(HANDLE,const UNICODE_STRING *);
+NTSTATUS NtSetValueKey(HANDLE,const UNICODE_STRING *,ULONG,ULONG,const void *,ULONG);
 NTSTATUS NtQueryValueKey(HANDLE,const UNICODE_STRING *,KEY_VALUE_INFORMATION_CLASS,void *,DWORD,DWORD *);
+NTSTATUS NtEnumerateKey(HANDLE,ULONG,KEY_INFORMATION_CLASS,void *,DWORD,DWORD *);
+NTSTATUS NtEnumerateValueKey(HANDLE,ULONG,KEY_VALUE_INFORMATION_CLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtQueryKey(HANDLE,KEY_INFORMATION_CLASS,void *,DWORD,DWORD *);
+NTSTATUS NtFlushKey(HANDLE);
 
 #endif /* PROSKRNL_ABI_NTREGAPI_H */

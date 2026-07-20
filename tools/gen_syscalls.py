@@ -112,13 +112,24 @@ IMPLEMENTED = [
     "NtCallbackReturn",
     "NtWaitForAlertByThreadId",
     "NtAlertThreadByThreadId",
-    # M7: ntdll startup services (NLS data, graceful-failure registry, the
-    # volume query RtlSetCurrentDirectory_U issues)
+    # M7: ntdll startup services (NLS data, the volume query
+    # RtlSetCurrentDirectory_U issues)
     "NtInitializeNlsFiles",
     "NtGetNlsSectionPtr",
-    "NtOpenKey",
-    "NtQueryValueKey",
     "NtQueryVolumeInformationFile",
+    # M8 Cm surface (NtOpenKey/NtQueryValueKey were M7 graceful-failure
+    # stubs; Cm makes them real)
+    "NtCreateKey",
+    "NtOpenKey",
+    "NtOpenKeyEx",
+    "NtDeleteKey",
+    "NtDeleteValueKey",
+    "NtSetValueKey",
+    "NtQueryValueKey",
+    "NtEnumerateKey",
+    "NtEnumerateValueKey",
+    "NtQueryKey",
+    "NtFlushKey",
 ]
 
 

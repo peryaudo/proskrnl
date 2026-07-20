@@ -1393,14 +1393,22 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
     )
 
 
-# M7: the registry surface ntdll's startup touches (load_global_options,
-# version_init — dlls/ntdll/loader.c, version.c). Cm proper is M8; until then
-# the kernel's NtOpenKey fails gracefully, but the CONTRACT (classes, struct
-# shapes, statuses) is pinned now so the M8 implementation slots in under the
-# same abi.
+# The Cm registry surface (M8; NtOpenKey/NtQueryValueKey were pinned in M7
+# while the kernel side failed gracefully). The key/value info classes and
+# struct shapes are what Wine's ntdll and the sem_reg suite exchange with the
+# kernel.
 NTREGAPI_FUNCTIONS = [
+    "NtCreateKey",
     "NtOpenKey",
+    "NtOpenKeyEx",
+    "NtDeleteKey",
+    "NtDeleteValueKey",
+    "NtSetValueKey",
     "NtQueryValueKey",
+    "NtEnumerateKey",
+    "NtEnumerateValueKey",
+    "NtQueryKey",
+    "NtFlushKey",
 ]
 
 
@@ -1435,14 +1443,27 @@ def gen_ntregapi(wine: Path) -> str:
             "REG_LINK",
             "REG_MULTI_SZ",
             "REG_QWORD",
+            "REG_OPTION_NON_VOLATILE",
+            "REG_OPTION_VOLATILE",
+            "REG_OPTION_CREATE_LINK",
+            "REG_CREATED_NEW_KEY",
+            "REG_OPENED_EXISTING_KEY",
         ],
     )
-    info_class = extract_enum(
-        winternl, "_KEY_VALUE_INFORMATION_CLASS", "KEY_VALUE_INFORMATION_CLASS"
+    info_class = (
+        extract_enum(winternl, "_KEY_INFORMATION_CLASS", "KEY_INFORMATION_CLASS")
+        + "\n\n"
+        + extract_enum(
+            winternl, "_KEY_VALUE_INFORMATION_CLASS", "KEY_VALUE_INFORMATION_CLASS"
+        )
     )
     structs = "\n\n".join(
         extract_struct(winternl, tag, typedef)
         for tag, typedef in [
+            ("_KEY_BASIC_INFORMATION", "KEY_BASIC_INFORMATION"),
+            ("_KEY_NODE_INFORMATION", "KEY_NODE_INFORMATION"),
+            ("_KEY_FULL_INFORMATION", "KEY_FULL_INFORMATION"),
+            ("_KEY_VALUE_BASIC_INFORMATION", "KEY_VALUE_BASIC_INFORMATION"),
             ("_KEY_VALUE_FULL_INFORMATION", "KEY_VALUE_FULL_INFORMATION"),
             ("_KEY_VALUE_PARTIAL_INFORMATION", "KEY_VALUE_PARTIAL_INFORMATION"),
         ]
@@ -1462,7 +1483,7 @@ def gen_ntregapi(wine: Path) -> str:
         + info_class
         + "\n\n"
         + structs
-        + "\n\n/* The M7 registry Nt* slice (graceful failure until Cm at M8);\n"
+        + "\n\n/* The Cm registry surface (M8);\n"
         + " * signatures extracted verbatim from wine/include/winternl.h. */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTREGAPI_H */\n"
