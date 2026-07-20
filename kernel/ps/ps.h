@@ -86,6 +86,11 @@ typedef struct ETHREAD
     uint64_t tebBase;           /* this thread's TEB */
     uint64_t stackAllocationBase;
     uint64_t stackBase;
+    /* M10: the latched thread-id alert (NtAlertThreadByThreadId /
+     * NtWaitForAlertByThreadId — ntdll's RtlWaitOnAddress/SRW primitive). A
+     * synchronization event IS the contract: set-while-not-waiting latches,
+     * one wait consumes (Wine dlls/ntdll/unix/sync.c futex semantics). */
+    KEVENT tidAlertEvent;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;
@@ -113,9 +118,12 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
  * initial thread on the NT CONTEXT protocol. PsRunWineImage waits for exit.
  * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
  * handle table. `console` (M9) seeds ConDrv handles + the ConsoleHandle/
- * hStd* process-parameter fields, so kernelbase binds to the console. */
+ * hStd* process-parameter fields, so kernelbase binds to the console.
+ * `threadOut` receives the main thread's ETHREAD (creator reference); the
+ * caller MUST hold it until the thread has exited — dropping it early frees
+ * a running thread. */
 NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                             PEPROCESS *processOut);
+                             PEPROCESS *processOut, PETHREAD *threadOut);
 NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut);
 
@@ -163,7 +171,8 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
  * RtlUserThreadStart-shaped entry protocol (rcx=startRoutine, rdx=argument).
  * Returns a handle in the CURRENT process's table. */
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
-                             BOOLEAN createSuspended, PHANDLE threadHandleOut);
+                             BOOLEAN createSuspended, PHANDLE threadHandleOut,
+                             uint64_t *threadIdOut, uint64_t *tebBaseOut);
 
 /* The first ring-3 descent of a user thread (shared by process/thread.c):
  * enters user mode at the KTHREAD's user-start register state. */
@@ -180,11 +189,13 @@ __attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb);
 __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus);
 
 /* Build the ETHREAD wrapper for a KTHREAD and link it into the process
- * (kernel/ps/thread.c); increments nextThreadId and activeThreadCount.
- * Returns a creator reference. */
+ * (kernel/ps/thread.c); increments activeThreadCount. `uniqueThreadId` is
+ * the id already stamped into the thread's TEB — one assignment, one truth
+ * (NtAlertThreadByThreadId looks threads up by it). Returns a creator
+ * reference. */
 NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase,
                                uint64_t stackAllocationBase, uint64_t stackBase,
-                               PETHREAD *threadOut);
+                               uint64_t uniqueThreadId, PETHREAD *threadOut);
 
 /* --- usermode.c (M7) ----------------------------------------------------- */
 

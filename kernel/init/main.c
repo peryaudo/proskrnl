@@ -300,8 +300,13 @@ static void KiStartConhost(void)
     }
     ObDereferenceObject(probe);
 
+    /* The main-thread ETHREAD reference is held forever: conhost is a
+     * permanent process (its thread never exits, so the reference may never
+     * be dropped — PsCreateWineProcess contract). */
+    static PETHREAD KiConhostThread;
     status = PsCreateWineProcess(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"),
-                                 "C:\\windows\\system32\\conhost.exe", FALSE, &KiConhostProcess);
+                                 "C:\\windows\\system32\\conhost.exe", FALSE, &KiConhostProcess,
+                                 &KiConhostThread);
     if (!NT_SUCCESS(status))
     {
         DbgPrint("[KTEST] conhost FAIL (create=%#lx)\n", (unsigned long)status);

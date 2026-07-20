@@ -76,7 +76,7 @@ void PspUserThreadStartup(void *context)
  * only via KiCreateThreadEx elsewhere. Returns a creator reference. */
 NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase,
                                uint64_t stackAllocationBase, uint64_t stackBase,
-                               PETHREAD *threadOut)
+                               uint64_t uniqueThreadId, PETHREAD *threadOut)
 {
     PVOID body;
     NTSTATUS status = ObpAllocateObject(&PspThreadType, sizeof(ETHREAD), &body);
@@ -91,10 +91,11 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     thread->tebBase = tebBase;
     thread->stackAllocationBase = stackAllocationBase;
     thread->stackBase = stackBase;
+    KeInitializeEvent(&thread->tidAlertEvent, SynchronizationEvent, FALSE);
 
     ObfReferenceObject(process); /* the thread pins its process */
     uint64_t flags = KiAcquireDispatcherLock();
-    thread->uniqueThreadId = ++process->nextThreadId;
+    thread->uniqueThreadId = uniqueThreadId;
     InsertTailList(&process->threadListHead, &thread->threadListEntry);
     process->activeThreadCount++;
     KiReleaseDispatcherLock(flags);
@@ -203,7 +204,8 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
 }
 
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
-                             BOOLEAN createSuspended, PHANDLE threadHandleOut)
+                             BOOLEAN createSuspended, PHANDLE threadHandleOut,
+                             uint64_t *threadIdOut, uint64_t *tebBaseOut)
 {
     (void)createSuspended; /* M7: suspend-on-create not needed by the test/ntdll path */
 
@@ -216,8 +218,9 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     }
 
     uint64_t tebBase = 0;
-    status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
-                         ++process->nextThreadId, &tebBase);
+    uint64_t threadId = ++process->nextThreadId; /* one id: TEB and ETHREAD agree */
+    status =
+        PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, threadId, &tebBase);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -241,7 +244,7 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     tcb->userStartArg2 = argument;
 
     PETHREAD thread;
-    status = PspCreateThreadObject(process, tcb, tebBase, allocBase, stackTop, &thread);
+    status = PspCreateThreadObject(process, tcb, tebBase, allocBase, stackTop, threadId, &thread);
     if (!NT_SUCCESS(status))
     {
         KiDeleteThread(tcb);
@@ -260,6 +263,14 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
 
     ObDereferenceObject(thread); /* the handle holds its own reference */
     KiReadyCreatedThread(tcb);   /* now everything it reads is final */
+    if (threadIdOut != 0)
+    {
+        *threadIdOut = threadId;
+    }
+    if (tebBaseOut != 0)
+    {
+        *tebBaseOut = tebBase;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -274,7 +285,6 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
     (void)zeroBits;
     (void)stackSize;
     (void)maximumStackSize;
-    (void)attributeList;
 
     PKTHREAD caller = KeGetCurrentThread();
     PEPROCESS process;
@@ -297,8 +307,64 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
     }
 
     BOOLEAN suspended = (createFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0;
+    uint64_t threadId = 0, tebBase = 0;
     NTSTATUS status = PspCreateUserThread(process, (uint64_t)(uintptr_t)startRoutine,
-                                          (uint64_t)(uintptr_t)argument, suspended, threadHandle);
+                                          (uint64_t)(uintptr_t)argument, suspended, threadHandle,
+                                          &threadId, &tebBase);
+
+    /* Output attributes, exactly Wine's update_attr_list (dlls/ntdll/unix/
+     * thread.c): CLIENT_ID and TEB_ADDRESS write back min(Size, actual) and
+     * the optional ReturnLength; kernelbase's CreateThread reads its
+     * lpThreadId from the CLIENT_ID one. Unknown attributes are tolerated. */
+    if (NT_SUCCESS(status) && attributeList != 0)
+    {
+        NTSTATUS probe = KiProbeForRead(attributeList, sizeof(SIZE_T), sizeof(SIZE_T));
+        SIZE_T totalLength = NT_SUCCESS(probe) ? attributeList->TotalLength : 0;
+        SIZE_T listHeader = offsetof(PS_ATTRIBUTE_LIST, Attributes);
+        if (NT_SUCCESS(probe) && totalLength >= listHeader && totalLength <= 0x1000 &&
+            (totalLength - listHeader) % sizeof(PS_ATTRIBUTE) == 0 &&
+            NT_SUCCESS(KiProbeForRead(attributeList, totalLength, sizeof(SIZE_T))))
+        {
+            SIZE_T count = (totalLength - listHeader) / sizeof(PS_ATTRIBUTE);
+            for (SIZE_T i = 0; i < count; i++)
+            {
+                const PS_ATTRIBUTE *attribute = &attributeList->Attributes[i];
+                const void *value = 0;
+                CLIENT_ID clientId;
+                PVOID tebPointer;
+                SIZE_T valueSize = 0;
+                if (attribute->Attribute == PS_ATTRIBUTE_CLIENT_ID)
+                {
+                    clientId.UniqueProcess = (HANDLE)(uintptr_t)process->uniqueProcessId;
+                    clientId.UniqueThread = (HANDLE)(uintptr_t)threadId;
+                    value = &clientId;
+                    valueSize = sizeof(clientId);
+                }
+                else if (attribute->Attribute == PS_ATTRIBUTE_TEB_ADDRESS)
+                {
+                    tebPointer = (PVOID)(uintptr_t)tebBase;
+                    value = &tebPointer;
+                    valueSize = sizeof(tebPointer);
+                }
+                if (value == 0)
+                {
+                    continue;
+                }
+                SIZE_T size = attribute->Size < valueSize ? attribute->Size : valueSize;
+                if (attribute->ValuePtr != 0 &&
+                    NT_SUCCESS(KiProbeForWrite(attribute->ValuePtr, size, 1)))
+                {
+                    memcpy(attribute->ValuePtr, value, size);
+                }
+                if (attribute->ReturnLength != 0 &&
+                    NT_SUCCESS(
+                        KiProbeForWrite(attribute->ReturnLength, sizeof(SIZE_T), sizeof(SIZE_T))))
+                {
+                    *attribute->ReturnLength = size;
+                }
+            }
+        }
+    }
     if (referenced)
     {
         ObDereferenceObject(process);
@@ -425,27 +491,50 @@ NTSTATUS NtAlertThread(HANDLE threadHandle)
     return STATUS_SUCCESS;
 }
 
-/* Thread-id keyed alerts (modern ntdll critical-section / SRW fast paths). A
- * minimal build over the same alert bit; the id is the ETHREAD's. */
+/* Thread-id keyed alerts (modern ntdll critical-section / SRW / WaitOnAddress
+ * paths, dlls/ntdll/sync.c). The contract is a latched per-thread alert bit
+ * (Wine dlls/ntdll/unix/sync.c: futex 0/1 + InterlockedExchange) — the
+ * ETHREAD's synchronization event carries it exactly (sem_wait/alert_by_tid).
+ * The id is process-local, matching the only consumers; an unknown id is
+ * accepted as a no-op, as the oracle's on-demand alert table behaves. */
 NTSTATUS NtAlertThreadByThreadId(HANDLE threadId)
 {
-    (void)threadId;
-    /* proskrnl's ntdll targets the raw-syscall path; the address-wait fast
-     * path is only reached under contention, which the single-threaded M7
-     * bring-up never hits. Accept and no-op (nothing is waiting on it). */
+    PEPROCESS process = KeGetCurrentThread()->process;
+    PETHREAD target = 0;
+    uint64_t flags = KiAcquireDispatcherLock();
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PETHREAD candidate = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        if (candidate->uniqueThreadId == (uint64_t)(uintptr_t)threadId)
+        {
+            target = candidate;
+            break;
+        }
+    }
+    KiReleaseDispatcherLock(flags);
+    if (target != 0)
+    {
+        /* Safe outside the lock: no kernel preemption (Art. 3), so the target
+         * cannot be reclaimed between the lookup and the set. */
+        KeSetEvent(&target->tidAlertEvent, 0, FALSE);
+    }
     return STATUS_SUCCESS;
 }
 
 NTSTATUS NtWaitForAlertByThreadId(const void *address, const LARGE_INTEGER *timeout)
 {
-    (void)address;
-    /* Symmetric with the above: with nothing to wait on, a bounded wait times
-     * out (callers loop). Honour a zero timeout immediately. */
-    if (timeout != 0 && timeout->QuadPart == 0)
+    (void)address; /* opaque to the wait; pairs are keyed by thread id only */
+    PETHREAD self = KeGetCurrentThread()->threadObject;
+    if (self == 0)
     {
-        return STATUS_TIMEOUT;
+        return STATUS_TIMEOUT; /* kernel threads have no alert latch */
     }
-    return STATUS_TIMEOUT;
+    NTSTATUS status = KeWaitForSingleObject(&self->tidAlertEvent, UserRequest, KernelMode, FALSE,
+                                            (PLARGE_INTEGER)timeout);
+    /* A satisfied wait is reported as STATUS_ALERTED (the whole point of the
+     * service); timeouts pass through. */
+    return status == STATUS_SUCCESS ? STATUS_ALERTED : status;
 }
 
 NTSTATUS NtResumeThread(HANDLE threadHandle, PULONG previousCount)
