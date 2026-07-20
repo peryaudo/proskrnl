@@ -151,10 +151,11 @@ per-end read-mode switching; blocking rides plain KEVENTs under the one-lock no-
 core. **condrv** (`drivers/condrv.c`) is the real-NT console architecture (docs/10
 "non-hacks"): clients open `\Device\ConDrv\{Connection,Reference,Input,Output,ScreenBuffer}`
 and speak the fully generated `IOCTL_CONDRV_*` surface (`abi/ntcondrv.h`); the kernel is a
-message queue that pumps every verb to **Wine's own conhost, ported** (`user/conhost/` —
-the pinned `conhost.c` with exactly its two wineserver call sites redirected onto a
-transport that mirrors wineserver's `get_next_console_request` semantics, including parked
-blocking reads). conhost's tty, both directions, is `\Device\Serial0` over the COM1 UART —
+message queue that pumps every verb to **Wine's own conhost, compiled straight from the
+pinned tree** — its two wineserver call sites gained a runtime-dormant proskrnl leg as a
+fork commit on `proskrnl-target` (Art. 10; dead code under regular Wine), a transport that
+mirrors wineserver's `get_next_console_request` semantics, including parked blocking
+reads; `user/conhost/` carries only standalone-PE glue. conhost's tty, both directions, is `\Device\Serial0` over the COM1 UART —
 the milestone's logged hack (HACK-004; RX is polled, no IRQ plumbing) — and new console
 processes are born with kernel-seeded `ConsoleHandle`/`hStd*` handles that unmodified
 kernelbase binds to. The bring-up also flushed three latent kernel bugs the Win32 surface

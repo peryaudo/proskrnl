@@ -4,8 +4,11 @@
  * condrv <-> conhost protocol is undocumented and absent from Wine's
  * headers (Wine pumps conhost through wineserver requests instead), so
  * there is nothing to generate from (G4 applies to the CLIENT surface,
- * which is fully generated — abi/ntcondrv.h). Both sides of this header
- * are in this tree: drivers/condrv.c and user/conhost/.
+ * which is fully generated — abi/ntcondrv.h). The conhost side lives in
+ * the pinned fork as programs/conhost/proskrnl.h (the runtime-dormant
+ * seam commit, Art. 10) — the two struct sets are both proskrnl-authored
+ * and MUST stay byte-identical; the run.sh console echo test exercises
+ * the wire end to end.
  *
  * The shape mirrors wineserver's get_next_console_request semantics
  * (third_party/wine server/console.c), so conhost's logic ports without

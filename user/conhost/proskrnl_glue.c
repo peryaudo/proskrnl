@@ -1,15 +1,18 @@
 /*
- * proskrnl_glue.c - everything the ported Wine conhost needs that Wine's
- * build environment provided (M9). See proskrnl_glue.h.
+ * proskrnl_glue.c - everything the proskrnl build of Wine's conhost needs
+ * that Wine's build environment provided (M9).
  *
- * Sections:
- *   1. the kernel ConDrv server transport (drivers/condrvproto.h)
- *   2. the process entry: open \Device\ConDrv\Server + the \Device\Serial0
+ * conhost itself is NOT copied: the Makefile compiles the pinned tree's
+ * programs/conhost/{conhost.c,proskrnl.c} directly, where the wineserver
+ * seam lives as a runtime-dormant fork commit on the proskrnl-target branch
+ * (behind !__wine_unix_call_dispatcher - Art. 10 / docs/06). This file
+ * carries only what the standalone PE build lacks:
+ *
+ *   1. the process entry: open \Device\ConDrv\Server + the \Device\Serial0
  *      tty pair (HACK-004), then hand wmain its headless command line
- *   3. the mini CRT (heap over kernel32, string/memory over own loops)
- *   4. no-op stands-ins for user32 + window.c (headless: never executed,
- *      or degrade to "no keyboard layout knowledge", which the tty line
- *      discipline tolerates)
+ *   2. the mini CRT (heap over kernel32, string/memory over own loops)
+ *   3. no-op stands-ins for user32 + window.c (headless: never executed) -
+ *      except VkKeyScanW, whose ASCII slice the edit line dispatches on
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -22,104 +25,7 @@
 #include <winternl.h>
 #include <ntstatus.h>
 
-#include "proskrnl_glue.h"
-#include "drivers/condrvproto.h"
-
-/* --- 1. the server transport ---------------------------------------------- */
-
-static char wire_buffer[CONDRV_SERVER_BUFFER_SIZE];
-static BOOL have_stashed_msg;   /* fetched but not yet handed to conhost
-                                 * (its ioctl buffer needed growing) */
-static UINT64 busy_request_id;  /* != 0: the last delivered request wants a
-                                 * plain reply on the next call */
-
-static NTSTATUS server_write( HANDLE server, const void *data, size_t size )
-{
-    IO_STATUS_BLOCK io;
-    return NtWriteFile( server, NULL, NULL, NULL, &io, (void *)data, size, NULL, NULL );
-}
-
-NTSTATUS proskrnl_next_console_request( HANDLE server, NTSTATUS status, int signal,
-                                        const void *reply_data, size_t reply_size,
-                                        void *buffer, size_t buffer_capacity,
-                                        unsigned int *code, int *output,
-                                        size_t *out_size, size_t *in_size )
-{
-    IO_STATUS_BLOCK io;
-    CONDRV_SERVER_MSG *msg = (CONDRV_SERVER_MSG *)wire_buffer;
-    NTSTATUS ret;
-
-    (void)signal; /* input-object signaling: not modeled by the kernel */
-
-    if (!have_stashed_msg)
-    {
-        if (busy_request_id)
-        {
-            struct
-            {
-                CONDRV_SERVER_REPLY hdr;
-                char data[CONDRV_SERVER_MAX_PAYLOAD];
-            } reply;
-            if (reply_size > sizeof(reply.data)) reply_size = sizeof(reply.data);
-            reply.hdr.id = busy_request_id;
-            reply.hdr.status = status;
-            reply.hdr.read = 0;
-            reply.hdr.outSize = reply_size;
-            reply.hdr.pad = 0;
-            if (reply_size) memcpy( reply.data, reply_data, reply_size );
-            busy_request_id = 0;
-            ret = server_write( server, &reply, sizeof(reply.hdr) + reply_size );
-            if (ret) return ret;
-        }
-
-        ret = NtReadFile( server, NULL, NULL, NULL, &io, wire_buffer, sizeof(wire_buffer),
-                          NULL, NULL );
-        if (ret) return ret; /* STATUS_PENDING = wait on the handle */
-        have_stashed_msg = TRUE;
-    }
-
-    if (msg->inSize > buffer_capacity)
-    {
-        /* conhost grows its ioctl buffer and calls again; the fetched
-         * message stays stashed (wineserver's BUFFER_OVERFLOW dance). */
-        *out_size = msg->inSize;
-        return STATUS_BUFFER_OVERFLOW;
-    }
-
-    if (msg->inSize) memcpy( buffer, wire_buffer + sizeof(*msg), msg->inSize );
-    *code = msg->code;
-    *output = (int)msg->output;
-    *out_size = msg->outCapacity;
-    *in_size = msg->inSize;
-    busy_request_id = msg->id; /* the kernel ignores it for blocking reads,
-                                * exactly as wineserver does */
-    have_stashed_msg = FALSE;
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS proskrnl_console_read_complete( HANDLE server, NTSTATUS status, int signal,
-                                         const void *data1, size_t size1,
-                                         const void *data2, size_t size2 )
-{
-    struct
-    {
-        CONDRV_SERVER_REPLY hdr;
-        char data[CONDRV_SERVER_MAX_PAYLOAD];
-    } reply;
-
-    (void)signal;
-    if (size1 + size2 > sizeof(reply.data)) return STATUS_INVALID_PARAMETER;
-    reply.hdr.id = 0;
-    reply.hdr.status = status;
-    reply.hdr.read = 1;
-    reply.hdr.outSize = size1 + size2;
-    reply.hdr.pad = 0;
-    if (size1) memcpy( reply.data, data1, size1 );
-    if (size2) memcpy( reply.data + size1, data2, size2 );
-    return server_write( server, &reply, sizeof(reply.hdr) + size1 + size2 );
-}
-
-/* --- 2. the process entry --------------------------------------------------- */
+/* --- 1. the process entry --------------------------------------------------- */
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
 
@@ -188,7 +94,7 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
     ExitProcess( (UINT)ret );
 }
 
-/* --- 3. the mini CRT -------------------------------------------------------- */
+/* --- 2. the mini CRT -------------------------------------------------------- */
 
 void *malloc( size_t size )
 {
@@ -274,13 +180,13 @@ wchar_t *_wcsdup( const wchar_t *str )
     return copy;
 }
 
-/* The tty escape builder's sprintf: literal text + the %u/%d/%s/%c subset. */
-int sprintf( char *buffer, const char *format, ... )
+/* The tty escape builder's sprintf: literal text + the %u/%d/%s/%c subset.
+ * Wine's msvcrt stdio.h lowers sprintf onto __stdio_common_vsprintf (the
+ * ucrt shape), so that is the symbol provided. */
+static int mini_vsprintf( char *buffer, const char *format, va_list args )
 {
-    va_list args;
     char *out = buffer;
 
-    va_start( args, format );
     while (*format)
     {
         if (*format != '%')
@@ -333,9 +239,17 @@ int sprintf( char *buffer, const char *format, ... )
             break;
         }
     }
-    va_end( args );
     *out = 0;
     return (int)(out - buffer);
+}
+
+int __cdecl __stdio_common_vsprintf( unsigned __int64 options, char *buffer, size_t length,
+                                     const char *format, _locale_t locale, va_list args )
+{
+    (void)options;
+    (void)length; /* conhost's escape buffers are sized for their formats */
+    (void)locale;
+    return mini_vsprintf( buffer, format, args );
 }
 
 long wcstol( const wchar_t *str, wchar_t **end, int base )
@@ -375,7 +289,7 @@ int iswalnum( wint_t ch )
     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
 }
 
-/* --- 4. user32 + window.c stands-ins ---------------------------------------- */
+/* --- 3. user32 + window.c stands-ins ---------------------------------------- */
 
 /* Key-code conversion without a keyboard layout: the ASCII slice of the
  * US-layout mapping user32's VkKeyScanW documents (low byte = virtual key,
