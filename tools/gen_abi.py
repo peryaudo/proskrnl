@@ -289,6 +289,9 @@ def gen_ntdef(wine: Path) -> str:
             "SEMAPHORE_ALL_ACCESS",
             "MUTANT_QUERY_STATE",
             "MUTANT_ALL_ACCESS",
+            "TIMER_QUERY_STATE",
+            "TIMER_MODIFY_STATE",
+            "TIMER_ALL_ACCESS",
             "DUPLICATE_CLOSE_SOURCE",
             "DUPLICATE_SAME_ACCESS",
             "DUPLICATE_SAME_ATTRIBUTES",
@@ -323,6 +326,7 @@ typedef long long LONGLONG;
 typedef unsigned long long ULONGLONG;
 typedef void *PVOID;
 typedef ULONGLONG ULONG_PTR;
+typedef ULONG_PTR *PULONG_PTR;
 
 typedef LONG *PLONG;
 typedef ULONG *PULONG;
@@ -471,6 +475,11 @@ NTOBAPI_FUNCTIONS = [
     "NtCreateSymbolicLinkObject",
     "NtOpenSymbolicLinkObject",
     "NtQuerySymbolicLinkObject",
+    # M10 waitable timers
+    "NtCreateTimer",
+    "NtSetTimer",
+    "NtCancelTimer",
+    "NtQueryTimer",
 ]
 
 
@@ -483,6 +492,7 @@ def gen_ntobapi(wine: Path) -> str:
             ("_EVENT_INFORMATION_CLASS", "EVENT_INFORMATION_CLASS"),
             ("_MUTANT_INFORMATION_CLASS", "MUTANT_INFORMATION_CLASS"),
             ("_SEMAPHORE_INFORMATION_CLASS", "SEMAPHORE_INFORMATION_CLASS"),
+            ("_TIMER_INFORMATION_CLASS", "TIMER_INFORMATION_CLASS"),
         ]
     )
     structs = "\n\n".join(
@@ -491,8 +501,10 @@ def gen_ntobapi(wine: Path) -> str:
             ("_EVENT_BASIC_INFORMATION", "EVENT_BASIC_INFORMATION"),
             ("_MUTANT_BASIC_INFORMATION", "MUTANT_BASIC_INFORMATION"),
             ("_SEMAPHORE_BASIC_INFORMATION", "SEMAPHORE_BASIC_INFORMATION"),
+            ("_TIMER_BASIC_INFORMATION", "TIMER_BASIC_INFORMATION"),
         ]
     )
+    timer_apc = extract_typedef_line(winternl, "winternl.h", "PTIMER_APC_ROUTINE")
     prototypes = extract_prototypes(winternl, NTOBAPI_FUNCTIONS)
 
     return (
@@ -504,6 +516,8 @@ def gen_ntobapi(wine: Path) -> str:
         + enums
         + "\n\n"
         + structs
+        + "\n\n"
+        + timer_apc
         + "\n\n/* The M3 Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
@@ -770,6 +784,11 @@ NTIOAPI_FUNCTIONS = [
     "NtCreateNamedPipeFile",
     # M10 (CUI userland)
     "NtQueryFullAttributesFile",
+    "NtCreateIoCompletion",
+    "NtSetIoCompletion",
+    "NtRemoveIoCompletion",
+    "NtRemoveIoCompletionEx",
+    "NtQueryIoCompletion",
 ]
 
 
@@ -902,6 +921,23 @@ def gen_ntioapi(wine: Path) -> str:
             "FSCTL_PIPE_WAIT",
         ],
     )
+    # M10: completion-port surface (ntdll threadpool / CreateIoCompletionPort).
+    completion_defines = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "IO_COMPLETION_QUERY_STATE",
+            "IO_COMPLETION_MODIFY_STATE",
+            "IO_COMPLETION_ALL_ACCESS",
+        ],
+    )
+    completion_enum = extract_enum(
+        winternl, "_IO_COMPLETION_INFORMATION_CLASS", "IO_COMPLETION_INFORMATION_CLASS"
+    )
+    completion_struct = extract_struct(
+        winternl, "_FILE_IO_COMPLETION_INFORMATION", "FILE_IO_COMPLETION_INFORMATION"
+    )
+
     pipe_defines = extract_defines(
         winternl,
         "winternl.h",
@@ -1026,6 +1062,12 @@ _Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_
         + pipe_defines
         + "\n\n"
         + pipe_structs
+        + "\n\n"
+        + completion_defines
+        + "\n\n"
+        + completion_enum
+        + "\n\n"
+        + completion_struct
         + "\n\n"
         + asserts
         + "\n/* The M6+M7 Io Nt* surface; signatures extracted verbatim from\n"

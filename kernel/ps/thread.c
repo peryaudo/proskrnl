@@ -94,6 +94,10 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     KeInitializeEvent(&thread->tidAlertEvent, SynchronizationEvent, FALSE);
 
     ObfReferenceObject(process); /* the thread pins its process */
+    ObfReferenceObject(thread);  /* the RUNNING PIN: a live thread pins its own
+                                  * ETHREAD (closing the last handle to a
+                                  * running thread must not delete it); parked
+                                  * on the reaper list at exit. */
     uint64_t flags = KiAcquireDispatcherLock();
     thread->uniqueThreadId = uniqueThreadId;
     InsertTailList(&process->threadListHead, &thread->threadListEntry);
@@ -105,11 +109,80 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     return STATUS_SUCCESS;
 }
 
+/* --- deferred ETHREAD release (M10) ---------------------------------------
+ * A LIVE thread pins its own ETHREAD (the "running pin",
+ * PspCreateThreadObject): NT semantics — closing the last handle to a
+ * running thread must not delete it (ntdll's threadpool closes its worker
+ * handles immediately). The pin cannot be dropped by the exiting thread
+ * itself (the deref would free the kernel stack it is running on), so exits
+ * park the ETHREAD on this list and any LATER exit — by then the parked
+ * threads are KI_THREAD_STATE_TERMINATED — drops the references. Bounded
+ * residue: the most recent exit stays parked until the next one. */
+static LIST_ENTRY PspReaperListHead = {&PspReaperListHead, &PspReaperListHead};
+
+void PspReapExitedThreads(void)
+{
+    for (;;)
+    {
+        uint64_t flags = KiAcquireDispatcherLock();
+        PETHREAD parked = 0;
+        if (!IsListEmpty(&PspReaperListHead))
+        {
+            PLIST_ENTRY head = RemoveHeadList(&PspReaperListHead);
+            parked = CONTAINING_RECORD(head, ETHREAD, threadListEntry);
+        }
+        KiReleaseDispatcherLock(flags);
+        if (parked == 0)
+        {
+            return;
+        }
+        ObDereferenceObject(parked); /* deletion (if last) is now safe: TERMINATED */
+    }
+}
+
+/* The thread-side bookkeeping every exit path runs: leave the process's
+ * thread list and satisfy joins. May still block after this. */
+void PspRetireCurrentThread(NTSTATUS exitStatus)
+{
+    PKTHREAD tcb = KeGetCurrentThread();
+    PETHREAD thread = tcb->threadObject;
+    tcb->exitStatus = exitStatus;
+    if (thread == 0)
+    {
+        return; /* kernel threads and flat-binary main threads */
+    }
+    KiTraceEvent(KiTraceThreadExit, (uint64_t)(uintptr_t)tcb, (uint64_t)(uint32_t)exitStatus, 0);
+    uint64_t flags = KiAcquireDispatcherLock();
+    RemoveEntryList(&thread->threadListEntry);
+    thread->header.signalState = 1; /* joins on the thread handle satisfy */
+    KiWaitTest(&thread->header);
+    KiReleaseDispatcherLock(flags);
+}
+
+/* Park the running pin and stop. The park MUST be the exiting thread's very
+ * last act before KiTerminateThread (after every possibly-blocking step): a
+ * drain by another thread would otherwise free this stack mid-run — safe
+ * only because nothing runs between the park and the switch (no preemption,
+ * Art. 3). threadListEntry is reused for the reaper list (the retire above
+ * already unlinked it). */
+__attribute__((noreturn)) void PspParkCurrentThreadAndTerminate(void)
+{
+    PETHREAD thread = KeGetCurrentThread()->threadObject;
+    if (thread != 0)
+    {
+        uint64_t flags = KiAcquireDispatcherLock();
+        InsertTailList(&PspReaperListHead, &thread->threadListEntry);
+        KiReleaseDispatcherLock(flags);
+    }
+    KiTerminateThread();
+}
+
 __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
 {
     PKTHREAD tcb = KeGetCurrentThread();
     PEPROCESS process = tcb->process;
-    PETHREAD thread = tcb->threadObject;
+
+    PspReapExitedThreads(); /* earlier exits are TERMINATED by now */
 
     /* The last thread's exit is the process's exit: close handles (in thread
      * context, before the address space is torn down) and signal the process
@@ -117,22 +190,9 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
      * complete; its KTHREAD/stack are reclaimed when the ETHREAD is deleted. */
     uint64_t flags = KiAcquireDispatcherLock();
     LONG remaining = --process->activeThreadCount;
-    if (thread != 0)
-    {
-        RemoveEntryList(&thread->threadListEntry);
-    }
     KiReleaseDispatcherLock(flags);
 
-    tcb->exitStatus = exitStatus;
-    if (thread != 0)
-    {
-        KiTraceEvent(KiTraceThreadExit, (uint64_t)(uintptr_t)tcb, (uint64_t)(uint32_t)exitStatus,
-                     0);
-        uint64_t f2 = KiAcquireDispatcherLock();
-        thread->header.signalState = 1; /* joins on the thread handle satisfy */
-        KiWaitTest(&thread->header);
-        KiReleaseDispatcherLock(f2);
-    }
+    PspRetireCurrentThread(exitStatus);
 
     if (remaining == 0)
     {
@@ -146,7 +206,7 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
         KiReleaseDispatcherLock(f3);
     }
 
-    KiTerminateThread();
+    PspParkCurrentThreadAndTerminate();
 }
 
 /* --- NtCreateThreadEx ----------------------------------------------------- */

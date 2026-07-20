@@ -759,6 +759,8 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
     PEPROCESS process = thread->process;
     ASSERT(process != PsInitialSystemProcess);
 
+    PspReapExitedThreads(); /* earlier exits are TERMINATED by now */
+
     /* Handles die in thread context (closing can cascade into object deletes,
      * which may take the dispatcher lock). The address space is torn down
      * later by PspDeleteProcess — we are still running on it. */
@@ -768,11 +770,17 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
                  0);
 
     uint64_t flags = KiAcquireDispatcherLock();
+    process->activeThreadCount--;
     process->header.signalState = 1; /* never reset: joins always satisfy */
     KiWaitTest(&process->header);
     KiReleaseDispatcherLock(flags);
 
-    KiTerminateThread();
+    /* Retire + park like any thread exit (M10): joins on the caller's thread
+     * handle satisfy, and the running pin is handed to the reaper. Abandoned
+     * sibling threads (blocked in waits) keep their pins until they exit on
+     * their own — NT would terminate them; docs/03 records the divergence. */
+    PspRetireCurrentThread(exitStatus);
+    PspParkCurrentThreadAndTerminate();
 }
 
 /* --- the Nt* surface -------------------------------------------------------- */

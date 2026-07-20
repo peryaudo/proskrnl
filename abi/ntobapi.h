@@ -20,6 +20,10 @@ typedef enum {
   SemaphoreBasicInformation
 } SEMAPHORE_INFORMATION_CLASS, *PSEMAPHORE_INFORMATION_CLASS;
 
+typedef enum {
+    TimerBasicInformation = 0
+} TIMER_INFORMATION_CLASS;
+
 typedef struct {
   EVENT_TYPE EventType;
   LONG EventState;
@@ -35,6 +39,13 @@ typedef struct {
   ULONG CurrentCount;
   ULONG MaximumCount;
 } SEMAPHORE_BASIC_INFORMATION, *PSEMAPHORE_BASIC_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER RemainingTime;
+    BOOLEAN       TimerState;
+} TIMER_BASIC_INFORMATION, *PTIMER_BASIC_INFORMATION;
+
+typedef VOID (*PTIMER_APC_ROUTINE) ( PVOID, ULONG, LONG );
 
 /* The M3 Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
@@ -63,5 +74,9 @@ NTSTATUS NtOpenDirectoryObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
 NTSTATUS NtCreateSymbolicLinkObject(PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES,PUNICODE_STRING);
 NTSTATUS NtOpenSymbolicLinkObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
 NTSTATUS NtQuerySymbolicLinkObject(HANDLE,PUNICODE_STRING,PULONG);
+NTSTATUS NtCreateTimer(HANDLE*, ACCESS_MASK, const OBJECT_ATTRIBUTES*, TIMER_TYPE);
+NTSTATUS NtSetTimer(HANDLE, const LARGE_INTEGER*, PTIMER_APC_ROUTINE, PVOID, BOOLEAN, ULONG, BOOLEAN*);
+NTSTATUS NtCancelTimer(HANDLE, BOOLEAN*);
+NTSTATUS NtQueryTimer(HANDLE,TIMER_INFORMATION_CLASS,PVOID,ULONG,PULONG);
 
 #endif /* PROSKRNL_ABI_NTOBAPI_H */

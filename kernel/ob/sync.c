@@ -11,6 +11,7 @@
  * out-pointers are trusted (uaccess probing arrives with syscall/entry.S).
  */
 #include "kernel/ob/ob.h"
+#include "kernel/lib/string.h"
 #include "kernel/ke/ke.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/init/panic.h"
@@ -414,5 +415,149 @@ NTSTATUS NtQuerySemaphore(HANDLE handle, SEMAPHORE_INFORMATION_CLASS information
         *returnLength = sizeof(SEMAPHORE_BASIC_INFORMATION);
     }
     ObDereferenceObject(body);
+    return STATUS_SUCCESS;
+}
+
+/* --- waitable timers (M10) ------------------------------------------------- */
+
+/* Ob-visible KTIMER objects: kernelbase's CreateWaitableTimer/
+ * SetWaitableTimer are direct wrappers and ntdll's timer queues arm one
+ * (third_party/wine dlls/kernelbase/sync.c, dlls/ntdll/threadpool.c).
+ * Contract pinned by tests/ntapi/sem_port/timers.c; the notification vs
+ * synchronization signalling mirrors events, carried by the M2 KTIMER
+ * machinery unchanged. */
+
+OBJECT_TYPE ObpTimerType = {
+    .name = "Timer",
+    .validAccess = TIMER_ALL_ACCESS,
+    .waitable = TRUE,
+};
+
+NTSTATUS NtCreateTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
+                       TIMER_TYPE type)
+{
+    if (handle == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (type != NotificationTimer && type != SynchronizationTimer)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    PVOID body;
+    NTSTATUS status =
+        ObpCreateObjectWithHandle(&ObpTimerType, sizeof(KTIMER), attr, access, &body, handle);
+    if (status == STATUS_SUCCESS)
+    {
+        KeInitializeTimerEx(body, type);
+    }
+    return status;
+}
+
+NTSTATUS NtSetTimer(HANDLE handle, const LARGE_INTEGER *dueTime, PTIMER_APC_ROUTINE apcRoutine,
+                    PVOID apcContext, BOOLEAN resume, ULONG period, BOOLEAN *previousState)
+{
+    (void)apcContext;
+    (void)resume; /* no power management to resume from */
+    if (dueTime == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (apcRoutine != 0)
+    {
+        /* Timer APCs are unbuilt: nothing on the CUI path arms one (the
+         * threadpool and kernelbase wait on the object). Refused loudly,
+         * never faked (docs/03). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    NTSTATUS status = KiProbeForRead(dueTime, sizeof(*dueTime), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    LARGE_INTEGER due = *dueTime;
+
+    PVOID body;
+    status = ObReferenceObjectByHandle(handle, TIMER_MODIFY_STATE, &ObpTimerType,
+                                       ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PKTIMER timer = body;
+    BOOLEAN wasSignaled = timer->header.signalState != 0;
+    KeSetTimerEx(timer, due, (LONG)period, 0);
+    ObDereferenceObject(body);
+
+    if (previousState != 0 &&
+        NT_SUCCESS(KiProbeForWrite(previousState, sizeof(*previousState), 1)))
+    {
+        *previousState = wasSignaled;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtCancelTimer(HANDLE handle, BOOLEAN *currentState)
+{
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(handle, TIMER_MODIFY_STATE, &ObpTimerType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PKTIMER timer = body;
+    BOOLEAN wasSignaled = timer->header.signalState != 0;
+    KeCancelTimer(timer);
+    ObDereferenceObject(body);
+
+    if (currentState != 0 && NT_SUCCESS(KiProbeForWrite(currentState, sizeof(*currentState), 1)))
+    {
+        *currentState = wasSignaled;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, PVOID buffer,
+                      ULONG length, PULONG returnLength)
+{
+    if (informationClass != TimerBasicInformation)
+    {
+        return STATUS_INVALID_INFO_CLASS;
+    }
+    if (length < sizeof(TIMER_BASIC_INFORMATION))
+    {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS probe = KiProbeForWrite(buffer, sizeof(TIMER_BASIC_INFORMATION), sizeof(uint64_t));
+    if (!NT_SUCCESS(probe))
+    {
+        return probe;
+    }
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(handle, TIMER_QUERY_STATE, &ObpTimerType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PKTIMER timer = body;
+    TIMER_BASIC_INFORMATION info;
+    uint64_t flags = KiAcquireDispatcherLock();
+    info.TimerState = timer->header.signalState != 0;
+    /* Remaining = due - now in 100 ns (negative once past due — the NT
+     * shape); an unarmed timer reports 0. */
+    info.RemainingTime.QuadPart =
+        timer->header.inserted != 0
+            ? timer->dueTime.QuadPart - (LONGLONG)KeTickCount * (LONGLONG)KI_100NS_PER_TICK
+            : 0;
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(body);
+
+    memcpy(buffer, &info, sizeof(info));
+    if (returnLength != 0 && NT_SUCCESS(KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG))))
+    {
+        *returnLength = sizeof(info);
+    }
     return STATUS_SUCCESS;
 }
