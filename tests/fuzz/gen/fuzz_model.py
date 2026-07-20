@@ -31,6 +31,15 @@ FNAME_TAGS = [
     (3, 'badpath'),
 ]
 
+# (index, tag) for each M8 registry path.
+KNAME_TAGS = [
+    (0, 'root'),
+    (1, 'valid'),
+    (2, 'valid'),
+    (3, 'subitem'),
+    (4, 'badpath'),
+]
+
 # table name -> (count, [avoid indices])
 CHOICES = {
     'access_event': (8, [6, 7]),
@@ -54,6 +63,13 @@ CHOICES = {
     'nls_type': (5, []),
     'nls_id': (6, []),
     'protect_page': (5, []),
+    'access_key': (6, []),
+    'reg_type': (5, []),
+    'reg_options': (2, []),
+    'vname': (4, []),
+    'vdata': (4, []),
+    'key_info': (3, []),
+    'kv_info': (3, []),
 }
 
 # op name -> (opcode, [operand kind strings])
@@ -93,4 +109,14 @@ OPS = [
     ('protect_memory', 32, 'NtProtectVirtualMemory', ['ch_protect_page']),
     ('init_nls', 33, 'NtInitializeNlsFiles', []),
     ('get_nls_section', 34, 'NtGetNlsSectionPtr', ['ch_nls_type', 'ch_nls_id']),
+    ('create_key', 35, 'NtCreateKey', ['slot_out', 'ch_access_key', 'kname', 'ch_reg_options']),
+    ('open_key', 36, 'NtOpenKey', ['slot_out', 'ch_access_key', 'kname']),
+    ('delete_key', 37, 'NtDeleteKey', ['slot_in']),
+    ('set_value_key', 38, 'NtSetValueKey', ['slot_in', 'ch_vname', 'ch_reg_type', 'ch_vdata']),
+    ('delete_value_key', 39, 'NtDeleteValueKey', ['slot_in', 'ch_vname']),
+    ('query_value_key', 40, 'NtQueryValueKey', ['slot_in', 'ch_vname', 'ch_kv_info', 'ch_len']),
+    ('enum_value_key', 41, 'NtEnumerateValueKey', ['slot_in', 'ch_ulong', 'ch_kv_info', 'ch_len']),
+    ('enumerate_key', 42, 'NtEnumerateKey', ['slot_in', 'ch_ulong', 'ch_key_info', 'ch_len']),
+    ('query_key', 43, 'NtQueryKey', ['slot_in', 'ch_key_info', 'ch_len']),
+    ('flush_key', 44, 'NtFlushKey', ['slot_in']),
 ]

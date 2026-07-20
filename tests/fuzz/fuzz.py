@@ -101,6 +101,8 @@ def gen_operand(rng, kind, live, allow_avoid):
         return rng.choices(range(NAME_COUNT), weights=NAME_WEIGHTS, k=1)[0]
     if kind == "fname":
         return rng.randrange(len(M.FNAME_TAGS))
+    if kind == "kname":
+        return rng.randrange(len(M.KNAME_TAGS))
     assert kind.startswith("ch_"), kind
     return _pick_choice(rng, kind[3:], allow_avoid)
 
@@ -256,7 +258,11 @@ def build_proskrnl(blob_c):
 
 def run_proskrnl(img):
     log = os.path.join(BUILD, "fuzz-serial.log")
-    env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end", TIMEOUT=os.environ.get("TIMEOUT", "60"))
+    # The M8 registry ops make mutating calls genuinely slow on proskrnl (every
+    # NtSetValueKey/NtCreateKey rewrites the whole hive file — immediate
+    # writeback, Art. 3), so the default batch needs minutes, not seconds. A
+    # truncated serial log reads as en-masse "proskrnl=none" divergences.
+    env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end", TIMEOUT=os.environ.get("TIMEOUT", "420"))
     subprocess.run([os.path.join(ROOT, "tools", "qemu.sh"), img], env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(log) as f:
