@@ -137,7 +137,32 @@ local macOS Wine.
 
 ## Status
 
-**M7 complete: the unmodified Wine PE ntdll boots `hello.exe` on the kernel.**
+**M8 complete: the registry (Cm) is up and boot runs the real initial process chain —
+kernel → smss-equivalent → hello.exe.** The kernel grew its fourth NT department:
+`kernel/cm/` implements the `Nt*Key*` surface — `NtCreateKey`/`NtOpenKey`/`NtOpenKeyEx`/
+`NtQueryValueKey`/`NtSetValueKey`/`NtDeleteKey`/`NtDeleteValueKey`/`NtEnumerateKey`/
+`NtEnumerateValueKey`/`NtQueryKey`/`NtFlushKey` — with the NT semantics pinned test-first
+on the Wine oracle (`tests/ntapi/sem_reg/`, green on Wine **and** on the kernel): open-if
+create with dispositions, always-case-insensitive lookup, sorted enumeration, the
+`STATUS_KEY_DELETED` stale-handle limbo, volatile keys, and the per-info-class
+`TOO_SMALL`/`OVERFLOW` buffer protocol. Persistence is deliberately the dumbest correct
+thing (Art. 3): the whole registry lives in the pool as a tree, and every successful
+mutation rewrites one hive file in **our own format** ("proskrnl hive v1",
+`kernel/cm/hive.c` — not Microsoft's regf; docs/03 "M8 Cm notes") through the ordinary
+write-through file path, so a mutation is on disk when its syscall returns and a torn
+rewrite is detected structurally (magic written last). The boot-twice harness
+`tests/run/run.sh persist` proves the milestone's acceptance: values written by a ring-3
+program on boot 1 are byte-verified after a reboot, and volatile keys are gone. On top of
+that, `NtCreateUserProcess` gained its common single-image spawn (image via
+`PS_ATTRIBUTE_IMAGE_NAME`, real process/thread handles, `CLIENT_ID` write-back), and the
+boot now runs NT's actual startup structure: the kernel launches `user/smss/smss.c` — a
+native ntdll-only PE that proves `\Registry` from ring 3, spawns `hello.exe` through
+`NtCreateUserProcess`, waits, and propagates its exit code — `[KTEST] module smss.exe
+PASS`, `[KTEST] M8 PASS`. The fuzzer's op model grew the ten registry services the same
+day (docs/08).
+
+**The M7 mountain this stands on: the unmodified Wine PE ntdll boots `hello.exe` on the
+kernel.**
 M7 is the mountain: the process lifecycle and the ring-3 return protocol Wine's ntdll
 depends on. The syscall boundary now speaks the **NT x64 calling convention using the
 pinned Wine tree's own 64-bit syscall ids** (generated from `dlls/ntdll/ntsyscalls.h`),
@@ -212,10 +237,11 @@ Wine's headers by `tools/gen_abi.py` + `tools/gen_syscalls.py` (Art. 4 — no ha
 constants):
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify [KTEST] M7 PASS on serial
+make run     # build the image, boot headless in QEMU, verify [KTEST] M8 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
+tests/run/run.sh persist    # the M8 acceptance: registry values survive a reboot (boot twice)
 ```
 
 The **differential fuzzer** (`tests/fuzz/`, `docs/08` "the hidden weapon") generates random
@@ -227,11 +253,11 @@ handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergenc
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M8** — Cm (the registry) + the initial process chain: hive read/write in our own
-format, `NtCreateKey`/`NtSetValueKey`/`NtQueryValueKey`, the SYSTEM hive mounted at boot,
-and an smss-equivalent initial process that mounts the hive, sets the `\??` drive letters,
-and launches the next process — done when a value written by a user program survives
-reboot and boot completes as kernel → smss-equiv → test process (`docs/02`).
+Next: **M9** — npfs, condrv, and the interactive console: the named-pipe FS (byte/message
+mode, listen/connect via `NtFsControlFile`), a ConDrv-style console device, a keyboard
+driver, and Wine's conhost — done when input echoes through conhost and the message-mode
+pipe client/server test rpcrt4 needs passes (`docs/02`; note it moves after the GUI path
+if calc.exe is pursued first).
 
 ## License
 

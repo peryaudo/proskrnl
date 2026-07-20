@@ -188,6 +188,58 @@ the pinned tree:
   for the non-waitable object itself. Baselined in `tests/fuzz/known_divergences.txt`,
   kept visible by a `todo_proskrnl` in `sem_ob/handle_life`.
 
+## M8 Cm notes (the registry + the initial process chain)
+
+The `Nt*Key*` boundary is pinned test-first against the pinned Wine (`tests/ntapi/sem_reg/`,
+green on both sides), and the load-bearing semantics — always-open-if create with the
+disposition, only-last-component creation, always-case-insensitive lookup, sorted
+subkey/value enumeration order, `STATUS_ACCESS_DENIED` for delete-with-subkeys,
+success-no-op re-delete, the `STATUS_KEY_DELETED` stale-handle limbo, the per-info-class
+`TOO_SMALL`/`OVERFLOW` buffer protocol with truncated-header writes, the 256-char component
+and 16383-char value-name limits — are each cross-checked against
+`wine dlls/ntdll/unix/registry.c` + `server/registry.c` (cited at the implementation,
+`kernel/cm/registry.c`).
+
+**Inside (all free under the semantic shadow):**
+
+- **The hive is our own format, "proskrnl hive v1"** (`kernel/cm/hive.c` is its normative
+  spec): one file, `\??\C:\windows\system32\config\SYSTEM` (NT's path shape), holding a
+  length-prefixed preorder dump of the whole tree — no cells, no bins, no free lists, no
+  incremental updates. Every successful mutating syscall rewrites the entire file through
+  the ordinary `NtCreateFile`/`NtWriteFile` path onto write-through FAT32, so mutations
+  are durable at syscall return and **`NtFlushKey` is a success no-op** (strictly stronger
+  than NT's lazy flusher; unobservable from a running program).
+- **No recovery logging** (NT's `.LOG1`/`.LOG2` dirty-page journals are shed, docs/05): the
+  file's magic is written only after the body, so a torn rewrite parses as *no* hive and
+  the next boot starts with an empty registry — deterministic loss, never a garbage parse.
+  A kernel crash between a mutation and its rewrite completing can lose that mutation.
+- **One hive** backs the whole tree (NT splits SYSTEM/SOFTWARE/SAM/... and mounts user
+  hives): `\Registry\Machine` and `\Registry\User` are plain keys persisted in the same
+  file. Unobservable until something enumerates hive *mount points* as such.
+- **The hive file is not locked**: the kernel opens it transiently per rewrite, so a user
+  program can open (even corrupt) it, where NT holds its hives open exclusively. A
+  corrupted file is rejected structurally at the next boot (bounds-checked parse, empty
+  registry on failure).
+- **Key classes, registry symlinks (`REG_OPTION_CREATE_LINK`), and change notification**
+  are unbuilt: the class argument is accepted and dropped, `CREATE_LINK` and the notify
+  APIs are refused loudly (`STATUS_NOT_IMPLEMENTED`), matching what the CUI Wine stack
+  never uses. `LastWriteTime` ticks on the boot-relative interrupt clock, not wall time.
+- **`\Registry\Machine`/`\Registry\User` are undeletable** (parent-of-root protection);
+  wine would allow an empty hive root's deletion but never exercises it.
+
+**The initial process chain** (`kernel → smss.exe → hello.exe`): `NtCreateUserProcess`
+implements the common single-image spawn — `PS_ATTRIBUTE_IMAGE_NAME` (+ optional
+`PS_ATTRIBUTE_CLIENT_ID` write-back), real process/thread handles, `PsCreateSuccess` info.
+Caller-supplied `RTL_USER_PROCESS_PARAMETERS` are **not yet threaded through** (the PEB's
+parameters are kernel-built from the image path — M10's `CreateProcess` work), and
+suspended creation + the pre-success `PS_CREATE_INFO` states are refused loudly. The DOS
+device letters (`\??\C:`) remain kernel-created at volume mount, where NT's smss creates
+them from `Session Manager\DOS Devices`; our smss-equivalent instead proves the registry
+from ring 3 and drives the spawn + wait + exit-code propagation
+(`ProcessBasicInformation.ExitStatus` reports the real code once the process object
+signals). Persistence acceptance is the boot-twice harness `tests/run/run.sh persist`
+(seed on boot 1, byte-verify + volatile-key-absence on boot 2).
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
