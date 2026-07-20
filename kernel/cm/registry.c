@@ -696,6 +696,16 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     ULONG dispositionValue;
     if (found != 0)
     {
+        /* Binding to an EXISTING key must request at least one access right
+         * (wine server/handle.c alloc_handle: mapped access 0 ->
+         * STATUS_ACCESS_DENIED); a newly created key is exempt (the
+         * alloc_handle_no_access_check path). Same rule Ob's open engine
+         * applies (kernel/ob/namespace.c); fuzzer-found, pinned by
+         * sem_reg/create_open. */
+        if (desiredAccess == 0)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
         dispositionValue = REG_OPENED_EXISTING_KEY;
     }
     else
@@ -763,6 +773,12 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+    /* An open must request at least one access right (wine alloc_handle;
+     * the same rule as Ob's open engine). */
+    if (desiredAccess == 0)
+    {
+        return STATUS_ACCESS_DENIED;
     }
     return CmpCreateKeyHandle(found, desiredAccess, attributes->Attributes, keyHandle);
 }
