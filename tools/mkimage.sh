@@ -118,6 +118,9 @@ for spec in "${WIN_SPECS[@]}"; do
     done
     mcopy -i "$IMG@@$ESP_OFF" "$src" "::/$dest"
 done
+# M10: the TEMP/TMP directory the default environment points at.
+mmd -i "$IMG@@$ESP_OFF" ::/windows 2>/dev/null || true
+mmd -i "$IMG@@$ESP_OFF" ::/windows/temp 2>/dev/null || true
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
 # Install the Limine BIOS boot stage into the BIOS-boot partition.
