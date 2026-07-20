@@ -240,6 +240,50 @@ from ring 3 and drives the spawn + wait + exit-code propagation
 signals). Persistence acceptance is the boot-twice harness `tests/run/run.sh persist`
 (seed on boot 1, byte-verify + volatile-key-absence on boot 2).
 
+## M9 npfs/condrv notes (pipes + the console)
+
+What the M9 bring-up pinned, deviated on, or left unbuilt:
+
+- **Pipes are synchronous-only** (Art. 3): every `NtReadFile`/`NtWriteFile`/
+  `FSCTL_PIPE_LISTEN` on a pipe completes (or blocks the caller) before the
+  syscall returns — `STATUS_PENDING` is never produced. The pinned sem_pipe
+  suite uses synchronous handles exclusively; an async-handle divergence
+  found later gets its own entry here.
+- **`FSCTL_PIPE_WAIT` / `FSCTL_PIPE_TRANSCEIVE` are unbuilt** — refused
+  loudly (`STATUS_NOT_SUPPORTED` + a serial line), never faked. The
+  `NtCreateNamedPipeFile` timeout parameter is accepted and unused until
+  WAIT exists. `FSCTL_PIPE_PEEK` is implemented (state, available bytes,
+  message count, preview).
+- **Byte-mode writes chunk under quota; message-mode writes are framed
+  whole**, with one documented allowance: a message larger than the quota is
+  admitted once the queue is fully drained (the reader then consumes it
+  across several reads). Observable behaviour (partial-read
+  `STATUS_BUFFER_OVERFLOW`, zero-byte messages, coalescing) is pinned by
+  `tests/ntapi/sem_pipe/` on the oracle.
+- **The kernel⇄conhost server protocol is proskrnl-internal**
+  (`drivers/condrvproto.h`): real NT's condrv⇄conhost wire is undocumented
+  and Wine pumps conhost through wineserver requests instead. The kernel
+  mirrors wineserver's `get_next_console_request` semantics (busy verbs vs.
+  parked blocking reads completed by `read=1`) so conhost's logic ports
+  unmodified; the CLIENT surface — `IOCTL_CONDRV_*` and its structs — stays
+  fully generated (`abi/ntcondrv.h`, G4).
+- **One global console.** `IOCTL_CONDRV_BIND_PID` is answered kernel-side;
+  every Connection/Reference/Input/Output open names the same console, and
+  `hStdOutput`/`hStdError` share one Output open (the shape kernelbase's own
+  std-handle setup produces). Per-console isolation arrives when something
+  needs a second console.
+- **The console transport is the COM1 serial wire, both directions**
+  (HACK-004, docs/10): conhost's tty is `\Device\Serial0`, RX polled — see
+  the ledger entry for scope and retirement.
+- **The ported conhost's keyboard knowledge is the ASCII slice** of the
+  US-layout `VkKeyScanW` mapping (user/conhost/proskrnl_glue.c): enough for
+  the tty line discipline (Enter/Backspace/Tab/Escape/^A-^Z by virtual
+  key); a real layout arrives with user32 (M10+).
+- **conhost's wire output is a screen diff**, not an echo of written bytes:
+  its renderer emits cursor-movement/erase sequences against its screen
+  model. Tests assert cooked results (the client's own verdict), never
+  literal output bytes (`tests/run/console_expect.py`).
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
