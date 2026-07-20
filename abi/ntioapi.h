@@ -358,6 +358,75 @@ typedef struct {
 #define FILE_DEVICE_DISK 0x00000007
 #define FILE_DEVICE_FILE_SYSTEM 0x00000009
 
+/* Ioctl/fsctl encoding + the named-pipe FSCTL verbs (M9), extracted
+ * from wine/include/winioctl.h. */
+#define CTL_CODE( DeviceType, Function, Method, Access ) ( (DWORD)((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method) )
+#define METHOD_BUFFERED 0
+#define METHOD_IN_DIRECT 1
+#define METHOD_OUT_DIRECT 2
+#define METHOD_NEITHER 3
+#define FILE_ANY_ACCESS 0
+#define FILE_READ_ACCESS FILE_READ_DATA  /* file & pipe */
+#define FILE_WRITE_ACCESS FILE_WRITE_DATA /* file & pipe */
+#define FILE_DEVICE_NAMED_PIPE 0x00000011
+#define FILE_DEVICE_CONSOLE 0x00000050
+#define FSCTL_PIPE_DISCONNECT CTL_CODE(FILE_DEVICE_NAMED_PIPE, 1, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define FSCTL_PIPE_LISTEN CTL_CODE(FILE_DEVICE_NAMED_PIPE, 2, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define FSCTL_PIPE_PEEK CTL_CODE(FILE_DEVICE_NAMED_PIPE, 3, METHOD_BUFFERED, FILE_READ_DATA)
+#define FSCTL_PIPE_TRANSCEIVE CTL_CODE(FILE_DEVICE_NAMED_PIPE, 5, METHOD_NEITHER,  FILE_READ_DATA | FILE_WRITE_DATA)
+#define FSCTL_PIPE_WAIT CTL_CODE(FILE_DEVICE_NAMED_PIPE, 6, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+/* NtCreateNamedPipeFile options + pipe info shapes (M9), extracted
+ * from wine/include/{winternl.h,winioctl.h}. */
+#define FILE_PIPE_DISCONNECTED_STATE 0x00000001
+#define FILE_PIPE_LISTENING_STATE 0x00000002
+#define FILE_PIPE_CONNECTED_STATE 0x00000003
+#define FILE_PIPE_CLOSING_STATE 0x00000004
+#define FILE_PIPE_INBOUND 0x00000000
+#define FILE_PIPE_OUTBOUND 0x00000001
+#define FILE_PIPE_FULL_DUPLEX 0x00000002
+#define FILE_PIPE_TYPE_MESSAGE 0x00000001
+#define FILE_PIPE_TYPE_BYTE 0x00000000
+#define FILE_PIPE_MESSAGE_MODE 0x00000001
+#define FILE_PIPE_BYTE_STREAM_MODE 0x00000000
+#define FILE_PIPE_COMPLETE_OPERATION 0x00000001
+#define FILE_PIPE_QUEUE_OPERATION 0x00000000
+#define FILE_PIPE_SERVER_END 0x00000001
+#define FILE_PIPE_CLIENT_END 0x00000000
+
+typedef struct {
+    ULONG ReadMode;
+    ULONG CompletionMode;
+} FILE_PIPE_INFORMATION, *PFILE_PIPE_INFORMATION;
+
+typedef struct {
+    ULONG NamedPipeType;
+    ULONG NamedPipeConfiguration;
+    ULONG MaximumInstances;
+    ULONG CurrentInstances;
+    ULONG InboundQuota;
+    ULONG ReadDataAvailable;
+    ULONG OutboundQuota;
+    ULONG WriteQuotaAvailable;
+    ULONG NamedPipeState;
+    ULONG NamedPipeEnd;
+} FILE_PIPE_LOCAL_INFORMATION, *PFILE_PIPE_LOCAL_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER   Timeout;
+    ULONG           NameLength;
+    BOOLEAN         TimeoutSpecified;
+    WCHAR           Name[1];
+} FILE_PIPE_WAIT_FOR_BUFFER, *PFILE_PIPE_WAIT_FOR_BUFFER;
+
+typedef struct {
+    ULONG   NamedPipeState;
+    ULONG   ReadDataAvailable;
+    ULONG   NumberOfMessages;
+    ULONG   MessageLength;
+    CHAR    Data[1];
+} FILE_PIPE_PEEK_BUFFER, *PFILE_PIPE_PEEK_BUFFER;
+
 #include <stddef.h>
 _Static_assert(sizeof(IO_STATUS_BLOCK) == 16, "IO_STATUS_BLOCK x64 layout");
 _Static_assert(offsetof(IO_STATUS_BLOCK, Information) == 8, "IO_STATUS_BLOCK x64 layout");
@@ -371,6 +440,11 @@ _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, ShortName) == 70, "FILE
 _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_BOTH_DIRECTORY_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_PIPE_INFORMATION) == 8, "FILE_PIPE_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
+_Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_FOR_BUFFER x64 layout");
 
 /* The M6+M7 Io Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
@@ -386,5 +460,8 @@ NTSTATUS NtFlushBuffersFile(HANDLE,IO_STATUS_BLOCK*);
 NTSTATUS NtLockFile(HANDLE,HANDLE,PIO_APC_ROUTINE,void*,PIO_STATUS_BLOCK,PLARGE_INTEGER,PLARGE_INTEGER,ULONG*,BOOLEAN,BOOLEAN);
 NTSTATUS NtUnlockFile(HANDLE,PIO_STATUS_BLOCK,PLARGE_INTEGER,PLARGE_INTEGER,PULONG);
 NTSTATUS NtQueryVolumeInformationFile(HANDLE,PIO_STATUS_BLOCK,PVOID,ULONG,FS_INFORMATION_CLASS);
+NTSTATUS NtDeviceIoControlFile(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,ULONG,PVOID,ULONG,PVOID,ULONG);
+NTSTATUS NtFsControlFile(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,ULONG,PVOID,ULONG,PVOID,ULONG);
+NTSTATUS NtCreateNamedPipeFile(PHANDLE,ULONG,POBJECT_ATTRIBUTES,PIO_STATUS_BLOCK,ULONG,ULONG,ULONG,ULONG,ULONG,ULONG,ULONG,ULONG,ULONG,PLARGE_INTEGER);
 
 #endif /* PROSKRNL_ABI_NTIOAPI_H */

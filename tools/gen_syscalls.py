@@ -522,8 +522,22 @@ def gen_table_inc(wine_syscalls) -> str:
     )
 
 
+def stub_frame_size(wine_syscalls) -> int:
+    """One uniform stub frame sized for the widest IMPLEMENTED service: the
+    NT-convention slots reach [rsp + 0x28 + 8*(argc-5)], and the frame keeps
+    the incoming SysV 16-byte alignment (rsp ≡ 8 mod 16 at entry, so the
+    frame size must be ≡ 8 mod 16)."""
+    by_name = {name: argc for _sid, name, argc in wine_syscalls}
+    max_argc = max(by_name[name] for name in IMPLEMENTED)
+    frame = 0x28 + 8 * max(max_argc - 4, 0)
+    if frame % 16 != 8:
+        frame += 8
+    return frame
+
+
 def gen_stubs(wine_syscalls) -> str:
     by_name = {name: (sid, argc) for sid, name, argc in wine_syscalls}
+    frame = stub_frame_size(wine_syscalls)
     stubs = []
     for name in IMPLEMENTED:
         sid, argc = by_name[name]
@@ -541,13 +555,15 @@ def gen_stubs(wine_syscalls) -> str:
             ]
         else:
             # Build an NT-shaped stack: args 5+ live at [rsp+0x28+8n] at the
-            # syscall instruction. 0x68 bytes covers the 11-argument maximum.
-            body.append("    sub $0x68, %rsp")
+            # syscall instruction. The frame covers the widest implemented
+            # service (stub_frame_size); SysV stack args moved down shift by
+            # the same frame.
+            body.append(f"    sub ${frame:#x}, %rsp")
             body.append("    mov %r8, 0x28(%rsp)")   # NT arg5 = SysV r8
             if argc >= 6:
                 body.append("    mov %r9, 0x30(%rsp)")  # NT arg6 = SysV r9
             for extra in range(argc - 6):  # NT arg7+ = SysV stack args
-                body.append(f"    mov {0x70 + 8 * extra:#x}(%rsp), %rax")
+                body.append(f"    mov {frame + 8 + 8 * extra:#x}(%rsp), %rax")
                 body.append(f"    mov %rax, {0x38 + 8 * extra:#x}(%rsp)")
             body += [
                 "    mov %rcx, %r9",
@@ -556,7 +572,7 @@ def gen_stubs(wine_syscalls) -> str:
                 "    mov %rdi, %r10",
                 f"    mov ${sid:#x}, %eax",
                 "    syscall",
-                "    add $0x68, %rsp",
+                f"    add ${frame:#x}, %rsp",
                 "    ret",
             ]
         stubs.append("\n".join(body) + "\n")

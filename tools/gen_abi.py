@@ -80,6 +80,35 @@ def extract_struct(src: str, tag: str, typedef: str, keep_tag: bool = False) -> 
     return intro + match.group(1) + "} " + match.group(2).strip() + ";"
 
 
+def extract_plain_struct(src: str, name: str) -> str:
+    """Pull one `struct NAME { ... };` body verbatim (the wine/condrv.h shape:
+    plain struct tags, no typedef)."""
+    match = re.search(r"struct " + re.escape(name) + r"\s*\{(.*?)\}\s*;", src, re.S)
+    if not match:
+        sys.exit(f"gen_abi: struct {name} not found")
+    return "struct " + name + "\n{" + match.group(1) + "};"
+
+
+def extract_anonymous_struct(src: str, typedef: str) -> str:
+    """Pull one tagless `typedef struct { ... } NAME;` body verbatim (the
+    wine/condrv.h char_info_t shape)."""
+    match = re.search(
+        r"typedef struct\s*\{(.*?)\}\s*(" + re.escape(typedef) + r")\s*;", src, re.S
+    )
+    if not match:
+        sys.exit(f"gen_abi: anonymous struct {typedef} not found")
+    return "typedef struct\n{" + match.group(1) + "} " + match.group(2) + ";"
+
+
+def extract_plain_enum(src: str, name: str) -> str:
+    """Pull one `enum NAME { ... };` body verbatim (values are positional, so
+    the body must come from the Wine header, not from memory)."""
+    match = re.search(r"enum " + re.escape(name) + r"\s*\{(.*?)\}\s*;", src, re.S)
+    if not match:
+        sys.exit(f"gen_abi: enum {name} not found")
+    return "enum " + name + "\n{" + match.group(1) + "};"
+
+
 def extract_prototypes(src: str, names: list[str]) -> str:
     """Pull `NTSYSAPI <ret> WINAPI Nt*(...)` prototypes verbatim from Wine's
     winternl.h, dropping the Windows linkage macros (signatures are contract;
@@ -735,6 +764,10 @@ NTIOAPI_FUNCTIONS = [
     "NtUnlockFile",
     # M7 (ntdll startup)
     "NtQueryVolumeInformationFile",
+    # M9 (npfs + condrv)
+    "NtDeviceIoControlFile",
+    "NtFsControlFile",
+    "NtCreateNamedPipeFile",
 ]
 
 
@@ -836,6 +869,62 @@ def gen_ntioapi(wine: Path) -> str:
         winioctl, "winioctl.h", ["FILE_DEVICE_DISK", "FILE_DEVICE_FILE_SYSTEM"]
     )
 
+    # M9: ioctl/fsctl plumbing + the named-pipe surface. CTL_CODE and the
+    # FSCTL_PIPE_* verbs come from winioctl.h; the pipe create/mode constants
+    # and info structs from winternl.h ("options for NtCreateNamedPipeFile").
+    ioctl_defines = extract_defines(
+        winioctl,
+        "winioctl.h",
+        [
+            "CTL_CODE( DeviceType, Function, Method, Access )",
+            "METHOD_BUFFERED",
+            "METHOD_IN_DIRECT",
+            "METHOD_OUT_DIRECT",
+            "METHOD_NEITHER",
+            "FILE_ANY_ACCESS",
+            "FILE_READ_ACCESS",
+            "FILE_WRITE_ACCESS",
+            "FILE_DEVICE_NAMED_PIPE",
+            "FILE_DEVICE_CONSOLE",
+            "FSCTL_PIPE_DISCONNECT",
+            "FSCTL_PIPE_LISTEN",
+            "FSCTL_PIPE_PEEK",
+            "FSCTL_PIPE_TRANSCEIVE",
+            "FSCTL_PIPE_WAIT",
+        ],
+    )
+    pipe_defines = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "FILE_PIPE_DISCONNECTED_STATE",
+            "FILE_PIPE_LISTENING_STATE",
+            "FILE_PIPE_CONNECTED_STATE",
+            "FILE_PIPE_CLOSING_STATE",
+            "FILE_PIPE_INBOUND",
+            "FILE_PIPE_OUTBOUND",
+            "FILE_PIPE_FULL_DUPLEX",
+            "FILE_PIPE_TYPE_MESSAGE",
+            "FILE_PIPE_TYPE_BYTE",
+            "FILE_PIPE_MESSAGE_MODE",
+            "FILE_PIPE_BYTE_STREAM_MODE",
+            "FILE_PIPE_COMPLETE_OPERATION",
+            "FILE_PIPE_QUEUE_OPERATION",
+            "FILE_PIPE_SERVER_END",
+            "FILE_PIPE_CLIENT_END",
+        ],
+    )
+    pipe_structs = "\n\n".join(
+        [
+            extract_struct(winternl, "_FILE_PIPE_INFORMATION", "FILE_PIPE_INFORMATION"),
+            extract_struct(
+                winternl, "_FILE_PIPE_LOCAL_INFORMATION", "FILE_PIPE_LOCAL_INFORMATION"
+            ),
+            extract_struct(winioctl, "_FILE_PIPE_WAIT_FOR_BUFFER", "FILE_PIPE_WAIT_FOR_BUFFER"),
+            extract_struct(winioctl, "_FILE_PIPE_PEEK_BUFFER", "FILE_PIPE_PEEK_BUFFER"),
+        ]
+    )
+
     iosb = extract_struct(winternl, "_IO_STATUS_BLOCK", "IO_STATUS_BLOCK")
     apc_routine = extract_typedef_line(winternl, "winternl.h", "PIO_APC_ROUTINE")
     info_class = extract_enum(
@@ -881,6 +970,11 @@ _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, ShortName) == 70, "FILE
 _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_BOTH_DIRECTORY_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_PIPE_INFORMATION) == 8, "FILE_PIPE_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
+_Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_FOR_BUFFER x64 layout");
 """
 
     return (
@@ -915,12 +1009,168 @@ _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_
         + fs_structs
         + "\n\n"
         + device_types
+        + "\n\n/* Ioctl/fsctl encoding + the named-pipe FSCTL verbs (M9), extracted\n"
+        + " * from wine/include/winioctl.h. */\n"
+        + ioctl_defines
+        + "\n\n/* NtCreateNamedPipeFile options + pipe info shapes (M9), extracted\n"
+        + " * from wine/include/{winternl.h,winioctl.h}. */\n"
+        + pipe_defines
+        + "\n\n"
+        + pipe_structs
         + "\n\n"
         + asserts
         + "\n/* The M6+M7 Io Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTIOAPI_H */\n"
+    )
+
+
+# The M9 ConDrv contract (docs/02): the IOCTL_CONDRV_* surface Wine's
+# kernelbase console client issues via NtDeviceIoControlFile, and the
+# structures those ioctls exchange — wine/include/wine/condrv.h is the
+# authoritative source (conhost and kernelbase both compile against it, so
+# it IS the observable boundary). COORD/SMALL_RECT come from wincontypes.h,
+# the CONSOLE_HANDLE_* sentinels' LongToHandle from basetsd.h.
+def gen_ntcondrv(wine: Path) -> str:
+    condrv = (wine / "include/wine/condrv.h").read_text()
+    wincontypes = (wine / "include/wincontypes.h").read_text()
+    basetsd = (wine / "include/basetsd.h").read_text()
+
+    ioctls = extract_defines(
+        condrv,
+        "wine/condrv.h",
+        [
+            "IOCTL_CONDRV_GET_MODE",
+            "IOCTL_CONDRV_SET_MODE",
+            "IOCTL_CONDRV_IS_UNIX",
+            "IOCTL_CONDRV_READ_CONSOLE",
+            "IOCTL_CONDRV_READ_FILE",
+            "IOCTL_CONDRV_READ_INPUT",
+            "IOCTL_CONDRV_WRITE_INPUT",
+            "IOCTL_CONDRV_PEEK",
+            "IOCTL_CONDRV_GET_INPUT_INFO",
+            "IOCTL_CONDRV_SET_INPUT_INFO",
+            "IOCTL_CONDRV_GET_TITLE",
+            "IOCTL_CONDRV_SET_TITLE",
+            "IOCTL_CONDRV_CTRL_EVENT",
+            "IOCTL_CONDRV_BEEP",
+            "IOCTL_CONDRV_FLUSH",
+            "IOCTL_CONDRV_GET_WINDOW",
+            "IOCTL_CONDRV_GET_PROCESS_LIST",
+            "IOCTL_CONDRV_READ_CONSOLE_CONTROL",
+            "IOCTL_CONDRV_GET_INPUT_COUNT",
+            "IOCTL_CONDRV_WRITE_CONSOLE",
+            "IOCTL_CONDRV_WRITE_FILE",
+            "IOCTL_CONDRV_READ_OUTPUT",
+            "IOCTL_CONDRV_WRITE_OUTPUT",
+            "IOCTL_CONDRV_GET_OUTPUT_INFO",
+            "IOCTL_CONDRV_SET_OUTPUT_INFO",
+            "IOCTL_CONDRV_ACTIVATE",
+            "IOCTL_CONDRV_FILL_OUTPUT",
+            "IOCTL_CONDRV_SCROLL",
+            "IOCTL_CONDRV_BIND_PID",
+            "IOCTL_CONDRV_SETUP_INPUT",
+            "IOCTL_CONDRV_INIT_OUTPUT",
+            "IOCTL_CONDRV_CLOSE_OUTPUT",
+        ],
+    )
+    masks = extract_defines(
+        condrv,
+        "wine/condrv.h",
+        [
+            "SET_CONSOLE_INPUT_INFO_INPUT_CODEPAGE",
+            "SET_CONSOLE_INPUT_INFO_OUTPUT_CODEPAGE",
+            "SET_CONSOLE_OUTPUT_INFO_CURSOR_GEOM",
+            "SET_CONSOLE_OUTPUT_INFO_CURSOR_POS",
+            "SET_CONSOLE_OUTPUT_INFO_SIZE",
+            "SET_CONSOLE_OUTPUT_INFO_ATTR",
+            "SET_CONSOLE_OUTPUT_INFO_DISPLAY_WINDOW",
+            "SET_CONSOLE_OUTPUT_INFO_MAX_SIZE",
+            "SET_CONSOLE_OUTPUT_INFO_POPUP_ATTR",
+            "SET_CONSOLE_OUTPUT_INFO_FONT",
+        ],
+    )
+    sentinels = extract_defines(basetsd, "basetsd.h", ["LongToHandle(l)"]) + "\n" + extract_defines(
+        condrv,
+        "wine/condrv.h",
+        [
+            "CONSOLE_HANDLE_ALLOC",
+            "CONSOLE_HANDLE_ALLOC_NO_WINDOW",
+            "CONSOLE_HANDLE_SHELL",
+            "CONSOLE_HANDLE_SHELL_NO_WINDOW",
+        ],
+    )
+
+    handle_typedef = extract_typedef_line(condrv, "wine/condrv.h", "condrv_handle_t")
+    char_info = extract_anonymous_struct(condrv, "char_info_t")
+    coord_structs = "\n\n".join(
+        [
+            extract_struct(wincontypes, "tagCOORD", "COORD"),
+            extract_struct(wincontypes, "tagSMALL_RECT", "SMALL_RECT"),
+        ]
+    )
+    structs = "\n\n".join(
+        [
+            extract_plain_struct(condrv, "condrv_input_info"),
+            extract_plain_struct(condrv, "condrv_input_info_params"),
+            extract_plain_struct(condrv, "condrv_output_params"),
+            extract_plain_enum(condrv, "char_info_mode"),
+            extract_plain_struct(condrv, "condrv_output_info"),
+            extract_plain_struct(condrv, "condrv_output_info_params"),
+            extract_plain_struct(condrv, "condrv_title_params"),
+            extract_plain_struct(condrv, "condrv_fill_output_params"),
+            extract_plain_struct(condrv, "condrv_scroll_params"),
+            extract_plain_struct(condrv, "condrv_ctrl_event"),
+        ]
+    )
+
+    scaffold = """\
+/* Win32 alias scaffold for the extracted structs/macros; sizes pinned. */
+typedef short SHORT;
+typedef LONGLONG LONG_PTR;
+_Static_assert(sizeof(SHORT) == 2, "Win32: SHORT is 2 bytes");
+_Static_assert(sizeof(LONG_PTR) == 8, "x86_64: LONG_PTR is pointer-sized");
+"""
+
+    asserts = """\
+#include <stddef.h>
+_Static_assert(sizeof(char_info_t) == 4, "char_info_t layout");
+_Static_assert(sizeof(struct condrv_input_info) == 8, "condrv_input_info layout");
+_Static_assert(sizeof(struct condrv_output_info) == 100, "condrv_output_info layout");
+_Static_assert(offsetof(struct condrv_output_params, width) == 12, "condrv_output_params layout");
+_Static_assert(offsetof(struct condrv_ctrl_event, group_id) == 4, "condrv_ctrl_event layout");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntcondrv.h",
+            source="wine/include/{wine/condrv.h,wincontypes.h,basetsd.h}",
+        )
+        + "#ifndef PROSKRNL_ABI_NTCONDRV_H\n"
+        + "#define PROSKRNL_ABI_NTCONDRV_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* CTL_CODE, FILE_DEVICE_CONSOLE */\n\n'
+        + scaffold
+        + "\n/* Extracted verbatim from wine/include/wincontypes.h. */\n"
+        + coord_structs
+        + "\n\n/* The ConDrv ioctl surface, extracted from wine/include/wine/condrv.h. */\n"
+        + ioctls
+        + "\n\n"
+        + handle_typedef
+        + "\n\n/* The ioctl parameter/result shapes, extracted verbatim from\n"
+        + " * wine/include/wine/condrv.h. */\n"
+        + char_info
+        + "\n\n"
+        + structs
+        + "\n\n"
+        + masks
+        + "\n\n/* Console-inheritance sentinels (RTL_USER_PROCESS_PARAMETERS.ConsoleHandle);\n"
+        + " * LongToHandle from wine/include/basetsd.h. */\n"
+        + sentinels
+        + "\n\n"
+        + asserts
+        + "\n#endif /* PROSKRNL_ABI_NTCONDRV_H */\n"
     )
 
 
@@ -1521,6 +1771,7 @@ def main() -> None:
         ("ntmmapi.h", gen_ntmmapi(args.wine)),
         ("ntimage.h", gen_ntimage(args.wine)),
         ("ntioapi.h", gen_ntioapi(args.wine)),
+        ("ntcondrv.h", gen_ntcondrv(args.wine)),
         ("ntcontext.h", gen_ntcontext(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
         ("ntpebteb.h", gen_ntpebteb(args.wine)),
