@@ -931,6 +931,9 @@ void NpfsInitialize(void)
     PIO_DEVICE device = body;
     device->ops = &NpfsVfsOps;
     device->context = 0;
+    /* GetFileType(pipe) == FILE_TYPE_PIPE (Wine dlls/kernelbase/file.c
+     * switches on FileFsDeviceInformation.DeviceType). */
+    device->deviceType = FILE_DEVICE_NAMED_PIPE;
     NpfsDevice = device;
     NtClose(handle);
 

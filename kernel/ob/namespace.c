@@ -258,9 +258,12 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             *parseRemaining = remaining;
             return STATUS_SUCCESS;
         }
-        if (trailingEmpty)
+        if (trailingEmpty && !(child != 0 && ObpGetHeader(child)->type == &ObpSymbolicLinkType))
         {
-            /* Trailing '\' on a non-parse path: invalid, as before. */
+            /* Trailing '\' on a non-parse path: invalid — except through a
+             * symbolic link ("\??\C:\" must reach the volume root exactly as
+             * the pinned oracle resolves it; sem_pipe/device_type.c), which
+             * the reparse below re-walks with the slash preserved. */
             ObDereferenceObject(current);
             return STATUS_OBJECT_NAME_INVALID;
         }
@@ -297,7 +300,11 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             }
             ULONG targetUnits = link->target.Length / sizeof(WCHAR);
             ULONG restUnits = remaining.Length / sizeof(WCHAR);
-            ULONG totalUnits = targetUnits + (restUnits != 0 ? 1 + restUnits : 0);
+            /* trailingEmpty: the link was named with a bare trailing '\'
+             * ("\??\C:\") — keep it on the rebuilt path so the re-walk
+             * presents the same shape to the parse object's own parser. */
+            ULONG totalUnits =
+                targetUnits + (restUnits != 0 ? 1 + restUnits : (trailingEmpty ? 1u : 0u));
             if (totalUnits > OBP_MAX_NAME_UNITS)
             {
                 ObDereferenceObject(current);
@@ -314,6 +321,10 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             {
                 rebuilt[targetUnits] = '\\';
                 memcpy(rebuilt + targetUnits + 1, remaining.Buffer, remaining.Length);
+            }
+            else if (trailingEmpty)
+            {
+                rebuilt[targetUnits] = '\\';
             }
             if (*reparseBuffer != 0)
             {
@@ -397,8 +408,8 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
      * link, as an open would. Matches the pinned third_party/wine; docs/09
      * Art. 6. */
     BOOLEAN followFinalLink = (type != &ObpSymbolicLinkType);
-    NTSTATUS status = ObpLookupName(attributes, followFinalLink, TRUE, 0, &found, &parent, &leaf,
-                                    0, &reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, followFinalLink, TRUE, 0, &found, &parent, &leaf, 0,
+                                    &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         goto out;

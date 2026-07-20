@@ -659,3 +659,52 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     ObDereferenceObject(file);
     return status;
 }
+
+/* --- NtQueryVolumeInformationFile (M7 stub -> per-device, M10) -------------- */
+
+NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStatusBlock,
+                                      PVOID buffer, ULONG length, FS_INFORMATION_CLASS infoClass)
+{
+    if (ioStatusBlock == 0 || buffer == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(ioStatusBlock, sizeof(*ioStatusBlock), sizeof(void *));
+    if (NT_SUCCESS(status) && length != 0)
+    {
+        status = KiProbeForWrite(buffer, length, 1);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (infoClass != FileFsDeviceInformation)
+    {
+        return STATUS_NOT_IMPLEMENTED; /* the other classes stay off the M10 path */
+    }
+
+    PFILE_OBJECT file;
+    status = IopReferenceFileByHandle(fileHandle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (length < sizeof(FILE_FS_DEVICE_INFORMATION))
+    {
+        /* Pinned Wine: a short FileFsDeviceInformation buffer is
+         * STATUS_BUFFER_TOO_SMALL (dlls/ntdll/unix/file.c). */
+        ObDereferenceObject(file);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    /* GetFileType's whole input: the owning device's type (disk vs pipe vs
+     * console/serial — kernelbase switches on it, dlls/kernelbase/file.c). */
+    FILE_FS_DEVICE_INFORMATION info;
+    memset(&info, 0, sizeof(info));
+    info.DeviceType = file->device->deviceType;
+    memcpy(buffer, &info, sizeof(info));
+    ioStatusBlock->Status = STATUS_SUCCESS;
+    ioStatusBlock->Information = sizeof(info);
+    ObDereferenceObject(file);
+    return STATUS_SUCCESS;
+}

@@ -790,7 +790,7 @@ NTSTATUS CondrvCreateProcessHandles(struct EPROCESS *process, HANDLE *consoleOut
 
 /* --- initialization ---------------------------------------------------------- */
 
-static PIO_DEVICE CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops)
+static PIO_DEVICE CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, ULONG deviceType)
 {
     UNICODE_STRING deviceName;
     OBJECT_ATTRIBUTES attributes;
@@ -811,6 +811,7 @@ static PIO_DEVICE CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops)
     PIO_DEVICE device = body;
     device->ops = ops;
     device->context = 0;
+    device->deviceType = deviceType;
     NtClose(handle);
     return device;
 }
@@ -823,6 +824,11 @@ void CondrvInitialize(void)
     InitializeListHead(&CondrvConsole.readQueue);
     CondrvConsole.nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
     KeInitializeEvent(&CondrvConsole.serverPresent, NotificationEvent, FALSE);
-    CondrvPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps);
-    CondrvConsoleDevice = CondrvPublishDevice(WSTR("\\Device\\ConDrv"), &CondrvConsoleOps);
+    /* GetFileType maps FILE_DEVICE_SERIAL_PORT and FILE_DEVICE_CONSOLE to
+     * FILE_TYPE_CHAR (Wine dlls/kernelbase/file.c); the console value is
+     * what wineserver's console objects report (server/console.c
+     * console_get_volume_info). */
+    CondrvPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps, FILE_DEVICE_SERIAL_PORT);
+    CondrvConsoleDevice =
+        CondrvPublishDevice(WSTR("\\Device\\ConDrv"), &CondrvConsoleOps, FILE_DEVICE_CONSOLE);
 }

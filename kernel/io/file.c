@@ -232,6 +232,10 @@ void IoMountBootVolume(void)
     PIO_DEVICE device = body;
     device->ops = &FatVfsOps;
     device->context = volume;
+    /* A mounted disk filesystem, as the pinned oracle reports one (Wine
+     * dlls/ntdll/unix/file.c get_device_info: regular files/directories →
+     * FILE_DEVICE_DISK_FILE_SYSTEM; GetFileType maps it to FILE_TYPE_DISK). */
+    device->deviceType = FILE_DEVICE_DISK_FILE_SYSTEM;
     IopBootVolumeDevice = device;
     NtClose(handle);
 
@@ -446,6 +450,63 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
         out.LastAccessTime = raw.lastAccessTime;
         out.LastWriteTime = raw.lastWriteTime;
         out.ChangeTime = raw.lastWriteTime;
+        out.FileAttributes = raw.fileAttributes;
+        memcpy(info, &out, sizeof(out));
+    }
+    ObDereferenceObject(file);
+    thread->previousMode = KernelMode;
+    NtClose(handle);
+    thread->previousMode = saved;
+    return status;
+}
+
+/* NtQueryAttributesFile's wide sibling: same by-name open, the
+ * FILE_NETWORK_OPEN_INFORMATION shape (times + sizes + attributes) that
+ * kernelbase's GetFileAttributesExW and msvcrt's stat family consume (Wine
+ * dlls/ntdll/unix/file.c NtQueryFullAttributesFile). */
+NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
+                                   FILE_NETWORK_OPEN_INFORMATION *info)
+{
+    if (info == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(info, sizeof(*info), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    HANDLE handle;
+    IO_STATUS_BLOCK iosb;
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* the handle is kernel-internal */
+    status = IopCreateFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
+                           &iosb, FILE_ATTRIBUTE_NORMAL,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
+    thread->previousMode = saved;
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PFILE_OBJECT file;
+    thread->previousMode = KernelMode;
+    NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file);
+    thread->previousMode = saved;
+    ASSERT(NT_SUCCESS(refStatus));
+    IO_FILE_INFO raw;
+    status = file->device->ops->GetInfo(file, &raw);
+    if (NT_SUCCESS(status))
+    {
+        FILE_NETWORK_OPEN_INFORMATION out;
+        memset(&out, 0, sizeof(out));
+        out.CreationTime = raw.creationTime;
+        out.LastAccessTime = raw.lastAccessTime;
+        out.LastWriteTime = raw.lastWriteTime;
+        out.ChangeTime = raw.lastWriteTime;
+        out.AllocationSize.QuadPart = (LONGLONG)raw.allocationSize;
+        out.EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
         out.FileAttributes = raw.fileAttributes;
         memcpy(info, &out, sizeof(out));
     }

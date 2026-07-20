@@ -137,6 +137,7 @@ IMPLEMENTED = [
     "NtCreateNamedPipeFile",
     # M10 CUI userland surface
     "NtQuerySystemTime",
+    "NtQueryFullAttributesFile",
 ]
 
 
