@@ -107,9 +107,18 @@ kernel → smss-equiv → test process.
 
 ## M9 — npfs, condrv, interactive console *(off the calc critical path)*
 Named-pipe FS (byte/message mode, listen/connect via `NtFsControlFile`); a ConDrv-style
-console device; keyboard driver; port Wine's conhost.
-**Done when:** input echoes through conhost; the pipe client/server test (message-mode
-behaviour rpcrt4 needs) passes.
+console device; port Wine's conhost.
+**The console transport is the COM1 serial port, in both directions** (HACK-004,
+`docs/10`). The 16550 is bidirectional and already carries all kernel output
+(`arch/x86_64/serial.c`); its receive side becomes console input — the "keyboard driver"
+of this milestone is the UART RX path, not a keyboard device. A real keyboard
+(virtio-input, `\Device\Input0`) is M11's problem and a GUI conhost is M15's; condrv is
+agnostic of its backend, so the serial transport is subtracted when those arrive. Testing
+stays inside the headless finite-time loop (`docs/08`): QEMU's serial chardev becomes a
+socket/pty instead of a plain log file, the runner writes keystrokes into it and greps the
+echo — no QEMU window, no screendump, no change to the loop's shape.
+**Done when:** input typed into the serial console echoes through conhost; the pipe
+client/server test (message-mode behaviour rpcrt4 needs) passes.
 *Note:* if pursuing calc.exe first, this milestone moves **after** the GUI path — see below.
 
 ## M10 — Full Wine user-land (CUI)

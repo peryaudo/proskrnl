@@ -96,7 +96,8 @@ proskrnl/
 │   │   ├── virtqueue.c              # shared ring
 │   │   ├── blk.c / console.c / input.c
 │   │   └── gpu.c                    # M11: 2D scanout
-│   ├── condrv.c                     # M9: ConDrv-style console device
+│   ├── condrv.c                     # M9: ConDrv-style console device, COM1 serial
+│   │                                #   transport both ways        ★ HACK-004
 │   ├── fb.c                         # M11: \Device\Fb0            ★ HACK-001
 │   └── hid.c                        # M11: \Device\Input0         ★ HACK-002
 │
