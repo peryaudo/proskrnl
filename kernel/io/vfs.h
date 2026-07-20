@@ -69,7 +69,7 @@ typedef struct IO_VFS_OPS
      * file->isDirectory; *information gets FILE_CREATED/OPENED/OVERWRITTEN.
      * Must call IoCheckShareAccess/IoSetShareAccess at the NT point: after
      * the existing file is found, before any overwrite side effect. */
-    NTSTATUS (*Create)
+    NTSTATUS(*Create)
     (struct IO_DEVICE *device, struct FILE_OBJECT *file, const UNICODE_STRING *path,
      struct FILE_OBJECT *relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
      ULONG fileAttributes, ULONG disposition, ULONG options, ULONG_PTR *information);
@@ -107,8 +107,38 @@ typedef struct IO_VFS_OPS
     /* The file's volume-relative NT path ("\dir\file.txt"; "\" for the
      * root), written into `buffer` of `capacity` bytes; *lengthOut is the
      * full length in bytes even when truncated (STATUS_BUFFER_OVERFLOW). */
-    NTSTATUS (*QueryName)
+    NTSTATUS(*QueryName)
     (struct FILE_OBJECT *file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut);
+
+    /* --- M9 optional device ops (NULL = the page-cache file behaviour) ----
+     * Devices whose data is a live stream (npfs, condrv, the serial port)
+     * implement these instead of GetCache. Buffers are kernel pool copies
+     * (kernel/io/rw.c, ioctl.c bounce them) because these ops may block in
+     * KeWaitFor* — the NT completion protocol is unchanged: the caller
+     * writes the IOSB and signals only after the op returns (Art. 3). */
+
+    /* Read up to `length` bytes; may block until data or a peer state
+     * change. *infoOut = bytes read (also on STATUS_BUFFER_OVERFLOW). */
+    NTSTATUS (*Read)(struct FILE_OBJECT *file, void *buffer, ULONG length, ULONG_PTR *infoOut);
+
+    /* Write `length` bytes; may block on quota. *infoOut = bytes written. */
+    NTSTATUS(*Write)
+    (struct FILE_OBJECT *file, const void *buffer, ULONG length, ULONG_PTR *infoOut);
+
+    /* One NtDeviceIoControlFile/NtFsControlFile verb (both funnel here: the
+     * NT split by device type is not observable through this boundary).
+     * *infoOut = bytes placed in `output`. */
+    NTSTATUS(*DeviceControl)
+    (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
+     ULONG outputLength, ULONG_PTR *infoOut);
+
+    /* FilePipeInformation / FilePipeLocalInformation (query), and
+     * FilePipeInformation (set) — kernel/io/query.c routes the classes here
+     * so the shapes stay next to the pipe state that fills them. */
+    NTSTATUS(*QueryPipeInfo)
+    (struct FILE_OBJECT *file, FILE_INFORMATION_CLASS informationClass, void *buffer, ULONG length,
+     ULONG_PTR *infoOut);
+    NTSTATUS (*SetPipeInfo)(struct FILE_OBJECT *file, const FILE_PIPE_INFORMATION *info);
 } IO_VFS_OPS;
 
 #endif /* PROSKRNL_KERNEL_IO_VFS_H */

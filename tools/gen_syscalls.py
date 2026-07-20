@@ -130,6 +130,11 @@ IMPLEMENTED = [
     "NtEnumerateValueKey",
     "NtQueryKey",
     "NtFlushKey",
+    # M9 npfs + condrv surface: the ioctl/fsctl services and the named-pipe
+    # create (14 arguments — the new dispatch maximum)
+    "NtDeviceIoControlFile",
+    "NtFsControlFile",
+    "NtCreateNamedPipeFile",
 ]
 
 

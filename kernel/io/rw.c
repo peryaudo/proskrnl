@@ -13,6 +13,7 @@
 #include "kernel/syscall/uaccess.h"
 #include "kernel/init/panic.h"
 #include "kernel/lib/string.h"
+#include "kernel/mm/pool.h"
 
 /* A user-mode ApcRoutine needs the M7 KiUserApcDispatcher return path;
  * refuse loudly rather than dropping the completion (io.h). */
@@ -106,6 +107,35 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         return status;
     }
 
+    /* M9 device path: a stream device (npfs/condrv/serial) reads through its
+     * own op — which may block — via a pool bounce buffer; byte offsets do
+     * not apply to a stream. */
+    if (file->device->ops->Read != 0)
+    {
+        void *bounce = length != 0 ? MiAllocatePool(length) : 0;
+        if (length != 0 && bounce == 0)
+        {
+            ObDereferenceObject(file);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        ULONG_PTR transferred = 0;
+        status = file->device->ops->Read(file, bounce, length, &transferred);
+        if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && transferred != 0)
+        {
+            memcpy(buffer, bounce, transferred); /* probed above */
+        }
+        if (bounce != 0)
+        {
+            MiFreePool(bounce);
+        }
+        if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
+        {
+            status = IopCompleteRequest(iosb, event, status, transferred);
+        }
+        ObDereferenceObject(file);
+        return status;
+    }
+
     PMI_PAGE_CACHE cache;
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
@@ -154,6 +184,35 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     status = KiProbeForRead(buffer, length, 1);
     if (!NT_SUCCESS(status))
     {
+        ObDereferenceObject(file);
+        return status;
+    }
+
+    /* M9 device path: stream devices write through their own (possibly
+     * blocking) op via a pool copy of the user bytes. */
+    if (file->device->ops->Write != 0)
+    {
+        void *bounce = 0;
+        if (length != 0)
+        {
+            bounce = MiAllocatePool(length);
+            if (bounce == 0)
+            {
+                ObDereferenceObject(file);
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
+            memcpy(bounce, buffer, length); /* probed above */
+        }
+        ULONG_PTR transferred = 0;
+        status = file->device->ops->Write(file, bounce, length, &transferred);
+        if (bounce != 0)
+        {
+            MiFreePool(bounce);
+        }
+        if (NT_SUCCESS(status))
+        {
+            status = IopCompleteRequest(iosb, event, status, transferred);
+        }
         ObDereferenceObject(file);
         return status;
     }
@@ -214,7 +273,16 @@ NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
         return status;
     }
     /* Writes are already through (immediate writeback); what may be dirty
-     * is mapped-view stores into the cache — push the whole stream out. */
+     * is mapped-view stores into the cache — push the whole stream out. A
+     * cache-less stream device (M9) has nothing to flush. */
+    if (file->device->ops->GetCache == 0)
+    {
+        status = STATUS_SUCCESS;
+        iosb->Status = STATUS_SUCCESS;
+        iosb->Information = 0;
+        ObDereferenceObject(file);
+        return status;
+    }
     if (!file->isDirectory)
     {
         PMI_PAGE_CACHE cache;

@@ -91,6 +91,10 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FileAllInformation:
         needed = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation.FileName);
         break;
+    case FilePipeInformation:
+    case FilePipeLocalInformation:
+        needed = 0; /* length checking lives in the pipe FS (M9) */
+        break;
     default:
         /* Unsupported class: STATUS_NOT_IMPLEMENTED (pinned Wine; real NT
          * says INVALID_INFO_CLASS — Wine wins, Art. 6). */
@@ -105,6 +109,27 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     status = IopReferenceFileByHandle(handle, 0, &file);
     if (!NT_SUCCESS(status))
     {
+        return status;
+    }
+
+    /* M9: the pipe classes route to the pipe FS before any GetInfo — a
+     * non-pipe file has no pipe view at all. */
+    if (informationClass == FilePipeInformation || informationClass == FilePipeLocalInformation)
+    {
+        if (file->device->ops->QueryPipeInfo == 0)
+        {
+            ObDereferenceObject(file);
+            return STATUS_INVALID_PARAMETER;
+        }
+        ULONG_PTR pipeInformation = 0;
+        status = file->device->ops->QueryPipeInfo(file, informationClass, buffer, length,
+                                                  &pipeInformation);
+        if (NT_SUCCESS(status))
+        {
+            iosb->Status = status;
+            iosb->Information = pipeInformation;
+        }
+        ObDereferenceObject(file);
         return status;
     }
     IO_FILE_INFO raw;
@@ -235,6 +260,10 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         needed = sizeof(FILE_DISPOSITION_INFORMATION);
         requiredAccess = DELETE;
         break;
+    case FilePipeInformation:
+        needed = sizeof(FILE_PIPE_INFORMATION); /* M9: read/completion mode */
+        requiredAccess = 0;
+        break;
     default:
         return STATUS_NOT_IMPLEMENTED; /* pinned Wine, as in query above */
     }
@@ -256,7 +285,8 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     {
         FILE_BASIC_INFORMATION basic;
         memcpy(&basic, buffer, sizeof(basic));
-        status = file->device->ops->SetBasic(file, &basic);
+        status = file->device->ops->SetBasic != 0 ? file->device->ops->SetBasic(file, &basic)
+                                                  : STATUS_INVALID_PARAMETER; /* M9 streams */
         break;
     }
     case FilePositionInformation:
@@ -281,6 +311,11 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
             status = STATUS_INVALID_PARAMETER;
             break;
         }
+        if (file->device->ops->SetEndOfFile == 0)
+        {
+            status = STATUS_INVALID_PARAMETER; /* M9 streams have no EOF */
+            break;
+        }
         status = IopCheckSetEofAccess(file, (uint64_t)eof.EndOfFile.QuadPart);
         if (NT_SUCCESS(status))
         {
@@ -294,6 +329,11 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
          * allocates on demand). */
         FILE_ALLOCATION_INFORMATION allocation;
         memcpy(&allocation, buffer, sizeof(allocation));
+        if (file->device->ops->SetEndOfFile == 0)
+        {
+            status = STATUS_INVALID_PARAMETER; /* M9 streams */
+            break;
+        }
         IO_FILE_INFO raw;
         status = file->device->ops->GetInfo(file, &raw);
         if (NT_SUCCESS(status) && allocation.AllocationSize.QuadPart >= 0 &&
@@ -308,7 +348,22 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     {
         FILE_DISPOSITION_INFORMATION disposition;
         memcpy(&disposition, buffer, sizeof(disposition));
-        status = file->device->ops->SetDisposition(file, disposition.DoDeleteFile);
+        status = file->device->ops->SetDisposition != 0
+                     ? file->device->ops->SetDisposition(file, disposition.DoDeleteFile)
+                     : STATUS_INVALID_PARAMETER; /* M9 streams */
+        break;
+    }
+    case FilePipeInformation:
+    {
+        /* M9: per-end read/completion mode (sem_pipe pins the switch). */
+        if (file->device->ops->SetPipeInfo == 0)
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        FILE_PIPE_INFORMATION pipeInfo;
+        memcpy(&pipeInfo, buffer, sizeof(pipeInfo));
+        status = file->device->ops->SetPipeInfo(file, &pipeInfo);
         break;
     }
     default:

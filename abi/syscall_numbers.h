@@ -99,6 +99,9 @@
 #define NTSYS_NtEnumerateValueKey 0x0013
 #define NTSYS_NtQueryKey 0x0016
 #define NTSYS_NtFlushKey 0x009a
+#define NTSYS_NtDeviceIoControlFile 0x0007
+#define NTSYS_NtFsControlFile 0x0039
+#define NTSYS_NtCreateNamedPipeFile 0x0085
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

@@ -106,6 +106,8 @@ CSRC := kernel/init/main.c \
         fs/fat32/fat.c \
         fs/fat32/dir.c \
         fs/fat32/file.c \
+        fs/npfs/pipe.c \
+        kernel/io/ioctl.c \
         arch/x86_64/serial.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
