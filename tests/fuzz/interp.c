@@ -407,6 +407,46 @@ static void fz_setup_protect(void)
                             MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
+/* --- M7 user-APC delivery (queue_apc / read_file_apc / test_alert) --------
+ * Single-threaded and drained only at the explicit test_alert op, so
+ * delivery is deterministic FIFO on both sides. The routines fold what they
+ * observed into per-program counters; test_alert's ONE trace line prints
+ * them (fuzz.py keys lines by (program, call) — one line per call). */
+NTSYSAPI NTSTATUS NTAPI NtQueueApcThread(HANDLE, void *, ULONG_PTR, ULONG_PTR, ULONG_PTR);
+NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
+#ifndef NtCurrentThread
+#define NtCurrentThread() ((HANDLE) ~(ULONG_PTR)1)
+#endif
+
+static unsigned fz_apc_delivered; /* APCs run so far this program */
+static unsigned fz_apc_sum;       /* order-sensitive fold of their payloads */
+
+static void fz_apc_fold(unsigned value)
+{
+    fz_apc_delivered++;
+    fz_apc_sum = (fz_apc_sum * 31u + value) & 0xFFFFu;
+}
+
+static void NTAPI fz_user_apc(ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3)
+{
+    (void)arg2;
+    (void)arg3;
+    fz_apc_fold((unsigned)arg1 * 13u + 1u);
+}
+
+static void NTAPI fz_io_apc(PVOID context, IO_STATUS_BLOCK *iosb, ULONG reserved)
+{
+    (void)reserved;
+    fz_apc_fold((unsigned)iosb->Status + (unsigned)iosb->Information * 7u +
+                (unsigned)(ULONG_PTR)context * 13u);
+}
+
+static void fz_reset_apc(void)
+{
+    fz_apc_delivered = 0;
+    fz_apc_sum = 0;
+}
+
 static void fz_reset_protect(void)
 {
     if (fz_protect_base != NULL)
@@ -879,6 +919,48 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_QUEUE_APC:
+    {
+        st = NtQueueApcThread(NtCurrentThread(), (void *)fz_user_apc, (ULONG_PTR)a[0], 0, 0);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_READ_FILE_APC:
+    {
+        static char io_buffer[8192];
+        /* static: the completion APC receives this very IOSB at the next
+         * test_alert — it must outlive the call (one shared block; the IOSB
+         * is written synchronously at completion on both sides, so its
+         * contents at delivery are deterministic). */
+        static IO_STATUS_BLOCK iosb;
+        LARGE_INTEGER off;
+        ULONG len = fz_iolen((unsigned)a[1]);
+        if (len > sizeof(io_buffer))
+            len = sizeof(io_buffer);
+        off.QuadPart = (LONGLONG)fz_iooff((unsigned)a[2]);
+        fz_bzero(io_buffer, sizeof(io_buffer));
+        iosb.Information = 0;
+        st = NtReadFile(fz_slots[a[0]], NULL, fz_io_apc, (PVOID)(ULONG_PTR)0x51u, &iosb, io_buffer,
+                        len, &off, NULL);
+        if (fz_ok(st))
+        {
+            unsigned sum = 0;
+            for (ULONG i = 0; i < (ULONG)iosb.Information && i < sizeof(io_buffer); i++)
+                sum = (sum + (unsigned char)io_buffer[i]) & 0xFFFF;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x n=%u sum=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)iosb.Information, sum);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_TEST_ALERT:
+    {
+        st = NtTestAlert();
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x apcs=%u sum=%u\n", prog, call, nt, (unsigned)st,
+                     fz_apc_delivered, fz_apc_sum);
+        break;
+    }
     case FZ_OP_SET_EOF_FILE:
     {
         IO_STATUS_BLOCK iosb;
@@ -1150,6 +1232,7 @@ START_TEST(fuzz_interp)
         fz_reset_files();
         fz_reset_keys();
         fz_reset_protect();
+        fz_reset_apc();
         ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
 
         for (unsigned ci = 0; ci < callCount; ci++)

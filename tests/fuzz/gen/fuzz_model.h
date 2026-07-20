@@ -87,6 +87,9 @@ typedef enum {
     FZ_OP_QUERY_PROCESS_BASIC,
     FZ_OP_QUERY_SYSTEM_BASIC,
     FZ_OP_PROTECT_MEMORY,
+    FZ_OP_QUEUE_APC,
+    FZ_OP_READ_FILE_APC,
+    FZ_OP_TEST_ALERT,
     FZ_OP_INIT_NLS,
     FZ_OP_GET_NLS_SECTION,
     FZ_OP_CREATE_KEY,
@@ -136,6 +139,9 @@ static const FzOperandKind fz_kinds_query_standard_file[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_query_process_basic[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_query_system_basic[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_protect_memory[] = { FZ_OPND_CH_PROTECT_PAGE };
+static const FzOperandKind fz_kinds_queue_apc[] = { FZ_OPND_CH_ULONG };
+static const FzOperandKind fz_kinds_read_file_apc[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOLEN, FZ_OPND_CH_IOOFF };
+static const FzOperandKind fz_kinds_test_alert[1];
 static const FzOperandKind fz_kinds_init_nls[1];
 static const FzOperandKind fz_kinds_get_nls_section[] = { FZ_OPND_CH_NLS_TYPE, FZ_OPND_CH_NLS_ID };
 static const FzOperandKind fz_kinds_create_key[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_KEY, FZ_OPND_KNAME, FZ_OPND_CH_REG_OPTIONS };
@@ -182,6 +188,9 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_QUERY_PROCESS_BASIC] = { fz_kinds_query_process_basic, 1, "NtQueryInformationProcess" },
     [FZ_OP_QUERY_SYSTEM_BASIC] = { fz_kinds_query_system_basic, 1, "NtQuerySystemInformation" },
     [FZ_OP_PROTECT_MEMORY] = { fz_kinds_protect_memory, 1, "NtProtectVirtualMemory" },
+    [FZ_OP_QUEUE_APC] = { fz_kinds_queue_apc, 1, "NtQueueApcThread" },
+    [FZ_OP_READ_FILE_APC] = { fz_kinds_read_file_apc, 3, "NtReadFile" },
+    [FZ_OP_TEST_ALERT] = { fz_kinds_test_alert, 0, "NtTestAlert" },
     [FZ_OP_INIT_NLS] = { fz_kinds_init_nls, 0, "NtInitializeNlsFiles" },
     [FZ_OP_GET_NLS_SECTION] = { fz_kinds_get_nls_section, 2, "NtGetNlsSectionPtr" },
     [FZ_OP_CREATE_KEY] = { fz_kinds_create_key, 4, "NtCreateKey" },
