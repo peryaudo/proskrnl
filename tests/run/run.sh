@@ -188,6 +188,10 @@ fuzz() { exec "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 # — and the volatile key's absence — on boot 2, when the kernel has reloaded
 # the hive the first boot wrote.
 persist() {
+    # A VIRGIN image: build/proskrnl.hdd may already carry a seeded hive from
+    # an earlier `make run` (m8_persist runs on every boot), which would make
+    # boot 1 verify instead of seed. Rebuilding the image resets the disk.
+    rm -f "$ROOT/build/proskrnl.hdd"
     make -C "$ROOT" >/dev/null
     local img="$ROOT/build/tests/persist.hdd"
     mkdir -p "$ROOT/build/tests"
