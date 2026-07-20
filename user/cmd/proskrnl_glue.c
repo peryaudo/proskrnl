@@ -172,7 +172,9 @@ HINSTANCE WINAPI FindExecutableW(const WCHAR *file, const WCHAR *directory, WCHA
         }
         result[i] = 0;
     }
-    return (HINSTANCE)(ULONG_PTR)33; /* > 32 = success */
+    /* > 32 = success (MS FindExecutable documentation; values <= 32 are the
+     * SE_ERR_* failures cmd checks against). */
+    return (HINSTANCE)(ULONG_PTR)33;
 }
 
 /* cmd asks only for SHGFI_EXETYPE (is this runnable / GUI or CUI); answer
@@ -189,7 +191,13 @@ DWORD_PTR WINAPI SHGetFileInfoW(const WCHAR *path, DWORD attributes, SHFILEINFOW
     if (!GetBinaryTypeW(path, &type))
         return 0;
     if (type == SCS_32BIT_BINARY || type == SCS_64BIT_BINARY)
-        return 0x00004550; /* 'PE\0\0' in LOWORD: a console executable */
+    {
+        /* SHGFI_EXETYPE contract (MS SHGetFileInfo documentation): LOWORD =
+         * 'PE'||'\0\0' with HIWORD 0 means a console executable — exactly
+         * the shape cmd tests (wcmdmain.c spawn_external_full_path:
+         * `console && !HIWORD(console)`). */
+        return 0x00004550;
+    }
     return 0;
 }
 

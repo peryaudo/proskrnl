@@ -137,7 +137,40 @@ local macOS Wine.
 
 ## Status
 
-**M9 complete: named pipes, the ConDrv console, and Wine's conhost — the machine has an
+**M10 complete: the full Wine CUI userland — an interactive cmd.exe with working
+pipes and redirection, running third-party CRT binaries.** `NtCreateUserProcess`
+now honors the whole kernelbase `CreateProcessInternalW` contract: the caller's
+`RTL_USER_PROCESS_PARAMETERS` is captured and rebuilt in the child in Wine's own
+layout (command line, environment, cwd, title all arrive — `kernel/ps/peb.c`);
+handle inheritance mirrors wineserver's `copy_handle_table` (inherit-all preserves
+handle VALUES by index-preserving copy, `PS_ATTRIBUTE_HANDLE_LIST` + the three std
+handles, console/std fixups per `server/process.c`); the initial thread parks on a
+real suspend count until `NtResumeThread`; `PS_ATTRIBUTE_IMAGE_INFO`/`CLIENT_ID`
+write back (all pinned by `tests/ntapi/sem_ps/{create_process,inherit,suspend_resume}`).
+Around it the CUI floor went in: KUSER_SHARED_DATA time now TICKS
+(InterruptTime/SystemTime/TickCount with the High1/High2 writer protocol, plus
+`NtQuerySystemTime`), thread-id alerts are real (the RtlWaitOnAddress/SRW/critical-
+section primitive — a latched per-ETHREAD event), completion ports carry ntdll's own
+threadpool (`kernel/io/completion.c`; `RtlQueueWorkItem` observed end-to-end) beside
+waitable timers (`tests/ntapi/sem_port/`), `GetFileType` answers per device
+(disk/pipe/console), and a running thread now pins its own ETHREAD (exit-reaper
+parking) so closing a live thread's last handle no longer frees it. The boot volume
+bakes the CUI DLL set — msvcrt, ucrtbase, advapi32, sechost, rpcrt4, version,
+cryptbase — whose bring-up flushed the load-bearing Mm fix: a relocated `SEC_IMAGE`
+copy's mapped header now claims the ACTUAL base, exactly as Wine's own mapper stamps
+it, ending the double relocation that crashed every base-conflicting DLL.
+**cmd.exe ships as a standalone PE** built from the pinned tree's own cmd objects
+plus `user/cmd/proskrnl_glue.c` (the CRT entry + five user32 / four shell32
+stand-ins; user32/shell32 stay off the image per Art. 7, and the Wine fork gained
+ZERO new commits — the hack meter is unchanged). Acceptance (docs/02 "Done when"):
+`tests/run/run.sh console` drives the interactive session over the serial wire —
+the prompt, `echo data>C:\t.txt`, `type C:\t.txt | C:\upcase.exe` through a real
+inherited anonymous pipe, and `hello_crt.exe` (plain-mingw FULL-CRT — the
+off-the-shelf-MSVC-app stand-in) printing and exiting 7, observed via
+`%errorlevel%` — then a clean `exit`. services.exe is deferred until something
+consumes the SCM; decisions + wrinkles in `docs/03` "M10 CUI-userland notes".
+
+**The M9 foundation: named pipes, the ConDrv console, and Wine's conhost — the machine has an
 interactive console over the serial wire.** The Io layer grew optional stream ops beside
 the page-cache file path, and three services went live — `NtDeviceIoControlFile`,
 `NtFsControlFile`, and the 14-argument `NtCreateNamedPipeFile` (the new dispatch maximum).

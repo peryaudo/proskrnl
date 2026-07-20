@@ -287,6 +287,74 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   model. Tests assert cooked results (the client's own verdict), never
   literal output bytes (`tests/run/console_expect.py`).
 
+## M10 CUI-userland notes (CreateProcess + the DLL set + cmd.exe)
+
+The full `NtCreateUserProcess` contract (params passthrough, inheritance,
+suspended creation) plus the time/port/timer surface, pinned by
+`tests/ntapi/sem_ps/{time,suspend_resume,create_process,inherit,dll_load}`,
+`sem_wait/alert_by_tid`, `sem_port/{ports,timers}`,
+`sem_file/full_attributes`, `sem_pipe/device_type` — all green on the oracle
+first (Art. 5). Wrinkles worth remembering:
+
+- **`PS_CREATE_INFO` reports `PsCreateSuccess` on success.** Real NT writes
+  the success state; the pinned Wine's unix implementation never writes
+  `*info` on its ordinary success path — but kernelbase never reads it
+  either, so the divergence is unobservable through the PE stack (and
+  `user/smss` relies on the NT shape).
+- **Console/std fixups mirror `server/process.c` `new_process`:** a real
+  (positive) `ConsoleHandle` in the child's params is re-duplicated to a
+  fresh child handle; the `CONSOLE_HANDLE_ALLOC*` sentinels and 0 pass
+  through untouched — under the single-global-console model (M9 note) the
+  sentinels still mean "no console bound". Without
+  `PROCESS_CREATE_FLAGS_INHERIT_HANDLES` the three std handles are
+  duplicated with invalid values tolerated. `bInheritHandles=FALSE` +
+  `STARTF_USESTDHANDLES` is deliberately unpinned: on the oracle the
+  console-less parent's `CONSOLE_HANDLE_ALLOC` headless console allocation
+  displaces the duplicated handles, and nothing on the CUI path uses it
+  (cmd always redirects with inherit).
+- **condrv's seeded std handles are born `OBJ_INHERIT`** (NT console
+  handles are inheritable); the console *reference* handle is not — the
+  create-time duplication covers it, as on wineserver.
+- **`NtSuspendThread` of a thread that has ever run stays
+  `STATUS_NOT_IMPLEMENTED`** (no kernel preemption — no park point; only
+  never-run threads carry a suspend count). The oracle behaviour is pinned
+  under `todo_proskrnl` in `sem_ps/suspend_resume.c`.
+- **`NtTerminateProcess` abandons blocked sibling threads**: they keep
+  their waits and exit on their own (their next syscall fails on the
+  closed handles). NT terminates them. Unobservable for the CUI clients
+  (cmd joins its children; the ntdll threadpool's workers wake on their
+  own timeouts).
+- **Thread-id alerts are process-local**; alerting an unknown id is an
+  accepted no-op — the shape of the oracle's on-demand alert table.
+- **Timer APCs (`NtSetTimer` with an APC routine) are refused loudly**;
+  nothing on the CUI path arms one (kernelbase and the ntdll threadpool
+  wait on the object).
+- **`NtRemoveIoCompletionEx` waits once**, then drains without waiting up
+  to the caller's count — a partial batch is a success.
+- **KUSER_SHARED_DATA time** follows the no-RTC rule: `SystemTime` =
+  fixed 2026-01-01 base + uptime (the FAT timestamp base), `TickCount` in
+  milliseconds with `TickCountMultiplier = 1 << 24`, exactly the pinned
+  Wine's constants; `NtQuerySystemTime` serves the same clock.
+- **`FileFsDeviceInformation.DeviceType` for a mounted volume is
+  `FILE_DEVICE_DISK_FILE_SYSTEM` (0x8)**, the pinned oracle's value for
+  regular files — not bare `FILE_DEVICE_DISK` (real NT's volume answer);
+  `GetFileType` maps both to `FILE_TYPE_DISK`.
+- **A relocated `SEC_IMAGE` copy's mapped header claims the ACTUAL base**
+  (`OptionalHeader.ImageBase` stamped after the kernel-side fixups), which
+  is what keeps ntdll's own `perform_relocations` from applying the delta
+  twice — the same convention as Wine's mapper
+  (`dlls/ntdll/unix/virtual.c map_image_into_view`).
+- **cmd.exe ships as a standalone PE** built from the pinned tree's own
+  cmd objects + `user/cmd/proskrnl_glue.c` (the five user32 / four shell32
+  imports stood in over ntdll/kernelbase; shell verbs fail loudly).
+  user32/shell32 themselves stay off the image until M12 (Art. 7).
+- **services.exe is deferred** (milestone text lists it): nothing in the
+  M10 acceptance — cmd prompting, pipes/redirection, a third-party CUI
+  app — touches the SCM. rpcrt4/advapi32 load and their client surface
+  works (`sem_ps/dll_load`); the SCM waits for its first consumer.
+- **Ctrl+C / console control events are out of scope**: no signal-delivery
+  path from conhost exists yet; the acceptance never sends `^C`.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
