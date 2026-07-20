@@ -459,14 +459,22 @@ FUZZ_OPS = [
     ("write_file", "NtWriteFile", ["slot_in", "ch_iolen", "ch_iooff"]),
     ("set_eof_file", "NtSetInformationFile", ["slot_in", "ch_iooff"]),
     ("query_standard_file", "NtQueryInformationFile", ["slot_in"]),
-    # M7 mechanical Ps/Mm surface (the pieces a flat interpreter can drive
-    # deterministically — process/system information length-checking and the
-    # in-place reprotect). The stateful M7 surface (threads, the KiUser*
-    # return protocol, APC delivery) needs the ntdll-resolved dispatchers a
-    # flat binary cannot export and is covered by the m7_smoke.exe module.
+    # M7 mechanical Ps/Mm surface — process/system information
+    # length-checking and the in-place reprotect.
     ("query_process_basic", "NtQueryInformationProcess", ["ch_len"]),
     ("query_system_basic", "NtQuerySystemInformation", ["ch_len"]),
     ("protect_memory", "NtProtectVirtualMemory", ["ch_protect_page"]),
+    # M7 user-APC delivery. Possible since the interp became a real ntdll
+    # client on both sides (the single-binary harness, docs/14) — the old
+    # flat proskrnl binary could not export KiUserApcDispatcher. Single
+    # thread + draining only at the explicit test_alert op keeps delivery
+    # deterministic (FIFO) and the trace canonical; the APC routines fold
+    # what they saw into counters that test_alert's one trace line prints.
+    # Threads stay out for a LIVE reason: scheduling nondeterminism would
+    # diff the traces themselves.
+    ("queue_apc", "NtQueueApcThread", ["ch_ulong"]),
+    ("read_file_apc", "NtReadFile", ["slot_in", "ch_iolen", "ch_iooff"]),
+    ("test_alert", "NtTestAlert", []),
     # M7 Wine bring-up: the NLS data services ntdll's locale_init issues.
     ("init_nls", "NtInitializeNlsFiles", []),
     ("get_nls_section", "NtGetNlsSectionPtr", ["ch_nls_type", "ch_nls_id"]),
