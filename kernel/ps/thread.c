@@ -236,7 +236,7 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
      * matching Wine's dlls/ntdll RtlUserThreadStart). */
     tcb->userStartRip =
         process->ldrInitializeThunk != 0 ? process->ldrInitializeThunk : startRoutine;
-    tcb->userStartRsp = (stackTop - 0x28) & ~(uint64_t)0xf;
+    tcb->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
     tcb->userStartArg1 = startRoutine;
     tcb->userStartArg2 = argument;
 
@@ -502,18 +502,48 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             return status;
         }
+
+        /* Resolve the target: the pseudo-handle (or an unwired M7-era 0)
+         * means the caller; a real handle names any thread — M9's
+         * GetExitCodeThread reads a JOINED thread's status through here. */
+        PETHREAD target = self;
+        PKTHREAD targetTcb = caller;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            targetTcb = target->tcb;
+            referenced = TRUE;
+        }
+
         THREAD_BASIC_INFORMATION info;
         memset(&info, 0, sizeof(info));
-        info.ExitStatus = STATUS_PENDING;
-        info.TebBaseAddress = self != 0 ? (PVOID)(uintptr_t)self->tebBase : caller->teb;
-        info.ClientId.UniqueProcess = (HANDLE)(uintptr_t)caller->process->uniqueProcessId;
-        info.ClientId.UniqueThread = (HANDLE)(uintptr_t)(self != 0 ? self->uniqueThreadId : 0);
-        info.Priority = caller->priority;
-        info.BasePriority = caller->priority;
+        /* Signaled thread object = exited (the join contract); a live
+         * thread reports STATUS_PENDING — what STILL_ACTIVE decodes to. */
+        BOOLEAN exited = target != 0 && target->header.signalState != 0;
+        info.ExitStatus = exited ? targetTcb->exitStatus : STATUS_PENDING;
+        info.TebBaseAddress = target != 0 ? (PVOID)(uintptr_t)target->tebBase : caller->teb;
+        info.ClientId.UniqueProcess =
+            (HANDLE)(uintptr_t)(target != 0 ? target->process->uniqueProcessId
+                                            : caller->process->uniqueProcessId);
+        info.ClientId.UniqueThread = (HANDLE)(uintptr_t)(target != 0 ? target->uniqueThreadId : 0);
+        info.Priority = targetTcb != 0 ? targetTcb->priority : caller->priority;
+        info.BasePriority = info.Priority;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
             *returnLength = sizeof(info);
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
         }
         return STATUS_SUCCESS;
     }
