@@ -192,11 +192,23 @@ typedef struct CONDRV_REQUEST
     KEVENT done;
 } CONDRV_REQUEST, *PCONDRV_REQUEST;
 
+/* The verbs conhost completes out-of-band through read_complete — the
+ * wineserver read_queue class (third_party/wine server/console.c
+ * is_blocking_read_ioctl). */
+static BOOLEAN CondrvIsBlockingReadCode(ULONG code)
+{
+    return code == IOCTL_CONDRV_READ_INPUT || code == IOCTL_CONDRV_READ_CONSOLE ||
+           code == IOCTL_CONDRV_READ_CONSOLE_CONTROL || code == IOCTL_CONDRV_READ_FILE;
+}
+
 static struct
 {
     PFILE_OBJECT serverFile; /* conhost's Server open; 0 = no console */
     LIST_ENTRY requestQueue; /* queued, not yet fetched by conhost */
-    PCONDRV_REQUEST current; /* fetched, awaiting the reply */
+    LIST_ENTRY readQueue;    /* head = the delivered blocking read awaiting
+                              * read_complete; tail = reads deferred behind
+                              * it (wineserver's read_queue shape) */
+    PCONDRV_REQUEST current; /* delivered non-read verb, awaiting its reply */
     uint64_t nextRequestId;
     ULONG nextOutputId;   /* fresh screen-buffer ids (2+) */
     KEVENT serverPresent; /* notification: a conhost attached */
@@ -261,31 +273,93 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
     return request.status;
 }
 
+/* Complete one request back to its parked client. */
+static void CondrvCompleteRequest(PCONDRV_REQUEST request, NTSTATUS status, const void *data,
+                                  ULONG dataLength)
+{
+    ULONG copy = dataLength;
+    if (copy > request->outputCapacity)
+    {
+        copy = request->outputCapacity;
+    }
+    if (copy != 0)
+    {
+        memcpy(request->outputBuffer, data, copy);
+    }
+    /* WRITE_FILE reports the bytes CONSUMED, not the reply payload
+     * (wineserver get_next_console_request's result choice). */
+    request->information = request->code == IOCTL_CONDRV_WRITE_FILE ? request->inputLength : copy;
+    request->status = status;
+    KeSetEvent(&request->done, 0, FALSE);
+}
+
 /* conhost's request fetch: one CONDRV_SERVER_MSG (+ payload) per read;
- * STATUS_PENDING = queue empty (wait on the handle). */
+ * STATUS_PENDING = nothing deliverable (wait on the handle). Mirrors
+ * wineserver: a fetched blocking read parks on readQueue (completed only
+ * by read_complete); later reads defer behind it; other verbs are "busy"
+ * until the plain reply. */
 static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
 {
-    if (CondrvConsole.current == 0)
+    if (CondrvConsole.current != 0)
     {
-        if (IsListEmpty(&CondrvConsole.requestQueue))
+        return STATUS_INVALID_DEVICE_STATE; /* reply before fetching again */
+    }
+
+    /* wineserver's move-aside: while a read is outstanding, queued reads
+     * shift to the read queue (order kept) so non-reads can flow. */
+    if (!IsListEmpty(&CondrvConsole.readQueue) && !IsListEmpty(&CondrvConsole.requestQueue))
+    {
+        PCONDRV_REQUEST head =
+            CONTAINING_RECORD(CondrvConsole.requestQueue.Flink, CONDRV_REQUEST, listEntry);
+        if (CondrvIsBlockingReadCode(head->code))
         {
-            CondrvSignalServer(FALSE);
-            return STATUS_PENDING;
-        }
-        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
-        CondrvConsole.current = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
-        if (IsListEmpty(&CondrvConsole.requestQueue))
-        {
-            CondrvSignalServer(FALSE);
+            PLIST_ENTRY entry = CondrvConsole.requestQueue.Flink;
+            while (entry != &CondrvConsole.requestQueue)
+            {
+                PLIST_ENTRY next = entry->Flink;
+                PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
+                if (CondrvIsBlockingReadCode(request->code))
+                {
+                    RemoveEntryList(entry);
+                    InsertTailList(&CondrvConsole.readQueue, entry);
+                }
+                entry = next;
+            }
         }
     }
-    PCONDRV_REQUEST request = CondrvConsole.current;
+
+    if (IsListEmpty(&CondrvConsole.requestQueue))
+    {
+        CondrvSignalServer(FALSE);
+        return STATUS_PENDING;
+    }
+    PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
+    PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
+    if (IsListEmpty(&CondrvConsole.requestQueue))
+    {
+        CondrvSignalServer(FALSE);
+    }
+
     ULONG total = (ULONG)sizeof(CONDRV_SERVER_MSG) + request->inputLength;
     if (length < total)
     {
-        return STATUS_INVALID_BUFFER_SIZE; /* the glue always offers the
-                                            * full protocol buffer */
+        /* The glue always offers the full protocol buffer; re-queue and
+         * refuse rather than truncating. */
+        InsertHeadList(&CondrvConsole.requestQueue, entry);
+        CondrvSignalServer(TRUE);
+        return STATUS_INVALID_BUFFER_SIZE;
     }
+
+    if (CondrvIsBlockingReadCode(request->code))
+    {
+        ASSERT(IsListEmpty(&CondrvConsole.readQueue));
+        InsertTailList(&CondrvConsole.readQueue, entry);
+    }
+    else
+    {
+        CondrvConsole.current = request;
+    }
+
     CONDRV_SERVER_MSG *message = buffer;
     message->id = request->id;
     message->code = request->code;
@@ -300,7 +374,10 @@ static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
     return STATUS_SUCCESS;
 }
 
-/* conhost's reply: complete the in-flight request by id. */
+/* conhost's reply. read == 1 completes the oldest delivered blocking read
+ * (read_complete); read == 0 completes the busy verb — and is silently
+ * ignored when there is none, exactly like wineserver ignores the loop
+ * reply that follows a read delivery. */
 static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *infoOut)
 {
     if (length < sizeof(CONDRV_SERVER_REPLY))
@@ -308,46 +385,77 @@ static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *i
         return STATUS_INVALID_BUFFER_SIZE;
     }
     const CONDRV_SERVER_REPLY *reply = buffer;
-    PCONDRV_REQUEST request = CondrvConsole.current;
-    if (request == 0 || request->id != reply->id || length < sizeof(*reply) + reply->outSize)
+    if (length < sizeof(*reply) + reply->outSize)
     {
         return STATUS_INVALID_PARAMETER;
     }
-    ULONG copy = reply->outSize;
-    if (copy > request->outputCapacity)
+    NTSTATUS status = reply->status;
+    if (status == STATUS_PENDING)
     {
-        copy = request->outputCapacity;
+        status = STATUS_INVALID_PARAMETER; /* wineserver's conversion */
     }
-    if (copy != 0)
+
+    if (reply->read != 0)
     {
-        memcpy(request->outputBuffer, reply + 1, copy);
+        if (IsListEmpty(&CondrvConsole.readQueue))
+        {
+            /* conhost's signal-only read_complete; it tolerates exactly
+             * this status (wineserver answers the same). */
+            return STATUS_INVALID_HANDLE;
+        }
+        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.readQueue);
+        PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
+        CondrvCompleteRequest(request, status, reply + 1, reply->outSize);
+        /* Deferred reads become deliverable again (wineserver moves the
+         * read queue back after a completion). */
+        while (!IsListEmpty(&CondrvConsole.readQueue))
+        {
+            InsertTailList(&CondrvConsole.requestQueue, RemoveHeadList(&CondrvConsole.readQueue));
+        }
+        if (!IsListEmpty(&CondrvConsole.requestQueue))
+        {
+            CondrvSignalServer(TRUE);
+        }
+        *infoOut = length;
+        return STATUS_SUCCESS;
     }
-    request->status = reply->status;
-    request->information = copy;
-    CondrvConsole.current = 0;
-    KeSetEvent(&request->done, 0, FALSE);
+
+    PCONDRV_REQUEST request = CondrvConsole.current;
+    if (request != 0)
+    {
+        if (request->id != reply->id)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        CondrvConsole.current = 0;
+        CondrvCompleteRequest(request, status, reply + 1, reply->outSize);
+    }
     *infoOut = length;
     return STATUS_SUCCESS;
 }
 
-/* Server teardown: every queued and in-flight request fails — a dead
- * conhost degrades the console, it never deadlocks a client. */
+/* Server teardown: every queued, busy, and parked-read request fails — a
+ * dead conhost degrades the console, it never deadlocks a client. */
 static void CondrvServerGone(void)
 {
     CondrvConsole.serverFile = 0;
     KeClearEvent(&CondrvConsole.serverPresent);
     if (CondrvConsole.current != 0)
     {
-        CondrvConsole.current->status = STATUS_INVALID_DEVICE_STATE;
-        KeSetEvent(&CondrvConsole.current->done, 0, FALSE);
+        CondrvCompleteRequest(CondrvConsole.current, STATUS_INVALID_DEVICE_STATE, 0, 0);
         CondrvConsole.current = 0;
+    }
+    while (!IsListEmpty(&CondrvConsole.readQueue))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.readQueue);
+        CondrvCompleteRequest(CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry),
+                              STATUS_INVALID_DEVICE_STATE, 0, 0);
     }
     while (!IsListEmpty(&CondrvConsole.requestQueue))
     {
         PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
-        PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
-        request->status = STATUS_INVALID_DEVICE_STATE;
-        KeSetEvent(&request->done, 0, FALSE);
+        CondrvCompleteRequest(CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry),
+                              STATUS_INVALID_DEVICE_STATE, 0, 0);
     }
 }
 
@@ -712,6 +820,7 @@ void CondrvInitialize(void)
     IopInitializeFcb(&CondrvSerialFcb);
     IopInitializeFcb(&CondrvConsoleFcb);
     InitializeListHead(&CondrvConsole.requestQueue);
+    InitializeListHead(&CondrvConsole.readQueue);
     CondrvConsole.nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
     KeInitializeEvent(&CondrvConsole.serverPresent, NotificationEvent, FALSE);
     CondrvPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps);

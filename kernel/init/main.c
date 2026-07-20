@@ -233,7 +233,7 @@ static int KiRunWineHello(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", FALSE, &exitStatus);
+        PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
@@ -269,7 +269,7 @@ static int KiRunInitialChain(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                                     "C:\\windows\\system32\\smss.exe", FALSE, &exitStatus);
+                                     "C:\\windows\\system32\\smss.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
@@ -278,6 +278,83 @@ static int KiRunInitialChain(void)
     else
     {
         DbgPrint("[KTEST] module smss.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
+                 (unsigned long)exitStatus);
+    }
+    return pass ? 0 : 1;
+}
+
+/* Start the M9 console server (docs/02): the ported Wine conhost, pumping
+ * the kernel ConDrv transport with the COM1 serial tty behind it
+ * (HACK-004). Fire-and-forget — conhost outlives every console client; the
+ * kept reference pins the process object (KTHREAD does not reference its
+ * process). Absent conhost.exe (the ntapi/fuzz images) is not an error:
+ * console requests then fail fast and nothing here blocks. */
+static PEPROCESS KiConhostProcess;
+
+static void KiStartConhost(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS status = IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"), &probe);
+    if (!NT_SUCCESS(status))
+    {
+        return;
+    }
+    ObDereferenceObject(probe);
+
+    status = PsCreateWineProcess(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"),
+                                 "C:\\windows\\system32\\conhost.exe", FALSE, &KiConhostProcess);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] conhost FAIL (create=%#lx)\n", (unsigned long)status);
+        return;
+    }
+    if (CondrvWaitForServer(10000))
+    {
+        DbgPrint("[KTEST] conhost up\n");
+    }
+    else
+    {
+        DbgPrint("[KTEST] conhost FAIL (no server attach)\n");
+    }
+}
+
+/* Run the M9 acceptance client (docs/02 "Done when"): m9_smoke.exe drives
+ * the threaded blocking-pipe protocol (the proskrnl twin of the oracle-only
+ * sem_pipe/pipe_blocking.c) and writes through the real console stack —
+ * kernelbase -> ConDrv -> conhost -> serial. */
+static int KiRunM9(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\m9_smoke.exe"), &probe);
+    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
+    {
+        DbgPrint("[KTEST] module m9_smoke.exe SKIP (not on the boot volume)\n");
+        return 0;
+    }
+    if (!NT_SUCCESS(probeStatus))
+    {
+        DbgPrint("[KTEST] module m9_smoke.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
+        return 1;
+    }
+    ObDereferenceObject(probe);
+
+    if (KiConhostProcess == 0)
+    {
+        DbgPrint("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
+        return 1;
+    }
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\m9_smoke.exe"), "C:\\m9_smoke.exe", TRUE, &exitStatus);
+    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] module m9_smoke.exe FAIL (create=%#lx)\n", (unsigned long)status);
+    }
+    else
+    {
+        DbgPrint("[KTEST] module m9_smoke.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
                  (unsigned long)exitStatus);
     }
     return pass ? 0 : 1;
@@ -305,6 +382,9 @@ static void KiTestMainThread(void *context)
      * volume (an absent/invalid hive starts empty: first boot). Needs the
      * volume above and a thread with a handle table for the hive file I/O. */
     CmInitialize();
+
+    /* M9: the console server, before anything that may use a console. */
+    KiStartConhost();
 
     int libFailures = kmt_run_lib();
     DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",
@@ -349,14 +429,20 @@ static void KiTestMainThread(void *context)
     int m8Failures = KiRunInitialChain();
     DbgPrint(m8Failures == 0 ? "[KTEST] M8 PASS\n" : "[KTEST] M8 FAIL failures=%d\n", m8Failures);
 
+    /* M9: npfs + condrv + conhost (docs/02): the threaded pipe client/server
+     * protocol and a console write through the whole stack. The npfs
+     * differential surface itself is the manifest's sem_pipe suite. */
+    int m9Failures = KiRunM9();
+    DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
+
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
      * what a real panic dump would look like after the whole boot suite
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total =
-        m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures + m8Failures;
+    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
+                m8Failures + m9Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

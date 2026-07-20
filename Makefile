@@ -261,6 +261,38 @@ $(SMSS): user/smss/smss.c $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
 	    user/smss/smss.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# The M9 acceptance client (docs/02): threaded blocking pipes + a console
+# write through kernelbase -> ConDrv -> conhost. Win32-level on purpose —
+# it exercises the same kernelbase paths a real console app takes.
+M9SMOKE := $(BUILD)/modules/m9_smoke.exe
+$(M9SMOKE): user/m9/m9_smoke.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -Wl,--entry=m9_start \
+	    user/m9/m9_smoke.c \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
+# The M9 console server: the pinned Wine conhost ported onto the kernel
+# ConDrv transport (user/conhost/ — conhost.c is the pinned tree's, with
+# the two wineserver call sites redirected; proskrnl_glue.c carries the
+# entry, transport, mini-CRT, and headless stubs). Built like the other
+# native PEs: mingw, no CRT, Wine import libraries.
+CONHOST := $(BUILD)/modules/conhost.exe
+$(CONHOST): user/conhost/conhost.c user/conhost/proskrnl_glue.c user/conhost/conhost.h \
+            user/conhost/proskrnl_glue.h user/conhost/wine/debug.h drivers/condrvproto.h \
+            $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
+	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' \
+	    -Iuser/conhost -I. -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
+	    -Wl,--entry=conhost_start \
+	    user/conhost/conhost.c user/conhost/proskrnl_glue.c \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
 WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
@@ -275,9 +307,12 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
             win:$(WINE_NLS)/normnfkd.nls=windows/system32/normnfkd.nls \
             win:$(WINE_NLS)/normidna.nls=windows/system32/normidna.nls \
             win:$(HELLO)=hello.exe \
-            win:$(SMSS)=windows/system32/smss.exe
+            win:$(SMSS)=windows/system32/smss.exe \
+            win:$(CONHOST)=windows/system32/conhost.exe \
+            win:$(M9SMOKE)=m9_smoke.exe
 
-$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(WINE_PE_DLLS) \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 run: $(IMG)
