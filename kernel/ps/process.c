@@ -394,7 +394,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
         main->userStartArg1 = process->pebBase; /* rcx (native client reads it) */
         main->userStartArg2 = 0;
     }
-    main->userStartRsp = (stackTop - 0x28) & ~(uint64_t)0xf;
+    main->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
     process->mainThread = main;
 
     KiReadyCreatedThread(main);
@@ -538,7 +538,7 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     main->userStartRip = 0;
     main->userStartArg1 = entry;
     main->userStartArg2 = process->pebBase;
-    main->userStartRsp = (stackTop - 0x28) & ~(uint64_t)0xf;
+    main->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
     process->mainThread = main;
 
     KiReadyCreatedThread(main);
@@ -782,7 +782,9 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     dosPath[imageNameChars - dosSkip] = 0;
 
     PEPROCESS process;
-    status = PsCreateWineProcess(ntPath, dosPath, FALSE, &process);
+    /* M9: NtCreateUserProcess children inherit the (single) console —
+     * kernelbase in the child binds via the seeded ConsoleHandle. */
+    status = PsCreateWineProcess(ntPath, dosPath, TRUE, &process);
     MiFreePool(ntPath);
     if (!NT_SUCCESS(status))
     {
