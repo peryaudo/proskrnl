@@ -233,6 +233,22 @@ NTSTATUS NtQueryDefaultLocale(BOOLEAN userProfile, LCID *lcid)
     return STATUS_SUCCESS;
 }
 
+NTSTATUS NtQuerySystemTime(PLARGE_INTEGER time)
+{
+    NTSTATUS status = KiProbeForWrite(time, sizeof(LARGE_INTEGER), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    /* The same clock the shared page's SystemTime mirrors (kernel/ke/timer.c:
+     * fixed base date + uptime, docs/03 no-RTC rule); Wine's implementation is
+     * dlls/ntdll/unix/sync.c NtQuerySystemTime (wall clock there). */
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    memcpy(time, &now, sizeof(now));
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency)
 {
     NTSTATUS status = KiProbeForWrite(counter, sizeof(LARGE_INTEGER), sizeof(uint64_t));

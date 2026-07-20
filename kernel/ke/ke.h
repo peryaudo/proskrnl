@@ -322,6 +322,14 @@ extern volatile uint64_t KeTickCount;
 #define KI_100NS_PER_TICK 10000ULL /* 1 ms tick */
 
 ULONGLONG KeQueryInterruptTime(void);
+void KeQuerySystemTime(LARGE_INTEGER *time);
+
+/* The KUSER_SHARED_DATA page (kernel alias), registered by Ps at boot
+ * (PspInitializeSharedUserData); once set, the clock tick mirrors the time
+ * fields into it (M10). Typed void* here so ke.h does not pull in the whole
+ * generated abi/ntkeapi.h; timer.c casts. */
+extern void *KiUserSharedData;
+void KiSeedUserSharedDataTime(void);
 
 void KeInitializeTimer(PKTIMER timer);
 void KeInitializeTimerEx(PKTIMER timer, TIMER_TYPE type);

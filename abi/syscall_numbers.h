@@ -102,6 +102,7 @@
 #define NTSYS_NtDeviceIoControlFile 0x0007
 #define NTSYS_NtFsControlFile 0x0039
 #define NTSYS_NtCreateNamedPipeFile 0x0085
+#define NTSYS_NtQuerySystemTime 0x005a
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

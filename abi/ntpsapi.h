@@ -798,5 +798,6 @@ NTSTATUS NtWaitForAlertByThreadId(const void*,const LARGE_INTEGER*);
 NTSTATUS NtAlertThreadByThreadId(HANDLE);
 NTSTATUS NtInitializeNlsFiles(void**,LCID*,LARGE_INTEGER*);
 NTSTATUS NtGetNlsSectionPtr(ULONG,ULONG,void*,void**,SIZE_T*);
+NTSTATUS NtQuerySystemTime(PLARGE_INTEGER);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */

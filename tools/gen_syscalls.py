@@ -135,6 +135,8 @@ IMPLEMENTED = [
     "NtDeviceIoControlFile",
     "NtFsControlFile",
     "NtCreateNamedPipeFile",
+    # M10 CUI userland surface
+    "NtQuerySystemTime",
 ]
 
 
