@@ -23,6 +23,7 @@
 #include "kernel/ob/ob.h"
 #include "kernel/ps/ps.h"
 #include "kernel/io/io.h"
+#include "kernel/cm/cm.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "tests/kmt/kmt.h"
@@ -252,6 +253,11 @@ static void KiTestMainThread(void *context)
      * needs a thread (handle tables live on the process). Everything after
      * this point, including the ring-3 boot modules, can open \??\C:. */
     IoMountBootVolume();
+
+    /* M8: bring up the registry — \Registry + the SYSTEM hive from the boot
+     * volume (an absent/invalid hive starts empty: first boot). Needs the
+     * volume above and a thread with a handle table for the hive file I/O. */
+    CmInitialize();
 
     int libFailures = kmt_run_lib();
     DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",

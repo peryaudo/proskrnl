@@ -52,3 +52,9 @@ sem_ps/nls_files                # NtInitializeNlsFiles/NtGetNlsSectionPtr (M7 Wi
 #                               # KiUserApcDispatcher; APC delivery is covered by m7_smoke.exe
 # sem_mm/image_section          # oracle-only: its oracle half leans on Win32 file APIs; the
 #                               # on-disk image path is covered by tests/kmt/m6_io.c
+
+# --- M8: Cm (registry) ---
+sem_reg/create_open             # NtCreateKey/NtOpenKey dispositions, case rules, relative opens
+sem_reg/values                  # NtSet/Query/DeleteValueKey, value info classes, buffer statuses
+sem_reg/enum_key                # NtEnumerateKey/NtEnumerateValueKey/NtQueryKey
+sem_reg/delete                  # NtDeleteKey semantics, STATUS_KEY_DELETED, volatile keys

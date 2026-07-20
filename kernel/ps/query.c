@@ -247,34 +247,6 @@ NTSTATUS NtFlushInstructionCache(HANDLE process, LPCVOID base, SIZE_T length)
     return STATUS_SUCCESS;
 }
 
-/* --- registry (graceful failure until Cm at M8) --------------------------- */
-
-NTSTATUS NtOpenKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
-                   const OBJECT_ATTRIBUTES *attributes)
-{
-    (void)desiredAccess;
-    (void)attributes;
-    if (keyHandle != 0 && NT_SUCCESS(KiProbeForWrite(keyHandle, sizeof(HANDLE), sizeof(HANDLE))))
-    {
-        *keyHandle = 0;
-    }
-    /* ntdll's load_global_options / version_init tolerate a missing key. */
-    return STATUS_OBJECT_NAME_NOT_FOUND;
-}
-
-NTSTATUS NtQueryValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName,
-                         KEY_VALUE_INFORMATION_CLASS infoClass, void *information, DWORD length,
-                         DWORD *resultLength)
-{
-    (void)keyHandle;
-    (void)valueName;
-    (void)infoClass;
-    (void)information;
-    (void)length;
-    (void)resultLength;
-    return STATUS_OBJECT_NAME_NOT_FOUND;
-}
-
 /* --- NLS (the data files ntdll's locale_init maps at startup) ------------- */
 
 /* Map one \??\C:\windows\system32 NLS data file read-only into the CURRENT

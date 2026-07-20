@@ -18,6 +18,8 @@
 void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source);
 BOOLEAN RtlEqualUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2,
                               BOOLEAN caseInsensitive);
+LONG RtlCompareUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2,
+                             BOOLEAN caseInsensitive);
 void RtlCopyUnicodeString(UNICODE_STRING *target, const UNICODE_STRING *source);
 
 #endif /* PROSKRNL_KERNEL_LIB_RTL_H */
