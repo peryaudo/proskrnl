@@ -366,14 +366,31 @@ $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(WINE_PE_DL
         tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
+# M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
+# import msvcrt.dll + kernel32.dll; third-party CRT startup against the
+# baked Wine userland). Only the console image carries them.
+HELLOCRT := $(BUILD)/modules/hello_crt.exe
+$(HELLOCRT): tests/cui/hello_crt.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+UPCASE := $(BUILD)/modules/upcase.exe
+$(UPCASE): tests/cui/upcase.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+
 # The M9 interactive-console image (tests/run/run.sh console): the standard
 # image plus m9_echo.exe, whose presence makes the boot block on console
-# input after the M9 verdict (kernel/init/main.c KiRunM9Echo).
+# input after the M9 verdict (kernel/init/main.c KiRunM9Echo) — and, M10,
+# cmd.exe plus the CUI apps for the interactive cmd session that follows
+# (KiRunCmdConsole).
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
-        $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+        $(CMD) $(HELLOCRT) $(UPCASE) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
-	    win:$(M9ECHO)=m9_echo.exe
+	    win:$(M9ECHO)=m9_echo.exe \
+	    win:$(CMD)=windows/system32/cmd.exe \
+	    win:$(HELLOCRT)=hello_crt.exe \
+	    win:$(UPCASE)=upcase.exe
 
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img

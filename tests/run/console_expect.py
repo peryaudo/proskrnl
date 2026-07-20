@@ -26,7 +26,7 @@ def main() -> int:
         return 2
     sock_path, log_path = sys.argv[1], sys.argv[2]
 
-    deadline = time.monotonic() + float(60)
+    deadline = time.monotonic() + float(150)
     sock = None
     while time.monotonic() < deadline:
         try:
@@ -80,6 +80,50 @@ def main() -> int:
     if not pump_until(lambda b: b"[KTEST] module m9_echo.exe PASS" in b, "the echo verdict"):
         return 1
     if not pump_until(lambda b: b"[KTEST] M9 PASS" in b, "the M9 verdict"):
+        return 1
+
+    # ---- M10: the interactive cmd.exe session (docs/02 "cmd.exe prompts;
+    # pipes/redirection work; an off-the-shelf CUI app runs") ----------------
+    # conhost renders via screen diffs, so expected text is matched with
+    # escape-tolerant regexes (like echo_re above). Every asserted string is
+    # chosen so the TYPED command cannot satisfy it (transforms/expansions).
+    def tolerant(text: bytes):
+        # Escape sequences and screen-diff redraws interleave freely between
+        # the payload characters; every asserted string is chosen so the
+        # TYPED command line cannot supply the characters in order.
+        pattern = b".*?".join(re.escape(text[i : i + 1]) for i in range(len(text)))
+        return re.compile(pattern, re.DOTALL)
+
+    def expect_after(mark: int, text: bytes, what: str) -> bool:
+        rx = tolerant(text)
+        return pump_until(lambda b: rx.search(b[mark:]) is not None, what)
+
+    if not pump_until(lambda b: b"[KTEST] cmd interactive start" in b, "the cmd start marker"):
+        return 1
+
+    def command(cmdline: bytes, expect: bytes, what: str) -> bool:
+        mark = len(buffered)
+        sock.sendall(cmdline + b"\r")
+        return expect_after(mark, expect, what)
+
+    # The transform can only come through the anonymous pipe + upcase.exe:
+    # the typed line is all-lowercase.
+    if not command(b"echo data>C:\\t.txt", b"C:\\", "the prompt after redirection"):
+        return 1
+    if not command(b"type C:\\t.txt | C:\\upcase.exe", b"DATA", "the piped uppercase output"):
+        return 1
+    # The CRT stand-in: its printf output and its exit code through
+    # %errorlevel% expansion (typed text carries neither string).
+    # The dash exists only in the OUTPUT ("hello-crt"); the typed command is
+    # hello_crt.exe. The "42" and the space render as screen-diff cursor
+    # motion, so only the contiguous-orderable part is asserted.
+    if not command(b"C:\\hello_crt.exe", b"hello-crt", "hello_crt's output"):
+        return 1
+    if not command(b"echo rc=%errorlevel%", b"rc=7", "the errorlevel expansion"):
+        return 1
+    mark = len(buffered)
+    sock.sendall(b"exit\r")
+    if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
         return 1
 
     # Drain until QEMU exits so the log carries the whole run.
