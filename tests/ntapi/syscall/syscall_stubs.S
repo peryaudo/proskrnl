@@ -1186,6 +1186,118 @@ NtQueryFullAttributesFile:
     syscall
     ret
 
+    .global NtCreateIoCompletion
+NtCreateIoCompletion:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x7e, %eax
+    syscall
+    ret
+
+    .global NtSetIoCompletion
+NtSetIoCompletion:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xef, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtRemoveIoCompletion
+NtRemoveIoCompletion:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtRemoveIoCompletionEx
+NtRemoveIoCompletionEx:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xd9, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtQueryIoCompletion
+NtQueryIoCompletion:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc8, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtCreateTimer
+NtCreateTimer:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x8c, %eax
+    syscall
+    ret
+
+    .global NtSetTimer
+NtSetTimer:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x62, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtCancelTimer
+NtCancelTimer:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x61, %eax
+    syscall
+    ret
+
+    .global NtQueryTimer
+NtQueryTimer:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x38, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
