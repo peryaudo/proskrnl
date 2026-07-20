@@ -261,12 +261,15 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   `STATUS_BUFFER_OVERFLOW`, zero-byte messages, coalescing) is pinned by
   `tests/ntapi/sem_pipe/` on the oracle.
 - **The kernel⇄conhost server protocol is proskrnl-internal**
-  (`drivers/condrvproto.h`): real NT's condrv⇄conhost wire is undocumented
-  and Wine pumps conhost through wineserver requests instead. The kernel
-  mirrors wineserver's `get_next_console_request` semantics (busy verbs vs.
-  parked blocking reads completed by `read=1`) so conhost's logic ports
-  unmodified; the CLIENT surface — `IOCTL_CONDRV_*` and its structs — stays
-  fully generated (`abi/ntcondrv.h`, G4).
+  (`drivers/condrvproto.h`, mirrored by the fork's
+  `programs/conhost/proskrnl.h`): real NT's condrv⇄conhost wire is
+  undocumented and Wine pumps conhost through wineserver requests instead.
+  The kernel mirrors wineserver's `get_next_console_request` semantics
+  (busy verbs vs. parked blocking reads completed by `read=1`) so conhost
+  runs uncopied straight from the pinned tree — its wineserver call sites
+  carry a runtime-dormant proskrnl leg as a fork commit on
+  `proskrnl-target` (Art. 10); the CLIENT surface — `IOCTL_CONDRV_*` and
+  its structs — stays fully generated (`abi/ntcondrv.h`, G4).
 - **One global console.** `IOCTL_CONDRV_BIND_PID` is answered kernel-side;
   every Connection/Reference/Input/Output open names the same console, and
   `hStdOutput`/`hStdError` share one Output open (the shape kernelbase's own
@@ -275,7 +278,7 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
 - **The console transport is the COM1 serial wire, both directions**
   (HACK-004, docs/10): conhost's tty is `\Device\Serial0`, RX polled — see
   the ledger entry for scope and retirement.
-- **The ported conhost's keyboard knowledge is the ASCII slice** of the
+- **The proskrnl conhost build's keyboard knowledge is the ASCII slice** of the
   US-layout `VkKeyScanW` mapping (user/conhost/proskrnl_glue.c): enough for
   the tty line discipline (Enter/Backspace/Tab/Escape/^A-^Z by virtual
   key); a real layout arrives with user32 (M10+).
