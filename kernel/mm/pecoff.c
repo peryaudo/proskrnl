@@ -95,6 +95,7 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
     info->preferredBase = nt->OptionalHeader.ImageBase;
     info->sizeOfImage = (nt->OptionalHeader.SizeOfImage + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
     info->sizeOfHeaders = nt->OptionalHeader.SizeOfHeaders;
+    info->ntHeaderOffset = (ULONG)dos->e_lfanew;
     info->entryRva = nt->OptionalHeader.AddressOfEntryPoint;
     info->machine = nt->FileHeader.Machine;
     info->characteristics = nt->FileHeader.Characteristics;

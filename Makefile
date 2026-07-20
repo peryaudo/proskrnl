@@ -339,10 +339,18 @@ $(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
+            win:$(WINE_PE)/msvcrt/x86_64-windows/msvcrt.dll=windows/system32/msvcrt.dll \
+            win:$(WINE_PE)/ucrtbase/x86_64-windows/ucrtbase.dll=windows/system32/ucrtbase.dll \
+            win:$(WINE_PE)/advapi32/x86_64-windows/advapi32.dll=windows/system32/advapi32.dll \
+            win:$(WINE_PE)/sechost/x86_64-windows/sechost.dll=windows/system32/sechost.dll \
+            win:$(WINE_PE)/rpcrt4/x86_64-windows/rpcrt4.dll=windows/system32/rpcrt4.dll \
+            win:$(WINE_PE)/version/x86_64-windows/version.dll=windows/system32/version.dll \
+            win:$(WINE_PE)/cryptbase/x86_64-windows/cryptbase.dll=windows/system32/cryptbase.dll \
             win:$(WINE_NLS)/locale.nls=windows/system32/locale.nls \
             win:$(WINE_NLS)/l_intl.nls=windows/system32/l_intl.nls \
             win:$(WINE_NLS)/c_1252.nls=windows/system32/c_1252.nls \
             win:$(WINE_NLS)/c_437.nls=windows/system32/c_437.nls \
+            win:$(WINE_NLS)/c_20127.nls=windows/system32/c_20127.nls \
             win:$(WINE_NLS)/sortdefault.nls=windows/system32/sortdefault.nls \
             win:$(WINE_NLS)/normnfc.nls=windows/system32/normnfc.nls \
             win:$(WINE_NLS)/normnfd.nls=windows/system32/normnfd.nls \

@@ -65,8 +65,22 @@ WINE_LIBS=("$WINE_PE/kernel32/x86_64-windows/libkernel32.a"
            "$WINE_PE/kernelbase/x86_64-windows/libkernelbase.a"
            "$WINE_PE/ntdll/x86_64-windows/libntdll.a")
 
-# Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself).
-all_tests() { find "$NTAPI" -name '*.c' ! -name 'ntapi.c' | sort; }
+# Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself
+# and the helper-DLL sources under dll/).
+all_tests() { find "$NTAPI" -name '*.c' ! -name 'ntapi.c' ! -path '*/dll/*' | sort; }
+
+# The search-order probe DLL (sem_ps/dll_load.c): built beside the test
+# .exes so a bare-name LoadLibrary resolves it from the application
+# directory. CRT-less like everything else here.
+build_helper_dll() {   # echoes the .dll path
+    local dll="$BUILD/ntapi/prshelper.dll"
+    if [[ ! -f "$dll" || "$NTAPI/dll/prshelper.c" -nt "$dll" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -shared -Wl,--entry=DllMainCRTStartup "$NTAPI/dll/prshelper.c" \
+            "${WINE_LIBS[@]}" -lgcc -o "$dll" >&2
+    fi
+    echo "$dll"
+}
 
 # Build one test into build/tests/ntapi/<name>.exe: no CRT (-nostdlib, entry
 # ntapi_start in ntapi.c), the pinned Wine import libs, -lgcc for the mingw
@@ -86,6 +100,7 @@ build_test() {   # $1 = .c path; echoes the .exe path
 
 oracle() {
     mkdir -p "$BUILD/ntapi"
+    build_helper_dll >/dev/null
     local fails=0
     while read -r src; do
         local name exe out
@@ -139,11 +154,14 @@ proskrnl() {
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
     # The Wine PE userland the tests run on (the same files Makefile WINFILES
-    # bakes for `make run`).
-    for dll in ntdll kernel32 kernelbase; do
+    # bakes for `make run`). M10 widens the set to the CUI DLLs.
+    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
+               cryptbase; do
         specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
     done
-    for nls in locale l_intl c_1252 c_437 sortdefault normnfc normnfd normnfkc normnfkd normidna; do
+    specs+=("win:$(build_helper_dll)=ntapi/prshelper.dll")
+    for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
+               normidna; do
         [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
             specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
     done
