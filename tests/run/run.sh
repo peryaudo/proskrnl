@@ -44,6 +44,12 @@ find_wine() {
     echo "wine"
 }
 : "${WINE:=$(find_wine)}"                  # runner for the .exe when not on Windows
+
+# Oracle runs get a scratch prefix under build/ (created by wine on first
+# use): the M8 sem_reg tests write real registry keys, and they must land in
+# a disposable registry, never the developer's ~/.wine. $WINEPREFIX overrides.
+: "${WINEPREFIX:=$BUILD/wineprefix}"
+export WINEPREFIX
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself).
