@@ -14,7 +14,6 @@
 
 /* The section surface (as sem_mm/util.h; redeclared here because this test
  * also needs the file surface from sem_file/util.h). */
-#if defined(NTAPI_ORACLE)
 NTSYSAPI NTSTATUS NTAPI NtCreateSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                         const LARGE_INTEGER *, ULONG, ULONG, HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtMapViewOfSection(HANDLE, HANDLE, PVOID *, ULONG_PTR, SIZE_T,
@@ -25,9 +24,6 @@ NTSYSAPI NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE, PVOID);
 #endif
 #ifndef NtCurrentProcess
 #define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
-#endif
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntmmapi.h"
 #endif
 
 #define PAGE_BYTES 0x1000u

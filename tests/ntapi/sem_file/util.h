@@ -18,9 +18,7 @@
 /* char16_t (2-byte) string literal, as Wine's tests spell it. */
 #define W(s) u##s
 
-#if defined(NTAPI_ORACLE)
-
-#include <string.h> /* memcmp/memset; proskrnl mode gets them from ntapi.c */
+#include <string.h> /* declarations only: the .exe links no CRT; ntapi.c defines them */
 
 /* Prototypes mingw's winternl.h omits (as wine/include/winternl.h). */
 NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID,
@@ -47,16 +45,6 @@ NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
  * itself is positional and complete, so nothing extra is needed. It also
  * omits FILE_NAMES_INFORMATION / FILE_DIRECTORY_INFORMATION on some
  * versions; both were checked present in the pinned mingw-w64 header. */
-
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntioapi.h"
-#include "abi/ntobapi.h" /* NtClose, NtCreateEvent, NtWaitForSingleObject */
-
-/* Freestanding: no <string.h>; implementations live in ntapi.c. */
-void *memset(void *destination, int value, unsigned long length);
-void *memcpy(void *destination, const void *source, unsigned long length);
-int memcmp(const void *left, const void *right, unsigned long length);
-#endif
 
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
 static inline void init_ustr(UNICODE_STRING *str, const void *wide)

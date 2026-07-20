@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 #
-# run.sh — the ntapi runner. Two modes, one shape (docs/08, docs/14).
+# run.sh — the ntapi runner. ONE binary per test, two runners (docs/08,
+# docs/14): every test is a single mingw-built, CRT-less PE .exe linked
+# against the pinned Wine import libraries.
 #
-#   run.sh oracle     Build+run EVERY tests/ntapi test against the host ntdll
-#                     (Wine/Windows). This is the SPEC gate: it must be all-green
-#                     before you may implement the corresponding kernel code.
+#   run.sh oracle     Run every test .exe under the pinned Wine. This is the
+#                     SPEC gate: it must be all-green before you may implement
+#                     the corresponding kernel code.
 #
-#   run.sh proskrnl   Build the manifest.txt subset into a disk image and run it
-#                     under QEMU. This is the REGRESSION gate: it must stay
-#                     all-green as the boundary is implemented.
+#   run.sh proskrnl   Bake the SAME .exes (plus the Wine PE userland) into a
+#                     disk image under C:\ntapi and boot it: the kernel's
+#                     ntapi runner (kernel/init/main.c) sweeps the directory
+#                     and runs each test. This is the REGRESSION gate: it must
+#                     stay all-green as the boundary is implemented.
 #
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
 #     [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
 # We grep those; nothing parses free-text. Exit non-zero iff any test FAILs.
 #
-# Pre-M1 status: the proskrnl mode is stubbed (needs the kernel + toolchain);
-# oracle mode needs a Windows-targeting toolchain (e.g. x86_64-w64-mingw32-gcc)
-# and, off Windows, wine to run the resulting .exe.
+# Needs a Windows-targeting toolchain (x86_64-w64-mingw32-gcc) and the pinned
+# third_party/wine build (tools/setup_linux.sh) for the import libraries, the
+# oracle runtime, and the DLLs/NLS files the proskrnl image bakes.
 
 set -euo pipefail
 
@@ -52,74 +56,66 @@ find_wine() {
 export WINEPREFIX
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
+# The pinned Wine import libraries the test .exes link against (built by
+# tools/setup_linux.sh). Import libs bind by DLL name, so the same .exe
+# resolves against Wine's ntdll under the oracle and against the baked
+# C:\windows\system32 DLLs on proskrnl.
+WINE_PE="$ROOT/third_party/wine/dlls"
+WINE_LIBS=("$WINE_PE/kernel32/x86_64-windows/libkernel32.a"
+           "$WINE_PE/kernelbase/x86_64-windows/libkernelbase.a"
+           "$WINE_PE/ntdll/x86_64-windows/libntdll.a")
+
 # Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself).
 all_tests() { find "$NTAPI" -name '*.c' ! -name 'ntapi.c' | sort; }
 
-# Manifest -> absolute .c paths (proskrnl mode only).
-manifest_tests() {
-    grep -vE '^\s*(#|$)' "$NTAPI/manifest.txt" | while read -r rel; do
-        echo "$NTAPI/${rel}.c"
-    done
-}
-
-run_verdicts() {   # stdin: raw test output -> tee + return fail count
-    grep -E '^\[KTEST\] ' || true
+# Build one test into build/tests/ntapi/<name>.exe: no CRT (-nostdlib, entry
+# ntapi_start in ntapi.c), the pinned Wine import libs, -lgcc for the mingw
+# helpers the compiler may emit (___chkstk_ms). Skips work when up to date.
+build_test() {   # $1 = .c path; echoes the .exe path
+    local src="$1" name exe
+    name="$(basename "${src%.c}")"
+    exe="$BUILD/ntapi/$name.exe"
+    if [[ ! -f "$exe" || "$src" -nt "$exe" || "$NTAPI/ntapi.c" -nt "$exe" || \
+          "$NTAPI/ntapi.h" -nt "$exe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$src" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" -lgcc -o "$exe" >&2
+    fi
+    echo "$exe"
 }
 
 oracle() {
-    mkdir -p "$BUILD"
+    mkdir -p "$BUILD/ntapi"
     local fails=0
     while read -r src; do
         local name exe out
         name="$(basename "${src%.c}")"
-        exe="$BUILD/oracle_$name.exe"
-        "$CC_ORACLE" $CFLAGS_COMMON -DNTAPI_ORACLE "$src" "$NTAPI/ntapi.c" \
-            -lntdll -o "$exe"
+        exe="$(build_test "$src")"
         out="$("$WINE" "$exe" 2>&1 || true)"
         echo "$out"
-        # tr -d '\r': the .exe's CRT writes CRLF; wine passes it through verbatim.
+        # tr -d '\r': tolerate CRLF if a console handle translates.
         echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
     done < <(all_tests)
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
 }
 
-# M4 (docs/14): build each manifest test as a flat binary (crt0 + generated
-# syscall stubs + the proskrnl ntapi.c + the test), bake them into a disk
-# image as Limine boot modules, boot the kernel under QEMU, and read each
-# test's own [KTEST] <name> PASS line off the serial log. The kernel runs
-# every module as a user process (kernel/init/main.c); a test that fails an
-# ok() exits nonzero and prints FAIL.
+# Bake the SAME .exes into a disk image under C:\ntapi beside the Wine PE
+# userland (ntdll/kernel32/kernelbase + the NLS tables), boot it, and read
+# each test's own [KTEST] <name> PASS line off the serial log. The kernel's
+# ntapi runner (kernel/init/main.c) sweeps C:\ntapi, runs every .exe as a
+# console-less Wine process, and prints '[KTEST] ntapi done' when the sweep
+# finishes — the boot's stop condition here.
 proskrnl() {
-    local llvm cc ld objcopy build kernel img
-    llvm="$(dirname "$(command -v clang)")"
-    cc="$llvm/clang"
-    ld="ld.lld"
-    objcopy="$llvm/llvm-objcopy"
-    build="$ROOT/build/tests/proskrnl"
+    local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/proskrnl.hdd"
-    mkdir -p "$build"
+    mkdir -p "$BUILD/ntapi"
 
     # The kernel image must exist (make builds it); build it if missing.
     if [[ ! -f "$kernel" ]]; then
         make -C "$ROOT" >/dev/null
     fi
-
-    local ucflags="-std=c11 -target x86_64-unknown-none -ffreestanding \
-        -fno-stack-protector -fno-pie -fno-pic -m64 -march=x86-64 \
-        -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
-        -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
-        -O2 -g -I$ROOT -I$NTAPI -DNTAPI_PROSKRNL"
-    local uldflags="-m elf_x86_64 -static -T $ROOT/user/init-tests/user.ld --build-id=none"
-
-    # Shared runtime objects (crt0 + generated stubs + harness).
-    # shellcheck disable=SC2086
-    $cc $ucflags -c "$ROOT/user/init-tests/crt0.S" -o "$build/crt0.o"
-    # shellcheck disable=SC2086
-    $cc $ucflags -c "$NTAPI/syscall/syscall_stubs.S" -o "$build/stubs.o"
-    # shellcheck disable=SC2086
-    $cc $ucflags -c "$NTAPI/ntapi.c" -o "$build/ntapi.o"
 
     # The M5 RAM-disk seed files (built by make with the kernel): kmt's
     # image/file section tests read them; they are data, never run.
@@ -127,40 +123,32 @@ proskrnl() {
     for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
-    # The M7 NLS data files (sem_ps/nls_files): the same pinned-Wine tables
-    # the kernel serves from C:\windows\system32 (Makefile WINFILES).
+    # The Wine PE userland the tests run on (the same files Makefile WINFILES
+    # bakes for `make run`).
+    for dll in ntdll kernel32 kernelbase; do
+        specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
+    done
     for nls in locale l_intl c_1252 c_437 sortdefault normnfc normnfd normnfkc normnfkd normidna; do
         [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
             specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
     done
-    while read -r rel _rest; do
-        local name bin
-        name="$(basename "$rel")"
-        bin="$build/$name.bin"
-        # shellcheck disable=SC2086
-        $cc $ucflags -c "$NTAPI/$rel.c" -o "$build/$name.o"
-        # shellcheck disable=SC2086
-        $ld $uldflags "$build/crt0.o" "$build/stubs.o" "$build/ntapi.o" "$build/$name.o" \
-            -o "$build/$name.elf"
-        "$objcopy" -O binary "$build/$name.elf" "$bin"
-        specs+=("$bin=expect=0")
+    while read -r src; do
+        local name exe
+        name="$(basename "${src%.c}")"
+        exe="$(build_test "$src")"
+        specs+=("win:$exe=ntapi/$name.exe")
         names+=("$name")
-    done < <(grep -vE '^\s*(#|$)' "$NTAPI/manifest.txt")
-
-    if [[ ${#names[@]} -eq 0 ]]; then
-        echo "== proskrnl: manifest is empty (nothing to run) =="
-        return 0
-    fi
+    done < <(all_tests)
 
     "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/proskrnl-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] M6 PASS" TIMEOUT="${TIMEOUT:-60}" \
+    LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-420}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # Symbolized sidecar for a human/LLM reading a failure (Art. 9); the
     # verdict greps below stay on the raw log.
-    "$ROOT/tools/symbolize.py" --kernel "$kernel" --moduledir "$build" \
+    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
         --moduledir "$ROOT/build/modules" < "$log" \
         > "$ROOT/build/tests/proskrnl-serial.sym.log" 2>/dev/null || true
 

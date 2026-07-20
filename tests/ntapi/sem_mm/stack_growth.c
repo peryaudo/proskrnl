@@ -14,25 +14,13 @@
  */
 #include "util.h"
 
-#if defined(NTAPI_ORACLE)
 #include <windows.h> /* NT_TIB, NtCurrentTeb */
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntpsapi.h" /* NT_TIB (generated; offsets pinned by asserts) */
-#endif
 
 /* volatile: on a growing kernel (proskrnl, Windows) StackLimit is rewritten
  * behind this code's back; without it the compiler may fold the loads. */
 static volatile NT_TIB *get_tib(void)
 {
-#if defined(NTAPI_ORACLE)
     return (volatile NT_TIB *)NtCurrentTeb();
-#else
-    /* The TEB begins with the NT_TIB and gs points at it in user mode;
-     * NT_TIB.Self (gs:0x30) is the TEB's linear address. */
-    void *self;
-    __asm__ volatile("mov %%gs:0x30, %0" : "=r"(self));
-    return (volatile NT_TIB *)self;
-#endif
 }
 
 /* Each frame occupies ~half a page and touches its buffer TOP-DOWN, the

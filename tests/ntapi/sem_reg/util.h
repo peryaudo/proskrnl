@@ -19,7 +19,6 @@
 /* char16_t (2-byte) string literal, as Wine's tests spell it. */
 #define W(s) u##s
 
-#if defined(NTAPI_ORACLE)
 /* Prototypes exactly as wine/include/winternl.h declares them; mingw's
  * winternl.h omits most of the registry set. Enum-typed class parameters are
  * declared ULONG here so the declarations do not depend on which enums each
@@ -62,20 +61,7 @@ NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, 
 #define REG_OPENED_EXISTING_KEY 0x00000002
 #endif
 
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntregapi.h"
-#include "abi/ntobapi.h"
-
-#define KEY_BASIC_INFO_CLASS KeyBasicInformation
-#define KEY_NODE_INFO_CLASS  KeyNodeInformation
-#define KEY_FULL_INFO_CLASS  KeyFullInformation
-
-#define KV_BASIC_INFO_CLASS   KeyValueBasicInformation
-#define KV_FULL_INFO_CLASS    KeyValueFullInformation
-#define KV_PARTIAL_INFO_CLASS KeyValuePartialInformation
-#endif
-
-/* Result-buffer layouts, snake_case, one definition for both modes; the
+/* Result-buffer layouts, snake_case; the
  * headers of the variable-size structs (everything before the trailing
  * name/data array) as wine/include/winternl.h defines them. */
 typedef struct
@@ -126,17 +112,6 @@ typedef struct
     ULONG data_length;
     UCHAR data[1];
 } reg_kv_partial_info;
-
-#if defined(NTAPI_PROSKRNL)
-_Static_assert(sizeof(reg_key_basic_info) == sizeof(KEY_BASIC_INFORMATION),
-               "reg_key_basic_info must match the abi layout");
-_Static_assert(sizeof(reg_key_full_info) == sizeof(KEY_FULL_INFORMATION),
-               "reg_key_full_info must match the abi layout");
-_Static_assert(sizeof(reg_kv_full_info) == sizeof(KEY_VALUE_FULL_INFORMATION),
-               "reg_kv_full_info must match the abi layout");
-_Static_assert(sizeof(reg_kv_partial_info) == sizeof(KEY_VALUE_PARTIAL_INFORMATION),
-               "reg_kv_partial_info must match the abi layout");
-#endif
 
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
 static inline void init_ustr(UNICODE_STRING *str, const void *wide)

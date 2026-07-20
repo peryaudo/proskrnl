@@ -7,23 +7,18 @@
  * (docs/08): it must be written against the oracle BEFORE the kernel implements
  * NtCreateEvent, or the implementation would certify whatever it happened to do.
  *
- * Oracle build: Nt* resolve against the host ntdll (Wine/Windows).
- * proskrnl build: lit up at M4; add to manifest.txt when NtCreateEvent lands.
+ * One PE binary: Nt* resolve against ntdll on both the Wine oracle and
+ * proskrnl (docs/14).
  */
 #include "../ntapi.h"
 
-/* Prototypes winternl.h omits (declared as Wine's own ntdll tests do). In
- * proskrnl mode they come from the generated abi/ntobapi.h. */
-#if defined(NTAPI_ORACLE)
+/* Prototypes winternl.h omits (declared as Wine's own ntdll tests do). */
 NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, EVENT_TYPE,
                                       BOOLEAN);
 NTSYSAPI NTSTATUS NTAPI NtSetEvent(HANDLE, PLONG);
 NTSYSAPI NTSTATUS NTAPI NtResetEvent(HANDLE, PLONG);
 NTSYSAPI NTSTATUS NTAPI NtWaitForSingleObject(HANDLE, BOOLEAN, PLARGE_INTEGER);
 NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntobapi.h"
-#endif
 
 /* wait with a zero timeout: returns STATUS_SUCCESS if signalled now, else
  * STATUS_TIMEOUT. Never blocks. */

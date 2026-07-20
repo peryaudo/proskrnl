@@ -1,10 +1,9 @@
 /*
  * sem_ob/util.h — shared helpers for the M3 object-manager tests.
  *
- * Wide literals are u"..." (char16_t): 2 bytes per unit in both build modes,
- * where L"..." would be 4 bytes under a Linux-hosted proskrnl build.
- * UNICODE_STRING/OBJECT_ATTRIBUTES are filled by hand so the tests do not
- * depend on which init helpers each mode's headers happen to declare.
+ * Wide literals are u"..." (char16_t): 2 bytes per unit, as Wine's tests
+ * spell them. UNICODE_STRING/OBJECT_ATTRIBUTES are filled by hand so the
+ * tests do not depend on which init helpers the headers happen to declare.
  */
 #ifndef NTAPI_SEM_OB_UTIL_H
 #define NTAPI_SEM_OB_UTIL_H
@@ -14,9 +13,7 @@
 /* char16_t (2-byte) string literal, as Wine's tests spell it. */
 #define W(s) u##s
 
-#if defined(NTAPI_ORACLE)
-/* Prototypes winternl.h omits (declared as Wine's own ntdll tests do). In
- * proskrnl mode these come from abi/ntobapi.h instead. */
+/* Prototypes winternl.h omits (declared as Wine's own ntdll tests do). */
 NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG,
                                           ULONG);
@@ -109,18 +106,9 @@ typedef enum _WAIT_TYPE
 #define SYMBOLIC_LINK_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0x1)
 #endif
 
-#elif defined(NTAPI_PROSKRNL)
-#include "abi/ntobapi.h"
-
-#define EVENT_BASIC_INFO_CLASS     EventBasicInformation
-#define MUTANT_BASIC_INFO_CLASS    MutantBasicInformation
-#define SEMAPHORE_BASIC_INFO_CLASS SemaphoreBasicInformation
-#endif
-
 /* The tests fill these with snake_case fields and pass them to NtQuery*; the
- * layout matches the generated abi/ntobapi.h structs byte-for-byte (the size
- * the info-class length checks demand), so one definition serves both modes.
- * A static_assert in proskrnl mode keeps that agreement honest. */
+ * layout matches the kernel's generated abi/ntobapi.h structs byte-for-byte
+ * (the size the info-class length checks demand). */
 typedef struct
 {
     LONG event_type; /* EVENT_TYPE */
@@ -140,15 +128,8 @@ typedef struct
     ULONG maximum_count;
 } ob_semaphore_basic_info;
 
-#if defined(NTAPI_PROSKRNL)
-_Static_assert(sizeof(ob_event_basic_info) == sizeof(EVENT_BASIC_INFORMATION),
-               "ob_event_basic_info must match the abi layout");
-_Static_assert(sizeof(ob_semaphore_basic_info) == sizeof(SEMAPHORE_BASIC_INFORMATION),
-               "ob_semaphore_basic_info must match the abi layout");
-#endif
-
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
-static void init_ustr(UNICODE_STRING *str, const void *wide)
+static inline void init_ustr(UNICODE_STRING *str, const void *wide)
 {
     const unsigned short *p = (const unsigned short *)wide;
     unsigned len = 0;
@@ -160,7 +141,7 @@ static void init_ustr(UNICODE_STRING *str, const void *wide)
 }
 
 /* Fill OBJECT_ATTRIBUTES; ntdll conventionally passes OBJ_CASE_INSENSITIVE. */
-static void init_attr(OBJECT_ATTRIBUTES *attr, HANDLE root, UNICODE_STRING *name, ULONG flags)
+static inline void init_attr(OBJECT_ATTRIBUTES *attr, HANDLE root, UNICODE_STRING *name, ULONG flags)
 {
     attr->Length = sizeof(*attr);
     attr->RootDirectory = root;
@@ -172,7 +153,7 @@ static void init_attr(OBJECT_ATTRIBUTES *attr, HANDLE root, UNICODE_STRING *name
 
 /* Wait with a zero timeout: STATUS_SUCCESS if signalled now, else
  * STATUS_TIMEOUT. Never blocks; a notification event is not consumed. */
-static NTSTATUS wait_now(HANDLE handle)
+static inline NTSTATUS wait_now(HANDLE handle)
 {
     LARGE_INTEGER zero;
     zero.QuadPart = 0;
