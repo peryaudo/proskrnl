@@ -135,11 +135,10 @@ proskrnl/
 │
 ├── tests/                           # ★ first-class, expected to exceed kernel size
 │   ├── kmt/                         # in-kernel unit tests (M2–M3: wait/apc/ob)
-│   ├── ntapi/                       # portable Nt* conformance; oracle .exe + proskrnl (docs/14)
+│   ├── ntapi/                       # Nt* conformance: ONE PE .exe per test, oracle + proskrnl (docs/14)
 │   │   ├── ntapi.h                  # harness API: START_TEST / ok / todo_proskrnl / skip
-│   │   ├── ntapi.c                  # per-mode I/O + [KTEST]/[ASSERT] verdicts (M4 seam)
-│   │   ├── manifest.txt             # tests that must be GREEN on proskrnl now
-│   │   ├── syscall/                 # M4: proskrnl-mode syscall stubs (empty until then)
+│   │   ├── ntapi.c                  # freestanding harness + runtime side probe + [KTEST] verdicts
+│   │   ├── syscall/                 # generated raw-syscall stubs (user/init-tests flat clients)
 │   │   ├── sem_file/                # share modes, info classes, async+APC
 │   │   ├── sem_mm/                  # reserve/commit, guard pages, (later) COW
 │   │   └── sem_wait/                # wait-all/any, alertable, APC interruption
