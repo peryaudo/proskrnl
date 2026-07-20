@@ -207,8 +207,6 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
                              BOOLEAN createSuspended, PHANDLE threadHandleOut,
                              uint64_t *threadIdOut, uint64_t *tebBaseOut)
 {
-    (void)createSuspended; /* M7: suspend-on-create not needed by the test/ntdll path */
-
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
     NTSTATUS status =
         PspAllocateThreadStack(process, 0x100000, 0x10000, &allocBase, &stackTop, &stackLimit);
@@ -262,7 +260,18 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     }
 
     ObDereferenceObject(thread); /* the handle holds its own reference */
-    KiReadyCreatedThread(tcb);   /* now everything it reads is final */
+    if (createSuspended)
+    {
+        /* THREAD_CREATE_FLAGS_CREATE_SUSPENDED (the CreateProcess/
+         * CreateThread(CREATE_SUSPENDED) path): the thread stays
+         * KI_THREAD_STATE_INITIALIZED with one suspend; NtResumeThread
+         * readies it when the count hits zero. */
+        tcb->suspendCount = 1;
+    }
+    else
+    {
+        KiReadyCreatedThread(tcb); /* now everything it reads is final */
+    }
     if (threadIdOut != 0)
     {
         *threadIdOut = threadId;
@@ -539,24 +548,68 @@ NTSTATUS NtWaitForAlertByThreadId(const void *address, const LARGE_INTEGER *time
 
 NTSTATUS NtResumeThread(HANDLE threadHandle, PULONG previousCount)
 {
-    (void)threadHandle;
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SUSPEND_RESUME, &PspThreadType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PETHREAD thread = body;
+    PKTHREAD tcb = thread->tcb;
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    ULONG previous = (ULONG)tcb->suspendCount;
+    if (tcb->suspendCount > 0 && --tcb->suspendCount == 0)
+    {
+        ASSERT(tcb->state == KI_THREAD_STATE_INITIALIZED);
+        KiReadyThread(tcb); /* the CreateProcess release point */
+    }
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(thread);
+
     if (previousCount != 0 &&
         NT_SUCCESS(KiProbeForWrite(previousCount, sizeof(ULONG), sizeof(ULONG))))
     {
-        *previousCount = 1;
+        *previousCount = previous;
     }
-    return STATUS_SUCCESS; /* create-suspended is unused; nothing to resume */
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousCount)
 {
-    (void)threadHandle;
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SUSPEND_RESUME, &PspThreadType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PETHREAD thread = body;
+    PKTHREAD tcb = thread->tcb;
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    if (tcb->state != KI_THREAD_STATE_INITIALIZED)
+    {
+        /* Suspending a thread that has ever run is unbuilt: no kernel
+         * preemption (Art. 3), so there is no point at which to park a
+         * running thread (docs/03 M10 note; sem_ps/suspend_resume pins the
+         * oracle behaviour under todo_proskrnl). */
+        KiReleaseDispatcherLock(flags);
+        ObDereferenceObject(thread);
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    ULONG previous = (ULONG)tcb->suspendCount;
+    tcb->suspendCount++;
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(thread);
+
     if (previousCount != 0 &&
         NT_SUCCESS(KiProbeForWrite(previousCount, sizeof(ULONG), sizeof(ULONG))))
     {
-        *previousCount = 0;
+        *previousCount = previous;
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS NtOpenThread(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
