@@ -249,6 +249,54 @@ static NTSTATUS PspDefaultString(const char *ascii, UNICODE_STRING *out)
     return STATUS_SUCCESS;
 }
 
+/* The default environment a kernel-launched first process starts with (M10):
+ * the variables every CUI program and cmd.exe assume exist. Children created
+ * with CreateProcess inherit or override wholesale (params passthrough), so
+ * these are furniture for the FIRST process only, alphabetical as NT keeps
+ * environment blocks sorted. */
+static const char *const PspDefaultEnvironment[] = {
+    "COMSPEC=C:\\windows\\system32\\cmd.exe",
+    "PATH=C:\\windows\\system32",
+    "SystemDrive=C:",
+    "SystemRoot=C:\\windows",
+    "TEMP=C:\\windows\\temp",
+    "TMP=C:\\windows\\temp",
+    "windir=C:\\windows",
+};
+
+static NTSTATUS PspBuildDefaultEnvironment(PSP_CAPTURED_PARAMS *captured)
+{
+    SIZE_T totalChars = 1; /* the final extra NUL */
+    for (SIZE_T i = 0; i < sizeof(PspDefaultEnvironment) / sizeof(PspDefaultEnvironment[0]); i++)
+    {
+        SIZE_T n = 0;
+        while (PspDefaultEnvironment[i][n] != '\0')
+        {
+            n++;
+        }
+        totalChars += n + 1;
+    }
+    WCHAR *block = MiAllocatePool(totalChars * sizeof(WCHAR));
+    if (block == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    SIZE_T out = 0;
+    for (SIZE_T i = 0; i < sizeof(PspDefaultEnvironment) / sizeof(PspDefaultEnvironment[0]); i++)
+    {
+        for (SIZE_T n = 0; PspDefaultEnvironment[i][n] != '\0'; n++)
+        {
+            block[out++] = (WCHAR)(unsigned char)PspDefaultEnvironment[i][n];
+        }
+        block[out++] = 0;
+    }
+    block[out++] = 0;
+    ASSERT(out == totalChars);
+    captured->environment = block;
+    captured->environmentSize = totalChars * sizeof(WCHAR);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
                                PSP_CAPTURED_PARAMS **capturedOut)
 {
@@ -277,6 +325,10 @@ NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
     if (NT_SUCCESS(status))
     {
         status = PspDefaultString(imagePath, &captured->strings[PSP_PARAM_WINDOW_TITLE]);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = PspBuildDefaultEnvironment(captured);
     }
     if (!NT_SUCCESS(status))
     {
