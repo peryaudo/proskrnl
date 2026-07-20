@@ -149,13 +149,30 @@ BOOL WINAPI ShellExecuteExW(SHELLEXECUTEINFOW *info)
     return FALSE;
 }
 
+/* cmd probes the executable with this before SHGetFileInfoW(SHGFI_EXETYPE)
+ * — a < 32 return makes it treat the child as GUI and NOT WAIT for it
+ * (spawn_external_full_path), losing the errorlevel. An existing file is
+ * its own executable here (no shell associations on the CUI core). */
 HINSTANCE WINAPI FindExecutableW(const WCHAR *file, const WCHAR *directory, WCHAR *result)
 {
-    (void)file;
     (void)directory;
+    if (GetFileAttributesW(file) == INVALID_FILE_ATTRIBUTES)
+    {
+        if (result != NULL)
+            result[0] = 0;
+        return (HINSTANCE)(ULONG_PTR)SE_ERR_FNF;
+    }
     if (result != NULL)
-        result[0] = 0;
-    return (HINSTANCE)(ULONG_PTR)SE_ERR_NOASSOC;
+    {
+        int i = 0;
+        while (file[i] != 0 && i < MAX_PATH - 1)
+        {
+            result[i] = file[i];
+            i++;
+        }
+        result[i] = 0;
+    }
+    return (HINSTANCE)(ULONG_PTR)33; /* > 32 = success */
 }
 
 /* cmd asks only for SHGFI_EXETYPE (is this runnable / GUI or CUI); answer
@@ -194,6 +211,6 @@ LPSTR(WINAPI *__imp_CharNextExA)(WORD, LPCSTR, DWORD) = CharNextExA;
 int(WINAPIV *__imp_wsprintfW)(WCHAR *, const WCHAR *, ...) = wsprintfW;
 BOOL(WINAPI *__imp_ShellExecuteExW)(SHELLEXECUTEINFOW *) = ShellExecuteExW;
 HINSTANCE(WINAPI *__imp_FindExecutableW)(const WCHAR *, const WCHAR *, WCHAR *) = FindExecutableW;
-DWORD_PTR(WINAPI *__imp_SHGetFileInfoW)(const WCHAR *, DWORD, SHFILEINFOW *, UINT, UINT) =
-    SHGetFileInfoW;
+DWORD_PTR(WINAPI *__imp_SHGetFileInfoW)
+(const WCHAR *, DWORD, SHFILEINFOW *, UINT, UINT) = SHGetFileInfoW;
 int(WINAPI *__imp_SHFileOperationW)(SHFILEOPSTRUCTW *) = SHFileOperationW;

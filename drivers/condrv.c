@@ -758,17 +758,20 @@ NTSTATUS CondrvCreateProcessHandles(struct EPROCESS *process, HANDLE *consoleOut
     }
     if (NT_SUCCESS(status))
     {
-        status = ObpCreateHandleInTable(table, input, FILE_ALL_ACCESS, 0, inOut);
+        /* Std handles are born inheritable, as NT console handles are —
+         * cmd's pipe children receive them through the M10 inherit-all
+         * copy at the same values (sem_ps/inherit semantics). */
+        status = ObpCreateHandleInTable(table, input, FILE_ALL_ACCESS, OBJ_INHERIT, inOut);
     }
     if (NT_SUCCESS(status))
     {
         /* hStdOutput and hStdError share ONE output open — the shape
          * kernelbase's own std-handle setup produces (DuplicateHandle). */
-        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, 0, outOut);
+        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, OBJ_INHERIT, outOut);
     }
     if (NT_SUCCESS(status))
     {
-        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, 0, errOut);
+        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, OBJ_INHERIT, errOut);
     }
     /* The handles hold their own references (or nothing does: on failure
      * the creator references drop everything, and ObpCloseAllHandles at

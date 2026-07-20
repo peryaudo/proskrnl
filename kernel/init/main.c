@@ -388,6 +388,33 @@ static int KiRunM9Echo(void)
     return pass ? 0 : 1;
 }
 
+/* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
+ * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
+ * cmd.exe on the serial console, driven by tests/run/console_expect.py —
+ * prompt, echo, redirection to a file, `type file | upcase` through a real
+ * anonymous-pipe child, hello_crt.exe's output and %errorlevel%, and a
+ * clean `exit`. Present only on the console-mode image (probe/skip like
+ * m9_echo). */
+static int KiRunCmdConsole(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\hello_crt.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return 0; /* not a console-mode image */
+    }
+    ObDereferenceObject(probe);
+
+    DbgPrint("[KTEST] cmd interactive start\n");
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
+                                     "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
+    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
+    DbgPrint("[KTEST] module cmd.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
+             (unsigned long)exitStatus);
+    return pass ? 0 : 1;
+}
+
 /* --- the ntapi single-binary test runner (docs/14) ------------------------- */
 
 /* Every tests/ntapi test is ONE PE .exe that runs unmodified on the Wine
@@ -640,6 +667,9 @@ static void KiTestMainThread(void *context)
      * M9 verdict so the runner knows the boot suite is already green. */
     int echoFailures = KiRunM9Echo();
 
+    /* Console-mode image only (M10): the interactive cmd.exe session. */
+    int cmdFailures = KiRunCmdConsole();
+
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
      * what a real panic dump would look like after the whole boot suite
@@ -647,7 +677,7 @@ static void KiTestMainThread(void *context)
     __asm__ volatile("int3");
 
     int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
-                m8Failures + m9Failures + ntapiFailures + echoFailures;
+                m8Failures + m9Failures + ntapiFailures + echoFailures + cmdFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

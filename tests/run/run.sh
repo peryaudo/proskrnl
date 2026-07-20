@@ -248,13 +248,15 @@ console() {
     local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
     mkdir -p "$ROOT/build/tests"
 
-    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-90}" \
+    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-180}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
         wait "$qemu_wrapper" 2>/dev/null || true
-        if grep -qE '^\[KTEST\] module m9_echo.exe PASS' "$log"; then
-            echo "== console: PASS (typed input echoed through conhost) =="
+        # No ^ anchor: conhost cursor escapes may share the verdict's line.
+        if grep -qE '\[KTEST\] module m9_echo.exe PASS' "$log" &&
+           grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+            echo "== console: PASS (conhost echo + interactive cmd.exe session) =="
             return 0
         fi
     fi
