@@ -27,9 +27,10 @@
 #include "ntapi.h"
 #include "sem_ob/util.h" /* Nt* prototypes (oracle), abi (proskrnl), init_ustr/init_attr, ob_* structs */
 #if defined(NTAPI_PROSKRNL)
-#include "abi/ntioapi.h" /* the M6 file surface (must precede fuzz_model.h) */
-#include "abi/ntmmapi.h" /* PAGE_* for the protect op (must precede fuzz_model.h) */
-#include "abi/ntpsapi.h" /* NtQueryInformationProcess + PROCESS_BASIC_INFORMATION */
+#include "abi/ntioapi.h"  /* the M6 file surface (must precede fuzz_model.h) */
+#include "abi/ntmmapi.h"  /* PAGE_* for the protect op (must precede fuzz_model.h) */
+#include "abi/ntpsapi.h"  /* NtQueryInformationProcess + PROCESS_BASIC_INFORMATION */
+#include "abi/ntregapi.h" /* the M8 Cm surface (must precede fuzz_model.h) */
 #endif
 #if defined(NTAPI_ORACLE)
 /* Prototypes winternl.h omits (as wine/include/winternl.h declares them). */
@@ -86,6 +87,138 @@ static const void *fz_fnames[FZ_FNAME_COUNT] = {
     W("\\??\\C:\\fuzz\\Fuzz Long Name.Dat"),
     W("\\??\\C:\\fuzz\\nodir\\x.dat"),
 };
+
+/* M8 registry paths; order/tags MUST match FUZZ_KEY_NAMES in tools/gen_syscalls.py. */
+static const void *fz_knames[FZ_KNAME_COUNT] = {
+    W("\\Registry\\Machine\\Software\\fz_reg"),
+    W("\\Registry\\Machine\\Software\\fz_reg\\ka"),
+    W("\\Registry\\Machine\\Software\\fz_reg\\kb"),
+    W("\\Registry\\Machine\\Software\\fz_reg\\ka\\Sub Key"),
+    W("\\Registry\\Machine\\Software\\fz_reg\\nokey\\x"),
+};
+
+#if defined(NTAPI_ORACLE)
+/* Registry prototypes mingw's winternl.h omits (as wine/include/winternl.h;
+ * enum-typed class parameters as ULONG, like sem_reg/util.h). */
+NTSYSAPI NTSTATUS NTAPI NtCreateKey(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *, ULONG,
+                                    const UNICODE_STRING *, ULONG, PULONG);
+NTSYSAPI NTSTATUS NTAPI NtOpenKey(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
+NTSYSAPI NTSTATUS NTAPI NtDeleteKey(HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtDeleteValueKey(HANDLE, const UNICODE_STRING *);
+NTSYSAPI NTSTATUS NTAPI NtSetValueKey(HANDLE, const UNICODE_STRING *, ULONG, ULONG, const void *,
+                                      ULONG);
+NTSYSAPI NTSTATUS NTAPI NtQueryValueKey(HANDLE, const UNICODE_STRING *, ULONG, void *, ULONG,
+                                        ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtEnumerateKey(HANDLE, ULONG, ULONG, void *, ULONG, ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtEnumerateValueKey(HANDLE, ULONG, ULONG, void *, ULONG, ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtQueryKey(HANDLE, ULONG, void *, ULONG, ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE);
+/* Info-class values as wine/include/winternl.h orders the enums. */
+#define FZ_KEY_BASIC_CLASS  0 /* KeyBasicInformation */
+#define FZ_KEY_NODE_CLASS   1 /* KeyNodeInformation */
+#define FZ_KEY_FULL_CLASS   2 /* KeyFullInformation */
+#define FZ_KV_BASIC_CLASS   0 /* KeyValueBasicInformation */
+#define FZ_KV_FULL_CLASS    1 /* KeyValueFullInformation */
+#define FZ_KV_PARTIAL_CLASS 2 /* KeyValuePartialInformation */
+#elif defined(NTAPI_PROSKRNL)
+#define FZ_KEY_BASIC_CLASS  KeyBasicInformation
+#define FZ_KEY_NODE_CLASS   KeyNodeInformation
+#define FZ_KEY_FULL_CLASS   KeyFullInformation
+#define FZ_KV_BASIC_CLASS   KeyValueBasicInformation
+#define FZ_KV_FULL_CLASS    KeyValueFullInformation
+#define FZ_KV_PARTIAL_CLASS KeyValuePartialInformation
+#endif
+
+/* Semantic-table indices for the M8 registry ops (FUZZ_CHOICES vname/vdata/
+ * key_info/kv_info); meanings live here. */
+enum
+{
+    FZ_VNAME_DEFAULT = 0, /* the unnamed (default) value */
+    FZ_VNAME_A,
+    FZ_VNAME_B,
+    FZ_VNAME_MISSING
+};
+enum
+{
+    FZ_VDATA_EMPTY = 0, /* 0 bytes */
+    FZ_VDATA_DWORD,     /* 4 bytes */
+    FZ_VDATA_ODD,       /* 7 bytes (exercises the hive's parity pad) */
+    FZ_VDATA_MID        /* 33 bytes */
+};
+enum
+{
+    FZ_KINFO_BASIC = 0,
+    FZ_KINFO_NODE,
+    FZ_KINFO_FULL
+};
+enum
+{
+    FZ_KVINFO_BASIC = 0,
+    FZ_KVINFO_FULL,
+    FZ_KVINFO_PARTIAL
+};
+
+static const void *fz_vnames[3] = {W(""), W("va"), W("vb")}; /* MISSING handled apart */
+static const void *fz_vname_missing = W("fz_no_such_value");
+
+static ULONG fz_key_class(unsigned shape)
+{
+    switch (shape)
+    {
+    case FZ_KINFO_NODE:
+        return FZ_KEY_NODE_CLASS;
+    case FZ_KINFO_FULL:
+        return FZ_KEY_FULL_CLASS;
+    default:
+        return FZ_KEY_BASIC_CLASS;
+    }
+}
+
+static ULONG fz_kv_class(unsigned shape)
+{
+    switch (shape)
+    {
+    case FZ_KVINFO_FULL:
+        return FZ_KV_FULL_CLASS;
+    case FZ_KVINFO_PARTIAL:
+        return FZ_KV_PARTIAL_CLASS;
+    default:
+        return FZ_KV_BASIC_CLASS;
+    }
+}
+
+static void fz_init_vname(UNICODE_STRING *name, unsigned shape)
+{
+    if (shape == FZ_VNAME_MISSING)
+        init_ustr(name, fz_vname_missing);
+    else
+        init_ustr(name, fz_vnames[shape % 3]);
+}
+
+/* Deterministic value payload for a vdata shape. */
+static ULONG fz_vdata_bytes(unsigned shape, unsigned char *buf, ULONG cap)
+{
+    ULONG len;
+    switch (shape)
+    {
+    case FZ_VDATA_DWORD:
+        len = 4;
+        break;
+    case FZ_VDATA_ODD:
+        len = 7;
+        break;
+    case FZ_VDATA_MID:
+        len = 33;
+        break;
+    default:
+        return 0;
+    }
+    if (len > cap)
+        len = cap;
+    for (ULONG i = 0; i < len; i++)
+        buf[i] = (unsigned char)(0x40 + i * 3);
+    return len;
+}
 
 #if defined(NTAPI_ORACLE)
 /* File-surface prototypes mingw's winternl.h omits (as wine/include/winternl.h). */
@@ -219,6 +352,65 @@ static void fz_reset_files(void)
     }
 }
 
+/* Scrub the fuzz registry keys between programs (registry state, like files,
+ * persists) and make sure the fz_reg root exists. Children first (a key with
+ * subkeys cannot be deleted), then the root's own values; the root itself
+ * stays. Uses only the M8 surface both sides implement. */
+static void fz_setup_keys(void)
+{
+    /* NtCreateKey creates only the LAST component, and a fresh proskrnl
+     * registry has no Machine\Software yet — build the chain. */
+    static const void *chain[2] = {W("\\Registry\\Machine\\Software"), NULL};
+    for (int i = 0; i < 2; i++)
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE key = NULL;
+        init_ustr(&name, chain[i] != NULL ? chain[i] : fz_knames[0]);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        if (fz_ok(NtCreateKey(&key, KEY_ALL_ACCESS, &attr, 0, NULL, 0, NULL)))
+            NtClose(key);
+    }
+}
+
+static void fz_reset_keys(void)
+{
+    /* Deepest-first over the known key space: ka\Sub Key, then ka, kb. */
+    static const int scrub_order[3] = {3, 1, 2};
+    for (int i = 0; i < 3; i++)
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE key = NULL;
+        init_ustr(&name, fz_knames[scrub_order[i]]);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        if (fz_ok(NtOpenKey(&key, KEY_ALL_ACCESS, &attr)))
+        {
+            NtDeleteKey(key);
+            NtClose(key);
+        }
+    }
+    /* The root's values (set_value on an open root-key slot). */
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE key = NULL;
+        init_ustr(&name, fz_knames[0]);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        if (fz_ok(NtOpenKey(&key, KEY_ALL_ACCESS, &attr)))
+        {
+            UNICODE_STRING vname;
+            for (unsigned v = 0; v < 3; v++)
+            {
+                init_ustr(&vname, fz_vnames[v]);
+                NtDeleteValueKey(key, &vname);
+            }
+            NtClose(key);
+        }
+    }
+    fz_setup_keys(); /* recreate the root if a program deleted it */
+}
+
 /* A committed private scratch region for the M7 NtProtectVirtualMemory op: one
  * VAD, fully committed, allocated once and reset to PAGE_READWRITE at each
  * program start so protection state does not leak between programs. Its base
@@ -316,6 +508,22 @@ static unsigned long long fz_resolve(FzOperandKind kind, unsigned char b)
         return fz_ch_nls_type[b % FZ_CH_NLS_TYPE_COUNT];
     case FZ_OPND_CH_NLS_ID:
         return fz_ch_nls_id[b % FZ_CH_NLS_ID_COUNT];
+    case FZ_OPND_KNAME:
+        return b % FZ_KNAME_COUNT;
+    case FZ_OPND_CH_ACCESS_KEY:
+        return fz_ch_access_key[b % FZ_CH_ACCESS_KEY_COUNT];
+    case FZ_OPND_CH_REG_TYPE:
+        return fz_ch_reg_type[b % FZ_CH_REG_TYPE_COUNT];
+    case FZ_OPND_CH_REG_OPTIONS:
+        return fz_ch_reg_options[b % FZ_CH_REG_OPTIONS_COUNT];
+    case FZ_OPND_CH_VNAME:
+        return b % FZ_CH_VNAME_COUNT;
+    case FZ_OPND_CH_VDATA:
+        return b % FZ_CH_VDATA_COUNT;
+    case FZ_OPND_CH_KEY_INFO:
+        return b % FZ_CH_KEY_INFO_COUNT;
+    case FZ_OPND_CH_KV_INFO:
+        return b % FZ_CH_KV_INFO_COUNT;
     }
     return 0;
 }
@@ -799,6 +1007,119 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    /* ---- M8 Cm registry ops ---------------------------------------------- */
+    case FZ_OP_CREATE_KEY:
+    {
+        ULONG disposition = 0;
+        h = NULL;
+        init_ustr(&ustr, fz_knames[a[2]]);
+        init_attr(&attr, NULL, &ustr, OBJ_CASE_INSENSITIVE);
+        st = NtCreateKey(&h, (ACCESS_MASK)a[1], &attr, 0, NULL, (ULONG)a[3], &disposition);
+        if (fz_ok(st))
+        {
+            fz_slots[a[0]] = h;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x disp=%u slot=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)disposition, (unsigned)a[0]);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_OPEN_KEY:
+        h = NULL;
+        init_ustr(&ustr, fz_knames[a[2]]);
+        init_attr(&attr, NULL, &ustr, OBJ_CASE_INSENSITIVE);
+        st = NtOpenKey(&h, (ACCESS_MASK)a[1], &attr);
+        if (fz_ok(st))
+            fz_slots[a[0]] = h;
+        fz_trace_handle(prog, call, nt, st, (unsigned)a[0], h);
+        break;
+    case FZ_OP_DELETE_KEY:
+        st = NtDeleteKey(fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_SET_VALUE_KEY:
+    {
+        UNICODE_STRING vname;
+        unsigned char data[64];
+        ULONG bytes = fz_vdata_bytes((unsigned)a[3], data, sizeof(data));
+        fz_init_vname(&vname, (unsigned)a[1]);
+        st = NtSetValueKey(fz_slots[a[0]], &vname, 0, (ULONG)a[2], bytes ? data : NULL, bytes);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_DELETE_VALUE_KEY:
+    {
+        UNICODE_STRING vname;
+        fz_init_vname(&vname, (unsigned)a[1]);
+        st = NtDeleteValueKey(fz_slots[a[0]], &vname);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_VALUE_KEY:
+    {
+        UNICODE_STRING vname;
+        unsigned char info[256];
+        ULONG retLen = 0;
+        fz_init_vname(&vname, (unsigned)a[1]);
+        fz_bzero(info, sizeof(info));
+        st = NtQueryValueKey(fz_slots[a[0]], &vname, fz_kv_class((unsigned)a[2]), info,
+                             fz_query_len((unsigned)a[3], 64), &retLen);
+        /* Status + required length; both are contract on every outcome the
+         * buffer protocol defines (rlen is set on TOO_SMALL/OVERFLOW too). */
+        if (fz_ok(st) || st == STATUS_BUFFER_TOO_SMALL || st == STATUS_BUFFER_OVERFLOW)
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_ENUM_VALUE_KEY:
+    {
+        unsigned char info[256];
+        ULONG retLen = 0;
+        fz_bzero(info, sizeof(info));
+        st = NtEnumerateValueKey(fz_slots[a[0]], (ULONG)a[1], fz_kv_class((unsigned)a[2]), info,
+                                 fz_query_len((unsigned)a[3], 64), &retLen);
+        if (fz_ok(st) || st == STATUS_BUFFER_TOO_SMALL || st == STATUS_BUFFER_OVERFLOW)
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_ENUMERATE_KEY:
+    {
+        unsigned char info[256];
+        ULONG retLen = 0;
+        fz_bzero(info, sizeof(info));
+        st = NtEnumerateKey(fz_slots[a[0]], (ULONG)a[1], fz_key_class((unsigned)a[2]), info,
+                            fz_query_len((unsigned)a[3], 64), &retLen);
+        if (fz_ok(st) || st == STATUS_BUFFER_TOO_SMALL || st == STATUS_BUFFER_OVERFLOW)
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_KEY:
+    {
+        unsigned char info[256];
+        ULONG retLen = 0;
+        fz_bzero(info, sizeof(info));
+        st = NtQueryKey(fz_slots[a[0]], fz_key_class((unsigned)a[1]), info,
+                        fz_query_len((unsigned)a[2], 64), &retLen);
+        if (fz_ok(st) || st == STATUS_BUFFER_TOO_SMALL || st == STATUS_BUFFER_OVERFLOW)
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_FLUSH_KEY:
+        st = NtFlushKey(fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
     default:
         ntapi_printf("[FUZZ] p%u c%u ??? op=%d\n", prog, call, op);
         break;
@@ -831,6 +1152,7 @@ START_TEST(fuzz_interp)
     p += 8;
 
     fz_setup_files();
+    fz_setup_keys();
     fz_setup_protect();
 
     for (unsigned pi = 0; pi < programCount && p < end; pi++)
@@ -846,6 +1168,7 @@ START_TEST(fuzz_interp)
 
         fz_reset_slots();
         fz_reset_files();
+        fz_reset_keys();
         fz_reset_protect();
         ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
 

@@ -15,6 +15,7 @@
 #define FZ_SLOT_COUNT 16
 #define FZ_NAME_COUNT 12
 #define FZ_FNAME_COUNT 4
+#define FZ_KNAME_COUNT 5
 
 typedef enum {
     FZ_OPND_SLOT_OUT,
@@ -42,6 +43,14 @@ typedef enum {
     FZ_OPND_CH_PROTECT_PAGE,
     FZ_OPND_CH_NLS_TYPE,
     FZ_OPND_CH_NLS_ID,
+    FZ_OPND_CH_ACCESS_KEY,
+    FZ_OPND_KNAME,
+    FZ_OPND_CH_REG_OPTIONS,
+    FZ_OPND_CH_VNAME,
+    FZ_OPND_CH_REG_TYPE,
+    FZ_OPND_CH_VDATA,
+    FZ_OPND_CH_KV_INFO,
+    FZ_OPND_CH_KEY_INFO,
 } FzOperandKind;
 
 typedef enum {
@@ -80,6 +89,16 @@ typedef enum {
     FZ_OP_PROTECT_MEMORY,
     FZ_OP_INIT_NLS,
     FZ_OP_GET_NLS_SECTION,
+    FZ_OP_CREATE_KEY,
+    FZ_OP_OPEN_KEY,
+    FZ_OP_DELETE_KEY,
+    FZ_OP_SET_VALUE_KEY,
+    FZ_OP_DELETE_VALUE_KEY,
+    FZ_OP_QUERY_VALUE_KEY,
+    FZ_OP_ENUM_VALUE_KEY,
+    FZ_OP_ENUMERATE_KEY,
+    FZ_OP_QUERY_KEY,
+    FZ_OP_FLUSH_KEY,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -119,6 +138,16 @@ static const FzOperandKind fz_kinds_query_system_basic[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_protect_memory[] = { FZ_OPND_CH_PROTECT_PAGE };
 static const FzOperandKind fz_kinds_init_nls[1];
 static const FzOperandKind fz_kinds_get_nls_section[] = { FZ_OPND_CH_NLS_TYPE, FZ_OPND_CH_NLS_ID };
+static const FzOperandKind fz_kinds_create_key[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_KEY, FZ_OPND_KNAME, FZ_OPND_CH_REG_OPTIONS };
+static const FzOperandKind fz_kinds_open_key[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_KEY, FZ_OPND_KNAME };
+static const FzOperandKind fz_kinds_delete_key[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_set_value_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_VNAME, FZ_OPND_CH_REG_TYPE, FZ_OPND_CH_VDATA };
+static const FzOperandKind fz_kinds_delete_value_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_VNAME };
+static const FzOperandKind fz_kinds_query_value_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_VNAME, FZ_OPND_CH_KV_INFO, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_enum_value_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_ULONG, FZ_OPND_CH_KV_INFO, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_enumerate_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_ULONG, FZ_OPND_CH_KEY_INFO, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_query_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_KEY_INFO, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_flush_key[] = { FZ_OPND_SLOT_IN };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -155,6 +184,16 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_PROTECT_MEMORY] = { fz_kinds_protect_memory, 1, "NtProtectVirtualMemory" },
     [FZ_OP_INIT_NLS] = { fz_kinds_init_nls, 0, "NtInitializeNlsFiles" },
     [FZ_OP_GET_NLS_SECTION] = { fz_kinds_get_nls_section, 2, "NtGetNlsSectionPtr" },
+    [FZ_OP_CREATE_KEY] = { fz_kinds_create_key, 4, "NtCreateKey" },
+    [FZ_OP_OPEN_KEY] = { fz_kinds_open_key, 3, "NtOpenKey" },
+    [FZ_OP_DELETE_KEY] = { fz_kinds_delete_key, 1, "NtDeleteKey" },
+    [FZ_OP_SET_VALUE_KEY] = { fz_kinds_set_value_key, 4, "NtSetValueKey" },
+    [FZ_OP_DELETE_VALUE_KEY] = { fz_kinds_delete_value_key, 2, "NtDeleteValueKey" },
+    [FZ_OP_QUERY_VALUE_KEY] = { fz_kinds_query_value_key, 4, "NtQueryValueKey" },
+    [FZ_OP_ENUM_VALUE_KEY] = { fz_kinds_enum_value_key, 4, "NtEnumerateValueKey" },
+    [FZ_OP_ENUMERATE_KEY] = { fz_kinds_enumerate_key, 4, "NtEnumerateKey" },
+    [FZ_OP_QUERY_KEY] = { fz_kinds_query_key, 3, "NtQueryKey" },
+    [FZ_OP_FLUSH_KEY] = { fz_kinds_flush_key, 1, "NtFlushKey" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -196,5 +235,15 @@ static const ULONG fz_ch_nls_type[] = { (ULONG)(NLS_SECTION_CASEMAP), (ULONG)(NL
 static const ULONG fz_ch_nls_id[] = { (ULONG)(0), (ULONG)(437), (ULONG)(1252), (ULONG)(NormalizationC), (ULONG)(13), (ULONG)(9999) };
 #define FZ_CH_PROTECT_PAGE_COUNT 5
 static const ULONG fz_ch_protect_page[] = { (ULONG)(PAGE_NOACCESS), (ULONG)(PAGE_READONLY), (ULONG)(PAGE_READWRITE), (ULONG)(PAGE_EXECUTE_READ), (ULONG)(PAGE_EXECUTE_READWRITE) };
+#define FZ_CH_ACCESS_KEY_COUNT 6
+static const ACCESS_MASK fz_ch_access_key[] = { (ACCESS_MASK)(KEY_ALL_ACCESS), (ACCESS_MASK)(KEY_READ), (ACCESS_MASK)(KEY_QUERY_VALUE), (ACCESS_MASK)(KEY_QUERY_VALUE|KEY_SET_VALUE), (ACCESS_MASK)(KEY_ENUMERATE_SUB_KEYS), (ACCESS_MASK)(0) };
+#define FZ_CH_REG_TYPE_COUNT 5
+static const ULONG fz_ch_reg_type[] = { (ULONG)(REG_SZ), (ULONG)(REG_DWORD), (ULONG)(REG_BINARY), (ULONG)(REG_MULTI_SZ), (ULONG)(REG_NONE) };
+#define FZ_CH_REG_OPTIONS_COUNT 2
+static const ULONG fz_ch_reg_options[] = { (ULONG)(0), (ULONG)(REG_OPTION_VOLATILE) };
+#define FZ_CH_VNAME_COUNT 4
+#define FZ_CH_VDATA_COUNT 4
+#define FZ_CH_KEY_INFO_COUNT 3
+#define FZ_CH_KV_INFO_COUNT 3
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */

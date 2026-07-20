@@ -207,6 +207,17 @@ FUZZ_FILE_NAMES = [
     ("badpath", "\\??\\C:\\fuzz\\nodir\\x.dat"),
 ]
 
+# M8 registry paths (index space only; strings in interp.c). All under the
+# per-program-scrubbed \Registry\Machine\Software\fz_reg; "badpath" = missing
+# intermediate key (NtCreateKey creates only the last component).
+FUZZ_KEY_NAMES = [
+    ("root", "\\Registry\\Machine\\Software\\fz_reg"),
+    ("valid", "\\Registry\\Machine\\Software\\fz_reg\\ka"),
+    ("valid", "\\Registry\\Machine\\Software\\fz_reg\\kb"),
+    ("subitem", "\\Registry\\Machine\\Software\\fz_reg\\ka\\Sub Key"),
+    ("badpath", "\\Registry\\Machine\\Software\\fz_reg\\nokey\\x"),
+]
+
 # Choice tables: name -> (c_type, [(c_expr, avoid), ...]). c_type None marks a
 # semantic table: no C array is emitted, only the index space (the interpreter
 # defines the meaning of each index itself, e.g. buffer-length shapes).
@@ -351,6 +362,51 @@ FUZZ_CHOICES = {
         ("PAGE_EXECUTE_READ", False),
         ("PAGE_EXECUTE_READWRITE", False),
     ]),
+    # M8 Cm ops. Access masks/types are ABI symbols; the value-name, value-
+    # data, and info-class spaces are semantic tables interp.c interprets
+    # (the oracle's winternl.h doesn't declare the info-class enums on every
+    # toolchain, so interp.c maps indices per build mode).
+    "access_key": ("ACCESS_MASK", [
+        ("KEY_ALL_ACCESS", False),
+        ("KEY_READ", False),
+        ("KEY_QUERY_VALUE", False),
+        ("KEY_QUERY_VALUE|KEY_SET_VALUE", False),
+        ("KEY_ENUMERATE_SUB_KEYS", False),
+        ("0", False),
+    ]),
+    "reg_type": ("ULONG", [
+        ("REG_SZ", False),
+        ("REG_DWORD", False),
+        ("REG_BINARY", False),
+        ("REG_MULTI_SZ", False),
+        ("REG_NONE", False),
+    ]),
+    "reg_options": ("ULONG", [
+        ("0", False),
+        ("REG_OPTION_VOLATILE", False),
+    ]),
+    "vname": (None, [
+        ("FZ_VNAME_DEFAULT", False),
+        ("FZ_VNAME_A", False),
+        ("FZ_VNAME_B", False),
+        ("FZ_VNAME_MISSING", False),
+    ]),
+    "vdata": (None, [
+        ("FZ_VDATA_EMPTY", False),
+        ("FZ_VDATA_DWORD", False),
+        ("FZ_VDATA_ODD", False),
+        ("FZ_VDATA_MID", False),
+    ]),
+    "key_info": (None, [
+        ("FZ_KINFO_BASIC", False),
+        ("FZ_KINFO_NODE", False),
+        ("FZ_KINFO_FULL", False),
+    ]),
+    "kv_info": (None, [
+        ("FZ_KVINFO_BASIC", False),
+        ("FZ_KVINFO_FULL", False),
+        ("FZ_KVINFO_PARTIAL", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -409,6 +465,18 @@ FUZZ_OPS = [
     # M7 Wine bring-up: the NLS data services ntdll's locale_init issues.
     ("init_nls", "NtInitializeNlsFiles", []),
     ("get_nls_section", "NtGetNlsSectionPtr", ["ch_nls_type", "ch_nls_id"]),
+    # M8 Cm surface (paths under \Registry\Machine\Software\fz_reg;
+    # per-program scrub in interp.c).
+    ("create_key", "NtCreateKey", ["slot_out", "ch_access_key", "kname", "ch_reg_options"]),
+    ("open_key", "NtOpenKey", ["slot_out", "ch_access_key", "kname"]),
+    ("delete_key", "NtDeleteKey", ["slot_in"]),
+    ("set_value_key", "NtSetValueKey", ["slot_in", "ch_vname", "ch_reg_type", "ch_vdata"]),
+    ("delete_value_key", "NtDeleteValueKey", ["slot_in", "ch_vname"]),
+    ("query_value_key", "NtQueryValueKey", ["slot_in", "ch_vname", "ch_kv_info", "ch_len"]),
+    ("enum_value_key", "NtEnumerateValueKey", ["slot_in", "ch_ulong", "ch_kv_info", "ch_len"]),
+    ("enumerate_key", "NtEnumerateKey", ["slot_in", "ch_ulong", "ch_key_info", "ch_len"]),
+    ("query_key", "NtQueryKey", ["slot_in", "ch_key_info", "ch_len"]),
+    ("flush_key", "NtFlushKey", ["slot_in"]),
 ]
 
 
@@ -534,7 +602,8 @@ def gen_fuzz_model_h() -> str:
 
     lines.append(f"#define FZ_SLOT_COUNT {FUZZ_SLOT_COUNT}")
     lines.append(f"#define FZ_NAME_COUNT {len(FUZZ_NAMES)}")
-    lines.append(f"#define FZ_FNAME_COUNT {len(FUZZ_FILE_NAMES)}\n")
+    lines.append(f"#define FZ_FNAME_COUNT {len(FUZZ_FILE_NAMES)}")
+    lines.append(f"#define FZ_KNAME_COUNT {len(FUZZ_KEY_NAMES)}\n")
 
     # Operand-kind enum.
     lines.append("typedef enum {")
@@ -597,6 +666,12 @@ def gen_fuzz_model_py() -> str:
     out.append("# (index, tag) for each M6 file path.")
     out.append("FNAME_TAGS = [")
     for i, (tag, _s) in enumerate(FUZZ_FILE_NAMES):
+        out.append(f"    ({i}, {tag!r}),")
+    out.append("]")
+    out.append("")
+    out.append("# (index, tag) for each M8 registry path.")
+    out.append("KNAME_TAGS = [")
+    for i, (tag, _s) in enumerate(FUZZ_KEY_NAMES):
         out.append(f"    ({i}, {tag!r}),")
     out.append("]")
     out.append("")
