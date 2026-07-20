@@ -274,6 +274,19 @@ $(M9SMOKE): user/m9/m9_smoke.c $(WINE_PE_DLLS)
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# The M9 interactive-echo client: baked ONLY into the console-mode image
+# below (it blocks on console input, which the plain headless loop must
+# never do).
+M9ECHO := $(BUILD)/modules/m9_echo.exe
+$(M9ECHO): user/m9/m9_echo.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -Wl,--entry=m9_start \
+	    user/m9/m9_echo.c \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
 # The M9 console server: the pinned Wine conhost ported onto the kernel
 # ConDrv transport (user/conhost/ — conhost.c is the pinned tree's, with
 # the two wineserver call sites redirected; proskrnl_glue.c carries the
@@ -314,6 +327,18 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(WINE_PE_DLLS) \
         tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
+
+# The M9 interactive-console image (tests/run/run.sh console): the standard
+# image plus m9_echo.exe, whose presence makes the boot block on console
+# input after the M9 verdict (kernel/init/main.c KiRunM9Echo).
+IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
+$(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
+        $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
+	    win:$(M9ECHO)=m9_echo.exe
+
+console-img: $(IMG_CONSOLE)
+.PHONY: console-img
 
 run: $(IMG)
 	tools/qemu.sh $(IMG)

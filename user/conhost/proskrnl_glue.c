@@ -377,12 +377,23 @@ int iswalnum( wint_t ch )
 
 /* --- 4. user32 + window.c stands-ins ---------------------------------------- */
 
-/* Key-code conversion without a keyboard layout: the tty line discipline
- * carries the character itself in the INPUT_RECORD, so "unknown virtual
- * key / scan code" degrades cleanly (conhost checks for ~0). */
+/* Key-code conversion without a keyboard layout: the ASCII slice of the
+ * US-layout mapping user32's VkKeyScanW documents (low byte = virtual key,
+ * bit 8 = shift, bit 9 = control). The edit line dispatches Enter/Backspace
+ * /Escape by VIRTUAL KEY (conhost's std_key_map), so these must be real;
+ * everything unmapped returns -1 and the character still inserts by its
+ * UnicodeChar. */
 SHORT WINAPI VkKeyScanW( WCHAR ch )
 {
-    (void)ch;
+    if (ch == '\r') return VK_RETURN;
+    if (ch == '\b') return VK_BACK;
+    if (ch == '\t') return VK_TAB;
+    if (ch == 0x1b) return VK_ESCAPE;
+    if (ch == ' ') return VK_SPACE;
+    if (ch >= '0' && ch <= '9') return (SHORT)ch;
+    if (ch >= 'A' && ch <= 'Z') return (SHORT)(0x100 | ch);
+    if (ch >= 'a' && ch <= 'z') return (SHORT)(ch - 'a' + 'A');
+    if (ch >= 1 && ch <= 26) return (SHORT)(0x200 | ('A' + ch - 1)); /* ^A..^Z */
     return -1;
 }
 

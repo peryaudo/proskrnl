@@ -34,6 +34,18 @@ PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
+# M9 (docs/02): the interactive-console loop swaps the serial log file for a
+# unix socket the runner types into (tests/run/console_expect.py), which
+# tees everything it reads into $LOG — the verdict grep below is unchanged,
+# so the headless finite-time loop keeps its shape (docs/08).
+if [[ -n "${SERIAL_SOCK:-}" ]]; then
+    rm -f "$SERIAL_SOCK"
+    SERIAL_ARGS=(-chardev "socket,id=ser0,path=$SERIAL_SOCK,server=on,wait=off"
+                 -serial chardev:ser0)
+else
+    SERIAL_ARGS=(-serial "file:$LOG")
+fi
+
 "$QEMU" \
     -M q35 \
     -cpu max \
@@ -41,7 +53,7 @@ mkdir -p "$(dirname "$LOG")"
     -no-reboot \
     -display none \
     -monitor none \
-    -serial "file:$LOG" \
+    "${SERIAL_ARGS[@]}" \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive file="$IMG",format=raw,if=virtio &
 QPID=$!
