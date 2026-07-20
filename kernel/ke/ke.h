@@ -177,6 +177,12 @@ struct KTHREAD
     KPRIORITY priority;
     LIST_ENTRY readyListEntry;
 
+    /* M10: suspend count. Nonzero only while the thread has never run
+     * (KI_THREAD_STATE_INITIALIZED — create-suspended and stacked suspends
+     * on it); NtResumeThread readies the thread when it reaches zero.
+     * Suspending a RUNNING thread is unbuilt (docs/03: no preemption). */
+    LONG suspendCount;
+
     /* M4: the owning process (never 0 once Ps is up — kernel threads belong
      * to PsInitialSystemProcess), the ring-crossing state the context switch
      * programs (stack top for TSS.RSP0/syscall entry, TEB for the user GS

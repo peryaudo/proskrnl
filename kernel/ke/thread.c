@@ -86,6 +86,7 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     KiInitializeDispatcherHeader(&thread->header, KI_OBJECT_THREAD, 0);
     KiInitializeThreadFxArea(thread);
     thread->state = KI_THREAD_STATE_INITIALIZED; /* readied by KiReadyCreatedThread */
+    thread->suspendCount = 0;
     thread->stackBase = stack;
     thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;
     thread->process = process != 0 ? process : PsInitialSystemProcess;
