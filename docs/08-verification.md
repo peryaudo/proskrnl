@@ -44,13 +44,13 @@ implement until they are green on proskrnl. The buckets grow milestone by milest
 - `sem_file/` — share modes, info classes, async + APC completion.
 - `sem_wait/` — wait-all/any, alertable waits, APC interruption of waits.
 
-**Two run targets, one manifest.** Every case runs green on the **oracle** target
+**Two run targets, one binary.** Every case runs green on the **oracle** target
 (Wine/Windows) from the day it is written — that is the spec being executable ahead of the
-code. The **proskrnl** target runs only the slice implemented so far, gated by a
-`todo_proskrnl` manifest (borrow Wine's own `todo_wine` idea): a not-yet-implemented case is
-*tagged out*, never failing. So the proskrnl run is always **green-or-real-regression**, and
-a red there always means something broke — the only way red stays meaningful across a dozen
-milestones.
+code. The **proskrnl** target runs the same binaries on the kernel; a case whose divergence
+is known and documented is gated in-source by `todo_proskrnl` (borrow Wine's own
+`todo_wine` idea) so it is *tagged out*, never failing. So the proskrnl run is always
+**green-or-real-regression**, and a red there always means something broke — the only way
+red stays meaningful across a dozen milestones.
 
 **Contract-shaped tests first; boring surface can come after.** The bugs that kill this
 project are wrong-*contract* bugs (e.g. signalling the event before writing the IOSB) —
@@ -61,8 +61,8 @@ field-filling) a test written just after is acceptable.
 
 This test asset is **the single most important thing an LLM can be asked to produce** — it
 is where the model is strongest (broad knowledge of Windows behaviour) and where the
-project's life is decided. The harness API, the `todo_proskrnl` convention, the manifest,
-and the runner are specified concretely in **`docs/14-test-harness.md`** (and skeletoned in
+project's life is decided. The harness API, the `todo_proskrnl` convention, and the
+runner are specified concretely in **`docs/14-test-harness.md`** (and skeletoned in
 `tests/`).
 
 ## Wine's test suite is our conformance suite

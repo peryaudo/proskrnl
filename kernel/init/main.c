@@ -622,7 +622,7 @@ static void KiTestMainThread(void *context)
 
     /* M9: npfs + condrv + conhost (docs/02): the threaded pipe client/server
      * protocol and a console write through the whole stack. The npfs
-     * differential surface itself is the manifest's sem_pipe suite. */
+     * differential surface itself is the sem_pipe suite (run.sh). */
     int m9Failures = KiRunM9();
     DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
 

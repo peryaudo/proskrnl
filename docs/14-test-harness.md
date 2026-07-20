@@ -1,46 +1,55 @@
 # 14 — The ntapi test harness & the `todo_proskrnl` convention
 
 This makes Article 5 (`docs/09`) and the verification strategy (`docs/08`) concrete. It
-specifies the one piece of infrastructure that must exist *before* kernel code: a portable
-test that runs on both an oracle and on proskrnl, and the bookkeeping that keeps the
-proskrnl run **green-or-regression** while the boundary is still mostly unimplemented.
+specifies the one piece of infrastructure every boundary behaviour passes through: a test
+that runs **as the same binary** on the Wine oracle and on proskrnl, and the bookkeeping
+that keeps the proskrnl run green-or-regression.
 
-Nothing here depends on kernel code existing. The oracle side is buildable today; the
-proskrnl side has a single clearly-marked seam that lights up at M4.
+> History: through M9 the harness had *two build modes* — an `NTAPI_ORACLE` mingw `.exe`
+> and an `NTAPI_PROSKRNL` freestanding flat binary over generated syscall stubs, with a
+> `manifest.txt` selecting the proskrnl subset. Once the kernel ran the unmodified Wine PE
+> userland (M7–M9) the flat binary was an anachronism that forced a bogus "oracle-only"
+> class (threads, APC delivery, vectored handlers, Win32 file APIs). Both modes were
+> consolidated into the single binary described here; the manifest is gone — proskrnl runs
+> **everything**.
 
 ---
 
-## The two build modes
+## One binary, two runners
 
-One source file, two toolchains, selected by exactly one predefined macro:
+Every test is one mingw-built Windows PE `.exe`: `<test>.c` + `tests/ntapi/ntapi.c`,
+compiled against the **system NT headers** (`winternl.h` — the oracle's contract, never
+`abi/`), built `-nostdlib` (no CRT; entry `ntapi_start` in `ntapi.c`), and linked against
+the **pinned Wine import libraries** (`ntdll` + `kernel32` + `kernelbase`). Import
+libraries bind by DLL name, so the same bytes resolve against Wine's DLLs under the oracle
+and against the baked `C:\windows\system32` DLLs on proskrnl.
 
-| Macro | Artifact | `Nt*` come from | Headers (the contract) | Output | Verdict |
-|---|---|---|---|---|---|
-| `NTAPI_ORACLE` | Windows PE `.exe` | the host ntdll | Windows SDK / Wine (`winternl.h`) | `stdout` | process exit code |
-| `NTAPI_PROSKRNL` | freestanding flat binary (M4+) | `tests/ntapi/syscall/` stubs | generated `abi/` | serial console | `isa-debug-exit` port |
+| Runner | How the test runs | Output | Verdict |
+|---|---|---|---|
+| **oracle** | under the pinned `third_party/wine` | `NtWriteFile(hStdOutput)` | `[KTEST]` line + exit code |
+| **proskrnl** | baked at `C:\ntapi\<name>.exe`; the kernel's ntapi runner (`kernel/init/main.c`) sweeps the directory and runs each `.exe` console-less | `NtDisplayString` → serial log | `[KTEST]` line + exit code |
 
-The Makefile defines exactly one macro; a build that defines both or neither is an error.
+**Which side the binary landed on is probed at run time,** not compiled in: the proskrnl
+runner launches tests without a console, so *no std output handle* means proskrnl. That
+probe is a **runner contract** (both runners are ours), not an OS sniff — proskrnl's
+PEB/KUSER_SHARED_DATA deliberately mimic Windows 10 (Art. 1), so version fields could
+never discriminate. The probe selects the output sink and drives `todo_proskrnl`.
 
-**The header switch is itself a conformance check.** In oracle mode the test includes the
-*oracle's* headers (the definition of truth); in proskrnl mode it includes generated `abi/`.
-The same test compiling and passing against both means proskrnl's `abi/` layouts and
-constants agree with the oracle — for free, at every test. This is why `ntapi` includes the
-system headers in oracle mode rather than `abi/`: mixing them would hide exactly the drift
-we want to catch.
+**Compiling against the system headers is itself a conformance check.** The kernel's
+`abi/` headers are generated from the pinned Wine tree (Art. 4); the tests never include
+them. The same binary passing on both sides proves the kernel's generated contract agrees
+with the oracle's headers — at every test, for free.
 
-**Why `ntapi` exists at all**, given Wine already ships `dlls/ntdll/tests/*`: those link the
-full PE user-mode stack and cannot run until M7. `ntapi` is the *only* oracle that also runs
-on the M1–M6 kernel (a flat binary issuing raw syscalls). At M7 Wine's own suite adds a
-richer conformance layer (`docs/08`) — it complements `ntapi`, it does not replace it.
-`ntapi` stays a permanently maintained first-class suite: it is the only one that runs on
-the bare kernel, and it is where every confirmed divergence — whether found by the
-differential fuzzer or by Wine's suite — is pinned as a deterministic regression test
-(Art. 6).
+**Why `ntapi` exists at all**, given Wine already ships `dlls/ntdll/tests/*`: those link
+the full CRT and test far more than the `Nt*` boundary. `ntapi` stays a permanently
+maintained first-class suite: it is small enough to run on every change, and it is where
+every confirmed divergence — whether found by the differential fuzzer or by Wine's suite —
+is pinned as a deterministic regression test (Art. 6).
 
-The `ntapi` harness is also the base the **differential fuzzer** (`tests/fuzz/`, `docs/08`)
-is built on: its interpreter compiles in these same two modes, and its op model is generated
-from the same `tools/gen_syscalls.py` list. That base exists from M4/M5 — the fuzzer did not
-wait for M7 — and grows with the surface rather than being retired.
+The `ntapi` harness is also the base the **differential fuzzer** (`tests/fuzz/`,
+`docs/08`) is built on: its interpreter is one more single-binary ntapi client (baked at
+`C:\ntapi\interp.exe` on the fuzz image), and its op model is generated from the same
+`tools/gen_syscalls.py` list.
 
 ---
 
@@ -48,15 +57,21 @@ wait for M7 — and grows with the surface rather than being retired.
 
 Deliberately close to Wine's, so distilling `ok()`s out of Wine tests is near-mechanical:
 
-- `START_TEST(name) { ... }` — declares a test binary's entry point.
+- `START_TEST(name) { ... }` — declares the test body; `ntapi.c`'s `ntapi_start` entry
+  probes the runner side and calls it.
 - `ok(cond, fmt, ...)` — one assertion. Failures are counted and logged with `file:line`.
 - `todo_proskrnl { ... }` — an in-source block whose assertions are *expected to fail on
-  proskrnl but must pass on the oracle*. Semantics mirror Wine's `todo_wine`:
-  - **oracle mode:** transparent — the block must pass like any other.
-  - **proskrnl mode:** an `ok()` failure inside is **not** a test failure; an `ok()` that
+  proskrnl but must pass on the oracle* — for a **known, documented divergence**
+  (`docs/03`). Semantics mirror Wine's `todo_wine`, decided by the runtime side probe:
+  - **on the oracle:** transparent — the block must pass like any other.
+  - **on proskrnl:** an `ok()` failure inside is **not** a test failure; an `ok()` that
     unexpectedly *passes* is reported as `todo succeeded` — a signal to delete the tag,
     because the behaviour now works and should be held to it.
-- `skip(reason, fmt, ...)` — record and continue; for preconditions unavailable in a mode.
+- `skip(reason, fmt, ...)` — record and continue; for unavailable preconditions.
+
+`ntapi.c` also carries the freestanding pieces a CRT would otherwise provide (`mem*`,
+`strcat`, a tiny `vsnprintf`, `__main`) — tests may use `memcmp`/`memset` freely but
+nothing else from libc.
 
 Every run ends by emitting a machine-greppable verdict line (`docs/08`):
 
@@ -65,67 +80,26 @@ Every run ends by emitting a machine-greppable verdict line (`docs/08`):
 [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
 ```
 
-and exits non-zero on failure (oracle) / writes the fail code to `isa-debug-exit`
-(proskrnl). `tests/run/` greps these lines; nothing parses free-text.
-
-### `todo_proskrnl` vs. the manifest — two granularities, on purpose
-
-- **`todo_proskrnl` (in-source, fine-grained):** for a test that is *otherwise live* on
-  proskrnl but has a known-not-yet-correct corner. Keeps the test running so its passing
-  assertions guard against regression while the one corner is still red.
-- **The manifest (coarse-grained):** selects which whole test binaries the proskrnl target
-  even *builds and runs* this milestone. A test for an unimplemented syscall must not be in
-  the manifest — otherwise the proskrnl binary would reference a syscall stub that traps (or
-  fails to link). The manifest is what actually prevents "a sea of expected reds."
-
-Rule of thumb: **not implemented at all → leave it out of the manifest. Implemented but one
-corner wrong → in the manifest, wrap the corner in `todo_proskrnl`.**
-
----
-
-## The manifest (`tests/ntapi/manifest.txt`)
-
-Plain text, line-oriented, reviewable in a diff. One test path per line; `#` comments;
-blank lines ignored. A line lists a test that is **expected to build, run, and pass on the
-proskrnl target as of the current milestone** (modulo its `todo_proskrnl` blocks).
-
-```
-# tests/ntapi/manifest.txt
-# Tests expected GREEN on the proskrnl target right now.
-# Everything under tests/ntapi/ not listed here is oracle-only for this milestone.
-# Adding a line is the last step of implementing an Nt*: it moves the test from
-# "oracle-only spec" to "proskrnl must not regress this".
-
-# --- M2: dispatcher objects (in-kernel; see note) ---
-# (M2 tests run in-kernel via tests/kmt, not as ntapi user binaries — no lines yet.)
-
-# --- M4: user mode + first syscalls ---
-# sem_wait/notification_event      # NtCreateEvent/NtWaitForSingleObject/NtSetEvent
-# sem_mm/reserve_commit            # NtAllocateVirtualMemory reserve then commit
-
-# --- M6: file semantics ---
-# sem_file/share_modes             # STATUS_SHARING_VIOLATION on conflicting share
-```
-
-The lines are commented out because **nothing is implemented yet** — the file ships with the
-milestone map pre-drawn so that "implement `NtCreateEvent`" has an obvious final step:
-uncomment `sem_wait/notification_event`. The oracle target ignores the manifest and runs
-everything.
+and exits through `NtTerminateProcess` with that verdict as the exit code. `tests/run/`
+and the kernel runner grep/check these; nothing parses free-text.
 
 ---
 
 ## The runner (`tests/run/run.sh`)
 
-One entry point, two modes, same shape from M1 to the desktop (`docs/08`):
+One entry point, the same shape from M1 to the desktop (`docs/08`):
 
 ```
-tests/run/run.sh oracle     # build+run every ntapi test on the host ntdll (Wine/Windows)
-tests/run/run.sh proskrnl   # build the manifest subset into a disk image, run under QEMU
+tests/run/run.sh oracle     # run every test .exe under the pinned Wine (the SPEC gate)
+tests/run/run.sh proskrnl   # bake the same .exes into a disk image, boot QEMU (the REGRESSION gate)
 ```
 
-Both collect `[KTEST] … PASS/FAIL` lines and exit non-zero if any test fails or any
-`todo_proskrnl` unexpectedly succeeded. `oracle` is the spec gate (must be all-green before
-you may implement); `proskrnl` is the regression gate (must stay all-green as you go).
+Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image
+carries the Wine PE userland (`windows/system32`: ntdll/kernel32/kernelbase + NLS tables)
+plus every test under `C:\ntapi\`; the kernel sweep (`KiRunNtapiTests`) runs whatever is
+there — **the image, not a kernel-side list, decides what runs** — and ends with
+`[KTEST] ntapi done tests=<n> failures=<n>`, the boot's stop condition. Both modes collect
+`[KTEST] … PASS/FAIL` lines and exit non-zero if any test fails.
 
 ---
 
@@ -134,26 +108,34 @@ you may implement); `proskrnl` is the regression gate (must stay all-green as yo
 ```
 tests/
   ntapi/
-    ntapi.h              # the portable harness API (this doc)
-    ntapi.c              # per-mode output + verdict; the M4 proskrnl seam
-    manifest.txt         # which tests must be green on proskrnl now
-    syscall/             # (M4) proskrnl-mode syscall stubs; empty until then
+    ntapi.h              # the harness API (this doc)
+    ntapi.c              # freestanding harness impl + the ntapi_start entry
+    syscall/             # generated raw-syscall stubs (user/init-tests flat clients only)
     sem_wait/            # dispatcher/wait semantics
+    sem_ob/              # object-manager semantics
     sem_mm/              # virtual memory semantics
     sem_file/            # file semantics
+    sem_ps/              # process/thread query surface
+    sem_reg/             # registry semantics
+    sem_pipe/            # named-pipe semantics
   run/
-    run.sh               # oracle | proskrnl runner
+    run.sh               # oracle | proskrnl | fuzz | persist | console
+  fuzz/                  # the differential fuzzer (same single-binary shape)
 ```
+
+(`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
+for the M4/M5-era flat boot modules under `user/init-tests/`.)
 
 ---
 
 ## Workflow, end to end (one Nt*)
 
-1. Find the behaviour in Wine's `dlls/ntdll/tests/*` (or Windows docs). Distil the relevant
-   `ok()`s into a `tests/ntapi/<bucket>/<name>.c` using this harness.
+1. Find the behaviour in Wine's `dlls/ntdll/tests/*` (or Windows docs). Distil the
+   relevant `ok()`s into a `tests/ntapi/<bucket>/<name>.c` using this harness.
 2. `tests/run/run.sh oracle` → the new test is **green on the oracle**. It is now the
    executable spec. Commit it *before* kernel code (Article 5).
-3. Implement the `Nt*` in the kernel until `tests/run/run.sh proskrnl` passes it. Wrap any
-   still-wrong corner in `todo_proskrnl`.
-4. Add the test's path to `manifest.txt`. From now on the proskrnl target guards it against
-   regression. "Done" = this line is green (`docs/09` Art. 5), not the code compiling.
+3. Implement the `Nt*` in the kernel until `tests/run/run.sh proskrnl` passes it. A
+   still-wrong corner that is a *documented deviation* (`docs/03`) gets `todo_proskrnl`;
+   anything else stays red until fixed.
+4. "Done" = the test is green on **both** runners (`docs/09` Art. 5), not the code
+   compiling.

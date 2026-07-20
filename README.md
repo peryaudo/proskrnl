@@ -269,7 +269,7 @@ constants):
 ```sh
 make run     # build the image, boot headless in QEMU, verify [KTEST] M9 PASS on serial
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
-tests/run/run.sh proskrnl   # the same contracts, green ON the kernel as flat-binary syscalls
+tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 tests/run/run.sh persist    # the M8 acceptance: registry values survive a reboot (boot twice)
 tests/run/run.sh console    # the M9 acceptance: type into the serial console, watch conhost echo
