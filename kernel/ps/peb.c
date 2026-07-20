@@ -19,6 +19,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/mm/virtual.h"
 #include "kernel/lib/string.h"
+#include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/mmu.h"
@@ -108,21 +109,217 @@ static USHORT PspAsciiToWide(WCHAR *out, const char *ascii, USHORT maxChars)
     return (USHORT)(n * sizeof(WCHAR));
 }
 
-/* The process-parameters block is laid out as [struct][string buffers][env] in
- * one user allocation; ntdll frees it wholesale with NtFreeVirtualMemory
- * (docs/03), so it must be a standalone region. Offsets within a scratch copy
- * are fixed here and the UNICODE_STRING.Buffer pointers set to the matching
- * user VAs before the block is copied out. */
-#define PSP_PARAMS_REGION_SIZE 0x1000
+/* --- captured process parameters (M10) ------------------------------------- */
 
-NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePath,
-                     const char *commandLine)
+/* One pooled UNICODE_STRING copy; `source` is a header field whose Buffer is
+ * a (parent) user VA — probed and copied under the parent's context. */
+static NTSTATUS PspCaptureString(const UNICODE_STRING *source, UNICODE_STRING *out)
+{
+    out->Buffer = 0;
+    out->Length = 0;
+    out->MaximumLength = 0;
+    if (source->Buffer == 0 || source->Length == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = KiProbeForRead(source->Buffer, source->Length, sizeof(WCHAR));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    WCHAR *copy = MiAllocatePool(source->Length + sizeof(WCHAR));
+    if (copy == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(copy, source->Buffer, source->Length);
+    copy[source->Length / sizeof(WCHAR)] = 0;
+    out->Buffer = copy;
+    out->Length = source->Length;
+    out->MaximumLength = (USHORT)(source->Length + sizeof(WCHAR));
+    return STATUS_SUCCESS;
+}
+
+void PspFreeCapturedParams(PSP_CAPTURED_PARAMS *captured)
+{
+    if (captured == 0)
+    {
+        return;
+    }
+    for (int i = 0; i < PSP_PARAM_COUNT; i++)
+    {
+        if (captured->strings[i].Buffer != 0)
+        {
+            MiFreePool(captured->strings[i].Buffer);
+        }
+    }
+    if (captured->environment != 0)
+    {
+        MiFreePool(captured->environment);
+    }
+    MiFreePool(captured);
+}
+
+/* An environment block is bounded: NT caps the block at 32767 WCHARs per
+ * variable but the whole block only by memory; 1 MiB is far beyond any real
+ * CreateProcess environment and bounds the kernel copy. */
+#define PSP_MAX_ENVIRONMENT_BYTES 0x100000
+
+NTSTATUS PspCaptureProcessParameters(const RTL_USER_PROCESS_PARAMETERS *userParams,
+                                     PSP_CAPTURED_PARAMS **capturedOut)
+{
+    NTSTATUS status = KiProbeForRead(userParams, sizeof(*userParams), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PSP_CAPTURED_PARAMS *captured = MiAllocatePool(sizeof(*captured));
+    if (captured == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memset(captured, 0, sizeof(*captured));
+    memcpy(&captured->header, userParams, sizeof(captured->header));
+
+    /* The eight strings, from the snapshotted header's (parent-VA) fields. */
+    const UNICODE_STRING *sources[PSP_PARAM_COUNT];
+    sources[PSP_PARAM_CURRENT_DIRECTORY] = &captured->header.CurrentDirectory.DosPath;
+    sources[PSP_PARAM_DLL_PATH] = &captured->header.DllPath;
+    sources[PSP_PARAM_IMAGE_PATH] = &captured->header.ImagePathName;
+    sources[PSP_PARAM_COMMAND_LINE] = &captured->header.CommandLine;
+    sources[PSP_PARAM_WINDOW_TITLE] = &captured->header.WindowTitle;
+    sources[PSP_PARAM_DESKTOP] = &captured->header.Desktop;
+    sources[PSP_PARAM_SHELL_INFO] = &captured->header.ShellInfo;
+    sources[PSP_PARAM_RUNTIME_INFO] = &captured->header.RuntimeInfo;
+    for (int i = 0; i < PSP_PARAM_COUNT; i++)
+    {
+        status = PspCaptureString(sources[i], &captured->strings[i]);
+        if (!NT_SUCCESS(status))
+        {
+            PspFreeCapturedParams(captured);
+            return status;
+        }
+    }
+
+    /* The environment block, sized by the header's EnvironmentSize (Wine's
+     * RtlCreateProcessParametersEx sets it; dlls/ntdll/env.c). */
+    SIZE_T environmentSize = captured->header.EnvironmentSize;
+    if (captured->header.Environment != 0 && environmentSize >= 2 * sizeof(WCHAR) &&
+        environmentSize <= PSP_MAX_ENVIRONMENT_BYTES)
+    {
+        status = KiProbeForRead(captured->header.Environment, environmentSize, sizeof(WCHAR));
+        if (!NT_SUCCESS(status))
+        {
+            PspFreeCapturedParams(captured);
+            return status;
+        }
+        WCHAR *environment = MiAllocatePool(environmentSize);
+        if (environment == 0)
+        {
+            PspFreeCapturedParams(captured);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memcpy(environment, captured->header.Environment, environmentSize);
+        /* Force termination whatever the caller handed over. */
+        environment[environmentSize / sizeof(WCHAR) - 1] = 0;
+        captured->environment = environment;
+        captured->environmentSize = environmentSize;
+    }
+    *capturedOut = captured;
+    return STATUS_SUCCESS;
+}
+
+/* Pooled kernel-default string (ASCII in). */
+static NTSTATUS PspDefaultString(const char *ascii, UNICODE_STRING *out)
+{
+    SIZE_T chars = 0;
+    while (ascii[chars] != '\0')
+    {
+        chars++;
+    }
+    WCHAR *copy = MiAllocatePool((chars + 1) * sizeof(WCHAR));
+    if (copy == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    PspAsciiToWide(copy, ascii, (USHORT)(chars + 1));
+    out->Buffer = copy;
+    out->Length = (USHORT)(chars * sizeof(WCHAR));
+    out->MaximumLength = (USHORT)((chars + 1) * sizeof(WCHAR));
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
+                               PSP_CAPTURED_PARAMS **capturedOut)
+{
+    PSP_CAPTURED_PARAMS *captured = MiAllocatePool(sizeof(*captured));
+    if (captured == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memset(captured, 0, sizeof(*captured));
+    NTSTATUS status = PspDefaultString(imagePath, &captured->strings[PSP_PARAM_IMAGE_PATH]);
+    if (NT_SUCCESS(status))
+    {
+        status = PspDefaultString(commandLine, &captured->strings[PSP_PARAM_COMMAND_LINE]);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = PspDefaultString("C:\\windows\\system32", &captured->strings[PSP_PARAM_DLL_PATH]);
+    }
+    if (NT_SUCCESS(status))
+    {
+        /* Current directory keeps its trailing slash (ntdll's
+         * RtlSetCurrentDirectory_U expects the stored shape). */
+        status = PspDefaultString("C:\\windows\\system32\\",
+                                  &captured->strings[PSP_PARAM_CURRENT_DIRECTORY]);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = PspDefaultString(imagePath, &captured->strings[PSP_PARAM_WINDOW_TITLE]);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        PspFreeCapturedParams(captured);
+        return status;
+    }
+    *capturedOut = captured;
+    return STATUS_SUCCESS;
+}
+
+/* The process-parameters block is laid out as [struct][string buffers][env]
+ * in one user allocation — the shape Wine's own alloc_process_params emits
+ * (dlls/ntdll/env.c) and ntdll frees wholesale with NtFreeVirtualMemory
+ * (docs/03). Offsets are fixed in a scratch copy and the Buffer pointers set
+ * to the matching user VAs before the block is copied out. */
+#define PSP_ROUND16(x) (((uint64_t)(x) + 15) & ~15ULL)
+
+NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
     /* --- RTL_USER_PROCESS_PARAMETERS -------------------------------------- */
+    /* CurrentDirectory gets MAX_PATH capacity whatever its length: ntdll's
+     * RtlSetCurrentDirectory_U writes the new path into this very buffer
+     * (Wine dlls/ntdll/env.c: curdir.MaximumLength = MAX_PATH * 2). */
+    USHORT maximums[PSP_PARAM_COUNT];
+    uint64_t structSize = sizeof(RTL_USER_PROCESS_PARAMETERS);
+    for (int i = 0; i < PSP_PARAM_COUNT; i++)
+    {
+        USHORT maximum = captured->strings[i].Buffer != 0 ? captured->strings[i].MaximumLength : 0;
+        if (i == PSP_PARAM_CURRENT_DIRECTORY && maximum < 260 * sizeof(WCHAR))
+        {
+            maximum = 260 * sizeof(WCHAR);
+        }
+        maximums[i] = maximum;
+        structSize += PSP_ROUND16(maximum);
+    }
+    uint64_t environmentBytes =
+        captured->environment != 0 ? captured->environmentSize : 2 * sizeof(WCHAR);
+    uint64_t regionSize = structSize + PSP_ROUND16(environmentBytes);
+
     PVOID paramsBase = 0;
-    SIZE_T paramsSize = PSP_PARAMS_REGION_SIZE;
+    SIZE_T paramsSize = regionSize;
     NTSTATUS status = MiAllocateVirtualMemory(space, &paramsBase, &paramsSize,
                                               MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!NT_SUCCESS(status))
@@ -131,69 +328,63 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const char *imagePat
     }
     uint64_t paramsVa = (uint64_t)(uintptr_t)paramsBase;
 
-    char *scratch = MiAllocatePool(PSP_PARAMS_REGION_SIZE);
+    char *scratch = MiAllocatePool(regionSize);
     if (scratch == 0)
     {
         return STATUS_NO_MEMORY;
     }
-    memset(scratch, 0, PSP_PARAMS_REGION_SIZE);
+    memset(scratch, 0, regionSize);
     RTL_USER_PROCESS_PARAMETERS *params = (RTL_USER_PROCESS_PARAMETERS *)scratch;
-    params->AllocationSize = PSP_PARAMS_REGION_SIZE;
-    params->Size = PSP_PARAMS_REGION_SIZE;
-    params->Flags = PROCESS_PARAMS_FLAG_NORMALIZED; /* pointers are absolute */
+    /* Scalars travel verbatim from the captured header — ConsoleHandle,
+     * ConsoleFlags, hStd*, dwX..wShowWindow, dwFlags (STARTF_*),
+     * ProcessGroupId; the creation-time console/std fixups have already
+     * been applied to it. */
+    memcpy(params, &captured->header, sizeof(*params));
+    params->AllocationSize = (ULONG)structSize;
+    params->Size = (ULONG)structSize;
+    params->Flags = captured->header.Flags | PROCESS_PARAMS_FLAG_NORMALIZED;
+    params->EnvironmentSize = PSP_ROUND16(environmentBytes);
 
-    /* String heap grows from just past the struct; each UNICODE_STRING.Buffer
-     * is a USER VA into the same block. */
-    uint64_t heapOffset = (sizeof(RTL_USER_PROCESS_PARAMETERS) + 15) & ~15ULL;
+    UNICODE_STRING *fields[PSP_PARAM_COUNT];
+    fields[PSP_PARAM_CURRENT_DIRECTORY] = &params->CurrentDirectory.DosPath;
+    fields[PSP_PARAM_DLL_PATH] = &params->DllPath;
+    fields[PSP_PARAM_IMAGE_PATH] = &params->ImagePathName;
+    fields[PSP_PARAM_COMMAND_LINE] = &params->CommandLine;
+    fields[PSP_PARAM_WINDOW_TITLE] = &params->WindowTitle;
+    fields[PSP_PARAM_DESKTOP] = &params->Desktop;
+    fields[PSP_PARAM_SHELL_INFO] = &params->ShellInfo;
+    fields[PSP_PARAM_RUNTIME_INFO] = &params->RuntimeInfo;
 
-#define PSP_EMIT_STRING(field, ascii)                                                              \
-    do                                                                                             \
-    {                                                                                              \
-        WCHAR *dst = (WCHAR *)(scratch + heapOffset);                                              \
-        USHORT bytes = PspAsciiToWide(dst, (ascii), 260);                                          \
-        params->field.Length = bytes;                                                              \
-        params->field.MaximumLength = (USHORT)(bytes + sizeof(WCHAR));                             \
-        params->field.Buffer = (PWSTR)(uintptr_t)(paramsVa + heapOffset);                          \
-        heapOffset += (params->field.MaximumLength + 15) & ~15ULL;                                 \
-    } while (0)
-
-    PSP_EMIT_STRING(ImagePathName, imagePath);
-    PSP_EMIT_STRING(CommandLine, commandLine);
-    PSP_EMIT_STRING(DllPath, "C:\\windows\\system32");
-    params->CurrentDirectory.DosPath.Length = 0;
-    PSP_EMIT_STRING(WindowTitle, imagePath);
-#undef PSP_EMIT_STRING
-
-    /* M9: the console plumbing. A REAL handle value (not the CONSOLE_HANDLE_*
-     * alloc sentinels) makes kernelbase's init_console bind to the existing
-     * console — create_console_connection(params->ConsoleHandle) — and the
-     * seeded std handles are used as-is (third_party/wine
-     * dlls/kernelbase/console.c init_console). Zero = no console. */
-    params->ConsoleHandle = process->consoleHandle;
-    params->hStdInput = process->stdInput;
-    params->hStdOutput = process->stdOutput;
-    params->hStdError = process->stdError;
-
-    /* Current directory "C:\\windows\\system32\\" with a trailing slash. */
+    uint64_t heapOffset = sizeof(RTL_USER_PROCESS_PARAMETERS);
+    for (int i = 0; i < PSP_PARAM_COUNT; i++)
     {
-        WCHAR *dst = (WCHAR *)(scratch + heapOffset);
-        USHORT bytes = PspAsciiToWide(dst, "C:\\windows\\system32\\", 260);
-        params->CurrentDirectory.DosPath.Length = bytes;
-        params->CurrentDirectory.DosPath.MaximumLength = (USHORT)(bytes + sizeof(WCHAR));
-        params->CurrentDirectory.DosPath.Buffer = (PWSTR)(uintptr_t)(paramsVa + heapOffset);
-        heapOffset += (params->CurrentDirectory.DosPath.MaximumLength + 15) & ~15ULL;
+        if (maximums[i] == 0)
+        {
+            fields[i]->Length = 0;
+            fields[i]->MaximumLength = 0;
+            fields[i]->Buffer = 0;
+            continue;
+        }
+        if (captured->strings[i].Buffer != 0)
+        {
+            memcpy(scratch + heapOffset, captured->strings[i].Buffer, captured->strings[i].Length);
+        }
+        fields[i]->Length = captured->strings[i].Length;
+        fields[i]->MaximumLength = maximums[i];
+        fields[i]->Buffer = (PWSTR)(uintptr_t)(paramsVa + heapOffset);
+        heapOffset += PSP_ROUND16(maximums[i]);
     }
+    ASSERT(heapOffset == structSize);
 
-    /* Environment: an empty double-NUL block (a valid, terminated env). */
-    WCHAR *env = (WCHAR *)(scratch + heapOffset);
-    env[0] = 0;
-    env[1] = 0;
+    /* Environment right after the struct+strings, exactly Wine's layout; an
+     * absent environment becomes the valid empty (double-NUL) block. */
+    if (captured->environment != 0)
+    {
+        memcpy(scratch + heapOffset, captured->environment, captured->environmentSize);
+    }
     params->Environment = (PWSTR)(uintptr_t)(paramsVa + heapOffset);
-    params->EnvironmentSize = 2 * sizeof(WCHAR);
-    heapOffset += 16;
-    ASSERT(heapOffset <= PSP_PARAMS_REGION_SIZE);
 
-    MiCopyToUserRange(space, paramsVa, scratch, PSP_PARAMS_REGION_SIZE);
+    MiCopyToUserRange(space, paramsVa, scratch, regionSize);
     MiFreePool(scratch);
 
     /* --- PEB -------------------------------------------------------------- */

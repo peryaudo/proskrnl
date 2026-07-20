@@ -138,6 +138,25 @@ NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes
 NTSTATUS ObpCreateHandleInTable(POBP_HANDLE_TABLE table, PVOID body, ACCESS_MASK grantedAccess,
                                 ULONG attributes, PHANDLE handleOut);
 
+/* M10: populate a new process's (empty) table as an inheritance copy of
+ * `parent`, mirroring wineserver's copy_handle_table (third_party/wine
+ * server/handle.c): with handleList == 0, every OBJ_INHERIT entry is copied
+ * AT THE SAME INDEX (handle values are index-derived, so values are
+ * preserved); with a list, only the listed handles plus the three std
+ * handles — each still requiring OBJ_INHERIT — are copied, same-index.
+ * Invalid/non-inheritable handles are skipped silently, as the server
+ * skips them. */
+NTSTATUS ObpInheritHandles(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child,
+                           const HANDLE *handleList, ULONG handleCount, const HANDLE stdHandles[3]);
+
+/* M10: kernel-internal cross-table duplication (the console/std fixups at
+ * process creation — wineserver's duplicate_handle(parent, ..., process)
+ * sites in server/process.c). Same access; attributes copied only when
+ * sameAttributes (DUPLICATE_SAME_ATTRIBUTES). Fails on an invalid source
+ * handle — the caller decides what that means. */
+NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HANDLE_TABLE child,
+                               BOOLEAN sameAttributes, PHANDLE handleOut);
+
 /* Map a caller's desired access onto a type: generic/maximum-allowed bits
  * grant the type's full mask (Se is always-allow, docs/05); specific bits
  * pass through filtered to the type's valid mask. */

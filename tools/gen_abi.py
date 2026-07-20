@@ -1562,6 +1562,11 @@ def gen_ntpsapi(wine: Path) -> str:
             "THREAD_CREATE_FLAGS_CREATE_SUSPENDED",
             "THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH",
             "THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER",
+            # NtCreateUserProcess process flags (M10)
+            "PROCESS_CREATE_FLAGS_BREAKAWAY",
+            "PROCESS_CREATE_FLAGS_NO_DEBUG_INHERIT",
+            "PROCESS_CREATE_FLAGS_INHERIT_HANDLES",
+            "PROCESS_CREATE_FLAGS_SUSPENDED",
             # RTL_USER_PROCESS_PARAMETERS.Flags
             "PROCESS_PARAMS_FLAG_NORMALIZED",
         ],
