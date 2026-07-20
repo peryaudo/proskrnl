@@ -360,6 +360,30 @@ static int KiRunM9(void)
     return pass ? 0 : 1;
 }
 
+/* Run the M9 interactive-echo client when (and only when) the image carries
+ * it — the console-mode image (Makefile console-img; tests/run/run.sh
+ * console). It blocks on console input until the runner types a line into
+ * the serial socket, so the plain image must never include it; absence is
+ * silent (the KiRunWineHello probe/skip pattern). */
+static int KiRunM9Echo(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\m9_echo.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return 0; /* not a console-mode image */
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\m9_echo.exe"), "C:\\m9_echo.exe", TRUE, &exitStatus);
+    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
+    DbgPrint("[KTEST] module m9_echo.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
+             (unsigned long)exitStatus);
+    return pass ? 0 : 1;
+}
+
 /* The in-kernel suites, run on a real kernel thread (waits need a
  * schedulable context). Ends the QEMU run with the milestone verdict
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
@@ -435,6 +459,11 @@ static void KiTestMainThread(void *context)
     int m9Failures = KiRunM9();
     DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
 
+    /* Console-mode image only: block on the interactive echo (the M9
+     * acceptance's other half — input typed on the serial wire). AFTER the
+     * M9 verdict so the runner knows the boot suite is already green. */
+    int echoFailures = KiRunM9Echo();
+
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
      * what a real panic dump would look like after the whole boot suite
@@ -442,7 +471,7 @@ static void KiTestMainThread(void *context)
     __asm__ volatile("int3");
 
     int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
-                m8Failures + m9Failures;
+                m8Failures + m9Failures + echoFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

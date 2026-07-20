@@ -215,10 +215,38 @@ persist() {
     return 0
 }
 
+# The M9 interactive-console acceptance (docs/02 "input typed into the
+# serial console echoes through conhost"): boot the console-mode image with
+# the serial wire on a unix socket, let console_expect.py type "ping" and
+# assert conhost's echo, the cooked line, and the M9 verdict. The loop keeps
+# the docs/08 shape — the expect script tees the wire into the log the
+# verdict grep reads.
+console() {
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/proskrnl-console.hdd"
+    local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
+    mkdir -p "$ROOT/build/tests"
+
+    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-90}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        if grep -qE '^\[KTEST\] module m9_echo.exe PASS' "$log"; then
+            echo "== console: PASS (typed input echoed through conhost) =="
+            return 0
+        fi
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+    echo "== console: FAIL (see $log) =="
+    return 1
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
-    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]|persist}" >&2; exit 2 ;;
+    console)  console ;;
+    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]|persist|console}" >&2; exit 2 ;;
 esac
