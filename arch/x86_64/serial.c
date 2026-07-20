@@ -46,3 +46,17 @@ void KiSerialPutString(const char *str)
         KiSerialPutChar(*str);
     }
 }
+
+/* M9 (HACK-004, docs/10): the RX side becomes the interactive console's
+ * transport. Polled, like everything else on this UART — LSR bit 0 is DR
+ * ("data ready": at least one byte in the receive FIFO) per the PC16550D
+ * datasheet; the pinned QEMU names the same bit UART_LSR_DR in
+ * hw/char/serial.c. RX interrupts stay disabled (KiInitializeSerial). */
+int KiSerialTryGetChar(void)
+{
+    if ((KiInByte(COM1 + 5) & 0x01) == 0)
+    {
+        return -1;
+    }
+    return KiInByte(COM1);
+}

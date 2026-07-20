@@ -6,4 +6,8 @@ void KiInitializeSerial(void);
 void KiSerialPutChar(char ch);
 void KiSerialPutString(const char *str);
 
+/* Nonblocking RX poll: the next received byte, or -1 when the FIFO is
+ * empty (M9, HACK-004: the UART's receive side is the console input). */
+int KiSerialTryGetChar(void);
+
 #endif /* PROSKRNL_ARCH_X86_64_SERIAL_H */
