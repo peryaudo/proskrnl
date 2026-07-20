@@ -7,7 +7,7 @@
  * this file, so this comment is their normative spec (gate G8: the trusted
  * source is proskrnl itself).
  *
- *   proskrnl hive v1 ("PHV1"), little-endian, no alignment padding:
+ *   proskrnl hive v1 ("PHV1"), little-endian:
  *
  *   HEADER (16 bytes)
  *     u32 magic        'P''H''V''1' = 0x31564850
@@ -17,9 +17,16 @@
  *   then one KEY record — the \Registry root (nameChars == 0) — where
  *   KEY  = u8 'K' | u8 flags(0) | u16 nameChars | u64 lastWriteTime
  *          | u32 valueCount | UTF-16LE name
- *          | valueCount x VALUE | child KEYs... | u8 'E'
+ *          | valueCount x VALUE | child KEYs... | u8 'E' u8 0
  *   VALUE= u8 'V' | u8 pad(0) | u16 nameChars | u32 regType | u32 dataBytes
- *          | UTF-16LE name | data
+ *          | UTF-16LE name | data | u8 pad(0) if dataBytes is odd
+ *
+ * Every record's total size is even and the header is 16 bytes, so every
+ * UTF-16 name in the stream sits at an even offset: the in-place
+ * UNICODE_STRINGs the parser builds over the buffer are always 2-aligned
+ * (the kernel is built with UBSan alignment traps; a misaligned WCHAR read
+ * is a #UD panic). The parser's own arithmetic maintains this parity
+ * regardless of file CONTENT, so a corrupted file cannot break it.
  *
  * Persistence model (Art. 3, "stupidly correct"): the whole tree is
  * serialized and the file rewritten on EVERY successful mutation, through
@@ -116,11 +123,12 @@ static USHORT CmpPersistedNameBytes(const CMP_KEY_NODE *node)
 /* Byte size of one KEY record (with descendants), volatile subtrees skipped. */
 static ULONGLONG CmpMeasureKey(const CMP_KEY_NODE *node)
 {
-    ULONGLONG bytes = 1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node) + 1; /* K..name + E */
+    ULONGLONG bytes = 1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node) + 2; /* K..name + E,0 */
     for (PLIST_ENTRY e = node->valueListHead.Flink; e != &node->valueListHead; e = e->Flink)
     {
         const CMP_VALUE *value = CONTAINING_RECORD(e, CMP_VALUE, listEntry);
-        bytes += 1 + 1 + 2 + 4 + 4 + value->name.Length + value->dataLength;
+        bytes += 1 + 1 + 2 + 4 + 4 + value->name.Length + value->dataLength +
+                 (value->dataLength & 1); /* even parity (file comment) */
     }
     for (PLIST_ENTRY e = node->subkeyListHead.Flink; e != &node->subkeyListHead; e = e->Flink)
     {
@@ -161,6 +169,10 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
         cursor += value->name.Length;
         memcpy(cursor, value->data, value->dataLength);
         cursor += value->dataLength;
+        if ((value->dataLength & 1) != 0)
+        {
+            *cursor++ = 0; /* keep the stream 2-aligned */
+        }
     }
     for (PLIST_ENTRY e = node->subkeyListHead.Flink; e != &node->subkeyListHead; e = e->Flink)
     {
@@ -171,6 +183,7 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
         }
     }
     *cursor++ = CMP_TAG_END;
+    *cursor++ = 0; /* keep the stream 2-aligned */
     return cursor;
 }
 
@@ -209,9 +222,10 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         USHORT nameChars = CmpGet16(p + 2);
         ULONG type = CmpGet32(p + 4);
         ULONG dataBytes = CmpGet32(p + 8);
-        const UCHAR *nameBytes, *dataStart;
+        const UCHAR *nameBytes, *dataStart, *pad;
         if (!CmpReaderTake(reader, (ULONGLONG)nameChars * sizeof(WCHAR), &nameBytes) ||
-            !CmpReaderTake(reader, dataBytes, &dataStart))
+            !CmpReaderTake(reader, dataBytes, &dataStart) ||
+            ((dataBytes & 1) != 0 && !CmpReaderTake(reader, 1, &pad)))
         {
             return FALSE;
         }
@@ -226,26 +240,26 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
     }
     for (;;)
     {
-        if (!CmpReaderTake(reader, 1, &p))
+        if (!CmpReaderTake(reader, 2, &p))
         {
             return FALSE;
         }
         if (p[0] == CMP_TAG_END)
         {
-            return TRUE;
+            return p[1] == 0; /* 'E' is a 2-byte record (parity) */
         }
         if (p[0] != CMP_TAG_KEY || depth >= CMP_HIVE_MAX_DEPTH)
         {
             return FALSE;
         }
         const UCHAR *header;
-        if (!CmpReaderTake(reader, 15, &header)) /* flags..valueCount */
+        if (!CmpReaderTake(reader, 14, &header)) /* nameChars..valueCount */
         {
             return FALSE;
         }
-        USHORT nameChars = CmpGet16(header + 1);
-        ULONGLONG lastWrite = CmpGet64(header + 3);
-        ULONG childValues = CmpGet32(header + 11);
+        USHORT nameChars = CmpGet16(header);
+        ULONGLONG lastWrite = CmpGet64(header + 2);
+        ULONG childValues = CmpGet32(header + 10);
         const UCHAR *nameBytes;
         if (nameChars == 0 ||
             !CmpReaderTake(reader, (ULONGLONG)nameChars * sizeof(WCHAR), &nameBytes))
