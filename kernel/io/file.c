@@ -586,3 +586,76 @@ NTSTATUS IoOpenDataSection(const WCHAR *ntPath, PMI_SECTION *sectionOut)
 {
     return IopOpenFileSection(ntPath, SEC_COMMIT, PAGE_READONLY, sectionOut);
 }
+
+/* Kernel-internal directory sweep (the ntapi test runner, kernel/init):
+ * open `ntPath` as a directory through the same IopCreateFile path a user
+ * open takes and hand every entry — "." and ".." included, as the vfs
+ * ReadDirectory op yields them — to `callback`; FALSE stops the sweep. */
+NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
+                              BOOLEAN (*callback)(const IO_DIR_ENTRY *entry, PVOID context),
+                              PVOID context)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, ntPath);
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* kernel pointers + a kernel handle */
+
+    HANDLE handle;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status = IopCreateFile(&handle, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attributes, &iosb,
+                                    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    FILE_OPEN, FILE_DIRECTORY_FILE);
+    if (NT_SUCCESS(status))
+    {
+        PFILE_OBJECT file;
+        status = IopReferenceFileByHandle(handle, 0, &file);
+        if (NT_SUCCESS(status))
+        {
+            if (file->device->ops->ReadDirectory == 0)
+            {
+                status = STATUS_INVALID_DEVICE_REQUEST;
+            }
+            else
+            {
+                IO_DIR_ENTRY *entry = MiAllocatePool(sizeof(*entry));
+                if (entry == 0)
+                {
+                    status = STATUS_INSUFFICIENT_RESOURCES;
+                }
+                else
+                {
+                    ULONG cursor = 0;
+                    for (;;)
+                    {
+                        status = file->device->ops->ReadDirectory(file, &cursor, entry);
+                        if (status == STATUS_NO_MORE_FILES)
+                        {
+                            status = STATUS_SUCCESS;
+                            break;
+                        }
+                        if (!NT_SUCCESS(status))
+                        {
+                            break;
+                        }
+                        if (!callback(entry, context))
+                        {
+                            break;
+                        }
+                    }
+                    MiFreePool(entry);
+                }
+            }
+            ObDereferenceObject(file);
+        }
+        NtClose(handle);
+    }
+    thread->previousMode = saved;
+    return status;
+}

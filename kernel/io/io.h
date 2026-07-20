@@ -108,6 +108,13 @@ NTSTATUS IoOpenImageSection(const WCHAR *ntPath, struct MI_SECTION **sectionOut)
 /* Same open, but a PAGE_READONLY data (SEC_COMMIT) section over the file. */
 NTSTATUS IoOpenDataSection(const WCHAR *ntPath, struct MI_SECTION **sectionOut);
 
+/* Kernel-internal: enumerate the directory at `ntPath`, handing every entry
+ * ("." / ".." included) to `callback`; return FALSE to stop the sweep. The
+ * ntapi test runner (kernel/init/main.c) sweeps \??\C:\ntapi with this. */
+NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
+                              BOOLEAN (*callback)(const IO_DIR_ENTRY *entry, PVOID context),
+                              PVOID context);
+
 /* Complete one operation: write the IOSB, then signal the optional event —
  * in exactly that order (the docs/08 contract). `eventHandle` may be 0. */
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,

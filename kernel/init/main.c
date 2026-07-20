@@ -212,21 +212,20 @@ static int KiRunM7Modules(void)
  * exercises KiUserExceptionDispatcher end to end. Exit 0 = PASS. */
 static int KiRunWineHello(void)
 {
-    /* The ntapi/fuzz images carry no Wine userland (tests/run/run.sh builds
-     * them without the windows/ tree); skip cleanly there. The `make run`
-     * image ships ntdll.dll + hello.exe (Makefile WINFILES), so a load
-     * failure on it IS a FAIL, not a skip. */
+    /* The ntapi/fuzz images carry the windows/ tree but not hello.exe
+     * (tests/run/run.sh bakes only the test .exes); skip cleanly there.
+     * The `make run` image ships it (Makefile WINFILES), so a load failure
+     * on it IS a FAIL, not a skip. */
     struct MI_SECTION *probe;
-    NTSTATUS probeStatus =
-        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\ntdll.dll"), &probe);
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\hello.exe"), &probe);
     if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
     {
-        DbgPrint("[KTEST] module hello.exe SKIP (no ntdll.dll on the boot volume)\n");
+        DbgPrint("[KTEST] module hello.exe SKIP (not on the boot volume)\n");
         return 0;
     }
     if (!NT_SUCCESS(probeStatus))
     {
-        DbgPrint("[KTEST] module hello.exe FAIL (ntdll probe=%#lx)\n", (unsigned long)probeStatus);
+        DbgPrint("[KTEST] module hello.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
         return 1;
     }
     ObDereferenceObject(probe);
@@ -384,6 +383,174 @@ static int KiRunM9Echo(void)
     return pass ? 0 : 1;
 }
 
+/* --- the ntapi single-binary test runner (docs/14) ------------------------- */
+
+/* Every tests/ntapi test is ONE PE .exe that runs unmodified on the Wine
+ * oracle and here (no more flat-binary build mode). tests/run/run.sh
+ * proskrnl bakes them all under C:\ntapi; this runner sweeps the directory
+ * — the image, not a kernel-side list, decides what runs — and each test
+ * prints its own [KTEST] <name> PASS/FAIL line, which the runner script
+ * greps off the serial log. Absence of C:\ntapi (the `make run` image) is
+ * silent. Tests run WITHOUT a console on purpose: no std handles is the
+ * harness's "running on proskrnl" discriminator (tests/ntapi/ntapi.c). */
+#define KI_NTAPI_MAX_TESTS  64
+#define KI_NTAPI_NAME_CHARS 64
+
+typedef struct KI_NTAPI_LIST
+{
+    WCHAR names[KI_NTAPI_MAX_TESTS][KI_NTAPI_NAME_CHARS];
+    int count;
+    BOOLEAN overflow;
+} KI_NTAPI_LIST;
+
+static BOOLEAN KiNtapiCollect(const IO_DIR_ENTRY *entry, PVOID context)
+{
+    KI_NTAPI_LIST *list = context;
+    ULONG chars = entry->nameLength / sizeof(WCHAR);
+    if (entry->info.isDirectory || chars < 5 || chars >= KI_NTAPI_NAME_CHARS)
+    {
+        return TRUE;
+    }
+    const WCHAR *name = entry->name;
+    if (name[chars - 4] != L'.' || (name[chars - 3] | 0x20) != L'e' ||
+        (name[chars - 2] | 0x20) != L'x' || (name[chars - 1] | 0x20) != L'e')
+    {
+        return TRUE;
+    }
+    if (list->count >= KI_NTAPI_MAX_TESTS)
+    {
+        list->overflow = TRUE; /* a silent cap would read as "all covered" */
+        return TRUE;
+    }
+    for (ULONG i = 0; i < chars; i++)
+    {
+        list->names[list->count][i] = name[i];
+    }
+    list->names[list->count][chars] = 0;
+    list->count++;
+    return TRUE;
+}
+
+/* Case-insensitive ASCII order, so the run order (and the serial log) is
+ * stable regardless of FAT directory layout. */
+static void KiNtapiSort(KI_NTAPI_LIST *list)
+{
+    for (int i = 1; i < list->count; i++)
+    {
+        WCHAR key[KI_NTAPI_NAME_CHARS];
+        for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
+        {
+            key[k] = list->names[i][k];
+        }
+        int j = i - 1;
+        while (j >= 0)
+        {
+            const WCHAR *a = list->names[j];
+            const WCHAR *b = key;
+            int cmp = 0;
+            while (*a != 0 || *b != 0)
+            {
+                WCHAR ca = (*a >= L'A' && *a <= L'Z') ? (WCHAR)(*a + 32) : *a;
+                WCHAR cb = (*b >= L'A' && *b <= L'Z') ? (WCHAR)(*b + 32) : *b;
+                if (ca != cb)
+                {
+                    cmp = ca < cb ? -1 : 1;
+                    break;
+                }
+                a++;
+                b++;
+            }
+            if (cmp <= 0)
+            {
+                break;
+            }
+            for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
+            {
+                list->names[j + 1][k] = list->names[j][k];
+            }
+            j--;
+        }
+        for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
+        {
+            list->names[j + 1][k] = key[k];
+        }
+    }
+}
+
+static int KiRunNtapiTests(void)
+{
+    static KI_NTAPI_LIST list; /* 8 KiB: bss, not this thread's stack */
+    list.count = 0;
+    list.overflow = FALSE;
+    NTSTATUS status = IoEnumerateDirectory(WSTR("\\??\\C:\\ntapi"), KiNtapiCollect, &list);
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND)
+    {
+        return 0; /* not an ntapi image */
+    }
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] ntapi FAIL (enumerate=%#lx)\n", (unsigned long)status);
+        return 1;
+    }
+    KiNtapiSort(&list);
+
+    int failures = 0;
+    for (int i = 0; i < list.count; i++)
+    {
+        /* Sequential runs: one static path set, rebuilt per test (the
+         * process holds the imageName pointer only while it runs, and
+         * PsRunWineImage waits for exit). */
+        static WCHAR widePath[32 + KI_NTAPI_NAME_CHARS];
+        static char dosPath[32 + KI_NTAPI_NAME_CHARS];
+        static const WCHAR prefix[] = WSTR("\\??\\C:\\ntapi\\");
+        int n = 0;
+        while (prefix[n] != 0)
+        {
+            widePath[n] = prefix[n];
+            n++;
+        }
+        int m = 0;
+        while (list.names[i][m] != 0)
+        {
+            widePath[n + m] = list.names[i][m];
+            m++;
+        }
+        widePath[n + m] = 0;
+        for (int k = 0; widePath[4 + k] != 0; k++) /* past "\??\" */
+        {
+            dosPath[k] = (char)widePath[4 + k];
+            dosPath[k + 1] = 0;
+        }
+        const char *ascii = dosPath + 9; /* past "C:\ntapi\" */
+
+        NTSTATUS exitStatus = 0;
+        status = PsRunWineImage(widePath, dosPath, FALSE, &exitStatus);
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrint("[KTEST] module ntapi/%s FAIL (create=%#lx)\n", ascii, (unsigned long)status);
+            failures++;
+        }
+        else if (exitStatus != 0)
+        {
+            DbgPrint("[KTEST] module ntapi/%s FAIL (exit=%#lx)\n", ascii,
+                     (unsigned long)exitStatus);
+            failures++;
+        }
+        else
+        {
+            DbgPrint("[KTEST] module ntapi/%s PASS\n", ascii);
+        }
+    }
+    if (list.overflow)
+    {
+        DbgPrint("[KTEST] ntapi FAIL (more than %d tests; raise KI_NTAPI_MAX_TESTS)\n",
+                 KI_NTAPI_MAX_TESTS);
+        failures++;
+    }
+    DbgPrint("[KTEST] ntapi done tests=%d failures=%d\n", list.count, failures);
+    return failures;
+}
+
 /* The in-kernel suites, run on a real kernel thread (waits need a
  * schedulable context). Ends the QEMU run with the milestone verdict
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
@@ -459,6 +626,10 @@ static void KiTestMainThread(void *context)
     int m9Failures = KiRunM9();
     DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
 
+    /* The ntapi image only (tests/run/run.sh proskrnl): run every single
+     * binary test baked under C:\ntapi. Absence is silent. */
+    int ntapiFailures = KiRunNtapiTests();
+
     /* Console-mode image only: block on the interactive echo (the M9
      * acceptance's other half — input typed on the serial wire). AFTER the
      * M9 verdict so the runner knows the boot suite is already green. */
@@ -471,7 +642,7 @@ static void KiTestMainThread(void *context)
     __asm__ volatile("int3");
 
     int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
-                m8Failures + m9Failures + echoFailures;
+                m8Failures + m9Failures + ntapiFailures + echoFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
