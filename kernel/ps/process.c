@@ -48,6 +48,10 @@ static void PspDeleteProcess(PVOID body)
     {
         KiDeleteThread(process->mainThread);
     }
+    if (process->imageNamePooled && process->imageName != 0)
+    {
+        MiFreePool((void *)process->imageName);
+    }
     ObpDeleteHandleTable(&process->handleTable);
     if (process->addressSpace.pml4Physical != 0)
     {
@@ -635,33 +639,188 @@ NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
     return STATUS_NOT_IMPLEMENTED; /* stopping a foreign process: unbuilt (Art. 3) */
 }
 
-/* NtCreateUserProcess: the M7 headline. Wine's ntdll builds an image section +
- * the RTL_USER_PROCESS_PARAMETERS and calls this to spawn a child; the boot
- * path uses PspCreateUserProcess directly. A full parameter-list + section-
- * handle implementation is large; the boundary shape (11 arguments, the
- * PS_CREATE_INFO state machine) is pinned here and the common single-image
- * spawn is wired, with the section/attribute plumbing marked for follow-up. */
+/* NtCreateUserProcess: the common single-image spawn, wired for M8's
+ * initial process chain (smss-equivalent -> next process). The caller names
+ * the image via PS_ATTRIBUTE_IMAGE_NAME (an NT path, as ntdll passes it —
+ * wine dlls/ntdll/unix/process.c NtCreateUserProcess reads the same
+ * attribute) and gets real process + thread handles, the PS_CREATE_INFO
+ * success state, and CLIENT_ID write-back when requested. Still unbuilt
+ * (docs/03 M8 notes): caller-supplied process parameters (the PEB's
+ * RTL_USER_PROCESS_PARAMETERS are kernel-built from the image path),
+ * suspended creation, and the pre-success PS_CREATE_INFO stages — refused
+ * loudly, never faked. */
 NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS_MASK processAccess,
                              ACCESS_MASK threadAccess, OBJECT_ATTRIBUTES *processAttributes,
                              OBJECT_ATTRIBUTES *threadAttributes, ULONG processFlags,
                              ULONG threadFlags, RTL_USER_PROCESS_PARAMETERS *processParameters,
                              PS_CREATE_INFO *createInfo, PS_ATTRIBUTE_LIST *attributeList)
 {
-    (void)processHandle;
-    (void)threadHandle;
-    (void)processAccess;
-    (void)threadAccess;
     (void)processAttributes;
     (void)threadAttributes;
-    (void)processFlags;
-    (void)threadFlags;
-    (void)processParameters;
-    (void)createInfo;
-    (void)attributeList;
-    /* The kernel can create and run a full user process (PspCreateUserProcess,
-     * exercised by the boot path + the M7 test). Driving it from ntdll's
-     * NtCreateUserProcess argument shape (a caller-supplied image section
-     * handle + attribute list + PS_CREATE_INFO write-back) is the remaining
-     * integration step and is not yet wired. */
-    return STATUS_NOT_IMPLEMENTED;
+    (void)processParameters; /* PEB params are kernel-built (docs/03) */
+
+    if (processHandle == 0 || threadHandle == 0 || createInfo == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(processHandle, sizeof(*processHandle), sizeof(HANDLE));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(threadHandle, sizeof(*threadHandle), sizeof(HANDLE));
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(createInfo, sizeof(PS_CREATE_INFO), sizeof(uint64_t));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (processFlags != 0 || (threadFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0)
+    {
+        return STATUS_NOT_IMPLEMENTED; /* suspended/flagged creation: unbuilt */
+    }
+
+    /* Walk the attribute list for the image name (+ optional CLIENT_ID
+     * write-back); other attributes a Wine client passes are tolerated. */
+    if (attributeList == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KiProbeForRead(attributeList, sizeof(SIZE_T), sizeof(SIZE_T));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    SIZE_T totalLength = attributeList->TotalLength;
+    SIZE_T listHeader = offsetof(PS_ATTRIBUTE_LIST, Attributes);
+    if (totalLength < listHeader || totalLength > 0x1000 ||
+        (totalLength - listHeader) % sizeof(PS_ATTRIBUTE) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KiProbeForRead(attributeList, totalLength, sizeof(SIZE_T));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    const WCHAR *imageNameUser = 0;
+    SIZE_T imageNameBytes = 0;
+    CLIENT_ID *clientIdOut = 0;
+    SIZE_T count = (totalLength - listHeader) / sizeof(PS_ATTRIBUTE);
+    for (SIZE_T i = 0; i < count; i++)
+    {
+        const PS_ATTRIBUTE *attribute = &attributeList->Attributes[i];
+        switch (attribute->Attribute)
+        {
+        case PS_ATTRIBUTE_IMAGE_NAME:
+            imageNameUser = attribute->ValuePtr;
+            imageNameBytes = attribute->Size;
+            break;
+        case PS_ATTRIBUTE_CLIENT_ID:
+            clientIdOut = attribute->ValuePtr;
+            break;
+        default:
+            break;
+        }
+    }
+    if (imageNameUser == 0 || imageNameBytes == 0 || imageNameBytes > 0x8000 ||
+        (imageNameBytes & 1) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KiProbeForRead(imageNameUser, imageNameBytes, 1);
+    if (NT_SUCCESS(status) && clientIdOut != 0)
+    {
+        status = KiProbeForWrite(clientIdOut, sizeof(*clientIdOut), sizeof(uint64_t));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Pool copies: the NUL-terminated NT path, and the DOS-path spelling the
+     * PEB carries (the NT path minus \??\; ASCII, as the PEB builder takes). */
+    SIZE_T imageNameChars = imageNameBytes / sizeof(WCHAR);
+    WCHAR *ntPath = MiAllocatePool((imageNameChars + 1) * sizeof(WCHAR));
+    if (ntPath == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(ntPath, imageNameUser, imageNameBytes);
+    ntPath[imageNameChars] = 0;
+
+    SIZE_T dosSkip = 0;
+    if (imageNameChars >= 4 && ntPath[0] == '\\' && ntPath[1] == '?' && ntPath[2] == '?' &&
+        ntPath[3] == '\\')
+    {
+        dosSkip = 4;
+    }
+    char *dosPath = MiAllocatePool(imageNameChars - dosSkip + 1);
+    if (dosPath == 0)
+    {
+        MiFreePool(ntPath);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    for (SIZE_T i = dosSkip; i < imageNameChars; i++)
+    {
+        dosPath[i - dosSkip] = ntPath[i] < 0x80 ? (char)ntPath[i] : '?';
+    }
+    dosPath[imageNameChars - dosSkip] = 0;
+
+    PEPROCESS process;
+    status = PsCreateWineProcess(ntPath, dosPath, &process);
+    MiFreePool(ntPath);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(dosPath);
+        return status;
+    }
+    process->imageName = dosPath; /* PsCreateWineProcess stored the caller's
+                                   * pointer; keep the pool copy instead */
+    process->imageNamePooled = TRUE;
+
+    /* Give the (already readied, not yet run — nothing here blocks, Art. 3)
+     * main thread its ETHREAD, so the returned thread handle is a real
+     * thread object. PsCreateWineProcess pre-counted the thread and stamped
+     * the TEB with id 1; reset both so PspCreateThreadObject's bookkeeping
+     * recounts to the same values. */
+    process->activeThreadCount = 0;
+    process->nextThreadId = 0;
+    PETHREAD threadObject;
+    status = PspCreateThreadObject(process, process->mainThread, (uint64_t)(uintptr_t)process->teb,
+                                   0, 0, &threadObject);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(process);
+        return status;
+    }
+    process->mainThread = 0; /* the ETHREAD owns the KTHREAD now */
+
+    status = ObpCreateHandle(process, ObpMapDesiredAccess(&PspProcessType, processAccess), 0,
+                             processHandle);
+    if (NT_SUCCESS(status))
+    {
+        status = ObpCreateHandle(threadObject, ObpMapDesiredAccess(&PspThreadType, threadAccess), 0,
+                                 threadHandle);
+    }
+    if (NT_SUCCESS(status))
+    {
+        if (clientIdOut != 0)
+        {
+            clientIdOut->UniqueProcess = (HANDLE)(uintptr_t)process->uniqueProcessId;
+            clientIdOut->UniqueThread = (HANDLE)(uintptr_t)threadObject->uniqueThreadId;
+        }
+        PS_CREATE_INFO info;
+        memset(&info, 0, sizeof(info));
+        info.Size = sizeof(info);
+        info.State = PsCreateSuccess;
+        memcpy(createInfo, &info, sizeof(info));
+    }
+    /* Drop the creator references; the handles (and the thread's process
+     * pin) keep everything alive. On a handle failure the process runs on
+     * unparented and cleans itself up at exit. */
+    ObDereferenceObject(threadObject);
+    ObDereferenceObject(process);
+    return status;
 }

@@ -244,6 +244,42 @@ static int KiRunWineHello(void)
     return pass ? 0 : 1;
 }
 
+/* Run the M8 initial process chain (docs/02): kernel → smss-equiv → test
+ * process. smss.exe exits with hello.exe's code, so one verdict covers the
+ * whole pipeline — including NtCreateUserProcess and the ring-3 registry. */
+static int KiRunInitialChain(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus =
+        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\smss.exe"), &probe);
+    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
+    {
+        DbgPrint("[KTEST] module smss.exe SKIP (no smss.exe on the boot volume)\n");
+        return 0;
+    }
+    if (!NT_SUCCESS(probeStatus))
+    {
+        DbgPrint("[KTEST] module smss.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
+        return 1;
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+                                     "C:\\windows\\system32\\smss.exe", &exitStatus);
+    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] module smss.exe FAIL (create=%#lx)\n", (unsigned long)status);
+    }
+    else
+    {
+        DbgPrint("[KTEST] module smss.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
+                 (unsigned long)exitStatus);
+    }
+    return pass ? 0 : 1;
+}
+
 /* The in-kernel suites, run on a real kernel thread (waits need a
  * schedulable context). Ends the QEMU run with the milestone verdict
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
@@ -295,13 +331,21 @@ static void KiTestMainThread(void *context)
     m7Failures += KiRunWineHello();
     DbgPrint(m7Failures == 0 ? "[KTEST] M7 PASS\n" : "[KTEST] M7 FAIL failures=%d\n", m7Failures);
 
+    /* M8: the initial process chain (docs/02 "Done when: boot completes as
+     * kernel → smss-equiv → test process"): smss.exe verifies \Registry from
+     * ring 3, spawns hello.exe through NtCreateUserProcess, and exits with
+     * the child's code. */
+    int m8Failures = KiRunInitialChain();
+    DbgPrint(m8Failures == 0 ? "[KTEST] M8 PASS\n" : "[KTEST] M8 FAIL failures=%d\n", m8Failures);
+
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows
      * what a real panic dump would look like after the whole boot suite
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures;
+    int total =
+        m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures + m8Failures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

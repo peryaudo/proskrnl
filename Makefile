@@ -245,6 +245,17 @@ $(HELLO): user/hello/hello.c user/hello/hello_seh.S $(WINE_PE)/ntdll/x86_64-wind
 	    user/hello/hello.c user/hello/hello_seh.S \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# The M8 smss-equivalent (docs/02): the initial user process — verifies the
+# registry from ring 3, spawns hello.exe via NtCreateUserProcess, exits with
+# the child's code. Same recipe as hello.exe: ntdll-only native PE.
+SMSS := $(BUILD)/modules/smss.exe
+$(SMSS): user/smss/smss.c $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=smss_start \
+	    user/smss/smss.c \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
 WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
@@ -258,9 +269,10 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
             win:$(WINE_NLS)/normnfkc.nls=windows/system32/normnfkc.nls \
             win:$(WINE_NLS)/normnfkd.nls=windows/system32/normnfkd.nls \
             win:$(WINE_NLS)/normidna.nls=windows/system32/normidna.nls \
-            win:$(HELLO)=hello.exe
+            win:$(HELLO)=hello.exe \
+            win:$(SMSS)=windows/system32/smss.exe
 
-$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 run: $(IMG)

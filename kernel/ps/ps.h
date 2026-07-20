@@ -32,8 +32,10 @@ typedef struct EPROCESS
     /* The main thread's stack region [reserve base, top): mm/fault.c grows
      * it a guard page at a time (M5, docs/02 "guard-page stack growth"). */
     uint64_t stackAllocationBase;
-    uint64_t stackBase;    /* the top; NT names the high end StackBase */
-    const char *imageName; /* for dumps; storage owned by the caller */
+    uint64_t stackBase;      /* the top; NT names the high end StackBase */
+    const char *imageName;   /* for dumps; storage owned by the caller... */
+    BOOLEAN imageNamePooled; /* ...unless pooled (NtCreateUserProcess copies
+                              * the caller's path; freed at process delete) */
 
     /* M7: the user-visible process structures (docs/00 "byte-for-byte"). */
     uint64_t pebBase;         /* user VA of the PEB (0 for the system process) */
@@ -164,6 +166,13 @@ __attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb);
  * unlink it from the process, and — when it was the last thread — publish the
  * process exit status and signal the process. Never returns. */
 __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus);
+
+/* Build the ETHREAD wrapper for a KTHREAD and link it into the process
+ * (kernel/ps/thread.c); increments nextThreadId and activeThreadCount.
+ * Returns a creator reference. */
+NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase,
+                               uint64_t stackAllocationBase, uint64_t stackBase,
+                               PETHREAD *threadOut);
 
 /* --- usermode.c (M7) ----------------------------------------------------- */
 
