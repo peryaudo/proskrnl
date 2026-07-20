@@ -32,7 +32,8 @@
 typedef struct IO_DEVICE
 {
     const IO_VFS_OPS *ops;
-    PVOID context; /* the mounted FAT_VOLUME */
+    PVOID context;    /* the mounted FAT_VOLUME */
+    ULONG deviceType; /* FILE_DEVICE_*: FileFsDeviceInformation / GetFileType (M10) */
 } IO_DEVICE, *PIO_DEVICE;
 
 extern OBJECT_TYPE IoDeviceType;

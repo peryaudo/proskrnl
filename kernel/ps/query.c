@@ -501,29 +501,8 @@ NTSTATUS NtGetNlsSectionPtr(ULONG type, ULONG codePage, PVOID contextData, PVOID
     return STATUS_SUCCESS;
 }
 
-/* --- volume information (RtlSetCurrentDirectory_U at startup) -------------- */
-
-NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStatusBlock,
-                                      PVOID buffer, ULONG length, FS_INFORMATION_CLASS infoClass)
-{
-    (void)fileHandle;
-    (void)ioStatusBlock;
-    if (infoClass == FileFsDeviceInformation && length >= sizeof(FILE_FS_DEVICE_INFORMATION))
-    {
-        NTSTATUS status =
-            KiProbeForWrite(buffer, sizeof(FILE_FS_DEVICE_INFORMATION), sizeof(ULONG));
-        if (!NT_SUCCESS(status))
-        {
-            return status;
-        }
-        FILE_FS_DEVICE_INFORMATION info;
-        memset(&info, 0, sizeof(info));
-        info.DeviceType = FILE_DEVICE_DISK;
-        memcpy(buffer, &info, sizeof(info));
-        return STATUS_SUCCESS;
-    }
-    return STATUS_NOT_IMPLEMENTED;
-}
+/* NtQueryVolumeInformationFile moved to kernel/io/query.c (M10: the answer
+ * is per-device now — DeviceType feeds GetFileType). */
 
 /* --- KiUserCallbackDispatcher return (unreachable for a CUI process) ------ */
 

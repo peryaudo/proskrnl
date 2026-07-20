@@ -768,6 +768,8 @@ NTIOAPI_FUNCTIONS = [
     "NtDeviceIoControlFile",
     "NtFsControlFile",
     "NtCreateNamedPipeFile",
+    # M10 (CUI userland)
+    "NtQueryFullAttributesFile",
 ]
 
 
@@ -866,7 +868,14 @@ def gen_ntioapi(wine: Path) -> str:
         ]
     )
     device_types = extract_defines(
-        winioctl, "winioctl.h", ["FILE_DEVICE_DISK", "FILE_DEVICE_FILE_SYSTEM"]
+        winioctl,
+        "winioctl.h",
+        [
+            "FILE_DEVICE_DISK",
+            "FILE_DEVICE_DISK_FILE_SYSTEM",
+            "FILE_DEVICE_FILE_SYSTEM",
+            "FILE_DEVICE_SERIAL_PORT",
+        ],
     )
 
     # M9: ioctl/fsctl plumbing + the named-pipe surface. CTL_CODE and the
