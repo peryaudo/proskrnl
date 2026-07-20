@@ -154,6 +154,13 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
  * containment path (panic.c) and NtTerminateProcess both land here. */
 __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus);
 
+/* M10 thread-exit protocol (kernel/ps/thread.c): drop earlier exits' parked
+ * ETHREAD pins, do the current thread's list/join bookkeeping, park its own
+ * running pin and stop. Park+terminate must be the thread's last act. */
+void PspReapExitedThreads(void);
+void PspRetireCurrentThread(NTSTATUS exitStatus);
+__attribute__((noreturn)) void PspParkCurrentThreadAndTerminate(void);
+
 /* Where a flat binary is mapped; its entry point is its first byte. */
 #define PSP_IMAGE_BASE 0x400000ULL
 

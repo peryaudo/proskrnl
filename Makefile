@@ -96,6 +96,7 @@ CSRC := kernel/init/main.c \
         kernel/io/rw.c \
         kernel/io/query.c \
         kernel/io/lock.c \
+        kernel/io/completion.c \
         kernel/cm/registry.c \
         kernel/cm/hive.c \
         kernel/syscall/table.c \

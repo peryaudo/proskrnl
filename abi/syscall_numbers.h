@@ -104,6 +104,15 @@
 #define NTSYS_NtCreateNamedPipeFile 0x0085
 #define NTSYS_NtQuerySystemTime 0x005a
 #define NTSYS_NtQueryFullAttributesFile 0x00c4
+#define NTSYS_NtCreateIoCompletion 0x007e
+#define NTSYS_NtSetIoCompletion 0x00ef
+#define NTSYS_NtRemoveIoCompletion 0x0009
+#define NTSYS_NtRemoveIoCompletionEx 0x00d9
+#define NTSYS_NtQueryIoCompletion 0x00c8
+#define NTSYS_NtCreateTimer 0x008c
+#define NTSYS_NtSetTimer 0x0062
+#define NTSYS_NtCancelTimer 0x0061
+#define NTSYS_NtQueryTimer 0x0038
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

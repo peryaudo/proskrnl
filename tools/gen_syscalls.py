@@ -138,6 +138,15 @@ IMPLEMENTED = [
     # M10 CUI userland surface
     "NtQuerySystemTime",
     "NtQueryFullAttributesFile",
+    "NtCreateIoCompletion",
+    "NtSetIoCompletion",
+    "NtRemoveIoCompletion",
+    "NtRemoveIoCompletionEx",
+    "NtQueryIoCompletion",
+    "NtCreateTimer",
+    "NtSetTimer",
+    "NtCancelTimer",
+    "NtQueryTimer",
 ]
 
 
