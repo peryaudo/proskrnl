@@ -420,7 +420,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
 #define PSP_NTDLL_PATH WSTR("\\??\\C:\\windows\\system32\\ntdll.dll")
 
 NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                             PEPROCESS *processOut)
+                             PEPROCESS *processOut, PETHREAD *threadOut)
 {
     PMI_SECTION exeSection;
     NTSTATUS status = IoOpenImageSection(exeNtPath, &exeSection);
@@ -547,10 +547,28 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
     main->userStartArg1 = entry;
     main->userStartArg2 = process->pebBase;
     main->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
-    process->mainThread = main;
+
+    /* The main thread's ETHREAD, BEFORE the thread runs: id 1 (the TEB was
+     * stamped with it above), so NtAlertThreadByThreadId and thread queries
+     * see every thread — kernel-launched processes included (M10). The
+     * ETHREAD owns the KTHREAD; the count starts at 0 and the create call
+     * counts it. The caller owns the returned creator reference and must
+     * hold it until the thread has exited. */
+    process->activeThreadCount = 0;
+    PETHREAD mainThreadObject;
+    status = PspCreateThreadObject(process, main, tebBase, 0, 0, process->nextThreadId,
+                                   &mainThreadObject);
+    if (!NT_SUCCESS(status))
+    {
+        KiDeleteThread(main);
+        ObDereferenceObject(process);
+        goto out_sections;
+    }
+    process->mainThread = 0;
 
     KiReadyCreatedThread(main);
     *processOut = process;
+    *threadOut = mainThreadObject;
     status = STATUS_SUCCESS;
 
 out_sections:
@@ -564,7 +582,8 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
                         NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
-    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, console, &process);
+    PETHREAD mainThread;
+    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, console, &process, &mainThread);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -572,6 +591,7 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
     status = KeWaitForSingleObject(process, Executive, KernelMode, FALSE, 0);
     ASSERT(status == STATUS_SUCCESS);
     *exitStatusOut = process->exitStatus;
+    ObDereferenceObject(mainThread); /* exited: safe to let the ETHREAD go */
     ObDereferenceObject(process);
     return STATUS_SUCCESS;
 }
@@ -790,9 +810,12 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     dosPath[imageNameChars - dosSkip] = 0;
 
     PEPROCESS process;
+    PETHREAD threadObject;
     /* M9: NtCreateUserProcess children inherit the (single) console —
-     * kernelbase in the child binds via the seeded ConsoleHandle. */
-    status = PsCreateWineProcess(ntPath, dosPath, TRUE, &process);
+     * kernelbase in the child binds via the seeded ConsoleHandle. The main
+     * thread's ETHREAD (id 1, matching its TEB) is built inside
+     * PsCreateWineProcess before the thread is readied (M10). */
+    status = PsCreateWineProcess(ntPath, dosPath, TRUE, &process, &threadObject);
     MiFreePool(ntPath);
     if (!NT_SUCCESS(status))
     {
@@ -802,23 +825,6 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     process->imageName = dosPath; /* PsCreateWineProcess stored the caller's
                                    * pointer; keep the pool copy instead */
     process->imageNamePooled = TRUE;
-
-    /* Give the (already readied, not yet run — nothing here blocks, Art. 3)
-     * main thread its ETHREAD, so the returned thread handle is a real
-     * thread object. PsCreateWineProcess pre-counted the thread and stamped
-     * the TEB with id 1; reset both so PspCreateThreadObject's bookkeeping
-     * recounts to the same values. */
-    process->activeThreadCount = 0;
-    process->nextThreadId = 0;
-    PETHREAD threadObject;
-    status = PspCreateThreadObject(process, process->mainThread, (uint64_t)(uintptr_t)process->teb,
-                                   0, 0, &threadObject);
-    if (!NT_SUCCESS(status))
-    {
-        ObDereferenceObject(process);
-        return status;
-    }
-    process->mainThread = 0; /* the ETHREAD owns the KTHREAD now */
 
     status = ObpCreateHandle(process, ObpMapDesiredAccess(&PspProcessType, processAccess), 0,
                              processHandle);
@@ -842,8 +848,14 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     }
     /* Drop the creator references; the handles (and the thread's process
      * pin) keep everything alive. On a handle failure the process runs on
-     * unparented and cleans itself up at exit. */
-    ObDereferenceObject(threadObject);
+     * unparented and cleans itself up at exit — the thread's creator
+     * reference is deliberately kept then (freeing a RUNNING thread's
+     * ETHREAD would delete its live kernel stack; the object outlives the
+     * unparented process instead). */
+    if (NT_SUCCESS(status))
+    {
+        ObDereferenceObject(threadObject);
+    }
     ObDereferenceObject(process);
     return status;
 }
