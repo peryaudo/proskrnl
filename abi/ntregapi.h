@@ -129,4 +129,17 @@ NTSTATUS NtEnumerateValueKey(HANDLE,ULONG,KEY_VALUE_INFORMATION_CLASS,PVOID,ULON
 NTSTATUS NtQueryKey(HANDLE,KEY_INFORMATION_CLASS,void *,DWORD,DWORD *);
 NTSTATUS NtFlushKey(HANDLE);
 
+/* Info-class layouts the kernel's CmpFill*Info arithmetic leans on (fixed
+ * headers + trailing-array offsets), pinned x64/LLP64 so a drift in the
+ * extraction fails at compile time (Art. 4). */
+_Static_assert(offsetof(KEY_BASIC_INFORMATION, Name) == 16, "KEY_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_NODE_INFORMATION, Name) == 24, "KEY_NODE_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_FULL_INFORMATION, Class) == 44, "KEY_FULL_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_VALUE_BASIC_INFORMATION, Name) == 12,
+               "KEY_VALUE_BASIC_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_VALUE_FULL_INFORMATION, Name) == 20,
+               "KEY_VALUE_FULL_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) == 12,
+               "KEY_VALUE_PARTIAL_INFORMATION x64 layout");
+
 #endif /* PROSKRNL_ABI_NTREGAPI_H */
