@@ -27,7 +27,7 @@ C); no 32→long-mode trampoline is written.
 - Removes the most error-prone piece of early bring-up — the trampoline — which is exactly
   the fiddly assembly the model gets subtly wrong (`docs/12`).
 - The kernel is a higher-half ELF; long mode, paging, memory map, and a framebuffer are
-  provided at entry (the framebuffer also helps M11 and early logging).
+  provided at entry (the framebuffer also helps GUI-1 and early logging).
 - The QEMU loop boots `build/proskrnl.hdd` (a Limine-installed FAT32 image from
   `mkimage.sh`) instead of `-kernel build/proskrnl` (`docs/08`). Cost: an image build per
   run — marginal, since `mkimage.sh` exists and Limine installs straight onto it.

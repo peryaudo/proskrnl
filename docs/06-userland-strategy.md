@@ -158,7 +158,7 @@ The **only real "lie"** Wine's shell32 tells is `winemenubuilder` writing Start-
 shortcuts into the *host's* application menu — meaningless here (no host); it likely
 no-ops.
 
-**Optional M17:** the ReactOS shell for a Windows-looking desktop. A separate integration
+**Optional GUI-7:** the ReactOS shell for a Windows-looking desktop. A separate integration
 effort (registry via ROS `mkhive` INF data, shell32-stack build glue, version/layout/COM
 mud), governed by a `user/dllmap.toml` that declares which DLL comes from which upstream —
 the collision map. Do this *after* Wine desktop works, so there is a working regression

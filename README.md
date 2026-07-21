@@ -333,8 +333,9 @@ handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergenc
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M11+** — the GUI path (pixels/input, win32u) or wineboot/services when a consumer
-arrives (`docs/02`), and growing the winetest manifest as its parked blockers land
+Next: **the CUI consolidation path (CUI-1..CUI-5)** — wineboot/firstboot, Se, the SCM,
+the process ecosystem, sockets — or **the GUI path (GUI-1+)** — pixels/input, win32u
+(`docs/02`); either way, growing the winetest manifest as its parked blockers land
 (`docs/03` "M10 winetest notes").
 
 ## License

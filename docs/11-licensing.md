@@ -11,7 +11,7 @@ root `LICENSE`.
 |---|---|---|
 | `kernel/`, `abi/`, `arch/`, `drivers/`, `fs/` | proskrnl | **GPL-2.0** (`LICENSE`) |
 | Wine PE DLLs, wineserver-lite | Wine | **LGPL-2.1** |
-| ReactOS shell (optional M17), its INF data | ReactOS | **GPL-2.0** |
+| ReactOS shell (optional GUI-7), its INF data | ReactOS | **GPL-2.0** |
 
 ## Route (a) and the kernel image
 
@@ -27,7 +27,7 @@ license-blocked; it remains avoided for the engineering reasons in `docs/07`.
 
 ## The GPL/LGPL interaction (for the optional shell)
 
-If the ReactOS shell is adopted (M17): explorer.exe is **GPLv2**; it calls Wine DLLs that
+If the ReactOS shell is adopted (GUI-7): explorer.exe is **GPLv2**; it calls Wine DLLs that
 are **LGPL**. LGPL is absorbable into GPL, so **GPL explorer calling LGPL user32 in one
 process is fine.** The kernel, being a separate process, is unaffected. A `licenses/MAP.md`
 should record provenance per process/file, and `user/dllmap.toml` records which DLL comes
@@ -60,7 +60,7 @@ never recall constants) and the rule below exist.
 
 ## Mandated provenance discipline
 
-- **The kernel license is GPL-2.0** (`LICENSE`), fixed well before M13. This neutralizes
+- **The kernel license is GPL-2.0** (`LICENSE`), fixed well before GUI-3. This neutralizes
   the ReactOS-reproduction *license* risk — any such output would be license-compatible.
   The reference-material restriction stands regardless: kernel-code reference material is
   **Wine headers and official Microsoft documentation** only, because provenance and

@@ -74,7 +74,7 @@ phase: each milestone adds only the cases for the `Nt*` it implements, and the p
 is gated by a `todo_proskrnl` manifest so it stays green-or-regression (see `docs/08`).
 Contract-shaped behaviour (event/IOSB ordering, wait semantics, share modes) *must* be
 tested first, or the implementation certifies its own bug. Semantic bugs caught in M3 cost
-hours; the same bug found at M13 costs months and is un-triageable across four suspects.
+hours; the same bug found at GUI-3 costs months and is un-triageable across four suspects.
 
 ## Article 6 — Only a differential test convicts
 
@@ -105,7 +105,7 @@ they are addition, never mutation.
 
 ## Article 8 — Fix the license before it fixes you
 
-Fixed: the kernel is **GPL-2.0** (see `LICENSE`), settled well before M13 — before any
+Fixed: the kernel is **GPL-2.0** (see `LICENSE`), settled well before GUI-3 — before any
 Wine/ReactOS-derived code could enter the kernel image under route (b), and before the
 LLM-provenance risk materializes. The provenance discipline of `docs/11` (reference
 material limited to Wine headers + MS docs, generated `abi/`, drivers from public specs)

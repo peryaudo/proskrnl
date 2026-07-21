@@ -20,7 +20,7 @@ Record a deliberate NT-absent addition in `docs/10-hacks-ledger.md`. Per Article
    ```
    ## HACK-NNN: <name>
    Status:     proposed
-   Introduced: <milestone, e.g. M11>
+   Introduced: <milestone, e.g. GUI-1>
    Not in NT:  <what NT does instead>
    Reason:     <why we add it anyway>
    Scope:      <new files touched — must be at the boundary's outside>

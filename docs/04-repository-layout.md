@@ -95,11 +95,11 @@ proskrnl/
 │   ├── virtio/
 │   │   ├── virtqueue.c              # shared ring
 │   │   ├── blk.c / console.c / input.c
-│   │   └── gpu.c                    # M11: 2D scanout
+│   │   └── gpu.c                    # GUI-1: 2D scanout
 │   ├── condrv.c                     # M9: ConDrv-style console device, COM1 serial
 │   │                                #   transport both ways        ★ HACK-004
-│   ├── fb.c                         # M11: \Device\Fb0            ★ HACK-001
-│   └── hid.c                        # M11: \Device\Input0         ★ HACK-002
+│   ├── fb.c                         # GUI-1: \Device\Fb0            ★ HACK-001
+│   └── hid.c                        # GUI-1: \Device\Input0         ★ HACK-002
 │
 ├── fs/
 │   ├── fat32/
@@ -167,7 +167,7 @@ proskrnl/
 
 Three independently-built components joined by **artifacts, not build graphs**: the kernel
 (our **Make** build, clang `--target=x86_64-elf -ffreestanding`), Wine (its *own* autotools,
-wrapped by `user/wine/build.sh`), and — at M16/M17 only — the ReactOS shell (its *own*
+wrapped by `user/wine/build.sh`), and — at GUI-6/GUI-7 only — the ReactOS shell (its *own*
 CMake/RosBE). Each foreign project builds itself into PE binaries; `tools/mkimage.sh` bakes
 those plus the kernel into the FAT32 image. The top-level `Makefile` is a thin orchestrator
 (build kernel → run `build.sh` → run `mkimage.sh`), not a single graph that owns everything.
@@ -179,8 +179,8 @@ rests on.
 
 ## Size expectations
 
-- `kernel/` ≈ 30k lines; `arch/` + `drivers/` + `fs/` ≈ 10k; GUI plumbing (M11–M15) ≈ 8k;
-  M16 ≈ 1.5k; `tests/` (self-authored) ≈ 18k. **Self-written total ≈ 70k**, realistically
+- `kernel/` ≈ 30k lines; `arch/` + `drivers/` + `fs/` ≈ 10k; GUI plumbing (GUI-1–GUI-5) ≈ 8k;
+  GUI-6 ≈ 1.5k; `tests/` (self-authored) ≈ 18k. **Self-written total ≈ 70k**, realistically
   **100–140k** after error paths, info-class tails, `#ifdef` mud, and debug scaffolding.
 - **Borrowed** (Wine PE, Wine tests, stripped wineserver, optional ROS shell/INF) ≈ 1.5M+.
   Leverage ≈ **25×**. See `docs/12` for the size analysis and where difficulty concentrates
@@ -192,5 +192,5 @@ rests on.
 M1 = `arch/` + `init/` · M2 = `ke/` · M3 = `ob/` · M4 = `syscall/` + user split ·
 M5 = `mm/section+fault+pagecache` · M6 = `io/` + `fs/fat32` + `drivers/virtio/blk` ·
 M7 = `ps/usermode+peb` + `user/wine` · M8 = `cm/` + `smss` · M9 = `fs/npfs` + `condrv` ·
-M11 = `drivers/{gpu,fb,hid}` · M12–M15 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
+GUI-1 = `drivers/{gpu,fb,hid}` · GUI-2–GUI-5 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
 Progress is visible as a coloring of the tree.
