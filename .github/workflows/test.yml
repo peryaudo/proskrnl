@@ -1,0 +1,100 @@
+# CI gate: build the image and run the test suites on every PR and on main.
+#
+# Merge blocking itself is repo configuration, not workflow code: a branch
+# protection rule (or ruleset) on `main` with "Require status checks to pass
+# before merging" pointing at this workflow's `test` check. Settings ->
+# Branches (or Settings -> Rules -> Rulesets); the check appears in the
+# picker after this workflow has run once.
+#
+# The pinned third_party QEMU and Wine are real source builds (hours on a
+# hosted runner), so the finished builds are cached keyed on the submodule
+# pins: the first run after a pin bump rebuilds, every other run restores
+# and tools/setup_linux.sh skips straight through (it is idempotent by
+# design). Keying on the pins means CI can never version-drift from the
+# tree abi/ is generated from.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350   # first uncached run builds QEMU + Wine
+    steps:
+      - uses: actions/checkout@v4
+
+      # .gitmodules pins third_party/wine by SSH URL; the runner has no SSH
+      # key, so route github.com submodule fetches over HTTPS. Init the
+      # submodules HERE, before the cache restore below overlays the build
+      # outputs into the same trees (git refuses to clone into a non-empty
+      # directory, so the order matters).
+      - name: Fetch pinned submodules over HTTPS
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 \
+            third_party/limine third_party/limine-protocol third_party/qemu third_party/wine
+
+      # The submodule pins ARE the cache key (git ls-tree reads them from the
+      # superproject tree, no submodule checkout needed).
+      - name: Compute third_party cache key
+        id: pins
+        run: echo "key=$(git ls-tree HEAD third_party | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore third_party builds
+        id: tp-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            third_party/limine
+            third_party/qemu/build
+            third_party/wine
+          key: third-party-${{ steps.pins.outputs.key }}
+
+      # The hosted runner's root disk is tight; the wine + qemu builds want
+      # the space these unused preinstalled toolchains occupy.
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+
+      - name: Toolchain + pinned third_party builds (tools/setup_linux.sh)
+        run: tools/setup_linux.sh
+
+      - name: make test (QEMU boot, [KTEST] verdict on serial)
+        run: make test
+
+      - name: ntapi oracle — the spec gate (tests/run/run.sh oracle)
+        run: tests/run/run.sh oracle
+
+      - name: ntapi on proskrnl — the regression gate (tests/run/run.sh proskrnl)
+        run: tests/run/run.sh proskrnl
+
+      # actions/cache's built-in post step only saves on job success; the
+      # split restore/save keeps a 2h+ first build even when a test leg goes
+      # red, so the retry costs minutes, not hours.
+      - name: Save third_party builds
+        if: always() && steps.tp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            third_party/limine
+            third_party/qemu/build
+            third_party/wine
+          key: third-party-${{ steps.pins.outputs.key }}
+
+      # The panic dump is the debugger (Art. 9): a red run must ship its
+      # serial logs.
+      - name: Upload serial logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-logs
+          path: |
+            build/serial.log
+            build/tests/*.log
+          if-no-files-found: ignore
