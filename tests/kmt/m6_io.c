@@ -96,6 +96,29 @@ static void test_file_roundtrip(void)
        (unsigned long)status, (unsigned long)iosb.Information);
     ok(memcmp(buffer, readback, size) == 0, "readback mismatch");
 
+    /* Leave a byte-comparable artifact behind for the host-side external
+     * oracle (tests/run/fatcheck.sh): the same pattern, NOT deleted, so
+     * mcopy can extract it after the run and compare against the host's
+     * regeneration of (i*7+3)&0xff. FILE_OVERWRITE_IF keeps reruns on an
+     * already-seeded image green. */
+    {
+        HANDLE persist = 0;
+        init_attr(&attr, &name, WSTR("\\??\\C:\\kmt6\\persist.dat"));
+        status = NtCreateFile(&persist, FILE_GENERIC_READ | FILE_GENERIC_WRITE, &attr, &iosb, 0,
+                              FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
+                              FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+        ok(status == STATUS_SUCCESS, "create persist.dat -> %08lx", (unsigned long)status);
+        if (status == STATUS_SUCCESS)
+        {
+            offset.QuadPart = 0;
+            status = NtWriteFile(persist, 0, 0, 0, &iosb, buffer, size, &offset, 0);
+            ok(status == STATUS_SUCCESS && iosb.Information == size,
+               "write persist.dat -> %08lx/%lu", (unsigned long)status,
+               (unsigned long)iosb.Information);
+            NtClose(persist);
+        }
+    }
+
     /* Persistence below the cache: bytes must be on the DISK, not only in
      * memory. Read the raw partition through virtio and hunt for the
      * pattern's first 16 bytes (cheap smoke, not a full FS check). */

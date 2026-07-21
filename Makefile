@@ -577,9 +577,13 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 .PHONY: wtests
 
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
-# verdict grepped off the serial log by tools/qemu.sh.
+# verdict grepped off the serial log by tools/qemu.sh, then the external FAT
+# oracle (fsck.fat + fatsweep + mtools byte-compares) on the mutated image —
+# make stops on a failed boot, so fatcheck only judges runs whose primary
+# verdict passed.
 test: $(IMG)
 	tools/qemu.sh $(IMG)
+	tests/run/fatcheck.sh verify test $(IMG)
 
 # The interactive boot: the Wine userland + cmd.exe + the CUI apps, plus the
 # interactive.flag marker that makes the kernel skip the test suites and hand

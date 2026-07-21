@@ -12,6 +12,7 @@ brew "qemu"    # qemu-system-x86_64 — the run/test loop (docs/08)
 brew "limine"  # bootloader; hands off in long mode (ADR 0010)
 brew "mtools"  # mformat/mcopy — populate the FAT32 ESP without mounting (tools/mkimage.sh)
 brew "gptfdisk" # sgdisk — GPT + BIOS-boot partition for the Limine image (tools/mkimage.sh)
+brew "dosfstools" # fsck.fat — independent FAT oracle for post-run checks (tests/run/fatcheck.sh)
 
 # ── ntapi oracle test target (from M2; not required for M1) ──────────
 brew "mingw-w64"     # build ntapi tests as a Windows .exe (docs/14)
