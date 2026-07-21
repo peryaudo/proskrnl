@@ -818,6 +818,26 @@ NtQueryPerformanceCounter:
     syscall
     ret
 
+    .global NtQueryTimerResolution
+NtQueryTimerResolution:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xd2, %eax
+    syscall
+    ret
+
+    .global NtConvertBetweenAuxiliaryCounterAndPerformanceCounter
+NtConvertBetweenAuxiliaryCounterAndPerformanceCounter:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x7c, %eax
+    syscall
+    ret
+
     .global NtQuerySystemInformation
 NtQuerySystemInformation:
     mov %rcx, %r9
@@ -1173,6 +1193,16 @@ NtQuerySystemTime:
     mov %rsi, %rdx
     mov %rdi, %r10
     mov $0x5a, %eax
+    syscall
+    ret
+
+    .global NtSetTimerResolution
+NtSetTimerResolution:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf6, %eax
     syscall
     ret
 

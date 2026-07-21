@@ -75,6 +75,8 @@
 #define NTSYS_NtQueryInformationThread 0x0025
 #define NTSYS_NtSetInformationThread 0x000d
 #define NTSYS_NtQueryPerformanceCounter 0x0031
+#define NTSYS_NtQueryTimerResolution 0x00d2
+#define NTSYS_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter 0x007c
 #define NTSYS_NtQuerySystemInformation 0x0036
 #define NTSYS_NtQueryDefaultLocale 0x0015
 #define NTSYS_NtGetContextThread 0x009d
@@ -103,6 +105,7 @@
 #define NTSYS_NtFsControlFile 0x0039
 #define NTSYS_NtCreateNamedPipeFile 0x0085
 #define NTSYS_NtQuerySystemTime 0x005a
+#define NTSYS_NtSetTimerResolution 0x00f6
 #define NTSYS_NtQueryFullAttributesFile 0x00c4
 #define NTSYS_NtCreateIoCompletion 0x007e
 #define NTSYS_NtSetIoCompletion 0x00ef

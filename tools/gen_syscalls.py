@@ -102,6 +102,8 @@ IMPLEMENTED = [
     "NtQueryInformationThread",
     "NtSetInformationThread",
     "NtQueryPerformanceCounter",
+    "NtQueryTimerResolution",
+    "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
     "NtQueryDefaultLocale",
     "NtGetContextThread",
@@ -137,6 +139,7 @@ IMPLEMENTED = [
     "NtCreateNamedPipeFile",
     # M10 CUI userland surface
     "NtQuerySystemTime",
+    "NtSetTimerResolution",
     "NtQueryFullAttributesFile",
     "NtCreateIoCompletion",
     "NtSetIoCompletion",

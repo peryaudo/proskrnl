@@ -1482,6 +1482,9 @@ NTPSAPI_FUNCTIONS = [
     "NtQueryInformationThread",
     "NtSetInformationThread",
     "NtQueryPerformanceCounter",
+    "NtQueryTimerResolution",
+    "NtSetTimerResolution",
+    "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
     "NtQueryDefaultLocale",
     "NtGetContextThread",
@@ -1577,6 +1580,11 @@ def gen_ntpsapi(wine: Path) -> str:
             ),
             extract_struct(
                 winternl, "_SYSTEM_PERFORMANCE_INFORMATION", "SYSTEM_PERFORMANCE_INFORMATION"
+            ),
+            extract_struct(winternl, "_RTL_SYSTEM_TIME", "RTL_SYSTEM_TIME"),
+            extract_struct(winternl, "_RTL_TIME_ZONE_INFORMATION", "RTL_TIME_ZONE_INFORMATION"),
+            extract_struct(
+                winternl, "_RTL_TIME_DYNAMIC_ZONE_INFORMATION", "RTL_DYNAMIC_TIME_ZONE_INFORMATION"
             ),
             extract_struct(winternl, "_VM_COUNTERS", "VM_COUNTERS"),
             extract_struct(winternl, "_VM_COUNTERS_EX", "VM_COUNTERS_EX"),

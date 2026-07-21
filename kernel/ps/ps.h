@@ -40,10 +40,12 @@ typedef struct EPROCESS
                               * the caller's path; freed at process delete) */
 
     /* M7: the user-visible process structures (docs/00 "byte-for-byte"). */
-    uint64_t pebBase;         /* user VA of the PEB (0 for the system process) */
-    uint64_t imageBase;       /* user VA the main image mapped at */
-    uint64_t uniqueProcessId; /* CLIENT_ID.UniqueProcess (a plain counter) */
-    ULONG cookie;             /* ProcessCookie: RtlEncodePointer's obfuscator */
+    uint64_t pebBase;                 /* user VA of the PEB (0 for the system process) */
+    uint64_t imageBase;               /* user VA the main image mapped at */
+    uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
+    ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
+    BOOLEAN timerResolutionRequested; /* NtSetTimerResolution's per-process
+                                       * has-a-request latch (M10 winetest) */
 
     /* M7: the ring-3 return-protocol entry points, resolved from the process's
      * system DLL (ntdll) — or, for a native single-image client, from the
