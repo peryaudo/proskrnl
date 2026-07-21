@@ -16,6 +16,41 @@
  *
  * Returns 0 on success; a distinct nonzero code per failed check, reported
  * by KiRunAbiProbe as the process exit status.
+ *
+ * --- conventions this probe does NOT cover yet -----------------------------
+ * A ledger of boundary conventions that are real but have no testable
+ * consumer or surface today. Each is pinned to the milestone that makes it
+ * observable; grow the probe in THAT milestone, before the first consumer:
+ *
+ *  - KiUserCallbackDispatcher (PEB.KernelCallbackTable): the user-callback
+ *    frame/stack contract user32 peer-depends on. Nothing dispatches user
+ *    callbacks until the GUI milestone (M12) — add the check with win32k
+ *    callouts (frame layout per Wine dlls/ntdll/signal_x86_64.c
+ *    KiUserCallbackDispatcher).
+ *  - CONTEXT_XSTATE / XSAVE conventions: KUSER_SHARED_DATA.XState
+ *    configuration (EnabledFeatures, CompactionEnabled, per-feature
+ *    offsets) and the CONTEXT_EX/XSTATE get/set round-trip. Today the
+ *    kernel is FXSAVE-only and no baked consumer issues CONTEXT_XSTATE;
+ *    add when an AVX-using client or a newer kernelbase appears (layout:
+ *    Wine include/winnt.h XSTATE_CONFIGURATION + Intel SDM Vol. 1 XSAVE).
+ *  - User CS/SS selector VALUES: today Wine's PE stack reads the selectors
+ *    at runtime (dlls/ntdll/unix/signal_x86_64.c cs64_sel), so proskrnl's
+ *    own GDT layout (arch/x86_64/gdt.h) is unpinned and this probe
+ *    deliberately does not check the values. The WOW64 milestone makes
+ *    them load-bearing (heaven's-gate far transfers encode CS) — pin them
+ *    there against real NT / MS docs, with the TEB32/PEB32 mirroring and
+ *    the 32-bit KUSD fields (TickCountMultiplier consumers included).
+ *  - Debugger conventions (DebugPort, first/second-chance routing,
+ *    DbgUiRemoteBreakin): no debug surface exists; add with DbgUi/Dbgk.
+ *  - Se/token conventions (NtQueryInformationToken shapes ntdll probes at
+ *    startup — the boot log's "syscall MISSING 0x21" lines): add when Se
+ *    lands; until then the miss itself is the visible marker.
+ *
+ * Covered elsewhere, deliberately not duplicated here: the SEH/APC
+ * dispatcher frame contracts (m7_smoke + hello.exe's SEH leg), PEB process-
+ * parameter normalization (smss/wineboot boot legs), syscall-number
+ * stability (generated — tools/gen_syscalls.py), and every Nt* semantic the
+ * ntapi differential can pin against the oracle (tests/ntapi/).
  */
 #include "abi/ntdef.h"
 #include "abi/ntstatus.h"
@@ -31,8 +66,15 @@
 
 /* Captured by the pe_start stub (abi_probe.S) before any C code runs. */
 extern ULONG_PTR abi_entry_rsp;
+extern ULONG_PTR abi_entry_rflags;
 extern ULONG abi_entry_mxcsr;
 extern USHORT abi_entry_fcw;
+
+/* Captured by the abi_thread_entry stub for the second thread. */
+extern ULONG_PTR abi_thread_rsp;
+extern ULONG abi_thread_mxcsr;
+extern USHORT abi_thread_fcw;
+void abi_thread_entry(void);
 
 static void say(const char *ascii)
 {
@@ -122,6 +164,13 @@ static int check_entry_state(void)
         return 2;
     if (abi_entry_mxcsr != 0x1f80)
         return 3;
+
+    /* DF must be clear at function entry (MS Learn "x64 register usage":
+     * the direction flag is clear on entry and on return; bit 10 of RFLAGS
+     * per Intel SDM Vol. 1 "EFLAGS Register"). std-then-crash bugs are of
+     * the same latent class as the alignment one. */
+    if ((abi_entry_rflags & 0x400) != 0)
+        return 32;
     return 0;
 }
 
@@ -166,6 +215,114 @@ static int check_identity(void)
     if (pbi.UniqueProcessId != (ULONG_PTR)teb->ClientId.UniqueProcess)
         return 13;
     return 0;
+}
+
+/* --- the second thread: entry conventions + per-thread stack growth -------- */
+
+static volatile TEB *g_main_teb;
+static volatile int g_thread_ran;
+static volatile int g_thread_result;
+
+/* Burn stack a KB at a time, far past the initial commit, so the recursion
+ * walks through the guard page repeatedly. noinline + volatile stores keep
+ * the frames real at -O1. */
+static __attribute__((noinline)) int touch_stack(int depth)
+{
+    volatile unsigned char frame[1024];
+    frame[0] = (unsigned char)depth;
+    frame[1023] = (unsigned char)(depth >> 1);
+    int result = frame[0] + frame[1023];
+    if (depth > 0)
+        result += touch_stack(depth - 1);
+    return result;
+}
+
+/* The second thread's C body (entered from abi_thread_entry in abi_probe.S). */
+void abi_thread_main(void *arg)
+{
+    (void)arg;
+    g_thread_ran = 1;
+
+    /* Entry conventions hold for every thread the same as for the first
+     * (Wine seeds every new-thread CONTEXT identically — third_party/wine
+     * dlls/ntdll/unix/signal_x86_64.c init_syscall_frame). */
+    if ((abi_thread_rsp & 0xf) != 8)
+    {
+        g_thread_result = 40;
+        return;
+    }
+    if (abi_thread_fcw != 0x27f || abi_thread_mxcsr != 0x1f80)
+    {
+        g_thread_result = 41;
+        return;
+    }
+
+    /* Its own TEB, with its own id, agreeing with the query surface. */
+    volatile TEB *teb = get_teb();
+    if (teb == 0 || teb == g_main_teb || teb->Tib.Self != (struct _NT_TIB *)teb)
+    {
+        g_thread_result = 42;
+        return;
+    }
+    if (teb->ClientId.UniqueProcess != g_main_teb->ClientId.UniqueProcess ||
+        teb->ClientId.UniqueThread == 0 ||
+        teb->ClientId.UniqueThread == g_main_teb->ClientId.UniqueThread)
+    {
+        g_thread_result = 43;
+        return;
+    }
+    THREAD_BASIC_INFORMATION tbi;
+    if (NtQueryInformationThread(NtCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), 0) !=
+            STATUS_SUCCESS ||
+        tbi.TebBaseAddress != (PVOID)teb || tbi.ClientId.UniqueThread != teb->ClientId.UniqueThread)
+    {
+        g_thread_result = 44;
+        return;
+    }
+    if (abi_thread_rsp > (ULONG_PTR)teb->Tib.StackBase ||
+        abi_thread_rsp <= (ULONG_PTR)teb->Tib.StackLimit)
+    {
+        g_thread_result = 45;
+        return;
+    }
+
+    /* Guard-page growth keyed on THIS thread's stack, published in THIS
+     * thread's TEB: deep recursion past the initial commit must neither
+     * fault nor corrupt, and NT lowers NT_TIB.StackLimit to the new commit
+     * bottom as it grows (Wine dlls/ntdll/unix/virtual.c grow_thread_stack).
+     * Growth keyed on the main thread's bounds is exactly the class that
+     * stayed latent until conhost's tty thread recursed deep. */
+    PVOID limitBefore = teb->Tib.StackLimit;
+    if (touch_stack(288) < 0) /* ~300 KB, far past the 64 KB commit */
+    {
+        g_thread_result = 46; /* unreachable; defeats value elision */
+        return;
+    }
+    if ((ULONG_PTR)teb->Tib.StackLimit >= (ULONG_PTR)limitBefore)
+    {
+        g_thread_result = 47;
+        return;
+    }
+    g_thread_result = 0;
+}
+
+static int check_thread(void)
+{
+    g_main_teb = get_teb();
+    g_thread_ran = 0;
+    g_thread_result = -1;
+    HANDLE thread = 0;
+    NTSTATUS status =
+        NtCreateThreadEx(&thread, THREAD_ALL_ACCESS, 0, NtCurrentProcess(),
+                         (PRTL_THREAD_START_ROUTINE)abi_thread_entry, 0, 0, 0, 0, 0, 0);
+    if (status != STATUS_SUCCESS || thread == 0)
+        return 33;
+    if (NtWaitForSingleObject(thread, FALSE, 0) != STATUS_SUCCESS)
+        return 34;
+    NtClose(thread);
+    if (!g_thread_ran || g_thread_result < 0)
+        return 35;
+    return g_thread_result;
 }
 
 /* --- the process cookie ---------------------------------------------------- */
@@ -343,6 +500,8 @@ int abi_probe_main(void)
     int code = check_entry_state();
     if (code == 0)
         code = check_identity();
+    if (code == 0)
+        code = check_thread();
     if (code == 0)
         code = check_cookie();
     if (code == 0)
