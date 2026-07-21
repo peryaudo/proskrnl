@@ -509,6 +509,47 @@ fatstress() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# Exhaustive torn-write testing (docs/08): boot a minimal image whose
+# workload module (user/init-tests/torn_workload.c) exercises every
+# disk-write shape while QEMU's blklogwrites driver logs each block write
+# (tools/qemu.sh WRITE_LOG); then tests/run/tornreplay.py applies every
+# prefix of the log to a pristine copy of the partition — each prefix is a
+# reachable power-loss state — and checks structural invariants plus the
+# hive's torn-write-falls-back-to-empty guarantee on all of them.
+tornwrite() {
+    make -C "$ROOT" build/proskrnl build/modules/torn_workload.bin \
+        build/modules/pe_smoke.exe build/modules/sample.dat >/dev/null
+    local kernel="$ROOT/build/proskrnl" img="$BUILD/tornwrite.hdd"
+    local logbin="$BUILD/tornwrite-writes.bin" serial="$BUILD/tornwrite-serial.log"
+    mkdir -p "$BUILD"
+
+    local specs=("$ROOT/build/modules/pe_smoke.exe=initrd"
+                 "$ROOT/build/modules/sample.dat=initrd"
+                 "$ROOT/build/modules/torn_workload.bin=expect=0")
+    "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+    cp "$img" "$BUILD/tornwrite-pristine.hdd"
+
+    rm -f "$logbin"
+    truncate -s 64M "$logbin"
+    WRITE_LOG="$logbin" LOG="$serial" PASS_RE="\[KTEST\] module /torn_workload.bin PASS" \
+        TIMEOUT="${TIMEOUT:-300}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    if ! grep -q '\[KTEST\] module /torn_workload.bin PASS' "$serial"; then
+        echo "== tornwrite: FAIL (the workload run itself went red; see $serial) =="
+        return 1
+    fi
+
+    local fails=0
+    if python3 "$ROOT/tests/run/tornreplay.py" --pristine "$BUILD/tornwrite-pristine.hdd" \
+           --final "$img" --log "$logbin"; then
+        :
+    else
+        fails=$((fails+1))
+    fi
+    "$ROOT/tests/run/fatcheck.sh" verify tornwrite "$img" || fails=$((fails+1))
+    echo "== tornwrite: $fails failing =="
+    return $((fails > 0 ? 1 : 0))
+}
+
 # The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
 # both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
@@ -685,6 +726,7 @@ case "$MODE" in
     console)  console ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop|fatstress}" >&2
+    tornwrite) tornwrite ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop|fatstress|tornwrite}" >&2
        exit 2 ;;
 esac

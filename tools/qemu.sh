@@ -67,6 +67,24 @@ else
     SERIAL_ARGS=(-serial "file:$LOG")
 fi
 
+# WRITE_LOG=<path> (the tornwrite leg): interpose QEMU's blklogwrites block
+# driver between virtio-blk and the image, appending every guest write
+# (512-byte header + data, the dm-log-writes format) to the log file —
+# ground truth for power-loss prefix replay (tests/run/tornreplay.py).
+# Options per qapi/block-core.json BlockdevOptionsBlklogwrites in the pinned
+# tree; log-super-update-interval=1 keeps the superblock's nr_entries fresh
+# after every write (our driver never negotiates FLUSH, and the default only
+# updates on flush). The caller pre-creates the log file.
+if [[ -n "${WRITE_LOG:-}" ]]; then
+    DRIVE_ARGS=(-blockdev "driver=file,node-name=tw-img,filename=$IMG"
+                -blockdev "driver=raw,node-name=tw-fmt,file=tw-img"
+                -blockdev "driver=file,node-name=tw-logf,filename=$WRITE_LOG"
+                -blockdev "driver=blklogwrites,node-name=tw-top,file=tw-fmt,log=tw-logf,log-append=off,log-super-update-interval=1"
+                -device  "virtio-blk-pci,drive=tw-top")
+else
+    DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio")
+fi
+
 "$QEMU" \
     -M q35 \
     -cpu max \
@@ -76,7 +94,7 @@ fi
     -monitor none \
     "${SERIAL_ARGS[@]}" \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -drive file="$IMG",format=raw,if=virtio &
+    "${DRIVE_ARGS[@]}" &
 QPID=$!
 
 ( sleep "$TIMEOUT"; kill -9 "$QPID" 2>/dev/null ) & KPID=$!
