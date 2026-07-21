@@ -125,9 +125,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: serial-logs
+          # No recursive glob over build/tests: the oracle wineprefix's
+          # dosdevices/z: symlinks to /, and walking it EACCESes the upload.
           path: |
             build/serial.log
-            build/tests/**/*.log
             build/tests/*.log
+            build/tests/wtests/*.log
             build/tests/fuzz/repro/**
           if-no-files-found: ignore
