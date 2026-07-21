@@ -175,6 +175,17 @@ all: $(IMG)
 # of layout-mismatch bugs).
 DEPFLAGS := -MMD -MP
 
+# User client objects (own flags; not the kernel's KASAN/kernel-cmodel build).
+# These must precede the generic kernel rules: GNU Make 3.81 (macOS's stock
+# make) picks the FIRST matching pattern rule, not the shortest-stem one.
+$(BUILD)/user/init-tests/%.o: user/init-tests/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD)/user/init-tests/%.o: user/init-tests/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(KASAN_FLAGS) $(DEPFLAGS) -c $< -o $@
@@ -186,15 +197,6 @@ $(BUILD)/%.o: %.S
 $(KERNEL): $(OBJ) arch/x86_64/linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) $(OBJ) -o $@
-
-# User client objects (own flags; not the kernel's KASAN/kernel-cmodel build).
-$(BUILD)/user/init-tests/%.o: user/init-tests/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(DEPFLAGS) -c $< -o $@
-
-$(BUILD)/user/init-tests/%.o: user/init-tests/%.S
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
 
 # The generated syscall stubs live under tests/ntapi/syscall (shared with the
 # ntapi proskrnl target); build them into the user runtime.
