@@ -72,6 +72,23 @@ else
     make -C third_party/wine -j"$(nproc)"
 fi
 
+# M10 stretch (docs/02): the winetest gate (tests/run/run.sh winetest) links
+# its standalone test binaries from the pinned tree's own PE test objects.
+# --disable-tests only trims makedep's directory list — config.h is untouched
+# — so re-configuring with tests enabled is incremental over the build above.
+# Only the five in-scope CUI test directories are built; note a bare `make`
+# in third_party/wine after this point would build every test module.
+echo "== wine: the CUI test modules (the winetest gate) =="
+if [[ -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ]]; then
+    echo "   already built — skipping"
+else
+    (cd third_party/wine &&
+        ./configure --enable-win64 --without-x --without-freetype)
+    make -C third_party/wine -j"$(nproc)" \
+        dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
+        dlls/ucrtbase/tests/all programs/cmd/tests/all
+fi
+
 echo
 echo "setup_linux: done. Next:"
 echo "  make run                    # boot the kernel in QEMU, expect [KTEST] M3 PASS"
