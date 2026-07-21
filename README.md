@@ -149,9 +149,12 @@ skip the work. The no-RTC deviation is retired: the CMOS clock seeds
 commits on the fork (ole32 + shell32 tolerance) let a registry-only install
 run on a disk that bakes only the CUI DLL set; the baked `wine.inf` is
 filtered to registry-only sections at image-bake time (`tools/filter_inf.py`).
-**Not yet:** the `HKLM\Software\Wow6432Node` mirror keys (WOW64 scope) and
-HKCU population (needs the token surface, CUI-2); the registry differential
-vs. the oracle prefix excludes both (`docs/03` "CUI-1 firstboot notes").
+The registry differential vs. the oracle's prefix (`tests/run/run.sh
+firstboot`, the milestone's Art. 6 conviction gate) is green: the whole INF
+payload — 195 keys / 345 values — matches the oracle exactly. **Not yet:**
+the `HKLM\Software\Wow6432Node` mirror keys (WOW64 scope) and HKCU
+population (needs the token surface, CUI-2); the differential excludes both
+(`docs/03` "CUI-1 firstboot notes").
 
 Next: **CUI-2..CUI-5** — Se/tokens, the SCM, the process ecosystem, sockets —
 or **the GUI path (GUI-1+)** — pixels/input, win32u (`docs/02`); either way,
@@ -169,6 +172,7 @@ tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, ora
 tests/run/run.sh persist    # tests that registry values survive a reboot (boot twice)
 tests/run/run.sh console    # tests that typing into the serial console is working
 tests/run/run.sh winetest   # runs the curated subset of winetest
+tests/run/run.sh firstboot  # CUI-1: diff the firstboot registry against the oracle's prefix
 ```
 
 ## License

@@ -476,8 +476,29 @@ which applies `wine.inf`'s machine-state payload through
   FALSE before its ~500-line AddReg ever runs), and `ProfileItems` (Start Menu
   shortcuts via shell32). All `AddReg`/`DelReg` and the `.Services` sections
   are kept. The INF is input data staged by the image builder — no Wine
-  PE-side change — so the oracle keeps consuming its full `wine.inf`; the
-  differential normalizes the resulting key-set delta.
+  PE-side change.
+- **The registry differential** (`tests/run/run.sh firstboot`, the milestone's
+  Art. 6 conviction gate) boots a virgin image, pulls the SYSTEM hive off the
+  FAT volume, and compares it against a fresh oracle prefix initialized with
+  the SAME filtered INF, staged over the pinned tree's `loader/wine.inf` for
+  that one prefix init (restored after; `--keep WineFakeDlls`, because fake
+  dlls write no registry but a prefix without them cannot launch any
+  non-bootstrap process, and on the host their sources exist). The compared
+  scope is derived FROM the filtered INF itself (`tests/run/regdiff.py`
+  parses the reachable AddReg sections): every payload key/value must match
+  exactly on both sides, and the hive must contain nothing beyond payload +
+  documented writers. Oracle-only state outside the payload (each fake
+  dll's embedded REGINST registration resource, wineserver furniture) stays
+  out of scope by construction; every other exclusion is written down in
+  `regdiff.py` and here.
+- **The baked PE dlls are debug-stripped copies** (Makefile `winestrip`).
+  Not an optimization: with no COW and no eviction (Art. 3) every mapped
+  image is copied whole per process, and toolchains that emit large DWARF
+  sections (Linux mingw-gcc) tripled the set — firstboot's rundll32
+  fan-out then died in `STATUS_INSUFFICIENT_RESOURCES` *import* failures,
+  which wineboot warn-and-continues into a silent no-payload "PASS" the
+  differential was built to convict. The pinned tree keeps full symbols for
+  the oracle legs.
 - **Two runtime-dormant setupapi seam commits** on the fork's
   `proskrnl-target` branch (Art. 10): `SetupInstallFromInfSectionW` resolves
   `CoInitialize`/`CoUninitialize` (ole32) lazily and `get_csidl_dir` resolves

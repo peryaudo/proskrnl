@@ -94,6 +94,8 @@ tests/run/run.sh oracle     # run every test .exe under the pinned Wine (the SPE
 tests/run/run.sh proskrnl   # bake the same .exes into a disk image, boot QEMU (the REGRESSION gate)
 tests/run/run.sh winetest   # the M10 stretch gate: the curated CUI subset of Wine's OWN
                             # test suite (tests/winetest/manifest.txt), oracle + proskrnl
+tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firstboot
+                            # SYSTEM hive against a fresh oracle prefix (regdump/regdiff)
 ```
 
 Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image
