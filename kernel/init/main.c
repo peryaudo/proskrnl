@@ -978,6 +978,11 @@ static void KiTestMainThread(void *context)
     m6Failures += libFailures;
     DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
 
+    /* The FAT interop battery (tests/kmt/fat_interop.c): only on images
+     * baked with C:\fatcorpus\manifest.txt (run.sh fatinterop). Prints its
+     * own [KTEST] FATINTEROP verdict when it runs; absence is silent. */
+    int fatInteropFailures = kmt_run_fat_interop();
+
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
      * the milestone's acceptance artifact. */
@@ -1023,8 +1028,8 @@ static void KiTestMainThread(void *context)
     __asm__ volatile("int3");
 
     int total = firstbootFailures + m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
-                m7Failures + m8Failures + m9Failures + ntapiFailures + wtestFailures +
-                echoFailures + cmdFailures;
+                fatInteropFailures + m7Failures + m8Failures + m9Failures + ntapiFailures +
+                wtestFailures + echoFailures + cmdFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
