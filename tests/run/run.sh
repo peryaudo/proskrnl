@@ -320,6 +320,97 @@ winetest() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# The FAT interop battery (docs/08 "The FAT on-disk format has its own
+# oracles"): bake an adversarial corpus with mtools + host-side FAT surgery
+# (tests/run/fatgen.py), boot, and let the in-kernel suite
+# (tests/kmt/fat_interop.c) enumerate/read/checksum it all; then extract the
+# battery the kernel wrote and verify it on the host. Both directions of
+# dir.c's 8.3/LFN logic meet an implementation they have never met. No Wine
+# userland needed: the suite runs in-kernel, gated by the baked manifest.
+fatinterop() {
+    local kernel="$ROOT/build/proskrnl" img="$BUILD/fatinterop.hdd"
+    local work="$BUILD/fatinterop" off=2097152    # mkimage.sh ESP_OFF
+    if [[ ! -f "$kernel" ]]; then
+        make -C "$ROOT" build/proskrnl >/dev/null
+    fi
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    # Base image: kernel + the M5 seed modules only (keeps M5/M6 green).
+    local specs=()
+    make -C "$ROOT" build/modules/pe_smoke.exe build/modules/sample.dat >/dev/null 2>&1 || true
+    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+        [[ -f "$seed" ]] && specs+=("$seed=initrd")
+    done
+    "$ROOT/tools/mkimage.sh" "$kernel" "$img" ${specs[@]+"${specs[@]}"} >/dev/null
+
+    # Cluster size from the real volume (mformat decided it): bytes/sector *
+    # sectors/cluster out of the BPB, via fatsweep's parser.
+    local cbytes
+    cbytes=$(python3 - "$img" <<'PYEOF'
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    f.seek(2097152)
+    boot = f.read(64)
+print(struct.unpack_from("<H", boot, 11)[0] * boot[13])
+PYEOF
+)
+    python3 "$ROOT/tests/run/fatgen.py" emit --outdir "$work" --cluster-bytes "$cbytes"
+
+    # Bake the corpus with raw mtools at the ESP offset (the firstboot mcopy
+    # precedent). The manifest goes LAST: it is the kernel-side gate, so a
+    # partially baked image never runs the suite.
+    mmd -i "$img@@$off" ::/fatcorpus
+    local fails=0
+    while IFS=$'\t' read -r op a b; do
+        case "$op" in
+            mkdir) mmd  -i "$img@@$off" "::$a" || fails=$((fails+1)) ;;
+            copy)  mcopy -i "$img@@$off" "$work/hostfiles/$a" "::$b" || fails=$((fails+1)) ;;
+            del)   mdel -i "$img@@$off" "::$a" || fails=$((fails+1)) ;;
+        esac
+    done < "$work/bake.txt"
+    if [[ $fails -ne 0 ]]; then
+        echo "== fatinterop: FAIL ($fails bake ops failed) =="
+        return 1
+    fi
+    # Deterministic fragmentation (host-side FAT surgery), then prove it.
+    python3 "$ROOT/tests/run/fatgen.py" fragment --image "$img" --path fatcorpus/frag.bin
+    python3 "$ROOT/tests/run/fatgen.py" fragment --image "$img" --path fatcorpus/frag2.bin
+    python3 "$ROOT/tests/run/fatgen.py" fragcheck --image "$img" --path fatcorpus/frag.bin \
+        --min-extents 2 || { echo "== fatinterop: FAIL (fragmentation) =="; return 1; }
+    mcopy -i "$img@@$off" "$work/manifest.txt" ::/fatcorpus/manifest.txt
+
+    local log="$BUILD/fatinterop-serial.log"
+    LOG="$log" PASS_RE="\[KTEST\] FATINTEROP PASS" TIMEOUT="${TIMEOUT:-420}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    "$ROOT/tools/symbolize.py" --kernel "$kernel" --moduledir "$ROOT/build/modules" \
+        < "$log" > "$BUILD/fatinterop-serial.sym.log" 2>/dev/null || true
+
+    fails=0
+    if grep -qE '\[KTEST\] FATINTEROP PASS' "$log" 2>/dev/null; then
+        echo "[KTEST] fatinterop-boot PASS"
+    else
+        echo "[KTEST] fatinterop-boot FAIL (see $log)"
+        fails=$((fails+1))
+    fi
+
+    # Kernel->host: extract AFTER qemu exits (the image lock), verify against
+    # the manifest, and run the structural oracles on the mutated image.
+    rm -rf "$work/extracted"
+    mkdir -p "$work/extracted"
+    mcopy -s -p -i "$img@@$off" ::/fatout/. "$work/extracted" 2>/dev/null || true
+    if python3 "$ROOT/tests/run/fatgen.py" verify --extracted "$work/extracted/fatout" \
+           --manifest "$work/manifest.txt"; then
+        echo "[KTEST] fatinterop-extract PASS"
+    else
+        echo "[KTEST] fatinterop-extract FAIL"
+        fails=$((fails+1))
+    fi
+    "$ROOT/tests/run/fatcheck.sh" verify fatinterop "$img" || fails=$((fails+1))
+    echo "== fatinterop: $fails failing =="
+    return $((fails > 0 ? 1 : 0))
+}
+
 # The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
 # both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
@@ -494,6 +585,7 @@ case "$MODE" in
     persist)  persist ;;
     firstboot) firstboot ;;
     console)  console ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console}" >&2
+    fatinterop) fatinterop ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop}" >&2
        exit 2 ;;
 esac

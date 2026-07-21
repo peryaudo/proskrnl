@@ -68,4 +68,10 @@ int kmt_run_m6(void);
  * checks in the unpartitioned GPT slack. Called from kmt_run_m6. */
 int kmt_run_m6_blk(void);
 
+/* The FAT interop battery (tests/kmt/fat_interop.c): reads/checksums the
+ * mtools-baked adversarial corpus and writes the battery the host extracts
+ * and verifies. Runs only when C:\fatcorpus\manifest.txt exists (the
+ * run.sh fatinterop image); silently absent everywhere else. */
+int kmt_run_fat_interop(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
