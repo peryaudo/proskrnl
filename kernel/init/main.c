@@ -10,6 +10,7 @@
 
 #include "limine.h"
 #include "arch/x86_64/serial.h"
+#include "arch/x86_64/rtc.h"
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/gdt.h"
@@ -1060,6 +1061,21 @@ void KiSystemStartup(void)
      * sections map images and data from — docs/02). */
     KiRegisterBootModules();
     DbgPrint("[KTEST] initrd PASS\n");
+
+    /* CUI-1: seed the wall clock from the CMOS RTC, before the first clock
+     * interrupt mirrors SystemTime into KUSER_SHARED_DATA and before the
+     * boot volume mounts (FAT timestamps read KeQuerySystemTime). A garbage
+     * CMOS keeps the fixed-date fallback (docs/03) rather than failing boot. */
+    uint64_t rtcTime = KiReadRtcTime();
+    if (rtcTime != 0)
+    {
+        KiSystemTimeBase = rtcTime;
+        DbgPrint("[KTEST] rtc PASS\n");
+    }
+    else
+    {
+        DbgPrint("[KTEST] rtc SKIP (implausible CMOS time; fixed-date base)\n");
+    }
 
     /* Dispatcher structures must exist before the first clock interrupt. */
     KiInitializeTimerList();

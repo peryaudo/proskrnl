@@ -371,13 +371,11 @@ void FatNtTimeToFatTime(LARGE_INTEGER ntTime, USHORT *fatDate, USHORT *fatTime)
 
 LARGE_INTEGER FatCurrentNtTime(void)
 {
-    /* No RTC driver yet: a fixed base date plus uptime keeps timestamps
-     * present, ordered, and monotonic — the only properties the boundary
-     * tests may rely on across hosts. */
-    LARGE_INTEGER base;
-    base.QuadPart = (LONGLONG)(FatDaysSinceNtEpoch(2026, 1, 1) * 86400ULL * FAT_100NS_PER_SECOND);
-    base.QuadPart += (LONGLONG)KeQueryInterruptTime();
-    return base;
+    /* The system clock, CMOS-RTC-seeded at boot (CUI-1, kernel/ke/timer.c):
+     * real wall-clock UTC under QEMU's default -rtc base=utc. */
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    return now;
 }
 
 /* --- mount ----------------------------------------------------------------- */
