@@ -121,7 +121,7 @@ void PsInitializeProcessSubsystem(void);
  * binary (M4 — copied to the fixed flat-binary base). Either way it gets an
  * NT-shaped guard-page stack and a TEB (NT_TIB filled), and its single
  * thread is readied. The caller owns the returned creator reference. */
-NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut);
+NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETHREAD *threadOut);
 
 /* M7 Wine bring-up: build a process from an on-disk PE plus the on-disk
  * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
