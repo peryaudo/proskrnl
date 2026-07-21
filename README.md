@@ -156,10 +156,28 @@ the `HKLM\Software\Wow6432Node` mirror keys (WOW64 scope) and HKCU
 population (needs the token surface, CUI-2); the differential excludes both
 (`docs/03` "CUI-1 firstboot notes").
 
-Next: **CUI-2..CUI-5** — Se/tokens, the SCM, the process ecosystem, sockets —
-or **the GUI path (GUI-1+)** — pixels/input, win32u (`docs/02`); either way,
-growing the winetest manifest as its parked blockers land (`docs/03` "M10
-winetest notes").
+**CUI-2 complete**: the Se minimal-but-real security model. A real Ob token
+object with ONE fixed identity — wineserver's `token_create_admin`,
+byte-identical (user `S-1-5-21-0-0-0-1000`, 8 groups, 21 privileges, session
+1, `TokenElevationTypeLimited`) — and the twelve token/security syscalls the
+already-baked DLLs read (`kernel/se/`): open/query/adjust/duplicate,
+`NtPrivilegeCheck`, `NtAccessCheck` (the wineserver ACE walk),
+`NtQuery/SetSecurityObject`, `NtAllocateLocallyUniqueId`, plus the magic
+token pseudo-handles. Pinned by `tests/ntapi/sem_se/` — 8 tests green on the
+oracle AND proskrnl (Art. 5/6) — and by the acceptance the milestone names:
+Wine's unmodified `whoami.exe` opens its own token under cmd.exe and prints
+the logon SID (`tests/run/run.sh console`). HKCU now resolves
+(`RtlFormatCurrentUserKeyPath` → `\Registry\User\S-1-5-21-0-0-0-1000`).
+**Not yet:** impersonation attach (thread tokens — CUI-3, the SCM needs
+them); object create/open stays always-allow (`NtAccessCheck` is a service,
+Ob grants unconditionally); `NtSetInformationToken`/`NtFilterToken`/linked
+tokens stay unimplemented until a baked caller convicts (`docs/03` "CUI-2 Se
+notes").
+
+Next: **CUI-3..CUI-5** — the SCM (services.exe + rpcss over npfs), the
+process ecosystem, sockets — or **the GUI path (GUI-1+)** — pixels/input,
+win32u (`docs/02`); either way, growing the winetest manifest as its parked
+blockers land (`docs/03` "M10 winetest notes").
 
 ## Build instructions
 

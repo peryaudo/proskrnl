@@ -430,7 +430,7 @@ $(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
 # only the disk payload is lean.
 WINESTRIP := $(BUILD)/winestrip
 WINESTRIP_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-                   cryptbase setupapi cfgmgr32 ws2_32
+                   cryptbase setupapi cfgmgr32 ws2_32 secur32
 WINESTRIP_DLLS := $(foreach d,$(WINESTRIP_NAMES),$(WINESTRIP)/$(d).dll)
 # One explicit rule per dll (the name appears twice in the source path, which
 # a pattern rule's single stem cannot express).
@@ -456,6 +456,7 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINESTRIP)/setupapi.dll=windows/system32/setupapi.dll \
             win:$(WINESTRIP)/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
             win:$(WINESTRIP)/ws2_32.dll=windows/system32/ws2_32.dll \
+            win:$(WINESTRIP)/secur32.dll=windows/system32/secur32.dll \
             win:$(RUNDLL32)=windows/system32/rundll32.exe \
             win:$(WINEBOOT)=windows/system32/wineboot.exe \
             win:$(WINE_INF)=windows/inf/wine.inf \
@@ -496,6 +497,12 @@ $(UPCASE): tests/cui/upcase.c
 # input after the M9 verdict (kernel/init/main.c KiRunM9Echo) — and, M10,
 # cmd.exe plus the CUI apps for the interactive cmd session that follows
 # (KiRunCmdConsole).
+# CUI-2 acceptance: the pinned tree's own UNMODIFIED whoami.exe — a real
+# tool whose startup path is OpenProcessToken + GetTokenInformation. It
+# lands on the console image; console_expect.py runs `whoami /logonid` and
+# greps the logon SID (docs/02 CUI-2 "Done when").
+WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
+
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
         $(CMD) $(HELLOCRT) $(UPCASE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WINE_PE_DLLS) \
@@ -504,7 +511,8 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 	    win:$(M9ECHO)=m9_echo.exe \
 	    win:$(CMD)=windows/system32/cmd.exe \
 	    win:$(HELLOCRT)=hello_crt.exe \
-	    win:$(UPCASE)=upcase.exe
+	    win:$(UPCASE)=upcase.exe \
+	    win:$(WHOAMI)=whoami.exe
 
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img

@@ -264,6 +264,11 @@ static const char *const PspDefaultEnvironment[] = {
     "TEMP=C:\\windows\\temp",
     "TMP=C:\\windows\\temp",
     "windir=C:\\windows",
+    /* CUI-2: advapi32's GetUserNameW is an environment read on Wine
+     * (dlls/advapi32/advapi.c: GetEnvironmentVariableW(L"WINEUSERNAME")),
+     * and real tools (whoami) call it at startup right next to their token
+     * reads. The name matches the fixed Se identity's intent, not its SID. */
+    "WINEUSERNAME=wine",
 };
 
 static NTSTATUS PspBuildDefaultEnvironment(PSP_CAPTURED_PARAMS *captured)
