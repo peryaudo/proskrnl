@@ -1,7 +1,8 @@
 # proskrnl — kernel build + thin superbuild (ADR 0009). Boot: Limine (ADR 0010).
 #
 #   make            build the bootable image (build/proskrnl.hdd)
-#   make run        build + boot in QEMU, check the [KTEST] verdict on serial
+#   make test       build + boot in QEMU, check the [KTEST] verdict on serial
+#   make run        build + boot the interactive image: cmd.exe on your terminal
 #   make clean
 
 # Toolchain: clang + ld.lld (README "Prerequisites"). On macOS, Homebrew's
@@ -485,8 +486,32 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
     $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe
 .PHONY: wtests
 
-run: $(IMG)
+# The headless test boot (docs/08): the standard image's full [KTEST] suite,
+# verdict grepped off the serial log by tools/qemu.sh.
+test: $(IMG)
 	tools/qemu.sh $(IMG)
+
+# The interactive boot: the Wine userland + cmd.exe + the CUI apps, plus the
+# interactive.flag marker that makes the kernel skip the test suites and hand
+# the serial console straight to cmd.exe (kernel/init/main.c
+# KiRunInteractiveCmd). No m9_echo (that blocker belongs to the scripted
+# console test) and no test boot modules. Serial is your terminal: type at
+# the prompt; `exit` powers the VM off; Ctrl-A x kills QEMU.
+IMG_RUN := $(BUILD)/proskrnl-run.hdd
+$(BUILD)/interactive.flag:
+	@mkdir -p $(BUILD)
+	@echo "interactive boot marker (kernel/init/main.c KiIsInteractiveBoot)" > $@
+
+$(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
+        $(WINE_PE_DLLS) $(BUILD)/interactive.flag tools/mkimage.sh arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
+	    win:$(CMD)=windows/system32/cmd.exe \
+	    win:$(HELLOCRT)=hello_crt.exe \
+	    win:$(UPCASE)=upcase.exe \
+	    win:$(BUILD)/interactive.flag=interactive.flag
+
+run: $(IMG_RUN)
+	INTERACTIVE=1 tools/qemu.sh $(IMG_RUN)
 
 clean:
 	rm -rf $(BUILD)
@@ -506,7 +531,7 @@ format:
 tidy:
 	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
 
-.PHONY: all run clean format tidy gen-abi
+.PHONY: all test run clean format tidy gen-abi
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)

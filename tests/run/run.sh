@@ -158,7 +158,7 @@ proskrnl() {
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
     # The Wine PE userland the tests run on (the same files Makefile WINFILES
-    # bakes for `make run`). M10 widens the set to the CUI DLLs.
+    # bakes for `make test`). M10 widens the set to the CUI DLLs.
     for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
                cryptbase; do
         specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
@@ -316,7 +316,7 @@ fuzz() { exec "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 # the hive the first boot wrote.
 persist() {
     # A VIRGIN image: build/proskrnl.hdd may already carry a seeded hive from
-    # an earlier `make run` (m8_persist runs on every boot), which would make
+    # an earlier `make test` (m8_persist runs on every boot), which would make
     # boot 1 verify instead of seed. Rebuilding the image resets the disk.
     rm -f "$ROOT/build/proskrnl.hdd"
     make -C "$ROOT" >/dev/null

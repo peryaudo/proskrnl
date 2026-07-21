@@ -215,7 +215,7 @@ static int KiRunWineHello(void)
 {
     /* The ntapi/fuzz images carry the windows/ tree but not hello.exe
      * (tests/run/run.sh bakes only the test .exes); skip cleanly there.
-     * The `make run` image ships it (Makefile WINFILES), so a load failure
+     * The `make test` image ships it (Makefile WINFILES), so a load failure
      * on it IS a FAIL, not a skip. */
     struct MI_SECTION *probe;
     NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\hello.exe"), &probe);
@@ -416,6 +416,53 @@ static int KiRunCmdConsole(void)
     return pass ? 0 : 1;
 }
 
+/* The interactive boot (make run): the image carries C:\interactive.flag
+ * (Makefile IMG_RUN), meaning a human owns the serial console — the test
+ * suites are skipped and the console goes straight to cmd.exe. The image,
+ * not a kernel-side switch, decides (the KiRunNtapiTests pattern). */
+static BOOLEAN KiIsInteractiveBoot(void)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\interactive.flag"));
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle;
+    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
+                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return FALSE;
+    }
+    NtClose(handle);
+    return TRUE;
+}
+
+/* Hand the console to a human-driven cmd.exe and power the VM off when it
+ * exits (`exit` at the prompt). A start failure still powers off — an
+ * interactive boot has no runner watching a timeout. */
+__attribute__((noreturn)) static void KiRunInteractiveCmd(void)
+{
+    DbgPrint("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
+                                     "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("proskrnl: cmd.exe failed to start (%#lx)\n", (unsigned long)status);
+    }
+    KiQemuExit(0);
+    /* The debug-exit teardown is asynchronous; do not run past it. */
+    for (;;)
+    {
+        __asm__ volatile("hlt");
+    }
+}
+
 /* --- the ntapi single-binary test runner (docs/14) ------------------------- */
 
 /* Every tests/ntapi test is ONE PE .exe that runs unmodified on the Wine
@@ -423,7 +470,7 @@ static int KiRunCmdConsole(void)
  * proskrnl bakes them all under C:\ntapi; this runner sweeps the directory
  * — the image, not a kernel-side list, decides what runs — and each test
  * prints its own [KTEST] <name> PASS/FAIL line, which the runner script
- * greps off the serial log. Absence of C:\ntapi (the `make run` image) is
+ * greps off the serial log. Absence of C:\ntapi (the `make test` image) is
  * silent. Tests run WITHOUT a console on purpose: no std handles is the
  * harness's "running on proskrnl" discriminator (tests/ntapi/ntapi.c). */
 #define KI_NTAPI_MAX_TESTS  64
@@ -848,6 +895,13 @@ static void KiTestMainThread(void *context)
 
     /* M9: the console server, before anything that may use a console. */
     KiStartConhost();
+
+    /* The interactive boot (make run) skips the test suites entirely: the
+     * serial console belongs to a human and cmd.exe. Never returns. */
+    if (KiIsInteractiveBoot())
+    {
+        KiRunInteractiveCmd();
+    }
 
     int libFailures = kmt_run_lib();
     DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",

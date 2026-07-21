@@ -112,7 +112,7 @@ with distro packages:
   bootstrap.
 - **qemu** — **QEMU must be ≥ 9.0**: the kernel's clock drives the LAPIC timer
   in x2APIC mode, and QEMU's TCG only gained x2APIC in 9.0 — on Ubuntu 24.04
-  LTS's QEMU 8.2 the calibration silently reads a dead timer and `make run`
+  LTS's QEMU 8.2 the calibration silently reads a dead timer and `make test`
   hangs after `[KTEST] pool PASS`. 24.04 ships 8.2, so the pinned submodule
   (official GitHub mirror, `x86_64-softmmu` only) is built instead of trusting
   the distro.
@@ -148,7 +148,8 @@ the process ecosystem, sockets — or **the GUI path (GUI-1+)** — pixels/input
 ## Build instructions
 
 ```sh
-make run     # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
+make test    # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
+make run     # boot interactively: a cmd.exe prompt on your terminal ('exit' powers off)
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel

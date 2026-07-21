@@ -40,7 +40,10 @@ SIZE_MB="${SIZE_MB:-64}"
 CONF="$(mktemp)"
 trap 'rm -f "$CONF"' EXIT
 cp "$CONF_BASE" "$CONF"
-for spec in "${MODULE_SPECS[@]}"; do
+# ${arr[@]+...}: an image may carry zero Limine modules (the interactive
+# `make run` image) — bash 3.2 (macOS) trips `set -u` on expanding an empty
+# array without the guard.
+for spec in ${MODULE_SPECS[@]+"${MODULE_SPECS[@]}"}; do
     modfile="${spec%%=*}"
     modstring="${spec#*=}"
     base="$(basename "$modfile")"
@@ -121,13 +124,13 @@ mkdirp /EFI/BOOT
 copy "$KERNEL"                       ::/proskrnl
 copy "$CONF"                         ::/limine.conf
 copy "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
-for spec in "${MODULE_SPECS[@]}"; do
+for spec in ${MODULE_SPECS[@]+"${MODULE_SPECS[@]}"}; do
     modfile="${spec%%=*}"
     copy "$modfile" "::/$(basename "$modfile")"
 done
 # M7: plain files onto the FAT volume (the Wine userland). Missing sources are
 # a hard error — a silently absent ntdll.dll would skip the Wine acceptance.
-for spec in "${WIN_SPECS[@]}"; do
+for spec in ${WIN_SPECS[@]+"${WIN_SPECS[@]}"}; do
     src="${spec%%=*}"
     dest="${spec#*=}"
     [[ -f "$src" ]] || { echo "mkimage: win file missing: $src" >&2; exit 1; }
