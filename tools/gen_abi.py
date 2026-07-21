@@ -91,9 +91,11 @@ def extract_plain_struct(src: str, name: str) -> str:
 
 def extract_anonymous_struct(src: str, typedef: str) -> str:
     """Pull one tagless `typedef struct { ... } NAME;` body verbatim (the
-    wine/condrv.h char_info_t shape)."""
+    wine/condrv.h char_info_t shape). The body match excludes braces so the
+    search can't start at an earlier unrelated `typedef struct {` and swallow
+    everything up to NAME (flat structs only)."""
     match = re.search(
-        r"typedef struct\s*\{(.*?)\}\s*(" + re.escape(typedef) + r")\s*;", src, re.S
+        r"typedef struct\s*\{([^{}]*?)\}\s*(" + re.escape(typedef) + r")\s*;", src, re.S
     )
     if not match:
         sys.exit(f"gen_abi: anonymous struct {typedef} not found")
@@ -1865,6 +1867,371 @@ _Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) == 12,
     )
 
 
+# The CUI-2 Se surface (docs/02): the token syscalls the already-baked DLLs
+# (ntdll/sec.c, kernelbase/security.c, advapi32) issue as `-syscall` thunks.
+# NtSetInformationToken / NtFilterToken / NtCompareTokens / NtCreateToken stay
+# out until a baked caller convicts them (Art. 1).
+NTSEAPI_FUNCTIONS = [
+    "NtAccessCheck",
+    "NtAdjustPrivilegesToken",
+    "NtAllocateLocallyUniqueId",
+    "NtDuplicateToken",
+    "NtOpenProcessToken",
+    "NtOpenProcessTokenEx",
+    "NtOpenThreadToken",
+    "NtOpenThreadTokenEx",
+    "NtPrivilegeCheck",
+    "NtQueryInformationToken",
+    "NtQuerySecurityObject",
+    "NtSetSecurityObject",
+]
+
+
+def gen_ntseapi(wine: Path) -> str:
+    winnt = (wine / "include/winnt.h").read_text()
+    winternl = (wine / "include/winternl.h").read_text()
+
+    token_access = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "TOKEN_ASSIGN_PRIMARY",
+            "TOKEN_DUPLICATE",
+            "TOKEN_IMPERSONATE",
+            "TOKEN_QUERY",
+            "TOKEN_QUERY_SOURCE",
+            "TOKEN_ADJUST_PRIVILEGES",
+            "TOKEN_ADJUST_GROUPS",
+            "TOKEN_ADJUST_DEFAULT",
+            "TOKEN_ADJUST_SESSIONID",
+            "TOKEN_EXECUTE",
+            "TOKEN_READ",
+            "TOKEN_WRITE",
+            "TOKEN_ALL_ACCESS",
+            "ACCESS_SYSTEM_SECURITY",
+        ],
+    )
+
+    sid_defs = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "ANYSIZE_ARRAY",
+            "SID_REVISION",
+            "SID_MAX_SUB_AUTHORITIES",
+            "SID_RECOMMENDED_SUB_AUTHORITIES",
+            "SECURITY_MAX_SID_SIZE",
+            "TOKEN_SOURCE_LENGTH",
+        ],
+    )
+
+    # The boot identity's raw material (kernel/se/token.c mirrors wineserver's
+    # token_create_admin): identifier authorities + the RIDs its SIDs use.
+    sid_authorities = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "SECURITY_WORLD_SID_AUTHORITY",
+            "SECURITY_LOCAL_SID_AUTHORITY",
+            "SECURITY_NT_AUTHORITY",
+            "SECURITY_MANDATORY_LABEL_AUTHORITY",
+            "SECURITY_WORLD_RID",
+            "SECURITY_LOCAL_RID",
+            "SECURITY_INTERACTIVE_RID",
+            "SECURITY_LOGON_IDS_RID",
+            "SECURITY_AUTHENTICATED_USER_RID",
+            "SECURITY_LOCAL_SYSTEM_RID",
+            "SECURITY_NT_NON_UNIQUE",
+            "SECURITY_BUILTIN_DOMAIN_RID",
+            "DOMAIN_GROUP_RID_ADMINS",
+            "DOMAIN_GROUP_RID_USERS",
+            "DOMAIN_ALIAS_RID_ADMINS",
+            "DOMAIN_ALIAS_RID_USERS",
+            "SECURITY_MANDATORY_HIGH_RID",
+        ],
+    )
+
+    group_priv_attrs = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "SE_GROUP_MANDATORY",
+            "SE_GROUP_ENABLED_BY_DEFAULT",
+            "SE_GROUP_ENABLED",
+            "SE_GROUP_OWNER",
+            "SE_GROUP_USE_FOR_DENY_ONLY",
+            "SE_GROUP_INTEGRITY",
+            "SE_GROUP_INTEGRITY_ENABLED",
+            "SE_GROUP_LOGON_ID",
+            "SE_GROUP_RESOURCE",
+            "SE_GROUP_VALID_ATTRIBUTES",
+            "SE_PRIVILEGE_ENABLED_BY_DEFAULT",
+            "SE_PRIVILEGE_ENABLED",
+            "SE_PRIVILEGE_REMOVED",
+            "SE_PRIVILEGE_USED_FOR_ACCESS",
+            "SE_PRIVILEGE_VALID_ATTRIBUTES",
+            "PRIVILEGE_SET_ALL_NECESSARY",
+        ],
+    )
+
+    acl_defs = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "ACL_REVISION1",
+            "ACL_REVISION2",
+            "ACL_REVISION3",
+            "ACL_REVISION4",
+            "MIN_ACL_REVISION",
+            "MAX_ACL_REVISION",
+            "ACL_REVISION",
+            "ACCESS_ALLOWED_ACE_TYPE",
+            "ACCESS_DENIED_ACE_TYPE",
+            "SYSTEM_AUDIT_ACE_TYPE",
+            "SYSTEM_ALARM_ACE_TYPE",
+            "SYSTEM_MANDATORY_LABEL_ACE_TYPE",
+            "OBJECT_INHERIT_ACE",
+            "CONTAINER_INHERIT_ACE",
+            "NO_PROPAGATE_INHERIT_ACE",
+            "INHERIT_ONLY_ACE",
+            "INHERITED_ACE",
+            "VALID_INHERIT_FLAGS",
+        ],
+    )
+
+    sd_defs = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "SECURITY_DESCRIPTOR_REVISION",
+            "SE_OWNER_DEFAULTED",
+            "SE_GROUP_DEFAULTED",
+            "SE_DACL_PRESENT",
+            "SE_DACL_DEFAULTED",
+            "SE_SACL_PRESENT",
+            "SE_SACL_DEFAULTED",
+            "SE_DACL_AUTO_INHERITED",
+            "SE_SACL_AUTO_INHERITED",
+            "SE_DACL_PROTECTED",
+            "SE_SACL_PROTECTED",
+            "SE_SELF_RELATIVE",
+            "OWNER_SECURITY_INFORMATION",
+            "GROUP_SECURITY_INFORMATION",
+            "DACL_SECURITY_INFORMATION",
+            "SACL_SECURITY_INFORMATION",
+            "LABEL_SECURITY_INFORMATION",
+        ],
+    )
+
+    # The numeric privilege LUIDs (winternl.h; wineserver builds its admin
+    # token from these same values in server/token.c).
+    privileges = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "SE_MIN_WELL_KNOWN_PRIVILEGE",
+            "SE_CREATE_TOKEN_PRIVILEGE",
+            "SE_ASSIGNPRIMARYTOKEN_PRIVILEGE",
+            "SE_LOCK_MEMORY_PRIVILEGE",
+            "SE_INCREASE_QUOTA_PRIVILEGE",
+            "SE_MACHINE_ACCOUNT_PRIVILEGE",
+            "SE_TCB_PRIVILEGE",
+            "SE_SECURITY_PRIVILEGE",
+            "SE_TAKE_OWNERSHIP_PRIVILEGE",
+            "SE_LOAD_DRIVER_PRIVILEGE",
+            "SE_SYSTEM_PROFILE_PRIVILEGE",
+            "SE_SYSTEMTIME_PRIVILEGE",
+            "SE_PROF_SINGLE_PROCESS_PRIVILEGE",
+            "SE_INC_BASE_PRIORITY_PRIVILEGE",
+            "SE_CREATE_PAGEFILE_PRIVILEGE",
+            "SE_CREATE_PERMANENT_PRIVILEGE",
+            "SE_BACKUP_PRIVILEGE",
+            "SE_RESTORE_PRIVILEGE",
+            "SE_SHUTDOWN_PRIVILEGE",
+            "SE_DEBUG_PRIVILEGE",
+            "SE_AUDIT_PRIVILEGE",
+            "SE_SYSTEM_ENVIRONMENT_PRIVILEGE",
+            "SE_CHANGE_NOTIFY_PRIVILEGE",
+            "SE_REMOTE_SHUTDOWN_PRIVILEGE",
+            "SE_UNDOCK_PRIVILEGE",
+            "SE_SYNC_AGENT_PRIVILEGE",
+            "SE_ENABLE_DELEGATION_PRIVILEGE",
+            "SE_MANAGE_VOLUME_PRIVILEGE",
+            "SE_IMPERSONATE_PRIVILEGE",
+            "SE_CREATE_GLOBAL_PRIVILEGE",
+            "SE_MAX_WELL_KNOWN_PRIVILEGE",
+        ],
+    )
+
+    enums = "\n\n".join(
+        [
+            extract_enum(winnt, "_TOKEN_ELEVATION_TYPE", "TOKEN_ELEVATION_TYPE"),
+            extract_enum(winnt, "_TOKEN_INFORMATION_CLASS", "TOKEN_INFORMATION_CLASS"),
+            extract_enum(winnt, "tagTOKEN_TYPE", "TOKEN_TYPE"),
+            extract_enum(
+                winnt, "_SECURITY_IMPERSONATION_LEVEL", "SECURITY_IMPERSONATION_LEVEL"
+            ),
+        ]
+    )
+
+    sid_structs = (
+        extract_anonymous_struct(
+            winnt, "SID_IDENTIFIER_AUTHORITY, *PSID_IDENTIFIER_AUTHORITY"
+        )
+        + "\n\n"
+        + "\n\n".join(
+            extract_struct(winnt, tag, typedef)
+            for tag, typedef in [
+                ("_SID", "SID"),
+                ("_SID_AND_ATTRIBUTES", "SID_AND_ATTRIBUTES"),
+                ("_LUID", "LUID"),
+            ]
+        )
+    )
+
+    # winnt.h wraps LUID_AND_ATTRIBUTES and TOKEN_STATISTICS in
+    # `#pragma pack(push,4)`; the pragma is part of the layout contract, so
+    # it is re-emitted around the extracted bodies below.
+    packed_structs = (
+        "#pragma pack(push,4)\n"
+        + extract_struct(winnt, "_LUID_AND_ATTRIBUTES", "LUID_AND_ATTRIBUTES")
+        + "\n#pragma pack(pop)\n\n"
+        + extract_struct(winnt, "_PRIVILEGE_SET", "PRIVILEGE_SET")
+    )
+
+    acl_structs = "\n\n".join(
+        extract_struct(winnt, tag, typedef)
+        for tag, typedef in [
+            ("_ACL", "ACL"),
+            ("_ACE_HEADER", "ACE_HEADER"),
+            ("_ACCESS_ALLOWED_ACE", "ACCESS_ALLOWED_ACE"),
+            ("_ACCESS_DENIED_ACE", "ACCESS_DENIED_ACE"),
+            ("_SECURITY_DESCRIPTOR_RELATIVE", "SECURITY_DESCRIPTOR_RELATIVE"),
+            ("_SECURITY_DESCRIPTOR", "SECURITY_DESCRIPTOR"),
+        ]
+    )
+
+    token_structs = (
+        "\n\n".join(
+            extract_struct(winnt, tag, typedef)
+            for tag, typedef in [
+                ("_TOKEN_USER", "TOKEN_USER"),
+                ("_TOKEN_GROUPS", "TOKEN_GROUPS"),
+                ("_TOKEN_PRIVILEGES", "TOKEN_PRIVILEGES"),
+                ("_TOKEN_OWNER", "TOKEN_OWNER"),
+                ("_TOKEN_PRIMARY_GROUP", "TOKEN_PRIMARY_GROUP"),
+                ("_TOKEN_DEFAULT_DACL", "TOKEN_DEFAULT_DACL"),
+                ("_TOKEN_SOURCE", "TOKEN_SOURCE"),
+                ("_SECURITY_QUALITY_OF_SERVICE", "SECURITY_QUALITY_OF_SERVICE"),
+            ]
+        )
+        + "\n\n#pragma pack(push,4)\n"
+        + extract_struct(winnt, "_TOKEN_STATISTICS", "TOKEN_STATISTICS")
+        + "\n#pragma pack(pop)\n\n"
+        + "\n\n".join(
+            extract_struct(winnt, tag, typedef)
+            for tag, typedef in [
+                ("_TOKEN_ELEVATION", "TOKEN_ELEVATION"),
+                ("_TOKEN_MANDATORY_LABEL", "TOKEN_MANDATORY_LABEL"),
+                (
+                    "_TOKEN_APPCONTAINER_INFORMATION",
+                    "TOKEN_APPCONTAINER_INFORMATION",
+                ),
+            ]
+        )
+    )
+
+    pointer_typedefs = "\n".join(
+        [
+            extract_typedef_line(winnt, "winnt.h", "PSECURITY_DESCRIPTOR"),
+            extract_typedef_line(winnt, "winnt.h", "PSID"),
+            extract_typedef_line(winnt, "winnt.h", "SECURITY_INFORMATION"),
+            extract_typedef_line(winnt, "winnt.h", "SECURITY_DESCRIPTOR_CONTROL"),
+        ]
+    )
+
+    prototypes = extract_prototypes(winternl, NTSEAPI_FUNCTIONS)
+
+    return (
+        BANNER.format(
+            name="abi/ntseapi.h", source="wine/include/{winnt.h,winternl.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTSEAPI_H\n"
+        + "#define PROSKRNL_ABI_NTSEAPI_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntobapi.h" /* GENERIC_MAPPING */\n\n'
+        + """\
+/* Non-numeric scaffold (shapes, not values). __MSABI_LONG carries the LP64
+ * 'l' suffix in Wine's headers; the kernel is char/short/int/long-long only,
+ * so the suffix is dropped (values are 32-bit RIDs either way). */
+#ifndef __MSABI_LONG
+#define __MSABI_LONG(x) x
+#endif
+typedef BOOLEAN *PBOOLEAN;
+typedef DWORD *PDWORD;
+/* winnt.h: `typedef BOOLEAN SECURITY_CONTEXT_TRACKING_MODE` (wrapped over
+ * two lines there, so re-typed as scaffold: a shape, not a value). */
+typedef BOOLEAN SECURITY_CONTEXT_TRACKING_MODE;
+"""
+        + "\n/* Pointer/handle scaffold typedefs, extracted from wine/include/winnt.h. */\n"
+        + pointer_typedefs
+        + "\n\n/* Token access rights, extracted from wine/include/winnt.h. */\n"
+        + token_access
+        + "\n\n/* SID scaffolding limits, extracted from wine/include/winnt.h. */\n"
+        + sid_defs
+        + "\n\n/* SID identifier authorities + RIDs, extracted from wine/include/winnt.h. */\n"
+        + sid_authorities
+        + "\n\n/* Group/privilege attribute bits, extracted from wine/include/winnt.h. */\n"
+        + group_priv_attrs
+        + "\n\n/* ACL/ACE revisions, types and flags, extracted from wine/include/winnt.h. */\n"
+        + acl_defs
+        + "\n\n/* Security-descriptor control/info bits, extracted from wine/include/winnt.h. */\n"
+        + sd_defs
+        + "\n\n/* Privilege LUID low parts, extracted from wine/include/winternl.h. */\n"
+        + privileges
+        + "\n\n/* Enums, extracted verbatim from wine/include/winnt.h. */\n"
+        + enums
+        + "\n\n"
+        + sid_structs
+        + "\n\n"
+        + packed_structs
+        + "\n\n"
+        + acl_structs
+        + "\n\n"
+        + token_structs
+        + "\n\n/* The CUI-2 Se surface; signatures extracted verbatim from\n"
+        + " * wine/include/winternl.h (linkage macros dropped). */\n"
+        + prototypes
+        + """
+
+/* x64/LLP64 layouts the kernel's Se marshalling arithmetic leans on, pinned
+ * so a drift in the extraction fails at compile time (Art. 4). The same
+ * shapes compile mingw-side in tests/ntapi/sem_se/, so oracle and kernel
+ * agree by construction. */
+_Static_assert(sizeof(SID) == 12, "SID with 1 subauthority");
+_Static_assert(offsetof(SID, SubAuthority) == 8, "SID x64 layout");
+_Static_assert(sizeof(LUID) == 8, "LUID is 2 DWORDs");
+_Static_assert(sizeof(LUID_AND_ATTRIBUTES) == 12, "LUID_AND_ATTRIBUTES pack(4)");
+_Static_assert(sizeof(TOKEN_USER) == 16, "TOKEN_USER x64 layout");
+_Static_assert(offsetof(TOKEN_GROUPS, Groups) == 8, "TOKEN_GROUPS x64 layout");
+_Static_assert(offsetof(TOKEN_PRIVILEGES, Privileges) == 4,
+               "TOKEN_PRIVILEGES x64 layout");
+_Static_assert(offsetof(PRIVILEGE_SET, Privilege) == 8, "PRIVILEGE_SET x64 layout");
+_Static_assert(sizeof(ACL) == 8, "ACL header");
+_Static_assert(sizeof(ACE_HEADER) == 4, "ACE_HEADER");
+_Static_assert(sizeof(ACCESS_ALLOWED_ACE) == 12, "ACCESS_ALLOWED_ACE header+mask+SidStart");
+_Static_assert(sizeof(SECURITY_DESCRIPTOR_RELATIVE) == 20,
+               "self-relative SD header");
+_Static_assert(sizeof(TOKEN_STATISTICS) == 56, "TOKEN_STATISTICS pack(4) x64 layout");
+_Static_assert(sizeof(TOKEN_SOURCE) == 16, "TOKEN_SOURCE x64 layout");
+_Static_assert(sizeof(SECURITY_QUALITY_OF_SERVICE) == 12,
+               "SECURITY_QUALITY_OF_SERVICE x64 layout");
+
+#endif /* PROSKRNL_ABI_NTSEAPI_H */
+"""
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     root = Path(__file__).resolve().parent.parent
@@ -1886,6 +2253,7 @@ def main() -> None:
         ("ntpebteb.h", gen_ntpebteb(args.wine)),
         ("ntkeapi.h", gen_ntkeapi(args.wine)),
         ("ntregapi.h", gen_ntregapi(args.wine)),
+        ("ntseapi.h", gen_ntseapi(args.wine)),
     ]:
         (args.out / name).write_text(text)
         print(f"gen_abi: wrote abi/{name}")
