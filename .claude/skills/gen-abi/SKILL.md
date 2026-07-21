@@ -1,7 +1,6 @@
 ---
 name: gen-abi
 description: Regenerate the abi/ numeric constants (NTSTATUS, info-class numbers, struct offsets, flags) from Wine headers via tools/gen_abi.py, per Constitution Article 4. Use when abi/ values need (re)generating, or when a static_assert offset check fails.
-disable-model-invocation: true
 ---
 
 # gen-abi
