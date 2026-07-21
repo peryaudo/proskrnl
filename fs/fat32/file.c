@@ -726,6 +726,11 @@ static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity
     return written <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
 
+static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
+{
+    return FatQueryVolumeInfo((PFAT_VOLUME)device->context, info);
+}
+
 const IO_VFS_OPS FatVfsOps = {
     .Create = FatVfsCreate,
     .Cleanup = FatVfsCleanup,
@@ -738,4 +743,5 @@ const IO_VFS_OPS FatVfsOps = {
     .SetDisposition = FatVfsSetDisposition,
     .ReadDirectory = FatVfsReadDirectory,
     .QueryName = FatVfsQueryName,
+    .QueryVolumeInfo = FatVfsQueryVolumeInfo,
 };

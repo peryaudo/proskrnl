@@ -61,6 +61,25 @@ typedef struct
     IO_FILE_INFO info;
 } IO_DIR_ENTRY;
 
+/* What QueryVolumeInfo reports (the FS's raw volume facts; info-class
+ * shaping — truncation, Information accounting, short-buffer statuses —
+ * happens in kernel/io/query.c). String lengths are bytes. */
+typedef struct
+{
+    ULONG serialNumber;
+    USHORT labelLength;
+    WCHAR label[16];     /* FAT: at most 11 units (spec §6.4 volume label) */
+    uint64_t totalUnits; /* allocation units (clusters) on the volume */
+    uint64_t freeUnits;
+    ULONG sectorsPerUnit;
+    ULONG bytesPerSector;
+    const WCHAR *fsName; /* static storage, e.g. WSTR("FAT32") */
+    USHORT fsNameLength;
+    ULONG fsAttributes; /* FILE_FS_ATTRIBUTE_INFORMATION.FileSystemAttributes */
+    LONG maxComponentLength;
+    BOOLEAN supportsObjects; /* Wine: TRUE exactly for NTFS */
+} IO_VOLUME_INFO;
+
 typedef struct IO_VFS_OPS
 {
     /* Resolve `path` (relative to the volume root, or to relativeTo when
@@ -109,6 +128,13 @@ typedef struct IO_VFS_OPS
      * full length in bytes even when truncated (STATUS_BUFFER_OVERFLOW). */
     NTSTATUS(*QueryName)
     (struct FILE_OBJECT *file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut);
+
+    /* The volume's identity and geometry, for the FileFsVolume/Size/
+     * AttributeInformation classes. NULL = not a filesystem volume: those
+     * classes answer STATUS_NOT_IMPLEMENTED, matching what Wine's
+     * pipe/console server objects reply (server/named_pipe.c
+     * pipe_end_get_volume_info default arm). */
+    NTSTATUS (*QueryVolumeInfo)(struct IO_DEVICE *device, IO_VOLUME_INFO *info);
 
     /* --- M9 optional device ops (NULL = the page-cache file behaviour) ----
      * Devices whose data is a live stream (npfs, condrv, the serial port)
