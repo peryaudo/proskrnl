@@ -74,6 +74,23 @@ jobs:
       - name: ntapi on proskrnl — the regression gate (tests/run/run.sh proskrnl)
         run: tests/run/run.sh proskrnl
 
+      # One deterministic batch (seed 1, 64 programs, anon-name policy — the
+      # documented clean green gate): random Nt* sequences, oracle vs kernel.
+      - name: differential fuzzer (tests/run/run.sh fuzz)
+        run: tests/run/run.sh fuzz
+
+      - name: registry persistence across reboot (tests/run/run.sh persist)
+        run: tests/run/run.sh persist
+
+      - name: serial console echo + interactive cmd (tests/run/run.sh console)
+        run: tests/run/run.sh console
+
+      - name: curated winetest subset, oracle + proskrnl (tests/run/run.sh winetest)
+        run: tests/run/run.sh winetest
+
+      - name: CUI-1 firstboot registry differential (tests/run/run.sh firstboot)
+        run: tests/run/run.sh firstboot
+
       # actions/cache's built-in post step only saves on job success; the
       # split restore/save keeps a 2h+ first build even when a test leg goes
       # red, so the retry costs minutes, not hours.
@@ -96,5 +113,7 @@ jobs:
           name: serial-logs
           path: |
             build/serial.log
+            build/tests/**/*.log
             build/tests/*.log
+            build/tests/fuzz/repro/**
           if-no-files-found: ignore
