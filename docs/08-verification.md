@@ -159,11 +159,15 @@ the LLM-driven loop (whose only eyes are the logs) does not chase a lie.
   reliably do.
 - **The standing ABI-conformance probe** — `user/init-tests/abi_probe.c`, a native PE run
   on every boot (`[KTEST] ABI`, kernel runner `KiRunAbiProbe`): cheap one-line checks of
-  ring-3 *conventions* rather than features — entry `rsp ≡ 8 (mod 16)`, the FXSAVE seed
-  control words, the mapped PE header claiming the base it actually got (forced through
-  the relocation path by double-mapping ntdll), TEB ids agreeing with the
-  `Nt*Information*` surface, a nonzero stable `ProcessCookie`, `KUSER_SHARED_DATA`
-  ticking, past absolute timeouts satisfying immediately. Unlike the milestone smoke
+  ring-3 *conventions* rather than features — entry `rsp ≡ 8 (mod 16)` and DF clear, the
+  FXSAVE seed control words (on the first thread AND a created one), the mapped PE header
+  claiming the base it actually got (forced through the relocation path by double-mapping
+  ntdll), TEB ids agreeing with the `Nt*Information*` surface, per-thread guard-page
+  growth published in that thread's `NT_TIB.StackLimit`, a nonzero stable
+  `ProcessCookie`, `KUSER_SHARED_DATA` ticking, past absolute timeouts satisfying
+  immediately. The probe's header also keeps the ledger of conventions that are real but
+  unobservable today (user-callback dispatch, XSTATE, WOW64 selectors/TEB32, debugger and
+  token conventions), each pinned to the milestone that must add its check. Unlike the milestone smoke
   clients it asserts contracts no current consumer may exercise yet: every historical
   convention bug of this class (entry alignment, double relocation, TEB/ETHREAD id
   mismatch, unserved cookie, absolute waits parked as interrupt-time) was cheap to state
