@@ -180,6 +180,10 @@ void PspReapExitedThreads(void);
 void PspRetireCurrentThread(NTSTATUS exitStatus);
 __attribute__((noreturn)) void PspParkCurrentThreadAndTerminate(void);
 
+/* Consistency sweep (kernel/init/verify.c; dispatcher lock held): every
+ * parked ETHREAD is a TERMINATED, signalled thread still holding its pin. */
+void PspVerifyReaperList(void);
+
 /* Where a flat binary is mapped; its entry point is its first byte. */
 #define PSP_IMAGE_BASE 0x400000ULL
 

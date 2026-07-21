@@ -170,6 +170,46 @@ NTSTATUS ObpCreateHandleInTable(POBP_HANDLE_TABLE table, PVOID body, ACCESS_MASK
     KiPanic("ObpCreateHandle: no free slot below capacity");
 }
 
+/* --- consistency-sweep checks (kernel/init/verify.c; lock held) ------------ */
+
+PVOID ObpHandleTableObjectAt(POBP_HANDLE_TABLE table, ULONG index)
+{
+    if (table->entries == 0 || index >= table->capacity)
+    {
+        return 0;
+    }
+    return ((POBP_HANDLE_ENTRY)table->entries)[index].body;
+}
+
+/* One table's internal invariants: inUse agrees with the occupied slots, and
+ * every occupied slot points at a live object whose bookkeeping at least
+ * accounts for this handle. The cross-table handleCount recount lives in the
+ * sweep orchestrator (it needs every table at once). */
+void ObpVerifyHandleTable(POBP_HANDLE_TABLE table)
+{
+    ASSERT(table->inUse <= table->capacity);
+    ULONG occupied = 0;
+    for (ULONG index = 0; index < table->capacity; index++)
+    {
+        PVOID body = ObpHandleTableObjectAt(table, index);
+        if (body == 0)
+        {
+            continue;
+        }
+        occupied++;
+        POBJECT_HEADER header = ObpGetHeader(body);
+        ASSERT(header->type != 0 && header->type->name != 0);
+        ASSERT(header->handleCount >= 1);
+        ASSERT(header->pointerCount >=
+               header->handleCount + (header->parentDirectory != 0 ? 1 : 0));
+        if (header->type->waitable)
+        {
+            KiVerifyWaitList(body);
+        }
+    }
+    ASSERT(occupied == table->inUse);
+}
+
 NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POBJECT_TYPE type,
                                    KPROCESSOR_MODE accessMode, PVOID *body,
                                    POBJECT_HANDLE_INFORMATION handleInformation)
