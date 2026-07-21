@@ -91,6 +91,7 @@ CSRC := kernel/init/main.c \
         kernel/ps/peb.c \
         kernel/ps/usermode.c \
         kernel/ps/query.c \
+        kernel/ps/atom.c \
         kernel/ps/display.c \
         kernel/io/file.c \
         kernel/io/rw.c \

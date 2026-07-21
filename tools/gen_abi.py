@@ -1484,6 +1484,10 @@ NTPSAPI_FUNCTIONS = [
     "NtQueryPerformanceCounter",
     "NtQueryTimerResolution",
     "NtSetTimerResolution",
+    "NtAddAtom",
+    "NtDeleteAtom",
+    "NtFindAtom",
+    "NtQueryInformationAtom",
     "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
     "NtQueryDefaultLocale",
@@ -1547,6 +1551,7 @@ def gen_ntpsapi(wine: Path) -> str:
             ("_THREADINFOCLASS", "THREADINFOCLASS"),
             ("_SYSTEM_INFORMATION_CLASS", "SYSTEM_INFORMATION_CLASS"),
             ("_PS_CREATE_STATE", "PS_CREATE_STATE"),
+            ("_ATOM_INFORMATION_CLASS", "ATOM_INFORMATION_CLASS"),
             ("_PS_ATTRIBUTE_NUM", "PS_ATTRIBUTE_NUM"),
         ]
     )
@@ -1581,6 +1586,7 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(
                 winternl, "_SYSTEM_PERFORMANCE_INFORMATION", "SYSTEM_PERFORMANCE_INFORMATION"
             ),
+            extract_struct(winternl, "_ATOM_BASIC_INFORMATION", "ATOM_BASIC_INFORMATION"),
             extract_struct(winternl, "_RTL_SYSTEM_TIME", "RTL_SYSTEM_TIME"),
             extract_struct(winternl, "_RTL_TIME_ZONE_INFORMATION", "RTL_TIME_ZONE_INFORMATION"),
             extract_struct(
@@ -1676,7 +1682,9 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + '#include "abi/ntdef.h"\n'
         + '#include "abi/ntcontext.h" /* CONTEXT/EXCEPTION_RECORD in prototypes */\n\n'
         + "/* Win32 alias scaffold used by extracted prototypes. */\n"
-        + "typedef ULONG LCID, *PLCID;\n\n"
+        + "typedef ULONG LCID, *PLCID;\n"
+        + "/* winternl.h: `typedef unsigned short RTL_ATOM` (the atom handle). */\n"
+        + "typedef unsigned short RTL_ATOM, *PRTL_ATOM;\n\n"
         + "/* The byte-exact bodies live in abi/ntpebteb.h (same tags); these\n"
         + " * forward typedefs let the structs/prototypes below reference them. */\n"
         + "typedef struct _PEB PEB, *PPEB;\n"

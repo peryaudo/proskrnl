@@ -828,6 +828,49 @@ NtQueryTimerResolution:
     syscall
     ret
 
+    .global NtAddAtom
+NtAddAtom:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x47, %eax
+    syscall
+    ret
+
+    .global NtDeleteAtom
+NtDeleteAtom:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x92, %eax
+    syscall
+    ret
+
+    .global NtFindAtom
+NtFindAtom:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x14, %eax
+    syscall
+    ret
+
+    .global NtQueryInformationAtom
+NtQueryInformationAtom:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc5, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
     .global NtConvertBetweenAuxiliaryCounterAndPerformanceCounter
 NtConvertBetweenAuxiliaryCounterAndPerformanceCounter:
     mov %rcx, %r9
