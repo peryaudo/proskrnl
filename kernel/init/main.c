@@ -1055,6 +1055,11 @@ static void KiTestMainThread(void *context)
      * own [KTEST] FATINTEROP verdict when it runs; absence is silent. */
     int fatInteropFailures = kmt_run_fat_interop();
 
+    /* The FS churn stress (tests/kmt/fat_churn.c): only on images baked
+     * with C:\churn.cfg (run.sh fatstress); prints its own churn-seed /
+     * churn-verify verdict. Absence is silent. */
+    fatInteropFailures += kmt_run_fat_churn();
+
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
      * the milestone's acceptance artifact. */

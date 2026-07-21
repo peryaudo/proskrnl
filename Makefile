@@ -126,7 +126,8 @@ CSRC := kernel/init/main.c \
         tests/kmt/m5_section.c \
         tests/kmt/m6_io.c \
         tests/kmt/m6_blk.c \
-        tests/kmt/fat_interop.c
+        tests/kmt/fat_interop.c \
+        tests/kmt/fat_churn.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S
