@@ -43,7 +43,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **Feature branches + PRs; every change must satisfy gates G1–G9.** Run `/gate-check` on a diff before committing.
 - `abi/` constants: regenerate with `/gen-abi`, never hand-edit.
 - Introducing an NT-absent device/process: log it with `/log-hack` before/with the code.
-- **On completing a milestone**, update the **Status** line in the README "Status" section (current milestone, what is achieved and what couldn't be achieved, what's next); confirm `make run` is green.
+- **On completing a milestone**, update the **Status** line in the README "Status" section (current milestone, what is achieved and what couldn't be achieved, what's next); confirm `make test` is green.
 
 ## Key docs
 

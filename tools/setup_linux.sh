@@ -91,5 +91,5 @@ fi
 
 echo
 echo "setup_linux: done. Next:"
-echo "  make run                    # boot the kernel in QEMU, expect [KTEST] M3 PASS"
+echo "  make test                   # boot the kernel in QEMU, expect the [KTEST] verdict"
 echo "  tests/run/run.sh oracle     # run the ntapi suite against the pinned wine"

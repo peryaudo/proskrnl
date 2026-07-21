@@ -10,7 +10,7 @@
  * "m8_persist: verified". Exit 0 either way when the phase succeeded; a
  * distinct nonzero code per failed check.
  *
- * On a freshly built image (make run, run.sh proskrnl) only the seed phase
+ * On a freshly built image (make test, run.sh proskrnl) only the seed phase
  * runs — cheap, and it keeps exercising the hive-write path every boot.
  */
 #include "abi/ntdef.h"

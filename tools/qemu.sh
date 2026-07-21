@@ -31,6 +31,26 @@ if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
 fi
 TIMEOUT="${TIMEOUT:-30}"
 MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
+
+# INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
+# multiplexes its monitor onto stdio (Ctrl-A x quits, Ctrl-A c toggles the
+# monitor). No timeout, no log, no verdict: a human owns the session, and the
+# guest powers off through isa-debug-exit when cmd.exe exits. isa-debug-exit
+# can only return odd exit codes ((code<<1)|1), so QEMU's status carries no
+# verdict either — always exit 0.
+if [[ -n "${INTERACTIVE:-}" ]]; then
+    echo "qemu.sh: interactive console — 'exit' at the prompt powers off; Ctrl-A x kills QEMU" >&2
+    "$QEMU" \
+        -M q35 \
+        -cpu max \
+        -m "$MEM" \
+        -no-reboot \
+        -display none \
+        -serial mon:stdio \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -drive file="$IMG",format=raw,if=virtio
+    exit 0
+fi
 PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
