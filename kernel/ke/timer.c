@@ -23,15 +23,17 @@ static volatile uint64_t KiInterruptTime; /* 100 ns units since boot */
 /* The KUSER_SHARED_DATA page, once Ps has built it (0 before that). */
 void *KiUserSharedData;
 
-/* System time base: a fixed date (2026-01-01) as 100 ns since 1601-01-01 —
- * the same no-RTC rule as file timestamps (docs/03, fs/fat32/fat.c
- * FatCurrentNtTime): present, ordered, monotonic; never compared to a wall
- * clock. 155228 days 1601→2026: 425 years * 365 + 103 leap days (Gregorian
- * rules per the MS FILETIME documentation,
+/* System time base: 100 ns since 1601-01-01 at boot, seeded from the CMOS
+ * RTC (arch/x86_64/rtc.c, CUI-1) before the first clock interrupt; system
+ * time is base + interrupt time everywhere below. The initializer is the
+ * fallback when the CMOS content is implausible — the old fixed-date rule
+ * (docs/03): 2026-01-01, present/ordered/monotonic but not wall-true.
+ * 155228 days 1601→2026: 425 years * 365 + 103 leap days (Gregorian rules
+ * per the MS FILETIME documentation,
  * https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-filetime;
  * cross-check: 1601→1970 is 134774 days — Wine server/fd.c ticks_1601_to_1970
  * (369 * 365 + 89) — plus 20454 days 1970→2026). */
-#define KI_SYSTEM_TIME_BASE (155228ULL * 86400ULL * 10000000ULL)
+uint64_t KiSystemTimeBase = 155228ULL * 86400ULL * 10000000ULL;
 
 static LIST_ENTRY KiTimerListHead;
 
@@ -52,7 +54,7 @@ ULONGLONG KeQueryInterruptTime(void)
 
 void KeQuerySystemTime(LARGE_INTEGER *time)
 {
-    time->QuadPart = (LONGLONG)(KI_SYSTEM_TIME_BASE + KeQueryInterruptTime());
+    time->QuadPart = (LONGLONG)(KiSystemTimeBase + KeQueryInterruptTime());
 }
 
 /* One KSYSTEM_TIME store in the order Wine's readers expect: High2Time,
@@ -69,7 +71,7 @@ static void KiWriteKSystemTime(volatile KSYSTEM_TIME *target, uint64_t value)
 
 /* Mirror the clocks into KUSER_SHARED_DATA. TickCount is milliseconds
  * (server/fd.c: tick_count = monotonic_time / 10000; kernelbase's readers
- * ignore TickCountMultiplier); SystemTime = the fixed base + uptime. */
+ * ignore TickCountMultiplier); SystemTime = the boot-time base + uptime. */
 static void KiUpdateUserSharedDataTime(void)
 {
     KUSER_SHARED_DATA *usd = KiUserSharedData;
@@ -79,7 +81,7 @@ static void KiUpdateUserSharedDataTime(void)
     }
     uint64_t tickMs = KiInterruptTime / 10000;
     KiWriteKSystemTime(&usd->InterruptTime, KiInterruptTime);
-    KiWriteKSystemTime(&usd->SystemTime, KI_SYSTEM_TIME_BASE + KiInterruptTime);
+    KiWriteKSystemTime(&usd->SystemTime, KiSystemTimeBase + KiInterruptTime);
     KiWriteKSystemTime(&usd->TickCount, tickMs);
     usd->TickCountLowDeprecated = (ULONG)tickMs;
 }
@@ -105,11 +107,11 @@ uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
      * deadline at or before the base is already in the past. Exercised by
      * ntdll:sync test_wait_on_address's absolute RtlWaitOnAddress timeout —
      * the untranslated value parked the wait for ~4 billion seconds. */
-    if ((uint64_t)timeout->QuadPart <= KI_SYSTEM_TIME_BASE)
+    if ((uint64_t)timeout->QuadPart <= KiSystemTimeBase)
     {
         return KiInterruptTime;
     }
-    return (uint64_t)timeout->QuadPart - KI_SYSTEM_TIME_BASE;
+    return (uint64_t)timeout->QuadPart - KiSystemTimeBase;
 }
 
 void KiInsertTimer(PKTIMER timer, uint64_t dueInterruptTime)

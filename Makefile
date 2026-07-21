@@ -113,6 +113,7 @@ CSRC := kernel/init/main.c \
         fs/npfs/pipe.c \
         kernel/io/ioctl.c \
         arch/x86_64/serial.c \
+        arch/x86_64/rtc.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
         arch/x86_64/gdt.c \

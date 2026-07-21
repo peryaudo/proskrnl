@@ -63,6 +63,18 @@ START_TEST(time)
     ok(status == STATUS_SUCCESS, "NtQuerySystemTime -> %08lx", (unsigned long)status);
     ok(t1.QuadPart > 0, "system time not positive (%lld)", (long long)t1.QuadPart);
 
+    /* CUI-1: the clock is wall-true (CMOS RTC on proskrnl, the host clock on
+     * the oracle), so SystemTime must be past a floor of 2026-02-01 — one
+     * month after the retired fixed-date base, so a kernel that silently
+     * fell back to it fails here instead of shipping frozen 2026-01-01
+     * timestamps. 155228 days 1601->2026-01-01 (kernel/ke/timer.c derivation,
+     * MS FILETIME docs) + 31. */
+    {
+        ULONGLONG floor2026feb = (155228ULL + 31) * 86400ULL * 10000000ULL;
+        ok((ULONGLONG)t1.QuadPart > floor2026feb, "system time %lld predates 2026-02-01",
+           (long long)t1.QuadPart);
+    }
+
     /* Sleep 60 ms; every clock must move. The advance lower bound is 20 ms —
      * loose enough for scheduling noise and the oracle's 16 ms page-update
      * cadence (third_party/wine server/fd.c user_shared_data_timeout). */

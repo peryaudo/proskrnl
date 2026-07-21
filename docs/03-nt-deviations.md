@@ -88,8 +88,12 @@ them, and excluded from the differential fuzzer's op model):
 
 **Internal simplifications** (unobservable, Art. 3):
 
-- **No RTC driver yet:** file timestamps derive from a fixed base date plus uptime —
-  present, ordered, monotonic; no test may compare them across hosts.
+- **RTC (retired in CUI-1):** file timestamps derive from the system clock, which is
+  seeded once at boot from the CMOS RTC (`arch/x86_64/rtc.c`; QEMU supplies host UTC) —
+  real wall time. Before CUI-1 they were a fixed base date plus uptime. If the CMOS
+  content is implausible the fixed-date fallback still applies, so tests may rely on
+  presence/ordering/monotonicity unconditionally and on wall-truth only where the RTC
+  boot line (`[KTEST] rtc PASS`) is part of the run's contract.
 - **Windows' `DIR_NTRes` lower-case hints are not used:** any name that is not already an
   exact upper-case 8.3 name gets an LFN run (spec-conformant; preserves case exactly).
 - **FSInfo free-count is not maintained** (the FAT spec marks it advisory and requires
@@ -335,10 +339,11 @@ first (Art. 5). Wrinkles worth remembering:
   wait on the object).
 - **`NtRemoveIoCompletionEx` waits once**, then drains without waiting up
   to the caller's count — a partial batch is a success.
-- **KUSER_SHARED_DATA time** follows the no-RTC rule: `SystemTime` =
-  fixed 2026-01-01 base + uptime (the FAT timestamp base), `TickCount` in
-  milliseconds with `TickCountMultiplier = 1 << 24`, exactly the pinned
-  Wine's constants; `NtQuerySystemTime` serves the same clock.
+- **KUSER_SHARED_DATA time**: `SystemTime` = CMOS-RTC-seeded boot base +
+  uptime (CUI-1 retired the fixed 2026-01-01 base; that date remains only as
+  the fallback for implausible CMOS content), `TickCount` in milliseconds
+  with `TickCountMultiplier = 1 << 24`, exactly the pinned Wine's constants;
+  `NtQuerySystemTime` serves the same clock.
 - **`FileFsDeviceInformation.DeviceType` for a mounted volume is
   `FILE_DEVICE_DISK_FILE_SYSTEM` (0x8)**, the pinned oracle's value for
   regular files — not bare `FILE_DEVICE_DISK` (real NT's volume answer);

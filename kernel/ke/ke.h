@@ -330,6 +330,11 @@ extern volatile uint64_t KeTickCount;
 ULONGLONG KeQueryInterruptTime(void);
 void KeQuerySystemTime(LARGE_INTEGER *time);
 
+/* Wall-clock base (100 ns since 1601 at boot): seeded once from the CMOS RTC
+ * during KiSystemStartup (CUI-1); the initializer is the fixed-date fallback
+ * (docs/03). SystemTime = base + interrupt time. */
+extern uint64_t KiSystemTimeBase;
+
 /* The KUSER_SHARED_DATA page (kernel alias), registered by Ps at boot
  * (PspInitializeSharedUserData); once set, the clock tick mirrors the time
  * fields into it (M10). Typed void* here so ke.h does not pull in the whole
