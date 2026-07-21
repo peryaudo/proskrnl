@@ -118,7 +118,14 @@ mkdirp() {
 }
 
 # Format the ESP FAT32 and populate it (mtools '::' at a byte offset).
-mformat -i "$IMG@@$ESP_OFF" -F ::
+# -T bounds the volume to the PARTITION's sectors: mtools treats offset->EOF
+# as the device, so an unbounded mformat would claim the disk's last 33
+# sectors — the backup GPT (UEFI 2.10 §5.3: 32 entry sectors + 1 header at
+# the last LBA) — and a full volume would let cluster data clobber it
+# (found by the fatinterop battery's fragmentation surgery). p2 runs from
+# sector 4096 to (disk end - 34) inclusive (sgdisk -n 2:0:0 above).
+ESP_SECTORS=$(( SIZE_MB * 2048 - 34 - 4096 + 1 ))
+mformat -i "$IMG@@$ESP_OFF" -T "$ESP_SECTORS" -F ::
 mkdirp /EFI
 mkdirp /EFI/BOOT
 copy "$KERNEL"                       ::/proskrnl
