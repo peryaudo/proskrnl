@@ -1,49 +1,66 @@
 #!/usr/bin/env python3
 # regdiff.py — CUI-1's conviction gate (Art. 6: only a differential test
 # convicts). Compare the machine hive proskrnl's firstboot produced against
-# the registry the SAME wineboot/wine.inf payload produces in a fresh prefix
+# the registry the SAME filtered wine.inf payload produces in a fresh prefix
 # under the pinned oracle wine:
 #
-#   regdiff.py <proskrnl-SYSTEM-hive> <oracle-system.reg>
+#   regdiff.py <proskrnl-SYSTEM-hive> <oracle-system.reg> <filtered-wine.inf>
 #
-# Both files are parsed by regdump.py into one canonical form and compared
-# key-for-key, value-for-value over HKLM. Divergences print one line each;
-# exit 0 iff none remain after the exclusion list below.
+# The INF is the payload's own spec, so it also DEFINES the compared scope:
+# every key an AddReg line writes must exist on both sides with identical
+# values (regdump.py canonicalizes both formats). Scoping to the INF is what
+# makes the compare honest on both flanks:
 #
-# The exclusion list is the docs/03 "CUI-1 firstboot notes" scope, spelled
-# out here so every excluded delta is a WRITTEN-DOWN deviation, not a silent
-# one. Anything not covered by an entry below is a conviction.
+#   - the ORACLE side carries registry state proskrnl legitimately never has
+#     (each fake dll's embedded REGINST registration resource — thousands of
+#     Software\Classes entries applied by setupapi's fake-dll machinery,
+#     which the filtered INF drops; wineserver's own prefix furniture), and
+#   - the PROSKRNL side must not contain anything BEYOND the payload + the
+#     documented dynamic writers — an "extra keys" sweep convicts that.
+#
+# Exclusions are the docs/03 "CUI-1 firstboot notes" scope, spelled out here
+# so every excluded delta is a WRITTEN-DOWN deviation, not a silent one.
+import re
 import sys
 
 import regdump
 
 # --- the exclusion list ------------------------------------------------------
-# Subtree prefixes (lower-cased, under machine\); a trailing \ means the key
-# itself AND everything below it.
+
+# NT keeps numbered control sets (System\ControlSet001) selected through the
+# System\Select key, with CurrentControlSet a REG_LINK onto the chosen one —
+# and so does the oracle's wineserver. proskrnl has exactly one control set
+# and no REG_LINK (NtCreateKey REG_OPTION_CREATE_LINK is unimplemented,
+# docs/03), so its skeleton names the key CurrentControlSet literally. Fold
+# the oracle's numbered set onto the same name before comparing.
+ORACLE_RENAMES = [
+    ("machine\\system\\controlset001", "machine\\system\\currentcontrolset"),
+]
+
+# Subtree prefixes (lower-cased); the key itself and everything below it.
 EXCLUDED_SUBTREES = [
-    # WOW64's 32-bit view: proskrnl has no WOW64 (far-future milestone); the
-    # oracle's win64 prefix mirrors Software into Wow6432Node (docs/03).
-    # Matched as a path component anywhere, see excluded() below.
-
-    # The oracle's wineserver seeds HKLM\System\Setup itself on prefix
-    # creation (registry.c create_default_keys? — observed empirically);
-    # proskrnl-side wineboot writes it too; kept in the compare unless found
-    # divergent for machine-specific reasons.
-
     # proskrnl test artifact: the M8 persistence module seeds
     # HKLM\Software\prsk_m8_persist on every test boot (user/init-tests/
     # m8_persist.c); not firstboot state.
     "machine\\software\\prsk_m8_persist",
-    # Host-machine state the oracle's wineboot derives from the Unix host
-    # (CPU identity, host name), where proskrnl's kernel seeds fixed names
-    # (kernel/cm/registry.c CmInitialize) or QEMU supplies the hardware:
-    # compared values would encode the build host, not the boundary.
+    # Host-machine state wineboot derives from the machine it runs on
+    # (create_hardware_registry_keys, create_computer_name_keys), where
+    # proskrnl's kernel seeds fixed names (kernel/cm/registry.c
+    # CmInitialize) or QEMU supplies the hardware: comparing them would
+    # encode the build host, not the boundary.
     "machine\\hardware",
     "machine\\system\\currentcontrolset\\control\\computername",
     "machine\\system\\currentcontrolset\\services\\tcpip\\parameters",
-    # The environment key mixes wine.inf constants (compared: see
-    # VALUE_EXCEPTIONS carve-outs) with host-CPU-derived values.
-    # (handled per-value below, not as a subtree)
+    # Device enumeration state (wineboot install_root_pnp_devices): the
+    # winebth/winebus/wineusb root devices install fully on the oracle
+    # (SetupDi* + winedevice.exe) but only partially on proskrnl (no .inf
+    # files, no SCM — docs/03 "warn-and-continue as stock"); PnP is not
+    # CUI-1 surface.
+    "machine\\system\\currentcontrolset\\enum",
+    "machine\\system\\currentcontrolset\\control\\deviceclasses",
+    # NT's control-set selection furniture (see ORACLE_RENAMES above):
+    # proskrnl has one implicit control set, no Select key.
+    "machine\\system\\select",
 ]
 
 # Path-component exclusions: any key whose path CONTAINS this component.
@@ -53,9 +70,7 @@ EXCLUDED_COMPONENTS = [
     "wow6432node",
 ]
 
-# (path suffix, value name) pairs excluded from the value compare; either
-# side. Lower-cased. A None name excludes every value directly under that
-# exact key path.
+# (path, value name) pairs excluded from the value compare, either side.
 EXCLUDED_VALUES = [
     # Host-CPU identity wineboot derives from the running machine
     # (create_environment_registry_keys): differs between the oracle host
@@ -70,6 +85,43 @@ EXCLUDED_VALUES = [
      "processor_revision"),
     ("machine\\system\\currentcontrolset\\control\\session manager\\environment",
      "number_of_processors"),
+    # The CSIDL-dirid degradation of the shell32 seam (docs/03 "CUI-1
+    # firstboot notes"): without shell32, setupapi's get_csidl_dir takes the
+    # get_unknown_dirid path, so AddReg value data referencing a CSIDL
+    # profile directory (Program Files and friends) renders as
+    # "...\system32\unknown\..." instead of the oracle host's real folder.
+    # The affected values are exactly wine.inf's dirid-16xxx references.
+    ("machine\\software\\classes\\rtffile\\shell\\open\\command", ""),
+    ("machine\\software\\classes\\rtffile\\shell\\print\\command", ""),
+    ("machine\\software\\classes\\wrifile\\shell\\open\\command", ""),
+    ("machine\\software\\classes\\wrifile\\shell\\print\\command", ""),
+    ("machine\\software\\microsoft\\mediaplayer", "installation directorylfn"),
+    ("machine\\software\\microsoft\\windows\\currentversion", "commonfilesdir"),
+    ("machine\\software\\microsoft\\windows\\currentversion", "commonfilesdir (x86)"),
+    ("machine\\software\\microsoft\\windows\\currentversion", "programfilesdir"),
+    ("machine\\software\\microsoft\\windows\\currentversion", "programfilesdir (x86)"),
+    # wineboot refreshes the timezone names from the host zone database
+    # after the INF writes their empty NOCLOBBER defaults; proskrnl has no
+    # zone database below it (the RTC supplies UTC time only, docs/03), so
+    # the INF defaults survive there while the oracle host writes its own.
+    ("machine\\system\\currentcontrolset\\control\\timezoneinformation", "standardname"),
+    ("machine\\system\\currentcontrolset\\control\\timezoneinformation", "timezonekeyname"),
+]
+
+# Value names excluded under ANY key: REG_LINK plumbing (proskrnl implements
+# no registry symlinks, docs/03 — the CurrentControlSet link is folded by
+# ORACLE_RENAMES; wine.inf's Time Zones link fails on proskrnl by design).
+EXCLUDED_VALUE_NAMES = [
+    "symboliclinkvalue",
+]
+
+# proskrnl-side keys that are allowed to exist OUTSIDE the INF payload scope:
+# the kernel's own skeleton (kernel/cm/registry.c CmInitialize) and the
+# dynamic keys wineboot writes at every boot (create_dynamic_registry_keys,
+# create_environment_registry_keys — Session Manager\Environment is also INF
+# scope; Windows\CurrentVersion\RunServices* are ProcessRunKeys probes).
+ALLOWED_EXTRA_SUBTREES = [
+    "machine\\system\\currentcontrolset\\control\\session manager",
 ]
 
 
@@ -84,15 +136,178 @@ def excluded_key(path):
 def excluded_value(path, name):
     if excluded_key(path):
         return True
+    if name in EXCLUDED_VALUE_NAMES:
+        return True
     return (path, name) in EXCLUDED_VALUES
 
 
+def rename_path(path):
+    for old, new in ORACLE_RENAMES:
+        if path == old or path.startswith(old + "\\"):
+            return new + path[len(old):]
+    return path
+
+
+def apply_renames(tree):
+    renamed = regdump.RegTree()
+    renamed.keys = {rename_path(p) for p in tree.keys}
+    renamed.values = {(rename_path(p), n): v for (p, n), v in tree.values.items()}
+    return renamed
+
+
+# --- the INF payload scope ---------------------------------------------------
+
+# Registry roots as AddReg spells them (setupapi/install.c append_multi_sz /
+# get_root_key): HKCR is the HKLM classes view on the machine side.
+INF_ROOTS = {
+    "hklm": "machine",
+    "hkcr": "machine\\software\\classes",
+}
+
+
+def split_inf_fields(line):
+    """Split an INF entry line on commas, honoring double quotes ("" is a
+    literal quote inside a quoted field — setupapi's PARSER_IN_STRING rule)."""
+    fields = []
+    cur = []
+    in_quotes = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == '"':
+            if in_quotes and i + 1 < len(line) and line[i + 1] == '"':
+                cur.append('"')
+                i += 2
+                continue
+            in_quotes = not in_quotes
+        elif c == "," and not in_quotes:
+            fields.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    fields.append("".join(cur).strip())
+    return fields
+
+
+def inf_addreg_scope(inf_path):
+    """(keys, values): the lower-cased machine-side key paths and
+    (path, valuename) pairs the INF's REACHABLE AddReg sections write.
+
+    Reachable = what `InstallHinfSection PreInstall/DefaultInstall` installs
+    on an amd64 machine: the undecorated section plus its .nt/.ntamd64
+    decorations (SetupDiGetActualSectionToInstall), Needs= recursion, then
+    each AddReg= section list. Sections for other architectures (.ntarm64,
+    Wow64Install, ...) are installed by NEITHER runner and must not enter
+    the scope. Good-enough INF reading for scope purposes: [Strings]
+    substitution, quoted fields, HKLM/HKCR roots (HKCU/HKU are out of the
+    machine differential; HKR never appears in the kept sections)."""
+    with open(inf_path, encoding="latin-1") as f:
+        text = f.read()
+
+    # splice continuations, collect lines per section
+    sections = {}
+    strings = {}
+    section = None
+    lines = []
+    for raw in text.splitlines():
+        raw = raw.split(";")[0].rstrip()
+        if not raw:
+            continue
+        if lines and lines[-1].endswith("\\"):
+            lines[-1] = lines[-1][:-1] + raw.lstrip()
+            continue
+        lines.append(raw)
+    for line in lines:
+        if line.startswith("["):
+            section = line[1 : line.index("]")].lower()
+            sections.setdefault(section, [])
+            continue
+        if section is not None:
+            sections[section].append(line)
+        if section == "strings" and "=" in line:
+            name, _, value = line.partition("=")
+            strings[name.strip().lower()] = value.strip().strip('"')
+
+    def substitute(s):
+        return re.sub(r"%([^%]+)%", lambda m: strings.get(m.group(1).lower(), m.group(0)), s)
+
+    def decorated(name):
+        # SetupDiGetActualSectionToInstall: the MOST SPECIFIC existing
+        # decoration replaces the others — they never stack.
+        for suffix in (".ntamd64", ".nt", ""):
+            if name.lower() + suffix in sections:
+                return [name.lower() + suffix]
+        return []
+
+    # walk PreInstall/DefaultInstall + Needs= to the AddReg section lists
+    install = []
+    pending = ["PreInstall", "DefaultInstall"]
+    seen = set()
+    while pending:
+        name = pending.pop()
+        for sec in decorated(name):
+            if sec in seen:
+                continue
+            seen.add(sec)
+            install.append(sec)
+            for line in sections[sec]:
+                directive, _, value = line.partition("=")
+                if directive.strip().lower() == "needs":
+                    pending.extend(n.strip() for n in value.split(",") if n.strip())
+
+    addreg = []
+    for sec in install:
+        for line in sections[sec]:
+            directive, _, value = line.partition("=")
+            if directive.strip().lower() == "addreg":
+                addreg.extend(n.strip().lower() for n in value.split(",") if n.strip())
+
+    keys = set()
+    values = set()
+    for sec in addreg:
+        for line in sections.get(sec, []):
+            fields = split_inf_fields(substitute(line))
+            if len(fields) < 2:
+                continue
+            root = INF_ROOTS.get(fields[0].lower())
+            if root is None:
+                continue  # per-user roots: outside the machine differential
+            subkey = fields[1].strip("\\")
+            path = (root + "\\" + subkey if subkey else root).lower()
+            if excluded_key(path):
+                continue
+            name = fields[2] if len(fields) > 2 else ""
+            try:
+                flags = int(fields[3], 0) if len(fields) > 3 and fields[3] else 0
+            except ValueError:
+                flags = 0
+            # AddReg flag bits: pinned tree include/setupapi.h —
+            # FLG_ADDREG_KEYONLY 0x10; type bits (flags >> 16) << 16 with
+            # FLG_ADDREG_TYPE_MULTI_SZ 0x10000 | FLG_ADDREG_TYPE_EXPAND_SZ
+            # 0x20000 spelling REG_LINK's 6 as 0x60000 (wine.inf's
+            # SymbolicLinkValue lines use exactly that).
+            if (flags & 0x60000) == 0x60000:
+                continue  # REG_LINK entries are excluded wholesale (docs/03)
+            keys.add(path)
+            if len(fields) > 2 and not (flags & 0x10):  # FLG_ADDREG_KEYONLY
+                values.add((path, name.lower()))
+    return keys, values
+
+
+def ancestors(path):
+    parts = path.split("\\")
+    return {"\\".join(parts[:i]) for i in range(1, len(parts))}
+
+
 def main():
-    if len(sys.argv) != 3:
-        sys.stderr.write("usage: regdiff.py <proskrnl-SYSTEM-hive> <oracle-system.reg>\n")
+    if len(sys.argv) != 4:
+        sys.stderr.write(
+            "usage: regdiff.py <proskrnl-SYSTEM-hive> <oracle-system.reg> <filtered-wine.inf>\n")
         return 2
     ours = regdump.load(sys.argv[1], subtree="machine")
-    oracle = regdump.load(sys.argv[2], subtree="machine")
+    oracle = apply_renames(regdump.load(sys.argv[2], subtree="machine"))
+    scope_keys, scope_values = inf_addreg_scope(sys.argv[3])
 
     divergences = 0
 
@@ -101,18 +316,23 @@ def main():
         divergences += 1
         print("regdiff: %s %s" % (kind, what))
 
-    for path in sorted(oracle.keys - ours.keys):
-        if not excluded_key(path):
+    # --- the payload: every scoped key/value on both sides, data identical --
+    # Oracle-side values NOT written by the INF are other oracle writers
+    # sharing the key (fake-dll REGINST registration, wineserver furniture)
+    # and stay out of the compare; proskrnl-side values not on the oracle
+    # AND not in the INF are convictions (who else wrote them?).
+    for path in sorted(scope_keys):
+        if path not in ours.keys:
             report("missing key", path)
-    for path in sorted(ours.keys - oracle.keys):
-        if not excluded_key(path):
-            report("extra key", path)
-
-    for (path, name) in sorted(set(oracle.values) | set(ours.values)):
+        if path not in oracle.keys:
+            report("oracle missing key", path)
+    for path, name in sorted(scope_values):
         if excluded_value(path, name):
             continue
-        theirs = oracle.values.get((path, name))
         mine = ours.values.get((path, name))
+        theirs = oracle.values.get((path, name))
+        if mine is None and theirs is None:
+            continue  # e.g. DelReg'd later, or NOCLOBBER against absent state
         if theirs is None:
             report("extra value", "%s ! %s = %s %s" % (path, name, mine[0], mine[1]))
         elif mine is None:
@@ -122,7 +342,31 @@ def main():
                    "%s ! %s: proskrnl %s %s != oracle %s %s"
                    % (path, name, mine[0], mine[1], theirs[0], theirs[1]))
 
-    print("regdiff: %d divergence(s)" % divergences)
+    # --- the sweep: proskrnl has nothing beyond payload + documented writers -
+    allowed = set(scope_keys)
+    for path in scope_keys:
+        allowed |= ancestors(path)
+    for path in sorted(ours.keys):
+        if path in allowed or excluded_key(path):
+            continue
+        if any(path == p or path.startswith(p + "\\") for p in ALLOWED_EXTRA_SUBTREES):
+            continue
+        # keys the oracle also has are fine: same writer wrote both sides
+        # (wineboot's dynamic keys land identically under both runners)
+        if path in oracle.keys:
+            continue
+        report("unexpected key", path)
+    for (path, name), val in sorted(ours.values.items()):
+        if path not in scope_keys or (path, name) in scope_values:
+            continue
+        if excluded_value(path, name):
+            continue
+        if (path, name) in oracle.values:
+            continue
+        report("unexpected value", "%s ! %s = %s %s" % (path, name, val[0], val[1]))
+
+    print("regdiff: scope %d keys / %d values; %d divergence(s)"
+          % (len(scope_keys), len(scope_values), divergences))
     return 1 if divergences else 0
 
 

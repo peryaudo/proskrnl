@@ -32,6 +32,8 @@
 import struct
 import sys
 
+# Registry value types: fixed by the Windows SDK contract; re-verify against
+# the pinned tree's include/winnt.h (REG_NONE..REG_QWORD).
 TYPE_NAMES = {
     0: "REG_NONE",
     1: "REG_SZ",
@@ -222,6 +224,14 @@ def parse_winereg(text, prefix):
             raw, _ = unescape(line, 1, "]")
             path = prefix + "\\" + raw if raw else prefix
             tree.add_key(path)
+            # Parents with subkeys but no values are only IMPLIED by the
+            # save format (server/registry.c save_subkeys: "keys with no
+            # values but subkeys are saved implicitly"); materialize them
+            # so key-existence compares see them.
+            parent = path.rsplit("\\", 1)[0]
+            while parent and parent.lower() not in tree.keys:
+                tree.add_key(parent)
+                parent = parent.rsplit("\\", 1)[0]
             continue
         if path is None:
             raise ValueError("value line before any key: %r" % line)

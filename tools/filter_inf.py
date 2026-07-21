@@ -25,7 +25,14 @@ builder - the oracle keeps consuming its own full wine.inf, and no Wine byte
 changes (docs/03 CUI-1 notes). Everything else - AddReg/DelReg (the ~500-line
 machine-state payload) and the .Services sections - is kept.
 
-Usage: filter_inf.py <wine.inf> <output.inf>
+Usage: filter_inf.py [--keep NAME[,NAME...]] <wine.inf> <output.inf>
+
+--keep exempts directive families from the drop list. The registry
+differential's oracle leg (tests/run/run.sh firstboot) uses
+--keep WineFakeDlls: on the oracle host the fake-dll sources exist and a
+prefix WITHOUT fake dlls cannot launch any non-bootstrap process (the
+initial process's null dll-load-path never falls back to builtins), while
+the directive writes no registry - so keeping it changes no compared state.
 """
 
 import re
@@ -33,12 +40,10 @@ import sys
 
 DROPPED = ("WineFakeDlls", "RegisterDlls", "CopyFiles", "DelFiles", "RenFiles", "UpdateInis",
            "ProfileItems")
-DIRECTIVE = re.compile(
-    r"^\s*(" + "|".join(DROPPED) + r")\s*=", re.IGNORECASE
-)
 
 
-def filter_inf(text: str) -> str:
+def filter_inf(text: str, dropped=DROPPED) -> str:
+    directive = re.compile(r"^\s*(" + "|".join(dropped) + r")\s*=", re.IGNORECASE)
     out = []
     dropping = False
     for line in text.splitlines(keepends=True):
@@ -46,7 +51,7 @@ def filter_inf(text: str) -> str:
             # Swallow the continuation lines of a dropped directive.
             dropping = line.rstrip("\r\n").rstrip().endswith("\\")
             continue
-        if DIRECTIVE.match(line):
+        if directive.match(line):
             dropping = line.rstrip("\r\n").rstrip().endswith("\\")
             continue
         out.append(line)
@@ -54,19 +59,25 @@ def filter_inf(text: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        sys.exit("usage: filter_inf.py <wine.inf> <output.inf>")
-    source, destination = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    directives = DROPPED
+    if args and args[0] == "--keep":
+        exempt = {name.lower() for name in args[1].split(",")}
+        directives = tuple(d for d in DROPPED if d.lower() not in exempt)
+        args = args[2:]
+    if len(args) != 2:
+        sys.exit("usage: filter_inf.py [--keep NAME[,NAME...]] <wine.inf> <output.inf>")
+    source, destination = args[0], args[1]
     # wine.inf is plain ASCII/UTF-8; keep bytes as-is via latin-1 round-trip.
     with open(source, encoding="latin-1", newline="") as handle:
         text = handle.read()
-    filtered = filter_inf(text)
+    filtered = filter_inf(text, directives)
     kept = sum(1 for l in filtered.splitlines() if l.strip())
     dropped = sum(1 for l in text.splitlines() if l.strip()) - kept
     with open(destination, "w", encoding="latin-1", newline="") as handle:
         handle.write(filtered)
     print(f"filter_inf: {destination}: dropped {dropped} lines "
-          f"({', '.join(DROPPED)})", file=sys.stderr)
+          f"({', '.join(directives)})", file=sys.stderr)
 
 
 if __name__ == "__main__":
