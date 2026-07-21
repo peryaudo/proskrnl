@@ -399,19 +399,43 @@ $(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
 	@mkdir -p $(dir $@)
 	python3 tools/filter_inf.py third_party/wine/loader/wine.inf $@
 
-WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
-            win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
-            win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
-            win:$(WINE_PE)/msvcrt/x86_64-windows/msvcrt.dll=windows/system32/msvcrt.dll \
-            win:$(WINE_PE)/ucrtbase/x86_64-windows/ucrtbase.dll=windows/system32/ucrtbase.dll \
-            win:$(WINE_PE)/advapi32/x86_64-windows/advapi32.dll=windows/system32/advapi32.dll \
-            win:$(WINE_PE)/sechost/x86_64-windows/sechost.dll=windows/system32/sechost.dll \
-            win:$(WINE_PE)/rpcrt4/x86_64-windows/rpcrt4.dll=windows/system32/rpcrt4.dll \
-            win:$(WINE_PE)/version/x86_64-windows/version.dll=windows/system32/version.dll \
-            win:$(WINE_PE)/cryptbase/x86_64-windows/cryptbase.dll=windows/system32/cryptbase.dll \
-            win:$(WINE_PE)/setupapi/x86_64-windows/setupapi.dll=windows/system32/setupapi.dll \
-            win:$(WINE_PE)/cfgmgr32/x86_64-windows/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
-            win:$(WINE_PE)/ws2_32/x86_64-windows/ws2_32.dll=windows/system32/ws2_32.dll \
+# The baked COPIES of the pinned tree's PE dlls are debug-stripped. The
+# DWARF sections are never read on-target, and with no COW and no eviction
+# (Art. 3) every mapped image is copied whole per process — the mingw-gcc
+# -g builds are ~3x the clang ones and firstboot's rundll32 fan-out pushed
+# a 256M boot into STATUS_INSUFFICIENT_RESOURCES import failures (observed:
+# setupapi's advapi32/cfgmgr32/rpcrt4 imports failing c000009a, silently
+# skipping wine.inf's whole AddReg payload). The pinned tree keeps its
+# full-symbol dlls for the oracle legs (one tree, three roles, docs/06);
+# only the disk payload is lean.
+WINESTRIP := $(BUILD)/winestrip
+WINESTRIP_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
+                   cryptbase setupapi cfgmgr32 ws2_32
+WINESTRIP_DLLS := $(foreach d,$(WINESTRIP_NAMES),$(WINESTRIP)/$(d).dll)
+# One explicit rule per dll (the name appears twice in the source path, which
+# a pattern rule's single stem cannot express).
+define WINESTRIP_RULE
+$(WINESTRIP)/$(1).dll: $(WINE_PE)/$(1)/x86_64-windows/$(1).dll
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach d,$(WINESTRIP_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+winestrip: $(WINESTRIP_DLLS)
+.PHONY: winestrip
+
+WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
+            win:$(WINESTRIP)/kernel32.dll=windows/system32/kernel32.dll \
+            win:$(WINESTRIP)/kernelbase.dll=windows/system32/kernelbase.dll \
+            win:$(WINESTRIP)/msvcrt.dll=windows/system32/msvcrt.dll \
+            win:$(WINESTRIP)/ucrtbase.dll=windows/system32/ucrtbase.dll \
+            win:$(WINESTRIP)/advapi32.dll=windows/system32/advapi32.dll \
+            win:$(WINESTRIP)/sechost.dll=windows/system32/sechost.dll \
+            win:$(WINESTRIP)/rpcrt4.dll=windows/system32/rpcrt4.dll \
+            win:$(WINESTRIP)/version.dll=windows/system32/version.dll \
+            win:$(WINESTRIP)/cryptbase.dll=windows/system32/cryptbase.dll \
+            win:$(WINESTRIP)/setupapi.dll=windows/system32/setupapi.dll \
+            win:$(WINESTRIP)/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
+            win:$(WINESTRIP)/ws2_32.dll=windows/system32/ws2_32.dll \
             win:$(RUNDLL32)=windows/system32/rundll32.exe \
             win:$(WINEBOOT)=windows/system32/wineboot.exe \
             win:$(WINE_INF)=windows/inf/wine.inf \
@@ -432,7 +456,7 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
             win:$(M9SMOKE)=m9_smoke.exe
 
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-        $(WINE_INF) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -455,7 +479,7 @@ $(UPCASE): tests/cui/upcase.c
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
         $(CMD) $(HELLOCRT) $(UPCASE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WINE_PE_DLLS) \
-        tools/mkimage.sh arch/x86_64/limine.conf
+        $(WINESTRIP_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(M9ECHO)=m9_echo.exe \
 	    win:$(CMD)=windows/system32/cmd.exe \
@@ -570,7 +594,7 @@ $(BUILD)/interactive.flag:
 
 $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(BUILD)/interactive.flag tools/mkimage.sh arch/x86_64/limine.conf
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(BUILD)/interactive.flag tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \
 	    win:$(HELLOCRT)=hello_crt.exe \
