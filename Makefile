@@ -395,6 +395,93 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img
 
+# ---------------------------------------------------------------------------
+# M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
+# subset of Wine's own test suite, run by tests/run/run.sh winetest against
+# the curated manifest (tests/winetest/manifest.txt) on BOTH the oracle and
+# proskrnl. Same discipline as cmd.exe above: the pinned tree's own PE test
+# objects (built by tools/setup_linux.sh) are linked UNMODIFIED; the CRT
+# entry is the implib's own mainCRTStartup (dlls/msvcrt/crt_main.c — the
+# entry winegcc itself picks for CRT exes), so the only glue is
+# user/wtest/user32_stubs.c standing in the user32 imports the ntdll and
+# kernel32 test objects reference (user32 is the M12 GUI path, off the image
+# per Art. 7; subtests whose assertions need the real user32 fail identically
+# on both runners and stay off the manifest).
+WTESTS := $(BUILD)/wtests
+WT_LINK := $(MINGW) -std=gnu11 -O1 -g0 -fno-builtin -nostdlib -nostartfiles \
+    -Wl,--entry=mainCRTStartup
+WT_GLUE := user/wtest/crt_sections.c
+WT_LIBS := third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
+    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a
+WT_CRT_MSVCRT := $(WINE_PE)/msvcrt/x86_64-windows/libmsvcrt.a
+WT_CRT_UCRT := $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a
+
+# Test objects per module: every SOURCES entry of the dir's Makefile.in plus
+# the makedep-generated testlist.o, MINUS the .spec helper-DLL objects
+# (testdll/dummy/threaddll — separate runtime-loaded modules; the subtests
+# that load them stay off the manifest).
+WT_NTDLL_D := third_party/wine/dlls/ntdll/tests/x86_64-windows
+WT_NTDLL_OBJS := $(addprefix $(WT_NTDLL_D)/, alpc.o atom.o change.o directory.o env.o \
+    error.o exception.o file.o generated.o info.o large_int.o om.o path.o pipe.o port.o \
+    reg.o rtl.o rtlbitmap.o rtlstr.o string.o sync.o thread.o threadpool.o time.o \
+    unwind.o virtual.o wow64.o testlist.o)
+WT_KERNEL32_D := third_party/wine/dlls/kernel32/tests/x86_64-windows
+WT_KERNEL32_OBJS := $(addprefix $(WT_KERNEL32_D)/, actctx.o atom.o change.o codepage.o \
+    comm.o console.o debugger.o directory.o drive.o environ.o fiber.o file.o format_msg.o \
+    generated.o heap.o loader.o locale.o mailslot.o module.o path.o pipe.o power.o \
+    process.o profile.o resource.o sync.o thread.o time.o timer.o toolhelp.o version.o \
+    virtual.o volume.o testlist.o)
+WT_MSVCRT_D := third_party/wine/dlls/msvcrt/tests/x86_64-windows
+WT_MSVCRT_OBJS := $(addprefix $(WT_MSVCRT_D)/, cpp.o data.o dir.o environ.o file.o heap.o \
+    locale.o misc.o printf.o scanf.o signal.o string.o time.o testlist.o)
+WT_UCRTBASE_D := third_party/wine/dlls/ucrtbase/tests/x86_64-windows
+WT_UCRTBASE_OBJS := $(addprefix $(WT_UCRTBASE_D)/, cpp.o environ.o file.o misc.o printf.o \
+    scanf.o string.o thread.o testlist.o)
+WT_CMD_D := third_party/wine/programs/cmd/tests/x86_64-windows
+WT_CMD_OBJS := $(addprefix $(WT_CMD_D)/, batch.o directory.o testlist.o)
+
+$(WT_NTDLL_OBJS) $(WT_KERNEL32_OBJS) $(WT_MSVCRT_OBJS) $(WT_UCRTBASE_OBJS) $(WT_CMD_OBJS):
+	@echo "error: $@ missing - build the pinned Wine test modules first (tools/setup_linux.sh)" >&2
+	@exit 1
+
+$(WTESTS)/ntdll_test.exe: $(WT_NTDLL_OBJS) user/wtest/user32_stubs.c $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_LINK) $(WT_NTDLL_OBJS) user/wtest/user32_stubs.c $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
+$(WTESTS)/kernel32_test.exe: $(WT_KERNEL32_OBJS) third_party/wine/dlls/kernel32/tests/resource.res \
+        user/wtest/user32_stubs.c $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff third_party/wine/dlls/kernel32/tests/resource.res \
+	    $(WTESTS)/kernel32_resource.res.o
+	$(WT_LINK) $(WT_KERNEL32_OBJS) $(WTESTS)/kernel32_resource.res.o \
+	    user/wtest/user32_stubs.c $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
+$(WTESTS)/msvcrt_test.exe: $(WT_MSVCRT_OBJS) $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_LINK) $(WT_MSVCRT_OBJS) $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
+$(WTESTS)/ucrtbase_test.exe: $(WT_UCRTBASE_OBJS) $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_LINK) $(WT_UCRTBASE_OBJS) $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_UCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
+$(WTESTS)/cmd.exe_test.exe: $(WT_CMD_OBJS) third_party/wine/programs/cmd/tests/rsrc.res $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff third_party/wine/programs/cmd/tests/rsrc.res \
+	    $(WTESTS)/cmd_rsrc.res.o
+	$(WT_LINK) $(WT_CMD_OBJS) $(WTESTS)/cmd_rsrc.res.o $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
+wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_test.exe \
+    $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe
+.PHONY: wtests
+
 run: $(IMG)
 	tools/qemu.sh $(IMG)
 

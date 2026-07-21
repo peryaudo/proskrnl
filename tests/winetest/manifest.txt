@@ -1,0 +1,21 @@
+# The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
+# own test suite"): every <test_exe>:<subtest> pair here must exit 0 (zero
+# winetest failures) under the pinned Wine oracle AND on proskrnl
+# (tests/run/run.sh winetest). Curated: a pair joins only once it is green on
+# BOTH runners; pairs blocked on unimplemented surface (user32, missing Nt*
+# syscalls) stay out until the consumer-driven kernel work lands (docs/03
+# "M10 winetest notes").
+ntdll_test.exe:large_int
+ntdll_test.exe:string
+ntdll_test.exe:rtlbitmap
+msvcrt_test.exe:data
+msvcrt_test.exe:heap
+msvcrt_test.exe:printf
+msvcrt_test.exe:scanf
+msvcrt_test.exe:string
+ucrtbase_test.exe:printf
+ucrtbase_test.exe:scanf
+ucrtbase_test.exe:string
+kernel32_test.exe:codepage
+kernel32_test.exe:format_msg
+kernel32_test.exe:heap

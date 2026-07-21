@@ -14,6 +14,10 @@
 #                     and runs each test. This is the REGRESSION gate: it must
 #                     stay all-green as the boundary is implemented.
 #
+#   run.sh winetest   The M10 stretch gate: run the curated manifest of
+#                     Wine's-own-test-suite pairs (tests/winetest/) under the
+#                     oracle AND on proskrnl. Same one-binary discipline.
+#
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
 #     [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
@@ -198,6 +202,100 @@ proskrnl() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
+# own test suite"): the curated manifest of <test_exe>:<subtest> pairs
+# (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
+# proskrnl. The binaries are the pinned tree's own test objects linked
+# standalone (Makefile `wtests`) — ONE binary, two runners, like everything
+# else here. On proskrnl the kernel sweep (kernel/init/main.c
+# KiRunWineTests) reads the baked manifest, runs each pair on the console
+# (winetest prints through msvcrt stdout -> conhost -> serial), and the exit
+# code — winetest's failure count — is the verdict.
+winetest() {
+    local manifest="$ROOT/tests/winetest/manifest.txt"
+    make -C "$ROOT" wtests >/dev/null
+    mkdir -p "$BUILD/wtests"
+
+    local pairs=()
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        pairs+=("$line")
+    done < "$manifest"
+    if [[ ${#pairs[@]} -eq 0 ]]; then
+        echo "== winetest: manifest empty ==" >&2
+        return 2
+    fi
+
+    # --- oracle leg (the SPEC gate: green here before the kernel side) ---
+    local fails=0
+    for pair in "${pairs[@]}"; do
+        local exe="${pair%%:*}" sub="${pair#*:}"
+        local olog="$BUILD/wtests/${exe}.${sub}.oracle.log"
+        # scratch cwd: the cmd tests write test.cmd/test.out where they run
+        if (cd "$BUILD/wtests" && "$WINE" "$ROOT/build/wtests/$exe" "$sub") >"$olog" 2>&1; then
+            echo "[KTEST] wtest-oracle $pair PASS"
+        else
+            echo "[KTEST] wtest-oracle $pair FAIL (see $olog)"
+            fails=$((fails+1))
+        fi
+    done
+
+    # --- proskrnl leg (the REGRESSION gate) ---
+    local kernel img
+    kernel="$ROOT/build/proskrnl"
+    img="$ROOT/build/tests/wtest.hdd"
+    if [[ ! -f "$kernel" ]]; then
+        make -C "$ROOT" >/dev/null
+    fi
+    make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe >/dev/null
+
+    # The Wine PE userland (the run.sh proskrnl set) + conhost (winetest
+    # processes run on the console) + cmd.exe (%COMSPEC%, the cmd tests'
+    # subject) + the test binaries and the manifest under C:\wtests.
+    local specs=()
+    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
+               cryptbase; do
+        specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
+    done
+    for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
+               normidna; do
+        [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
+            specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
+    done
+    specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
+    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
+    for exe in ntdll_test.exe kernel32_test.exe msvcrt_test.exe ucrtbase_test.exe \
+               cmd.exe_test.exe; do
+        specs+=("win:$ROOT/build/wtests/$exe=wtests/$exe")
+    done
+    specs+=("win:$manifest=wtests/manifest.txt")
+
+    # MB-scale test binaries: a bigger volume than the 64 MB default.
+    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+
+    local log="$ROOT/build/tests/wtest-serial.log"
+    LOG="$log" PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+
+    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
+        --moduledir "$ROOT/build/modules" < "$log" \
+        > "$ROOT/build/tests/wtest-serial.sym.log" 2>/dev/null || true
+
+    # No ^ anchor: conhost cursor escapes may share the verdict's line (the
+    # run.sh console precedent).
+    for pair in "${pairs[@]}"; do
+        if grep -qF "[KTEST] wtest $pair PASS" "$log" 2>/dev/null; then
+            echo "[KTEST] wtest $pair PASS"
+        else
+            echo "[KTEST] wtest $pair FAIL"
+            fails=$((fails + 1))
+        fi
+    done
+    echo "== winetest: $fails failing =="
+    return $((fails > 0 ? 1 : 0))
+}
+
 # The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
 # both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
@@ -268,8 +366,10 @@ console() {
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
+    winetest) winetest ;;
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
     console)  console ;;
-    *) echo "usage: $0 {oracle|proskrnl|fuzz [fuzz.py options]|persist|console}" >&2; exit 2 ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|console}" >&2
+       exit 2 ;;
 esac
