@@ -13,6 +13,7 @@
  * and fail with STATUS_NOT_IMPLEMENTED). */
 #define NTSYS_NtClose 0x000f
 #define NTSYS_NtDuplicateObject 0x003c
+#define NTSYS_NtQueryObject 0x0010
 #define NTSYS_NtMakeTemporaryObject 0x00af
 #define NTSYS_NtCreateEvent 0x0048
 #define NTSYS_NtOpenEvent 0x0040

@@ -452,6 +452,7 @@ _Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityQualityOfService) == 40, "OBJ
 NTOBAPI_FUNCTIONS = [
     "NtClose",
     "NtDuplicateObject",
+    "NtQueryObject",
     "NtMakeTemporaryObject",
     "NtCreateEvent",
     "NtOpenEvent",
@@ -490,19 +491,25 @@ NTOBAPI_FUNCTIONS = [
 
 def gen_ntobapi(wine: Path) -> str:
     winternl = (wine / "include/winternl.h").read_text()
+    winnt = (wine / "include/winnt.h").read_text()
 
     enums = "\n\n".join(
         extract_enum(winternl, tag, typedef)
         for tag, typedef in [
+            ("_OBJECT_INFORMATION_CLASS", "OBJECT_INFORMATION_CLASS"),
             ("_EVENT_INFORMATION_CLASS", "EVENT_INFORMATION_CLASS"),
             ("_MUTANT_INFORMATION_CLASS", "MUTANT_INFORMATION_CLASS"),
             ("_SEMAPHORE_INFORMATION_CLASS", "SEMAPHORE_INFORMATION_CLASS"),
             ("_TIMER_INFORMATION_CLASS", "TIMER_INFORMATION_CLASS"),
         ]
     )
-    structs = "\n\n".join(
+    generic_mapping = extract_struct(winnt, "_GENERIC_MAPPING", "GENERIC_MAPPING")
+    structs = generic_mapping + "\n\n" + "\n\n".join(
         extract_struct(winternl, tag, typedef)
         for tag, typedef in [
+            ("_OBJECT_BASIC_INFORMATION", "OBJECT_BASIC_INFORMATION"),
+            ("_OBJECT_NAME_INFORMATION", "OBJECT_NAME_INFORMATION"),
+            ("__OBJECT_TYPE_INFORMATION", "OBJECT_TYPE_INFORMATION"),
             ("_EVENT_BASIC_INFORMATION", "EVENT_BASIC_INFORMATION"),
             ("_MUTANT_BASIC_INFORMATION", "MUTANT_BASIC_INFORMATION"),
             ("_SEMAPHORE_BASIC_INFORMATION", "SEMAPHORE_BASIC_INFORMATION"),

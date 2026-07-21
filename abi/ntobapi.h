@@ -9,6 +9,16 @@
 
 /* Information classes, extracted verbatim from wine/include/winternl.h. */
 typedef enum {
+    ObjectBasicInformation,
+    ObjectNameInformation,
+    ObjectTypeInformation,
+    ObjectTypesInformation,
+    ObjectHandleFlagInformation,
+    ObjectSessionInformation,
+    ObjectSessionObjectInformation,
+} OBJECT_INFORMATION_CLASS, *POBJECT_INFORMATION_CLASS;
+
+typedef enum {
   EventBasicInformation
 } EVENT_INFORMATION_CLASS, *PEVENT_INFORMATION_CLASS;
 
@@ -23,6 +33,57 @@ typedef enum {
 typedef enum {
     TimerBasicInformation = 0
 } TIMER_INFORMATION_CLASS;
+
+typedef struct {
+    ACCESS_MASK GenericRead;
+    ACCESS_MASK GenericWrite;
+    ACCESS_MASK GenericExecute;
+    ACCESS_MASK GenericAll;
+} GENERIC_MAPPING, *PGENERIC_MAPPING;
+
+typedef struct {
+    ULONG  Attributes;
+    ACCESS_MASK  GrantedAccess;
+    ULONG  HandleCount;
+    ULONG  PointerCount;
+    ULONG  PagedPoolUsage;
+    ULONG  NonPagedPoolUsage;
+    ULONG  Reserved[3];
+    ULONG  NameInformationLength;
+    ULONG  TypeInformationLength;
+    ULONG  SecurityDescriptorLength;
+    LARGE_INTEGER  CreateTime;
+} OBJECT_BASIC_INFORMATION, *POBJECT_BASIC_INFORMATION;
+
+typedef struct {
+    UNICODE_STRING Name;
+} OBJECT_NAME_INFORMATION, *POBJECT_NAME_INFORMATION;
+
+typedef struct {
+    UNICODE_STRING TypeName;
+    ULONG TotalNumberOfObjects;
+    ULONG TotalNumberOfHandles;
+    ULONG TotalPagedPoolUsage;
+    ULONG TotalNonPagedPoolUsage;
+    ULONG TotalNamePoolUsage;
+    ULONG TotalHandleTableUsage;
+    ULONG HighWaterNumberOfObjects;
+    ULONG HighWaterNumberOfHandles;
+    ULONG HighWaterPagedPoolUsage;
+    ULONG HighWaterNonPagedPoolUsage;
+    ULONG HighWaterNamePoolUsage;
+    ULONG HighWaterHandleTableUsage;
+    ULONG InvalidAttributes;
+    GENERIC_MAPPING GenericMapping;
+    ULONG ValidAccessMask;
+    BOOLEAN SecurityRequired;
+    BOOLEAN MaintainHandleCount;
+    UCHAR TypeIndex;
+    CHAR ReservedByte;
+    ULONG PoolType;
+    ULONG DefaultPagedPoolCharge;
+    ULONG DefaultNonPagedPoolCharge;
+} OBJECT_TYPE_INFORMATION, *POBJECT_TYPE_INFORMATION;
 
 typedef struct {
   EVENT_TYPE EventType;
@@ -51,6 +112,7 @@ typedef VOID (*PTIMER_APC_ROUTINE) ( PVOID, ULONG, LONG );
  * wine/include/winternl.h (linkage macros dropped). */
 NTSTATUS NtClose(HANDLE);
 NTSTATUS NtDuplicateObject(HANDLE,HANDLE,HANDLE,PHANDLE,ACCESS_MASK,ULONG,ULONG);
+NTSTATUS NtQueryObject(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 NTSTATUS NtMakeTemporaryObject(HANDLE);
 NTSTATUS NtCreateEvent(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES *,EVENT_TYPE,BOOLEAN);
 NTSTATUS NtOpenEvent(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES *);

@@ -275,6 +275,20 @@ static NTSTATUS FatResolveParent(PFAT_FCB base, const UNICODE_STRING *path, PFAT
         component.Buffer = remaining.Buffer;
         component.Length = (USHORT)(i * sizeof(WCHAR));
         component.MaximumLength = component.Length;
+        /* NT filename character rules (MS "Naming Files, Paths": the
+         * reserved set " * / : < > ? \ | and controls) — a wildcard or
+         * reserved character in any component is STATUS_OBJECT_NAME_INVALID
+         * on the oracle (kernel32:directory pins the wildcard half). */
+        for (ULONG k = 0; k < i; k++)
+        {
+            WCHAR c = component.Buffer[k];
+            if (c < 0x20 || c == L'"' || c == L'*' || c == L'/' || c == L':' || c == L'<' ||
+                c == L'>' || c == L'?' || c == L'|')
+            {
+                FatDereferenceFcb(current);
+                return STATUS_OBJECT_NAME_INVALID;
+            }
+        }
         BOOLEAN isFinal = i == units;
         if (isFinal)
         {

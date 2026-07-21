@@ -426,3 +426,136 @@ NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HAN
     return ObpCreateHandleInTable(child, entry->body, entry->grantedAccess,
                                   sameAttributes ? entry->attributes : 0, handleOut);
 }
+
+/* --- NtQueryObject (M10 winetest) ------------------------------------------ */
+
+/* The three classes the CUI tests read, shaped as the oracle reports them
+ * (dlls/ntdll/unix/file.c NtQueryObject over wineserver's get_object_info/
+ * get_object_name/get_object_type): Basic is GrantedAccess + the counts;
+ * Name is the namespace path for header-named objects and the empty
+ * OBJECT_NAME_INFORMATION for anonymous ones; Type is the type name with
+ * the string buffer right after the struct. Consumer: kernel32:directory
+ * (TEST_GRANTED_ACCESS). */
+NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID buffer,
+                       ULONG length, PULONG returnLength)
+{
+    POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
+    if (entry == 0)
+    {
+        return STATUS_INVALID_HANDLE;
+    }
+    POBJECT_HEADER header = ObpGetHeader(entry->body);
+    NTSTATUS status;
+
+    switch (infoClass)
+    {
+    case ObjectBasicInformation:
+    {
+        if (length < sizeof(OBJECT_BASIC_INFORMATION))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        status = KiProbeForWrite(buffer, sizeof(OBJECT_BASIC_INFORMATION), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        OBJECT_BASIC_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        info.Attributes = entry->attributes;
+        info.GrantedAccess = entry->grantedAccess;
+        info.HandleCount = (ULONG)header->handleCount;
+        info.PointerCount = (ULONG)header->pointerCount;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            ULONG used = sizeof(info);
+            memcpy(returnLength, &used, sizeof(used));
+        }
+        return STATUS_SUCCESS;
+    }
+    case ObjectNameInformation:
+    {
+        USHORT nameBytes = header->name.Length;
+        ULONG needed = sizeof(OBJECT_NAME_INFORMATION) +
+                       (nameBytes != 0 ? nameBytes + sizeof(WCHAR) : 0);
+        if (length < sizeof(OBJECT_NAME_INFORMATION) ||
+            (nameBytes != 0 && length < needed))
+        {
+            if (returnLength != 0)
+            {
+                KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
+                memcpy(returnLength, &needed, sizeof(needed));
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        status = KiProbeForWrite(buffer, needed, sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        OBJECT_NAME_INFORMATION *info = buffer;
+        if (nameBytes == 0)
+        {
+            memset(info, 0, sizeof(*info));
+        }
+        else
+        {
+            WCHAR *nameOut = (WCHAR *)(info + 1);
+            memcpy(nameOut, header->name.Buffer, nameBytes);
+            nameOut[nameBytes / sizeof(WCHAR)] = 0;
+            info->Name.Buffer = nameOut;
+            info->Name.Length = nameBytes;
+            info->Name.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        }
+        if (returnLength != 0)
+        {
+            memcpy(returnLength, &needed, sizeof(needed));
+        }
+        return STATUS_SUCCESS;
+    }
+    case ObjectTypeInformation:
+    {
+        ULONG nameChars = 0;
+        while (header->type->name[nameChars] != '\0')
+        {
+            nameChars++;
+        }
+        ULONG nameBytes = nameChars * sizeof(WCHAR);
+        ULONG needed = sizeof(OBJECT_TYPE_INFORMATION) + nameBytes + sizeof(WCHAR);
+        if (length < needed)
+        {
+            if (returnLength != 0)
+            {
+                KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
+                memcpy(returnLength, &needed, sizeof(needed));
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        status = KiProbeForWrite(buffer, needed, sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        OBJECT_TYPE_INFORMATION *info = buffer;
+        memset(info, 0, sizeof(*info));
+        WCHAR *nameOut = (WCHAR *)(info + 1);
+        for (ULONG i = 0; i < nameChars; i++)
+        {
+            nameOut[i] = (WCHAR)(unsigned char)header->type->name[i];
+        }
+        nameOut[nameChars] = 0;
+        info->TypeName.Buffer = nameOut;
+        info->TypeName.Length = (USHORT)nameBytes;
+        info->TypeName.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        if (returnLength != 0)
+        {
+            ULONG used = (ULONG)sizeof(*info) + info->TypeName.MaximumLength;
+            memcpy(returnLength, &used, sizeof(used));
+        }
+        return STATUS_SUCCESS;
+    }
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
+}
