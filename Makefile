@@ -123,7 +123,8 @@ CSRC := kernel/init/main.c \
         tests/kmt/m3_ob.c \
         tests/kmt/m4_usermode.c \
         tests/kmt/m5_section.c \
-        tests/kmt/m6_io.c
+        tests/kmt/m6_io.c \
+        tests/kmt/m6_blk.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S
@@ -584,6 +585,14 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 test: $(IMG)
 	tools/qemu.sh $(IMG)
 	tests/run/fatcheck.sh verify test $(IMG)
+
+# A WEAK second oracle for driver-vs-device-model assumptions (docs/08): the
+# same boot under the host's QEMU instead of the pin. A divergence names a
+# suspect (spec misreading vs. QEMU behavior); it convicts nothing (Art. 6)
+# and never gates a PR. Host QEMU must still be >= 9.0 (qemu.sh enforces).
+test-hostqemu: $(IMG)
+	QEMU=qemu-system-x86_64 tools/qemu.sh $(IMG)
+.PHONY: test-hostqemu
 
 # The interactive boot: the Wine userland + cmd.exe + the CUI apps, plus the
 # interactive.flag marker that makes the kernel skip the test suites and hand

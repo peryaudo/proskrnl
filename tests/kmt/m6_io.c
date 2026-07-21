@@ -241,6 +241,7 @@ int kmt_run_m6(void)
     KMT_RUN(test_virtio_blk);
     if (VioBlkIsPresent())
     {
+        kmt_run_m6_blk();
         KMT_RUN(test_file_roundtrip);
         KMT_RUN(test_image_section_from_disk);
     }
