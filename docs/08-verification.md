@@ -72,6 +72,12 @@ boundary. The moment M7 lands Wine's ntdll, that suite becomes proskrnl's confor
 suite. `user32/tests/msg.c` is the GUI trophy — passing it means 30 years of message-order
 compatibility hold on our kernel.
 
+Since M10 this is live as **the winetest gate**: `tests/run/run.sh winetest` runs the
+curated manifest (`tests/winetest/manifest.txt`) of `<test_exe>:<subtest>` pairs from the
+CUI modules (ntdll, kernel32, msvcrt, ucrtbase, programs/cmd) — standalone links of the
+pinned tree's own test objects — and every pair must exit 0 under the oracle AND on
+proskrnl. Mechanics + wrinkles: `docs/03` "M10 winetest notes".
+
 `tests/ntapi/` is **not** retired at that point — and the differential fuzzer never
 replaces it either. The three assets are complementary, permanently:
 

@@ -355,6 +355,74 @@ first (Art. 5). Wrinkles worth remembering:
 - **Ctrl+C / console control events are out of scope**: no signal-delivery
   path from conhost exists yet; the acceptance never sends `^C`.
 
+## M10 winetest notes (the CUI subset of Wine's own test suite)
+
+The M10 stretch line (docs/02 "Ideal regression") is live as **the winetest
+gate**: `tests/run/run.sh winetest` runs a curated manifest of
+`<test_exe>:<subtest>` pairs (`tests/winetest/manifest.txt`) that must exit 0
+— winetest's own failure count — under the pinned oracle AND on proskrnl.
+The binaries are standalone links of the pinned tree's own unmodified test
+objects (Makefile `wtests`, the cmd.exe recipe; entry is the msvcrt/ucrtbase
+implib's own `mainCRTStartup`, winegcc's choice, with the `.CRT$X??`
+boundary symbols winebuild would have emitted supplied by
+`user/wtest/crt_sections.c`). Decisions and wrinkles:
+
+- **One binary, two runners (docs/14) — so user32 is stood in at link
+  time.** The ntdll/kernel32 test objects declare `IMPORTS = user32`;
+  user32 is the M12 GUI path, off the image per Art. 7.
+  `user/wtest/user32_stubs.c` supplies the referenced imports (honest
+  `ERROR_CALL_NOT_IMPLEMENTED` failures for GUI entities; real
+  implementations only where ntdll/msvcrt already carry the semantics).
+  A subtest whose assertions need a real window/winstation fails
+  IDENTICALLY on both runners and stays off the manifest (`ntdll:om` is
+  the canonical casualty: its `\Sessions\...\WindowStations` half needs
+  real winstation objects).
+- **Both runners read as `winetest_platform == "wine"`** — the framework's
+  probe is `GetProcAddress(ntdll, "wine_server_call") != NULL`, true for
+  the fork's PE ntdll on proskrnl too — so `todo_wine` marks apply
+  identically on both legs, and `win_skip` counts as a failure on both.
+  That keeps the gate strictly differential.
+- **G5 policy for winetest-driven kernel work**: the winetest subtest IS
+  the oracle-pinned differential test — green on the oracle first, then a
+  permanent regression gate on both runners via the manifest. A separate
+  `tests/ntapi` pin is added only when the subtest's coverage of the new
+  surface is incidental, or when a proskrnl-vs-oracle deviation needs a
+  `todo_proskrnl`-style pin.
+- **The sweep runs each pair on the console** (`kernel/init/main.c`
+  KiRunWineTests): winetest prints through msvcrt stdout → condrv →
+  conhost → serial, so the serial log carries the per-check diagnostics;
+  the exit code is the verdict. A pair that exceeds the per-pair budget
+  (300 s — TCG runs the million-ok() subtests ~10x slower than native)
+  cannot be reaped (no foreign terminate, above) and owns the single
+  global console, so the sweep ABORTS on timeout rather than running more
+  pairs against a wedged console.
+- **The wtest image provisions instead of managing**: the FULL nls set is
+  baked (a missing `c_932.nls` reads as a mass CRT/codepage divergence),
+  and the leg boots with 1 GiB of guest RAM — no eviction (Art. 3) means
+  the page cache holds every MB-scale test binary's pages for the whole
+  sweep. A per-process page leak was ruled out empirically (one
+  child-spawning pair run ten times in one boot).
+- **`PEB->NtGlobalFlag` is stamped by the KERNEL** (`kernel/ps/peb.c`):
+  Session Manager `GlobalFlag` default, image-basename "Image File
+  Execution Options" override, `PROCESS_PARAMS_IMAGE_KEY_MISSING` mirrored
+  — real NT's MmCreatePeb does exactly this; Wine does it unixlib-side
+  (`dlls/ntdll/unix/env.c load_global_options`), a seam proskrnl doesn't
+  have. Consumer: `kernel32:heap` test_debug_heap children.
+- **`Machine\System\CurrentControlSet\Control\Session Manager` is seeded
+  Cm furniture** — real NT always has it; the heap test's
+  read-Session-Manager child probes it directly.
+- **GlobalMemoryStatusEx's three sources answer for real** (`kernel/ps/
+  query.c`): `MmNumberOfPhysicalPages`, the new
+  `SystemPerformanceInformation` class, and
+  `NtQueryInformationProcess(ProcessVmCounters)` over a VAD walk — no
+  paging means committed IS the working set, and with no pagefile the
+  commit limit IS physical memory. (Before this, the heap test's own
+  `/ (ullTotalPhys / 100)` was a guest divide-by-zero.)
+- **Left off the manifest with cause**: `ntdll:om` (winstations, above);
+  `kernel32:file` and `cmd.exe_test:batch` fail on the ORACLE leg (7 and
+  3 failures — upstream suite-vs-Wine drift, not proskrnl's);
+  `ucrtbase:file` needs a host UTF-8 locale the oracle environment lacks.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
