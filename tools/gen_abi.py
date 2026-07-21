@@ -1475,6 +1475,9 @@ _Static_assert(sizeof(KUSER_SHARED_DATA) == 0x738, "KUSER_SHARED_DATA size (C_AS
 # The M4 Ps surface (process termination, NtDisplayString) + the M7 surface:
 # thread/process creation, the user dispatcher return protocol, queries.
 NTPSAPI_FUNCTIONS = [
+    # CUI-1: smss's firstboot hand-off builds real process parameters.
+    "RtlCreateProcessParametersEx",
+    "RtlDestroyProcessParameters",
     "NtTerminateProcess",
     "NtDisplayString",
     "NtCreateUserProcess",
@@ -1503,6 +1506,7 @@ NTPSAPI_FUNCTIONS = [
     "NtQueryInformationAtom",
     "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
+    "NtQuerySystemInformationEx",
     "NtQueryDefaultLocale",
     "NtGetContextThread",
     "NtSetContextThread",
@@ -1597,6 +1601,14 @@ def gen_ntpsapi(wine: Path) -> str:
                 "__WINESRC__",
                 True,
             ),
+            # CUI-1: the SystemSupportedProcessorArchitectures answer shape
+            # wineboot gates its rundll32 INF passes on (winnt.h; bitfields,
+            # so no offsetof asserts — one 4-byte DWORD).
+            extract_struct(
+                winnt,
+                "_SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION",
+                "SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION",
+            ),
             extract_struct(
                 winternl, "_SYSTEM_PERFORMANCE_INFORMATION", "SYSTEM_PERFORMANCE_INFORMATION"
             ),
@@ -1653,6 +1665,8 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_typedef_line(winternl, "winternl.h", "PRTL_THREAD_START_ROUTINE"),
         ]
     )
+    # CUI-1: SYSTEM_CPU_INFORMATION.ProcessorArchitecture answer (winnt.h).
+    arch_defines = extract_defines(winnt, "winnt.h", ["PROCESSOR_ARCHITECTURE_AMD64"])
     kcontinue = (
         extract_enum(winternl, "_KCONTINUE_TYPE", "KCONTINUE_TYPE")
         + "\n\n"
@@ -1727,6 +1741,8 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + info_enums
         + "\n\n"
         + ps_attribute_defines
+        + "\n\n"
+        + arch_defines
         + "\n\n"
         + info_structs
         + "\n\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"

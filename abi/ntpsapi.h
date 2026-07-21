@@ -647,6 +647,8 @@ typedef enum {
 #define PROCESS_PARAMS_FLAG_NORMALIZED 0x00000001
 #define PROCESS_PARAMS_IMAGE_KEY_MISSING 0x00004000
 
+#define PROCESSOR_ARCHITECTURE_AMD64 9
+
 typedef struct {
     NTSTATUS  ExitStatus;
     PVOID     TebBaseAddress;
@@ -696,6 +698,16 @@ typedef struct {
     ULONGLONG BootTimeBias;
     ULONGLONG SleepTimeBias;
 } SYSTEM_TIMEOFDAY_INFORMATION, *PSYSTEM_TIMEOFDAY_INFORMATION;
+
+typedef struct {
+    DWORD Machine : 16;
+    DWORD KernelMode : 1;
+    DWORD UserMode : 1;
+    DWORD Native : 1;
+    DWORD Process : 1;
+    DWORD WoW64Container : 1;
+    DWORD ReservedZero0 : 11;
+} SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION;
 
 typedef struct {
     LARGE_INTEGER IdleTime;
@@ -925,6 +937,8 @@ typedef struct {
 
 /* The M4+M7 Ps Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
+NTSTATUS RtlCreateProcessParametersEx(RTL_USER_PROCESS_PARAMETERS**,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,PWSTR,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,ULONG);
+void RtlDestroyProcessParameters(RTL_USER_PROCESS_PARAMETERS*);
 NTSTATUS NtTerminateProcess(HANDLE,LONG);
 NTSTATUS NtDisplayString(PUNICODE_STRING);
 NTSTATUS NtCreateUserProcess(HANDLE*,HANDLE*,ACCESS_MASK,ACCESS_MASK,OBJECT_ATTRIBUTES*,OBJECT_ATTRIBUTES*,ULONG,ULONG,RTL_USER_PROCESS_PARAMETERS*,PS_CREATE_INFO*,PS_ATTRIBUTE_LIST*);
@@ -953,6 +967,7 @@ NTSTATUS NtFindAtom(const WCHAR*,ULONG,RTL_ATOM*);
 NTSTATUS NtQueryInformationAtom(RTL_ATOM,ATOM_INFORMATION_CLASS,PVOID,ULONG,ULONG*);
 NTSTATUS NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(ULONG,ULONGLONG*,ULONGLONG*,ULONGLONG*);
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS,void*,ULONG,void*,ULONG,ULONG*);
 NTSTATUS NtQueryDefaultLocale(BOOLEAN,LCID*);
 NTSTATUS NtGetContextThread(HANDLE,CONTEXT*);
 NTSTATUS NtSetContextThread(HANDLE,const CONTEXT*);
