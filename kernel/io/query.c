@@ -660,7 +660,8 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     return status;
 }
 
-/* --- NtQueryVolumeInformationFile (M7 stub -> per-device, M10) -------------- */
+/* --- NtQueryVolumeInformationFile (M7 stub -> per-device, M10; the volume
+ * classes cmd.exe's dir/vol consume land as CUI polish) ---------------------- */
 
 NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStatusBlock,
                                       PVOID buffer, ULONG length, FS_INFORMATION_CLASS infoClass)
@@ -678,33 +679,142 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         return status;
     }
-    if (infoClass != FileFsDeviceInformation)
-    {
-        return STATUS_NOT_IMPLEMENTED; /* the other classes stay off the M10 path */
-    }
+
+    /* Past the probes the IOSB is written on EVERY path, failure included
+     * (pinned Wine: dlls/ntdll/unix/file.c preamble io->Information = 0,
+     * epilogue `return io->Status = status`). */
+    ULONG_PTR information = 0;
 
     PFILE_OBJECT file;
     status = IopReferenceFileByHandle(fileHandle, 0, &file);
     if (!NT_SUCCESS(status))
     {
+        ioStatusBlock->Status = status;
+        ioStatusBlock->Information = 0;
         return status;
     }
-    if (length < sizeof(FILE_FS_DEVICE_INFORMATION))
+
+    switch (infoClass)
     {
-        /* Pinned Wine: a short FileFsDeviceInformation buffer is
-         * STATUS_BUFFER_TOO_SMALL (dlls/ntdll/unix/file.c). */
-        ObDereferenceObject(file);
-        return STATUS_BUFFER_TOO_SMALL;
+    case FileFsDeviceInformation:
+    {
+        if (length < sizeof(FILE_FS_DEVICE_INFORMATION))
+        {
+            /* Pinned Wine: a short FileFsDeviceInformation buffer is
+             * STATUS_BUFFER_TOO_SMALL (dlls/ntdll/unix/file.c). */
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        /* GetFileType's whole input: the owning device's type (disk vs pipe
+         * vs console/serial — kernelbase switches on it,
+         * dlls/kernelbase/file.c). */
+        FILE_FS_DEVICE_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        info.DeviceType = file->device->deviceType;
+        memcpy(buffer, &info, sizeof(info));
+        information = sizeof(info);
+        break;
     }
 
-    /* GetFileType's whole input: the owning device's type (disk vs pipe vs
-     * console/serial — kernelbase switches on it, dlls/kernelbase/file.c). */
-    FILE_FS_DEVICE_INFORMATION info;
-    memset(&info, 0, sizeof(info));
-    info.DeviceType = file->device->deviceType;
-    memcpy(buffer, &info, sizeof(info));
-    ioStatusBlock->Status = STATUS_SUCCESS;
-    ioStatusBlock->Information = sizeof(info);
+    /* The three classes kernelbase's GetVolumeInformation(ByHandle)W and
+     * GetDiskFreeSpaceExW issue (dlls/kernelbase/volume.c) — cmd.exe's dir
+     * silently prints NOTHING when the first one fails. Shapes pinned by
+     * tests/ntapi/sem_file/volume_info.c: a short fixed part is
+     * INFO_LENGTH_MISMATCH for volume/attribute but BUFFER_TOO_SMALL for
+     * size, and label/fs-name truncate silently to the room left. */
+    case FileFsVolumeInformation:
+    {
+        if (file->device->ops->QueryVolumeInfo == 0)
+        {
+            status = STATUS_NOT_IMPLEMENTED; /* pipes/console: wineserver's answer */
+            break;
+        }
+        if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        FILE_FS_VOLUME_INFORMATION *out = buffer;
+        ULONG room = length - (ULONG)offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel);
+        ULONG labelBytes = facts.labelLength < room ? facts.labelLength : room;
+        out->VolumeCreationTime.QuadPart = 0; /* pinned Wine reports 0 */
+        out->VolumeSerialNumber = facts.serialNumber;
+        out->VolumeLabelLength = labelBytes;
+        out->SupportsObjects = facts.supportsObjects;
+        memcpy(out->VolumeLabel, facts.label, labelBytes);
+        information = offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel) + labelBytes;
+        break;
+    }
+
+    case FileFsSizeInformation:
+    {
+        if (file->device->ops->QueryVolumeInfo == 0)
+        {
+            status = STATUS_NOT_IMPLEMENTED;
+            break;
+        }
+        if (length < sizeof(FILE_FS_SIZE_INFORMATION))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        FILE_FS_SIZE_INFORMATION *out = buffer;
+        out->TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
+        out->AvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
+        out->BytesPerSector = facts.bytesPerSector;
+        information = sizeof(FILE_FS_SIZE_INFORMATION);
+        break;
+    }
+
+    case FileFsAttributeInformation:
+    {
+        if (file->device->ops->QueryVolumeInfo == 0)
+        {
+            status = STATUS_NOT_IMPLEMENTED;
+            break;
+        }
+        if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        FILE_FS_ATTRIBUTE_INFORMATION *out = buffer;
+        ULONG room = length - (ULONG)offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName);
+        ULONG nameBytes = facts.fsNameLength < room ? facts.fsNameLength : room;
+        out->FileSystemAttributes = facts.fsAttributes;
+        out->MaximumComponentNameLength = facts.maxComponentLength;
+        out->FileSystemNameLength = nameBytes;
+        memcpy(out->FileSystemName, facts.fsName, nameBytes);
+        information = offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName) + nameBytes;
+        break;
+    }
+
+    default:
+        status = STATUS_NOT_IMPLEMENTED; /* the other classes stay off the path */
+        break;
+    }
+
     ObDereferenceObject(file);
-    return STATUS_SUCCESS;
+    ioStatusBlock->Status = status;
+    ioStatusBlock->Information = information;
+    return status;
 }

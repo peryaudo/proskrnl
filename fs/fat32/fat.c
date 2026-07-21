@@ -13,6 +13,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
@@ -512,6 +513,27 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     volume->nextFreeHint = 2;
     InitializeListHead(&volume->fcbList);
 
+    /* Volume identity for the FileFs* classes: BS_VolID at 67, BS_VolLab at
+     * 71 (11 OEM chars, space-padded) — spec §3.3 FAT32 boot sector; same
+     * offsets Wine's mountmgr reads for a FAT32 superblock (0x43/0x47,
+     * dlls/mountmgr.sys/device.c VOLUME_GetSuperblock{Serial,Label}).
+     * "NO NAME    " is the spec's no-label sentinel (§3.3 BS_VolLab). */
+    volume->volumeSerial = FatRead32(boot + 67);
+    ULONG labelUnits = 11;
+    while (labelUnits > 0 && (boot[71 + labelUnits - 1] == ' ' || boot[71 + labelUnits - 1] == 0))
+    {
+        labelUnits--;
+    }
+    if (labelUnits == 7 && memcmp(boot + 71, "NO NAME", 7) == 0)
+    {
+        labelUnits = 0;
+    }
+    for (ULONG i = 0; i < labelUnits; i++)
+    {
+        volume->volumeLabel[i] = (WCHAR)boot[71 + i];
+    }
+    volume->volumeLabelLength = (USHORT)(labelUnits * sizeof(WCHAR));
+
     /* The whole (first) FAT in pool; every entry write goes through to all
      * copies (FatSetFatEntry). */
     volume->fat = MiAllocatePool((uint64_t)fatSize * bytesPerSector);
@@ -570,5 +592,40 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     DbgPrint("fat32: mounted at LBA %lu, %lu clusters of %lu bytes\n", (unsigned long)partitionLba,
              (unsigned long)clusterCount, (unsigned long)(sectorsPerCluster * bytesPerSector));
     *volumeOut = volume;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS FatQueryVolumeInfo(PFAT_VOLUME volume, IO_VOLUME_INFO *info)
+{
+    ASSERT(volume->clusterCount + 2 <= volume->fatSizeSectors * volume->bytesPerSector / 4);
+
+    /* Count free clusters off the in-pool FAT (a pure memory sweep: no
+     * blocking, so it is atomic under the no-preemption model). Entry 0 =
+     * free (spec §4); data clusters are 2 .. CountofClusters+1 (§3.5). */
+    uint64_t freeCount = 0;
+    for (ULONG cluster = 2; cluster < volume->clusterCount + 2; cluster++)
+    {
+        if ((volume->fat[cluster] & FAT_ENTRY_MASK) == 0)
+        {
+            freeCount++;
+        }
+    }
+
+    info->serialNumber = volume->volumeSerial;
+    info->labelLength = volume->volumeLabelLength;
+    memcpy(info->label, volume->volumeLabel, volume->volumeLabelLength);
+    info->totalUnits = volume->clusterCount;
+    info->freeUnits = freeCount;
+    info->sectorsPerUnit = volume->sectorsPerCluster;
+    info->bytesPerSector = volume->bytesPerSector;
+    /* The FileFsAttributeInformation answer for a FAT32 volume, exactly as
+     * the pinned Wine reports it (dlls/ntdll/unix/file.c
+     * NtQueryVolumeInformationFile, MOUNTMGR_FS_TYPE_FAT32 branch):
+     * case-preserving, 255-unit components, not an object-id filesystem. */
+    info->fsName = WSTR("FAT32");
+    info->fsNameLength = 5 * sizeof(WCHAR);
+    info->fsAttributes = FILE_CASE_PRESERVED_NAMES;
+    info->maxComponentLength = 255;
+    info->supportsObjects = FALSE;
     return STATUS_SUCCESS;
 }

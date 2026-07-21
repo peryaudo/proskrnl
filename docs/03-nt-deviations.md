@@ -348,6 +348,17 @@ first (Art. 5). Wrinkles worth remembering:
   `FILE_DEVICE_DISK_FILE_SYSTEM` (0x8)**, the pinned oracle's value for
   regular files — not bare `FILE_DEVICE_DISK` (real NT's volume answer);
   `GetFileType` maps both to `FILE_TYPE_DISK`.
+- **The volume classes (`FileFsVolume/Size/AttributeInformation`) answer in
+  the pinned Wine's shapes**, not real NT's: `VolumeCreationTime` is 0,
+  `SupportsObjects` is FALSE for FAT32 (TRUE only for NTFS), the FAT32
+  attribute answer is `FILE_CASE_PRESERVED_NAMES` alone (real NT adds
+  `FILE_UNICODE_ON_DISK`), and the volume label is read from the boot
+  sector's `BS_VolLab` — the field Wine's mountmgr reads — not the root
+  directory's `ATTR_VOLUME_ID` entry real NT's fastfat prefers (the two
+  agree on any consistently-written volume; `FileFsLabelInformation` set
+  is unimplemented on both sides). Pinned by
+  `tests/ntapi/sem_file/volume_info.c`; consumer: cmd.exe's `dir`/`vol`
+  via `GetVolumeInformationW` / `GetDiskFreeSpaceExW`.
 - **A relocated `SEC_IMAGE` copy's mapped header claims the ACTUAL base**
   (`OptionalHeader.ImageBase` stamped after the kernel-side fixups), which
   is what keeps ntdll's own `perform_relocations` from applying the delta

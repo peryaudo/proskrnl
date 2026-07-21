@@ -46,12 +46,16 @@ typedef struct FAT_VOLUME
     ULONG fatSizeSectors;
     ULONG rootCluster;
     ULONG totalSectors;
-    ULONG firstDataSector; /* volume-relative (spec §6.7) */
-    ULONG clusterCount;    /* CountofClusters (spec §3.5) */
-    uint32_t *fat;         /* the whole first FAT in pool; write-through */
-    ULONG nextFreeHint;    /* allocation cursor */
-    LIST_ENTRY fcbList;    /* live FAT_FCBs, for the one-FCB-per-file rule */
-    struct FAT_FCB *root;  /* the root directory's FCB (never dies) */
+    ULONG firstDataSector;    /* volume-relative (spec §6.7) */
+    ULONG clusterCount;       /* CountofClusters (spec §3.5) */
+    ULONG volumeSerial;       /* BS_VolID (spec §3.3, offset 67) */
+    WCHAR volumeLabel[11];    /* BS_VolLab (spec §3.3, offset 71), trailing
+                               * spaces stripped; empty for "NO NAME" */
+    USHORT volumeLabelLength; /* bytes */
+    uint32_t *fat;            /* the whole first FAT in pool; write-through */
+    ULONG nextFreeHint;       /* allocation cursor */
+    LIST_ENTRY fcbList;       /* live FAT_FCBs, for the one-FCB-per-file rule */
+    struct FAT_FCB *root;     /* the root directory's FCB (never dies) */
 } FAT_VOLUME, *PFAT_VOLUME;
 
 typedef struct FAT_FCB
@@ -92,6 +96,10 @@ typedef struct FAT_FCB
 
 /* Scan the GPT boot disk, mount the first FAT32 data partition. */
 NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut);
+
+/* The volume's identity + geometry raw facts (IO_VFS_OPS.QueryVolumeInfo);
+ * free units counted live off the in-pool FAT. */
+NTSTATUS FatQueryVolumeInfo(PFAT_VOLUME volume, IO_VOLUME_INFO *info);
 
 /* Volume-relative sector I/O. */
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer);
