@@ -767,6 +767,39 @@ typedef struct {
 } SYSTEM_PERFORMANCE_INFORMATION, *PSYSTEM_PERFORMANCE_INFORMATION;
 
 typedef struct {
+    WORD wYear;
+    WORD wMonth;
+    WORD wDayOfWeek;
+    WORD wDay;
+    WORD wHour;
+    WORD wMinute;
+    WORD wSecond;
+    WORD wMilliseconds;
+} RTL_SYSTEM_TIME, *PRTL_SYSTEM_TIME;
+
+typedef struct {
+    LONG Bias;
+    WCHAR StandardName[32];
+    RTL_SYSTEM_TIME StandardDate;
+    LONG StandardBias;
+    WCHAR DaylightName[32];
+    RTL_SYSTEM_TIME DaylightDate;
+    LONG DaylightBias;
+} RTL_TIME_ZONE_INFORMATION, *PRTL_TIME_ZONE_INFORMATION;
+
+typedef struct {
+    LONG Bias;
+    WCHAR StandardName[32];
+    RTL_SYSTEM_TIME StandardDate;
+    LONG StandardBias;
+    WCHAR DaylightName[32];
+    RTL_SYSTEM_TIME DaylightDate;
+    LONG DaylightBias;
+    WCHAR TimeZoneKeyName[128];
+    BOOLEAN DynamicDaylightTimeDisabled;
+} RTL_DYNAMIC_TIME_ZONE_INFORMATION, *PRTL_DYNAMIC_TIME_ZONE_INFORMATION;
+
+typedef struct {
     SIZE_T PeakVirtualSize;
     SIZE_T VirtualSize;
     ULONG PageFaultCount;
@@ -898,6 +931,9 @@ NTSTATUS NtSetInformationProcess(HANDLE,PROCESSINFOCLASS,PVOID,ULONG);
 NTSTATUS NtQueryInformationThread(HANDLE,THREADINFOCLASS,PVOID,ULONG,PULONG);
 NTSTATUS NtSetInformationThread(HANDLE,THREADINFOCLASS,LPCVOID,ULONG);
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
+NTSTATUS NtQueryTimerResolution(PULONG,PULONG,PULONG);
+NTSTATUS NtSetTimerResolution(ULONG,BOOLEAN,PULONG);
+NTSTATUS NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(ULONG,ULONGLONG*,ULONGLONG*,ULONGLONG*);
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS,PVOID,ULONG,PULONG);
 NTSTATUS NtQueryDefaultLocale(BOOLEAN,LCID*);
 NTSTATUS NtGetContextThread(HANDLE,CONTEXT*);

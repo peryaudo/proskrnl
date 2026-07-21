@@ -264,6 +264,83 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    case SystemTimeOfDayInformation:
+    {
+        /* A PARTIAL buffer is served here — `if (size <= sizeof(sti)) copy
+         * size bytes` (Wine dlls/ntdll/unix/system.c); an oversized one is
+         * the mismatch. TimeZoneBias must equal the shared page's (the
+         * ntdll:time pin): proskrnl is UTC-only (docs/03 no-RTC rule), both
+         * are zero. BootTime is the fixed base date — the instant uptime
+         * started counting. */
+        SYSTEM_TIMEOFDAY_INFORMATION info;
+        if (length > sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        LARGE_INTEGER now;
+        KeQuerySystemTime(&now);
+        info.SystemTime = now;
+        info.BootTime.QuadPart = now.QuadPart - (LONGLONG)KeQueryInterruptTime();
+        info.TimeZoneBias.QuadPart = 0; /* UTC, as the shared page */
+        memcpy(buffer, &info, length);
+        if (returnLength != 0)
+        {
+            *returnLength = length;
+        }
+        return STATUS_SUCCESS;
+    }
+    case SystemCurrentTimeZoneInformation:
+    case SystemDynamicTimeZoneInformation:
+    {
+        /* The fixed UTC zone in the pinned Wine's own shape: MUI indirect
+         * names from the tree's tzres (dlls/tzres/tzres.rc: 22000 standard /
+         * 22001 daylight for the UTC zone), key name "UTC", no DST rules,
+         * zero bias. Class 44 answers the RTL_TIME_ZONE_INFORMATION prefix,
+         * class 102 the full dynamic struct — `size >= len` accepted, as
+         * Wine's handlers do (dlls/ntdll/unix/system.c). Consumer:
+         * ntdll:time RtlQueryTimeZoneInformation tests. */
+        static const char *standardName = "@tzres.dll,-22000";
+        static const char *daylightName = "@tzres.dll,-22001";
+        static const char *keyName = "UTC";
+        RTL_DYNAMIC_TIME_ZONE_INFORMATION zone;
+        memset(&zone, 0, sizeof(zone));
+        for (int i = 0; standardName[i] != '\0'; i++)
+        {
+            zone.StandardName[i] = (WCHAR)(unsigned char)standardName[i];
+        }
+        for (int i = 0; daylightName[i] != '\0'; i++)
+        {
+            zone.DaylightName[i] = (WCHAR)(unsigned char)daylightName[i];
+        }
+        for (int i = 0; keyName[i] != '\0'; i++)
+        {
+            zone.TimeZoneKeyName[i] = (WCHAR)(unsigned char)keyName[i];
+        }
+        ULONG needed = infoClass == SystemDynamicTimeZoneInformation
+                           ? sizeof(RTL_DYNAMIC_TIME_ZONE_INFORMATION)
+                           : sizeof(RTL_TIME_ZONE_INFORMATION);
+        if (length < needed)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, &zone, needed);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        return STATUS_SUCCESS;
+    }
     case SystemPerformanceInformation:
     {
         /* An OVERSIZED buffer is fine here (unlike SystemBasicInformation):
@@ -335,6 +412,83 @@ NTSTATUS NtQuerySystemTime(PLARGE_INTEGER time)
     KeQuerySystemTime(&now);
     memcpy(time, &now, sizeof(now));
     return STATUS_SUCCESS;
+}
+
+/* Wine's fixed resolution triple (dlls/ntdll/unix/sync.c
+ * NtQueryTimerResolution: max = current = 10000, min = 156250 — 100 ns
+ * units, i.e. 1 ms current against a 15.625 ms floor). A NULL argument is
+ * STATUS_ACCESS_VIOLATION through the probes — the oracle faults on the
+ * unix-side write and reports the same; ntdll:time pins all of it. */
+NTSTATUS NtQueryTimerResolution(PULONG minimumResolution, PULONG maximumResolution,
+                                PULONG currentResolution)
+{
+    NTSTATUS status = KiProbeForWrite(minimumResolution, sizeof(ULONG), sizeof(ULONG));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(maximumResolution, sizeof(ULONG), sizeof(ULONG));
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(currentResolution, sizeof(ULONG), sizeof(ULONG));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG minimum = 156250;
+    ULONG maximum = 10000;
+    ULONG current = 10000;
+    memcpy(minimumResolution, &minimum, sizeof(minimum));
+    memcpy(maximumResolution, &maximum, sizeof(maximum));
+    memcpy(currentResolution, &current, sizeof(current));
+    return STATUS_SUCCESS;
+}
+
+/* The Wine shape (dlls/ntdll/unix/sync.c NtSetTimerResolution): the current
+ * resolution is always reported as 10000, nothing actually changes, and a
+ * per-process latch answers STATUS_TIMER_RESOLUTION_NOT_SET for a rescind
+ * with no prior request. Wine's latch is its process-local static; here it
+ * lives on the EPROCESS. */
+NTSTATUS NtSetTimerResolution(ULONG requestedResolution, BOOLEAN set, PULONG currentResolution)
+{
+    (void)requestedResolution;
+    NTSTATUS status = KiProbeForWrite(currentResolution, sizeof(ULONG), sizeof(ULONG));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG current = 10000;
+    memcpy(currentResolution, &current, sizeof(current));
+
+    PEPROCESS process = KeGetCurrentThread()->process;
+    if (!process->timerResolutionRequested && !set)
+    {
+        return STATUS_TIMER_RESOLUTION_NOT_SET;
+    }
+    process->timerResolutionRequested = set;
+    return STATUS_SUCCESS;
+}
+
+/* No auxiliary counter exists — probe the two required pointers (a NULL is
+ * STATUS_ACCESS_VIOLATION, as the oracle's unix-side write would fault) and
+ * refuse without writing anything (Wine answers STATUS_NOT_SUPPORTED and
+ * leaves the buffers untouched; ntdll:time pins both). */
+NTSTATUS NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(ULONG direction, ULONGLONG *value,
+                                                               ULONGLONG *converted,
+                                                               ULONGLONG *error)
+{
+    (void)direction;
+    (void)error;
+    NTSTATUS status = KiProbeForWrite(value, sizeof(ULONGLONG), sizeof(ULONGLONG));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(converted, sizeof(ULONGLONG), sizeof(ULONGLONG));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    return STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency)
