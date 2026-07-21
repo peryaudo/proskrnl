@@ -40,6 +40,15 @@ static inline uint32_t KiInLong(uint16_t port)
     return value;
 }
 
+/* CPUID, results in eax/ebx/ecx/edx order (Intel SDM vol. 2A, CPUID; same
+ * shape as Wine dlls/ntdll/unix/system.c do_cpuid). */
+static inline void KiCpuid(uint32_t leaf, uint32_t subleaf, uint32_t result[4])
+{
+    __asm__ volatile("cpuid"
+                     : "=a"(result[0]), "=b"(result[1]), "=c"(result[2]), "=d"(result[3])
+                     : "a"(leaf), "c"(subleaf));
+}
+
 static inline uint64_t KiReadMsr(uint32_t msr)
 {
     uint32_t low, high;
