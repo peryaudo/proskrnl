@@ -886,6 +886,29 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     return STATUS_SUCCESS;
 }
 
+void MiQueryVmCounters(PMI_ADDRESS_SPACE space, uint64_t *reservedBytesOut,
+                       uint64_t *committedBytesOut)
+{
+    uint64_t reserved = 0;
+    uint64_t committed = 0;
+    for (PLIST_ENTRY entry = space->vadListHead.Flink; entry != &space->vadListHead;
+         entry = entry->Flink)
+    {
+        PMI_VAD vad = CONTAINING_RECORD(entry, MI_VAD, listEntry);
+        reserved += vad->size;
+        uint64_t pages = vad->size / PAGE_SIZE;
+        for (uint64_t i = 0; i < pages; i++)
+        {
+            if (vad->pageProtect[i] != 0)
+            {
+                committed += PAGE_SIZE;
+            }
+        }
+    }
+    *reservedBytesOut = reserved;
+    *committedBytesOut = committed;
+}
+
 NTSTATUS NtProtectVirtualMemory(HANDLE process, PVOID *baseInOut, SIZE_T *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtect)
 {

@@ -53,6 +53,12 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
 NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtectOut);
 
+/* M10 winetest: the ProcessVmCounters substrate — reserved (every VAD) and
+ * committed bytes by a VAD walk. With no paging (Art. 3) every committed
+ * page is resident, so committed IS the working set. */
+void MiQueryVmCounters(PMI_ADDRESS_SPACE space, uint64_t *reservedBytesOut,
+                       uint64_t *committedBytesOut);
+
 /* --- section-view plumbing (mm/section.c, M5) ------------------------------ */
 
 /* Lowest free 64K-aligned region of `size` bytes (0 = address space full) /

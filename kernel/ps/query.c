@@ -113,6 +113,55 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessVmCounters:
+    {
+        /* Both documented sizes are served, any other size is filled-but-
+         * flagged (Wine dlls/ntdll/unix/process.c ProcessVmCounters: fill,
+         * `if (size != sizeof(VM_COUNTERS) && size != sizeof(VM_COUNTERS_EX))
+         * ret = STATUS_INFO_LENGTH_MISMATCH`). Values: with no paging and no
+         * COW (Art. 3) every committed page is resident, so committed IS the
+         * working set and the pagefile usage; reserved is VirtualSize.
+         * Consumer: kernelbase GlobalMemoryStatusEx, pinned by kernel32:heap
+         * test_GlobalMemoryStatus. */
+        if (length < sizeof(VM_COUNTERS))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(VM_COUNTERS_EX);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        ULONG copyLength =
+            length >= sizeof(VM_COUNTERS_EX) ? sizeof(VM_COUNTERS_EX) : sizeof(VM_COUNTERS);
+        status = KiProbeForWrite(buffer, copyLength, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        uint64_t reserved = 0;
+        uint64_t committed = 0;
+        MiQueryVmCounters(&process->addressSpace, &reserved, &committed);
+        VM_COUNTERS_EX info;
+        memset(&info, 0, sizeof(info));
+        info.PeakVirtualSize = reserved;
+        info.VirtualSize = reserved;
+        info.PeakWorkingSetSize = committed;
+        info.WorkingSetSize = committed;
+        info.PagefileUsage = committed;
+        info.PeakPagefileUsage = committed;
+        info.PrivateUsage = committed;
+        memcpy(buffer, &info, copyLength);
+        if (returnLength != 0)
+        {
+            *returnLength =
+                length != sizeof(VM_COUNTERS) ? sizeof(VM_COUNTERS_EX) : sizeof(VM_COUNTERS);
+        }
+        status = (length == sizeof(VM_COUNTERS) || length == sizeof(VM_COUNTERS_EX))
+                     ? STATUS_SUCCESS
+                     : STATUS_INFO_LENGTH_MISMATCH;
+        break;
+    }
     case ProcessCookie:
     {
         /* Own process only, size exactly ULONG (Wine
@@ -202,11 +251,50 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         SYSTEM_BASIC_INFORMATION info;
         memset(&info, 0, sizeof(info));
         info.PageSize = PAGE_SIZE;
+        info.MmNumberOfPhysicalPages = (ULONG)MiGetTotalPageCount();
         info.NumberOfProcessors = 1; /* uniprocessor (Art. 3) */
         info.ActiveProcessorsAffinityMask = 1;
         info.LowestUserAddress = (void *)0x10000;
         info.HighestUserAddress = (void *)(KI_USER_SPACE_LIMIT - 1);
         info.AllocationGranularity = 0x10000;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+    case SystemPerformanceInformation:
+    {
+        /* An OVERSIZED buffer is fine here (unlike SystemBasicInformation):
+         * `if (size >= len) memcpy else STATUS_INFO_LENGTH_MISMATCH`, return
+         * length = sizeof (Wine dlls/ntdll/unix/system.c) — the heap test
+         * passes sizeof+16 "for some Win 7 versions". Consumer: kernelbase
+         * GlobalMemoryStatusEx (dlls/kernelbase/memory.c) multiplies these
+         * page counts into MEMORYSTATUSEX, pinned by kernel32:heap
+         * test_GlobalMemoryStatus. With no pagefile and no eviction (Art. 3)
+         * the commit limit IS physical memory and committed = total - free. */
+        if (length < sizeof(SYSTEM_PERFORMANCE_INFORMATION))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(SYSTEM_PERFORMANCE_INFORMATION);
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status =
+            KiProbeForWrite(buffer, sizeof(SYSTEM_PERFORMANCE_INFORMATION), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        SYSTEM_PERFORMANCE_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        uint64_t total = MiGetTotalPageCount();
+        uint64_t free = MiGetFreePageCount();
+        info.AvailablePages = (ULONG)free;
+        info.TotalCommittedPages = (ULONG)(total - free);
+        info.TotalCommitLimit = (ULONG)total;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
