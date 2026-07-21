@@ -282,7 +282,7 @@ static NTSTATUS PspMapImage(PEPROCESS process, PKI_RAMDISK_FILE file, uint64_t *
     return status;
 }
 
-NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
+NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETHREAD *threadOut)
 {
     if (file == 0 || file->size == 0)
     {
@@ -365,10 +365,15 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
             PspFreeCapturedParams(defaults);
         }
     }
+    /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — same
+     * discipline as PsCreateWineProcessEx: a TEB id that disagrees with what
+     * NtQueryInformationThread reports is exactly the class the ABI probe
+     * convicts (user/init-tests/abi_probe.c). */
+    uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status) && isPe)
     {
-        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
-                             PspAllocateProcessId(), &tebBase);
+        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, mainThreadId,
+                             &tebBase);
     }
     else if (NT_SUCCESS(status))
     {
@@ -395,7 +400,6 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
     process->teb = (void *)(uintptr_t)tebBase;
     process->entryRip = entry;
     process->entryRsp = stackTop;
-    process->activeThreadCount = 1; /* the main thread (no ETHREAD wrapper) */
 
     /* Build the main thread. For a PE the loader protocol enters ntdll's
      * LdrInitializeThunk (when resolved) with rcx = image entry; for a flat
@@ -419,10 +423,28 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
         main->userStartArg2 = 0;
     }
     main->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
-    process->mainThread = main;
+
+    /* The main thread's ETHREAD, BEFORE the thread runs, with the id the TEB
+     * was stamped with above — thread queries and NtAlertThreadByThreadId
+     * must see boot-module threads like any other (the Wine-process path
+     * already does this; the ABI probe convicted this path's omission). The
+     * ETHREAD owns the KTHREAD; the count starts at 0 and the create call
+     * counts it. The caller owns the returned creator reference and must
+     * hold it until the thread has exited. */
+    process->activeThreadCount = 0;
+    PETHREAD mainThreadObject;
+    status = PspCreateThreadObject(process, main, tebBase, 0, 0, mainThreadId, &mainThreadObject);
+    if (!NT_SUCCESS(status))
+    {
+        KiDeleteThread(main);
+        ObDereferenceObject(process);
+        return status;
+    }
+    process->mainThread = 0; /* the ETHREAD owns the KTHREAD (M10 shape) */
 
     KiReadyCreatedThread(main);
     *processOut = process;
+    *threadOut = mainThreadObject;
     return STATUS_SUCCESS;
 }
 
@@ -777,7 +799,8 @@ NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, cons
 NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
-    NTSTATUS status = PspCreateUserProcess(file, &process);
+    PETHREAD mainThread;
+    NTSTATUS status = PspCreateUserProcess(file, &process, &mainThread);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -785,7 +808,8 @@ NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut)
     status = KeWaitForSingleObject(process, Executive, KernelMode, FALSE, 0);
     ASSERT(status == STATUS_SUCCESS);
     *exitStatusOut = process->exitStatus;
-    ObDereferenceObject(process); /* the creator reference; PspDeleteProcess frees it */
+    ObDereferenceObject(mainThread); /* exited: safe to let the ETHREAD go */
+    ObDereferenceObject(process);    /* the creator reference; PspDeleteProcess frees it */
     return STATUS_SUCCESS;
 }
 
