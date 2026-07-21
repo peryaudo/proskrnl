@@ -124,8 +124,11 @@ mkdirp() {
 # the last LBA) — and a full volume would let cluster data clobber it
 # (found by the fatinterop battery's fragmentation surgery). p2 runs from
 # sector 4096 to (disk end - 34) inclusive (sgdisk -n 2:0:0 above).
+# CLUSTER_SECTORS (optional) sets the cluster size in sectors (mformat -c,
+# mtools(1)): the FS test legs sweep geometries — boundary bugs are
+# geometry-specific and the default is one fixed layout.
 ESP_SECTORS=$(( SIZE_MB * 2048 - 34 - 4096 + 1 ))
-mformat -i "$IMG@@$ESP_OFF" -T "$ESP_SECTORS" -F ::
+mformat -i "$IMG@@$ESP_OFF" -T "$ESP_SECTORS" ${CLUSTER_SECTORS:+-c "$CLUSTER_SECTORS"} -F ::
 mkdirp /EFI
 mkdirp /EFI/BOOT
 copy "$KERNEL"                       ::/proskrnl

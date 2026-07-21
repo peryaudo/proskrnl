@@ -411,6 +411,104 @@ PYEOF
     return $((fails > 0 ? 1 : 0))
 }
 
+# The FS churn stress (docs/08): fixed-seed random churn against an
+# in-kernel shadow model (tests/kmt/fat_churn.c), across THREE mkfs
+# geometries — boundary bugs are geometry-specific. Non-diskfull legs boot
+# TWICE (the m8_persist pattern): boot 1 seeds wet, boot 2 replays the
+# model dry from the seed alone and verifies through a COLD cache. Then the
+# host convicts independently: dump-vs-dump determinism diff, mcopy
+# extraction + crc diff (churn_verify.py), fsck.fat + the sweeper.
+fatstress() {
+    local kernel="$ROOT/build/proskrnl"
+    if [[ ! -f "$kernel" ]]; then
+        make -C "$ROOT" build/proskrnl >/dev/null
+    fi
+    make -C "$ROOT" build/modules/pe_smoke.exe build/modules/sample.dat >/dev/null 2>&1 || true
+    mkdir -p "$BUILD"
+
+    # name:SIZE_MB:CLUSTER_SECTORS:ops:expect_diskfull:boots
+    #   default   the standard geometry (512 B clusters on 64 MiB)
+    #   c8        4 KiB clusters (page-size, the untested shape)
+    #   nearfull  a small volume + ballast so allocation hits DISK_FULL
+    local legs=("default:64::400:0:2" "c8:320:8:400:0:2" "nearfull:36:1:300:1:1")
+    local fails=0
+    for leg in "${legs[@]}"; do
+        local lname lsize lcs lops ldf lboots
+        IFS=: read -r lname lsize lcs lops ldf lboots <<< "$leg"
+        local img="$BUILD/fatstress-$lname.hdd" cfg="$BUILD/churn-$lname.cfg"
+        # The near-full leg gets a huge budget: the point is to press the
+        # allocator against a really-full volume (ballast below).
+        local budget=6291456
+        [[ "$ldf" == 1 ]] && budget=33554432
+        printf 'seed=0x1965A11D ops=%s maxfiles=48 maxsize=16384 budget=%s expect_diskfull=%s\n' \
+            "$lops" "$budget" "$ldf" > "$cfg"
+
+        local specs=()
+        for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+            [[ -f "$seed" ]] && specs+=("$seed=initrd")
+        done
+        specs+=("win:$cfg=churn.cfg")
+        if [[ "$ldf" == 1 ]]; then
+            # ~33.4 MiB of data clusters minus ~2 MiB of kernel/module files:
+            # 31 MiB + 400 KiB of ballast leaves ~150 KiB free, well inside
+            # the churn's working set, so allocation really hits DISK_FULL.
+            dd if=/dev/zero of="$BUILD/ballast.bin" bs=1048576 count=31 2>/dev/null
+            dd if=/dev/zero of="$BUILD/ballast2.bin" bs=1024 count=400 2>/dev/null
+            specs+=("win:$BUILD/ballast.bin=ballast.bin"
+                    "win:$BUILD/ballast2.bin=ballast2.bin")
+        fi
+        SIZE_MB="$lsize" CLUSTER_SECTORS="$lcs" \
+            "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+
+        local log1="$BUILD/fatstress-$lname-1.log" log2="$BUILD/fatstress-$lname-2.log"
+        LOG="$log1" PASS_RE="\[KTEST\] churn-seed PASS" TIMEOUT="${TIMEOUT:-420}" \
+            "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+        if ! grep -q '\[KTEST\] churn-seed PASS' "$log1"; then
+            echo "[KTEST] fatstress-$lname-seed FAIL (see $log1)"
+            fails=$((fails+1))
+            continue
+        fi
+        echo "[KTEST] fatstress-$lname-seed PASS"
+
+        local finalLog="$log1"
+        if [[ "$lboots" == 2 ]]; then
+            LOG="$log2" PASS_RE="\[KTEST\] churn-verify PASS" TIMEOUT="${TIMEOUT:-420}" \
+                "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+            if grep -q '\[KTEST\] churn-verify PASS' "$log2"; then
+                echo "[KTEST] fatstress-$lname-verify PASS"
+            else
+                echo "[KTEST] fatstress-$lname-verify FAIL (see $log2)"
+                fails=$((fails+1))
+            fi
+            # Dry-replay determinism: the two dumps must be identical.
+            if diff <(grep '^\[CHURN\] ' "$log1" | tr -d '\r' | sort) \
+                    <(grep '^\[CHURN\] ' "$log2" | tr -d '\r' | sort) >/dev/null; then
+                echo "[KTEST] fatstress-$lname-replay PASS"
+            else
+                echo "[KTEST] fatstress-$lname-replay FAIL (dumps differ)"
+                fails=$((fails+1))
+            fi
+            finalLog="$log2"
+        fi
+
+        # Host conviction: extraction + crc, then the structural oracles.
+        local extract="$BUILD/fatstress-$lname-extract"
+        rm -rf "$extract"
+        mkdir -p "$extract"
+        mcopy -s -p -i "$img@@2097152" ::/churn "$extract" 2>/dev/null || true
+        if python3 "$ROOT/tests/run/churn_verify.py" --log "$finalLog" \
+               --extracted "$extract/churn"; then
+            echo "[KTEST] fatstress-$lname-extract PASS"
+        else
+            echo "[KTEST] fatstress-$lname-extract FAIL"
+            fails=$((fails+1))
+        fi
+        "$ROOT/tests/run/fatcheck.sh" verify churn "$img" || fails=$((fails+1))
+    done
+    echo "== fatstress: $fails failing =="
+    return $((fails > 0 ? 1 : 0))
+}
+
 # The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
 # both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
@@ -586,6 +684,7 @@ case "$MODE" in
     firstboot) firstboot ;;
     console)  console ;;
     fatinterop) fatinterop ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop}" >&2
+    fatstress) fatstress ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop|fatstress}" >&2
        exit 2 ;;
 esac

@@ -74,4 +74,10 @@ int kmt_run_m6_blk(void);
  * run.sh fatinterop image); silently absent everywhere else. */
 int kmt_run_fat_interop(void);
 
+/* The FS churn stress (tests/kmt/fat_churn.c): fixed-seed random ops vs an
+ * in-memory shadow model; two-boot protocol (seed wet / replay dry + cold
+ * verify). Runs only when C:\churn.cfg exists (the run.sh fatstress
+ * images); silently absent everywhere else. */
+int kmt_run_fat_churn(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
