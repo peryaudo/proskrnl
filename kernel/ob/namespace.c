@@ -13,6 +13,7 @@
  * STATUS_OBJECT_NAME_EXISTS, wrong final type = STATUS_OBJECT_TYPE_MISMATCH.
  */
 #include "kernel/ob/ob.h"
+#include "kernel/ke/ke.h" /* KiVerifyWaitList (the consistency sweep) */
 #include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -589,6 +590,57 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
      * the caller copies what it needs before freeing the buffer. */
     *remainingName = remaining;
     return STATUS_SUCCESS;
+}
+
+/* --- the consistency sweep (kernel/init/verify.c; lock held) --------------- */
+
+/* Every named object's name bookkeeping: the entry's parentDirectory points
+ * back at the directory holding it, the name is a real pool string, and the
+ * name's + every handle's reference are accounted for in pointerCount. The
+ * namespace is shallow (boot directories + device/link leaves; Cm keys keep
+ * their own tree behind \Registry), so bounded recursion is safe. */
+static void ObpVerifyDirectory(PVOID directoryBody, int depth)
+{
+    ASSERT(depth < 16);
+    POBP_DIRECTORY directory = directoryBody;
+    if (directory->entryListHead.Flink == 0)
+    {
+        return; /* still-zeroed body: the private create window (ob.h contract) */
+    }
+    for (PLIST_ENTRY entry = directory->entryListHead.Flink; entry != &directory->entryListHead;
+         entry = entry->Flink)
+    {
+        ASSERT(entry->Flink->Blink == entry && entry->Blink->Flink == entry);
+        POBJECT_HEADER header = CONTAINING_RECORD(entry, OBJECT_HEADER, directoryEntry);
+        ASSERT(header->parentDirectory == directoryBody);
+        ASSERT(header->name.Buffer != 0 && header->name.Length != 0);
+        ASSERT(header->type != 0 && header->type->name != 0);
+        /* handles + the name itself; transient refs only push it higher */
+        ASSERT(header->handleCount >= 0);
+        ASSERT(header->pointerCount >= header->handleCount + 1);
+        PVOID body = ObpGetBody(header);
+        if (header->type->waitable)
+        {
+            KiVerifyWaitList(body);
+        }
+        if (header->type == &ObpDirectoryType)
+        {
+            ObpVerifyDirectory(body, depth + 1);
+        }
+    }
+}
+
+void ObpVerifyNamespace(void)
+{
+    if (ObpRootDirectory == 0)
+    {
+        return; /* before ObpInitializeObjectManager */
+    }
+    POBJECT_HEADER root = ObpGetHeader(ObpRootDirectory);
+    ASSERT(root->type == &ObpDirectoryType);
+    ASSERT(root->parentDirectory == 0);
+    ASSERT(root->pointerCount >= 1);
+    ObpVerifyDirectory(ObpRootDirectory, 0);
 }
 
 /* --- initialization ------------------------------------------------------- */

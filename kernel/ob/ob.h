@@ -165,6 +165,13 @@ NTSTATUS ObpInheritHandles(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child,
 NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HANDLE_TABLE child,
                                BOOLEAN sameAttributes, PHANDLE handleOut);
 
+/* Consistency-sweep helpers (kernel/init/verify.c orchestrates; dispatcher
+ * lock held). ObpVerifyHandleTable asserts one table's internal invariants;
+ * ObpHandleTableObjectAt exposes slot occupancy (body or 0) so the sweep can
+ * recount handleCount across every table without seeing the entry layout. */
+void ObpVerifyHandleTable(POBP_HANDLE_TABLE table);
+PVOID ObpHandleTableObjectAt(POBP_HANDLE_TABLE table, ULONG index);
+
 /* Map a caller's desired access onto a type: generic/maximum-allowed bits
  * grant the type's full mask (Se is always-allow, docs/05); specific bits
  * pass through filtered to the type's valid mask. */
@@ -189,6 +196,11 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
 /* Retire an object's name: unlink from its directory, drop the name's and
  * the directory's references. Idempotent via parentDirectory == 0. */
 void ObpUnlinkObjectName(POBJECT_HEADER header);
+
+/* Consistency sweep (kernel/init/verify.c; dispatcher lock held): walk the
+ * whole \-rooted tree asserting name/parent/reference agreement for every
+ * named object. */
+void ObpVerifyNamespace(void);
 
 /* Resolve a path that may cross into a parse object (M6: an Io Device —
  * NT's ParseProcedure concept). On success *parseObject is the referenced

@@ -61,6 +61,7 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
 CSRC := kernel/init/main.c \
         kernel/init/panic.c \
         kernel/init/trace.c \
+        kernel/init/verify.c \
         kernel/init/initrd.c \
         kernel/lib/dbgprint.c \
         kernel/lib/string.c \

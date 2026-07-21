@@ -139,6 +139,27 @@ void KiRemoveTimer(PKTIMER timer)
     timer->header.inserted = 0;
 }
 
+/* Consistency-sweep check (kernel/init/verify.c; lock held): the due-time
+ * order KiInsertTimer maintains, and every entry's inserted flag — the flag
+ * and list membership are one value owned in two places. */
+void KiVerifyTimerList(void)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    uint64_t previousDue = 0;
+    for (PLIST_ENTRY entry = KiTimerListHead.Flink; entry != &KiTimerListHead; entry = entry->Flink)
+    {
+        ASSERT(entry->Flink->Blink == entry && entry->Blink->Flink == entry);
+        PKTIMER timer = CONTAINING_RECORD(entry, KTIMER, timerListEntry);
+        ASSERT(timer->header.inserted != 0);
+        ASSERT(timer->header.type == KI_OBJECT_NOTIFICATION_TIMER ||
+               timer->header.type == KI_OBJECT_SYNCHRONIZATION_TIMER);
+        ASSERT(timer->dueTime.QuadPart >= previousDue);
+        previousDue = timer->dueTime.QuadPart;
+        ASSERT(timer->period >= 0);
+        KiVerifyWaitList(&timer->header);
+    }
+}
+
 void KiUpdateClock(void)
 {
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */

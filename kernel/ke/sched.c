@@ -15,6 +15,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/init/verify.h"
 #include "kernel/lib/string.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/io.h"
@@ -103,6 +104,50 @@ static PKTHREAD KiSelectNextThread(void)
     return thread;
 }
 
+/* --- consistency-sweep checks (kernel/init/verify.c; lock held) ------------ */
+
+BOOLEAN KiIsThreadOnReadyQueue(PKTHREAD thread)
+{
+    if (thread->priority < 0 || thread->priority >= KI_PRIORITY_LEVELS)
+    {
+        return FALSE;
+    }
+    for (PLIST_ENTRY entry = KiReadyQueues[thread->priority].Flink;
+         entry != &KiReadyQueues[thread->priority]; entry = entry->Flink)
+    {
+        if (entry == &thread->readyListEntry)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* The queues and the summary bitmap are one value owned in two places; every
+ * queued thread's state/priority must agree with the queue holding it. */
+void KiVerifyScheduler(void)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(KiCurrentThread != 0);
+    ASSERT(KiCurrentThread->state == KI_THREAD_STATE_RUNNING);
+    for (int level = 0; level < KI_PRIORITY_LEVELS; level++)
+    {
+        BOOLEAN queued = !IsListEmpty(&KiReadyQueues[level]);
+        BOOLEAN flagged = (KiReadySummary & (1U << level)) != 0;
+        ASSERT(queued == flagged);
+        for (PLIST_ENTRY entry = KiReadyQueues[level].Flink; entry != &KiReadyQueues[level];
+             entry = entry->Flink)
+        {
+            ASSERT(entry->Flink->Blink == entry && entry->Blink->Flink == entry);
+            PKTHREAD thread = CONTAINING_RECORD(entry, KTHREAD, readyListEntry);
+            ASSERT(thread->state == KI_THREAD_STATE_READY);
+            ASSERT(thread->priority == level);
+            ASSERT(thread->header.type == KI_OBJECT_THREAD);
+            ASSERT(thread->process != 0);
+        }
+    }
+}
+
 /* Program the machine for `next` (M4): the ring-crossing stack (TSS.RSP0 +
  * the syscall entry stack), the user GS base (its TEB), and CR3 when the
  * address space changes. Under Art. 3 this is the ONLY place hardware
@@ -177,6 +222,10 @@ __attribute__((noreturn)) void KiIdleLoop(void)
             KiIdleThread.state = KI_THREAD_STATE_READY;
             KiSwapToNext();
         }
+        /* Idle is the one context guaranteed to see every other thread at a
+         * blocking point: sweep the executive's cross-references here
+         * (throttled inside; interrupts are already off = lock held). */
+        KiVerifyKernelStateIdle();
         /* sti;hlt back-to-back: an interrupt arriving in between still wakes
          * the hlt (sti takes effect after the next instruction). */
         __asm__ volatile("sti; hlt");

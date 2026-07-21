@@ -149,6 +149,24 @@ void PspReapExitedThreads(void)
     }
 }
 
+/* Consistency sweep (kernel/init/verify.c; lock held): the reaper holds only
+ * finished threads — a live thread here would be freed under its own stack
+ * on the next drain (the edf9f0b failure shape). */
+void PspVerifyReaperList(void)
+{
+    for (PLIST_ENTRY entry = PspReaperListHead.Flink; entry != &PspReaperListHead;
+         entry = entry->Flink)
+    {
+        ASSERT(entry->Flink->Blink == entry && entry->Blink->Flink == entry);
+        PETHREAD parked = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        ASSERT(ObpGetHeader(parked)->type == &PspThreadType);
+        ASSERT(ObpGetHeader(parked)->pointerCount >= 1); /* the parked pin */
+        ASSERT(parked->tcb != 0);
+        ASSERT(parked->tcb->state == KI_THREAD_STATE_TERMINATED);
+        ASSERT(parked->header.signalState == 1);
+    }
+}
+
 /* The thread-side bookkeeping every exit path runs: leave the process's
  * thread list and satisfy joins. May still block after this. */
 void PspRetireCurrentThread(NTSTATUS exitStatus)

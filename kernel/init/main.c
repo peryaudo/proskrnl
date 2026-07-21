@@ -30,6 +30,7 @@
 #include "drivers/condrv.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
+#include "kernel/init/verify.h"
 #include "tests/kmt/kmt.h"
 
 __attribute__((
@@ -161,6 +162,7 @@ static int KiRunBootModules(void)
         {
             failures++;
         }
+        KiVerifyKernelState(); /* the exited process must have left no debris */
     }
     return failures;
 }
@@ -199,6 +201,7 @@ static int KiRunM7Modules(void)
         {
             failures++;
         }
+        KiVerifyKernelState();
     }
     if (ran == 0)
     {
@@ -662,6 +665,7 @@ static int KiRunNtapiTests(void)
         {
             DbgPrint("[KTEST] module ntapi/%s PASS\n", ascii);
         }
+        KiVerifyKernelState(); /* between tests: each must leave a clean executive */
     }
     if (list.overflow)
     {
@@ -901,6 +905,7 @@ static int KiRunWineTests(void)
         {
             DbgPrint("[KTEST] wtest %s:%s PASS\n", list.pairs[i].exe, list.pairs[i].subtest);
         }
+        KiVerifyKernelState(); /* between pairs: each must leave a clean executive */
     }
     if (list.overflow)
     {
@@ -950,18 +955,28 @@ static void KiTestMainThread(void *context)
         KiRunInteractiveCmd();
     }
 
+    /* Boot is quiescent: the first consistency sweep (kernel/init/verify.c)
+     * baselines the executive before any suite mutates it; the per-suite
+     * sweeps below then catch the suite that introduced an inconsistency,
+     * not the consumer that later trips over it. */
+    KiVerifyKernelState();
+
     int libFailures = kmt_run_lib();
     DbgPrint(libFailures == 0 ? "[KTEST] LIB PASS\n" : "[KTEST] LIB FAIL failures=%d\n",
              libFailures);
+    KiVerifyKernelState();
 
     int m2Failures = kmt_run_m2();
     DbgPrint(m2Failures == 0 ? "[KTEST] M2 PASS\n" : "[KTEST] M2 FAIL failures=%d\n", m2Failures);
+    KiVerifyKernelState();
     int m3Failures = kmt_run_m3();
     DbgPrint(m3Failures == 0 ? "[KTEST] M3 PASS\n" : "[KTEST] M3 FAIL failures=%d\n", m3Failures);
+    KiVerifyKernelState();
 
     /* M4: the mm/VAD engine in kernel mode. */
     int m4Failures = kmt_run_m4();
     DbgPrint(m4Failures == 0 ? "[KTEST] M4 PASS\n" : "[KTEST] M4 FAIL failures=%d\n", m4Failures);
+    KiVerifyKernelState();
 
     /* M5: sections + image mapping in kernel mode (kmt), then the ring-3
      * clients as boot modules — including the PE client the section-based
@@ -970,6 +985,7 @@ static void KiTestMainThread(void *context)
     int m5Failures = kmt_run_m5();
     m5Failures += KiRunBootModules();
     DbgPrint(m5Failures == 0 ? "[KTEST] M5 PASS\n" : "[KTEST] M5 FAIL failures=%d\n", m5Failures);
+    KiVerifyKernelState();
 
     /* M6: the I/O manager + FAT32 over virtio-blk (docs/02). The final
      * milestone line is the verdict tools/qemu.sh greps for, so it
@@ -977,6 +993,7 @@ static void KiTestMainThread(void *context)
     int m6Failures = kmt_run_m6();
     m6Failures += libFailures;
     DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
+    KiVerifyKernelState();
 
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
@@ -985,6 +1002,7 @@ static void KiTestMainThread(void *context)
     /* The Wine bring-up half of M7: the unmodified PE ntdll runs hello.exe. */
     m7Failures += KiRunWineHello();
     DbgPrint(m7Failures == 0 ? "[KTEST] M7 PASS\n" : "[KTEST] M7 FAIL failures=%d\n", m7Failures);
+    KiVerifyKernelState();
 
     /* M8: the initial process chain (docs/02 "Done when: boot completes as
      * kernel → smss-equiv → test process"): smss.exe verifies \Registry from
@@ -992,12 +1010,14 @@ static void KiTestMainThread(void *context)
      * the child's code. */
     int m8Failures = KiRunInitialChain();
     DbgPrint(m8Failures == 0 ? "[KTEST] M8 PASS\n" : "[KTEST] M8 FAIL failures=%d\n", m8Failures);
+    KiVerifyKernelState();
 
     /* M9: npfs + condrv + conhost (docs/02): the threaded pipe client/server
      * protocol and a console write through the whole stack. The npfs
      * differential surface itself is the sem_pipe suite (run.sh). */
     int m9Failures = KiRunM9();
     DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
+    KiVerifyKernelState();
 
     /* The ntapi image only (tests/run/run.sh proskrnl): run every single
      * binary test baked under C:\ntapi. Absence is silent. */
@@ -1015,6 +1035,12 @@ static void KiTestMainThread(void *context)
 
     /* Console-mode image only (M10): the interactive cmd.exe session. */
     int cmdFailures = KiRunCmdConsole();
+
+    /* The whole run swept clean: every sweep either passed or panicked, so
+     * reaching this line IS the verdict (plus the idle-loop sweeps that ran
+     * whenever the machine went quiet). */
+    KiVerifyKernelState();
+    DbgPrint("[KTEST] sweep PASS (%lu sweeps)\n", (unsigned long)KiSweepCount);
 
     /* End-of-suite #BP: the resume-path dump (panic.c) prints the full
      * system state INCLUDING a populated trace ring — every green run shows

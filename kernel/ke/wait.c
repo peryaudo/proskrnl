@@ -175,6 +175,120 @@ restart:
     }
 }
 
+/* --- consistency-sweep checks (kernel/init/verify.c; lock held) ------------ */
+
+static BOOLEAN KiIsDispatcherType(UCHAR type)
+{
+    switch (type)
+    {
+    case KI_OBJECT_NOTIFICATION_EVENT:
+    case KI_OBJECT_SYNCHRONIZATION_EVENT:
+    case KI_OBJECT_MUTANT:
+    case KI_OBJECT_PROCESS:
+    case KI_OBJECT_SEMAPHORE:
+    case KI_OBJECT_THREAD:
+    case KI_OBJECT_NOTIFICATION_TIMER:
+    case KI_OBJECT_SYNCHRONIZATION_TIMER:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+static BOOLEAN KiWaitListContains(PDISPATCHER_HEADER object, PKWAIT_BLOCK block)
+{
+    for (PLIST_ENTRY entry = object->waitListHead.Flink; entry != &object->waitListHead;
+         entry = entry->Flink)
+    {
+        if (entry == &block->waitListEntry)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Every waiter on an object's wait list must be a WAITING thread that
+ * actually armed this block (its waitBlockList chain or its timeout block) —
+ * a stale block here is a use-after-unwait about to satisfy a dead wait. */
+void KiVerifyWaitList(PDISPATCHER_HEADER object)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    if (object->waitListHead.Flink == 0)
+    {
+        return; /* still-zeroed body: the private create window (ob.h contract) */
+    }
+    ASSERT(KiIsDispatcherType(object->type));
+    for (PLIST_ENTRY entry = object->waitListHead.Flink; entry != &object->waitListHead;
+         entry = entry->Flink)
+    {
+        ASSERT(entry->Flink->Blink == entry && entry->Blink->Flink == entry);
+        PKWAIT_BLOCK block = CONTAINING_RECORD(entry, KWAIT_BLOCK, waitListEntry);
+        ASSERT(block->object == object);
+        PKTHREAD thread = block->thread;
+        ASSERT(thread != 0);
+        ASSERT(thread->state == KI_THREAD_STATE_WAITING);
+        BOOLEAN owned = block == &thread->timerWaitBlock && thread->timerArmed;
+        for (PKWAIT_BLOCK b = thread->waitBlockList; !owned && b != 0; b = b->nextWaitBlock)
+        {
+            owned = b == block;
+        }
+        ASSERT(owned);
+    }
+}
+
+/* The thread-side mirror: a thread's scheduling state must agree with the
+ * queue/list it claims to be on. Callable for any enumerable thread. */
+void KiVerifyThreadWaitState(PKTHREAD thread)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    switch (thread->state)
+    {
+    case KI_THREAD_STATE_INITIALIZED:
+        ASSERT(thread->waitBlockList == 0);
+        ASSERT(thread->suspendCount >= 0);
+        break;
+    case KI_THREAD_STATE_READY:
+        ASSERT(thread->waitBlockList == 0);
+        ASSERT(KiIsThreadOnReadyQueue(thread));
+        break;
+    case KI_THREAD_STATE_RUNNING:
+        ASSERT(thread == KiCurrentThread);
+        break;
+    case KI_THREAD_STATE_WAITING:
+        ASSERT(thread->waitBlockList != 0 || thread->timerArmed);
+        for (PKWAIT_BLOCK block = thread->waitBlockList; block != 0; block = block->nextWaitBlock)
+        {
+            ASSERT(block->thread == thread);
+            ASSERT(block->object != 0);
+            ASSERT(KiIsDispatcherType(((PDISPATCHER_HEADER)block->object)->type));
+            ASSERT(KiWaitListContains(block->object, block));
+        }
+        if (thread->timerArmed)
+        {
+            ASSERT(thread->timer.header.inserted != 0);
+            ASSERT(thread->timerWaitBlock.thread == thread);
+            ASSERT(KiWaitListContains(&thread->timer.header, &thread->timerWaitBlock));
+        }
+        break;
+    case KI_THREAD_STATE_TERMINATED:
+        ASSERT(thread->header.signalState == 1);
+        break;
+    default:
+        KiPanic("KiVerifyThreadWaitState: invalid thread state");
+    }
+    /* Owned mutants: ownership is a value held in two places (the mutant's
+     * ownerThread and the thread's mutant list) — they must agree. */
+    for (PLIST_ENTRY entry = thread->mutantListHead.Flink; entry != &thread->mutantListHead;
+         entry = entry->Flink)
+    {
+        PKMUTANT mutant = CONTAINING_RECORD(entry, KMUTANT, mutantListEntry);
+        ASSERT(mutant->header.type == KI_OBJECT_MUTANT);
+        ASSERT(mutant->ownerThread == thread);
+        ASSERT(mutant->header.signalState <= 0);
+    }
+}
+
 LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned)
 {
     ASSERT(mutant->header.type == KI_OBJECT_MUTANT);

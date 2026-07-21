@@ -258,6 +258,14 @@ static inline BOOLEAN KiIsDispatcherLockHeld(void)
 void KiReadyThread(PKTHREAD thread);
 void KiSwapToNext(void); /* current must already be re-stated; lock held */
 
+/* Consistency-sweep helpers (kernel/init/verify.c orchestrates; lock held).
+ * Each asserts the invariants of the state its file owns. */
+void KiVerifyScheduler(void);                     /* ready queues + summary bitmap */
+BOOLEAN KiIsThreadOnReadyQueue(PKTHREAD thread);  /* membership, for cross-checks */
+void KiVerifyTimerList(void);                     /* ordering + inserted flags */
+void KiVerifyWaitList(PDISPATCHER_HEADER object); /* each waiter armed this wait */
+void KiVerifyThreadWaitState(PKTHREAD thread);    /* state <-> queues/waits agree */
+
 void KiYield(void);
 __attribute__((noreturn)) void KiIdleLoop(void);
 
