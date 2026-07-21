@@ -1575,6 +1575,11 @@ def gen_ntpsapi(wine: Path) -> str:
                 "__WINESRC__",
                 True,
             ),
+            extract_struct(
+                winternl, "_SYSTEM_PERFORMANCE_INFORMATION", "SYSTEM_PERFORMANCE_INFORMATION"
+            ),
+            extract_struct(winternl, "_VM_COUNTERS", "VM_COUNTERS"),
+            extract_struct(winternl, "_VM_COUNTERS_EX", "VM_COUNTERS_EX"),
             extract_struct(winternl, "_PS_ATTRIBUTE", "PS_ATTRIBUTE"),
             extract_struct(winternl, "_PS_ATTRIBUTE_LIST", "PS_ATTRIBUTE_LIST"),
             extract_struct(winternl, "_PS_CREATE_INFO", "PS_CREATE_INFO"),
@@ -1611,6 +1616,7 @@ def gen_ntpsapi(wine: Path) -> str:
             "PROCESS_CREATE_FLAGS_SUSPENDED",
             # RTL_USER_PROCESS_PARAMETERS.Flags
             "PROCESS_PARAMS_FLAG_NORMALIZED",
+            "PROCESS_PARAMS_IMAGE_KEY_MISSING",
         ],
     )
     function_pointers = "\n".join(
