@@ -8,7 +8,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 
 ## Read before writing code (hard rules, not guidance)
 
-`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The ten constitution articles map to PR gates G1–G9. Key ones you will violate by default:
+`docs/09-constitution.md` and `docs/CONTRIBUTING.md` are **gates**, not suggestions — a change that erodes a boundary is rejected even if it adds a feature. The eleven constitution articles map to PR gates G1–G11. Key ones you will violate by default:
 
 - **G1 / Art. 1 — Boundary only.** Reproduce NT behavior *exactly* only at the observable boundary (`Nt*` semantics Wine uses; PEB/TEB/RTL_USER_PROCESS_PARAMETERS/KUSER_SHARED_DATA layout; NT file semantics). Reproduce nothing else in Microsoft-compatible form.
 - **G2 / Art. 2 — No NT-absent entities in the core.** Never add to `kernel/`, `abi/`, `arch/`, `fs/`, or the `Nt*` surface anything NT lacks. GUI-only exception: a new device or new process at the *outside* of the boundary, logged in `docs/10-hacks-ledger.md` (use `/log-hack`).
@@ -19,6 +19,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 - **G6 / Art. 6 — Only a differential test convicts.** Sanitizers/asserts name suspects; only a passing differential/conformance test closes an issue. "The sanitizer went quiet" is not a fix.
 - **G7 / Art. 7 — Additive & removable.** Everything outside the CUI core (GUI, WOW64, ROS shell) must be subtractable without touching the core.
 - **G9 / Art. 10 — Wine is patched only at the unixlib seam.** Wine modifications replace unixlib plumbing with syscall stubs (+ build glue), nothing else — managed solely as commits on the fork's `proskrnl-target` branch pinned at `third_party/wine`; there is no patches directory, no vendored diffs, no build-time patching. Never change PE-side observable behavior, and **never patch Wine to make a proskrnl divergence pass** — that fixes the oracle instead of the kernel (Art. 6). Every commit carries a what/why/upstream-disposition header; the hack meter is the submodule diff vs. the winehq merge-base, and a pin-bump PR reports its delta.
+- **G10+G11 / Art. 11 — One authority.** Never reimplement what a shared engine already does (Ob name resolution / create-open access checks / handle allocation, Ps identity minting) in a second code path — extend the engine instead; parallel paths drift even while currently equivalent. Every identity value (ids, cookies, handle values) has exactly one allocation site; a diff touching object creation/refcounts/teardown answers the ownership audit: who holds a reference at each point, and what happens if every handle closes — or the owning thread exits — at the earliest legal moment.
 
 **LLM failure mode (called out in the docs):** you are trained mostly on Linux/ReactOS and will unprompted add IRQL, split the cache into a separate `Cc`, introduce fine-grained locks / COW, import POSIX idioms, and recall constants from memory. Each violates a gate. When in doubt, prefer the simplest thing that passes the boundary tests and leave NT-faithful internals and optimizations unbuilt.
 
@@ -40,7 +41,7 @@ proskrnl is a minimal, Windows-NT-semantics-compatible kernel that boots on bare
 
 ## Workflow
 
-- **Feature branches + PRs; every change must satisfy gates G1–G9.** Run `/gate-check` on a diff before committing.
+- **Feature branches + PRs; every change must satisfy gates G1–G11.** Run `/gate-check` on a diff before committing.
 - `abi/` constants: regenerate with `/gen-abi`, never hand-edit.
 - Introducing an NT-absent device/process: log it with `/log-hack` before/with the code.
 - **On completing a milestone**, update the **Status** line in the README "Status" section (current milestone, what is achieved and what couldn't be achieved, what's next); confirm `make test` is green.

@@ -165,6 +165,37 @@ Licensing: the fork is derivative of Wine (LGPL) and its DLLs run in user mode, 
 far side of the process boundary; nothing from it enters the kernel image (Art. 8,
 `docs/11`).
 
+## Article 11 — One authority: engines, identities, lifetimes
+
+The executive's shared mechanisms exist exactly once, and every consumer goes through
+them. Three concrete forms, each learned from a shipped bug:
+
+- **No parallel engines.** An operation a shared engine already performs — name
+  resolution and the create/open access checks (Ob), handle allocation (Ob), identity
+  minting (Ps) — is never reimplemented by a second code path, even a specialized one. A
+  parallel path is a defect *even while its behaviour is identical*, because two
+  implementations of one rule drift apart silently: Cm's private name-resolution walked
+  past the zero-access refusal Ob's open engine already enforced, and the divergence was
+  invisible until the fuzzer sampled it (`a53dd04`). Extend the engine (a parse hook, a
+  flag) rather than bypassing it.
+- **One source of truth per identity value.** Every identity value — thread and process
+  ids, cookies, handle values, any number with a contract meaning — has exactly one
+  allocation site and one authoritative home; every other appearance is a copy taken
+  from the authority at a defined point. Two independent writers of "the same" value is
+  the split-brain shape that gave a thread a TEB id its own ETHREAD disagreed with
+  (`4fc732c`).
+- **Lifetimes are held by named references.** For every kernel object, "who keeps this
+  alive right now" has an explicit answer at every point in its life — including against
+  the earliest legal handle close and against the owning thread exiting first. An object
+  reachable by running code must be pinned by a reference that running code cannot lose:
+  a live thread's ETHREAD was once deleted out from under it by the first caller that
+  closed its handles promptly (`edf9f0b`).
+
+These rules are cheap at introduction time and nearly unenforceable after the fact — a
+second engine or a second writer looks locally correct in every later diff, and both
+departments stay self-consistent while disagreeing with each other. Gates G10 and G11
+therefore check for them at review time, per diff.
+
 ---
 
 ## The through-line
@@ -173,5 +204,5 @@ Every article is the same instinct applied to a different target: **avoid the di
 boundary, take the clean one.** T1 avoids the driver ABI; T2 avoids win32k's temporal
 protocol; Article 3 avoids the concurrency swamp; Article 4 avoids the model's unreliable
 memory; T7 avoids the undocumented shell seam; Article 10 avoids quietly reshaping the
-oracle to fit the kernel. The project succeeds exactly insofar as these boundaries hold.
-Guard them.
+oracle to fit the kernel; Article 11 avoids the second implementation that drifts. The
+project succeeds exactly insofar as these boundaries hold. Guard them.
