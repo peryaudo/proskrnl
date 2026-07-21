@@ -58,6 +58,15 @@ find_wine() {
 # a disposable registry, never the developer's ~/.wine. $WINEPREFIX overrides.
 : "${WINEPREFIX:=$BUILD/wineprefix}"
 export WINEPREFIX
+
+# Keep mscoree/mshtml unloadable in every oracle prefix: wine.inf's
+# RegisterDllsSection registers both, and their DllRegisterServer is the
+# Wine Mono / Gecko INSTALLER (dlls/mscoree/mscoree_main.c
+# install_wine_mono, via appwiz.cpl) — a multi-minute download on every
+# fresh-prefix init, and addon state the proskrnl side never has. The
+# override makes setupapi's registration warn-and-continue instead.
+: "${WINEDLLOVERRIDES:=mscoree,mshtml=}"
+export WINEDLLOVERRIDES
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # The pinned Wine import libraries the test .exes link against (built by
@@ -342,6 +351,52 @@ persist() {
     return 0
 }
 
+# The CUI-1 acceptance (docs/02 "a registry differential vs. the oracle's
+# prefix is green" — Art. 6, the diff convicts): boot a VIRGIN standard
+# image once (firstboot runs wineboot --init through rundll32/setupapi),
+# pull the SYSTEM hive off the FAT volume, and diff it against the registry
+# the SAME payload produces in a fresh prefix under the pinned oracle wine.
+# regdump.py canonicalizes both sides; regdiff.py carries the documented
+# exclusion list (docs/03 "CUI-1 firstboot notes").
+firstboot() {
+    mkdir -p "$BUILD"
+
+    # --- proskrnl leg: virgin image (the persist() pattern), one boot ---
+    rm -f "$ROOT/build/proskrnl.hdd"
+    make -C "$ROOT" >/dev/null
+    local img="$BUILD/firstboot.hdd"
+    cp "$ROOT/build/proskrnl.hdd" "$img"
+    local log="$BUILD/firstboot.log"
+    LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-420}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    if ! grep -q "\[KTEST\] firstboot PASS" "$log"; then
+        echo "[KTEST] firstboot-diff FAIL (boot did not reach firstboot PASS; see $log)"
+        return 1
+    fi
+    # The hive sits on the image's ESP FAT32 partition (mkimage.sh: p2 at
+    # sector 4096, the same byte offset mkimage's own mcopy uses).
+    local hive="$BUILD/firstboot-SYSTEM"
+    rm -f "$hive"
+    mcopy -i "$img@@2097152" ::/windows/system32/config/SYSTEM "$hive"
+
+    # --- oracle leg: wineboot --init in a fresh prefix under the pinned wine ---
+    local prefix="$BUILD/firstboot-prefix"
+    rm -rf "$prefix"
+    WINEPREFIX="$prefix" "$WINE" wineboot --init >"$BUILD/firstboot-oracle.log" 2>&1
+    # wineserver persists system.reg on exit; -w waits for that shutdown.
+    WINEPREFIX="$prefix" "$ROOT/third_party/wine/server/wineserver" -w
+
+    # --- the differential ---
+    if python3 "$ROOT/tests/run/regdiff.py" "$hive" "$prefix/system.reg"; then
+        echo "[KTEST] firstboot-diff PASS"
+        echo "== firstboot: PASS =="
+        return 0
+    fi
+    echo "[KTEST] firstboot-diff FAIL"
+    echo "== firstboot: FAIL (regdiff divergences above) =="
+    return 1
+}
+
 # The M9 interactive-console acceptance (docs/02 "input typed into the
 # serial console echoes through conhost"): boot the console-mode image with
 # the serial wire on a unix socket, let console_expect.py type "ping" and
@@ -377,7 +432,8 @@ case "$MODE" in
     winetest) winetest ;;
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
+    firstboot) firstboot ;;
     console)  console ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|console}" >&2
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console}" >&2
        exit 2 ;;
 esac
