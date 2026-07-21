@@ -30,6 +30,7 @@ if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
     exit 1
 fi
 TIMEOUT="${TIMEOUT:-30}"
+MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
 PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
@@ -49,7 +50,7 @@ fi
 "$QEMU" \
     -M q35 \
     -cpu max \
-    -m 256M \
+    -m "$MEM" \
     -no-reboot \
     -display none \
     -monitor none \

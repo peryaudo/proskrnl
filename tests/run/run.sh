@@ -252,16 +252,21 @@ winetest() {
 
     # The Wine PE userland (the run.sh proskrnl set) + conhost (winetest
     # processes run on the console) + cmd.exe (%COMSPEC%, the cmd tests'
-    # subject) + the test binaries and the manifest under C:\wtests.
+    # subject) + the test binaries and the manifest under C:\wtests. The M5
+    # seed modules keep the in-kernel M6 suite green on this image too, and
+    # the FULL nls set goes in — the CRT/codepage subtests exercise every
+    # codepage the oracle has (a missing c_932.nls reads as a divergence).
     local specs=()
+    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+        [[ -f "$seed" ]] && specs+=("$seed=initrd")
+    done
     for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
                cryptbase; do
         specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
     done
-    for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
-               normidna; do
-        [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
-            specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
+    local nlsfile
+    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
+        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
     done
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
@@ -271,11 +276,14 @@ winetest() {
     done
     specs+=("win:$manifest=wtests/manifest.txt")
 
-    # MB-scale test binaries: a bigger volume than the 64 MB default.
+    # MB-scale test binaries: a bigger volume than the 64 MB default. And
+    # 1 GiB of guest RAM: no eviction (Art. 3) means the page cache holds
+    # every test binary's pages for the whole sweep — memory is provisioned,
+    # not managed.
     SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/wtest-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-900}" \
+    LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1200}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     "$ROOT/tools/symbolize.py" --kernel "$kernel" \
