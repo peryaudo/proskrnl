@@ -351,7 +351,7 @@ first (Art. 5). Wrinkles worth remembering:
 - **cmd.exe ships as a standalone PE** built from the pinned tree's own
   cmd objects + `user/cmd/proskrnl_glue.c` (the five user32 / four shell32
   imports stood in over ntdll/kernelbase; shell verbs fail loudly).
-  user32/shell32 themselves stay off the image until M12 (Art. 7).
+  user32/shell32 themselves stay off the image until GUI-2 (Art. 7).
 - **services.exe is deferred** (milestone text lists it): nothing in the
   M10 acceptance — cmd prompting, pipes/redirection, a third-party CUI
   app — touches the SCM. rpcrt4/advapi32 load and their client surface
@@ -373,7 +373,7 @@ boundary symbols winebuild would have emitted supplied by
 
 - **One binary, two runners (docs/14) — so user32 is stood in at link
   time.** The ntdll/kernel32 test objects declare `IMPORTS = user32`;
-  user32 is the M12 GUI path, off the image per Art. 7.
+  user32 is the GUI-2 path, off the image per Art. 7.
   `user/wtest/user32_stubs.c` supplies the referenced imports (honest
   `ERROR_CALL_NOT_IMPLEMENTED` failures for GUI entities; real
   implementations only where ntdll/msvcrt already carry the semantics).
@@ -473,7 +473,7 @@ and each is logged in `docs/10-hacks-ledger.md`:
 
 - **serial-backed console** (HACK-004, M9) — condrv's transport is the COM1 UART in both
   directions; real NT feeds conhost from win32k's raw input path and draws its output into
-  a window. Retired when the M11+ input/display path exists.
+  a window. Retired when the GUI-1+ input/display path exists.
 - **`\Device\Fb0`** (HACK-001) — map the framebuffer to user mode; NT would own this via a
   display driver behind win32k.
 - **`\Device\Input0`** (HACK-002) — raw input stream to user mode; NT routes this through

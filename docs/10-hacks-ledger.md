@@ -32,7 +32,7 @@ Retirement: <the condition under which this is deleted>
 
 ```
 Status:     proposed
-Introduced: M11
+Introduced: GUI-1
 Not in NT:  NT owns the framebuffer behind a display driver, below win32k (WDDM/XDDM).
 Reason:     We implement no display-driver model; win32u needs somewhere to blit.
 Scope:      drivers/fb.c ; user/wine/winefb.drv/display.c
@@ -43,7 +43,7 @@ Retirement: if an NtGdi-side display-driver abstraction is ever built.
 
 ```
 Status:     proposed
-Introduced: M11
+Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
 Scope:      drivers/hid.c ; user/wine/winefb.drv/input.c
@@ -54,7 +54,7 @@ Retirement: if input routing moves into a kernel win32k (route (b)).
 
 ```
 Status:     proposed
-Introduced: M13 (route (a))
+Introduced: GUI-3 (route (a))
 Not in NT:  NT holds desktop state in kernel win32k (since NT 4.0). NOTE: this is a
             return to NT 3.1's architecture, so it is only "not in NT 4.0+", not
             un-NT-like in principle.
@@ -75,13 +75,13 @@ Not in NT:  conhost's input arrives from win32k's raw input path (i8042prt/kbdcl
             the interactive console's transport. (NT's EMS/SAC serial console is a
             separate management channel, not condrv's backend.)
 Reason:     M9 needs interactive console I/O before any display or keyboard hardware
-            exists (both are M11+). The 16550 is bidirectional, already carries all
+            exists (both are GUI-1+). The 16550 is bidirectional, already carries all
             kernel output, and a socket/pty chardev keeps the headless scripted test
             loop (docs/08) unchanged — the cheapest input source an LLM-driven runner
             can drive deterministically.
 Scope:      drivers/condrv.c (backend hookup) ; arch/x86_64/serial.c (RX side)
-Retirement: when the real input path (\Device\Input0, M11 / HACK-002) exists and conhost
-            is GUI-ified (M15), delete the serial backend; condrv's transport becomes
+Retirement: when the real input path (\Device\Input0, GUI-1 / HACK-002) exists and conhost
+            is GUI-ified (GUI-5), delete the serial backend; condrv's transport becomes
             the input queue + window like real NT.
 ```
 

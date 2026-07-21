@@ -97,9 +97,9 @@ needed for a usable windowing system.
 
 ## Milestones
 
-M11 (pixels/input) · M12 (win32u + winefb.drv, single process → **calc.exe on screen**) ·
-M13 (wineserver-lite, multi-process state ⛰️) · M14 (compositing + input routing) ·
-M15 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) · M16 (Wine desktop).
+GUI-1 (pixels/input) · GUI-2 (win32u + winefb.drv, single process → **calc.exe on screen**) ·
+GUI-3 (wineserver-lite, multi-process state ⛰️) · GUI-4 (compositing + input routing) ·
+GUI-5 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) · GUI-6 (Wine desktop).
 
 ## Verification
 
@@ -120,7 +120,7 @@ if GUI collapses, subtract the ledger entries and the CUI kernel remains untouch
 
 - **user32/gdi32 PE reading shared memory** — Wine may expect some window info via a shared
   section (`GetWindowLong` fast path); the kernel/server may need to supply it. Main source
-  of M13 estimate uncertainty.
+  of GUI-3 estimate uncertainty.
 - **Fonts** — statically linking FreeType into PE means peeling Wine's unix-assuming build;
   metrics must match (dialog layout depends on them). Same FreeType + fonts as Wine-on-Linux
   ⇒ same numbers ⇒ oracle exists.

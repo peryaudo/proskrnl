@@ -13,7 +13,7 @@ vs Win10), build-extraction from ReactOS's build system, and a GPL/LGPL map.
 ## Decision
 Use Wine's desktop first. Initialize the registry at runtime via Wine's `wineboot.exe`
 (which calls our `NtCreateKey`, doubling as the Cm integration test), so no hive-generation
-tool is needed. The ReactOS shell is an optional later milestone (M17) governed by a
+tool is needed. The ReactOS shell is an optional later milestone (GUI-7) governed by a
 `user/dllmap.toml` collision map, done only after Wine's desktop provides a regression
 baseline.
 
