@@ -63,4 +63,9 @@ int kmt_run_m5(void);
  * file. Returns failures. */
 int kmt_run_m6(void);
 
+/* The virtio-blk driver units (tests/kmt/m6_blk.c): chunk-boundary
+ * transfers, last-sector/past-capacity I/O, write+readback with neighbor
+ * checks in the unpartitioned GPT slack. Called from kmt_run_m6. */
+int kmt_run_m6_blk(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */
