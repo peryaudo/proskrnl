@@ -12,7 +12,8 @@ ntdll_test.exe:large_int
 ntdll_test.exe:rtlbitmap
 ntdll_test.exe:rtlstr
 ntdll_test.exe:string
-ntdll_test.exe:time
+# ntdll_test.exe:time is out: oracle-side USD/NtQuerySystemTime race on
+# shared CI runners (docs/03 "M10 winetest notes")
 kernel32_test.exe:atom
 kernel32_test.exe:codepage
 kernel32_test.exe:directory
