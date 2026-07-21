@@ -1118,7 +1118,7 @@ NTSTATUS NtFlushKey(HANDLE keyHandle)
  * seeds the keys real NT guarantees exist (Session Manager: created by NT
  * itself, probed by kernel32:heap test_child_heap and read by the kernel's
  * own GlobalFlag stamp, kernel/ps/peb.c). */
-static void CmpEnsureSkeletonKey(PCWSTR path)
+static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
 {
     PCMP_KEY_NODE node = CmpRootNode;
     while (*path != 0)
@@ -1144,6 +1144,26 @@ static void CmpEnsureSkeletonKey(PCWSTR path)
         node = child;
         path = (*end != 0) ? end + 1 : end;
     }
+    return node;
+}
+
+/* Seed a REG_SZ value if absent — furniture only; a persisted hive's own
+ * value (or a later ring-3 write) is never stomped. */
+static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
+{
+    UNICODE_STRING nameString;
+    RtlInitUnicodeString(&nameString, name);
+    if (CmpFindValue(node, &nameString) != 0)
+    {
+        return;
+    }
+    ULONG bytes = 0;
+    while (data[bytes / sizeof(WCHAR)] != 0)
+    {
+        bytes += sizeof(WCHAR);
+    }
+    bytes += sizeof(WCHAR);
+    CmpSetValue(node, &nameString, REG_SZ, data, bytes);
 }
 
 void CmInitialize(void)
@@ -1189,6 +1209,18 @@ void CmInitialize(void)
     CmpEnsureSkeletonKey(WSTR("Machine"));
     CmpEnsureSkeletonKey(WSTR("User"));
     CmpEnsureSkeletonKey(WSTR("Machine\\System\\CurrentControlSet\\Control\\Session Manager"));
+
+    /* The computer-name furniture kernelbase's GetComputerNameEx* reads
+     * (dlls/kernelbase/registry.c: ActiveComputerName/ComputerName, Tcpip
+     * Hostname/Domain) — real NT setup writes these; the fixed names keep
+     * the no-config rule. Consumer: kernel32:environ. */
+    PCMP_KEY_NODE seeded = CmpEnsureSkeletonKey(WSTR(
+        "Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ActiveComputerName"));
+    CmpSeedStringValue(seeded, WSTR("ComputerName"), WSTR("PROSKRNL"));
+    seeded = CmpEnsureSkeletonKey(
+        WSTR("Machine\\System\\CurrentControlSet\\Services\\Tcpip\\Parameters"));
+    CmpSeedStringValue(seeded, WSTR("Hostname"), WSTR("proskrnl"));
+    CmpSeedStringValue(seeded, WSTR("Domain"), WSTR("localdomain"));
 
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",

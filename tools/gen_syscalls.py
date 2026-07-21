@@ -35,6 +35,7 @@ IMPLEMENTED = [
     # M3 Ob surface, reachable from user mode as of M4
     "NtClose",
     "NtDuplicateObject",
+    "NtQueryObject",
     "NtMakeTemporaryObject",
     "NtCreateEvent",
     "NtOpenEvent",

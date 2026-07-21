@@ -41,6 +41,19 @@ NtDuplicateObject:
     add $0x78, %rsp
     ret
 
+    .global NtQueryObject
+NtQueryObject:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x10, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
     .global NtMakeTemporaryObject
 NtMakeTemporaryObject:
     mov %rcx, %r9
