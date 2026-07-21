@@ -15,6 +15,7 @@ Exit 0 = all three seen; 1 = timeout/mismatch (the log names the miss).
 """
 
 import re
+import os
 import socket
 import sys
 import time
@@ -26,7 +27,10 @@ def main() -> int:
         return 2
     sock_path, log_path = sys.argv[1], sys.argv[2]
 
-    deadline = time.monotonic() + float(150)
+    # The console image's virgin boot includes the CUI-1 firstboot INF pass
+    # (minutes under TCG) before conhost ever speaks; the runner passes a
+    # matching budget.
+    deadline = time.monotonic() + float(os.environ.get("EXPECT_DEADLINE", "150"))
     sock = None
     while time.monotonic() < deadline:
         try:

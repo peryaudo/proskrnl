@@ -167,10 +167,13 @@ proskrnl() {
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
     # The Wine PE userland the tests run on (the same files Makefile WINFILES
-    # bakes for `make test`). M10 widens the set to the CUI DLLs.
+    # bakes for `make test`): the debug-STRIPPED staging copies — with no COW
+    # and no eviction, the -g mingw builds' DWARF triples every mapped image
+    # copy (see Makefile winestrip).
+    make -C "$ROOT" winestrip >/dev/null
     for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
                cryptbase; do
-        specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
+        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
     done
     specs+=("win:$(build_helper_dll)=ntapi/prshelper.dll")
     for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
@@ -269,9 +272,10 @@ winetest() {
     for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
+    make -C "$ROOT" winestrip >/dev/null
     for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
                cryptbase; do
-        specs+=("win:$WINE_PE/$dll/x86_64-windows/$dll.dll=windows/system32/$dll.dll")
+        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
     done
     local nlsfile
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
@@ -334,13 +338,15 @@ persist() {
     cp "$ROOT/build/proskrnl.hdd" "$img"
 
     local log1="$ROOT/build/tests/persist1.log" log2="$ROOT/build/tests/persist2.log"
-    LOG="$log1" TIMEOUT="${TIMEOUT:-60}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    # Boot 1 of a virgin image runs the whole CUI-1 firstboot INF pass
+    # (minutes under TCG); boot 2 skips it via wineboot's timestamp check.
+    LOG="$log1" TIMEOUT="${TIMEOUT:-420}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: seeded' "$log1" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log1"; then
         echo "== persist: FAIL (boot 1 did not seed; see $log1) =="
         return 1
     fi
-    LOG="$log2" TIMEOUT="${TIMEOUT:-60}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    LOG="$log2" TIMEOUT="${TIMEOUT:-420}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: verified' "$log2" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log2" || \
        ! grep -qE '^\[KTEST\] M8 PASS' "$log2"; then
@@ -380,14 +386,53 @@ firstboot() {
     mcopy -i "$img@@2097152" ::/windows/system32/config/SYSTEM "$hive"
 
     # --- oracle leg: wineboot --init in a fresh prefix under the pinned wine ---
+    # BOTH sides apply the IDENTICAL filtered INF, so the differential
+    # isolates the kernel's Cm/setupapi boundary from the directive families
+    # tools/filter_inf.py documents as out of scope (their registry effect —
+    # RegisterDlls self-registration — is neither applied on proskrnl nor
+    # comparable). The filtered INF is staged as input data over the pinned
+    # tree's loader/wine.inf for the duration of this one prefix init (the
+    # loader's WINEBUILDDIR always wins over the environment, so the file is
+    # the only staging point); the byte-identical original is restored even
+    # on failure, keeping the pinned tree — the hack meter — clean.
     local prefix="$BUILD/firstboot-prefix"
+    local inf="$ROOT/third_party/wine/loader/wine.inf"
     rm -rf "$prefix"
-    WINEPREFIX="$prefix" "$WINE" wineboot --init >"$BUILD/firstboot-oracle.log" 2>&1
+    cp "$inf" "$BUILD/wine.inf.pristine"
+    trap 'cp "'"$BUILD"'/wine.inf.pristine" "'"$inf"'"' EXIT
+    # --keep WineFakeDlls: fake dlls write no registry, but a prefix without
+    # them cannot launch any non-bootstrap process (see tools/filter_inf.py);
+    # on the host the sources exist, so the oracle keeps them. The compared
+    # AddReg/DelReg/Services payload is byte-identical to the baked INF's.
+    python3 "$ROOT/tools/filter_inf.py" --keep WineFakeDlls \
+        "$BUILD/wine.inf.pristine" "$BUILD/wine-oracle.inf" 2>/dev/null
+    cp "$BUILD/wine-oracle.inf" "$inf"
+    # Prefix creation itself applies the payload: ntdll's prefix bootstrap
+    # (unix/env.c run_wineboot) runs wineboot --init --update synchronously
+    # before the requested command ever loads. The requested command must be
+    # a REAL on-disk .exe by unix path — a filtered-INF prefix has no fake
+    # dlls, so a builtin app (bare "wineboot", or even an explicit
+    # system32 path: load_main_exe hard-fails an explicit path with no file
+    # behind it) can never be the initial process. The repo's own standalone
+    # cmd.exe doubles as the it-really-booted signal; the registry verdict
+    # itself belongs to regdiff, not this exit code.
+    local oracle_out
+    oracle_out="$(WINEPREFIX="$prefix" "$WINE" "$ROOT/build/modules/cmd.exe" /c \
+        "echo firstboot-oracle-ok" 2>"$BUILD/firstboot-oracle.log" | tr -d '\r')"
+    if ! echo "$oracle_out" | grep -q "firstboot-oracle-ok"; then
+        echo "[KTEST] firstboot-diff FAIL (oracle prefix init failed; see $BUILD/firstboot-oracle.log)"
+        cp "$BUILD/wine.inf.pristine" "$inf"
+        trap - EXIT
+        return 1
+    fi
     # wineserver persists system.reg on exit; -w waits for that shutdown.
     WINEPREFIX="$prefix" "$ROOT/third_party/wine/server/wineserver" -w
+    cp "$BUILD/wine.inf.pristine" "$inf"
+    trap - EXIT
 
     # --- the differential ---
-    if python3 "$ROOT/tests/run/regdiff.py" "$hive" "$prefix/system.reg"; then
+    if python3 "$ROOT/tests/run/regdiff.py" "$hive" "$prefix/system.reg" \
+        "$ROOT/build/wine-proskrnl.inf"; then
         echo "[KTEST] firstboot-diff PASS"
         echo "== firstboot: PASS =="
         return 0
@@ -409,10 +454,11 @@ console() {
     local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
     mkdir -p "$ROOT/build/tests"
 
-    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-180}" \
+    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-600}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
-    if python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+    if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
         wait "$qemu_wrapper" 2>/dev/null || true
         # No ^ anchor: conhost cursor escapes may share the verdict's line.
         if grep -qE '\[KTEST\] module m9_echo.exe PASS' "$log" &&
