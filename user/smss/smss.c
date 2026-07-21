@@ -15,16 +15,11 @@
  * User clients follow the test-code conventions (Wine style, docs/15
  * exemption). Exit 0 = the whole chain passed; a distinct code per step.
  */
-#include "abi/ntdef.h"
-#include "abi/ntstatus.h"
-#include "abi/ntobapi.h"
-#include "abi/ntpsapi.h"
+#include "user/smss/smss.h"
+
 #include "abi/ntregapi.h"
 
-/* char16_t literal; a bare u"" prefix does not survive clang-format. */
-#define WSTR(s) u##s
-
-static void say(const char *ascii)
+void smss_say(const char *ascii)
 {
     WCHAR wide[80];
     USHORT n = 0;
@@ -40,7 +35,7 @@ static void say(const char *ascii)
     NtDisplayString(&string);
 }
 
-static void init_ustr(UNICODE_STRING *str, const WCHAR *wide)
+void smss_init_ustr(UNICODE_STRING *str, const WCHAR *wide)
 {
     USHORT n = 0;
     while (wide[n] != 0)
@@ -54,17 +49,40 @@ static const WCHAR next_image[] = WSTR("\\??\\C:\\hello.exe");
 
 void smss_start(void *peb_arg)
 {
-    (void)peb_arg;
     NTSTATUS status;
 
-    say("smss: initial process up\n");
+    smss_say("smss: initial process up\n");
+
+    /* CUI-1: `smss.exe firstboot` runs the wineboot hand-off instead of the
+     * M8 chain (user/smss/firstboot.c). The kernel decides by command line
+     * (KiRunFirstBoot), same image either way. */
+    {
+        PEB *peb = peb_arg;
+        RTL_USER_PROCESS_PARAMETERS *params = peb != 0 ? peb->ProcessParameters : 0;
+        if (params != 0 && params->CommandLine.Buffer != 0)
+        {
+            static const WCHAR word[] = WSTR("firstboot");
+            const WCHAR *cmd = params->CommandLine.Buffer;
+            USHORT len = (USHORT)(params->CommandLine.Length / sizeof(WCHAR));
+            for (USHORT i = 0; i + 9 <= len; i++)
+            {
+                USHORT k = 0;
+                while (k < 9 && cmd[i + k] == word[k])
+                    k++;
+                if (k == 9)
+                {
+                    NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, firstboot_run());
+                }
+            }
+        }
+    }
 
     /* 1. The registry the kernel mounted must be reachable from ring 3. */
     {
         UNICODE_STRING name;
         OBJECT_ATTRIBUTES attr;
         HANDLE machine;
-        init_ustr(&name, WSTR("\\Registry\\Machine"));
+        smss_init_ustr(&name, WSTR("\\Registry\\Machine"));
         attr.Length = sizeof(attr);
         attr.RootDirectory = 0;
         attr.ObjectName = &name;
@@ -74,7 +92,7 @@ void smss_start(void *peb_arg)
         status = NtOpenKey(&machine, KEY_READ, &attr);
         if (status != STATUS_SUCCESS)
         {
-            say("smss: registry not reachable\n");
+            smss_say("smss: registry not reachable\n");
             NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, 0x10);
         }
         NtClose(machine);
@@ -115,7 +133,7 @@ void smss_start(void *peb_arg)
         if (status != STATUS_SUCCESS || create_info.State != PsCreateSuccess ||
             client_id.UniqueProcess == 0)
         {
-            say("smss: NtCreateUserProcess failed\n");
+            smss_say("smss: NtCreateUserProcess failed\n");
             NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, 0x20);
         }
     }
@@ -132,7 +150,7 @@ void smss_start(void *peb_arg)
         if (status == STATUS_SUCCESS)
         {
             child_status = basic.ExitStatus;
-            say(child_status == 0 ? "smss: chain complete\n" : "smss: child failed\n");
+            smss_say(child_status == 0 ? "smss: chain complete\n" : "smss: child failed\n");
         }
     }
     NtClose(thread);

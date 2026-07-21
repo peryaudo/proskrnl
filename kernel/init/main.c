@@ -443,6 +443,47 @@ static BOOLEAN KiIsInteractiveBoot(void)
     return TRUE;
 }
 
+/* CUI-1 firstboot: run `smss.exe firstboot` (which spawns wineboot --init,
+ * user/smss/firstboot.c) so wine.inf's machine-state registry payload is
+ * applied before anything else uses the hive. Probe/skip on the image
+ * content (the KiIsInteractiveBoot pattern): images without wineboot.exe —
+ * the hermetic ntapi/fuzz images — boot exactly as before. wineboot's own
+ * .update-timestamp freshness check makes non-first boots near-instant, so
+ * this runs on every boot of a full image. */
+static int KiRunFirstBoot(void)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\system32\\wineboot.exe"));
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle;
+    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
+                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return 0; /* no wineboot baked: silently absent, like KiRunNtapiTests */
+    }
+    NtClose(handle);
+
+    NTSTATUS exitStatus = STATUS_UNSUCCESSFUL;
+    status = PsRunWineImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+                              "C:\\windows\\system32\\smss.exe", "smss.exe firstboot", FALSE, 0,
+                              &exitStatus);
+    if (!NT_SUCCESS(status) || exitStatus != 0)
+    {
+        DbgPrint("[KTEST] firstboot FAIL (status=%#lx exit=%#lx)\n", (unsigned long)status,
+                 (unsigned long)exitStatus);
+        return 1;
+    }
+    DbgPrint("[KTEST] firstboot PASS\n");
+    return 0;
+}
+
 /* Hand the console to a human-driven cmd.exe and power the VM off when it
  * exits (`exit` at the prompt). A start failure still powers off — an
  * interactive boot has no runner watching a timeout. */
@@ -897,6 +938,11 @@ static void KiTestMainThread(void *context)
     /* M9: the console server, before anything that may use a console. */
     KiStartConhost();
 
+    /* CUI-1: firstboot — wineboot --init populates the machine state before
+     * the console/test flows, so cmd.exe and the test sweeps below see the
+     * wine.inf registry payload. Probe/skip: absent wineboot.exe is a no-op. */
+    int firstbootFailures = KiRunFirstBoot();
+
     /* The interactive boot (make run) skips the test suites entirely: the
      * serial console belongs to a human and cmd.exe. Never returns. */
     if (KiIsInteractiveBoot())
@@ -976,9 +1022,9 @@ static void KiTestMainThread(void *context)
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
-                m8Failures + m9Failures + ntapiFailures + wtestFailures + echoFailures +
-                cmdFailures;
+    int total = firstbootFailures + m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
+                m7Failures + m8Failures + m9Failures + ntapiFailures + wtestFailures +
+                echoFailures + cmdFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
