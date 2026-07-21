@@ -260,11 +260,12 @@ $(HELLO): user/hello/hello.c user/hello/hello_seh.S $(WINE_PE)/ntdll/x86_64-wind
 # registry from ring 3, spawns hello.exe via NtCreateUserProcess, exits with
 # the child's code. Same recipe as hello.exe: ntdll-only native PE.
 SMSS := $(BUILD)/modules/smss.exe
-$(SMSS): user/smss/smss.c $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
+$(SMSS): user/smss/smss.c user/smss/firstboot.c user/smss/smss.h \
+        $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
 	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=smss_start \
-	    user/smss/smss.c \
+	    user/smss/smss.c user/smss/firstboot.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
 # The M9 acceptance client (docs/02): threaded blocking pipes + a console
@@ -341,6 +342,63 @@ $(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
+# CUI-1: Wine's rundll32.exe as a standalone PE — wineboot --init's vehicle
+# for the `setupapi,InstallHinfSection` children that apply wine.inf (ADR
+# 0008's Cm integration exercise). The pinned tree's own PE build provides
+# rundll32.o UNMODIFIED; user/rundll32/ supplies the wide CRT entry plus the
+# four user32 imports as headless stand-ins (Art. 7: GUI path stays absent).
+WINE_RUNDLL32 := third_party/wine/programs/rundll32
+RUNDLL32 := $(BUILD)/modules/rundll32.exe
+$(RUNDLL32): user/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
+        $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=rundll32_start \
+	    $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
+	    user/rundll32/proskrnl_glue.c \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+# CUI-1: wineboot.exe as a standalone PE. The pinned tree keeps
+# programs/wineboot out of its PE build (x86_64_DISABLED_SUBDIRS, same as
+# conhost), so wineboot.c is compiled DIRECTLY from the tree — the conhost
+# recipe — with user/wineboot/ supplying the narrow CRT entry, the
+# user32/gdi32 wait-window set, and honest-failure stand-ins for the
+# shell32/shlwapi/ws2_32/wininet/newdev legs that degrade gracefully under
+# --init (docs/02 CUI-1). setupapi/version/advapi32/rpcrt4/uuid link real:
+# their DLLs are baked below. shutdown.c is not compiled — its three
+# entry points are glue stubs, unreached under --init.
+WINE_WINEBOOT := third_party/wine/programs/wineboot
+WINEBOOT := $(BUILD)/modules/wineboot.exe
+$(WINEBOOT): $(WINE_WINEBOOT)/wineboot.c user/wineboot/proskrnl_glue.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
+	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' '-DWINGDIAPI=' '-DWINBASEAPI=' \
+	    -I$(WINE_WINEBOOT) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
+	    -Wl,--entry=wineboot_start \
+	    $(WINE_WINEBOOT)/wineboot.c user/wineboot/proskrnl_glue.c \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/setupapi/x86_64-windows/libsetupapi.a \
+	    $(WINE_PE)/version/x86_64-windows/libversion.a \
+	    third_party/wine/libs/uuid/x86_64-windows/libuuid.a \
+	    $(WINE_PE)/rpcrt4/x86_64-windows/librpcrt4.a \
+	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+# CUI-1: the registry-only wine.inf (tools/filter_inf.py strips the fake-dll
+# / file-queue / self-registration directives that need source media or GUI
+# DLLs the disk does not bake; the AddReg machine-state payload is kept).
+WINE_INF := $(BUILD)/wine-proskrnl.inf
+$(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
+	@mkdir -p $(dir $@)
+	python3 tools/filter_inf.py third_party/wine/loader/wine.inf $@
+
 WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINE_PE)/kernel32/x86_64-windows/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINE_PE)/kernelbase/x86_64-windows/kernelbase.dll=windows/system32/kernelbase.dll \
@@ -351,6 +409,12 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
             win:$(WINE_PE)/rpcrt4/x86_64-windows/rpcrt4.dll=windows/system32/rpcrt4.dll \
             win:$(WINE_PE)/version/x86_64-windows/version.dll=windows/system32/version.dll \
             win:$(WINE_PE)/cryptbase/x86_64-windows/cryptbase.dll=windows/system32/cryptbase.dll \
+            win:$(WINE_PE)/setupapi/x86_64-windows/setupapi.dll=windows/system32/setupapi.dll \
+            win:$(WINE_PE)/cfgmgr32/x86_64-windows/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
+            win:$(WINE_PE)/ws2_32/x86_64-windows/ws2_32.dll=windows/system32/ws2_32.dll \
+            win:$(RUNDLL32)=windows/system32/rundll32.exe \
+            win:$(WINEBOOT)=windows/system32/wineboot.exe \
+            win:$(WINE_INF)=windows/inf/wine.inf \
             win:$(WINE_NLS)/locale.nls=windows/system32/locale.nls \
             win:$(WINE_NLS)/l_intl.nls=windows/system32/l_intl.nls \
             win:$(WINE_NLS)/c_1252.nls=windows/system32/c_1252.nls \
@@ -367,8 +431,8 @@ WINFILES := win:$(WINE_PE)/ntdll/x86_64-windows/ntdll.dll=windows/system32/ntdll
             win:$(CONHOST)=windows/system32/conhost.exe \
             win:$(M9SMOKE)=m9_smoke.exe
 
-$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(WINE_PE_DLLS) \
-        tools/mkimage.sh arch/x86_64/limine.conf
+$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
+        $(WINE_INF) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -390,7 +454,8 @@ $(UPCASE): tests/cui/upcase.c
 # (KiRunCmdConsole).
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
-        $(CMD) $(HELLOCRT) $(UPCASE) $(WINE_PE_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+        $(CMD) $(HELLOCRT) $(UPCASE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WINE_PE_DLLS) \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(M9ECHO)=m9_echo.exe \
 	    win:$(CMD)=windows/system32/cmd.exe \
@@ -504,6 +569,7 @@ $(BUILD)/interactive.flag:
 	@echo "interactive boot marker (kernel/init/main.c KiIsInteractiveBoot)" > $@
 
 $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
         $(WINE_PE_DLLS) $(BUILD)/interactive.flag tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \

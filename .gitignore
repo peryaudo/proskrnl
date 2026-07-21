@@ -7,3 +7,6 @@ CLAUDE.local.md
 # Python bytecode (tools/, tests/fuzz/)
 __pycache__/
 *.pyc
+
+# CUI-1 oracle: x86_64 Wine worktree built for the Rosetta oracle (not tracked)
+third_party/wine-x86_64/
