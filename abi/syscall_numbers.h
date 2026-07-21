@@ -76,6 +76,10 @@
 #define NTSYS_NtSetInformationThread 0x000d
 #define NTSYS_NtQueryPerformanceCounter 0x0031
 #define NTSYS_NtQueryTimerResolution 0x00d2
+#define NTSYS_NtAddAtom 0x0047
+#define NTSYS_NtDeleteAtom 0x0092
+#define NTSYS_NtFindAtom 0x0014
+#define NTSYS_NtQueryInformationAtom 0x00c5
 #define NTSYS_NtConvertBetweenAuxiliaryCounterAndPerformanceCounter 0x007c
 #define NTSYS_NtQuerySystemInformation 0x0036
 #define NTSYS_NtQueryDefaultLocale 0x0015

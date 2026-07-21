@@ -10,6 +10,8 @@
 
 /* Win32 alias scaffold used by extracted prototypes. */
 typedef ULONG LCID, *PLCID;
+/* winternl.h: `typedef unsigned short RTL_ATOM` (the atom handle). */
+typedef unsigned short RTL_ATOM, *PRTL_ATOM;
 
 /* The byte-exact bodies live in abi/ntpebteb.h (same tags); these
  * forward typedefs let the structs/prototypes below reference them. */
@@ -578,6 +580,11 @@ typedef enum {
 } PS_CREATE_STATE;
 
 typedef enum {
+   AtomBasicInformation         = 0,
+   AtomTableInformation         = 1,
+} ATOM_INFORMATION_CLASS;
+
+typedef enum {
     PsAttributeParentProcess,
     PsAttributeDebugPort,
     PsAttributeToken,
@@ -767,6 +774,13 @@ typedef struct {
 } SYSTEM_PERFORMANCE_INFORMATION, *PSYSTEM_PERFORMANCE_INFORMATION;
 
 typedef struct {
+   USHORT       ReferenceCount;
+   USHORT       Pinned;
+   USHORT       NameLength;
+   WCHAR        Name[1];
+} ATOM_BASIC_INFORMATION, *PATOM_BASIC_INFORMATION;
+
+typedef struct {
     WORD wYear;
     WORD wMonth;
     WORD wDayOfWeek;
@@ -933,6 +947,10 @@ NTSTATUS NtSetInformationThread(HANDLE,THREADINFOCLASS,LPCVOID,ULONG);
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
 NTSTATUS NtQueryTimerResolution(PULONG,PULONG,PULONG);
 NTSTATUS NtSetTimerResolution(ULONG,BOOLEAN,PULONG);
+NTSTATUS NtAddAtom(const WCHAR*,ULONG,RTL_ATOM*);
+NTSTATUS NtDeleteAtom(RTL_ATOM);
+NTSTATUS NtFindAtom(const WCHAR*,ULONG,RTL_ATOM*);
+NTSTATUS NtQueryInformationAtom(RTL_ATOM,ATOM_INFORMATION_CLASS,PVOID,ULONG,ULONG*);
 NTSTATUS NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(ULONG,ULONGLONG*,ULONGLONG*,ULONGLONG*);
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS,PVOID,ULONG,PULONG);
 NTSTATUS NtQueryDefaultLocale(BOOLEAN,LCID*);
