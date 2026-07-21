@@ -47,6 +47,9 @@ jobs:
         id: pins
         run: echo "key=$(git ls-tree HEAD third_party | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
+      # v2: v1 entries were poisoned by a cancelled run saving a sources-only
+      # snapshot (no builds) under the pins key; the version bump orphans them
+      # (unused entries age out on their own).
       - name: Restore third_party builds
         id: tp-cache
         uses: actions/cache/restore@v4
@@ -55,7 +58,7 @@ jobs:
             third_party/limine
             third_party/qemu/build
             third_party/wine
-          key: third-party-${{ steps.pins.outputs.key }}
+          key: third-party-v2-${{ steps.pins.outputs.key }}
 
       # The hosted runner's root disk is tight; the wine + qemu builds want
       # the space these unused preinstalled toolchains occupy.
@@ -63,10 +66,17 @@ jobs:
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
 
       - name: Toolchain + pinned third_party builds (tools/setup_linux.sh)
+        id: setup
         run: tools/setup_linux.sh
 
+      # CI boots a VIRGIN image every time, so the boot runs the full CUI-1
+      # firstboot INF pass ("minutes under TCG" — see run.sh persist), which
+      # qemu.sh's 30s default kill would cut short; the timeout is only a
+      # backstop — a green boot exits via isa-debug-exit as soon as it's done.
       - name: make test (QEMU boot, [KTEST] verdict on serial)
         run: make test
+        env:
+          TIMEOUT: "600"
 
       - name: ntapi oracle — the spec gate (tests/run/run.sh oracle)
         run: tests/run/run.sh oracle
@@ -92,17 +102,21 @@ jobs:
         run: tests/run/run.sh firstboot
 
       # actions/cache's built-in post step only saves on job success; the
-      # split restore/save keeps a 2h+ first build even when a test leg goes
-      # red, so the retry costs minutes, not hours.
+      # split restore/save keeps the long first build even when a test leg
+      # goes red, so the retry costs minutes, not hours. Gated on the SETUP
+      # step's own outcome, not the job's: a red test leg still saves, but a
+      # cancellation or failure mid-build can never freeze a half-built (or
+      # sources-only) tree under the key — saved entries are immutable, so a
+      # bad save poisons the key until the pins move.
       - name: Save third_party builds
-        if: always() && steps.tp-cache.outputs.cache-hit != 'true'
+        if: always() && steps.setup.outcome == 'success' && steps.tp-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
             third_party/limine
             third_party/qemu/build
             third_party/wine
-          key: third-party-${{ steps.pins.outputs.key }}
+          key: third-party-v2-${{ steps.pins.outputs.key }}
 
       # The panic dump is the debugger (Art. 9): a red run must ship its
       # serial logs.
