@@ -98,7 +98,18 @@ uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
         /* Relative: unsigned negation avoids UB on the most-negative value. */
         return KiInterruptTime + (0 - (uint64_t)timeout->QuadPart);
     }
-    return (uint64_t)timeout->QuadPart;
+    /* Absolute: 100 ns since 1601 in SYSTEM time (the NT timeout contract;
+     * Wine dlls/ntdll/unix/sync.c get_absolute_timeout). The timer queue
+     * runs on interrupt time, and SystemTime == BASE + InterruptTime
+     * (KeQuerySystemTime above), so the due converts by the fixed base; a
+     * deadline at or before the base is already in the past. Exercised by
+     * ntdll:sync test_wait_on_address's absolute RtlWaitOnAddress timeout —
+     * the untranslated value parked the wait for ~4 billion seconds. */
+    if ((uint64_t)timeout->QuadPart <= KI_SYSTEM_TIME_BASE)
+    {
+        return KiInterruptTime;
+    }
+    return (uint64_t)timeout->QuadPart - KI_SYSTEM_TIME_BASE;
 }
 
 void KiInsertTimer(PKTIMER timer, uint64_t dueInterruptTime)

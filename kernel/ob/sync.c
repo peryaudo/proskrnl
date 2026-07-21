@@ -102,6 +102,15 @@ static LONG ObpSetEvent(PRKEVENT event)
     return KeSetEvent(event, 0, FALSE);
 }
 
+/* The oracle's shape verbatim: a boost-priority set IS a set (Wine
+ * dlls/ntdll/unix/sync.c NtSetEventBoostPriority -> NtSetEvent; priority
+ * boosting does not exist on the no-preemption kernel). Consumer:
+ * ntdll:sync test_event. */
+NTSTATUS NtSetEventBoostPriority(HANDLE handle)
+{
+    return NtSetEvent(handle, 0);
+}
+
 static LONG ObpResetEvent(PRKEVENT event)
 {
     return KeResetEvent(event);
@@ -560,4 +569,216 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
         *returnLength = sizeof(info);
     }
     return STATUS_SUCCESS;
+}
+
+/* --- keyed events (M10 winetest) ------------------------------------------- */
+
+/* The keyed event is a rendezvous broker: a waiter and a releaser meet on a
+ * (process, key) pair and both complete; there is no state to signal, and a
+ * PLAIN wait on the handle satisfies immediately (wineserver
+ * server/event.c keyed_event_signaled returns 1 for non-keyed selects — the
+ * body here is a permanently-set notification event for the same effect).
+ * Access split, the odd-key STATUS_INVALID_PARAMETER_1 precheck, and the
+ * NULL-handle implicit instance (real NT's CritSecOutOfMemoryEvent) follow
+ * the oracle (dlls/ntdll/unix/sync.c NtWaitForKeyedEvent/NtReleaseKeyedEvent
+ * + server/event.c), all pinned by ntdll:sync test_keyed_events. Access
+ * masks are the documented NT values (MS ntifs.h KEYEDEVENT_*; also
+ * dlls/ntdll/tests/sync.c): */
+#define OBP_KEYEDEVENT_WAIT       0x0001
+#define OBP_KEYEDEVENT_WAKE       0x0002
+#define OBP_KEYEDEVENT_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0x0003)
+
+typedef struct OBP_KEYED_EVENT
+{
+    KEVENT alwaysSignaled; /* the waitable body (leads with the header) */
+    LIST_ENTRY waiters;
+} OBP_KEYED_EVENT;
+
+typedef struct OBP_KEYED_WAITER
+{
+    LIST_ENTRY entry;
+    void *process;       /* pair-matching identity only (server/event.c) */
+    const void *key;
+    BOOLEAN release;     /* queued by NtReleaseKeyedEvent */
+    KEVENT wake;
+} OBP_KEYED_WAITER;
+
+static OBJECT_TYPE ObpKeyedEventType = {
+    .name = "KeyedEvent",
+    /* SYNCHRONIZE is grantable — an explicit ALL|SYNCHRONIZE create can
+     * plain-wait the handle, bare ALL cannot (ntdll:sync pins both). */
+    .validAccess = OBP_KEYEDEVENT_ALL_ACCESS | SYNCHRONIZE,
+    .waitable = TRUE,
+    .deleteProcedure = 0,
+    /* The NT generic mapping the oracle enforces: reading waits, writing
+     * wakes (wineserver server/event.c keyed_event type). */
+    .genericRead = STANDARD_RIGHTS_READ | OBP_KEYEDEVENT_WAIT,
+    .genericWrite = STANDARD_RIGHTS_WRITE | OBP_KEYEDEVENT_WAKE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE,
+    .genericAll = OBP_KEYEDEVENT_ALL_ACCESS,
+};
+
+static void ObpInitializeKeyedEvent(OBP_KEYED_EVENT *keyed)
+{
+    KeInitializeEvent(&keyed->alwaysSignaled, NotificationEvent, TRUE);
+    InitializeListHead(&keyed->waiters);
+}
+
+/* The NULL-handle instance, created on first use (the dispatcher lock makes
+ * the check-and-init atomic on the one CPU). */
+static OBP_KEYED_EVENT ObpCritSecKeyedEvent;
+static BOOLEAN ObpCritSecKeyedEventReady;
+
+NTSTATUS NtCreateKeyedEvent(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
+                            ULONG flags)
+{
+    if (handle == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (flags != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    PVOID body;
+    NTSTATUS status = ObpCreateObjectWithHandle(&ObpKeyedEventType, sizeof(OBP_KEYED_EVENT), attr,
+                                                access, &body, handle);
+    if (status == STATUS_SUCCESS)
+    {
+        ObpInitializeKeyedEvent(body);
+    }
+    return status;
+}
+
+NTSTATUS NtOpenKeyedEvent(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
+{
+    if (handle == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return ObpOpenObjectByName(&ObpKeyedEventType, attr, access, handle);
+}
+
+/* The shared wait/release engine: find the opposite party on (process, key)
+ * and wake it, else park until woken or timed out. On a timeout that races
+ * a concurrent wake the rendezvous HAS happened — the parked entry is
+ * already unlinked — and the result is success. */
+static NTSTATUS ObpKeyedEventOperation(HANDLE handle, const void *key, BOOLEAN alertable,
+                                       const LARGE_INTEGER *timeout, BOOLEAN release)
+{
+    if (((uintptr_t)key & 1) != 0)
+    {
+        return STATUS_INVALID_PARAMETER_1;
+    }
+    OBP_KEYED_EVENT *keyed;
+    BOOLEAN referenced = FALSE;
+    if (handle == 0)
+    {
+        uint64_t flags = KiAcquireDispatcherLock();
+        if (!ObpCritSecKeyedEventReady)
+        {
+            ObpInitializeKeyedEvent(&ObpCritSecKeyedEvent);
+            ObpCritSecKeyedEventReady = TRUE;
+        }
+        KiReleaseDispatcherLock(flags);
+        keyed = &ObpCritSecKeyedEvent;
+    }
+    else
+    {
+        PVOID body;
+        NTSTATUS status =
+            ObReferenceObjectByHandle(handle, release ? OBP_KEYEDEVENT_WAKE : OBP_KEYEDEVENT_WAIT,
+                                      &ObpKeyedEventType, ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        keyed = body;
+        referenced = TRUE;
+    }
+
+    void *process = KeGetCurrentThread()->process;
+    NTSTATUS status = STATUS_SUCCESS;
+    OBP_KEYED_WAITER self;
+    BOOLEAN parked = FALSE;
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    PLIST_ENTRY entry;
+    OBP_KEYED_WAITER *other = 0;
+    for (entry = keyed->waiters.Flink; entry != &keyed->waiters; entry = entry->Flink)
+    {
+        OBP_KEYED_WAITER *waiter = CONTAINING_RECORD(entry, OBP_KEYED_WAITER, entry);
+        if (waiter->process == process && waiter->key == key && waiter->release != release)
+        {
+            other = waiter;
+            break;
+        }
+    }
+    if (other != 0)
+    {
+        RemoveEntryList(&other->entry);
+        KeSetEvent(&other->wake, 0, FALSE);
+    }
+    else
+    {
+        self.process = process;
+        self.key = key;
+        self.release = release;
+        KeInitializeEvent(&self.wake, SynchronizationEvent, FALSE);
+        InsertTailList(&keyed->waiters, &self.entry);
+        parked = TRUE;
+    }
+    KiReleaseDispatcherLock(flags);
+
+    if (parked)
+    {
+        status = KeWaitForSingleObject(&self.wake, UserRequest, KernelMode, alertable,
+                                       (PLARGE_INTEGER)timeout);
+        flags = KiAcquireDispatcherLock();
+        if (status == STATUS_SUCCESS)
+        {
+            /* woken by the opposite party, already unlinked */
+        }
+        else
+        {
+            /* Timed out (or alerted): unlink unless a waker got there in
+             * the same instant — then the rendezvous happened. */
+            BOOLEAN stillQueued = FALSE;
+            for (entry = keyed->waiters.Flink; entry != &keyed->waiters; entry = entry->Flink)
+            {
+                if (entry == &self.entry)
+                {
+                    stillQueued = TRUE;
+                    break;
+                }
+            }
+            if (stillQueued)
+            {
+                RemoveEntryList(&self.entry);
+            }
+            else
+            {
+                status = STATUS_SUCCESS;
+            }
+        }
+        KiReleaseDispatcherLock(flags);
+    }
+
+    if (referenced)
+    {
+        ObDereferenceObject(keyed);
+    }
+    return status;
+}
+
+NTSTATUS NtWaitForKeyedEvent(HANDLE handle, const void *key, BOOLEAN alertable,
+                             const LARGE_INTEGER *timeout)
+{
+    return ObpKeyedEventOperation(handle, key, alertable, timeout, FALSE);
+}
+
+NTSTATUS NtReleaseKeyedEvent(HANDLE handle, const void *key, BOOLEAN alertable,
+                             const LARGE_INTEGER *timeout)
+{
+    return ObpKeyedEventOperation(handle, key, alertable, timeout, TRUE);
 }

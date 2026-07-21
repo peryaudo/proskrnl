@@ -37,6 +37,15 @@ uint64_t PspAllocateProcessId(void)
     return PspNextUniqueProcessId;
 }
 
+/* Was this id EVER allocated? The oracle's session-wide alert table keeps a
+ * slot for every id it ever handed out, so alerting a since-exited thread
+ * is an accepted no-op while a never-allocated id is STATUS_INVALID_CID
+ * (ntdll:sync test_tid_alert alerts a joined thread's id). */
+static BOOLEAN PspIdWasAllocated(uint64_t id)
+{
+    return id > 0x100 && id <= PspNextUniqueProcessId && (id & 3) == 0;
+}
+
 /* --- the ETHREAD object type --------------------------------------------- */
 
 static void PspDeleteThread(PVOID body)
@@ -276,7 +285,10 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     }
 
     uint64_t tebBase = 0;
-    uint64_t threadId = ++process->nextThreadId; /* one id: TEB and ETHREAD agree */
+    /* Ids come from the shared Ps id source: NT's client ids are GLOBALLY
+     * unique (one CID table for pids and tids), and the global alert-by-tid
+     * lookup depends on it (ntdll:sync test_tid_alert). */
+    uint64_t threadId = PspAllocateProcessId();
     status =
         PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, threadId, &tebBase);
     if (!NT_SUCCESS(status))
@@ -564,30 +576,84 @@ NTSTATUS NtAlertThread(HANDLE threadHandle)
  * paths, dlls/ntdll/sync.c). The contract is a latched per-thread alert bit
  * (Wine dlls/ntdll/unix/sync.c: futex 0/1 + InterlockedExchange) — the
  * ETHREAD's synchronization event carries it exactly (sem_wait/alert_by_tid).
- * The id is process-local, matching the only consumers; an unknown id is
- * accepted as a no-op, as the oracle's on-demand alert table behaves. */
+ * Ids are GLOBAL (the active-process list): an unknown id is
+ * STATUS_INVALID_CID and a foreign process's live id is accepted, both as
+ * the oracle's session-wide alert table behaves (ntdll:sync
+ * test_tid_alert; the M10 process-local shortcut is retired). */
+static PETHREAD PspFindThreadByThreadId(uint64_t threadId)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+         p = p->Flink)
+    {
+        PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+             entry = entry->Flink)
+        {
+            PETHREAD candidate = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+            if (candidate->uniqueThreadId == threadId)
+            {
+                return candidate;
+            }
+        }
+    }
+    return 0;
+}
+
 NTSTATUS NtAlertThreadByThreadId(HANDLE threadId)
 {
-    PEPROCESS process = KeGetCurrentThread()->process;
-    PETHREAD target = 0;
     uint64_t flags = KiAcquireDispatcherLock();
-    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
-         entry = entry->Flink)
+    PETHREAD target = PspFindThreadByThreadId((uint64_t)(uintptr_t)threadId);
+    KiReleaseDispatcherLock(flags);
+    if (target == 0)
     {
-        PETHREAD candidate = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
-        if (candidate->uniqueThreadId == (uint64_t)(uintptr_t)threadId)
+        /* An id that once existed aliases the oracle's still-allocated
+         * table slot: the alert lands nowhere, successfully. */
+        return PspIdWasAllocated((uint64_t)(uintptr_t)threadId) ? STATUS_SUCCESS
+                                                                : STATUS_INVALID_CID;
+    }
+    /* Safe outside the lock: no kernel preemption (Art. 3), so the target
+     * cannot be reclaimed between the lookup and the set. */
+    KeSetEvent(&target->tidAlertEvent, 0, FALSE);
+    return STATUS_SUCCESS;
+}
+
+/* Validate every id FIRST, then alert each — a bad id alerts nothing (Wine
+ * dlls/ntdll/unix/sync.c NtAlertMultipleThreadByThreadId; the two trailing
+ * arguments are unused there too). */
+NTSTATUS NtAlertMultipleThreadByThreadId(HANDLE *threadIds, ULONG count, void *unknown1,
+                                         void *unknown2)
+{
+    (void)unknown1;
+    (void)unknown2;
+    if (count == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = KiProbeForRead(threadIds, count * sizeof(HANDLE), sizeof(HANDLE));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t flags = KiAcquireDispatcherLock();
+    for (ULONG i = 0; i < count; i++)
+    {
+        if (PspFindThreadByThreadId((uint64_t)(uintptr_t)threadIds[i]) == 0 &&
+            !PspIdWasAllocated((uint64_t)(uintptr_t)threadIds[i]))
         {
-            target = candidate;
-            break;
+            KiReleaseDispatcherLock(flags);
+            return STATUS_INVALID_CID;
+        }
+    }
+    for (ULONG i = 0; i < count; i++)
+    {
+        PETHREAD target = PspFindThreadByThreadId((uint64_t)(uintptr_t)threadIds[i]);
+        if (target != 0)
+        {
+            KeSetEvent(&target->tidAlertEvent, 0, FALSE);
         }
     }
     KiReleaseDispatcherLock(flags);
-    if (target != 0)
-    {
-        /* Safe outside the lock: no kernel preemption (Art. 3), so the target
-         * cannot be reclaimed between the lookup and the set. */
-        KeSetEvent(&target->tidAlertEvent, 0, FALSE);
-    }
     return STATUS_SUCCESS;
 }
 

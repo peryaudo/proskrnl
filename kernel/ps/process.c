@@ -46,6 +46,9 @@ static void PspDeleteProcess(PVOID body)
 {
     PEPROCESS process = body;
     ASSERT(KeGetCurrentThread() == 0 || KeGetCurrentThread()->process != process);
+    uint64_t listFlags = KiAcquireDispatcherLock();
+    RemoveEntryList(&process->activeProcessLinks);
+    KiReleaseDispatcherLock(listFlags);
     if (process->mainThread != 0)
     {
         KiDeleteThread(process->mainThread);
@@ -68,9 +71,17 @@ OBJECT_TYPE PspProcessType = {
     .deleteProcedure = PspDeleteProcess,
 };
 
+/* Every process, system included, is on the active list from init to
+ * delete (NT's PsActiveProcessHead); the global thread-id lookup
+ * (kernel/ps/thread.c) walks it under the dispatcher lock. */
+LIST_ENTRY PspActiveProcessListHead = {&PspActiveProcessListHead, &PspActiveProcessListHead};
+
 /* Zero the M7 fields common to every process body. */
 static void PspInitializeProcessCommon(PEPROCESS process)
 {
+    uint64_t flags = KiAcquireDispatcherLock();
+    InsertTailList(&PspActiveProcessListHead, &process->activeProcessLinks);
+    KiReleaseDispatcherLock(flags);
     process->pebBase = 0;
     process->imageBase = 0;
     process->uniqueProcessId = 0;
@@ -88,7 +99,6 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->rtlUserThreadStart = 0;
     process->ntdllBase = 0;
     process->activeThreadCount = 0;
-    process->nextThreadId = 0;
     InitializeListHead(&process->threadListHead);
     process->consoleHandle = 0;
     process->stdInput = 0;
@@ -357,9 +367,8 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut)
     }
     if (NT_SUCCESS(status) && isPe)
     {
-        process->nextThreadId = 0;
         status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
-                             ++process->nextThreadId, &tebBase);
+                             PspAllocateProcessId(), &tebBase);
     }
     else if (NT_SUCCESS(status))
     {
@@ -610,11 +619,14 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
         status = PspBuildPeb(process, imageBase, params);
     }
     uint64_t tebBase = 0;
+    /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — NT's
+     * client ids come from the shared CID space (ntdll:sync test_tid_alert
+     * depends on cross-process uniqueness). */
+    uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status))
     {
-        process->nextThreadId = 0;
         status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
-                             ++process->nextThreadId, &tebBase);
+                             mainThreadId, &tebBase);
     }
     if (!NT_SUCCESS(status))
     {
@@ -654,7 +666,7 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
      * hold it until the thread has exited. */
     process->activeThreadCount = 0;
     PETHREAD mainThreadObject;
-    status = PspCreateThreadObject(process, main, tebBase, 0, 0, process->nextThreadId,
+    status = PspCreateThreadObject(process, main, tebBase, 0, 0, mainThreadId,
                                    &mainThreadObject);
     if (!NT_SUCCESS(status))
     {

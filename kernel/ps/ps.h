@@ -46,6 +46,9 @@ typedef struct EPROCESS
     ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
     BOOLEAN timerResolutionRequested; /* NtSetTimerResolution's per-process
                                        * has-a-request latch (M10 winetest) */
+    LIST_ENTRY activeProcessLinks;    /* PspActiveProcessListHead (the NT
+                                       * PsActiveProcessHead shape) — the
+                                       * global tid lookup walks it */
 
     /* M7: the ring-3 return-protocol entry points, resolved from the process's
      * system DLL (ntdll) — or, for a native single-image client, from the
@@ -66,7 +69,6 @@ typedef struct EPROCESS
      * threads). The process object signals when the last one exits. */
     LIST_ENTRY threadListHead;
     LONG activeThreadCount;
-    uint64_t nextThreadId; /* CLIENT_ID.UniqueThread source */
 
     /* M9: the console handles seeded into THIS process's handle table at
      * creation (drivers/condrv.c); 0 = not a console process. The values go
@@ -104,6 +106,10 @@ extern OBJECT_TYPE PspProcessType;
 /* The process kernel threads belong to. Its address space is the kernel
  * PML4 and its handle table is the one kmt/kernel Nt* callers use. */
 extern PEPROCESS PsInitialSystemProcess;
+
+/* Every live process (NT's PsActiveProcessHead shape); walked under the
+ * dispatcher lock (the global thread-id lookup, kernel/ps/thread.c). */
+extern LIST_ENTRY PspActiveProcessListHead;
 
 /* Create the system process and freeze the kernel PML4's top level (process
  * page tables share it by copy — see arch/x86_64/mmu.h). Needs Ob; call
