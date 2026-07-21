@@ -56,6 +56,10 @@ void ObDereferenceObject(PVOID body)
     {
         MiFreePool(header->name.Buffer);
     }
+    if (header->securityDescriptor != 0)
+    {
+        MiFreePool(header->securityDescriptor);
+    }
     MiFreePool(header);
 }
 

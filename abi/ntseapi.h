@@ -367,6 +367,10 @@ typedef struct {
 #pragma pack(pop)
 
 typedef struct {
+  HANDLE LinkedToken;
+} TOKEN_LINKED_TOKEN, * PTOKEN_LINKED_TOKEN;
+
+typedef struct {
   DWORD TokenIsElevated;
 } TOKEN_ELEVATION, * PTOKEN_ELEVATION;
 

@@ -10,6 +10,7 @@
  * an unmodified PE ntdll reads at startup (docs/00, docs/02).
  */
 #include "kernel/ps/ps.h"
+#include "kernel/se/se.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/section.h"
@@ -57,6 +58,7 @@ static void PspDeleteProcess(PVOID body)
     {
         MiFreePool((void *)process->imageName);
     }
+    SeDeassignPrimaryToken(process);
     ObpDeleteHandleTable(&process->handleTable);
     if (process->addressSpace.pml4Physical != 0)
     {
@@ -104,6 +106,13 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->stdInput = 0;
     process->stdOutput = 0;
     process->stdError = 0;
+    /* CUI-2: every process is born with a primary-token duplicate (the ONE
+     * mint site, G11). Failure means pool exhaustion — already fatal under
+     * one-pool/no-eviction (Art. 3). */
+    if (!NT_SUCCESS(SeAssignPrimaryToken(process)))
+    {
+        KiPanic("PspInitializeProcessCommon: cannot mint the process token");
+    }
 }
 
 void PsInitializeProcessSubsystem(void)

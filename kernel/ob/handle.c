@@ -214,6 +214,39 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
                                    KPROCESSOR_MODE accessMode, PVOID *body,
                                    POBJECT_HANDLE_INFORMATION handleInformation)
 {
+    /* CUI-2: the magic token pseudo-handles, resolved before the table
+     * exactly as wineserver's get_magic_handle (server/handle.c) resolves
+     * them — ~3 the process token, ~4 the thread token (none exists in
+     * CUI-2), ~5 the thread-effective token (falls back to the process
+     * token). Magic handles bypass the access check (get_handle_obj grabs
+     * without checking; get_handle_access reports all rights) but keep the
+     * type check. */
+    ULONG_PTR value = (ULONG_PTR)handle;
+    if (value >= (ULONG_PTR)-6 && value <= (ULONG_PTR)-4)
+    {
+        PVOID token = 0;
+        if (value != (ULONG_PTR)-5) /* ~3 and ~5 resolve to the process token */
+        {
+            token = KeGetCurrentThread()->process->token;
+        }
+        if (token == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        if (type != 0 && ObpGetHeader(token)->type != type)
+        {
+            return STATUS_OBJECT_TYPE_MISMATCH;
+        }
+        ObfReferenceObject(token);
+        *body = token;
+        if (handleInformation != 0)
+        {
+            handleInformation->HandleAttributes = 0;
+            handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
+        }
+        return STATUS_SUCCESS;
+    }
+
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
     if (entry == 0)
     {
@@ -288,6 +321,13 @@ void ObpCloseAllHandles(POBP_HANDLE_TABLE table)
 
 NTSTATUS NtClose(HANDLE handle)
 {
+    /* Closing any pseudo handle in [~5, ~0] is a successful no-op (the
+     * oracle's unix layer short-circuits before the server ever sees it:
+     * dlls/ntdll/unix/server.c NtClose's HandleToLong range check). */
+    if ((ULONG_PTR)handle >= (ULONG_PTR)-6)
+    {
+        return STATUS_SUCCESS;
+    }
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
     if (entry == 0)
     {

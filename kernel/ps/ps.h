@@ -78,6 +78,12 @@ typedef struct EPROCESS
     HANDLE stdInput;
     HANDLE stdOutput;
     HANDLE stdError;
+
+    /* CUI-2: the primary token — a per-process DUPLICATE of the creator's
+     * (never shared; wineserver's child rule, server/process.c), minted by
+     * SeAssignPrimaryToken from PspInitializeProcessCommon and dropped by
+     * SeDeassignPrimaryToken at delete. EPROCESS holds one reference. */
+    struct TOKEN *token;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.

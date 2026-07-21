@@ -24,6 +24,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/ps/ps.h"
+#include "kernel/se/se.h"
 #include "kernel/io/io.h"
 #include "kernel/cm/cm.h"
 #include "fs/npfs/npfs.h"
@@ -1191,6 +1192,12 @@ void KiSystemStartup(void)
      * MiFreezeKernelPml4 happens inside PsInitializeProcessSubsystem. */
     IoInitializeTransport();
     DbgPrint("[KTEST] io PASS\n");
+
+    /* CUI-2: mint the boot token (the fixed admin identity every process
+     * token duplicates). Needs only Ob + pool; must precede Ps — the system
+     * process's own token is a duplicate of it. */
+    SeInitializeSecuritySubsystem();
+    DbgPrint("[KTEST] se PASS\n");
 
     /* M4: the system process (owns the kernel address space + the kernel
      * handle table) and the kernel-PML4 freeze process page tables copy

@@ -162,6 +162,20 @@ IMPLEMENTED = [
     "NtSetTimer",
     "NtCancelTimer",
     "NtQueryTimer",
+    # CUI-2 Se surface (kernel/se/): the token syscalls the already-baked
+    # DLLs (kernelbase/security.c, ntdll/sec.c, advapi32) issue
+    "NtOpenProcessToken",
+    "NtOpenProcessTokenEx",
+    "NtOpenThreadToken",
+    "NtOpenThreadTokenEx",
+    "NtQueryInformationToken",
+    "NtAdjustPrivilegesToken",
+    "NtDuplicateToken",
+    "NtPrivilegeCheck",
+    "NtAccessCheck",
+    "NtAllocateLocallyUniqueId",
+    "NtQuerySecurityObject",
+    "NtSetSecurityObject",
 ]
 
 

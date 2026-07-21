@@ -29,6 +29,7 @@
 #include "abi/ntioapi.h"
 #include "abi/ntpsapi.h"
 #include "abi/ntregapi.h"
+#include "abi/ntseapi.h"
 #include "abi/syscall_numbers.h"
 
 typedef NTSTATUS (*KI_SERVICE_ROUTINE)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
