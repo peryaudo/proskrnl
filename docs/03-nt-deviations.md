@@ -324,8 +324,12 @@ first (Art. 5). Wrinkles worth remembering:
   closed handles). NT terminates them. Unobservable for the CUI clients
   (cmd joins its children; the ntdll threadpool's workers wake on their
   own timeouts).
-- **Thread-id alerts are process-local**; alerting an unknown id is an
-  accepted no-op — the shape of the oracle's on-demand alert table.
+- **Thread-id alerts are process-local** — *retired by the winetest gate*:
+  ids now come from the shared Ps id source (globally unique, NT's CID
+  shape), an unknown id is `STATUS_INVALID_CID`, and a once-allocated id
+  of an exited thread aliases the oracle's still-allocated table slot as
+  an accepted no-op (`ntdll:sync` test_tid_alert; see "M10 winetest
+  notes").
 - **Timer APCs (`NtSetTimer` with an APC routine) are refused loudly**;
   nothing on the CUI path arms one (kernelbase and the ntdll threadpool
   wait on the object).
