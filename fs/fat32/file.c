@@ -111,6 +111,7 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
     {
         return status;
     }
+    uint64_t oldSize = fcb->fileSize;
 
     ULONG haveClusters = FatChainLength(volume, fcb->firstCluster);
     ULONG wantClusters = (ULONG)((newSize + clusterBytes - 1) / clusterBytes);
@@ -171,6 +172,48 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
         return status;
     }
     fcb->fileSize = newSize;
+
+    if (newSize > oldSize && oldSize != 0)
+    {
+        /* An extended range must read as ZEROS (NT rule; pinned by
+         * sem_file/zero_extend, found by the kmt FAT churn stress). Two
+         * stale-byte sources survive a plain resize: the cache page holding
+         * the old EOF carries the on-disk sector tail FatEnsureCache read
+         * past EOF, and the old last cluster's tail on DISK still holds
+         * truncated bytes (freshly allocated clusters are zero-filled, kept
+         * ones are not). Scrub the cache window and write the kept-cluster
+         * tail through. */
+        uint64_t cacheEnd = (oldSize + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        if (cacheEnd > newSize)
+        {
+            cacheEnd = newSize;
+        }
+        for (uint64_t position = oldSize; position < cacheEnd;)
+        {
+            uint64_t pageOffset = position & (PAGE_SIZE - 1);
+            uint64_t chunk = PAGE_SIZE - pageOffset;
+            if (chunk > cacheEnd - position)
+            {
+                chunk = cacheEnd - position;
+            }
+            char *page = MiPhysicalToVirtual(fcb->cache.frames[position / PAGE_SIZE]);
+            memset(page + pageOffset, 0, chunk);
+            position += chunk;
+        }
+        uint64_t diskEnd = (oldSize + clusterBytes - 1) / clusterBytes * clusterBytes;
+        if (diskEnd > newSize)
+        {
+            diskEnd = newSize;
+        }
+        if (diskEnd > oldSize)
+        {
+            status = FatWritebackRange(fcb, oldSize, diskEnd - oldSize);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+        }
+    }
 
     LARGE_INTEGER now = FatCurrentNtTime();
     FatNtTimeToFatTime(now, &fcb->writeDate, &fcb->writeTime);
