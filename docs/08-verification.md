@@ -124,6 +124,28 @@ already in the `known_divergences.txt` baseline — minimizes the program and em
 Art. 6 a new divergence is dispositioned by a `tests/ntapi/` conviction or a cited baseline
 entry, never silence.
 
+## The FAT on-disk format has its own oracles
+
+The same triangulation principle applies below the `Nt*` boundary: the FAT32 volume the
+kernel writes is an externally specified format with excellent independent implementations,
+one of which (mtools) already builds every disk image. The FS test battery therefore never
+lets the kernel grade its own homework:
+
+- **`tests/run/fatcheck.sh`** runs after every disk-mutating boot (`make test`, the
+  `run.sh` `proskrnl`/`persist`/`firstboot` legs): `fsck.fat -n` (dosfstools) on the
+  dd-extracted partition, the invariant sweeper below, and mtools byte-compares — files
+  the kernel wrote are extracted with `mcopy` and compared against host-side truth, and
+  files the kernel only read (ntdll.dll, the baked test binaries) must come back
+  byte-identical, which convicts corrupted *neighbors* no in-kernel readback can see
+  (the kernel reads through its own cache and its own FAT code).
+- **`tests/run/fatsweep.py`** pins the invariants specific to how `fs/fat32/` writes:
+  FAT copies byte-identical (every entry write mirrors), no cross-linked clusters, chain
+  length consistent with each dirent's size, no lost clusters, LFN runs
+  ordered/complete/checksummed. The FSInfo free count is advisory by deviation
+  (docs/03) — a stale count warns, a clobbered signature fails.
+
+GPL tools serve as *test oracles* only; no code flows into the kernel (docs/11).
+
 ## Sanitizers: make silent corruption loud, not "find bugs"
 
 Sanitizers do **not** catch the bugs that kill this project — those are *wrong-contract*

@@ -36,7 +36,7 @@ echo "== apt packages =="
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \
     clang lld llvm clang-format clang-tidy make git ca-certificates python3 \
-    gdisk mtools \
+    gdisk mtools dosfstools \
     ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
     flex bison python3-venv \
     gcc libc6-dev gcc-mingw-w64-x86-64

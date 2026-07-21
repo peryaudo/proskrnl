@@ -210,6 +210,9 @@ proskrnl() {
             fails=$((fails + 1))
         fi
     done
+    # The external FAT oracle on the mutated image (docs/08): the kernel's
+    # writes must parse under implementations that have never met fs/fat32/.
+    "$ROOT/tests/run/fatcheck.sh" verify proskrnl "$img" || fails=$((fails + 1))
     echo "== proskrnl: $fails failing =="
     return $((fails > 0 ? 1 : 0))
 }
@@ -353,6 +356,11 @@ persist() {
         echo "== persist: FAIL (boot 2 did not verify; see $log2) =="
         return 1
     fi
+    # The external FAT oracle after boot 2 (the hive write path's image).
+    if ! "$ROOT/tests/run/fatcheck.sh" verify persist "$img"; then
+        echo "== persist: FAIL (fatcheck) =="
+        return 1
+    fi
     echo "== persist: PASS (seeded on boot 1, verified after reboot) =="
     return 0
 }
@@ -377,6 +385,12 @@ firstboot() {
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q "\[KTEST\] firstboot PASS" "$log"; then
         echo "[KTEST] firstboot-diff FAIL (boot did not reach firstboot PASS; see $log)"
+        return 1
+    fi
+    # The external FAT oracle BEFORE the hive extraction below: a FAT-corrupt
+    # image should fail loudly here, not feed a torn hive to regdiff.
+    if ! "$ROOT/tests/run/fatcheck.sh" verify firstboot "$img"; then
+        echo "[KTEST] firstboot-diff FAIL (fatcheck on the booted image)"
         return 1
     fi
     # The hive sits on the image's ESP FAT32 partition (mkimage.sh: p2 at

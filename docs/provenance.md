@@ -36,3 +36,5 @@ leaked Windows source, never model memory.
 | `tools/filter_inf.py` | Original (strips file/registration/ini/profile directives from `wine.inf` at image-bake time, keeping the AddReg payload). |
 | `user/m9/` | Original (the M9 acceptance clients: threaded blocking pipes + console round trips through kernel32/kernelbase). |
 | `LICENSE` | Verbatim GPL-2.0 license text fetched from the canonical FSF source (`https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt`), not model-recalled. |
+| dosfstools (`fsck.fat`) | Host-side **test oracle only** (`tests/run/fatcheck.sh`), installed by `tools/setup_linux.sh`/`Brewfile`. GPL-3.0+; never linked into or translated into the kernel — the same standing as QEMU and sgdisk (docs/11). |
+| `tests/run/fatsweep.py` | Original host-side FAT32 invariant checker, written from the "Microsoft FAT Specification" (Aug 30 2005) with sections cited inline — the same public-spec provenance as `fs/fat32/`. |
