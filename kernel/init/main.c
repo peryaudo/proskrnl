@@ -211,6 +211,54 @@ static int KiRunM7Modules(void)
     return failures;
 }
 
+/* Run the standing ABI-conformance probe (cmdline "abi"): a native PE that
+ * asserts ring-3 CONVENTIONS rather than features — entry-rsp alignment, the
+ * FXSAVE seed values, mapped-header rebasing, TEB/query id agreement, the
+ * process cookie, KUSER_SHARED_DATA ticking, the absolute-timeout contract
+ * (user/init-tests/abi_probe.c). The checks guard documented contracts no
+ * current consumer may exercise yet, so a convention regression names itself
+ * here instead of surfacing as a distant Wine crash. Exit 0 = conformant;
+ * a missing probe module is itself a failure (the probe must never silently
+ * fall off the image). */
+static int KiRunAbiProbe(void)
+{
+    if (LiModuleRequest.response == 0)
+    {
+        return 1;
+    }
+    int failures = 0;
+    int ran = 0;
+    for (uint64_t i = 0; i < LiModuleRequest.response->module_count; i++)
+    {
+        struct limine_file *module = LiModuleRequest.response->modules[i];
+        const char *tag = module->string != 0 ? module->string : "";
+        if (!KiStringEquals(tag, "abi"))
+        {
+            continue;
+        }
+        const char *path = module->path != 0 ? module->path : "?";
+        PKI_RAMDISK_FILE file = KiFindRamdiskFile(KiRamdiskBasename(path));
+        ASSERT(file != 0);
+
+        NTSTATUS exitStatus = 0;
+        NTSTATUS runStatus = PsRunBootModule(file, &exitStatus);
+        BOOLEAN pass = NT_SUCCESS(runStatus) && exitStatus == 0;
+        DbgPrint("[KTEST] module %s %s (exit=%#lx)\n", path, pass ? "PASS" : "FAIL",
+                 (unsigned long)exitStatus);
+        ran++;
+        if (!pass)
+        {
+            failures++;
+        }
+    }
+    if (ran == 0)
+    {
+        DbgPrint("[KTEST] ABI no probe ran\n");
+        return 1;
+    }
+    return failures;
+}
+
 /* Run the M7 Wine acceptance (docs/02 "Done when"): hello.exe from the boot
  * volume, loaded beside the unmodified Wine PE ntdll.dll and started through
  * LdrInitializeThunk — ntdll's loader runs the process, and hello's SEH test
@@ -995,6 +1043,13 @@ static void KiTestMainThread(void *context)
     DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
     KiVerifyKernelState();
 
+    /* The standing ABI-conformance probe: ring-3 conventions asserted every
+     * boot (user/init-tests/abi_probe.c). Before the M7 clients, so a broken
+     * convention names itself here rather than surfacing as an M7 crash. */
+    int abiFailures = KiRunAbiProbe();
+    DbgPrint(abiFailures == 0 ? "[KTEST] ABI PASS\n" : "[KTEST] ABI FAIL failures=%d\n",
+             abiFailures);
+
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
      * the milestone's acceptance artifact. */
@@ -1016,6 +1071,10 @@ static void KiTestMainThread(void *context)
      * protocol and a console write through the whole stack. The npfs
      * differential surface itself is the sem_pipe suite (run.sh). */
     int m9Failures = KiRunM9();
+    /* The M9 line is the verdict tools/qemu.sh greps for (PASS_RE), so it
+     * must aggregate the ABI probe too — the same fold the M6 line does for
+     * lib above; an unconsumed-convention regression must flip `make test`. */
+    m9Failures += abiFailures;
     DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
     KiVerifyKernelState();
 
