@@ -71,6 +71,28 @@ stated as hard gates.
   justifies any growth, and re-runs `tests/run/run.sh oracle` against the new pin,
   stating so. (Art. 10)
 
+- **G10 — No parallel engines.** Does the diff resolve names, perform create/open access
+  checks, allocate handles, or mint identity values without going through the Ob/Ps
+  engine that already does it? If yes, reroute through the engine (extend it with a hook
+  or flag if needed) or justify in the PR why the engine cannot serve the case. A
+  parallel reimplementation is rejected **even when currently equivalent** — two
+  implementations of one rule drift apart silently, and the drift is invisible to every
+  other gate until a consumer samples it (the `a53dd04` shape: Cm's private resolution
+  path skipped Ob's zero-access refusal). (Art. 11)
+
+- **G11 — Ownership audit.** A diff that creates, copies, or stores an identity value
+  (thread/process ids, cookies, handle values), or that touches a kernel object's
+  creation, reference counting, or teardown, must answer the audit in the PR description:
+  1. For each identity value the diff writes: what is its single source of truth, and
+     does this diff introduce a second assignment site? (The `4fc732c` shape: TEB and
+     ETHREAD ids from two counters.)
+  2. For each object whose lifetime the diff touches: who holds a reference at each point
+     of its life, and what happens if every handle is closed — or the owning thread
+     exits — at the earliest legal moment? (The `edf9f0b` shape: a live thread's ETHREAD
+     freed when its creator closed its handles promptly.)
+  An unanswered audit, or one answered with "the caller won't do that", is a rejection.
+  (Art. 11)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
