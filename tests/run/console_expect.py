@@ -125,6 +125,12 @@ def main() -> int:
         return 1
     if not command(b"echo rc=%errorlevel%", b"rc=7", "the errorlevel expansion"):
         return 1
+    # CUI-2 acceptance (docs/02 "a real tool that opens its own token at
+    # startup gets past STATUS_NOT_IMPLEMENTED"): Wine's unmodified
+    # whoami.exe opens the process token and prints the logon SID from
+    # TokenGroups. The SID digits cannot come from the typed command.
+    if not command(b"C:\\whoami.exe /logonid", b"S-1-5-5-0-0", "whoami's logon SID"):
+        return 1
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):

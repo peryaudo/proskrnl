@@ -52,7 +52,7 @@ third-party drivers, we owe that contract to no one, and SMP becomes ordinary fu
 
 | Faked | Shape preserved | Inside |
 |---|---|---|
-| **Se (security)** | token object; `SECURITY_DESCRIPTOR` accepted by every relevant `Nt*`; `NtQueryInformationToken` info classes | "always allow"; a fixed admin token |
+| **Se (security)** | CUI-2: a real Ob token object with the full query/adjust/duplicate/access-check surface (`kernel/se/`, pinned by `tests/ntapi/sem_se/` — see "CUI-2 Se notes") | ONE fixed admin identity (wineserver's `token_create_admin`, byte-identical); object create/open stays "always allow" — `NtAccessCheck` exists as a service, but Ob never consults tokens or SDs when granting handles |
 | **Cm hive format** | `NtCreateKey`/value semantics | our own on-disk format; no MS hive binary compat |
 | **EPROCESS/ETHREAD** | exist as internal structs | layout entirely ours; nobody reads it (no drivers) |
 | **DPC/IRQL surface** | absent, not stubbed | callers don't exist (no drivers) |
@@ -524,6 +524,72 @@ which applies `wine.inf`'s machine-state payload through
 - wineboot's remaining legs warn-and-continue as stock: missing
   `__wine_user_shared_data` section, absent `services.exe`, the root PnP
   device installs, and the `winedbg` auto-start on a child fault.
+
+## CUI-2 Se notes (the minimal-but-real security model)
+
+`kernel/se/` implements the token surface the already-baked DLLs read
+(kernelbase/security.c, ntdll/sec.c, advapi32): `NtOpenProcessToken(Ex)`,
+`NtOpenThreadToken(Ex)`, `NtQueryInformationToken`,
+`NtAdjustPrivilegesToken`, `NtDuplicateToken`, `NtPrivilegeCheck`,
+`NtAccessCheck`, `NtQuery/SetSecurityObject`, `NtAllocateLocallyUniqueId` —
+pinned by `tests/ntapi/sem_se/` (oracle-green first, Art. 5). The behaviour
+reproduced is the ORACLE COMBINATION of Wine's unix layer
+(`dlls/ntdll/unix/security.c`) and wineserver (`server/token.c`,
+`server/handle.c`, `server/object.c`); where that pair disagrees with
+real-NT folklore, the oracle wins (Art. 6). Scoping and deviations:
+
+- **One fixed identity, byte-identical to wineserver's
+  `token_create_admin`**: user `S-1-5-21-0-0-0-1000`, owner/primary group
+  Domain Users (`-513`), 8 groups, 21 privileges (4 enabled by default),
+  the 2-ACE default DACL, session 1, `TokenElevationTypeLimited`. Identical
+  bytes are what let sem_se pin exact SIDs differentially, and make
+  `RtlFormatCurrentUserKeyPath` (HKCU) agree on both sides. Every process
+  token is a primary *duplicate* of its creator's (wineserver's child
+  rule): adjustments never leak across processes; TokenIds are per-process.
+- **No impersonation attach** (CUI-3, the SCM needs it): threads carry no
+  token; `NtOpenThreadToken(Ex)` validates the thread handle and answers
+  `STATUS_NO_TOKEN`, exactly what the oracle says for a fresh thread.
+  `NtDuplicateToken` still mints impersonation *objects* — all
+  `AccessCheck`/`CheckTokenMembership` need.
+- **Still MISSING** (no baked caller; each returns
+  `STATUS_NOT_IMPLEMENTED` through the generic dispatcher):
+  `NtSetInformationToken`, `NtFilterToken`, `NtCompareTokens`,
+  `NtCreateToken`, `NtImpersonateAnonymousToken`, the audit/alarm
+  `NtAccessCheck*AndAuditAlarm` family. `TokenLinkedToken` likewise stays
+  unanswered (the oracle would mint a Full-elevation linked token) until a
+  UAC-probing caller convicts it.
+- **Object access remains always-allow**: `OBJECT_ATTRIBUTES.
+  SecurityDescriptor` at create time is accepted and ignored; Ob's
+  create/open/handle paths never evaluate SDs or tokens. `NtAccessCheck`
+  is a pure *service* over a caller-supplied SD (the wineserver ACE walk,
+  transcribed exactly).
+- **`NtQuery/SetSecurityObject` scope**: pinned on named events (kernel
+  objects generally); FILE SDs are out — the oracle's come from host
+  `stat()` shapes. Mandatory-label SACL surgery
+  (`LABEL_SECURITY_INFORMATION` extraction/replacement,
+  `token_assign_label`) is not reproduced; no baked caller reads labels.
+- **Oracle oddities kept, not "fixed"**: the retlen pre-writes (`*retlen =
+  info_len[class]` before any validation, `*handle = 0` before any open);
+  `TokenSource` = `BUFFER_TOO_SMALL` short but `NOT_IMPLEMENTED` adequate;
+  the semi-stub classes (`TokenVirtualizationEnabled`, `TokenUIAccess`,
+  `TokenIntegrityLevel`, `TokenIsAppContainer`, `TokenAppContainerSid`)
+  answered without touching the handle at all; adjust's silent
+  previous-state truncation; `NtClose` succeeding on every pseudo handle in
+  `[~5, ~0]`. One divergence: the oracle reads `info_len[]` out of bounds
+  for classes 41..50 (garbage lengths) — proskrnl answers 0/`NOT_IMPLEMENTED`;
+  unpinnable either way.
+- **winetest**: no parked pair was blocked on the token surface (the
+  parked causes are Mm/path/thread breadth — "M10 winetest notes" above);
+  the manifest is unchanged by CUI-2.
+- **Acceptance**: Wine's unmodified `whoami.exe` (+ `secur32.dll`) is baked
+  onto the console image; `tests/run/run.sh console` runs `whoami /logonid`
+  under cmd.exe and greps the logon SID `S-1-5-5-0-0` — a real tool's
+  startup `OpenProcessToken`/`GetTokenInformation` path, machine-checked.
+  (`whoami /user` additionally needs `GetComputerNameW`, whose
+  `ActiveComputerName` seeding rides wineboot's unixlib `gethostname` —
+  absent here, so the SAM-name flavor stays out of the gate.)
+  `GetUserNameW` is an environment read on Wine (`advapi32/advapi.c`), so
+  the default environment grows `WINEUSERNAME=wine`.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
