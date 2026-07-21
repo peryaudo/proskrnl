@@ -452,7 +452,8 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
     options->params = 0;
     if (params == 0)
     {
-        status = PspBuildDefaultParams(imageDosPath, imageDosPath, &params);
+        const char *commandLine = options->commandLine ? options->commandLine : imageDosPath;
+        status = PspBuildDefaultParams(imageDosPath, commandLine, &params);
         if (!NT_SUCCESS(status))
         {
             goto out_sections;
@@ -723,14 +724,38 @@ NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, B
 NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut)
 {
+    return PsRunWineImageEx(exeNtPath, imageDosPath, 0, console, 0, exitStatusOut);
+}
+
+NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
+                          BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut)
+{
     PEPROCESS process;
     PETHREAD mainThread;
-    NTSTATUS status = PsCreateWineProcess(exeNtPath, imageDosPath, console, &process, &mainThread);
+    PSP_CREATE_OPTIONS options;
+    memset(&options, 0, sizeof(options));
+    options.console = console;
+    options.commandLine = commandLine;
+    NTSTATUS status =
+        PsCreateWineProcessEx(exeNtPath, imageDosPath, &options, &process, &mainThread);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    status = KeWaitForSingleObject(process, Executive, KernelMode, FALSE, 0);
+    LARGE_INTEGER timeout;
+    PLARGE_INTEGER timeoutPtr = 0;
+    if (timeoutMs != 0)
+    {
+        timeout.QuadPart = -((LONGLONG)timeoutMs * 10000); /* relative, 100 ns */
+        timeoutPtr = &timeout;
+    }
+    status = KeWaitForSingleObject(process, Executive, KernelMode, FALSE, timeoutPtr);
+    if (status == STATUS_TIMEOUT)
+    {
+        /* Still running; no foreign terminate exists (docs/03), so the
+         * creator references stay leaked rather than freeing a live process. */
+        return STATUS_TIMEOUT;
+    }
     ASSERT(status == STATUS_SUCCESS);
     *exitStatusOut = process->exitStatus;
     ObDereferenceObject(mainThread); /* exited: safe to let the ETHREAD go */

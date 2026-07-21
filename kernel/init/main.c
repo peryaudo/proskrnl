@@ -17,6 +17,7 @@
 #include "arch/x86_64/mmu.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
+#include "kernel/lib/string.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
@@ -583,6 +584,244 @@ static int KiRunNtapiTests(void)
     return failures;
 }
 
+/* --- the winetest sweep (M10 stretch: docs/02 "Ideal regression") ---------- */
+
+/* tests/run/run.sh winetest bakes standalone Wine-test binaries (the pinned
+ * tree's own test objects, docs/14) under C:\wtests plus a manifest of
+ * <exe>:<subtest> pairs curated to be green on the oracle. Each pair runs
+ * WITH a console (winetest prints through msvcrt stdout -> condrv -> conhost
+ * -> serial) and its exit code — winetest's failure count — is the verdict.
+ * Absence of the manifest (every other image) is silent. A pair that times
+ * out cannot be reaped (no foreign terminate — docs/03), so the sweep aborts
+ * rather than running more clients against a wedged console. */
+#define KI_WTEST_MAX_PAIRS     128
+#define KI_WTEST_EXE_CHARS     40
+#define KI_WTEST_SUBTEST_CHARS 32
+#define KI_WTEST_MANIFEST_MAX  (64 * 1024)
+#define KI_WTEST_TIMEOUT_MS    (180 * 1000)
+
+typedef struct KI_WTEST_LIST
+{
+    struct
+    {
+        char exe[KI_WTEST_EXE_CHARS];
+        char subtest[KI_WTEST_SUBTEST_CHARS];
+    } pairs[KI_WTEST_MAX_PAIRS];
+    int count;
+    BOOLEAN overflow;
+} KI_WTEST_LIST;
+
+/* Whole-file read with a kernel-internal transient handle (the
+ * CmpReadHiveFile pattern, kernel/cm/hive.c). *bufferOut is pool. */
+static BOOLEAN KiWtestReadManifest(UCHAR **bufferOut, ULONG *lengthOut)
+{
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\wtests\\manifest.txt"));
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle;
+    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
+                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return FALSE;
+    }
+    BOOLEAN ok = FALSE;
+    FILE_STANDARD_INFORMATION standard;
+    status =
+        NtQueryInformationFile(handle, &iosb, &standard, sizeof(standard), FileStandardInformation);
+    if (NT_SUCCESS(status) && standard.EndOfFile.QuadPart > 0 &&
+        standard.EndOfFile.QuadPart <= KI_WTEST_MANIFEST_MAX)
+    {
+        ULONG length = (ULONG)standard.EndOfFile.QuadPart;
+        UCHAR *buffer = MiAllocatePool(length);
+        if (buffer != 0)
+        {
+            LARGE_INTEGER offset;
+            offset.QuadPart = 0;
+            status = NtReadFile(handle, 0, 0, 0, &iosb, buffer, length, &offset, 0);
+            if (NT_SUCCESS(status) && iosb.Information == length)
+            {
+                *bufferOut = buffer;
+                *lengthOut = length;
+                ok = TRUE;
+            }
+            else
+            {
+                MiFreePool(buffer);
+            }
+        }
+    }
+    NtClose(handle);
+    return ok;
+}
+
+/* Parse `<exe>:<subtest>` lines; '#' comments and blank lines skipped,
+ * CRLF tolerated. Malformed/oversized lines are loud (a silently dropped
+ * pair would read as "covered"). Returns FALSE on a parse failure. */
+static BOOLEAN KiWtestParseManifest(const UCHAR *buffer, ULONG length, KI_WTEST_LIST *list)
+{
+    ULONG pos = 0;
+    while (pos < length)
+    {
+        ULONG end = pos;
+        while (end < length && buffer[end] != '\n')
+        {
+            end++;
+        }
+        ULONG lineEnd = end;
+        while (lineEnd > pos && (buffer[lineEnd - 1] == '\r' || buffer[lineEnd - 1] == ' '))
+        {
+            lineEnd--;
+        }
+        if (lineEnd > pos && buffer[pos] != '#')
+        {
+            ULONG colon = pos;
+            while (colon < lineEnd && buffer[colon] != ':')
+            {
+                colon++;
+            }
+            ULONG exeChars = colon - pos;
+            ULONG subChars = (colon < lineEnd) ? lineEnd - colon - 1 : 0;
+            if (colon >= lineEnd || exeChars == 0 || exeChars >= KI_WTEST_EXE_CHARS ||
+                subChars == 0 || subChars >= KI_WTEST_SUBTEST_CHARS)
+            {
+                DbgPrint("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
+                         (unsigned)pos);
+                return FALSE;
+            }
+            if (list->count >= KI_WTEST_MAX_PAIRS)
+            {
+                list->overflow = TRUE;
+                pos = end + 1;
+                continue;
+            }
+            for (ULONG i = 0; i < exeChars; i++)
+            {
+                list->pairs[list->count].exe[i] = (char)buffer[pos + i];
+            }
+            list->pairs[list->count].exe[exeChars] = 0;
+            for (ULONG i = 0; i < subChars; i++)
+            {
+                list->pairs[list->count].subtest[i] = (char)buffer[colon + 1 + i];
+            }
+            list->pairs[list->count].subtest[subChars] = 0;
+            list->count++;
+        }
+        pos = end + 1;
+    }
+    return TRUE;
+}
+
+static int KiRunWineTests(void)
+{
+    static KI_WTEST_LIST list; /* pairs table: bss, not this thread's stack */
+    list.count = 0;
+    list.overflow = FALSE;
+
+    UCHAR *manifest = 0;
+    ULONG manifestLength = 0;
+    if (!KiWtestReadManifest(&manifest, &manifestLength))
+    {
+        return 0; /* not a wtest image */
+    }
+    BOOLEAN parsed = KiWtestParseManifest(manifest, manifestLength, &list);
+    MiFreePool(manifest);
+    if (!parsed)
+    {
+        return 1;
+    }
+
+    int failures = 0;
+    for (int i = 0; i < list.count; i++)
+    {
+        /* Sequential runs, one static path set (the KiRunNtapiTests shape;
+         * the process copies the command line and holds imageName only
+         * while PsRunWineImageEx waits). */
+        static WCHAR widePath[16 + KI_WTEST_EXE_CHARS];
+        static char dosPath[12 + KI_WTEST_EXE_CHARS];
+        static char cmdLine[12 + KI_WTEST_EXE_CHARS + 1 + KI_WTEST_SUBTEST_CHARS];
+        static const WCHAR prefix[] = WSTR("\\??\\C:\\wtests\\");
+        int n = 0;
+        while (prefix[n] != 0)
+        {
+            widePath[n] = prefix[n];
+            n++;
+        }
+        for (int m = 0;; m++)
+        {
+            widePath[n + m] = (WCHAR)(unsigned char)list.pairs[i].exe[m];
+            if (list.pairs[i].exe[m] == 0)
+            {
+                break;
+            }
+        }
+        int d = 0;
+        for (int k = 4; widePath[k] != 0; k++) /* past "\??\" */
+        {
+            dosPath[d++] = (char)widePath[k];
+        }
+        dosPath[d] = 0;
+        int c = 0;
+        while (dosPath[c] != 0)
+        {
+            cmdLine[c] = dosPath[c];
+            c++;
+        }
+        cmdLine[c++] = ' ';
+        for (int m = 0;; m++)
+        {
+            cmdLine[c + m] = list.pairs[i].subtest[m];
+            if (list.pairs[i].subtest[m] == 0)
+            {
+                break;
+            }
+        }
+
+        NTSTATUS exitStatus = 0;
+        NTSTATUS status =
+            PsRunWineImageEx(widePath, dosPath, cmdLine, TRUE, KI_WTEST_TIMEOUT_MS, &exitStatus);
+        if (status == STATUS_TIMEOUT)
+        {
+            /* The wedged process owns the console; further pairs would be
+             * noise. Abort loudly — the runner sees the missing PASSes. */
+            DbgPrint("[KTEST] wtest %s:%s FAIL (timeout)\n", list.pairs[i].exe,
+                     list.pairs[i].subtest);
+            failures += list.count - i;
+            break;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrint("[KTEST] wtest %s:%s FAIL (create=%#lx)\n", list.pairs[i].exe,
+                     list.pairs[i].subtest, (unsigned long)status);
+            failures++;
+        }
+        else if (exitStatus != 0)
+        {
+            DbgPrint("[KTEST] wtest %s:%s FAIL (exit=%#lx)\n", list.pairs[i].exe,
+                     list.pairs[i].subtest, (unsigned long)exitStatus);
+            failures++;
+        }
+        else
+        {
+            DbgPrint("[KTEST] wtest %s:%s PASS\n", list.pairs[i].exe, list.pairs[i].subtest);
+        }
+    }
+    if (list.overflow)
+    {
+        DbgPrint("[KTEST] wtest FAIL (more than %d pairs; raise KI_WTEST_MAX_PAIRS)\n",
+                 KI_WTEST_MAX_PAIRS);
+        failures++;
+    }
+    DbgPrint("[KTEST] wtest done tests=%d failures=%d\n", list.count, failures);
+    return failures;
+}
+
 /* The in-kernel suites, run on a real kernel thread (waits need a
  * schedulable context). Ends the QEMU run with the milestone verdict
  * (docs/08): M3 PASS requires the M2 suite to stay green too. */
@@ -662,6 +901,11 @@ static void KiTestMainThread(void *context)
      * binary test baked under C:\ntapi. Absence is silent. */
     int ntapiFailures = KiRunNtapiTests();
 
+    /* The wtest image only (tests/run/run.sh winetest): the curated pairs
+     * from Wine's own CUI test suite baked under C:\wtests. Absence is
+     * silent. */
+    int wtestFailures = KiRunWineTests();
+
     /* Console-mode image only: block on the interactive echo (the M9
      * acceptance's other half — input typed on the serial wire). AFTER the
      * M9 verdict so the runner knows the boot suite is already green. */
@@ -677,7 +921,8 @@ static void KiTestMainThread(void *context)
     __asm__ volatile("int3");
 
     int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + m7Failures +
-                m8Failures + m9Failures + ntapiFailures + echoFailures + cmdFailures;
+                m8Failures + m9Failures + ntapiFailures + wtestFailures + echoFailures +
+                cmdFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
