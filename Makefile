@@ -95,6 +95,10 @@ CSRC := kernel/init/main.c \
         kernel/ps/query.c \
         kernel/ps/atom.c \
         kernel/ps/display.c \
+        kernel/se/token.c \
+        kernel/se/sd.c \
+        kernel/se/access.c \
+        kernel/se/secobj.c \
         kernel/io/file.c \
         kernel/io/rw.c \
         kernel/io/query.c \

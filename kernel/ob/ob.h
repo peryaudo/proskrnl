@@ -82,6 +82,11 @@ typedef struct OBJECT_HEADER
     PVOID parentDirectory; /* directory BODY holding our name; 0 = unnamed */
     UNICODE_STRING name;   /* pool copy owned by the header */
     LIST_ENTRY directoryEntry;
+    /* CUI-2: the stored security descriptor (a pooled SEP blob, se.h shape;
+     * 0 = none — the common case). Ob owns the storage (freed with the
+     * object); kernel/se/secobj.c owns the interpretation. */
+    PVOID securityDescriptor;
+    PVOID sePad; /* keep bodies 16-aligned (assert below) */
 } OBJECT_HEADER, *POBJECT_HEADER;
 
 _Static_assert(sizeof(OBJECT_HEADER) % 16 == 0, "object bodies must stay 16-aligned");

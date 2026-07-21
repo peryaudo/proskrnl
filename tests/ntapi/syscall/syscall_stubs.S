@@ -1458,6 +1458,151 @@ NtQueryTimer:
     add $0x78, %rsp
     ret
 
+    .global NtOpenProcessToken
+NtOpenProcessToken:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xbb, %eax
+    syscall
+    ret
+
+    .global NtOpenProcessTokenEx
+NtOpenProcessTokenEx:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x30, %eax
+    syscall
+    ret
+
+    .global NtOpenThreadToken
+NtOpenThreadToken:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x24, %eax
+    syscall
+    ret
+
+    .global NtOpenThreadTokenEx
+NtOpenThreadTokenEx:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x2f, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtQueryInformationToken
+NtQueryInformationToken:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x21, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtAdjustPrivilegesToken
+NtAdjustPrivilegesToken:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x41, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtDuplicateToken
+NtDuplicateToken:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x42, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtPrivilegeCheck
+NtPrivilegeCheck:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc0, %eax
+    syscall
+    ret
+
+    .global NtAccessCheck
+NtAccessCheck:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x0, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtAllocateLocallyUniqueId
+NtAllocateLocallyUniqueId:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x68, %eax
+    syscall
+    ret
+
+    .global NtQuerySecurityObject
+NtQuerySecurityObject:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xcc, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtSetSecurityObject
+NtSetSecurityObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf2, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

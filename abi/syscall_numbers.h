@@ -128,6 +128,18 @@
 #define NTSYS_NtSetTimer 0x0062
 #define NTSYS_NtCancelTimer 0x0061
 #define NTSYS_NtQueryTimer 0x0038
+#define NTSYS_NtOpenProcessToken 0x00bb
+#define NTSYS_NtOpenProcessTokenEx 0x0030
+#define NTSYS_NtOpenThreadToken 0x0024
+#define NTSYS_NtOpenThreadTokenEx 0x002f
+#define NTSYS_NtQueryInformationToken 0x0021
+#define NTSYS_NtAdjustPrivilegesToken 0x0041
+#define NTSYS_NtDuplicateToken 0x0042
+#define NTSYS_NtPrivilegeCheck 0x00c0
+#define NTSYS_NtAccessCheck 0x0000
+#define NTSYS_NtAllocateLocallyUniqueId 0x0068
+#define NTSYS_NtQuerySecurityObject 0x00cc
+#define NTSYS_NtSetSecurityObject 0x00f2
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

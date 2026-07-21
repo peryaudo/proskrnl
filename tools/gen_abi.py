@@ -2131,6 +2131,7 @@ def gen_ntseapi(wine: Path) -> str:
         + "\n\n".join(
             extract_struct(winnt, tag, typedef)
             for tag, typedef in [
+                ("_TOKEN_LINKED_TOKEN", "TOKEN_LINKED_TOKEN"),
                 ("_TOKEN_ELEVATION", "TOKEN_ELEVATION"),
                 ("_TOKEN_MANDATORY_LABEL", "TOKEN_MANDATORY_LABEL"),
                 (
