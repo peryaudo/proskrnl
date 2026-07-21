@@ -909,6 +909,10 @@ def gen_ntioapi(wine: Path) -> str:
             "FILE_DEVICE_SERIAL_PORT",
         ],
     )
+    # FileFsAttributeInformation.FileSystemAttributes bits: the kernel's FAT32
+    # answer mirrors the pinned Wine FAT32 branch (dlls/ntdll/unix/file.c
+    # NtQueryVolumeInformationFile), which sets exactly this flag.
+    fs_attribute_flags = extract_defines(winnt, "winnt.h", ["FILE_CASE_PRESERVED_NAMES"])
 
     # M9: ioctl/fsctl plumbing + the named-pipe surface. CTL_CODE and the
     # FSCTL_PIPE_* verbs come from winioctl.h; the pipe create/mode constants
@@ -1067,6 +1071,9 @@ _Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_
         + fs_structs
         + "\n\n"
         + device_types
+        + "\n\n/* FileFsAttributeInformation.FileSystemAttributes bits, extracted\n"
+        + " * from wine/include/winnt.h. */\n"
+        + fs_attribute_flags
         + "\n\n/* Ioctl/fsctl encoding + the named-pipe FSCTL verbs (M9), extracted\n"
         + " * from wine/include/winioctl.h. */\n"
         + ioctl_defines
