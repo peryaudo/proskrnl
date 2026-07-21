@@ -141,6 +141,9 @@ typedef struct PSP_CREATE_OPTIONS
     const HANDLE *handleList; /* kernel copy; 0 = inherit-all */
     ULONG handleCount;
     SECTION_IMAGE_INFORMATION *imageInfoOut; /* optional, kernel pointer */
+    const char *commandLine;                 /* kernel launches with params == 0 only:
+                                              * CommandLine for the default parameter block
+                                              * (0 = the image path, the M7 shape) */
 } PSP_CREATE_OPTIONS;
 
 NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
@@ -148,6 +151,14 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
                                PETHREAD *threadOut);
 NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut);
+
+/* The winetest sweep's variant (M10 stretch): an explicit command line for
+ * the default parameter block, and a bounded wait. On STATUS_TIMEOUT the
+ * process is STILL RUNNING and cannot be reaped (no foreign terminate —
+ * docs/03); its creator references are deliberately leaked and the caller
+ * must not run further console clients. */
+NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
+                          BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
  * exit status, signal the process object, never return. The user-fault
