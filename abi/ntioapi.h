@@ -360,6 +360,10 @@ typedef struct {
 #define FILE_DEVICE_FILE_SYSTEM 0x00000009
 #define FILE_DEVICE_SERIAL_PORT 0x0000001b
 
+/* FileFsAttributeInformation.FileSystemAttributes bits, extracted
+ * from wine/include/winnt.h. */
+#define FILE_CASE_PRESERVED_NAMES 0x00000002
+
 /* Ioctl/fsctl encoding + the named-pipe FSCTL verbs (M9), extracted
  * from wine/include/winioctl.h. */
 #define CTL_CODE( DeviceType, Function, Method, Access ) ( (DWORD)((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method) )
