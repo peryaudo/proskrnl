@@ -498,8 +498,7 @@ NTSTATUS NtSetTimer(HANDLE handle, const LARGE_INTEGER *dueTime, PTIMER_APC_ROUT
     KeSetTimerEx(timer, due, (LONG)period, 0);
     ObDereferenceObject(body);
 
-    if (previousState != 0 &&
-        NT_SUCCESS(KiProbeForWrite(previousState, sizeof(*previousState), 1)))
+    if (previousState != 0 && NT_SUCCESS(KiProbeForWrite(previousState, sizeof(*previousState), 1)))
     {
         *previousState = wasSignaled;
     }
@@ -564,7 +563,8 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
     ObDereferenceObject(body);
 
     memcpy(buffer, &info, sizeof(info));
-    if (returnLength != 0 && NT_SUCCESS(KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG))))
+    if (returnLength != 0 &&
+        NT_SUCCESS(KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG))))
     {
         *returnLength = sizeof(info);
     }
@@ -597,9 +597,9 @@ typedef struct OBP_KEYED_EVENT
 typedef struct OBP_KEYED_WAITER
 {
     LIST_ENTRY entry;
-    void *process;       /* pair-matching identity only (server/event.c) */
+    void *process; /* pair-matching identity only (server/event.c) */
     const void *key;
-    BOOLEAN release;     /* queued by NtReleaseKeyedEvent */
+    BOOLEAN release; /* queued by NtReleaseKeyedEvent */
     KEVENT wake;
 } OBP_KEYED_WAITER;
 

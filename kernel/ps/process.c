@@ -625,8 +625,8 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
     uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status))
     {
-        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId,
-                             mainThreadId, &tebBase);
+        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, mainThreadId,
+                             &tebBase);
     }
     if (!NT_SUCCESS(status))
     {
@@ -666,8 +666,7 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
      * hold it until the thread has exited. */
     process->activeThreadCount = 0;
     PETHREAD mainThreadObject;
-    status = PspCreateThreadObject(process, main, tebBase, 0, 0, mainThreadId,
-                                   &mainThreadObject);
+    status = PspCreateThreadObject(process, main, tebBase, 0, 0, mainThreadId, &mainThreadObject);
     if (!NT_SUCCESS(status))
     {
         KiDeleteThread(main);

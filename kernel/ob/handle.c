@@ -59,9 +59,8 @@ ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
         if (type->genericAll != 0)
         {
             /* The type carries a real NT GENERIC_MAPPING (see ob.h). */
-            ACCESS_MASK granted = desiredAccess & ~(GENERIC_READ | GENERIC_WRITE |
-                                                    GENERIC_EXECUTE | GENERIC_ALL |
-                                                    MAXIMUM_ALLOWED);
+            ACCESS_MASK granted = desiredAccess & ~(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE |
+                                                    GENERIC_ALL | MAXIMUM_ALLOWED);
             if (desiredAccess & GENERIC_READ)
             {
                 granted |= type->genericRead;
@@ -361,8 +360,7 @@ static void ObpInheritOne(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child, HAN
 }
 
 NTSTATUS ObpInheritHandles(POBP_HANDLE_TABLE parent, POBP_HANDLE_TABLE child,
-                           const HANDLE *handleList, ULONG handleCount,
-                           const HANDLE stdHandles[3])
+                           const HANDLE *handleList, ULONG handleCount, const HANDLE stdHandles[3])
 {
     ASSERT(child->inUse == 0); /* a fresh process's table */
     if (parent->entries == 0)
@@ -477,10 +475,9 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
     case ObjectNameInformation:
     {
         USHORT nameBytes = header->name.Length;
-        ULONG needed = sizeof(OBJECT_NAME_INFORMATION) +
-                       (nameBytes != 0 ? nameBytes + sizeof(WCHAR) : 0);
-        if (length < sizeof(OBJECT_NAME_INFORMATION) ||
-            (nameBytes != 0 && length < needed))
+        ULONG needed =
+            sizeof(OBJECT_NAME_INFORMATION) + (nameBytes != 0 ? nameBytes + sizeof(WCHAR) : 0);
+        if (length < sizeof(OBJECT_NAME_INFORMATION) || (nameBytes != 0 && length < needed))
         {
             if (returnLength != 0)
             {
