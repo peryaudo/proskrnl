@@ -17,6 +17,7 @@
 #define NTSYS_NtCreateEvent 0x0048
 #define NTSYS_NtOpenEvent 0x0040
 #define NTSYS_NtSetEvent 0x000e
+#define NTSYS_NtSetEventBoostPriority 0x002d
 #define NTSYS_NtResetEvent 0x00dd
 #define NTSYS_NtClearEvent 0x003e
 #define NTSYS_NtPulseEvent 0x00c1
@@ -77,6 +78,11 @@
 #define NTSYS_NtQueryPerformanceCounter 0x0031
 #define NTSYS_NtQueryTimerResolution 0x00d2
 #define NTSYS_NtAddAtom 0x0047
+#define NTSYS_NtAlertMultipleThreadByThreadId 0x0064
+#define NTSYS_NtCreateKeyedEvent 0x0081
+#define NTSYS_NtOpenKeyedEvent 0x00b9
+#define NTSYS_NtWaitForKeyedEvent 0x0107
+#define NTSYS_NtReleaseKeyedEvent 0x00d8
 #define NTSYS_NtDeleteAtom 0x0092
 #define NTSYS_NtFindAtom 0x0014
 #define NTSYS_NtQueryInformationAtom 0x00c5

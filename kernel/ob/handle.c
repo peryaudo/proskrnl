@@ -56,6 +56,30 @@ ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
     if (desiredAccess &
         (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED))
     {
+        if (type->genericAll != 0)
+        {
+            /* The type carries a real NT GENERIC_MAPPING (see ob.h). */
+            ACCESS_MASK granted = desiredAccess & ~(GENERIC_READ | GENERIC_WRITE |
+                                                    GENERIC_EXECUTE | GENERIC_ALL |
+                                                    MAXIMUM_ALLOWED);
+            if (desiredAccess & GENERIC_READ)
+            {
+                granted |= type->genericRead;
+            }
+            if (desiredAccess & GENERIC_WRITE)
+            {
+                granted |= type->genericWrite;
+            }
+            if (desiredAccess & GENERIC_EXECUTE)
+            {
+                granted |= type->genericExecute;
+            }
+            if (desiredAccess & (GENERIC_ALL | MAXIMUM_ALLOWED))
+            {
+                granted |= type->genericAll;
+            }
+            return granted & type->validAccess;
+        }
         /* Se is always-allow (docs/05): a generic wish grants the type's
          * full mask rather than carrying NT's per-type generic mapping. */
         return type->validAccess;

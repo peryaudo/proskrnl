@@ -51,6 +51,14 @@ typedef struct OBJECT_TYPE
     void (*closeProcedure)(PVOID body);  /* LAST handle closed (M6: Io cleanup —
                                           * share release, delete-on-close);
                                           * NT's CloseProcedure concept. May be 0. */
+    /* Optional NT GENERIC_MAPPING (all four set, or all zero). Zero keeps
+     * the documented docs/03 over-grant (a generic wish = validAccess);
+     * a type whose generic split is OBSERVABLE (keyed events: GENERIC_READ
+     * waits, GENERIC_WRITE wakes — ntdll:sync) carries the real mapping. */
+    ACCESS_MASK genericRead;
+    ACCESS_MASK genericWrite;
+    ACCESS_MASK genericExecute;
+    ACCESS_MASK genericAll;
 } OBJECT_TYPE, *POBJECT_TYPE;
 
 extern OBJECT_TYPE ObpDirectoryType;

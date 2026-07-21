@@ -960,6 +960,7 @@ NTSTATUS NtContinueEx(CONTEXT*,KCONTINUE_ARGUMENT*);
 NTSTATUS NtCallbackReturn(PVOID,ULONG,NTSTATUS);
 NTSTATUS NtWaitForAlertByThreadId(const void*,const LARGE_INTEGER*);
 NTSTATUS NtAlertThreadByThreadId(HANDLE);
+NTSTATUS NtAlertMultipleThreadByThreadId(HANDLE*,ULONG,void*,void*);
 NTSTATUS NtInitializeNlsFiles(void**,LCID*,LARGE_INTEGER*);
 NTSTATUS NtGetNlsSectionPtr(ULONG,ULONG,void*,void**,SIZE_T*);
 NTSTATUS NtQuerySystemTime(PLARGE_INTEGER);

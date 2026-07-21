@@ -84,6 +84,16 @@ NtSetEvent:
     syscall
     ret
 
+    .global NtSetEventBoostPriority
+NtSetEventBoostPriority:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x2d, %eax
+    syscall
+    ret
+
     .global NtResetEvent
 NtResetEvent:
     mov %rcx, %r9
@@ -835,6 +845,56 @@ NtAddAtom:
     mov %rsi, %rdx
     mov %rdi, %r10
     mov $0x47, %eax
+    syscall
+    ret
+
+    .global NtAlertMultipleThreadByThreadId
+NtAlertMultipleThreadByThreadId:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x64, %eax
+    syscall
+    ret
+
+    .global NtCreateKeyedEvent
+NtCreateKeyedEvent:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x81, %eax
+    syscall
+    ret
+
+    .global NtOpenKeyedEvent
+NtOpenKeyedEvent:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xb9, %eax
+    syscall
+    ret
+
+    .global NtWaitForKeyedEvent
+NtWaitForKeyedEvent:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x107, %eax
+    syscall
+    ret
+
+    .global NtReleaseKeyedEvent
+NtReleaseKeyedEvent:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xd8, %eax
     syscall
     ret
 

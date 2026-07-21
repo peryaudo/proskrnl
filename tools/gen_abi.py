@@ -455,7 +455,12 @@ NTOBAPI_FUNCTIONS = [
     "NtMakeTemporaryObject",
     "NtCreateEvent",
     "NtOpenEvent",
+    "NtCreateKeyedEvent",
+    "NtOpenKeyedEvent",
+    "NtWaitForKeyedEvent",
+    "NtReleaseKeyedEvent",
     "NtSetEvent",
+    "NtSetEventBoostPriority",
     "NtResetEvent",
     "NtClearEvent",
     "NtPulseEvent",
@@ -518,6 +523,7 @@ def gen_ntobapi(wine: Path) -> str:
         + structs
         + "\n\n"
         + timer_apc
+
         + "\n\n/* The M3 Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
@@ -1497,6 +1503,7 @@ NTPSAPI_FUNCTIONS = [
     "NtCallbackReturn",
     "NtWaitForAlertByThreadId",
     "NtAlertThreadByThreadId",
+    "NtAlertMultipleThreadByThreadId",
     "NtInitializeNlsFiles",
     "NtGetNlsSectionPtr",
     "NtQuerySystemTime",
