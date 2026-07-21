@@ -92,6 +92,8 @@ One entry point, the same shape from M1 to the desktop (`docs/08`):
 ```
 tests/run/run.sh oracle     # run every test .exe under the pinned Wine (the SPEC gate)
 tests/run/run.sh proskrnl   # bake the same .exes into a disk image, boot QEMU (the REGRESSION gate)
+tests/run/run.sh winetest   # the M10 stretch gate: the curated CUI subset of Wine's OWN
+                            # test suite (tests/winetest/manifest.txt), oracle + proskrnl
 ```
 
 Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image
@@ -119,9 +121,16 @@ tests/
     sem_reg/             # registry semantics
     sem_pipe/            # named-pipe semantics
   run/
-    run.sh               # oracle | proskrnl | fuzz | persist | console
+    run.sh               # oracle | proskrnl | winetest | fuzz | persist | console
+  winetest/
+    manifest.txt         # the winetest gate's curated <test_exe>:<subtest> pairs
   fuzz/                  # the differential fuzzer (same single-binary shape)
 ```
+
+The winetest gate's binaries are NOT ntapi tests — they are Wine's own `dlls/*/tests`
+objects linked standalone (Makefile `wtests`, glue in `user/wtest/`), swept by
+`KiRunWineTests` from `C:\wtests\manifest.txt` with a console. The manifest is curated:
+a pair joins only when it exits 0 on BOTH runners (`docs/03` "M10 winetest notes").
 
 (`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
 for the M4/M5-era flat boot modules under `user/init-tests/`.)
