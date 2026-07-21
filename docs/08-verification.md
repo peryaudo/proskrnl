@@ -146,6 +146,29 @@ lets the kernel grade its own homework:
 
 GPL tools serve as *test oracles* only; no code flows into the kernel (docs/11).
 
+Three dedicated legs build on those two oracles (each one boot-plus-host-verdict,
+the docs/08 QEMU-loop shape):
+
+- **`run.sh fatinterop`** — the bidirectional interop battery, the FAT analog of the
+  Wine oracle. The host bakes an adversarial corpus with mtools (LFN unit-boundary
+  and 255-char names, 8.3/case classes, SFN-collision families, cluster/page-edge
+  sizes, deep nesting, chains fragmented by deterministic host-side FAT surgery);
+  the kernel enumerates, reads and checksums it all (`tests/kmt/fat_interop.c`),
+  then writes a battery the host extracts and verifies. Every divergence in either
+  direction of `dir.c`'s 8.3/LFN logic surfaces here; confirmed wrinkles are pinned
+  as permanent corpus classes (Art. 6).
+- **`run.sh fatstress`** — fixed-seed random churn against an in-kernel shadow model
+  (`tests/kmt/fat_churn.c`, the `section_stress` precedent), across three mkfs
+  geometries including page-size clusters and a near-full volume. The shadow
+  advances from the PRNG alone, so boot 2 replays it dry and verifies the tree
+  through a **cold** cache; the host then re-verifies the extraction by CRC.
+- **`run.sh tornwrite`** — exhaustive power-loss testing. Art. 3's synchronous
+  immediate-writeback I/O makes the block-write sequence deterministic and short;
+  QEMU's blklogwrites driver records it, and `tests/run/tornreplay.py` replays
+  every prefix onto a pristine partition, separating fatal corruption
+  (cross-links, loops, a valid-magic hive that fails to parse) from the
+  deterministic, fsck-repairable states the write orderings legitimately produce.
+
 ## Sanitizers: make silent corruption loud, not "find bugs"
 
 Sanitizers do **not** catch the bugs that kill this project — those are *wrong-contract*
