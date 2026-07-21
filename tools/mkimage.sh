@@ -93,15 +93,37 @@ sgdisk "$IMG" \
     -n 1:2048:+1M -t 1:ef02 -c 1:"BIOS boot" \
     -n 2:0:0      -t 2:ef00 -c 2:"ESP" >/dev/null
 
+# Copy one file onto the FAT volume, announcing it on stderr first — mcopy is
+# silent, so a wedged copy (e.g. blocked on the image lock a leftover QEMU
+# holds) is otherwise indistinguishable from a slow one.
+copy() {
+    echo "mkimage: copying $1 -> $2" >&2
+    mcopy -i "$IMG@@$ESP_OFF" "$1" "$2"
+}
+
+# Create a FAT directory at most once per run. Re-running mmd on an existing
+# directory is a mtools "name clash", and mtools' default clash handling asks
+# INTERACTIVELY on /dev/tty (man mtools "name clashes"; seen with Homebrew
+# mtools 4.0.49) — with stderr suppressed the question is invisible and the
+# build hangs at a hidden prompt. Deduplicating in the script keeps every mmd
+# a first creation on the freshly-formatted volume, so no clash can occur.
+MADE_DIRS=" "
+mkdirp() {
+    case "$MADE_DIRS" in *" $1 "*) return 0 ;; esac
+    mmd -i "$IMG@@$ESP_OFF" "::$1" 2>/dev/null || true
+    MADE_DIRS="$MADE_DIRS$1 "
+}
+
 # Format the ESP FAT32 and populate it (mtools '::' at a byte offset).
 mformat -i "$IMG@@$ESP_OFF" -F ::
-mmd     -i "$IMG@@$ESP_OFF" ::/EFI ::/EFI/BOOT 2>/dev/null || true
-mcopy   -i "$IMG@@$ESP_OFF" "$KERNEL"                       ::/proskrnl
-mcopy   -i "$IMG@@$ESP_OFF" "$CONF"                         ::/limine.conf
-mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
+mkdirp /EFI
+mkdirp /EFI/BOOT
+copy "$KERNEL"                       ::/proskrnl
+copy "$CONF"                         ::/limine.conf
+copy "$LIMINE_SHARE/limine-bios.sys" ::/limine-bios.sys
 for spec in "${MODULE_SPECS[@]}"; do
     modfile="${spec%%=*}"
-    mcopy -i "$IMG@@$ESP_OFF" "$modfile" "::/$(basename "$modfile")"
+    copy "$modfile" "::/$(basename "$modfile")"
 done
 # M7: plain files onto the FAT volume (the Wine userland). Missing sources are
 # a hard error — a silently absent ntdll.dll would skip the Wine acceptance.
@@ -109,18 +131,19 @@ for spec in "${WIN_SPECS[@]}"; do
     src="${spec%%=*}"
     dest="${spec#*=}"
     [[ -f "$src" ]] || { echo "mkimage: win file missing: $src" >&2; exit 1; }
-    # Create each intermediate directory (mmd has no -p; ignore existing).
+    # Create each intermediate directory (mmd has no -p).
     dir=""
     IFS='/' read -ra parts <<< "$dest"
     for ((i = 0; i < ${#parts[@]} - 1; i++)); do
         dir="$dir/${parts[$i]}"
-        mmd -i "$IMG@@$ESP_OFF" "::$dir" 2>/dev/null || true
+        mkdirp "$dir"
     done
-    mcopy -i "$IMG@@$ESP_OFF" "$src" "::/$dest"
+    copy "$src" "::/$dest"
 done
 # M10: the TEMP/TMP directory the default environment points at.
-mmd -i "$IMG@@$ESP_OFF" ::/windows 2>/dev/null || true
-mmd -i "$IMG@@$ESP_OFF" ::/windows/temp 2>/dev/null || true
+mkdirp /windows
+mkdirp /windows/temp
+echo "mkimage: copying $LIMINE_SHARE/BOOTX64.EFI -> ::/EFI/BOOT/BOOTX64.EFI (optional)" >&2
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
 # Install the Limine BIOS boot stage into the BIOS-boot partition.
