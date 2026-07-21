@@ -12,7 +12,11 @@ The project's lifeline (Article 5, `docs/08`). Layout and conventions are specif
     semantic buckets.
 - `fuzz/` — the differential fuzzer; its interpreter is one more single-binary client.
 - `run/run.sh` — the runner: `oracle` (spec gate), `proskrnl` (regression gate), plus
-  `fuzz`, `persist`, `console`.
+  `fuzz`, `persist`, `console`, and the FS battery legs `fatinterop` (mtools-baked
+  interop corpus), `fatstress` (shadow-model churn, three geometries, two-boot cold
+  verify), `tornwrite` (write-log prefix replay). Every disk-mutating leg ends in
+  `run/fatcheck.sh` — fsck.fat + `run/fatsweep.py` + mcopy byte-compares (docs/08
+  "The FAT on-disk format has its own oracles").
 
 Quick start (needs a mingw toolchain + the pinned `third_party/wine` build):
 
