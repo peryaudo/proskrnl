@@ -170,6 +170,22 @@ off-the-shelf-MSVC-app stand-in) printing and exiting 7, observed via
 `%errorlevel%` — then a clean `exit`. services.exe is deferred until something
 consumes the SCM; decisions + wrinkles in `docs/03` "M10 CUI-userland notes".
 
+**The M10 stretch is live: proskrnl runs the CUI subset of Wine's OWN test suite.**
+`tests/run/run.sh winetest` gates a curated manifest (`tests/winetest/manifest.txt`,
+currently 26 `<test_exe>:<subtest>` pairs across ntdll/kernel32/msvcrt/ucrtbase) that
+must exit 0 — winetest's own failure count — under the pinned oracle AND on proskrnl.
+The binaries are standalone links of the pinned tree's own unmodified test objects
+(Makefile `wtests`; user32 stood in at link time per Art. 7 — ZERO new Wine fork
+commits), swept on the kernel by `KiRunWineTests` from `C:\wtests`. Getting there
+convicted and fixed real kernel bugs — the absolute-timeout translation, per-process
+thread-id collisions, `GlobalMemoryStatusEx` reading zeros — and pulled in the
+consumer-driven surface: keyed events, the global atom table, `NtQueryObject`,
+timer-resolution and time-zone/time-of-day queries, `SystemPerformanceInformation` +
+`ProcessVmCounters`, the kernel-side `PEB->NtGlobalFlag` stamp (real NT's MmCreatePeb
+behavior), NT filename character rules on FAT, and the computer-name registry
+furniture. Full decisions + the parked-candidates ledger: `docs/03` "M10 winetest
+notes".
+
 **The M9 foundation: named pipes, the ConDrv console, and Wine's conhost — the machine has an
 interactive console over the serial wire.** The Io layer grew optional stream ops beside
 the page-cache file path, and three services went live — `NtDeviceIoControlFile`,
@@ -317,10 +333,9 @@ handles), both fixed and pinned in `tests/ntapi/`. A checked-in `known_divergenc
 baseline keeps it green as a regression gate while documenting the current proskrnl-vs-Wine
 gaps it surfaces.
 
-Next: **M10** — the full Wine CUI userland: kernelbase/kernel32 breadth, msvcrt, advapi32,
-rpcrt4 over the new named pipes, services.exe, and Wine's cmd.exe — done when cmd.exe
-prompts on the interactive console and pipes/redirection work (`docs/02`; the GUI path to
-calc.exe remains the documented alternative ordering).
+Next: **M11+** — the GUI path (pixels/input, win32u) or wineboot/services when a consumer
+arrives (`docs/02`), and growing the winetest manifest as its parked blockers land
+(`docs/03` "M10 winetest notes").
 
 ## License
 

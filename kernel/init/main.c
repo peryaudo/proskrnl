@@ -598,7 +598,8 @@ static int KiRunNtapiTests(void)
 #define KI_WTEST_EXE_CHARS     40
 #define KI_WTEST_SUBTEST_CHARS 32
 #define KI_WTEST_MANIFEST_MAX  (64 * 1024)
-#define KI_WTEST_TIMEOUT_MS    (300 * 1000) /* TCG is ~10x native; the string tests are millions of ok()s */
+#define KI_WTEST_TIMEOUT_MS                                                                        \
+    (300 * 1000) /* TCG is ~10x native; the string tests are millions of ok()s */
 
 typedef struct KI_WTEST_LIST
 {

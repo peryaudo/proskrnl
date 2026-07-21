@@ -1214,8 +1214,8 @@ void CmInitialize(void)
      * (dlls/kernelbase/registry.c: ActiveComputerName/ComputerName, Tcpip
      * Hostname/Domain) — real NT setup writes these; the fixed names keep
      * the no-config rule. Consumer: kernel32:environ. */
-    PCMP_KEY_NODE seeded = CmpEnsureSkeletonKey(WSTR(
-        "Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ActiveComputerName"));
+    PCMP_KEY_NODE seeded = CmpEnsureSkeletonKey(
+        WSTR("Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ActiveComputerName"));
     CmpSeedStringValue(seeded, WSTR("ComputerName"), WSTR("PROSKRNL"));
     seeded = CmpEnsureSkeletonKey(
         WSTR("Machine\\System\\CurrentControlSet\\Services\\Tcpip\\Parameters"));

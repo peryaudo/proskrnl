@@ -422,10 +422,36 @@ boundary symbols winebuild would have emitted supplied by
   paging means committed IS the working set, and with no pagefile the
   commit limit IS physical memory. (Before this, the heap test's own
   `/ (ullTotalPhys / 100)` was a guest divide-by-zero.)
-- **Left off the manifest with cause**: `ntdll:om` (winstations, above);
-  `kernel32:file` and `cmd.exe_test:batch` fail on the ORACLE leg (7 and
-  3 failures — upstream suite-vs-Wine drift, not proskrnl's);
-  `ucrtbase:file` needs a host UTF-8 locale the oracle environment lacks.
+- **The gate already convicted and fixed real kernel bugs** (Art. 6 in
+  action): the absolute-timeout translation (`KiComputeDueTime` treated a
+  positive since-1601 deadline as an interrupt-time due — every absolute
+  `RtlWaitOnAddress`/wait timeout parked ~forever), per-process thread-id
+  collisions (ids now come from the shared CID-shaped source), the missing
+  keyed-event rendezvous, and a divide-by-zero feeding
+  `GlobalMemoryStatusEx` zeros into `kernel32:heap`'s own arithmetic.
+- **Left off the manifest with cause** (candidates re-join as their
+  blockers land):
+  - oracle-side failures (upstream suite-vs-Wine drift, not proskrnl's):
+    `kernel32:file` (7), `cmd.exe_test:batch` (3); `ucrtbase:file` needs a
+    host UTF-8 locale the oracle environment lacks.
+  - user32-load-bearing: `ntdll:om` (its `\Sessions\...\WindowStations`
+    half needs real winstation objects).
+  - path-syntax breadth: `ntdll:path` / `kernel32:path` pin the full NT
+    open-path table (trailing/doubled slashes, dot components,
+    RootDirectory-relative opens) — the Io/FAT walker diverges on ~22
+    cases.
+  - missing Mm surface: `ntdll:virtual` / `kernel32:virtual` (zero_bits,
+    `NtAllocateVirtualMemoryEx`); `ntdll:info` (processor-feature and
+    breadth classes, then hangs).
+  - process-exit protocol: `ntdll:sync` and `kernel32:sync` complete their
+    checks (sync: zero failures) but park at exit — the tests deliberately
+    LEAK threads blocked on a closed completion port, which real NT's
+    terminate-all-threads kills; proskrnl's no-preemption abandon rule
+    (above) leaves the exit path waiting. Needs the foreign-terminate
+    story.
+  - breadth not yet triaged: `kernel32:{thread,time,pipe}` (107/43/slow),
+    `msvcrt:{misc,file,time}`, `ucrtbase:misc`, `cmd.exe_test:directory`
+    (6 failures on proskrnl only).
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
