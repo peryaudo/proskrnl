@@ -1113,17 +1113,36 @@ NTSTATUS NtFlushKey(HANDLE keyHandle)
 
 /* --- initialization --------------------------------------------------------- */
 
-/* Create a skeleton child of the root if the loaded hive lacks it. */
-static void CmpEnsureSkeletonKey(PCWSTR name)
+/* Create a skeleton path under the root if the loaded hive lacks it —
+ * '\'-separated segments, existing nodes reused. Beyond the hive roots this
+ * seeds the keys real NT guarantees exist (Session Manager: created by NT
+ * itself, probed by kernel32:heap test_child_heap and read by the kernel's
+ * own GlobalFlag stamp, kernel/ps/peb.c). */
+static void CmpEnsureSkeletonKey(PCWSTR path)
 {
-    UNICODE_STRING nameString;
-    RtlInitUnicodeString(&nameString, name);
-    if (CmpFindSubkey(CmpRootNode, &nameString) == 0)
+    PCMP_KEY_NODE node = CmpRootNode;
+    while (*path != 0)
     {
-        if (CmpAllocateNode(CmpRootNode, &nameString) == 0)
+        const WCHAR *end = path;
+        while (*end != 0 && *end != L'\\')
         {
-            KiPanic("CmInitialize: out of pool");
+            end++;
         }
+        UNICODE_STRING segment;
+        segment.Buffer = (PWSTR)path;
+        segment.Length = (USHORT)((end - path) * sizeof(WCHAR));
+        segment.MaximumLength = segment.Length;
+        PCMP_KEY_NODE child = CmpFindSubkey(node, &segment);
+        if (child == 0)
+        {
+            child = CmpAllocateNode(node, &segment);
+            if (child == 0)
+            {
+                KiPanic("CmInitialize: out of pool");
+            }
+        }
+        node = child;
+        path = (*end != 0) ? end + 1 : end;
     }
 }
 
@@ -1169,6 +1188,7 @@ void CmInitialize(void)
     CmpLoadHive();
     CmpEnsureSkeletonKey(WSTR("Machine"));
     CmpEnsureSkeletonKey(WSTR("User"));
+    CmpEnsureSkeletonKey(WSTR("Machine\\System\\CurrentControlSet\\Control\\Session Manager"));
 
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",

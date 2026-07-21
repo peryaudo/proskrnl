@@ -19,6 +19,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/mm/virtual.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
@@ -26,6 +27,7 @@
 
 #include "abi/ntpebteb.h"
 #include "abi/ntkeapi.h"
+#include "abi/ntregapi.h"
 
 /* KUSER_SHARED_DATA lives at this fixed user VA on x64 NT; Wine's PE ntdll
  * syscall thunks test its SystemCall byte at 0x7ffe0308 and RTL reads its
@@ -339,6 +341,98 @@ NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
     return STATUS_SUCCESS;
 }
 
+/* --- NtGlobalFlag (M10 winetest) ------------------------------------------- */
+
+/* REG_DWORD read from an open key, defaulting on any miss — the same helper
+ * shape as Wine's dlls/ntdll/unix/env.c get_dword_option. */
+static ULONG PspGetDwordOption(HANDLE key, PCWSTR name, ULONG defaultValue)
+{
+    UNICODE_STRING valueName;
+    RtlInitUnicodeString(&valueName, name);
+    UCHAR buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+    DWORD resultLength = 0;
+    NTSTATUS status = NtQueryValueKey(key, &valueName, KeyValuePartialInformation, buffer,
+                                      sizeof(buffer), &resultLength);
+    if (!NT_SUCCESS(status) || info->Type != REG_DWORD || info->DataLength != sizeof(ULONG))
+    {
+        return defaultValue;
+    }
+    ULONG value;
+    memcpy(&value, info->Data, sizeof(value));
+    return value;
+}
+
+/* The child's PEB->NtGlobalFlag: the Session Manager GlobalFlag default,
+ * overridden by the image's "Image File Execution Options" key. On real NT
+ * the KERNEL stamps this while building the PEB (MmCreatePeb reads IFEO);
+ * Wine does it unixlib-side (dlls/ntdll/unix/env.c load_global_options),
+ * which has no seam here — so this is the kernel's job, same paths and
+ * precedence as that reference. Also reports whether the image key existed
+ * (the PROCESS_PARAMS_IMAGE_KEY_MISSING signal). Runs with kernel-mode
+ * previous mode: the creating thread may be a ring-3 caller mid-
+ * NtCreateUserProcess, and every pointer here is a kernel pointer.
+ * Consumer: kernel32:heap test_debug_heap children (RtlGetNtGlobalFlags). */
+#define PSP_IFEO_BASENAME_MAX 64
+static ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyFoundOut)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE savedMode = thread->previousMode;
+    thread->previousMode = KernelMode;
+
+    ULONG globalFlag = 0;
+    BOOLEAN imageKeyFound = FALSE;
+
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    UNICODE_STRING name;
+    attributes.ObjectName = &name;
+    HANDLE key;
+
+    RtlInitUnicodeString(
+        &name, WSTR("\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Session Manager"));
+    if (NT_SUCCESS(NtOpenKey(&key, KEY_QUERY_VALUE, &attributes)))
+    {
+        globalFlag = PspGetDwordOption(key, WSTR("GlobalFlag"), 0);
+        NtClose(key);
+    }
+
+    /* The IFEO subkey is the image's BASENAME (Wine load_global_options
+     * walks ImagePathName back to the last '\'). */
+    const UNICODE_STRING *imagePath = &captured->strings[PSP_PARAM_IMAGE_PATH];
+    ULONG chars = imagePath->Length / sizeof(WCHAR);
+    ULONG start = chars;
+    while (start > 0 && imagePath->Buffer[start - 1] != L'\\')
+    {
+        start--;
+    }
+    ULONG baseChars = chars - start;
+    static const WCHAR prefix[] =
+        WSTR("\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\"
+             "Image File Execution Options\\");
+    if (baseChars > 0 && baseChars < PSP_IFEO_BASENAME_MAX)
+    {
+        WCHAR path[(sizeof(prefix) / sizeof(WCHAR)) + PSP_IFEO_BASENAME_MAX];
+        ULONG n = (sizeof(prefix) / sizeof(WCHAR)) - 1;
+        memcpy(path, prefix, n * sizeof(WCHAR));
+        memcpy(path + n, imagePath->Buffer + start, baseChars * sizeof(WCHAR));
+        path[n + baseChars] = 0;
+        RtlInitUnicodeString(&name, path);
+        if (NT_SUCCESS(NtOpenKey(&key, KEY_QUERY_VALUE, &attributes)))
+        {
+            globalFlag = PspGetDwordOption(key, WSTR("GlobalFlag"), globalFlag);
+            imageKeyFound = TRUE;
+            NtClose(key);
+        }
+    }
+
+    thread->previousMode = savedMode;
+    *imageKeyFoundOut = imageKeyFound;
+    return globalFlag;
+}
+
 /* The process-parameters block is laid out as [struct][string buffers][env]
  * in one user allocation — the shape Wine's own alloc_process_params emits
  * (dlls/ntdll/env.c) and ntdll frees wholesale with NtFreeVirtualMemory
@@ -349,6 +443,9 @@ NTSTATUS PspBuildDefaultParams(const char *imagePath, const char *commandLine,
 NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
+
+    BOOLEAN imageKeyFound = FALSE;
+    ULONG globalFlag = PspQueryGlobalFlag(captured, &imageKeyFound);
 
     /* --- RTL_USER_PROCESS_PARAMETERS -------------------------------------- */
     /* CurrentDirectory gets MAX_PATH capacity whatever its length: ntdll's
@@ -395,6 +492,12 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
     params->AllocationSize = (ULONG)structSize;
     params->Size = (ULONG)structSize;
     params->Flags = captured->header.Flags | PROCESS_PARAMS_FLAG_NORMALIZED;
+    if (!imageKeyFound)
+    {
+        /* Wine load_global_options: the missing-image-key signal rides the
+         * parameter flags (set when undebugged, cleared when the key exists). */
+        params->Flags |= PROCESS_PARAMS_IMAGE_KEY_MISSING;
+    }
     params->EnvironmentSize = PSP_ROUND16(environmentBytes);
 
     UNICODE_STRING *fields[PSP_PARAM_COUNT];
@@ -462,6 +565,7 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
     }
     memset(peb, 0, sizeof(PEB));
     peb->ImageBaseAddress = (HMODULE)(uintptr_t)imageBase;
+    peb->NtGlobalFlag = globalFlag;
     peb->ProcessParameters = (RTL_USER_PROCESS_PARAMETERS *)(uintptr_t)paramsVa;
     peb->NumberOfProcessors = 1; /* uniprocessor (Art. 3) */
     peb->OSMajorVersion = 10;
