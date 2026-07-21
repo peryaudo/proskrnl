@@ -458,6 +458,52 @@ boundary symbols winebuild would have emitted supplied by
     `msvcrt:{misc,file,time}`, `ucrtbase:misc`, `cmd.exe_test:directory`
     (6 failures on proskrnl only).
 
+## CUI-1 firstboot notes (wineboot + the machine-state registry)
+
+First boot runs `wineboot --init` (`smss.exe firstboot` → `KiRunFirstBoot`),
+which applies `wine.inf`'s machine-state payload through
+`rundll32 setupapi,InstallHinfSection` children. Deviations and scoping:
+
+- **The baked `wine.inf` is filtered, not the oracle's** (`tools/filter_inf.py`,
+  run at image-bake time). Dropped directive families: `WineFakeDlls`
+  (setupapi's fake-dll machinery truncates a "Wine builtin DLL"-signed
+  destination *before* reading the absent source — deletes the baked
+  system32), `CopyFiles`/`DelFiles`/`RenFiles` (the file queue fails on absent
+  source media and aborts `SetupInstallFromInfSectionW` before its AddReg
+  pass), `RegisterDlls` (self-registration loads GUI DLLs not baked),
+  `UpdateInis` (`SPINST_INIFILES` runs *before* `SPINST_REGISTRY`;
+  `BaseInstall` opens with `UpdateInis=SystemIni`, and a failure there returns
+  FALSE before its ~500-line AddReg ever runs), and `ProfileItems` (Start Menu
+  shortcuts via shell32). All `AddReg`/`DelReg` and the `.Services` sections
+  are kept. The INF is input data staged by the image builder — no Wine
+  PE-side change — so the oracle keeps consuming its full `wine.inf`; the
+  differential normalizes the resulting key-set delta.
+- **Two runtime-dormant setupapi seam commits** on the fork's
+  `proskrnl-target` branch (Art. 10): `SetupInstallFromInfSectionW` resolves
+  `CoInitialize`/`CoUninitialize` (ole32) lazily and `get_csidl_dir` resolves
+  `SHGetSpecialFolderPathW` (shell32) lazily, each degrading gracefully when
+  the DLL is absent. Both are *unconditional* delay-import calls setupapi
+  makes that no INF filtering can suppress (the ole32 one fires under
+  `SPINST_REGSVR` even with zero `RegisterDlls`; the shell32 one fires
+  whenever an AddReg value references a CSIDL dirid). Under regular
+  Wine/Windows both DLLs always load and the calls run unchanged.
+- **`HKLM\Software\Wow6432Node` mirror keys fail and are excluded from the
+  differential** (~52 `could not create key` on `Software\...\Wow6432Node\...`).
+  These are the WOW64 32-bit registry view; WOW64 is a far-future milestone.
+  setupapi warn-and-continues on each.
+- **HKCU is not populated (deferred to CUI-2).** `RtlFormatCurrentUserKeyPath`
+  needs `NtQueryInformationToken` (still `MISSING`), so wineboot's per-user
+  legs fail gracefully; the differential is scoped to `HKLM`.
+- **`REG_OPTION_CREATE_LINK` stays unimplemented** (`NtCreateKey` returns
+  `STATUS_NOT_IMPLEMENTED`); the `Time Zones` REG_LINK symlink `wine.inf`
+  writes fails and is on the differential's exclusion list.
+- **`ws2_32.dll` is baked as dormant data** — it cannot load (`DllMain`
+  returns failure with no unixlib below); wineboot's `gethostname`/
+  `getaddrinfo` are glue stand-ins. A loadable seam is CUI-5's (sockets).
+- wineboot's remaining legs warn-and-continue as stock: missing
+  `__wine_user_shared_data` section, absent `services.exe`, the root PnP
+  device installs, and the `winedbg` auto-start on a child fault.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:

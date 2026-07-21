@@ -137,13 +137,26 @@ local macOS Wine.
 
 ## Status
 
-**M10 complete**: the full Wine CUI userland — an interactive cmd.exe with working
-pipes and redirection, running third-party CRT binaries.
+**CUI-1 complete** (on M10's full Wine CUI userland): first boot runs
+`wineboot --init`. `smss.exe firstboot` (`KiRunFirstBoot`) spawns a standalone
+`wineboot.exe`, which drives `wine.inf`'s ~500-line machine-state registry
+payload through `rundll32 setupapi,InstallHinfSection` children — the Cm
+integration test ADR 0008 promised and an `NtCreateUserProcess` stress test.
+The populated hive (~35 KB of `HKLM\Software` + `HKLM\System`) persists and
+survives reboot; wineboot's own `.update-timestamp` check makes later boots
+skip the work. The no-RTC deviation is retired: the CMOS clock seeds
+`SystemTime` and FAT timestamps at boot. Two runtime-dormant setupapi seam
+commits on the fork (ole32 + shell32 tolerance) let a registry-only install
+run on a disk that bakes only the CUI DLL set; the baked `wine.inf` is
+filtered to registry-only sections at image-bake time (`tools/filter_inf.py`).
+**Not yet:** the `HKLM\Software\Wow6432Node` mirror keys (WOW64 scope) and
+HKCU population (needs the token surface, CUI-2); the registry differential
+vs. the oracle prefix excludes both (`docs/03` "CUI-1 firstboot notes").
 
-Next: **the CUI consolidation path (CUI-1..CUI-5)** — wineboot/firstboot, Se, the SCM,
-the process ecosystem, sockets — or **the GUI path (GUI-1+)** — pixels/input, win32u
-(`docs/02`); either way, growing the winetest manifest as its parked blockers land
-(`docs/03` "M10 winetest notes").
+Next: **CUI-2..CUI-5** — Se/tokens, the SCM, the process ecosystem, sockets —
+or **the GUI path (GUI-1+)** — pixels/input, win32u (`docs/02`); either way,
+growing the winetest manifest as its parked blockers land (`docs/03` "M10
+winetest notes").
 
 ## Build instructions
 
