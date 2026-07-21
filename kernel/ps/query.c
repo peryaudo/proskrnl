@@ -19,8 +19,10 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
+#include "arch/x86_64/io.h"
 
 #include "abi/ntpsapi.h"
+#include "abi/ntimage.h"
 #include "abi/ntpebteb.h"
 #include "abi/ntioapi.h"
 #include "abi/ntregapi.h"
@@ -264,6 +266,45 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    case SystemCpuInformation:
+    {
+        /* An OVERSIZED buffer is fine here (`size >= len` — Wine
+         * dlls/ntdll/unix/system.c, unlike SystemBasicInformation's
+         * exact-length rule); return length = sizeof. Consumer: wineboot's
+         * create_hardware_registry_keys switches on ProcessorArchitecture
+         * (CUI-1). Level/revision use Wine's get_cpuinfo encoding of CPUID
+         * leaf 1 eax: level = family, revision = extended-model/model/
+         * stepping nibbles. FeatureBits stay 0 until a boundary test pins
+         * them. Pinned by sem_ps/cpu_info. */
+        if (length < sizeof(SYSTEM_CPU_INFORMATION))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(SYSTEM_CPU_INFORMATION);
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(SYSTEM_CPU_INFORMATION), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        SYSTEM_CPU_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        uint32_t regs[4];
+        KiCpuid(1, 0, regs);
+        info.ProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
+        info.ProcessorLevel = (USHORT)(((regs[0] >> 8) & 0xf) + ((regs[0] >> 20) & 0xff));
+        info.ProcessorRevision = (USHORT)((((regs[0] >> 16) & 0xf) << 12) |
+                                          (((regs[0] >> 4) & 0xf) << 8) | (regs[0] & 0xf));
+        info.MaximumProcessors = 1; /* uniprocessor (Art. 3) */
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
     case SystemTimeOfDayInformation:
     {
         /* A PARTIAL buffer is served here — `if (size <= sizeof(sti)) copy
@@ -381,6 +422,81 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     }
     default:
         /* version_init tolerates a failure here (docs/03). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+}
+
+NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID query,
+                                    ULONG queryLength, PVOID buffer, ULONG length,
+                                    PULONG returnLength)
+{
+    switch (infoClass)
+    {
+    case SystemSupportedProcessorArchitectures:
+    {
+        /* The query blob is the target process HANDLE (Wine
+         * dlls/ntdll/unix/system.c): absent/short is STATUS_INVALID_PARAMETER
+         * before returnLength is touched; a NULL handle is allowed (no
+         * per-process machine then). proskrnl is 64-bit-only x86-64, so the
+         * answer is one native entry plus the all-zero terminator whatever
+         * the process — but an invalid real handle is still an error, as on
+         * the oracle. Consumer: wineboot (a failure zeroes machines[0] and
+         * its rundll32 DefaultInstall pass never runs — CUI-1). Pinned by
+         * sem_ps/supported_machines. */
+        if (query == 0 || queryLength < sizeof(HANDLE))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        HANDLE processHandle;
+        NTSTATUS status = KiCopyFromUser(&processHandle, query, sizeof(processHandle));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (processHandle != 0 && processHandle != NtCurrentProcess())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(processHandle, PROCESS_QUERY_LIMITED_INFORMATION,
+                                               &PspProcessType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            ObDereferenceObject(body);
+        }
+        SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[2];
+        ULONG needed = sizeof(machines);
+        if (length < needed)
+        {
+            /* returnLength still reports the needed size (the oracle's
+             * epilogue writes it unconditionally). */
+            if (returnLength != 0)
+            {
+                *returnLength = needed;
+            }
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        status = KiProbeForWrite(buffer, needed, sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(machines, 0, sizeof(machines));
+        machines[0].Machine = IMAGE_FILE_MACHINE_AMD64;
+        machines[0].KernelMode = 1;
+        machines[0].UserMode = 1;
+        machines[0].Native = 1;
+        /* Wine sets Process when the target's machine matches; every real
+         * process here is native AMD64, only the NULL handle has none. */
+        machines[0].Process = processHandle != 0;
+        memcpy(buffer, machines, needed);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        return STATUS_SUCCESS;
+    }
+    default:
         return STATUS_NOT_IMPLEMENTED;
     }
 }

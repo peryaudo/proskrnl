@@ -116,6 +116,7 @@ IMPLEMENTED = [
     "NtQueryInformationAtom",
     "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
+    "NtQuerySystemInformationEx",  # CUI-1: wineboot's supported-machines gate
     "NtQueryDefaultLocale",
     "NtGetContextThread",
     "NtSetContextThread",
