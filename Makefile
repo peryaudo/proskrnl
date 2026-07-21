@@ -148,6 +148,7 @@ USER_RT   := $(BUILD)/user/init-tests/crt0.o \
 MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
              $(BUILD)/modules/m8_persist.bin \
              $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/m7_smoke.exe \
+             $(BUILD)/modules/abi_probe.exe \
              $(BUILD)/modules/sample.dat
 # Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
 # reads the cmdline as the module's expected outcome, or "initrd" for a
@@ -157,6 +158,7 @@ MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
                 $(BUILD)/modules/m8_persist.bin=expect=0 \
                 $(BUILD)/modules/pe_smoke.exe=expect=0 \
                 $(BUILD)/modules/m7_smoke.exe=m7 \
+                $(BUILD)/modules/abi_probe.exe=abi \
                 $(BUILD)/modules/sample.dat=initrd
 
 # --- M5 PE user client + RAM-disk seed data --------------------------------
@@ -224,6 +226,16 @@ $(BUILD)/modules/m7_smoke.exe: user/init-tests/m7_smoke.c user/init-tests/m7_dis
                                tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) -Wl,--export-all-symbols $^ -o $@
+
+# The standing ABI-conformance probe (docs/08): a native PE asserting ring-3
+# CONVENTIONS (entry-rsp alignment, FXSAVE seeds, header rebasing, id
+# agreement, the cookie, KUSER_SHARED_DATA ticking) on every boot — run by
+# kernel/init/main.c KiRunAbiProbe via the "abi" module cmdline. The entry
+# stub captures the entry state before any compiler-generated code runs.
+$(BUILD)/modules/abi_probe.exe: user/init-tests/abi_probe.c user/init-tests/abi_probe.S \
+                                tests/ntapi/syscall/syscall_stubs.S
+	@mkdir -p $(dir $@)
+	$(MINGW) $(PECFLAGS) $^ -o $@
 
 # A deterministic, non-page-multiple data file for the kmt M5 mapped-view /
 # read consistency test (any bytes do; the size exercises EOF zero-fill).

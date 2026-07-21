@@ -1,0 +1,357 @@
+/* user/init-tests/abi_probe.c — the standing ABI-conformance probe.
+ *
+ * A native PE client run on EVERY boot (boot-module cmdline "abi",
+ * kernel/init/main.c KiRunAbiProbe) that asserts ring-3 CONVENTIONS rather
+ * than features: entry-stack alignment, the FXSAVE seed values, the mapped
+ * PE header claiming its actual base, TEB ids agreeing with what the
+ * Nt*Information* surface reports, the process cookie, KUSER_SHARED_DATA
+ * ticking, and the absolute-timeout contract. Unlike the milestone smoke
+ * clients these checks guard conventions no current consumer may need yet —
+ * each one is a documented contract a later Wine DLL will silently depend
+ * on, and each earlier convention bug (entry rsp ≡ 0 instead of NT's ≡ 8;
+ * the mapped header keeping the preferred base after relocation, so ntdll
+ * relocated twice; a TEB id disagreeing with the ETHREAD's; ProcessCookie
+ * unserved feeding garbage to RtlEncodePointer; absolute timeouts parked as
+ * interrupt-time) stayed latent until one did.
+ *
+ * Returns 0 on success; a distinct nonzero code per failed check, reported
+ * by KiRunAbiProbe as the process exit status.
+ */
+#include "abi/ntdef.h"
+#include "abi/ntstatus.h"
+#include "abi/ntimage.h"
+#include "abi/ntioapi.h"
+#include "abi/ntkeapi.h"
+#include "abi/ntmmapi.h"
+#include "abi/ntobapi.h"
+#include "abi/ntpebteb.h"
+#include "abi/ntpsapi.h"
+
+#define WSTR(s) u##s
+
+/* Captured by the pe_start stub (abi_probe.S) before any C code runs. */
+extern ULONG_PTR abi_entry_rsp;
+extern ULONG abi_entry_mxcsr;
+extern USHORT abi_entry_fcw;
+
+static void say(const char *ascii)
+{
+    WCHAR wide[80];
+    USHORT n = 0;
+    while (ascii[n] != '\0' && n < 79)
+    {
+        wide[n] = (WCHAR)(unsigned char)ascii[n];
+        n++;
+    }
+    UNICODE_STRING string;
+    string.Length = (USHORT)(n * sizeof(WCHAR));
+    string.MaximumLength = string.Length;
+    string.Buffer = wide;
+    NtDisplayString(&string);
+}
+
+static void init_ustr(UNICODE_STRING *str, const WCHAR *wide)
+{
+    USHORT n = 0;
+    while (wide[n] != 0)
+        n++;
+    str->Length = (USHORT)(n * sizeof(WCHAR));
+    str->MaximumLength = (USHORT)(str->Length + sizeof(WCHAR));
+    str->Buffer = (PWSTR)wide;
+}
+
+static void init_attr(OBJECT_ATTRIBUTES *attr, HANDLE root, UNICODE_STRING *name)
+{
+    attr->Length = sizeof(*attr);
+    attr->RootDirectory = root;
+    attr->ObjectName = name;
+    attr->Attributes = OBJ_CASE_INSENSITIVE;
+    attr->SecurityDescriptor = 0;
+    attr->SecurityQualityOfService = 0;
+}
+
+static volatile TEB *get_teb(void)
+{
+    void *self;
+    /* gs points at the TEB; 0x30 is NT_TIB.Self (abi/ntpsapi.h,
+     * _Static_assert(offsetof(NT_TIB, Self) == 48)). */
+    __asm__ volatile("mov %%gs:0x30, %0" : "=r"(self));
+    return (volatile TEB *)self;
+}
+
+/* KUSER_SHARED_DATA at its NT-fixed user VA (third_party/wine
+ * dlls/ntdll/unix/virtual.c `user_shared_data = (void *)0x7ffe0000`, and
+ * include/ddk/wdm.h in the Windows DDK). */
+static const volatile KUSER_SHARED_DATA *kusd(void)
+{
+    return (const volatile KUSER_SHARED_DATA *)(ULONG_PTR)0x7ffe0000;
+}
+
+/* The KSYSTEM_TIME coherent-read protocol: the kernel writes High2Time,
+ * then Low, then High1Time; a reader retries until the two highs agree
+ * (Wine reads it the same way — third_party/wine dlls/ntdll/time.c
+ * RtlQueryUnbiasedInterruptTime). */
+static ULONGLONG read_ksystem_time(const volatile KSYSTEM_TIME *t)
+{
+    ULONG low;
+    LONG high;
+    do
+    {
+        high = t->High1Time;
+        low = t->LowPart;
+    } while (high != t->High2Time);
+    return ((ULONGLONG)(ULONG)high << 32) | low;
+}
+
+/* --- entry conventions: stack alignment + FXSAVE seeds -------------------- */
+
+static int check_entry_state(void)
+{
+    /* NT enters the thread like a called function: 16-byte alignment minus
+     * the pushed return address (MS Learn "x64 stack usage"; Wine's initial
+     * frame is StackBase - 0x28 — dlls/ntdll/unix/signal_x86_64.c
+     * init_syscall_frame). kernelbase's __TRY frames movdqa off this. */
+    if ((abi_entry_rsp & 0xf) != 8)
+        return 1;
+
+    /* The seed control words of a fresh thread (MS Learn "x64 calling
+     * convention" FPCSR/MXCSR "standard values at the start of program
+     * execution"; Wine seeds exactly these — dlls/ntdll/unix/
+     * signal_x86_64.c init_syscall_frame FCW 0x27f, MxCsr 0x1f80). */
+    if (abi_entry_fcw != 0x27f)
+        return 2;
+    if (abi_entry_mxcsr != 0x1f80)
+        return 3;
+    return 0;
+}
+
+/* --- TEB / PEB / id agreement --------------------------------------------- */
+
+static int check_identity(void)
+{
+    volatile TEB *teb = get_teb();
+    if (teb == 0 || teb->Tib.Self != (struct _NT_TIB *)teb)
+        return 4;
+    PEB *peb = teb->Peb;
+    if (peb == 0)
+        return 5;
+    if (teb->ClientId.UniqueProcess == 0 || teb->ClientId.UniqueThread == 0)
+        return 6;
+
+    /* The entry rsp must lie inside the stack the TEB describes. */
+    if (abi_entry_rsp > (ULONG_PTR)teb->Tib.StackBase ||
+        abi_entry_rsp <= (ULONG_PTR)teb->Tib.StackLimit)
+        return 7;
+
+    /* The TEB's ids and self-pointer must agree with what the query surface
+     * reports for the same thread — one thread, one id (a TEB id of N
+     * beside an ETHREAD counting N+1 fed RtlSetThreadErrorMode-era Wine
+     * wrong ids for every alert). */
+    THREAD_BASIC_INFORMATION tbi;
+    if (NtQueryInformationThread(NtCurrentThread(), ThreadBasicInformation, &tbi, sizeof(tbi), 0) !=
+        STATUS_SUCCESS)
+        return 8;
+    if (tbi.TebBaseAddress != (PVOID)teb)
+        return 9;
+    if (tbi.ClientId.UniqueProcess != teb->ClientId.UniqueProcess ||
+        tbi.ClientId.UniqueThread != teb->ClientId.UniqueThread)
+        return 10;
+
+    PROCESS_BASIC_INFORMATION pbi;
+    if (NtQueryInformationProcess(NtCurrentProcess(), ProcessBasicInformation, &pbi, sizeof(pbi),
+                                  0) != STATUS_SUCCESS)
+        return 11;
+    if (pbi.PebBaseAddress != peb)
+        return 12;
+    if (pbi.UniqueProcessId != (ULONG_PTR)teb->ClientId.UniqueProcess)
+        return 13;
+    return 0;
+}
+
+/* --- the process cookie ---------------------------------------------------- */
+
+static int check_cookie(void)
+{
+    /* ntdll feeds ProcessCookie straight into RtlEncodePointer; zero or
+     * garbage means every encoded pointer decodes wild (the vectored-
+     * handler wild jump). It must be nonzero and stable (Wine
+     * dlls/ntdll/unix/process.c NtQueryInformationProcess ProcessCookie). */
+    ULONG cookie1 = 0;
+    ULONG cookie2 = 0;
+    if (NtQueryInformationProcess(NtCurrentProcess(), ProcessCookie, &cookie1, sizeof(cookie1),
+                                  0) != STATUS_SUCCESS)
+        return 14;
+    if (cookie1 == 0)
+        return 15;
+    if (NtQueryInformationProcess(NtCurrentProcess(), ProcessCookie, &cookie2, sizeof(cookie2),
+                                  0) != STATUS_SUCCESS ||
+        cookie2 != cookie1)
+        return 16;
+    return 0;
+}
+
+/* --- the mapped PE header claims the actual base --------------------------- */
+
+static int check_own_header(void)
+{
+    volatile TEB *teb = get_teb();
+    PEB *peb = teb->Peb;
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)peb->ImageBaseAddress;
+    if (dos == 0 || dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 17;
+    const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)((const char *)dos + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return 18;
+    /* Wherever the image landed, its mapped header must claim THAT base —
+     * ntdll's own perform_relocations keys off this field (Wine
+     * dlls/ntdll/loader.c), and Wine's mapper rewrites it after relocating
+     * (dlls/ntdll/unix/virtual.c map_image_into_view: ImageBase =
+     * map_addr). A header still claiming the preferred base makes ntdll
+     * relocate every rebased module a second time. */
+    if (nt->OptionalHeader.ImageBase != (ULONG_PTR)peb->ImageBaseAddress)
+        return 19;
+    return 0;
+}
+
+/* Force the relocation path: map ntdll.dll twice in this (ntdll-less)
+ * process. The second view cannot sit at the first view's base, so at least
+ * one view is rebased — and each view's mapped header must claim the base
+ * that view actually got. The ntapi differential deliberately cannot pin
+ * this field (Wine rebases builtin dlls to a server-assigned address, so
+ * the value is oracle-divergent — tests/ntapi/sem_mm/image_section.c),
+ * which is why the convention is probed here, on the proskrnl side only. */
+static const WCHAR ntdll_path[] = WSTR("\\??\\C:\\windows\\system32\\ntdll.dll");
+
+static int check_view_header(void *view)
+{
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)view;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 24;
+    const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)((const char *)dos + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return 25;
+    if (nt->OptionalHeader.ImageBase != (ULONG_PTR)view)
+        return 26;
+    return 0;
+}
+
+static int check_rebased_header(void)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    HANDLE file = 0;
+    init_ustr(&name, ntdll_path);
+    init_attr(&attr, 0, &name);
+    NTSTATUS status = NtOpenFile(&file, FILE_GENERIC_READ, &attr, &iosb, FILE_SHARE_READ,
+                                 FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
+    if (!NT_SUCCESS(status))
+    {
+        /* The ntapi/fuzz images may not bake the windows tree; the check
+         * self-skips there rather than failing the whole probe. */
+        say("abi_probe: rebase check skipped (no ntdll.dll)\n");
+        return 0;
+    }
+
+    HANDLE section = 0;
+    status = NtCreateSection(&section, SECTION_ALL_ACCESS, 0, 0, PAGE_READONLY, SEC_IMAGE, file);
+    NtClose(file);
+    if (status != STATUS_SUCCESS)
+        return 20;
+
+    int code = 0;
+    void *view1 = 0;
+    void *view2 = 0;
+    SIZE_T size1 = 0;
+    SIZE_T size2 = 0;
+    LARGE_INTEGER offset;
+    offset.QuadPart = 0;
+    status = NtMapViewOfSection(section, NtCurrentProcess(), &view1, 0, 0, &offset, &size1,
+                                ViewShare, 0, PAGE_READONLY);
+    if (status != STATUS_SUCCESS && status != STATUS_IMAGE_NOT_AT_BASE)
+        code = 21;
+    if (code == 0)
+    {
+        offset.QuadPart = 0;
+        status = NtMapViewOfSection(section, NtCurrentProcess(), &view2, 0, 0, &offset, &size2,
+                                    ViewShare, 0, PAGE_READONLY);
+        /* The base is taken: this view MUST come back rebased. */
+        if (status != STATUS_IMAGE_NOT_AT_BASE || view2 == view1 || view2 == 0)
+            code = 22;
+    }
+    if (code == 0 && view1 == 0)
+        code = 23;
+    if (code == 0)
+        code = check_view_header(view1);
+    if (code == 0)
+        code = check_view_header(view2);
+
+    if (view1 != 0)
+        NtUnmapViewOfSection(NtCurrentProcess(), view1);
+    if (view2 != 0)
+        NtUnmapViewOfSection(NtCurrentProcess(), view2);
+    NtClose(section);
+    return code;
+}
+
+/* --- KUSER_SHARED_DATA ticks; timeouts honor the NT time contract ---------- */
+
+static int check_time(void)
+{
+    /* SystemTime is 100ns units since 1601 (the NT time contract — Wine
+     * dlls/ntdll/unix/sync.c get_absolute_timeout); a zero value means the
+     * page was mapped but never written. */
+    if (read_ksystem_time(&kusd()->SystemTime) == 0)
+        return 27;
+
+    /* The page must TICK: InterruptTime and TickCount both advance across
+     * a real delay. Bounded retries absorb a coarse tick period. */
+    ULONGLONG interrupt0 = read_ksystem_time(&kusd()->InterruptTime);
+    ULONGLONG tick0 = read_ksystem_time(&kusd()->TickCount);
+    int advanced = 0;
+    for (int i = 0; i < 10 && !advanced; i++)
+    {
+        LARGE_INTEGER delay;
+        delay.QuadPart = -500000; /* 50 ms, relative (negative, 100ns units) */
+        if (NtDelayExecution(FALSE, &delay) != STATUS_SUCCESS)
+            return 28;
+        advanced = read_ksystem_time(&kusd()->InterruptTime) > interrupt0 &&
+                   read_ksystem_time(&kusd()->TickCount) > tick0;
+    }
+    if (!advanced)
+        return 29;
+
+    /* An absolute timeout (positive: 100ns since 1601 in SYSTEM time — Wine
+     * dlls/ntdll/unix/sync.c get_absolute_timeout) that is already in the
+     * past must satisfy immediately. Treating it as interrupt-time parked
+     * such waits for ~4 billion seconds. */
+    LARGE_INTEGER due;
+    due.QuadPart = (LONGLONG)(read_ksystem_time(&kusd()->SystemTime) - 100000000ULL); /* -10 s */
+    ULONGLONG before = read_ksystem_time(&kusd()->InterruptTime);
+    if (NtDelayExecution(FALSE, &due) != STATUS_SUCCESS)
+        return 30;
+    ULONGLONG after = read_ksystem_time(&kusd()->InterruptTime);
+    if (after - before > 20000000ULL) /* > 2 s: the wait parked */
+        return 31;
+    return 0;
+}
+
+/* The probe body, entered from pe_start (abi_probe.S) after the entry state
+ * is captured. Returns the process exit status: 0 = every convention holds. */
+int abi_probe_main(void)
+{
+    int code = check_entry_state();
+    if (code == 0)
+        code = check_identity();
+    if (code == 0)
+        code = check_cookie();
+    if (code == 0)
+        code = check_own_header();
+    if (code == 0)
+        code = check_rebased_header();
+    if (code == 0)
+        code = check_time();
+    if (code == 0)
+        say("[KTEST] user abi_probe PASS\n");
+    return code;
+}
