@@ -386,6 +386,17 @@ boundary symbols winebuild would have emitted supplied by
   IDENTICALLY on both runners and stays off the manifest (`ntdll:om` is
   the canonical casualty: its `\Sessions\...\WindowStations` half needs
   real winstation objects).
+- **`ntdll:time` is off the manifest — an oracle-HOST flake, not a
+  proskrnl divergence.** Its `test_user_shared_data_time` check (`USD
+  SystemTime / NtQuerySystemTime are out of order`, time.c:460 in the
+  pinned tree) races Wine's own user-shared-data updater thread against
+  the syscall's direct clock read; on shared CI runners (GitHub Actions
+  ubuntu-24.04) the USD page lands ~0.7 ms AHEAD and the check trips
+  near-deterministically (2/2 runs), while the same pair is green on
+  developer hardware and green on proskrnl's own leg. A pair that can go
+  red with zero proskrnl involvement cannot sit in a merge-blocking gate;
+  it rejoins when upstream marks the check flaky or the oracle leg moves
+  to hardware where it holds.
 - **Both runners read as `winetest_platform == "wine"`** — the framework's
   probe is `GetProcAddress(ntdll, "wine_server_call") != NULL`, true for
   the fork's PE ntdll on proskrnl too — so `todo_wine` marks apply
