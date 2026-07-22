@@ -680,17 +680,24 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         return status;
     }
 
-    /* Past the probes the IOSB is written on EVERY path, failure included
-     * (pinned Wine: dlls/ntdll/unix/file.c preamble io->Information = 0,
-     * epilogue `return io->Status = status`). */
+    /* Past the probes the IOSB is written only on SUCCESS: a failing query
+     * leaves it untouched, the shape tests/ntapi/sem_file/volume_info.c pins
+     * on the drive-root handle (pinned Wine serves that handle through the
+     * wineserver, whose synchronous NT_ERROR completions never fill the
+     * caller's IOSB — server/async.c async_terminate passes sb as NULL; real
+     * NT agrees). Wine's unix-fd path (plain file handles) fills it on
+     * failure too; that Wine-internal split is not reproduced — see
+     * docs/03-nt-deviations.md. */
     ULONG_PTR information = 0;
 
     PFILE_OBJECT file;
     status = IopReferenceFileByHandle(fileHandle, 0, &file);
     if (!NT_SUCCESS(status))
     {
+        /* Pinned Wine writes iosb.Status (and only Status) for a bad handle
+         * on either of its paths: dlls/ntdll/unix/file.c, the early
+         * `return io->Status = status` before the fd/device split. */
         ioStatusBlock->Status = status;
-        ioStatusBlock->Information = 0;
         return status;
     }
 
@@ -814,7 +821,10 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     }
 
     ObDereferenceObject(file);
-    ioStatusBlock->Status = status;
-    ioStatusBlock->Information = information;
+    if (NT_SUCCESS(status))
+    {
+        ioStatusBlock->Status = status;
+        ioStatusBlock->Information = information;
+    }
     return status;
 }

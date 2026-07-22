@@ -15,8 +15,17 @@
  *     STATUS_INFO_LENGTH_MISMATCH; the size class is STATUS_BUFFER_TOO_SMALL;
  *   - label / fs name are truncated SILENTLY to the buffer room (min(),
  *     no overflow status), and Information counts offsetof + name bytes;
- *   - the IOSB is written on failure too (io->Information = 0, epilogue
- *     `return io->Status = status`).
+ *   - on FAILURE the IOSB is left untouched. The drive-root handle these
+ *     legs run on is a mountmgr DEVICE file under the pinned Wine (no unix
+ *     fd: dlls/ntdll/unix/file.c STATUS_BAD_DEVICE_TYPE branch -> the
+ *     wineserver get_volume_info request, answered by dlls/mountmgr.sys
+ *     device.c harddisk_query_volume), and a synchronous NT_ERROR
+ *     completion never fills the caller's IOSB (server/async.c
+ *     async_terminate: "the client should not fill the IOSB", sb passed as
+ *     NULL) — real NT's shape as well. Wine's OTHER path (plain file
+ *     handles, which do have a unix fd) fills the IOSB on failure; that
+ *     split is Wine-internal and deliberately NOT pinned here — see
+ *     docs/03-nt-deviations.md.
  *
  * Filesystem-dependent values differ across the gate (the oracle prefix
  * reports NTFS, proskrnl's boot volume FAT32), so those legs assert
@@ -70,14 +79,16 @@ START_TEST(volume_info)
     ULONG serial = vol->VolumeSerialNumber;
     BOOLEAN supports_objects = vol->SupportsObjects;
 
-    /* Short buffer: the fixed part must fit whole. */
+    /* Short buffer: the fixed part must fit whole; failure leaves the IOSB
+     * untouched (header comment). */
     poison_iosb(&iosb);
     status = NtQueryVolumeInformationFile(root, &iosb, volbuf, label_off, FileFsVolumeInformation);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "short volume buffer -> %08lx",
        (unsigned long)status);
-    ok(iosb.Status == STATUS_INFO_LENGTH_MISMATCH, "short volume iosb.Status %08lx",
+    ok(iosb.Status == IOSB_POISON_STATUS, "short volume iosb.Status %08lx",
        (unsigned long)iosb.Status);
-    ok(iosb.Information == 0, "short volume Information %lu", (unsigned long)iosb.Information);
+    ok(iosb.Information == (ULONG_PTR)~0ULL, "short volume Information %lu",
+       (unsigned long)iosb.Information);
 
     /* Exactly sizeof: success, label silently truncated to the room left
      * after the fixed part (no overflow status). */
@@ -115,9 +126,10 @@ START_TEST(volume_info)
     status =
         NtQueryVolumeInformationFile(root, &iosb, &size, sizeof(size) - 1, FileFsSizeInformation);
     ok(status == STATUS_BUFFER_TOO_SMALL, "short size buffer -> %08lx", (unsigned long)status);
-    ok(iosb.Status == STATUS_BUFFER_TOO_SMALL, "short size iosb.Status %08lx",
+    ok(iosb.Status == IOSB_POISON_STATUS, "short size iosb.Status %08lx",
        (unsigned long)iosb.Status);
-    ok(iosb.Information == 0, "short size Information %lu", (unsigned long)iosb.Information);
+    ok(iosb.Information == (ULONG_PTR)~0ULL, "short size Information %lu",
+       (unsigned long)iosb.Information);
 
     /* --- FileFsAttributeInformation ---------------------------------------- */
     char attrbuf[sizeof(FILE_FS_ATTRIBUTE_INFORMATION) + 32 * sizeof(WCHAR)];
@@ -154,9 +166,10 @@ START_TEST(volume_info)
         NtQueryVolumeInformationFile(root, &iosb, attrbuf, name_off, FileFsAttributeInformation);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "short attribute buffer -> %08lx",
        (unsigned long)status);
-    ok(iosb.Status == STATUS_INFO_LENGTH_MISMATCH, "short attribute iosb.Status %08lx",
+    ok(iosb.Status == IOSB_POISON_STATUS, "short attribute iosb.Status %08lx",
        (unsigned long)iosb.Status);
-    ok(iosb.Information == 0, "short attribute Information %lu", (unsigned long)iosb.Information);
+    ok(iosb.Information == (ULONG_PTR)~0ULL, "short attribute Information %lu",
+       (unsigned long)iosb.Information);
 
     /* Exactly sizeof: success, name truncated to the room past the fixed
      * part (4 bytes here — every name in the answer table is longer). */
