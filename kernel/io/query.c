@@ -553,6 +553,13 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
         ObDereferenceObject(file);
         return STATUS_INVALID_PARAMETER;
     }
+    if (file->device->ops->ReadDirectory == 0)
+    {
+        /* A directory-shaped device open with no enumeration (the npfs
+         * device root, CUI-3): refuse rather than fault. */
+        ObDereferenceObject(file);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
 
     /* The mask binds to the handle; a fresh non-empty mask replaces it
      * (pinned Wine: NULL reuses the stored one). */

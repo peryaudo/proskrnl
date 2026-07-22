@@ -58,6 +58,11 @@ typedef struct NPFS_PIPE
     ULONG outQuota;
     LIST_ENTRY instanceList; /* NPFS_INSTANCE */
     ULONG instanceCount;
+
+    /* CUI-3: NtCreateNamedPipeFile's timeout parameter — the default an
+     * FSCTL_PIPE_WAIT with TimeoutSpecified == FALSE falls back to
+     * (wine/server/named_pipe.c: `when = ... : pipe->timeout`). */
+    LARGE_INTEGER defaultTimeout;
 } NPFS_PIPE, *PNPFS_PIPE;
 
 typedef struct NPFS_INSTANCE
@@ -92,6 +97,18 @@ typedef struct NPFS_END
  * mutated only between blocking points are already atomic — Art. 3). */
 static LIST_ENTRY NpfsPipeList;
 static PIO_DEVICE NpfsDevice;
+
+/* CUI-3: FCB for opens of the device ROOT ("\??\PIPE\" — the WaitNamedPipe
+ * handle, kernelbase/sync.c WaitNamedPipeW). Root FILE_OBJECTs carry
+ * fsContext == 0 as their marker. */
+static IO_FCB NpfsRootFcb;
+
+/* Signalled whenever a listening instance may have APPEARED (instance
+ * creation, disconnect->listening) — the wake FSCTL_PIPE_WAIT parks on
+ * (mirrors wineserver's async_wake_up(&pipe->waiters), named_pipe.c). One
+ * GLOBAL event, not per-pipe: waiters re-look the pipe up per wake, which
+ * sidesteps the pipe-lifetime hazard at the cost of spurious re-checks. */
+static KEVENT NpfsListenersChangedEvent;
 
 /* --- helpers ---------------------------------------------------------------- */
 
@@ -363,6 +380,91 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
 
 /* --- FSCTL verbs ------------------------------------------------------------ */
 
+/* Does `pipe` have an instance a client could attach to right now? (The
+ * same test NpfsVfsCreate's attach loop applies.) */
+static BOOLEAN NpfsHasListener(PNPFS_PIPE pipe)
+{
+    for (PLIST_ENTRY entry = pipe->instanceList.Flink; entry != &pipe->instanceList;
+         entry = entry->Flink)
+    {
+        PNPFS_INSTANCE candidate = CONTAINING_RECORD(entry, NPFS_INSTANCE, listEntry);
+        if (candidate->state == FILE_PIPE_LISTENING_STATE && candidate->serverEnd != 0)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* FSCTL_PIPE_WAIT on the device root: the WaitNamedPipe path both rpcrt4's
+ * ncacn_np client open and sechost's service_open_pipe take. Semantics
+ * transcribed from wine/server/named_pipe.c named_pipe_dir_ioctl
+ * FSCTL_PIPE_WAIT + kernelbase/sync.c WaitNamedPipeW; pinned by
+ * sem_pipe/pipe_wait.c. */
+static NTSTATUS NpfsWaitForPipe(const void *input, ULONG inputLength)
+{
+    const FILE_PIPE_WAIT_FOR_BUFFER *wait = input;
+    if (inputLength < sizeof(*wait) ||
+        inputLength < offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) + wait->NameLength)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    UNICODE_STRING name;
+    name.Buffer = (PWSTR)wait->Name;
+    name.Length = (USHORT)((wait->NameLength / sizeof(WCHAR)) * sizeof(WCHAR));
+    name.MaximumLength = name.Length;
+
+    BOOLEAN deadlineSet = FALSE;
+    LARGE_INTEGER deadline;
+    for (;;)
+    {
+        /* Re-look the pipe up each pass: the global-event park means the
+         * pipe may have died meanwhile. An unknown name answers immediately
+         * — waiting for pipe CREATION is not part of the contract (pinned);
+         * a pipe deleted MID-wait also answers NAME_NOT_FOUND here, where
+         * wineserver would run the timeout out (docs/03, unpinned edge). */
+        PNPFS_PIPE pipe = NpfsFindPipe(&name);
+        if (pipe == 0)
+        {
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        }
+        if (NpfsHasListener(pipe))
+        {
+            return STATUS_SUCCESS;
+        }
+        if (!deadlineSet)
+        {
+            /* One absolute deadline across every re-check. Relative NT
+             * times are negative; positive values (including
+             * WaitNamedPipeW's NMPWAIT_WAIT_FOREVER encoding) are already
+             * absolute system time (kernel/ke/timer.c). */
+            LARGE_INTEGER timeout = wait->TimeoutSpecified ? wait->Timeout : pipe->defaultTimeout;
+            if (timeout.QuadPart < 0)
+            {
+                LARGE_INTEGER now;
+                KeQuerySystemTime(&now);
+                deadline.QuadPart = now.QuadPart - timeout.QuadPart;
+            }
+            else
+            {
+                deadline = timeout;
+            }
+            deadlineSet = TRUE;
+        }
+        /* Clear-then-wait: safe against lost wakeups for the same reason
+         * NpfsWait is — nothing runs between the listener check above and
+         * this park (uniprocessor, no preemption). */
+        KeClearEvent(&NpfsListenersChangedEvent);
+        NTSTATUS status = KeWaitForSingleObject(&NpfsListenersChangedEvent, Executive, KernelMode,
+                                                FALSE, &deadline);
+        if (status == STATUS_TIMEOUT)
+        {
+            return STATUS_IO_TIMEOUT;
+        }
+        ASSERT(status == STATUS_SUCCESS);
+    }
+}
+
 static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request)
 {
     PNPFS_INSTANCE instance = end->instance;
@@ -375,6 +477,8 @@ static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CO
         /* Return to listening: queues were flushed at disconnect. */
         instance->state = FILE_PIPE_LISTENING_STATE;
         NpfsWakeAll(instance);
+        /* A listener appeared: wake FSCTL_PIPE_WAIT parkers. */
+        KeSetEvent(&NpfsListenersChangedEvent, 0, FALSE);
     }
     for (;;)
     {
@@ -504,9 +608,28 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
                                   ULONG inputLength, void *output, ULONG outputLength,
                                   ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
 {
+    PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        /* The device root serves exactly FSCTL_PIPE_WAIT; the per-instance
+         * verbs on it are illegal (wine/server/named_pipe.c
+         * named_pipe_device_ioctl: WAIT/LISTEN/IMPERSONATE ->
+         * STATUS_ILLEGAL_FUNCTION on the wrong object). */
+        switch (code)
+        {
+        case FSCTL_PIPE_WAIT:
+            return NpfsWaitForPipe(input, inputLength);
+        case FSCTL_PIPE_LISTEN:
+        case FSCTL_PIPE_DISCONNECT:
+        case FSCTL_PIPE_PEEK:
+            return STATUS_ILLEGAL_FUNCTION;
+        default:
+            DbgPrint("npfs: unimplemented root fsctl %#lx\n", (unsigned long)code);
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
     (void)input;
     (void)inputLength;
-    PNPFS_END end = file->fsContext;
     switch (code)
     {
     case FSCTL_PIPE_LISTEN:
@@ -516,8 +639,9 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
     case FSCTL_PIPE_PEEK:
         return NpfsPeek(end, output, outputLength, infoOut);
     default:
-        /* Unbuilt verbs (WAIT/TRANSCEIVE/...) are refused loudly, never
-         * faked (docs/03). */
+        /* Unbuilt verbs (TRANSCEIVE/IMPERSONATE/... — and WAIT, which an
+         * instance handle answers NOT_SUPPORTED, pinned pipe_wait.c) are
+         * refused loudly, never faked (docs/03). */
         DbgPrint("npfs: unimplemented fsctl %#lx\n", (unsigned long)code);
         return STATUS_NOT_SUPPORTED;
     }
@@ -529,6 +653,10 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
                                   void *buffer, ULONG length, ULONG_PTR *infoOut)
 {
     PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return STATUS_INVALID_DEVICE_REQUEST; /* the root is not a pipe end */
+    }
     PNPFS_INSTANCE instance = end->instance;
 
     if (informationClass == FilePipeInformation)
@@ -574,6 +702,10 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
 static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, const FILE_PIPE_INFORMATION *info)
 {
     PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return STATUS_INVALID_DEVICE_REQUEST; /* the root is not a pipe end */
+    }
     end->readMode = info->ReadMode;
     end->completionMode = info->CompletionMode;
     return STATUS_SUCCESS;
@@ -591,6 +723,17 @@ static NTSTATUS NpfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
 static NTSTATUS NpfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
 {
     PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        /* The root's volume-relative name is the bare backslash. */
+        *lengthOut = sizeof(WCHAR);
+        if (capacity >= sizeof(WCHAR))
+        {
+            buffer[0] = '\\';
+            return STATUS_SUCCESS;
+        }
+        return STATUS_BUFFER_OVERFLOW;
+    }
     PNPFS_PIPE pipe = end->instance->pipe;
     ULONG nameBytes = pipe != 0 ? pipe->name.Length : 0;
     ULONG full = (ULONG)sizeof(WCHAR) + nameBytes; /* "\" + name */
@@ -620,7 +763,15 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     (void)options;
     if (path->Length == 0)
     {
-        return STATUS_OBJECT_NAME_INVALID; /* the device root is not a file */
+        /* The device ROOT open ("\??\PIPE\") — the WaitNamedPipe handle
+         * (kernelbase/sync.c WaitNamedPipeW; wineserver models it as the
+         * named-pipe directory object). fsContext == 0 marks it; the
+         * directory shape keeps NtRead/WriteFile off it (kernel/io/rw.c). */
+        file->fsContext = 0;
+        file->fcb = &NpfsRootFcb;
+        file->isDirectory = TRUE;
+        *information = FILE_OPENED;
+        return STATUS_SUCCESS;
     }
     if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF && disposition != FILE_CREATE)
     {
@@ -685,6 +836,10 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
 static void NpfsVfsCleanup(PFILE_OBJECT file)
 {
     PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return; /* a device-root open holds no pipe state */
+    }
     PNPFS_INSTANCE instance = end->instance;
 
     /* The peer sees a half-closed pipe: drains what is buffered, then
@@ -732,6 +887,10 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
 static void NpfsVfsClose(PFILE_OBJECT file)
 {
     PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return; /* a device-root open holds no pipe state */
+    }
     PNPFS_INSTANCE instance = end->instance;
     if (instance->serverEnd == end || instance->clientEnd == end)
     {
@@ -755,7 +914,7 @@ static void NpfsVfsClose(PFILE_OBJECT file)
 static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
 {
     PNPFS_END end = file->fsContext;
-    if (!end->isServer)
+    if (end == 0 || !end->isServer)
     {
         return 0;
     }
@@ -806,7 +965,6 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
                                ULONG completionMode, ULONG maxInstances, ULONG inboundQuota,
                                ULONG outboundQuota, PLARGE_INTEGER timeout)
 {
-    (void)timeout; /* stored by NT for FSCTL_PIPE_WAIT; unbuilt (docs/03) */
     if (handleOut == 0 || iosb == 0)
     {
         return STATUS_ACCESS_VIOLATION;
@@ -827,6 +985,19 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     if (maxInstances == 0)
     {
         return STATUS_INVALID_PARAMETER;
+    }
+    /* The create-time timeout is the default an unspecified FSCTL_PIPE_WAIT
+     * uses (pinned pipe_wait.c); it binds at PIPE creation — later
+     * instances of an existing pipe do not rewrite it (wineserver stores it
+     * on the named_pipe object once). */
+    LARGE_INTEGER defaultTimeout = {.QuadPart = 0};
+    if (timeout != 0)
+    {
+        status = KiCopyFromUser(&defaultTimeout, timeout, sizeof(defaultTimeout));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
     }
 
     /* Resolve \??\pipe\<name> (or \Device\NamedPipe\<name>) to OUR device. */
@@ -871,6 +1042,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         pipe->maxInstances = maxInstances;
         pipe->inQuota = inboundQuota != 0 ? inboundQuota : 4096;
         pipe->outQuota = outboundQuota != 0 ? outboundQuota : 4096;
+        pipe->defaultTimeout = defaultTimeout;
         InitializeListHead(&pipe->instanceList);
         InsertTailList(&NpfsPipeList, &pipe->listEntry);
         information = FILE_CREATED;
@@ -908,6 +1080,9 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     instance->endCount = 1;
     InsertTailList(&pipe->instanceList, &instance->listEntry);
     pipe->instanceCount++;
+    /* A listener appeared: wake FSCTL_PIPE_WAIT parkers (pipe_wait.c's
+     * appearing-listener case; wineserver wakes pipe->waiters here too). */
+    KeSetEvent(&NpfsListenersChangedEvent, 0, FALSE);
 
     /* Build the File object exactly as IopCreateFile does. */
     PVOID body;
@@ -974,6 +1149,8 @@ out:
 void NpfsInitialize(void)
 {
     InitializeListHead(&NpfsPipeList);
+    IopInitializeFcb(&NpfsRootFcb);
+    KeInitializeEvent(&NpfsListenersChangedEvent, NotificationEvent, FALSE);
 
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attributes;

@@ -68,10 +68,7 @@ START_TEST(pipe_wait)
     DWORD wait, extra;
 
     status = open_pipe_root(&root);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "device root open -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_SUCCESS, "device root open -> %08lx", (unsigned long)status);
     if (root == NULL)
     {
         skip("no device root; FSCTL_PIPE_WAIT unbuilt");

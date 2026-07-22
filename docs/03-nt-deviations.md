@@ -256,11 +256,16 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   rpcrt4's ncacn_np server loop deadlocks on a blocking listen, see the
   "CUI-3 SCM notes". On synchronous handles the original blocking behaviour
   is unchanged.
-- **`FSCTL_PIPE_WAIT` / `FSCTL_PIPE_TRANSCEIVE` are unbuilt** — refused
-  loudly (`STATUS_NOT_SUPPORTED` + a serial line), never faked. The
-  `NtCreateNamedPipeFile` timeout parameter is accepted and unused until
-  WAIT exists. `FSCTL_PIPE_PEEK` is implemented (state, available bytes,
-  message count, preview).
+- **`FSCTL_PIPE_TRANSCEIVE` / `FSCTL_PIPE_IMPERSONATE` are unbuilt** —
+  refused loudly (`STATUS_NOT_SUPPORTED` + a serial line), never faked.
+  `FSCTL_PIPE_PEEK` is implemented (state, available bytes, message count,
+  preview). *`FSCTL_PIPE_WAIT` is built by CUI-3* (served on the device-root
+  open, with `NtCreateNamedPipeFile`'s timeout parameter finally stored as
+  the unspecified-timeout default; pinned `sem_pipe/pipe_wait.c`) — one
+  unpinned edge: a pipe deleted MID-wait answers
+  `STATUS_OBJECT_NAME_NOT_FOUND` on the next wake, where wineserver would
+  run the timeout out (waiters park on one global listeners-changed event
+  and re-look the pipe up, sidestepping per-pipe waiter lifetime).
 - **Byte-mode writes chunk under quota; message-mode writes are framed
   whole**, with one documented allowance: a message larger than the quota is
   admitted once the queue is fully drained (the reader then consumes it
