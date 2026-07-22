@@ -110,23 +110,30 @@ static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK tar
     {
         return status;
     }
-    PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    /* ANY object resolves (wineserver's cancel_async takes any handle — a
+     * cancel on an event simply finds nothing; pinned async_listen.c);
+     * only files can carry pending requests. */
+    PVOID body;
+    status = ObReferenceObjectByHandle(handle, 0, 0, ExGetPreviousMode(), &body, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
     ULONG cancelled = 0;
-    if (file->device->ops->CancelPending != 0)
+    if (ObpGetHeader(body)->type == &IoFileObjectType)
     {
-        cancelled = file->device->ops->CancelPending(file, issuer, targetIosb);
+        PFILE_OBJECT file = body;
+        if (file->device->ops->CancelPending != 0)
+        {
+            cancelled = file->device->ops->CancelPending(file, issuer, targetIosb);
+        }
     }
     /* Thread-scoped (issuer != 0): success regardless; by-IOSB/all: the
      * count decides. */
     status = (issuer != 0 || cancelled != 0) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
     ioStatus->Status = status;
     ioStatus->Information = 0;
-    ObDereferenceObject(file);
+    ObDereferenceObject(body);
     return status;
 }
 
