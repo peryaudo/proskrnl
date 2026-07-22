@@ -53,10 +53,7 @@ static void test_pending_listen(void)
        (unsigned long)iosb.Status);
     ok(iosb.Information == (ULONG_PTR)~0ULL, "iosb length untouched while pending");
     wait = WaitForSingleObject(event, 0);
-    todo_proskrnl
-    {
-        ok(wait == WAIT_TIMEOUT, "event reset at submission -> %lu", (unsigned long)wait);
-    }
+    ok(wait == WAIT_TIMEOUT, "event reset at submission -> %lu", (unsigned long)wait);
 
     /* The client's connect completes the listen: event signalled, IOSB
      * carries the verdict (same on both sides — a blocking kernel signals
