@@ -1527,6 +1527,13 @@ NTPSAPI_FUNCTIONS = [
     "NtInitializeNlsFiles",
     "NtGetNlsSectionPtr",
     "NtQuerySystemTime",
+    # CUI-3: the job-object surface services.exe drives (create, assign,
+    # limit/completion-port setup; query stays kernel-side unimplemented but
+    # the signature is part of the same contract).
+    "NtCreateJobObject",
+    "NtAssignProcessToJobObject",
+    "NtSetInformationJobObject",
+    "NtQueryInformationJobObject",
 ]
 
 
@@ -1674,6 +1681,60 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_typedef_line(winternl, "winternl.h", "PRTL_THREAD_START_ROUTINE"),
         ]
     )
+    # CUI-3: the job-object contract services.exe exercises (winnt.h). The
+    # completion messages are what the SCM's process monitor drains from the
+    # associated port; the limit structs/flags are what it sets at startup.
+    job_enum = extract_enum(winnt, "_JOBOBJECTINFOCLASS", "JOBOBJECTINFOCLASS")
+    job_structs = "\n\n".join(
+        [
+            extract_struct(winnt, "_IO_COUNTERS", "IO_COUNTERS"),
+            extract_struct(
+                winnt, "_JOBOBJECT_BASIC_LIMIT_INFORMATION", "JOBOBJECT_BASIC_LIMIT_INFORMATION"
+            ),
+            extract_struct(
+                winnt, "_JOBOBJECT_ASSOCIATE_COMPLETION_PORT",
+                "JOBOBJECT_ASSOCIATE_COMPLETION_PORT",
+            ),
+            extract_struct(
+                winnt, "_JOBOBJECT_EXTENDED_LIMIT_INFORMATION",
+                "JOBOBJECT_EXTENDED_LIMIT_INFORMATION",
+            ),
+        ]
+    )
+    job_defines = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "JOB_OBJECT_ALL_ACCESS",
+            "JOB_OBJECT_MSG_END_OF_JOB_TIME",
+            "JOB_OBJECT_MSG_END_OF_PROCESS_TIME",
+            "JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT",
+            "JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO",
+            "JOB_OBJECT_MSG_NEW_PROCESS",
+            "JOB_OBJECT_MSG_EXIT_PROCESS",
+            "JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS",
+            "JOB_OBJECT_MSG_PROCESS_MEMORY_LIMIT",
+            "JOB_OBJECT_MSG_JOB_MEMORY_LIMIT",
+            "JOB_OBJECT_LIMIT_WORKINGSET",
+            "JOB_OBJECT_LIMIT_PROCESS_TIME",
+            "JOB_OBJECT_LIMIT_JOB_TIME",
+            "JOB_OBJECT_LIMIT_ACTIVE_PROCESS",
+            "JOB_OBJECT_LIMIT_AFFINITY",
+            "JOB_OBJECT_LIMIT_PRIORITY_CLASS",
+            "JOB_OBJECT_LIMIT_PRESERVE_JOB_TIME",
+            "JOB_OBJECT_LIMIT_SCHEDULING_CLASS",
+            "JOB_OBJECT_LIMIT_PROCESS_MEMORY",
+            "JOB_OBJECT_LIMIT_JOB_MEMORY",
+            "JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION",
+            "JOB_OBJECT_LIMIT_BREAKAWAY_OK",
+            "JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK",
+            "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+            "JOB_OBJECT_LIMIT_SUBSET_AFFINITY",
+            "JOB_OBJECT_LIMIT_VALID_FLAGS",
+            "JOB_OBJECT_BASIC_LIMIT_VALID_FLAGS",
+            "JOB_OBJECT_EXTENDED_LIMIT_VALID_FLAGS",
+        ],
+    )
     # CUI-1: SYSTEM_CPU_INFORMATION.ProcessorArchitecture answer (winnt.h).
     arch_defines = extract_defines(winnt, "winnt.h", ["PROCESSOR_ARCHITECTURE_AMD64"])
     kcontinue = (
@@ -1752,6 +1813,13 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + ps_attribute_defines
         + "\n\n"
         + arch_defines
+        + "\n\n/* CUI-3: the job-object contract (services.exe), extracted verbatim\n"
+        + " * from wine/include/winnt.h. */\n"
+        + job_enum
+        + "\n\n"
+        + job_structs
+        + "\n\n"
+        + job_defines
         + "\n\n"
         + info_structs
         + "\n\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"
