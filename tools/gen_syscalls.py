@@ -176,6 +176,10 @@ IMPLEMENTED = [
     "NtAllocateLocallyUniqueId",
     "NtQuerySecurityObject",
     "NtSetSecurityObject",
+    # CUI-3 SCM surface: cancel for pending pipe listens (services.exe's
+    # CancelIo-on-timeout path against a stack OVERLAPPED)
+    "NtCancelIoFile",
+    "NtCancelIoFileEx",
 ]
 
 

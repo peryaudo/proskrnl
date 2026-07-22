@@ -154,21 +154,15 @@ static void test_cancel(const void *pipe_name, BOOLEAN use_ex)
         status = NtCancelIoFileEx(server, &iosb, &cancel_iosb);
     else
         status = NtCancelIoFile(server, &cancel_iosb);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "cancel -> %08lx", (unsigned long)status);
-        ok(cancel_iosb.Status == STATUS_SUCCESS, "cancel iosb -> %08lx",
-           (unsigned long)cancel_iosb.Status);
-        ok(cancel_iosb.Information == 0, "cancel iosb length");
-    }
+    ok(status == STATUS_SUCCESS, "cancel -> %08lx", (unsigned long)status);
+    ok(cancel_iosb.Status == STATUS_SUCCESS, "cancel iosb -> %08lx",
+       (unsigned long)cancel_iosb.Status);
+    ok(cancel_iosb.Information == 0, "cancel iosb length");
 
     wait = WaitForSingleObject(event, 10000);
     ok(wait == WAIT_OBJECT_0, "cancelled listen wait -> %lu", (unsigned long)wait);
-    todo_proskrnl
-    {
-        ok(iosb.Status == STATUS_CANCELLED, "cancelled listen iosb -> %08lx",
-           (unsigned long)iosb.Status);
-    }
+    ok(iosb.Status == STATUS_CANCELLED, "cancelled listen iosb -> %08lx",
+       (unsigned long)iosb.Status);
 
     /* The connector still lands: a canceled listen leaves the instance
      * accepting (connect-before-listen semantics). */
@@ -197,20 +191,14 @@ static void test_cancel_nothing_pending(void)
      * server/async.c DECL_HANDLER(cancel_async)). */
     poison_iosb(&cancel_iosb);
     status = NtCancelIoFile(server, &cancel_iosb);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "cancel-nothing -> %08lx", (unsigned long)status);
-        ok(cancel_iosb.Status == STATUS_SUCCESS, "cancel-nothing iosb -> %08lx",
-           (unsigned long)cancel_iosb.Status);
-    }
+    ok(status == STATUS_SUCCESS, "cancel-nothing -> %08lx", (unsigned long)status);
+    ok(cancel_iosb.Status == STATUS_SUCCESS, "cancel-nothing iosb -> %08lx",
+       (unsigned long)cancel_iosb.Status);
     poison_iosb(&cancel_iosb);
     status = NtCancelIoFileEx(server, NULL, &cancel_iosb);
-    todo_proskrnl
-    {
-        ok(status == STATUS_NOT_FOUND, "cancel-ex-nothing -> %08lx", (unsigned long)status);
-        ok(cancel_iosb.Status == STATUS_NOT_FOUND, "cancel-ex-nothing iosb -> %08lx",
-           (unsigned long)cancel_iosb.Status);
-    }
+    ok(status == STATUS_NOT_FOUND, "cancel-ex-nothing -> %08lx", (unsigned long)status);
+    ok(cancel_iosb.Status == STATUS_NOT_FOUND, "cancel-ex-nothing iosb -> %08lx",
+       (unsigned long)cancel_iosb.Status);
     NtClose(server);
 }
 
