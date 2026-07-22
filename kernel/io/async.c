@@ -45,6 +45,11 @@ NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDIN
             return status;
         }
         pending->event = eventBody;
+        /* NT resets the caller's event when the operation is submitted —
+         * rpcrt4's server caches MANUAL-RESET events and relies on exactly
+         * this (a stale signalled event would fire its accept loop against
+         * a stale IOSB forever; pinned async_listen.c). */
+        KeClearEvent(pending->event);
     }
 
     PEPROCESS owner = KeGetCurrentThread()->process;
