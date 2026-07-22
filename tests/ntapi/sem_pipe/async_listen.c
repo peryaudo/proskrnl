@@ -207,6 +207,23 @@ static void test_cancel_nothing_pending(void)
     ok(cancel_iosb.Status == STATUS_NOT_FOUND, "cancel-ex-nothing iosb -> %08lx",
        (unsigned long)cancel_iosb.Status);
     NtClose(server);
+
+    /* A NON-file handle resolves too (wineserver's cancel_async takes any
+     * object and finds nothing): thread-scoped succeeds, Ex answers
+     * NOT_FOUND. */
+    HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    ok(event != NULL, "CreateEventW");
+    status = NtCancelIoFile(event, &cancel_iosb);
+    todo_proskrnl
+    {
+        ok(status == STATUS_SUCCESS, "cancel on event -> %08lx", (unsigned long)status);
+    }
+    status = NtCancelIoFileEx(event, NULL, &cancel_iosb);
+    todo_proskrnl
+    {
+        ok(status == STATUS_NOT_FOUND, "cancel-ex on event -> %08lx", (unsigned long)status);
+    }
+    CloseHandle(event);
 }
 
 START_TEST(async_listen)
