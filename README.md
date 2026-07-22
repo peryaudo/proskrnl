@@ -197,10 +197,35 @@ Ob grants unconditionally); `NtSetInformationToken`/`NtFilterToken`/linked
 tokens stay unimplemented until a baked caller convicts (`docs/03` "CUI-2 Se
 notes").
 
-Next: **CUI-3..CUI-5** — the SCM (services.exe + rpcss over npfs), the
-process ecosystem, sockets — or **the GUI path (GUI-1+)** — pixels/input,
-win32u (`docs/02`); either way, growing the winetest manifest as its parked
-blockers land (`docs/03` "M10 winetest notes").
+**CUI-3 complete**: the SCM. Wine's unmodified services.exe, rpcss.exe,
+sc.exe, and userenv.dll are baked (pure PE, prebuilt in the pinned tree —
+zero fork commits, hack meter untouched); wineboot starts services.exe on
+every boot and the wine.inf `AddService` payload installs through the live
+SCM over `ncacn_np:[\pipe\svcctl]` — M9's npfs carries all of it and ALPC
+stays permanently unimplemented. The kernel grew exactly what the SCM
+convicts it of needing: a genuinely-pending `FSCTL_PIPE_LISTEN` on
+asynchronous handles (`kernel/io/async.c` — rpcrt4's server loop deadlocks
+on a blocking listen), `NtCancelIoFile(Ex)`, `FSCTL_PIPE_WAIT` on the
+device-root open (WaitNamedPipe), job objects — the SCM subset
+(`kernel/ps/job.c`: limits validated + stored, lifecycle packets through
+the one completion-port engine), and a real `ProcessWineMakeProcessSystem`
+(the global shutdown event; the old blanket-success stub handed
+services.exe a NULL handle — the Art. 12 shape). Pinned by
+`sem_pipe/async_listen`, `sem_pipe/pipe_wait`, `sem_ps/job`,
+`sem_ps/make_system` — green on the oracle AND proskrnl — and by the
+acceptance: `tests/run/run.sh scm` drives `sc query`/`sc start`/`sc create`
+from cmd.exe (a real `svcctl` RPC round-trip), installs a third-party demo
+service, reboots, and asserts the SCM auto-started it from the persisted
+registry. **Not yet:** impersonation attach — re-deferred with evidence
+(Wine's SCM never impersonates; `docs/03` "CUI-3 SCM notes"); job-limit
+enforcement, job nesting, and the job query/terminate surface stay
+loud-unbuilt.
+
+Next: **CUI-4..CUI-5** — the process ecosystem
+(SystemProcessInformation/tasklist, Ctrl+C through condrv), sockets — or
+**the GUI path (GUI-1+)** — pixels/input, win32u (`docs/02`); either way,
+growing the winetest manifest as its parked blockers land (`docs/03` "M10
+winetest notes").
 
 ## Build instructions
 
@@ -214,6 +239,7 @@ tests/run/run.sh persist    # tests that registry values survive a reboot (boot 
 tests/run/run.sh console    # tests that typing into the serial console is working
 tests/run/run.sh winetest   # runs the curated subset of winetest
 tests/run/run.sh firstboot  # CUI-1: diff the firstboot registry against the oracle's prefix
+tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-survival autostart
 ```
 
 ## License

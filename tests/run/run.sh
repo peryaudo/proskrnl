@@ -698,7 +698,9 @@ console() {
     local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
     mkdir -p "$ROOT/build/tests"
 
-    SERIAL_SOCK="$sock" LOG="$log" TIMEOUT="${TIMEOUT:-600}" \
+    # CUI-3: a resident SCM under no-eviction/no-COW needs the winetest
+    # leg's provisioning.
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-600}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" \
@@ -716,6 +718,46 @@ console() {
     return 1
 }
 
+# The CUI-3 acceptance (docs/02 "an sc-style query round-trips; a real
+# service installs, starts, and survives reboot, all driven from ring 3"):
+# boot ONE console-image disk twice. Boot 1 drives the round-trip from
+# cmd.exe — sc query RpcSs over \pipe\svcctl, sc start RpcSs (a real
+# service process), sc create + start SvcDemo (tests/cui/svcdemo.c), the
+# proof line in C:\svcdemo.log (console_expect.py EXPECT_SCM=1). Boot 2
+# asserts the SCM AUTO-started SvcDemo from the persisted registry before
+# cmd ever prompted, and the proof file grew (EXPECT_SCM=2).
+scm() {
+    # A VIRGIN console image (the persist() pattern): a hive seeded by an
+    # earlier console run could already carry SvcDemo and break the create.
+    rm -f "$ROOT/build/proskrnl-console.hdd"
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/tests/scm.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local boot sock log qemu_wrapper
+    for boot in 1 2; do
+        sock="$ROOT/build/tests/scm$boot.sock"
+        log="$ROOT/build/tests/scm$boot.log"
+        SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-600}" \
+            "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+        qemu_wrapper=$!
+        if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_SCM="$boot" \
+            python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+            wait "$qemu_wrapper" 2>/dev/null || true
+            echo "== scm: FAIL (boot $boot; see $log) =="
+            return 1
+        fi
+        wait "$qemu_wrapper" 2>/dev/null || true
+        if ! grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+            echo "== scm: FAIL (boot $boot cmd verdict; see $log) =="
+            return 1
+        fi
+    done
+    echo "== scm: PASS (sc round-trip + reboot-survival autostart) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -724,9 +766,10 @@ case "$MODE" in
     persist)  persist ;;
     firstboot) firstboot ;;
     console)  console ;;
+    scm)      scm ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|fatinterop|fatstress|tornwrite}" >&2
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|fatinterop|fatstress|tornwrite}" >&2
        exit 2 ;;
 esac

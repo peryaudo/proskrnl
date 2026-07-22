@@ -131,6 +131,50 @@ def main() -> int:
     # TokenGroups. The SID digits cannot come from the typed command.
     if not command(b"C:\\whoami.exe /logonid", b"S-1-5-5-0-0", "whoami's logon SID"):
         return 1
+
+    # ---- CUI-3: the SCM acceptance (docs/02 "an sc-style query round-trips;
+    # a real service installs, starts, and survives reboot") ----------------
+    # EXPECT_SCM=1 drives boot 1 (query RpcSs over \pipe\svcctl, start it,
+    # install + start the demo service); EXPECT_SCM=2 is the post-reboot
+    # boot: the SCM must have AUTO-started SvcDemo from the persisted
+    # registry before cmd prompted, and the proof file carries a second
+    # line (asserted via cmd's %~zf size expansion: 22 -> 44 bytes; the
+    # digits cannot come from the typed command).
+    scm = os.environ.get("EXPECT_SCM", "")
+    if scm == "1":
+        # The round-trip: sechost binds ncacn_np:[\pipe\svcctl], the query
+        # marshals back a STOPPED demand-start rpcss (wine.inf's RpcSs).
+        if not command(b"C:\\windows\\system32\\sc.exe query RpcSs", b"STOPPED",
+                       "the RpcSs query round-trip"):
+            return 1
+        # Starting it spawns a real service process (control pipe,
+        # MakeProcessSystem, status handshake); sc prints the post-start
+        # query block.
+        if not command(b"C:\\windows\\system32\\sc.exe start RpcSs", b"RUNNING",
+                       "RpcSs running"):
+            return 1
+        if not command(b"C:\\windows\\system32\\sc.exe create SvcDemo binpath= "
+                       b"C:\\svcdemo.exe start= auto", b"C:\\", "the create prompt"):
+            return 1
+        if not command(b"echo rc=%errorlevel%", b"rc=0", "the create errorlevel"):
+            return 1
+        if not command(b"C:\\windows\\system32\\sc.exe start SvcDemo", b"RUNNING",
+                       "SvcDemo running"):
+            return 1
+        # The size is zz-wrapped so the digits cannot be satisfied by prompt
+        # text ("system32" supplies stray 2s and 3s to a bare tolerant
+        # match — the false positive that masked a broken append path).
+        if not command(b"for %f in (C:\\svcdemo.log) do @echo zz%~zfzz", b"zz22zz",
+                       "the first proof line"):
+            return 1
+    elif scm == "2":
+        if not command(b"C:\\windows\\system32\\sc.exe query SvcDemo", b"RUNNING",
+                       "SvcDemo auto-started after reboot"):
+            return 1
+        if not command(b"for %f in (C:\\svcdemo.log) do @echo zz%~zfzz", b"zz44zz",
+                       "the second proof line"):
+            return 1
+
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
