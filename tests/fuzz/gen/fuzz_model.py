@@ -70,6 +70,8 @@ CHOICES = {
     'vdata': (4, []),
     'key_info': (3, []),
     'kv_info': (3, []),
+    'access_job': (3, []),
+    'job_scenario': (6, []),
 }
 
 # op name -> (opcode, [operand kind strings])
@@ -122,4 +124,8 @@ OPS = [
     ('enumerate_key', 45, 'NtEnumerateKey', ['slot_in', 'ch_ulong', 'ch_key_info', 'ch_len']),
     ('query_key', 46, 'NtQueryKey', ['slot_in', 'ch_key_info', 'ch_len']),
     ('flush_key', 47, 'NtFlushKey', ['slot_in']),
+    ('cancel_io', 48, 'NtCancelIoFile', ['slot_in']),
+    ('cancel_io_ex', 49, 'NtCancelIoFileEx', ['slot_in']),
+    ('create_job', 50, 'NtCreateJobObject', ['slot_out', 'ch_access_job']),
+    ('set_job_limits', 51, 'NtSetInformationJobObject', ['slot_in', 'ch_job_scenario']),
 ]

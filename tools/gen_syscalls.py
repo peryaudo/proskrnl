@@ -462,6 +462,23 @@ FUZZ_CHOICES = {
         ("FZ_KVINFO_FULL", False),
         ("FZ_KVINFO_PARTIAL", False),
     ]),
+    # CUI-3: job-object creation access + the NtSetInformationJobObject
+    # argument-gate scenarios (semantic indices interp.c interprets: valid
+    # and invalid limit classes/sizes/flag masks — validated + stored,
+    # never enforced, so statuses are deterministic on both sides).
+    "access_job": ("ACCESS_MASK", [
+        ("JOB_OBJECT_ALL_ACCESS", False),
+        ("SYNCHRONIZE", False),
+        ("0", False),
+    ]),
+    "job_scenario": (None, [
+        ("FZ_JOB_BASIC_VALID", False),
+        ("FZ_JOB_BASIC_BADFLAGS", False),
+        ("FZ_JOB_BASIC_BADSIZE", False),
+        ("FZ_JOB_EXT_VALID", False),
+        ("FZ_JOB_EXT_BADSIZE", False),
+        ("FZ_JOB_CLASS_CEILING", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -540,6 +557,19 @@ FUZZ_OPS = [
     ("enumerate_key", "NtEnumerateKey", ["slot_in", "ch_ulong", "ch_key_info", "ch_len"]),
     ("query_key", "NtQueryKey", ["slot_in", "ch_key_info", "ch_len"]),
     ("flush_key", "NtFlushKey", ["slot_in"]),
+    # CUI-3 SCM surface. Cancel is deterministic on any slot: the
+    # single-threaded interp never has an operation pending, so the
+    # thread-scoped verb succeeds and the Ex form answers NOT_FOUND on any
+    # resolvable handle (wineserver's cancel_async takes ANY object).
+    # Jobs stay anonymous and are only argument-gated (limits are validated
+    # + stored, never enforced — docs/03 "CUI-3 SCM notes"), so every
+    # scenario's status is deterministic on both sides. Assignment stays
+    # out: assigning the interp to a job is irreversible state, and
+    # re-assignment answers differ (nesting is unbuilt, docs/03).
+    ("cancel_io", "NtCancelIoFile", ["slot_in"]),
+    ("cancel_io_ex", "NtCancelIoFileEx", ["slot_in"]),
+    ("create_job", "NtCreateJobObject", ["slot_out", "ch_access_job"]),
+    ("set_job_limits", "NtSetInformationJobObject", ["slot_in", "ch_job_scenario"]),
 ]
 
 
