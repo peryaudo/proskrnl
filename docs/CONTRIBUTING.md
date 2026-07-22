@@ -93,6 +93,19 @@ stated as hard gates.
   An unanswered audit, or one answered with "the caller won't do that", is a rejection.
   (Art. 11)
 
+- **G12 — Loud refusal.** Does the diff add a stub, default case, or stand-in that
+  fabricates a plausible answer — a success status from a no-op, a hardwired
+  count/id/device-type/exit-status, a `-1`/`0` sentinel the caller will interpret —
+  instead of refusing loudly (`STATUS_NOT_IMPLEMENTED` or the oracle's own refusal
+  shape, plus a serial line naming what was asked — the `KI_SYSCALL_MISSING` pattern)?
+  Every silent-plausible stub in the project's history became a deferred bug
+  (`1d6dafd`, `7cd6189`, `87bb03e`, `4fc732c`, `15e72d8`, `3ce0031`); every loud stub
+  surfaced instantly and harmlessly. A fixed answer is acceptable **only** when it is
+  the pinned oracle behaviour — backed by a `tests/ntapi/` case green on the oracle or
+  a `docs/03-nt-deviations.md` entry — which makes it an implementation, not a stub. A
+  value invented so callers keep going is rejected regardless of how reasonable it
+  looks. (Art. 12)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
