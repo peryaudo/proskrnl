@@ -432,7 +432,7 @@ $(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
 # only the disk payload is lean.
 WINESTRIP := $(BUILD)/winestrip
 WINESTRIP_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-                   cryptbase setupapi cfgmgr32 ws2_32 secur32
+                   cryptbase setupapi cfgmgr32 ws2_32 secur32 userenv
 WINESTRIP_DLLS := $(foreach d,$(WINESTRIP_NAMES),$(WINESTRIP)/$(d).dll)
 # One explicit rule per dll (the name appears twice in the source path, which
 # a pattern rule's single stem cannot express).
@@ -442,7 +442,20 @@ $(WINESTRIP)/$(1).dll: $(WINE_PE)/$(1)/x86_64-windows/$(1).dll
 	$$(OBJCOPY) --strip-debug $$< $$@
 endef
 $(foreach d,$(WINESTRIP_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
-winestrip: $(WINESTRIP_DLLS)
+
+# CUI-3: the SCM programs — the pinned tree's own UNMODIFIED pure-PE
+# binaries (the whoami precedent: prebuilt, no glue, no relink), baked
+# debug-stripped like the DLLs (services.exe stays resident; unstripped
+# DWARF triples the no-COW memory bill — docs/03 CUI-1 notes).
+WINESTRIP_EXE_NAMES := services rpcss sc
+WINESTRIP_EXES := $(foreach p,$(WINESTRIP_EXE_NAMES),$(WINESTRIP)/$(p).exe)
+define WINESTRIP_EXE_RULE
+$(WINESTRIP)/$(1).exe: third_party/wine/programs/$(1)/x86_64-windows/$(1).exe
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach p,$(WINESTRIP_EXE_NAMES),$(eval $(call WINESTRIP_EXE_RULE,$(p))))
+winestrip: $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 .PHONY: winestrip
 
 WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
@@ -459,6 +472,10 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINESTRIP)/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
             win:$(WINESTRIP)/ws2_32.dll=windows/system32/ws2_32.dll \
             win:$(WINESTRIP)/secur32.dll=windows/system32/secur32.dll \
+            win:$(WINESTRIP)/userenv.dll=windows/system32/userenv.dll \
+            win:$(WINESTRIP)/services.exe=windows/system32/services.exe \
+            win:$(WINESTRIP)/rpcss.exe=windows/system32/rpcss.exe \
+            win:$(WINESTRIP)/sc.exe=windows/system32/sc.exe \
             win:$(RUNDLL32)=windows/system32/rundll32.exe \
             win:$(WINEBOOT)=windows/system32/wineboot.exe \
             win:$(WINE_INF)=windows/inf/wine.inf \
@@ -479,7 +496,8 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(M9SMOKE)=m9_smoke.exe
 
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
+        arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -493,6 +511,12 @@ UPCASE := $(BUILD)/modules/upcase.exe
 $(UPCASE): tests/cui/upcase.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+# CUI-3 acceptance: a third-party service binary (imports advapi32 for the
+# service dispatcher; otherwise the hello_crt shape).
+SVCDEMO := $(BUILD)/modules/svcdemo.exe
+$(SVCDEMO): tests/cui/svcdemo.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $< -ladvapi32
 
 # The M9 interactive-console image (tests/run/run.sh console): the standard
 # image plus m9_echo.exe, whose presence makes the boot block on console
@@ -507,14 +531,16 @@ WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
-        $(CMD) $(HELLOCRT) $(UPCASE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WINE_PE_DLLS) \
-        $(WINESTRIP_DLLS) tools/mkimage.sh arch/x86_64/limine.conf
+        $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
+        arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(M9ECHO)=m9_echo.exe \
 	    win:$(CMD)=windows/system32/cmd.exe \
 	    win:$(HELLOCRT)=hello_crt.exe \
 	    win:$(UPCASE)=upcase.exe \
-	    win:$(WHOAMI)=whoami.exe
+	    win:$(WHOAMI)=whoami.exe \
+	    win:$(SVCDEMO)=svcdemo.exe
 
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img
@@ -636,15 +662,18 @@ $(BUILD)/interactive.flag:
 
 $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(BUILD)/interactive.flag tools/mkimage.sh arch/x86_64/limine.conf
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(BUILD)/interactive.flag \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \
 	    win:$(HELLOCRT)=hello_crt.exe \
 	    win:$(UPCASE)=upcase.exe \
 	    win:$(BUILD)/interactive.flag=interactive.flag
 
+# CUI-3: a resident SCM under no-eviction/no-COW (Art. 3) needs the same
+# provisioning the winetest leg always used.
 run: $(IMG_RUN)
-	INTERACTIVE=1 tools/qemu.sh $(IMG_RUN)
+	INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
 
 clean:
 	rm -rf $(BUILD)
