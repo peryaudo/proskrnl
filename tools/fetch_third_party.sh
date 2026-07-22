@@ -149,6 +149,14 @@ if [[ ${#missing[@]} -eq 0 ]]; then
     exit 0
 fi
 
+# tar has no built-in zstd — `tar --zstd` shells out to the zstd binary,
+# which the Ubuntu 24.04 base image does not ship. It must be installed
+# HERE: this script runs BEFORE setup_linux.sh by design (so setup's build
+# steps find everything present and skip), so there is nothing earlier in
+# the sequence to provide it. Guarded so provisioned machines never touch
+# apt, and ordered after the marker check (a fully-restored tree exits
+# without apt) but before any download (never burn ~900 MB of tarball
+# fetch only to die on a missing decompressor).
 if ! command -v zstd >/dev/null 2>&1; then
     echo "== apt: zstd (needed to unpack the cache tarballs) =="
     $SUDO apt-get update -qq
