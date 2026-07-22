@@ -2,10 +2,11 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup|resume",
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ \"$(uname)\" = Linux ] && [ ! -e /tmp/fetch_third_party.log ] && { [ ! -e third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ] || git submodule status 2>/dev/null | grep -q '^-'; }; then nohup tools/fetch_third_party.sh >/tmp/fetch_third_party.log 2>&1 & echo 'fetch_third_party: initializing all submodules and restoring the pinned third_party builds (qemu/wine/limine) from the release cache in the background — tail -f /tmp/fetch_third_party.log and wait for it (then run tools/setup_linux.sh for the apt toolchain) instead of building from source.'; fi",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
             "statusMessage": "third_party build cache"
           }
         ]
