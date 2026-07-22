@@ -125,6 +125,29 @@ finished work. A distro QEMU ≥ 9.0 (Ubuntu ≥ 24.10, recent Fedora/Arch) also
 works — the runner scripts prefer the in-tree builds and fall back to PATH,
 and `QEMU=`, `WINE=`, `LIMINE=`/`LIMINE_SHARE=` override either way.
 
+### Ephemeral containers (Claude Code on the web, fresh CI-like boxes)
+
+Building QEMU + Wine from source in a throwaway container wastes hours, so CI
+publishes the finished build trees to the rolling `third-party-cache` GitHub
+prerelease (zstd tarballs, keyed on the submodule pins — the publish step in
+`.github/workflows/test.yml`). `tools/fetch_third_party.sh` restores them in
+minutes and then `tools/setup_linux.sh`'s skip-logic only installs the apt
+toolchain:
+
+```sh
+tools/fetch_third_party.sh && tools/setup_linux.sh
+```
+
+For **Claude Code on the web**, paste exactly that line as the environment's
+*setup script* (environment settings in the web UI): the sandbox snapshots the
+filesystem after the setup script succeeds, so the download cost is paid once
+per environment and every later session starts with the builds already in
+place. Sessions without a configured setup script still recover: a
+`SessionStart` hook in `.claude/settings.json` kicks off the same fetch in the
+background on remote Linux containers. If the pins were bumped and main's CI
+hasn't republished yet, the fetch fails loudly — fall back to
+`tools/setup_linux.sh`.
+
 ### ntapi oracle target (both hosts; from M2, not needed for M1)
 
 **mingw-w64** builds the tests as a Windows `.exe` (`docs/14`) and a **Wine**
