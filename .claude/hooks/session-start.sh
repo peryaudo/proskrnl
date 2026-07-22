@@ -3,13 +3,15 @@
 # builds (qemu/wine/limine) from the third-party-cache GitHub release instead
 # of building them from source (tools/fetch_third_party.sh).
 #
-# Runs in the harness's async hook mode: the '{"async": ...}' line below tells
-# Claude Code to let the session start while this script keeps running in the
-# background. Do NOT self-background with `nohup ... &` — the harness kills
-# the hook's process group as soon as the hook command returns, which orphans
-# and kills the child mid-download (that failure mode is why this file exists).
+# Runs SYNCHRONOUSLY: session start blocks the ~1-2 minutes the restore takes,
+# guaranteeing third_party is ready before the agent can run anything (no
+# make-run-before-restore race). The hook's "timeout" in settings.json must
+# stay well above the restore time. Do NOT self-background with `nohup ... &`
+# — the harness kills the hook's process group as soon as the hook command
+# returns, which orphans and kills the child mid-download (that failure mode
+# is why this file exists).
 #
-# Progress / result: tail -f /tmp/fetch_third_party.log
+# Full transcript: /tmp/fetch_third_party.log
 set -euo pipefail
 
 # Web sessions only; local checkouts manage third_party themselves.
@@ -27,8 +29,13 @@ if [ -e third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ] \
     exit 0
 fi
 
-echo '{"async": true, "asyncTimeout": 1800000}'
-
 # fetch_third_party.sh is idempotent per component, so a rerun after a partial
 # restore (or a resumed session) picks up where it left off.
-tools/fetch_third_party.sh >/tmp/fetch_third_party.log 2>&1
+if tools/fetch_third_party.sh >/tmp/fetch_third_party.log 2>&1; then
+    echo 'fetch_third_party: restored the pinned third_party builds (qemu/wine/limine) from the release cache; run tools/setup_linux.sh for the apt toolchain.'
+else
+    rc=$?
+    echo "fetch_third_party FAILED (rc=$rc) — third_party builds are NOT restored; see /tmp/fetch_third_party.log. Last lines:" >&2
+    tail -5 /tmp/fetch_third_party.log >&2
+    exit "$rc"
+fi
