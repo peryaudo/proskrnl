@@ -33,20 +33,30 @@ static void test_pending_listen(void)
     status = create_pipe_instance_async(&server, W("\\??\\pipe\\prstest_alisten"), 1, &iosb);
     ok(status == STATUS_SUCCESS, "async server create -> %08lx", (unsigned long)status);
 
-    event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    /* The event goes in PRE-SIGNALLED: submission must reset it (the NT
+     * contract rpcrt4's server leans on — it caches MANUAL-RESET events and
+     * never resets them itself, get_np_event/release_np_event in
+     * dlls/rpcrt4/rpc_transport.c; a stale signalled event would fire the
+     * accept loop against a stale IOSB forever). */
+    event = CreateEventW(NULL, TRUE, TRUE, NULL);
     ok(event != NULL, "CreateEventW");
 
     thread = CreateThread(NULL, 0, connect_after_delay, W("\\??\\pipe\\prstest_alisten"), 0, NULL);
     ok(thread != NULL, "CreateThread");
 
-    /* The listen pends: PENDING comes back immediately and the IOSB is not
-     * written until completion. */
+    /* The listen pends: PENDING comes back immediately, the IOSB is not
+     * written until completion, and the pre-set event was RESET at submit. */
     poison_iosb(&iosb);
     status = NtFsControlFile(server, event, NULL, NULL, &iosb, FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
     ok(status == STATUS_PENDING, "async listen -> %08lx", (unsigned long)status);
     ok(iosb.Status == IOSB_POISON_STATUS, "iosb untouched while pending, got %08lx",
        (unsigned long)iosb.Status);
     ok(iosb.Information == (ULONG_PTR)~0ULL, "iosb length untouched while pending");
+    wait = WaitForSingleObject(event, 0);
+    todo_proskrnl
+    {
+        ok(wait == WAIT_TIMEOUT, "event reset at submission -> %lu", (unsigned long)wait);
+    }
 
     /* The client's connect completes the listen: event signalled, IOSB
      * carries the verdict (same on both sides — a blocking kernel signals
