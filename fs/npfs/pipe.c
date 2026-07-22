@@ -749,6 +749,28 @@ static void NpfsVfsClose(PFILE_OBJECT file)
     }
 }
 
+/* Cancel the instance's parked listen if this file object's end issued it
+ * and the filter matches (kernel/io/async.c IopCancelIo). Only the server
+ * end can have issued one — a client handle never cancels it. */
+static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
+{
+    PNPFS_END end = file->fsContext;
+    if (!end->isServer)
+    {
+        return 0;
+    }
+    PNPFS_INSTANCE instance = end->instance;
+    PIOP_PENDING_REQUEST pending = instance->pendingListen;
+    if (pending == 0 || (issuer != 0 && pending->issuer != issuer) ||
+        (userIosb != 0 && pending->userIosb != userIosb))
+    {
+        return 0;
+    }
+    instance->pendingListen = 0;
+    IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
+    return 1;
+}
+
 const IO_VFS_OPS NpfsVfsOps = {
     .Create = NpfsVfsCreate,
     .Cleanup = NpfsVfsCleanup,
@@ -758,6 +780,7 @@ const IO_VFS_OPS NpfsVfsOps = {
     .Read = NpfsRead,
     .Write = NpfsWrite,
     .DeviceControl = NpfsDeviceControl,
+    .CancelPending = NpfsCancelPending,
     .QueryPipeInfo = NpfsQueryPipeInfo,
     .SetPipeInfo = NpfsSetPipeInfo,
 };

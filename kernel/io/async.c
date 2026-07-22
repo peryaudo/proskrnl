@@ -82,3 +82,57 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     ObDereferenceObject(request->owner);
     MiFreePool(request);
 }
+
+/* --- NtCancelIoFile / NtCancelIoFileEx (CUI-3) ----------------------------- */
+
+/* services.exe's process_send_start_message drives CancelIo against a STACK
+ * OVERLAPPED on its control-pipe timeout path (services.c) — a pending op
+ * that could not be cancelled would complete into a dead stack frame later.
+ * Oracle shape (wine/dlls/ntdll/unix/file.c cancel_io + server/async.c
+ * cancel_async, pinned sem_pipe/async_listen.c): the thread-scoped verb
+ * succeeds even when nothing pends; the Ex form answers STATUS_NOT_FOUND;
+ * both write the cancel call's own IOSB with the verdict; an invalid handle
+ * returns without touching it. */
+static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK targetIosb,
+                            PIO_STATUS_BLOCK ioStatus)
+{
+    if (ioStatus == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(ioStatus, sizeof(*ioStatus), sizeof(void *));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PFILE_OBJECT file;
+    status = IopReferenceFileByHandle(handle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG cancelled = 0;
+    if (file->device->ops->CancelPending != 0)
+    {
+        cancelled = file->device->ops->CancelPending(file, issuer, targetIosb);
+    }
+    /* Thread-scoped (issuer != 0): success regardless; by-IOSB/all: the
+     * count decides. */
+    status = (issuer != 0 || cancelled != 0) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+    ioStatus->Status = status;
+    ioStatus->Information = 0;
+    ObDereferenceObject(file);
+    return status;
+}
+
+NTSTATUS NtCancelIoFile(HANDLE handle, PIO_STATUS_BLOCK ioStatus)
+{
+    return IopCancelIo(handle, KeGetCurrentThread(), 0, ioStatus);
+}
+
+NTSTATUS NtCancelIoFileEx(HANDLE handle, PIO_STATUS_BLOCK targetIosb, PIO_STATUS_BLOCK ioStatus)
+{
+    /* `targetIosb` identifies the request (NULL = all on the handle); it is
+     * compared against the parked VA, never dereferenced. */
+    return IopCancelIo(handle, 0, targetIosb, ioStatus);
+}

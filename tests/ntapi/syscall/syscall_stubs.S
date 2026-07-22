@@ -1603,6 +1603,26 @@ NtSetSecurityObject:
     syscall
     ret
 
+    .global NtCancelIoFile
+NtCancelIoFile:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x5d, %eax
+    syscall
+    ret
+
+    .global NtCancelIoFileEx
+NtCancelIoFileEx:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x74, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

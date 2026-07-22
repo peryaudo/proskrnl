@@ -804,6 +804,9 @@ NTIOAPI_FUNCTIONS = [
     "NtRemoveIoCompletion",
     "NtRemoveIoCompletionEx",
     "NtQueryIoCompletion",
+    # CUI-3 (the SCM's cancel path)
+    "NtCancelIoFile",
+    "NtCancelIoFileEx",
 ]
 
 

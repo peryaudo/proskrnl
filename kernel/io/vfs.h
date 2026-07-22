@@ -19,6 +19,7 @@
 
 struct FILE_OBJECT; /* kernel/io/io.h */
 struct IO_DEVICE;   /* kernel/io/io.h */
+struct KTHREAD;     /* kernel/ke/ke.h */
 
 /* What a DeviceControl op needs to PEND an operation (CUI-3): the caller's
  * completion event handle and IOSB, captured into an IOP_PENDING_REQUEST by
@@ -171,6 +172,15 @@ typedef struct IO_VFS_OPS
     NTSTATUS(*DeviceControl)
     (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
      ULONG outputLength, ULONG_PTR *infoOut, const struct IO_CONTROL_CONTEXT *request);
+
+    /* CUI-3: cancel-complete (STATUS_CANCELLED) every pending request this
+     * FILE_OBJECT issued that matches the filter — `issuer` non-0 restricts
+     * to that thread's requests (NtCancelIoFile), `userIosb` non-0 to the
+     * request with that IOSB VA (NtCancelIoFileEx; compared, never
+     * dereferenced). Returns how many were cancelled. NULL = the device
+     * never pends, so there is never anything to cancel. */
+    ULONG(*CancelPending)
+    (struct FILE_OBJECT *file, struct KTHREAD *issuer, PIO_STATUS_BLOCK userIosb);
 
     /* FilePipeInformation / FilePipeLocalInformation (query), and
      * FilePipeInformation (set) — kernel/io/query.c routes the classes here
