@@ -68,6 +68,17 @@ the file on proskrnl's disk. That only works under one invariant:
    grep-auditable `#ifdef PROSKRNL_TARGET` regions. Enacting this hatch is a visible,
    gated event: the same PR must amend this section and `tools/setup_linux.sh`.
 
+**The canonical worked example is the conhost seam commit** on the fork — "conhost: pump
+the kernel ConDrv transport when no wineserver is below" (M9; superproject context:
+`31e7b57`). Its shape is the one to imitate when adding a new seam, rather than inventing
+a fresh arrangement: the two `get_next_console_request` call sites take the proskrnl leg
+only after ntdll's own no-unixlib fallback answers a **side-effect-free probe** with
+`STATUS_NOT_SUPPORTED` — the guard is the oracle's own refusal, a level-1 runtime
+dormancy — and the transport implementation lives in **new files**
+(`programs/conhost/proskrnl.{c,h}`) that are dead code in the oracle's `conhost.exe`
+(level 2). Probe first; guard the proskrnl leg behind behaviour only a missing unixlib
+produces; keep the implementation additive.
+
 `run.sh oracle` running the **patched** tree is therefore intentional and load-bearing:
 a green oracle run is the continuous, empirical proof that every seam commit is
 behavior-neutral under Wine. Measure the meter with `tools/hack_meter.sh`. The base is
@@ -85,6 +96,24 @@ target trees that would need its own merge-base-equality check — machinery to 
 problem the split itself created. A worktree-of-the-merge-base variant is strictly worse:
 it pays the second build *and* loses tested-bytes even for dormant patches. If a
 non-dormant change ever becomes necessary, the answer is level 3 above, not a second pin.
+
+## Landing a fork commit (the recipe)
+
+The mechanics of a Wine modification, end to end — there is no other path (no patches
+directory, no vendored diffs, no build-time patching):
+
+1. **Commit on the fork.** Inside `third_party/wine`, commit to `proskrnl-target` — one
+   logical change (Art. 10) whose message carries the required header: what it changes /
+   why the unixlib seam (and not the kernel) is the right place / upstream disposition
+   (`upstreamable` | `proskrnl-only` | `temporary`-until-a-named-feature) — and names its
+   dormancy mechanism (level 1/2/3 above). Follow the conhost seam commit's shape.
+2. **Push the fork branch** to the fork remote (the submodule's origin,
+   `proskrnl-target`). On a winehq base bump, `master` is fast-forwarded to the new base
+   in the same push that rebases `proskrnl-target` onto it (the hack-meter base).
+3. **Bump the pin in the superproject**: one pin-bump commit updating the
+   `third_party/wine` SHA. Its message/PR reports the old → new hack meter
+   (`tools/hack_meter.sh`) with a justification for any growth, and states that
+   `tests/run/run.sh oracle` was re-run green on the new pin — the dormancy proof.
 
 ## Checkout: submodule, pinned
 
