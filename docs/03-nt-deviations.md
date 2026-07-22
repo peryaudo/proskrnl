@@ -359,6 +359,19 @@ first (Art. 5). Wrinkles worth remembering:
   is unimplemented on both sides). Pinned by
   `tests/ntapi/sem_file/volume_info.c`; consumer: cmd.exe's `dir`/`vol`
   via `GetVolumeInformationW` / `GetDiskFreeSpaceExW`.
+- **A failing `NtQueryVolumeInformationFile` leaves the IOSB untouched on
+  every handle** (success writes it; a bad handle writes `Status` alone).
+  The pinned Wine is split on this: a drive-root handle is a mountmgr
+  DEVICE file served through the wineserver, whose synchronous `NT_ERROR`
+  completions never fill the caller's IOSB (`server/async.c`
+  `async_terminate` — "the client should not fill the IOSB"), while a
+  plain file handle takes the unix-fd path that fills it on failure
+  (`dlls/ntdll/unix/file.c` preamble/epilogue). proskrnl has one path and
+  follows the server-path shape uniformly — it is also real NT's — so the
+  file-handle failure IOSB diverges from the oracle; only the drive-root
+  shape is pinned (`tests/ntapi/sem_file/volume_info.c`), and no Wine PE
+  consumer reads the IOSB after a failed volume query
+  (`dlls/kernelbase/volume.c` checks the return status alone).
 - **A relocated `SEC_IMAGE` copy's mapped header claims the ACTUAL base**
   (`OptionalHeader.ImageBase` stamped after the kernel-side fixups), which
   is what keeps ntdll's own `perform_relocations` from applying the delta
