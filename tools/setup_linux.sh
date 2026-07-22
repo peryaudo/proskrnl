@@ -41,9 +41,30 @@ $SUDO apt-get install -y --no-install-recommends \
     flex bison python3-venv \
     gcc libc6-dev gcc-mingw-w64-x86-64
 
+# Bring every third_party submodule to its pinned gitlink, one at a time so
+# a single broken tree cannot strand the rest (an empty clone with an unborn
+# HEAD aborts a no-path `git submodule update` before it reaches the later
+# submodules, leaving them at clone-time default-branch tips). Per-path
+# update first; on failure, repair the clone directly by fetching the pinned
+# sha and detaching onto it. Then fail loudly on any remaining drift — the
+# builds below and abi/ generation silently trust these checkouts.
 echo "== pinned submodules =="
-git submodule update --init --depth 1 \
-    third_party/limine third_party/limine-protocol third_party/qemu third_party/wine
+while IFS=$'\t' read -r sha path; do
+    if git submodule update --init --depth 1 -- "$path" </dev/null; then
+        continue
+    fi
+    echo "   $path: submodule update failed; fetching pin $sha directly"
+    git -C "$path" fetch --depth 1 origin "$sha" </dev/null ||
+        git -C "$path" fetch origin "$sha" </dev/null ||
+        git -C "$path" fetch origin </dev/null
+    git -C "$path" checkout -q --detach "$sha" </dev/null
+done < <(git ls-tree HEAD third_party/ | awk '$2 == "commit" { print $3 "\t" $4 }')
+drift="$(git submodule status third_party/ | grep -v '^ ' || true)"
+if [[ -n "$drift" ]]; then
+    echo "setup_linux: submodules are NOT at their pinned commits:" >&2
+    echo "$drift" >&2
+    exit 1
+fi
 
 echo "== limine: deploy tool (stages are prebuilt on the binary branch) =="
 make -C third_party/limine limine

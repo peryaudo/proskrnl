@@ -40,15 +40,52 @@ fi
 KEY="$(git ls-tree HEAD third_party | sha256sum | cut -c1-16)"
 echo "== third_party cache key: $KEY =="
 
+# Fail loudly if any submodule checkout disagrees with its pinned gitlink —
+# everything downstream (the cache key above, abi/ generation, the wine
+# oracle) silently trusts the checkout. `git submodule status` marks drift
+# with a non-space prefix: '+' wrong commit, '-' not initialized, 'U'
+# conflicts.
+VerifySubmodulePins() {
+    local drift
+    drift="$(git submodule status | grep -v '^ ' || true)"
+    if [[ -n "$drift" ]]; then
+        echo "fetch_third_party: submodules are NOT at their pinned commits:" >&2
+        echo "$drift" >&2
+        exit 1
+    fi
+}
+
+# Bring every third_party submodule to its pinned gitlink, one at a time so
+# a single broken tree cannot strand the rest. A half-finished session-start
+# clone leaves exactly that: an empty clone with an unborn HEAD makes
+# `git submodule update` (no path list) abort with "Unable to find current
+# revision" before it ever reaches the later submodules, which then sit at
+# their clone-time default-branch tips instead of the pins. Per-path update
+# first; on failure, repair the clone directly by fetching the pinned sha
+# (depth 1, then full, then all refs) and detaching onto it.
+UpdateSubmodulePins() {
+    local sha path
+    while IFS=$'\t' read -r sha path; do
+        if git submodule update --init --depth 1 -- "$path" </dev/null; then
+            continue
+        fi
+        echo "   $path: submodule update failed; fetching pin $sha directly"
+        git -C "$path" fetch --depth 1 origin "$sha" </dev/null ||
+            git -C "$path" fetch origin "$sha" </dev/null ||
+            git -C "$path" fetch origin </dev/null
+        git -C "$path" checkout -q --detach "$sha" </dev/null
+    done < <(git ls-tree HEAD third_party/ | awk '$2 == "commit" { print $3 "\t" $4 }')
+}
+
 # .gitmodules pins third_party/wine by SSH URL; an ephemeral container has
 # no SSH key, so route github.com submodule fetches over HTTPS (same trick
-# as test.yml). ALL submodules, no path list — this doubles as the session's
-# submodule init. Init BEFORE extracting — git refuses to clone into a
-# non-empty directory, so the tarballs must overlay the checkouts, not
-# precede them.
+# as test.yml). ALL submodules — this doubles as the session's submodule
+# init. Init BEFORE extracting — git refuses to clone into a non-empty
+# directory, so the tarballs must overlay the checkouts, not precede them.
 echo "== pinned submodules =="
 git config --global url."https://github.com/".insteadOf "git@github.com:"
-git submodule update --init --depth 1
+UpdateSubmodulePins
+VerifySubmodulePins
 
 # CI packs the trees from the runner's workspace, and qemu's build dir links
 # its firmware bundle (qemu-bundle/.../bios-256k.bin etc.) by ABSOLUTE path
