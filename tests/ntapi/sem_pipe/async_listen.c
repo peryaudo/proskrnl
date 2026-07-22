@@ -214,15 +214,9 @@ static void test_cancel_nothing_pending(void)
     HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
     ok(event != NULL, "CreateEventW");
     status = NtCancelIoFile(event, &cancel_iosb);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "cancel on event -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_SUCCESS, "cancel on event -> %08lx", (unsigned long)status);
     status = NtCancelIoFileEx(event, NULL, &cancel_iosb);
-    todo_proskrnl
-    {
-        ok(status == STATUS_NOT_FOUND, "cancel-ex on event -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_NOT_FOUND, "cancel-ex on event -> %08lx", (unsigned long)status);
     CloseHandle(event);
 }
 
