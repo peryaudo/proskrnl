@@ -72,6 +72,11 @@ typedef struct NPFS_INSTANCE
     NPFS_QUEUE inbound;  /* client -> server */
     NPFS_QUEUE outbound; /* server -> client */
     KEVENT connectEvent; /* notification: connect / state changed */
+
+    /* CUI-3: the one parked async listen (kernel/io/async.c). Owned here:
+     * completed by client attach, NtCancelIoFile(Ex), or the server end's
+     * cleanup — whichever comes first (G11). */
+    PIOP_PENDING_REQUEST pendingListen;
 } NPFS_INSTANCE, *PNPFS_INSTANCE;
 
 typedef struct NPFS_END
@@ -358,7 +363,7 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
 
 /* --- FSCTL verbs ------------------------------------------------------------ */
 
-static NTSTATUS NpfsListen(PNPFS_END end)
+static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request)
 {
     PNPFS_INSTANCE instance = end->instance;
     if (!end->isServer)
@@ -386,6 +391,21 @@ static NTSTATUS NpfsListen(PNPFS_END end)
             {
                 return STATUS_PIPE_LISTENING;
             }
+            if (!file->synchronousIo)
+            {
+                /* Asynchronous handle: genuinely pend (pinned
+                 * async_listen.c — rpcrt4's server loop deadlocks on a
+                 * blocking listen). One slot: no baked caller stacks two
+                 * listens on one instance; a second is refused loudly, not
+                 * given a made-up answer (Art. 12). */
+                if (instance->pendingListen != 0)
+                {
+                    DbgPrint("npfs: second concurrent listen on one instance\n");
+                    return STATUS_NOT_IMPLEMENTED;
+                }
+                NTSTATUS status = IopPreparePendingRequest(request, &instance->pendingListen);
+                return NT_SUCCESS(status) ? STATUS_PENDING : status;
+            }
             NpfsWait(&instance->connectEvent);
             break;
         default:
@@ -409,6 +429,9 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
+    /* A listen can pend only in the listening state, which the guard above
+     * rejects — nothing to cancel here. */
+    ASSERT(instance->pendingListen == 0);
     /* Unread bytes are DISCARDED (pinned) and the client end is orphaned. */
     NpfsFlushQueue(&instance->inbound);
     NpfsFlushQueue(&instance->outbound);
@@ -479,7 +502,7 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
 
 static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                   ULONG inputLength, void *output, ULONG outputLength,
-                                  ULONG_PTR *infoOut)
+                                  ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
 {
     (void)input;
     (void)inputLength;
@@ -487,7 +510,7 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
     switch (code)
     {
     case FSCTL_PIPE_LISTEN:
-        return NpfsListen(end);
+        return NpfsListen(end, file, request);
     case FSCTL_PIPE_DISCONNECT:
         return NpfsDisconnect(end);
     case FSCTL_PIPE_PEEK:
@@ -643,6 +666,14 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     instance->endCount++;
     instance->state = FILE_PIPE_CONNECTED_STATE;
     NpfsWakeAll(instance); /* satisfy a parked FSCTL_PIPE_LISTEN */
+    if (instance->pendingListen != 0)
+    {
+        /* Complete the pended async listen: IOSB {SUCCESS, 0} in the
+         * server's address space, then its event (pinned async_listen.c). */
+        PIOP_PENDING_REQUEST pending = instance->pendingListen;
+        instance->pendingListen = 0;
+        IopCompletePendingRequest(pending, STATUS_SUCCESS, 0);
+    }
 
     file->fsContext = end;
     file->fcb = &instance->header;
@@ -664,6 +695,15 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
     }
     if (instance->serverEnd == end)
     {
+        if (instance->pendingListen != 0)
+        {
+            /* The owning handle is going away: cancel-complete the parked
+             * listen before the instance loses its server end (G11 — the
+             * request never outlives the handle that issued it). */
+            PIOP_PENDING_REQUEST pending = instance->pendingListen;
+            instance->pendingListen = 0;
+            IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
+        }
         instance->serverEnd = 0;
         /* The instance leaves the pipe's accounting when its server handle
          * goes away; the pipe itself dies with its last instance. */

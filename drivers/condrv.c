@@ -653,8 +653,9 @@ static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG 
 
 static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                            ULONG inputLength, void *output, ULONG outputLength,
-                                           ULONG_PTR *infoOut)
+                                           ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
 {
+    (void)request; /* console verbs complete synchronously (Art. 3) */
     PCONDRV_OPEN open = file->fsContext;
     if (open->kind == CondrvOpenServer)
     {

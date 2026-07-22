@@ -248,11 +248,14 @@ signals). Persistence acceptance is the boot-twice harness `tests/run/run.sh per
 
 What the M9 bring-up pinned, deviated on, or left unbuilt:
 
-- **Pipes are synchronous-only** (Art. 3): every `NtReadFile`/`NtWriteFile`/
-  `FSCTL_PIPE_LISTEN` on a pipe completes (or blocks the caller) before the
-  syscall returns — `STATUS_PENDING` is never produced. The pinned sem_pipe
-  suite uses synchronous handles exclusively; an async-handle divergence
-  found later gets its own entry here.
+- **Pipe DATA transfers are synchronous-only** (Art. 3): every
+  `NtReadFile`/`NtWriteFile` on a pipe completes (or blocks the caller)
+  before the syscall returns — `STATUS_PENDING` is never produced for data.
+  *Narrowed by CUI-3:* `FSCTL_PIPE_LISTEN` on an **asynchronous** handle
+  genuinely pends (`kernel/io/async.c`; pinned `sem_pipe/async_listen.c`) —
+  rpcrt4's ncacn_np server loop deadlocks on a blocking listen, see the
+  "CUI-3 SCM notes". On synchronous handles the original blocking behaviour
+  is unchanged.
 - **`FSCTL_PIPE_WAIT` / `FSCTL_PIPE_TRANSCEIVE` are unbuilt** — refused
   loudly (`STATUS_NOT_SUPPORTED` + a serial line), never faked. The
   `NtCreateNamedPipeFile` timeout parameter is accepted and unused until

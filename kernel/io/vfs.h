@@ -20,6 +20,16 @@
 struct FILE_OBJECT; /* kernel/io/io.h */
 struct IO_DEVICE;   /* kernel/io/io.h */
 
+/* What a DeviceControl op needs to PEND an operation (CUI-3): the caller's
+ * completion event handle and IOSB, captured into an IOP_PENDING_REQUEST by
+ * IopPreparePendingRequest while still in the issuer's context
+ * (kernel/io/async.c). Synchronous-only devices never look at it. */
+typedef struct IO_CONTROL_CONTEXT
+{
+    HANDLE eventHandle;        /* optional completion event (0 = none) */
+    PIO_STATUS_BLOCK userIosb; /* the caller's IOSB (probed writable) */
+} IO_CONTROL_CONTEXT;
+
 /* NT share-mode accounting state (the SHARE_ACCESS concept, kept internal).
  * Owned by the Io layer (kernel/io/file.c Io*ShareAccess). */
 typedef struct
@@ -153,10 +163,14 @@ typedef struct IO_VFS_OPS
 
     /* One NtDeviceIoControlFile/NtFsControlFile verb (both funnel here: the
      * NT split by device type is not observable through this boundary).
-     * *infoOut = bytes placed in `output`. */
+     * *infoOut = bytes placed in `output`. A verb on an asynchronous handle
+     * may return STATUS_PENDING after parking an IOP_PENDING_REQUEST built
+     * from `request` (kernel/io/async.c; CUI-3 npfs listen) — the Io layer
+     * then leaves the caller's IOSB untouched. Everything else ignores
+     * `request` and completes before returning (Art. 3). */
     NTSTATUS(*DeviceControl)
     (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
-     ULONG outputLength, ULONG_PTR *infoOut);
+     ULONG outputLength, ULONG_PTR *infoOut, const struct IO_CONTROL_CONTEXT *request);
 
     /* FilePipeInformation / FilePipeLocalInformation (query), and
      * FilePipeInformation (set) — kernel/io/query.c routes the classes here
