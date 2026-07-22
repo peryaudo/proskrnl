@@ -196,6 +196,39 @@ second engine or a second writer looks locally correct in every later diff, and 
 departments stay self-consistent while disagreeing with each other. Gates G10 and G11
 therefore check for them at review time, per diff.
 
+## Article 12 — Unbuilt behaviour refuses loudly
+
+Every not-yet-implemented service, info class, ioctl/fsctl verb, or glue stand-in
+**refuses loudly**: a distinct failure status (`STATUS_NOT_IMPLEMENTED`, or the refusal
+the oracle itself shapes for the case) plus a serial line naming what was asked for —
+the `KI_SYSCALL_MISSING` pattern, which is why the M7 bring-up could see exactly which
+`Nt*` an unmodified ntdll wanted next. **Never fabricate a plausible answer to let
+callers proceed.** The project's bug history is unambiguous on this: every loud stub
+surfaced instantly and harmlessly, while every stub that answered something plausible
+became a deferred bug that a later milestone paid for —
+
+- `NtResumeThread` as a silent success no-op made CreateProcess impossible (`1d6dafd`);
+- `ThreadBasicInformation` always described the caller and reported `STILL_ACTIVE`
+  forever (`7cd6189`);
+- `ProcessBasicInformation.ExitStatus` hardwired `STATUS_PENDING` (`87bb03e`);
+- the M7 alert-by-tid accept-and-timeout fakes turned the first contended heap lock into
+  a busy spin (`4fc732c`);
+- conhost's `VkKeyScanW` stand-in returning −1 inserted a literal `^M` instead of ending
+  the line (`15e72d8`);
+- `FileFsDeviceInformation` hardwired `FILE_DEVICE_DISK` for every device (`3ce0031`).
+
+The test is observability: if a caller could not distinguish the stub from a real
+implementation except by things going wrong later, the stub is a planted bug. A loud
+refusal is distinguishable immediately, at the exact point of first contact, and turns
+the missing feature into a visible work item instead of a latent divergence.
+
+One carve-out, sharply bounded: a **fixed answer that is the pinned oracle behaviour is
+an implementation, not a stub** — Wine itself answers `NtQueryTimerResolution` with a
+fixed triple, and matching that is correct. The distinction is provenance: a fixed value
+is legitimate only when it is pinned by a `tests/ntapi/` case green on the oracle
+(Art. 5) or recorded in `docs/03-nt-deviations.md` — a value *invented so callers keep
+going* is a violation regardless of how reasonable it looks.
+
 ---
 
 ## The through-line
@@ -204,5 +237,6 @@ Every article is the same instinct applied to a different target: **avoid the di
 boundary, take the clean one.** T1 avoids the driver ABI; T2 avoids win32k's temporal
 protocol; Article 3 avoids the concurrency swamp; Article 4 avoids the model's unreliable
 memory; T7 avoids the undocumented shell seam; Article 10 avoids quietly reshaping the
-oracle to fit the kernel; Article 11 avoids the second implementation that drifts. The
-project succeeds exactly insofar as these boundaries hold. Guard them.
+oracle to fit the kernel; Article 11 avoids the second implementation that drifts;
+Article 12 avoids the plausible answer that defers the bug. The project succeeds exactly
+insofar as these boundaries hold. Guard them.
