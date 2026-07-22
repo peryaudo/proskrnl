@@ -50,6 +50,43 @@ echo "== pinned submodules =="
 git config --global url."https://github.com/".insteadOf "git@github.com:"
 git submodule update --init --depth 1
 
+# CI packs the trees from the runner's workspace, and qemu's build dir links
+# its firmware bundle (qemu-bundle/.../bios-256k.bin etc.) by ABSOLUTE path
+# into that workspace — dangling on any machine with a different checkout
+# path ("qemu: could not load PC BIOS 'bios-256k.bin'"). Re-root every broken
+# absolute link that points into a third_party tree onto this checkout. Runs
+# on the already-present path too: a tree restored elsewhere (environment
+# snapshot, older script) may still carry the build machine's paths.
+RerootSymlinks() {
+    echo "== re-rooting absolute symlinks from the build machine's path =="
+    local rerooted=0 link tgt
+    while IFS= read -r link; do
+        tgt="$(readlink "$link")"
+        case "$tgt" in
+            /*/third_party/*)
+                ln -sfn "$ROOT/third_party/${tgt#*/third_party/}" "$link"
+                rerooted=$((rerooted + 1))
+                ;;
+        esac
+    done < <(find third_party -xtype l 2>/dev/null)
+    echo "   $rerooted re-rooted"
+    # Links into meson-downloaded qemu subprojects (bundle include/ headers)
+    # stay dangling — those sources exist only on the build machine and are
+    # never needed at runtime. Only the firmware bundle (share/qemu) is
+    # load-bearing: qemu refuses to boot without it, so that stays fatal.
+    local stillBroken
+    stillBroken="$(find third_party -xtype l 2>/dev/null)"
+    if grep -q "/share/qemu/" <<<"$stillBroken"; then
+        echo "fetch_third_party: qemu firmware symlinks remain broken:" >&2
+        grep "/share/qemu/" <<<"$stillBroken" | head -5 >&2
+        exit 1
+    fi
+    if [[ -n "$stillBroken" ]]; then
+        echo "   note: non-runtime links left dangling (build-only headers):"
+        head -3 <<<"$stillBroken" | sed 's/^/     /'
+    fi
+}
+
 # component name (in asset filenames) -> finished-build marker, the same
 # markers setup_linux.sh's skip-logic tests. wine's marker is the pass-2
 # test exe: the tarball holds both wine passes, so pass 2 present => whole
@@ -70,6 +107,7 @@ for c in "${COMPONENTS[@]}"; do
     fi
 done
 if [[ ${#missing[@]} -eq 0 ]]; then
+    RerootSymlinks
     echo "fetch_third_party: everything already present."
     exit 0
 fi
@@ -151,6 +189,8 @@ for c in "${missing[@]}"; do
         exit 1
     }
 done
+
+RerootSymlinks
 
 echo
 echo "fetch_third_party: done. Next:"
