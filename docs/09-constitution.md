@@ -229,6 +229,32 @@ is legitimate only when it is pinned by a `tests/ntapi/` case green on the oracl
 (Art. 5) or recorded in `docs/03-nt-deviations.md` — a value *invented so callers keep
 going* is a violation regardless of how reasonable it looks.
 
+## Article 13 — History is part of the deliverable
+
+A PR's commit history is **curated into meaningful units**, not left as the accident of
+how the work happened. Under LLM-driven development the history carries three loads that
+reviewing the final diff cannot:
+
+- **Bisection is the cheap half of Art. 6.** A differential test that goes red convicts
+  a *commit* only if each commit is one logical change that builds and passes the gates
+  on its own. A mixed commit turns a conviction back into a suspect list.
+- **The history is the retrospective's raw material.** The bug-pattern analysis that
+  produced Articles 11 and 12 was possible only because fix commits named what was
+  broken, what found it, and why the fix has its shape. A "misc fixes" commit is
+  amnesia — it discards exactly the evidence future gates are built from.
+- **Per-commit review is how the other gates stay checkable.** Art. 5's oracle-first
+  ordering is only *visible* in history — the pin commit precedes the kernel commit; a
+  squashed blob hides whether the test was ever green before the implementation
+  existed. The fork already lives by this rule (Art. 10: one logical commit per Wine
+  modification); the superproject holds itself to the same standard.
+
+Concretely: one logical change per commit — a test pin, a kernel behaviour with its
+`docs/03` note, an `abi/` regeneration, a mechanical rename — never a drive-by mix of
+behaviour change and unrelated refactor. Subjects name the department(s) and the change
+(the existing `io+ob: ...` convention); bodies state what changed, why, and how it was
+verified. No WIP/fixup/checkpoint commits survive into a PR: reorder and squash locally
+before pushing.
+
 ---
 
 ## The through-line
@@ -238,5 +264,6 @@ boundary, take the clean one.** T1 avoids the driver ABI; T2 avoids win32k's tem
 protocol; Article 3 avoids the concurrency swamp; Article 4 avoids the model's unreliable
 memory; T7 avoids the undocumented shell seam; Article 10 avoids quietly reshaping the
 oracle to fit the kernel; Article 11 avoids the second implementation that drifts;
-Article 12 avoids the plausible answer that defers the bug. The project succeeds exactly
-insofar as these boundaries hold. Guard them.
+Article 12 avoids the plausible answer that defers the bug; Article 13 avoids the
+history that cannot testify. The project succeeds exactly insofar as these boundaries
+hold. Guard them.

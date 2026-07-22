@@ -106,6 +106,16 @@ stated as hard gates.
   value invented so callers keep going is rejected regardless of how reasonable it
   looks. (Art. 12)
 
+- **G13 — Commits are meaningful units.** A PR's history is curated: each commit is one
+  logical change — a test pin, a kernel behaviour with its `docs/03` note, an `abi/`
+  regeneration, a mechanical rename — that builds and passes the gates on its own, so a
+  bisect can convict it (Art. 6). Subjects name the department(s) and the change (the
+  `io+ob: ...` convention); bodies state what changed, why, and how it was verified.
+  The G5 ordering must be visible in the history: the oracle-pin commit precedes the
+  kernel commit it specifies. No WIP/fixup/checkpoint commits and no drive-by mixes of
+  behaviour change with unrelated refactoring reach the PR — reorder and squash locally
+  first. (Art. 13)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public
