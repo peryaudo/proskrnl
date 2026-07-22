@@ -51,6 +51,8 @@ typedef enum {
     FZ_OPND_CH_VDATA,
     FZ_OPND_CH_KV_INFO,
     FZ_OPND_CH_KEY_INFO,
+    FZ_OPND_CH_ACCESS_JOB,
+    FZ_OPND_CH_JOB_SCENARIO,
 } FzOperandKind;
 
 typedef enum {
@@ -102,6 +104,10 @@ typedef enum {
     FZ_OP_ENUMERATE_KEY,
     FZ_OP_QUERY_KEY,
     FZ_OP_FLUSH_KEY,
+    FZ_OP_CANCEL_IO,
+    FZ_OP_CANCEL_IO_EX,
+    FZ_OP_CREATE_JOB,
+    FZ_OP_SET_JOB_LIMITS,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -154,6 +160,10 @@ static const FzOperandKind fz_kinds_enum_value_key[] = { FZ_OPND_SLOT_IN, FZ_OPN
 static const FzOperandKind fz_kinds_enumerate_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_ULONG, FZ_OPND_CH_KEY_INFO, FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_query_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_KEY_INFO, FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_flush_key[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_cancel_io[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_cancel_io_ex[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_create_job[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_JOB };
+static const FzOperandKind fz_kinds_set_job_limits[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_SCENARIO };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -203,6 +213,10 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_ENUMERATE_KEY] = { fz_kinds_enumerate_key, 4, "NtEnumerateKey" },
     [FZ_OP_QUERY_KEY] = { fz_kinds_query_key, 3, "NtQueryKey" },
     [FZ_OP_FLUSH_KEY] = { fz_kinds_flush_key, 1, "NtFlushKey" },
+    [FZ_OP_CANCEL_IO] = { fz_kinds_cancel_io, 1, "NtCancelIoFile" },
+    [FZ_OP_CANCEL_IO_EX] = { fz_kinds_cancel_io_ex, 1, "NtCancelIoFileEx" },
+    [FZ_OP_CREATE_JOB] = { fz_kinds_create_job, 2, "NtCreateJobObject" },
+    [FZ_OP_SET_JOB_LIMITS] = { fz_kinds_set_job_limits, 2, "NtSetInformationJobObject" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -254,5 +268,8 @@ static const ULONG fz_ch_reg_options[] = { (ULONG)(0), (ULONG)(REG_OPTION_VOLATI
 #define FZ_CH_VDATA_COUNT 4
 #define FZ_CH_KEY_INFO_COUNT 3
 #define FZ_CH_KV_INFO_COUNT 3
+#define FZ_CH_ACCESS_JOB_COUNT 3
+static const ACCESS_MASK fz_ch_access_job[] = { (ACCESS_MASK)(JOB_OBJECT_ALL_ACCESS), (ACCESS_MASK)(SYNCHRONIZE), (ACCESS_MASK)(0) };
+#define FZ_CH_JOB_SCENARIO_COUNT 6
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */

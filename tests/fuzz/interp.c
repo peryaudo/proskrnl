@@ -30,6 +30,11 @@ NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, PULONG);
 NTSYSAPI NTSTATUS NTAPI NtInitializeNlsFiles(void **, LCID *, LARGE_INTEGER *);
 NTSYSAPI NTSTATUS NTAPI NtGetNlsSectionPtr(ULONG, ULONG, void *, void **, SIZE_T *);
+/* CUI-3 ops. */
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE, PIO_STATUS_BLOCK);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
+NTSYSAPI NTSTATUS NTAPI NtCreateJobObject(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PVOID, ULONG);
 /* NtGetNlsSectionPtr's section types, as wine/dlls/ntdll/locale_private.h
  * defines them (winternl.h omits the enum; NORM_FORM comes via windows.h).
  * Before fuzz_model.h: its nls choice tables name these. */
@@ -1182,6 +1187,76 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         st = NtFlushKey(fz_slots[a[0]]);
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
+    /* ---- CUI-3 SCM surface ---------------------------------------------- */
+    case FZ_OP_CANCEL_IO:
+    {
+        IO_STATUS_BLOCK iosb;
+        iosb.Information = 0;
+        st = NtCancelIoFile(fz_slots[a[0]], &iosb);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_CANCEL_IO_EX:
+    {
+        IO_STATUS_BLOCK iosb;
+        iosb.Information = 0;
+        st = NtCancelIoFileEx(fz_slots[a[0]], NULL, &iosb);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_CREATE_JOB:
+    {
+        HANDLE handle = NULL;
+        st = NtCreateJobObject(&handle, (ACCESS_MASK)a[1], NULL);
+        if (fz_ok(st))
+        {
+            fz_slots[a[0]] = handle;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x slot=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)a[0]);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_SET_JOB_LIMITS:
+    {
+        /* The job_scenario semantic table (tools/gen_syscalls.py): the
+         * argument gates NtSetInformationJobObject validates before
+         * storing — classes, exact sizes, per-class flag masks. */
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION ext;
+        fz_bzero(&ext, sizeof(ext));
+        JOBOBJECTINFOCLASS cls = JobObjectBasicLimitInformation;
+        ULONG len = sizeof(JOBOBJECT_BASIC_LIMIT_INFORMATION);
+        switch (a[1])
+        {
+        case 0: /* FZ_JOB_BASIC_VALID */
+            ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_WORKINGSET;
+            break;
+        case 1: /* FZ_JOB_BASIC_BADFLAGS: breakaway is extended-only */
+            ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            break;
+        case 2: /* FZ_JOB_BASIC_BADSIZE */
+            len -= 1;
+            break;
+        case 3: /* FZ_JOB_EXT_VALID: the services.exe startup shape */
+            cls = JobObjectExtendedLimitInformation;
+            len = sizeof(ext);
+            ext.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+            break;
+        case 4: /* FZ_JOB_EXT_BADSIZE */
+            cls = JobObjectExtendedLimitInformation;
+            len = sizeof(ext) - 1;
+            break;
+        default: /* FZ_JOB_CLASS_CEILING */
+            cls = (JOBOBJECTINFOCLASS)1000;
+            len = sizeof(ext);
+            break;
+        }
+        st = NtSetInformationJobObject(fz_slots[a[0]], cls, &ext, len);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
     default:
         ntapi_printf("[FUZZ] p%u c%u ??? op=%d\n", prog, call, op);
         break;
