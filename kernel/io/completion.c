@@ -30,11 +30,11 @@ typedef struct IOP_COMPLETION_PACKET
     ULONG_PTR information;
 } IOP_COMPLETION_PACKET;
 
-typedef struct IO_COMPLETION
+struct IO_COMPLETION
 {
     KSEMAPHORE semaphore; /* count == queued packets; FIRST: handle waits land here */
     LIST_ENTRY queue;     /* IOP_COMPLETION_PACKET FIFO, dispatcher-lock guarded */
-} IO_COMPLETION, *PIO_COMPLETION;
+};
 
 static void IopDeleteCompletion(PVOID body)
 {
@@ -73,21 +73,15 @@ NTSTATUS NtCreateIoCompletion(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIB
     return status;
 }
 
-NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS packetStatus,
-                           SIZE_T information)
+/* The one packet-posting engine (G10): NtSetIoCompletion resolves the
+ * handle and lands here; kernel-internal producers with a referenced port
+ * body (Ps job objects, CUI-3) call it directly. */
+NTSTATUS IopPostCompletionPacket(PIO_COMPLETION port, ULONG_PTR key, ULONG_PTR value,
+                                 NTSTATUS packetStatus, ULONG_PTR information)
 {
-    PVOID body;
-    NTSTATUS status = ObReferenceObjectByHandle(handle, IO_COMPLETION_MODIFY_STATE,
-                                                &IoCompletionType, ExGetPreviousMode(), &body, 0);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    PIO_COMPLETION port = body;
     IOP_COMPLETION_PACKET *packet = MiAllocatePool(sizeof(*packet));
     if (packet == 0)
     {
-        ObDereferenceObject(port);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     packet->key = key;
@@ -99,8 +93,22 @@ NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTAT
     InsertTailList(&port->queue, &packet->entry);
     KiReleaseDispatcherLock(flags);
     KeReleaseSemaphore(&port->semaphore, 0, 1, FALSE);
-    ObDereferenceObject(port);
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS packetStatus,
+                           SIZE_T information)
+{
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(handle, IO_COMPLETION_MODIFY_STATE,
+                                                &IoCompletionType, ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = IopPostCompletionPacket(body, key, value, packetStatus, information);
+    ObDereferenceObject(body);
+    return status;
 }
 
 /* Wait for one packet (bounded by `timeout`), pop it FIFO. */

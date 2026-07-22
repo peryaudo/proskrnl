@@ -58,6 +58,7 @@ static void PspDeleteProcess(PVOID body)
     {
         MiFreePool((void *)process->imageName);
     }
+    PspUnlinkProcessFromJob(process);
     SeDeassignPrimaryToken(process);
     ObpDeleteHandleTable(&process->handleTable);
     if (process->addressSpace.pml4Physical != 0)
@@ -835,6 +836,7 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
      * later by PspDeleteProcess — we are still running on it. */
     ObpCloseAllHandles(&process->handleTable);
     process->exitStatus = exitStatus;
+    PspNotifyProcessExit(process); /* CUI-3: the job's EXIT_PROCESS packets */
     KiTraceEvent(KiTraceProcessExit, (uint64_t)(uintptr_t)process, (uint64_t)(uint32_t)exitStatus,
                  0);
 
