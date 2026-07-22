@@ -27,6 +27,10 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 350   # first uncached run builds QEMU + Wine
+    # contents:write is for the release-cache publish step below (main pushes
+    # only); PRs from forks get a read-only token regardless.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -117,6 +121,49 @@ jobs:
             third_party/qemu/build
             third_party/wine
           key: third-party-v2-${{ steps.pins.outputs.key }}
+
+      # Mirror the finished builds to the rolling `third-party-cache`
+      # prerelease so ephemeral containers outside Actions (Claude Code on
+      # the web — tools/fetch_third_party.sh) can restore them: the Actions
+      # cache above is not downloadable without Actions auth, release assets
+      # are. Same gating rationale as the save step: a red test leg still
+      # publishes finished builds, a failed/cancelled setup never publishes
+      # a half-built tree. Main pushes only — branch pins without published
+      # assets just mean fetch_third_party.sh reports a miss.
+      - name: Publish third_party builds to the release cache
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.pins.outputs.key }}
+        run: |
+          tag=third-party-cache
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "third_party build cache" \
+              --notes "CI build cache for tools/fetch_third_party.sh — not a software release. Assets are zstd tarballs of the pinned third_party builds, keyed on the submodule pins."
+          existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if grep -q "^tp-v2-$KEY-" <<<"$existing"; then
+            echo "assets for key $KEY already published — skipping"
+            exit 0
+          fi
+          pack="$RUNNER_TEMP/tp-pack"
+          mkdir -p "$pack"
+          # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
+          # side concatenates partNN in order.
+          for spec in limine:third_party/limine qemu-build:third_party/qemu/build wine:third_party/wine; do
+            name="${spec%%:*}"; path="${spec#*:}"
+            tar -C "$GITHUB_WORKSPACE" --zstd -cf - "$path" \
+              | split -b 1900m -d -a 2 - "$pack/tp-v2-$KEY-$name.tar.zst.part"
+          done
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v2-"$KEY"-* --clobber
+          # Prune stale keys only after the new key uploaded whole, so a
+          # failed upload never leaves the release empty.
+          for a in $existing; do
+            case "$a" in
+              tp-v2-"$KEY"-*) ;;
+              *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
+            esac
+          done
 
       # The panic dump is the debugger (Art. 9): a red run must ship its
       # serial logs.

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"${CLAUDE_CODE_REMOTE:-}\" = true ] && [ \"$(uname)\" = Linux ] && [ ! -e third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ] && [ ! -e /tmp/fetch_third_party.log ]; then nohup tools/fetch_third_party.sh >/tmp/fetch_third_party.log 2>&1 & echo 'fetch_third_party: restoring the pinned third_party builds (qemu/wine/limine) from the release cache in the background — tail -f /tmp/fetch_third_party.log and wait for it (then run tools/setup_linux.sh for the apt toolchain) instead of building from source.'; fi",
+            "statusMessage": "third_party build cache"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
