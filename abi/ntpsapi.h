@@ -649,6 +649,128 @@ typedef enum {
 
 #define PROCESSOR_ARCHITECTURE_AMD64 9
 
+/* CUI-3: the job-object contract (services.exe), extracted verbatim
+ * from wine/include/winnt.h. */
+typedef enum {
+    JobObjectBasicAccountingInformation = 1,
+    JobObjectBasicLimitInformation = 2,
+    JobObjectBasicProcessIdList = 3,
+    JobObjectBasicUIRestrictions = 4,
+    JobObjectSecurityLimitInformation = 5,
+    JobObjectEndOfJobTimeInformation = 6,
+    JobObjectAssociateCompletionPortInformation = 7,
+    JobObjectBasicAndIoAccountingInformation = 8,
+    JobObjectExtendedLimitInformation = 9,
+    JobObjectJobSetInformation = 10,
+    JobObjectGroupInformation = 11,
+    JobObjectNotificationLimitInformation = 12,
+    JobObjectLimitViolationInformation = 13,
+    JobObjectGroupInformationEx = 14,
+    JobObjectCpuRateControlInformation = 15,
+    JobObjectCompletionFilter = 16,
+    JobObjectCompletionCounter = 17,
+    JobObjectFreezeInformation = 18,
+    JobObjectExtendedAccountingInformation = 19,
+    JobObjectWakeInformation = 20,
+    JobObjectBackgroundInformation = 21,
+    JobObjectSchedulingRankBiasInformation = 22,
+    JobObjectTimerVirtualizationInformation = 23,
+    JobObjectCycleTimeNotification = 24,
+    JobObjectClearEvent = 25,
+    JobObjectInterferenceInformation = 26,
+    JobObjectClearPeakJobMemoryUsed = 27,
+    JobObjectMemoryUsageInformation = 28,
+    JobObjectSharedCommit = 29,
+    JobObjectContainerId = 30,
+    JobObjectIoRateControlInformation = 31,
+    JobObjectNetRateControlInformation = 32,
+    JobObjectNotificationLimitInformation2 = 33,
+    JobObjectLimitViolationInformation2 = 34,
+    JobObjectCreateSilo = 35,
+    JobObjectSiloBasicInformation = 36,
+    JobObjectSiloRootDirectory = 37,
+    JobObjectServerSiloBasicInformation = 38,
+    JobObjectServerSiloUserSharedData = 39,
+    JobObjectServerSiloInitialize = 40,
+    JobObjectServerSiloRunningState = 41,
+    JobObjectIoAttribution = 42,
+    JobObjectMemoryPartitionInformation = 43,
+    JobObjectContainerTelemetryId = 44,
+    JobObjectSiloSystemRoot = 45,
+    JobObjectEnergyTrackingState = 46,
+    JobObjectThreadImpersonationInformation = 47,
+    JobObjectIoPriorityLimit = 48,
+    JobObjectPagePriorityLimit = 49,
+    JobObjectServerSiloDiagnosticInformation = 50,
+    JobObjectNetworkAccountingInformation = 51,
+    JobObjectCpuPartition = 52,
+    MaxJobObjectInfoClass
+} JOBOBJECTINFOCLASS;
+
+typedef struct {
+    ULONGLONG ReadOperationCount;
+    ULONGLONG WriteOperationCount;
+    ULONGLONG OtherOperationCount;
+    ULONGLONG ReadTransferCount;
+    ULONGLONG WriteTransferCount;
+    ULONGLONG OtherTransferCount;
+} IO_COUNTERS, *PIO_COUNTERS;
+
+typedef struct {
+    LARGE_INTEGER PerProcessUserTimeLimit;
+    LARGE_INTEGER PerJobUserTimeLimit;
+    DWORD         LimitFlags;
+    SIZE_T        MinimumWorkingSetSize;
+    SIZE_T        MaximumWorkingSetSize;
+    DWORD         ActiveProcessLimit;
+    ULONG_PTR     Affinity;
+    DWORD         PriorityClass;
+    DWORD         SchedulingClass;
+} JOBOBJECT_BASIC_LIMIT_INFORMATION, *PJOBOBJECT_BASIC_LIMIT_INFORMATION;
+
+typedef struct {
+    PVOID  CompletionKey;
+    HANDLE CompletionPort;
+} JOBOBJECT_ASSOCIATE_COMPLETION_PORT, *PJOBOBJECT_ASSOCIATE_COMPLETION_PORT;
+
+typedef struct {
+    JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+    IO_COUNTERS                       IoInfo;
+    SIZE_T                            ProcessMemoryLimit;
+    SIZE_T                            JobMemoryLimit;
+    SIZE_T                            PeakProcessMemoryUsed;
+    SIZE_T                            PeakJobMemoryUsed;
+} JOBOBJECT_EXTENDED_LIMIT_INFORMATION, *PJOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+
+#define JOB_OBJECT_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE|0x3f)
+#define JOB_OBJECT_MSG_END_OF_JOB_TIME 1
+#define JOB_OBJECT_MSG_END_OF_PROCESS_TIME 2
+#define JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT 3
+#define JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO 4
+#define JOB_OBJECT_MSG_NEW_PROCESS 6
+#define JOB_OBJECT_MSG_EXIT_PROCESS 7
+#define JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS 8
+#define JOB_OBJECT_MSG_PROCESS_MEMORY_LIMIT 9
+#define JOB_OBJECT_MSG_JOB_MEMORY_LIMIT 10
+#define JOB_OBJECT_LIMIT_WORKINGSET 0x00000001
+#define JOB_OBJECT_LIMIT_PROCESS_TIME 0x00000002
+#define JOB_OBJECT_LIMIT_JOB_TIME 0x00000004
+#define JOB_OBJECT_LIMIT_ACTIVE_PROCESS 0x00000008
+#define JOB_OBJECT_LIMIT_AFFINITY 0x00000010
+#define JOB_OBJECT_LIMIT_PRIORITY_CLASS 0x00000020
+#define JOB_OBJECT_LIMIT_PRESERVE_JOB_TIME 0x00000040
+#define JOB_OBJECT_LIMIT_SCHEDULING_CLASS 0x00000080
+#define JOB_OBJECT_LIMIT_PROCESS_MEMORY 0x00000100
+#define JOB_OBJECT_LIMIT_JOB_MEMORY 0x00000200
+#define JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION 0x00000400
+#define JOB_OBJECT_LIMIT_BREAKAWAY_OK 0x00000800
+#define JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK 0x00001000
+#define JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 0x00002000
+#define JOB_OBJECT_LIMIT_SUBSET_AFFINITY 0x00004000
+#define JOB_OBJECT_LIMIT_VALID_FLAGS 0x0007ffff
+#define JOB_OBJECT_BASIC_LIMIT_VALID_FLAGS 0x000000ff
+#define JOB_OBJECT_EXTENDED_LIMIT_VALID_FLAGS 0x00007fff
+
 typedef struct {
     NTSTATUS  ExitStatus;
     PVOID     TebBaseAddress;
@@ -979,5 +1101,9 @@ NTSTATUS NtAlertMultipleThreadByThreadId(HANDLE*,ULONG,void*,void*);
 NTSTATUS NtInitializeNlsFiles(void**,LCID*,LARGE_INTEGER*);
 NTSTATUS NtGetNlsSectionPtr(ULONG,ULONG,void*,void**,SIZE_T*);
 NTSTATUS NtQuerySystemTime(PLARGE_INTEGER);
+NTSTATUS NtCreateJobObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
+NTSTATUS NtAssignProcessToJobObject(HANDLE,HANDLE);
+NTSTATUS NtSetInformationJobObject(HANDLE,JOBOBJECTINFOCLASS,PVOID,ULONG);
+NTSTATUS NtQueryInformationJobObject(HANDLE,JOBOBJECTINFOCLASS,PVOID,ULONG,PULONG);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */
