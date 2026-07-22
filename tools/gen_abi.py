@@ -1636,6 +1636,12 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(
                 winternl, "_SYSTEM_PERFORMANCE_INFORMATION", "SYSTEM_PERFORMANCE_INFORMATION"
             ),
+            # CUI-3: the RtlGenRandom entropy source (cryptbase
+            # SystemFunction036 queries SystemInterruptInformation; UuidCreate
+            # feeds the SCM's RPC context handles from it).
+            extract_struct(
+                winternl, "_SYSTEM_INTERRUPT_INFORMATION", "SYSTEM_INTERRUPT_INFORMATION"
+            ),
             extract_struct(winternl, "_ATOM_BASIC_INFORMATION", "ATOM_BASIC_INFORMATION"),
             extract_struct(winternl, "_RTL_SYSTEM_TIME", "RTL_SYSTEM_TIME"),
             extract_struct(winternl, "_RTL_TIME_ZONE_INFORMATION", "RTL_TIME_ZONE_INFORMATION"),

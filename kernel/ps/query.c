@@ -538,6 +538,55 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    case SystemInterruptInformation:
+    {
+        /* The RtlGenRandom entropy source (CUI-3): cryptbase's
+         * SystemFunction036 fills its pool from this class, and rpcrt4's
+         * UuidCreate feeds the SCM's RPC context handles from it WITHOUT
+         * checking for failure — refusing the class hands out repeating
+         * stack garbage as "UUIDs" and the client's GUID-keyed context
+         * cache collides (pinned sem_ps/entropy.c). Contract from
+         * wine/dlls/ntdll/unix/system.c: ncpus records, size >= len
+         * required, content is random (the oracle reads /dev/urandom;
+         * here a TSC-seeded splitmix64 — uniqueness is the contract,
+         * docs/03: not a cryptographic source). */
+        ULONG len = sizeof(SYSTEM_INTERRUPT_INFORMATION); /* uniprocessor (Art. 3) */
+        if (returnLength != 0 &&
+            NT_SUCCESS(KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG))))
+        {
+            *returnLength = len;
+        }
+        if (length < len)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, len, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        /* splitmix64 (Steele/Lea/Flood via Vigna, prng.di.unimi.it/splitmix64.c
+         * — the mixing constants are the algorithm's own), stirred with the
+         * TSC so state can never repeat across calls. */
+        static uint64_t PspEntropyState;
+        if (PspEntropyState == 0)
+        {
+            PspEntropyState = __builtin_ia32_rdtsc() | 1;
+        }
+        unsigned char out[sizeof(SYSTEM_INTERRUPT_INFORMATION)];
+        for (ULONG offset = 0; offset < len; offset += sizeof(uint64_t))
+        {
+            PspEntropyState += 0x9E3779B97F4A7C15ULL + (__builtin_ia32_rdtsc() << 1);
+            uint64_t z = PspEntropyState;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            z ^= z >> 31;
+            ULONG chunk = len - offset < sizeof(z) ? len - offset : sizeof(z);
+            memcpy(out + offset, &z, chunk);
+        }
+        memcpy(buffer, out, len);
+        return STATUS_SUCCESS;
+    }
     default:
         /* version_init tolerates a failure here (docs/03). */
         return STATUS_NOT_IMPLEMENTED;
