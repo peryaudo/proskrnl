@@ -36,6 +36,8 @@ NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_
                                     const void *, ULONG, PLARGE_INTEGER, PULONG);
 NTSYSAPI NTSTATUS NTAPI NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
 NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE, PIO_STATUS_BLOCK);
+NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
 
 /* The named-pipe FSCTL verbs (wine/include/winioctl.h; mingw's winioctl.h
  * carries CTL_CODE + FILE_DEVICE_NAMED_PIPE but not the pipe verbs). */
@@ -89,6 +91,16 @@ typedef struct
     ULONG CompletionMode;
 } SEM_FILE_PIPE_INFORMATION;
 
+/* FSCTL_PIPE_WAIT input (wine/include/winioctl.h FILE_PIPE_WAIT_FOR_BUFFER;
+ * a local name because mingw keeps the real one in the DDK headers). */
+typedef struct
+{
+    LARGE_INTEGER Timeout;
+    ULONG NameLength;
+    BOOLEAN TimeoutSpecified;
+    WCHAR Name[1];
+} SEM_PIPE_WAIT_FOR_BUFFER;
+
 /* Fill a UNICODE_STRING over a NUL-terminated 2-byte-unit string. */
 static inline void init_ustr(UNICODE_STRING *str, const void *wide)
 {
@@ -139,6 +151,26 @@ static inline NTSTATUS create_pipe_instance(HANDLE *handle, const void *wide_nam
                                  sharing, FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, type,
                                  read_mode, FILE_PIPE_QUEUE_OPERATION, max_instances, 4096, 4096,
                                  &timeout);
+}
+
+/* Create one server-end instance on an ASYNCHRONOUS handle (no
+ * FILE_SYNCHRONOUS_IO_* option — the FILE_FLAG_OVERLAPPED shape rpcrt4's
+ * ncacn_np server endpoint uses, dlls/rpcrt4/rpc_transport.c). */
+static inline NTSTATUS create_pipe_instance_async(HANDLE *handle, const void *wide_name,
+                                                  ULONG max_instances, IO_STATUS_BLOCK *iosb)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    LARGE_INTEGER timeout;
+
+    init_ustr(&name, wide_name);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    timeout.QuadPart = -100 * 10000; /* 100 ms, relative */
+    *handle = NULL;
+    return NtCreateNamedPipeFile(handle, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE, &attr, iosb,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF, 0,
+                                 FILE_PIPE_TYPE_BYTE, FILE_PIPE_BYTE_STREAM_MODE,
+                                 FILE_PIPE_QUEUE_OPERATION, max_instances, 4096, 4096, &timeout);
 }
 
 /* Open the client end with synchronous defaults. */
