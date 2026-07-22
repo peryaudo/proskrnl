@@ -118,6 +118,9 @@ jobs:
       - name: CUI-1 firstboot registry differential (tests/run/run.sh firstboot)
         run: tests/run/run.sh firstboot
 
+      - name: CUI-3 SCM round-trip + reboot survival (tests/run/run.sh scm)
+        run: tests/run/run.sh scm
+
       # actions/cache's built-in post step only saves on job success; the
       # split restore/save keeps the long first build even when a test leg
       # goes red, so the retry costs minutes, not hours. Gated on the SETUP

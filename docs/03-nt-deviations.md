@@ -634,6 +634,91 @@ real-NT folklore, the oracle wins (Art. 6). Scoping and deviations:
   `GetUserNameW` is an environment read on Wine (`advapi32/advapi.c`), so
   the default environment grows `WINEUSERNAME=wine`.
 
+## CUI-3 SCM notes (services.exe + rpcss over npfs)
+
+What the SCM bring-up pinned, deviated on, or left unbuilt:
+
+- **The transport is M9's npfs, exactly as planned** (`docs/02`): Wine's
+  local RPC is named pipes (`ncacn_np:[\pipe\svcctl]`,
+  `\pipe\net\NtControlPipe%u`), so the whole LPC/ALPC syscall surface stays
+  permanently unimplemented. Zero Wine fork commits: services.exe, rpcss.exe,
+  sc.exe, and userenv.dll are pure-PE, prebuilt in the pinned tree, baked
+  unmodified (the whoami precedent) — the hack meter is untouched.
+- **Async narrows to exactly one verb** (amended M9 note above):
+  `FSCTL_PIPE_LISTEN` on an asynchronous handle pends
+  (`kernel/io/async.c`); data transfers stay synchronous. One divergence
+  this leaves: services.exe's 10-second I/O timeouts on service control
+  pipes (`service_send_command`) cannot fire MID-transfer — a blocking
+  read against a hung service parks until the peer acts, where NT would
+  time out and orphan it. A hung *service* is the only victim; the pinned
+  suite and the baked services never hit it.
+- **One pending listen per pipe instance**: a second concurrent listen on
+  the same instance is refused loudly (`STATUS_NOT_IMPLEMENTED` + serial);
+  wineserver queues them. rpcrt4 issues one listen per connection object,
+  so no baked caller stacks two.
+- **Impersonation attach is RE-deferred with evidence** (correcting the
+  CUI-2 prediction above that "the SCM needs it"): Wine's services.exe
+  performs no token-based access checks — `programs/services/` contains no
+  `RpcImpersonateClient`/`RevertToSelf` call at all
+  (`svcctl_OpenSCManagerW` only maps access masks). `NtOpenThreadToken`
+  keeps answering `STATUS_NO_TOKEN`; `FSCTL_PIPE_IMPERSONATE` stays
+  loud-unbuilt. What the SCM actually needed instead: job objects,
+  `ProcessWineMakeProcessSystem`, `NtCancelIoFile(Ex)`, `FSCTL_PIPE_WAIT`,
+  async listen, and a `GetComputerNameA` that answers.
+- **Job limits are validated and stored, never enforced**
+  (`kernel/ps/job.c`): services.exe sets only the breakaway bits, which
+  gate behaviour proskrnl does not have. Loud-unbuilt: job nesting
+  (re-assigning a process already in a job), `NtQueryInformationJobObject`,
+  `NtTerminateJobObject`, `NtOpenJobObject`, `NtIsProcessInJob` (not on the
+  CreateProcess path — verified kernelbase). Exit packets always say
+  `JOB_OBJECT_MSG_EXIT_PROCESS`; the ABNORMAL_EXIT flavor is unbuilt (no
+  consumer distinguishes them).
+- **`ProcessWineMakeProcessSystem` is real** (`kernel/ps/query.c`): the
+  global shutdown event exists and its user-process count is maintained,
+  but on-target it realistically never signals (conhost and cmd live for
+  the whole session). The remaining `NtSetInformationProcess` classes stay
+  accepted no-ops — now NAMED on serial per call (Art. 12 hygiene; this
+  class was the planted-bug shape that rule exists for).
+- **The hostname is configuration**: the wineboot glue's `gethostname`
+  answers the fixed name `proskrnl` (there is no hostname source below the
+  boundary); wineboot's stock `create_computer_name_keys` seeds
+  `ComputerName`/`ActiveComputerName`, which `rpcrt4_ncacn_np_handoff`
+  hard-requires. The firstboot differential already excludes those
+  subtrees as host-derived.
+- **wine.inf's `AddService` payload now installs through the real SCM**:
+  wineboot starts services.exe (`start_services_process`, every boot —
+  firstboot always runs `--init`) BEFORE the INF pass, so setupapi's
+  service installer round-trips `CreateService` over `\pipe\svcctl` at
+  first boot — the Cm+SCM integration exercise. Auto-start services whose
+  binaries are not baked (svchost/winedevice) fail fast at
+  `CreateProcessW` and are tolerated (`services.c` autostart loop).
+- **A resident SCM raises the memory floor**: every process maps full
+  private copies of its DLLs (no COW, no eviction — Art. 3), and
+  services.exe + its service processes now stay resident for the whole
+  session. 256 MB no longer covers an interactive console boot (kernel32
+  load fails `STATUS_NO_MEMORY` mid-session); `make run` and the
+  console/scm legs provision 1 GB — the winetest leg's long-standing
+  answer to the same bill.
+- **winetest**: the manifest is unchanged. The natural pair
+  (`advapi32:service`) cannot run — the pinned tree builds no advapi32-test
+  PE objects. The three adjacent candidates were EVALUATED (oracle-green
+  all three) and park on proskrnl with these observed causes:
+  `ntdll:pipe` — wants the async DATA path (`STATUS_PENDING` reads/writes),
+  `NtSetInformationFile(FilePipeInformation)` validation, pipe-object
+  signal-state semantics, and wrong-end verb mapping
+  (`STATUS_ILLEGAL_FUNCTION`); runs past the deadline on an unfulfilled
+  wait. `kernel32:pipe` — the same overlapped data-path breadth through
+  the Win32 surface. `ntdll:info` — unbuilt query classes
+  (`SystemProcessorFeaturesBitMapInformation` et al.); also over-deadline.
+  All are M9-breadth surface the SCM demonstrably does not need.
+- **Acceptance** (`tests/run/run.sh scm`, boot-twice): boot 1 drives
+  `sc query RpcSs` (STOPPED over the pipe), `sc start RpcSs` (a real
+  service process spawns and reports RUNNING), `sc create SvcDemo` +
+  `sc start SvcDemo` (`tests/cui/svcdemo.c`, a plain-mingw third-party
+  service binary that appends a proof line to `C:\svcdemo.log`); boot 2
+  asserts the SCM AUTO-started SvcDemo from the persisted registry before
+  cmd prompted, and the proof file grew to two lines.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
