@@ -121,6 +121,19 @@ NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information);
 
+/* --- completion ports (kernel/io/completion.c) ----------------------------- */
+
+/* Opaque port body (an Ob object of IoCompletionType); layout private to
+ * completion.c. */
+typedef struct IO_COMPLETION IO_COMPLETION, *PIO_COMPLETION;
+extern OBJECT_TYPE IoCompletionType;
+
+/* Queue one packet on a REFERENCED port body — the engine NtSetIoCompletion
+ * itself uses; kernel-internal producers (Ps job objects, CUI-3) post
+ * through it too (G10: one path). */
+NTSTATUS IopPostCompletionPacket(PIO_COMPLETION port, ULONG_PTR key, ULONG_PTR value,
+                                 NTSTATUS packetStatus, ULONG_PTR information);
+
 /* --- pending requests (kernel/io/async.c; CUI-3) --------------------------- */
 
 /* One operation that returned STATUS_PENDING (an npfs listen on an

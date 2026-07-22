@@ -216,10 +216,7 @@ START_TEST(job)
         ExitProcess(0x77); /* never returns */
 
     status = NtCreateJobObject(&job, JOB_OBJECT_ALL_ACCESS, NULL);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "NtCreateJobObject -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_SUCCESS, "NtCreateJobObject -> %08lx", (unsigned long)status);
     if (job == NULL)
     {
         skip("no job objects; the CUI-3 surface is unbuilt");

@@ -180,6 +180,11 @@ IMPLEMENTED = [
     # CancelIo-on-timeout path against a stack OVERLAPPED)
     "NtCancelIoFile",
     "NtCancelIoFileEx",
+    # CUI-3 SCM surface: the job objects services.exe's process monitor
+    # drives (kernel/ps/job.c)
+    "NtCreateJobObject",
+    "NtAssignProcessToJobObject",
+    "NtSetInformationJobObject",
 ]
 
 

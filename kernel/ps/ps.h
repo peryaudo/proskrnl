@@ -84,6 +84,18 @@ typedef struct EPROCESS
      * SeAssignPrimaryToken from PspInitializeProcessCommon and dropped by
      * SeDeassignPrimaryToken at delete. EPROCESS holds one reference. */
     struct TOKEN *token;
+
+    /* CUI-3: job membership (kernel/ps/job.c). `job` referenced (dropped by
+     * PspUnlinkProcessFromJob at delete); `jobExitNotified` keeps the
+     * exit-packet accounting single-shot across the two exit paths. */
+    struct EJOB *job;
+    LIST_ENTRY jobLinks; /* on EJOB.processList while job != 0 */
+    BOOLEAN jobExitNotified;
+
+    /* CUI-3: ProcessWineMakeProcessSystem's mark (kernel/ps/query.c) — the
+     * process no longer counts toward the live-user-process total whose
+     * zero-crossing signals the global shutdown event. */
+    BOOLEAN isSystemProcess;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
@@ -108,6 +120,14 @@ typedef struct ETHREAD
 extern OBJECT_TYPE PspThreadType;
 
 extern OBJECT_TYPE PspProcessType;
+
+extern OBJECT_TYPE PspJobType; /* CUI-3, kernel/ps/job.c */
+
+/* CUI-3 (kernel/ps/job.c): post the job's exit packets — call once from
+ * each process-exit path, BEFORE the process object can be deleted. */
+void PspNotifyProcessExit(PEPROCESS process);
+/* Drop the job membership at process delete. */
+void PspUnlinkProcessFromJob(PEPROCESS process);
 
 /* The process kernel threads belong to. Its address space is the kernel
  * PML4 and its handle table is the one kmt/kernel Nt* callers use. */

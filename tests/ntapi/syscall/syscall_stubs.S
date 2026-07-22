@@ -1623,6 +1623,36 @@ NtCancelIoFileEx:
     syscall
     ret
 
+    .global NtCreateJobObject
+NtCreateJobObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x7f, %eax
+    syscall
+    ret
+
+    .global NtAssignProcessToJobObject
+NtAssignProcessToJobObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x73, %eax
+    syscall
+    ret
+
+    .global NtSetInformationJobObject
+NtSetInformationJobObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xea, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
