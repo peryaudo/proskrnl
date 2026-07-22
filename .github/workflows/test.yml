@@ -64,6 +64,19 @@ jobs:
             third_party/wine
           key: third-party-v2-${{ steps.pins.outputs.key }}
 
+      # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
+      # repo budget) far more eagerly than the release-cache assets the
+      # publish step below maintains, so on a miss pull the same trees from
+      # the release before resigning to the hours-long source build.
+      # Fail-soft: a miss (pins bumped and not yet republished) just falls
+      # through to setup_linux.sh building from source, exactly as before.
+      - name: Restore third_party builds from the release cache (fallback)
+        if: steps.tp-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: tools/fetch_third_party.sh || echo "no release cache for this key — building from source"
+
       # The hosted runner's root disk is tight; the wine + qemu builds want
       # the space these unused preinstalled toolchains occupy.
       - name: Free runner disk space
@@ -141,13 +154,20 @@ jobs:
             gh release create "$tag" -R "$GITHUB_REPOSITORY" --prerelease \
               --title "third_party build cache" \
               --notes "CI build cache for tools/fetch_third_party.sh — not a software release. Assets are zstd tarballs of the pinned third_party builds, keyed on the submodule pins."
+          # distro.txt is uploaded LAST, so its presence is the "this key's
+          # asset set is complete" sentinel — both for this skip-guard and
+          # for fetch_third_party.sh (a partial upload just reruns here).
           existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          if grep -q "^tp-v2-$KEY-" <<<"$existing"; then
+          if grep -qx "tp-v2-$KEY-distro.txt" <<<"$existing"; then
             echo "assets for key $KEY already published — skipping"
             exit 0
           fi
           pack="$RUNNER_TEMP/tp-pack"
           mkdir -p "$pack"
+          # The tarballs hold binaries linked against this runner's glibc;
+          # fetch_third_party.sh refuses to restore onto a different distro
+          # release, so record which one built them.
+          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v2-$KEY-distro.txt"
           # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
           # side concatenates partNN in order.
           for spec in limine:third_party/limine qemu-build:third_party/qemu/build wine:third_party/wine; do
@@ -155,7 +175,8 @@ jobs:
             tar -C "$GITHUB_WORKSPACE" --zstd -cf - "$path" \
               | split -b 1900m -d -a 2 - "$pack/tp-v2-$KEY-$name.tar.zst.part"
           done
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v2-"$KEY"-* --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v2-"$KEY"-*.part* --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v2-$KEY-distro.txt" --clobber
           # Prune stale keys only after the new key uploaded whole, so a
           # failed upload never leaves the release empty.
           for a in $existing; do
