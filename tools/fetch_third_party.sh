@@ -42,13 +42,13 @@ echo "== third_party cache key: $KEY =="
 
 # .gitmodules pins third_party/wine by SSH URL; an ephemeral container has
 # no SSH key, so route github.com submodule fetches over HTTPS (same trick
-# as test.yml). Init BEFORE extracting — git refuses to clone into a
+# as test.yml). ALL submodules, no path list — this doubles as the session's
+# submodule init. Init BEFORE extracting — git refuses to clone into a
 # non-empty directory, so the tarballs must overlay the checkouts, not
 # precede them.
 echo "== pinned submodules =="
 git config --global url."https://github.com/".insteadOf "git@github.com:"
-git submodule update --init --depth 1 \
-    third_party/limine third_party/limine-protocol third_party/qemu third_party/wine
+git submodule update --init --depth 1
 
 # component name (in asset filenames) -> finished-build marker, the same
 # markers setup_linux.sh's skip-logic tests. wine's marker is the pass-2
@@ -102,6 +102,31 @@ import json, sys
 for a in json.load(sys.stdin).get("assets", []):
     print(a["name"] + "\t" + a["browser_download_url"])
 ' <<<"$release_json" | sort)"
+
+# The tarballs hold binaries linked against the builder's glibc and shared
+# libraries, so the restoring distro must match the building distro
+# (test.yml pins ubuntu-24.04). The publish step uploads the per-key
+# distro.txt LAST, so its presence also proves the key's asset set is
+# complete — treat its absence as a miss, and a different distro as fatal.
+distro_url="$(awk -F'\t' -v n="tp-v2-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+if [[ -z "$distro_url" ]]; then
+    echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
+    echo "  Either the pins were just bumped and CI on main has not" >&2
+    echo "  republished yet, or this branch's pins differ from main's." >&2
+    echo "  Build from source instead: tools/setup_linux.sh" >&2
+    exit 1
+fi
+build_distro="$(curl -fsSL --retry 3 "$distro_url")"
+local_distro="$(. /etc/os-release && echo "$ID-$VERSION_ID")"
+if [[ "$build_distro" != "$local_distro" ]]; then
+    echo "fetch_third_party: cache was built on $build_distro but this is" >&2
+    echo "  $local_distro — the binaries would link against the wrong" >&2
+    echo "  glibc/shared libraries. Either move the CI runner and this" >&2
+    echo "  container to the same distro release, or build from source:" >&2
+    echo "  tools/setup_linux.sh" >&2
+    exit 1
+fi
+echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
     prefix="tp-v2-$KEY-$c.tar.zst.part"
