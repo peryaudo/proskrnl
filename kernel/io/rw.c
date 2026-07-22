@@ -55,10 +55,14 @@ static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC a
     return final;
 }
 
-/* Shared argument shaping for NtReadFile/NtWriteFile. */
+/* Shared argument shaping for NtReadFile/NtWriteFile. `writeToEndOut`
+ * non-0 (the write path) accepts the FILE_WRITE_TO_END_OF_FILE sentinel
+ * (ByteOffset.QuadPart == -1, pinned sem_file/append.c); reads keep
+ * rejecting negative offsets. */
 static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUTINE apc,
                                  PVOID apcContext, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteOffset,
-                                 PFILE_OBJECT *fileOut, uint64_t *offsetOut, PKAPC *apcOut)
+                                 PFILE_OBJECT *fileOut, uint64_t *offsetOut, PKAPC *apcOut,
+                                 BOOLEAN *writeToEndOut)
 {
     if (iosb == 0)
     {
@@ -107,10 +111,22 @@ static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUT
         }
         if (captured.QuadPart < 0)
         {
-            ObDereferenceObject(file);
-            return STATUS_INVALID_PARAMETER;
+            if (writeToEndOut != 0 && captured.QuadPart == -1)
+            {
+                /* FILE_WRITE_TO_END_OF_FILE: the write lands at EOF. */
+                *writeToEndOut = TRUE;
+                offset = 0;
+            }
+            else
+            {
+                ObDereferenceObject(file);
+                return STATUS_INVALID_PARAMETER;
+            }
         }
-        offset = (uint64_t)captured.QuadPart;
+        else
+        {
+            offset = (uint64_t)captured.QuadPart;
+        }
     }
     /* Last, so no failure path below needs to unwind it. */
     status = IopPrepareCompletionApc(apc, apcContext, iosb, apcOut);
@@ -133,7 +149,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     uint64_t offset;
     PKAPC apcBlock = 0;
     NTSTATUS status = IopStartTransfer(handle, FILE_READ_DATA, apc, apcContext, iosb, byteOffset,
-                                       &file, &offset, &apcBlock);
+                                       &file, &offset, &apcBlock, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -224,11 +240,24 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     PFILE_OBJECT file;
     uint64_t offset;
     PKAPC apcBlock = 0;
-    NTSTATUS status = IopStartTransfer(handle, FILE_WRITE_DATA, apc, apcContext, iosb, byteOffset,
-                                       &file, &offset, &apcBlock);
+    BOOLEAN writeToEnd = FALSE;
+    /* The access gate is NOT plain FILE_WRITE_DATA: an APPEND-ONLY handle
+     * (FILE_APPEND_DATA without WRITE_DATA — kernelbase's append-mode
+     * loggers) writes too, forced to EOF below (pinned sem_file/append.c). */
+    NTSTATUS status = IopStartTransfer(handle, 0, apc, apcContext, iosb, byteOffset, &file, &offset,
+                                       &apcBlock, &writeToEnd);
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+    if ((file->grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)) == 0)
+    {
+        status = STATUS_ACCESS_DENIED;
+        goto abandon;
+    }
+    if ((file->grantedAccess & FILE_WRITE_DATA) == 0)
+    {
+        writeToEnd = TRUE; /* append-only: every write lands at EOF */
     }
     status = KiProbeForRead(buffer, length, 1);
     if (!NT_SUCCESS(status))
@@ -274,6 +303,11 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     if (!NT_SUCCESS(status))
     {
         goto abandon;
+    }
+
+    if (writeToEnd)
+    {
+        offset = cache->fileSize; /* append semantics: EOF at write time */
     }
 
     /* A write past EOF extends the file; the gap reads as zeroes (the
