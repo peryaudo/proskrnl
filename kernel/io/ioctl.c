@@ -90,14 +90,16 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
         memset(outBounce, 0, outputLength);
     }
 
+    IO_CONTROL_CONTEXT request = {.eventHandle = event, .userIosb = iosb};
     ULONG_PTR information = 0;
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
-                                              outputLength, &information);
+                                              outputLength, &information, &request);
     /* IOSB Information is not always an output-payload count (a console
      * WRITE_FILE reports bytes CONSUMED); copy back only what the output
      * buffer can hold. */
     ULONG copyOut = information > outputLength ? outputLength : (ULONG)information;
-    if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && copyOut != 0)
+    if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && status != STATUS_PENDING &&
+        copyOut != 0)
     {
         memcpy(output, outBounce, copyOut); /* probed above */
     }
@@ -108,6 +110,13 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     if (outBounce != 0)
     {
         MiFreePool(outBounce);
+    }
+    if (status == STATUS_PENDING)
+    {
+        /* The op parked an IOP_PENDING_REQUEST: the caller's IOSB stays
+         * untouched until completion (pinned sem_pipe/async_listen). */
+        ObDereferenceObject(file);
+        return STATUS_PENDING;
     }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {

@@ -43,13 +43,10 @@ static void test_pending_listen(void)
      * written until completion. */
     poison_iosb(&iosb);
     status = NtFsControlFile(server, event, NULL, NULL, &iosb, FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
-    todo_proskrnl
-    {
-        ok(status == STATUS_PENDING, "async listen -> %08lx", (unsigned long)status);
-        ok(iosb.Status == IOSB_POISON_STATUS, "iosb untouched while pending, got %08lx",
-           (unsigned long)iosb.Status);
-        ok(iosb.Information == (ULONG_PTR)~0ULL, "iosb length untouched while pending");
-    }
+    ok(status == STATUS_PENDING, "async listen -> %08lx", (unsigned long)status);
+    ok(iosb.Status == IOSB_POISON_STATUS, "iosb untouched while pending, got %08lx",
+       (unsigned long)iosb.Status);
+    ok(iosb.Information == (ULONG_PTR)~0ULL, "iosb length untouched while pending");
 
     /* The client's connect completes the listen: event signalled, IOSB
      * carries the verdict (same on both sides — a blocking kernel signals
@@ -100,40 +97,31 @@ static void test_overlapped_rw(void)
 
     poison_iosb(&iosb);
     status = NtReadFile(server, event, NULL, NULL, &iosb, buffer, 4, NULL, NULL);
-    todo_proskrnl
+    ok(status == STATUS_SUCCESS || status == STATUS_PENDING, "overlapped NULL-offset read -> %08lx",
+       (unsigned long)status);
+    if (status == STATUS_PENDING)
     {
-        ok(status == STATUS_SUCCESS || status == STATUS_PENDING,
-           "overlapped NULL-offset read -> %08lx", (unsigned long)status);
-        if (status == STATUS_PENDING)
-        {
-            wait = WaitForSingleObject(event, 10000);
-            ok(wait == WAIT_OBJECT_0, "read completion wait -> %lu", (unsigned long)wait);
-        }
-        ok(iosb.Status == STATUS_SUCCESS, "read iosb -> %08lx", (unsigned long)iosb.Status);
-        ok(iosb.Information == 4, "read length %lu", (unsigned long)iosb.Information);
-        ok(memcmp(buffer, "ping", 4) == 0, "read bytes");
+        wait = WaitForSingleObject(event, 10000);
+        ok(wait == WAIT_OBJECT_0, "read completion wait -> %lu", (unsigned long)wait);
     }
+    ok(iosb.Status == STATUS_SUCCESS, "read iosb -> %08lx", (unsigned long)iosb.Status);
+    ok(iosb.Information == 4, "read length %lu", (unsigned long)iosb.Information);
+    ok(memcmp(buffer, "ping", 4) == 0, "read bytes");
 
     poison_iosb(&iosb);
     status = NtWriteFile(server, event, NULL, NULL, &iosb, "pong", 4, NULL, NULL);
-    todo_proskrnl
+    ok(status == STATUS_SUCCESS || status == STATUS_PENDING,
+       "overlapped NULL-offset write -> %08lx", (unsigned long)status);
+    if (status == STATUS_PENDING)
     {
-        ok(status == STATUS_SUCCESS || status == STATUS_PENDING,
-           "overlapped NULL-offset write -> %08lx", (unsigned long)status);
-        if (status == STATUS_PENDING)
-        {
-            wait = WaitForSingleObject(event, 10000);
-            ok(wait == WAIT_OBJECT_0, "write completion wait -> %lu", (unsigned long)wait);
-        }
-        ok(iosb.Status == STATUS_SUCCESS, "write iosb -> %08lx", (unsigned long)iosb.Status);
-        ok(iosb.Information == 4, "write length %lu", (unsigned long)iosb.Information);
+        wait = WaitForSingleObject(event, 10000);
+        ok(wait == WAIT_OBJECT_0, "write completion wait -> %lu", (unsigned long)wait);
     }
+    ok(iosb.Status == STATUS_SUCCESS, "write iosb -> %08lx", (unsigned long)iosb.Status);
+    ok(iosb.Information == 4, "write length %lu", (unsigned long)iosb.Information);
     status = pipe_read(client, buffer, 4, &iosb);
     ok(status == STATUS_SUCCESS, "client read-back -> %08lx", (unsigned long)status);
-    todo_proskrnl
-    {
-        ok(memcmp(buffer, "pong", 4) == 0, "read-back bytes");
-    }
+    ok(memcmp(buffer, "pong", 4) == 0, "read-back bytes");
 
     CloseHandle(event);
     NtClose(client);
@@ -159,10 +147,7 @@ static void test_cancel(const void *pipe_name, BOOLEAN use_ex)
 
     poison_iosb(&iosb);
     status = NtFsControlFile(server, event, NULL, NULL, &iosb, FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
-    todo_proskrnl
-    {
-        ok(status == STATUS_PENDING, "async listen -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_PENDING, "async listen -> %08lx", (unsigned long)status);
 
     poison_iosb(&cancel_iosb);
     if (use_ex)

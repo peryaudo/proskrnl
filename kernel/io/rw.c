@@ -84,14 +84,17 @@ static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUT
     uint64_t offset;
     if (byteOffset == 0)
     {
-        /* NULL ByteOffset: legal only on a synchronous handle, where it
-         * means "the current file position" (pinned read_write.c). */
-        if (!file->synchronousIo)
+        /* NULL ByteOffset: the current position on a synchronous handle
+         * (pinned read_write.c). On a STREAM device offsets are meaningless
+         * and NULL is what overlapped callers pass (rpcrt4_conn_np_read/
+         * write on FILE_FLAG_OVERLAPPED pipes — pinned async_listen.c);
+         * only an asynchronous DISK handle rejects it. */
+        if (!file->synchronousIo && file->device->ops->Read == 0)
         {
             ObDereferenceObject(file);
             return STATUS_INVALID_PARAMETER;
         }
-        offset = (uint64_t)file->currentByteOffset.QuadPart;
+        offset = file->synchronousIo ? (uint64_t)file->currentByteOffset.QuadPart : 0;
     }
     else
     {

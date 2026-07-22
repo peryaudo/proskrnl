@@ -121,4 +121,36 @@ NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information);
 
+/* --- pending requests (kernel/io/async.c; CUI-3) --------------------------- */
+
+/* One operation that returned STATUS_PENDING (an npfs listen on an
+ * asynchronous handle). Everything a later completer — running in ANY
+ * process context — needs was resolved in the issuer's context: the event
+ * BODY (a handle would be meaningless elsewhere) and the owning process
+ * (whose address space holds the IOSB). Ownership (G11): the parking
+ * filesystem holds the only pointer and always completes the request —
+ * client attach, cancel, or the owning handle's cleanup, whichever comes
+ * first; handles close before the owner's address space dies
+ * (PspExitCurrentProcess vs. PspDeleteProcess), so the IOSB write cannot
+ * hit a torn-down space. */
+typedef struct IOP_PENDING_REQUEST
+{
+    struct EPROCESS *owner;    /* referenced; the IOSB's address space */
+    PIO_STATUS_BLOCK userIosb; /* IOSB VA in `owner` (probed at issue) */
+    BOOLEAN kernelIosb;        /* issuer was kernel mode: write directly */
+    PKEVENT event;             /* referenced event body, or 0 */
+    PKTHREAD issuer;           /* NtCancelIoFile scoping; compared, never
+                                * dereferenced */
+} IOP_PENDING_REQUEST, *PIOP_PENDING_REQUEST;
+
+/* Build a pending request in the ISSUER's context (references the event and
+ * the current process). The caller's IOSB must already be probed. */
+NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDING_REQUEST *out);
+
+/* Complete a pending request from any context: IOSB into the owner's
+ * address space strictly BEFORE the event signal (docs/08), then drop both
+ * references and free. */
+void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status,
+                               ULONG_PTR information);
+
 #endif /* PROSKRNL_KERNEL_IO_IO_H */
