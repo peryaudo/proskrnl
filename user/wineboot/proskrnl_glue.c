@@ -354,15 +354,26 @@ BOOL WINAPI UpdateDriverForPlugAndPlayDevicesA(HWND parent, const char *hardware
 
 /* ---- ws2_32 stand-ins (dllimport: __imp_* below) ------------------------- */
 
-/* create_computer_name_keys: a failing gethostname takes the early return
- * (warn-and-continue). ws2_32.dll itself is baked but not loadable until its
- * unixlib seam lands (CUI-5); wineboot must not import it. */
+/* create_computer_name_keys reads the machine's name through gethostname
+ * and seeds ComputerName/ActiveComputerName (+ the Tcpip Hostname keys)
+ * from it. CUI-3 needs those keys populated: rpcrt4's ncacn_np server
+ * handoff fails hard when GetComputerNameA cannot answer
+ * (dlls/rpcrt4/rpc_transport.c rpcrt4_ncacn_np_handoff -> the SCM's RPC
+ * server loop exits), and kernelbase reads the name from the registry keys
+ * wineboot writes. There is no hostname source below this boundary, so the
+ * glue answers a FIXED name — configuration, not NT contract (docs/03
+ * "CUI-3 SCM notes"). ws2_32.dll itself stays unloadable until its unixlib
+ * seam lands (CUI-5); wineboot must not import it. */
 int WINAPI gethostname(char *name, int namelen)
 {
-    (void)name;
-    (void)namelen;
-    SetLastError(WSAENETDOWN); /* what WSASetLastError amounts to */
-    return SOCKET_ERROR;
+    static const char fixed[] = "proskrnl";
+    if (name == NULL || namelen < (int)sizeof(fixed))
+    {
+        SetLastError(WSAEFAULT);
+        return SOCKET_ERROR;
+    }
+    memcpy(name, fixed, sizeof(fixed));
+    return 0;
 }
 
 int WINAPI getaddrinfo(const char *node, const char *service, const struct addrinfo *hints,
@@ -388,8 +399,8 @@ void WINAPI freeaddrinfo(struct addrinfo *info)
 /* These headers declare their functions dllimport, so wineboot.c's calls go
  * through __imp_* pointers (user/cmd/proskrnl_glue.c precedent). */
 HRESULT(WINAPI *__imp_SHGetFolderPathW)(HWND, int, HANDLE, DWORD, WCHAR *) = glue_SHGetFolderPathW;
-BOOL(WINAPI *__imp_SHGetSpecialFolderPathW)(HWND, WCHAR *, int,
-                                            BOOL) = glue_SHGetSpecialFolderPathW;
+BOOL(WINAPI *__imp_SHGetSpecialFolderPathW)
+(HWND, WCHAR *, int, BOOL) = glue_SHGetSpecialFolderPathW;
 HRESULT(WINAPI *__imp_SHGetSpecialFolderLocation)
 (HWND, int, ITEMIDLIST **) = glue_SHGetSpecialFolderLocation;
 HRESULT(WINAPI *__imp_SHGetDesktopFolder)(IShellFolder **) = glue_SHGetDesktopFolder;
@@ -405,8 +416,8 @@ BOOL(WINAPI *__imp_InternetCloseHandle)(HINTERNET) = glue_InternetCloseHandle;
  * ws2tcpip.h/newdev.h carry no dllimport under __WINESRC__), so they are
  * defined above under their real names; the __imp_ aliases cover any
  * dllimport-compiled reference too. */
-BOOL(WINAPI *__imp_UpdateDriverForPlugAndPlayDevicesA)(HWND, const char *, const char *, DWORD,
-                                                       BOOL *) = UpdateDriverForPlugAndPlayDevicesA;
+BOOL(WINAPI *__imp_UpdateDriverForPlugAndPlayDevicesA)
+(HWND, const char *, const char *, DWORD, BOOL *) = UpdateDriverForPlugAndPlayDevicesA;
 int(WINAPI *__imp_gethostname)(char *, int) = gethostname;
 int(WINAPI *__imp_getaddrinfo)(const char *, const char *, const struct addrinfo *,
                                struct addrinfo **) = getaddrinfo;
