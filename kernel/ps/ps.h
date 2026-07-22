@@ -94,8 +94,11 @@ typedef struct EPROCESS
 
     /* CUI-3: ProcessWineMakeProcessSystem's mark (kernel/ps/query.c) — the
      * process no longer counts toward the live-user-process total whose
-     * zero-crossing signals the global shutdown event. */
+     * zero-crossing signals the global shutdown event — and the
+     * exactly-once latch for leaving that count (exit, or delete after a
+     * failed create that never ran). */
     BOOLEAN isSystemProcess;
+    BOOLEAN shutdownAccounted;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
@@ -128,6 +131,13 @@ extern OBJECT_TYPE PspJobType; /* CUI-3, kernel/ps/job.c */
 void PspNotifyProcessExit(PEPROCESS process);
 /* Drop the job membership at process delete. */
 void PspUnlinkProcessFromJob(PEPROCESS process);
+
+/* CUI-3 (kernel/ps/query.c): the ProcessWineMakeProcessSystem accounting —
+ * count a user process at birth; un-count at exit (called from
+ * PspNotifyProcessExit) so the global shutdown event can signal when the
+ * last counted process goes. */
+void PspNoteUserProcessBirth(void);
+void PspShutdownNoteProcessExit(PEPROCESS process);
 
 /* The process kernel threads belong to. Its address space is the kernel
  * PML4 and its handle table is the one kmt/kernel Nt* callers use. */

@@ -59,6 +59,8 @@ static void PspDeleteProcess(PVOID body)
         MiFreePool((void *)process->imageName);
     }
     PspUnlinkProcessFromJob(process);
+    PspShutdownNoteProcessExit(process); /* idempotent: covers a process
+                                          * deleted without ever exiting */
     SeDeassignPrimaryToken(process);
     ObpDeleteHandleTable(&process->handleTable);
     if (process->addressSpace.pml4Physical != 0)
@@ -96,6 +98,13 @@ static void PspInitializeProcessCommon(PEPROCESS process)
      * self-consistent. */
     ULONG cookie = (ULONG)__builtin_ia32_rdtsc();
     process->cookie = cookie != 0 ? cookie : 0xd1ce; /* never 0: 0 means "unset" to ntdll */
+    process->job = 0;
+    process->jobExitNotified = FALSE;
+    process->isSystemProcess = FALSE;
+    if (process != PsInitialSystemProcess)
+    {
+        PspNoteUserProcessBirth(); /* CUI-3: the make-process-system count */
+    }
     process->userExceptionDispatcher = 0;
     process->userApcDispatcher = 0;
     process->ldrInitializeThunk = 0;

@@ -18,6 +18,7 @@
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/io.h"
 
@@ -211,15 +212,132 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
     return status;
 }
 
+/* --- ProcessWineMakeProcessSystem (CUI-3) ---------------------------------- */
+
+/* The one global shutdown event (wineserver's shutdown_event,
+ * server/process.c make_process_system): manual-reset, created on first
+ * use, signalled when the last COUNTED user process exits. Every
+ * make-process-system caller gets a fresh SYNCHRONIZE handle to it. */
+static PKEVENT PspShutdownEventBody;
+static LONG PspLiveUserProcessCount;
+
+void PspNoteUserProcessBirth(void)
+{
+    PspLiveUserProcessCount++;
+}
+
+/* A counted process stops counting exactly once: at its exit, or earlier
+ * when ProcessWineMakeProcessSystem marks it system. */
+static void PspNoteUserProcessGone(void)
+{
+    ASSERT(PspLiveUserProcessCount > 0);
+    if (--PspLiveUserProcessCount == 0 && PspShutdownEventBody != 0)
+    {
+        KeSetEvent(PspShutdownEventBody, 0, FALSE);
+    }
+}
+
+void PspShutdownNoteProcessExit(PEPROCESS process)
+{
+    if (process == PsInitialSystemProcess || process->isSystemProcess || process->shutdownAccounted)
+    {
+        return; /* system processes never counted (or already un-counted) */
+    }
+    process->shutdownAccounted = TRUE;
+    PspNoteUserProcessGone();
+}
+
+static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG length)
+{
+    /* Size gate first (wine/dlls/ntdll/unix/process.c; pinned
+     * sem_ps/make_system.c). The out-value is one HANDLE. */
+    if (length != sizeof(HANDLE *))
+    {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS status = KiProbeForWrite(buffer, sizeof(HANDLE), sizeof(HANDLE));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (PspShutdownEventBody == 0)
+    {
+        PVOID body;
+        status = ObpAllocateObject(&ObpEventType, sizeof(KEVENT), &body);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        KeInitializeEvent(body, NotificationEvent, FALSE);
+        PspShutdownEventBody = body; /* keeps the creator reference forever */
+    }
+
+    PEPROCESS process;
+    BOOLEAN referenced = FALSE;
+    if (processHandle == NtCurrentProcess())
+    {
+        process = KeGetCurrentThread()->process;
+    }
+    else
+    {
+        PVOID body;
+        status = ObReferenceObjectByHandle(processHandle, PROCESS_SET_INFORMATION, &PspProcessType,
+                                           ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        process = body;
+        referenced = TRUE;
+    }
+
+    /* Idempotent mark (wineserver: an already-system process still gets a
+     * handle); the un-count happens exactly once. */
+    if (!process->isSystemProcess && process != PsInitialSystemProcess)
+    {
+        if (!process->shutdownAccounted)
+        {
+            process->shutdownAccounted = TRUE;
+            PspNoteUserProcessGone();
+        }
+        process->isSystemProcess = TRUE;
+    }
+    if (referenced)
+    {
+        ObDereferenceObject(process);
+    }
+
+    /* The kernel-internal creation path: ObpCreateHandle probes its
+     * out-pointer as USER memory (the create/open choke point), but this
+     * handle value lands on the kernel stack first and only its VALUE is
+     * copied out through the probed caller buffer. */
+    HANDLE handle;
+    status = ObpCreateHandleInTable(&KeGetCurrentThread()->process->handleTable,
+                                    PspShutdownEventBody, SYNCHRONIZE, 0, &handle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *(HANDLE *)buffer = handle; /* probed above */
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClass, PVOID buffer,
                                  ULONG length)
 {
-    (void)processHandle;
-    (void)infoClass;
-    (void)buffer;
-    (void)length;
+    if (infoClass == ProcessWineMakeProcessSystem)
+    {
+        /* services.exe's RPC_Init and every service's
+         * service_run_main_thread store the returned event and wait on it —
+         * the old blanket success handed them a NULL handle (the Art. 12
+         * planted-bug shape this rewrite retires). */
+        return PspMakeProcessSystem(processHandle, buffer, length);
+    }
     /* The classes ntdll sets at startup (default hard-error mode, fault
-     * policy, etc.) have no observable effect here; accept them. */
+     * policy, etc.) have no observable effect here; accept them — but by
+     * NAME on serial, so a class whose effect matters cannot hide (Art. 12
+     * hygiene; the pattern that caught this very class). */
+    DbgPrint("ps: NtSetInformationProcess class %u accepted as a no-op\n", (unsigned)infoClass);
     return STATUS_SUCCESS;
 }
 

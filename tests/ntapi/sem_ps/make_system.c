@@ -60,31 +60,22 @@ START_TEST(make_system)
     /* The size gate: anything but sizeof(HANDLE *) is rejected
      * (wine/dlls/ntdll/unix/process.c). */
     status = NtSetInformationProcess(pi.hProcess, PS_ProcessWineMakeProcessSystem, &event, 4);
-    todo_proskrnl
-    {
-        ok(status == STATUS_INFO_LENGTH_MISMATCH, "wrong size -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "wrong size -> %08lx", (unsigned long)status);
 
     /* The real call: SUCCESS and a live waitable handle out. */
     status = NtSetInformationProcess(pi.hProcess, PS_ProcessWineMakeProcessSystem, &event,
                                      sizeof(HANDLE *));
     ok(status == STATUS_SUCCESS, "make-system -> %08lx", (unsigned long)status);
-    todo_proskrnl
-    {
-        ok(event != NULL, "shutdown event handle out");
-        /* Not signalled: this test process is still a live user process. */
-        wait = event ? WaitForSingleObject(event, 0) : WAIT_FAILED;
-        ok(wait == WAIT_TIMEOUT, "shutdown event unsignalled -> %lu", (unsigned long)wait);
-    }
+    ok(event != NULL, "shutdown event handle out");
+    /* Not signalled: this test process is still a live user process. */
+    wait = event ? WaitForSingleObject(event, 0) : WAIT_FAILED;
+    ok(wait == WAIT_TIMEOUT, "shutdown event unsignalled -> %lu", (unsigned long)wait);
 
     /* Marking an already-system process still hands out a handle. */
     status = NtSetInformationProcess(pi.hProcess, PS_ProcessWineMakeProcessSystem, &event2,
                                      sizeof(HANDLE *));
     ok(status == STATUS_SUCCESS, "make-system again -> %08lx", (unsigned long)status);
-    todo_proskrnl
-    {
-        ok(event2 != NULL, "second event handle out");
-    }
+    ok(event2 != NULL, "second event handle out");
 
     ok(ResumeThread(pi.hThread) != (DWORD)-1, "resume child");
     ok(WaitForSingleObject(pi.hProcess, 30000) == WAIT_OBJECT_0, "child wait");

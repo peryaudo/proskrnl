@@ -1582,7 +1582,12 @@ def gen_ntpsapi(wine: Path) -> str:
     # startup, the NtCreateUserProcess attribute machinery, and the user-APC
     # / thread-entry function-pointer types.
     info_enums = "\n\n".join(
-        extract_enum(winternl, tag, typedef)
+        # PROCESSINFOCLASS: keep the __WINESRC__ branch — the Wine-private
+        # classes (ProcessWineMakeProcessSystem = 1000) ARE the boundary
+        # contract the PE side issues (services.exe/sechost, CUI-3).
+        (resolve_ifdef(extract_enum(winternl, tag, typedef), "__WINESRC__", True)
+         if typedef == "PROCESSINFOCLASS"
+         else extract_enum(winternl, tag, typedef))
         for tag, typedef in [
             ("_PROCESSINFOCLASS", "PROCESSINFOCLASS"),
             ("_THREADINFOCLASS", "THREADINFOCLASS"),
