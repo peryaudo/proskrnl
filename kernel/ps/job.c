@@ -252,6 +252,10 @@ NTSTATUS NtAssignProcessToJobObject(HANDLE jobHandle, HANDLE processHandle)
  * PspDeleteProcess; the flag keeps the accounting single-shot. */
 void PspNotifyProcessExit(PEPROCESS process)
 {
+    /* Both CUI-3 exit-time notifications ride the one hook: the
+     * make-process-system count (kernel/ps/query.c) ... */
+    PspShutdownNoteProcessExit(process);
+    /* ... and the job packets. */
     PEJOB job = process->job;
     if (job == 0 || process->jobExitNotified)
     {
