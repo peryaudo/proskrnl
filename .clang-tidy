@@ -23,7 +23,7 @@ Checks: >
 # unused-parameters is unavoidable under docs/15 (NT signatures fix the
 # parameter lists — increment/wait/waitMode are meaningless under Art. 3).
 WarningsAsErrors: ''
-HeaderFilterRegex: '(kernel|arch)/'
+HeaderFilterRegex: '(kernel|arch|drivers|fs)/'
 FormatStyle: file
 CheckOptions:
   # Names of code and types.
