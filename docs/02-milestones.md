@@ -227,7 +227,7 @@ SymCrypt PE-side, `libs/symcrypt`).
 > window shortens by months. npfs (M9) and cmd (M10) can come *after* the calculator.
 
 ## GUI-1 — Pixels and input
-virtio-gpu (2D scanout) or ramfb; virtio-input. `\Device\Fb0` (map framebuffer to user)
+Limine framebuffer; virtio-input. `\Device\Fb0` (map framebuffer to user)
 and `\Device\Input0` (input event stream). **HACK-001 and HACK-002** (see `docs/10`).
 **Done when:** a user program maps the framebuffer and draws a rectangle visible in a
 screendump; key input is readable.
