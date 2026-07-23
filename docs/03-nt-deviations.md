@@ -655,7 +655,18 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
 - **One pending listen per pipe instance**: a second concurrent listen on
   the same instance is refused loudly (`STATUS_NOT_IMPLEMENTED` + serial);
   wineserver queues them. rpcrt4 issues one listen per connection object,
-  so no baked caller stacks two.
+  so no baked caller stacks two. Two adjacent narrownesses, both
+  unreachable for baked callers: a pending listen is NOT cancelled at its
+  issuer THREAD's exit (NT sweeps a dying thread's pending I/O; here only
+  handle cleanup/cancel/completion retire it — rpcrt4's listener thread is
+  process-lifetime), and the cancel verbs' thread scoping compares the
+  recorded issuer pointer without holding the thread (a compared-only
+  field; a recycled thread allocation could in principle mis-scope a
+  cancel on the same handle — no baked caller cancels from a thread other
+  than the issuer). `NtWriteFile`'s `-2` FILE_USE_FILE_POINTER_POSITION
+  sentinel is refused (`STATUS_INVALID_PARAMETER`), not honoured —
+  unpinned, no baked caller; `-1` (write-to-end) is pinned and served
+  (`sem_file/append.c`).
 - **Impersonation attach is RE-deferred with evidence** (correcting the
   CUI-2 prediction above that "the SCM needs it"): Wine's services.exe
   performs no token-based access checks — `programs/services/` contains no

@@ -56,9 +56,14 @@ static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC a
 }
 
 /* Shared argument shaping for NtReadFile/NtWriteFile. `writeToEndOut`
- * non-0 (the write path) accepts the FILE_WRITE_TO_END_OF_FILE sentinel
- * (ByteOffset.QuadPart == -1, pinned sem_file/append.c); reads keep
- * rejecting negative offsets. */
+ * non-0 (the write path) accepts the FILE_WRITE_TO_END_OF_FILE sentinel —
+ * QuadPart == -1, the value the pinned tree fixes
+ * (third_party/wine/dlls/ntdll/unix/unix_private.h
+ * FILE_WRITE_TO_END_OF_FILE) and sem_file/append.c pins at the boundary.
+ * Every other negative offset is refused, including the -2
+ * FILE_USE_FILE_POINTER_POSITION sentinel (same header) — unpinned, no
+ * baked caller; a consumer would get a distinguishable
+ * STATUS_INVALID_PARAMETER, never a fabricated position (docs/03). */
 static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUTINE apc,
                                  PVOID apcContext, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteOffset,
                                  PFILE_OBJECT *fileOut, uint64_t *offsetOut, PKAPC *apcOut,
