@@ -205,12 +205,14 @@ def main() -> int:
                        "tasklist listing cmd.exe"):
             return 1
 
-        # 3. taskkill /f kills a live process by pid. The looper is started
-        #    in the background, its pid taken from tasklist's own output is
-        #    not scriptable here, so the kill goes by image name — taskkill
-        #    resolves it through the same snapshot tasklist walks.
+        # 3. taskkill /f kills a live process. The looper detaches a copy of
+        #    itself (`--spawn`) so the shell gets its prompt back with a live
+        #    process to kill — cmd's `start` cannot serve, it delegates to
+        #    system32\start.exe, which proskrnl does not bake. The kill goes
+        #    by image name; taskkill resolves it through the same snapshot
+        #    tasklist walks.
         mark = len(buffered)
-        sock.sendall(b"start C:\\looper.exe\r")
+        sock.sendall(b"C:\\looper.exe --spawn\r")
         if not expect_after(mark, b"loop-alive", "the background looper"):
             return 1
         if not command(b"C:\\windows\\system32\\taskkill.exe /f /im looper.exe", b"C:\\",

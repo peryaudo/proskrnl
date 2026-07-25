@@ -15,6 +15,7 @@
  */
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 
 static volatile LONG caught;
 
@@ -30,8 +31,32 @@ static BOOL WINAPI ctrl_handler(DWORD type)
     return FALSE;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /* `looper --spawn` starts a detached copy sharing this console and
+     * returns immediately, so the shell gets its prompt back with a live
+     * process to kill. cmd's `start` cannot serve: it delegates to
+     * system32\start.exe, which proskrnl does not bake. */
+    if (argc > 1 && strcmp(argv[1], "--spawn") == 0)
+    {
+        char self[MAX_PATH];
+        GetModuleFileNameA(NULL, self, MAX_PATH);
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        memset(&pi, 0, sizeof(pi));
+        if (!CreateProcessA(self, NULL, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+        {
+            printf("loop-nospawn\n");
+            fflush(stdout);
+            return 1;
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return 0;
+    }
+
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
     printf("loop-alive\n");
     fflush(stdout);
