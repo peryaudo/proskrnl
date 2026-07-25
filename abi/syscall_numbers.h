@@ -154,6 +154,10 @@
 #define NTSYS_NtGetNextProcess 0x009f
 #define NTSYS_NtSuspendProcess 0x00fa
 #define NTSYS_NtResumeProcess 0x00e0
+#define NTSYS_NtQueryInformationJobObject 0x00c6
+#define NTSYS_NtTerminateJobObject 0x00fd
+#define NTSYS_NtOpenJobObject 0x00b5
+#define NTSYS_NtIsProcessInJob 0x004f
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
