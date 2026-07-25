@@ -778,6 +778,11 @@ scm() {
 # EXPECT_PROCS block in console_expect.py types the session and asserts the
 # markers, ^C included (the serial socket is bidirectional — docs/08).
 procs() {
+    # A VIRGIN console image (the scm() pattern): a booted image is REWRITTEN
+    # by the guest, so its mtime outruns the modules and make would skip the
+    # rebuild — the acceptance would then run against an image missing the
+    # very programs it types.
+    rm -f "$ROOT/build/proskrnl-console.hdd"
     make -C "$ROOT" console-img >/dev/null
     local img="$ROOT/build/tests/procs.hdd"
     mkdir -p "$ROOT/build/tests"
