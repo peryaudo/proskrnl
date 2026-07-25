@@ -561,9 +561,7 @@ typedef enum {
     SystemRefTraceInformationEx = 251,
     SystemBasicProcessInformation = 252,
     SystemHandleCountInformation = 253,
-#ifdef __WINESRC__
     SystemWineVersionInformation = 1000,
-#endif
 } SYSTEM_INFORMATION_CLASS, *PSYSTEM_INFORMATION_CLASS;
 
 typedef enum {
@@ -914,6 +912,42 @@ typedef struct {
     ULONG ApcBypassCount;
 } SYSTEM_INTERRUPT_INFORMATION, *PSYSTEM_INTERRUPT_INFORMATION;
 
+typedef enum {
+        SystemPowerPolicyAc,
+        SystemPowerPolicyDc,
+        VerifySystemPolicyAc,
+        VerifySystemPolicyDc,
+        SystemPowerCapabilities,
+        SystemBatteryState,
+        SystemPowerStateHandler,
+        ProcessorStateHandler,
+        SystemPowerPolicyCurrent,
+        AdministratorPowerPolicy,
+        SystemReserveHiberFile,
+        ProcessorInformation,
+        SystemPowerInformation,
+        ProcessorStateHandler2,
+        LastWakeTime,
+        LastSleepTime,
+        SystemExecutionState,
+        SystemPowerStateNotifyHandler,
+        ProcessorPowerPolicyAc,
+        ProcessorPowerPolicyDc,
+        VerifyProcessorPowerPolicyAc,
+        VerifyProcessorPowerPolicyDc,
+        ProcessorPowerPolicyCurrent
+} POWER_INFORMATION_LEVEL;
+
+typedef struct {
+	ULONG Number;
+	ULONG MaxMhz;
+	ULONG CurrentMhz;
+	ULONG MhzLimit;
+	ULONG MaxIdleState;
+	ULONG CurrentIdleState;
+} PROCESSOR_POWER_INFORMATION,
+*PPROCESSOR_POWER_INFORMATION;
+
 typedef struct {
    USHORT       ReferenceCount;
    USHORT       Pinned;
@@ -1088,6 +1122,7 @@ NTSTATUS NtSetInformationProcess(HANDLE,PROCESSINFOCLASS,PVOID,ULONG);
 NTSTATUS NtQueryInformationThread(HANDLE,THREADINFOCLASS,PVOID,ULONG,PULONG);
 NTSTATUS NtSetInformationThread(HANDLE,THREADINFOCLASS,LPCVOID,ULONG);
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
+NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL,PVOID,ULONG,PVOID,ULONG);
 NTSTATUS NtQueryTimerResolution(PULONG,PULONG,PULONG);
 NTSTATUS NtSetTimerResolution(ULONG,BOOLEAN,PULONG);
 NTSTATUS NtAddAtom(const WCHAR*,ULONG,RTL_ATOM*);

@@ -554,6 +554,7 @@ NTMMAPI_FUNCTIONS = [
     # M7 (ntdll startup / loader paths)
     "NtProtectVirtualMemory",
     "NtFlushInstructionCache",
+    "NtAreMappedFilesTheSame",
 ]
 
 
@@ -1510,6 +1511,7 @@ NTPSAPI_FUNCTIONS = [
     "NtQueryInformationThread",
     "NtSetInformationThread",
     "NtQueryPerformanceCounter",
+    "NtPowerInformation",
     "NtQueryTimerResolution",
     "NtSetTimerResolution",
     "NtAddAtom",
@@ -1582,11 +1584,13 @@ def gen_ntpsapi(wine: Path) -> str:
     # startup, the NtCreateUserProcess attribute machinery, and the user-APC
     # / thread-entry function-pointer types.
     info_enums = "\n\n".join(
-        # PROCESSINFOCLASS: keep the __WINESRC__ branch — the Wine-private
-        # classes (ProcessWineMakeProcessSystem = 1000) ARE the boundary
-        # contract the PE side issues (services.exe/sechost, CUI-3).
+        # PROCESSINFOCLASS / SYSTEM_INFORMATION_CLASS: keep the __WINESRC__
+        # branch — the Wine-private classes (ProcessWineMakeProcessSystem =
+        # 1000, SystemWineVersionInformation = 1000) ARE the boundary
+        # contract the PE side issues (services.exe/sechost at CUI-3;
+        # ntdll's version_init at every process start).
         (resolve_ifdef(extract_enum(winternl, tag, typedef), "__WINESRC__", True)
-         if typedef == "PROCESSINFOCLASS"
+         if typedef in ("PROCESSINFOCLASS", "SYSTEM_INFORMATION_CLASS")
          else extract_enum(winternl, tag, typedef))
         for tag, typedef in [
             ("_PROCESSINFOCLASS", "PROCESSINFOCLASS"),
@@ -1641,6 +1645,13 @@ def gen_ntpsapi(wine: Path) -> str:
             # feeds the SCM's RPC context handles from it).
             extract_struct(
                 winternl, "_SYSTEM_INTERRUPT_INFORMATION", "SYSTEM_INTERRUPT_INFORMATION"
+            ),
+            # CUI-1: wineboot's ~MHz registry source —
+            # NtPowerInformation(ProcessorInformation): the level selector
+            # and the per-CPU record it fills (winnt.h).
+            extract_enum(winnt, "_POWER_INFORMATION_LEVEL", "POWER_INFORMATION_LEVEL"),
+            extract_struct(
+                winnt, "_PROCESSOR_POWER_INFORMATION", "PROCESSOR_POWER_INFORMATION"
             ),
             extract_struct(winternl, "_ATOM_BASIC_INFORMATION", "ATOM_BASIC_INFORMATION"),
             extract_struct(winternl, "_RTL_SYSTEM_TIME", "RTL_SYSTEM_TIME"),
