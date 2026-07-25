@@ -118,33 +118,53 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
 
     if (wantClusters > haveClusters)
     {
-        ULONG last =
+        ULONG oldLast =
             haveClusters != 0 ? FatWalkChain(volume, fcb->firstCluster, haveClusters - 1) : 0;
+        ULONG last = oldLast;
+        ULONG firstFresh = 0;
         unsigned char zero[FAT_SECTOR_SIZE];
         memset(zero, 0, sizeof(zero));
         for (ULONG i = haveClusters; i < wantClusters; i++)
         {
             ULONG fresh;
             status = FatAllocateCluster(volume, last, &fresh);
-            if (!NT_SUCCESS(status))
+            if (NT_SUCCESS(status))
             {
-                return status;
-            }
-            /* Zero-fill on disk immediately so the extension reads as
-             * zeroes even across a remount (Art. 3: immediate writeback). */
-            for (ULONG s = 0; s < volume->sectorsPerCluster; s++)
-            {
-                NTSTATUS ws = FatWriteSector(volume, FatClusterToSector(volume, fresh) + s, zero);
-                if (!NT_SUCCESS(ws))
+                if (firstFresh == 0)
                 {
-                    return ws;
+                    firstFresh = fresh;
+                }
+                last = fresh;
+                /* Zero-fill on disk immediately so the extension reads as
+                 * zeroes even across a remount (Art. 3: immediate writeback). */
+                for (ULONG s = 0; s < volume->sectorsPerCluster && NT_SUCCESS(status); s++)
+                {
+                    status = FatWriteSector(volume, FatClusterToSector(volume, fresh) + s, zero);
                 }
             }
-            if (fcb->firstCluster == 0)
+            if (!NT_SUCCESS(status))
             {
-                fcb->firstCluster = fresh;
+                /* Unwind the partial extension: a failed grow must leave the
+                 * volume exactly as it was. The dir entry still shows the old
+                 * size/first-cluster (no metadata flush yet), so any cluster
+                 * kept linked here would be orphaned the moment the FCB goes
+                 * away — fsck.fat/fatsweep convict it as a lost cluster (the
+                 * fatstress nearfull leg caught this via the kmt6 persist.dat
+                 * write hitting DISK_FULL with no corrective truncate). */
+                if (firstFresh != 0)
+                {
+                    FatFreeChain(volume, firstFresh);
+                    if (oldLast != 0)
+                    {
+                        FatSetFatEntry(volume, oldLast, FAT_ENTRY_MASK); /* EOC */
+                    }
+                }
+                return status;
             }
-            last = fresh;
+        }
+        if (fcb->firstCluster == 0)
+        {
+            fcb->firstCluster = firstFresh;
         }
     }
     else if (wantClusters < haveClusters)
