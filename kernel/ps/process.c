@@ -882,6 +882,114 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
 
 /* --- the Nt* surface -------------------------------------------------------- */
 
+/* Find a live process by its unique id (CLIENT_ID.UniqueProcess); lock held.
+ * The only by-id process lookup — NtOpenProcess and the toolhelp/taskkill
+ * paths share it (G11). Returns 0 if no live process carries that id. */
+static PEPROCESS PspFindProcessByProcessId(uint64_t processId)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+         p = p->Flink)
+    {
+        PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        if (process->uniqueProcessId == processId)
+        {
+            return process;
+        }
+    }
+    return 0;
+}
+
+/* The process owning a live thread id (CLIENT_ID.UniqueThread with a zero
+ * UniqueProcess); lock held. */
+static PEPROCESS PspFindProcessByThreadId(uint64_t threadId)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+         p = p->Flink)
+    {
+        PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        for (PLIST_ENTRY t = process->threadListHead.Flink; t != &process->threadListHead;
+             t = t->Flink)
+        {
+            if (CONTAINING_RECORD(t, ETHREAD, threadListEntry)->uniqueThreadId == threadId)
+            {
+                return process;
+            }
+        }
+    }
+    return 0;
+}
+
+NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
+                       const OBJECT_ATTRIBUTES *objectAttributes, const CLIENT_ID *clientId)
+{
+    /* The toolhelp path (dlls/kernelbase/process.c OpenProcess): a
+     * CLIENT_ID, never a name. Open-by-name is not built (no baked caller);
+     * a name in objectAttributes would refuse loudly. Contract from
+     * wineserver's get_process_from_id (server/process.c): an id that never
+     * belonged to a process is STATUS_INVALID_CID. Pinned by
+     * sem_ps/open_process. */
+    NTSTATUS status =
+        KiProbeForWrite(processHandle, sizeof(*processHandle), sizeof(*processHandle));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (clientId == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KiProbeForRead(clientId, sizeof(*clientId), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t processId = (uint64_t)(uintptr_t)clientId->UniqueProcess;
+    uint64_t threadId = (uint64_t)(uintptr_t)clientId->UniqueThread;
+
+    ULONG attributes = 0;
+    if (objectAttributes != 0)
+    {
+        status = KiProbeForRead(objectAttributes, sizeof(*objectAttributes), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        /* A named open is not the toolhelp path — refuse loudly (Art. 12). */
+        if (objectAttributes->ObjectName != 0)
+        {
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        attributes = objectAttributes->Attributes;
+    }
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    PEPROCESS process = 0;
+    if (processId != 0)
+    {
+        process = PspFindProcessByProcessId(processId);
+    }
+    else if (threadId != 0)
+    {
+        process = PspFindProcessByThreadId(threadId);
+    }
+    if (process != 0)
+    {
+        ObfReferenceObject(process); /* pin across the lock drop */
+    }
+    KiReleaseDispatcherLock(flags);
+
+    if (process == 0)
+    {
+        return STATUS_INVALID_CID;
+    }
+    status = ObpCreateHandle(process, ObpMapDesiredAccess(&PspProcessType, desiredAccess),
+                             attributes, processHandle);
+    ObDereferenceObject(process); /* the handle holds its own reference */
+    return status;
+}
+
 NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
 {
     PKTHREAD thread = KeGetCurrentThread();
