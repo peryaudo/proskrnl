@@ -44,9 +44,26 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
     }
     else
     {
+        /* NT splits process queries across TWO rights: the "limited" classes
+         * (identity and other harmless facts) are readable through
+         * PROCESS_QUERY_LIMITED_INFORMATION, and everything
+         * PROCESS_QUERY_INFORMATION covers is readable too — the full right is
+         * a superset in NT's rules, but a distinct BIT, so a handle carrying
+         * only one of them must still satisfy the check. Ob's mask test wants
+         * every requested bit, so try the limited right and fall back.
+         * ProcessIdToSessionId is the consumer that forces this: it opens
+         * other processes with PROCESS_QUERY_LIMITED_INFORMATION alone
+         * (dlls/kernelbase/process.c), and refusing it made tasklist drop
+         * every row but its own. */
         PVOID body;
-        NTSTATUS status = ObReferenceObjectByHandle(processHandle, PROCESS_QUERY_INFORMATION,
-                                                    &PspProcessType, ExGetPreviousMode(), &body, 0);
+        KPROCESSOR_MODE mode = ExGetPreviousMode();
+        NTSTATUS status = ObReferenceObjectByHandle(
+            processHandle, PROCESS_QUERY_LIMITED_INFORMATION, &PspProcessType, mode, &body, 0);
+        if (status == STATUS_ACCESS_DENIED)
+        {
+            status = ObReferenceObjectByHandle(processHandle, PROCESS_QUERY_INFORMATION,
+                                               &PspProcessType, mode, &body, 0);
+        }
         if (!NT_SUCCESS(status))
         {
             return status;
