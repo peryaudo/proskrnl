@@ -253,6 +253,29 @@ static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, ui
     }
 }
 
+/* The main image's SECTION_IMAGE_INFORMATION from the PE parse (abi shape;
+ * `entry` is the RELOCATED entry point). One fill for the retained
+ * EPROCESS.imageInformation and the PS_ATTRIBUTE_IMAGE_INFO write-back. */
+static void PspFillImageInformation(const MI_IMAGE_INFO *image, uint64_t entry,
+                                    SECTION_IMAGE_INFORMATION *info)
+{
+    memset(info, 0, sizeof(*info));
+    info->TransferAddress = (PVOID)(uintptr_t)entry;
+    info->MaximumStackSize = image->stackReserve;
+    info->CommittedStackSize = image->stackCommit;
+    info->SubSystemType = image->subsystem;
+    info->MinorSubsystemVersion = image->subsystemMinor;
+    info->MajorSubsystemVersion = image->subsystemMajor;
+    info->MinorOperatingSystemVersion = image->osMinor;
+    info->MajorOperatingSystemVersion = image->osMajor;
+    info->ImageCharacteristics = image->characteristics;
+    info->DllCharacteristics = image->dllCharacteristics;
+    info->Machine = image->machine;
+    info->ImageContainsCode = image->containsCode;
+    info->CheckSum = image->checksum;
+    info->ImageFileSize = image->fileSize;
+}
+
 /* Map an already-built image section into `process`. Returns the entry point
  * + the PE-declared stack shape. */
 static NTSTATUS PspMapImageSection(PEPROCESS process, PMI_SECTION section, uint64_t *entryOut,
@@ -717,27 +740,15 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
     }
     process->mainThread = 0;
 
-    /* The image facts CreateProcess's PS_ATTRIBUTE_IMAGE_INFO write-back
-     * reports (abi SECTION_IMAGE_INFORMATION; source: the PE parse). */
+    /* The image facts from the PE parse, retained on the process: served by
+     * ProcessImageInformation (ntdll's build_main_module reads it at every
+     * process start) and by CreateProcess's PS_ATTRIBUTE_IMAGE_INFO
+     * write-back below — one copy, one fill (G11). */
+    PspFillImageInformation(exeSection->image, entry, &process->imageInformation);
     if (options->imageInfoOut != 0)
     {
-        const MI_IMAGE_INFO *image = exeSection->image;
-        SECTION_IMAGE_INFORMATION *info = options->imageInfoOut;
-        memset(info, 0, sizeof(*info));
-        info->TransferAddress = (PVOID)(uintptr_t)entry;
-        info->MaximumStackSize = image->stackReserve;
-        info->CommittedStackSize = image->stackCommit;
-        info->SubSystemType = image->subsystem;
-        info->MinorSubsystemVersion = image->subsystemMinor;
-        info->MajorSubsystemVersion = image->subsystemMajor;
-        info->MinorOperatingSystemVersion = image->osMinor;
-        info->MajorOperatingSystemVersion = image->osMajor;
-        info->ImageCharacteristics = image->characteristics;
-        info->DllCharacteristics = image->dllCharacteristics;
-        info->Machine = image->machine;
-        info->ImageContainsCode = image->containsCode;
-        info->CheckSum = image->checksum;
-        info->ImageFileSize = image->fileSize;
+        memcpy(options->imageInfoOut, &process->imageInformation,
+               sizeof(process->imageInformation));
     }
 
     if (options->createSuspended)

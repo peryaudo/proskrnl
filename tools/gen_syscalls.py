@@ -117,6 +117,7 @@ IMPLEMENTED = [
     "NtConvertBetweenAuxiliaryCounterAndPerformanceCounter",
     "NtQuerySystemInformation",
     "NtQuerySystemInformationEx",  # CUI-1: wineboot's supported-machines gate
+    "NtPowerInformation",  # CUI-1: wineboot's ~MHz registry source
     "NtQueryDefaultLocale",
     "NtGetContextThread",
     "NtSetContextThread",

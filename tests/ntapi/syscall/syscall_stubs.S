@@ -978,6 +978,19 @@ NtQuerySystemInformationEx:
     add $0x78, %rsp
     ret
 
+    .global NtPowerInformation
+NtPowerInformation:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x5f, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
     .global NtQueryDefaultLocale
 NtQueryDefaultLocale:
     mov %rcx, %r9

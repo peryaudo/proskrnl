@@ -165,6 +165,63 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
                      : STATUS_INFO_LENGTH_MISMATCH;
         break;
     }
+    case ProcessWow64Information:
+    {
+        /* The WOW64 PEB address: always 0 — x64-only, no WOW64 process can
+         * exist (docs/adr/0006), so 0 is the true answer, not a stub. EXACT
+         * ULONG_PTR size, and the mismatch returns before returnLength is
+         * touched (Wine dlls/ntdll/unix/process.c). Consumer: kernelbase's
+         * IsWow64Process. Pinned by sem_ps/process_query. */
+        if (length != sizeof(ULONG_PTR))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG_PTR), sizeof(ULONG_PTR));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        ULONG_PTR wowPeb = 0;
+        memcpy(buffer, &wowPeb, sizeof(wowPeb));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(wowPeb);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
+    case ProcessImageInformation:
+    {
+        /* The main image's SECTION_IMAGE_INFORMATION, retained at creation
+         * (EPROCESS.imageInformation — the PS_ATTRIBUTE_IMAGE_INFO fill's
+         * twin). EXACT size, returnLength = sizeof either way (Wine
+         * dlls/ntdll/unix/process.c ProcessImageInformation). ntdll's
+         * build_main_module reads it at every process start and terminates
+         * on IMAGE_FILE_DLL — an unserved query hands it stack garbage.
+         * Pinned by sem_ps/process_query. */
+        if (length != sizeof(SECTION_IMAGE_INFORMATION))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(SECTION_IMAGE_INFORMATION);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(SECTION_IMAGE_INFORMATION), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        memcpy(buffer, &process->imageInformation, sizeof(SECTION_IMAGE_INFORMATION));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(SECTION_IMAGE_INFORMATION);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
     case ProcessCookie:
     {
         /* Own process only, size exactly ULONG (Wine
@@ -795,6 +852,64 @@ NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER counter, PLARGE_INTEGER freque
         memcpy(frequency, &freq, sizeof(freq));
     }
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG inputLength,
+                            PVOID output, ULONG outputLength)
+{
+    (void)input;
+    (void)inputLength;
+    switch (level)
+    {
+    case ProcessorInformation:
+    {
+        /* wineboot's ~MHz registry source (create_hardware_registry_keys;
+         * it tolerates failure by memsetting zeros). Contract from Wine
+         * dlls/ntdll/unix/system.c ProcessorInformation: NULL/0 output is
+         * INVALID_PARAMETER, under one record per CPU is BUFFER_TOO_SMALL,
+         * else one PROCESSOR_POWER_INFORMATION per CPU — one, uniprocessor
+         * (Art. 3). MHz: CPUID leaf 0x16 (Intel SDM vol. 2A "CPUID",
+         * Processor Frequency Information: EAX = base MHz, 0 when
+         * unsupported — TCG qemu64 tops out below it), else 1000 — the
+         * oracle's own no-cpufreq fallback (`cannedMHz`), a pinned shape,
+         * not a guess. Pinned by sem_ps/process_query. */
+        if (output == 0 || outputLength == 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (outputLength / sizeof(PROCESSOR_POWER_INFORMATION) < 1)
+        {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        NTSTATUS status =
+            KiProbeForWrite(output, sizeof(PROCESSOR_POWER_INFORMATION), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        uint32_t regs[4];
+        KiCpuid(0, 0, regs);
+        ULONG mhz = 0;
+        if (regs[0] >= 0x16)
+        {
+            KiCpuid(0x16, 0, regs);
+            mhz = regs[0];
+        }
+        if (mhz == 0)
+        {
+            mhz = 1000;
+        }
+        PROCESSOR_POWER_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        info.MaxMhz = mhz;
+        info.CurrentMhz = mhz;
+        info.MhzLimit = mhz;
+        memcpy(output, &info, sizeof(info));
+        return STATUS_SUCCESS;
+    }
+    default:
+        return STATUS_NOT_IMPLEMENTED; /* other levels: unbuilt, loud (Art. 12) */
+    }
 }
 
 /* --- scheduling ----------------------------------------------------------- */
