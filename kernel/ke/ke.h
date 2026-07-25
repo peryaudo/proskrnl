@@ -278,6 +278,9 @@ void KiVerifyWaitList(PDISPATCHER_HEADER object); /* each waiter armed this wait
 void KiVerifyThreadWaitState(PKTHREAD thread);    /* state <-> queues/waits agree */
 
 void KiYield(void);
+/* CUI-4: round-robin at the timer interrupt's return to ring 3 (the one
+ * preemption point; kernel/init/panic.c). */
+void KiPreemptAtUserReturn(void);
 __attribute__((noreturn)) void KiIdleLoop(void);
 
 PKTHREAD KeGetCurrentThread(void);
@@ -312,6 +315,10 @@ void KiWaitTest(PDISPATCHER_HEADER object);
 void KiUnwaitThreadWithStatus(PKTHREAD thread, NTSTATUS status);
 /* Complete an alertable wait with STATUS_ALERTED (lock held). */
 void KiAlertWaitingThread(PKTHREAD thread);
+
+/* CUI-4: abort a foreign-terminated user thread's wait with
+ * STATUS_THREAD_IS_TERMINATING so it reaches its reaping edge (lock held). */
+void KiAbortThreadWait(PKTHREAD thread);
 
 /* Abandon-aware mutant release shared by KeReleaseMutex and termination. */
 LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned);

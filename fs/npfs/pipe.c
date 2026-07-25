@@ -134,12 +134,14 @@ static void NpfsWakeAll(PNPFS_INSTANCE instance)
 }
 
 /* Clear-then-wait: safe against lost wakeups because nothing runs between
- * the caller's condition check and this park (uniprocessor, no preemption). */
-static void NpfsWait(PKEVENT event)
+ * the caller's condition check and this park (uniprocessor, no preemption).
+ * Returns the wait status so a foreign terminate (CUI-4,
+ * STATUS_THREAD_IS_TERMINATING) breaks the caller's re-park loop instead of
+ * trapping a dying thread. */
+static NTSTATUS NpfsWait(PKEVENT event)
 {
     KeClearEvent(event);
-    NTSTATUS status = KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
-    ASSERT(status == STATUS_SUCCESS);
+    return KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
 }
 
 static void NpfsFlushQueue(PNPFS_QUEUE queue)
@@ -211,7 +213,11 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
         {
             return STATUS_PIPE_EMPTY;
         }
-        NpfsWait(&queue->dataEvent);
+        NTSTATUS waitStatus = NpfsWait(&queue->dataEvent);
+        if (waitStatus != STATUS_SUCCESS)
+        {
+            return waitStatus; /* CUI-4: foreign terminate breaks the read park */
+        }
     }
 
     NTSTATUS status = STATUS_SUCCESS;
@@ -333,7 +339,11 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
             {
                 break;
             }
-            NpfsWait(&queue->spaceEvent);
+            status = NpfsWait(&queue->spaceEvent);
+            if (status != STATUS_SUCCESS)
+            {
+                return status; /* CUI-4: foreign terminate breaks the write park */
+            }
         }
         status = NpfsAppendBuffer(queue, buffer, length);
         if (!NT_SUCCESS(status))
@@ -359,7 +369,11 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
             queue->quota > queue->bytesAvailable ? queue->quota - queue->bytesAvailable : 0;
         if (space == 0)
         {
-            NpfsWait(&queue->spaceEvent);
+            status = NpfsWait(&queue->spaceEvent);
+            if (status != STATUS_SUCCESS)
+            {
+                return status; /* CUI-4: foreign terminate breaks the write park */
+            }
             continue;
         }
         ULONG chunk = length - written;
@@ -461,7 +475,10 @@ static NTSTATUS NpfsWaitForPipe(const void *input, ULONG inputLength)
         {
             return STATUS_IO_TIMEOUT;
         }
-        ASSERT(status == STATUS_SUCCESS);
+        if (status != STATUS_SUCCESS)
+        {
+            return status; /* CUI-4: foreign terminate breaks the FSCTL_PIPE_WAIT park */
+        }
     }
 }
 
@@ -510,7 +527,13 @@ static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CO
                 NTSTATUS status = IopPreparePendingRequest(request, &instance->pendingListen);
                 return NT_SUCCESS(status) ? STATUS_PENDING : status;
             }
-            NpfsWait(&instance->connectEvent);
+            {
+                NTSTATUS waitStatus = NpfsWait(&instance->connectEvent);
+                if (waitStatus != STATUS_SUCCESS)
+                {
+                    return waitStatus; /* CUI-4: foreign terminate breaks the listen park */
+                }
+            }
             break;
         default:
             return STATUS_PIPE_DISCONNECTED;

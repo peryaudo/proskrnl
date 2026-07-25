@@ -212,6 +212,30 @@ void KiYield(void)
     KiReleaseDispatcherLock(flags);
 }
 
+/* CUI-4: the one preemption point, taken at the timer interrupt's return to
+ * ring 3 (kernel/init/panic.c). Art. 3 forbids preempting kernel code, but a
+ * switch AT a user-mode return is explicitly sanctioned (docs/09) — and it is
+ * required: without it a ring-3 busy loop that issues no syscalls never yields,
+ * starving every other thread (a killer can never run to stop it; taskkill /
+ * Ctrl+C would hang). Round-robin only when another thread of at least this
+ * one's priority is ready, so strict priority still holds and an otherwise
+ * idle CPU keeps running the current thread. */
+void KiPreemptAtUserReturn(void)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    PKTHREAD current = KiCurrentThread;
+    if (current != &KiIdleThread && KiReadySummary != 0)
+    {
+        int highestReady = 31 - __builtin_clz(KiReadySummary);
+        if (highestReady >= current->priority)
+        {
+            KiReadyThread(current); /* tail of its level */
+            KiSwapToNext();
+        }
+    }
+    KiReleaseDispatcherLock(flags);
+}
+
 __attribute__((noreturn)) void KiIdleLoop(void)
 {
     if (KiCurrentThread != &KiIdleThread)

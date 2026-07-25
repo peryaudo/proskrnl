@@ -111,6 +111,31 @@ void KiAlertWaitingThread(PKTHREAD thread)
     KiUnwaitThread(thread, STATUS_ALERTED);
 }
 
+/* CUI-4: pull a foreign-terminated thread out of its wait so it reaches a
+ * ring-3 edge and reaps itself (KiProcessPendingUserSignals). Only ever
+ * called for a user thread (ASSERT) — kernel-internal waits (cm hive mutex,
+ * PsRunWineImage joins, the reaper) are never terminate targets, so they are
+ * never aborted. The wait returns STATUS_THREAD_IS_TERMINATING, which each
+ * indefinite-wait site propagates up rather than re-waiting on. */
+void KiAbortThreadWait(PKTHREAD thread)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    ASSERT(thread->threadObject != 0);
+    if (thread->state == KI_THREAD_STATE_WAITING)
+    {
+        KiUnwaitThread(thread, STATUS_THREAD_IS_TERMINATING);
+    }
+}
+
+/* Would a wait by the current user thread fail outright because a foreign
+ * terminate is pending? Checked at the top of every indefinite wait so a
+ * re-wait loop (npfs re-park, the condrv serial poll, the byte-lock retry)
+ * cannot trap a dying thread short of its reaping edge. */
+static BOOLEAN KiWaitAbortedForTermination(PKTHREAD thread)
+{
+    return thread->terminating && thread->threadObject != 0;
+}
+
 /* Are all objects of a wait-all thread simultaneously satisfiable? The
  * timeout timer block is deliberately outside waitBlockList. */
 static int KiIsWaitAllSatisfiable(PKTHREAD thread)
@@ -364,6 +389,14 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
 
     uint64_t flags = KiAcquireDispatcherLock();
 
+    /* A foreign-terminated thread never parks (CUI-4): fail the wait so it
+     * unwinds to its reaping edge. */
+    if (KiWaitAbortedForTermination(thread))
+    {
+        KiReleaseDispatcherLock(flags);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
+
     /* Immediate satisfaction — checked before any timeout, including 0. */
     if (waitType == WaitAny)
     {
@@ -467,6 +500,13 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
     }
     uint64_t flags = KiAcquireDispatcherLock();
     PKTHREAD thread = KiCurrentThread;
+
+    /* A foreign-terminated thread never parks (CUI-4). */
+    if (KiWaitAbortedForTermination(thread))
+    {
+        KiReleaseDispatcherLock(flags);
+        return STATUS_THREAD_IS_TERMINATING;
+    }
 
     /* Alertable + a user APC (or alert) already pending: complete
      * immediately, exactly as the object waits do (sem_file/apc_completion

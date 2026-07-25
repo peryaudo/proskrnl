@@ -499,8 +499,13 @@ NTSTATUS NtTerminateThread(HANDLE threadHandle, LONG exitStatus)
         ObDereferenceObject(thread);
         PspExitCurrentThread(exitStatus);
     }
+    /* Foreign thread (CUI-4): flag it and wake it; it reaps itself at its next
+     * return to user mode (Art. 3 — never torn down from here). */
+    uint64_t flags = KiAcquireDispatcherLock();
+    PspFlagThreadTermination(thread->tcb, (NTSTATUS)exitStatus);
+    KiReleaseDispatcherLock(flags);
     ObDereferenceObject(thread);
-    return STATUS_NOT_IMPLEMENTED; /* foreign running thread: needs suspend (unbuilt) */
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,

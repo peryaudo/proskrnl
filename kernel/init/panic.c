@@ -252,6 +252,10 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         if ((trapFrame->segCs & 3) == 3)
         {
             KiProcessPendingUserSignals(KeGetCurrentThread());
+            /* The one preemption point: round-robin a ring-3 thread at the
+             * timer tick so a syscall-free busy loop cannot starve others
+             * (CUI-4 — without it a killer/parent never regains the CPU). */
+            KiPreemptAtUserReturn();
         }
         return;
     }
