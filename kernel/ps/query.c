@@ -15,6 +15,7 @@
 #include "kernel/mm/phys.h"
 #include "kernel/mm/section.h"
 #include "kernel/io/io.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -644,8 +645,24 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         memcpy(buffer, out, len);
         return STATUS_SUCCESS;
     }
+    case SystemFirmwareTableInformation:
+        /* SMBIOS pass-through: the oracle synthesizes its answer from the
+         * HOST's DMI tables (dlls/ntdll/unix/system.c create_smbios_data) —
+         * host-derived data proskrnl deliberately has no source for, and
+         * the firstboot registry differential already excludes the derived
+         * keys as host-derived. wineboot's create_bios_key tolerates the
+         * refusal (GetSystemFirmwareTable answers 0 and the SMBIOS parse
+         * finds nothing). Pinned todo_proskrnl by sem_ps/process_query
+         * (docs/03). */
+        return KiPinnedNotImplemented();
+    case SystemWineVersionInformation:
+        /* The oracle's unix layer answers its version/uname strings here
+         * (dlls/ntdll/unix/system.c) and ntdll's version_init — the caller,
+         * at every process start — ignores the status. proskrnl is not
+         * Wine-on-unix and refuses rather than fabricate a uname (docs/03;
+         * pinned todo_proskrnl by sem_ps/process_query). */
+        return KiPinnedNotImplemented();
     default:
-        /* version_init tolerates a failure here (docs/03). */
         return STATUS_NOT_IMPLEMENTED;
     }
 }

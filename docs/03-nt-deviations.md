@@ -730,6 +730,36 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
   asserts the SCM AUTO-started SvcDemo from the persisted registry before
   cmd prompted, and the proof file grew to two lines.
 
+## Panic-on-STATUS_NOT_IMPLEMENTED boot (Art. 12 dialed to fatal)
+
+- **Every image carries `C:\panic_not_implemented.flag` by default**
+  (`tools/mkimage.sh`; `PANIC_NOTIMPL=0` omits it). While the marker is
+  present (`kernel/init/main.c KiConfigurePanicOnNotImplemented`), a ring-3
+  syscall that answers an *unpinned* `STATUS_NOT_IMPLEMENTED` — a
+  `KI_SYSCALL_MISSING` id or a partial service's unbuilt case — panics at
+  the dispatcher (`kernel/syscall/table.c`) after naming the service (and
+  its first two arguments) on serial. Art. 12's loud refusal becomes an
+  immediate, attributable stop instead of a status a caller may limp past.
+- **Pinned refusals stay non-fatal**: a `STATUS_NOT_IMPLEMENTED` that IS
+  the contract — the pinned oracle's own answer for the case, or a
+  deviation below that an ntapi test exercises — returns through
+  `KiPinnedNotImplemented()` (`kernel/syscall/syscall.h`) and does not
+  panic. Current pinned sites: the token/file/volume info-class refusals
+  the oracle itself shapes (`sem_se/se_query`, `sem_file/info_classes`,
+  `sem_file/volume_info`), the byte-lock bare-form contract
+  (`sem_file/byte_locks`), suspending an ever-run thread
+  (`sem_ps/suspend_resume`, the M10 note above), and
+  `SystemWineVersionInformation` (below).
+- **`NtQuerySystemInformation(SystemWineVersionInformation)` (1000) is a
+  pinned refusal**: the oracle's unix layer answers
+  `version\0build\0sysname\0release` from its own uname
+  (`dlls/ntdll/unix/system.c`); proskrnl is not Wine-on-unix, and
+  fabricating a uname would be exactly the plausible-answer stub Art. 12
+  forbids. ntdll's `version_init` — the caller, at every process start —
+  ignores the status (`wine_version` stays empty; the reported Windows
+  version is unaffected). Pinned `todo_proskrnl` by
+  `sem_ps/process_query`.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:

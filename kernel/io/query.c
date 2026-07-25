@@ -7,6 +7,7 @@
  * (a NULL mask on a later call reuses the previous one).
  */
 #include "kernel/io/io.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
@@ -98,7 +99,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     default:
         /* Unsupported class: STATUS_NOT_IMPLEMENTED (pinned Wine; real NT
          * says INVALID_INFO_CLASS — Wine wins, Art. 6). */
-        return STATUS_NOT_IMPLEMENTED;
+        return KiPinnedNotImplemented();
     }
     if (length < needed)
     {
@@ -265,7 +266,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         requiredAccess = 0;
         break;
     default:
-        return STATUS_NOT_IMPLEMENTED; /* pinned Wine, as in query above */
+        return KiPinnedNotImplemented(); /* pinned Wine, as in query above */
     }
     if (length < needed)
     {
@@ -740,7 +741,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = STATUS_NOT_IMPLEMENTED; /* pipes/console: wineserver's answer */
+            status = KiPinnedNotImplemented(); /* pipes/console: wineserver's answer */
             break;
         }
         if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
@@ -770,7 +771,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = STATUS_NOT_IMPLEMENTED;
+            status = KiPinnedNotImplemented(); /* wineserver's answer, as above */
             break;
         }
         if (length < sizeof(FILE_FS_SIZE_INFORMATION))
@@ -797,7 +798,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = STATUS_NOT_IMPLEMENTED;
+            status = KiPinnedNotImplemented(); /* wineserver's answer, as above */
             break;
         }
         if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))

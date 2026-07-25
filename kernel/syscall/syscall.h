@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 
+#include "abi/ntdef.h"
 #include "arch/x86_64/trap.h"
 
 /* The C half of the entry stub (entry.S): dispatch the syscall described by
@@ -23,6 +24,23 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame);
 /* Service name for a syscall id ("?" if unknown / unimplemented) — the panic
  * dump prints it next to the raw last-syscall number (Art. 9). */
 const char *KiSystemCallName(uint64_t number);
+
+/* Art. 12 dialed to fatal: TRUE when the boot volume carries
+ * C:\panic_not_implemented.flag (baked into every image by tools/mkimage.sh
+ * unless PANIC_NOTIMPL=0; probed at boot by kernel/init/main.c — the
+ * KiIsInteractiveBoot pattern: the image, not a kernel switch, decides).
+ * While armed, a ring-3 syscall that answers STATUS_NOT_IMPLEMENTED —
+ * a KI_SYSCALL_MISSING id or a partial service's unbuilt case — panics
+ * instead of returning, so a run convicts the exact first unbuilt service
+ * it needed rather than limping past it. */
+extern BOOLEAN KiPanicOnNotImplemented;
+
+/* A pinned refusal: STATUS_NOT_IMPLEMENTED that IS the contract — the pinned
+ * oracle's own answer for the case (G12: "then it's an implementation, not a
+ * stub") or a docs/03 deviation an ntapi test exercises. Returning through
+ * this helper marks the status so the armed panic above does not convict it;
+ * a bare `return STATUS_NOT_IMPLEMENTED` stays a loud stub. */
+NTSTATUS KiPinnedNotImplemented(void);
 
 /* entry.S: first descent into ring 3 (kernel/ps). KERNEL_GS_BASE must already
  * carry the thread's TEB; the kernel stack is abandoned. arg1/arg2 seed the

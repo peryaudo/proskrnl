@@ -9,6 +9,7 @@
  * its last handle (IopCloseFileObject).
  */
 #include "kernel/io/io.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
 #include "kernel/mm/pool.h"
@@ -117,10 +118,11 @@ NTSTATUS NtLockFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apcC
                     ULONG *key, BOOLEAN failImmediately, BOOLEAN exclusive)
 {
     (void)apcContext;
-    /* The pinned Wine contract: only the bare form is implemented. */
+    /* The pinned Wine contract (sem_file/byte_locks): only the bare form is
+     * implemented — the oracle's own refusal, not a stub. */
     if (apc != 0 || iosb != 0 || key != 0)
     {
-        return STATUS_NOT_IMPLEMENTED;
+        return KiPinnedNotImplemented();
     }
     if (byteOffset == 0 || length == 0)
     {
@@ -184,7 +186,7 @@ NTSTATUS NtUnlockFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteO
 {
     if (key != 0)
     {
-        return STATUS_NOT_IMPLEMENTED; /* the pinned Wine contract */
+        return KiPinnedNotImplemented(); /* the pinned Wine contract */
     }
     if (iosb == 0 || byteOffset == 0 || length == 0)
     {
