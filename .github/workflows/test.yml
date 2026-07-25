@@ -214,5 +214,6 @@ jobs:
             build/serial.log
             build/tests/*.log
             build/tests/wtests/*.log
+            build/tests/fatcheck/*.log
             build/tests/fuzz/repro/**
           if-no-files-found: ignore
