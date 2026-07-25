@@ -10,6 +10,7 @@
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
+#include "kernel/mm/section.h"
 #include "kernel/ps/ps.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
@@ -949,4 +950,44 @@ NTSTATUS NtProtectVirtualMemory(HANDLE process, PVOID *baseInOut, SIZE_T *sizeIn
         ObDereferenceObject(target);
     }
     return status;
+}
+
+/* kernel/io/file.c: the Mm<->Io seam for file identity (the
+ * IopBuildSectionBacking pattern, mm/section.c). */
+BOOLEAN IoIsSameUnderlyingFile(PVOID fileBody1, PVOID fileBody2);
+
+NTSTATUS NtAreMappedFilesTheSame(PVOID address1, PVOID address2)
+{
+    /* The loader's find_existing_module probe (dlls/ntdll/loader.c): is the
+     * image at address2 the same on-disk file as the module at address1?
+     * Statuses and their ORDER as the oracle's dlls/ntdll/unix/virtual.c
+     * NtAreMappedFilesTheSame + server/mapping.c is_same_mapping, pinned by
+     * sem_mm/mapped_same: both addresses must land in views; private
+     * (NtAllocateVirtualMemory) memory refuses CONFLICTING_ADDRESSES; one
+     * view is trivially the same; two views are the same only when the
+     * FIRST is an image view and both name the same on-disk file. */
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    PMI_VAD vad1 = MiFindVad(space, (uint64_t)(uintptr_t)address1);
+    PMI_VAD vad2 = MiFindVad(space, (uint64_t)(uintptr_t)address2);
+    if (vad1 == 0 || vad2 == 0)
+    {
+        return STATUS_INVALID_ADDRESS;
+    }
+    if (vad1->type == MEM_PRIVATE || vad2->type == MEM_PRIVATE)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+    if (vad1 == vad2)
+    {
+        return STATUS_SUCCESS;
+    }
+    PMI_SECTION section1 = vad1->sectionBody;
+    PMI_SECTION section2 = vad2->sectionBody;
+    if (section1 == 0 || section2 == 0 || section1->fileObject == 0 || section2->fileObject == 0 ||
+        (section1->attributes & SEC_IMAGE) == 0 ||
+        !IoIsSameUnderlyingFile(section1->fileObject, section2->fileObject))
+    {
+        return STATUS_NOT_SAME_DEVICE;
+    }
+    return STATUS_SUCCESS;
 }

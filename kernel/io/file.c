@@ -648,6 +648,17 @@ NTSTATUS IoOpenDataSection(const WCHAR *ntPath, PMI_SECTION *sectionOut)
     return IopOpenFileSection(ntPath, SEC_COMMIT, PAGE_READONLY, sectionOut);
 }
 
+/* Mm's NtAreMappedFilesTheSame seam: do two File bodies name the same
+ * on-disk file? FCB identity answers it — one live FCB per on-disk file is
+ * the fs contract (fs/fat32 "one-FCB-per-file rule"), so two opens of one
+ * path share the pointer. */
+BOOLEAN IoIsSameUnderlyingFile(PVOID fileBody1, PVOID fileBody2)
+{
+    PFILE_OBJECT file1 = fileBody1;
+    PFILE_OBJECT file2 = fileBody2;
+    return file1->fcb != 0 && file1->fcb == file2->fcb;
+}
+
 /* Kernel-internal directory sweep (the ntapi test runner, kernel/init):
  * open `ntPath` as a directory through the same IopCreateFile path a user
  * open takes and hand every entry — "." and ".." included, as the vfs
