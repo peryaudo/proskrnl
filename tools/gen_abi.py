@@ -555,6 +555,9 @@ NTMMAPI_FUNCTIONS = [
     "NtProtectVirtualMemory",
     "NtFlushInstructionCache",
     "NtAreMappedFilesTheSame",
+    # CUI-4: cross-process memory access (toolhelp/debug-adjacent readers).
+    "NtReadVirtualMemory",
+    "NtWriteVirtualMemory",
 ]
 
 
@@ -1113,6 +1116,21 @@ def gen_ntcondrv(wine: Path) -> str:
     condrv = (wine / "include/wine/condrv.h").read_text()
     wincontypes = (wine / "include/wincontypes.h").read_text()
     basetsd = (wine / "include/basetsd.h").read_text()
+    consoleapi = (wine / "include/consoleapi.h").read_text()
+
+    # CUI-4: the console-control event codes riding condrv_ctrl_event.event
+    # (conhost -> kernel -> the injected CtrlRoutine thread's argument).
+    ctrl_events = extract_defines(
+        consoleapi,
+        "consoleapi.h",
+        [
+            "CTRL_C_EVENT",
+            "CTRL_BREAK_EVENT",
+            "CTRL_CLOSE_EVENT",
+            "CTRL_LOGOFF_EVENT",
+            "CTRL_SHUTDOWN_EVENT",
+        ],
+    )
 
     ioctls = extract_defines(
         condrv,
@@ -1233,6 +1251,9 @@ _Static_assert(offsetof(struct condrv_ctrl_event, group_id) == 4, "condrv_ctrl_e
         + coord_structs
         + "\n\n/* The ConDrv ioctl surface, extracted from wine/include/wine/condrv.h. */\n"
         + ioctls
+        + "\n\n/* Console-control event codes (condrv_ctrl_event.event), extracted\n"
+        + " * from wine/include/consoleapi.h. */\n"
+        + ctrl_events
         + "\n\n"
         + handle_typedef
         + "\n\n/* The ioctl parameter/result shapes, extracted verbatim from\n"
@@ -1540,6 +1561,15 @@ NTPSAPI_FUNCTIONS = [
     "NtAssignProcessToJobObject",
     "NtSetInformationJobObject",
     "NtQueryInformationJobObject",
+    # CUI-4: the process ecosystem (tasklist/taskkill/toolhelp + job-driving
+    # build tools).
+    "NtOpenProcess",
+    "NtGetNextProcess",
+    "NtSuspendProcess",
+    "NtResumeProcess",
+    "NtOpenJobObject",
+    "NtTerminateJobObject",
+    "NtIsProcessInJob",
 ]
 
 
@@ -1609,6 +1639,16 @@ def gen_ntpsapi(wine: Path) -> str:
         "__WINESRC__",
         True,
     )
+    # CUI-4: extracted by name so their Wine offset comments can also be
+    # turned into layout pins below (gen_offset_asserts).
+    sys_thread_info = extract_struct(
+        winternl, "_SYSTEM_THREAD_INFORMATION", "SYSTEM_THREAD_INFORMATION"
+    )
+    sys_process_info = resolve_ifdef(
+        extract_struct(winternl, "_SYSTEM_PROCESS_INFORMATION", "SYSTEM_PROCESS_INFORMATION"),
+        "__WINESRC__",
+        True,
+    )
     info_structs = "\n\n".join(
         [
             extract_struct(winternl, "_THREAD_BASIC_INFORMATION", "THREAD_BASIC_INFORMATION"),
@@ -1662,6 +1702,15 @@ def gen_ntpsapi(wine: Path) -> str:
             ),
             extract_struct(winternl, "_VM_COUNTERS", "VM_COUNTERS"),
             extract_struct(winternl, "_VM_COUNTERS_EX", "VM_COUNTERS_EX"),
+            # CUI-4: the SystemProcessInformation entry chain kernel32's
+            # toolhelp snapshot walks. Keep the __WINESRC__ branch — it is
+            # the real named layout ntdll's unix side produces and the PE
+            # side consumes (get_system_process_info / fetch_process_thread).
+            # Dependency order: the process entry embeds the thread record
+            # array (below) and IO_COUNTERS (already emitted with the job
+            # structs, which precede info_structs in the assembled header).
+            sys_thread_info,
+            sys_process_info,
             extract_struct(winternl, "_PS_ATTRIBUTE", "PS_ATTRIBUTE"),
             extract_struct(winternl, "_PS_ATTRIBUTE_LIST", "PS_ATTRIBUTE_LIST"),
             extract_struct(winternl, "_PS_CREATE_INFO", "PS_CREATE_INFO"),
@@ -1725,6 +1774,20 @@ def gen_ntpsapi(wine: Path) -> str:
                 winnt, "_JOBOBJECT_EXTENDED_LIMIT_INFORMATION",
                 "JOBOBJECT_EXTENDED_LIMIT_INFORMATION",
             ),
+            # CUI-4: the query surface (NtQueryInformationJobObject) a
+            # job-driving build tool reads back.
+            extract_struct(
+                winnt, "_JOBOBJECT_BASIC_ACCOUNTING_INFORMATION",
+                "JOBOBJECT_BASIC_ACCOUNTING_INFORMATION",
+            ),
+            extract_struct(
+                winnt, "JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION",
+                "JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION",
+            ),
+            extract_struct(
+                winnt, "_JOBOBJECT_BASIC_PROCESS_ID_LIST",
+                "JOBOBJECT_BASIC_PROCESS_ID_LIST",
+            ),
         ]
     )
     job_defines = extract_defines(
@@ -1732,6 +1795,11 @@ def gen_ntpsapi(wine: Path) -> str:
         "winnt.h",
         [
             "JOB_OBJECT_ALL_ACCESS",
+            # CUI-4: the specific job rights the query/terminate surface checks.
+            "JOB_OBJECT_ASSIGN_PROCESS",
+            "JOB_OBJECT_SET_ATTRIBUTES",
+            "JOB_OBJECT_QUERY",
+            "JOB_OBJECT_TERMINATE",
             "JOB_OBJECT_MSG_END_OF_JOB_TIME",
             "JOB_OBJECT_MSG_END_OF_PROCESS_TIME",
             "JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT",
@@ -1848,6 +1916,11 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + job_defines
         + "\n\n"
         + info_structs
+        + "\n\n/* Layout pins, generated from the offset comments in the SAME Wine\n"
+        + " * header the structs were extracted from (Art. 4). */\n"
+        + gen_offset_asserts(sys_thread_info, "SYSTEM_THREAD_INFORMATION")
+        + "\n"
+        + gen_offset_asserts(sys_process_info, "SYSTEM_PROCESS_INFORMATION")
         + "\n\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes

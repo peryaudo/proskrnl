@@ -172,5 +172,7 @@ NTSTATUS NtQuerySection(HANDLE,SECTION_INFORMATION_CLASS,PVOID,SIZE_T,SIZE_T*);
 NTSTATUS NtProtectVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG,ULONG*);
 NTSTATUS NtFlushInstructionCache(HANDLE,LPCVOID,SIZE_T);
 NTSTATUS NtAreMappedFilesTheSame(PVOID,PVOID);
+NTSTATUS NtReadVirtualMemory(HANDLE,const void*,void*,SIZE_T,SIZE_T*);
+NTSTATUS NtWriteVirtualMemory(HANDLE,void*,const void*,SIZE_T,SIZE_T*);
 
 #endif /* PROSKRNL_ABI_NTMMAPI_H */
