@@ -51,6 +51,12 @@ typedef struct EPROCESS
     uint64_t parentProcessId;         /* CUI-4: the creator's id, reported by
                                        * SystemProcessInformation.ParentProcessId
                                        * (0 for the system process / kernel launches) */
+    uint64_t processGroupId;          /* CUI-4: the console-signal group
+                                       * (wineserver's process->group_id):
+                                       * inherited from the creator, or the
+                                       * process's own id when it starts a new
+                                       * group. GenerateConsoleCtrlEvent filters
+                                       * the ctrl-event fanout on it. */
     ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
     ULONG hardErrorMode;              /* ProcessDefaultHardErrorMode (kernelbase
                                        * Set/GetErrorMode); fresh process = 0 */
@@ -73,6 +79,12 @@ typedef struct EPROCESS
      * reaches by NtContinue after loader_init (kernel/ps/usermode.c). 0 keeps
      * the bare-register entry the native M4-M7 clients use. */
     uint64_t rtlUserThreadStart;
+    /* CUI-4: ntdll's __wine_ctrl_routine export — the entry a kernel-injected
+     * thread runs to deliver a console control event (it calls kernelbase's
+     * CtrlRoutine, which runs the process's handler list). 0 = unresolved,
+     * and such a process is simply skipped by the fanout (Art. 12: no
+     * fabricated delivery). */
+    uint64_t ctrlRoutine;
     uint64_t ntdllBase; /* where the system DLL mapped (0 = none loaded) */
 
     /* M7: all threads of the process (the main thread plus NtCreateThreadEx
@@ -309,6 +321,18 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
                              BOOLEAN createSuspended, PHANDLE threadHandleOut,
                              uint64_t *threadIdOut, uint64_t *tebBaseOut);
+
+/* CUI-4: start a thread in `process` with NO handle in any table — the
+ * kernel-initiated injection the console-control fanout uses (ntdll's unix
+ * int_handler does the same with NtCreateThreadEx + an immediate NtClose). */
+NTSTATUS PspInjectUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument);
+
+/* CUI-4: deliver a console control event (CTRL_C_EVENT / CTRL_BREAK_EVENT) to
+ * every process attached to the console, filtered by `groupId` when nonzero:
+ * a new user thread runs ntdll's __wine_ctrl_routine with the event as its
+ * argument, exactly as wineserver's propagate_console_signal + ntdll's
+ * int_handler do. Called from drivers/condrv.c. */
+NTSTATUS PsPropagateConsoleCtrlEvent(ULONG event, uint64_t groupId);
 
 /* The first ring-3 descent of a user thread (shared by process/thread.c):
  * enters user mode at the KTHREAD's user-start register state. */

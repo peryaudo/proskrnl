@@ -291,6 +291,93 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
     return STATUS_SUCCESS;
 }
 
+/* Build a user thread in `process` (its own stack + TEB + ETHREAD), entering
+ * ring 3 at startRoutine(argument) through the image's loader protocol, and
+ * hand back a creator reference WITHOUT touching the caller's handle table.
+ * PspCreateUserThread adds the caller-visible handle; PspInjectUserThread
+ * (CUI-4's console-control delivery) needs a thread with no handle at all,
+ * since the kernel is the creator. The thread is left un-readied so the
+ * caller can finalize it. */
+static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
+                                   PETHREAD *threadOut, uint64_t *threadIdOut, uint64_t *tebBaseOut)
+{
+    uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
+    NTSTATUS status =
+        PspAllocateThreadStack(process, 0x100000, 0x10000, &allocBase, &stackTop, &stackLimit);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    uint64_t tebBase = 0;
+    /* Ids come from the shared Ps id source: NT's client ids are GLOBALLY
+     * unique (one CID table for pids and tids), and the global alert-by-tid
+     * lookup depends on it (ntdll:sync test_tid_alert). */
+    uint64_t threadId = PspAllocateProcessId();
+    status =
+        PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, threadId, &tebBase);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Create the Ke thread but do not ready it until its user-start state and
+     * ETHREAD are set (the context switch programs GS from the TEB). */
+    PKTHREAD tcb =
+        KiCreateThreadSuspended(8, PspUserThreadStartup, 0, process, (void *)(uintptr_t)tebBase);
+    if (tcb == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    /* Enter ring 3 at the image's RtlUserThreadStart-shaped entry: rcx =
+     * startRoutine, rdx = argument (the loader protocol NtCreateThreadEx uses,
+     * matching Wine's dlls/ntdll RtlUserThreadStart). */
+    tcb->userStartRip =
+        process->ldrInitializeThunk != 0 ? process->ldrInitializeThunk : startRoutine;
+    tcb->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
+    tcb->userStartArg1 = startRoutine;
+    tcb->userStartArg2 = argument;
+
+    PETHREAD thread;
+    status = PspCreateThreadObject(process, tcb, tebBase, allocBase, stackTop, threadId, &thread);
+    if (!NT_SUCCESS(status))
+    {
+        KiDeleteThread(tcb);
+        return status;
+    }
+    *threadOut = thread;
+    if (threadIdOut != 0)
+    {
+        *threadIdOut = threadId;
+    }
+    if (tebBaseOut != 0)
+    {
+        *tebBaseOut = tebBase;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* CUI-4: start a thread in `process` with NO handle in anyone's table — the
+ * kernel-initiated injection the console-control fanout uses to run ntdll's
+ * __wine_ctrl_routine (mirroring what ntdll's unix int_handler does with
+ * NtCreateThreadEx + an immediate NtClose). */
+NTSTATUS PspInjectUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument)
+{
+    PETHREAD thread;
+    NTSTATUS status = PspBuildUserThread(process, startRoutine, argument, &thread, 0, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PKTHREAD tcb = thread->tcb;
+    /* The thread holds its own running pin (PspCreateThreadObject); drop the
+     * creator reference — no handle stands in for it (G11: the running pin is
+     * what keeps the ETHREAD alive until it exits). */
+    ObDereferenceObject(thread);
+    KiReadyCreatedThread(tcb);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
                              BOOLEAN createSuspended, PHANDLE threadHandleOut,
                              uint64_t *threadIdOut, uint64_t *tebBaseOut)

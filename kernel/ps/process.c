@@ -27,6 +27,7 @@
 
 #include "abi/ntimage.h"
 #include "abi/ntpsapi.h"
+#include "abi/ntcondrv.h" /* CUI-4: CTRL_C_EVENT / CTRL_BREAK_EVENT */
 
 #include <stddef.h>
 
@@ -91,6 +92,7 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->imageBase = 0;
     process->uniqueProcessId = 0;
     process->parentProcessId = 0;
+    process->processGroupId = 0;
     /* The ProcessCookie: ntdll's get_process_cookie feeds this straight
      * into RtlEncodePointer/RtlDecodePointer WITHOUT checking the query's
      * status, so every process must carry a stable nonzero value from
@@ -110,6 +112,7 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->userApcDispatcher = 0;
     process->ldrInitializeThunk = 0;
     process->rtlUserThreadStart = 0;
+    process->ctrlRoutine = 0;
     process->ntdllBase = 0;
     process->activeThreadCount = 0;
     InitializeListHead(&process->threadListHead);
@@ -251,6 +254,16 @@ static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, ui
     if (rva != 0)
     {
         process->rtlUserThreadStart = base + rva;
+    }
+    /* CUI-4: the console-control entry. ntdll exports it (dlls/ntdll/
+     * ntdll.spec, loader.c __wine_ctrl_routine) precisely so the OS can start
+     * a thread there to deliver CTRL_C/CTRL_BREAK; it forwards to
+     * kernelbase's CtrlRoutine, which runs the process's handler list. */
+    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
+                              "__wine_ctrl_routine");
+    if (rva != 0)
+    {
+        process->ctrlRoutine = base + rva;
     }
 }
 
@@ -550,7 +563,13 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
     /* CUI-4: SystemProcessInformation.ParentProcessId — the creator, or 0
      * for a boot-time kernel launch (KiInitialize runs on the system
      * process, whose id is 0). */
-    process->parentProcessId = KeGetCurrentThread()->process->uniqueProcessId;
+    PEPROCESS creator = KeGetCurrentThread()->process;
+    process->parentProcessId = creator->uniqueProcessId;
+    /* The console-signal group (wineserver server/process.c new_process): a
+     * child joins its creator's group; a process whose creator has none —
+     * every kernel launch — starts its own, keyed on its own id. */
+    process->processGroupId =
+        creator->processGroupId != 0 ? creator->processGroupId : process->uniqueProcessId;
 
     status = MiCreateAddressSpace(&process->addressSpace);
     if (!NT_SUCCESS(status))
@@ -942,6 +961,69 @@ void PspFlagThreadTermination(PKTHREAD tcb, NTSTATUS exitStatus)
     {
         KiReadyThread(tcb); /* never ran: descend and self-reap at first entry */
     }
+}
+
+/* CUI-4: console-control delivery. The contract the PE stack expects is the
+ * one wineserver implements (server/console.c propagate_console_signal) and
+ * ntdll's unix side executes (signal_x86_64.c int_handler): for every process
+ * attached to the console, START A NEW THREAD at ntdll's __wine_ctrl_routine
+ * with the event code as its argument. That thread calls kernelbase's
+ * CtrlRoutine, which raises DBG_CONTROL_C, then walks the process's handler
+ * list (cmd's my_event_handler, msvcrt's SIGINT dispatch), defaulting to
+ * RtlExitUserProcess(STATUS_CONTROL_C_EXIT). No APC can serve this: a user APC
+ * only runs at an alertable wait, so it could never interrupt a busy loop.
+ *
+ * Attachment is `consoleHandle != 0` — proskrnl has ONE global console
+ * (docs/03 M9), so a process either has its handles or it does not. */
+#define PSP_MAX_CTRL_TARGETS 32
+
+NTSTATUS PsPropagateConsoleCtrlEvent(ULONG event, uint64_t groupId)
+{
+    if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
+    {
+        /* The other CTRL_* codes have no wineserver delivery either
+         * (propagate_console_signal maps only these two). */
+        DbgPrint("ps: console ctrl event %u unimplemented\n", (unsigned)event);
+        return STATUS_NOT_IMPLEMENTED;
+    }
+
+    /* Snapshot the targets under the lock, each pinned, so the injections
+     * below (which allocate and can block) run with the lock dropped and
+     * cannot race a process delete (G11). */
+    PEPROCESS targets[PSP_MAX_CTRL_TARGETS];
+    ULONG count = 0;
+    uint64_t flags = KiAcquireDispatcherLock();
+    for (PLIST_ENTRY entry = PspActiveProcessListHead.Flink;
+         entry != &PspActiveProcessListHead && count < PSP_MAX_CTRL_TARGETS; entry = entry->Flink)
+    {
+        PEPROCESS process = CONTAINING_RECORD(entry, EPROCESS, activeProcessLinks);
+        if (process->consoleHandle == 0 || process->ctrlRoutine == 0)
+        {
+            continue; /* not on the console, or no ntdll to deliver through */
+        }
+        if (process->header.signalState != 0 || process->activeThreadCount == 0)
+        {
+            continue; /* already exiting: nothing to deliver to */
+        }
+        if (groupId != 0 && process->processGroupId != groupId)
+        {
+            continue; /* GenerateConsoleCtrlEvent's group filter */
+        }
+        ObfReferenceObject(process);
+        targets[count++] = process;
+    }
+    KiReleaseDispatcherLock(flags);
+
+    for (ULONG i = 0; i < count; i++)
+    {
+        NTSTATUS status = PspInjectUserThread(targets[i], targets[i]->ctrlRoutine, event);
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrint("ps: ctrl-event injection failed %08x\n", (unsigned)status);
+        }
+        ObDereferenceObject(targets[i]);
+    }
+    return STATUS_SUCCESS;
 }
 
 /* Flag every thread of a foreign process for termination (lock taken here). */
