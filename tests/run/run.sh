@@ -192,7 +192,7 @@ proskrnl() {
     "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/proskrnl-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-420}" \
+    LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # Symbolized sidecar for a human/LLM reading a failure (Art. 9); the
@@ -299,7 +299,7 @@ winetest() {
     SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/wtest-serial.log"
-    LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1200}" \
+    LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     "$ROOT/tools/symbolize.py" --kernel "$kernel" \
@@ -381,7 +381,7 @@ PYEOF
     mcopy -i "$img@@$off" "$work/manifest.txt" ::/fatcorpus/manifest.txt
 
     local log="$BUILD/fatinterop-serial.log"
-    LOG="$log" PASS_RE="\[KTEST\] FATINTEROP PASS" TIMEOUT="${TIMEOUT:-420}" \
+    LOG="$log" PASS_RE="\[KTEST\] FATINTEROP PASS" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     "$ROOT/tools/symbolize.py" --kernel "$kernel" --moduledir "$ROOT/build/modules" \
         < "$log" > "$BUILD/fatinterop-serial.sym.log" 2>/dev/null || true
@@ -461,7 +461,7 @@ fatstress() {
             "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
         local log1="$BUILD/fatstress-$lname-1.log" log2="$BUILD/fatstress-$lname-2.log"
-        LOG="$log1" PASS_RE="\[KTEST\] churn-seed PASS" TIMEOUT="${TIMEOUT:-420}" \
+        LOG="$log1" PASS_RE="\[KTEST\] churn-seed PASS" TIMEOUT="${TIMEOUT:-900}" \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
         if ! grep -q '\[KTEST\] churn-seed PASS' "$log1"; then
             echo "[KTEST] fatstress-$lname-seed FAIL (see $log1)"
@@ -472,7 +472,7 @@ fatstress() {
 
         local finalLog="$log1"
         if [[ "$lboots" == 2 ]]; then
-            LOG="$log2" PASS_RE="\[KTEST\] churn-verify PASS" TIMEOUT="${TIMEOUT:-420}" \
+            LOG="$log2" PASS_RE="\[KTEST\] churn-verify PASS" TIMEOUT="${TIMEOUT:-900}" \
                 "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
             if grep -q '\[KTEST\] churn-verify PASS' "$log2"; then
                 echo "[KTEST] fatstress-$lname-verify PASS"
@@ -532,7 +532,7 @@ tornwrite() {
     rm -f "$logbin"
     truncate -s 64M "$logbin"
     WRITE_LOG="$logbin" LOG="$serial" PASS_RE="\[KTEST\] module /torn_workload.bin PASS" \
-        TIMEOUT="${TIMEOUT:-300}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+        TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q '\[KTEST\] module /torn_workload.bin PASS' "$serial"; then
         echo "== tornwrite: FAIL (the workload run itself went red; see $serial) =="
         return 1
@@ -573,13 +573,13 @@ persist() {
     local log1="$ROOT/build/tests/persist1.log" log2="$ROOT/build/tests/persist2.log"
     # Boot 1 of a virgin image runs the whole CUI-1 firstboot INF pass
     # (minutes under TCG); boot 2 skips it via wineboot's timestamp check.
-    LOG="$log1" TIMEOUT="${TIMEOUT:-420}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    LOG="$log1" TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: seeded' "$log1" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log1"; then
         echo "== persist: FAIL (boot 1 did not seed; see $log1) =="
         return 1
     fi
-    LOG="$log2" TIMEOUT="${TIMEOUT:-420}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    LOG="$log2" TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: verified' "$log2" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log2" || \
        ! grep -qE '^\[KTEST\] M8 PASS' "$log2"; then
@@ -611,7 +611,7 @@ firstboot() {
     local img="$BUILD/firstboot.hdd"
     cp "$ROOT/build/proskrnl.hdd" "$img"
     local log="$BUILD/firstboot.log"
-    LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-420}" \
+    LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q "\[KTEST\] firstboot PASS" "$log"; then
         echo "[KTEST] firstboot-diff FAIL (boot did not reach firstboot PASS; see $log)"
@@ -700,7 +700,7 @@ console() {
 
     # CUI-3: a resident SCM under no-eviction/no-COW needs the winetest
     # leg's provisioning.
-    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-600}" \
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" \
@@ -739,7 +739,7 @@ scm() {
     for boot in 1 2; do
         sock="$ROOT/build/tests/scm$boot.sock"
         log="$ROOT/build/tests/scm$boot.log"
-        SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-600}" \
+        SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
         qemu_wrapper=$!
         if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_SCM="$boot" \

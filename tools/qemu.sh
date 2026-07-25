@@ -29,7 +29,11 @@ if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
     echo "qemu.sh: QEMU $QEMU_MAJOR.x lacks TCG x2APIC (need >= 9.0, README \"Prerequisites\")" >&2
     exit 1
 fi
-TIMEOUT="${TIMEOUT:-30}"
+# Sized for a virgin full image under TCG on a modest container (the CUI-1
+# firstboot INF pass alone is minutes there): a green boot exits through
+# isa-debug-exit the moment it is done, so a large default only delays how
+# fast a WEDGED run is declared dead, never a passing one.
+TIMEOUT="${TIMEOUT:-600}"
 MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
 
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
