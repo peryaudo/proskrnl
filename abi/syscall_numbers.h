@@ -152,6 +152,8 @@
 #define NTSYS_NtReadVirtualMemory 0x003f
 #define NTSYS_NtWriteVirtualMemory 0x003a
 #define NTSYS_NtGetNextProcess 0x009f
+#define NTSYS_NtSuspendProcess 0x00fa
+#define NTSYS_NtResumeProcess 0x00e0
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

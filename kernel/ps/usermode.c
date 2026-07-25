@@ -218,8 +218,31 @@ static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
  *   - bare-register (no ntdll: the M4 flat binaries and the native PE
  *     clients): enter at the resolved rip with rcx/rdx = the two arguments.
  */
+/* CUI-4: the choke point every return-to-ring-3 edge runs (syscall return,
+ * interrupt return, first descent). A pending foreign terminate reaps the
+ * thread through the ordinary exit path — on its OWN stack, in its OWN context
+ * (Art. 3: never torn down from another thread). A closed suspend gate parks
+ * it here until resumed. The loop re-checks because a terminate can arrive
+ * while suspended. Lock NOT held: KeWaitForSingleObject takes it itself. */
+void KiProcessPendingUserSignals(PKTHREAD thread)
+{
+    for (;;)
+    {
+        if (thread->terminating)
+        {
+            PspExitCurrentThread(thread->terminateStatus); /* never returns */
+        }
+        if (KeReadStateEvent(&thread->suspendGate) != 0)
+        {
+            return;
+        }
+        KeWaitForSingleObject(&thread->suspendGate, Suspended, KernelMode, FALSE, 0);
+    }
+}
+
 __attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb)
 {
+    KiProcessPendingUserSignals(tcb); /* honour a create-suspend / terminate before ring 3 */
     PEPROCESS process = tcb->process;
     if (process->rtlUserThreadStart != 0 && process->ldrInitializeThunk != 0)
     {
