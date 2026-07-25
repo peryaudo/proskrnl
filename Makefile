@@ -364,6 +364,47 @@ $(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
+# CUI-4: Wine's tasklist.exe / taskkill.exe as standalone CUI PEs — the
+# milestone's acceptance pair (docs/02 "a tasklist/taskkill pair works
+# against live processes"). The pinned tree's own PE build provides the
+# program objects and wrc-compiled resources UNMODIFIED; user/tasklist/ and
+# user/taskkill/ supply only the wide CRT entry and the user32 imports
+# (LoadStringW is a resource read; taskkill's window calls fail honestly —
+# its /f path does not use them). Same recipe shape as cmd.exe above.
+WINE_TASKLIST := third_party/wine/programs/tasklist
+TASKLIST := $(BUILD)/modules/tasklist.exe
+$(TASKLIST): user/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windows/tasklist.o \
+        $(WINE_TASKLIST)/tasklist.res $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff $(WINE_TASKLIST)/tasklist.res \
+	    $(BUILD)/tasklist.res.o
+	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=tasklist_start \
+	    $(WINE_TASKLIST)/x86_64-windows/tasklist.o user/tasklist/proskrnl_glue.c \
+	    $(BUILD)/tasklist.res.o \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+WINE_TASKKILL := third_party/wine/programs/taskkill
+TASKKILL := $(BUILD)/modules/taskkill.exe
+$(TASKKILL): user/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windows/taskkill.o \
+        $(WINE_TASKKILL)/taskkill.res $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff $(WINE_TASKKILL)/taskkill.res \
+	    $(BUILD)/taskkill.res.o
+	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=taskkill_start \
+	    $(WINE_TASKKILL)/x86_64-windows/taskkill.o user/taskkill/proskrnl_glue.c \
+	    $(BUILD)/taskkill.res.o \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
 # CUI-1: Wine's rundll32.exe as a standalone PE — wineboot --init's vehicle
 # for the `setupapi,InstallHinfSection` children that apply wine.inf (ADR
 # 0008's Cm integration exercise). The pinned tree's own PE build provides
@@ -517,6 +558,16 @@ SVCDEMO := $(BUILD)/modules/svcdemo.exe
 $(SVCDEMO): tests/cui/svcdemo.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $< -ladvapi32
+# CUI-4 acceptance: an interruptible busy loop (console control handler) and
+# a job-object-using build tool. Same third-party CUI shape as above.
+LOOPER := $(BUILD)/modules/looper.exe
+$(LOOPER): tests/cui/looper.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+JOBTOOL := $(BUILD)/modules/jobtool.exe
+$(JOBTOOL): tests/cui/jobtool.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
 
 # The M9 interactive-console image (tests/run/run.sh console): the standard
 # image plus m9_echo.exe, whose presence makes the boot block on console
@@ -531,7 +582,8 @@ WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
-        $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+        $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) $(TASKLIST) $(TASKKILL) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
@@ -540,7 +592,11 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 	    win:$(HELLOCRT)=hello_crt.exe \
 	    win:$(UPCASE)=upcase.exe \
 	    win:$(WHOAMI)=whoami.exe \
-	    win:$(SVCDEMO)=svcdemo.exe
+	    win:$(SVCDEMO)=svcdemo.exe \
+	    win:$(LOOPER)=looper.exe \
+	    win:$(JOBTOOL)=jobtool.exe \
+	    win:$(TASKLIST)=windows/system32/tasklist.exe \
+	    win:$(TASKKILL)=windows/system32/taskkill.exe
 
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img
