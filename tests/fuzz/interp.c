@@ -35,6 +35,14 @@ NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE, PIO_STATUS_BLOCK);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
 NTSYSAPI NTSTATUS NTAPI NtCreateJobObject(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PVOID, ULONG);
+/* CUI-4 */
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PVOID, ULONG,
+                                                    PULONG);
+NTSYSAPI NTSTATUS NTAPI NtIsProcessInJob(HANDLE, HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtOpenProcess(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *,
+                                      const CLIENT_ID *);
+NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE, const void *, void *, SIZE_T, SIZE_T *);
+NTSYSAPI NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE, void *, const void *, SIZE_T, SIZE_T *);
 /* NtGetNlsSectionPtr's section types, as wine/dlls/ntdll/locale_private.h
  * defines them (winternl.h omits the enum; NORM_FORM comes via windows.h).
  * Before fuzz_model.h: its nls choice tables name these. */
@@ -1255,6 +1263,135 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         }
         st = NtSetInformationJobObject(fz_slots[a[0]], cls, &ext, len);
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_OPEN_PROCESS:
+    {
+        /* The process_cid semantic table: our own pid resolves, an id that
+         * was never handed out is STATUS_INVALID_CID on both sides. The
+         * HANDLE VALUE is never traced (allocation differs); only the status
+         * and, on success, the slot it landed in. */
+        OBJECT_ATTRIBUTES attr;
+        CLIENT_ID cid;
+        HANDLE handle = NULL;
+        InitializeObjectAttributes(&attr, NULL, 0, NULL, NULL);
+        fz_bzero(&cid, sizeof(cid));
+        switch (a[1])
+        {
+        case 0: /* FZ_CID_SELF */
+            cid.UniqueProcess = (HANDLE)(ULONG_PTR)GetCurrentProcessId();
+            break;
+        case 1: /* FZ_CID_NEVER_ALLOCATED: 4-aligned but absurdly high */
+            cid.UniqueProcess = (HANDLE)(ULONG_PTR)0xfffffffcUL;
+            break;
+        default: /* FZ_CID_ZERO: no process and no thread named */
+            break;
+        }
+        st = NtOpenProcess(&handle, PROCESS_QUERY_INFORMATION, &attr, &cid);
+        if (fz_ok(st))
+        {
+            fz_slots[a[0]] = handle;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x slot=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)a[0]);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_SYSTEM_PROCESSES:
+    {
+        /* Length gating only: the process list's CONTENTS (how many processes
+         * exist, their names and ids) legitimately differ between the oracle
+         * host and proskrnl, so the trace carries the status and whether a
+         * needed size came back — never the bytes or the size itself. */
+        static unsigned char buffer[8192];
+        ULONG retLen = 0;
+        st = NtQuerySystemInformation(SystemProcessInformation, buffer,
+                                      fz_query_len((unsigned)a[0], (ULONG)sizeof(buffer)), &retLen);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x sized=%u\n", prog, call, nt, (unsigned)st,
+                     (unsigned)(retLen != 0));
+        break;
+    }
+    case FZ_OP_READ_OWN_MEMORY:
+    case FZ_OP_WRITE_OWN_MEMORY:
+    {
+        /* The vm_scenario table over the interp's OWN memory: a whole buffer,
+         * a zero-length move, and an address unmapped on both sides (the
+         * STATUS_PARTIAL_COPY path). Self-directed, so the bytes moved are
+         * fully determined by the program. */
+        static unsigned char vmSource[64];
+        static unsigned char vmSink[64];
+        for (unsigned i = 0; i < sizeof(vmSource); i++)
+            vmSource[i] = (unsigned char)(i * 3 + 1);
+        const void *from = vmSource;
+        void *to = vmSink;
+        SIZE_T length = sizeof(vmSource);
+        SIZE_T moved = 0;
+        switch (a[0])
+        {
+        case 0: /* FZ_VM_WHOLE */
+            break;
+        case 1: /* FZ_VM_ZERO_LENGTH */
+            length = 0;
+            break;
+        default: /* FZ_VM_UNMAPPED */
+            from = (const void *)(ULONG_PTR)0x1000;
+            to = (void *)(ULONG_PTR)0x1000;
+            break;
+        }
+        if (op == FZ_OP_READ_OWN_MEMORY)
+            st = NtReadVirtualMemory(NtCurrentProcess(), from, vmSink, length, &moved);
+        else
+            st = NtWriteVirtualMemory(NtCurrentProcess(), to, vmSource, length, &moved);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x moved=%u\n", prog, call, nt, (unsigned)st,
+                     (unsigned)moved);
+        break;
+    }
+    case FZ_OP_IS_PROCESS_IN_JOB:
+    {
+        /* Self against whatever the slot holds: a job handle answers
+         * NOT_IN_JOB (the interp never assigns itself — assignment is
+         * irreversible state, deliberately outside the model), a non-job
+         * handle is the type mismatch, an empty slot the invalid handle. */
+        st = NtIsProcessInJob(NtCurrentProcess(), fz_slots[a[0]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_JOB_INFO:
+    {
+        /* The job_query semantic table. Every answer is deterministic for an
+         * empty interp-created job: zero counts, zero ids, the limit flags
+         * set_job_limits stored. */
+        unsigned char buffer[256];
+        ULONG retLen = 0;
+        JOBOBJECTINFOCLASS cls;
+        ULONG len;
+        fz_bzero(buffer, sizeof(buffer));
+        switch (a[1])
+        {
+        case 0: /* FZ_JOBQ_ACCOUNTING */
+            cls = JobObjectBasicAccountingInformation;
+            len = sizeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION);
+            break;
+        case 1: /* FZ_JOBQ_PID_LIST */
+            cls = JobObjectBasicProcessIdList;
+            len = sizeof(buffer);
+            break;
+        case 2: /* FZ_JOBQ_BASIC_LIMITS */
+            cls = JobObjectBasicLimitInformation;
+            len = sizeof(JOBOBJECT_BASIC_LIMIT_INFORMATION);
+            break;
+        default: /* FZ_JOBQ_CLASS_CEILING */
+            cls = (JOBOBJECTINFOCLASS)1000;
+            len = sizeof(buffer);
+            break;
+        }
+        st = NtQueryInformationJobObject(fz_slots[a[0]], cls, buffer, len, &retLen);
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u\n", prog, call, nt, (unsigned)st,
+                         (unsigned)retLen);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
     default:

@@ -494,6 +494,30 @@ FUZZ_CHOICES = {
         ("FZ_JOB_EXT_BADSIZE", False),
         ("FZ_JOB_CLASS_CEILING", False),
     ]),
+    # CUI-4: the CLIENT_ID shapes NtOpenProcess resolves deterministically —
+    # the interp's own pid, and ids that can never name a live process.
+    "process_cid": (None, [
+        ("FZ_CID_SELF", False),
+        ("FZ_CID_NEVER_ALLOCATED", False),
+        ("FZ_CID_ZERO", False),
+    ]),
+    # The NtRead/WriteVirtualMemory cases over the interp's OWN memory: a
+    # whole buffer, a zero-length move, and an address that is never mapped
+    # on either side (the STATUS_PARTIAL_COPY path).
+    "vm_scenario": (None, [
+        ("FZ_VM_WHOLE", False),
+        ("FZ_VM_ZERO_LENGTH", False),
+        ("FZ_VM_UNMAPPED", False),
+    ]),
+    # The job query classes whose answers are deterministic for an EMPTY,
+    # interp-created job (counts are 0/0; the limit read-back mirrors what
+    # set_job_limits stored).
+    "job_query": (None, [
+        ("FZ_JOBQ_ACCOUNTING", False),
+        ("FZ_JOBQ_PID_LIST", False),
+        ("FZ_JOBQ_BASIC_LIMITS", False),
+        ("FZ_JOBQ_CLASS_CEILING", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -585,6 +609,20 @@ FUZZ_OPS = [
     ("cancel_io_ex", "NtCancelIoFileEx", ["slot_in"]),
     ("create_job", "NtCreateJobObject", ["slot_out", "ch_access_job"]),
     ("set_job_limits", "NtSetInformationJobObject", ["slot_in", "ch_job_scenario"]),
+    # CUI-4 process-ecosystem ops. Only the DETERMINISTIC slice: opening a
+    # process by a CLIENT_ID the interp itself supplies (self, or an id that
+    # was never a process), the length gating of the process-list query (its
+    # CONTENTS are inherently host-specific — trace status + whether a size
+    # came back, never the bytes), and reads/writes of the interp's OWN
+    # memory. Foreign-process ops stay out: another process's liveness is not
+    # reproducible across the two sides. Suspend/terminate of self are
+    # irreversible, so they stay out too (the cancel_io precedent).
+    ("open_process", "NtOpenProcess", ["slot_out", "ch_process_cid"]),
+    ("query_system_processes", "NtQuerySystemInformation", ["ch_len"]),
+    ("read_own_memory", "NtReadVirtualMemory", ["ch_vm_scenario"]),
+    ("write_own_memory", "NtWriteVirtualMemory", ["ch_vm_scenario"]),
+    ("is_process_in_job", "NtIsProcessInJob", ["slot_in"]),
+    ("query_job_info", "NtQueryInformationJobObject", ["slot_in", "ch_job_query"]),
 ]
 
 
