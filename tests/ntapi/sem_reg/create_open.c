@@ -136,6 +136,29 @@ START_TEST(create_open)
         reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_m8_create_open\\zeroed"));
     }
 
+    /* --- REG_OPTION_CREATE_LINK: registry symlinks -----------------------
+     * The oracle creates a KEY_SYMLINK key (server/registry.c set_flags);
+     * proskrnl pins a refusal — registry symlinks are unbuilt (docs/03 M8
+     * + CUI-1 notes: wine.inf's Time Zones link rides the firstboot
+     * differential's exclusion list; setupapi warn-and-continues). */
+    {
+        HANDLE link = NULL;
+        ULONG link_disposition = 0;
+        init_ustr(&name, W("\\Registry\\Machine\\Software\\prsk_m8_create_link"));
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+        status = NtCreateKey(&link, KEY_ALL_ACCESS, &attr, 0, NULL,
+                             REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, &link_disposition);
+        todo_proskrnl
+        {
+            ok(status == STATUS_SUCCESS, "create link key -> %08lx", (unsigned long)status);
+        }
+        if (NT_SUCCESS(status))
+        {
+            NtDeleteKey(link);
+            NtClose(link);
+        }
+    }
+
     /* Cleanup: delete sub then base. */
     reg_delete_sub(base, W("sub"));
     status = NtDeleteKey(base);
