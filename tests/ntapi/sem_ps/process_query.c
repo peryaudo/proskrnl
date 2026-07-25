@@ -104,4 +104,62 @@ START_TEST(process_query)
                                        sizeof(wide_cookie), NULL);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "ProcessCookie oversize -> %08lx",
        (unsigned long)status);
+
+    /* --- ProcessDebugPort: not debugged -> 0; EXACT DWORD_PTR size -------
+     * ntdll's loader_init queries this at every process start and calls
+     * process_breakpoint on a nonzero answer. Wine dlls/ntdll/unix/
+     * process.c: `size != sizeof(DWORD_PTR)` -> INFO_LENGTH_MISMATCH;
+     * no debugger (STATUS_PORT_NOT_SET from the server) -> *info = 0,
+     * STATUS_SUCCESS. */
+    ULONG_PTR debug_port = ~(ULONG_PTR)0;
+    returnLength = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessDebugPort, &debug_port,
+                                       sizeof(debug_port), &returnLength);
+    ok(status == STATUS_SUCCESS, "ProcessDebugPort -> %08lx", (unsigned long)status);
+    ok(debug_port == 0, "debug port %p with no debugger", (void *)debug_port);
+    ok(returnLength == sizeof(debug_port), "debug port return length %lu",
+       (unsigned long)returnLength);
+    ULONG narrow_port = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessDebugPort, &narrow_port,
+                                       sizeof(narrow_port), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "ProcessDebugPort short -> %08lx",
+       (unsigned long)status);
+
+    /* --- ProcessImageInformation: the main image's facts, EXACT size -----
+     * ntdll's build_main_module reads this at every process start and
+     * terminates the process on IMAGE_FILE_DLL. Wine dlls/ntdll/unix/
+     * process.c: `size == len` else INFO_LENGTH_MISMATCH; returnLength =
+     * sizeof either way. The values describe THIS test .exe. */
+    ps_section_image_info image_info;
+    returnLength = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessImageInformation, &image_info,
+                                       sizeof(image_info), &returnLength);
+    ok(status == STATUS_SUCCESS, "ProcessImageInformation -> %08lx", (unsigned long)status);
+    ok(returnLength == sizeof(image_info), "image info return length %lu",
+       (unsigned long)returnLength);
+    ok(image_info.machine == IMAGE_FILE_MACHINE_AMD64, "machine %04x", image_info.machine);
+    ok((image_info.image_characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) != 0,
+       "characteristics %04x lack EXECUTABLE_IMAGE", image_info.image_characteristics);
+    ok((image_info.image_characteristics & IMAGE_FILE_DLL) == 0, "characteristics %04x have DLL",
+       image_info.image_characteristics);
+    ok(image_info.maximum_stack_size != 0, "maximum stack size 0");
+    status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessImageInformation, &image_info,
+                                       sizeof(image_info) - 8, NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "image info short -> %08lx", (unsigned long)status);
+
+    /* --- SystemWineVersionInformation (1000): the oracle's unix layer
+     * answers version\0build\0sysname\0release (dlls/ntdll/unix/system.c);
+     * proskrnl PINS a refusal instead — it is not Wine-on-unix and has no
+     * truthful uname to fabricate, and ntdll's version_init ignores the
+     * status (docs/03). */
+    char wine_version[512];
+    wine_version[0] = 0;
+    status = NtQuerySystemInformation(PS_SystemWineVersionInformation, wine_version,
+                                      sizeof(wine_version), NULL);
+    todo_proskrnl
+    {
+        ok(status == STATUS_SUCCESS, "SystemWineVersionInformation -> %08lx",
+           (unsigned long)status);
+        ok(wine_version[0] != 0, "wine version string empty");
+    }
 }

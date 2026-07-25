@@ -33,6 +33,38 @@ NTSYSAPI NTSTATUS NTAPI NtRemoveIoCompletion(HANDLE, PULONG_PTR, PULONG_PTR, PIO
  * oracle run validates the value — a wrong one would answer
  * STATUS_INVALID_INFO_CLASS there). */
 #define PS_ProcessWineMakeProcessSystem ((PROCESSINFOCLASS)1000)
+
+/* The Wine-private system info class ntdll's version_init queries at every
+ * process start (wine/include/winternl.h SystemWineVersionInformation =
+ * 1000; the oracle run validates the value the same way). */
+#define PS_SystemWineVersionInformation ((SYSTEM_INFORMATION_CLASS)1000)
+
+/* mingw's winternl.h omits this class (wine/include/winternl.h
+ * ProcessImageInformation = 37; a wrong value would answer
+ * STATUS_INVALID_INFO_CLASS on the oracle) and the struct it returns
+ * (SECTION_IMAGE_INFORMATION, x64 layout as wine/include/winternl.h;
+ * snake_case per the sem_mm/image_section.c pattern). */
+#define PS_ProcessImageInformation ((PROCESSINFOCLASS)37)
+typedef struct
+{
+    PVOID transfer_address;
+    ULONG zero_bits;
+    SIZE_T maximum_stack_size;
+    SIZE_T committed_stack_size;
+    ULONG subsystem_type;
+    USHORT minor_subsystem_version;
+    USHORT major_subsystem_version;
+    USHORT major_operating_system_version;
+    USHORT minor_operating_system_version;
+    USHORT image_characteristics;
+    USHORT dll_characteristics;
+    USHORT machine;
+    BOOLEAN image_contains_code;
+    UCHAR image_flags;
+    ULONG loader_flags;
+    ULONG image_file_size;
+    ULONG checksum;
+} ps_section_image_info;
 NTSYSAPI NTSTATUS NTAPI NtDelayExecution(BOOLEAN, const LARGE_INTEGER *);
 NTSYSAPI NTSTATUS NTAPI NtYieldExecution(void);
 NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
