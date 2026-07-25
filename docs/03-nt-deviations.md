@@ -519,9 +519,19 @@ boundary symbols winebuild would have emitted supplied by
   - process-exit protocol: `ntdll:sync` and `kernel32:sync` complete their
     checks (sync: zero failures) but park at exit — the tests deliberately
     LEAK threads blocked on a closed completion port, which real NT's
-    terminate-all-threads kills; proskrnl's no-preemption abandon rule
-    (above) leaves the exit path waiting. Needs the foreign-terminate
-    story.
+    terminate-all-threads kills. **Re-triaged at CUI-4** (which built the
+    foreign-terminate story this note used to wait on): both pairs are
+    oracle-green, and on proskrnl the run now reaches its own summary line
+    — `sync: 0 tests executed (… 0 failures)` on serial — and *then* still
+    fails the per-pair budget as `FAIL (timeout)`. So terminating the
+    siblings at `ExitProcess` (`PspExitCurrentProcess`) was necessary but
+    NOT sufficient: something else keeps the process alive after the last
+    check. They stay off the manifest with that sharper cause; the next
+    attempt should start from which thread is still counted in
+    `activeThreadCount` at that point, not from the wait paths (those now
+    abort). Adding them meanwhile is actively harmful: pairs share one
+    console, so a wedged pair fails every pair after it (the re-triage run
+    showed five otherwise-green `kernel32` pairs cascade).
   - breadth not yet triaged: `kernel32:{thread,time,pipe}` (107/43/slow),
     `msvcrt:{misc,file,time}`, `ucrtbase:misc`, `cmd.exe_test:directory`
     (6 failures on proskrnl only).
