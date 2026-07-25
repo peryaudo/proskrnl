@@ -1495,6 +1495,7 @@ NTPSAPI_FUNCTIONS = [
     "NtDisplayString",
     "NtCreateUserProcess",
     "NtCreateThreadEx",
+    "NtGetNextThread",
     "NtOpenThread",
     "NtResumeThread",
     "NtSuspendThread",
