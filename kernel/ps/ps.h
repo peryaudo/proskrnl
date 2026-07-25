@@ -48,6 +48,9 @@ typedef struct EPROCESS
      * All-zero when the image had no PE parse (M4 flat clients). */
     SECTION_IMAGE_INFORMATION imageInformation;
     uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
+    uint64_t parentProcessId;         /* CUI-4: the creator's id, reported by
+                                       * SystemProcessInformation.ParentProcessId
+                                       * (0 for the system process / kernel launches) */
     ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
     ULONG hardErrorMode;              /* ProcessDefaultHardErrorMode (kernelbase
                                        * Set/GetErrorMode); fresh process = 0 */

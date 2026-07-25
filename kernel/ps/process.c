@@ -90,6 +90,7 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->pebBase = 0;
     process->imageBase = 0;
     process->uniqueProcessId = 0;
+    process->parentProcessId = 0;
     /* The ProcessCookie: ntdll's get_process_cookie feeds this straight
      * into RtlEncodePointer/RtlDecodePointer WITHOUT checking the query's
      * status, so every process must carry a stable nonzero value from
@@ -343,6 +344,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     process->imageName = file->name;
     PspInitializeProcessCommon(process);
     process->uniqueProcessId = PspAllocateProcessId();
+    process->parentProcessId = KeGetCurrentThread()->process->uniqueProcessId;
 
     status = MiCreateAddressSpace(&process->addressSpace);
     if (!NT_SUCCESS(status))
@@ -545,6 +547,10 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
     process->imageName = imageDosPath;
     PspInitializeProcessCommon(process);
     process->uniqueProcessId = PspAllocateProcessId();
+    /* CUI-4: SystemProcessInformation.ParentProcessId — the creator, or 0
+     * for a boot-time kernel launch (KiInitialize runs on the system
+     * process, whose id is 0). */
+    process->parentProcessId = KeGetCurrentThread()->process->uniqueProcessId;
 
     status = MiCreateAddressSpace(&process->addressSpace);
     if (!NT_SUCCESS(status))

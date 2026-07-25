@@ -13,6 +13,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/mm/phys.h"
+#include "kernel/mm/pool.h"
 #include "kernel/mm/section.h"
 #include "kernel/io/io.h"
 #include "kernel/syscall/syscall.h"
@@ -249,6 +250,33 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessSessionInformation:
+    {
+        /* The session id ProcessIdToSessionId reads per row
+         * (dlls/kernelbase/process.c) — tasklist hits it for every process
+         * it lists (CUI-4). One interactive session (PEB.SessionId == 1,
+         * kernel/ps/peb.c). EXACT ULONG size; returnLength = sizeof either
+         * way (Wine dlls/ntdll/unix/process.c ProcessSessionInformation).
+         * Pinned by sem_ps/system_processes. */
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG);
+        }
+        if (length != sizeof(ULONG))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        ULONG sessionId = 1; /* the one interactive session (peb.c) */
+        memcpy(buffer, &sessionId, sizeof(sessionId));
+        status = STATUS_SUCCESS;
+        break;
+    }
     case ProcessCookie:
     {
         /* Own process only, size exactly ULONG (Wine
@@ -468,11 +496,170 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
 
 /* --- system information --------------------------------------------------- */
 
+/* CUI-4: SystemProcessInformation — the chained snapshot kernel32's
+ * CreateToolhelp32Snapshot walks (dlls/kernel32/toolhelp.c). The producer
+ * contract is dlls/ntdll/unix/system.c get_system_process_info: per process a
+ * SYSTEM_PROCESS_INFORMATION header, its SYSTEM_THREAD_INFORMATION[] array,
+ * then the base-name string, all 8-aligned and NextEntryOffset-linked (0 ends
+ * the chain). Pinned by sem_ps/system_processes.
+ *
+ * We build into a kernel scratch (the dispatcher lock is held only across the
+ * two list walks, never during the user copy), computing ProcessName.Buffer
+ * as the FINAL user VA so the caller's chain is self-consistent. */
+
+/* The base name (past the last path separator) of an ASCII image path, as a
+ * character count; the DOS/NT path uses '\\', flat clients may have none. */
+static ULONG PspImageBaseNameChars(const char *imageName)
+{
+    ULONG length = 0;
+    ULONG base = 0;
+    for (ULONG i = 0; imageName != 0 && imageName[i] != 0; i++)
+    {
+        length = i + 1;
+        if (imageName[i] == '\\' || imageName[i] == '/')
+        {
+            base = i + 1;
+        }
+    }
+    return length - base;
+}
+
+static const char *PspImageBaseName(const char *imageName)
+{
+    const char *base = imageName;
+    for (const char *p = imageName; p != 0 && *p != 0; p++)
+    {
+        if (*p == '\\' || *p == '/')
+        {
+            base = p + 1;
+        }
+    }
+    return base;
+}
+
+/* One process's entry length: header + its threads + its base name + NUL,
+ * rounded up to 8 (Wine's proc_len). */
+static ULONG PspProcessEntryLength(PEPROCESS process)
+{
+    ULONG threadCount = (ULONG)process->activeThreadCount;
+    ULONG nameChars = PspImageBaseNameChars(process->imageName);
+    ULONG length = (ULONG)sizeof(SYSTEM_PROCESS_INFORMATION) +
+                   threadCount * (ULONG)sizeof(SYSTEM_THREAD_INFORMATION) +
+                   (nameChars + 1) * (ULONG)sizeof(WCHAR);
+    return (length + 7) & ~7u;
+}
+
+/* Fill one process entry into `entry` (a kernel scratch pointer); the name
+ * Buffer points at `userEntry` (the entry's final user VA) so the copied-out
+ * chain resolves. Lock held. */
+static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *entry,
+                                uint64_t userEntry, ULONG entryLength, BOOLEAN isLast)
+{
+    ULONG threadCount = (ULONG)process->activeThreadCount;
+    ULONG nameChars = PspImageBaseNameChars(process->imageName);
+    const char *baseName = PspImageBaseName(process->imageName);
+
+    memset(entry, 0, entryLength);
+    entry->NextEntryOffset = isLast ? 0 : entryLength;
+    entry->dwThreadCount = threadCount;
+    entry->UniqueProcessId = (HANDLE)(uintptr_t)process->uniqueProcessId;
+    entry->ParentProcessId = (HANDLE)(uintptr_t)process->parentProcessId;
+    entry->HandleCount = process->handleTable.inUse;
+    entry->SessionId = 1; /* the one interactive session (peb.c) */
+    entry->dwBasePriority = process->mainThread != 0 ? process->mainThread->priority : 8;
+
+    ULONG threadIndex = 0;
+    for (PLIST_ENTRY p = process->threadListHead.Flink;
+         p != &process->threadListHead && threadIndex < threadCount; p = p->Flink)
+    {
+        PETHREAD ethread = CONTAINING_RECORD(p, ETHREAD, threadListEntry);
+        SYSTEM_THREAD_INFORMATION *ti = &entry->ti[threadIndex++];
+        ti->ClientId.UniqueProcess = (HANDLE)(uintptr_t)process->uniqueProcessId;
+        ti->ClientId.UniqueThread = (HANDLE)(uintptr_t)ethread->uniqueThreadId;
+        LONG priority = ethread->tcb != 0 ? ethread->tcb->priority : 8;
+        ti->dwCurrentPriority = (DWORD)priority;
+        ti->dwBasePriority = (DWORD)priority;
+    }
+
+    /* The name sits just past the thread array; its Buffer is the FINAL user
+     * address so the caller can chase it in the copied-out block. */
+    ULONG nameOffset =
+        (ULONG)offsetof(SYSTEM_PROCESS_INFORMATION, ti) + threadCount * (ULONG)sizeof(*entry->ti);
+    WCHAR *nameScratch = (WCHAR *)((BYTE *)entry + nameOffset);
+    for (ULONG i = 0; i < nameChars; i++)
+    {
+        nameScratch[i] = (WCHAR)(unsigned char)baseName[i];
+    }
+    nameScratch[nameChars] = 0;
+    entry->ProcessName.Length = (USHORT)(nameChars * sizeof(WCHAR));
+    entry->ProcessName.MaximumLength = (USHORT)((nameChars + 1) * sizeof(WCHAR));
+    entry->ProcessName.Buffer = (WCHAR *)(uintptr_t)(userEntry + nameOffset);
+}
+
+static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PULONG returnLength)
+{
+    /* Pass 1: total size, list stable under the lock. */
+    uint64_t flags = KiAcquireDispatcherLock();
+    ULONG total = 0;
+    for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+         p = p->Flink)
+    {
+        total += PspProcessEntryLength(CONTAINING_RECORD(p, EPROCESS, activeProcessLinks));
+    }
+    KiReleaseDispatcherLock(flags);
+
+    if (returnLength != 0)
+    {
+        *returnLength = total;
+    }
+    if (length < total)
+    {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    NTSTATUS status = KiProbeForWrite(buffer, total, sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    BYTE *scratch = MiAllocatePool(total);
+    if (scratch == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+
+    /* Pass 2: fill the scratch (Buffer pointers computed against the user VA).
+     * No blocking between the passes (Art. 3), so the same list is seen. */
+    flags = KiAcquireDispatcherLock();
+    ULONG offset = 0;
+    for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+         p = p->Flink)
+    {
+        PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        ULONG entryLength = PspProcessEntryLength(process);
+        if (offset + entryLength > total)
+        {
+            break; /* list grew between passes (cannot happen: no preemption) */
+        }
+        PspFillProcessEntry(process, (SYSTEM_PROCESS_INFORMATION *)(scratch + offset),
+                            (uint64_t)(uintptr_t)buffer + offset, entryLength,
+                            p->Flink == &PspActiveProcessListHead);
+        offset += entryLength;
+    }
+    KiReleaseDispatcherLock(flags);
+
+    memcpy(buffer, scratch, offset);
+    MiFreePool(scratch);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buffer, ULONG length,
                                   PULONG returnLength)
 {
     switch (infoClass)
     {
+    case SystemProcessInformation:
+        return PspQuerySystemProcessInformation(buffer, length, returnLength);
     case SystemBasicInformation:
     {
         /* SystemBasicInformation wants an EXACT length — both under- and
