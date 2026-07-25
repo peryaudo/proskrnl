@@ -327,10 +327,20 @@ first (Art. 5). Wrinkles worth remembering:
 - **condrv's seeded std handles are born `OBJ_INHERIT`** (NT console
   handles are inheritable); the console *reference* handle is not — the
   create-time duplication covers it, as on wineserver.
-- **`NtSuspendThread` of a thread that has ever run stays
-  `STATUS_NOT_IMPLEMENTED`** (no kernel preemption — no park point; only
-  never-run threads carry a suspend count). The oracle behaviour is pinned
-  under `todo_proskrnl` in `sem_ps/suspend_resume.c`.
+- **Suspend takes effect at the target's next return to user mode**
+  (CUI-4 — *retires the M10 "suspend of a run thread is unbuilt"
+  deviation*). There is still no kernel preemption, so a foreign thread is
+  not parked mid-instruction; instead each `KTHREAD` carries a suspend gate
+  (a notification event, `PspSuspend/ResumeTcb` the one truth for the
+  thread- and process-level `Nt*`) that `KiProcessPendingUserSignals`
+  consults at every ring-3 edge — the syscall-return, the interrupt-return
+  (so even a syscall-free busy loop parks at the next timer tick), and the
+  first descent. A thread blocked in a kernel wait is *not* pulled out of
+  the wait: it finishes it and parks on return, which is exactly NT's
+  "suspend applies on the way back to user mode" (server/process.c over the
+  unix-signal suspend). `sem_ps/suspend_resume.c` (running-thread counts)
+  and `sem_ps/suspend_process.c` (a child frozen mid-loop) pin it on both
+  sides.
 - **`NtTerminateProcess` abandons blocked sibling threads**: they keep
   their waits and exit on their own (their next syscall fails on the
   closed handles). NT terminates them. Unobservable for the CUI clients

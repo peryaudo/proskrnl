@@ -990,6 +990,51 @@ NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
     return status;
 }
 
+/* CUI-4: suspend/resume every thread of a target process (server/process.c
+ * suspend_process / resume_process). A thread blocked in a kernel wait is NOT
+ * pulled out — the suspend takes effect at its next return to user mode
+ * (PspSuspendTcb closes its gate, KiProcessPendingUserSignals parks it there),
+ * which is exactly NT's "suspend applies on the way back to user mode". */
+static NTSTATUS PspSuspendResumeProcess(HANDLE processHandle, BOOLEAN suspend)
+{
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(processHandle, PROCESS_SUSPEND_RESUME,
+                                                &PspProcessType, ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PEPROCESS process = body;
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+        if (suspend)
+        {
+            PspSuspendTcb(tcb);
+        }
+        else
+        {
+            PspResumeTcb(tcb);
+        }
+    }
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(process);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtSuspendProcess(HANDLE processHandle)
+{
+    return PspSuspendResumeProcess(processHandle, TRUE);
+}
+
+NTSTATUS NtResumeProcess(HANDLE processHandle)
+{
+    return PspSuspendResumeProcess(processHandle, FALSE);
+}
+
 NTSTATUS NtGetNextProcess(HANDLE processHandle, ACCESS_MASK desiredAccess, ULONG attributes,
                           ULONG flags, HANDLE *handleOut)
 {

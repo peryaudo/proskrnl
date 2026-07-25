@@ -245,6 +245,14 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     if (trapFrame->vector >= 32)
     {
         KiDispatchInterrupt(trapFrame->vector);
+        /* CUI-4: the interrupt-return edge — the one that catches a syscall-
+         * free ring-3 busy loop at the next timer tick (the EOI is already
+         * sent). A foreign terminate reaps here; a closed suspend gate parks
+         * here. Only when returning to ring 3. */
+        if ((trapFrame->segCs & 3) == 3)
+        {
+            KiProcessPendingUserSignals(KeGetCurrentThread());
+        }
         return;
     }
 
@@ -275,6 +283,10 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
             faultStatus = MiHandleUserFault(cr2);
             if (faultStatus == STATUS_SUCCESS)
             {
+                /* Resolved fault returning to ring 3: same suspend/terminate
+                 * edge as the interrupt path (a stack-growing loop must stay
+                 * catchable). */
+                KiProcessPendingUserSignals(KeGetCurrentThread());
                 return; /* guard consumed / stack grown: resume ring 3 */
             }
         }

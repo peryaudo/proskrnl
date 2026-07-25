@@ -324,6 +324,16 @@ __attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb);
  * process exit status and signal the process. Never returns. */
 __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus);
 
+/* CUI-4: the shared suspend/resume primitives (dispatcher lock held). One
+ * truth for NtSuspend/ResumeThread and NtSuspend/ResumeProcess (G11). */
+void PspSuspendTcb(PKTHREAD tcb);
+void PspResumeTcb(PKTHREAD tcb);
+
+/* CUI-4: called at every return-to-ring-3 edge (syscall return, interrupt
+ * return, first descent). Reaps the current thread if a foreign terminate is
+ * pending, else parks it while its suspend gate is closed. Lock NOT held. */
+void KiProcessPendingUserSignals(PKTHREAD thread);
+
 /* Build the ETHREAD wrapper for a KTHREAD and link it into the process
  * (kernel/ps/thread.c); increments activeThreadCount. `uniqueThreadId` is
  * the id already stamped into the thread's TEB — one assignment, one truth

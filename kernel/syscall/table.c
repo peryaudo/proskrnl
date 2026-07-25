@@ -19,6 +19,7 @@
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
+#include "kernel/ps/ps.h" /* CUI-4: KiProcessPendingUserSignals */
 #include "kernel/ob/ob.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
@@ -188,6 +189,13 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
     if ((trapFrame->segCs & 3) == 3 && KiUserApcPending(thread))
     {
         KiDeliverUserApc(thread, trapFrame);
+    }
+
+    /* CUI-4: the suspend/terminate choke point on the way back to ring 3 —
+     * a foreign terminate reaps here, a closed suspend gate parks here. */
+    if ((trapFrame->segCs & 3) == 3)
+    {
+        KiProcessPendingUserSignals(thread);
     }
 
     thread->trapFrame = previousFrame;

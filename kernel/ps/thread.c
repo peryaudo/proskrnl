@@ -355,9 +355,10 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     {
         /* THREAD_CREATE_FLAGS_CREATE_SUSPENDED (the CreateProcess/
          * CreateThread(CREATE_SUSPENDED) path): the thread stays
-         * KI_THREAD_STATE_INITIALIZED with one suspend; NtResumeThread
-         * readies it when the count hits zero. */
+         * KI_THREAD_STATE_INITIALIZED with one suspend and its gate closed;
+         * PspResumeTcb readies it when the count hits zero. */
         tcb->suspendCount = 1;
+        KeClearEvent(&tcb->suspendGate);
     }
     else
     {
@@ -691,6 +692,34 @@ NTSTATUS NtWaitForAlertByThreadId(const void *address, const LARGE_INTEGER *time
     return status == STATUS_SUCCESS ? STATUS_ALERTED : status;
 }
 
+/* CUI-4: the shared suspend/resume primitives (one truth for the thread- and
+ * process-level Nt*; lock held). PspSuspendTcb closes the gate on the first
+ * hold; a thread that has already run parks on it at its next ring-3 edge. */
+void PspSuspendTcb(PKTHREAD tcb)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    if (tcb->suspendCount++ == 0)
+    {
+        tcb->suspendGate.header.signalState = 0; /* close: park at the next edge */
+    }
+}
+
+/* Drop one hold; at zero the gate opens (waking a parked thread) and a
+ * never-run thread is readied — the unified create-suspended release point. */
+void PspResumeTcb(PKTHREAD tcb)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    if (tcb->suspendCount > 0 && --tcb->suspendCount == 0)
+    {
+        tcb->suspendGate.header.signalState = 1;
+        KiWaitTest(&tcb->suspendGate.header); /* wake a thread parked on the gate */
+        if (tcb->state == KI_THREAD_STATE_INITIALIZED)
+        {
+            KiReadyThread(tcb); /* create-suspended release */
+        }
+    }
+}
+
 NTSTATUS NtResumeThread(HANDLE threadHandle, PULONG previousCount)
 {
     PVOID body;
@@ -705,11 +734,7 @@ NTSTATUS NtResumeThread(HANDLE threadHandle, PULONG previousCount)
 
     uint64_t flags = KiAcquireDispatcherLock();
     ULONG previous = (ULONG)tcb->suspendCount;
-    if (tcb->suspendCount > 0 && --tcb->suspendCount == 0)
-    {
-        ASSERT(tcb->state == KI_THREAD_STATE_INITIALIZED);
-        KiReadyThread(tcb); /* the CreateProcess release point */
-    }
+    PspResumeTcb(tcb);
     KiReleaseDispatcherLock(flags);
     ObDereferenceObject(thread);
 
@@ -734,19 +759,8 @@ NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousCount)
     PKTHREAD tcb = thread->tcb;
 
     uint64_t flags = KiAcquireDispatcherLock();
-    if (tcb->state != KI_THREAD_STATE_INITIALIZED)
-    {
-        /* Suspending a thread that has ever run is unbuilt: no kernel
-         * preemption (Art. 3), so there is no point at which to park a
-         * running thread (docs/03 M10 note; sem_ps/suspend_resume pins the
-         * oracle behaviour under todo_proskrnl — a documented, test-known
-         * refusal, so pinned rather than a bare stub). */
-        KiReleaseDispatcherLock(flags);
-        ObDereferenceObject(thread);
-        return KiPinnedNotImplemented();
-    }
     ULONG previous = (ULONG)tcb->suspendCount;
-    tcb->suspendCount++;
+    PspSuspendTcb(tcb);
     KiReleaseDispatcherLock(flags);
     ObDereferenceObject(thread);
 

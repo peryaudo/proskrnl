@@ -177,11 +177,22 @@ struct KTHREAD
     KPRIORITY priority;
     LIST_ENTRY readyListEntry;
 
-    /* M10: suspend count. Nonzero only while the thread has never run
-     * (KI_THREAD_STATE_INITIALIZED — create-suspended and stacked suspends
-     * on it); NtResumeThread readies the thread when it reaches zero.
-     * Suspending a RUNNING thread is unbuilt (docs/03: no preemption). */
+    /* Suspend count (CUI-4: generalized to any state). A create-suspended
+     * thread is born with 1; NtSuspend/ResumeThread and NtSuspend/Resume
+     * Process stack/unstack it (PspSuspend/ResumeTcb). While nonzero the
+     * suspendGate below is cleared; a thread that has already run parks on it
+     * at its next return to user mode (KiProcessPendingUserSignals) — the
+     * suspend point Art. 3's no-preemption model otherwise lacks. At zero the
+     * gate opens; a never-run thread is readied then. */
     LONG suspendCount;
+    KEVENT suspendGate; /* NotificationEvent: signalled == may run */
+
+    /* CUI-4: a foreign NtTerminateProcess/Thread request. The initiator sets
+     * these + wakes the target; the target reaps ITSELF at its next ring-3
+     * edge through the ordinary PspExitCurrentThread path (never torn down
+     * from another context — Art. 3). */
+    BOOLEAN terminating;
+    NTSTATUS terminateStatus;
 
     /* M4: the owning process (never 0 once Ps is up — kernel threads belong
      * to PsInitialSystemProcess), the ring-crossing state the context switch

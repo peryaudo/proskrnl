@@ -52,6 +52,10 @@ void KiInitializeScheduler(void)
     KiInitializeDispatcherHeader(&KiIdleThread.header, KI_OBJECT_THREAD, 0);
     KiIdleThread.state = KI_THREAD_STATE_RUNNING;
     KiIdleThread.priority = 0;
+    KiIdleThread.suspendCount = 0;
+    KeInitializeEvent(&KiIdleThread.suspendGate, NotificationEvent, TRUE);
+    KiIdleThread.terminating = FALSE;
+    KiIdleThread.terminateStatus = STATUS_SUCCESS;
     /* The boot context: a system thread on Limine's stack. stackTop stays 0
      * (the idle thread never leads to a ring crossing). */
     KiIdleThread.process = PsInitialSystemProcess;

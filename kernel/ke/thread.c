@@ -87,6 +87,12 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     KiInitializeThreadFxArea(thread);
     thread->state = KI_THREAD_STATE_INITIALIZED; /* readied by KiReadyCreatedThread */
     thread->suspendCount = 0;
+    /* Signalled == may run; PspSuspendTcb clears it, PspResumeTcb reopens it
+     * (CUI-4). A create-suspended thread has its count/gate set by the Ps
+     * creation path after this. */
+    KeInitializeEvent(&thread->suspendGate, NotificationEvent, TRUE);
+    thread->terminating = FALSE;
+    thread->terminateStatus = STATUS_SUCCESS;
     thread->stackBase = stack;
     thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;
     thread->process = process != 0 ? process : PsInitialSystemProcess;

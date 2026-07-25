@@ -194,6 +194,8 @@ IMPLEMENTED = [
     "NtReadVirtualMemory",
     "NtWriteVirtualMemory",
     "NtGetNextProcess",
+    "NtSuspendProcess",
+    "NtResumeProcess",
 ]
 
 

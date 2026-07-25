@@ -1739,6 +1739,26 @@ NtGetNextProcess:
     add $0x78, %rsp
     ret
 
+    .global NtSuspendProcess
+NtSuspendProcess:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xfa, %eax
+    syscall
+    ret
+
+    .global NtResumeProcess
+NtResumeProcess:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xe0, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
