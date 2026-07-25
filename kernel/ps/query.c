@@ -223,6 +223,32 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessDefaultHardErrorMode:
+    {
+        /* The per-process error mode kernelbase's GetErrorMode reads (and
+         * SetErrorMode stores through the set pair below). EXACT UINT size,
+         * returnLength = sizeof either way (Wine dlls/ntdll/unix/process.c
+         * ProcessDefaultHardErrorMode). Pinned by sem_ps/process_query;
+         * ucrtbase's misc tests convicted the refusal under the armed
+         * boot. */
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG);
+        }
+        if (length != sizeof(ULONG))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        memcpy(buffer, &process->hardErrorMode, sizeof(ULONG));
+        status = STATUS_SUCCESS;
+        break;
+    }
     case ProcessCookie:
     {
         /* Own process only, size exactly ULONG (Wine
@@ -391,10 +417,51 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * planted-bug shape this rewrite retires). */
         return PspMakeProcessSystem(processHandle, buffer, length);
     }
-    /* The classes ntdll sets at startup (default hard-error mode, fault
-     * policy, etc.) have no observable effect here; accept them — but by
-     * NAME on serial, so a class whose effect matters cannot hide (Art. 12
-     * hygiene; the pattern that caught this very class). */
+    if (infoClass == ProcessDefaultHardErrorMode)
+    {
+        /* kernelbase SetErrorMode's store; the query pair reads it back.
+         * EXACT UINT, STATUS_INVALID_PARAMETER otherwise (Wine
+         * dlls/ntdll/unix/process.c). Pinned by sem_ps/process_query. */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        ULONG mode;
+        NTSTATUS status = KiCopyFromUser(&mode, buffer, sizeof(mode));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PEPROCESS process;
+        BOOLEAN referenced = FALSE;
+        if (processHandle == NtCurrentProcess())
+        {
+            process = KeGetCurrentThread()->process;
+        }
+        else
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(processHandle, PROCESS_SET_INFORMATION,
+                                               &PspProcessType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            process = body;
+            referenced = TRUE;
+        }
+        process->hardErrorMode = mode;
+        if (referenced)
+        {
+            ObDereferenceObject(process);
+        }
+        return STATUS_SUCCESS;
+    }
+    /* The classes ntdll sets at startup (fault policy etc.) have no
+     * observable effect here; accept them — but by NAME on serial, so a
+     * class whose effect matters cannot hide (Art. 12 hygiene; the pattern
+     * that caught ProcessWineMakeProcessSystem and the hard-error mode
+     * above). */
     DbgPrint("ps: NtSetInformationProcess class %u accepted as a no-op\n", (unsigned)infoClass);
     return STATUS_SUCCESS;
 }

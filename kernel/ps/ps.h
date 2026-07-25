@@ -49,6 +49,8 @@ typedef struct EPROCESS
     SECTION_IMAGE_INFORMATION imageInformation;
     uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
     ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
+    ULONG hardErrorMode;              /* ProcessDefaultHardErrorMode (kernelbase
+                                       * Set/GetErrorMode); fresh process = 0 */
     BOOLEAN timerResolutionRequested; /* NtSetTimerResolution's per-process
                                        * has-a-request latch (M10 winetest) */
     LIST_ENTRY activeProcessLinks;    /* PspActiveProcessListHead (the NT
