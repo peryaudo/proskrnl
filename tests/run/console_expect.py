@@ -199,10 +199,12 @@ def main() -> int:
         if not command(b"echo rc=%errorlevel%", b"rc=77", "the interrupted exit code"):
             return 1
 
-        # 2. tasklist lists live processes — its parent cmd among them. The
-        #    assertion is the UPPERCASED image name tasklist prints, which the
-        #    lowercase typed command line cannot supply in order.
-        if not command(b"C:\\windows\\system32\\tasklist.exe", b"CMD.EXE",
+        # 2. tasklist lists live processes — its parent cmd among them.
+        #    tasklist prints each image name as the process carries it, so
+        #    this one is lowercase. The typed line
+        #    ("C:\windows\system32\tasklist.exe") holds no lowercase 'c', so
+        #    it cannot supply "cmd.exe" in order under the tolerant match.
+        if not command(b"C:\\windows\\system32\\tasklist.exe", b"cmd.exe",
                        "tasklist listing cmd.exe"):
             return 1
 
