@@ -163,7 +163,12 @@ NTSTATUS NtLockFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apcC
          * or unlock; Wine polls the same way). 10 ms, relative. */
         LARGE_INTEGER interval;
         interval.QuadPart = -100000;
-        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        NTSTATUS napStatus = KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        if (napStatus != STATUS_SUCCESS)
+        {
+            status = napStatus; /* CUI-4: foreign terminate — stop retrying */
+            break;
+        }
     }
 
     if (NT_SUCCESS(status) && event != 0)

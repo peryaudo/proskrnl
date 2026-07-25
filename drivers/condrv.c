@@ -131,7 +131,14 @@ static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, 
         /* Nap one clock tick between polls (relative 100 ns units). */
         LARGE_INTEGER interval;
         interval.QuadPart = -10000; /* 1 ms */
-        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        NTSTATUS napStatus = KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        if (napStatus != STATUS_SUCCESS)
+        {
+            /* CUI-4: a foreign terminate broke the nap — stop polling and let
+             * the thread unwind to its reaping edge instead of re-napping. */
+            *infoOut = 0;
+            return napStatus;
+        }
     }
 }
 
@@ -267,7 +274,25 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
     InsertTailList(&CondrvConsole.requestQueue, &request.listEntry);
     CondrvSignalServer(TRUE);
     NTSTATUS waitStatus = KeWaitForSingleObject(&request.done, Executive, KernelMode, FALSE, 0);
-    ASSERT(waitStatus == STATUS_SUCCESS);
+    if (waitStatus != STATUS_SUCCESS)
+    {
+        /* CUI-4: the client thread is being terminated. Our `request` lives on
+         * this (now-unwinding) kernel stack and is still linked on a console
+         * queue or is `current`; unlink it so conhost's later fetch/reply
+         * never touches freed stack. A vanished read completes on conhost's
+         * side as STATUS_INVALID_HANDLE, which it already tolerates. */
+        uint64_t f = KiAcquireDispatcherLock();
+        if (CondrvConsole.current == &request)
+        {
+            CondrvConsole.current = 0;
+        }
+        else
+        {
+            RemoveEntryList(&request.listEntry);
+        }
+        KiReleaseDispatcherLock(f);
+        return waitStatus;
+    }
 
     *infoOut = request.information;
     return request.status;

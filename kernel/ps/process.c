@@ -851,33 +851,32 @@ NTSTATUS PsRunBootModule(PKI_RAMDISK_FILE file, NTSTATUS *exitStatusOut)
 
 __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
 {
-    PKTHREAD thread = KeGetCurrentThread();
-    PEPROCESS process = thread->process;
+    PKTHREAD self = KeGetCurrentThread();
+    PEPROCESS process = self->process;
     ASSERT(process != PsInitialSystemProcess);
 
-    PspReapExitedThreads(); /* earlier exits are TERMINATED by now */
-
-    /* Handles die in thread context (closing can cascade into object deletes,
-     * which may take the dispatcher lock). The address space is torn down
-     * later by PspDeleteProcess — we are still running on it. */
-    ObpCloseAllHandles(&process->handleTable);
-    process->exitStatus = exitStatus;
-    PspNotifyProcessExit(process); /* CUI-3: the job's EXIT_PROCESS packets */
-    KiTraceEvent(KiTraceProcessExit, (uint64_t)(uintptr_t)process, (uint64_t)(uint32_t)exitStatus,
-                 0);
-
+    /* CUI-4: exiting the process means every thread dies, not just this one
+     * (retires the M10 "abandons blocked siblings" divergence — the crux for
+     * a Ctrl+C exit, where the injected ctrl-routine thread ends the process
+     * while the original thread is still looping/blocked). Flag the siblings
+     * and wake them; each reaps ITSELF at its edge. The last thread to exit
+     * — this one or a sibling — runs the process finalization in
+     * PspExitCurrentThread (close handles, publish the status, signal the
+     * process object). All carry the same exitStatus, so the published code
+     * is stable. */
     uint64_t flags = KiAcquireDispatcherLock();
-    process->activeThreadCount--;
-    process->header.signalState = 1; /* never reset: joins always satisfy */
-    KiWaitTest(&process->header);
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+        if (tcb != self)
+        {
+            PspFlagThreadTermination(tcb, exitStatus);
+        }
+    }
     KiReleaseDispatcherLock(flags);
 
-    /* Retire + park like any thread exit (M10): joins on the caller's thread
-     * handle satisfy, and the running pin is handed to the reaper. Abandoned
-     * sibling threads (blocked in waits) keep their pins until they exit on
-     * their own — NT would terminate them; docs/03 records the divergence. */
-    PspRetireCurrentThread(exitStatus);
-    PspParkCurrentThreadAndTerminate();
+    PspExitCurrentThread(exitStatus); /* never returns */
 }
 
 /* --- the Nt* surface -------------------------------------------------------- */
@@ -919,6 +918,43 @@ static PEPROCESS PspFindProcessByThreadId(uint64_t threadId)
         }
     }
     return 0;
+}
+
+/* CUI-4: flag one thread for foreign termination and get it moving toward its
+ * reaping edge (lock held). A suspended thread must wake to die (drop its
+ * holds, open its gate); a waiting thread has its wait aborted; a never-run
+ * thread is readied so it descends and self-reaps at first entry. Shared by
+ * foreign NtTerminateProcess/Thread, NtTerminateJobObject, and kill-on-job-
+ * close (G11). */
+void PspFlagThreadTermination(PKTHREAD tcb, NTSTATUS exitStatus)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    tcb->terminating = TRUE;
+    tcb->terminateStatus = exitStatus;
+    tcb->suspendCount = 0;                   /* a suspended target must wake to die */
+    tcb->suspendGate.header.signalState = 1; /* open the gate */
+    KiWaitTest(&tcb->suspendGate.header);    /* wake a thread parked on the gate */
+    if (tcb->state == KI_THREAD_STATE_WAITING)
+    {
+        KiAbortThreadWait(tcb); /* out of the wait, back to its reaping edge */
+    }
+    else if (tcb->state == KI_THREAD_STATE_INITIALIZED)
+    {
+        KiReadyThread(tcb); /* never ran: descend and self-reap at first entry */
+    }
+}
+
+/* Flag every thread of a foreign process for termination (lock taken here). */
+void PspTerminateProcessThreads(PEPROCESS process, NTSTATUS exitStatus)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PspFlagThreadTermination(CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb,
+                                 exitStatus);
+    }
+    KiReleaseDispatcherLock(flags);
 }
 
 NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
@@ -1146,8 +1182,14 @@ NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
         PspExitCurrentProcess(exitStatus);
     }
 
+    /* Foreign process (CUI-4 — taskkill): flag every thread and wake it; each
+     * reaps ITSELF at its next return to user mode (Art. 3 — never torn down
+     * from here). The last one to exit publishes process->exitStatus and
+     * signals the process object, so the killer's exit code propagates and a
+     * join completes. */
+    PspTerminateProcessThreads(process, (NTSTATUS)exitStatus);
     ObDereferenceObject(process);
-    return STATUS_NOT_IMPLEMENTED; /* stopping a foreign process: unbuilt (Art. 3) */
+    return STATUS_SUCCESS;
 }
 
 /* NtCreateUserProcess (M8 wired the initial chain; M10 the full

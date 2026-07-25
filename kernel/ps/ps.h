@@ -329,6 +329,15 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus);
 void PspSuspendTcb(PKTHREAD tcb);
 void PspResumeTcb(PKTHREAD tcb);
 
+/* CUI-4: foreign-termination primitives. PspFlagThreadTermination marks one
+ * thread and wakes it (lock held); PspTerminateProcessThreads flags a whole
+ * process (lock taken internally). Each target reaps ITSELF at its next
+ * ring-3 edge (never torn down from the caller's context, Art. 3). Shared by
+ * foreign NtTerminateProcess/Thread, NtTerminateJobObject, kill-on-job-close
+ * (G11). */
+void PspFlagThreadTermination(PKTHREAD tcb, NTSTATUS exitStatus);
+void PspTerminateProcessThreads(PEPROCESS process, NTSTATUS exitStatus);
+
 /* CUI-4: called at every return-to-ring-3 edge (syscall return, interrupt
  * return, first descent). Reaps the current thread if a foreign terminate is
  * pending, else parks it while its suspend gate is closed. Lock NOT held. */

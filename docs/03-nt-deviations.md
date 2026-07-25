@@ -124,10 +124,10 @@ against the pinned Wine tree. Notes that fall out:
 
 - `NtGetContextThread`/`NtSetContextThread` and `NtRaiseException`/`NtContinue` operate on
   the *calling* thread only. Capturing or setting a *running foreign* thread's context would
-  require stopping it, which the single-CPU no-preemption model cannot do without the
-  suspend machinery; foreign-thread `NtTerminateThread`/`NtTerminateProcess` are
-  `STATUS_NOT_IMPLEMENTED` for the same reason. The M7 clients (and ntdll's own startup)
-  only ever act on the current thread or join already-exiting ones.
+  require stopping it mid-instruction, which the single-CPU no-preemption model cannot do.
+  (Foreign-thread `NtTerminateThread`/`NtTerminateProcess` are **served since CUI-4** — see
+  the process-ecosystem note below — because a *terminate* only needs the target to reach a
+  ring-3 edge, not to be frozen at an arbitrary instruction.)
 - The `PEB->Ldr`, `ProcessHeap`, `FastPebLock`, and TLS bitmaps are left null by the kernel:
   ntdll's `loader_init` builds them itself (the NT contract — the kernel must *not*
   pre-populate them). Only the fields ntdll reads before that point (`ImageBaseAddress`,
@@ -341,11 +341,26 @@ first (Art. 5). Wrinkles worth remembering:
   unix-signal suspend). `sem_ps/suspend_resume.c` (running-thread counts)
   and `sem_ps/suspend_process.c` (a child frozen mid-loop) pin it on both
   sides.
-- **`NtTerminateProcess` abandons blocked sibling threads**: they keep
-  their waits and exit on their own (their next syscall fails on the
-  closed handles). NT terminates them. Unobservable for the CUI clients
-  (cmd joins its children; the ntdll threadpool's workers wake on their
-  own timeouts).
+- **Foreign process/thread termination is served (CUI-4)** — *retires the
+  "abandons blocked siblings" and the M7 "foreign terminate is
+  `STATUS_NOT_IMPLEMENTED`" notes*. Nothing is torn down from the killer's
+  context (Art. 3): `PspFlagThreadTermination` marks each target thread,
+  drops its suspend holds and opens its gate, and aborts any wait
+  (`KiAbortThreadWait` → `STATUS_THREAD_IS_TERMINATING`); the target reaps
+  itself at its next ring-3 edge through the ordinary `PspExitCurrentThread`
+  path. Exiting the process now terminates its siblings too, so a process
+  actually dies when one thread calls `ExitProcess` (the Ctrl+C case). Every
+  indefinite kernel wait a *user* thread can park in propagates the abort and
+  releases its stack-local state — audited: `kernel/ob/wait.c`,
+  `kernel/ob/sync.c` (keyed park), `kernel/io/completion.c`,
+  `kernel/io/lock.c`, `fs/npfs/pipe.c`, and **`drivers/condrv.c`
+  `CondrvForward`**, whose request lives on the dying thread's stack and is
+  unlinked from the console queue on abort (a vanished console read completes
+  as `STATUS_INVALID_HANDLE`, which conhost tolerates). `KiAbortThreadWait`
+  asserts a non-kernel thread, so kernel-internal waits (cm hive mutex, the
+  `PsRunWineImage` joins, the reaper) are never targets. **Any future
+  indefinite user-thread wait must join this audit.** Pinned by
+  `sem_ps/terminate_process.c`.
 - **Thread-id alerts are process-local** — *retired by the winetest gate*:
   ids now come from the shared Ps id source (globally unique, NT's CID
   shape), an unknown id is `STATUS_INVALID_CID`, and a once-allocated id
