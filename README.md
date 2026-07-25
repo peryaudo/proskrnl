@@ -221,11 +221,42 @@ registry. **Not yet:** impersonation attach — re-deferred with evidence
 enforcement, job nesting, and the job query/terminate surface stay
 loud-unbuilt.
 
-Next: **CUI-4..CUI-5** — the process ecosystem
-(SystemProcessInformation/tasklist, Ctrl+C through condrv), sockets — or
-**the GUI path (GUI-1+)** — pixels/input, win32u (`docs/02`); either way,
-growing the winetest manifest as its parked blockers land (`docs/03` "M10
-winetest notes").
+**CUI-4 complete**: the process ecosystem. Processes can now be listed,
+opened, read, suspended, killed and grouped from ring 3 —
+`SystemProcessInformation` (the chained snapshot `CreateToolhelp32Snapshot`
+walks) plus `ProcessSessionInformation`, `NtOpenProcess`,
+`NtRead/WriteVirtualMemory` (cross-process through the HHDM, no CR3 games),
+`NtGetNextProcess`, `NtSuspend/ResumeProcess`, and the job query/terminate/
+open/in-job surface with `KILL_ON_JOB_CLOSE` enforced. Two long-standing
+"no-preemption" deviations are retired with it. **Foreign termination**
+(`taskkill`): nothing is torn down from the killer's context — the target is
+flagged, woken, and pulled out of any wait, then reaps *itself* at its next
+return to user mode through the ordinary exit path, which also required
+auditing every indefinite kernel wait a user thread can park in (condrv's
+stack-resident request, npfs, completion ports, byte locks). **Suspend** of
+a thread that has already run works the same way, via a per-thread gate
+consulted at each ring-3 edge. That edge is also where the kernel's one
+preemption point now lives (`KiPreemptAtUserReturn`, the switch-at-user-
+return Art. 3 sanctions) — not an optimization but a prerequisite: a ring-3
+busy loop issues no syscalls, so without it a killer never regains the CPU.
+And **Ctrl+C** finally reaches ring 3: the kernel starts a thread in each
+console process at ntdll's `__wine_ctrl_routine`, exactly as wineserver +
+ntdll's signal path do, so kernelbase's `CtrlRoutine` and every handler
+above it work unmodified. Pinned by seven new `sem_ps/` tests green on the
+oracle AND proskrnl, six new differential-fuzzer ops, and the acceptance
+`tests/run/run.sh procs`: `^C` interrupts a busy loop under cmd.exe,
+`tasklist`/`taskkill /f` work against live processes, and a job-object build
+tool reaps its children by closing the job handle. **Not yet:** debug
+objects (the milestone's stretch goal); job nesting and the remaining limit
+flags; per-job and per-process CPU/IO accounting reads back zero rather than
+a fabricated number; `^C` is detected on the serial transport rather than by
+conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
+process-ecosystem notes").
+
+Next: **CUI-5** — sockets (virtio-net, `\Device\Afd`) — or **the GUI path
+(GUI-1+)** — pixels/input, win32u (`docs/02`); either way, growing the
+winetest manifest as its parked blockers land (`docs/03` "M10 winetest
+notes").
 
 ## Build instructions
 
@@ -240,6 +271,7 @@ tests/run/run.sh console    # tests that typing into the serial console is worki
 tests/run/run.sh winetest   # runs the curated subset of winetest
 tests/run/run.sh firstboot  # CUI-1: diff the firstboot registry against the oracle's prefix
 tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-survival autostart
+tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill, a job tool
 ```
 
 ## License

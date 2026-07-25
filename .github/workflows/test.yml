@@ -121,6 +121,9 @@ jobs:
       - name: CUI-3 SCM round-trip + reboot survival (tests/run/run.sh scm)
         run: tests/run/run.sh scm
 
+      - name: CUI-4 Ctrl+C, tasklist/taskkill, job tool (tests/run/run.sh procs)
+        run: tests/run/run.sh procs
+
       # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
       # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
       # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.
