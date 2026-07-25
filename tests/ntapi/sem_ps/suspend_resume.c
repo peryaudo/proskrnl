@@ -73,24 +73,22 @@ START_TEST(suspend_resume)
     ok(prev == 0, "resume not-suspended previous count %lu", (unsigned long)prev);
     CloseHandle(thread);
 
-    /* --- suspending a RUNNING thread: unbuilt on proskrnl (docs/03 — no
-     * kernel preemption; only never-run threads hold a suspend count) ------- */
+    /* --- suspending a RUNNING thread: the suspend takes effect at the
+     * thread's next return to user mode (CUI-4 — the per-thread suspend gate
+     * checked at every ring-3 edge, since there is still no kernel
+     * preemption). The count semantics are observable regardless of when the
+     * target actually parks. --------------------------------------------- */
     HANDLE spinner = CreateThread(NULL, 0, spinner_worker, NULL, 0, NULL);
     ok(spinner != NULL, "CreateThread spinner");
     Sleep(30);
-    todo_proskrnl
-    {
-        prev = 0xdead;
-        status = NtSuspendThread(spinner, &prev);
-        ok(status == STATUS_SUCCESS, "suspend running -> %08lx", (unsigned long)status);
-        if (status == STATUS_SUCCESS)
-        {
-            ok(prev == 0, "suspend running previous count %lu", (unsigned long)prev);
-            status = NtResumeThread(spinner, &prev);
-            ok(status == STATUS_SUCCESS && prev == 1, "resume running -> %08lx prev %lu",
-               (unsigned long)status, (unsigned long)prev);
-        }
-    }
+    prev = 0xdead;
+    status = NtSuspendThread(spinner, &prev);
+    ok(status == STATUS_SUCCESS, "suspend running -> %08lx", (unsigned long)status);
+    ok(prev == 0, "suspend running previous count %lu", (unsigned long)prev);
+    prev = 0xdead;
+    status = NtResumeThread(spinner, &prev);
+    ok(status == STATUS_SUCCESS && prev == 1, "resume running -> %08lx prev %lu",
+       (unsigned long)status, (unsigned long)prev);
     InterlockedExchange(&spinner_stop, 1);
     WaitForSingleObject(spinner, INFINITE);
     CloseHandle(spinner);
