@@ -199,9 +199,10 @@ def main() -> int:
         if not command(b"echo rc=%errorlevel%", b"rc=77", "the interrupted exit code"):
             return 1
 
-        # 2. tasklist lists live processes: its own image name appears in a
-        #    column its header supplies, and cmd.exe (the parent) is listed.
-        if not command(b"C:\\windows\\system32\\tasklist.exe", b"cmd.exe",
+        # 2. tasklist lists live processes — its parent cmd among them. The
+        #    assertion is the UPPERCASED image name tasklist prints, which the
+        #    lowercase typed command line cannot supply in order.
+        if not command(b"C:\\windows\\system32\\tasklist.exe", b"CMD.EXE",
                        "tasklist listing cmd.exe"):
             return 1
 
