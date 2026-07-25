@@ -51,9 +51,10 @@ START_TEST(mapped_same)
     GetSystemDirectoryA(path, sizeof(path));
     strcat(path, "\\ntdll.dll");
     file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
-    ok(file != INVALID_HANDLE_VALUE, "cannot open %s", path);
+    ok(file != INVALID_HANDLE_VALUE, "cannot open %s (%lu)", path, (unsigned long)GetLastError());
     file2 = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
-    ok(file2 != INVALID_HANDLE_VALUE, "cannot open %s (2)", path);
+    ok(file2 != INVALID_HANDLE_VALUE, "cannot open %s (2) (%lu)", path,
+       (unsigned long)GetLastError());
 
     section = NULL;
     status =
