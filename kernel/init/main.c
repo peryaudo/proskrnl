@@ -576,7 +576,7 @@ __attribute__((noreturn)) static void KiRunInteractiveCmd(void)
  * greps off the serial log. Absence of C:\ntapi (the `make test` image) is
  * silent. Tests run WITHOUT a console on purpose: no std handles is the
  * harness's "running on proskrnl" discriminator (tests/ntapi/ntapi.c). */
-#define KI_NTAPI_MAX_TESTS  64
+#define KI_NTAPI_MAX_TESTS  96
 #define KI_NTAPI_NAME_CHARS 64
 
 typedef struct KI_NTAPI_LIST
