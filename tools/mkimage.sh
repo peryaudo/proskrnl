@@ -153,6 +153,16 @@ for spec in ${WIN_SPECS[@]+"${WIN_SPECS[@]}"}; do
     done
     copy "$src" "::/$dest"
 done
+# Art. 12 dialed to fatal, by default on EVERY image: the marker makes the
+# kernel panic on any unpinned STATUS_NOT_IMPLEMENTED syscall answer
+# (kernel/init/main.c KiConfigurePanicOnNotImplemented, kernel/syscall/
+# table.c). PANIC_NOTIMPL=0 omits the marker for a limp-along boot.
+if [[ "${PANIC_NOTIMPL:-1}" != 0 ]]; then
+    NOTIMPL_FLAG="$(mktemp)"
+    echo "panic-on-STATUS_NOT_IMPLEMENTED marker (kernel/init/main.c)" > "$NOTIMPL_FLAG"
+    copy "$NOTIMPL_FLAG" ::/panic_not_implemented.flag
+    rm -f "$NOTIMPL_FLAG"
+fi
 # M10: the TEMP/TMP directory the default environment points at.
 mkdirp /windows
 mkdirp /windows/temp

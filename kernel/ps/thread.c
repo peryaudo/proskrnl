@@ -739,10 +739,11 @@ NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousCount)
         /* Suspending a thread that has ever run is unbuilt: no kernel
          * preemption (Art. 3), so there is no point at which to park a
          * running thread (docs/03 M10 note; sem_ps/suspend_resume pins the
-         * oracle behaviour under todo_proskrnl). */
+         * oracle behaviour under todo_proskrnl — a documented, test-known
+         * refusal, so pinned rather than a bare stub). */
         KiReleaseDispatcherLock(flags);
         ObDereferenceObject(thread);
-        return STATUS_NOT_IMPLEMENTED;
+        return KiPinnedNotImplemented();
     }
     ULONG previous = (ULONG)tcb->suspendCount;
     tcb->suspendCount++;

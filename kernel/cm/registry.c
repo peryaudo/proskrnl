@@ -42,6 +42,7 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 
 /* Limits as the pinned Wine tree fixes them (see the file comment). */
@@ -681,7 +682,11 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     }
     if ((options & REG_OPTION_CREATE_LINK) != 0)
     {
-        return STATUS_NOT_IMPLEMENTED; /* registry symlinks: unbuilt (docs/03) */
+        /* Registry symlinks: unbuilt — a documented deviation the CUI-1
+         * differential excludes (docs/03; wine.inf's Time Zones link,
+         * setupapi warn-and-continues). Pinned todo_proskrnl by
+         * sem_reg/create_open, so the refusal is contract, not a stub. */
+        return KiPinnedNotImplemented();
     }
 
     PCMP_KEY_NODE parent, found;

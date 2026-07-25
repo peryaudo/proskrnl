@@ -60,6 +60,22 @@ static const KI_SERVICE_DESCRIPTOR KiServiceTable[NTSYS_SYSCALL_LIMIT] = {
 #undef KI_SYSCALL_MISSING
 /* NOLINTEND(bugprone-casting-through-void) */
 
+/* Art. 12 dialed to fatal (see syscall.h): armed at boot from
+ * C:\panic_not_implemented.flag by kernel/init/main.c. */
+BOOLEAN KiPanicOnNotImplemented = FALSE;
+
+/* The pinned-refusal latch: set by KiPinnedNotImplemented, cleared by the
+ * dispatcher before each service call. A plain global is safe under Art. 3
+ * (uniprocessor, no kernel preemption): a pinned site sets it and returns
+ * without blocking, so no other thread's syscall can run in between. */
+static BOOLEAN KiNotImplementedPinned = FALSE;
+
+NTSTATUS KiPinnedNotImplemented(void)
+{
+    KiNotImplementedPinned = TRUE;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
 const char *KiSystemCallName(uint64_t number)
 {
     if (number >= NTSYS_SYSCALL_LIMIT || KiServiceTable[number].name == 0)
@@ -101,12 +117,17 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
         /* A known Wine id with no proskrnl service yet: name it on serial so
          * the bring-up loop knows exactly what to implement next. */
         DbgPrint("[KTEST] syscall MISSING %#lx %s\n", (unsigned long)number, descriptor->name);
+        if (KiPanicOnNotImplemented)
+        {
+            KiPanic("syscall MISSING (panic_not_implemented.flag armed)");
+        }
         status = STATUS_NOT_IMPLEMENTED;
     }
     else
     {
         ASSERT(thread->previousMode == KernelMode); /* syscalls never nest */
         thread->previousMode = UserMode;
+        KiNotImplementedPinned = FALSE;
 
         uint64_t stackArguments[KI_MAX_SYSCALL_ARGUMENTS - 4] = {0};
         status = STATUS_SUCCESS;
@@ -127,6 +148,25 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
                                          stackArguments[2], stackArguments[3], stackArguments[4],
                                          stackArguments[5], stackArguments[6], stackArguments[7],
                                          stackArguments[8], stackArguments[9]);
+        }
+
+        /* A partial service's unbuilt case (an info class, an ioctl verb, a
+         * flag) refusing loudly per Art. 12: name it like the MISSING row
+         * does — unless the refusal is the pinned contract itself
+         * (KiPinnedNotImplemented), which is an implementation, not a stub. */
+        if (status == STATUS_NOT_IMPLEMENTED && !KiNotImplementedPinned)
+        {
+            /* arg1/arg2 name the refused case (the info class / verb usually
+             * rides in one of them) — the bring-up loop needs the exact
+             * suspect, not just the service. */
+            DbgPrint("[KTEST] syscall PARTIAL %#lx %s a0=%#lx a1=%#lx\n", (unsigned long)number,
+                     descriptor->name, (unsigned long)trapFrame->r10,
+                     (unsigned long)trapFrame->rdx);
+            if (KiPanicOnNotImplemented)
+            {
+                KiPanic("syscall returned STATUS_NOT_IMPLEMENTED "
+                        "(panic_not_implemented.flag armed)");
+            }
         }
 
         thread->previousMode = KernelMode;

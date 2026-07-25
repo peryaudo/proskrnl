@@ -27,6 +27,7 @@
 #include "kernel/se/se.h"
 #include "kernel/io/io.h"
 #include "kernel/cm/cm.h"
+#include "kernel/syscall/syscall.h"
 #include "fs/npfs/npfs.h"
 #include "drivers/condrv.h"
 #include "kernel/init/panic.h"
@@ -469,14 +470,12 @@ static int KiRunCmdConsole(void)
     return pass ? 0 : 1;
 }
 
-/* The interactive boot (make run): the image carries C:\interactive.flag
- * (Makefile IMG_RUN), meaning a human owns the serial console — the test
- * suites are skipped and the console goes straight to cmd.exe. The image,
- * not a kernel-side switch, decides (the KiRunNtapiTests pattern). */
-static BOOLEAN KiIsInteractiveBoot(void)
+/* Probe/skip on the boot volume's content: does `path` exist? The one
+ * authority for every flag-file and presence probe below (G10). */
+static BOOLEAN KiBootFileExists(PCWSTR path)
 {
     UNICODE_STRING name;
-    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\interactive.flag"));
+    RtlInitUnicodeString(&name, path);
     OBJECT_ATTRIBUTES attributes;
     memset(&attributes, 0, sizeof(attributes));
     attributes.Length = sizeof(attributes);
@@ -495,6 +494,29 @@ static BOOLEAN KiIsInteractiveBoot(void)
     return TRUE;
 }
 
+/* The interactive boot (make run): the image carries C:\interactive.flag
+ * (Makefile IMG_RUN), meaning a human owns the serial console — the test
+ * suites are skipped and the console goes straight to cmd.exe. The image,
+ * not a kernel-side switch, decides (the KiRunNtapiTests pattern). */
+static BOOLEAN KiIsInteractiveBoot(void)
+{
+    return KiBootFileExists(WSTR("\\??\\C:\\interactive.flag"));
+}
+
+/* Art. 12 dialed to fatal: C:\panic_not_implemented.flag (baked into every
+ * image by tools/mkimage.sh unless PANIC_NOTIMPL=0) arms the dispatcher's
+ * panic on any unpinned STATUS_NOT_IMPLEMENTED answer (kernel/syscall/
+ * table.c). Same image-decides pattern as KiIsInteractiveBoot. */
+static void KiConfigurePanicOnNotImplemented(void)
+{
+    KiPanicOnNotImplemented = KiBootFileExists(WSTR("\\??\\C:\\panic_not_implemented.flag"));
+    if (KiPanicOnNotImplemented)
+    {
+        DbgPrint("[KTEST] panic on STATUS_NOT_IMPLEMENTED armed "
+                 "(C:\\panic_not_implemented.flag)\n");
+    }
+}
+
 /* CUI-1 firstboot: run `smss.exe firstboot` (which spawns wineboot --init,
  * user/smss/firstboot.c) so wine.inf's machine-state registry payload is
  * applied before anything else uses the hive. Probe/skip on the image
@@ -504,28 +526,15 @@ static BOOLEAN KiIsInteractiveBoot(void)
  * this runs on every boot of a full image. */
 static int KiRunFirstBoot(void)
 {
-    UNICODE_STRING name;
-    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\system32\\wineboot.exe"));
-    OBJECT_ATTRIBUTES attributes;
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_CASE_INSENSITIVE;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
-                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
-    if (!NT_SUCCESS(status))
+    if (!KiBootFileExists(WSTR("\\??\\C:\\windows\\system32\\wineboot.exe")))
     {
         return 0; /* no wineboot baked: silently absent, like KiRunNtapiTests */
     }
-    NtClose(handle);
 
     NTSTATUS exitStatus = STATUS_UNSUCCESSFUL;
-    status = PsRunWineImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                              "C:\\windows\\system32\\smss.exe", "smss.exe firstboot", FALSE, 0,
-                              &exitStatus);
+    NTSTATUS status = PsRunWineImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+                                       "C:\\windows\\system32\\smss.exe", "smss.exe firstboot",
+                                       FALSE, 0, &exitStatus);
     if (!NT_SUCCESS(status) || exitStatus != 0)
     {
         DbgPrint("[KTEST] firstboot FAIL (status=%#lx exit=%#lx)\n", (unsigned long)status,
@@ -988,6 +997,11 @@ static void KiTestMainThread(void *context)
      * volume (an absent/invalid hive starts empty: first boot). Needs the
      * volume above and a thread with a handle table for the hive file I/O. */
     CmInitialize();
+
+    /* Arm the panic-on-STATUS_NOT_IMPLEMENTED boot before anything runs
+     * ring-3 code — conhost below is already a Wine process (needs only the
+     * boot volume, mounted above). */
+    KiConfigurePanicOnNotImplemented();
 
     /* M9: the console server, before anything that may use a console. */
     KiStartConhost();

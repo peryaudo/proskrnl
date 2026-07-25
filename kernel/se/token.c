@@ -21,6 +21,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/ke/ke.h"
 #include "kernel/mm/pool.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
@@ -964,8 +965,9 @@ NTSTATUS NtQueryInformationToken(HANDLE tokenHandle, TOKEN_INFORMATION_CLASS inf
     default:
         /* TokenSource, TokenRestrictedSids, TokenLinkedToken, and every
          * other class: no case in the oracle's switch (TokenLinkedToken has
-         * one but no baked caller — docs/03 CUI-2 notes). */
-        return STATUS_NOT_IMPLEMENTED;
+         * one but no baked caller — docs/03 CUI-2 notes). Pinned by
+         * sem_se/se_query — the oracle's own refusal, not a stub. */
+        return KiPinnedNotImplemented();
     }
 }
 
