@@ -1088,15 +1088,15 @@ NTSTATUS NtReadVirtualMemory(HANDLE processHandle, const void *baseAddress, void
 
     PEPROCESS process;
     BOOLEAN referenced = FALSE;
-    NTSTATUS status = MiReferenceProcessByHandle(processHandle, PROCESS_VM_READ, &process,
-                                                 &referenced);
+    NTSTATUS status =
+        MiReferenceProcessByHandle(processHandle, PROCESS_VM_READ, &process, &referenced);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
 
-    uint64_t copied = MiCopyFromUserRange(&process->addressSpace, buffer,
-                                          (uint64_t)(uintptr_t)baseAddress, size);
+    uint64_t copied =
+        MiCopyFromUserRange(&process->addressSpace, buffer, (uint64_t)(uintptr_t)baseAddress, size);
     if (referenced)
     {
         ObDereferenceObject(process);
@@ -1117,7 +1117,8 @@ NTSTATUS NtWriteVirtualMemory(HANDLE processHandle, void *baseAddress, const voi
 {
     if (bytesWritten != 0)
     {
-        NTSTATUS probe = KiProbeForWrite(bytesWritten, sizeof(*bytesWritten), sizeof(*bytesWritten));
+        NTSTATUS probe =
+            KiProbeForWrite(bytesWritten, sizeof(*bytesWritten), sizeof(*bytesWritten));
         if (!NT_SUCCESS(probe))
         {
             return probe;
@@ -1137,8 +1138,8 @@ NTSTATUS NtWriteVirtualMemory(HANDLE processHandle, void *baseAddress, const voi
 
     PEPROCESS process;
     BOOLEAN referenced = FALSE;
-    NTSTATUS status = MiReferenceProcessByHandle(processHandle, PROCESS_VM_WRITE, &process,
-                                                 &referenced);
+    NTSTATUS status =
+        MiReferenceProcessByHandle(processHandle, PROCESS_VM_WRITE, &process, &referenced);
     if (!NT_SUCCESS(status))
     {
         return status;
