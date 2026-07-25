@@ -656,6 +656,68 @@ void MiZeroUserRange(PMI_ADDRESS_SPACE space, uint64_t userBase, uint64_t length
     }
 }
 
+/* CUI-4: NtReadVirtualMemory's engine — copy from a (possibly non-current)
+ * address space's user range into a kernel/current-space buffer, stopping at
+ * the first page that is not present. Returns the bytes copied (< length ==
+ * a fault). Unlike MiCopyToUserRange it never asserts: a probe of another
+ * process's memory can legitimately hit an unmapped page. */
+uint64_t MiCopyFromUserRange(PMI_ADDRESS_SPACE space, void *dest, uint64_t userBase,
+                             uint64_t length)
+{
+    char *to = dest;
+    uint64_t copied = 0;
+    while (copied < length)
+    {
+        uint64_t va = userBase + copied;
+        uint64_t pageOffset = va & (PAGE_SIZE - 1);
+        uint64_t chunk = PAGE_SIZE - pageOffset;
+        if (chunk > length - copied)
+        {
+            chunk = length - copied;
+        }
+        int present = 0;
+        uint64_t frame = MiTranslateUserPage(space->pml4Physical, va - pageOffset, 0, &present);
+        if (frame == 0 || !present)
+        {
+            break;
+        }
+        memcpy(to + copied, (const char *)MiPhysicalToVirtual(frame) + pageOffset, chunk);
+        copied += chunk;
+    }
+    return copied;
+}
+
+/* NtWriteVirtualMemory's engine — the present-and-writable-checked mirror of
+ * MiCopyToUserRange. Stops at the first page that is not present-and-writable;
+ * returns the bytes written. */
+uint64_t MiCopyToUserRangeChecked(PMI_ADDRESS_SPACE space, uint64_t userBase, const void *source,
+                                  uint64_t length)
+{
+    const char *from = source;
+    uint64_t written = 0;
+    while (written < length)
+    {
+        uint64_t va = userBase + written;
+        uint64_t pageOffset = va & (PAGE_SIZE - 1);
+        uint64_t chunk = PAGE_SIZE - pageOffset;
+        if (chunk > length - written)
+        {
+            chunk = length - written;
+        }
+        int present = 0;
+        int writable = 0;
+        uint64_t frame =
+            MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
+        if (frame == 0 || !present || !writable)
+        {
+            break;
+        }
+        memcpy((char *)MiPhysicalToVirtual(frame) + pageOffset, from + written, chunk);
+        written += chunk;
+    }
+    return written;
+}
+
 /* --- guard pages (virtual.h; used by mm/fault.c) ---------------------------- */
 
 BOOLEAN MiClearGuardPage(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
@@ -988,6 +1050,113 @@ NTSTATUS NtAreMappedFilesTheSame(PVOID address1, PVOID address2)
         !IoIsSameUnderlyingFile(section1->fileObject, section2->fileObject))
     {
         return STATUS_NOT_SAME_DEVICE;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* CUI-4: cross-process memory access (toolhelp/debug readers). Contract from
+ * ntdll's unix side (dlls/ntdll/unix/virtual.c): a read validates the OUT
+ * buffer (ACCESS_VIOLATION on failure, bytes 0), then moves from the target
+ * address space, reporting STATUS_PARTIAL_COPY with bytes 0 on any fault; a
+ * write validates the source buffer (PARTIAL_COPY on failure) then moves into
+ * the target. The buffer is always in the CALLER's address space (direct
+ * access under the current CR3); only the far side rides MiTranslateUserPage +
+ * the HHDM. Pinned by sem_ps/virtual_memory. */
+NTSTATUS NtReadVirtualMemory(HANDLE processHandle, const void *baseAddress, void *buffer,
+                             SIZE_T size, SIZE_T *bytesRead)
+{
+    if (bytesRead != 0)
+    {
+        NTSTATUS probe = KiProbeForWrite(bytesRead, sizeof(*bytesRead), sizeof(*bytesRead));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        *bytesRead = 0;
+    }
+    if (size == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    /* The OUT buffer must be writable in the caller (Wine's
+     * virtual_check_buffer_for_write); failure is ACCESS_VIOLATION, not a
+     * partial copy. */
+    if (!NT_SUCCESS(KiProbeForWrite(buffer, size, 1)))
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+
+    PEPROCESS process;
+    BOOLEAN referenced = FALSE;
+    NTSTATUS status = MiReferenceProcessByHandle(processHandle, PROCESS_VM_READ, &process,
+                                                 &referenced);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    uint64_t copied = MiCopyFromUserRange(&process->addressSpace, buffer,
+                                          (uint64_t)(uintptr_t)baseAddress, size);
+    if (referenced)
+    {
+        ObDereferenceObject(process);
+    }
+    if (copied != size)
+    {
+        return STATUS_PARTIAL_COPY; /* bytesRead already 0 (Wine's fault shape) */
+    }
+    if (bytesRead != 0)
+    {
+        *bytesRead = size;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtWriteVirtualMemory(HANDLE processHandle, void *baseAddress, const void *buffer,
+                              SIZE_T size, SIZE_T *bytesWritten)
+{
+    if (bytesWritten != 0)
+    {
+        NTSTATUS probe = KiProbeForWrite(bytesWritten, sizeof(*bytesWritten), sizeof(*bytesWritten));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        *bytesWritten = 0;
+    }
+    if (size == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    /* The source must be readable in the caller (Wine's
+     * virtual_check_buffer_for_read); failure is STATUS_PARTIAL_COPY. */
+    if (!NT_SUCCESS(KiProbeForRead(buffer, size, 1)))
+    {
+        return STATUS_PARTIAL_COPY;
+    }
+
+    PEPROCESS process;
+    BOOLEAN referenced = FALSE;
+    NTSTATUS status = MiReferenceProcessByHandle(processHandle, PROCESS_VM_WRITE, &process,
+                                                 &referenced);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    uint64_t written = MiCopyToUserRangeChecked(&process->addressSpace,
+                                                (uint64_t)(uintptr_t)baseAddress, buffer, size);
+    if (referenced)
+    {
+        ObDereferenceObject(process);
+    }
+    if (written != size)
+    {
+        return STATUS_PARTIAL_COPY;
+    }
+    if (bytesWritten != 0)
+    {
+        *bytesWritten = size;
     }
     return STATUS_SUCCESS;
 }

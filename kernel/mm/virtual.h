@@ -94,6 +94,15 @@ void MiCopyToUserRange(PMI_ADDRESS_SPACE space, uint64_t userBase, const void *s
                        uint64_t length);
 void MiZeroUserRange(PMI_ADDRESS_SPACE space, uint64_t userBase, uint64_t length);
 
+/* CUI-4: fault-tolerant copies for NtRead/WriteVirtualMemory. Each stops at
+ * the first page that is not present (read) / not present-and-writable
+ * (write) and returns the bytes moved; a short result is the caller's
+ * STATUS_PARTIAL_COPY. */
+uint64_t MiCopyFromUserRange(PMI_ADDRESS_SPACE space, void *dest, uint64_t userBase,
+                             uint64_t length);
+uint64_t MiCopyToUserRangeChecked(PMI_ADDRESS_SPACE space, uint64_t userBase, const void *source,
+                                  uint64_t length);
+
 /* Resolve a process-handle argument of an Mm Nt* (the pseudo-handle or a
  * real Process handle); *referenced tells the caller to dereference. Shared
  * by the NtAllocate/Free/Query wrappers here and the section Nt* (M5). */
