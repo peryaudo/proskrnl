@@ -223,10 +223,16 @@ def main() -> int:
             return 1
         if not command(b"echo rc=%errorlevel%", b"rc=0", "taskkill's exit code"):
             return 1
-        # The killed looper is gone: a second kill finds nothing to kill.
-        if not command(b"C:\\windows\\system32\\taskkill.exe /f /im looper.exe & "
-                       b"echo zz%errorlevel%zz", b"zz128zz",
-                       "taskkill reporting no such process"):
+        # The killed looper is gone: a second kill finds nothing. Asserted in
+        # two steps — cmd expands %errorlevel% when it PARSES the line, so a
+        # `cmd & echo %errorlevel%` one-liner reports the PREVIOUS command's
+        # code, not this one's. "Could not find" is unsatisfiable by the typed
+        # line, which holds no 'u'.
+        if not command(b"C:\\windows\\system32\\taskkill.exe /f /im looper.exe",
+                       b"Could not find", "taskkill reporting no such process"):
+            return 1
+        if not command(b"echo zz%errorlevel%zz", b"zz128zz",
+                       "taskkill's not-found exit code"):
             return 1
 
         # 4. The job-object build tool: children assigned to a job with
