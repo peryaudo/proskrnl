@@ -125,6 +125,22 @@ START_TEST(process_query)
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "ProcessDebugPort short -> %08lx",
        (unsigned long)status);
 
+    /* --- ProcessWow64Information: a 64-bit process answers 0 (no WOW64
+     * PEB); EXACT ULONG_PTR size (Wine dlls/ntdll/unix/process.c: `size !=
+     * len` returns INFO_LENGTH_MISMATCH before touching returnLength).
+     * Consumer: kernelbase's IsWow64Process, on the CreateProcess path. */
+    ULONG_PTR wow64_peb = ~(ULONG_PTR)0;
+    returnLength = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessWow64Information, &wow64_peb,
+                                       sizeof(wow64_peb), &returnLength);
+    ok(status == STATUS_SUCCESS, "ProcessWow64Information -> %08lx", (unsigned long)status);
+    ok(wow64_peb == 0, "wow64 peb %p in a 64-bit process", (void *)wow64_peb);
+    ok(returnLength == sizeof(wow64_peb), "wow64 return length %lu", (unsigned long)returnLength);
+    ULONG narrow_wow64 = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessWow64Information, &narrow_wow64,
+                                       sizeof(narrow_wow64), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "wow64 short -> %08lx", (unsigned long)status);
+
     /* --- ProcessImageInformation: the main image's facts, EXACT size -----
      * ntdll's build_main_module reads this at every process start and
      * terminates the process on IMAGE_FILE_DLL. Wine dlls/ntdll/unix/
@@ -161,5 +177,34 @@ START_TEST(process_query)
         ok(status == STATUS_SUCCESS, "SystemWineVersionInformation -> %08lx",
            (unsigned long)status);
         ok(wine_version[0] != 0, "wine version string empty");
+    }
+
+    /* --- NtPowerInformation(ProcessorInformation): wineboot's ~MHz source.
+     * Contract (Wine dlls/ntdll/unix/system.c): NULL/0 output ->
+     * INVALID_PARAMETER; a buffer under one record per CPU ->
+     * BUFFER_TOO_SMALL; else one PROCESSOR_POWER_INFORMATION per CPU with
+     * nonzero MaxMhz (the oracle's no-cpufreq fallback is a canned
+     * 1000 MHz, so nonzero always holds). */
+    ps_processor_power_info power_info[64];
+    status = NtPowerInformation(ProcessorInformation, NULL, 0, power_info, sizeof(power_info));
+    ok(status == STATUS_SUCCESS, "ProcessorInformation -> %08lx", (unsigned long)status);
+    ok(power_info[0].number == 0, "cpu 0 Number %lu", (unsigned long)power_info[0].number);
+    ok(power_info[0].max_mhz != 0, "cpu 0 MaxMhz 0");
+    status = NtPowerInformation(ProcessorInformation, NULL, 0, power_info, 4);
+    ok(status == STATUS_BUFFER_TOO_SMALL, "short power buffer -> %08lx", (unsigned long)status);
+    status = NtPowerInformation(ProcessorInformation, NULL, 0, NULL, 0);
+    ok(status == STATUS_INVALID_PARAMETER, "null power buffer -> %08lx", (unsigned long)status);
+
+    /* --- SystemFirmwareTableInformation (76): host SMBIOS pass-through --
+     * The oracle serves the RSMB provider from the host's DMI tables
+     * (dlls/ntdll/unix/system.c create_smbios_data); proskrnl pins a
+     * refusal — host-derived data with no kernel source, and wineboot's
+     * create_bios_key tolerates it (docs/03). GetSystemFirmwareTable is
+     * kernelbase's thin wrapper over the class. */
+    UINT smbios_len =
+        GetSystemFirmwareTable(('R' << 24) | ('S' << 16) | ('M' << 8) | 'B', 0, NULL, 0);
+    todo_proskrnl
+    {
+        ok(smbios_len != 0, "RSMB firmware table absent on the oracle");
     }
 }
