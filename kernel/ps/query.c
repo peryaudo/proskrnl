@@ -596,6 +596,18 @@ static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *e
     entry->ProcessName.Buffer = (WCHAR *)(uintptr_t)(userEntry + nameOffset);
 }
 
+/* A process leaves the snapshot the moment it EXITS, not when its EPROCESS is
+ * finally freed. PspActiveProcessListHead keeps a terminated process until the
+ * last reference goes (a parent's still-open handle holds it for as long as it
+ * likes), but NT's process list never shows an exited process — and listing one
+ * is not cosmetic: `taskkill /im` matched a dead entry, reported a successful
+ * kill, and made "nothing left to kill" unobservable. The signalled dispatcher
+ * header is the exit marker (kernel/ps/thread.c publishes it). */
+static BOOLEAN PspProcessIsLive(PEPROCESS process)
+{
+    return process->header.signalState == 0 && process->activeThreadCount > 0;
+}
+
 static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PULONG returnLength)
 {
     /* Pass 1: total size, list stable under the lock. */
@@ -604,7 +616,11 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
     for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
          p = p->Flink)
     {
-        total += PspProcessEntryLength(CONTAINING_RECORD(p, EPROCESS, activeProcessLinks));
+        PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        if (PspProcessIsLive(process))
+        {
+            total += PspProcessEntryLength(process);
+        }
     }
     KiReleaseDispatcherLock(flags);
 
@@ -632,19 +648,32 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
      * No blocking between the passes (Art. 3), so the same list is seen. */
     flags = KiAcquireDispatcherLock();
     ULONG offset = 0;
+    ULONG lastOffset = 0;
+    BOOLEAN wroteAny = FALSE;
     for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
          p = p->Flink)
     {
         PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+        if (!PspProcessIsLive(process))
+        {
+            continue;
+        }
         ULONG entryLength = PspProcessEntryLength(process);
         if (offset + entryLength > total)
         {
             break; /* list grew between passes (cannot happen: no preemption) */
         }
         PspFillProcessEntry(process, (SYSTEM_PROCESS_INFORMATION *)(scratch + offset),
-                            (uint64_t)(uintptr_t)buffer + offset, entryLength,
-                            p->Flink == &PspActiveProcessListHead);
+                            (uint64_t)(uintptr_t)buffer + offset, entryLength, FALSE);
+        lastOffset = offset;
+        wroteAny = TRUE;
         offset += entryLength;
+    }
+    /* The chain terminator belongs to the last entry WRITTEN, which filtering
+     * makes distinct from the last list member. */
+    if (wroteAny)
+    {
+        ((SYSTEM_PROCESS_INFORMATION *)(scratch + lastOffset))->NextEntryOffset = 0;
     }
     KiReleaseDispatcherLock(flags);
 
