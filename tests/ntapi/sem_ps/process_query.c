@@ -179,6 +179,36 @@ START_TEST(process_query)
         ok(wine_version[0] != 0, "wine version string empty");
     }
 
+    /* --- ProcessDefaultHardErrorMode: SetErrorMode's kernel half ---------
+     * Per-process, round-trips through the query/set pair; EXACT UINT size
+     * (Wine dlls/ntdll/unix/process.c: query mismatch is
+     * INFO_LENGTH_MISMATCH, set mismatch is INVALID_PARAMETER). */
+    ULONG error_mode_before = 0xdead, error_mode = 0;
+    status =
+        NtQueryInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode,
+                                  &error_mode_before, sizeof(error_mode_before), &returnLength);
+    ok(status == STATUS_SUCCESS, "hard error mode query -> %08lx", (unsigned long)status);
+    ok(returnLength == sizeof(ULONG), "hard error mode retlen %lu", (unsigned long)returnLength);
+    ULONG new_error_mode = 3;
+    status = NtSetInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode,
+                                     &new_error_mode, sizeof(new_error_mode));
+    ok(status == STATUS_SUCCESS, "hard error mode set -> %08lx", (unsigned long)status);
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode, &error_mode,
+                                       sizeof(error_mode), NULL);
+    ok(status == STATUS_SUCCESS && error_mode == 3, "hard error mode round-trip -> %08lx (%lu)",
+       (unsigned long)status, (unsigned long)error_mode);
+    UCHAR tiny_mode = 0;
+    status = NtQueryInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode, &tiny_mode,
+                                       sizeof(tiny_mode), NULL);
+    ok(status == STATUS_INFO_LENGTH_MISMATCH, "hard error mode short query -> %08lx",
+       (unsigned long)status);
+    status = NtSetInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode, &tiny_mode,
+                                     sizeof(tiny_mode));
+    ok(status == STATUS_INVALID_PARAMETER, "hard error mode short set -> %08lx",
+       (unsigned long)status);
+    NtSetInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode, &error_mode_before,
+                            sizeof(error_mode_before));
+
     /* --- NtPowerInformation(ProcessorInformation): wineboot's ~MHz source.
      * Contract (Wine dlls/ntdll/unix/system.c): NULL/0 output ->
      * INVALID_PARAMETER; a buffer under one record per CPU ->
