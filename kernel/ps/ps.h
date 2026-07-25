@@ -40,8 +40,13 @@ typedef struct EPROCESS
                               * the caller's path; freed at process delete) */
 
     /* M7: the user-visible process structures (docs/00 "byte-for-byte"). */
-    uint64_t pebBase;                 /* user VA of the PEB (0 for the system process) */
-    uint64_t imageBase;               /* user VA the main image mapped at */
+    uint64_t pebBase;   /* user VA of the PEB (0 for the system process) */
+    uint64_t imageBase; /* user VA the main image mapped at */
+    /* The main image's facts from the PE parse, retained at creation
+     * (PspFillImageInformation): ProcessImageInformation and the
+     * PS_ATTRIBUTE_IMAGE_INFO write-back serve this one copy (G11).
+     * All-zero when the image had no PE parse (M4 flat clients). */
+    SECTION_IMAGE_INFORMATION imageInformation;
     uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
     ULONG cookie;                     /* ProcessCookie: RtlEncodePointer's obfuscator */
     BOOLEAN timerResolutionRequested; /* NtSetTimerResolution's per-process
