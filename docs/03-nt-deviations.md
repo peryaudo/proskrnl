@@ -762,6 +762,68 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
   asserts the SCM AUTO-started SvcDemo from the persisted registry before
   cmd prompted, and the proof file grew to two lines.
 
+## CUI-4 process-ecosystem notes (tasklist/taskkill, Ctrl+C, job tools)
+
+The milestone's own deviations; the retirements it earns are recorded at the
+notes they replace (the M7 foreign-terminate note, the M10 suspend and
+abandoned-siblings notes, the CUI-3 job note).
+
+- **One preemption point exists now** (`KiPreemptAtUserReturn`,
+  `kernel/ke/sched.c`, called from the timer interrupt's ring-3 return in
+  `kernel/init/panic.c`). This is *not* kernel preemption — Art. 3 still
+  holds inside the kernel — but the switch AT a user-mode return the
+  constitution sanctions. It is **required**, not an optimization: a ring-3
+  loop that issues no syscall never yields, so before this a killer could
+  never regain the CPU and `taskkill` / Ctrl+C could not work at all (the
+  proskrnl sweep hung the first time foreign terminate was tried without
+  it). Round-robin only when an equal-or-higher-priority thread is ready.
+- **Ctrl+C is detected on the serial RX path, not by conhost**
+  (`drivers/condrv.c CondrvSerialRead`). Under HACK-004 the UART receive
+  path *is* this milestone's keyboard driver (docs/02 M9), so it is also the
+  line discipline: like a Unix tty's `ISIG`, `0x03` is consumed there and
+  becomes a console control event rather than a keystroke. The kernel-side
+  `IOCTL_CONDRV_CTRL_EVENT` handler is nevertheless implemented for both the
+  server handle (conhost's own fanout) and the client handle
+  (`GenerateConsoleCtrlEvent`), so the real Wine path works the moment
+  conhost can drive it. **Cost:** `ENABLE_PROCESSED_INPUT` is not consulted —
+  a program that turns it off still gets a control event instead of a `0x03`
+  input record. Retired with HACK-004 when a real keyboard arrives (GUI-1).
+  *Why the transport and not conhost:* the pinned conhost kills its own tty
+  input thread on a raw `0x03` when it is not in `--unix` mode
+  (`programs/conhost/conhost.c`), and `--unix` cannot be used here because it
+  switches decoding to `CP_UNIXCP`, a codepage proskrnl has no table for.
+  Fixing conhost is a `proskrnl-target` fork commit (G9) and is the right
+  long-term shape; it is out of this change's repository scope.
+- **Delivery is a new thread at ntdll's `__wine_ctrl_routine`**
+  (`PsPropagateConsoleCtrlEvent`, `kernel/ps/process.c`) — the exact contract
+  wineserver's `propagate_console_signal` + ntdll's `int_handler` implement,
+  so kernelbase's `CtrlRoutine` and every handler above it work unmodified.
+  An APC could not serve: a user APC only runs at an alertable wait, so it
+  could never interrupt a busy loop. Console attachment is
+  `consoleHandle != 0` (one global console, docs/03 M9); `EPROCESS`
+  gains `processGroupId`, inherited from the creator or the process's own id,
+  which is what `GenerateConsoleCtrlEvent`'s group filter selects on. A
+  process whose ntdll export did not resolve is skipped, never faked.
+- **`SystemProcessInformation`'s time/IO/memory fields are zero**
+  (`kernel/ps/query.c`): proskrnl keeps no per-process CPU or IO accounting,
+  and the counts that ARE real (thread count, ids, handle count, session,
+  base priority, the base-name `ProcessName`) are what `CreateToolhelp32
+  Snapshot` and tasklist read. `ParentProcessId` is a new `EPROCESS` field.
+- **tasklist/taskkill are standalone PEs** built from the pinned tree's own
+  unmodified program objects plus `user/{tasklist,taskkill}/proskrnl_glue.c`
+  (the cmd.exe precedent). taskkill's *graceful* path needs windows, which do
+  not exist before GUI-2, so `EnumWindows`/`GetWindowThreadProcessId`/
+  `PostMessageW` fail honestly (Art. 12) and `/f` — `OpenProcess` +
+  `TerminateProcess` — is the working path.
+- **Acceptance** (`tests/run/run.sh procs`): one interactive console boot in
+  which `looper.exe` (a busy loop with a console control handler) is
+  interrupted by an injected `^C` and reports the handler's own marker and
+  exit code; `tasklist` lists the live processes; `taskkill /f /im` kills a
+  background looper and then reports there is nothing left to kill; and
+  `jobtool.exe` assigns children to a `KILL_ON_JOB_CLOSE` job, reads the live
+  member count back through the job's accounting, and closes the handle to
+  reap them.
+
 ## Panic-on-STATUS_NOT_IMPLEMENTED boot (Art. 12 dialed to fatal)
 
 - **Every image carries `C:\panic_not_implemented.flag` by default**

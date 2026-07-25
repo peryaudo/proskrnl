@@ -772,6 +772,34 @@ scm() {
     return 0
 }
 
+# CUI-4 acceptance (docs/02 "a tasklist/taskkill pair works against live
+# processes; Ctrl+C interrupts a loop under cmd.exe; a job-object-using build
+# tool completes"). One interactive boot over the console image: the
+# EXPECT_PROCS block in console_expect.py types the session and asserts the
+# markers, ^C included (the serial socket is bidirectional — docs/08).
+procs() {
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/tests/procs.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local sock="$ROOT/build/tests/procs.sock" log="$ROOT/build/tests/procs.log"
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_PROCS=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        if grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+            echo "== procs: PASS (Ctrl+C interrupt + tasklist/taskkill + job tool) =="
+            return 0
+        fi
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+    echo "== procs: FAIL (see $log) =="
+    return 1
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -781,9 +809,10 @@ case "$MODE" in
     firstboot) firstboot ;;
     console)  console ;;
     scm)      scm ;;
+    procs)    procs ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|fatinterop|fatstress|tornwrite}" >&2
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite}" >&2
        exit 2 ;;
 esac

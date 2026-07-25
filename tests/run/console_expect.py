@@ -175,6 +175,65 @@ def main() -> int:
                        "the second proof line"):
             return 1
 
+    # ---- CUI-4: the process ecosystem (docs/02 "a tasklist/taskkill pair
+    # works against live processes; Ctrl+C interrupts a loop under cmd.exe;
+    # a job-object-using build tool completes") ----------------------------
+    if os.environ.get("EXPECT_PROCS", ""):
+        # 1. Ctrl+C interrupts a BUSY loop. looper.exe installs a console
+        #    control handler and then spins without any blocking call, so
+        #    only the real delivery path can reach it: the kernel sees ^C on
+        #    the console transport and starts a thread in the process at
+        #    ntdll's __wine_ctrl_routine. The handler prints the marker; its
+        #    digits and dashes cannot come from the typed command line.
+        mark = len(buffered)
+        sock.sendall(b"C:\\looper.exe\r")
+        if not expect_after(mark, b"loop-alive", "the looper's start marker"):
+            return 1
+        mark = len(buffered)
+        sock.sendall(b"\x03")
+        if not expect_after(mark, b"loop-caught-1", "the Ctrl+C handler marker"):
+            return 1
+        # cmd survives the interrupt and keeps prompting; the looper's exit
+        # code (77, set by its handler) proves it died through the handler
+        # rather than by any other route.
+        if not command(b"echo rc=%errorlevel%", b"rc=77", "the interrupted exit code"):
+            return 1
+
+        # 2. tasklist lists live processes: its own image name appears in a
+        #    column its header supplies, and cmd.exe (the parent) is listed.
+        if not command(b"C:\\windows\\system32\\tasklist.exe", b"cmd.exe",
+                       "tasklist listing cmd.exe"):
+            return 1
+
+        # 3. taskkill /f kills a live process by pid. The looper is started
+        #    in the background, its pid taken from tasklist's own output is
+        #    not scriptable here, so the kill goes by image name — taskkill
+        #    resolves it through the same snapshot tasklist walks.
+        mark = len(buffered)
+        sock.sendall(b"start C:\\looper.exe\r")
+        if not expect_after(mark, b"loop-alive", "the background looper"):
+            return 1
+        if not command(b"C:\\windows\\system32\\taskkill.exe /f /im looper.exe", b"C:\\",
+                       "the prompt after taskkill"):
+            return 1
+        if not command(b"echo rc=%errorlevel%", b"rc=0", "taskkill's exit code"):
+            return 1
+        # The killed looper is gone: a second kill finds nothing to kill.
+        if not command(b"C:\\windows\\system32\\taskkill.exe /f /im looper.exe & "
+                       b"echo zz%errorlevel%zz", b"zz128zz",
+                       "taskkill reporting no such process"):
+            return 1
+
+        # 4. The job-object build tool: children assigned to a job with
+        #    KILL_ON_JOB_CLOSE, read back through the job's own accounting,
+        #    then reaped by closing the last job handle.
+        mark = len(buffered)
+        sock.sendall(b"C:\\jobtool.exe\r")
+        if not expect_after(mark, b"jobtool-active-2", "the job's live member count"):
+            return 1
+        if not expect_after(mark, b"jobtool-done-2", "the kill-on-close cleanup"):
+            return 1
+
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
