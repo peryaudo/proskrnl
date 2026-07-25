@@ -21,7 +21,7 @@ Ordering rules that matter:
   one-source/two-mode `ntapi` harness, the generated syscall list, the deterministic
   serial-log verdict — all exist from M4/M5, so it was built early (`tests/fuzz/`, `docs/08`)
   and its op model grows with each milestone's new `Nt*`. Run it with `tests/run/run.sh fuzz`.
-- **The critical path to calc.exe deliberately excludes npfs/condrv/conhost/cmd.** See
+- **The critical path to winemine.exe deliberately excludes npfs/condrv/conhost/cmd.** See
   the GUI note below and `docs/07`.
 
 ---
@@ -106,7 +106,7 @@ letters, launch next).
 **Done when:** a value written by a user program survives reboot; boot completes as
 kernel → smss-equiv → test process.
 
-## M9 — npfs, condrv, interactive console *(off the calc critical path)*
+## M9 — npfs, condrv, interactive console
 Named-pipe FS (byte/message mode, listen/connect via `NtFsControlFile`); a ConDrv-style
 console device; port Wine's conhost.
 **The console transport is the COM1 serial port, in both directions** (HACK-004,
@@ -120,7 +120,6 @@ socket/pty instead of a plain log file, the runner writes keystrokes into it and
 echo — no QEMU window, no screendump, no change to the loop's shape.
 **Done when:** input typed into the serial console echoes through conhost; the pipe
 client/server test (message-mode behaviour rpcrt4 needs) passes.
-*Note:* if pursuing calc.exe first, this milestone moves **after** the GUI path — see below.
 
 ## M10 — Full Wine user-land (CUI)
 kernelbase/kernel32, msvcrt, advapi32, rpcrt4, services.exe, Wine's cmd.exe; full
@@ -222,10 +221,6 @@ SymCrypt PE-side, `libs/symcrypt`).
 
 ## GUI path (opt-in, additive, route (a) — see docs/07)
 
-> **calc.exe does not need npfs/condrv/conhost/cmd.** Give wineserver-lite a
-> shared-section + two-event transport instead of npfs, and the critical path to a
-> window shortens by months. npfs (M9) and cmd (M10) can come *after* the calculator.
-
 ## GUI-1 — Pixels and input
 Limine framebuffer; virtio-input. `\Device\Fb0` (map framebuffer to user)
 and `\Device\Input0` (input event stream). **HACK-001 and HACK-002** (see `docs/10`).
@@ -237,7 +232,7 @@ Bring in win32u/user32/gdi32/comctl32 PE sides; build win32u's unix side as PE (
 our `Nt*`, FreeType statically linked). Write `winefb.drv`: implement Wine's display
 driver table, blit dibdrv's bitmap to `\Device\Fb0`. Desktop state lives in-process; one
 GUI process.
-**Done when:** **calc.exe appears on screen.**
+**Done when:** **winemine.exe appears on screen.**
 
 ## GUI-3 — win32k-lite / wineserver-lite ⛰️ (the GUI mountain, lowered by route (a))
 Under route (a): run a stripped wineserver as a PE process holding GUI state
