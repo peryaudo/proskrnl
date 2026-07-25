@@ -188,6 +188,9 @@ IMPLEMENTED = [
     "NtCreateJobObject",
     "NtAssignProcessToJobObject",
     "NtSetInformationJobObject",
+    # CUI-4 the process ecosystem (tasklist/taskkill, job-driving build
+    # tools); each row's kernel service lands in its own commit.
+    "NtOpenProcess",
 ]
 
 

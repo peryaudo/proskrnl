@@ -148,6 +148,7 @@
 #define NTSYS_NtCreateJobObject 0x007f
 #define NTSYS_NtAssignProcessToJobObject 0x0073
 #define NTSYS_NtSetInformationJobObject 0x00ea
+#define NTSYS_NtOpenProcess 0x0026
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
