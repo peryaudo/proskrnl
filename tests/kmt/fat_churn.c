@@ -347,10 +347,10 @@ static int churn_wet_write(const churn_file *f, uint64_t offset, ULONG length, U
     }
     if (status == STATUS_DISK_FULL)
     {
-        /* Corrective truncate-to-zero: the failed grow may have linked
-         * clusters past EOF (fs/fat32/file.c FatSetFileSize's mid-extend
-         * failure); the shrink frees them and leaves a consistent, empty
-         * file the shadow mirrors. */
+        /* Corrective truncate-to-zero: the failed chunk's grow unwound
+         * itself (fs/fat32/file.c FatSetFileSize), but earlier chunks of
+         * this write may already have extended the file; the shrink leaves
+         * a consistent, empty file the shadow mirrors. */
         FILE_END_OF_FILE_INFORMATION eof;
         eof.EndOfFile.QuadPart = 0;
         NtSetInformationFile(handle, &iosb, &eof, sizeof(eof), FileEndOfFileInformation);
@@ -364,8 +364,7 @@ static int churn_wet_write(const churn_file *f, uint64_t offset, ULONG length, U
 
 /* Returns TRUE when the resize stuck; FALSE when DISK_FULL rolled it back
  * to oldSize (expect_diskfull legs only). */
-static BOOLEAN churn_wet_seteof(const churn_file *f, uint64_t newSize, uint64_t oldSize,
-                                ULONG iter)
+static BOOLEAN churn_wet_seteof(const churn_file *f, uint64_t newSize, uint64_t oldSize, ULONG iter)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
@@ -757,8 +756,8 @@ static void churn_run_model(BOOLEAN wet)
                 churn_total_bytes -= victim->size;
                 churn_set_whole(victim, size, seed);
                 churn_total_bytes += size;
-                if (wet && churn_wet_write(victim, 0, (ULONG)size, seed, FILE_OVERWRITE_IF,
-                                           iter) != 0)
+                if (wet &&
+                    churn_wet_write(victim, 0, (ULONG)size, seed, FILE_OVERWRITE_IF, iter) != 0)
                 {
                     churn_total_bytes -= victim->size;
                     churn_set_whole(victim, 0, 0);
@@ -844,8 +843,8 @@ static void churn_run_model(BOOLEAN wet)
                 churn_total_bytes -= f->size;
                 churn_set_whole(f, newSize, seed);
                 churn_total_bytes += newSize;
-                if (wet && churn_wet_write(f, 0, (ULONG)newSize, seed, FILE_OVERWRITE_IF,
-                                           iter) != 0)
+                if (wet &&
+                    churn_wet_write(f, 0, (ULONG)newSize, seed, FILE_OVERWRITE_IF, iter) != 0)
                 {
                     churn_total_bytes -= f->size;
                     churn_set_whole(f, 0, 0);
@@ -1072,8 +1071,8 @@ static BOOLEAN churn_load_config(void)
         char *v = eq + 1;
         if (v[0] == '0' && v[1] == 'x')
         {
-            for (v += 2; (*v >= '0' && *v <= '9') || (*v >= 'a' && *v <= 'f') ||
-                         (*v >= 'A' && *v <= 'F');
+            for (v += 2;
+                 (*v >= '0' && *v <= '9') || (*v >= 'a' && *v <= 'f') || (*v >= 'A' && *v <= 'F');
                  v++)
             {
                 value = value * 16 + (ULONG)(*v <= '9'   ? *v - '0'
