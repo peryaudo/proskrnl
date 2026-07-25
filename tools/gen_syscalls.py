@@ -193,6 +193,7 @@ IMPLEMENTED = [
     "NtOpenProcess",
     "NtReadVirtualMemory",
     "NtWriteVirtualMemory",
+    "NtGetNextProcess",
 ]
 
 

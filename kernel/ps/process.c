@@ -990,6 +990,76 @@ NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
     return status;
 }
 
+NTSTATUS NtGetNextProcess(HANDLE processHandle, ACCESS_MASK desiredAccess, ULONG attributes,
+                          ULONG flags, HANDLE *handleOut)
+{
+    /* The handle-returning process walk (the shape NtGetNextThread already
+     * uses for threads). Contract from wineserver's get_next_process
+     * (server/process.c): flags 0 walks the active list forward, 1 backward,
+     * anything else refuses; last = 0 starts at the head/tail; each success
+     * is a fresh handle; the walk ends with STATUS_NO_MORE_ENTRIES. The list
+     * is re-scanned rather than chained off `last`'s links: a since-exited
+     * `last` has left the active list (PspDeleteProcess unlinks it), so a
+     * stale reference ends the walk gracefully. Pinned by
+     * sem_ps/get_next_process. */
+    if (flags > 1)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NTSTATUS status = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PEPROCESS last = 0;
+    if (processHandle != 0)
+    {
+        PVOID body;
+        status = ObReferenceObjectByHandle(processHandle, 0, &PspProcessType, ExGetPreviousMode(),
+                                           &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        last = body;
+    }
+
+    PEPROCESS found = 0;
+    uint64_t lockFlags = KiAcquireDispatcherLock();
+    BOOLEAN seen = (last == 0);
+    PLIST_ENTRY head = &PspActiveProcessListHead;
+    for (PLIST_ENTRY entry = flags ? head->Blink : head->Flink; entry != head;
+         entry = flags ? entry->Blink : entry->Flink)
+    {
+        PEPROCESS candidate = CONTAINING_RECORD(entry, EPROCESS, activeProcessLinks);
+        if (seen)
+        {
+            found = candidate;
+            ObfReferenceObject(found); /* pins it across the lock drop */
+            break;
+        }
+        if (candidate == last)
+        {
+            seen = TRUE;
+        }
+    }
+    KiReleaseDispatcherLock(lockFlags);
+
+    if (last != 0)
+    {
+        ObDereferenceObject(last);
+    }
+    if (found == 0)
+    {
+        return STATUS_NO_MORE_ENTRIES;
+    }
+    status = ObpCreateHandle(found, ObpMapDesiredAccess(&PspProcessType, desiredAccess), attributes,
+                             handleOut);
+    ObDereferenceObject(found); /* the handle holds its own reference */
+    return status;
+}
+
 NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
 {
     PKTHREAD thread = KeGetCurrentThread();

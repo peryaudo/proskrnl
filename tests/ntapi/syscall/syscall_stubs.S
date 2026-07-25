@@ -1726,6 +1726,19 @@ NtWriteVirtualMemory:
     add $0x78, %rsp
     ret
 
+    .global NtGetNextProcess
+NtGetNextProcess:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9f, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
