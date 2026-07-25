@@ -72,6 +72,9 @@ CHOICES = {
     'kv_info': (3, []),
     'access_job': (3, []),
     'job_scenario': (6, []),
+    'process_cid': (3, []),
+    'vm_scenario': (3, []),
+    'job_query': (4, []),
 }
 
 # op name -> (opcode, [operand kind strings])
@@ -128,4 +131,10 @@ OPS = [
     ('cancel_io_ex', 49, 'NtCancelIoFileEx', ['slot_in']),
     ('create_job', 50, 'NtCreateJobObject', ['slot_out', 'ch_access_job']),
     ('set_job_limits', 51, 'NtSetInformationJobObject', ['slot_in', 'ch_job_scenario']),
+    ('open_process', 52, 'NtOpenProcess', ['slot_out', 'ch_process_cid']),
+    ('query_system_processes', 53, 'NtQuerySystemInformation', ['ch_len']),
+    ('read_own_memory', 54, 'NtReadVirtualMemory', ['ch_vm_scenario']),
+    ('write_own_memory', 55, 'NtWriteVirtualMemory', ['ch_vm_scenario']),
+    ('is_process_in_job', 56, 'NtIsProcessInJob', ['slot_in']),
+    ('query_job_info', 57, 'NtQueryInformationJobObject', ['slot_in', 'ch_job_query']),
 ]

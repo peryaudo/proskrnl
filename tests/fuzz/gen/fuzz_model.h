@@ -53,6 +53,9 @@ typedef enum {
     FZ_OPND_CH_KEY_INFO,
     FZ_OPND_CH_ACCESS_JOB,
     FZ_OPND_CH_JOB_SCENARIO,
+    FZ_OPND_CH_PROCESS_CID,
+    FZ_OPND_CH_VM_SCENARIO,
+    FZ_OPND_CH_JOB_QUERY,
 } FzOperandKind;
 
 typedef enum {
@@ -108,6 +111,12 @@ typedef enum {
     FZ_OP_CANCEL_IO_EX,
     FZ_OP_CREATE_JOB,
     FZ_OP_SET_JOB_LIMITS,
+    FZ_OP_OPEN_PROCESS,
+    FZ_OP_QUERY_SYSTEM_PROCESSES,
+    FZ_OP_READ_OWN_MEMORY,
+    FZ_OP_WRITE_OWN_MEMORY,
+    FZ_OP_IS_PROCESS_IN_JOB,
+    FZ_OP_QUERY_JOB_INFO,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -164,6 +173,12 @@ static const FzOperandKind fz_kinds_cancel_io[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_cancel_io_ex[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_create_job[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_JOB };
 static const FzOperandKind fz_kinds_set_job_limits[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_SCENARIO };
+static const FzOperandKind fz_kinds_open_process[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_PROCESS_CID };
+static const FzOperandKind fz_kinds_query_system_processes[] = { FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_read_own_memory[] = { FZ_OPND_CH_VM_SCENARIO };
+static const FzOperandKind fz_kinds_write_own_memory[] = { FZ_OPND_CH_VM_SCENARIO };
+static const FzOperandKind fz_kinds_is_process_in_job[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_query_job_info[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_QUERY };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -217,6 +232,12 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CANCEL_IO_EX] = { fz_kinds_cancel_io_ex, 1, "NtCancelIoFileEx" },
     [FZ_OP_CREATE_JOB] = { fz_kinds_create_job, 2, "NtCreateJobObject" },
     [FZ_OP_SET_JOB_LIMITS] = { fz_kinds_set_job_limits, 2, "NtSetInformationJobObject" },
+    [FZ_OP_OPEN_PROCESS] = { fz_kinds_open_process, 2, "NtOpenProcess" },
+    [FZ_OP_QUERY_SYSTEM_PROCESSES] = { fz_kinds_query_system_processes, 1, "NtQuerySystemInformation" },
+    [FZ_OP_READ_OWN_MEMORY] = { fz_kinds_read_own_memory, 1, "NtReadVirtualMemory" },
+    [FZ_OP_WRITE_OWN_MEMORY] = { fz_kinds_write_own_memory, 1, "NtWriteVirtualMemory" },
+    [FZ_OP_IS_PROCESS_IN_JOB] = { fz_kinds_is_process_in_job, 1, "NtIsProcessInJob" },
+    [FZ_OP_QUERY_JOB_INFO] = { fz_kinds_query_job_info, 2, "NtQueryInformationJobObject" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -271,5 +292,8 @@ static const ULONG fz_ch_reg_options[] = { (ULONG)(0), (ULONG)(REG_OPTION_VOLATI
 #define FZ_CH_ACCESS_JOB_COUNT 3
 static const ACCESS_MASK fz_ch_access_job[] = { (ACCESS_MASK)(JOB_OBJECT_ALL_ACCESS), (ACCESS_MASK)(SYNCHRONIZE), (ACCESS_MASK)(0) };
 #define FZ_CH_JOB_SCENARIO_COUNT 6
+#define FZ_CH_PROCESS_CID_COUNT 3
+#define FZ_CH_VM_SCENARIO_COUNT 3
+#define FZ_CH_JOB_QUERY_COUNT 4
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */
