@@ -118,6 +118,7 @@ IMPLEMENTED = [
     "NtQuerySystemInformation",
     "NtQuerySystemInformationEx",  # CUI-1: wineboot's supported-machines gate
     "NtPowerInformation",  # CUI-1: wineboot's ~MHz registry source
+    "NtGetNextThread",  # M10: ntdll's TLS walk for runtime-loaded DLLs
     "NtQueryDefaultLocale",
     "NtGetContextThread",
     "NtSetContextThread",

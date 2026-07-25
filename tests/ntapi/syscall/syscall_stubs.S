@@ -991,6 +991,20 @@ NtPowerInformation:
     add $0x78, %rsp
     ret
 
+    .global NtGetNextThread
+NtGetNextThread:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xa0, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
     .global NtQueryDefaultLocale
 NtQueryDefaultLocale:
     mov %rcx, %r9

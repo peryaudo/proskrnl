@@ -91,6 +91,7 @@
 #define NTSYS_NtQuerySystemInformation 0x0036
 #define NTSYS_NtQuerySystemInformationEx 0x00d1
 #define NTSYS_NtPowerInformation 0x005f
+#define NTSYS_NtGetNextThread 0x00a0
 #define NTSYS_NtQueryDefaultLocale 0x0015
 #define NTSYS_NtGetContextThread 0x009d
 #define NTSYS_NtSetContextThread 0x00e4
