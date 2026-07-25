@@ -66,6 +66,19 @@ typedef struct
     ULONG checksum;
 } ps_section_image_info;
 NTSYSAPI NTSTATUS NTAPI NtDelayExecution(BOOLEAN, const LARGE_INTEGER *);
+/* As wine/include/winternl.h (mingw's winternl.h omits it); the level
+ * selector comes from the system winnt.h, the record shape (which mingw
+ * omits) as wine/include/winnt.h PROCESSOR_POWER_INFORMATION. */
+NTSYSAPI NTSTATUS NTAPI NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID, ULONG, PVOID, ULONG);
+typedef struct
+{
+    ULONG number;
+    ULONG max_mhz;
+    ULONG current_mhz;
+    ULONG mhz_limit;
+    ULONG max_idle_state;
+    ULONG current_idle_state;
+} ps_processor_power_info;
 NTSYSAPI NTSTATUS NTAPI NtYieldExecution(void);
 NTSYSAPI NTSTATUS NTAPI NtTestAlert(void);
 NTSYSAPI NTSTATUS NTAPI NtInitializeNlsFiles(void **, LCID *, LARGE_INTEGER *);
