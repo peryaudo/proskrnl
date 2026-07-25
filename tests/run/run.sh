@@ -448,17 +448,31 @@ fatstress() {
             [[ -f "$seed" ]] && specs+=("$seed=initrd")
         done
         specs+=("win:$cfg=churn.cfg")
-        if [[ "$ldf" == 1 ]]; then
-            # ~33.4 MiB of data clusters minus ~2 MiB of kernel/module files:
-            # 31 MiB + 400 KiB of ballast leaves ~150 KiB free, well inside
-            # the churn's working set, so allocation really hits DISK_FULL.
-            dd if=/dev/zero of="$BUILD/ballast.bin" bs=1048576 count=31 2>/dev/null
-            dd if=/dev/zero of="$BUILD/ballast2.bin" bs=1024 count=400 2>/dev/null
-            specs+=("win:$BUILD/ballast.bin=ballast.bin"
-                    "win:$BUILD/ballast2.bin=ballast2.bin")
-        fi
         SIZE_MB="$lsize" CLUSTER_SECTORS="$lcs" \
             "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+        if [[ "$ldf" == 1 ]]; then
+            # Fill the baked volume down to ~150 KiB free — well inside the
+            # churn's working set, so allocation really hits DISK_FULL. The
+            # ballast is sized from the image's MEASURED free space, not a
+            # fixed count: the kernel binary's size swings by hundreds of
+            # KiB across toolchains (debug info), and a fixed 31 MiB once
+            # left a container's build ~300 KiB free — above the churn's
+            # peak, so DISK_FULL never fired and the leg failed for no
+            # kernel fault of its own.
+            local off=2097152   # mkimage.sh ESP_OFF
+            local freeBytes keepBytes=153600
+            # mtools space-groups thousands ("311 296 bytes free"); strip
+            # everything but digits from that one line.
+            freeBytes=$(mdir -i "$img@@$off" :: | grep 'bytes free' | tr -dc '0-9')
+            if [[ -z "$freeBytes" || "$freeBytes" -le "$keepBytes" ]]; then
+                echo "[KTEST] fatstress-$lname-seed FAIL (cannot size ballast: free='$freeBytes')"
+                fails=$((fails+1))
+                continue
+            fi
+            dd if=/dev/zero of="$BUILD/ballast.bin" bs=1024 \
+                count=$(( (freeBytes - keepBytes) / 1024 )) 2>/dev/null
+            mcopy -i "$img@@$off" "$BUILD/ballast.bin" ::/ballast.bin
+        fi
 
         local log1="$BUILD/fatstress-$lname-1.log" log2="$BUILD/fatstress-$lname-2.log"
         LOG="$log1" PASS_RE="\[KTEST\] churn-seed PASS" TIMEOUT="${TIMEOUT:-900}" \
