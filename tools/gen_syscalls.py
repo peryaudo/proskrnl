@@ -122,6 +122,7 @@ IMPLEMENTED = [
     "NtSetContextThread",
     "NtProtectVirtualMemory",
     "NtFlushInstructionCache",
+    "NtAreMappedFilesTheSame",  # the loader's find_existing_module probe
     "NtContinueEx",
     "NtCallbackReturn",
     "NtWaitForAlertByThreadId",

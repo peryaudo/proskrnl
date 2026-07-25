@@ -1031,6 +1031,16 @@ NtFlushInstructionCache:
     syscall
     ret
 
+    .global NtAreMappedFilesTheSame
+NtAreMappedFilesTheSame:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x72, %eax
+    syscall
+    ret
+
     .global NtContinueEx
 NtContinueEx:
     mov %rcx, %r9

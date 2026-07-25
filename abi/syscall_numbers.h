@@ -95,6 +95,7 @@
 #define NTSYS_NtSetContextThread 0x00e4
 #define NTSYS_NtProtectVirtualMemory 0x0050
 #define NTSYS_NtFlushInstructionCache 0x0099
+#define NTSYS_NtAreMappedFilesTheSame 0x0072
 #define NTSYS_NtContinueEx 0x007b
 #define NTSYS_NtCallbackReturn 0x0005
 #define NTSYS_NtWaitForAlertByThreadId 0x0105
