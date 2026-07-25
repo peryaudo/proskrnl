@@ -70,6 +70,16 @@ OBJECT_TYPE IoFileObjectType = {
     .waitable = TRUE, /* born signaled; see io.h */
     .deleteProcedure = IopDeleteFileObject,
     .closeProcedure = IopCloseFileObject,
+    /* The real NT generic mapping, as wineserver's file_type
+     * (third_party/wine server/file.c). Without it a GENERIC_READ open fell
+     * into the always-allow branch and was granted FILE_ALL_ACCESS — whose
+     * write/delete bits then counted in the share-mode ledger, so TWO
+     * read-sharing GENERIC_READ opens of one file collided
+     * (sem_mm/mapped_same's double open of ntdll.dll convicted it). */
+    .genericRead = FILE_GENERIC_READ,
+    .genericWrite = FILE_GENERIC_WRITE,
+    .genericExecute = FILE_GENERIC_EXECUTE,
+    .genericAll = FILE_ALL_ACCESS,
 };
 
 /* --- share-mode accounting (NT's IoCheckShareAccess/IoSetShareAccess) ------ */
