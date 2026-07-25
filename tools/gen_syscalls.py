@@ -196,6 +196,10 @@ IMPLEMENTED = [
     "NtGetNextProcess",
     "NtSuspendProcess",
     "NtResumeProcess",
+    "NtQueryInformationJobObject",
+    "NtTerminateJobObject",
+    "NtOpenJobObject",
+    "NtIsProcessInJob",
 ]
 
 

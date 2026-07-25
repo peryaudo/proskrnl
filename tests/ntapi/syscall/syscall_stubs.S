@@ -1759,6 +1759,49 @@ NtResumeProcess:
     syscall
     ret
 
+    .global NtQueryInformationJobObject
+NtQueryInformationJobObject:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc6, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtTerminateJobObject
+NtTerminateJobObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xfd, %eax
+    syscall
+    ret
+
+    .global NtOpenJobObject
+NtOpenJobObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xb5, %eax
+    syscall
+    ret
+
+    .global NtIsProcessInJob
+NtIsProcessInJob:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x4f, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

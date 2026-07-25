@@ -701,14 +701,21 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
   loud-unbuilt. What the SCM actually needed instead: job objects,
   `ProcessWineMakeProcessSystem`, `NtCancelIoFile(Ex)`, `FSCTL_PIPE_WAIT`,
   async listen, and a `GetComputerNameA` that answers.
-- **Job limits are validated and stored, never enforced**
+- **Job limits are validated and stored, mostly never enforced**
   (`kernel/ps/job.c`): services.exe sets only the breakaway bits, which
-  gate behaviour proskrnl does not have. Loud-unbuilt: job nesting
-  (re-assigning a process already in a job), `NtQueryInformationJobObject`,
-  `NtTerminateJobObject`, `NtOpenJobObject`, `NtIsProcessInJob` (not on the
-  CreateProcess path — verified kernelbase). Exit packets always say
-  `JOB_OBJECT_MSG_EXIT_PROCESS`; the ABNORMAL_EXIT flavor is unbuilt (no
-  consumer distinguishes them).
+  gate behaviour proskrnl does not have. The one exception is
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, **enforced since CUI-4** through the
+  type's close procedure (last handle closed → every live member is
+  terminated) — the contract a job-driving build tool cleans up with.
+  `NtQueryInformationJobObject` (accounting, pid list, limit read-back),
+  `NtTerminateJobObject`, `NtOpenJobObject` and `NtIsProcessInJob` are
+  served as of CUI-4 too, pinned by `sem_ps/job_query.c`. Still loud-unbuilt:
+  job nesting (re-assigning a process already in a job), the other limit
+  flags, and per-job CPU/IO accounting — the time and IO counters read back
+  **zero** rather than a fabricated number (Art. 12); the counts that are
+  real (assigned / active / terminated) are what consumers read. Exit
+  packets always say `JOB_OBJECT_MSG_EXIT_PROCESS`; the ABNORMAL_EXIT flavor
+  is unbuilt (no consumer distinguishes them).
 - **`ProcessWineMakeProcessSystem` is real** (`kernel/ps/query.c`): the
   global shutdown event exists and its user-process count is maintained,
   but on-target it realistically never signals (conhost and cmd live for
