@@ -768,6 +768,108 @@ NTSTATUS NtOpenThread(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
     return STATUS_NOT_IMPLEMENTED; /* open-by-CLIENT_ID: not on the M7 path */
 }
 
+NTSTATUS NtGetNextThread(HANDLE processHandle, HANDLE threadHandle, ACCESS_MASK desiredAccess,
+                         ULONG attributes, ULONG flags, HANDLE *handleOut)
+{
+    /* The loader's TLS walk (dlls/ntdll/loader.c alloc_tls_slot enumerates
+     * every thread when a TLS-bearing DLL loads at runtime). Contract from
+     * wineserver's get_next_thread (server/thread.c): flags 0 walks
+     * creation order forward, 1 backward, anything else refuses; last = 0
+     * starts at the end; each success is a NEW handle; the walk finishes
+     * with STATUS_NO_MORE_ENTRIES. wineserver walks its global list, which
+     * restricted to one process is the same creation order as
+     * EPROCESS.threadListHead. The list is re-scanned rather than chained
+     * from last's links: an exited thread has left the list (its entry is
+     * reused for the reaper), so a stale `last` ends the walk gracefully
+     * instead of wandering. Pinned by sem_ps/get_next_thread. */
+    if (flags > 1)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NTSTATUS status = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PEPROCESS process;
+    BOOLEAN processReferenced = FALSE;
+    if (processHandle == NtCurrentProcess())
+    {
+        process = KeGetCurrentThread()->process;
+    }
+    else
+    {
+        PVOID body;
+        status = ObReferenceObjectByHandle(processHandle, PROCESS_QUERY_INFORMATION,
+                                           &PspProcessType, ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        process = body;
+        processReferenced = TRUE;
+    }
+
+    PETHREAD lastThread = 0;
+    if (threadHandle != 0)
+    {
+        PVOID body;
+        status = ObReferenceObjectByHandle(threadHandle, 0, &PspThreadType, ExGetPreviousMode(),
+                                           &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            if (processReferenced)
+            {
+                ObDereferenceObject(process);
+            }
+            return status;
+        }
+        lastThread = body;
+    }
+
+    PETHREAD found = 0;
+    uint64_t lockFlags = KiAcquireDispatcherLock();
+    BOOLEAN seen = (lastThread == 0);
+    PLIST_ENTRY head = &process->threadListHead;
+    for (PLIST_ENTRY entry = flags ? head->Blink : head->Flink; entry != head;
+         entry = flags ? entry->Blink : entry->Flink)
+    {
+        PETHREAD candidate = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        if (seen)
+        {
+            found = candidate;
+            ObfReferenceObject(found); /* pins it across the lock drop */
+            break;
+        }
+        if (candidate == lastThread)
+        {
+            seen = TRUE;
+        }
+    }
+    KiReleaseDispatcherLock(lockFlags);
+
+    if (lastThread != 0)
+    {
+        ObDereferenceObject(lastThread);
+    }
+    if (found == 0)
+    {
+        status = STATUS_NO_MORE_ENTRIES;
+    }
+    else
+    {
+        status = ObpCreateHandle(found, ObpMapDesiredAccess(&PspThreadType, desiredAccess),
+                                 attributes, handleOut);
+        ObDereferenceObject(found); /* the handle holds its own reference */
+    }
+    if (processReferenced)
+    {
+        ObDereferenceObject(process);
+    }
+    return status;
+}
+
 /* --- queries -------------------------------------------------------------- */
 
 NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, PVOID buffer,
