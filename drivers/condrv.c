@@ -46,6 +46,11 @@
 
 /* --- \Device\Serial0 --------------------------------------------------------- */
 
+/* ASCII ETX — what a terminal sends for Ctrl+C (the byte a Unix tty's VINTR
+ * defaults to). CUI-4 treats it as a signal on the RX path; see
+ * CondrvSerialRead. */
+#define CONDRV_SERIAL_INTR 0x03
+
 /* One global open context: the device is stateless per-open (conhost is the
  * only intended opener) but the Io close hooks key off a non-NULL fsContext
  * and a valid IO_FCB (kernel/io/file.c). */
@@ -119,13 +124,36 @@ static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, 
     {
         ULONG got = 0;
         int ch;
+        BOOLEAN interrupt = FALSE;
         while (got < length && (ch = KiSerialTryGetChar()) >= 0)
         {
+            if (ch == CONDRV_SERIAL_INTR)
+            {
+                /* ^C is a SIGNAL, not input (CUI-4). Under HACK-004 the UART
+                 * RX path IS this milestone's keyboard driver (docs/02 M9),
+                 * so it is also the line discipline: like a Unix tty's ISIG,
+                 * the byte is consumed here and becomes a console control
+                 * event rather than a keystroke. Delivered after the read
+                 * returns, so the fanout never runs under conhost's read. */
+                interrupt = TRUE;
+                continue;
+            }
             out[got++] = (unsigned char)ch;
+        }
+        if (interrupt)
+        {
+            PsPropagateConsoleCtrlEvent(CTRL_C_EVENT, 0);
         }
         if (got != 0)
         {
             *infoOut = got;
+            return STATUS_SUCCESS;
+        }
+        if (interrupt)
+        {
+            /* Nothing but the ^C: report a zero-length read rather than
+             * blocking, so conhost's input thread loops promptly. */
+            *infoOut = 0;
             return STATUS_SUCCESS;
         }
         /* Nap one clock tick between polls (relative 100 ns units). */
@@ -684,12 +712,24 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
     PCONDRV_OPEN open = file->fsContext;
     if (open->kind == CondrvOpenServer)
     {
-        /* conhost's own verbs on its server handle: input-thread setup and
-         * ctrl-event fanout. No client to deliver to yet — accept. */
-        if (code == IOCTL_CONDRV_SETUP_INPUT || code == IOCTL_CONDRV_CTRL_EVENT)
+        if (code == IOCTL_CONDRV_SETUP_INPUT)
         {
-            *infoOut = 0;
+            *infoOut = 0; /* conhost's input-thread setup: nothing to do here */
             return STATUS_SUCCESS;
+        }
+        if (code == IOCTL_CONDRV_CTRL_EVENT)
+        {
+            /* conhost's ctrl-event fanout (CUI-4): it swallowed a ^C key
+             * record and asks the OS to signal the console's processes.
+             * group_id 0 means every attached process (wineserver's
+             * console_server_ioctl -> propagate_console_signal). */
+            const struct condrv_ctrl_event *event = input;
+            if (inputLength != sizeof(*event))
+            {
+                return STATUS_INVALID_PARAMETER;
+            }
+            *infoOut = 0;
+            return PsPropagateConsoleCtrlEvent((ULONG)event->event, event->group_id);
         }
         return STATUS_INVALID_DEVICE_REQUEST;
     }
@@ -698,6 +738,28 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
         /* Wine's wineserver-side bookkeeping; one global console here. */
         *infoOut = 0;
         return STATUS_SUCCESS;
+    }
+    if (code == IOCTL_CONDRV_CTRL_EVENT)
+    {
+        /* The GenerateConsoleCtrlEvent path (dlls/kernelbase/console.c) on a
+         * CLIENT handle. Served kernel-side, never forwarded: this is a
+         * wineserver verb, and conhost answers it STATUS_INVALID_HANDLE.
+         * Group resolution mirrors server/console.c: an explicit group, else
+         * the caller's own; a zero group is a parameter error (unlike the
+         * server handle's broadcast). */
+        const struct condrv_ctrl_event *event = input;
+        if (inputLength != sizeof(*event))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        uint64_t group =
+            event->group_id != 0 ? event->group_id : KeGetCurrentThread()->process->processGroupId;
+        if (group == 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        *infoOut = 0;
+        return PsPropagateConsoleCtrlEvent((ULONG)event->event, group);
     }
     return CondrvForward(code, open->kind == CondrvOpenOutput ? open->outputId : 0, input,
                          inputLength, output, outputLength, infoOut);
