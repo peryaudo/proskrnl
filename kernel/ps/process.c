@@ -611,6 +611,14 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
                                                  FALSE, &duplicated)))
             {
                 params->header.ConsoleHandle = duplicated;
+                /* CUI-4: record the inherited console on the EPROCESS too —
+                 * `consoleHandle != 0` is what marks a process as attached to
+                 * the console, and so what the Ctrl+C fanout selects on
+                 * (PsPropagateConsoleCtrlEvent). A cmd child reaches its
+                 * console THIS way, not through the kernel-launch seeding
+                 * below, so leaving it 0 made every interactive child
+                 * invisible to console control events. */
+                process->consoleHandle = duplicated;
             }
             else
             {
