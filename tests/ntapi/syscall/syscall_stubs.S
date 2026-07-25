@@ -1690,6 +1690,42 @@ NtSetInformationJobObject:
     syscall
     ret
 
+    .global NtOpenProcess
+NtOpenProcess:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x26, %eax
+    syscall
+    ret
+
+    .global NtReadVirtualMemory
+NtReadVirtualMemory:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x3f, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtWriteVirtualMemory
+NtWriteVirtualMemory:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x3a, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
