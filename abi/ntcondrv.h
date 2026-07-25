@@ -61,6 +61,14 @@ typedef struct {
 #define IOCTL_CONDRV_INIT_OUTPUT CTL_CODE(FILE_DEVICE_CONSOLE, 90, METHOD_BUFFERED, 0)
 #define IOCTL_CONDRV_CLOSE_OUTPUT CTL_CODE(FILE_DEVICE_CONSOLE, 91, METHOD_BUFFERED, 0)
 
+/* Console-control event codes (condrv_ctrl_event.event), extracted
+ * from wine/include/consoleapi.h. */
+#define CTRL_C_EVENT 0
+#define CTRL_BREAK_EVENT 1
+#define CTRL_CLOSE_EVENT 2
+#define CTRL_LOGOFF_EVENT 5
+#define CTRL_SHUTDOWN_EVENT 6
+
 typedef unsigned int condrv_handle_t;
 
 /* The ioctl parameter/result shapes, extracted verbatim from

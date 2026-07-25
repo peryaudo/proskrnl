@@ -738,7 +738,33 @@ typedef struct {
     SIZE_T                            PeakJobMemoryUsed;
 } JOBOBJECT_EXTENDED_LIMIT_INFORMATION, *PJOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 
+typedef struct {
+    LARGE_INTEGER TotalUserTime;
+    LARGE_INTEGER TotalKernelTime;
+    LARGE_INTEGER ThisPeriodTotalUserTime;
+    LARGE_INTEGER ThisPeriodTotalKernelTime;
+    DWORD         TotalPageFaultCount;
+    DWORD         TotalProcesses;
+    DWORD         ActiveProcesses;
+    DWORD         TotalTerminatedProcesses;
+} JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, *PJOBOBJECT_BASIC_ACCOUNTING_INFORMATION;
+
+typedef struct {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION BasicInfo;
+    IO_COUNTERS                            IoInfo;
+} JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION, *PJOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION;
+
+typedef struct {
+    DWORD     NumberOfAssignedProcesses;
+    DWORD     NumberOfProcessIdsInList;
+    ULONG_PTR ProcessIdList[1];
+} JOBOBJECT_BASIC_PROCESS_ID_LIST, *PJOBOBJECT_BASIC_PROCESS_ID_LIST;
+
 #define JOB_OBJECT_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE|0x3f)
+#define JOB_OBJECT_ASSIGN_PROCESS 0x0001
+#define JOB_OBJECT_SET_ATTRIBUTES 0x0002
+#define JOB_OBJECT_QUERY 0x0004
+#define JOB_OBJECT_TERMINATE 0x0008
 #define JOB_OBJECT_MSG_END_OF_JOB_TIME 1
 #define JOB_OBJECT_MSG_END_OF_PROCESS_TIME 2
 #define JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT 3
@@ -1017,6 +1043,43 @@ typedef struct {
     SIZE_T PrivateUsage;
 } VM_COUNTERS_EX, *PVM_COUNTERS_EX;
 
+typedef struct {                                    /* win32/win64 */
+    LARGE_INTEGER KernelTime;          /* 00/00 */
+    LARGE_INTEGER UserTime;            /* 08/08 */
+    LARGE_INTEGER CreateTime;          /* 10/10 */
+    DWORD         dwTickCount;         /* 18/18 */
+    LPVOID        StartAddress;        /* 1c/20 */
+    CLIENT_ID     ClientId;            /* 20/28 */
+    DWORD         dwCurrentPriority;   /* 28/38 */
+    DWORD         dwBasePriority;      /* 2c/3c */
+    DWORD         dwContextSwitches;   /* 30/40 */
+    DWORD         dwThreadState;       /* 34/44 */
+    DWORD         dwWaitReason;        /* 38/48 */
+    DWORD         dwUnknown;           /* 3c/4c */
+} SYSTEM_THREAD_INFORMATION, *PSYSTEM_THREAD_INFORMATION;
+
+typedef struct {
+    ULONG NextEntryOffset;             /* 00/00 */
+    DWORD dwThreadCount;               /* 04/04 */
+    LARGE_INTEGER WorkingSetPrivateSize; /* 08/08 */
+    ULONG HardFaultCount;              /* 10/10 */
+    ULONG NumberOfThreadsHighWatermark;/* 14/14 */
+    ULONGLONG CycleTime;               /* 18/18 */
+    LARGE_INTEGER CreationTime;        /* 20/20 */
+    LARGE_INTEGER UserTime;            /* 28/28 */
+    LARGE_INTEGER KernelTime;          /* 30/30 */
+    UNICODE_STRING ProcessName;        /* 38/38 */
+    DWORD dwBasePriority;              /* 40/48 */
+    HANDLE UniqueProcessId;            /* 44/50 */
+    HANDLE ParentProcessId;            /* 48/58 */
+    ULONG HandleCount;                 /* 4c/60 */
+    ULONG SessionId;                   /* 50/64 */
+    ULONG_PTR UniqueProcessKey;        /* 54/68 */
+    VM_COUNTERS_EX vmCounters;         /* 58/70 */
+    IO_COUNTERS ioCounters;            /* 88/d0 */
+    SYSTEM_THREAD_INFORMATION ti[1];   /* b8/100 */
+} SYSTEM_PROCESS_INFORMATION, *PSYSTEM_PROCESS_INFORMATION;
+
 typedef struct {
     ULONG_PTR Attribute;
     SIZE_T    Size;
@@ -1098,6 +1161,40 @@ typedef struct {
     };
 } PS_CREATE_INFO, *PPS_CREATE_INFO;
 
+/* Layout pins, generated from the offset comments in the SAME Wine
+ * header the structs were extracted from (Art. 4). */
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, KernelTime) == 0x00, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, UserTime) == 0x08, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, CreateTime) == 0x10, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwTickCount) == 0x18, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, StartAddress) == 0x20, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, ClientId) == 0x28, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwCurrentPriority) == 0x38, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwBasePriority) == 0x3c, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwContextSwitches) == 0x40, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwThreadState) == 0x44, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwWaitReason) == 0x48, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwUnknown) == 0x4c, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset) == 0x00, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, dwThreadCount) == 0x04, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, WorkingSetPrivateSize) == 0x08, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, HardFaultCount) == 0x10, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, NumberOfThreadsHighWatermark) == 0x14, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, CycleTime) == 0x18, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, CreationTime) == 0x20, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UserTime) == 0x28, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, KernelTime) == 0x30, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ProcessName) == 0x38, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, dwBasePriority) == 0x48, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId) == 0x50, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ParentProcessId) == 0x58, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, HandleCount) == 0x60, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, SessionId) == 0x64, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessKey) == 0x68, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, vmCounters) == 0x70, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ioCounters) == 0xd0, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ti) == 0x100, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+
 /* The M4+M7 Ps Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
 NTSTATUS RtlCreateProcessParametersEx(RTL_USER_PROCESS_PARAMETERS**,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,PWSTR,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,ULONG);
@@ -1148,5 +1245,12 @@ NTSTATUS NtCreateJobObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
 NTSTATUS NtAssignProcessToJobObject(HANDLE,HANDLE);
 NTSTATUS NtSetInformationJobObject(HANDLE,JOBOBJECTINFOCLASS,PVOID,ULONG);
 NTSTATUS NtQueryInformationJobObject(HANDLE,JOBOBJECTINFOCLASS,PVOID,ULONG,PULONG);
+NTSTATUS NtOpenProcess(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*,const CLIENT_ID*);
+NTSTATUS NtGetNextProcess(HANDLE,ACCESS_MASK,ULONG,ULONG,HANDLE*);
+NTSTATUS NtSuspendProcess(HANDLE);
+NTSTATUS NtResumeProcess(HANDLE);
+NTSTATUS NtOpenJobObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
+NTSTATUS NtTerminateJobObject(HANDLE,NTSTATUS);
+NTSTATUS NtIsProcessInJob(HANDLE,HANDLE);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */
