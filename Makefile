@@ -708,7 +708,8 @@ $(W32U_BUILD)/srv/%.o: $(WINE_SRV)/%.c
 
 $(W32U_BUILD)/glue/%.o: user/wine/%.c
 	@mkdir -p $(dir $@)
-	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
+	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -Iuser/wine/server \
+	    -Iuser/wine/winefb.drv -c $< -o $@
 
 # The dispatch table is generated from the pinned tree's own request list and
 # from which handlers actually linked: a request whose handler is not part of

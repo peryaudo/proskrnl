@@ -35,6 +35,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 
 NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status );
+extern void winefb_init(void);
 extern void *prsk_freetype_handle( const char *name );
 extern void *prsk_freetype_symbol( void *handle, const char *symbol );
 
@@ -599,5 +600,6 @@ int __mingw_vasprintf( char **out, const char *format, va_list args )
 
 BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved )
 {
+    if (reason == DLL_PROCESS_ATTACH) winefb_init();
     return TRUE;
 }
