@@ -123,3 +123,52 @@ int VioSubmitAndPoll(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segm
     }
     return 0; /* device wedged; the caller panics loudly */
 }
+
+/* --- receive queues (see virtio.h) ----------------------------------------- */
+
+void VioPostReceiveBuffer(VIO_VIRTQUEUE *queue, uint16_t descriptorIndex, uint64_t physical,
+                          uint32_t length)
+{
+    ASSERT(descriptorIndex < queue->queueSize);
+
+    /* A single device-writable descriptor, no chain (§2.7.5): one buffer,
+     * one event. The slot belongs to the caller for the device's lifetime,
+     * so it is written in place rather than taken from the free list. */
+    VIRTQ_DESC *descriptor = &queue->desc[descriptorIndex];
+    descriptor->addr = physical;
+    descriptor->len = length;
+    descriptor->flags = VIRTQ_DESC_F_WRITE;
+    descriptor->next = 0;
+
+    /* Publish: ring entry, barrier, idx (§2.7.13.2-.3; the §2.7.13.3.1
+     * barrier orders the descriptor and ring stores before the idx store
+     * the device reads). */
+    queue->avail->ring[queue->avail->idx % queue->queueSize] = descriptorIndex;
+    VioMemoryBarrier();
+    queue->avail->idx++;
+}
+
+void VioNotifyQueue(VIO_VIRTQUEUE *queue)
+{
+    /* Order the avail->idx store before the notify the device reacts to. */
+    VioMemoryBarrier();
+    /* §4.1.5.2: write the 16-bit virtqueue index to the notify address. */
+    *queue->notify = queue->queueIndex;
+}
+
+int VioTryPopUsed(VIO_VIRTQUEUE *queue, uint16_t *idOut, uint32_t *lengthOut)
+{
+    if (queue->used->idx == queue->lastUsedIdx)
+    {
+        return 0;
+    }
+    /* The device writes the used element before advancing used->idx
+     * (§2.7.8.2), so a barrier after observing the new idx orders our read
+     * of the element after the read of idx that revealed it. */
+    VioMemoryBarrier();
+    VIRTQ_USED_ELEM *element = &queue->used->ring[queue->lastUsedIdx % queue->queueSize];
+    *idOut = (uint16_t)element->id;
+    *lengthOut = element->len;
+    queue->lastUsedIdx++;
+    return 1;
+}
