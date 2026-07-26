@@ -1008,7 +1008,12 @@ static void reap_thread_locked( struct prsk_thread_record *record )
         free_msg_queue( thread );
         thread->queue = NULL;
     }
-    if (thread->desktop_users > 0) release_thread_desktop( thread, 1 );
+    /* Unconditional, as in cleanup_thread (server/thread.c) -- the helper
+     * guards itself on thread->desktop. Gating it on desktop_users (usually
+     * 0; it counts temporary desktop references) skipped the removal, and a
+     * freed thread stayed linked on desktop->threads for the next reap's
+     * remove_desktop_thread to walk into. */
+    release_thread_desktop( thread, 1 );
     current = previous == thread ? NULL : previous;
 
     list_remove( &thread->proc_entry );
@@ -1046,6 +1051,12 @@ void prsk_reap_client( struct prsk_client *client )
     close_process_desktop( client->process );
     destroy_process_classes( client->process );
     free_process_user_handles( client->process );
+    /* The subset of process_destroy (server/process.c) that applies here,
+     * because this build's process ops end in no_destroy: the rawinput list
+     * is GLOBAL, and a freed process left on it is a dangling entry the next
+     * set_rawinput_process walks into. */
+    list_remove( &client->process->rawinput_entry );
+    free( client->process->rawinput_devices );
     if (client->process->handles)
     {
         release_object( client->process->handles );
