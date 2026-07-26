@@ -1015,6 +1015,32 @@ type (Art. 4).
 so the conviction is that a key injected by QEMU's own input layer (QMP `send-key`) comes back out
 of the read path as `EV_KEY`/`KEY_A` press-then-release.
 
+### `\Device\Input1` (GUI-4)
+
+**The pointer stream — QEMU's `virtio-tablet-pci` — under the same contract.** Everything the
+Input0 section pins holds per stream: verbatim `virtio_input_event` records, blocking whole-event
+reads, one exclusive reader, polled, no output path. The tablet was chosen over a relative mouse
+because its coordinates are absolute: a QMP-injected position arrives verbatim (the pinned QEMU's
+`qmp_input_send_event` does not scale abs values), so a dropped event cannot skew every later
+position the way a lost relative delta would — the difference between a convictable test (Art. 6)
+and a flaky one.
+
+**Which function is the pointer is the device's own claim.** The instance whose `EV_BITS` config
+advertises `EV_ABS` is the pointer (virtio 1.2 cs01 §5.8.5.1: an unsupported select/subsel pair
+reads back size 0, which the pinned QEMU implements as a memset). PCI enumeration order decides
+nothing, so identity survives a reordered command line.
+
+**One ioctl, `IOCTL_PRSHID_GET_ABS_INFO`** (`drivers/hidproto.h`), reporting the ABS_X/ABS_Y
+min/max the device published — verbatim, cached at init, the `IOCTL_PRSFB_GET_MODE` precedent.
+Events are still untranslated and unscaled: scaling to screen pixels is user mode's, exactly as
+scancode translation is. The keyboard keeps no `DeviceControl` op at all, so its pinned refusal
+shape never shifts. **`FileFsDeviceInformation` answers `FILE_DEVICE_MOUSE`**, generated (Art. 4).
+
+**The G5 adaptation, restated for the pointer:** no oracle can have `\Device\Input1`, so the
+conviction is that QMP-injected `input-send-event` abs moves and button presses come back out of
+the read path as `EV_ABS`/`BTN_LEFT` with the injected values, and downstream that the gui4 leg's
+click/drag verdicts and screendumps hold (`tests/run/run.sh gui4`).
+
 ## GUI-2 notes (win32u in-process)
 
 GUI-2 runs win32u's implementation and the pinned wineserver's GUI object model inside the

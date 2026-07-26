@@ -1,13 +1,17 @@
-/* drivers/hid.c — \Device\Input0, the raw input stream (GUI-1, HACK-002).
+/* drivers/hid.c — \Device\Input0 and \Device\Input1, the raw input streams
+ * (GUI-1; the pointer joined at GUI-4; HACK-002).
  *
  * Reads deliver virtio-input events verbatim (drivers/hidproto.h). There is
  * no translation here on purpose: any mapping from scancode to character is
  * a keyboard layout, and a layout belongs in user32 above the boundary, not
- * in a driver below it.
+ * in a driver below it. The same rule keeps pointer coordinates raw — the
+ * one thing the pointer device answers beyond events is its own ABS_INFO
+ * range, verbatim, through a single ioctl, so scaling lives in user mode
+ * and no QEMU constant is baked on either side.
  *
  * HACK-002 (docs/10): NT routes raw input through win32k and csrss into the
  * input queue, and route (a) (docs/07) has neither, so the display backend
- * needs a raw event source. Like \Device\Fb0 this is a new device at the
+ * needs raw event sources. Like \Device\Fb0 these are new devices at the
  * OUTSIDE of the boundary and nothing else -- no Nt* call changes shape
  * (Art. 2's GUI exception), and deleting drivers/hid.*, drivers/hidproto.h,
  * the Makefile line and the HidInitialize() call restores the pre-GUI
@@ -20,25 +24,42 @@
 #include "drivers/hid.h"
 #include "drivers/hidproto.h"
 #include "drivers/virtio/input.h"
+#include "kernel/init/panic.h"
 #include "kernel/io/io.h"
 #include "kernel/io/vfs.h"
 #include "kernel/ke/ke.h"
+#include "kernel/syscall/syscall.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "abi/ntstatus.h"
 
-/* One global open context (the CondrvSerialFcb shape): the Io close hooks
- * key off a non-NULL fsContext and a valid IO_FCB, and the share-access
- * engine needs somewhere to keep this device's one open's slots. */
-static IO_FCB HidInputFcb;
+/* One stream = one published device over one virtio-input instance. The
+ * FCB is the CondrvSerialFcb shape: the Io close hooks key off a non-NULL
+ * fsContext and a valid IO_FCB, and the share-access engine needs somewhere
+ * to keep this device's one open's slots. Handlers find their stream
+ * through file->device->context (one publication path, G10/Art. 11). */
+typedef struct HID_STREAM
+{
+    IO_FCB fcb;
+    VIO_INPUT_INSTANCE *source;
+    const WCHAR *queryName; /* the QueryName answer, L"\\Input0" shape */
+} HID_STREAM;
+
+static HID_STREAM HidKeyboardStream;
+static HID_STREAM HidPointerStream;
+
+static HID_STREAM *HidStreamFromFile(PFILE_OBJECT file)
+{
+    return (HID_STREAM *)file->device->context;
+}
 
 static NTSTATUS HidInputCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
                                PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess,
                                ULONG shareAccess, ULONG fileAttributes, ULONG disposition,
                                ULONG options, ULONG_PTR *information)
 {
-    (void)device;
+    HID_STREAM *stream = (HID_STREAM *)device->context;
     (void)relativeTo;
     (void)fileAttributes;
     (void)disposition;
@@ -48,21 +69,21 @@ static NTSTATUS HidInputCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICO
         return STATUS_OBJECT_NAME_NOT_FOUND; /* the device has no namespace */
     }
 
-    /* Exactly one reader: two opens of one event stream would each see an
-     * arbitrary half of it, which is a data race dressed as a feature.
-     * Enforced through the existing share engine rather than a private
-     * flag (G10/Art. 11) -- the Io layer releases the slots on close
-     * (IopCloseFileObject), so this device inherits that for free. */
-    NTSTATUS status = IoCheckShareAccess(grantedAccess, shareAccess, &HidInputFcb);
+    /* Exactly one reader per stream: two opens of one event stream would
+     * each see an arbitrary half of it, which is a data race dressed as a
+     * feature. Enforced through the existing share engine rather than a
+     * private flag (G10/Art. 11) -- the Io layer releases the slots on
+     * close (IopCloseFileObject), so this device inherits that for free. */
+    NTSTATUS status = IoCheckShareAccess(grantedAccess, shareAccess, &stream->fcb);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    IoSetShareAccess(grantedAccess, shareAccess, &HidInputFcb);
+    IoSetShareAccess(grantedAccess, shareAccess, &stream->fcb);
     file->shareCounted = TRUE;
 
-    file->fsContext = &HidInputFcb;
-    file->fcb = &HidInputFcb;
+    file->fsContext = &stream->fcb;
+    file->fcb = &stream->fcb;
     file->isDirectory = FALSE;
     *information = FILE_OPENED;
     return STATUS_SUCCESS;
@@ -88,9 +109,12 @@ static NTSTATUS HidInputGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
 static NTSTATUS HidInputQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity,
                                   ULONG *lengthOut)
 {
-    (void)file;
-    static const WCHAR name[] = WSTR("\\Input0");
-    ULONG full = sizeof(name) - sizeof(WCHAR);
+    const WCHAR *name = HidStreamFromFile(file)->queryName;
+    ULONG full = 0;
+    while (name[full / sizeof(WCHAR)] != 0)
+    {
+        full += sizeof(WCHAR);
+    }
     *lengthOut = full;
     ULONG copy = full <= capacity ? full : capacity;
     memcpy(buffer, name, copy);
@@ -101,7 +125,7 @@ static NTSTATUS HidInputQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capaci
  * whatever else the eventq already holds. Whole events only. */
 static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
 {
-    (void)file;
+    HID_STREAM *stream = HidStreamFromFile(file);
     if (length == 0)
     {
         *infoOut = 0;
@@ -119,7 +143,7 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
     for (;;)
     {
         ULONG got = 0;
-        while (got < capacity && VioInputTryReadEvent(VioInputKeyboard(), &out[got]))
+        while (got < capacity && VioInputTryReadEvent(stream->source, &out[got]))
         {
             got++;
         }
@@ -142,11 +166,44 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
     }
 }
 
-/* No Write and no DeviceControl: the statusq that would carry output to
- * the device is unconfigured (drivers/virtio/input.c), and there is no
- * ioctl verb to implement. Their absence makes the Io layer refuse with
- * its own distinct status, which is the honest answer -- a stub that
- * accepted a write and dropped it would be the bug Art. 12 is about. */
+/* The pointer's one verb: its ABS_INFO ranges, as the device published
+ * them (cached at init; this path never touches MMIO). */
+static NTSTATUS HidPointerDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
+                                        ULONG inputLength, void *output, ULONG outputLength,
+                                        ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
+{
+    HID_STREAM *stream = HidStreamFromFile(file);
+    (void)input;
+    (void)inputLength;
+    (void)request;
+
+    if (code == IOCTL_PRSHID_GET_ABS_INFO)
+    {
+        if (outputLength < sizeof(HID_ABS_INFO))
+        {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        HID_ABS_INFO info;
+        info.minX = stream->source->absX.min;
+        info.maxX = stream->source->absX.max;
+        info.minY = stream->source->absY.min;
+        info.maxY = stream->source->absY.max;
+        memcpy(output, &info, sizeof(info));
+        *infoOut = sizeof(info);
+        return STATUS_SUCCESS;
+    }
+
+    /* Art. 12: name the refusal on serial and return the refusal status —
+     * never a no-op success for a verb this device does not have. */
+    DbgPrint("hid: unimplemented pointer ioctl %#lx\n", (unsigned long)code);
+    return KiPinnedNotImplemented();
+}
+
+/* No Write and no DeviceControl on the keyboard: the statusq that would
+ * carry output to the device is unconfigured (drivers/virtio/input.c), and
+ * there is no ioctl verb to implement. Their absence makes the Io layer
+ * refuse with its own distinct status, which is the honest answer -- a stub
+ * that accepted a write and dropped it would be the bug Art. 12 is about. */
 static const IO_VFS_OPS HidInputOps = {
     .Create = HidInputCreate,
     .Cleanup = HidInputCleanup,
@@ -156,16 +213,47 @@ static const IO_VFS_OPS HidInputOps = {
     .Read = HidInputRead,
 };
 
+/* The pointer stream: the same contract plus the one abs-info verb. Still
+ * no Write (the statusq argument holds for both devices). */
+static const IO_VFS_OPS HidPointerOps = {
+    .Create = HidInputCreate,
+    .Cleanup = HidInputCleanup,
+    .Close = HidInputClose,
+    .GetInfo = HidInputGetInfo,
+    .QueryName = HidInputQueryName,
+    .Read = HidInputRead,
+    .DeviceControl = HidPointerDeviceControl,
+};
+
 void HidInitialize(void)
 {
-    if (!VioInputKeyboard())
+    if (VioInputKeyboard())
+    {
+        static const WCHAR keyboardName[] = WSTR("\\Input0");
+        IopInitializeFcb(&HidKeyboardStream.fcb);
+        HidKeyboardStream.source = VioInputKeyboard();
+        HidKeyboardStream.queryName = keyboardName;
+        IoPublishDevice(WSTR("\\Device\\Input0"), &HidInputOps, &HidKeyboardStream,
+                        FILE_DEVICE_KEYBOARD);
+        DbgPrint("hid: \\Device\\Input0 published\n");
+    }
+    else
     {
         DbgPrint("hid: no virtio-input keyboard; \\Device\\Input0 not published\n");
-        return;
     }
-    IopInitializeFcb(&HidInputFcb);
-    /* GetFileType maps FILE_DEVICE_KEYBOARD to FILE_TYPE_CHAR (Wine
-     * dlls/kernelbase/file.c switches on FileFsDeviceInformation). */
-    IoPublishDevice(WSTR("\\Device\\Input0"), &HidInputOps, 0, FILE_DEVICE_KEYBOARD);
-    DbgPrint("hid: \\Device\\Input0 published\n");
+
+    if (VioInputPointer())
+    {
+        static const WCHAR pointerName[] = WSTR("\\Input1");
+        IopInitializeFcb(&HidPointerStream.fcb);
+        HidPointerStream.source = VioInputPointer();
+        HidPointerStream.queryName = pointerName;
+        IoPublishDevice(WSTR("\\Device\\Input1"), &HidPointerOps, &HidPointerStream,
+                        FILE_DEVICE_MOUSE);
+        DbgPrint("hid: \\Device\\Input1 published (pointer)\n");
+    }
+    else
+    {
+        DbgPrint("hid: no virtio-input pointer; \\Device\\Input1 not published\n");
+    }
 }
