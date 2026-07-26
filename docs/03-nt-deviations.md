@@ -1050,6 +1050,22 @@ thread death, which it learns about from the socket closing; there is no socket 
 the GUI process's thread count is bounded by what the app creates. A leak, bounded and
 deliberate, to be closed when GUI-3 gives the server a real thread lifetime.
 
+**The desktop is always forced, and its user entries look foreign.** On Wine the desktop
+and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window` without `force` waits
+for it, and every app process sees the windows' user entries carry a foreign pid, which is
+what routes win32u onto its `WND_DESKTOP` special cases. There is one GUI process here and
+explorer is GUI-6, so the shim sets `force` on every `get_desktop_window` (the same server
+path the forcing caller takes — win32u never tries to launch an explorer.exe the image does
+not carry) and then clears the owner ids on the two entries so they read as foreign
+(`shim.c detach_user_entry`; the server side is already detached,
+`server/window.c detach_window_thread`). Without that second half the entries kept our own
+pid, win32u went looking for a client-side WND that was never made, `GetWindowLong` on the
+desktop answered style 0, and the first `ShowWindow` took the invisible-parent shortcut —
+the window turned visible without ever being exposed, and nothing painted. The desktop
+window's rects, which explorer would size, come from winefb.drv's `pSetDesktopWindow`
+sizing it to the scanout — the same repair `X11DRV_SetDesktopWindow` makes when it finds
+them uninitialized.
+
 **`HKU\<sid>` exists from boot.** win32u's `font_init` opens
 `\Registry\User\S-1-5-21-0-0-0-1000` (the fixed Se identity) and loads no fonts at all when
 it is absent; the oracle's wineserver creates `HKU\<sid>` at prefix init. `CmInitialize`
