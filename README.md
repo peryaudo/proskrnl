@@ -319,29 +319,32 @@ no mouse and no cursor (GUI-4), one surface flush with last-writer-wins
 (the compositor is GUI-4), and winemine idles after its first paint, so
 the leg screendumps that settled first frame.
 
-**GUI-3 — wineserver-lite becomes a process — is in progress**, on the
-`milestone-gui3` branch, and its leg (`tests/run/run.sh gui3`) is written
-and red. What stands up: the **font-metrics oracle** (the pinned Wine is
-now built `--with-freetype` against the pinned FreeType, so the oracle and
-the target answer font questions from the same code — `tests/gdi/fontsmoke.c`
-guards the dlopen that would otherwise degrade to no fonts in silence); and
-the **process boundary** itself — `wineserver-lite.exe` is a real process,
-linked a second time over the *same* server objects `win32u.dll` uses, with
-clients reaching it through a shared section plus kernel events. Two GUI
-processes attach to it and their requests arrive intact; clients are real
-records with the kernel as the only source of identity, window stations
-resolve per session, and a client's death is learned from its process
-handle rather than from a socket. The kernel grew cross-process
-`NtDuplicateObject` (pinned by `sem_ob/dup_cross_process`) to make the
-handle hand-offs possible. **Not yet:** connect-time desktop inheritance —
-wineserver hands a connecting process its window station and desktop before
-it runs a line, and without that step a client's first thread has no
-desktop, which makes `create_desktop` report failure *after* creating the
-desktop. That single gap is what keeps the leg red; the diagnosis and the
-measurements behind it are in `docs/03` "Connect-time desktop inheritance".
+**GUI-3 complete — two GUI processes over wineserver-lite**
+(`tests/run/run.sh gui3`: `FindWindow` across the boundary, a cross-process
+`SendMessage` proved by its answer, one z-order over both processes, the
+foreground moving between them, plus the cross-thread case — and both
+windows' pixels verified on one scanout). The **font-metrics oracle**: the
+pinned Wine is now built `--with-freetype` against the pinned FreeType, so
+the oracle and the target answer font questions from the same code —
+`tests/gdi/fontsmoke.c` guards the dlopen that would otherwise degrade to
+no fonts in silence. The **process boundary**: `wineserver-lite.exe` is a
+real process, linked a second time over the *same* server objects
+`win32u.dll` uses, with clients reaching it through a shared section plus
+kernel events; clients are real records with the kernel as the only source
+of identity, window stations resolve per session, and a client's death is
+learned from its process handle rather than from a socket. The kernel grew
+cross-process `NtDuplicateObject` (pinned by `sem_ob/dup_cross_process`) to
+make the handle hand-offs possible. The suspected missing "connect step"
+turned out to be the oracle's own first-process behaviour; the real stopper
+was the transport dropping the reply body on error, against Wine's wire
+contract (`docs/03` "Desktop inheritance"). **Not yet:** connect-time
+handle inheritance for a process spawned *by* a GUI process (first relevant
+when explorer launches things, GUI-6), and the thread-record residual for
+violently-killed threads (`docs/03`).
 
-Also next: **CUI-5** (Io completion, led by file
-rename) through **CUI-7**,
+Also next: **GUI-4** — compositing, input routing and the cursor (the
+pointer device joins HACK-002 there); or **CUI-5** (Io completion, led by
+file rename) through **CUI-7**,
 the measured syscall gap and its plan (`docs/16-syscall-status.md`,
 `docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
 CUI-5, now its own path); either way, growing the winetest manifest as its
@@ -365,7 +368,7 @@ tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-su
 tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill, a job tool
 tests/run/run.sh gui        # GUI-1: framebuffer screendump + an injected key
 tests/run/run.sh gui2       # GUI-2: winemine on screen (screendump differential)
-tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite (in progress)
+tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite
 ```
 
 ## License
