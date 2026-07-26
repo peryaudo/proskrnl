@@ -922,8 +922,8 @@ and each is logged in `docs/10-hacks-ledger.md`:
   a window. Retired when the GUI-1+ input/display path exists.
 - **`\Device\Fb0`** (HACK-001, GUI-1, **built**) — map the framebuffer to user mode; NT would
   own this via a display driver behind win32k. See "GUI-1 notes" below.
-- **`\Device\Input0`** (HACK-002) — raw input stream to user mode; NT routes this through
-  win32k/csrss.
+- **`\Device\Input0`** (HACK-002, GUI-1, **built**) — raw input stream to user mode; NT routes
+  this through win32k/csrss. See "GUI-1 notes" below.
 - **wineserver-lite as a desktop server** — a user-mode server holding desktop state. Not
   a hack against NT so much as a return to NT 3.1's actual architecture (see `docs/07`).
 
@@ -971,6 +971,40 @@ that report (Art. 6: a sanitizer-quiet kernel convicts nothing; an independent r
 contract itself is pinned in `drivers/fbproto.h` and in this section, which is the same shape
 HACK-004's console leg uses. No golden image at GUI-1 — a byte-compared PPM would break on any
 QEMU rendering change without saying anything about the kernel.
+
+### `\Device\Input0`
+
+**Events are the wire format, untranslated.** A read returns whole `virtio_input_event` records
+(`drivers/hidproto.h`) — Linux evdev type/code/value, exactly as the device produced them. There
+is deliberately no scancode-to-character mapping in the driver: that mapping is a keyboard
+layout, and a layout belongs in user32 above the boundary. (Contrast the M9 conhost glue, which
+knows the ASCII slice of US-layout `VkKeyScanW` only because HACK-004 gave it no alternative.)
+
+**Blocking-only, whole events, one reader.** A read blocks until at least one event is available;
+there is no peek/poll mode and no ioctl, because nothing has needed one — GUI-3's unified waiting
+lives in user mode (`docs/07`). A buffer smaller than one event returns
+`STATUS_INVALID_PARAMETER` rather than a silent zero-length read the caller would spin on. The
+device opens exclusively (`STATUS_SHARING_VIOLATION` on a second open), enforced through the
+existing `IoCheckShareAccess`/`IoSetShareAccess` engine rather than a private flag (G10/Art. 11),
+so the Io layer's ordinary close path releases it.
+
+**Polled, not interrupt-driven.** `kernel/ke/irq.c` routes no device vectors, and this driver
+does not add any: the read drains the eventq and, finding nothing, naps a millisecond — the shape
+`CondrvSerialRead` already uses for the serial console. Buffering is the device's: QEMU's eventq
+holds 64 single-event buffers and drops whole new reports when full (pinned tree
+`hw/input/virtio-input.c` `virtio_input_send`), so there is no second ring inside the kernel to
+size, and the driver's only obligation is to re-post each buffer as it consumes it.
+
+**No output path.** virtio-input's statusq (§5.8.2) carries LED and force-feedback output *to*
+the device; it is left unconfigured and says so on serial, and `\Device\Input0` correspondingly
+has no `Write` or `DeviceControl` op, so the Io layer refuses those verbs outright (Art. 12).
+
+**`FileFsDeviceInformation` answers `FILE_DEVICE_KEYBOARD`**, generated like every other device
+type (Art. 4).
+
+**The G5 adaptation** is the framebuffer's, applied to input: no oracle can have `\Device\Input0`,
+so the conviction is that a key injected by QEMU's own input layer (QMP `send-key`) comes back out
+of the read path as `EV_KEY`/`KEY_A` press-then-release.
 
 ## WOW64 (not a deviation)
 

@@ -53,13 +53,25 @@ refuses through `KiPinnedNotImplemented` (Art. 12).
 ## HACK-002: `\Device\Input0`
 
 ```
-Status:     proposed
+Status:     active (GUI-1: virtio-input keyboard, eventq polled from a
+            blocking read -- no IRQ; statusq unconfigured; exclusive open)
 Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
-Scope:      drivers/hid.c ; user/wine/winefb.drv/input.c
+Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
+            drivers/virtio/input.c ; drivers/virtio/input.h ;
+            kernel/io/file.c + kernel/init/main.c (the two init calls) ;
+            user/wine/winefb.drv/input.c (GUI-2)
 Retirement: if input routing moves into a kernel win32k (route (b)).
 ```
+
+Reads deliver `virtio_input_event` records verbatim (`drivers/hidproto.h`):
+no scancode translation, because translation is a keyboard layout and a
+layout belongs in user32 above the boundary. Blocking-only, one reader at a
+time (enforced through the existing Io share engine, not a private flag),
+no write path and no ioctl — the statusq that would carry LED output to the
+device is deliberately unconfigured, and the missing ops make the Io layer
+refuse rather than accept-and-drop (Art. 12).
 
 ## HACK-003: wineserver-lite as a user-mode desktop server
 

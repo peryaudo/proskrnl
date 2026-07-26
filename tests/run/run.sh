@@ -824,7 +824,10 @@ gui() {
     local dir="$ROOT/build/tests"
     local sock="$dir/gui.sock" log="$dir/gui.log" ppm="$dir/gui.ppm"
     mkdir -p "$dir"
-    rm -f "$sock" "$ppm"
+    # The log too: qemu.sh truncates it, but not before this function starts
+    # polling it, and a previous run's markers would satisfy every await
+    # instantly -- screendumping a framebuffer the guest has not painted yet.
+    rm -f "$sock" "$ppm" "$log"
 
     # The guest never powers itself off (it must hold the painted frame for
     # the screendump), so this leg always ends the guest itself.

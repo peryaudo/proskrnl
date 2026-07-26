@@ -31,6 +31,7 @@
 #include "fs/npfs/npfs.h"
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
+#include "drivers/hid.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "kernel/init/verify.h"
@@ -1022,6 +1023,10 @@ static void KiTestMainThread(void *context)
     /* GUI-1: \Device\Fb0 over the framebuffer Limine set (HACK-001). No
      * framebuffer means no device — nothing else in the boot cares. */
     FbInitialize();
+
+    /* GUI-1: \Device\Input0 over virtio-input (HACK-002). No input device
+     * means no device published -- an open then fails honestly. */
+    HidInitialize();
 
     /* M8: bring up the registry — \Registry + the SYSTEM hive from the boot
      * volume (an absent/invalid hive starts empty: first boot). Needs the
