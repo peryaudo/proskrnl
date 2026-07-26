@@ -124,6 +124,14 @@ jobs:
       - name: CUI-4 Ctrl+C, tasklist/taskkill, job tool (tests/run/run.sh procs)
         run: tests/run/run.sh procs
 
+      # GUI-1: the verdict is a picture. The guest paints through
+      # \Device\Fb0 and reports what it painted; the pixels come back out of
+      # QEMU's screendump and a QMP-injected key comes back out of
+      # \Device\Input0 (docs/03 "GUI-1 notes" for why this stands in for an
+      # oracle leg).
+      - name: GUI-1 framebuffer screendump + key input (tests/run/run.sh gui)
+        run: tests/run/run.sh gui
+
       # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
       # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
       # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.

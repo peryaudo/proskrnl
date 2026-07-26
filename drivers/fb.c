@@ -52,6 +52,12 @@
 __attribute__((used, section(".limine_requests"))) static volatile struct limine_framebuffer_request
     FbLimineRequest = {.id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0, .response = 0};
 
+/* fbproto.h states the memory model to its clients without dragging the
+ * Limine header into a PE build, so pin the two together here — the one
+ * place both are visible — rather than trusting a copied 1 to stay right. */
+_Static_assert(FB_MEMORY_MODEL_RGB == LIMINE_FRAMEBUFFER_RGB,
+               "the \\Device\\Fb0 memory model is Limine's, passed through");
+
 /* --- driver state ------------------------------------------------------------ */
 
 static FB_MODE_INFO FbMode;
