@@ -496,6 +496,82 @@ static void KiRunGui2(void)
              (unsigned long)exitStatus);
 }
 
+/* wineserver-lite (HACK-003) is a system service, not a GUI app: it must be
+ * running before ANYTHING that loads win32u, because every such process is
+ * one of its clients. CUI-1's firstboot is exactly such a process --
+ * wineboot loads user32 -> win32u -- so starting the server with the GUI
+ * clients at the end of boot left two processes waiting out the client's
+ * connect timeout for a server that did not exist yet. Started here, beside
+ * conhost, for the same reason and with the same fire-and-forget contract:
+ * the references are held forever because the process never exits.
+ *
+ * Probe/skip on the image file, so this is a no-op on every other image. */
+static void KiStartWineserverLite(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS status =
+        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"), &probe);
+    if (!NT_SUCCESS(status))
+    {
+        return; /* no server on this image: win32u stays in-process */
+    }
+    ObDereferenceObject(probe);
+
+    static PEPROCESS KiWineserverProcess;
+    static PETHREAD KiWineserverThread;
+    status = PsCreateWineProcess(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"),
+                                 "C:\\windows\\system32\\wineserver-lite.exe", FALSE,
+                                 &KiWineserverProcess, &KiWineserverThread);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] gui3 server FAIL (create=%#lx)\n", (unsigned long)status);
+    }
+}
+
+/* The GUI-3 acceptance (docs/02 "two GUI processes run at once; Z-order,
+ * focus, cross-thread SendMessage, FindWindow all behave"): wineserver-lite
+ * as a PROCESS (HACK-003) with two GUI clients above it, each an ordinary
+ * Wine GUI app over the same unmodified user32/gdi32/win32u stack GUI-2
+ * runs. Present only on the gui3 image (probe/skip like the others).
+ *
+ * Order matters only in that the server should get a head start; it is not
+ * relied on. The clients wait for the server's ready event before they
+ * touch the transport (user/wine/server/call.c), and gui3b waits for
+ * gui3a's window with FindWindow, so a slow start under TCG costs time
+ * rather than a false verdict.
+ *
+ * The server and gui3a are fire-and-forget, as conhost is: both are meant
+ * to still be running when the harness screendumps. gui3b is the one waited
+ * on -- it prints the verdict and then parks. */
+static void KiRunGui3(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui3a.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return; /* not a gui3 image */
+    }
+    ObDereferenceObject(probe);
+
+    /* The server is already up: it is started before firstboot, because
+     * anything that loads win32u is a client and would otherwise wait for a
+     * server that does not exist yet (KiStartWineserverLite). */
+    static PEPROCESS KiGui3aProcess;
+    static PETHREAD KiGui3aThread;
+    NTSTATUS status = PsCreateWineProcess(WSTR("\\??\\C:\\gui3a.exe"), "C:\\gui3a.exe", FALSE,
+                                          &KiGui3aProcess, &KiGui3aThread);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] gui3 A FAIL (create=%#lx)\n", (unsigned long)status);
+        return;
+    }
+
+    NTSTATUS exitStatus = 0;
+    status = PsRunWineImage(WSTR("\\??\\C:\\gui3b.exe"), "C:\\gui3b.exe", FALSE, &exitStatus);
+    DbgPrint("[KTEST] gui3 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+}
+
 /* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
  * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
  * cmd.exe on the serial console, driven by tests/run/console_expect.py —
@@ -1067,6 +1143,10 @@ static void KiTestMainThread(void *context)
     /* M9: the console server, before anything that may use a console. */
     KiStartConhost();
 
+    /* GUI-3 image only: the desktop server, before any client can load
+     * win32u (firstboot's wineboot is one). */
+    KiStartWineserverLite();
+
     /* CUI-1: firstboot — wineboot --init populates the machine state before
      * the console/test flows, so cmd.exe and the test sweeps below see the
      * wine.inf registry payload. Probe/skip: absent wineboot.exe is a no-op. */
@@ -1192,6 +1272,10 @@ static void KiTestMainThread(void *context)
      * arrangement as GUI-1 above -- last, and normally not returning, so
      * the host can screendump a live window. */
     KiRunGui2();
+
+    /* GUI-3 image only: two GUI processes over wineserver-lite. Same
+     * arrangement again -- last, and normally not returning. */
+    KiRunGui3();
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran

@@ -849,9 +849,13 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
     else if (current->error && current->error != STATUS_PENDING)
         /* PENDING is not a swallowed failure: it is get_message's ordinary
          * empty-queue reply (server/queue.c), and reporting it printed one
-         * line per message-loop iteration. */
-        prsk_log( "[KTEST] wineserver-lite: %s failed %08x\n", prsk_req_names[req],
-                  current->error );
+         * line per message-loop iteration.
+         *
+         * The pid/tid are here because with more than one client "which
+         * process asked" is the first question every failure raises, and
+         * without it the log says a request failed without saying whose. */
+        prsk_log( "[KTEST] wineserver-lite: %s failed %08x (pid=%u tid=%u)\n", prsk_req_names[req],
+                  current->error, (unsigned)current->process->id, (unsigned)current->id );
 
     reply.reply_header.error = current->error;
     reply.reply_header.reply_size = current->reply_size;
@@ -880,6 +884,7 @@ static void fixup_request_before( struct __server_request_info *info, enum reque
 {
     if (!strcmp( prsk_req_names[req], "get_desktop_window" ))
         info->u.req.get_desktop_window_request.force = 1;
+
 }
 
 /* On Wine the desktop and HWND_MESSAGE windows belong to EXPLORER, so every

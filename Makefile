@@ -866,6 +866,50 @@ gui2-img: $(IMG_GUI2)
 .PHONY: gui2-img
 
 # ---------------------------------------------------------------------------
+# GUI-3 (docs/02): wineserver-lite as a process, with TWO GUI clients.
+#
+# The clients are purpose-built rather than stock Wine applets: the verdict
+# is what they REPORT (FindWindow found it, the SendMessage answer came back
+# derived, the z-order flipped, the foreground moved), and an applet cannot
+# report. They link the pinned user32/gdi32 import libs and the ntapi
+# harness, so they are ordinary Wine GUI apps over the same unmodified stack
+# GUI-2 runs -- nothing about them is privileged.
+GUI3_LIBS := $(WINE_PE)/user32/x86_64-windows/libuser32.a \
+             $(WINE_PE)/gdi32/x86_64-windows/libgdi32.a \
+             $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+             $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+             $(WINE_PE)/ntdll/x86_64-windows/libntdll.a
+
+GUI3A := $(BUILD)/modules/gui3a.exe
+GUI3B := $(BUILD)/modules/gui3b.exe
+
+$(BUILD)/modules/gui3%.exe: tests/gui/gui3%.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h \
+        $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
+	    tests/gui/gui3$*.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
+
+# The gui2 payload minus winemine, plus the server and the two clients.
+GUI3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             win:$(GUI3A)=gui3a.exe \
+             win:$(GUI3B)=gui3b.exe
+
+IMG_GUI3 := $(BUILD)/proskrnl-gui3.hdd
+$(IMG_GUI3): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(WINESERVER_LITE) $(GUI3A) $(GUI3B) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI3) $(MODULE_SPECS) $(WINFILES) $(GUI3FILES)
+
+gui3-img: $(IMG_GUI3)
+.PHONY: gui3-img
+
+# ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
 # the curated manifest (tests/winetest/manifest.txt) on BOTH the oracle and

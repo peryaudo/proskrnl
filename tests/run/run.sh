@@ -1010,6 +1010,69 @@ gui2() {
     return 0
 }
 
+# GUI-3 (docs/02 "two GUI processes run at once; Z-order, focus, cross-thread
+# SendMessage, FindWindow all behave"): wineserver-lite as a PROCESS with two
+# GUI clients above it. Same shape as gui2 -- this function owns QEMU's
+# lifetime so the screendump can be taken while the windows are still up --
+# but the verdict has two halves: what the guests REPORTED about each
+# behaviour, and the pixels proving both windows really reached the scanout
+# (tests/gui/check_gui3.py).
+gui3() {
+    make -C "$ROOT" gui3-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui3.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui3.sock" log="$dir/gui3.log" ppm="$dir/gui3.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm" "$log"
+
+    # More memory than gui2: no COW, and this image runs THREE Wine processes
+    # (the server plus two clients), each copying the images it maps.
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
+        TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI3-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui3_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui3: FAIL ($1; see $log) =="
+        return 1
+    }
+
+    if ! await '\[KTEST\] gui3 server READY'; then
+        gui3_fail "wineserver-lite never published its transport"; return 1
+    fi
+    if ! await '\[KTEST\] gui3 verdict (PASS|FAIL)'; then
+        gui3_fail "the second GUI process never reached a verdict"; return 1
+    fi
+    # Both clients park with their windows up; let the last paint settle on
+    # the scanout before dumping (the gui2 reasoning).
+    sleep 3
+
+    if ! python3 "$ROOT/tests/gui/qmpctl.py" "$sock" screendump "$ppm"; then
+        gui3_fail "screendump failed"; return 1
+    fi
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! python3 "$ROOT/tests/gui/check_gui3.py" --log "$log" --ppm "$ppm"; then
+        echo "== gui3: FAIL (behaviour or pixels; see $log) =="
+        return 1
+    fi
+    echo "== gui3: PASS (two GUI processes over wineserver-lite) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -1025,6 +1088,7 @@ case "$MODE" in
     tornwrite) tornwrite ;;
     gui)      gui ;;
     gui2)     gui2 ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2}" >&2
+    gui3)     gui3 ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3}" >&2
        exit 2 ;;
 esac
