@@ -51,29 +51,39 @@ returns a page cache whose frames are the scanout's physical pages, so
 `drivers/fbproto.h`; the mode ioctl is the only verb, and every other code
 refuses through `KiPinnedNotImplemented` (Art. 12).
 
-## HACK-002: `\Device\Input0`
+## HACK-002: `\Device\Input0` / `\Device\Input1`
 
 ```
 Status:     active (GUI-1: virtio-input keyboard, eventq polled from a
             blocking read -- no IRQ; statusq unconfigured; exclusive open;
-            GUI-2: read by winefb.drv's input thread, injected as scancodes)
+            GUI-2: read by winefb.drv's input thread, injected as scancodes;
+            GUI-4: a second virtio-input function -- QEMU's tablet -- joins
+            as \Device\Input1: same per-stream contract (verbatim events,
+            blocking, one exclusive reader), FILE_DEVICE_MOUSE, plus one
+            ioctl reporting the device's ABS_INFO range verbatim)
 Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
 Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
             drivers/virtio/input.c ; drivers/virtio/input.h ;
             kernel/io/file.c + kernel/init/main.c (the two init calls) ;
-            user/wine/winefb.drv/input.c (GUI-2)
+            user/wine/winefb.drv/input.c (GUI-2; GUI-4: + the pointer
+            reader) ; user/wine/winefb.drv/cursor.c (GUI-4)
 Retirement: if input routing moves into a kernel win32k (route (b)).
 ```
 
 Reads deliver `virtio_input_event` records verbatim (`drivers/hidproto.h`):
 no scancode translation, because translation is a keyboard layout and a
 layout belongs in user32 above the boundary. Blocking-only, one reader at a
-time (enforced through the existing Io share engine, not a private flag),
-no write path and no ioctl — the statusq that would carry LED output to the
-device is deliberately unconfigured, and the missing ops make the Io layer
-refuse rather than accept-and-drop (Art. 12).
+time per stream (enforced through the existing Io share engine, not a
+private flag), no write path — the statusq that would carry LED output to
+the device is deliberately unconfigured on both instances, and the missing
+ops make the Io layer refuse rather than accept-and-drop (Art. 12). The
+keyboard has no ioctl at all; the pointer has exactly one, answering the
+absolute-axis range the device itself published, so scaling lives in user
+mode and no QEMU constant is baked on either side. Which virtio function is
+the pointer is the device's own claim (its `EV_BITS` advertise `EV_ABS`),
+never PCI enumeration order.
 
 ## HACK-003: wineserver-lite as a user-mode desktop server
 
