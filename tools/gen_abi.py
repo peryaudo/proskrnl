@@ -915,7 +915,13 @@ def gen_ntioapi(wine: Path) -> str:
             "FILE_DEVICE_DISK",
             "FILE_DEVICE_DISK_FILE_SYSTEM",
             "FILE_DEVICE_FILE_SYSTEM",
+            # GUI-1: \Device\Input0 (HACK-002) and \Device\Fb0 (HACK-001)
+            # answer FileFsDeviceInformation with their real device type, and
+            # FILE_DEVICE_VIDEO is the CTL_CODE device field of the framebuffer
+            # ioctls (drivers/fbproto.h).
+            "FILE_DEVICE_KEYBOARD",
             "FILE_DEVICE_SERIAL_PORT",
+            "FILE_DEVICE_VIDEO",
         ],
     )
     # FileFsAttributeInformation.FileSystemAttributes bits: the kernel's FAT32
