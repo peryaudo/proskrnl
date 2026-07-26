@@ -130,6 +130,20 @@ void winefb_set_desktop_window( HWND hwnd )
             wine_server_call( req );
         }
         SERVER_END_REQ;
+
+        /* The desktop window is forced and foreign (docs/03 GUI-2 notes):
+         * no process runs its WndProc, so nothing would ever paint the
+         * desktop. winefb is its painter -- the same authority split as an
+         * X root window -- and paints it exactly once, here, in the first
+         * process, the same moment that sizes it. The uncover repair
+         * (blit.c) restores this color when a window moves away. The
+         * checkers sample the background rather than assume it; this line
+         * is what they sample against. */
+        winefb_fill_rect( &rect, WINEFB_DESKTOP_BG );
+        winefb_report( "[KTEST] gui2 desktop w=%u h=%u bg=%02x%02x%02x\n",
+                       (unsigned)winefb_scanout.mode.width, (unsigned)winefb_scanout.mode.height,
+                       GetRValue( WINEFB_DESKTOP_BG ), GetGValue( WINEFB_DESKTOP_BG ),
+                       GetBValue( WINEFB_DESKTOP_BG ) );
     }
 }
 

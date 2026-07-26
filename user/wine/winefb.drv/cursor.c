@@ -73,18 +73,6 @@ static struct
     UINT under[CURSOR_W * CURSOR_H];
 } cursor_state;
 
-/* Pack one 8-bit-per-channel color the way the scanout wants it -- the
- * same arithmetic blit.c's repack_rows uses, so the masks mean the same
- * thing in both places. */
-static UINT pack_pixel( UINT r, UINT g, UINT b )
-{
-    const FB_MODE_INFO *mode = &winefb_scanout.mode;
-
-    return ((r >> (8 - mode->redMaskSize)) << mode->redMaskShift) |
-           ((g >> (8 - mode->greenMaskSize)) << mode->greenMaskShift) |
-           ((b >> (8 - mode->blueMaskSize)) << mode->blueMaskShift);
-}
-
 static UINT *scanout_at( int x, int y )
 {
     return (UINT *)(winefb_scanout.pixels + (size_t)y * winefb_scanout.mode.pitch +
@@ -126,8 +114,8 @@ void winefb_cursor_update( int x, int y )
                 (size_t)cursor_state.w * 4 );
     cursor_state.saved = TRUE;
 
-    black = pack_pixel( 0x00, 0x00, 0x00 );
-    white = pack_pixel( 0xff, 0xff, 0xff );
+    black = winefb_pack_pixel( 0x00, 0x00, 0x00 );
+    white = winefb_pack_pixel( 0xff, 0xff, 0xff );
     for (row = 0; row < cursor_state.h; row++)
     {
         UINT *out = scanout_at( x, y + row );
