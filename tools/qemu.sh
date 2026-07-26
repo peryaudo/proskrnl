@@ -5,6 +5,11 @@
 #
 # macOS ships no `timeout`, so we use a portable background killer. On Apple
 # Silicon the x86-64 guest runs under TCG emulation (no HVF) — slower, correct.
+#
+# ACCEL=kvm|tcg forces the accelerator; the default is KVM when /dev/kvm is
+# usable, else TCG. KVM changes no guest-observable semantics the tests
+# grep for (the verdict still comes off the same serial log) — it only stops
+# emulating every guest instruction in software.
 set -uo pipefail
 
 IMG="${1:?usage: qemu.sh <hdd>}"
@@ -22,13 +27,41 @@ find_qemu() {
 }
 QEMU="${QEMU:-$(find_qemu)}"
 
-# TCG only gained x2APIC — the kernel's clock — in QEMU 9.0 (Ubuntu 24.04 LTS
-# ships 8.2). Fail fast instead of hanging silently in timer calibration.
-QEMU_MAJOR="$("$QEMU" --version | sed -n 's/.*version \([0-9]*\).*/\1/p' | head -1)"
-if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
-    echo "qemu.sh: QEMU $QEMU_MAJOR.x lacks TCG x2APIC (need >= 9.0, README \"Prerequisites\")" >&2
+# Pick the accelerator: `-accel kvm` needs a Linux host whose /dev/kvm this
+# user can open read-write — probing the open (not the mode bits) is what
+# catches the group-vs-ACL cases. KVM virtualizes the LAPIC in the host
+# kernel, so x2APIC — the kernel's clock — works even when the host's own
+# CPUID hides it (an AMD board left in xAPIC compat mode); +x2apic names the
+# dependency explicitly so QEMU complains instead of the guest panicking in
+# timer calibration if it ever cannot be offered.
+find_accel() {
+    if [[ "$(uname -s)" == Linux ]] && : 2>/dev/null <>/dev/kvm; then
+        echo kvm
+    else
+        echo tcg
+    fi
+}
+ACCEL="${ACCEL:-$(find_accel)}"
+case "$ACCEL" in
+kvm)
+    ACCEL_ARGS=(-accel kvm -cpu host,+x2apic)
+    ;;
+tcg)
+    # TCG only gained x2APIC in QEMU 9.0 (Ubuntu 24.04 LTS ships 8.2). Fail
+    # fast instead of hanging silently in timer calibration. Under KVM the
+    # LAPIC comes from the host kernel, so the floor is TCG-only.
+    QEMU_MAJOR="$("$QEMU" --version | sed -n 's/.*version \([0-9]*\).*/\1/p' | head -1)"
+    if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
+        echo "qemu.sh: QEMU $QEMU_MAJOR.x lacks TCG x2APIC (need >= 9.0, README \"Prerequisites\")" >&2
+        exit 1
+    fi
+    ACCEL_ARGS=(-accel tcg -cpu max)
+    ;;
+*)
+    echo "qemu.sh: ACCEL='$ACCEL' is not one of kvm|tcg" >&2
     exit 1
-fi
+    ;;
+esac
 # Sized for a virgin full image under TCG on a modest container (the CUI-1
 # firstboot INF pass alone is minutes there): a green boot exits through
 # isa-debug-exit the moment it is done, so a large default only delays how
@@ -64,7 +97,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
     echo "qemu.sh: interactive console — 'exit' at the prompt powers off; Ctrl-A x kills QEMU" >&2
     "$QEMU" \
         -M q35 \
-        -cpu max \
+        "${ACCEL_ARGS[@]}" \
         -m "$MEM" \
         -no-reboot \
         -display none \
@@ -112,7 +145,7 @@ fi
 
 "$QEMU" \
     -M q35 \
-    -cpu max \
+    "${ACCEL_ARGS[@]}" \
     -m "$MEM" \
     -no-reboot \
     -display none \
