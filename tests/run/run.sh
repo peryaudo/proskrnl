@@ -805,6 +805,85 @@ procs() {
     return 1
 }
 
+# The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
+# draws a rectangle visible in a screendump; key input is readable"): boot
+# the gui image with a QMP socket and a virtio keyboard, wait for the guest
+# to report what it painted, screendump the scanout and check the pixels
+# against that report, then press a key and watch it come back out of
+# \Device\Input0.
+#
+# There is no oracle leg here and cannot be one: \Device\Fb0 and
+# \Device\Input0 are HACK devices (docs/10 HACK-001/002) that NT does not
+# have, so no tests/ntapi case can pin them on Wine (the G5 adaptation is
+# written out in docs/03 "GUI-1 notes"). What stands in for the oracle is
+# QEMU: the pixels are rendered by its device model and the key is injected
+# by its input layer, neither of which the kernel controls (Art. 6).
+gui() {
+    make -C "$ROOT" gui-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui.sock" log="$dir/gui.log" ppm="$dir/gui.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm"
+
+    # The guest never powers itself off (it must hold the painted frame for
+    # the screendump), so this leg always ends the guest itself.
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" \
+        TIMEOUT="${TIMEOUT:-300}" PASS_RE='\[KTEST\] gui input PASS' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    # Wait for a marker to appear in the serial log, or give up.
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-180}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui: FAIL ($1; see $log) =="
+        return 1
+    }
+
+    if ! await '\[KTEST\] gui fb drawn '; then
+        gui_fail "the guest never reported a painted framebuffer"; return 1
+    fi
+    if ! python3 "$ROOT/tests/gui/qmpctl.py" "$sock" screendump "$ppm"; then
+        gui_fail "screendump failed"; return 1
+    fi
+
+    if ! await '\[KTEST\] gui input READY'; then
+        gui_fail "the guest never opened \\Device\\Input0"; return 1
+    fi
+    if ! python3 "$ROOT/tests/gui/qmpctl.py" "$sock" sendkey a; then
+        gui_fail "send-key failed"; return 1
+    fi
+    if ! await '\[KTEST\] gui input (PASS|FAIL)'; then
+        gui_fail "no input verdict after send-key"; return 1
+    fi
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    # Both halves must be green, and the picture must agree with the guest.
+    if ! grep -qE '\[KTEST\] gui fb PASS' "$log"; then
+        echo "== gui: FAIL (framebuffer half; see $log) =="; return 1
+    fi
+    if ! grep -qE '\[KTEST\] gui input PASS' "$log"; then
+        echo "== gui: FAIL (input half; see $log) =="; return 1
+    fi
+    if ! python3 "$ROOT/tests/gui/check_rect.py" --log "$log" --ppm "$ppm"; then
+        echo "== gui: FAIL (screendump does not match what the guest painted) =="; return 1
+    fi
+    echo "== gui: PASS (framebuffer rectangle in a screendump + key input) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -818,6 +897,7 @@ case "$MODE" in
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite}" >&2
+    gui)      gui ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui}" >&2
        exit 2 ;;
 esac

@@ -443,6 +443,31 @@ static int KiRunM9Echo(void)
     return pass ? 0 : 1;
 }
 
+/* The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
+ * draws a rectangle visible in a screendump; key input is readable"):
+ * gui_smoke.exe opens \Device\Fb0 and \Device\Input0, paints, and parks in
+ * a blocking read. Present only on the gui image (probe/skip like
+ * m9_echo). Does not return on that image — see the call site. */
+static void KiRunGuiSmoke(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui_smoke.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return; /* not a gui image */
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\gui_smoke.exe"), "C:\\gui_smoke.exe", FALSE, &exitStatus);
+    /* Only reached if the client exited, which it is written never to do:
+     * say so rather than letting the boot fall through to a sweep verdict
+     * the harness would read as a healthy end (Art. 12). */
+    DbgPrint("[KTEST] gui FAIL (gui_smoke.exe returned %#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+}
+
 /* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
  * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
  * cmd.exe on the serial console, driven by tests/run/console_expect.py —
@@ -1119,6 +1144,13 @@ static void KiTestMainThread(void *context)
 
     /* Console-mode image only (M10): the interactive cmd.exe session. */
     int cmdFailures = KiRunCmdConsole();
+
+    /* GUI image only (GUI-1): paint the framebuffer, then block forever on
+     * \Device\Input0. Deliberately LAST and deliberately never returning —
+     * the host has to see the painted frame in a screendump, so the guest
+     * must not tear the drawing down or power off underneath it. Every
+     * verdict above has already printed by this point. */
+    KiRunGuiSmoke();
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran
