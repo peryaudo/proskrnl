@@ -48,6 +48,7 @@ BOOL winefb_map_scanout(void)
     SIZE_T view_size = 0;
     FB_MODE_INFO mode;
 
+    winefb_report( "[KTEST] gui2 fb opening\n" );
     if (winefb_scanout.pixels) return TRUE;
 
     if (!(fb = open_device( fb0, FILE_GENERIC_READ | FILE_GENERIC_WRITE, 0 )))

@@ -470,6 +470,32 @@ static void KiRunGuiSmoke(void)
              (unsigned long)exitStatus);
 }
 
+/* The GUI-2 acceptance (docs/02 "winemine.exe appears on screen"): the
+ * whole Wine GUI stack -- winemine over comctl32/user32/gdi32 over the PE
+ * build of win32u (user/wine), painting through winefb.drv onto
+ * \Device\Fb0. Present only on the gui2 image (probe/skip like m9_echo).
+ * Does not return while the app is up -- see the call site. */
+static void KiRunGui2(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\winemine.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return; /* not a gui2 image */
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\winemine.exe"), "C:\\winemine.exe", FALSE, &exitStatus);
+    /* Reached when the window is closed (the harness's Alt+F4 probe) or
+     * when the app dies. Either way the exit code is the diagnosis, so
+     * print it rather than falling through to a sweep verdict the harness
+     * would read as a healthy end (Art. 12). */
+    DbgPrint("[KTEST] gui2 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+}
+
 /* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
  * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
  * cmd.exe on the serial console, driven by tests/run/console_expect.py —
@@ -1161,6 +1187,11 @@ static void KiTestMainThread(void *context)
      * must not tear the drawing down or power off underneath it. Every
      * verdict above has already printed by this point. */
     KiRunGuiSmoke();
+
+    /* GUI-2 image only: winemine, over the whole Wine GUI stack. Same
+     * arrangement as GUI-1 above -- last, and normally not returning, so
+     * the host can screendump a live window. */
+    KiRunGui2();
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran
