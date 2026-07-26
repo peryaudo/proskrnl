@@ -117,6 +117,7 @@ CSRC := kernel/init/main.c \
         drivers/virtio/input.c \
         drivers/condrv.c \
         drivers/fb.c \
+        drivers/hid.c \
         fs/fat32/fat.c \
         fs/fat32/dir.c \
         fs/fat32/file.c \
