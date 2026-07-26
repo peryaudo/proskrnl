@@ -107,9 +107,10 @@ VGA_ARGS=(-vga std)
 # GUI_DISPLAY=1 (make rungui): same session, but with the scanout visible
 # and a virtio keyboard for winefb.drv's input path; serial diagnostics
 # stay on the terminal. A host window when this QEMU build has a GUI
-# backend (gtk/sdl); otherwise the scanout is served over VNC and the
-# banner says where — the pinned build is configured headless
-# (tools/setup_linux.sh), so VNC is what you get out of the box.
+# backend (gtk/sdl — tools/setup_linux.sh configures the pinned build
+# --enable-gtk); otherwise — a build restored from the CI cache predating
+# that, or a hand-built one — the scanout is served over VNC and the
+# banner says where.
 if [[ -n "${INTERACTIVE:-}" ]]; then
     DISPLAY_ARGS=(-display none)
     INTERACTIVE_DEVICE_ARGS=()
