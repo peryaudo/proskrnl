@@ -38,6 +38,7 @@ $SUDO apt-get install -y --no-install-recommends \
     clang lld llvm clang-format clang-tidy make git ca-certificates python3 \
     gdisk mtools dosfstools \
     ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
+    libgtk-3-dev bzip2 \
     flex bison python3-venv \
     gcc libc6-dev gcc-mingw-w64-x86-64
 
@@ -74,8 +75,12 @@ if [[ -x third_party/qemu/build/qemu-system-x86_64 ]]; then
     echo "   already built — skipping"
 else
     mkdir -p third_party/qemu/build
+    # --enable-gtk (not autodetect) so `make rungui` deterministically gets a
+    # host window; libgtk-3-dev is in the apt list above. The headless test
+    # legs never open a display, so nothing else changes.
     (cd third_party/qemu/build &&
-        ../configure --target-list=x86_64-softmmu --disable-docs --disable-user)
+        ../configure --target-list=x86_64-softmmu --disable-docs --disable-user \
+            --enable-gtk)
     make -C third_party/qemu/build -j"$(nproc)"
 fi
 
