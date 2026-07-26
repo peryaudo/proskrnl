@@ -43,7 +43,8 @@ jobs:
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 \
-            third_party/limine third_party/limine-protocol third_party/qemu third_party/wine
+            third_party/limine third_party/limine-protocol third_party/qemu third_party/wine \
+            third_party/freetype
 
       # The submodule pins ARE the cache key (git ls-tree reads them from the
       # superproject tree, no submodule checkout needed).
@@ -54,6 +55,15 @@ jobs:
       # v2: v1 entries were poisoned by a cancelled run saving a sources-only
       # snapshot (no builds) under the pins key; the version bump orphans them
       # (unused entries age out on their own).
+      #
+      # v3: the key is computed from the submodule PINS alone, so it does not
+      # move when the way a pinned tree is CONFIGURED changes — and it just
+      # did. QEMU is now configured --enable-gtk so `make rungui` gets a host
+      # window deterministically, but every v2 entry holds a GTK-less
+      # qemu-system-x86_64, and setup_linux.sh's "already built — skipping"
+      # guard would serve it forever. The bump is what forces the rebuild;
+      # freetype's new path rides along. Expect the first run on this key to
+      # pay the full QEMU + Wine source build.
       - name: Restore third_party builds
         id: tp-cache
         uses: actions/cache/restore@v4
@@ -62,7 +72,8 @@ jobs:
             third_party/limine
             third_party/qemu/build
             third_party/wine
-          key: third-party-v2-${{ steps.pins.outputs.key }}
+            third_party/freetype/x86_64-windows
+          key: third-party-v3-${{ steps.pins.outputs.key }}
 
       # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
       # repo budget) far more eagerly than the release-cache assets the
@@ -170,7 +181,8 @@ jobs:
             third_party/limine
             third_party/qemu/build
             third_party/wine
-          key: third-party-v2-${{ steps.pins.outputs.key }}
+            third_party/freetype/x86_64-windows
+          key: third-party-v3-${{ steps.pins.outputs.key }}
 
       # Mirror the finished builds to the rolling `third-party-cache`
       # prerelease so ephemeral containers outside Actions (Claude Code on
@@ -194,8 +206,18 @@ jobs:
           # distro.txt is uploaded LAST, so its presence is the "this key's
           # asset set is complete" sentinel — both for this skip-guard and
           # for fetch_third_party.sh (a partial upload just reruns here).
+          #
+          # v3: freetype joined the component set, and the tp-v2 assets carry
+          # the pre---enable-gtk qemu besides. The sentinel above makes a
+          # published key immutable, so republishing under the same name would
+          # never happen — the fetch side would demand a freetype asset this
+          # step permanently skips creating, and keep handing out a GTK-less
+          # QEMU. The prefix bump forces the republish; the prune below then
+          # drops the tp-v2 assets. Kept in lockstep with the Actions cache
+          # key above: if only one of the two moved, the stale one would just
+          # feed the same GTK-less build back in through the other door.
           existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          if grep -qx "tp-v2-$KEY-distro.txt" <<<"$existing"; then
+          if grep -qx "tp-v3-$KEY-distro.txt" <<<"$existing"; then
             echo "assets for key $KEY already published — skipping"
             exit 0
           fi
@@ -204,21 +226,22 @@ jobs:
           # The tarballs hold binaries linked against this runner's glibc;
           # fetch_third_party.sh refuses to restore onto a different distro
           # release, so record which one built them.
-          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v2-$KEY-distro.txt"
+          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v3-$KEY-distro.txt"
           # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
           # side concatenates partNN in order.
-          for spec in limine:third_party/limine qemu-build:third_party/qemu/build wine:third_party/wine; do
+          for spec in limine:third_party/limine qemu-build:third_party/qemu/build \
+                      wine:third_party/wine freetype:third_party/freetype/x86_64-windows; do
             name="${spec%%:*}"; path="${spec#*:}"
             tar -C "$GITHUB_WORKSPACE" --zstd -cf - "$path" \
-              | split -b 1900m -d -a 2 - "$pack/tp-v2-$KEY-$name.tar.zst.part"
+              | split -b 1900m -d -a 2 - "$pack/tp-v3-$KEY-$name.tar.zst.part"
           done
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v2-"$KEY"-*.part* --clobber
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v2-$KEY-distro.txt" --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v3-"$KEY"-*.part* --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v3-$KEY-distro.txt" --clobber
           # Prune stale keys only after the new key uploaded whole, so a
           # failed upload never leaves the release empty.
           for a in $existing; do
             case "$a" in
-              tp-v2-"$KEY"-*) ;;
+              tp-v3-"$KEY"-*) ;;
               *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
             esac
           done
