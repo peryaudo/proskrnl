@@ -234,8 +234,17 @@ static unsigned int slot_call( unsigned int index, enum prsk_slot_op op,
      * APC interrupting the wait would leave the slot half-consumed. */
     if (NtWaitForSingleObject( done_events[index], FALSE, NULL )) return STATUS_UNSUCCESSFUL;
 
+    /* The reply comes back WHETHER OR NOT the request failed: wineserver
+     * writes the full reply plus its data unconditionally (server/request.c
+     * send_reply) and the client copies both before it even looks at the
+     * error (dlls/ntdll/unix/server.c wait_reply), because callers read
+     * reply fields beside an error -- win32u's NtUserCreateDesktopEx takes
+     * reply->handle from a create_desktop that failed, which is how the
+     * FIRST process to connect gets its desktop at all. Dropping the reply
+     * on error here is what stalled GUI-3: the in-process dispatch never
+     * dropped it, and the two modes had drifted (Art. 11). */
     status = slot->status;
-    if (info && !status)
+    if (info)
     {
         info->u.reply = slot->reply;
         if (slot->reply_size && info->reply_data)
