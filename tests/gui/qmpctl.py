@@ -3,14 +3,27 @@
 
     qmpctl.py <socket> screendump <out.ppm>
     qmpctl.py <socket> sendkey <qcode> [<qcode>...]
+    qmpctl.py <socket> absmove <x> <y>
+    qmpctl.py <socket> button <name> <down|up>
     qmpctl.py <socket> quit
 
-The gui leg needs three things QEMU only offers through its monitor:
-a copy of what the display adapter is actually scanning out, a way to
-press a key, and a way to end a guest that is deliberately never going to
-power itself off. Commands and argument names follow the pinned tree's
-qapi/ui.json (screendump, send-key) and qapi/control.json (quit); QMP
-rather than HMP because the replies parse without screen-scraping.
+The gui legs need what QEMU only offers through its monitor: a copy of
+what the display adapter is actually scanning out, a way to press a key
+or move the pointer, and a way to end a guest that is deliberately never
+going to power itself off. Commands and argument names follow the pinned
+tree's qapi/ui.json (screendump, send-key, input-send-event: InputMoveEvent
+axis/value, InputBtnEvent button/down, InputButton names) and
+qapi/control.json (quit); QMP rather than HMP because the replies parse
+without screen-scraping.
+
+`absmove` takes tablet coordinates, 0..0x7fff on both axes (the
+InputMoveEvent contract for absolute coordinates). The value arrives in
+the guest verbatim: qmp_input_send_event forwards abs events without
+scaling (pinned tree ui/input.c), and both axes ride one command, so the
+guest sees one report ended by one SYN — injection is exactly
+deterministic, which the gui4 leg's arithmetic relies on. No `device`
+argument: event-mask routing finds the tablet for abs/btn and the
+keyboard for keys.
 
 `screendump` is the whole point of the framebuffer verdict: the pixels
 come back out of QEMU's own device model, so the kernel is never grading
@@ -87,6 +100,22 @@ def main(argv):
         # QEMU maps to the guest's Linux evdev codes for virtio-input.
         keys = [{"type": "qcode", "data": key} for key in arguments]
         qmp.execute("send-key", keys=keys)
+    elif command == "absmove":
+        if len(arguments) != 2:
+            print("qmpctl: absmove takes x y (0..32767)", file=sys.stderr)
+            return 2
+        x, y = int(arguments[0]), int(arguments[1])
+        events = [
+            {"type": "abs", "data": {"axis": "x", "value": x}},
+            {"type": "abs", "data": {"axis": "y", "value": y}},
+        ]
+        qmp.execute("input-send-event", events=events)
+    elif command == "button":
+        if len(arguments) != 2 or arguments[1] not in ("down", "up"):
+            print("qmpctl: button takes an InputButton name and down|up", file=sys.stderr)
+            return 2
+        events = [{"type": "btn", "data": {"button": arguments[0], "down": arguments[1] == "down"}}]
+        qmp.execute("input-send-event", events=events)
     elif command == "quit":
         try:
             qmp.execute("quit")
