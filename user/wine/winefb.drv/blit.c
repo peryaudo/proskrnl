@@ -14,7 +14,10 @@
  * the only reason this driver implements it.
  */
 
+#include <stdlib.h>
+
 #include "winefb.h"
+#include "ntgdi.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
@@ -25,16 +28,30 @@ struct winefb_surface
     POINT                 origin;    /* the visible rect's top-left, in screen pixels */
     SIZE                  visible;   /* how much of the padded surface is the window */
     UINT                  flushes;
+    RECT                 *clip_rects; /* win32u's surface clip, surface-local; NULL = none */
+    UINT                  clip_count;
 };
 
 static struct winefb_surface *surface_from_header( struct window_surface *surface );
 
+/* win32u computes the surface region server-side (shaped windows,
+ * pixel-format children) and hands it down as a rect array in
+ * surface-local coordinates (dlls/win32u/window.c update_surface_region
+ * offsets it by -visible.left/top). Stored verbatim; the flush intersects
+ * with it. Called with the surface lock held (dce.c), so this only
+ * stores. */
 static void winefb_surface_set_clip( struct window_surface *surface, const RECT *rects, UINT count )
 {
-    /* One app window over a static desktop: whatever the clip says, the
-     * last flush wins and is correct. Z-order-aware flushing arrives with
-     * the compositor (GUI-4); until there are two windows to order there is
-     * nothing here to get wrong. */
+    struct winefb_surface *impl = surface_from_header( surface );
+
+    free( impl->clip_rects );
+    impl->clip_rects = NULL;
+    impl->clip_count = 0;
+    if (!count) return;
+
+    if (!(impl->clip_rects = malloc( count * sizeof(*rects) ))) return;
+    memcpy( impl->clip_rects, rects, count * sizeof(*rects) );
+    impl->clip_count = count;
 }
 
 static void copy_rows( char *dst, int dst_pitch, const char *src, int src_pitch, int width,
@@ -78,6 +95,24 @@ static void repack_rows( char *dst, int dst_pitch, const char *src, int src_pitc
     }
 }
 
+/* Blit one surface-local rect (already clipped to the visible part and the
+ * scanout) into the scanout. */
+static void blit_rect( const struct winefb_surface *surface, const RECT *r, const void *color_bits,
+                       int src_pitch )
+{
+    const FB_MODE_INFO *mode = &winefb_scanout.mode;
+    int width = r->right - r->left, height = r->bottom - r->top;
+    const char *src;
+    char *dst;
+
+    if (width <= 0 || height <= 0) return;
+    src = (const char *)color_bits + (size_t)r->top * src_pitch + (size_t)r->left * 4;
+    dst = winefb_scanout.pixels + (size_t)(surface->origin.y + r->top) * mode->pitch +
+          (size_t)(surface->origin.x + r->left) * 4;
+    if (winefb_scanout.bgrx) copy_rows( dst, mode->pitch, src, src_pitch, width, height );
+    else repack_rows( dst, mode->pitch, src, src_pitch, width, height );
+}
+
 static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect, const RECT *dirty,
                                   const BITMAPINFO *color_info, const void *color_bits,
                                   BOOL shape_changed, const BITMAPINFO *shape_info,
@@ -88,9 +123,14 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     int src_pitch = color_info->bmiHeader.biSizeImage /
                     abs( color_info->bmiHeader.biHeight );
     RECT clipped = *dirty;
-    const char *src;
-    char *dst;
-    int width, height;
+    RECT above[WINEFB_MAX_TOPLEVELS];
+    /* 1024 rects (16 KB of stack): far beyond what subtracting ≤ 64
+     * rectangles from one can band out to in practice. */
+    char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
+    RGNDATA *data = (RGNDATA *)region_buffer;
+    HRGN dirty_rgn, tmp_rgn;
+    UINT i, above_count;
+    DWORD size;
 
     /* Clip to the window's visible part (the surface is padded past it) and
      * then to the screen: a window can be positioned partly off either
@@ -104,16 +144,54 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     if (clipped.bottom > (int)mode->height - surface->origin.y)
         clipped.bottom = (int)mode->height - surface->origin.y;
 
-    width = clipped.right - clipped.left;
-    height = clipped.bottom - clipped.top;
-    if (width <= 0 || height <= 0) return TRUE;
+    if (clipped.right - clipped.left <= 0 || clipped.bottom - clipped.top <= 0) return TRUE;
 
-    src = (const char *)color_bits + (size_t)clipped.top * src_pitch + (size_t)clipped.left * 4;
-    dst = winefb_scanout.pixels + (size_t)(surface->origin.y + clipped.top) * mode->pitch +
-          (size_t)(surface->origin.x + clipped.left) * 4;
+    /* The compositor: what actually reaches the scanout is
+     * dirty ∧ win32u's surface clip ∧ ¬(anything above in z-order).
+     * Region algebra is Wine's own engine (G10) -- these are win32u's
+     * NtGdi entry points, and this file is compiled into win32u. */
+    dirty_rgn = NtGdiCreateRectRgn( clipped.left, clipped.top, clipped.right, clipped.bottom );
+    tmp_rgn = NtGdiCreateRectRgn( 0, 0, 0, 0 );
 
-    if (winefb_scanout.bgrx) copy_rows( dst, mode->pitch, src, src_pitch, width, height );
-    else repack_rows( dst, mode->pitch, src, src_pitch, width, height );
+    if (surface->clip_count)
+    {
+        HRGN clip_rgn = NtGdiCreateRectRgn( 0, 0, 0, 0 );
+
+        for (i = 0; i < surface->clip_count; i++)
+        {
+            const RECT *r = &surface->clip_rects[i];
+
+            NtGdiSetRectRgn( tmp_rgn, r->left, r->top, r->right, r->bottom );
+            NtGdiCombineRgn( clip_rgn, clip_rgn, tmp_rgn, RGN_OR );
+        }
+        NtGdiCombineRgn( dirty_rgn, dirty_rgn, clip_rgn, RGN_AND );
+        NtGdiDeleteObjectApp( clip_rgn );
+    }
+
+    /* Screen rects of the windows above, translated to surface-local. */
+    above_count = winefb_windows_above( base->hwnd, above, WINEFB_MAX_TOPLEVELS );
+    for (i = 0; i < above_count; i++)
+    {
+        NtGdiSetRectRgn( tmp_rgn, above[i].left - surface->origin.x,
+                         above[i].top - surface->origin.y, above[i].right - surface->origin.x,
+                         above[i].bottom - surface->origin.y );
+        NtGdiCombineRgn( dirty_rgn, dirty_rgn, tmp_rgn, RGN_DIFF );
+    }
+    NtGdiDeleteObjectApp( tmp_rgn );
+
+    /* A region built from ≤ 1 dirty ∧ clip and ≤ 64 subtractions cannot
+     * exceed the buffer above; 0 from NtGdiGetRegionData would mean it
+     * somehow did, and skipping the blit (repaired by the next flush)
+     * beats writing through a lying rect list. */
+    size = NtGdiGetRegionData( dirty_rgn, sizeof(region_buffer), data );
+    NtGdiDeleteObjectApp( dirty_rgn );
+    if (size)
+    {
+        const RECT *rects = (const RECT *)data->Buffer;
+
+        for (i = 0; i < data->rdh.nCount; i++)
+            blit_rect( surface, &rects[i], color_bits, src_pitch );
+    }
 
     /* The harness needs one self-describing line naming where a window
      * actually reached the scanout (tests/gui/check_window.py). The first
@@ -129,7 +207,10 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
 
 static void winefb_surface_destroy( struct window_surface *base )
 {
-    /* win32u owns the bitmaps; the header is all this driver added. */
+    struct winefb_surface *surface = surface_from_header( base );
+
+    /* win32u owns the bitmaps; the clip copy is all this driver added. */
+    free( surface->clip_rects );
 }
 
 static const struct window_surface_funcs winefb_surface_funcs =

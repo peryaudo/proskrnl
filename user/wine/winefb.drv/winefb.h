@@ -51,6 +51,12 @@ extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_
 extern void winefb_start_input(void);
 extern void winefb_cursor_update( int x, int y );
 
+/* compose.c: the z-order query behind the compositing flush (blit.c). More
+ * top-level windows than this and the excess is treated as invisible; 64
+ * is far beyond anything the milestones put on one desktop. */
+#define WINEFB_MAX_TOPLEVELS 64
+extern UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count );
+
 /* The harness reads these off the serial log and checks the screendump
  * against them; nothing about the expected picture is hardcoded host-side
  * (tests/gui/check_window.py, the GUI-1 precedent). */
