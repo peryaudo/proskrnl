@@ -635,6 +635,119 @@ gui-img: $(IMG_GUI)
 .PHONY: gui-img
 
 # ---------------------------------------------------------------------------
+# GUI-2 (docs/02, docs/07 route (a)): win32u as a PE, plus winefb.drv.
+#
+# Wine ships win32u in two halves — a PE win32u.dll that is nothing but
+# syscall thunks, and win32u.so holding the actual implementation. Neither
+# half fits: the thunks would issue NtUser*/NtGdi* syscalls at a kernel that
+# must never grow them (Art. 2 / docs/07 "no NtUser* syscalls are minted"),
+# and there is no unix side to load. So the SECOND half is compiled here as
+# the DLL — the same sources, above ntdll instead of above libc — and
+# user32/gdi32/imm32 bind to it by name, unmodified, because that is how
+# they import win32u in the first place.
+#
+# The desktop state those sources talk to is the pinned wineserver's own GUI
+# object model, compiled into the same DLL and reached through an in-process
+# wine_server_call (user/wine/server/). One GUI process, no wineserver
+# (GUI-3 is where it becomes a process again).
+#
+# Nothing in third_party/wine is patched for any of this: user/wine/ carries
+# the shims (POSIX headers mingw lacks), the glue (pthreads, the user-mode
+# callback pair, ntdll's unix-side helpers) and the display driver. Deleting
+# user/wine/ and the two drivers restores the CUI kernel (Art. 7).
+WINE_W32U := third_party/wine/dlls/win32u
+WINE_SRV  := third_party/wine/server
+W32U_BUILD := $(BUILD)/win32u
+
+# Everything in win32u's SOURCES except the two files that ARE the syscall
+# boundary: main.c (the PE thunks this build replaces) and syscall.c (the
+# service-table registration and the pthread-key thread info, both re-done in
+# user/wine/win32u/glue.c).
+W32U_SRCS := $(filter-out $(WINE_W32U)/main.c $(WINE_W32U)/syscall.c, \
+                 $(wildcard $(WINE_W32U)/*.c) $(wildcard $(WINE_W32U)/dibdrv/*.c))
+
+# The wineserver GUI subset: object/handle plumbing plus the window tree,
+# classes, atoms, queues, hooks, clipboard and region algebra. Compiled
+# UNMODIFIED — this is the one authority for desktop state (Art. 11), and
+# GUI-3 moves this same code behind IPC rather than rewriting it.
+SRV_SRCS := $(addprefix $(WINE_SRV)/, object.c handle.c unicode.c user.c atom.c class.c \
+                winstation.c window.c queue.c region.c clipboard.c hook.c)
+
+# Eleven names exist on both sides of the boundary with different meanings
+# (win32u's alloc_user_handle asks the server; the server's allocates). In
+# Wine they live in different address spaces; here they share one, so the
+# server's copies are renamed at compile time. A build-time rename, not a
+# source change: third_party/wine is untouched.
+SRV_RENAMES := alloc_user_handle free_user_handle destroy_thread_windows \
+               get_virtual_screen_rect get_window_thread is_desktop_class \
+               is_message_class is_window_visible mirror_region \
+               send_notify_message shared_session
+SRV_RENAME_FLAGS := $(foreach n,$(SRV_RENAMES),-D$(n)=srv_$(n))
+# unicode.c composes the unix path of the NLS case table from the configure
+# prefix. Nothing here loads it (win32u carries its own casing), so the
+# prefix is empty; only hash_strW/memicmp_strW/dump_strW are wanted from the
+# file, and they are pure.
+SRV_PATH_FLAGS := -DBINDIR='""' -DDATADIR='""'
+
+W32U_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
+               -D__WINESRC__ -D_WIN32U_ -DWINE_UNIX_LIB -DWINE_NO_LONG_TYPES \
+               -D__USE_MINGW_ANSI_STDIO=0 \
+               -Iuser/wine/include -Ithird_party/wine/include
+
+W32U_OBJS := $(patsubst $(WINE_W32U)/%.c,$(W32U_BUILD)/w32u/%.o,$(W32U_SRCS)) \
+             $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS)) \
+             $(patsubst user/wine/%.c,$(W32U_BUILD)/glue/%.o,$(wildcard user/wine/*/*.c))
+
+$(W32U_BUILD)/w32u/%.o: $(WINE_W32U)/%.c user/wine/include/wine/unixlib.h
+	@mkdir -p $(dir $@)
+	$(MINGW) $(W32U_CFLAGS) -I$(WINE_W32U) -c $< -o $@
+
+$(W32U_BUILD)/srv/%.o: $(WINE_SRV)/%.c
+	@mkdir -p $(dir $@)
+	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) $(SRV_PATH_FLAGS) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
+
+$(W32U_BUILD)/glue/%.o: user/wine/%.c
+	@mkdir -p $(dir $@)
+	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
+
+# The dispatch table is generated from the pinned tree's own request list and
+# from which handlers actually linked: a request whose handler is not part of
+# this build gets a NULL slot, which the shim turns into a named refusal
+# (tools/gen_server_table.py, Art. 12).
+SRV_OBJS := $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS))
+SRV_TABLE := $(W32U_BUILD)/prsk_request_table.c
+$(SRV_TABLE): $(SRV_OBJS) tools/gen_server_table.py $(WINE_SRV)/request_handlers.h
+	@mkdir -p $(dir $@)
+	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $@ $(SRV_OBJS)
+
+$(W32U_BUILD)/prsk_request_table.o: $(SRV_TABLE) user/wine/server/prsk_request_table.h
+	$(MINGW) $(W32U_CFLAGS) -Iuser/wine/server -c $< -o $@
+
+# The export list comes out of win32u.spec, and the generator also proves the
+# shipped importers find every name they need (tools/gen_win32u_def.py).
+W32U_DEF := $(W32U_BUILD)/win32u.def
+GUI_IMPORTERS := $(WINE_PE)/user32/x86_64-windows/user32.dll \
+                 $(WINE_PE)/gdi32/x86_64-windows/gdi32.dll \
+                 $(WINE_PE)/imm32/x86_64-windows/imm32.dll
+$(W32U_DEF): $(WINE_W32U)/win32u.spec tools/gen_win32u_def.py $(GUI_IMPORTERS)
+	@mkdir -p $(dir $@)
+	python3 tools/gen_win32u_def.py $(WINE_W32U)/win32u.spec $@ $(GUI_IMPORTERS)
+
+WIN32U := $(BUILD)/modules/win32u.dll
+$(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -shared -nostdlib -nostartfiles -Wl,--entry=prsk_win32u_entry \
+	    $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    third_party/wine/libs/musl/x86_64-windows/libmusl.a \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+win32u: $(WIN32U)
+.PHONY: win32u
+
+# ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
 # the curated manifest (tests/winetest/manifest.txt) on BOTH the oracle and
