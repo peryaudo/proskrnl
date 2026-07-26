@@ -80,6 +80,15 @@ typedef struct FILE_OBJECT
 void IoInitializeTransport(void);
 void IoMountBootVolume(void);
 
+/* Create a permanent \Device\... object over `ops` and return its body (the
+ * namespace owns it; the transient handle is closed here). The one device
+ * publication path — every driver and filesystem in the tree mints its
+ * device object through this call (G10/Art. 11). Publication needs a handle
+ * table, so callers run on a thread with a process context. Failure is a
+ * boot-time panic: the namespace is fresh and a collision is a bug. */
+PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID context,
+                           ULONG deviceType);
+
 /* --- share-mode accounting (kernel/io/file.c; NT's Io*ShareAccess) --------- */
 
 NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB fcb);

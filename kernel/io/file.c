@@ -197,6 +197,36 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
 
 /* --- initialization --------------------------------------------------------- */
 
+PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID context,
+                           ULONG deviceType)
+{
+    UNICODE_STRING deviceName;
+    OBJECT_ATTRIBUTES attributes;
+    RtlInitUnicodeString(&deviceName, name);
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &deviceName;
+    attributes.Attributes = OBJ_PERMANENT;
+
+    PVOID body;
+    HANDLE handle;
+    NTSTATUS status = ObpCreateObjectWithHandle(&IoDeviceType, sizeof(IO_DEVICE), &attributes,
+                                                FILE_ALL_ACCESS, &body, &handle);
+    if (status != STATUS_SUCCESS)
+    {
+        DbgPrint("io: cannot publish %ls: %08lx\n", name, (unsigned long)status);
+        KiPanic("IoPublishDevice: cannot create a device object");
+    }
+    PIO_DEVICE device = body;
+    device->ops = ops;
+    device->context = context;
+    device->deviceType = deviceType;
+    /* The namespace holds the object (OBJ_PERMANENT); the transient handle
+     * has done its job. */
+    NtClose(handle);
+    return device;
+}
+
 static PIO_DEVICE IopBootVolumeDevice;
 
 void IoInitializeTransport(void)
@@ -221,34 +251,18 @@ void IoMountBootVolume(void)
         return;
     }
 
-    /* \Device\HarddiskVolume1 (permanent), then \??\C: -> it. */
-    PVOID body;
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attributes;
-    RtlInitUnicodeString(&name, WSTR("\\Device\\HarddiskVolume1"));
-    attributes.Length = sizeof(attributes);
-    attributes.RootDirectory = 0;
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_PERMANENT;
-    attributes.SecurityDescriptor = 0;
-    attributes.SecurityQualityOfService = 0;
-    HANDLE handle;
-    status = ObpCreateObjectWithHandle(&IoDeviceType, sizeof(IO_DEVICE), &attributes,
-                                       FILE_ALL_ACCESS, &body, &handle);
-    if (status != STATUS_SUCCESS)
-    {
-        KiPanic("IoInitialize: cannot create the volume device");
-    }
-    PIO_DEVICE device = body;
-    device->ops = &FatVfsOps;
-    device->context = volume;
-    /* A mounted disk filesystem, as the pinned oracle reports one (Wine
+    /* \Device\HarddiskVolume1 (permanent), then \??\C: -> it. A mounted disk
+     * filesystem, as the pinned oracle reports one (Wine
      * dlls/ntdll/unix/file.c get_device_info: regular files/directories →
      * FILE_DEVICE_DISK_FILE_SYSTEM; GetFileType maps it to FILE_TYPE_DISK). */
-    device->deviceType = FILE_DEVICE_DISK_FILE_SYSTEM;
-    IopBootVolumeDevice = device;
-    NtClose(handle);
+    IopBootVolumeDevice = IoPublishDevice(WSTR("\\Device\\HarddiskVolume1"), &FatVfsOps, volume,
+                                          FILE_DEVICE_DISK_FILE_SYSTEM);
 
+    HANDLE handle;
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.Attributes = OBJ_PERMANENT;
     UNICODE_STRING linkName, target;
     RtlInitUnicodeString(&linkName, WSTR("\\??\\C:"));
     RtlInitUnicodeString(&target, WSTR("\\Device\\HarddiskVolume1"));
