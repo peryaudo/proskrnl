@@ -918,8 +918,11 @@ def gen_ntioapi(wine: Path) -> str:
             # GUI-1: \Device\Input0 (HACK-002) and \Device\Fb0 (HACK-001)
             # answer FileFsDeviceInformation with their real device type, and
             # FILE_DEVICE_VIDEO is the CTL_CODE device field of the framebuffer
-            # ioctls (drivers/fbproto.h).
+            # ioctls (drivers/fbproto.h). GUI-4: \Device\Input1, the pointer
+            # half of HACK-002, answers FILE_DEVICE_MOUSE (also the CTL_CODE
+            # device field of its abs-info ioctl, drivers/hidproto.h).
             "FILE_DEVICE_KEYBOARD",
+            "FILE_DEVICE_MOUSE",
             "FILE_DEVICE_SERIAL_PORT",
             "FILE_DEVICE_VIDEO",
         ],
