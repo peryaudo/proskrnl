@@ -881,32 +881,6 @@ NTSTATUS CondrvCreateProcessHandles(struct EPROCESS *process, HANDLE *consoleOut
 
 /* --- initialization ---------------------------------------------------------- */
 
-static PIO_DEVICE CondrvPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, ULONG deviceType)
-{
-    UNICODE_STRING deviceName;
-    OBJECT_ATTRIBUTES attributes;
-    RtlInitUnicodeString(&deviceName, name);
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &deviceName;
-    attributes.Attributes = OBJ_PERMANENT;
-
-    PVOID body;
-    HANDLE handle;
-    NTSTATUS status = ObpCreateObjectWithHandle(&IoDeviceType, sizeof(IO_DEVICE), &attributes,
-                                                FILE_ALL_ACCESS, &body, &handle);
-    if (status != STATUS_SUCCESS)
-    {
-        KiPanic("CondrvInitialize: cannot create a console device");
-    }
-    PIO_DEVICE device = body;
-    device->ops = ops;
-    device->context = 0;
-    device->deviceType = deviceType;
-    NtClose(handle);
-    return device;
-}
-
 void CondrvInitialize(void)
 {
     IopInitializeFcb(&CondrvSerialFcb);
@@ -919,7 +893,7 @@ void CondrvInitialize(void)
      * FILE_TYPE_CHAR (Wine dlls/kernelbase/file.c); the console value is
      * what wineserver's console objects report (server/console.c
      * console_get_volume_info). */
-    CondrvPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps, FILE_DEVICE_SERIAL_PORT);
+    IoPublishDevice(WSTR("\\Device\\Serial0"), &CondrvSerialOps, 0, FILE_DEVICE_SERIAL_PORT);
     CondrvConsoleDevice =
-        CondrvPublishDevice(WSTR("\\Device\\ConDrv"), &CondrvConsoleOps, FILE_DEVICE_CONSOLE);
+        IoPublishDevice(WSTR("\\Device\\ConDrv"), &CondrvConsoleOps, 0, FILE_DEVICE_CONSOLE);
 }

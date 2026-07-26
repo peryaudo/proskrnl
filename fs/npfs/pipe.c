@@ -1175,36 +1175,22 @@ void NpfsInitialize(void)
     IopInitializeFcb(&NpfsRootFcb);
     KeInitializeEvent(&NpfsListenersChangedEvent, NotificationEvent, FALSE);
 
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attributes;
-    RtlInitUnicodeString(&name, WSTR("\\Device\\NamedPipe"));
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_PERMANENT;
-
-    PVOID body;
-    HANDLE handle;
-    NTSTATUS status = ObpCreateObjectWithHandle(&IoDeviceType, sizeof(IO_DEVICE), &attributes,
-                                                FILE_ALL_ACCESS, &body, &handle);
-    if (status != STATUS_SUCCESS)
-    {
-        KiPanic("NpfsInitialize: cannot create \\Device\\NamedPipe");
-    }
-    PIO_DEVICE device = body;
-    device->ops = &NpfsVfsOps;
-    device->context = 0;
     /* GetFileType(pipe) == FILE_TYPE_PIPE (Wine dlls/kernelbase/file.c
      * switches on FileFsDeviceInformation.DeviceType). */
-    device->deviceType = FILE_DEVICE_NAMED_PIPE;
-    NpfsDevice = device;
-    NtClose(handle);
+    NpfsDevice =
+        IoPublishDevice(WSTR("\\Device\\NamedPipe"), &NpfsVfsOps, 0, FILE_DEVICE_NAMED_PIPE);
 
+    HANDLE handle;
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.Attributes = OBJ_PERMANENT;
     UNICODE_STRING linkName, target;
     RtlInitUnicodeString(&linkName, WSTR("\\??\\pipe"));
     RtlInitUnicodeString(&target, WSTR("\\Device\\NamedPipe"));
     attributes.ObjectName = &linkName;
-    status = NtCreateSymbolicLinkObject(&handle, SYMBOLIC_LINK_ALL_ACCESS, &attributes, &target);
+    NTSTATUS status =
+        NtCreateSymbolicLinkObject(&handle, SYMBOLIC_LINK_ALL_ACCESS, &attributes, &target);
     if (!NT_SUCCESS(status))
     {
         KiPanic("NpfsInitialize: cannot create \\??\\pipe");
