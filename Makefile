@@ -111,6 +111,7 @@ CSRC := kernel/init/main.c \
         kernel/syscall/table.c \
         kernel/syscall/uaccess.c \
         drivers/pci.c \
+        drivers/virtio/pci.c \
         drivers/virtio/virtqueue.c \
         drivers/virtio/blk.c \
         drivers/condrv.c \

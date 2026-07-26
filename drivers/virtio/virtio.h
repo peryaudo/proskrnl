@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "abi/ntdef.h"
+#include "drivers/pci.h"
 
 /* --- device status (virtio 1.2 cs01 §2.1) -------------------------------- */
 #define VIRTIO_STATUS_ACKNOWLEDGE        1
@@ -72,6 +74,12 @@ typedef struct
 #define VIRTIO_PCI_DEVICE_ID_MAX              0x107F
 #define VIRTIO_PCI_DEVICE_ID_BLK_TRANSITIONAL 0x1001 /* §4.1.2.1 */
 #define VIRTIO_PCI_DEVICE_ID_MODERN_BASE      0x1040 /* §4.1.2: 0x1040 + type */
+
+/* Virtio device types (§5, "Device Types"); the modern PCI device id is
+ * VIRTIO_PCI_DEVICE_ID_MODERN_BASE + type (§4.1.2). Cross-check:
+ * third_party/qemu include/standard-headers/linux/virtio_ids.h. */
+#define VIRTIO_DEVICE_TYPE_BLK   2  /* §5.2 */
+#define VIRTIO_DEVICE_TYPE_INPUT 18 /* §5.8 */
 
 /* Vendor-specific capability layout (virtio 1.2 cs01 §4.1.4); cap_vndr is
  * PCI capability ID 0x09 (PCI Local Bus Spec 3.0 §6.7 vendor-specific). */
@@ -151,5 +159,46 @@ typedef struct
 } VIO_SEGMENT;
 
 int VioSubmitAndPoll(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segmentCount);
+
+/* --- the shared modern-PCI transport (pci.c) ------------------------------- */
+
+/* One virtio function brought up through the §3.1.1 initialization
+ * sequence. Every virtio driver in the tree mints its transport through
+ * this one path (Art. 11): the BAR mapping window is a single cursor, so a
+ * second copy of the mapping code would hand out overlapping kernel VAs. */
+typedef struct
+{
+    KI_PCI_FUNCTION function;
+    VIRTIO_PCI_COMMON_CFG *commonCfg;
+    volatile uint8_t *deviceCfg;  /* §4.1.4.6 device-specific config */
+    volatile uint8_t *notifyBase; /* §4.1.4.4 notify structure */
+    uint32_t notifyMultiplier;    /* §4.1.4.4 notify_off_multiplier */
+    uint32_t deviceFeaturesLow;   /* offered bits 0..31, as read */
+    const char *name;             /* "virtio-blk"; log prefix only */
+} VIO_PCI_DEVICE;
+
+/* §3.1.1 steps 1-4 (read half): find the function, enable MMIO decoding and
+ * bus mastering, map the common/notify/device-config capabilities, reset,
+ * ACKNOWLEDGE|DRIVER, and confirm the device offers VERSION_1. Leaves the
+ * offered low feature word in out->deviceFeaturesLow so the caller can
+ * refuse on a device-specific bit before features are written back.
+ * `transitionalId` is the §4.1.2.1 legacy id to also accept, or 0 for a
+ * modern-only device. Returns FALSE (loudly, on serial) when absent. */
+BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, const char *name,
+                                VIO_PCI_DEVICE *out);
+
+/* §3.1.1 step 4 (write half) plus steps 5-6: accept VERSION_1 and nothing
+ * else, set FEATURES_OK, and confirm the readback. */
+BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device);
+
+/* §3.1.1 step 7 for one queue: select it, size the rings, publish the three
+ * area addresses, resolve the notify address (§4.1.4.4), enable. */
+BOOLEAN VioPciSetupQueue(VIO_PCI_DEVICE *device, VIO_VIRTQUEUE *queue, uint16_t queueIndex);
+
+/* §3.1.1 step 8: the device is live. */
+void VioPciSetDriverOk(VIO_PCI_DEVICE *device);
+
+/* §2.1: give up on this device — the driver sets FAILED and walks away. */
+void VioPciSetFailed(VIO_PCI_DEVICE *device);
 
 #endif /* PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H */
