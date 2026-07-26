@@ -116,12 +116,24 @@ static DWORD WINAPI input_thread( void *arg )
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK io;
     HANDLE device;
+    NTSTATUS status;
 
     RtlInitUnicodeString( &name, input0 );
     InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
     /* Exclusive by contract (drivers/hidproto.h): sharing 0. */
-    if (NtCreateFile( &device, FILE_GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL,
-                      FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 ))
+    status = NtCreateFile( &device, FILE_GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL,
+                           FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT,
+                           NULL, 0 );
+    if (status == STATUS_SHARING_VIOLATION)
+    {
+        /* Another GUI process won the exclusive open and is the reader.
+         * Losing that race is the designed outcome for every process but
+         * one (each of them tries, the server routes globally), so it is
+         * not reported as an absence. */
+        TRACE( "input0 already has its reader\n" );
+        return 0;
+    }
+    if (status)
     {
         /* No keyboard: the display half stands alone, so say so once and
          * stop rather than spinning on a device that is not there. */
@@ -146,9 +158,19 @@ static DWORD WINAPI input_thread( void *arg )
     return 0;
 }
 
+/* Idempotent: every GUI process calls this from every hook that proves the
+ * process is alive and off the loader lock (display enumeration, first
+ * window surface), and exactly one attempt is made per process. The
+ * devices open exclusively, so across processes exactly one reader wins;
+ * the rest lose the race quietly above. Residual (docs/03 GUI-4 notes): if
+ * the winning process dies, input is orphaned until a process that has not
+ * yet attempted creates its first window surface. */
 void winefb_start_input(void)
 {
+    static LONG started;
     HANDLE thread;
+
+    if (InterlockedExchange( &started, 1 )) return;
 
     if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), input_thread, NULL,
                           0, 0, 0, 0, NULL ))
