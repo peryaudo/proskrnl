@@ -1050,6 +1050,12 @@ thread death, which it learns about from the socket closing; there is no socket 
 the GUI process's thread count is bounded by what the app creates. A leak, bounded and
 deliberate, to be closed when GUI-3 gives the server a real thread lifetime.
 
+**`HKU\<sid>` exists from boot.** win32u's `font_init` opens
+`\Registry\User\S-1-5-21-0-0-0-1000` (the fixed Se identity) and loads no fonts at all when
+it is absent; the oracle's wineserver creates `HKU\<sid>` at prefix init. `CmInitialize`
+seeds the empty root (the ComputerName precedent); HKCU *population* stays deferred
+(CUI-1 notes).
+
 **Case folding comes from ntdll, not from the server's own table.** `server/unicode.c` reads
 a lowercase table out of `l_intl.nls` with `pread()` on a unix descriptor; that file is a
 unix-fd reader rather than a state machine, so it is not compiled here, and `hash_strW` /
