@@ -363,7 +363,7 @@ BOOL WINAPI UpdateDriverForPlugAndPlayDevicesA(HWND parent, const char *hardware
  * wineboot writes. There is no hostname source below this boundary, so the
  * glue answers a FIXED name — configuration, not NT contract (docs/03
  * "CUI-3 SCM notes"). ws2_32.dll itself stays unloadable until its unixlib
- * seam lands (CUI-5); wineboot must not import it. */
+ * seam lands (Net-1); wineboot must not import it. */
 int WINAPI gethostname(char *name, int namelen)
 {
     static const char fixed[] = "proskrnl";

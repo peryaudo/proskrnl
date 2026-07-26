@@ -253,10 +253,13 @@ a fabricated number; `^C` is detected on the serial transport rather than by
 conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
 process-ecosystem notes").
 
-Next: **CUI-5** — sockets (virtio-net, `\Device\Afd`) — or **the GUI path
-(GUI-1+)** — pixels/input, win32u (`docs/02`); either way, growing the
-winetest manifest as its parked blockers land (`docs/03` "M10 winetest
-notes").
+Next: **CUI-5** — Io completion, led by file rename — through **CUI-7**
+(the measured syscall gap and its plan: `docs/16-syscall-status.md`,
+`docs/02`), **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
+CUI-5, now its own path) — or **the GUI path (GUI-1+)** — pixels/input,
+win32u (`docs/02`); either way, growing the winetest manifest as its parked
+blockers land (`docs/03` "M10 winetest notes"). Debug objects are ruled out
+of scope permanently (`docs/03` "Debug objects").
 
 ## Build instructions
 

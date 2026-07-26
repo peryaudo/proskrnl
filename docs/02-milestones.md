@@ -2,7 +2,7 @@
 
 Each milestone closes on **a runnable artifact + a verification method**. Never on "code
 written." The empirical effort split is roughly: **M1–M6 = 40%, M7 alone = 30%,
-M8 onward = 30%** (an estimate that predates the CUI consolidation path below — CUI-5
+M8 onward = 30%** (an estimate that predates the CUI consolidation path below — Net-1
 alone is M6-sized). M7 is both the biggest mountain and the biggest return.
 
 Ordering rules that matter:
@@ -136,10 +136,16 @@ AND on proskrnl (`docs/03` "M10 winetest notes").
 
 > M10's acceptance proves the *mechanism* (process/file/pipe/console plumbing). It does
 > not provide the *machine state* real console software expects: registry content, a
-> token surface, an SCM, process enumeration, an interruptible console, sockets, a true
-> clock. These five milestones close that gap, consumer-first (Article 5: each new `Nt*`
-> arrives because a baked binary calls it, pinned by an oracle-green test — never
+> token surface, an SCM, process enumeration, an interruptible console, a true clock.
+> These milestones close that gap, consumer-first (Article 5: each new `Nt*` arrives
+> because a baked binary calls it, pinned by an oracle-green test — never
 > speculatively). The path is independent of the GUI path; either may come first.
+> Sockets are NOT on this path: they are a genuinely new subsystem, not consolidation,
+> and live as their own **Net-1** milestone below. The measured gap this path closes —
+> which ids are missing, which are permanently out of scope, which partial services
+> refuse the classes real apps ask for — is `docs/16-syscall-status.md`; CUI-5…CUI-7
+> are its build plan, and after them the buildable syscall surface is complete
+> (202 of the 264 Wine x64 ids; the other 62 are out of scope by decision, not debt).
 > **Verification spine:** the winetest gate (`tests/run/run.sh winetest`, live since the
 > M10 stretch work — `docs/03` "M10 winetest notes") — every CUI milestone grows its
 > manifest, unparking pairs blocked on that milestone's surface, so "fully functional"
@@ -161,7 +167,7 @@ neuter the directive in glue. Also here: **retire the no-RTC deviation** (`docs/
 read the CMOS RTC once at boot (MC146818 via ports 0x70/0x71, cited per G8; QEMU supplies
 host UTC) and seed the 1601-epoch SystemTime base from it instead of the fixed date.
 That fixes FAT32 mtimes (build tools compare them) and wineboot's own freshness check,
-and is a hard prerequisite for CUI-5's TLS acceptance. wineboot's remaining legs degrade
+and is a hard prerequisite for Net-1's TLS acceptance. wineboot's remaining legs degrade
 gracefully (missing `__wine_user_shared_data` section, failing
 `NtQuerySystemInformationEx`, unloadable RegisterDlls GUI DLLs all warn-and-continue).
 **Done when:** `wineboot --init` completes; a registry differential vs. the oracle's
@@ -201,9 +207,76 @@ most user-visible CUI hole (a running program cannot be interrupted today). Debu
 objects (`NtCreateDebugObject` family) are the stretch goal, not the gate.
 **Done when:** a tasklist/taskkill pair works against live processes; Ctrl+C interrupts
 a loop under cmd.exe; a job-object-using build tool completes.
+*(Outcome: the stretch goal was not taken, and afterwards debug objects were ruled
+permanently out of scope — no baked consumer, and the native debugger toolchain
+expects PDB where proskrnl is DWARF end-to-end. `docs/03` "Debug objects", `docs/16`.)*
 
-## CUI-5 — sockets: virtio-net + `\Device\Afd`
-The one genuinely new subsystem and the largest item on this path (2–3× the others).
+## CUI-5 — Io completion
+The file surface's last mile (12 missing ids + the refused info classes, `docs/16`),
+led by the single largest hole on either list: **rename**.
+`FileRenameInformation(Ex)`/`FileLinkInformation` in `NtSetInformationFile` —
+`MoveFile`/`ren`/`move` and every write-tmp-then-rename tool fail today, and rename
+does not exist anywhere in `fs/` yet. Then: `NtNotifyChangeDirectoryFile`
+(`ReadDirectoryChangesW` — file watchers, build tools), `NtCancelSynchronousIoFile`,
+`NtRead/WriteFile{Scatter,Gather}`, `NtFlushBuffersFileEx`, `NtDeleteFile`,
+`NtQuery/SetEaFile`, `NtSetVolumeInformationFile`, `NtQueryDirectoryObject`
+(kernelbase volume enumeration), `NtOpenIoCompletion`, `NtSetIoCompletionEx`; the
+missing query classes (`FileNetworkOpen`/`AttributeTag`/`Stream`/
+`FileIdBothDirectory`, `FileFsFullSizeInformation`); and widening async I/O past
+CUI-3's single pended verb (`FSCTL_PIPE_LISTEN`) where a consumer convicts it.
+**Done when:** `move`/`ren` work under cmd.exe; a write-tmp-then-rename tool
+completes; a directory watcher sees a change; the unparked winetest file pairs join
+the manifest.
+
+## CUI-6 — handles, identity, and the query surface
+What real tools ask *about* processes, threads, and handles — plus the Se leftovers.
+Ob/Ke/Ps ids: `NtSetInformationObject` (**`SetHandleInformation`**, the
+stdio-redirect idiom) with `ObjectHandleFlagInformation` in `NtQueryObject`
+(`GetHandleInformation`); `NtCompareObjects`; `NtSignalAndWaitForSingleObject`;
+`NtOpenTimer`; `NtMakePermanentObject`; `NtQueueApcThreadEx2`;
+`NtAlertResumeThread`; `NtFlushProcessWriteBuffers` and
+`NtGetCurrentProcessorNumber` (kernel32/kernelbase forward these exports straight to
+ntdll); `NtSetThreadExecutionState`. Query classes: `ProcessTimes`/`PriorityClass`/
+`HandleCount`/`ImageFileName`, `ThreadTimes`, `SystemHandle`/`Module`/
+`ProcessorPerformanceInformation`. Foreign-thread `NtGet/SetContextThread` (the
+`SuspendThread`+`GetThreadContext` profiler/GC pattern — its debugger consumer is
+gone) and `NtOpenThread` by CLIENT_ID. Jobs finish here: nesting, limit enforcement,
+real accounting. Se-2: `NtSetInformationToken`, `NtFilterToken`
+(`CreateRestrictedToken`), `NtAdjustGroupsToken`, `NtImpersonateAnonymousToken`,
+impersonation attach, and **retiring Ob's always-allow create/open access check** —
+a one-authority engine change (Art. 11) that must be its own commit.
+**Done when:** a handle-inheritance redirect chain round-trips; a `timeit`-style
+tool reads real process/thread times; a restricted-token launch works.
+
+## CUI-7 — Cm-2 + Mm-2 + system furniture
+The largest by id count (29) and the cheapest per id — the `*Ex` forms delegate to
+engines that already exist (Art. 11: extend, never fork). Registry: `NtLoadKey{,2,Ex}`,
+`NtUnloadKey`, `NtSaveKey`, `NtRestoreKey`, `NtReplaceKey`, `NtRenameKey`,
+`NtNotifyChangeKey{,MultipleKeys}` (`RegNotifyChangeKeyValue` — services block on
+it), `NtSetInformationKey`, `NtQueryMultipleValueKey`. Memory:
+`NtAllocateVirtualMemoryEx`, `NtCreateSectionEx`, `NtMap/UnmapViewOfSectionEx` (the
+`VirtualAlloc2`/`MapViewOfFile3` family), `NtFlushVirtualMemory`,
+`NtLock/UnlockVirtualMemory`, `NtGet/ResetWriteWatch` (write-watch heaps),
+`NtSetInformationVirtualMemory`. Locale/system: `NtQueryDefaultUILanguage`,
+`NtQueryInstallUILanguage`, `NtSetDefaultUILanguage`, `NtSetDefaultLocale` (natural
+fit with Cm-2 — they are NLS/registry reads), `NtSetSystemTime` (pairs with CUI-1's
+CMOS RTC work), `NtSetSystemInformation`, `NtShutdownSystem`.
+Ordering: CUI-5 → CUI-6 is a hard order (jobs and foreign-context work want the
+query surface); CUI-7 is independent and can land in parallel or slot anywhere.
+**Done when:** `reg save`/`reg load` round-trips and survives reboot; an app on the
+`VirtualAlloc2`/write-watch path runs; after CUI-5…7 the buildable id surface is
+complete (202/264, `docs/16`) and every remaining `KI_SYSCALL_MISSING` row is an
+out-of-scope decision, not debt.
+
+---
+
+## Networking path (independent of the CUI path; formerly CUI-5)
+
+## Net-1 — sockets: virtio-net + `\Device\Afd`
+The one genuinely new subsystem and the largest single item post-M10 (2–3× a CUI
+consolidation milestone) — moved off the CUI path because it is new capability, not
+consolidation, and nothing on CUI-5…CUI-7 depends on it (nor it on them; it needs
+only CUI-1's clock).
 virtio-net over the existing virtio-pci transport (spec-cited per constant, like
 virtio-blk); a deliberately dumb TCP/UDP stack (Article 3: correctness only, no
 performance work); the AFD ioctl surface Wine's PE ws2_32 issues via

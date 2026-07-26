@@ -598,7 +598,7 @@ which applies `wine.inf`'s machine-state payload through
   writes fails and is on the differential's exclusion list.
 - **`ws2_32.dll` is baked as dormant data** — it cannot load (`DllMain`
   returns failure with no unixlib below); wineboot's `gethostname`/
-  `getaddrinfo` are glue stand-ins. A loadable seam is CUI-5's (sockets).
+  `getaddrinfo` are glue stand-ins. A loadable seam is Net-1's (sockets).
 - wineboot's remaining legs warn-and-continue as stock: missing
   `__wine_user_shared_data` section, absent `services.exe`, the root PnP
   device installs, and the `winedbg` auto-start on a child fault.
@@ -833,6 +833,40 @@ abandoned-siblings notes, the CUI-3 job note).
   `jobtool.exe` assigns children to a `KILL_ON_JOB_CLOSE` job, reads the live
   member count back through the job's accounting, and closes the handle to
   reap them.
+
+## Debug objects are out of scope (permanent; decided post-CUI-4)
+
+The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,
+`NtRemoveProcessDebug`, `NtWaitForDebugEvent`, `NtSetInformationDebugObject` — was
+CUI-4's stretch goal; it was not taken, and it is now ruled **permanently out of
+scope** rather than deferred:
+
+- **No baked consumer (Art. 1).** The entire family sits behind ntdll's on-demand
+  `DbgUi*` entry points (`dlls/ntdll/process.c`) and the
+  `DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS` flags in kernelbase's `CreateProcess`
+  path — nothing in the baked CUI stack reaches them at startup or on any normal
+  path. A debugger is a development tool, not an app the boundary exists to run.
+- **Symbol-toolchain impedance mismatch.** proskrnl's own toolchain is
+  clang/LLD/DWARF end-to-end (`tools/symbolize.py`, the panic-path stack traces);
+  the native Windows debugging ecosystem a debug-object surface would invite
+  (windbg et al.) expects PDB symbol flow that nothing here produces. Supporting
+  the syscalls without the toolchain they exist to serve would be surface without
+  a consumer.
+- **What is lost, concretely:** `DebugActiveProcess`/`WaitForDebugEvent`-style
+  debugger attach, and `CreateProcess` with `DEBUG_PROCESS`. Both fail loudly
+  (`KI_SYSCALL_MISSING` on serial + `STATUS_NOT_IMPLEMENTED`, Art. 12) — never
+  silently. Debugging *of* proskrnl user processes remains what it is today:
+  the panic dump, serial tracing, and the differential suites (Art. 6/9).
+- **Also out with them:** the kernel-debug control pair
+  (`NtSystemDebugControl`, `NtSetDebugFilterState`). Foreign-thread
+  `NtGet/SetContextThread` is NOT out — it stays on the CUI-6 plan for the
+  `SuspendThread`+`GetThreadContext` profiler pattern (`docs/02`).
+- If a future milestone ever revisits this (e.g. a DWARF-native debugger as its
+  own consumer), it re-enters through the front door: an oracle-green `tests/ntapi`
+  pin first (Art. 5), and this entry is amended — not silently contradicted.
+
+The full accounting of which missing syscalls are out of scope vs. planned is
+`docs/16-syscall-status.md`.
 
 ## Panic-on-STATUS_NOT_IMPLEMENTED boot (Art. 12 dialed to fatal)
 
