@@ -36,6 +36,24 @@ fi
 TIMEOUT="${TIMEOUT:-600}"
 MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
 
+# cache=unsafe (and cache.no-flush=on in the blockdev leg): the guest driver
+# negotiates neither VIRTIO_BLK_F_FLUSH nor _CONFIG_WCE, so QEMU emulates a
+# writethrough disk — every 512-byte sector write carries BDRV_REQ_FUA and
+# lands as pwrite+fdatasync (pinned tree: hw/block/virtio-blk.c
+# virtio_blk_set_status -> blk_set_enable_write_cache(false);
+# block/block-backend.c blk_co_do_pwritev_part sets BDRV_REQ_FUA on every
+# write; block/file-posix.c turns that into a device cache flush). On a
+# desktop NVMe an honest flush is ~2-3 ms, and the CUI-1 firstboot INF pass
+# rewrites the whole hive per registry mutation: a virgin boot measured 380
+# sector-writes/s — 10+ minutes of fdatasync — vs 12 s (KVM) / 35 s (TCG)
+# with flushes suppressed (CI never hurt: a hosted runner's fdatasync is
+# nearly free). Suppressing host-side durability changes nothing the guest
+# or the verdict pipeline observes: the bytes sit in host page cache, so
+# fatcheck and the tornwrite replay read the same image even after a timeout
+# SIGKILL — only a HOST power loss could eat a scratch image, and every
+# image here is one.
+DRIVE_CACHE="cache=unsafe"
+
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
 # multiplexes its monitor onto stdio (Ctrl-A x quits, Ctrl-A c toggles the
 # monitor). No timeout, no log, no verdict: a human owns the session, and the
@@ -52,7 +70,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         -display none \
         -serial mon:stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-        -drive file="$IMG",format=raw,if=virtio
+        -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
     exit 0
 fi
 PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
@@ -80,13 +98,16 @@ fi
 # after every write (our driver never negotiates FLUSH, and the default only
 # updates on flush). The caller pre-creates the log file.
 if [[ -n "${WRITE_LOG:-}" ]]; then
-    DRIVE_ARGS=(-blockdev "driver=file,node-name=tw-img,filename=$IMG"
+    # cache.no-flush=on = the DRIVE_CACHE rationale above in blockdev syntax
+    # (qapi/block-core.json BlockdevCacheOptions); the log's ground truth is
+    # the guest-issued write sequence, not the host file's sync state.
+    DRIVE_ARGS=(-blockdev "driver=file,node-name=tw-img,filename=$IMG,cache.no-flush=on"
                 -blockdev "driver=raw,node-name=tw-fmt,file=tw-img"
-                -blockdev "driver=file,node-name=tw-logf,filename=$WRITE_LOG"
+                -blockdev "driver=file,node-name=tw-logf,filename=$WRITE_LOG,cache.no-flush=on"
                 -blockdev "driver=blklogwrites,node-name=tw-top,file=tw-fmt,log=tw-logf,log-append=off,log-super-update-interval=1"
                 -device  "virtio-blk-pci,drive=tw-top")
 else
-    DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio")
+    DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio,$DRIVE_CACHE")
 fi
 
 "$QEMU" \
