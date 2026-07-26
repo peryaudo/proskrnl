@@ -166,6 +166,27 @@ oracle() {
         fails=$((fails+1))
     fi
 
+    # GUI-3: the oracle is also the font-metrics oracle, and its font backend
+    # is dlopen'd -- when the open fails win32u proceeds with NO fonts rather
+    # than failing, so nothing above would notice. Ask it for a face and check
+    # it answers (tests/gdi/fontsmoke.c). Oracle-only: it links gdi32, which
+    # the proskrnl ntapi image does not carry.
+    local fontexe fontout
+    fontexe="$BUILD/ntapi/fontsmoke.exe"
+    if [[ ! -f "$fontexe" || "$ROOT/tests/gdi/fontsmoke.c" -nt "$fontexe" || \
+          "$NTAPI/ntapi.c" -nt "$fontexe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontsmoke.c" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fontexe" >&2
+    fi
+    fontout="$("$WINE" "$fontexe" 2>&1 || true)"
+    echo "$fontout"
+    if echo "$fontout" | tr -d '\r' | grep -qE '^\[KTEST\] fontsmoke PASS$'; then
+        :
+    else
+        fails=$((fails+1))
+    fi
+
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
 }
