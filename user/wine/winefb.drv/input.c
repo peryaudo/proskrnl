@@ -342,10 +342,15 @@ static DWORD WINAPI pointer_thread( void *arg )
         }
         /* One line per drained batch, not per report: the harness gates on
          * position/buttons after it stops injecting, and a batch is the
-         * natural coalescing unit under a fast host pointer. */
+         * natural coalescing unit under a fast host pointer. The cursor
+         * follows the batch's final position (cursor.c; this thread is its
+         * single writer). */
         if (flushed)
+        {
+            winefb_cursor_update( report.screen_x, report.screen_y );
             winefb_report( "[KTEST] gui4 ptr x=%d y=%d btn=%x\n", report.screen_x,
                            report.screen_y, (unsigned)report.buttons );
+        }
     }
     NtClose( device );
     return 0;

@@ -49,6 +49,7 @@ extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_
                                        UINT swp_flags, const struct window_rects *new_rects,
                                        struct window_surface *surface );
 extern void winefb_start_input(void);
+extern void winefb_cursor_update( int x, int y );
 
 /* The harness reads these off the serial log and checks the screendump
  * against them; nothing about the expected picture is hardcoded host-side
