@@ -768,8 +768,12 @@ win32u: $(WIN32U)
 # mapped image is copied whole per process, so DWARF is a real memory
 # bill -- see WINESTRIP above). user32 pulls in win32u, which this build
 # replaces; gdi32 and comctl32 come with winemine, and imm32 is loaded by
-# user32's own init.
-WINESTRIP_GUI_NAMES := user32 gdi32 comctl32 imm32
+# user32's own init. The ole32 chain (ole32 -> combase/coml2; rpcrt4 is
+# already in the CUI set, everything else delay-imported) is there for
+# imm32's IME apartment spy: CoRegisterInitializeSpy is a DELAYIMPORT whose
+# failure hook aborts the process (EXCEPTION_WINE_STUB), and every real
+# Windows has ole32.
+WINESTRIP_GUI_NAMES := user32 gdi32 comctl32 imm32 ole32 combase coml2
 WINESTRIP_GUI_DLLS := $(foreach d,$(WINESTRIP_GUI_NAMES),$(WINESTRIP)/$(d).dll)
 $(foreach d,$(WINESTRIP_GUI_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
