@@ -229,8 +229,12 @@ static void serve_ready_slots(void)
             info.reply_data = slot->data;
             status = prsk_server_dispatch( owner->client, slot->tid, &info );
             slot->status = status;
+            /* Reply and reply data go back even on error, exactly as
+             * wineserver's send_reply writes them (server/request.c): the
+             * dispatch already copied the data into the slot, and callers
+             * read reply fields beside an error (see call.c slot_call). */
             slot->reply = info.u.reply;
-            slot->reply_size = status ? 0 : info.u.reply.reply_header.reply_size;
+            slot->reply_size = info.u.reply.reply_header.reply_size;
             break;
         }
 
