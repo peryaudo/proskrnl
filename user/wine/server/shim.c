@@ -708,9 +708,10 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
     if (prsk_trace_requests)
     {
         const unsigned int *body = (const unsigned int *)((const char *)&info->u.req + 12);
-        prsk_log( "[TRACE] wineserver-lite: %s data=%u req=%08x,%08x,%08x\n",
+        prsk_log( "[TRACE] wineserver-lite: %s data=%u req=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
                   req < prsk_req_count ? prsk_req_names[req] : "<out of range>",
-                  (unsigned)info->u.req.request_header.request_size, body[0], body[1], body[2] );
+                  (unsigned)info->u.req.request_header.request_size, body[0], body[1], body[2],
+                  body[3], body[4], body[5], body[6], body[7] );
     }
 
     if (req >= prsk_req_count || !prsk_req_handlers[req])
@@ -730,7 +731,10 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
         prsk_log( "[TRACE] wineserver-lite: %s -> %08x reply=%08x,%08x\n", prsk_req_names[req],
                   current->error, body[0], body[1] );
     }
-    else if (current->error)
+    else if (current->error && current->error != STATUS_PENDING)
+        /* PENDING is not a swallowed failure: it is get_message's ordinary
+         * empty-queue reply (server/queue.c), and reporting it printed one
+         * line per message-loop iteration. */
         prsk_log( "[KTEST] wineserver-lite: %s failed %08x\n", prsk_req_names[req],
                   current->error );
 
