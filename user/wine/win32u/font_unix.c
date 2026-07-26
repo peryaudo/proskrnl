@@ -79,12 +79,21 @@ static HANDLE fd_get( int fd )
 NTSTATUS ntdll_get_unix_file_name( const WCHAR *dos, char **unix_name, UINT disposition )
 {
     static const char prefix[] = "\\??\\";
-    size_t len = wcslen( dos );
+    size_t skip = sizeof(prefix) - 1, len = wcslen( dos );
     char *name;
     size_t i;
 
+    /* Not every caller hands a drive-letter path: font.c composes paths
+     * from ntdll_get_data_dir, which here already IS the NT spelling, so
+     * they arrive with the \??\ prefix in place. Adding a second one made
+     * every font open fail (and so every select_font bail). */
+    if (len < skip || dos[0] != '\\' || dos[1] != '?' || dos[2] != '?' || dos[3] != '\\')
+        skip = 0;
+
     if (!(name = malloc( sizeof(prefix) + len ))) return STATUS_NO_MEMORY;
     memcpy( name, prefix, sizeof(prefix) - 1 );
+    dos += skip;
+    len -= skip;
     /* Font paths are ASCII on this image (the baked fonts directory); a
      * non-ASCII name would be silently mangled, so refuse it instead. */
     for (i = 0; i < len; i++)
