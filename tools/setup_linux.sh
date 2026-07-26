@@ -104,8 +104,14 @@ echo "== wine: the ntapi oracle (64-bit only, no GUI/font deps) =="
 if [[ -x third_party/wine/wine64 || -x third_party/wine/wine ]]; then
     echo "   already built — skipping"
 else
+    # --without-fontconfig is explicit, not autodetect: libgtk-3-dev (for the
+    # QEMU GTK build above) drags the fontconfig dev headers in, and an
+    # oracle whose config.h depends on which host built it is exactly the
+    # drift the pins exist to prevent (user/wine/include/config.h pins the
+    # win32u build against it regardless).
     (cd third_party/wine &&
-        ./configure --enable-win64 --without-x --without-freetype --disable-tests)
+        ./configure --enable-win64 --without-x --without-freetype \
+            --without-fontconfig --disable-tests)
     make -C third_party/wine -j"$(nproc)"
 fi
 
@@ -120,7 +126,8 @@ if [[ -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ]]; the
     echo "   already built — skipping"
 else
     (cd third_party/wine &&
-        ./configure --enable-win64 --without-x --without-freetype)
+        ./configure --enable-win64 --without-x --without-freetype \
+            --without-fontconfig)
     make -C third_party/wine -j"$(nproc)" \
         dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
         dlls/ucrtbase/tests/all programs/cmd/tests/all
