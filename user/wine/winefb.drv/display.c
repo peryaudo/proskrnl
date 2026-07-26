@@ -22,8 +22,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
 struct winefb_scanout winefb_scanout;
 
-static UINT started_input;
-
 static HANDLE open_device( const WCHAR *path, ACCESS_MASK access, ULONG sharing )
 {
     UNICODE_STRING name;
@@ -144,9 +142,13 @@ UINT winefb_update_display_devices( const struct gdi_device_manager *manager, vo
 
     if (!winefb_scanout.pixels) return STATUS_UNSUCCESSFUL;
 
-    /* The first enumeration is the earliest point that is certainly off the
-     * loader lock, so it is where the keyboard reader starts. */
-    if (!started_input++) winefb_start_input();
+    /* Display enumeration is certainly off the loader lock, so it is one of
+     * the points the input reader may start from. It is no longer the only
+     * one: once the display cache is warm in the registry, a client can run
+     * its whole life without this entry being called (the GUI-3 logs proved
+     * it), so the first window surface is a second chance (blit.c).
+     * winefb_start_input itself is idempotent. */
+    winefb_start_input();
 
     current.dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT |
                        DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
