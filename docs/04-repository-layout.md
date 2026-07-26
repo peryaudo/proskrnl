@@ -116,18 +116,28 @@ proskrnl/
 │   ├── wine/                        # build glue; Wine itself is the third_party/wine
 │   │   │                            #   submodule — unixlib→syscall swaps live as commits
 │   │   │                            #   on its proskrnl-target fork branch (Art. 10 / G9)
+│   │   ├── include/                 # the POSIX headers mingw lacks (pthread, dlfcn,
+│   │   │                            #   poll, mmap, dirent) + config.h/unixlib.h shadows
+│   │   ├── win32u/                  # ★ win32u's unix half, compiled as PE (GUI-2)
+│   │   │   ├── glue.c               #   pthreads, the user-mode callback pair, ntdll's
+│   │   │   │                        #   unix-side helpers, the libc corners
+│   │   │   ├── font_unix.c          #   open/mmap/opendir for the font backend, over Nt*
+│   │   │   └── freetype_link.c      #   dlsym → the linked-in FreeType (generated table)
+│   │   ├── server/                  # ★ wineserver's GUI object model, in-process
+│   │   │   └── shim.c               #   wine_server_call, the session mapping, queue
+│   │   │                            #   events, timeouts, the one process/thread
 │   │   ├── winefb.drv/              # ★ display backend written AS a Wine driver
 │   │   │   ├── init.c               #   user_driver_funcs table
 │   │   │   ├── display.c            #   mode enumeration, \Device\Fb0 map, desktop create
 │   │   │   ├── blit.c               #   dibdrv output → scanout
-│   │   │   ├── cursor.c
+│   │   │   ├── cursor.c             #   empty until there is a mouse (GUI-4)
 │   │   │   └── input.c              #   \Device\Input0 → input injection
-│   │   ├── build.sh                 # partial build: ntdll + needed DLLs only
-│   │   └── build-server.sh          # wineserver-lite build (route (a))
 │   └── init-tests/                  # M4–M6 flat-binary / minimal-PE test clients
 │
 ├── third_party/
-│   └── wine/                        # submodule, SHA-pinned (fork on GitHub recommended)
+│   ├── wine/                        # submodule, SHA-pinned (fork on GitHub recommended)
+│   └── freetype/                    # submodule, SHA-pinned; cross-built as a PE static
+│                                    #   library and linked into win32u (GUI-2)
 │
 ├── system/                          # "furniture": data, not code (GUI/desktop era)
 │   └── skel/
@@ -167,10 +177,18 @@ proskrnl/
 
 Three independently-built components joined by **artifacts, not build graphs**: the kernel
 (our **Make** build, clang `--target=x86_64-elf -ffreestanding`), Wine (its *own* autotools,
-wrapped by `user/wine/build.sh`), and — at GUI-6/GUI-7 only — the ReactOS shell (its *own*
+driven by `tools/setup_linux.sh`), and — at GUI-6/GUI-7 only — the ReactOS shell (its *own*
 CMake/RosBE). Each foreign project builds itself into PE binaries; `tools/mkimage.sh` bakes
 those plus the kernel into the FAT32 image. The top-level `Makefile` is a thin orchestrator
-(build kernel → run `build.sh` → run `mkimage.sh`), not a single graph that owns everything.
+(build kernel → bake the pinned PE output → run `mkimage.sh`), not a single graph that owns
+everything.
+
+One deliberate exception, added at GUI-2: the `win32u` target compiles Wine *sources* out of
+the pinned tree with mingw rather than taking a built artifact. That is not a port of Wine
+into our build system — it is the same trick `user/conhost/` has used since M9, applied to
+the half of win32u Wine builds as a `.so` and we need as a `.dll`. Nothing is copied and
+nothing is patched; the pinned tree stays the single source (docs/06 "one tree, three
+roles").
 
 The rule this encodes: **never port Wine or ROS into our build system.** Their build risk
 (flag-combination extraction — `docs/06`, `docs/12`) lives inside their native builds and is

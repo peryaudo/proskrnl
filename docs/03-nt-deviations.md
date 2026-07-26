@@ -1006,6 +1006,49 @@ type (Art. 4).
 so the conviction is that a key injected by QEMU's own input layer (QMP `send-key`) comes back out
 of the read path as `EV_KEY`/`KEY_A` press-then-release.
 
+## GUI-2 notes (win32u in-process)
+
+GUI-2 runs win32u's implementation and the pinned wineserver's GUI object model inside the
+GUI process (`user/wine/`, docs/07 route (a)). Three shortcuts that arrangement makes are
+deliberate, and each is a delta to re-examine at GUI-3, when wineserver-lite becomes a
+process again.
+
+**One window-station directory.** `NtUserCreateWindowStation` names "WinSta0" relative to a
+handle on `\Sessions\<id>\Windows\WindowStations`, and that handle comes from the KERNEL
+namespace (`NtOpenDirectoryObject`), which the in-process server has no view of. So
+`get_directory_obj` probes the handle for validity and then answers with the one
+window-station directory it owns. With one process, one session and one station that IS the
+correct answer, but it stops being one the moment there are two sessions. Reported once on
+serial when first taken.
+
+**Security is the kernel's, not a second engine's.** The in-process server's
+`check_object_access` succeeds and its token queries answer "no token". proskrnl's Se
+department already decides access at the `Nt*` boundary (M8); running a second, parallel
+check over descriptors nobody sets would be exactly the drift Art. 11 warns about — two
+authorities that agree today and diverge later. The GUI objects are reachable only from
+this process, so there is nothing for the second check to protect.
+
+**Case folding comes from ntdll, not from the server's own table.** `server/unicode.c` reads
+a lowercase table out of `l_intl.nls` with `pread()` on a unix descriptor; that file is a
+unix-fd reader rather than a state machine, so it is not compiled here, and `hash_strW` /
+`memicmp_strW` go through `RtlDowncaseUnicodeChar` instead. It is the same table — ntdll maps
+the same `l_intl.nls` the image bakes — reached a different way.
+
+Everything else the GUI path asks for that is not linked in refuses by name and returns
+`STATUS_NOT_IMPLEMENTED`; the dispatch table is generated from the pinned tree's own request
+list (`tools/gen_server_table.py`), so the refusals are a measured set (188 of 308) rather
+than an assumption.
+
+**FreeType is on for this build only.** The pinned Wine stays configured
+`--without-freetype`. It is the oracle, and the oracle is the spec (docs/06) — turning fonts
+on there to make a proskrnl build easier would be fixing the oracle instead of the kernel
+(Art. 6). `user/wine/include/config.h` sets the two defines for the proskrnl build alone.
+The consequence to keep in mind: there is currently no oracle for font *metrics*, because
+the two builds do not have the same font backend. docs/07's "same FreeType + fonts as
+Wine-on-Linux ⇒ same numbers" needs the pin reconfigured, which is a GUI-3+ decision.
+
+
+
 ## WOW64 (not a deviation)
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
