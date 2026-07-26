@@ -87,6 +87,16 @@ MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
 # image here is one.
 DRIVE_CACHE="cache=unsafe"
 
+# GUI-1 (docs/02): Limine sets a linear framebuffer through the VGA BIOS's
+# VBE, and \Device\Fb0 (drivers/fb.c) publishes whatever it was given. "std"
+# (QEMU's bochs-display VBE) is already the default VGA for the q35
+# default-device set, so this pins today's behaviour rather than changing
+# it — but the pin is what keeps a future -nodefaults or a QEMU default
+# change from silently taking the framebuffer away. -display none does not
+# remove the adapter: the scanout still renders host-side, which is what
+# makes the headless `screendump` verification below work at all.
+VGA_ARGS=(-vga std)
+
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
 # multiplexes its monitor onto stdio (Ctrl-A x quits, Ctrl-A c toggles the
 # monitor). No timeout, no log, no verdict: a human owns the session, and the
@@ -101,6 +111,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         -m "$MEM" \
         -no-reboot \
         -display none \
+        "${VGA_ARGS[@]}" \
         -serial mon:stdio \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
@@ -130,6 +141,32 @@ fi
 # tree; log-super-update-interval=1 keeps the superblock's nr_entries fresh
 # after every write (our driver never negotiates FLUSH, and the default only
 # updates on flush). The caller pre-creates the log file.
+# GUI-1: QMP_SOCK=<path> exposes a QMP control socket so the gui leg can
+# pull the scanout as a PPM (`screendump`, qapi/ui.json in the pinned tree)
+# and inject keys (`send-key`) — the framebuffer's verdict is a picture, not
+# a serial line, and QEMU renders it from its own device model rather than
+# from anything the kernel says about itself (Art. 6). QMP rather than HMP
+# because the replies are machine-parseable. Absent QMP_SOCK this is exactly
+# the previous `-monitor none` invocation.
+if [[ -n "${QMP_SOCK:-}" ]]; then
+    rm -f "$QMP_SOCK"
+    MON_ARGS=(-monitor none -qmp "unix:$QMP_SOCK,server=on,wait=off")
+else
+    MON_ARGS=(-monitor none)
+fi
+
+# EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui
+# leg adds virtio-keyboard-pci this way so no other leg grows a device it
+# does not use. Word-split on spaces: a spec may carry comma-separated
+# properties, but no spaces.
+EXTRA_DEVICE_ARGS=()
+if [[ -n "${EXTRA_DEVICES:-}" ]]; then
+    read -ra EXTRA_DEVICE_SPECS <<< "$EXTRA_DEVICES"
+    for spec in "${EXTRA_DEVICE_SPECS[@]}"; do
+        EXTRA_DEVICE_ARGS+=(-device "$spec")
+    done
+fi
+
 if [[ -n "${WRITE_LOG:-}" ]]; then
     # cache.no-flush=on = the DRIVE_CACHE rationale above in blockdev syntax
     # (qapi/block-core.json BlockdevCacheOptions); the log's ground truth is
@@ -149,8 +186,10 @@ fi
     -m "$MEM" \
     -no-reboot \
     -display none \
-    -monitor none \
+    "${VGA_ARGS[@]}" \
+    "${MON_ARGS[@]}" \
     "${SERIAL_ARGS[@]}" \
+    ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     "${DRIVE_ARGS[@]}" &
 QPID=$!
