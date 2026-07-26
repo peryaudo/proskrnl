@@ -277,13 +277,44 @@ painted, and a QMP-injected key comes back out of `NtReadFile`
 switching, no write-combining, and no output path to the keyboard (LEDs) —
 each refuses rather than pretends (`docs/03` "GUI-1 notes").
 
-Next: **GUI-2** — win32u and `winefb.drv`, the first window on screen — or
-**CUI-5** (Io completion, led by file rename) through **CUI-7**, the measured
-syscall gap and its plan (`docs/16-syscall-status.md`, `docs/02`), or
-**Net-1** — sockets (virtio-net, `\Device\Afd`; the former CUI-5, now its own
-path); either way, growing the winetest manifest as its parked blockers land
-(`docs/03` "M10 winetest notes"). Debug objects are ruled out of scope
-permanently (ADR 0011).
+**GUI-2 — win32u and `winefb.drv`** is **in progress**: the structure is
+built and boots, and the kernel gained almost nothing for it. Wine ships
+win32u in two halves and neither one fits — the PE `win32u.dll` is nothing
+but syscall thunks aimed at `NtUser*`/`NtGdi*` numbers the kernel must never
+grow (`docs/07`: "no `NtUser*` syscalls are minted"), and the implementation
+lives in a `.so` there is no unix side to load. So the second half becomes
+the DLL: the same sources, compiled as PE above ntdll instead of above libc,
+with `user32`/`gdi32`/`imm32` binding to it by name, unmodified, because
+that is how they import win32u anyway. The desktop state underneath is the
+pinned **wineserver's own GUI object model** compiled into the same DLL
+behind an in-process `wine_server_call` — Wine's state machine rather than a
+second one (Art. 11), and the same library GUI-3 will put back behind IPC.
+Message queues wake through real kernel events, which is `docs/07`'s
+"message queue backed by a kernel event" arriving a milestone early because
+it was also the simplest thing that worked. `winefb.drv` turns out to be
+three driver entries and a surface flush — the `nulldrv_*` defaults are
+right for a framebuffer with no window manager to negotiate with. FreeType
+is pinned and cross-built as a PE static library. **Nothing in
+`third_party/wine` is patched**: the hack meter is unchanged, and the whole
+milestone is `user/wine/` plus two boot directories in the object namespace.
+
+A gui2 boot currently gets as far as: win32u attached, `\Device\Fb0` mapped
+and its mode reported, the keyboard reader running, window station and
+desktop created, built-in classes registered, and the display device
+enumerated through the driver. It stops at `lock_display_devices` — win32u
+writes the display devices to the registry and reads them straight back, and
+the read-back finds nothing, because the write needs
+`HKLM\HARDWARE\DEVICEMAP` and its parents to exist and the image's PnP setup
+does not create them. The oracle was checked and fails the same call the
+same way, so this is not a kernel divergence; it is furniture the image is
+missing (`docs/02` GUI-2, `docs/03` "GUI-2 notes").
+
+Also next: **CUI-5** (Io completion, led by file rename) through **CUI-7**,
+the measured syscall gap and its plan (`docs/16-syscall-status.md`,
+`docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
+CUI-5, now its own path); either way, growing the winetest manifest as its
+parked blockers land (`docs/03` "M10 winetest notes"). Debug objects are
+ruled out of scope permanently (ADR 0011).
 
 ## Build instructions
 
@@ -299,10 +330,13 @@ tests/run/run.sh winetest   # runs the curated subset of winetest
 tests/run/run.sh firstboot  # CUI-1: diff the firstboot registry against the oracle's prefix
 tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-survival autostart
 tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill, a job tool
+tests/run/run.sh gui        # GUI-1: framebuffer screendump + an injected key
+tests/run/run.sh gui2       # GUI-2: winemine on screen (in progress -- see Status)
 ```
 
 ## License
 
 **GPL-2.0** — see [`LICENSE`](LICENSE) and `docs/11-licensing.md`. Third-party components
-keep their own licenses (Wine is LGPL-2.1; the vendored Limine header is BSD-2-Clause);
+keep their own licenses (Wine is LGPL-2.1; FreeType is FTL/GPL-2.0; the vendored Limine
+header is BSD-2-Clause);
 the kernel/user process boundary keeps user-mode code out of the kernel image.
