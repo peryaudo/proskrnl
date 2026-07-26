@@ -572,6 +572,44 @@ static void KiRunGui3(void)
              (unsigned long)exitStatus);
 }
 
+/* The GUI-4 acceptance (docs/02 "windows can be grabbed and moved; clicks
+ * reach the right window"): the gui3 arrangement -- wineserver-lite plus
+ * two GUI clients -- but with overlapping windows, driven by the harness
+ * through the tablet and keyboard (tests/run/run.sh gui4). Present only on
+ * the gui4 image (probe/skip like the others).
+ *
+ * Both clients park pumping forever: every verdict past their ready
+ * markers is produced by harness-injected input, and both windows must
+ * still be on the scanout for the screendumps. gui4b is waited on exactly
+ * because it never exits -- like every gui leg, this deliberately never
+ * returns (the end-of-suite QEMU exit below would tear the windows down
+ * under the harness's screendumps); the leg owns QEMU's lifetime. */
+static void KiRunGui4(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui4a.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return; /* not a gui4 image */
+    }
+    ObDereferenceObject(probe);
+
+    static PEPROCESS KiGui4aProcess;
+    static PETHREAD KiGui4aThread;
+    NTSTATUS status = PsCreateWineProcess(WSTR("\\??\\C:\\gui4a.exe"), "C:\\gui4a.exe", FALSE,
+                                          &KiGui4aProcess, &KiGui4aThread);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] gui4 A FAIL (create=%#lx)\n", (unsigned long)status);
+        return;
+    }
+
+    NTSTATUS exitStatus = 0;
+    status = PsRunWineImage(WSTR("\\??\\C:\\gui4b.exe"), "C:\\gui4b.exe", FALSE, &exitStatus);
+    DbgPrint("[KTEST] gui4 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+}
+
 /* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
  * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
  * cmd.exe on the serial console, driven by tests/run/console_expect.py —
@@ -1276,6 +1314,8 @@ static void KiTestMainThread(void *context)
     /* GUI-3 image only: two GUI processes over wineserver-lite. Same
      * arrangement again -- last, and normally not returning. */
     KiRunGui3();
+
+    KiRunGui4();
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran

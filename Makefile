@@ -909,6 +909,39 @@ $(IMG_GUI3): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
 gui3-img: $(IMG_GUI3)
 .PHONY: gui3-img
 
+# GUI-4 (docs/02 "windows can be grabbed and moved; clicks reach the right
+# window"): the gui3 payload shape with two purpose-built clients whose
+# windows OVERLAP -- the compositor's pictorial proof -- driven by the
+# harness through the tablet and keyboard (tests/run/run.sh gui4). Same
+# link rule and libs as the gui3 clients: ordinary Wine GUI apps.
+GUI4A := $(BUILD)/modules/gui4a.exe
+GUI4B := $(BUILD)/modules/gui4b.exe
+
+$(BUILD)/modules/gui4%.exe: tests/gui/gui4%.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h \
+        $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
+	    tests/gui/gui4$*.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
+
+GUI4FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             win:$(GUI4A)=gui4a.exe \
+             win:$(GUI4B)=gui4b.exe
+
+IMG_GUI4 := $(BUILD)/proskrnl-gui4.hdd
+$(IMG_GUI4): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(WINESERVER_LITE) $(GUI4A) $(GUI4B) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI4) $(MODULE_SPECS) $(WINFILES) $(GUI4FILES)
+
+gui4-img: $(IMG_GUI4)
+.PHONY: gui4-img
+
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
