@@ -191,15 +191,126 @@ static const struct object_ops prsk_thread_ops =
     no_destroy                 /* destroy */
 };
 
-static struct process *the_process;
+/* One client == one process that talks to this server. GUI-2 had exactly
+ * one and could call it `the_process`; GUI-3 keeps a list, because the
+ * lookups below (get_process_from_id, enum_processes, get_thread_from_id)
+ * are the ones that answered "the only process there is" and have to answer
+ * truthfully once there are two. The in-process build registers itself as
+ * the single client at bringup, so this is the same shape either way and
+ * there is one code path rather than two (Art. 11).
+ *
+ * `handle` is the client's NT process handle, held for as long as the
+ * client is known: it is what a duplicate INTO the client names, and what
+ * the server waits on to learn the client died. The local client's is
+ * GetCurrentProcess(), the pseudo handle, which needs no closing. */
+struct prsk_client
+{
+    struct list     entry;
+    struct process *process;
+    HANDLE          handle;
+    DWORD           pid;
+    ULONG           session;
+};
+
+static struct list clients = LIST_INIT( clients );
+static struct prsk_client *local_client;
 static struct list thread_records = LIST_INIT( thread_records );
 
 struct prsk_thread_record
 {
-    struct list    entry;
-    struct thread *thread;
-    DWORD          tid;
+    struct list         entry;
+    struct thread      *thread;
+    struct prsk_client *client;
+    DWORD               tid;
 };
+
+static struct prsk_client *find_client( DWORD pid )
+{
+    struct prsk_client *client;
+
+    LIST_FOR_EACH_ENTRY( client, &clients, struct prsk_client, entry )
+        if (client->pid == pid) return client;
+    return NULL;
+}
+
+static struct prsk_client *find_client_by_process( struct process *process )
+{
+    struct prsk_client *client;
+
+    LIST_FOR_EACH_ENTRY( client, &clients, struct prsk_client, entry )
+        if (client->process == process) return client;
+    return NULL;
+}
+
+/* Does `handle` name a live directory object in the CLIENT's handle table?
+ *
+ * The server has no view of another process's table, so the handle is
+ * brought over with a cross-process NtDuplicateObject (pinned by
+ * sem_ob/dup_cross_process) and queried here, then dropped. For the local
+ * client the duplicate is same-process and the code path is identical --
+ * one authority for both modes rather than a branch that drifts (Art. 11). */
+static int prsk_client_handle_is_directory( struct prsk_client *client, obj_handle_t handle )
+{
+    HANDLE local = NULL;
+    char buffer[128];
+    OBJECT_TYPE_INFORMATION *type = (OBJECT_TYPE_INFORMATION *)buffer;
+    ULONG len = 0;
+    int ok;
+
+    if (!handle) return 0;
+    if (NtDuplicateObject( client->handle, wine_server_ptr_handle( handle ), GetCurrentProcess(),
+                           &local, 0, 0, DUPLICATE_SAME_ACCESS ))
+        return 0;
+    ok = !NtQueryObject( local, ObjectTypeInformation, type, sizeof(buffer), &len ) &&
+         type->TypeName.Length == sizeof(L"Directory") - sizeof(WCHAR) &&
+         !memcmp( type->TypeName.Buffer, L"Directory", type->TypeName.Length );
+    NtClose( local );
+    return ok;
+}
+
+/* The NT session a process runs in. It decides which window-station
+ * directory the client's create requests resolve against, so it comes from
+ * the kernel rather than from an assumption that there is only one. */
+static ULONG prsk_process_session( HANDLE process )
+{
+    ULONG session = 0;
+
+    /* ProcessSessionInformation is an EXACT-ULONG class -- that is the shape
+     * both the oracle (dlls/ntdll/unix/process.c) and the kernel
+     * (kernel/ps/query.c, pinned by sem_ps/system_processes) implement, and
+     * a larger buffer is refused rather than truncated. */
+    if (NtQueryInformationProcess( process, ProcessSessionInformation, &session, sizeof(session),
+                                   NULL ))
+        return 0;
+    return session;
+}
+
+static struct prsk_client *create_client( DWORD pid, HANDLE handle )
+{
+    struct prsk_client *client;
+    struct process *process;
+
+    if (!(process = alloc_object( &prsk_process_ops ))) return NULL;
+    memset( (char *)process + sizeof(process->obj), 0, sizeof(*process) - sizeof(process->obj) );
+    process->id = pid;
+    process->parent_id = 0;
+    process->machine = IMAGE_FILE_MACHINE_AMD64;
+    process->running_threads = 1;
+    list_init( &process->thread_list );
+    list_init( &process->classes );
+    list_init( &process->rawinput_entry );
+    list_init( &process->kernel_object );
+    /* alloc_handle_table RETURNS the table; process.c assigns it. */
+    if (!(process->handles = alloc_handle_table( process, 0 ))) return NULL;
+
+    if (!(client = malloc( sizeof(*client) ))) return NULL;
+    client->process = process;
+    client->handle = handle;
+    client->pid = pid;
+    client->session = prsk_process_session( handle );
+    list_add_tail( &clients, &client->entry );
+    return client;
+}
 
 static struct thread *find_thread_record( DWORD tid )
 {
@@ -210,14 +321,23 @@ static struct thread *find_thread_record( DWORD tid )
     return NULL;
 }
 
-static struct thread *create_thread_record( DWORD tid )
+static struct prsk_client *find_thread_client( DWORD tid )
+{
+    struct prsk_thread_record *record;
+
+    LIST_FOR_EACH_ENTRY( record, &thread_records, struct prsk_thread_record, entry )
+        if (record->tid == tid) return record->client;
+    return NULL;
+}
+
+static struct thread *create_thread_record( struct prsk_client *client, DWORD tid )
 {
     struct prsk_thread_record *record;
     struct thread *thread;
 
     if (!(thread = alloc_object( &prsk_thread_ops ))) return NULL;
     memset( (char *)thread + sizeof(thread->obj), 0, sizeof(*thread) - sizeof(thread->obj) );
-    thread->process = the_process;
+    thread->process = client->process;
     thread->id = tid;
     thread->state = RUNNING;
     thread->desktop_users = 0;
@@ -227,11 +347,12 @@ static struct thread *create_thread_record( DWORD tid )
     list_init( &thread->system_apc );
     list_init( &thread->user_apc );
     list_init( &thread->kernel_object );
-    list_add_tail( &the_process->thread_list, &thread->proc_entry );
+    list_add_tail( &client->process->thread_list, &thread->proc_entry );
     list_init( &thread->desktop_entry );
 
     if (!(record = malloc( sizeof(*record) ))) return NULL;
     record->thread = thread;
+    record->client = client;
     record->tid = tid;
     list_add_tail( &thread_records, &record->entry );
     return thread;
@@ -459,13 +580,16 @@ void reset_sync( struct object *obj )
 /* The kernel handle behind a sync object, duplicated for the caller. Used to
  * answer get_msg_queue_handle with something NtWaitForMultipleObjects
  * understands (see the dispatch fix-ups below). */
-static HANDLE dup_sync_handle( struct object *obj )
+static HANDLE dup_sync_handle( struct object *obj, HANDLE target_process )
 {
     struct prsk_sync *sync = (struct prsk_sync *)obj;
     HANDLE dup = NULL;
 
     if (!obj || obj->ops != &prsk_sync_ops) return NULL;
-    NtDuplicateObject( GetCurrentProcess(), sync->event, GetCurrentProcess(), &dup,
+    /* The reply carries a handle that must be valid IN THE CLIENT, which is
+     * how NT hands a win32k handle out too. In-process that target is our
+     * own process and this is the same call it always was. */
+    NtDuplicateObject( GetCurrentProcess(), sync->event, target_process, &dup,
                        SYNCHRONIZE | EVENT_MODIFY_STATE, 0, 0 );
     return dup;
 }
@@ -592,8 +716,6 @@ static DWORD WINAPI timeout_thread( void *arg )
 
 static LONG init_state;   /* 0 untouched, 1 building, 2 ready, 3 failed */
 
-static int prsk_create_winstation_dir(void);
-
 /* A first-chance report of any access violation, with the faulting address
  * relative to this DLL. The Wine loader catches these and reports only
  * "failed to initialize", which names the DLL but not the instruction; this
@@ -628,21 +750,14 @@ static int server_bringup(void)
     if (NtCreateEvent( &timeout_wakeup, EVENT_ALL_ACCESS, &attr, SynchronizationEvent, FALSE ))
         return 0;
     if (!prsk_create_session_mapping()) return 0;
-    if (!prsk_create_winstation_dir()) return 0;
 
-    if (!(the_process = alloc_object( &prsk_process_ops ))) return 0;
-    memset( (char *)the_process + sizeof(the_process->obj), 0,
-            sizeof(*the_process) - sizeof(the_process->obj) );
-    the_process->id = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess );
-    the_process->parent_id = 0;
-    the_process->machine = IMAGE_FILE_MACHINE_AMD64;
-    the_process->running_threads = 1;
-    list_init( &the_process->thread_list );
-    list_init( &the_process->classes );
-    list_init( &the_process->rawinput_entry );
-    list_init( &the_process->kernel_object );
-    /* alloc_handle_table RETURNS the table; process.c assigns it. */
-    if (!(the_process->handles = alloc_handle_table( the_process, 0 ))) return 0;
+    /* The process running this library is the first client. In the
+     * in-process build it is the only one; when the server is its own
+     * process the clients that attach over the transport join the same
+     * list through the same constructor. */
+    if (!(local_client = create_client( HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess ),
+                                        GetCurrentProcess() )))
+        return 0;
 
     /* The two process-wide atom tables wineserver's init_directories makes.
      * RegisterClass and the window-property calls add to the user one, and
@@ -812,11 +927,12 @@ static void fixup_request( struct __server_request_info *info, enum request req,
          * dispatch_request has already cleared `current` by the time this
          * runs - reading current->queue here was a NULL deref. */
         struct object *queue = (struct object *)thread->queue, *sync;
+        struct prsk_client *client = find_client_by_process( thread->process );
         HANDLE event = NULL;
 
-        if (queue && (sync = get_obj_sync( queue )))
+        if (client && queue && (sync = get_obj_sync( queue )))
         {
-            event = dup_sync_handle( sync );
+            event = dup_sync_handle( sync, client->handle );
             release_object( sync );
         }
         info->u.reply.get_msg_queue_handle_reply.handle = wine_server_obj_handle( event );
@@ -835,7 +951,8 @@ unsigned int CDECL wine_server_call( void *req_ptr )
 
     tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
     server_lock();
-    if (!(thread = find_thread_record( tid )) && !(thread = create_thread_record( tid )))
+    if (!(thread = find_thread_record( tid )) &&
+        !(thread = create_thread_record( local_client, tid )))
     {
         server_unlock();
         return STATUS_NO_MEMORY;
@@ -986,7 +1103,39 @@ static const struct object_ops prsk_directory_ops =
     no_destroy                     /* destroy */
 };
 
-static struct prsk_directory *winstation_dir;
+/* One station directory PER SESSION, made on demand. GUI-2 had a single one
+ * and handed it to every caller, which was the right answer while there was
+ * one session and one process and stopped being one the moment there were
+ * two of either (docs/03 "GUI-2 notes"). The session a request resolves
+ * against is the calling client's, which came from the kernel
+ * (NtQueryInformationProcess) when the client attached -- not from an
+ * assumption about how many there are. */
+struct prsk_station_dir
+{
+    struct list            entry;
+    ULONG                  session;
+    struct prsk_directory *dir;
+};
+
+static struct list station_dirs = LIST_INIT( station_dirs );
+
+static struct prsk_directory *station_dir_for_session( ULONG session )
+{
+    struct prsk_station_dir *entry;
+    struct prsk_directory *dir;
+
+    LIST_FOR_EACH_ENTRY( entry, &station_dirs, struct prsk_station_dir, entry )
+        if (entry->session == session) return entry->dir;
+
+    if (!(dir = alloc_object( &prsk_directory_ops ))) return NULL;
+    dir->obj.name = NULL;
+    if (!(dir->entries = create_namespace( 7 ))) return NULL;
+    if (!(entry = malloc( sizeof(*entry) ))) return NULL;
+    entry->session = session;
+    entry->dir = dir;
+    list_add_tail( &station_dirs, &entry->entry );
+    return dir;
+}
 
 int directory_link_name( struct object *obj, struct object_name *name, struct object *parent )
 {
@@ -1002,33 +1151,38 @@ int directory_link_name( struct object *obj, struct object_name *name, struct ob
     return 1;
 }
 
+/* The session of whichever client is making the current request. */
+static ULONG current_session(void)
+{
+    struct prsk_client *client = current ? find_client_by_process( current->process ) : NULL;
+
+    return client ? client->session : 0;
+}
+
 struct object *get_root_directory(void)
 {
-    return grab_object( winstation_dir );
+    struct prsk_directory *dir = station_dir_for_session( current_session() );
+
+    return dir ? grab_object( dir ) : NULL;
 }
 
 struct object *get_directory_obj( struct process *process, obj_handle_t handle )
 {
-    static int reported;
-    OBJECT_BASIC_INFORMATION info;
+    struct prsk_client *client = find_client_by_process( process );
+    struct prsk_directory *dir;
 
-    if (NtQueryObject( wine_server_ptr_handle( handle ), ObjectBasicInformation, &info,
-                       sizeof(info), NULL ))
+    /* The handle names a directory in the CLIENT's table, which this server
+     * cannot read; what it decides is only which station directory the
+     * relative name resolves under, and that follows from the client's
+     * session. So: check the handle really is a live directory over there,
+     * then answer with that session's directory. */
+    if (!client || !prsk_client_handle_is_directory( client, handle ))
     {
         set_error( STATUS_INVALID_HANDLE );
         return NULL;
     }
-    if (!reported++)
-        prsk_log( "[KTEST] wineserver-lite: window stations live in the one session directory\n" );
-    return grab_object( winstation_dir );
-}
-
-static int prsk_create_winstation_dir(void)
-{
-    if (!(winstation_dir = alloc_object( &prsk_directory_ops ))) return 0;
-    winstation_dir->obj.name = NULL;
-    if (!(winstation_dir->entries = create_namespace( 7 ))) return 0;
-    return 1;
+    if (!(dir = station_dir_for_session( client->session ))) return NULL;
+    return grab_object( dir );
 }
 
 /* --- security --------------------------------------------------------------
@@ -1181,14 +1335,22 @@ void free_kernel_objects( struct object *obj ) { }
 
 struct process *get_process_from_handle( obj_handle_t handle, unsigned int access )
 {
-    /* One process: any handle a GUI request carries names it. */
-    return (struct process *)grab_object( the_process );
+    /* Only req_dup_handle asks (server/handle.c), and that is not on the GUI
+     * path. Resolving it would mean reading a handle table this server does
+     * not own; answering "the process I know about" was true while there was
+     * one and would be a fabricated answer now (Art. 12). */
+    PRSK_UNBUILT( "get_process_from_handle" );
+    set_error( STATUS_NOT_IMPLEMENTED );
+    return NULL;
 }
 
 struct process *get_process_from_id( process_id_t id )
 {
-    if (id && id != the_process->id) { set_error( STATUS_INVALID_PARAMETER ); return NULL; }
-    return (struct process *)grab_object( the_process );
+    struct prsk_client *client;
+
+    if (!id) return (struct process *)grab_object( current->process );
+    if (!(client = find_client( id ))) { set_error( STATUS_INVALID_PARAMETER ); return NULL; }
+    return (struct process *)grab_object( client->process );
 }
 
 struct thread *get_thread_from_id( thread_id_t id )
@@ -1201,7 +1363,10 @@ struct thread *get_thread_from_id( thread_id_t id )
 
 void enum_processes( int (*cb)(struct process *, void *), void *user )
 {
-    cb( the_process, user );
+    struct prsk_client *client, *next;
+
+    LIST_FOR_EACH_ENTRY_SAFE( client, next, &clients, struct prsk_client, entry )
+        if (cb( client->process, user )) break;
 }
 
 const char *server_argv0 = "win32u.dll";

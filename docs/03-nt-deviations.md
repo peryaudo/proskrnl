@@ -1022,13 +1022,25 @@ GUI process (`user/wine/`, docs/07 route (a)). Three shortcuts that arrangement 
 deliberate, and each is a delta to re-examine at GUI-3, when wineserver-lite becomes a
 process again.
 
-**One window-station directory.** `NtUserCreateWindowStation` names "WinSta0" relative to a
-handle on `\Sessions\<id>\Windows\WindowStations`, and that handle comes from the KERNEL
-namespace (`NtOpenDirectoryObject`), which the in-process server has no view of. So
-`get_directory_obj` probes the handle for validity and then answers with the one
-window-station directory it owns. With one process, one session and one station that IS the
-correct answer, but it stops being one the moment there are two sessions. Reported once on
-serial when first taken.
+**One window-station directory — RETIRED at GUI-3.** `NtUserCreateWindowStation` names
+"WinSta0" relative to a handle on `\Sessions\<id>\Windows\WindowStations`, and that handle
+comes from the KERNEL namespace (`NtOpenDirectoryObject`), which the in-process server had
+no view of. GUI-2's `get_directory_obj` therefore probed the handle for validity and
+answered with the one window-station directory it owned — correct while there was one
+process, one session and one station, and wrong the moment there were two of any of them.
+
+The server now keeps **one station directory per session**, made on demand, and answers with
+the directory for the *calling client's* session. The session comes from the kernel
+(`NtQueryInformationProcess(ProcessSessionInformation)` on the client's process handle, taken
+when the client attaches), not from an assumption about how many exist. The handle itself is
+still checked rather than trusted: it is duplicated out of the client with a cross-process
+`NtDuplicateObject` (`sem_ob/dup_cross_process`) and its type queried, so a handle that is
+not a live directory over there is refused. What remains a deviation is narrower and worth
+stating: proskrnl's `NtQueryObject(ObjectNameInformation)` returns an object's **leaf** name
+rather than NT's full path, so the server cannot read the session number out of the handle's
+own name and takes it from the owning process instead. That is the same answer for every
+case the boundary can distinguish, since a process's window stations live in its session's
+directory; making the name query answer full paths is NT-correct and unbuilt.
 
 **Security is the kernel's, not a second engine's.** The in-process server's
 `check_object_access` succeeds, `sd_is_valid` checks only that a descriptor is big enough to
@@ -1038,11 +1050,18 @@ sets would be exactly the drift Art. 11 warns about — two authorities that agr
 diverge later. The GUI objects are reachable only from this process, so there is nothing for
 the second check to protect.
 
-**One process, so any process handle names it.** `get_process_from_handle` returns the one
-process record for any handle a GUI request carries, and `get_process_from_id` accepts only
-that process's id. There is no second process for a handle to mean, and there will not be
-one until GUI-3; the alternative — a handle table for processes that can only ever hold one
-entry — would be machinery with no case to distinguish. `enum_processes` visits the one.
+**One process, so any process handle names it — RETIRED at GUI-3.** GUI-2's
+`get_process_from_handle` returned the one process record for any handle a GUI request
+carried, `get_process_from_id` accepted only that process's id, and `enum_processes` visited
+the one. The server now keeps a list of clients — the in-process build registers itself as
+the single one at bringup, so there is one code path rather than two — and
+`get_process_from_id`/`enum_processes` answer from it truthfully.
+
+`get_process_from_handle` is the exception, and it now **refuses loudly** instead of
+answering. Resolving it would mean reading a handle table the server does not own, and the
+GUI-2 answer ("the process I know about") becomes a fabricated one as soon as there are two
+(Art. 12). Nothing on the GUI path calls it: the only caller among the linked server files is
+`req_dup_handle` (`server/handle.c`), which is not a request win32u makes.
 
 **Thread records are not reclaimed.** A `struct thread` is minted the first time a Win32
 thread makes a server request and lives until the process exits. Wine's server frees them on
