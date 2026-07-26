@@ -22,6 +22,7 @@
  */
 
 #include <pthread.h>
+#include <corecrt_stdio_config.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -532,12 +533,12 @@ int __cdecl __stdio_common_vsscanf( unsigned __int64 options, const char *input,
                                     const char *format, void *locale, va_list args );
 
 /* Ask for C99 truncation semantics (return the length that WOULD have been
- * written, always NUL-terminate) rather than MSVC's -1. */
-#define PRSK_SNPRINTF_OPTIONS (2ULL /* _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR */)
-
+ * written, always NUL-terminate) rather than MSVC's -1. The flag is UCRT's,
+ * so it comes from UCRT's header rather than being typed here (G8). */
 static int prsk_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
 {
-    return __stdio_common_vsprintf( PRSK_SNPRINTF_OPTIONS, buffer, count, format, NULL, args );
+    return __stdio_common_vsprintf( _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR, buffer, count,
+                                    format, NULL, args );
 }
 
 int __mingw_vsnprintf( char *buffer, size_t count, const char *format, va_list args )

@@ -78,7 +78,13 @@ refuse rather than accept-and-drop (Art. 12).
 ## HACK-003: wineserver-lite as a user-mode desktop server
 
 ```
-Status:     proposed
+Status:     proposed as a PROCESS (GUI-3). Its state machine already runs at
+            GUI-2, but in-process: the pinned wineserver's GUI object model is
+            compiled into win32u.dll and reached through an in-process
+            wine_server_call (user/wine/server/). That is not an entry in this
+            ledger, because nothing NT-absent crosses the boundary -- the kernel
+            sees one process running one PE image. It becomes a hack when it
+            becomes a process.
 Introduced: GUI-3 (route (a))
 Not in NT:  NT holds desktop state in kernel win32k (since NT 4.0). NOTE: this is a
             return to NT 3.1's architecture, so it is only "not in NT 4.0+", not

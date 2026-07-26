@@ -57,7 +57,9 @@ START_TEST(session_dirs)
                                        sizeof(basic), NULL);
     ok(status == STATUS_SUCCESS, "ProcessBasicInformation -> %08lx", (unsigned long)status);
     if (NT_SUCCESS(status) && basic.PebBaseAddress)
-        session = *(volatile ULONG *)((char *)basic.PebBaseAddress + 0x2c0 /* PEB.SessionId */);
+        /* PEB.SessionId at 0x2c0 on x86_64; offset as annotated in the
+         * pinned tree's winternl.h (`ULONG SessionId; /* 1d4/2c0 *\/`). */
+        session = *(volatile ULONG *)((char *)basic.PebBaseAddress + 0x2c0);
 
     build_path(path, session);
     init_ustr(&name, path);

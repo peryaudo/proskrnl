@@ -1022,11 +1022,24 @@ correct answer, but it stops being one the moment there are two sessions. Report
 serial when first taken.
 
 **Security is the kernel's, not a second engine's.** The in-process server's
-`check_object_access` succeeds and its token queries answer "no token". proskrnl's Se
-department already decides access at the `Nt*` boundary (M8); running a second, parallel
-check over descriptors nobody sets would be exactly the drift Art. 11 warns about — two
-authorities that agree today and diverge later. The GUI objects are reachable only from
-this process, so there is nothing for the second check to protect.
+`check_object_access` succeeds, `sd_is_valid` checks only that a descriptor is big enough to
+be one, and the token queries answer "no token". proskrnl's Se department already decides
+access at the `Nt*` boundary (M8); running a second, parallel check over descriptors nobody
+sets would be exactly the drift Art. 11 warns about — two authorities that agree today and
+diverge later. The GUI objects are reachable only from this process, so there is nothing for
+the second check to protect.
+
+**One process, so any process handle names it.** `get_process_from_handle` returns the one
+process record for any handle a GUI request carries, and `get_process_from_id` accepts only
+that process's id. There is no second process for a handle to mean, and there will not be
+one until GUI-3; the alternative — a handle table for processes that can only ever hold one
+entry — would be machinery with no case to distinguish. `enum_processes` visits the one.
+
+**Thread records are not reclaimed.** A `struct thread` is minted the first time a Win32
+thread makes a server request and lives until the process exits. Wine's server frees them on
+thread death, which it learns about from the socket closing; there is no socket here, and
+the GUI process's thread count is bounded by what the app creates. A leak, bounded and
+deliberate, to be closed when GUI-3 gives the server a real thread lifetime.
 
 **Case folding comes from ntdll, not from the server's own table.** `server/unicode.c` reads
 a lowercase table out of `l_intl.nls` with `pread()` on a unix descriptor; that file is a
