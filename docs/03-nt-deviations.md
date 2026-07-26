@@ -1078,27 +1078,35 @@ is the same root cause as before — no per-thread death signal — but bounded 
 lifetime rather than unbounded, and it is the case GUI-4's input routing will care about
 first.
 
-**Connect-time desktop inheritance is NOT built — the GUI-3 stopper.** wineserver gives a
-connecting process its window station and desktop before it runs a line
-(`set_process_default_desktop`, `server/winstation.c`): an inherited handle, else the named
-`WinSta0`/`Default`, else the parent's. wineserver-lite has no equivalent, so every client
-thread starts with `thread->desktop == 0`, and that turns out to be load-bearing in a
-non-obvious way. `create_desktop`'s own body calls `get_thread_desktop( current, 0 )` to
-inherit the `DF_WINE_*_DESKTOP` flags; on a desktop-less thread that call fails and, as a
-side effect, leaves `STATUS_INVALID_HANDLE` set. The newly-created branch has no
-`clear_error()` (only the already-existed branch does), so the request returns an error
-**even though it created the desktop and allocated its handle** — win32u reads the error,
-concludes the desktop is unavailable, and every later `get_desktop_window` and
-`create_window` fails in turn.
+**Desktop inheritance: threads inherit, connecting processes self-create — RESOLVED at
+GUI-3 (what stopped the milestone was elsewhere).** What was diagnosed here as "the missing
+connect step" — `create_desktop` on a desktop-less first thread returns
+`STATUS_INVALID_HANDLE` **beside the handle it allocated** (its body's
+`get_thread_desktop( current, 0 )` fails while inheriting the `DF_WINE_*_DESKTOP` flags, and
+only the already-existed branch clears the error) — turned out to be the *oracle's own
+behaviour*, not a divergence. The first process ever to connect to a real wineserver hits the
+same reply: its parent has no window station either, `connect_process_winstation`
+(`server/winstation.c`) bails through `clear_error()`, win32u's `winstation_init` creates
+`WinSta0`/`Default` itself, `NtUserCreateDesktopEx` deliberately takes `reply->handle`
+without looking at the error, and the following `set_thread_desktop` request repairs the
+process default desktop. Every wineserver-lite client is such a parentless first process, so
+the create-and-ignore-the-error dance *is* the pinned behaviour — and no session bootstrap
+in the server is needed or wanted.
 
-Measured, not inferred: the request arrives intact (14 bytes, "Default", one data element),
-the caller's window station resolves (`get_process_winstation` succeeds), and the reply
-carries desktop handle 8 beside the error. So the transport, the client records and the
-per-session station lookup are all doing their jobs; what is missing is the connect step.
-The fix belongs in the server (a session bootstrap that creates `WinSta0`/`Default` once and
-hands each attaching client the same inheritance wineserver's connect path does), never in
-the pinned tree — patching Wine to clear that error would be fixing the oracle to make
-proskrnl pass (Art. 6 / G9).
+The actual stopper was a transport infidelity: `slot_call` (`user/wine/server/call.c`)
+copied the reply back **only on success**, where Wine's wire contract delivers the full
+reply and its data unconditionally and returns the error beside it (`send_reply`,
+`server/request.c`; `wait_reply`, `dlls/ntdll/unix/server.c`) — and the in-process dispatch
+already did the same, so the two modes had drifted (Art. 11) in exactly the way this file
+exists to prevent. With the reply delivered, win32u recovers exactly as it does on the
+oracle. The one piece of inheritance wineserver-lite *did* owe is the per-thread half, and
+it is built: a new thread record starts on its process's default desktop — the same block
+wineserver's `create_thread` runs (`server/thread.c`) — which is what a client's second and
+later threads inherit. The residual deviation is narrow: a process spawned *by a connected
+GUI process* would, on the oracle, inherit its parent's window station and desktop handles
+at connect time; here it self-creates and `OBJ_OPENIF` lands it on the same `WinSta0`/
+`Default`, so the objects agree and only the connect-time handles differ. That case first
+matters when a GUI process launches another (explorer, GUI-6).
 
 **The desktop is always forced, and its user entries look foreign.** On Wine the desktop
 and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window` without `force` waits
