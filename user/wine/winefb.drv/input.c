@@ -1,10 +1,11 @@
 /*
- * input.c - \Device\Input0 into win32u's message queues.
+ * input.c - \Device\Input0 and \Device\Input1 into win32u's message queues.
  *
- * The device hands out raw evdev events, untranslated (drivers/hidproto.h
- * -- scancode translation was explicitly deferred to user32, which is
- * this). Turning them into Win32 input needs two steps and neither of them
- * is a keyboard layout:
+ * The devices hand out raw evdev events, untranslated (drivers/hidproto.h
+ * -- translation was explicitly deferred to user32, which is this).
+ *
+ * Keyboard: turning events into Win32 input needs two steps and neither of
+ * them is a keyboard layout:
  *
  *   evdev keycode -> AT set-1 scancode, which is a fixed table;
  *   scancode -> vkey, which win32u does itself before the message is
@@ -19,14 +20,28 @@
  * takes the same made-up extended scancode Wine's own fallback produces,
  * which is wrong in the same way on both and therefore comparable.
  *
- * The read loop is the one tests/gui/gui_smoke.c proved at GUI-1: exclusive
- * open, blocking NtReadFile, whole 8-byte events. It runs on its own thread
- * because the device has no async path (HACK-002: no IRQ, the driver polls
- * inside the blocking read).
+ * Pointer (GUI-4): the tablet's absolute axes scale to screen pixels --
+ * the range comes from the device itself (IOCTL_PRSHID_GET_ABS_INFO), the
+ * screen from the scanout mode, so no QEMU constant is baked here -- and
+ * inject as MOUSEEVENTF_ABSOLUTE hardware input the way winewayland's
+ * pointer does (dlls/winewayland.drv/wayland_pointer.c,
+ * pointer_handle_motion_internal): screen pixels go to the server
+ * verbatim, which routes by capture and coordinate
+ * (server/queue.c find_hardware_message_window). hwnd 0 on purpose: this
+ * reader serves the whole desktop, not one window, and the server needs
+ * no window hint to hit-test. MOUSEEVENTF_MOVE_NOCOALESCE keeps win32u
+ * from holding motion back (dlls/win32u/input.c accum_mouse_motion) --
+ * QEMU already coalesced whatever needed coalescing.
+ *
+ * The read loops are the one tests/gui/gui_smoke.c proved at GUI-1:
+ * exclusive open, blocking NtReadFile, whole 8-byte events. Each runs on
+ * its own thread because the devices have no async path (HACK-002: no
+ * IRQ, the driver polls inside the blocking read).
  */
 
 #include "winefb.h"
 #include "wine/debug.h"
+#include "wine/server.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
@@ -158,6 +173,184 @@ static DWORD WINAPI input_thread( void *arg )
     return 0;
 }
 
+/* --- the pointer (GUI-4) ------------------------------------------------- */
+
+/* One report's worth of button/wheel INPUTs; QEMU's tablet sends at most a
+ * couple of button transitions between SYNs. */
+#define POINTER_MAX_CLICKS 8
+
+struct pointer_report
+{
+    UINT last_x, last_y; /* raw device values; persist across reports */
+    BOOL moved;          /* an axis changed since the last SYN */
+    UINT buttons;        /* bit 0/1/2 = left/right/middle, for the marker */
+    INPUT clicks[POINTER_MAX_CLICKS];
+    UINT click_count;
+    int screen_x, screen_y; /* last injected position */
+};
+
+static void inject_pointer( INPUT *input )
+{
+    input->type = INPUT_MOUSE;
+    NtUserSendHardwareInput( 0, SEND_HWMSG_RAWINPUT, input, 0 );
+}
+
+/* Device range -> screen pixels. Both ends inclusive; 64-bit intermediate
+ * because 32767 * 32767 does not care, but 32767 * a future 4K width
+ * might. */
+static int scale_axis( UINT value, UINT min, UINT max, UINT screen )
+{
+    if (max <= min || screen == 0) return 0;
+    if (value <= min) return 0;
+    if (value >= max) return (int)screen - 1;
+    return (int)(((ULONGLONG)(value - min) * (screen - 1)) / (max - min));
+}
+
+static void pointer_flush_report( struct pointer_report *report, const HID_ABS_INFO *abs )
+{
+    UINT i;
+
+    /* Motion first: a button in the same report belongs at the report's
+     * position, and the server stamps buttons with the cursor position it
+     * already has (server/queue.c queue_mouse_message). */
+    if (report->moved)
+    {
+        INPUT input = { 0 };
+
+        report->screen_x = scale_axis( report->last_x, abs->minX, abs->maxX,
+                                       winefb_scanout.mode.width );
+        report->screen_y = scale_axis( report->last_y, abs->minY, abs->maxY,
+                                       winefb_scanout.mode.height );
+        input.mi.dx = report->screen_x;
+        input.mi.dy = report->screen_y;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE_NOCOALESCE;
+        inject_pointer( &input );
+        report->moved = FALSE;
+    }
+    for (i = 0; i < report->click_count; i++) inject_pointer( &report->clicks[i] );
+    report->click_count = 0;
+}
+
+static void pointer_add_click( struct pointer_report *report, DWORD flags, DWORD data )
+{
+    INPUT *input;
+
+    if (report->click_count >= POINTER_MAX_CLICKS) return;
+    input = &report->clicks[report->click_count++];
+    memset( input, 0, sizeof(*input) );
+    input->mi.dwFlags = flags;
+    input->mi.mouseData = data;
+}
+
+static DWORD WINAPI pointer_thread( void *arg )
+{
+    static const WCHAR input1[] =
+        {'\\','D','e','v','i','c','e','\\','I','n','p','u','t','1',0};
+    HID_INPUT_EVENT events[32];
+    struct pointer_report report = { 0 };
+    HID_ABS_INFO abs;
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK io;
+    HANDLE device;
+    NTSTATUS status;
+
+    RtlInitUnicodeString( &name, input1 );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+    /* Exclusive by contract (drivers/hidproto.h): sharing 0. */
+    status = NtCreateFile( &device, FILE_GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL,
+                           FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT,
+                           NULL, 0 );
+    if (status == STATUS_SHARING_VIOLATION)
+    {
+        TRACE( "input1 already has its reader\n" );
+        return 0;
+    }
+    if (status)
+    {
+        /* No pointer: keyboard-only images say so once and stand alone. */
+        winefb_report( "[KTEST] gui4 mouse ABSENT\n" );
+        return 0;
+    }
+
+    /* The device's own range, once; scaling with a stale range would be
+     * wrong forever, and the range cannot change (the device model fixes
+     * it before DRIVER_OK). */
+    if (NtDeviceIoControlFile( device, NULL, NULL, NULL, &io, IOCTL_PRSHID_GET_ABS_INFO, NULL, 0,
+                               &abs, sizeof(abs) ) || io.Information != sizeof(abs))
+    {
+        ERR( "IOCTL_PRSHID_GET_ABS_INFO failed\n" );
+        winefb_report( "[KTEST] gui4 mouse FAULT absinfo\n" );
+        NtClose( device );
+        return 0;
+    }
+
+    winefb_report( "[KTEST] gui4 mouse READY abs=%u..%u,%u..%u\n", (unsigned)abs.minX,
+                   (unsigned)abs.maxX, (unsigned)abs.minY, (unsigned)abs.maxY );
+    for (;;)
+    {
+        ULONG count, i;
+        BOOL flushed = FALSE;
+
+        if (NtReadFile( device, NULL, NULL, NULL, &io, events, sizeof(events), NULL, NULL )) break;
+        count = io.Information / sizeof(events[0]);
+        for (i = 0; i < count; i++)
+        {
+            const HID_INPUT_EVENT *event = &events[i];
+
+            switch (event->type)
+            {
+            case HID_EV_ABS:
+                if (event->code == HID_ABS_X) { report.last_x = event->value; report.moved = TRUE; }
+                else if (event->code == HID_ABS_Y) { report.last_y = event->value; report.moved = TRUE; }
+                break;
+            case HID_EV_KEY:
+                switch (event->code)
+                {
+                case HID_BTN_LEFT:
+                    pointer_add_click( &report, event->value ? MOUSEEVENTF_LEFTDOWN
+                                                             : MOUSEEVENTF_LEFTUP, 0 );
+                    report.buttons = event->value ? report.buttons | 1 : report.buttons & ~1u;
+                    break;
+                case HID_BTN_RIGHT:
+                    pointer_add_click( &report, event->value ? MOUSEEVENTF_RIGHTDOWN
+                                                             : MOUSEEVENTF_RIGHTUP, 0 );
+                    report.buttons = event->value ? report.buttons | 2 : report.buttons & ~2u;
+                    break;
+                case HID_BTN_MIDDLE:
+                    pointer_add_click( &report, event->value ? MOUSEEVENTF_MIDDLEDOWN
+                                                             : MOUSEEVENTF_MIDDLEUP, 0 );
+                    report.buttons = event->value ? report.buttons | 4 : report.buttons & ~4u;
+                    break;
+                }
+                break;
+            case HID_EV_REL:
+                /* The wheel is a detent count; Win32 spells one detent
+                 * WHEEL_DELTA, same sign (up/away positive). */
+                if (event->code == HID_REL_WHEEL)
+                    pointer_add_click( &report, MOUSEEVENTF_WHEEL,
+                                       (DWORD)((int)event->value * WHEEL_DELTA) );
+                break;
+            case HID_EV_SYN:
+                if (report.moved || report.click_count)
+                {
+                    pointer_flush_report( &report, &abs );
+                    flushed = TRUE;
+                }
+                break;
+            }
+        }
+        /* One line per drained batch, not per report: the harness gates on
+         * position/buttons after it stops injecting, and a batch is the
+         * natural coalescing unit under a fast host pointer. */
+        if (flushed)
+            winefb_report( "[KTEST] gui4 ptr x=%d y=%d btn=%x\n", report.screen_x,
+                           report.screen_y, (unsigned)report.buttons );
+    }
+    NtClose( device );
+    return 0;
+}
+
 /* Idempotent: every GUI process calls this from every hook that proves the
  * process is alive and off the loader lock (display enumeration, first
  * window surface), and exactly one attempt is made per process. The
@@ -176,6 +369,14 @@ void winefb_start_input(void)
                           0, 0, 0, 0, NULL ))
     {
         ERR( "cannot start the input thread\n" );
+        return;
+    }
+    NtClose( thread );
+
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), pointer_thread,
+                          NULL, 0, 0, 0, 0, NULL ))
+    {
+        ERR( "cannot start the pointer thread\n" );
         return;
     }
     NtClose( thread );
