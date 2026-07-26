@@ -379,6 +379,26 @@ exposed via generated `NtUser*` syscalls.
 **Done when:** two GUI processes run at once; Z-order, focus, cross-thread `SendMessage`,
 `FindWindow` all behave; the docs/03 GUI-2 single-process shortcuts are retired.
 
+**In progress.** Standing as of the GUI-3 branch — `tests/run/run.sh gui3` is written and
+red, which is the honest measure of what is left:
+
+- **Done.** The font-metrics oracle (the decision above, taken and built). The transport:
+  `wineserver-lite.exe` is a real process, built as a second link over the *same* server
+  objects `win32u.dll` uses, and clients reach it through a shared section plus kernel
+  events — two GUI processes attach, and their requests arrive with payloads intact. Real
+  client records with the kernel as the only identity source; window stations resolved per
+  session; thread and process reaping (a client's death is learned from its process handle
+  going signalled, no socket needed). Cross-process `NtDuplicateObject` in the kernel,
+  which the handout of a queue's sync event and the station-handle check both need.
+- **Left.** Connect-time desktop inheritance — wineserver's `set_process_default_desktop`,
+  which gives a connecting process its window station and desktop before it runs a line.
+  Without it a client's first thread has no desktop, and `create_desktop`'s own body leaves
+  `STATUS_INVALID_HANDLE` set as a side effect of asking for one, so the request reports
+  failure *after having created the desktop*. Everything downstream cascades from that.
+  Diagnosis and measurements: docs/03 "Connect-time desktop inheritance". The fix belongs
+  in the server — a session bootstrap plus the inheritance step — and never in the pinned
+  tree.
+
 ## GUI-4 — Compositing, input routing, cursor
 Inject `\Device\Input0` events into the input queue; hit-test and route; composite
 per-Z-order with clipping; draw the cursor; manage dirty rectangles. No window manager

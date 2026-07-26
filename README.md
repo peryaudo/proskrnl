@@ -64,8 +64,9 @@ The version-sensitive dependencies are **pinned git submodules** under
 `third_party/` so every environment builds against the same bits: `limine`
 (bootloader stages + deploy tool, a `-binary` release branch), `limine-protocol`
 (the kernel-facing boot-protocol header), `qemu` (the official GitHub mirror,
-pinned ≥ 9.0 — see below), and `wine` (both the `abi/` generation source *and*
-the ntapi oracle runtime). `tools/mkimage.sh`, `tools/qemu.sh`, and
+pinned ≥ 9.0 — see below), `freetype` (the font backend, built twice: a PE
+static library for the target and a native one for the oracle), and `wine`
+(both the `abi/` generation source *and* the ntapi oracle runtime). `tools/mkimage.sh`, `tools/qemu.sh`, and
 `tests/run/run.sh` all prefer the in-tree builds automatically and fall back to
 host tools on PATH.
 
@@ -116,9 +117,13 @@ with distro packages:
   hangs after `[KTEST] pool PASS`. 24.04 ships 8.2, so the pinned submodule
   (official GitHub mirror, `x86_64-softmmu` only) is built instead of trusting
   the distro.
-- **wine** — the ntapi oracle runtime, built (64-bit only, no GUI/font
-  dependencies) from the very same pinned tree `abi/` is generated from, so
-  the oracle and the contract cannot version-diverge.
+- **wine** — the ntapi oracle runtime, built (64-bit, no X) from the very
+  same pinned tree `abi/` is generated from, so the oracle and the contract
+  cannot version-diverge. Since GUI-3 it is also the **font-metrics oracle**:
+  configured `--with-freetype --without-fontconfig` against the pinned
+  `third_party/freetype`, so the oracle and the target answer font questions
+  from the same FreeType and the same font set, and no host fonts can leak
+  into the spec.
 
 The first run takes a while (QEMU and Wine are real builds); re-runs skip
 finished work. A distro QEMU ≥ 9.0 (Ubuntu ≥ 24.10, recent Fedora/Arch) also
@@ -314,8 +319,28 @@ no mouse and no cursor (GUI-4), one surface flush with last-writer-wins
 (the compositor is GUI-4), and winemine idles after its first paint, so
 the leg screendumps that settled first frame.
 
-Also next: **GUI-3** — wineserver-lite becomes a process again (the GUI
-mountain, lowered by route (a)) — or **CUI-5** (Io completion, led by file
+**GUI-3 — wineserver-lite becomes a process — is in progress**, on the
+`milestone-gui3` branch, and its leg (`tests/run/run.sh gui3`) is written
+and red. What stands up: the **font-metrics oracle** (the pinned Wine is
+now built `--with-freetype` against the pinned FreeType, so the oracle and
+the target answer font questions from the same code — `tests/gdi/fontsmoke.c`
+guards the dlopen that would otherwise degrade to no fonts in silence); and
+the **process boundary** itself — `wineserver-lite.exe` is a real process,
+linked a second time over the *same* server objects `win32u.dll` uses, with
+clients reaching it through a shared section plus kernel events. Two GUI
+processes attach to it and their requests arrive intact; clients are real
+records with the kernel as the only source of identity, window stations
+resolve per session, and a client's death is learned from its process
+handle rather than from a socket. The kernel grew cross-process
+`NtDuplicateObject` (pinned by `sem_ob/dup_cross_process`) to make the
+handle hand-offs possible. **Not yet:** connect-time desktop inheritance —
+wineserver hands a connecting process its window station and desktop before
+it runs a line, and without that step a client's first thread has no
+desktop, which makes `create_desktop` report failure *after* creating the
+desktop. That single gap is what keeps the leg red; the diagnosis and the
+measurements behind it are in `docs/03` "Connect-time desktop inheritance".
+
+Also next: **CUI-5** (Io completion, led by file
 rename) through **CUI-7**,
 the measured syscall gap and its plan (`docs/16-syscall-status.md`,
 `docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
@@ -340,6 +365,7 @@ tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-su
 tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill, a job tool
 tests/run/run.sh gui        # GUI-1: framebuffer screendump + an injected key
 tests/run/run.sh gui2       # GUI-2: winemine on screen (screendump differential)
+tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite (in progress)
 ```
 
 ## License

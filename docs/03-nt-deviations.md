@@ -1063,11 +1063,42 @@ GUI-2 answer ("the process I know about") becomes a fabricated one as soon as th
 (Art. 12). Nothing on the GUI path calls it: the only caller among the linked server files is
 `req_dup_handle` (`server/handle.c`), which is not a request win32u makes.
 
-**Thread records are not reclaimed.** A `struct thread` is minted the first time a Win32
-thread makes a server request and lives until the process exits. Wine's server frees them on
-thread death, which it learns about from the socket closing; there is no socket here, and
-the GUI process's thread count is bounded by what the app creates. A leak, bounded and
-deliberate, to be closed when GUI-3 gives the server a real thread lifetime.
+**Thread records are not reclaimed — RETIRED at GUI-3 (with a named residual).** GUI-2 minted
+a `struct thread` on a Win32 thread's first server request and never freed it: Wine's server
+learns of thread death from the socket closing, and there is no socket here. The server
+process now has two authorities for it, neither a socket. A thread that detaches normally
+sends `PRSK_OP_DETACH` from win32u's `DLL_THREAD_DETACH` and is reaped in wineserver's own
+order (`cleanup_clipboard_thread` → `destroy_thread_windows` → `free_msg_queue` →
+`release_thread_desktop`); a client PROCESS that exits is noticed by its process handle going
+signalled in the server's own wait, and everything it still owns is reaped then.
+
+The residual, stated because it is real: a thread killed with `NtTerminateThread` while its
+process lives on delivers no `DLL_THREAD_DETACH`, so its records wait for process exit. That
+is the same root cause as before — no per-thread death signal — but bounded by a process
+lifetime rather than unbounded, and it is the case GUI-4's input routing will care about
+first.
+
+**Connect-time desktop inheritance is NOT built — the GUI-3 stopper.** wineserver gives a
+connecting process its window station and desktop before it runs a line
+(`set_process_default_desktop`, `server/winstation.c`): an inherited handle, else the named
+`WinSta0`/`Default`, else the parent's. wineserver-lite has no equivalent, so every client
+thread starts with `thread->desktop == 0`, and that turns out to be load-bearing in a
+non-obvious way. `create_desktop`'s own body calls `get_thread_desktop( current, 0 )` to
+inherit the `DF_WINE_*_DESKTOP` flags; on a desktop-less thread that call fails and, as a
+side effect, leaves `STATUS_INVALID_HANDLE` set. The newly-created branch has no
+`clear_error()` (only the already-existed branch does), so the request returns an error
+**even though it created the desktop and allocated its handle** — win32u reads the error,
+concludes the desktop is unavailable, and every later `get_desktop_window` and
+`create_window` fails in turn.
+
+Measured, not inferred: the request arrives intact (14 bytes, "Default", one data element),
+the caller's window station resolves (`get_process_winstation` succeeds), and the reply
+carries desktop handle 8 beside the error. So the transport, the client records and the
+per-session station lookup are all doing their jobs; what is missing is the connect step.
+The fix belongs in the server (a session bootstrap that creates `WinSta0`/`Default` once and
+hands each attaching client the same inheritance wineserver's connect path does), never in
+the pinned tree — patching Wine to clear that error would be fixing the oracle to make
+proskrnl pass (Art. 6 / G9).
 
 **The desktop is always forced, and its user entries look foreign.** On Wine the desktop
 and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window` without `force` waits
