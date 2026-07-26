@@ -42,6 +42,7 @@ extern struct winefb_scanout winefb_scanout;
 
 extern BOOL winefb_map_scanout(void);
 extern UINT winefb_update_display_devices( const struct gdi_device_manager *manager, void *param );
+extern void winefb_set_desktop_window( HWND hwnd );
 extern BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_rect,
                                           struct window_surface **surface );
 extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint,

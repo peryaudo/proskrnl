@@ -16,6 +16,7 @@
 
 #include "winefb.h"
 #include "wine/debug.h"
+#include "wine/server.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
@@ -92,6 +93,46 @@ BOOL winefb_map_scanout(void)
                    (unsigned)mode.width, (unsigned)mode.height, (unsigned)mode.pitch,
                    (unsigned)mode.bpp, winefb_scanout.bgrx ? 1u : 0u );
     return TRUE;
+}
+
+/* The desktop window is born with empty rects and normally sized by the
+ * process that owns it — explorer's desktop thread on Wine. There is no
+ * explorer here (GUI-6), so the driver entry sizes it to the scanout, the
+ * same repair X11DRV_SetDesktopWindow makes when it finds the rects
+ * uninitialized (dlls/winex11.drv/window.c). The scanout mode is the
+ * driver's whole truth about the display (one mode, HACK-001), so it is
+ * the size used directly. */
+void winefb_set_desktop_window( HWND hwnd )
+{
+    unsigned int width, height;
+
+    if (!winefb_scanout.pixels) return;
+
+    SERVER_START_REQ( get_window_rectangles )
+    {
+        req->handle = wine_server_user_handle( hwnd );
+        req->relative = COORDS_CLIENT;
+        wine_server_call( req );
+        width  = reply->window.right;
+        height = reply->window.bottom;
+    }
+    SERVER_END_REQ;
+
+    if (!width && !height)  /* not initialized yet */
+    {
+        RECT rect = { 0, 0, winefb_scanout.mode.width, winefb_scanout.mode.height };
+
+        SERVER_START_REQ( set_window_pos )
+        {
+            req->handle        = wine_server_user_handle( hwnd );
+            req->previous      = 0;
+            req->swp_flags     = SWP_NOZORDER;
+            req->window        = wine_server_rectangle( rect );
+            req->client        = req->window;
+            wine_server_call( req );
+        }
+        SERVER_END_REQ;
+    }
 }
 
 UINT winefb_update_display_devices( const struct gdi_device_manager *manager, void *param )

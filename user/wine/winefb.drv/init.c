@@ -1,7 +1,7 @@
 /*
  * init.c - the user_driver_funcs table, and the report channel.
  *
- * Three entries. __wine_set_user_driver fills every NULL with a nulldrv_*
+ * Four entries. __wine_set_user_driver fills every NULL with a nulldrv_*
  * default (dlls/win32u/driver.c), and for a framebuffer with no window
  * manager to negotiate with, the defaults are what we want:
  *
@@ -52,6 +52,7 @@ void winefb_report( const char *format, ... )
 
 static const struct user_driver_funcs winefb_funcs =
 {
+    .pSetDesktopWindow     = winefb_set_desktop_window,
     .pUpdateDisplayDevices = winefb_update_display_devices,
     .pCreateWindowSurface  = winefb_create_window_surface,
     .pWindowPosChanged     = winefb_window_pos_changed,
