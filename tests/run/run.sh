@@ -887,6 +887,75 @@ gui() {
     return 0
 }
 
+# GUI-2 (docs/02 "winemine.exe appears on screen"). Same shape as gui()
+# above: boot the gui2 image with a QMP socket and a virtio keyboard, wait
+# for winefb.drv to report the scanout and then a painted window,
+# screendump, and check the picture against what the guest said.
+#
+# No oracle leg, for the same reason gui() has none -- \Device\Fb0 is a
+# HACK device NT does not have (docs/03 "GUI-1 notes", the G5 adaptation).
+# What stands in for it is QEMU's own device model rendering the pixels
+# back (Art. 6), plus the fact that everything ABOVE the driver is
+# unmodified Wine: user32, gdi32, comctl32 and winemine are the pinned
+# tree's own binaries, and win32u is its own sources compiled as PE.
+gui2() {
+    make -C "$ROOT" gui2-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui2.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui2.sock" log="$dir/gui2.log" ppm="$dir/gui2.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm" "$log"
+
+    # 1024M like the console leg: no COW means every process copies the
+    # DLLs it maps, and this image's userland is the whole GUI stack.
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1024M}" \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui2 window ' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-600}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui2_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui2: FAIL ($1; see $log) =="
+        return 1
+    }
+
+    if ! await '\[KTEST\] gui2 mode '; then
+        gui2_fail "winefb.drv never mapped the scanout"; return 1
+    fi
+    if ! await '\[KTEST\] gui2 window '; then
+        gui2_fail "no window ever reached the scanout"; return 1
+    fi
+    # The first flush is the window's first paint; the later marker means
+    # the app has been round its message loop a few times, so the frame the
+    # host dumps is a settled one rather than a half-drawn first pass.
+    await '\[KTEST\] gui2 window .* flush=8' || true
+    sleep 2
+
+    if ! python3 "$ROOT/tests/gui/qmpctl.py" "$sock" screendump "$ppm"; then
+        gui2_fail "screendump failed"; return 1
+    fi
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! python3 "$ROOT/tests/gui/check_window.py" --log "$log" --ppm "$ppm"; then
+        echo "== gui2: FAIL (the screendump does not show what the guest painted) =="
+        return 1
+    fi
+    echo "== gui2: PASS (winemine.exe on screen) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -901,6 +970,7 @@ case "$MODE" in
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
     gui)      gui ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui}" >&2
+    gui2)     gui2 ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2}" >&2
        exit 2 ;;
 esac
