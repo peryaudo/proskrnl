@@ -347,30 +347,62 @@ the scanout (`pSetDesktopWindow`, the `X11DRV` repair). The image also bakes the
 chain (ole32/combase/coml2) because imm32's `CoRegisterInitializeSpy` delay-import aborts
 the process when it cannot resolve — every real Windows has ole32.
 
-## GUI-3 — win32k-lite / wineserver-lite ⛰️ (the GUI mountain, lowered by route (a))
-Under route (a): run a stripped wineserver as a PE process holding GUI state
-(window/queue/hook/clipboard/atom); transport via shared-section + kernel event (message
-queue backed by a kernel event; the genuine friction point). Under route (b) — later,
-optional — transplant that state into a `kernel/win32k/` module exposed via generated
-`NtUser*` syscalls.
+## GUI-3 — wineserver-lite becomes a process ⛰️ (the GUI mountain, half-climbed at GUI-2)
+The stripped wineserver this milestone was budgeted to *build* already runs: GUI-2
+compiled the pinned server's GUI object model (window/queue/hook/clipboard/atom)
+unmodified into win32u.dll behind an in-process `wine_server_call`
+(`user/wine/server/shim.c`), publishing the session shared mapping as a real named
+section (`\KernelObjects\__wine_session`, pinned by `sem_mm/session_shm` — win32u's hot
+read paths open it by name exactly as under Wine) and backing queue wake-ups with real
+kernel events, so `wait_message`'s `NtWaitForMultipleObjects` blocks and wakes unmodified
+— the "genuine friction point" resolved a milestone early. What remains is giving that
+library a process boundary:
+- the request transport — shared section + kernel events (`docs/06`) — replacing the
+  in-process call;
+- real process/thread records with real lifetimes: thread records currently leak by
+  design (no closing socket to learn thread death from), and one-process shortcuts
+  answer `get_process_from_handle`/`get_process_from_id`/`enum_processes` with the only
+  process there is;
+- the window-station directory resolved through the kernel namespace instead of
+  `get_directory_obj`'s probe-and-answer-self;
+- the session mapping's writer moving into the server process (readers already open by
+  name).
+The checklist is the docs/03 "GUI-2 notes" shortcut list — each entry retired or
+re-justified multi-process. Also decided here (docs/03 defers it to "GUI-3+"): the
+**font-metrics oracle** — the pinned Wine is configured `--without-freetype`, so no
+oracle for font metrics exists yet; reconfiguring the pin is a visible
+`tools/setup_linux.sh` event and must precede any milestone that judges dialog layout
+(GUI-5). Under route (b) — later, optional — transplant the server state into a
+`kernel/win32k/` module exposed via generated `NtUser*` syscalls.
 **Done when:** two GUI processes run at once; Z-order, focus, cross-thread `SendMessage`,
-`FindWindow` all behave.
+`FindWindow` all behave; the docs/03 GUI-2 single-process shortcuts are retired.
 
 ## GUI-4 — Compositing, input routing, cursor
 Inject `\Device\Input0` events into the input queue; hit-test and route; composite
 per-Z-order with clipping; draw the cursor; manage dirty rectangles. No window manager
-needed — each app's `DefWindowProc` draws its own frame.
+needed — each app's `DefWindowProc` draws its own frame. Two GUI-2 findings land here:
+`\Device\Input0` carries only a virtio keyboard so far, so the pointer device joins
+HACK-002 at this milestone; and the current flush clock is winefb.drv riding win32u's
+flush-on-message-wait (an idle app paints once and stops — why the gui2 leg dumps the
+settled first frame), which per-window surfaces + dirty rectangles replace.
 **Done when:** windows can be grabbed and moved; clicks reach the right window.
 
 ## GUI-5 — GUI finishing
 Clipboard, hooks, `AttachThreadInput`, GUI-ifying conhost, and the real trophy: run
 Wine's `user32/tests/msg.c`. Value accrues incrementally; keep an honest `todo_` list.
+Anything here that judges dialog layout needs the font-metrics oracle decided at GUI-3
+(docs/03 "GUI-2 notes": the pin is `--without-freetype`, so metrics currently have no
+oracle).
 
 ## GUI-6 — Desktop *(Wine desktop; not the ReactOS shell)*
-Run `wineboot` once (already done if the CUI path ran — CUI-1's firstboot; otherwise it
-initializes the registry via our `NtCreateKey` here), then
-`explorer.exe /desktop=shell,WxH`. The golden artifact is a wallpaper rectangle + a file
-window. `gen_hive.py` is **not** needed — wineboot does it at runtime.
+`wineboot` has already run (CUI-1's firstboot), so this is
+`explorer.exe /desktop=shell,WxH` plus whatever machine-state furniture explorer/shell32
+turn out to assume — GUI-2's lesson: the stalls on that boot were mostly absent furniture
+Wine's userland expects (registry symlinks, `HKU\<sid>`, the ole32 delay-import chain —
+the last already baked), not the predicted risk spots. explorer
+becoming the desktop's real owner retires GUI-2's forced-desktop / foreign-entries
+fixture (docs/03 "GUI-2 notes"). The golden artifact is a wallpaper rectangle + a file
+window. `gen_hive.py` is **not** needed — wineboot did it at runtime.
 **Done when:** `tests/gui/golden/desktop.ppm` matches.
 *Optional GUI-7:* the ReactOS shell (taskbar/Start menu/icons) — a separate integration
 effort with a two-upstream cost; see `docs/06`.
