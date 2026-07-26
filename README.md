@@ -253,13 +253,37 @@ a fabricated number; `^C` is detected on the serial transport rather than by
 conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
 process-ecosystem notes").
 
-Next: **CUI-5** — Io completion, led by file rename — through **CUI-7**
-(the measured syscall gap and its plan: `docs/16-syscall-status.md`,
-`docs/02`), **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
-CUI-5, now its own path) — or **the GUI path (GUI-1+)** — pixels/input,
-win32u (`docs/02`); either way, growing the winetest manifest as its parked
-blockers land (`docs/03` "M10 winetest notes"). Debug objects are ruled out
-of scope permanently (ADR 0011).
+**GUI-1 — pixels and input** opens the GUI path (route (a), `docs/07`), and
+it cost less kernel than budgeted. The framebuffer Limine already set
+through the VGA BIOS's VBE is the one `\Device\Fb0` publishes, so there is
+no virtio-gpu, no ramfb, no mode set and no display-driver model — one
+driver, one ioctl reporting the mode, and pixels a process writes itself.
+Mapping needed no new memory machinery at all: the device implements the
+`GetCache` vfs op the file path already has, so `NtCreateSection` +
+`NtMapViewOfSection` over the device handle work unchanged and `kernel/mm`
+gained nothing — a client maps the scanout with exactly the calls it would
+use to map a file, which is what `winefb.drv` will want at GUI-2. Input is
+`\Device\Input0` over **virtio-input**, delivering evdev records verbatim
+(translation is a keyboard layout, and layouts belong in user32, above the
+boundary); reads block by draining the eventq and napping, the shape the
+serial console already uses, so no interrupt path was added. Getting there
+also meant extracting the modern virtio-pci transport out of the block
+driver — its BAR-mapping window is a single kernel VA cursor, and a second
+copy would have handed two drivers overlapping addresses. Both halves are
+convicted by QEMU rather than by the kernel's own account of itself: a
+`screendump` of the scanout is checked against what the guest says it
+painted, and a QMP-injected key comes back out of `NtReadFile`
+(`tests/run/run.sh gui`). **Not yet:** no mouse (GUI-4), no cursor, no mode
+switching, no write-combining, and no output path to the keyboard (LEDs) —
+each refuses rather than pretends (`docs/03` "GUI-1 notes").
+
+Next: **GUI-2** — win32u and `winefb.drv`, the first window on screen — or
+**CUI-5** (Io completion, led by file rename) through **CUI-7**, the measured
+syscall gap and its plan (`docs/16-syscall-status.md`, `docs/02`), or
+**Net-1** — sockets (virtio-net, `\Device\Afd`; the former CUI-5, now its own
+path); either way, growing the winetest manifest as its parked blockers land
+(`docs/03` "M10 winetest notes"). Debug objects are ruled out of scope
+permanently (ADR 0011).
 
 ## Build instructions
 

@@ -295,11 +295,20 @@ SymCrypt PE-side, `libs/symcrypt`).
 
 ## GUI path (opt-in, additive, route (a) — see docs/07)
 
-## GUI-1 — Pixels and input
+## GUI-1 — Pixels and input ✅
 Limine framebuffer; virtio-input. `\Device\Fb0` (map framebuffer to user)
 and `\Device\Input0` (input event stream). **HACK-001 and HACK-002** (see `docs/10`).
 **Done when:** a user program maps the framebuffer and draws a rectangle visible in a
 screendump; key input is readable.
+
+**Done** (`tests/run/run.sh gui`). Cheaper than budgeted: no virtio-gpu and no ramfb — the
+framebuffer Limine sets through the VGA BIOS's VBE is the framebuffer we publish, so the display
+side is one driver with one ioctl. Mapping needed no new Mm machinery either: `\Device\Fb0`
+implements the existing `GetCache` vfs op, so `NtCreateSection` + `NtMapViewOfSection` over the
+device handle work unchanged. Input is polled from the virtio-input eventq by the blocking read
+(no IRQ path was added). Both halves are convicted by QEMU rather than by the kernel — screendump
+for the pixels, QMP `send-key` for the key (`docs/03` "GUI-1 notes" for the G5 adaptation a HACK
+device forces).
 
 ## GUI-2 — win32u + framebuffer backend (single process)
 Bring in win32u/user32/gdi32/comctl32 PE sides; build win32u's unix side as PE (POSIX →
