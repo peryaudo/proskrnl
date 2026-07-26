@@ -209,9 +209,11 @@ typedef struct
  * offered low feature word in out->deviceFeaturesLow so the caller can
  * refuse on a device-specific bit before features are written back.
  * `transitionalId` is the §4.1.2.1 legacy id to also accept, or 0 for a
- * modern-only device. Returns FALSE (loudly, on serial) when absent. */
+ * modern-only device. `instance` is a 0-based index among same-id functions
+ * (two virtio-input devices on one bus); single-device drivers pass 0.
+ * Returns FALSE (loudly, on serial) when absent. */
 BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, const char *name,
-                                VIO_PCI_DEVICE *out);
+                                unsigned instance, VIO_PCI_DEVICE *out);
 
 /* §3.1.1 step 4 (write half) plus steps 5-6: accept VERSION_1 and nothing
  * else, set FEATURES_OK, and confirm the readback. */

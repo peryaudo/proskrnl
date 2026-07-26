@@ -46,9 +46,12 @@ uint8_t KiPciReadConfig8(const KI_PCI_FUNCTION *f, uint8_t offset);
 void KiPciWriteConfig32(const KI_PCI_FUNCTION *f, uint8_t offset, uint32_t value);
 void KiPciWriteConfig16(const KI_PCI_FUNCTION *f, uint8_t offset, uint16_t value);
 
-/* Scan bus 0 for the first function matching vendor and a device-ID
- * predicate range [deviceLow, deviceHigh]. Returns 1 and fills `out`. */
-int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, KI_PCI_FUNCTION *out);
+/* Scan bus 0 for the (nth+1)-th function matching vendor and a device-ID
+ * predicate range [deviceLow, deviceHigh] (nth is a 0-based match index, so
+ * two identical functions — e.g. two virtio-input devices — are both
+ * reachable). Returns 1 and fills `out`. */
+int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, unsigned nth,
+                    KI_PCI_FUNCTION *out);
 
 /* Read a BAR as a 64-bit physical address (handles the 64-bit memory BAR
  * encoding; returns 0 for an I/O BAR or an unimplemented BAR). */

@@ -43,7 +43,8 @@ void KiPciWriteConfig16(const KI_PCI_FUNCTION *f, uint8_t offset, uint16_t value
     KiPciWriteConfig32(f, offset, dword);
 }
 
-int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, KI_PCI_FUNCTION *out)
+int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, unsigned nth,
+                    KI_PCI_FUNCTION *out)
 {
     for (uint8_t device = 0; device < 32; device++)
     {
@@ -65,8 +66,12 @@ int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, KI
             f.deviceId = (uint16_t)(id >> 16);
             if (f.vendorId == vendor && f.deviceId >= deviceLow && f.deviceId <= deviceHigh)
             {
-                *out = f;
-                return 1;
+                if (nth == 0)
+                {
+                    *out = f;
+                    return 1;
+                }
+                nth--;
             }
             /* Single-function device: header type bit 7 clear (PCI §6.2.1). */
             if (function == 0 && (KiPciReadConfig8(&f, PCI_CONFIG_HEADER_TYPE) & 0x80) == 0)
