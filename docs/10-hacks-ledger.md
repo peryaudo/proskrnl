@@ -31,7 +31,8 @@ Retirement: <the condition under which this is deleted>
 ## HACK-001: `\Device\Fb0`
 
 ```
-Status:     active (GUI-1: the Limine-set linear framebuffer, published as-is)
+Status:     active (GUI-1: the Limine-set linear framebuffer, published as-is;
+            GUI-2: mapped by winefb.drv, which blits dibdrv's surfaces to it)
 Introduced: GUI-1
 Not in NT:  NT owns the framebuffer behind a display driver, below win32k (WDDM/XDDM).
 Reason:     We implement no display-driver model; win32u needs somewhere to blit.
@@ -54,7 +55,8 @@ refuses through `KiPinnedNotImplemented` (Art. 12).
 
 ```
 Status:     active (GUI-1: virtio-input keyboard, eventq polled from a
-            blocking read -- no IRQ; statusq unconfigured; exclusive open)
+            blocking read -- no IRQ; statusq unconfigured; exclusive open;
+            GUI-2: read by winefb.drv's input thread, injected as scancodes)
 Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
