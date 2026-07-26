@@ -78,20 +78,27 @@ refuse rather than accept-and-drop (Art. 12).
 ## HACK-003: wineserver-lite as a user-mode desktop server
 
 ```
-Status:     proposed as a PROCESS (GUI-3). Its state machine already runs at
-            GUI-2, but in-process: the pinned wineserver's GUI object model is
-            compiled into win32u.dll and reached through an in-process
-            wine_server_call (user/wine/server/). That is not an entry in this
-            ledger, because nothing NT-absent crosses the boundary -- the kernel
-            sees one process running one PE image. It becomes a hack when it
-            becomes a process.
+Status:     active (GUI-3). It became a process: wineserver-lite.exe serves the
+            GUI object model to every client over a shared section plus kernel
+            events, and the kernel starts it beside conhost. Until GUI-3 the
+            same state machine ran in-process inside win32u.dll, which was NOT
+            an entry in this ledger -- nothing NT-absent crossed the boundary
+            there, because the kernel saw one process running one PE image.
+            It is one now: the kernel sees a process NT does not have.
 Introduced: GUI-3 (route (a))
 Not in NT:  NT holds desktop state in kernel win32k (since NT 4.0). NOTE: this is a
             return to NT 3.1's architecture, so it is only "not in NT 4.0+", not
             un-NT-like in principle.
 Reason:     Reusing Wine's 30-years-tuned GUI state code without transplanting it onto Ob;
             keeps a clean kernel license; trivially removable.
-Scope:      user/wine (stripped server build) ; transport via shared section + 2 events
+Scope:      user/wine/wineserver/main.c (the process), user/wine/server/
+            {transport.h,call.c,srv_glue.c,shim.c} (the wire and the state
+            machine's environment), the WINESERVER_LITE link in the Makefile,
+            and KiStartWineserverLite in kernel/init/main.c, which starts it.
+            The exe is a NEW LINK over the same objects win32u.dll uses, never
+            a stripped copy of server/ (docs/06). The transport itself is not
+            part of this entry -- NT carries win32k state in sections shared
+            with user mode too; only the SEPARATE PROCESS is the logged item.
 Retirement: if/when route (b) moves desktop state into kernel/win32k.
 ```
 
