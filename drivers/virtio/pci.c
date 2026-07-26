@@ -84,7 +84,7 @@ static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
 }
 
 BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, const char *name,
-                                VIO_PCI_DEVICE *out)
+                                unsigned instance, VIO_PCI_DEVICE *out)
 {
     memset(out, 0, sizeof(*out));
     out->name = name;
@@ -96,12 +96,13 @@ BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, con
     int haveDevice = 0;
     if (transitionalId != 0)
     {
-        haveDevice = KiPciFindDevice(VIRTIO_PCI_VENDOR, transitionalId, transitionalId, &found);
+        haveDevice =
+            KiPciFindDevice(VIRTIO_PCI_VENDOR, transitionalId, transitionalId, instance, &found);
     }
     if (!haveDevice)
     {
         uint16_t modernId = (uint16_t)(VIRTIO_PCI_DEVICE_ID_MODERN_BASE + deviceType);
-        haveDevice = KiPciFindDevice(VIRTIO_PCI_VENDOR, modernId, modernId, &found);
+        haveDevice = KiPciFindDevice(VIRTIO_PCI_VENDOR, modernId, modernId, instance, &found);
     }
     if (!haveDevice)
     {

@@ -49,7 +49,7 @@ BOOLEAN VioInputInitialize(void)
 {
     /* §4.1.2: input is modern-only -- there is no transitional device id
      * for a device type introduced after the legacy interface. */
-    if (!VioPciSetupModernDevice(VIRTIO_DEVICE_TYPE_INPUT, 0, "virtio-input", &VioInputDevice))
+    if (!VioPciSetupModernDevice(VIRTIO_DEVICE_TYPE_INPUT, 0, "virtio-input", 0, &VioInputDevice))
     {
         return FALSE;
     }

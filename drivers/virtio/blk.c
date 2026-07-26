@@ -61,7 +61,7 @@ BOOLEAN VioBlkInitialize(void)
     /* §3.1.1 steps 1-4: blk is transitional 0x1001 or modern 0x1040+2
      * (§4.1.2.1, §5.2.1). */
     if (!VioPciSetupModernDevice(VIRTIO_DEVICE_TYPE_BLK, VIRTIO_PCI_DEVICE_ID_BLK_TRANSITIONAL,
-                                 "virtio-blk", &VioBlkDevice))
+                                 "virtio-blk", 0, &VioBlkDevice))
     {
         return FALSE;
     }
