@@ -30,9 +30,10 @@ import regdump
 # NT keeps numbered control sets (System\ControlSet001) selected through the
 # System\Select key, with CurrentControlSet a REG_LINK onto the chosen one —
 # and so does the oracle's wineserver. proskrnl has exactly one control set
-# and no REG_LINK (NtCreateKey REG_OPTION_CREATE_LINK is unimplemented,
-# docs/03), so its skeleton names the key CurrentControlSet literally. Fold
-# the oracle's numbered set onto the same name before comparing.
+# and its kernel skeleton names the key CurrentControlSet literally (the
+# skeleton predates wine.inf; registry symlinks themselves are built as of
+# GUI-2, docs/03 M8 notes). Fold the oracle's numbered set onto the same
+# name before comparing.
 ORACLE_RENAMES = [
     ("machine\\system\\controlset001", "machine\\system\\currentcontrolset"),
 ]
@@ -108,9 +109,11 @@ EXCLUDED_VALUES = [
     ("machine\\system\\currentcontrolset\\control\\timezoneinformation", "timezonekeyname"),
 ]
 
-# Value names excluded under ANY key: REG_LINK plumbing (proskrnl implements
-# no registry symlinks, docs/03 — the CurrentControlSet link is folded by
-# ORACLE_RENAMES; wine.inf's Time Zones link fails on proskrnl by design).
+# Value names excluded under ANY key: REG_LINK plumbing. Both runners now
+# create wine.inf's Time Zones link (registry symlinks are built, GUI-2),
+# but both dumps RESOLVE links while walking, so the SymbolicLinkValue value
+# itself is only visible through OBJ_OPENLINK opens neither dumper makes;
+# the CurrentControlSet link is folded by ORACLE_RENAMES.
 EXCLUDED_VALUE_NAMES = [
     "symboliclinkvalue",
 ]

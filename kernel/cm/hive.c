@@ -15,9 +15,11 @@
  *     u32 totalBytes   whole file, header included
  *     u32 reserved     0
  *   then one KEY record — the \Registry root (nameChars == 0) — where
- *   KEY  = u8 'K' | u8 flags(0) | u16 nameChars | u64 lastWriteTime
+ *   KEY  = u8 'K' | u8 flags | u16 nameChars | u64 lastWriteTime
  *          | u32 valueCount | UTF-16LE name
  *          | valueCount x VALUE | child KEYs... | u8 'E' u8 0
+ *   flags: bit 0 = the key is a registry symbolic link
+ *          (REG_OPTION_CREATE_LINK); other bits 0
  *   VALUE= u8 'V' | u8 pad(0) | u16 nameChars | u32 regType | u32 dataBytes
  *          | UTF-16LE name | data | u8 pad(0) if dataBytes is odd
  *
@@ -145,7 +147,7 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
 {
     USHORT nameBytes = CmpPersistedNameBytes(node);
     *cursor++ = CMP_TAG_KEY;
-    *cursor++ = 0;
+    *cursor++ = node->isLink ? 1 : 0;
     CmpPut16(cursor, nameBytes / sizeof(WCHAR));
     cursor += 2;
     CmpPut64(cursor, (ULONGLONG)node->lastWriteTime.QuadPart);
@@ -248,10 +250,11 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         {
             return p[1] == 0; /* 'E' is a 2-byte record (parity) */
         }
-        if (p[0] != CMP_TAG_KEY || depth >= CMP_HIVE_MAX_DEPTH)
+        if (p[0] != CMP_TAG_KEY || (p[1] & ~1u) != 0 || depth >= CMP_HIVE_MAX_DEPTH)
         {
             return FALSE;
         }
+        UCHAR keyFlags = p[1];
         const UCHAR *header;
         if (!CmpReaderTake(reader, 14, &header)) /* nameChars..valueCount */
         {
@@ -276,6 +279,7 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
             return FALSE;
         }
         child->lastWriteTime.QuadPart = (LONGLONG)lastWrite;
+        child->isLink = (keyFlags & 1) != 0;
         if (!CmpParseKeyBody(reader, child, childValues, depth + 1))
         {
             return FALSE;

@@ -137,10 +137,8 @@ START_TEST(create_open)
     }
 
     /* --- REG_OPTION_CREATE_LINK: registry symlinks -----------------------
-     * The oracle creates a KEY_SYMLINK key (server/registry.c set_flags);
-     * proskrnl pins a refusal — registry symlinks are unbuilt (docs/03 M8
-     * + CUI-1 notes: wine.inf's Time Zones link rides the firstboot
-     * differential's exclusion list; setupapi warn-and-continues). */
+     * Creation succeeds on both runners (GUI-2: win32u's display commit
+     * needs real links); the full link semantics are sem_reg/symlink's. */
     {
         HANDLE link = NULL;
         ULONG link_disposition = 0;
@@ -148,10 +146,7 @@ START_TEST(create_open)
         init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
         status = NtCreateKey(&link, KEY_ALL_ACCESS, &attr, 0, NULL,
                              REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, &link_disposition);
-        todo_proskrnl
-        {
-            ok(status == STATUS_SUCCESS, "create link key -> %08lx", (unsigned long)status);
-        }
+        ok(status == STATUS_SUCCESS, "create link key -> %08lx", (unsigned long)status);
         if (NT_SUCCESS(status))
         {
             NtDeleteKey(link);
