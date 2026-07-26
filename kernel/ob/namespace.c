@@ -680,6 +680,18 @@ void ObpInitializeObjectManager(void)
      * win32u opens `__wine_session` in (dlls/win32u/winstation.c). Permanent
      * in the pinned Wine server too (server/directory.c, dir_kernel). */
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("KernelObjects"));
+
+    /* The per-session namespace. NT gives every session one, and window
+     * stations live in \Sessions\<id>\Windows\WindowStations -- which is
+     * where win32u names "WinSta0", relative to a handle on that directory
+     * (dlls/win32u/winstation.c, get_winstations_dir_handle). The pinned
+     * Wine server builds the same tree (server/directory.c, create_session).
+     * One session: PsInitializePeb hands every process SessionId 1, so that
+     * is the only id a lookup can ask for. */
+    PVOID sessions = ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("Sessions"));
+    PVOID session = ObpCreatePermanentDirectory(sessions, WSTR("1"));
+    PVOID windows = ObpCreatePermanentDirectory(session, WSTR("Windows"));
+    ObpCreatePermanentDirectory(windows, WSTR("WindowStations"));
 }
 
 /* --- the directory / symbolic-link Nt* surface ---------------------------- */
