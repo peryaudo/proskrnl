@@ -373,14 +373,30 @@ NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS st
 
 /* --- 4. ntdll unix-side helpers -------------------------------------------- */
 
+/* Spelled as loops over RtlUpcaseUnicodeChar, NOT as calls to wcsicmp:
+ * wine/unixlib.h #defines wcsicmp/wcsnicmp AS these two functions, so a
+ * definition that calls the libc name calls itself (same trap as the
+ * __mingw_vsnprintf story below - it compiled to `jmp .` and the first
+ * caller spun forever). RtlUpcaseUnicodeChar reads the same NLS casemap
+ * ntdll_towupper does (dlls/ntdll/unix/env.c), so the semantics match. */
 int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 )
 {
-    return wcsicmp( str1, str2 );
+    int ret;
+    for (;;)
+    {
+        if ((ret = RtlUpcaseUnicodeChar( *str1 ) - RtlUpcaseUnicodeChar( *str2 )) || !*str1)
+            return ret;
+        str1++;
+        str2++;
+    }
 }
 
 int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )
 {
-    return wcsnicmp( str1, str2, n );
+    int ret;
+    for (ret = 0; n > 0; n--, str1++, str2++)
+        if ((ret = RtlUpcaseUnicodeChar( *str1 ) - RtlUpcaseUnicodeChar( *str2 )) || !*str1) break;
+    return ret;
 }
 
 DWORD ntdll_umbstowcs( const char *src, DWORD srclen, WCHAR *dst, DWORD dstlen )
