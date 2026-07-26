@@ -155,7 +155,35 @@ fi
     "${DRIVE_ARGS[@]}" &
 QPID=$!
 
-( sleep "$TIMEOUT"; kill -9 "$QPID" 2>/dev/null ) & KPID=$!
+# The killer subshell also carries the issue #56 mitigation: a green boot
+# occasionally leaves QEMU alive after the guest's isa-debug-exit outb (the
+# pinned tree's hw/misc/debugexit.c requests an ASYNCHRONOUS shutdown, and
+# the main loop is now and then slow to process it), which burned the whole
+# TIMEOUT for a run whose verdict was already on the wire. Once the verdict
+# regex appears and the guest has had GRACE seconds to power itself off, we
+# kill QEMU and proceed. A WEDGED run never prints the verdict, so it still
+# burns the full TIMEOUT — the finite-time verdict semantics (docs/08) are
+# unchanged, and no run is ever declared PASS that would not have been.
+#
+# Only when nothing external is driving the guest: with SERIAL_SOCK a script
+# (tests/run/console_expect.py) is still typing at the console long after the
+# default M9 verdict scrolls past, and those legs must not lose QEMU
+# mid-conversation. That is also the only configuration #56 was ever seen in.
+GRACE="${GRACE:-5}"
+(
+    elapsed=0
+    while [[ "$elapsed" -lt "$TIMEOUT" ]]; do
+        kill -0 "$QPID" 2>/dev/null || exit 0   # QEMU ended on its own
+        if [[ -z "${SERIAL_SOCK:-}" ]] && grep -q "$PASS_RE" "$LOG" 2>/dev/null; then
+            sleep "$GRACE"
+            kill -9 "$QPID" 2>/dev/null
+            exit 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    kill -9 "$QPID" 2>/dev/null
+) & KPID=$!
 wait "$QPID" 2>/dev/null || true
 kill "$KPID" 2>/dev/null || true
 wait "$KPID" 2>/dev/null || true
