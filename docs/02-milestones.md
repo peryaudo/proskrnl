@@ -368,12 +368,14 @@ library a process boundary:
 - the session mapping's writer moving into the server process (readers already open by
   name).
 The checklist is the docs/03 "GUI-2 notes" shortcut list — each entry retired or
-re-justified multi-process. Also decided here (docs/03 defers it to "GUI-3+"): the
-**font-metrics oracle** — the pinned Wine is configured `--without-freetype`, so no
-oracle for font metrics exists yet; reconfiguring the pin is a visible
-`tools/setup_linux.sh` event and must precede any milestone that judges dialog layout
-(GUI-5). Under route (b) — later, optional — transplant the server state into a
-`kernel/win32k/` module exposed via generated `NtUser*` syscalls.
+re-justified multi-process. Also decided here (docs/03 deferred it to "GUI-3+"): the
+**font-metrics oracle** — *decided yes*. The pin is now configured `--with-freetype
+--without-fontconfig` against the same `third_party/freetype` the PE build links, so
+oracle and target agree on backend, version and font set; it is a visible
+`tools/setup_linux.sh` event (with a cache-prefix bump, tp-v3 → tp-v4, to force the one
+rebuild), and it lands before the milestone that judges dialog layout (GUI-5). Under
+route (b) — later, optional — transplant the server state into a `kernel/win32k/` module
+exposed via generated `NtUser*` syscalls.
 **Done when:** two GUI processes run at once; Z-order, focus, cross-thread `SendMessage`,
 `FindWindow` all behave; the docs/03 GUI-2 single-process shortcuts are retired.
 
@@ -390,9 +392,10 @@ settled first frame), which per-window surfaces + dirty rectangles replace.
 ## GUI-5 — GUI finishing
 Clipboard, hooks, `AttachThreadInput`, GUI-ifying conhost, and the real trophy: run
 Wine's `user32/tests/msg.c`. Value accrues incrementally; keep an honest `todo_` list.
-Anything here that judges dialog layout needs the font-metrics oracle decided at GUI-3
-(docs/03 "GUI-2 notes": the pin is `--without-freetype`, so metrics currently have no
-oracle).
+Anything here that judges dialog layout builds on the font-metrics oracle decided at
+GUI-3 (docs/03 "the font oracle": oracle and target now share backend, version and font
+set). What GUI-3 did *not* pin is the metric differential itself — the same measurement
+run on both sides — which belongs here.
 
 ## GUI-6 — Desktop *(Wine desktop; not the ReactOS shell)*
 `wineboot` has already run (CUI-1's firstboot), so this is

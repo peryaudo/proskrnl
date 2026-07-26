@@ -64,6 +64,19 @@ jobs:
       # guard would serve it forever. The bump is what forces the rebuild;
       # freetype's new path rides along. Expect the first run on this key to
       # pay the full QEMU + Wine source build.
+      #
+      # v4: the same failure mode, one tree over. GUI-3 reconfigures the
+      # pinned Wine --with-freetype --without-fontconfig against the pinned
+      # FreeType (built native by tools/build_freetype.sh) so it is the
+      # font-METRICS oracle, not just the ntapi one (docs/03 "the font
+      # oracle"). Every v3 entry holds a --without-freetype wine; the pins
+      # did not move, so only this prefix can force the rebuild.
+      # setup_linux.sh detects a stale tree on its own (SONAME_LIBFREETYPE in
+      # the generated config.h) and would rebuild it from source, but that
+      # costs hours on every run until the key moves — which is the point of
+      # moving it. freetype's new x86_64-linux output joins the paths below.
+      # Kept in lockstep with the tp-v4 release assets: if only one door
+      # moved, the stale oracle would come back in through the other.
       - name: Restore third_party builds
         id: tp-cache
         uses: actions/cache/restore@v4
@@ -73,7 +86,8 @@ jobs:
             third_party/qemu/build
             third_party/wine
             third_party/freetype/x86_64-windows
-          key: third-party-v3-${{ steps.pins.outputs.key }}
+            third_party/freetype/x86_64-linux
+          key: third-party-v4-${{ steps.pins.outputs.key }}
 
       # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
       # repo budget) far more eagerly than the release-cache assets the
@@ -182,7 +196,8 @@ jobs:
             third_party/qemu/build
             third_party/wine
             third_party/freetype/x86_64-windows
-          key: third-party-v3-${{ steps.pins.outputs.key }}
+            third_party/freetype/x86_64-linux
+          key: third-party-v4-${{ steps.pins.outputs.key }}
 
       # Mirror the finished builds to the rolling `third-party-cache`
       # prerelease so ephemeral containers outside Actions (Claude Code on
@@ -216,8 +231,12 @@ jobs:
           # drops the tp-v2 assets. Kept in lockstep with the Actions cache
           # key above: if only one of the two moved, the stale one would just
           # feed the same GTK-less build back in through the other door.
+          #
+          # v4: the wine configure gained the font backend (GUI-3 — the
+          # font-metrics oracle); the immutable-sentinel argument above
+          # applies unchanged, and the same lockstep rule holds.
           existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          if grep -qx "tp-v3-$KEY-distro.txt" <<<"$existing"; then
+          if grep -qx "tp-v4-$KEY-distro.txt" <<<"$existing"; then
             echo "assets for key $KEY already published — skipping"
             exit 0
           fi
@@ -226,22 +245,26 @@ jobs:
           # The tarballs hold binaries linked against this runner's glibc;
           # fetch_third_party.sh refuses to restore onto a different distro
           # release, so record which one built them.
-          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v3-$KEY-distro.txt"
+          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v4-$KEY-distro.txt"
           # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
           # side concatenates partNN in order.
+          # freetype packs BOTH build outputs (PE static library + the native
+          # shared library the oracle wine is configured against) and neither
+          # the sources nor anything else in the submodule.
           for spec in limine:third_party/limine qemu-build:third_party/qemu/build \
-                      wine:third_party/wine freetype:third_party/freetype/x86_64-windows; do
-            name="${spec%%:*}"; path="${spec#*:}"
-            tar -C "$GITHUB_WORKSPACE" --zstd -cf - "$path" \
-              | split -b 1900m -d -a 2 - "$pack/tp-v3-$KEY-$name.tar.zst.part"
+                      wine:third_party/wine \
+                      "freetype:third_party/freetype/x86_64-windows third_party/freetype/x86_64-linux"; do
+            name="${spec%%:*}"; paths="${spec#*:}"
+            tar -C "$GITHUB_WORKSPACE" --zstd -cf - $paths \
+              | split -b 1900m -d -a 2 - "$pack/tp-v4-$KEY-$name.tar.zst.part"
           done
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v3-"$KEY"-*.part* --clobber
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v3-$KEY-distro.txt" --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v4-"$KEY"-*.part* --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v4-$KEY-distro.txt" --clobber
           # Prune stale keys only after the new key uploaded whole, so a
           # failed upload never leaves the release empty.
           for a in $existing; do
             case "$a" in
-              tp-v3-"$KEY"-*) ;;
+              tp-v4-"$KEY"-*) ;;
               *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
             esac
           done

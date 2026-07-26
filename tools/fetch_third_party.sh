@@ -5,7 +5,7 @@
 # CI (.github/workflows/test.yml) publishes the finished build trees
 #
 #   third_party/limine        third_party/qemu/build        third_party/wine
-#   third_party/freetype/x86_64-windows
+#   third_party/freetype/{x86_64-windows,x86_64-linux}
 #
 # as zstd tarballs on the rolling `third-party-cache` prerelease, named by
 # the same submodule-pin key its Actions cache uses (git ls-tree over
@@ -128,21 +128,37 @@ RerootSymlinks() {
 # component name (in asset filenames) -> finished-build marker, the same
 # markers setup_linux.sh's skip-logic tests. wine's marker is the pass-2
 # test exe: the tarball holds both wine passes, so pass 2 present => whole
-# tree present. freetype ships only its build output directory, not the
+# tree present. freetype ships only its build output directories, not the
 # whole checkout — the sources come from the submodule (qemu's split, not
 # wine's), and the archive is what a fresh box would otherwise have to
-# notice was missing mid-`make`.
+# notice was missing mid-`make`. Its marker is the NATIVE library, the
+# younger of the two outputs (GUI-3), so a freetype tree from before the
+# oracle gained a font backend reads as absent and is restored whole.
 declare -A MARKER=(
     [limine]="third_party/limine/limine"
     [qemu-build]="third_party/qemu/build/qemu-system-x86_64"
     [wine]="third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe"
-    [freetype]="third_party/freetype/x86_64-windows/libfreetype.a"
+    [freetype]="third_party/freetype/x86_64-linux/libfreetype.so.6"
 )
 COMPONENTS=(limine qemu-build wine freetype)
 
+# A wine tree built before GUI-3 has every marker above and still lacks the
+# font backend. setup_linux.sh would catch that and rebuild from source —
+# correct, but hours; re-restoring from the cache is minutes, and the
+# tarball overlays the stale tree completely. Same truthful marker
+# setup_linux.sh uses: configure writes SONAME_LIBFREETYPE exactly when the
+# backend is on (and errors out when it is wanted but missing).
+WineTreeIsStale() {
+    [[ -f third_party/wine/include/config.h ]] &&
+        ! grep -q '^#define SONAME_LIBFREETYPE ' third_party/wine/include/config.h
+}
+
 missing=()
 for c in "${COMPONENTS[@]}"; do
-    if [[ -e "${MARKER[$c]}" ]]; then
+    if [[ "$c" == wine ]] && [[ -e "${MARKER[$c]}" ]] && WineTreeIsStale; then
+        echo "== wine: present but built without the font backend — restoring =="
+        missing+=("$c")
+    elif [[ -e "${MARKER[$c]}" ]]; then
         echo "== $c: already present — skipping =="
     else
         missing+=("$c")
@@ -196,7 +212,7 @@ for a in json.load(sys.stdin).get("assets", []):
 # (test.yml pins ubuntu-24.04). The publish step uploads the per-key
 # distro.txt LAST, so its presence also proves the key's asset set is
 # complete — treat its absence as a miss, and a different distro as fatal.
-distro_url="$(awk -F'\t' -v n="tp-v3-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+distro_url="$(awk -F'\t' -v n="tp-v4-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
 if [[ -z "$distro_url" ]]; then
     echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
     echo "  Either the pins were just bumped and CI on main has not" >&2
@@ -217,7 +233,7 @@ fi
 echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
-    prefix="tp-v3-$KEY-$c.tar.zst.part"
+    prefix="tp-v4-$KEY-$c.tar.zst.part"
     parts="$(grep "^$prefix" <<<"$assets" || true)"
     if [[ -z "$parts" ]]; then
         echo "fetch_third_party: no '$prefix*' assets for the current pins." >&2

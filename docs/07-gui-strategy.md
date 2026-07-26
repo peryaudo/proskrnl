@@ -166,13 +166,19 @@ if GUI collapses, subtract the ledger entries and the CUI kernel remains untouch
   session mapping is a real named NT section (`\KernelObjects\__wine_session`) that
   win32u opens read-only by name exactly as under Wine, pinned by `sem_mm/session_shm`.
   What GUI-3 still owes is only moving the writer out of the client process.
-- **Fonts** — *half-collected.* Peeling Wine's unix-assuming build worked (FreeType
-  pinned, cross-built as a PE static library). But the promised metrics oracle **does
-  not exist yet**: the pinned Wine — the oracle — is configured `--without-freetype`,
-  and turning fonts on there just to ease a proskrnl build would be touched-oracle
-  territory, so it stays off until deliberately decided (docs/03 "GUI-2 notes";
-  scheduled as a GUI-3 decision in `docs/02`). Until then "same FreeType ⇒ same numbers"
-  is a plan, not a fact — dialog-layout-judging tests (GUI-5) must not precede it.
+- **Fonts** — *collected at GUI-3.* Peeling Wine's unix-assuming build worked at GUI-2
+  (FreeType pinned, cross-built as a PE static library), but the promised metrics oracle
+  did not exist: the pinned Wine was `--without-freetype`, so the two builds shared no
+  font backend. GUI-3 took the scheduled decision and reconfigured the pin
+  `--with-freetype --without-fontconfig` against the *same* `third_party/freetype`, built
+  native by the same script — so backend, version and font set now agree on both sides
+  and "same FreeType ⇒ same numbers" is a fact rather than a plan. This was not
+  touched-oracle territory: no font test existed to fail, so the spec was *extended*
+  rather than moved to make something pass (docs/03 "the font oracle"). Dialog-layout
+  tests (GUI-5) are unblocked; what is still owed there is the metric differential
+  itself — GUI-3 pins only that the oracle's backend loads and answers
+  (`tests/gdi/fontsmoke.c`), which guards a real failure mode, since win32u `dlopen`s its
+  backend and silently falls back to *no fonts* rather than failing.
 - **Machine-state furniture** — *the risk class that actually bit, unlisted here before.*
   None of GUI-2's six stacked boot stalls were in the predicted spots; most were furniture
   Wine's userland assumes exists: registry symlinks under `Control\Video`, the

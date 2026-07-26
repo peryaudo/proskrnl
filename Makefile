@@ -687,8 +687,11 @@ SRV_RENAME_FLAGS := $(foreach n,$(SRV_RENAMES),-D$(n)=srv_$(n))
 # FreeType comes from third_party/freetype, cross-built as a PE static
 # library (tools/build_freetype.sh). PRSK_WITH_FREETYPE is what turns
 # dlls/win32u/freetype.c's real body on, through the config.h shadow in
-# user/wine/include -- the PINNED Wine stays --without-freetype, because it
-# is the oracle and the oracle is the spec (docs/06).
+# user/wine/include -- which the PE build needs because it runs no configure
+# of its own. Since GUI-3 the pinned Wine is configured --with-freetype
+# against the SAME pinned FreeType (built native by the same script), so the
+# oracle answers font questions from the code that runs here (docs/03 "the
+# font oracle").
 FREETYPE := third_party/freetype/x86_64-windows/libfreetype.a
 $(FREETYPE):
 	tools/build_freetype.sh
@@ -786,7 +789,18 @@ $(WINEMINE): third_party/wine/programs/winemine/x86_64-windows/winemine.exe
 # sources. win32u's font backend enumerates C:\windows\fonts, and with no
 # fontconfig to ask (user/wine/include/config.h) that directory IS the font
 # set -- so an empty one means no text at all.
-WINE_FONTS := $(wildcard third_party/wine/fonts/*.ttf)
+#
+# Both extensions, because the ORACLE loads both (GUI-3). Running from its
+# build tree, the oracle's win32u calls load_file_system_fonts(), which reads
+# C:\windows\fonts AND the build dir's own fonts/ -- and that directory holds
+# the generated .fon bitmap fonts (System, Fixedsys, Courier and their
+# codepage variants) as well as the .ttf ones. Shipping only the .ttf half
+# would leave the two sides enumerating different font sets, which is the one
+# thing the font-metrics oracle exists to prevent; the bitmap faces are also
+# exactly the ones dialog layout (GUI-5) leans on. The .fon files exist only
+# once the pinned tree has been built with fonts enabled -- the same soft
+# dependency the .ttf wildcard already has.
+WINE_FONTS := $(wildcard third_party/wine/fonts/*.ttf) $(wildcard third_party/wine/fonts/*.fon)
 FONTFILES := $(foreach f,$(WINE_FONTS),win:$(f)=windows/fonts/$(notdir $(f)))
 
 GUI2FILES := win:$(WIN32U)=windows/system32/win32u.dll \
