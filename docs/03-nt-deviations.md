@@ -1206,6 +1206,76 @@ comparing numbers between oracle and target is GUI-5 work, as docs/02 has it.
 
 
 
+## GUI-4 notes (the compositor, the pointer, the cursor)
+
+**winefb.drv is the native windowing system, and that sentence has two halves.** The pinned
+server deliberately neither clips top-level siblings out of a window's surface region
+(`server/window.c get_visible_region`: "that's up to the native windowing system") nor exposes
+them when a top-level moves away (`expose_window` skips children of the desktop). Under
+winex11/winewayland the host compositor owns both; here both are the driver's:
+
+- **occlusion**: every surface flush intersects its dirty rect with win32u's own surface clip
+  (delivered through `window_surface_set_clip` and previously dropped) and subtracts the rects
+  of every visible top-level *above* it, queried fresh from the server per flush
+  (`get_window_list` — the same topmost-first walk the server's own hit-testing does — plus
+  `get_window_rectangles`), with the region algebra done by win32u's own `NtGdi` engine;
+- **exposure**: the *mover* repairs the world from `pWindowPosChanged`/surface destroy — other
+  top-levels touching the vacated area are invalidated cross-process (`NtUserRedrawWindow` →
+  server `redraw_window` wakes their queues), the desktop-owned remainder is filled directly,
+  and the moved window's own surface is re-blitted whole (a pure move dirties nothing:
+  the surface is reused and `move_window_bits` is an identity no-op; a raise generates no
+  exposure at all).
+
+Queried fresh rather than cached, on purpose: a cache would need exactly the cross-process
+invalidation protocol this design avoids. Staleness is bounded by one flush — clip and repair
+derive from the same server rectangles, so the picture converges on the next flush of either
+side.
+
+**The desktop background is the driver's too.** The desktop window is forced and foreign
+(the GUI-2 notes above): no process runs its WndProc, so nothing would ever paint the
+desktop. winefb paints it — once, in the first process, the moment that sizes the desktop
+window, and again wherever the uncover repair reaches desktop-owned pixels. The same
+authority split as an X root window. The color is reported on serial
+(`[KTEST] gui2 desktop … bg=…`) and the checkers sample against the report, never assume.
+
+**Input0's reader placement was a live bug, fixed here.** The GUI-2 start hook —
+`pUpdateDisplayDevices` — is never called once the display cache is warm in the registry, so
+the app under test had *no* reader at all (the gui3 logs proved it: `input READY` only in an
+early firstboot-era process). `winefb_start_input` is now idempotent and also fires at the
+first window surface; every GUI process attempts the exclusive opens, one wins, losers exit
+quietly on `STATUS_SHARING_VIOLATION`. Residual: if the winning process dies, input is
+orphaned until a process that has not yet attempted creates its first surface.
+
+**Pointer injection is the winewayland shape, per event.** The tablet's absolute axes scale
+to scanout pixels in the reader (range from `IOCTL_PRSHID_GET_ABS_INFO`, screen from the
+mode — no QEMU constant on either side) and inject as
+`MOUSEEVENTF_MOVE|ABSOLUTE|MOVE_NOCOALESCE` with hwnd 0: the reader serves the desktop, and
+the unmodified server routes by capture and coordinate (`find_hardware_message_window`).
+`MOVE_NOCOALESCE` bypasses win32u's motion accumulator — QEMU already coalesced.
+
+**The cursor is a software arrow with a single writer.** No hardware cursor plane exists, so
+the pointer thread save-unders and draws a builtin 12×20 arrow at each batch's final
+position. Deliberately *not* the per-window `HCURSOR`: `WM_WINE_SETCURSOR` is delivered to
+the process owning the window under the cursor, which is not the reader — honoring shapes
+would make cursor drawing a cross-process protocol for zero milestone value (the named
+escalation path, if it is ever needed: flush-side compositing off the shared
+`desktop_shm->cursor`). Bounded artifact: an overlapping window flush stomps the picture
+until the next motion; the gui4 leg parks the cursor over background before each screendump.
+
+**Known residuals, named:**
+
+- **lowering** a window (`HWND_BOTTOM`) exposes the sibling that rises above it with no
+  notification anywhere; the newly-uncovered window shows through only on its own next
+  flush. Not on the milestone path; the gui4 scenario avoids it.
+- the thread-record residual from GUI-3 (a violently-killed thread's `thread_input` — focus,
+  capture — survives to process exit) is now load-bearing for input routing; still bounded by
+  process lifetime, still waiting for a case that hits it.
+- **the pinned server's focus-stealing rule is real** and convicted the gui3 leg's latent
+  race: a non-foreground process whose input is older may not retake foreground once its
+  window has been foreground before (`set_foreground_window`, `queue->input->user_time`).
+  Show-order determinism (B created after A) is now pinned in gui3b/gui4b; click-driven
+  activation (the gui4 way) is exempt because a click *is* fresh user input.
+
 ## WOW64 (not a deviation)
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks

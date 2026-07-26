@@ -258,93 +258,40 @@ a fabricated number; `^C` is detected on the serial transport rather than by
 conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
 process-ecosystem notes").
 
-**GUI-1 — pixels and input** opens the GUI path (route (a), `docs/07`), and
-it cost less kernel than budgeted. The framebuffer Limine already set
-through the VGA BIOS's VBE is the one `\Device\Fb0` publishes, so there is
-no virtio-gpu, no ramfb, no mode set and no display-driver model — one
-driver, one ioctl reporting the mode, and pixels a process writes itself.
-Mapping needed no new memory machinery at all: the device implements the
-`GetCache` vfs op the file path already has, so `NtCreateSection` +
-`NtMapViewOfSection` over the device handle work unchanged and `kernel/mm`
-gained nothing — a client maps the scanout with exactly the calls it would
-use to map a file, which is what `winefb.drv` will want at GUI-2. Input is
-`\Device\Input0` over **virtio-input**, delivering evdev records verbatim
-(translation is a keyboard layout, and layouts belong in user32, above the
-boundary); reads block by draining the eventq and napping, the shape the
-serial console already uses, so no interrupt path was added. Getting there
-also meant extracting the modern virtio-pci transport out of the block
-driver — its BAR-mapping window is a single kernel VA cursor, and a second
-copy would have handed two drivers overlapping addresses. Both halves are
-convicted by QEMU rather than by the kernel's own account of itself: a
-`screendump` of the scanout is checked against what the guest says it
-painted, and a QMP-injected key comes back out of `NtReadFile`
-(`tests/run/run.sh gui`). **Not yet:** no mouse (GUI-4), no cursor, no mode
-switching, no write-combining, and no output path to the keyboard (LEDs) —
-each refuses rather than pretends (`docs/03` "GUI-1 notes").
+![two windows composited on the proskrnl scanout, one just dragged](docs/img/gui4-drag.png)
 
-![winemine.exe on the proskrnl scanout](docs/img/gui2-winemine.png)
+**GUI-4 complete — grabbed, moved, clicked** (`tests/run/run.sh gui4`;
+`make rungui` for a human session with a live pointer). Two *overlapping*
+windows over wineserver-lite: a click in the overlap reaches only the
+upper one, focus and characters follow a click to the lower one, and the
+upper window is grabbed by its caption and dragged — DefWindowProc's own
+modal loop under server-side capture, none of it our code — with both
+screendumps holding pictorially: the upper fill wins the overlap, the
+moved window sits at its reported new rectangle, what it uncovered is
+repainted cross-process, the vacated strip returns to the desktop
+background, and the software cursor's arrow sits parked where the harness
+left it. The pointer is **`\Device\Input1`** — QEMU's tablet joining
+HACK-002, identified by its own `EV_BITS` never PCI order, its absolute
+range served verbatim by one ioctl so no QEMU constant is baked on either
+side — read by the same client-side reader as the keyboard, whose start
+hook was also fixed (it had been dead for the app under test since GUI-2).
+**Compositing** is the two halves of the "native windowing system" role
+Wine's server explicitly delegates: every flush clips against a fresh
+server z-order query through win32u's own region engine, and the *mover*
+repairs what it uncovers (cross-process invalidation for other windows,
+a driver-painted background for the desktop — the forced-foreign desktop
+window has no other painter). Hit-testing, routing, capture, the drag
+loop and the caption's own painting are the pinned server's and win32u's,
+unmodified; **the hack meter is unchanged**. **Not yet:** per-window
+`HCURSOR` shapes (one software arrow, single writer; the escalation path
+is named in `docs/03`), `HWND_BOTTOM` lowering exposure, and the earlier
+milestones' residuals (`docs/03` "GUI-4 notes" collects them, including
+the focus-stealing lesson the leg surfaced).
 
-**GUI-2 complete — winemine.exe on screen** (`tests/run/run.sh gui2`;
-`make rungui` for a human session). Wine ships win32u in two halves and
-neither one fits — the PE `win32u.dll` is nothing but syscall thunks aimed
-at `NtUser*`/`NtGdi*` numbers the kernel must never grow (`docs/07`: "no
-`NtUser*` syscalls are minted"), and the implementation lives in a `.so`
-there is no unix side to load. So the second half becomes the DLL: the same
-sources, compiled as PE above ntdll instead of above libc, with
-`user32`/`gdi32`/`imm32` binding to it by name, unmodified, because that is
-how they import win32u anyway. The desktop state underneath is the pinned
-**wineserver's own GUI object model** compiled into the same DLL behind an
-in-process `wine_server_call` — Wine's state machine rather than a second
-one (Art. 11), and the same library GUI-3 will put back behind IPC. Message
-queues wake through real kernel events, `winefb.drv` is four driver entries
-and a surface flush, and FreeType is pinned and cross-built as a PE static
-library. **Nothing in `third_party/wine` is patched**: the hack meter is
-unchanged. The kernel gained exactly one boundary feature for the
-milestone: **registry symbolic links** (`REG_OPTION_CREATE_LINK`, pinned by
-`sem_reg/symlink` on the oracle first) — win32u's display-device commit
-writes volatile links under `Control\Video` and the read-back resolves
-them; the CUI-era refusal was why the boot used to stop at
-`lock_display_devices`. The rest of the distance was furniture and glue,
-recorded in `docs/02` GUI-2 and `docs/03` "GUI-2 notes": the `HKU\<sid>`
-root the font loader opens, a forced `get_desktop_window` whose
-desktop/message windows read as foreign (explorer owns them on real Wine),
-the desktop window sized to the scanout by the driver, the ole32 chain
-baked for imm32's delay import, and two in-process-glue bugs (a macro trap
-that compiled `ntdll_wcsicmp` into a self-jump, and a use-after-clear in
-the queue-handle fixup). The verdict is the GUI-1 differential grown up:
-the guest reports the window rect it painted, QEMU's screendump returns
-the pixels, and the checker wants a mostly-painted multi-colour window
-exactly there and an untouched framebuffer everywhere else. **Not yet:**
-no mouse and no cursor (GUI-4), one surface flush with last-writer-wins
-(the compositor is GUI-4), and winemine idles after its first paint, so
-the leg screendumps that settled first frame.
-
-**GUI-3 complete — two GUI processes over wineserver-lite**
-(`tests/run/run.sh gui3`: `FindWindow` across the boundary, a cross-process
-`SendMessage` proved by its answer, one z-order over both processes, the
-foreground moving between them, plus the cross-thread case — and both
-windows' pixels verified on one scanout). The **font-metrics oracle**: the
-pinned Wine is now built `--with-freetype` against the pinned FreeType, so
-the oracle and the target answer font questions from the same code —
-`tests/gdi/fontsmoke.c` guards the dlopen that would otherwise degrade to
-no fonts in silence. The **process boundary**: `wineserver-lite.exe` is a
-real process, linked a second time over the *same* server objects
-`win32u.dll` uses, with clients reaching it through a shared section plus
-kernel events; clients are real records with the kernel as the only source
-of identity, window stations resolve per session, and a client's death is
-learned from its process handle rather than from a socket. The kernel grew
-cross-process `NtDuplicateObject` (pinned by `sem_ob/dup_cross_process`) to
-make the handle hand-offs possible. The suspected missing "connect step"
-turned out to be the oracle's own first-process behaviour; the real stopper
-was the transport dropping the reply body on error, against Wine's wire
-contract (`docs/03` "Desktop inheritance"). **Not yet:** connect-time
-handle inheritance for a process spawned *by* a GUI process (first relevant
-when explorer launches things, GUI-6), and the thread-record residual for
-violently-killed threads (`docs/03`).
-
-Also next: **GUI-4** — compositing, input routing and the cursor (the
-pointer device joins HACK-002 there); or **CUI-5** (Io completion, led by
-file rename) through **CUI-7**,
+Also next: **GUI-5** — GUI finishing: clipboard, hooks,
+`AttachThreadInput`, GUI-ifying conhost, and Wine's `user32/tests/msg.c`
+(the font-metrics differential lands there too); or **CUI-5** (Io
+completion, led by file rename) through **CUI-7**,
 the measured syscall gap and its plan (`docs/16-syscall-status.md`,
 `docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
 CUI-5, now its own path); either way, growing the winetest manifest as its
