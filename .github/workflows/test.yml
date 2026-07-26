@@ -132,6 +132,17 @@ jobs:
       - name: GUI-1 framebuffer screendump + key input (tests/run/run.sh gui)
         run: tests/run/run.sh gui
 
+      # GUI-2: winemine.exe on the scanout — unmodified user32/gdi32/comctl32
+      # and winemine over the PE build of win32u, painting through winefb.drv.
+      # Same screendump differential as GUI-1 (the guest reports the window
+      # rect it painted; QEMU's device model returns the pixels). The whole
+      # GUI userland boots under TCG here, so the deadlines are generous.
+      - name: GUI-2 winemine on screen (tests/run/run.sh gui2)
+        run: tests/run/run.sh gui2
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
       # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
       # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
       # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.
@@ -224,6 +235,7 @@ jobs:
           path: |
             build/serial.log
             build/tests/*.log
+            build/tests/*.ppm
             build/tests/wtests/*.log
             build/tests/fatcheck/*.log
             build/tests/fuzz/repro/**

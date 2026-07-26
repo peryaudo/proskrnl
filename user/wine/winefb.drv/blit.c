@@ -116,9 +116,9 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     else repack_rows( dst, mode->pitch, src, src_pitch, width, height );
 
     /* The harness needs one self-describing line naming where a window
-     * actually reached the scanout; the second, later one gives it a
-     * settled frame to screendump instead of the first blank fill
-     * (tests/gui/check_window.py). */
+     * actually reached the scanout (tests/gui/check_window.py). The first
+     * flush is the whole first paint and an idle app never flushes again;
+     * the flush=8 line only appears under interaction, as corroboration. */
     surface->flushes++;
     if (surface->flushes == 1 || surface->flushes == 8)
         winefb_report( "[KTEST] gui2 window rect=%d,%d,%dx%d flush=%u\n",
