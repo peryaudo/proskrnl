@@ -17,3 +17,8 @@
 	path = third_party/limine-protocol
 	url = https://github.com/limine-bootloader/limine-protocol.git
 	shallow = true
+[submodule "third_party/freetype"]
+	path = third_party/freetype
+	url = https://gitlab.freedesktop.org/freetype/freetype.git
+	shallow = true
+	ignore = dirty
