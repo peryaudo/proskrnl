@@ -908,8 +908,14 @@ gui2() {
 
     # 1024M like the console leg: no COW means every process copies the
     # DLLs it maps, and this image's userland is the whole GUI stack.
+    #
+    # PASS_RE deliberately never matches: qemu.sh's verdict-killer reaps
+    # QEMU GRACE seconds after the regex appears, and this leg still needs
+    # the live QMP socket for the screendump AFTER the window marker. QEMU's
+    # lifetime is owned here (qmpctl quit below), with qemu.sh's TIMEOUT as
+    # the wedged-run backstop.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1024M}" \
-        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui2 window ' \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='PRSK-GUI2-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -935,11 +941,11 @@ gui2() {
     if ! await '\[KTEST\] gui2 window '; then
         gui2_fail "no window ever reached the scanout"; return 1
     fi
-    # The first flush is the window's first paint; the later marker means
-    # the app has been round its message loop a few times, so the frame the
-    # host dumps is a settled one rather than a half-drawn first pass.
-    await '\[KTEST\] gui2 window .* flush=8' || true
-    sleep 2
+    # The first flush is the whole first paint (dibdrv composes the full
+    # window before winefb flushes it); winemine then IDLES — no repaint
+    # without input, so no later flush to wait for. The sleep lets the
+    # scanout and QEMU's device model settle before the dump.
+    sleep 3
 
     if ! python3 "$ROOT/tests/gui/qmpctl.py" "$sock" screendump "$ppm"; then
         gui2_fail "screendump failed"; return 1
