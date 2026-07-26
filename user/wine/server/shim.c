@@ -761,15 +761,18 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
  * explorer.exe. There is exactly one GUI process here and explorer is GUI-6,
  * so the desktop is created on the spot - the same code path the server
  * takes for the forcing caller. */
-static void fixup_request( struct __server_request_info *info, enum request req )
+static void fixup_request( struct __server_request_info *info, enum request req,
+                           struct thread *thread )
 {
     if (!strcmp( prsk_req_names[req], "get_msg_queue_handle" ))
     {
-        /* current->queue is a struct object at offset 0; its get_sync op is
+        /* thread->queue is a struct object at offset 0; its get_sync op is
          * the queue's own accessor, so the sync object comes out of Wine's
          * code rather than out of a guess about the struct's layout (which
-         * is private to queue.c). */
-        struct object *queue = (struct object *)current->queue, *sync;
+         * is private to queue.c). The thread comes in as a parameter because
+         * dispatch_request has already cleared `current` by the time this
+         * runs - reading current->queue here was a NULL deref. */
+        struct object *queue = (struct object *)thread->queue, *sync;
         HANDLE event = NULL;
 
         if (queue && (sync = get_obj_sync( queue )))
@@ -799,7 +802,7 @@ unsigned int CDECL wine_server_call( void *req_ptr )
         return STATUS_NO_MEMORY;
     }
     ret = dispatch_request( info, thread );
-    if (!ret && req < prsk_req_count) fixup_request( info, req );
+    if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
     server_unlock();
     return ret;
 }
