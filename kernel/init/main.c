@@ -30,6 +30,7 @@
 #include "kernel/syscall/syscall.h"
 #include "fs/npfs/npfs.h"
 #include "drivers/condrv.h"
+#include "drivers/fb.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "kernel/init/verify.h"
@@ -1017,6 +1018,10 @@ static void KiTestMainThread(void *context)
     /* M9: the console devices — \Device\Serial0 (the HACK-004 serial
      * transport) and, with conhost, the ConDrv console object. */
     CondrvInitialize();
+
+    /* GUI-1: \Device\Fb0 over the framebuffer Limine set (HACK-001). No
+     * framebuffer means no device — nothing else in the boot cares. */
+    FbInitialize();
 
     /* M8: bring up the registry — \Registry + the SYSTEM hive from the boot
      * volume (an absent/invalid hive starts empty: first boot). Needs the

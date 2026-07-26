@@ -31,13 +31,24 @@ Retirement: <the condition under which this is deleted>
 ## HACK-001: `\Device\Fb0`
 
 ```
-Status:     proposed
+Status:     active (GUI-1: the Limine-set linear framebuffer, published as-is)
 Introduced: GUI-1
 Not in NT:  NT owns the framebuffer behind a display driver, below win32k (WDDM/XDDM).
 Reason:     We implement no display-driver model; win32u needs somewhere to blit.
-Scope:      drivers/fb.c ; user/wine/winefb.drv/display.c
+Scope:      drivers/fb.c ; drivers/fb.h ; drivers/fbproto.h ;
+            kernel/init/main.c (the FbInitialize call) ;
+            user/wine/winefb.drv/display.c (GUI-2)
 Retirement: if an NtGdi-side display-driver abstraction is ever built.
 ```
+
+The device does no mode set, no drawing, no cursor: it publishes whatever
+mode the bootloader chose and lets a process map it. Mapping rides the
+ordinary Mm path — the device implements the existing `GetCache` vfs op and
+returns a page cache whose frames are the scanout's physical pages, so
+`NtCreateSection` + `NtMapViewOfSection` over the handle work unchanged and
+`kernel/mm` gains nothing (G10/Art. 11). The wire contract is
+`drivers/fbproto.h`; the mode ioctl is the only verb, and every other code
+refuses through `KiPinnedNotImplemented` (Art. 12).
 
 ## HACK-002: `\Device\Input0`
 

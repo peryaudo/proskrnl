@@ -920,12 +920,57 @@ and each is logged in `docs/10-hacks-ledger.md`:
 - **serial-backed console** (HACK-004, M9) — condrv's transport is the COM1 UART in both
   directions; real NT feeds conhost from win32k's raw input path and draws its output into
   a window. Retired when the GUI-1+ input/display path exists.
-- **`\Device\Fb0`** (HACK-001) — map the framebuffer to user mode; NT would own this via a
-  display driver behind win32k.
+- **`\Device\Fb0`** (HACK-001, GUI-1, **built**) — map the framebuffer to user mode; NT would
+  own this via a display driver behind win32k. See "GUI-1 notes" below.
 - **`\Device\Input0`** (HACK-002) — raw input stream to user mode; NT routes this through
   win32k/csrss.
 - **wineserver-lite as a desktop server** — a user-mode server holding desktop state. Not
   a hack against NT so much as a return to NT 3.1's actual architecture (see `docs/07`).
+
+## GUI-1 notes (`\Device\Fb0`)
+
+**A section over a device handle.** `\Device\Fb0` is mappable because it implements the
+internal `GetCache` vfs op (`kernel/io/vfs.h`) and returns a page cache whose frames are the
+scanout's physical pages; `NtCreateSection(SEC_COMMIT, PAGE_READWRITE, fbHandle)` +
+`NtMapViewOfSection` then work through the same `IopBuildSectionBacking` / `MiMapViewOfSection`
+path a file uses, and `kernel/mm` gains nothing. Real NT does not expose a display device this
+way at all — VRAM is mapped below win32k by the display driver — so this is an extension of our
+internal seam, not an imitation of an NT one. The client-visible shape is deliberately the
+boring one (`MapViewOfFile(CreateFileMapping(hDevice))` at the Win32 level), because that is
+what winefb.drv will use at GUI-2. `NtReadFile`/`NtWriteFile` on the handle fall out of the same
+seam and genuinely read and write scanout bytes.
+
+**Writeback is a no-op, honestly.** The device's `WritebackRange` returns success because the
+"cache" *is* the scanout: there is no farther copy of those bytes. This is an implementation of
+the op, not a stub — the op's contract is "these bytes are durable at the next level down", and
+they are.
+
+**Cacheability.** The view is plain `PAGE_READWRITE`, mapped write-back through the HHDM like
+every other page; there is no WC/PAT support and no `MiMapPage` cacheability argument. Under the
+QEMU target the "VRAM" is host RAM (pinned tree `hw/display/vga.c` backs it with a RAM memory
+region), so write-combining would buy nothing observable. On real hardware this would be a
+performance deviation to revisit — never a correctness one (Art. 3).
+
+**The mode is the bootloader's.** There is no mode-set path. `IOCTL_PRSFB_GET_MODE`
+(`drivers/fbproto.h`) reports width/height/pitch/bpp and the RGB mask sizes and shifts exactly as
+Limine reported them, so a client composes pixels from the masks rather than assuming BGRA. A
+framebuffer that is absent, not RGB, or not 32bpp means the device is **not published** and an
+open fails `STATUS_OBJECT_NAME_NOT_FOUND` — the honest refusal, never a fabricated mode
+(Art. 12). Any ioctl other than the mode query refuses through `KiPinnedNotImplemented`.
+
+**`FileFsDeviceInformation` answers `FILE_DEVICE_VIDEO`**, generated from the pinned Wine
+`winioctl.h` like every other device type (Art. 4) rather than recalled — it is `0x23`, not the
+`0x22` a plausible guess produces.
+
+**The G5 adaptation.** Oracle-first is inapplicable to a HACK device: Wine has no `\Device\Fb0`,
+so no `tests/ntapi` case can be green on it before the kernel implements it. What replaces the
+oracle is a differential against an implementation the kernel does not control — the guest paints
+a rectangle and reports on serial what it painted and where, and `tests/run/run.sh gui` pulls the
+scanout back through QEMU's own device model (`screendump` → PPM) and checks the pixels against
+that report (Art. 6: a sanitizer-quiet kernel convicts nothing; an independent reader does). The
+contract itself is pinned in `drivers/fbproto.h` and in this section, which is the same shape
+HACK-004's console leg uses. No golden image at GUI-1 — a byte-compared PPM would break on any
+QEMU rendering change without saying anything about the kernel.
 
 ## WOW64 (not a deviation)
 

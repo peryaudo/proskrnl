@@ -39,8 +39,11 @@ hatch is available to us before ever considering (b).)
 
 Just **two drivers**, both logged in `docs/10`:
 
-- **`\Device\Fb0`** (HACK-001) — maps the framebuffer to user mode. QEMU ramfb or
-  virtio-gpu 2D scanout; a few hundred lines. NT would own this behind a display driver.
+- **`\Device\Fb0`** (HACK-001) — maps the framebuffer to user mode. **Built at GUI-1** over
+  the linear framebuffer Limine sets through the VGA BIOS's VBE (QEMU's default stdvga), which
+  turned out to need no display driver of our own at all: ~230 lines, no virtio-gpu, no ramfb,
+  no mode set. Mapping rides the existing section path (`GetCache`), so `kernel/mm` gained
+  nothing. NT would own this behind a display driver.
 - **`\Device\Input0`** (HACK-002) — raw keyboard/mouse events to user mode; a few hundred
   lines. NT routes this through win32k/csrss.
 

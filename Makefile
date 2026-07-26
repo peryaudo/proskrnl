@@ -115,6 +115,7 @@ CSRC := kernel/init/main.c \
         drivers/virtio/virtqueue.c \
         drivers/virtio/blk.c \
         drivers/condrv.c \
+        drivers/fb.c \
         fs/fat32/fat.c \
         fs/fat32/dir.c \
         fs/fat32/file.c \

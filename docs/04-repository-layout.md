@@ -93,13 +93,13 @@ proskrnl/
 │
 ├── drivers/                         # all statically linked; implement vfs.h directly
 │   ├── virtio/
+│   │   ├── pci.c                    # modern virtio-pci transport (the one bring-up path)
 │   │   ├── virtqueue.c              # shared ring
-│   │   ├── blk.c / console.c / input.c
-│   │   └── gpu.c                    # GUI-1: 2D scanout
+│   │   └── blk.c / console.c / input.c
 │   ├── condrv.c                     # M9: ConDrv-style console device, COM1 serial
 │   │                                #   transport both ways        ★ HACK-004
-│   ├── fb.c                         # GUI-1: \Device\Fb0            ★ HACK-001
-│   └── hid.c                        # GUI-1: \Device\Input0         ★ HACK-002
+│   ├── fb.c / fbproto.h             # GUI-1: \Device\Fb0            ★ HACK-001
+│   └── hid.c / hidproto.h           # GUI-1: \Device\Input0         ★ HACK-002
 │
 ├── fs/
 │   ├── fat32/
@@ -192,5 +192,5 @@ rests on.
 M1 = `arch/` + `init/` · M2 = `ke/` · M3 = `ob/` · M4 = `syscall/` + user split ·
 M5 = `mm/section+fault+pagecache` · M6 = `io/` + `fs/fat32` + `drivers/virtio/blk` ·
 M7 = `ps/usermode+peb` + `user/wine` · M8 = `cm/` + `smss` · M9 = `fs/npfs` + `condrv` ·
-GUI-1 = `drivers/{gpu,fb,hid}` · GUI-2–GUI-5 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
+GUI-1 = `drivers/{fb,hid,virtio/input}` · GUI-2–GUI-5 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
 Progress is visible as a coloring of the tree.
