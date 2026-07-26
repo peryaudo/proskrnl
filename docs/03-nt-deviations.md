@@ -224,10 +224,16 @@ and 16383-char value-name limits — are each cross-checked against
   program can open (even corrupt) it, where NT holds its hives open exclusively. A
   corrupted file is rejected structurally at the next boot (bounds-checked parse, empty
   registry on failure).
-- **Key classes, registry symlinks (`REG_OPTION_CREATE_LINK`), and change notification**
-  are unbuilt: the class argument is accepted and dropped, `CREATE_LINK` and the notify
-  APIs are refused loudly (`STATUS_NOT_IMPLEMENTED`), matching what the CUI Wine stack
-  never uses. `LastWriteTime` ticks on the boot-relative interrupt clock, not wall time.
+- **Key classes and change notification are unbuilt**: the class argument is accepted
+  and dropped, the notify APIs are refused loudly (`STATUS_NOT_IMPLEMENTED`), matching
+  what the CUI Wine stack never uses. `LastWriteTime` ticks on the boot-relative
+  interrupt clock, not wall time.
+- **Registry symlinks (`REG_OPTION_CREATE_LINK`) are built** (GUI-2: win32u's
+  display-device commit creates them), pinned by `sem_reg/symlink`. Two deviations from
+  the oracle, both outside what any pinned caller does: a resolution follows at most 32
+  links (NT's reparse limit; wineserver would recurse forever on a cycle), and a
+  destination outside `\Registry` refuses as `STATUS_OBJECT_NAME_NOT_FOUND` where the
+  oracle would resolve the foreign object and fail its type check.
 - **`\Registry\Machine`/`\Registry\User` are undeletable** (parent-of-root protection);
   wine would allow an empty hive root's deletion but never exercises it.
 
@@ -593,9 +599,12 @@ which applies `wine.inf`'s machine-state payload through
 - **HKCU is not populated (deferred to CUI-2).** `RtlFormatCurrentUserKeyPath`
   needs `NtQueryInformationToken` (still `MISSING`), so wineboot's per-user
   legs fail gracefully; the differential is scoped to `HKLM`.
-- **`REG_OPTION_CREATE_LINK` stays unimplemented** (`NtCreateKey` returns
-  `STATUS_NOT_IMPLEMENTED`); the `Time Zones` REG_LINK symlink `wine.inf`
-  writes fails and is on the differential's exclusion list.
+- **`REG_OPTION_CREATE_LINK` was unimplemented at CUI-1** and the `Time Zones`
+  REG_LINK symlink `wine.inf` writes failed. GUI-2 built registry symlinks
+  (see the M8 notes), so the link now lands on proskrnl too; the
+  differential still excludes `SymbolicLinkValue` values on both sides
+  (`tests/run/regdiff.py`), because both dumps resolve links rather than
+  reporting them.
 - **`ws2_32.dll` is baked as dormant data** — it cannot load (`DllMain`
   returns failure with no unixlib below); wineboot's `gethostname`/
   `getaddrinfo` are glue stand-ins. A loadable seam is Net-1's (sockets).

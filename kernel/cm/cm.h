@@ -37,6 +37,7 @@ typedef struct CMP_KEY_NODE
     ULONG bodyCount;    /* key bodies bound to this node */
     BOOLEAN deleted;    /* NtDeleteKey ran; node is unlinked */
     BOOLEAN isVolatile; /* REG_OPTION_VOLATILE: never persisted */
+    BOOLEAN isLink;     /* REG_OPTION_CREATE_LINK: resolves via SymbolicLinkValue */
     UNICODE_STRING name;
 } CMP_KEY_NODE, *PCMP_KEY_NODE;
 

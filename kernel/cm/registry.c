@@ -29,6 +29,11 @@
  *     16383 chars is STATUS_INVALID_PARAMETER on set and
  *     STATUS_OBJECT_NAME_NOT_FOUND on query/delete (ntdll
  *     MAX_VALUE_LENGTH).
+ *   - Registry symbolic links (REG_OPTION_CREATE_LINK) resolve through
+ *     their SymbolicLinkValue anywhere in a path; OBJ_OPENLINK names the
+ *     link itself, a link key accepts no other value, and creating over an
+ *     existing key with CREATE_LINK collides (wine server/registry.c
+ *     key_lookup_name / create_key / set_value; pinned by sem_reg/symlink).
  *
  * Everything internal is the dumbest correct shape (Art. 3): plain linked
  * lists, no KCB cache, no security beyond the granted-access mask, and a
@@ -286,14 +291,117 @@ static BOOLEAN CmpNextComponent(UNICODE_STRING *path, UNICODE_STRING *component)
     return TRUE;
 }
 
+/* TRUE when `path` has no components left (empty or separators only). */
+static BOOLEAN CmpPathExhausted(const UNICODE_STRING *path)
+{
+    for (ULONG i = 0; i < path->Length / sizeof(WCHAR); i++)
+    {
+        if (path->Buffer[i] != '\\')
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+/* A resolution follows at most this many links before refusing — breaks
+ * link cycles, which would hang the oracle (docs/03 "registry symlinks";
+ * the value is NT's reparse limit, MSDN "Reparse Points"). */
+#define CMP_MAX_LINK_EXPANSIONS 32u
+
+/* Follow `link`: replace the walk's path with the link's destination plus
+ * the unconsumed `remainder`, for a restart from the registry root. The
+ * destination is SymbolicLinkValue, an absolute path that must start with
+ * '\' (wine server/registry.c key_lookup_name: missing or relative refuses
+ * with STATUS_OBJECT_NAME_NOT_FOUND) and must stay under \Registry (the
+ * oracle would resolve a non-registry destination to a non-key and fail
+ * open's type check; one refusal shape here, docs/03). The recomposed path
+ * lives in *linkBuffer, freed and replaced across nested follows. */
+static NTSTATUS CmpFollowLink(PCMP_KEY_NODE link, const UNICODE_STRING *remainder,
+                              UNICODE_STRING *pathOut, PWSTR *linkBuffer, ULONG *expansions)
+{
+    static const WCHAR registryPrefix[] = {'\\', 'R', 'e', 'g', 'i', 's', 't', 'r', 'y'};
+    const ULONG prefixChars = sizeof(registryPrefix) / sizeof(WCHAR);
+
+    if (++(*expansions) > CMP_MAX_LINK_EXPANSIONS)
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    UNICODE_STRING valueName;
+    RtlInitUnicodeString(&valueName, WSTR("SymbolicLinkValue"));
+    PCMP_VALUE value = CmpFindValue(link, &valueName);
+    if (value == 0 || value->dataLength < sizeof(WCHAR))
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    UNICODE_STRING target;
+    target.Buffer = value->data;
+    target.Length = (USHORT)((value->dataLength / sizeof(WCHAR)) * sizeof(WCHAR));
+    target.MaximumLength = target.Length;
+    if (target.Buffer[0] != '\\')
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    UNICODE_STRING prefix;
+    prefix.Buffer = (PWSTR)registryPrefix;
+    prefix.Length = prefix.MaximumLength = (USHORT)sizeof(registryPrefix);
+    UNICODE_STRING targetHead = target;
+    if (targetHead.Length > sizeof(registryPrefix))
+    {
+        targetHead.Length = sizeof(registryPrefix);
+    }
+    if (!RtlEqualUnicodeString(&targetHead, &prefix, TRUE) ||
+        (target.Length > sizeof(registryPrefix) && target.Buffer[prefixChars] != '\\'))
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    /* Compose <target after \Registry> + '\' + <remainder>. The extra
+     * separator is harmless when the remainder brings its own —
+     * CmpNextComponent skips runs of them. */
+    ULONG suffixBytes = target.Length - (USHORT)sizeof(registryPrefix);
+    ULONG totalBytes =
+        suffixBytes + (remainder->Length != 0 ? sizeof(WCHAR) + remainder->Length : 0);
+    PWSTR composed = MiAllocatePool(totalBytes != 0 ? totalBytes : sizeof(WCHAR));
+    if (composed == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(composed, target.Buffer + prefixChars, suffixBytes);
+    if (remainder->Length != 0)
+    {
+        composed[suffixBytes / sizeof(WCHAR)] = '\\';
+        memcpy(composed + suffixBytes / sizeof(WCHAR) + 1, remainder->Buffer, remainder->Length);
+    }
+    if (*linkBuffer != 0)
+    {
+        MiFreePool(*linkBuffer);
+    }
+    *linkBuffer = composed;
+    pathOut->Buffer = composed;
+    pathOut->Length = (USHORT)totalBytes;
+    pathOut->MaximumLength = pathOut->Length;
+    return STATUS_SUCCESS;
+}
+
 /* Resolve `attributes` to a node in the tree. For forCreate, the walk stops
  * at the LAST component: *parentOut and *leafOut name it and *foundOut is the
  * existing child (0 = creatable); the leaf is copied into the caller's
  * leafScratch (CMP_MAX_COMPONENT_BYTES). For open (forCreate FALSE)
  * *foundOut is the named node itself. An empty path resolves to the base
- * key. */
+ * key.
+ *
+ * Link keys resolve through their SymbolicLinkValue wherever the walk meets
+ * one — in the middle of a path or at its end — except that `openLink`
+ * (OBJ_OPENLINK / REG_OPTION_CREATE_LINK's lookup) keeps a FINAL link
+ * unresolved, naming the link key itself (wine server/registry.c
+ * key_lookup_name). A follow restarts the walk from the registry root on
+ * the recomposed destination path, so a dangling destination's last
+ * component is creatable like any other (forCreate). */
 static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forCreate,
-                               PCMP_KEY_NODE *parentOut, UNICODE_STRING *leafOut,
+                               BOOLEAN openLink, PCMP_KEY_NODE *parentOut, UNICODE_STRING *leafOut,
                                WCHAR *leafScratch, PCMP_KEY_NODE *foundOut)
 {
     if (attributes == 0 || attributes->ObjectName == 0)
@@ -345,14 +453,19 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
     /* Walk. Node pointers stay valid without references: nodes die only via
      * NtDeleteKey (which unlinks them) + the last body close, and nothing
      * here blocks (Art. 3 cooperative kernel). */
-    PCMP_KEY_NODE node = base;
+    PCMP_KEY_NODE walkBase = base;
+    PCMP_KEY_NODE node;
     UNICODE_STRING component;
+    PWSTR linkBuffer = 0; /* owns the recomposed path after a link follow */
+    ULONG expansions = 0;
     status = STATUS_SUCCESS;
     *foundOut = 0;
     if (parentOut != 0)
     {
         *parentOut = 0;
     }
+restart:
+    node = walkBase;
     if (!forCreate)
     {
         while (CmpNextComponent(&path, &component))
@@ -367,6 +480,30 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
             {
                 status = STATUS_OBJECT_NAME_NOT_FOUND;
                 break;
+            }
+            if (node->isLink && !CmpPathExhausted(&path))
+            {
+                /* A link in the middle of the path: the remainder continues
+                 * under the destination. */
+                status = CmpFollowLink(node, &path, &path, &linkBuffer, &expansions);
+                if (!NT_SUCCESS(status))
+                {
+                    break;
+                }
+                walkBase = CmpRootNode;
+                goto restart;
+            }
+        }
+        if (NT_SUCCESS(status) && node->isLink && !openLink)
+        {
+            /* The path ended ON a link: without OBJ_OPENLINK the handle
+             * names the destination. */
+            UNICODE_STRING empty = {0, 0, 0};
+            status = CmpFollowLink(node, &empty, &path, &linkBuffer, &expansions);
+            if (NT_SUCCESS(status))
+            {
+                walkBase = CmpRootNode;
+                goto restart;
             }
         }
         if (NT_SUCCESS(status))
@@ -397,6 +534,24 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
                     status = STATUS_OBJECT_NAME_NOT_FOUND;
                     break;
                 }
+                if (node->isLink)
+                {
+                    /* Remainder from the current component to the end (one
+                     * contiguous buffer: component and path both point into
+                     * the walk's current name). */
+                    UNICODE_STRING remainder;
+                    remainder.Buffer = component.Buffer;
+                    remainder.Length =
+                        (USHORT)((path.Buffer - component.Buffer) * sizeof(WCHAR) + path.Length);
+                    remainder.MaximumLength = remainder.Length;
+                    status = CmpFollowLink(node, &remainder, &path, &linkBuffer, &expansions);
+                    if (!NT_SUCCESS(status))
+                    {
+                        break;
+                    }
+                    walkBase = CmpRootNode;
+                    goto restart;
+                }
             }
             leaf = component;
         }
@@ -412,26 +567,49 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
                 parent = node;
                 *foundOut = CmpFindSubkey(parent, &leaf);
             }
-            if (parentOut != 0)
+            if (*foundOut != 0 && (*foundOut)->isLink && !openLink)
             {
-                *parentOut = parent;
-            }
-            if (leafOut != 0)
-            {
-                /* leaf points into the caller's name (possibly user memory)
-                 * or the reparse buffer freed below — copy it into the
-                 * caller's scratch so it survives this frame. */
-                if (leaf.Length != 0)
+                /* Create-through-link: restart on the destination, whose
+                 * last component is then creatable if missing (wine
+                 * server/registry.c key_lookup_name: "symlink destination
+                 * can be created if missing"). */
+                UNICODE_STRING empty = {0, 0, 0};
+                status = CmpFollowLink(*foundOut, &empty, &path, &linkBuffer, &expansions);
+                if (NT_SUCCESS(status))
                 {
-                    memcpy(leafScratch, leaf.Buffer, leaf.Length);
+                    *foundOut = 0;
+                    walkBase = CmpRootNode;
+                    goto restart;
                 }
-                leafOut->Buffer = leafScratch;
-                leafOut->Length = leaf.Length;
-                leafOut->MaximumLength = leaf.Length;
+            }
+            if (NT_SUCCESS(status))
+            {
+                if (parentOut != 0)
+                {
+                    *parentOut = parent;
+                }
+                if (leafOut != 0)
+                {
+                    /* leaf points into the caller's name (possibly user
+                     * memory), the reparse buffer, or the link buffer, all
+                     * freed below — copy it into the caller's scratch so it
+                     * survives this frame. */
+                    if (leaf.Length != 0)
+                    {
+                        memcpy(leafScratch, leaf.Buffer, leaf.Length);
+                    }
+                    leafOut->Buffer = leafScratch;
+                    leafOut->Length = leaf.Length;
+                    leafOut->MaximumLength = leaf.Length;
+                }
             }
         }
     }
 
+    if (linkBuffer != 0)
+    {
+        MiFreePool(linkBuffer); /* the leaf was copied into leafScratch */
+    }
     if (reparseBuffer != 0)
     {
         MiFreePool(reparseBuffer); /* the leaf was copied into leafScratch */
@@ -680,19 +858,17 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;
     }
-    if ((options & REG_OPTION_CREATE_LINK) != 0)
-    {
-        /* Registry symlinks: unbuilt — a documented deviation the CUI-1
-         * differential excludes (docs/03; wine.inf's Time Zones link,
-         * setupapi warn-and-continues). Pinned todo_proskrnl by
-         * sem_reg/create_open, so the refusal is contract, not a stub. */
-        return KiPinnedNotImplemented();
-    }
+    /* REG_OPTION_CREATE_LINK's lookup keeps a final link unresolved and
+     * drops the implied open-if: creating over ANYTHING existing collides
+     * (wine server/registry.c create_key: attributes = (attributes &
+     * ~OBJ_OPENIF) | OBJ_OPENLINK). Pinned by sem_reg/symlink. */
+    BOOLEAN createLink = (options & REG_OPTION_CREATE_LINK) != 0;
+    BOOLEAN openLink = createLink || (attributes->Attributes & OBJ_OPENLINK) != 0;
 
     PCMP_KEY_NODE parent, found;
     UNICODE_STRING leaf;
     WCHAR leafScratch[CMP_MAX_COMPONENT_BYTES / sizeof(WCHAR)];
-    status = CmpResolvePath(attributes, TRUE, &parent, &leaf, leafScratch, &found);
+    status = CmpResolvePath(attributes, TRUE, openLink, &parent, &leaf, leafScratch, &found);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -701,6 +877,10 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     ULONG dispositionValue;
     if (found != 0)
     {
+        if (createLink)
+        {
+            return STATUS_OBJECT_NAME_COLLISION;
+        }
         /* Binding to an EXISTING key must request at least one access right
          * (wine server/handle.c alloc_handle: mapped access 0 ->
          * STATUS_ACCESS_DENIED); a newly created key is exempt (the
@@ -727,6 +907,7 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         found->isVolatile = parent->isVolatile || (options & REG_OPTION_VOLATILE) != 0;
+        found->isLink = createLink;
         parent->lastWriteTime = CmpNow();
         dispositionValue = REG_CREATED_NEW_KEY;
     }
@@ -750,9 +931,10 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
 NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
                      const OBJECT_ATTRIBUTES *attributes, ULONG options)
 {
-    /* REG_OPTION_OPEN_LINK is the only meaningful option and registry
-     * symlinks are unbuilt (docs/03), so options only get wine's own
-     * treatment: ignored. */
+    /* Options get wine's own treatment: ignored — even REG_OPTION_OPEN_LINK
+     * (wine dlls/ntdll/unix/registry.c NtOpenKeyEx passes only the object
+     * attributes to the server, so opening a link unresolved takes
+     * OBJ_OPENLINK in the attributes, not the option). */
     (void)options;
     if (keyHandle == 0)
     {
@@ -774,7 +956,8 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     }
 
     PCMP_KEY_NODE found;
-    status = CmpResolvePath(attributes, FALSE, 0, 0, 0, &found);
+    status = CmpResolvePath(attributes, FALSE, (attributes->Attributes & OBJ_OPENLINK) != 0, 0, 0,
+                            0, &found);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -912,6 +1095,19 @@ NTSTATUS NtSetValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName, ULONG 
     PCMP_KEY_NODE node = body->node;
     UNICODE_STRING name = *valueName;
     name.Length &= ~1u; /* as wine's server: whole WCHARs only */
+
+    /* A link key takes exactly one value: SymbolicLinkValue of type
+     * REG_LINK (wine server/registry.c set_value). */
+    if (node->isLink)
+    {
+        UNICODE_STRING symlinkValue;
+        RtlInitUnicodeString(&symlinkValue, WSTR("SymbolicLinkValue"));
+        if (type != REG_LINK || !RtlEqualUnicodeString(&name, &symlinkValue, TRUE))
+        {
+            ObDereferenceObject(body);
+            return STATUS_ACCESS_DENIED;
+        }
+    }
 
     /* An identical set is a success no-op (wine server set_value): no
      * LastWriteTime touch, no hive rewrite. */
