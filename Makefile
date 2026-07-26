@@ -602,6 +602,35 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img
 
+# The GUI-1 acceptance client (docs/02 "a user program maps the framebuffer
+# and draws a rectangle visible in a screendump; key input is readable").
+# ntdll only — it talks to \Device\Fb0 and \Device\Input0 through the Nt*
+# surface directly, with no Win32 above it (user32 does not exist until
+# GUI-2). -I. so it can include the drivers/*proto.h contracts.
+GUISMOKE := $(BUILD)/modules/gui_smoke.exe
+$(GUISMOKE): tests/gui/gui_smoke.c drivers/fbproto.h drivers/hidproto.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=gui_start \
+	    tests/gui/gui_smoke.c \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
+# The GUI-1 image (tests/run/run.sh gui): the standard image plus
+# gui_smoke.exe, whose presence makes the boot paint the framebuffer and
+# then block forever on input (kernel/init/main.c KiRunGuiSmoke) — the host
+# screendumps it and ends the guest over QMP. No Wine userland beyond ntdll
+# is involved, so this image boots in seconds.
+IMG_GUI := $(BUILD)/proskrnl-gui.hdd
+$(IMG_GUI): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(GUISMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI) $(MODULE_SPECS) $(WINFILES) \
+	    win:$(GUISMOKE)=gui_smoke.exe
+
+gui-img: $(IMG_GUI)
+.PHONY: gui-img
+
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
