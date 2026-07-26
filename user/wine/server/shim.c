@@ -939,20 +939,20 @@ static void fixup_request( struct __server_request_info *info, enum request req,
     }
 }
 
-unsigned int CDECL wine_server_call( void *req_ptr )
+/* Run one request on behalf of `client`'s thread `tid`. This is the whole
+ * server side of a call, and BOTH modes reach the state machine through it:
+ * the in-process build calls it directly (user/wine/server/call.c), the
+ * server process calls it from its transport loop. One authority, so the
+ * two modes cannot drift (Art. 11). */
+unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
+                                   struct __server_request_info *info )
 {
-    struct __server_request_info * const info = req_ptr;
     enum request req = info->u.req.request_header.req;
     struct thread *thread;
     unsigned int ret;
-    DWORD tid;
 
-    if (!prsk_server_init()) return STATUS_UNSUCCESSFUL;
-
-    tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
     server_lock();
-    if (!(thread = find_thread_record( tid )) &&
-        !(thread = create_thread_record( local_client, tid )))
+    if (!(thread = find_thread_record( tid )) && !(thread = create_thread_record( client, tid )))
     {
         server_unlock();
         return STATUS_NO_MEMORY;
@@ -962,6 +962,95 @@ unsigned int CDECL wine_server_call( void *req_ptr )
     if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
     server_unlock();
     return ret;
+}
+
+struct prsk_client *prsk_local_client(void)
+{
+    return local_client;
+}
+
+void *prsk_client_process_handle( struct prsk_client *client )
+{
+    return client ? client->handle : NULL;
+}
+
+struct prsk_client *prsk_attach_client( unsigned int pid, void *processHandle )
+{
+    struct prsk_client *client;
+
+    server_lock();
+    if (!(client = find_client( pid ))) client = create_client( pid, processHandle );
+    server_unlock();
+    return client;
+}
+
+/* Retire one thread's records, in wineserver's own order
+ * (server/thread.c cleanup_thread): clipboard first, then the windows it
+ * owns, then its message queue, then its hold on the desktop. Doing it in a
+ * different order is how a window ends up on a freed queue. */
+static void reap_thread_locked( struct prsk_thread_record *record )
+{
+    struct thread *thread = record->thread;
+    struct thread *previous = current;
+
+    /* The teardown helpers read `current` (they set errors and touch the
+     * calling thread's desktop), so bind the thread being reaped. */
+    current = thread;
+    cleanup_clipboard_thread( thread );
+    srv_destroy_thread_windows( thread );
+    if (thread->queue)
+    {
+        free_msg_queue( thread );
+        thread->queue = NULL;
+    }
+    if (thread->desktop_users > 0) release_thread_desktop( thread, 1 );
+    current = previous == thread ? NULL : previous;
+
+    list_remove( &thread->proc_entry );
+    list_remove( &record->entry );
+    release_object( thread );
+    free( record );
+}
+
+void prsk_reap_thread( struct prsk_client *client, unsigned int tid )
+{
+    struct prsk_thread_record *record, *next;
+
+    server_lock();
+    LIST_FOR_EACH_ENTRY_SAFE( record, next, &thread_records, struct prsk_thread_record, entry )
+        if (record->client == client && record->tid == tid)
+        {
+            reap_thread_locked( record );
+            break;
+        }
+    server_unlock();
+}
+
+/* A client process died. Everything it still owns goes, threads first (a
+ * window is owned by a thread, and destroy_thread_windows is what unlinks
+ * it) and then the process-wide state, which is the subset of wineserver's
+ * process_killed that applies to the files compiled here. */
+void prsk_reap_client( struct prsk_client *client )
+{
+    struct prsk_thread_record *record, *next;
+
+    server_lock();
+    LIST_FOR_EACH_ENTRY_SAFE( record, next, &thread_records, struct prsk_thread_record, entry )
+        if (record->client == client) reap_thread_locked( record );
+
+    close_process_desktop( client->process );
+    destroy_process_classes( client->process );
+    free_process_user_handles( client->process );
+    if (client->process->handles)
+    {
+        release_object( client->process->handles );
+        client->process->handles = NULL;
+    }
+    list_remove( &client->entry );
+    release_object( client->process );
+    if (client->handle && client->handle != GetCurrentProcess()) NtClose( client->handle );
+    free( client );
+    server_unlock();
 }
 
 /* --- what wineserver's unix half would have provided -------------------------

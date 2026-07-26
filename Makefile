@@ -702,9 +702,13 @@ W32U_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
                -Iuser/wine/include -Ithird_party/freetype/include \
                -I$(W32U_BUILD) -Ithird_party/wine/include
 
+# The glue, minus the server process's own main: user/wine/wineserver/ is
+# the wineserver-lite.exe link, not part of the DLL (see WINESERVER_LITE).
+W32U_GLUE_SRCS := $(filter-out user/wine/wineserver/%.c,$(wildcard user/wine/*/*.c))
+
 W32U_OBJS := $(patsubst $(WINE_W32U)/%.c,$(W32U_BUILD)/w32u/%.o,$(W32U_SRCS)) \
              $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS)) \
-             $(patsubst user/wine/%.c,$(W32U_BUILD)/glue/%.o,$(wildcard user/wine/*/*.c))
+             $(patsubst user/wine/%.c,$(W32U_BUILD)/glue/%.o,$(W32U_GLUE_SRCS))
 
 $(W32U_BUILD)/w32u/%.o: $(WINE_W32U)/%.c user/wine/include/wine/unixlib.h
 	@mkdir -p $(dir $@)
@@ -766,6 +770,45 @@ $(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(FREETYP
 
 win32u: $(WIN32U)
 .PHONY: win32u
+
+# wineserver-lite.exe (GUI-3, HACK-003): the same GUI object model, linked
+# into a process of its own instead of into every GUI client.
+#
+# This is docs/06's keep-list build: a NEW link over the very same
+# $(W32U_BUILD)/srv/*.o objects and the same generated request table the DLL
+# uses -- not a stripped copy of server/, which would mutate the oracle's
+# wineserver and corrupt the spec. Because the objects are literally shared,
+# the two modes cannot drift into two state machines (Art. 11).
+#
+# What differs is only which halves come along: the server takes shim.c (the
+# environment the state machine expects) and its own main.c, and leaves out
+# call.c, which is the CLIENT half -- so the server carries no client of
+# itself. The DLL takes call.c and leaves out main.c. SRV_RENAME_FLAGS is
+# still applied because these are the same renamed objects.
+WSRV_BUILD := $(W32U_BUILD)/wineserver
+WSRV_SRCS  := $(wildcard user/wine/wineserver/*.c)
+WSRV_OBJS  := $(patsubst user/wine/wineserver/%.c,$(WSRV_BUILD)/%.o,$(WSRV_SRCS)) \
+              $(W32U_BUILD)/glue/server/shim.o $(W32U_BUILD)/glue/server/srv_glue.o
+
+$(WSRV_BUILD)/%.o: user/wine/wineserver/%.c
+	@mkdir -p $(dir $@)
+	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) \
+	    -Iuser/wine/server -c $< -o $@
+
+WINESERVER_LITE := $(BUILD)/modules/wineserver-lite.exe
+$(WINESERVER_LITE): $(WSRV_OBJS) $(SRV_OBJS) $(W32U_BUILD)/prsk_request_table.o $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -nostdlib -nostartfiles -Wl,--entry=prsk_server_start \
+	    $(WSRV_OBJS) $(SRV_OBJS) $(W32U_BUILD)/prsk_request_table.o \
+	    -Wl,--start-group \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
+	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    third_party/wine/libs/musl/x86_64-windows/libmusl.a \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    -Wl,--end-group -lgcc -o $@
+
+wineserver-lite: $(WINESERVER_LITE)
+.PHONY: wineserver-lite
 
 # The Wine GUI DLLs, baked debug-stripped like the rest (no COW: every
 # mapped image is copied whole per process, so DWARF is a real memory
