@@ -310,45 +310,42 @@ device handle work unchanged. Input is polled from the virtio-input eventq by th
 for the pixels, QMP `send-key` for the key (`docs/03` "GUI-1 notes" for the G5 adaptation a HACK
 device forces).
 
-## GUI-2 — win32u + framebuffer backend (single process) 🚧
+## GUI-2 — win32u + framebuffer backend (single process) ✅
 Bring in win32u/user32/gdi32/comctl32 PE sides; build win32u's unix side as PE (POSIX →
 our `Nt*`, FreeType statically linked). Write `winefb.drv`: implement Wine's display
 driver table, blit dibdrv's bitmap to `\Device\Fb0`. Desktop state lives in-process; one
 GUI process.
 **Done when:** **winemine.exe appears on screen.**
 
-**In progress** (`tests/run/run.sh gui2`, not green yet). The structure is built and boots;
-the remaining gap is one specific thing, named below.
+**Done** (`tests/run/run.sh gui2`): winemine paints its window onto the scanout and the
+screendump differential convicts it (the guest reports the window rect, QEMU's device
+model returns the pixels — the GUI-1 shape). `make rungui` boots the same image with a
+host window for a human.
 
-Built and working on the target: win32u.dll is the pinned tree's *unix-side* sources
-compiled as PE (`user/wine/`, `make win32u`) — user32/gdi32/imm32 bind to it by name,
-unmodified, because that is how they import win32u anyway (all 434 imports covered). The
-desktop state is the pinned wineserver's own GUI object model compiled into the same DLL
-behind an in-process `wine_server_call`, so it is Wine's state machine rather than a second
-one (Art. 11); 120 of its 308 request handlers link and the rest refuse by name. Queue
-wake-ups are real kernel events, which is `docs/07`'s "message queue backed by a kernel
-event" arriving one milestone early because it was also the simplest thing that worked.
-`winefb.drv` is three driver entries plus a surface flush. FreeType is pinned
-(`third_party/freetype`) and linked in. **Nothing in `third_party/wine` is patched** — the
-hack meter is unchanged.
+The structure: win32u.dll is the pinned tree's *unix-side* sources compiled as PE
+(`user/wine/`, `make win32u`) — user32/gdi32/imm32 bind to it by name, unmodified, because
+that is how they import win32u anyway (all 434 imports covered). The desktop state is the
+pinned wineserver's own GUI object model compiled into the same DLL behind an in-process
+`wine_server_call`, so it is Wine's state machine rather than a second one (Art. 11); 120
+of its 308 request handlers link and the rest refuse by name. Queue wake-ups are real
+kernel events, which is `docs/07`'s "message queue backed by a kernel event" arriving one
+milestone early because it was also the simplest thing that worked. `winefb.drv` is four
+driver entries plus a surface flush. FreeType is pinned (`third_party/freetype`) and
+linked in. **Nothing in `third_party/wine` is patched** — the hack meter is unchanged.
 
-A gui2 boot gets: win32u attached, `\Device\Fb0` mapped and its mode reported, the
-keyboard reader running, the window station and desktop created, the built-in classes
-registered, and the display device enumerated through `pUpdateDisplayDevices`. It then
-stops at `lock_display_devices`: win32u commits the display devices to the registry and
-immediately reads them back, and the read-back finds no sources. The write goes through
-`reg_create_ascii_key( NULL, "\\Registry\\Machine\\HARDWARE\\DEVICEMAP\\VIDEO", ... )` — a path
-with two missing intermediates, and `NtCreateKey` creates only the last component (verified
-identical on the oracle: Wine fails the same call the same way, so this is NOT a proskrnl
-divergence). On Wine those parents exist because the PnP/`wineboot` device installation
-made them; on the gui2 image it does not run to completion (`install_root_pnp_devices` fails
-for every root device). **Next: make the image's hive carry the keys win32u's display commit
-needs, then continue through the first window.**
-
-Two other things are known-deferred and will need attention right after: the desktop window
-the forced `get_desktop_window` creates has empty rects (explorer sizes it in real Wine, and
-explorer is GUI-6), and the `get_desktop_window` request needs `force` set on this
-single-process path so win32u does not try to launch explorer at all.
+What completing the boot took, in the order the boot found it: registry symbolic links in
+Cm (`sem_reg/symlink` pins the semantics; win32u's display-device commit creates volatile
+links under `Control\Video` and the read-back resolves them — the CUI-era refusal was the
+reason `lock_display_devices` found no sources), the `HKU\<sid>` root the font loader
+opens, two in-process-glue bugs (`ntdll_wcsicmp` compiled to a self-jump via the unixlib.h
+macro trap; the queue-handle fixup read a cleared pointer), and three single-process
+fixtures the docs/03 "GUI-2 notes" record: `get_desktop_window` is always forced, the
+desktop/message windows' user entries are made to look foreign (explorer owns them on real
+Wine — with our own pid in the entries, win32u skipped the `WND_DESKTOP` paths and the
+first `ShowWindow` never exposed the window), and winefb.drv sizes the desktop window to
+the scanout (`pSetDesktopWindow`, the `X11DRV` repair). The image also bakes the ole32
+chain (ole32/combase/coml2) because imm32's `CoRegisterInitializeSpy` delay-import aborts
+the process when it cannot resolve — every real Windows has ole32.
 
 ## GUI-3 — win32k-lite / wineserver-lite ⛰️ (the GUI mountain, lowered by route (a))
 Under route (a): run a stripped wineserver as a PE process holding GUI state
