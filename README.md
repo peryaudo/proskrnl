@@ -259,7 +259,7 @@ Next: **CUI-5** — Io completion, led by file rename — through **CUI-7**
 CUI-5, now its own path) — or **the GUI path (GUI-1+)** — pixels/input,
 win32u (`docs/02`); either way, growing the winetest manifest as its parked
 blockers land (`docs/03` "M10 winetest notes"). Debug objects are ruled out
-of scope permanently (`docs/03` "Debug objects").
+of scope permanently (ADR 0011).
 
 ## Build instructions
 
