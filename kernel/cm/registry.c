@@ -1423,6 +1423,14 @@ void CmInitialize(void)
     CmpSeedStringValue(seeded, WSTR("Hostname"), WSTR("proskrnl"));
     CmpSeedStringValue(seeded, WSTR("Domain"), WSTR("localdomain"));
 
+    /* The HKCU root for the fixed Se identity (kernel/se/token.c:
+     * S-1-5-21-0-0-0-1000). The oracle's wineserver creates HKU\<sid> at
+     * prefix init (server/registry.c init_registry); win32u's font_init
+     * OPENS it (dlls/win32u/font.c open_hkcu) and loads no fonts at all
+     * when it is absent. Full HKCU population stays deferred (docs/03
+     * "CUI-1 firstboot notes"); this is only the root the open needs. */
+    CmpEnsureSkeletonKey(WSTR("User\\S-1-5-21-0-0-0-1000"));
+
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",
              CmpRootNode->subkeyCount > 2 ? "loaded" : "empty");
