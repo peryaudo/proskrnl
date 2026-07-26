@@ -749,21 +749,56 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
     return reply.reply_header.error;
 }
 
-/* Two replies name something only this build can answer.
- *
- * get_msg_queue_handle hands out a server handle to the queue, which the
- * client then waits on. On Wine that handle reaches the wineserver socket;
- * here the wait is a real NtWaitForMultipleObjects, so the handle has to be
- * the queue's kernel event.
+/* A few requests name something only this build can answer.
  *
  * get_desktop_window without `force` returns nothing until some other
  * process has created the desktop, and win32u answers that by launching
  * explorer.exe. There is exactly one GUI process here and explorer is GUI-6,
- * so the desktop is created on the spot - the same code path the server
- * takes for the forcing caller. */
+ * so every caller gets `force`: the desktop is created on the spot - the
+ * same code path the server takes for the forcing caller - and win32u
+ * never goes looking for an explorer.exe the image does not carry. */
+static void fixup_request_before( struct __server_request_info *info, enum request req )
+{
+    if (!strcmp( prsk_req_names[req], "get_desktop_window" ))
+        info->u.req.get_desktop_window_request.force = 1;
+}
+
+/* On Wine the desktop and HWND_MESSAGE windows belong to EXPLORER, so every
+ * app process sees their user entries with a foreign pid and takes win32u's
+ * WND_DESKTOP paths (dlls/win32u/window.c get_user_handle_ptr ->
+ * OBJ_OTHER_PROCESS). Here the force-create runs inside the app's own
+ * process: the entry keeps our pid, win32u goes looking for a client-side
+ * WND that was never made, GetWindowLong on the desktop answers style 0,
+ * and the first ShowWindow takes the invisible-parent shortcut - the window
+ * turns visible without ever being exposed, so nothing paints. Clearing the
+ * owner ids makes the entries look foreign, which is exactly how they look
+ * to a Wine app. The server side is already detached
+ * (server/window.c detach_window_thread). */
+static void detach_user_entry( user_handle_t handle )
+{
+    volatile struct user_entry *entry;
+    unsigned int index;
+
+    if (!handle) return;
+    index = ((handle & 0xffff) - FIRST_USER_HANDLE) >> 1;
+    if (index >= MAX_USER_HANDLES) return;
+    entry = &srv_shared_session->user_entries[index];
+    entry->pid = 0;
+    entry->tid = 0;
+}
+
+/* get_msg_queue_handle hands out a server handle to the queue, which the
+ * client then waits on. On Wine that handle reaches the wineserver socket;
+ * here the wait is a real NtWaitForMultipleObjects, so the handle has to be
+ * the queue's kernel event. */
 static void fixup_request( struct __server_request_info *info, enum request req,
                            struct thread *thread )
 {
+    if (!strcmp( prsk_req_names[req], "get_desktop_window" ))
+    {
+        detach_user_entry( info->u.reply.get_desktop_window_reply.top_window );
+        detach_user_entry( info->u.reply.get_desktop_window_reply.msg_window );
+    }
     if (!strcmp( prsk_req_names[req], "get_msg_queue_handle" ))
     {
         /* thread->queue is a struct object at offset 0; its get_sync op is
@@ -801,6 +836,7 @@ unsigned int CDECL wine_server_call( void *req_ptr )
         server_unlock();
         return STATUS_NO_MEMORY;
     }
+    if (req < prsk_req_count) fixup_request_before( info, req );
     ret = dispatch_request( info, thread );
     if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
     server_unlock();
