@@ -404,6 +404,31 @@ flush-on-message-wait (an idle app paints once and stops — why the gui2 leg du
 settled first frame), which per-window surfaces + dirty rectangles replace.
 **Done when:** windows can be grabbed and moved; clicks reach the right window.
 
+**Done** — `tests/run/run.sh gui4` is green: two *overlapping* windows over
+wineserver-lite, a click in the overlap reaching only the upper one, focus following a
+click on the lower one's exposed part (characters following focus both times), and the
+upper window grabbed by its caption and dragged +150,+120 — DefWindowProc's own modal
+loop under server-side capture, none of it our code — with both screendumps holding
+pictorially: the upper window's fill wins the overlap, the moved window sits at its
+reported new rectangle, what it uncovered is repainted cross-process, the vacated strip
+returns to the desktop background, and the software cursor's arrow sits at both park
+points. The pointer is `\Device\Input1` — QEMU's tablet, identified by its own `EV_BITS`
+never PCI order, its abs range served verbatim by one ioctl (HACK-002 grew; docs/10) —
+read by the same client-side reader as the keyboard, whose start hook was also fixed
+(it was dead for the app under test since GUI-2; docs/03). Compositing is clip-at-flush
+against a fresh server z-order query plus mover-repairs-the-world exposure — the two
+halves of the "native windowing system" role Wine's server explicitly delegates — and
+the desktop got a background, painted by the driver because the forced-foreign desktop
+window has no other painter. Hit-testing, routing, capture and the drag loop are the
+pinned server's and win32u's own, unmodified; the hack meter is unchanged. The flush
+clock survives as flush-on-message-wait by measurement, not assumption: with input
+flowing, message waits are continuous, and win32u's dirty-bounds tracking plus the
+clipped blits complete the dirty-rectangle story. What is deliberately *not* built:
+per-window `HCURSOR` shapes (the cursor is one software arrow with a single writer —
+the escalation path is named in docs/03), `HWND_BOTTOM` lowering exposure, and
+`pMoveWindowBits` (the forced full re-blit covers pure moves). Residuals and the
+focus-stealing lesson the leg surfaced: docs/03 "GUI-4 notes".
+
 ## GUI-5 — GUI finishing
 Clipboard, hooks, `AttachThreadInput`, GUI-ifying conhost, and the real trophy: run
 Wine's `user32/tests/msg.c`. Value accrues incrementally; keep an honest `todo_` list.
