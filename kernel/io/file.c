@@ -16,6 +16,7 @@
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
 #include "drivers/virtio/blk.h"
+#include "drivers/virtio/input.h"
 #include "fs/fat32/fat.h"
 
 /* --- object types ----------------------------------------------------------- */
@@ -234,6 +235,13 @@ void IoInitializeTransport(void)
     if (!VioBlkInitialize())
     {
         DbgPrint("io: no boot disk; file surface disabled\n");
+    }
+    /* GUI-1: the raw input source behind \Device\Input0 (HACK-002). Absent
+     * on every image but the gui one, which is why this says so and moves
+     * on -- drivers/hid.c then publishes no device at all. */
+    if (!VioInputInitialize())
+    {
+        DbgPrint("io: no input device; \\Device\\Input0 disabled\n");
     }
 }
 
