@@ -111,14 +111,6 @@ START_TEST(gui3b)
     cls.lpszClassName = class_b;
     ok(RegisterClassW(&cls) != 0, "RegisterClassW");
 
-    hwnd_b = CreateWindowExW(0, class_b, title_b, WS_POPUP | WS_VISIBLE, B_X, B_Y, B_W, B_H, NULL,
-                             NULL, GetModuleHandleW(NULL), NULL);
-    ok(hwnd_b != NULL, "CreateWindowExW");
-    if (!hwnd_b)
-        return;
-    UpdateWindow(hwnd_b);
-    ntapi_printf("[KTEST] gui3 B rect=%d,%d,%dx%d\n", B_X, B_Y, B_W, B_H);
-
     /* --- FindWindow: A's window, from B's process ------------------------- */
     hwnd_a = wait_for_a();
     ntapi_printf("[KTEST] gui3 find %s\n", hwnd_a ? "PASS" : "FAIL");
@@ -127,6 +119,24 @@ START_TEST(gui3b)
         ntapi_printf("[KTEST] gui3 verdict FAIL\n");
         return;
     }
+
+    /* B's window is created strictly AFTER A's exists, so the show-time
+     * activation order is deterministic: B's window is the last shown, and
+     * showing it moves the foreground from A's process to this one (that IS
+     * the cross-process activation this leg proves; A corroborates by
+     * reporting its deactivation). The order matters because the pinned
+     * server enforces its focus-stealing rule (server/queue.c,
+     * set_foreground_window: a process that is not foreground and has older
+     * user input may not take foreground once its window has been foreground
+     * before) -- created the other way around, the focus check below would
+     * be refused by the oracle's own rule, not by a proskrnl bug. */
+    hwnd_b = CreateWindowExW(0, class_b, title_b, WS_POPUP | WS_VISIBLE, B_X, B_Y, B_W, B_H, NULL,
+                             NULL, GetModuleHandleW(NULL), NULL);
+    ok(hwnd_b != NULL, "CreateWindowExW");
+    if (!hwnd_b)
+        return;
+    UpdateWindow(hwnd_b);
+    ntapi_printf("[KTEST] gui3 B rect=%d,%d,%dx%d\n", B_X, B_Y, B_W, B_H);
 
     /* --- SendMessage: cross-process, and the ANSWER proves it ran --------- */
     answer = SendMessageW(hwnd_a, GUI3_APP_MESSAGE, 0x4321, 0);
