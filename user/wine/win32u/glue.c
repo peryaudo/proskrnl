@@ -38,6 +38,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status );
 extern void winefb_init(void);
 extern int prsk_server_init(void);
+extern int prsk_transport_startup(void);
+extern void prsk_client_thread_detach(void);
 extern void winefb_report( const char *format, ... );
 extern void *prsk_freetype_handle( const char *name );
 extern void *prsk_freetype_symbol( void *handle, const char *symbol );
@@ -166,6 +168,7 @@ struct prsk_thread_data
     struct user_thread_info  info;          /* first: get_user_thread_info returns &info */
     struct callback_frame   *callback_top;
     struct arena_chunk      *arena;         /* callback replies, see NtCallbackReturn */
+    unsigned int             server_slot;   /* transport slot + 1; 0 = unclaimed */
 };
 
 struct arena_chunk
@@ -195,6 +198,16 @@ struct user_thread_info *get_user_thread_info(void)
 {
     struct prsk_thread_data *data = thread_data();
     return data ? &data->info : NULL;
+}
+
+/* Where user/wine/server/call.c keeps this thread's transport slot. It
+ * belongs in the per-thread block rather than in a TLS index of its own:
+ * this build links no kernel32, so there is no TlsAlloc, and the block is
+ * already the thread-local store everything else here uses. */
+unsigned int *prsk_thread_slot(void)
+{
+    struct prsk_thread_data *data = thread_data();
+    return data ? &data->server_slot : NULL;
 }
 
 /* --- 3. the user-mode callback pair ---------------------------------------- */
@@ -428,74 +441,6 @@ const WCHAR *ntdll_get_data_dir(void)
     return windowsW;
 }
 
-/* --- 5. what WINE_UNIX_LIB expects ntdll.so to export ----------------------
- *
- * Under WINE_UNIX_LIB these are real calls into ntdll.so rather than the
- * inline TEB reads the PE headers use (winnt.h, processthreadsapi.h). The
- * definitions are the inline ones, spelled once here. */
-
-struct _TEB * WINAPI NtCurrentTeb(void)
-{
-    struct _TEB *teb;
-
-    __asm__( "movq %%gs:0x30,%0" : "=r" (teb) );
-    return teb;
-}
-
-HANDLE WINAPI PsGetCurrentProcessId(void)
-{
-    return NtCurrentTeb()->ClientId.UniqueProcess;
-}
-
-HANDLE WINAPI PsGetCurrentThreadId(void)
-{
-    return NtCurrentTeb()->ClientId.UniqueThread;
-}
-
-/* win32u/syscall.c narrows allocations for a WoW64 client; there is no
- * 32-bit client here (x86_64 only, ADR 0006), so the whole address space is
- * available - the same value Wine uses for a pure 64-bit process. */
-ULONG_PTR zero_bits = 0;
-
-/* musl's error hook: Wine's PE build leaves errno alone too. */
-void math_error( int type, const char *name, double x, double y, double result ) { }
-
-/* --- 6. the last few libc corners ------------------------------------------
- *
- * ucrtbase covers everything win32u actually calls except these. strdup is
- * real (opentype.c and the server's atom code use it); the descriptor calls
- * are reachable only from wineserver paths this build refuses elsewhere, so
- * they refuse here too rather than pretending to have a file system. The
- * font backend's own file calls are NOT here -- they are implemented, over
- * Nt*, in font_unix.c. */
-
-char *strdup( const char *str )
-{
-    size_t size = strlen( str ) + 1;
-    char *copy = malloc( size );
-
-    if (copy) memcpy( copy, str, size );
-    return copy;
-}
-
-int dup( int fd )
-{
-    ERR( "no unix descriptors in this build\n" );
-    return -1;
-}
-
-ssize_t pread( int fd, void *buffer, size_t count, off_t offset )
-{
-    ERR( "no unix descriptors in this build\n" );
-    return -1;
-}
-
-char *realpath( const char *path, char *resolved )
-{
-    ERR( "no unix paths in this build\n" );
-    return NULL;
-}
-
 /* --- 7. dlopen ------------------------------------------------------------
  *
  * opengl.c and vulkan.c load their backends this way and degrade by
@@ -528,86 +473,6 @@ char *prsk_dlerror(void)
     return (char *)"not available in this build";
 }
 
-/* --- 7b. the printf family -------------------------------------------------
- *
- * mingw's stdio.h routes the v*printf family through its own ANSI-conforming
- * copies in libmingwex, which this DLL does not link (it would bring a
- * second CRT alongside ucrtbase). The mingw spellings are therefore defined
- * here, over ucrtbase's real entry points.
- *
- * Over __stdio_common_vsprintf, NOT over vsnprintf: mingw's stdio.h defines
- * vsnprintf AS __mingw_vsnprintf, so a definition that calls vsnprintf calls
- * itself. (It compiles, links, and tail-calls into `jmp .`; the guest sat
- * there spinning at CPL=3 until QEMU's registers said which symbol it was.)
- * __stdio_common_vsprintf is UCRT's actual ABI underneath all of them and no
- * macro rewrites it.
- */
-
-int __cdecl __stdio_common_vsprintf( unsigned __int64 options, char *buffer, size_t count,
-                                     const char *format, void *locale, va_list args );
-int __cdecl __stdio_common_vsscanf( unsigned __int64 options, const char *input, size_t count,
-                                    const char *format, void *locale, va_list args );
-
-/* Ask for C99 truncation semantics (return the length that WOULD have been
- * written, always NUL-terminate) rather than MSVC's -1. The flag is UCRT's,
- * so it comes from UCRT's header rather than being typed here (G8). */
-static int prsk_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
-{
-    return __stdio_common_vsprintf( _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR, buffer, count,
-                                    format, NULL, args );
-}
-
-int __mingw_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
-{
-    return prsk_vsnprintf( buffer, count, format, args );
-}
-
-int __ms_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
-{
-    return prsk_vsnprintf( buffer, count, format, args );
-}
-
-int __mingw_vsscanf( const char *input, const char *format, va_list args )
-{
-    return __stdio_common_vsscanf( 0, input, (size_t)-1, format, NULL, args );
-}
-
-int __ms_vsscanf( const char *input, const char *format, va_list args )
-{
-    return __mingw_vsscanf( input, format, args );
-}
-
-int __mingw_vasprintf( char **out, const char *format, va_list args )
-{
-    va_list copy;
-    int len;
-
-    va_copy( copy, args );
-    len = prsk_vsnprintf( NULL, 0, format, copy );
-    va_end( copy );
-    if (len < 0 || !(*out = malloc( len + 1 ))) return -1;
-    return prsk_vsnprintf( *out, len + 1, format, args );
-}
-
-int asprintf( char **out, const char *format, ... )
-{
-    va_list args;
-    int ret;
-
-    va_start( args, format );
-    ret = __mingw_vasprintf( out, format, args );
-    va_end( args );
-    return ret;
-}
-
-/* Only wineserver's dump helpers print to a FILE*, and there is no stderr
- * here - diagnostics go to serial (user/wine/server/shim.c prsk_log). */
-int __mingw_vfprintf( FILE *file, const char *format, va_list args ) { return 0; }
-int __mingw_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
-int __ms_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
-int fprintf( FILE *file, const char *format, ... ) { return 0; }
-int fscanf( FILE *file, const char *format, ... ) { return -1; }
-
 /* --- 8. the DLL entry ------------------------------------------------------
  *
  * Not winecrt0's DllMainCRTStartup: that one runs the C++ static-init
@@ -620,12 +485,24 @@ BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved 
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        /* The state machine has to exist before win32u's own init runs:
-         * shared_session_init opens \KernelObjects\__wine_session by name
-         * as the FIRST thing init_user does, before any request is sent, so
-         * a server that only wakes up on its first request is too late. */
-        if (!prsk_server_init()) winefb_report( "[KTEST] gui2 server FAIL\n" );
+        /* The state machine has to be REACHABLE before win32u's own init
+         * runs: shared_session_init opens \KernelObjects\__wine_session by
+         * name as the FIRST thing init_user does, before any request is
+         * sent, so a server that only wakes up on its first request is too
+         * late. In-process that means bringing it up here; with a server
+         * process it means waiting until that process has published the
+         * mapping. prsk_transport_startup decides which, once. */
+        if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
         winefb_init();
+    }
+    else if (reason == DLL_THREAD_DETACH)
+    {
+        /* Hand the transport slot back and let the server retire this
+         * thread's windows and queue now. It is not the only path that
+         * does so -- a thread that dies without detaching is reaped when
+         * its process does -- but it is the one that keeps a long-lived
+         * process from accumulating dead threads' records. */
+        prsk_client_thread_detach();
     }
     return TRUE;
 }
