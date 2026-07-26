@@ -334,6 +334,7 @@ static struct thread *create_thread_record( struct prsk_client *client, DWORD ti
 {
     struct prsk_thread_record *record;
     struct thread *thread;
+    struct desktop *desktop;
 
     if (!(thread = alloc_object( &prsk_thread_ops ))) return NULL;
     memset( (char *)thread + sizeof(thread->obj), 0, sizeof(*thread) - sizeof(thread->obj) );
@@ -349,6 +350,24 @@ static struct thread *create_thread_record( struct prsk_client *client, DWORD ti
     list_init( &thread->kernel_object );
     list_add_tail( &client->process->thread_list, &thread->proc_entry );
     list_init( &thread->desktop_entry );
+
+    /* A new thread starts on its process's default desktop -- the same block
+     * wineserver's create_thread runs (server/thread.c). The FIRST thread of
+     * a client still has no desktop (its process has none yet, exactly like
+     * the oracle's first process, whose connect_process_winstation finds no
+     * parent to inherit from); win32u's winstation_init then creates
+     * WinSta0/Default and set_thread_desktop sets the process default, which
+     * is what every LATER thread inherits here. */
+    if (client->process->desktop)
+    {
+        if (!(desktop = get_desktop_obj( client->process, client->process->desktop, 0 )))
+            clear_error();  /* ignore errors */
+        else
+        {
+            set_thread_default_desktop( thread, desktop, client->process->desktop );
+            release_object( desktop );
+        }
+    }
 
     if (!(record = malloc( sizeof(*record) ))) return NULL;
     record->thread = thread;
