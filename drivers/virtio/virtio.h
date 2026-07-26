@@ -160,6 +160,32 @@ typedef struct
 
 int VioSubmitAndPoll(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segmentCount);
 
+/* --- receive queues (device -> driver; virtqueue.c) ------------------------ */
+/* A receive queue (virtio-input's eventq, §5.8.2) inverts the request/reply
+ * shape above: the driver supplies empty device-writable buffers up front
+ * and the device fills them whenever it has something to say. The two calls
+ * below are that supply path (§2.7.13) and a non-blocking used-ring poll
+ * (§2.7.14) — never a wait, because nothing may block the caller here.
+ *
+ * Such a queue keeps a fixed 1:1 descriptor-slot-to-buffer mapping owned by
+ * its driver and re-posts a slot once its buffer has been consumed, so the
+ * free list VioInitializeVirtqueue builds goes unused; a queue is used one
+ * way or the other, never both. */
+
+/* Publish one device-writable buffer in descriptor slot `descriptorIndex`.
+ * Does not notify: callers batch that with VioNotifyQueue, which also keeps
+ * the initial fill from notifying before DRIVER_OK (§3.1.1). */
+void VioPostReceiveBuffer(VIO_VIRTQUEUE *queue, uint16_t descriptorIndex, uint64_t physical,
+                          uint32_t length);
+
+/* §4.1.5.2: tell the device the avail ring moved. */
+void VioNotifyQueue(VIO_VIRTQUEUE *queue);
+
+/* Pop one used element if the device has published one (§2.7.14). Returns 0
+ * when the used ring is empty, else 1 with *idOut = the head descriptor
+ * index and *lengthOut = the number of bytes the device wrote. */
+int VioTryPopUsed(VIO_VIRTQUEUE *queue, uint16_t *idOut, uint32_t *lengthOut);
+
 /* --- the shared modern-PCI transport (pci.c) ------------------------------- */
 
 /* One virtio function brought up through the §3.1.1 initialization
