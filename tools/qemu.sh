@@ -115,7 +115,9 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
     DISPLAY_ARGS=(-display none)
     INTERACTIVE_DEVICE_ARGS=()
     if [[ -n "${GUI_DISPLAY:-}" ]]; then
-        INTERACTIVE_DEVICE_ARGS=(-device virtio-keyboard-pci)
+        # Tablet, not mouse: absolute coordinates map the host pointer to
+        # the guest 1:1 with no grab (and it is what the gui4 leg drives).
+        INTERACTIVE_DEVICE_ARGS=(-device virtio-keyboard-pci -device virtio-tablet-pci)
         GUI_BACKEND="$("$QEMU" -display help 2>/dev/null | grep -m1 -E '^(gtk|sdl)$' || true)"
         if [[ -n "$GUI_BACKEND" ]]; then
             DISPLAY_ARGS=(-display "$GUI_BACKEND")

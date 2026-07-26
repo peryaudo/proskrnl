@@ -369,6 +369,7 @@ tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill
 tests/run/run.sh gui        # GUI-1: framebuffer screendump + an injected key
 tests/run/run.sh gui2       # GUI-2: winemine on screen (screendump differential)
 tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite
+tests/run/run.sh gui4       # GUI-4: overlap composited, click routed, window dragged
 ```
 
 ## License

@@ -1073,6 +1073,151 @@ gui3() {
     return 0
 }
 
+# GUI-4 (docs/02 "windows can be grabbed and moved; clicks reach the right
+# window"): two overlapping windows over wineserver-lite, driven from here
+# through QEMU's tablet and keyboard (qmpctl absmove/button/sendkey). Every
+# injection is awaited before the next -- the guests print on receipt -- so
+# the choreography is sequenced, not timed. Two screendumps: before the
+# drag (compositing: the upper window's colour wins the overlap; the cursor
+# parked on background) and after it (the window moved; what it uncovered
+# was repaired). tests/gui/check_gui4.py grades both halves.
+gui4() {
+    make -C "$ROOT" gui4-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui4.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui4.sock" log="$dir/gui4.log"
+    local ppm1="$dir/gui4-before.ppm" ppm2="$dir/gui4-after.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm1" "$ppm2" "$log"
+
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI4-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui4_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui4: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    await '\[KTEST\] gui4 A ready rect=' || { gui4_fail "A never came up"; return 1; }
+    await '\[KTEST\] gui4 B ready wrect=.* ztop=PASS' || { gui4_fail "B never came up above A"; return 1; }
+    await '\[KTEST\] gui4 mouse READY' || { gui4_fail "no pointer reader"; return 1; }
+
+    # Geometry, all guest-reported: the scanout mode, the tablet's own abs
+    # range, and the windows' rectangles. Nothing here assumes a size.
+    local w h maxx maxy
+    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    local a_line b_line
+    a_line=$(grep -oE '\[KTEST\] gui4 A ready rect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+' "$log" | tail -1)
+    b_line=$(grep -oE '\[KTEST\] gui4 B ready wrect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+ crect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+ caption=[-0-9]+,[-0-9]+' "$log" | tail -1)
+    local ax ay aw ah bx by bw bh cx cy capx capy
+    ax=$(sed -E 's/.*rect=(-?[0-9]+),.*/\1/' <<<"$a_line")
+    ay=$(sed -E 's/.*rect=-?[0-9]+,(-?[0-9]+),.*/\1/' <<<"$a_line")
+    aw=$(sed -E 's/.*,([0-9]+)x[0-9]+$/\1/' <<<"$a_line")
+    ah=$(sed -E 's/.*x([0-9]+)$/\1/' <<<"$a_line")
+    bx=$(sed -E 's/.*wrect=(-?[0-9]+),.*/\1/' <<<"$b_line")
+    by=$(sed -E 's/.*wrect=-?[0-9]+,(-?[0-9]+),.*/\1/' <<<"$b_line")
+    bw=$(sed -E 's/.*wrect=-?[0-9]+,-?[0-9]+,([0-9]+)x.*/\1/' <<<"$b_line")
+    bh=$(sed -E 's/.*wrect=-?[0-9]+,-?[0-9]+,[0-9]+x([0-9]+).*/\1/' <<<"$b_line")
+    cx=$(sed -E 's/.*crect=(-?[0-9]+),.*/\1/' <<<"$b_line")
+    cy=$(sed -E 's/.*crect=-?[0-9]+,(-?[0-9]+),.*/\1/' <<<"$b_line")
+    local cw ch
+    cw=$(sed -E 's/.*crect=-?[0-9]+,-?[0-9]+,([0-9]+)x.*/\1/' <<<"$b_line")
+    ch=$(sed -E 's/.*crect=-?[0-9]+,-?[0-9]+,[0-9]+x([0-9]+).*/\1/' <<<"$b_line")
+    capx=$(sed -E 's/.*caption=(-?[0-9]+),.*/\1/' <<<"$b_line")
+    capy=$(sed -E 's/.*caption=-?[0-9]+,(-?[0-9]+).*/\1/' <<<"$b_line")
+    if [ -z "$w" ] || [ -z "$maxx" ] || [ -z "$capy" ]; then
+        gui4_fail "could not parse guest geometry"; return 1
+    fi
+
+    # Pixel -> tablet value, exact by construction: v = ceil(px*max/(w-1))
+    # makes the guest's floor(v*(w-1)/max) reproduce px (qmpctl.py notes the
+    # verbatim QMP->guest path this relies on), so `await` can gate on the
+    # guest echoing the exact position back.
+    move_px() {
+        local vx=$(( ($1 * maxx + w - 2) / (w - 1) ))
+        local vy=$(( ($2 * maxy + h - 2) / (h - 1) ))
+        qmp absmove "$vx" "$vy" || return 1
+        await "\[KTEST\] gui4 ptr x=$1 y=$2 btn=" || return 1
+    }
+
+    # Park the cursor over bare desktop and take the before-drag dump.
+    local park1x=40 park1y=$((h - 100)) park2x=60 park2y=$((h - 40))
+    move_px "$park1x" "$park1y" || { gui4_fail "pointer motion never arrived"; return 1; }
+    sleep 2   # let the last flush settle (the gui2 reasoning)
+    qmp screendump "$ppm1" || { gui4_fail "screendump 1 failed"; return 1; }
+
+    # Click the centre of the overlap of A with B's CLIENT area (a frame
+    # click would be a non-client message): it must reach B (above), never A.
+    local ox=$(( ( (ax > cx ? ax : cx) + ( (ax + aw) < (cx + cw) ? (ax + aw) : (cx + cw) ) ) / 2 ))
+    local oy=$(( ( (ay > cy ? ay : cy) + ( (ay + ah) < (cy + ch) ? (ay + ah) : (cy + ch) ) ) / 2 ))
+    move_px "$ox" "$oy" || { gui4_fail "pointer motion lost"; return 1; }
+    qmp button left down && qmp button left up
+    await '\[KTEST\] gui4 B click ' || { gui4_fail "the overlap click never reached B"; return 1; }
+    qmp sendkey b
+    await '\[KTEST\] gui4 B char=62' || { gui4_fail "keyboard input never reached B"; return 1; }
+
+    # Click A's exposed part: focus follows the click across processes.
+    move_px $((ax + 50)) $((ay + 50)) || { gui4_fail "pointer motion lost"; return 1; }
+    qmp button left down && qmp button left up
+    await '\[KTEST\] gui4 A click ' || { gui4_fail "the exposed click never reached A"; return 1; }
+    await '\[KTEST\] gui4 A active' || { gui4_fail "the click did not activate A"; return 1; }
+    qmp sendkey a
+    await '\[KTEST\] gui4 A char=61' || { gui4_fail "focus did not follow the click"; return 1; }
+
+    # Grab B by its own advertised caption point and drag it +150,+120 in
+    # ten awaited steps (DefWindowProc's modal loop moves the window per
+    # WM_MOUSEMOVE under server-side capture; none of the drag is our code).
+    local dragx=$capx dragy=$capy step
+    move_px "$dragx" "$dragy" || { gui4_fail "pointer motion lost"; return 1; }
+    qmp button left down
+    for step in $(seq 1 10); do
+        dragx=$((dragx + 15)); dragy=$((dragy + 12))
+        move_px "$dragx" "$dragy" || { gui4_fail "drag motion lost at step $step"; return 1; }
+    done
+    qmp button left up
+    await "\[KTEST\] gui4 B moved rect=$((bx + 150)),$((by + 120)),${bw}x${bh}" \
+        || { gui4_fail "B never reported the dragged-to rectangle"; return 1; }
+
+    # Park again (a different spot, so the await cannot match the first
+    # park), then ask B -- still focused from the drag -- for one more
+    # repaint now that the cursor has left it (the save-under restore can
+    # deposit a stale patch over the caption; cursor.c documents it), and
+    # take the after-drag dump.
+    move_px "$park2x" "$park2y" || { gui4_fail "pointer motion lost"; return 1; }
+    qmp sendkey r
+    await '\[KTEST\] gui4 B char=72' || { gui4_fail "the repaint request never reached B"; return 1; }
+    sleep 2
+    qmp screendump "$ppm2" || { gui4_fail "screendump 2 failed"; return 1; }
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! python3 "$ROOT/tests/gui/check_gui4.py" --log "$log" --ppm1 "$ppm1" --ppm2 "$ppm2" \
+            --park1 "$park1x,$park1y" --park2 "$park2x,$park2y"; then
+        echo "== gui4: FAIL (behaviour or pixels; see $log) =="
+        return 1
+    fi
+    echo "== gui4: PASS (grabbed, moved, clicked -- the compositor holds) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -1089,6 +1234,7 @@ case "$MODE" in
     gui)      gui ;;
     gui2)     gui2 ;;
     gui3)     gui3 ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3}" >&2
+    gui4)     gui4 ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4}" >&2
        exit 2 ;;
 esac
