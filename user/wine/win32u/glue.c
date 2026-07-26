@@ -36,6 +36,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 
 NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status );
 extern void winefb_init(void);
+extern int prsk_server_init(void);
+extern void winefb_report( const char *format, ... );
 extern void *prsk_freetype_handle( const char *name );
 extern void *prsk_freetype_symbol( void *handle, const char *symbol );
 
@@ -446,7 +448,9 @@ void math_error( int type, const char *name, double x, double y, double result )
  * ucrtbase covers everything win32u actually calls except these. strdup is
  * real (opentype.c and the server's atom code use it); the descriptor calls
  * are reachable only from wineserver paths this build refuses elsewhere, so
- * they refuse here too rather than pretending to have a file system. */
+ * they refuse here too rather than pretending to have a file system. The
+ * font backend's own file calls are NOT here -- they are implemented, over
+ * Nt*, in font_unix.c. */
 
 char *strdup( const char *str )
 {
@@ -455,12 +459,6 @@ char *strdup( const char *str )
 
     if (copy) memcpy( copy, str, size );
     return copy;
-}
-
-int close( int fd )
-{
-    ERR( "no unix descriptors in this build\n" );
-    return -1;
 }
 
 int dup( int fd )
@@ -517,49 +515,61 @@ char *prsk_dlerror(void)
  *
  * mingw's stdio.h routes the v*printf family through its own ANSI-conforming
  * copies in libmingwex, which this DLL does not link (it would bring a
- * second CRT alongside ucrtbase). ucrtbase already exports the C runtime
- * these sources want, so the mingw spellings are forwarded to it. */
+ * second CRT alongside ucrtbase). The mingw spellings are therefore defined
+ * here, over ucrtbase's real entry points.
+ *
+ * Over __stdio_common_vsprintf, NOT over vsnprintf: mingw's stdio.h defines
+ * vsnprintf AS __mingw_vsnprintf, so a definition that calls vsnprintf calls
+ * itself. (It compiles, links, and tail-calls into `jmp .`; the guest sat
+ * there spinning at CPL=3 until QEMU's registers said which symbol it was.)
+ * __stdio_common_vsprintf is UCRT's actual ABI underneath all of them and no
+ * macro rewrites it.
+ */
+
+int __cdecl __stdio_common_vsprintf( unsigned __int64 options, char *buffer, size_t count,
+                                     const char *format, void *locale, va_list args );
+int __cdecl __stdio_common_vsscanf( unsigned __int64 options, const char *input, size_t count,
+                                    const char *format, void *locale, va_list args );
+
+/* Ask for C99 truncation semantics (return the length that WOULD have been
+ * written, always NUL-terminate) rather than MSVC's -1. */
+#define PRSK_SNPRINTF_OPTIONS (2ULL /* _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR */)
+
+static int prsk_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
+{
+    return __stdio_common_vsprintf( PRSK_SNPRINTF_OPTIONS, buffer, count, format, NULL, args );
+}
 
 int __mingw_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
 {
-    return vsnprintf( buffer, count, format, args );
+    return prsk_vsnprintf( buffer, count, format, args );
 }
 
 int __ms_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
 {
-    return vsnprintf( buffer, count, format, args );
+    return prsk_vsnprintf( buffer, count, format, args );
 }
 
-/* Only the server's dump helpers print to a FILE*, and there is no stderr
- * here - diagnostics go to serial (user/wine/server/shim.c prsk_log). */
-int __mingw_vfprintf( FILE *file, const char *format, va_list args )
+int __mingw_vsscanf( const char *input, const char *format, va_list args )
 {
-    return 0;
-}
-
-int __mingw_vfscanf( FILE *file, const char *format, va_list args )
-{
-    return -1;
-}
-
-int __ms_vfscanf( FILE *file, const char *format, va_list args )
-{
-    return -1;
+    return __stdio_common_vsscanf( 0, input, (size_t)-1, format, NULL, args );
 }
 
 int __ms_vsscanf( const char *input, const char *format, va_list args )
 {
-    return vsscanf( input, format, args );
+    return __mingw_vsscanf( input, format, args );
 }
 
-int fprintf( FILE *file, const char *format, ... )
+int __mingw_vasprintf( char **out, const char *format, va_list args )
 {
-    return 0;
-}
+    va_list copy;
+    int len;
 
-int fscanf( FILE *file, const char *format, ... )
-{
-    return -1;
+    va_copy( copy, args );
+    len = prsk_vsnprintf( NULL, 0, format, copy );
+    va_end( copy );
+    if (len < 0 || !(*out = malloc( len + 1 ))) return -1;
+    return prsk_vsnprintf( *out, len + 1, format, args );
 }
 
 int asprintf( char **out, const char *format, ... )
@@ -573,22 +583,13 @@ int asprintf( char **out, const char *format, ... )
     return ret;
 }
 
-int __mingw_vsscanf( const char *input, const char *format, va_list args )
-{
-    return vsscanf( input, format, args );
-}
-
-int __mingw_vasprintf( char **out, const char *format, va_list args )
-{
-    va_list copy;
-    int len;
-
-    va_copy( copy, args );
-    len = vsnprintf( NULL, 0, format, copy );
-    va_end( copy );
-    if (len < 0 || !(*out = malloc( len + 1 ))) return -1;
-    return vsnprintf( *out, len + 1, format, args );
-}
+/* Only wineserver's dump helpers print to a FILE*, and there is no stderr
+ * here - diagnostics go to serial (user/wine/server/shim.c prsk_log). */
+int __mingw_vfprintf( FILE *file, const char *format, va_list args ) { return 0; }
+int __mingw_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
+int __ms_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
+int fprintf( FILE *file, const char *format, ... ) { return 0; }
+int fscanf( FILE *file, const char *format, ... ) { return -1; }
 
 /* --- 8. the DLL entry ------------------------------------------------------
  *
@@ -600,6 +601,14 @@ int __mingw_vasprintf( char **out, const char *format, va_list args )
 
 BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved )
 {
-    if (reason == DLL_PROCESS_ATTACH) winefb_init();
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        /* The state machine has to exist before win32u's own init runs:
+         * shared_session_init opens \KernelObjects\__wine_session by name
+         * as the FIRST thing init_user does, before any request is sent, so
+         * a server that only wakes up on its first request is too late. */
+        if (!prsk_server_init()) winefb_report( "[KTEST] gui2 server FAIL\n" );
+        winefb_init();
+    }
     return TRUE;
 }
