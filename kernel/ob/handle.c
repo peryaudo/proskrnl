@@ -86,13 +86,15 @@ ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
     return desiredAccess & type->validAccess;
 }
 
-/* Handle value <-> table index; returns the entry or 0 when out of range or
- * free. The low two bits are NT's user-mode tag bits — ignored. */
-static POBP_HANDLE_ENTRY ObpEntryFromHandle(HANDLE handle)
+/* Handle value <-> table index against an EXPLICIT table; returns the entry
+ * or 0 when out of range or free. The low two bits are NT's user-mode tag
+ * bits — ignored. Every lookup lands here: the current process's table
+ * (ObpEntryFromHandle), the parent's at inheritance, and either end of a
+ * cross-process duplication. */
+static POBP_HANDLE_ENTRY ObpEntryInTable(POBP_HANDLE_TABLE table, HANDLE handle)
 {
-    POBP_HANDLE_TABLE table = ObpCurrentTable();
     ULONG_PTR value = (ULONG_PTR)handle & ~(ULONG_PTR)3;
-    if (value == 0)
+    if (value == 0 || table->entries == 0)
     {
         return 0;
     }
@@ -103,6 +105,11 @@ static POBP_HANDLE_ENTRY ObpEntryFromHandle(HANDLE handle)
     }
     POBP_HANDLE_ENTRY entry = (POBP_HANDLE_ENTRY)table->entries + index;
     return entry->body != 0 ? entry : 0;
+}
+
+static POBP_HANDLE_ENTRY ObpEntryFromHandle(HANDLE handle)
+{
+    return ObpEntryInTable(ObpCurrentTable(), handle);
 }
 
 static HANDLE ObpHandleFromIndex(ULONG index)
@@ -337,20 +344,66 @@ NTSTATUS NtClose(HANDLE handle)
     return STATUS_SUCCESS;
 }
 
+/* Resolve one end of a duplication to its process. The current-process
+ * pseudo-handle is answered without a reference (the caller's own process
+ * cannot go away underneath it); any other handle must GRANT
+ * PROCESS_DUP_HANDLE, which is the right NT checks on both ends
+ * (wineserver's duplicate_handle asks get_process_from_handle for
+ * PROCESS_DUP_HANDLE on source and target alike, server/handle.c). */
+static NTSTATUS ObpReferenceDupProcess(HANDLE processHandle, PEPROCESS *processOut,
+                                       BOOLEAN *referenced)
+{
+    if (processHandle == NtCurrentProcess())
+    {
+        *processOut = KeGetCurrentThread()->process;
+        *referenced = FALSE;
+        return STATUS_SUCCESS;
+    }
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(processHandle, PROCESS_DUP_HANDLE, &PspProcessType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *processOut = body;
+    *referenced = TRUE;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE targetProcess,
                            PHANDLE targetHandle, ACCESS_MASK desiredAccess, ULONG attributes,
                            ULONG options)
 {
-    /* Until Ps exists (M4) there is one process; only the pseudo-handle can
-     * name it. */
-    if (sourceProcess != NtCurrentProcess() || targetProcess != NtCurrentProcess())
+    /* Either end may name a FOREIGN process (GUI-3): wineserver-lite hands a
+     * queue's sync event out to a client and pulls a client's window-station
+     * directory handle in, which is how NT hands win32k handles across too.
+     * The object is looked up in the SOURCE's table and created in the
+     * TARGET's; DUPLICATE_CLOSE_SOURCE closes the entry in whichever process
+     * owns it, not in the caller's. Pinned by sem_ob/dup_cross_process. */
+    PEPROCESS sourceProc, targetProc;
+    BOOLEAN sourceReferenced, targetReferenced;
+    NTSTATUS status = ObpReferenceDupProcess(sourceProcess, &sourceProc, &sourceReferenced);
+    if (!NT_SUCCESS(status))
     {
-        return STATUS_INVALID_HANDLE;
+        return status;
     }
-    POBP_HANDLE_ENTRY source = ObpEntryFromHandle(sourceHandle);
+    status = ObpReferenceDupProcess(targetProcess, &targetProc, &targetReferenced);
+    if (!NT_SUCCESS(status))
+    {
+        if (sourceReferenced)
+        {
+            ObDereferenceObject(sourceProc);
+        }
+        return status;
+    }
+
+    POBP_HANDLE_TABLE sourceTable = &sourceProc->handleTable;
+    POBP_HANDLE_ENTRY source = ObpEntryInTable(sourceTable, sourceHandle);
     if (source == 0)
     {
-        return STATUS_INVALID_HANDLE;
+        status = STATUS_INVALID_HANDLE;
+        goto release;
     }
 
     POBJECT_TYPE type = ObpGetHeader(source->body)->type;
@@ -377,45 +430,56 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     }
     ULONG newAttributes = (options & DUPLICATE_SAME_ATTRIBUTES) ? source->attributes : attributes;
 
-    NTSTATUS status = STATUS_SUCCESS;
+    status = STATUS_SUCCESS;
     if (targetHandle != 0)
     {
-        status = ObpCreateHandle(source->body, granted, newAttributes, targetHandle);
+        /* The out-pointer is the CALLER's, whichever processes the two ends
+         * name — probe it here rather than through ObpCreateHandle, whose
+         * table is implicitly the current one. */
+        status = KiProbeForWrite(targetHandle, sizeof(*targetHandle), sizeof(*targetHandle));
+        if (NT_SUCCESS(status))
+        {
+            /* Hold the body across the insert. The insert takes its own
+             * reference on success, but it can allocate, and the source table
+             * now belongs to a process whose OWN threads may close the handle
+             * — so the transient reference is what keeps the body alive
+             * between reading it here and the insert referencing it. */
+            PVOID body = source->body;
+            ObfReferenceObject(body);
+            status = ObpCreateHandleInTable(&targetProc->handleTable, body, granted, newAttributes,
+                                            targetHandle);
+            ObDereferenceObject(body);
+        }
         if (!NT_SUCCESS(status))
         {
-            return status;
+            goto release;
         }
     }
     if (options & DUPLICATE_CLOSE_SOURCE)
     {
-        /* The source entry may have moved if the table grew: re-resolve. */
-        source = ObpEntryFromHandle(sourceHandle);
-        ASSERT(source != 0);
-        ObpCloseHandleEntry(source);
+        /* The source entry may have moved if the table grew (it can be the
+         * same table as the target's): re-resolve. A source that vanished
+         * meanwhile is nothing left to close. */
+        source = ObpEntryInTable(sourceTable, sourceHandle);
+        if (source != 0)
+        {
+            ObpCloseHandleEntryIn(sourceTable, source);
+        }
+    }
+
+release:
+    if (targetReferenced)
+    {
+        ObDereferenceObject(targetProc);
+    }
+    if (sourceReferenced)
+    {
+        ObDereferenceObject(sourceProc);
     }
     return status;
 }
 
 /* --- M10: inheritance at process creation ---------------------------------- */
-
-/* Entry lookup against an EXPLICIT table (the parent's, from the creating
- * thread's context) — ObpEntryFromHandle resolves against the current
- * process only. */
-static POBP_HANDLE_ENTRY ObpEntryInTable(POBP_HANDLE_TABLE table, HANDLE handle)
-{
-    ULONG_PTR value = (ULONG_PTR)handle & ~(ULONG_PTR)3;
-    if (value == 0 || table->entries == 0)
-    {
-        return 0;
-    }
-    ULONG_PTR index = value / 4 - 1;
-    if (index >= table->capacity)
-    {
-        return 0;
-    }
-    POBP_HANDLE_ENTRY entry = (POBP_HANDLE_ENTRY)table->entries + index;
-    return entry->body != 0 ? entry : 0;
-}
 
 /* Copy one parent handle into the child AT THE SAME INDEX, if it exists, is
  * inherit-marked, and the slot is still free — wineserver's inherit_handle
