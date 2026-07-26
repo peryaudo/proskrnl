@@ -8,6 +8,9 @@
 #                               binary-release branch) + the `limine` deploy
 #                               tool (one cc invocation)
 #   third_party/limine-protocol the kernel-facing boot-protocol header
+#   third_party/freetype        the PE static library win32u's font backend
+#                               links against (tools/build_freetype.sh) —
+#                               seconds, not a real build like the two below
 #   third_party/qemu            qemu-system-x86_64 (>= 9.0 is required for
 #                               TCG x2APIC; Ubuntu 24.04 ships 8.2)
 #   third_party/wine            the ntapi oracle's wine — the SAME pinned
@@ -69,6 +72,14 @@ fi
 
 echo "== limine: deploy tool (stages are prebuilt on the binary branch) =="
 make -C third_party/limine limine
+
+# GUI-2 needs real glyphs, and there is no dynamic loader on the target to
+# hand win32u a libfreetype.so, so FreeType is cross-built as a PE static
+# library and linked in. The Makefile has the same rule on demand; doing it
+# here means a provisioned box never discovers it mid-build. The mingw
+# cross-compiler it needs is in the apt list above.
+echo "== freetype: the PE static library (win32u's font backend) =="
+tools/build_freetype.sh
 
 echo "== qemu: x86_64-softmmu =="
 if [[ -x third_party/qemu/build/qemu-system-x86_64 ]]; then
