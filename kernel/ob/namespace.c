@@ -676,6 +676,10 @@ void ObpInitializeObjectManager(void)
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("Device"));
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("??"));
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("BaseNamedObjects"));
+    /* NT's home for kernel-owned named objects, and the directory Wine's
+     * win32u opens `__wine_session` in (dlls/win32u/winstation.c). Permanent
+     * in the pinned Wine server too (server/directory.c, dir_kernel). */
+    ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("KernelObjects"));
 }
 
 /* --- the directory / symbolic-link Nt* surface ---------------------------- */
