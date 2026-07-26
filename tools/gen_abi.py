@@ -1592,6 +1592,9 @@ def gen_ntpsapi(wine: Path) -> str:
             "PROCESS_VM_OPERATION",
             "PROCESS_VM_READ",
             "PROCESS_VM_WRITE",
+            # GUI-3: the right both ends of a cross-process NtDuplicateObject
+            # must grant (sem_ob/dup_cross_process).
+            "PROCESS_DUP_HANDLE",
             "PROCESS_QUERY_INFORMATION",
             "PROCESS_SET_INFORMATION",
             "PROCESS_SUSPEND_RESUME",
