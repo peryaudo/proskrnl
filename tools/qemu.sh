@@ -103,16 +103,43 @@ VGA_ARGS=(-vga std)
 # guest powers off through isa-debug-exit when cmd.exe exits. isa-debug-exit
 # can only return odd exit codes ((code<<1)|1), so QEMU's status carries no
 # verdict either — always exit 0.
+#
+# GUI_DISPLAY=1 (make rungui): same session, but with the scanout visible
+# and a virtio keyboard for winefb.drv's input path; serial diagnostics
+# stay on the terminal. A host window when this QEMU build has a GUI
+# backend (gtk/sdl); otherwise the scanout is served over VNC and the
+# banner says where — the pinned build is configured headless
+# (tools/setup_linux.sh), so VNC is what you get out of the box.
 if [[ -n "${INTERACTIVE:-}" ]]; then
-    echo "qemu.sh: interactive console — 'exit' at the prompt powers off; Ctrl-A x kills QEMU" >&2
+    DISPLAY_ARGS=(-display none)
+    INTERACTIVE_DEVICE_ARGS=()
+    if [[ -n "${GUI_DISPLAY:-}" ]]; then
+        INTERACTIVE_DEVICE_ARGS=(-device virtio-keyboard-pci)
+        GUI_BACKEND="$("$QEMU" -display help 2>/dev/null | grep -m1 -E '^(gtk|sdl)$' || true)"
+        if [[ -n "$GUI_BACKEND" ]]; then
+            DISPLAY_ARGS=(-display "$GUI_BACKEND")
+            echo "qemu.sh: interactive GUI ($GUI_BACKEND window) — close it or Ctrl-A x to quit" >&2
+        else
+            DISPLAY_ARGS=(-display none -vnc 127.0.0.1:0)
+            echo "qemu.sh: NO GUI display backend in this QEMU build —" >&2
+            echo "         the scanout is a VNC server on 127.0.0.1:5900." >&2
+            echo "         Connect a viewer (e.g. apt install tigervnc-viewer;" >&2
+            echo "         vncviewer 127.0.0.1:5900), or rebuild the pinned QEMU" >&2
+            echo "         with gtk (apt install libgtk-3-dev, re-run" >&2
+            echo "         tools/setup_linux.sh after removing third_party/qemu/build)." >&2
+        fi
+    else
+        echo "qemu.sh: interactive console — 'exit' at the prompt powers off; Ctrl-A x kills QEMU" >&2
+    fi
     "$QEMU" \
         -M q35 \
         "${ACCEL_ARGS[@]}" \
         -m "$MEM" \
         -no-reboot \
-        -display none \
+        "${DISPLAY_ARGS[@]}" \
         "${VGA_ARGS[@]}" \
         -serial mon:stdio \
+        "${INTERACTIVE_DEVICE_ARGS[@]}" \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
     exit 0

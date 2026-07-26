@@ -938,6 +938,12 @@ $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) 
 run: $(IMG_RUN)
 	INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
 
+# GUI-2: the gui2 image (winemine over the whole Wine GUI stack) with a host
+# window on the scanout and a virtio keyboard; serial stays on the terminal.
+rungui: $(IMG_GUI2)
+	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI2)
+.PHONY: rungui
+
 clean:
 	rm -rf $(BUILD)
 
