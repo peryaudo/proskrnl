@@ -9,8 +9,10 @@
 #                               tool (one cc invocation)
 #   third_party/limine-protocol the kernel-facing boot-protocol header
 #   third_party/freetype        the PE static library win32u's font backend
-#                               links against (tools/build_freetype.sh) —
-#                               seconds, not a real build like the two below
+#                               links against, and the native shared library
+#                               the wine below is configured against
+#                               (tools/build_freetype.sh) — seconds, not a
+#                               real build like the two below
 #   third_party/qemu            qemu-system-x86_64 (>= 9.0 is required for
 #                               TCG x2APIC; Ubuntu 24.04 ships 8.2)
 #   third_party/wine            the ntapi oracle's wine — the SAME pinned
@@ -20,7 +22,9 @@
 #                               baked onto proskrnl's boot volume (Makefile
 #                               WINFILES): one build is oracle, shipped
 #                               userland, and dormancy check at once
-#                               (docs/06 "One tree, three roles")
+#                               (docs/06 "One tree, three roles"). Since
+#                               GUI-3 it is the font-metrics oracle too,
+#                               built against the pinned FreeType above
 #
 # tools/{mkimage,qemu}.sh and tests/run/run.sh pick these up automatically.
 # Idempotent: finished builds are skipped; re-run after a submodule bump.
@@ -29,6 +33,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+# Parallelism for the two real source builds. nproc is the portable default,
+# but it reports the process's CPU affinity / cgroup quota rather than the
+# machine's width — on a box whose container is pinned to half its cores it
+# silently halves the wine and qemu builds, which are the long poles here.
+# Override with JOBS=<n> when you know better than the cgroup does.
+JOBS="${JOBS:-$(nproc)}"
 
 SUDO=""
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -77,8 +88,10 @@ make -C third_party/limine limine
 # hand win32u a libfreetype.so, so FreeType is cross-built as a PE static
 # library and linked in. The Makefile has the same rule on demand; doing it
 # here means a provisioned box never discovers it mid-build. The mingw
-# cross-compiler it needs is in the apt list above.
-echo "== freetype: the PE static library (win32u's font backend) =="
+# cross-compiler it needs is in the apt list above. Since GUI-3 the same
+# script also builds the native shared library the wine below is configured
+# against, so this must run BEFORE wine's configure.
+echo "== freetype: the PE static library + the native one (font backends) =="
 tools/build_freetype.sh
 
 echo "== qemu: x86_64-softmmu =="
@@ -92,16 +105,51 @@ else
     (cd third_party/qemu/build &&
         ../configure --target-list=x86_64-softmmu --disable-docs --disable-user \
             --enable-gtk)
-    make -C third_party/qemu/build -j"$(nproc)"
+    make -C third_party/qemu/build -j"$JOBS"
 fi
 
 # One wine build, three roles (docs/06): the ntapi/fuzz oracle, the source of
 # the PE dlls + nls files shipped on proskrnl's disk (Makefile WINFILES), and
 # — because the pinned fork's seam commits are dormant under a live unixlib —
 # the continuous proof that the patched PE ntdll behaves identically on
-# regular Wine.
-echo "== wine: the ntapi oracle (64-bit only, no GUI/font deps) =="
-if [[ -x third_party/wine/wine64 || -x third_party/wine/wine ]]; then
+# regular Wine. Since GUI-3, a fourth: the font-METRICS oracle.
+#
+# The font backend is the PINNED third_party/freetype built native above,
+# never the distro's. The oracle is the spec (docs/06), and a spec that
+# answers metric questions from a different FreeType than the one
+# win32u.dll links is not one — Ubuntu 24.04 ships 2.13.2, the pin is
+# 2.13.3. FREETYPE_CFLAGS/FREETYPE_LIBS are configure's own precious
+# variables and bypass pkg-config entirely, so no libfreetype-dev and no .pc
+# file are needed. fontconfig is explicitly OFF: it autodetects ON on Linux
+# (libgtk-3-dev, installed above for QEMU, drags its dev files in), and with
+# it on, win32u's freetype_load_fonts() would pull the HOST's font set into
+# the oracle. With it off the oracle's fonts are the build tree's own fonts/
+# plus C:\windows\fonts — exactly the set Makefile WINE_FONTS bakes onto the
+# GUI images. Both sides then match in backend, version, and font set.
+FT_NATIVE="$ROOT/third_party/freetype/x86_64-linux"
+WINE_FT_ENV=(
+    FREETYPE_CFLAGS="-I$ROOT/third_party/freetype/include"
+    FREETYPE_LIBS="-L$FT_NATIVE -lfreetype"
+)
+WINE_CONFIGURE=(--enable-win64 --without-x --with-freetype --without-fontconfig)
+
+# A box provisioned before GUI-3 carries a --without-freetype wine, and the
+# two "already built — skipping" guards below would serve it forever. wine's
+# configure writes SONAME_LIBFREETYPE into the generated include/config.h
+# exactly when the font backend is on, and ERRORS OUT when freetype is wanted
+# but missing (WINE_ERROR_WITH, third_party/wine/aclocal.m4) — so that define
+# is a truthful "this tree has fonts" marker, not a heuristic. Computed ONCE,
+# before either pass, so pass 1's own reconfigure cannot wash the flag out and
+# both passes rerun exactly once.
+wineStale=0
+if [[ -f third_party/wine/include/config.h ]] &&
+    ! grep -q '^#define SONAME_LIBFREETYPE ' third_party/wine/include/config.h; then
+    wineStale=1
+    echo "== wine: pre-GUI-3 (--without-freetype) build found — reconfiguring =="
+fi
+
+echo "== wine: the ntapi + font-metrics oracle (64-bit only, no X) =="
+if [[ $wineStale -eq 0 && ( -x third_party/wine/wine64 || -x third_party/wine/wine ) ]]; then
     echo "   already built — skipping"
 else
     # --without-fontconfig is explicit, not autodetect: libgtk-3-dev (for the
@@ -110,9 +158,12 @@ else
     # drift the pins exist to prevent (user/wine/include/config.h pins the
     # win32u build against it regardless).
     (cd third_party/wine &&
-        ./configure --enable-win64 --without-x --without-freetype \
-            --without-fontconfig --disable-tests)
-    make -C third_party/wine -j"$(nproc)"
+        env "${WINE_FT_ENV[@]}" ./configure "${WINE_CONFIGURE[@]}" --disable-tests)
+    # With fonts enabled the build also builds and RUNS the host tool
+    # sfnt2fon, which links the pinned library directly — it has to be
+    # findable at build time, not just at wine's runtime dlopen.
+    LD_LIBRARY_PATH="$FT_NATIVE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        make -C third_party/wine -j"$JOBS"
 fi
 
 # M10 stretch (docs/02): the winetest gate (tests/run/run.sh winetest) links
@@ -122,13 +173,13 @@ fi
 # Only the five in-scope CUI test directories are built; note a bare `make`
 # in third_party/wine after this point would build every test module.
 echo "== wine: the CUI test modules (the winetest gate) =="
-if [[ -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ]]; then
+if [[ $wineStale -eq 0 && -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ]]; then
     echo "   already built — skipping"
 else
     (cd third_party/wine &&
-        ./configure --enable-win64 --without-x --without-freetype \
-            --without-fontconfig)
-    make -C third_party/wine -j"$(nproc)" \
+        env "${WINE_FT_ENV[@]}" ./configure "${WINE_CONFIGURE[@]}")
+    LD_LIBRARY_PATH="$FT_NATIVE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        make -C third_party/wine -j"$JOBS" \
         dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
         dlls/ucrtbase/tests/all programs/cmd/tests/all
 fi

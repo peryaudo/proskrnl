@@ -1083,13 +1083,42 @@ Everything else the GUI path asks for that is not linked in refuses by name and 
 list (`tools/gen_server_table.py`), so the refusals are a measured set (188 of 308) rather
 than an assumption.
 
-**FreeType is on for this build only.** The pinned Wine stays configured
-`--without-freetype`. It is the oracle, and the oracle is the spec (docs/06) — turning fonts
-on there to make a proskrnl build easier would be fixing the oracle instead of the kernel
-(Art. 6). `user/wine/include/config.h` sets the two defines for the proskrnl build alone.
-The consequence to keep in mind: there is currently no oracle for font *metrics*, because
-the two builds do not have the same font backend. docs/07's "same FreeType + fonts as
-Wine-on-Linux ⇒ same numbers" needs the pin reconfigured, which is a GUI-3+ decision.
+**FreeType was on for the proskrnl build only** — GUI-2's state, retired at GUI-3. It is
+recorded here because the reasoning is the reusable part.
+
+At GUI-2 the pinned Wine stayed `--without-freetype` while `user/wine/include/config.h` set
+the two defines for the proskrnl build alone, so the two builds did not share a font
+backend and there was no oracle for font *metrics* at all. That was the right default —
+turning fonts on in the oracle to make a proskrnl build *easier* would be fixing the oracle
+instead of the kernel (Art. 6) — but it left docs/07's "same FreeType + fonts as
+Wine-on-Linux ⇒ same numbers" a plan rather than a fact, and docs/02 scheduled the decision
+here.
+
+**Taken at GUI-3: the oracle gets the same font backend, from the same source tree.**
+`tools/setup_linux.sh` now configures the pin `--with-freetype --without-fontconfig` with
+`FREETYPE_CFLAGS`/`FREETYPE_LIBS` pointed at `third_party/freetype` — the *pinned* FreeType,
+built native by `tools/build_freetype.sh` from the same file list as the PE static library
+`win32u.dll` links. Both sides therefore agree on three things that have to agree before a
+metric can be differentially tested at all:
+
+- **backend** — FreeType on both, no fontconfig on either;
+- **version** — the pin (2.13.3) on both, rather than the pin on one side and whatever the
+  distro ships (Ubuntu 24.04: 2.13.2) on the other;
+- **font set** — with fontconfig off, win32u never loads host fonts, so the oracle's fonts
+  are the pinned tree's own `fonts/` and the target's are the same files baked at
+  `C:\windows\fonts` (Makefile `WINE_FONTS`).
+
+This is not Art. 6 oracle-fixing: nothing was changed to make a proskrnl divergence pass —
+no font test existed to fail. The spec was *extended* to cover a surface it did not cover,
+before the milestone that judges dialog layout (GUI-5) needs it. The configure change is
+deliberately a visible `tools/setup_linux.sh` event, as docs/02 required, and forces one
+rebuild through the cache-prefix bump (tp-v3 → tp-v4) plus a staleness check on
+`SONAME_LIBFREETYPE` in the generated `config.h`.
+
+What is still *not* pinned: an actual metric differential. `tests/gdi/fontsmoke.c` proves
+the oracle's backend loads and answers (the failure mode it guards is real — win32u
+`dlopen`s its backend and falls back to *no fonts* rather than failing loudly), but
+comparing numbers between oracle and target is GUI-5 work, as docs/02 has it.
 
 
 
