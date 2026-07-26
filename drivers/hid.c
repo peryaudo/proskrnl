@@ -119,7 +119,7 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
     for (;;)
     {
         ULONG got = 0;
-        while (got < capacity && VioInputTryReadEvent(&out[got]))
+        while (got < capacity && VioInputTryReadEvent(VioInputKeyboard(), &out[got]))
         {
             got++;
         }
@@ -158,9 +158,9 @@ static const IO_VFS_OPS HidInputOps = {
 
 void HidInitialize(void)
 {
-    if (!VioInputIsPresent())
+    if (!VioInputKeyboard())
     {
-        DbgPrint("hid: no virtio-input; \\Device\\Input0 not published\n");
+        DbgPrint("hid: no virtio-input keyboard; \\Device\\Input0 not published\n");
         return;
     }
     IopInitializeFcb(&HidInputFcb);

@@ -57,5 +57,11 @@ _Static_assert(sizeof(HID_INPUT_EVENT) == 8, "virtio_input_event is 8 bytes (vir
  * Only the ones a consumer exists for; the rest are added when one does. */
 #define HID_EV_SYN 0x00 /* report boundary; SYN_REPORT (code 0) ends a report */
 #define HID_EV_KEY 0x01 /* key/button: value 1 = press, 0 = release, 2 = autorepeat */
+#define HID_EV_ABS 0x03 /* absolute axis: value in the device's ABS_INFO range */
+
+/* EV_ABS axis codes (input-event-codes.h ABS_*). The pointer instance is
+ * the one whose EV_BITS advertise EV_ABS (drivers/virtio/input.c). */
+#define HID_ABS_X 0x00
+#define HID_ABS_Y 0x01
 
 #endif /* PROSKRNL_DRIVERS_HIDPROTO_H */

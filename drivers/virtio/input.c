@@ -5,8 +5,11 @@
  * inline) against the pinned third_party/qemu device model. Provenance:
  * public spec only (docs/11).
  *
- * The event source under \Device\Input0 (drivers/hid.c, HACK-002). Only
- * the eventq: this is a keyboard we read, never one we talk back to.
+ * The event sources under \Device\Input0 and \Device\Input1 (drivers/hid.c,
+ * HACK-002). Up to two instances: the keyboard (GUI-1) and the pointer —
+ * QEMU's tablet — which joined at GUI-4. Which function is which is decided
+ * by the device's own EV_BITS config, never by PCI enumeration order. Only
+ * the eventq on both: devices we read, never ones we talk back to.
  *
  * No interrupt. The kernel has no device-IRQ path at all (kernel/ke/irq.c
  * panics on any vector but the clock), and the established shape for an
@@ -22,6 +25,7 @@
 #include "drivers/hidproto.h"
 #include "kernel/mm/phys.h"
 #include "kernel/lib/dbgprint.h"
+#include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
 /* One event per buffer (§5.8.6.1), so the ring's depth is the number of
@@ -30,61 +34,119 @@
  * negotiates the device's own size and we fill exactly that. */
 #define VIO_INPUT_MAX_EVENTS (PAGE_SIZE / sizeof(HID_INPUT_EVENT))
 
-static BOOLEAN VioInputPresent;
-static VIO_PCI_DEVICE VioInputDevice;
-static VIO_VIRTQUEUE VioInputEventQueue;
+/* Keyboard + pointer; a third virtio-input function has no consumer. */
+#define VIO_INPUT_MAX_INSTANCES 2
 
-/* The DMA page the device writes events into: one frame, sliced into
- * 8-byte slots, slot i permanently owned by descriptor i. */
-static uint64_t VioInputSlotsPhysical;
-static HID_INPUT_EVENT *VioInputSlots;
-static uint16_t VioInputSlotCount;
+/* Device-config selectors (virtio 1.2 cs01 §5.8.4, cross-check the pinned
+ * QEMU include/standard-headers/linux/virtio_input.h enum
+ * virtio_input_config_select). The config layout is struct
+ * virtio_input_config: select at 0, subsel at 1, size at 2, reserved[5],
+ * payload union at 8. An unsupported select/subsel pair reads back size 0
+ * (§5.8.5.1; QEMU hw/input/virtio-input.c virtio_input_get_config memsets
+ * the config on a miss). */
+#define VIO_INPUT_CFG_EV_BITS     0x11
+#define VIO_INPUT_CFG_ABS_INFO    0x12
+#define VIO_INPUT_CFG_OFF_SELECT  0
+#define VIO_INPUT_CFG_OFF_SUBSEL  1
+#define VIO_INPUT_CFG_OFF_SIZE    2
+#define VIO_INPUT_CFG_OFF_PAYLOAD 8
 
-static uint64_t VioInputSlotPhysical(uint16_t slot)
+static VIO_INPUT_INSTANCE VioInputInstances[VIO_INPUT_MAX_INSTANCES];
+static VIO_INPUT_INSTANCE *VioInputKeyboardInstance;
+static VIO_INPUT_INSTANCE *VioInputPointerInstance;
+
+static uint64_t VioInputSlotPhysical(const VIO_INPUT_INSTANCE *input, uint16_t slot)
 {
-    return VioInputSlotsPhysical + (uint64_t)slot * sizeof(HID_INPUT_EVENT);
+    return input->slotsPhysical + (uint64_t)slot * sizeof(HID_INPUT_EVENT);
 }
 
-BOOLEAN VioInputInitialize(void)
+/* Select a config view and return its size byte (0 = the device does not
+ * have that entry). Device config is byte-accessible MMIO (§4.1.4.6). */
+static uint8_t VioInputSelectConfig(VIO_PCI_DEVICE *device, uint8_t select, uint8_t subsel)
+{
+    device->deviceCfg[VIO_INPUT_CFG_OFF_SELECT] = select;
+    device->deviceCfg[VIO_INPUT_CFG_OFF_SUBSEL] = subsel;
+    return device->deviceCfg[VIO_INPUT_CFG_OFF_SIZE];
+}
+
+/* Little-endian 32-bit field out of the selected config payload (§5.8.4:
+ * config fields are le32; byte reads keep the MMIO access width simple). */
+static uint32_t VioInputReadConfigLe32(VIO_PCI_DEVICE *device, unsigned offset)
+{
+    volatile uint8_t *payload = device->deviceCfg + VIO_INPUT_CFG_OFF_PAYLOAD + offset;
+    return (uint32_t)payload[0] | ((uint32_t)payload[1] << 8) | ((uint32_t)payload[2] << 16) |
+           ((uint32_t)payload[3] << 24);
+}
+
+/* struct virtio_input_absinfo: min, max, fuzz, flat, res, five le32s in
+ * that order (§5.8.4; pinned virtio_input.h). Cached at init so the ioctl
+ * that reports it (drivers/hid.c) never touches MMIO. */
+static void VioInputReadAbsInfo(VIO_PCI_DEVICE *device, uint8_t axis, VIO_INPUT_ABS_INFO *info)
+{
+    if (VioInputSelectConfig(device, VIO_INPUT_CFG_ABS_INFO, axis) == 0)
+    {
+        memset(info, 0, sizeof(*info));
+        return;
+    }
+    info->min = VioInputReadConfigLe32(device, 0);
+    info->max = VioInputReadConfigLe32(device, 4);
+    info->fuzz = VioInputReadConfigLe32(device, 8);
+    info->flat = VioInputReadConfigLe32(device, 12);
+    info->res = VioInputReadConfigLe32(device, 16);
+}
+
+static BOOLEAN VioInputSetupInstance(VIO_INPUT_INSTANCE *input, unsigned instance)
 {
     /* §4.1.2: input is modern-only -- there is no transitional device id
      * for a device type introduced after the legacy interface. */
-    if (!VioPciSetupModernDevice(VIRTIO_DEVICE_TYPE_INPUT, 0, "virtio-input", 0, &VioInputDevice))
+    if (!VioPciSetupModernDevice(VIRTIO_DEVICE_TYPE_INPUT, 0, "virtio-input", instance,
+                                 &input->device))
     {
         return FALSE;
     }
-    if (!VioPciAcceptFeatures(&VioInputDevice))
+    if (!VioPciAcceptFeatures(&input->device))
     {
         return FALSE;
+    }
+
+    /* Classify by what the device itself advertises: a pointer is the
+     * instance whose EV_BITS have an EV_ABS entry (QEMU's tablet reports
+     * ABS_X/ABS_Y there; its keyboard has no EV_ABS view at all). PCI order
+     * decides nothing. */
+    input->isPointer = VioInputSelectConfig(&input->device, VIO_INPUT_CFG_EV_BITS, HID_EV_ABS) != 0;
+    if (input->isPointer)
+    {
+        VioInputReadAbsInfo(&input->device, HID_ABS_X, &input->absX);
+        VioInputReadAbsInfo(&input->device, HID_ABS_Y, &input->absY);
     }
 
     /* §5.8.2 defines two virtqueues: 0 eventq, 1 statusq. We configure only
      * the eventq -- a driver uses the queues it configures, and the statusq
      * carries output to the device (keyboard LEDs, force feedback) that
      * nothing above us can ask for. Said out loud rather than left as a
-     * silent gap, and \Device\Input0 has no Write op to match (Art. 12). */
-    if (!VioPciSetupQueue(&VioInputDevice, &VioInputEventQueue, 0))
+     * silent gap, and neither device has a Write op to match (Art. 12). */
+    if (!VioPciSetupQueue(&input->device, &input->eventQueue, 0))
     {
         return FALSE;
     }
     DbgPrint("virtio-input: statusq unconfigured -- no LED/output path (GUI-1 scope)\n");
 
-    VioInputSlotsPhysical = MiAllocatePage();
-    if (VioInputSlotsPhysical == 0)
+    input->slotsPhysical = MiAllocatePage();
+    if (input->slotsPhysical == 0)
     {
-        VioPciSetFailed(&VioInputDevice);
+        VioPciSetFailed(&input->device);
         return FALSE;
     }
-    VioInputSlots = MiPhysicalToVirtual(VioInputSlotsPhysical);
+    input->slots = MiPhysicalToVirtual(input->slotsPhysical);
 
-    VioInputSlotCount = VioInputEventQueue.queueSize;
-    if (VioInputSlotCount > VIO_INPUT_MAX_EVENTS)
+    input->slotCount = input->eventQueue.queueSize;
+    if (input->slotCount > VIO_INPUT_MAX_EVENTS)
     {
-        VioInputSlotCount = (uint16_t)VIO_INPUT_MAX_EVENTS; /* one frame of slots */
+        input->slotCount = (uint16_t)VIO_INPUT_MAX_EVENTS; /* one frame of slots */
     }
-    for (uint16_t slot = 0; slot < VioInputSlotCount; slot++)
+    for (uint16_t slot = 0; slot < input->slotCount; slot++)
     {
-        VioPostReceiveBuffer(&VioInputEventQueue, slot, VioInputSlotPhysical(slot),
+        VioPostReceiveBuffer(&input->eventQueue, slot, VioInputSlotPhysical(input, slot),
                              sizeof(HID_INPUT_EVENT));
     }
 
@@ -92,42 +154,83 @@ BOOLEAN VioInputInitialize(void)
      * events before it (pinned tree hw/input/virtio-input.c: `active =
      * status & DRIVER_OK`, virtio_input_hid handler registered there), so
      * nothing can arrive until this line. */
-    VioPciSetDriverOk(&VioInputDevice);
-    VioNotifyQueue(&VioInputEventQueue);
+    VioPciSetDriverOk(&input->device);
+    VioNotifyQueue(&input->eventQueue);
 
-    VioInputPresent = TRUE;
-    DbgPrint("virtio-input: %02x:%x id %04x, %u event buffers\n", VioInputDevice.function.device,
-             VioInputDevice.function.function, VioInputDevice.function.deviceId, VioInputSlotCount);
+    input->present = TRUE;
+    DbgPrint("virtio-input: %02x:%x id %04x, %u event buffers, %s\n", input->device.function.device,
+             input->device.function.function, input->device.function.deviceId, input->slotCount,
+             input->isPointer ? "pointer (EV_ABS)" : "keyboard");
     return TRUE;
 }
 
-BOOLEAN VioInputIsPresent(void)
+BOOLEAN VioInputInitialize(void)
 {
-    return VioInputPresent;
+    for (unsigned instance = 0; instance < VIO_INPUT_MAX_INSTANCES; instance++)
+    {
+        VIO_INPUT_INSTANCE *input = &VioInputInstances[instance];
+        if (!VioInputSetupInstance(input, instance))
+        {
+            break; /* a miss ends the scan; the setup said so on serial */
+        }
+        if (input->isPointer)
+        {
+            if (VioInputPointerInstance == 0)
+            {
+                VioInputPointerInstance = input;
+            }
+            else
+            {
+                DbgPrint("virtio-input: second pointer ignored\n");
+            }
+        }
+        else
+        {
+            if (VioInputKeyboardInstance == 0)
+            {
+                VioInputKeyboardInstance = input;
+            }
+            else
+            {
+                DbgPrint("virtio-input: second keyboard ignored\n");
+            }
+        }
+    }
+    return VioInputKeyboardInstance != 0 || VioInputPointerInstance != 0;
 }
 
-int VioInputTryReadEvent(HID_INPUT_EVENT *event)
+VIO_INPUT_INSTANCE *VioInputKeyboard(void)
 {
-    ASSERT(VioInputPresent);
+    return VioInputKeyboardInstance;
+}
+
+VIO_INPUT_INSTANCE *VioInputPointer(void)
+{
+    return VioInputPointerInstance;
+}
+
+int VioInputTryReadEvent(VIO_INPUT_INSTANCE *input, HID_INPUT_EVENT *event)
+{
+    ASSERT(input != 0 && input->present);
 
     uint16_t slot;
     uint32_t length;
-    if (!VioTryPopUsed(&VioInputEventQueue, &slot, &length))
+    if (!VioTryPopUsed(&input->eventQueue, &slot, &length))
     {
         return 0;
     }
     /* The device fills a whole event or nothing (§5.8.6.1). A short write
      * would mean the device and this driver disagree about the wire format,
      * which is not a condition to paper over. */
-    ASSERT(slot < VioInputSlotCount);
+    ASSERT(slot < input->slotCount);
     ASSERT(length >= sizeof(HID_INPUT_EVENT));
 
-    *event = VioInputSlots[slot];
+    *event = input->slots[slot];
 
     /* Hand the slot straight back: the buffer supply must not drain while
      * a reader is draining events, or the device starts dropping reports. */
-    VioPostReceiveBuffer(&VioInputEventQueue, slot, VioInputSlotPhysical(slot),
+    VioPostReceiveBuffer(&input->eventQueue, slot, VioInputSlotPhysical(input, slot),
                          sizeof(HID_INPUT_EVENT));
-    VioNotifyQueue(&VioInputEventQueue);
+    VioNotifyQueue(&input->eventQueue);
     return 1;
 }
