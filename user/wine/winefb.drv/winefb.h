@@ -51,11 +51,26 @@ extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_
 extern void winefb_start_input(void);
 extern void winefb_cursor_update( int x, int y );
 
-/* compose.c: the z-order query behind the compositing flush (blit.c). More
- * top-level windows than this and the excess is treated as invisible; 64
- * is far beyond anything the milestones put on one desktop. */
+/* compose.c: the z-order queries behind the compositing flush and the
+ * uncover repair (blit.c). More top-level windows than this and the excess
+ * is treated as invisible; 64 is far beyond anything the milestones put on
+ * one desktop. */
 #define WINEFB_MAX_TOPLEVELS 64
+struct winefb_toplevel
+{
+    HWND hwnd;
+    RECT rect; /* window rect, screen coordinates */
+};
 extern UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count );
+extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, UINT max_count );
+
+/* blit.c: the desktop background. The desktop window is forced and foreign
+ * (docs/03 GUI-2 notes) -- no process runs its WndProc, so winefb is its
+ * painter, the same authority split as an X root window. One fixed color;
+ * the value is reported on serial, never assumed by a checker. */
+#define WINEFB_DESKTOP_BG RGB( 0x3a, 0x6e, 0xa5 ) /* the classic desktop blue */
+extern void winefb_fill_rect( const RECT *screen_rect, COLORREF color );
+extern UINT winefb_pack_pixel( UINT r, UINT g, UINT b );
 
 /* The harness reads these off the serial log and checks the screendump
  * against them; nothing about the expected picture is hardcoded host-side

@@ -18,6 +18,7 @@
 
 #include "winefb.h"
 #include "ntgdi.h"
+#include "win32u_private.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
@@ -33,6 +34,7 @@ struct winefb_surface
 };
 
 static struct winefb_surface *surface_from_header( struct window_surface *surface );
+static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_rect );
 
 /* win32u computes the surface region server-side (shaped windows,
  * pixel-format children) and hands it down as a rect array in
@@ -64,6 +66,42 @@ static void copy_rows( char *dst, int dst_pitch, const char *src, int src_pitch,
         memcpy( dst, src, width * 4 );
         dst += dst_pitch;
         src += src_pitch;
+    }
+}
+
+/* Pack one 8-bit-per-channel color the way the scanout wants it: one
+ * authority for the mask arithmetic, shared with the cursor (cursor.c) and
+ * the background fill below. */
+UINT winefb_pack_pixel( UINT r, UINT g, UINT b )
+{
+    const FB_MODE_INFO *mode = &winefb_scanout.mode;
+
+    return ((r >> (8 - mode->redMaskSize)) << mode->redMaskShift) |
+           ((g >> (8 - mode->greenMaskSize)) << mode->greenMaskShift) |
+           ((b >> (8 - mode->blueMaskSize)) << mode->blueMaskShift);
+}
+
+/* Fill a screen rect with one color, clipped to the scanout. */
+void winefb_fill_rect( const RECT *screen_rect, COLORREF color )
+{
+    const FB_MODE_INFO *mode = &winefb_scanout.mode;
+    RECT r = *screen_rect;
+    UINT pixel;
+    int x, y;
+
+    if (!winefb_scanout.pixels) return;
+    if (r.left < 0) r.left = 0;
+    if (r.top < 0) r.top = 0;
+    if (r.right > (int)mode->width) r.right = (int)mode->width;
+    if (r.bottom > (int)mode->height) r.bottom = (int)mode->height;
+    if (r.right <= r.left || r.bottom <= r.top) return;
+
+    pixel = winefb_pack_pixel( GetRValue( color ), GetGValue( color ), GetBValue( color ) );
+    for (y = r.top; y < r.bottom; y++)
+    {
+        UINT *out = (UINT *)(winefb_scanout.pixels + (size_t)y * mode->pitch) + r.left;
+
+        for (x = 0; x < r.right - r.left; x++) out[x] = pixel;
     }
 }
 
@@ -208,6 +246,17 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
 static void winefb_surface_destroy( struct window_surface *base )
 {
     struct winefb_surface *surface = surface_from_header( base );
+    RECT old_rect, empty = { 0, 0, 0, 0 };
+
+    /* A destroyed surface vacates everything it covered: the hide/close
+     * analogue of the move repair below (a dying transport during process
+     * teardown just fails the server calls, and the repaint is lost with
+     * the process -- tolerated, the next mover repairs again). */
+    old_rect.left = surface->origin.x;
+    old_rect.top = surface->origin.y;
+    old_rect.right = surface->origin.x + surface->visible.cx;
+    old_rect.bottom = surface->origin.y + surface->visible.cy;
+    if (!IsRectEmpty( &old_rect )) repair_uncovered( base->hwnd, &old_rect, &empty );
 
     /* win32u owns the bitmaps; the clip copy is all this driver added. */
     free( surface->clip_rects );
@@ -264,15 +313,95 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
     return TRUE;
 }
 
+/* The mover repairs the world. The server neither clips top-level siblings
+ * nor exposes them (server/window.c expose_window skips children of the
+ * desktop -- that too is "up to the native windowing system"), so when this
+ * window stops covering part of the screen, nobody else will notice. The
+ * area it vacated is split two ways: parts other top-level windows own are
+ * invalidated cross-process (NtUserRedrawWindow -> server redraw_window
+ * wakes their queues; their next clipped flush restores the pixels), and
+ * the desktop-owned remainder is filled with the background directly --
+ * the desktop window is forced and foreign, winefb is its painter.
+ *
+ * Runs OUTSIDE the surface locks (pWindowPosChanged / destroy): both
+ * NtUserRedrawWindow and window_surface_flush re-enter surface code and
+ * must never be called from inside flush. */
+static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_rect )
+{
+    struct winefb_toplevel others[WINEFB_MAX_TOPLEVELS];
+    char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
+    RGNDATA *data = (RGNDATA *)region_buffer;
+    HRGN vacated, tmp;
+    UINT i, count;
+    DWORD size;
+
+    vacated = NtGdiCreateRectRgn( old_rect->left, old_rect->top, old_rect->right,
+                                  old_rect->bottom );
+    tmp = NtGdiCreateRectRgn( new_rect->left, new_rect->top, new_rect->right, new_rect->bottom );
+    NtGdiCombineRgn( vacated, vacated, tmp, RGN_DIFF );
+
+    count = winefb_other_toplevels( hwnd, others, WINEFB_MAX_TOPLEVELS );
+    for (i = 0; i < count; i++)
+    {
+        RECT overlap;
+
+        /* Whole-window invalidation whenever the window touches the old
+         * rect: no client-coordinate translation to get wrong, and a
+         * redundant repaint of a small window is cheaper than a wrong one. */
+        if (intersect_rect( &overlap, &others[i].rect, old_rect ))
+            NtUserRedrawWindow( others[i].hwnd, NULL, 0,
+                                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+
+        NtGdiSetRectRgn( tmp, others[i].rect.left, others[i].rect.top, others[i].rect.right,
+                         others[i].rect.bottom );
+        NtGdiCombineRgn( vacated, vacated, tmp, RGN_DIFF );
+    }
+    NtGdiDeleteObjectApp( tmp );
+
+    size = NtGdiGetRegionData( vacated, sizeof(region_buffer), data );
+    NtGdiDeleteObjectApp( vacated );
+    if (size)
+    {
+        const RECT *rects = (const RECT *)data->Buffer;
+
+        for (i = 0; i < data->rdh.nCount; i++) winefb_fill_rect( &rects[i], WINEFB_DESKTOP_BG );
+    }
+}
+
 void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                                 const struct window_rects *new_rects,
                                 struct window_surface *base )
 {
     struct winefb_surface *surface = surface_from_header( base );
+    RECT old_rect, new_rect;
 
     if (!surface) return;
-    surface->origin.x = new_rects->visible.left;
-    surface->origin.y = new_rects->visible.top;
-    surface->visible.cx = new_rects->visible.right - new_rects->visible.left;
-    surface->visible.cy = new_rects->visible.bottom - new_rects->visible.top;
+    old_rect.left = surface->origin.x;
+    old_rect.top = surface->origin.y;
+    old_rect.right = surface->origin.x + surface->visible.cx;
+    old_rect.bottom = surface->origin.y + surface->visible.cy;
+    new_rect = new_rects->visible;
+
+    surface->origin.x = new_rect.left;
+    surface->origin.y = new_rect.top;
+    surface->visible.cx = new_rect.right - new_rect.left;
+    surface->visible.cy = new_rect.bottom - new_rect.top;
+
+    if (!IsRectEmpty( &old_rect ) && !EqualRect( &old_rect, &new_rect ))
+        repair_uncovered( hwnd, &old_rect, &new_rect );
+
+    /* Always re-blit the whole surface at its (possibly new) place. A pure
+     * move dirties nothing -- the surface is reused (create_window_surface's
+     * EqualRect path) and win32u's move_window_bits is an identity no-op for
+     * it -- and a raise generates no server exposure, so this forced flush
+     * is what paints the window at its new position or above a previously
+     * covering sibling. A window-sized copy per SetWindowPos, with no flag
+     * decoding to get wrong. */
+    window_surface_lock( base );
+    base->bounds.left = 0;
+    base->bounds.top = 0;
+    base->bounds.right = base->rect.right - base->rect.left;
+    base->bounds.bottom = base->rect.bottom - base->rect.top;
+    window_surface_unlock( base );
+    window_surface_flush( base );
 }
