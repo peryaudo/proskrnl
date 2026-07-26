@@ -670,7 +670,7 @@ W32U_SRCS := $(filter-out $(WINE_W32U)/main.c $(WINE_W32U)/syscall.c, \
 # classes, atoms, queues, hooks, clipboard and region algebra. Compiled
 # UNMODIFIED — this is the one authority for desktop state (Art. 11), and
 # GUI-3 moves this same code behind IPC rather than rewriting it.
-SRV_SRCS := $(addprefix $(WINE_SRV)/, object.c handle.c unicode.c user.c atom.c class.c \
+SRV_SRCS := $(addprefix $(WINE_SRV)/, object.c handle.c user.c atom.c class.c \
                 winstation.c window.c queue.c region.c clipboard.c hook.c)
 
 # Eleven names exist on both sides of the boundary with different meanings
@@ -683,16 +683,21 @@ SRV_RENAMES := alloc_user_handle free_user_handle destroy_thread_windows \
                is_message_class is_window_visible mirror_region \
                send_notify_message shared_session
 SRV_RENAME_FLAGS := $(foreach n,$(SRV_RENAMES),-D$(n)=srv_$(n))
-# unicode.c composes the unix path of the NLS case table from the configure
-# prefix. Nothing here loads it (win32u carries its own casing), so the
-# prefix is empty; only hash_strW/memicmp_strW/dump_strW are wanted from the
-# file, and they are pure.
-SRV_PATH_FLAGS := -DBINDIR='""' -DDATADIR='""'
+
+# FreeType comes from third_party/freetype, cross-built as a PE static
+# library (tools/build_freetype.sh). PRSK_WITH_FREETYPE is what turns
+# dlls/win32u/freetype.c's real body on, through the config.h shadow in
+# user/wine/include -- the PINNED Wine stays --without-freetype, because it
+# is the oracle and the oracle is the spec (docs/06).
+FREETYPE := third_party/freetype/x86_64-windows/libfreetype.a
+$(FREETYPE):
+	tools/build_freetype.sh
 
 W32U_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
                -D__WINESRC__ -D_WIN32U_ -DWINE_UNIX_LIB -DWINE_NO_LONG_TYPES \
-               -D__USE_MINGW_ANSI_STDIO=0 \
-               -Iuser/wine/include -Ithird_party/wine/include
+               -D__USE_MINGW_ANSI_STDIO=0 -DPRSK_WITH_FREETYPE \
+               -Iuser/wine/include -Ithird_party/freetype/include \
+               -I$(W32U_BUILD) -Ithird_party/wine/include
 
 W32U_OBJS := $(patsubst $(WINE_W32U)/%.c,$(W32U_BUILD)/w32u/%.o,$(W32U_SRCS)) \
              $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS)) \
@@ -704,9 +709,17 @@ $(W32U_BUILD)/w32u/%.o: $(WINE_W32U)/%.c user/wine/include/wine/unixlib.h
 
 $(W32U_BUILD)/srv/%.o: $(WINE_SRV)/%.c
 	@mkdir -p $(dir $@)
-	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) $(SRV_PATH_FLAGS) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
+	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
 
-$(W32U_BUILD)/glue/%.o: user/wine/%.c
+# The FreeType entry points freetype.c resolves by name, generated from its
+# own MAKE_FUNCPTR list so a pin that starts calling a new one fails the
+# build rather than the boot (Art. 4 / Art. 12).
+FT_SYMS := $(W32U_BUILD)/prsk_freetype_syms.h
+$(FT_SYMS): $(WINE_W32U)/freetype.c tools/gen_freetype_syms.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_freetype_syms.py $(WINE_W32U)/freetype.c $@
+
+$(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS)
 	@mkdir -p $(dir $@)
 	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -Iuser/wine/server \
 	    -Iuser/wine/winefb.drv -c $< -o $@
@@ -735,18 +748,61 @@ $(W32U_DEF): $(WINE_W32U)/win32u.spec tools/gen_win32u_def.py $(GUI_IMPORTERS)
 	python3 tools/gen_win32u_def.py $(WINE_W32U)/win32u.spec $@ $(GUI_IMPORTERS)
 
 WIN32U := $(BUILD)/modules/win32u.dll
-$(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(WINE_PE_DLLS)
+$(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(FREETYPE) \
+           $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -shared -nostdlib -nostartfiles -Wl,--entry=prsk_win32u_entry \
 	    $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) \
+	    -Wl,--start-group \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
+	    $(FREETYPE) \
 	    third_party/wine/libs/musl/x86_64-windows/libmusl.a \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
-	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+	    -Wl,--end-group -lgcc -o $@
 
 win32u: $(WIN32U)
 .PHONY: win32u
+
+# The Wine GUI DLLs, baked debug-stripped like the rest (no COW: every
+# mapped image is copied whole per process, so DWARF is a real memory
+# bill -- see WINESTRIP above). user32 pulls in win32u, which this build
+# replaces; gdi32 and comctl32 come with winemine, and imm32 is loaded by
+# user32's own init.
+WINESTRIP_GUI_NAMES := user32 gdi32 comctl32 imm32
+WINESTRIP_GUI_DLLS := $(foreach d,$(WINESTRIP_GUI_NAMES),$(WINESTRIP)/$(d).dll)
+$(foreach d,$(WINESTRIP_GUI_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+
+WINEMINE := $(WINESTRIP)/winemine.exe
+$(WINEMINE): third_party/wine/programs/winemine/x86_64-windows/winemine.exe
+	@mkdir -p $(dir $@)
+	$(OBJCOPY) --strip-debug $< $@
+
+# The pinned tree's own font files, which its build generates from the .sfd
+# sources. win32u's font backend enumerates C:\windows\fonts, and with no
+# fontconfig to ask (user/wine/include/config.h) that directory IS the font
+# set -- so an empty one means no text at all.
+WINE_FONTS := $(wildcard third_party/wine/fonts/*.ttf)
+FONTFILES := $(foreach f,$(WINE_FONTS),win:$(f)=windows/fonts/$(notdir $(f)))
+
+GUI2FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINEMINE)=winemine.exe
+
+# The GUI-2 image (tests/run/run.sh gui2): the standard image plus the Wine
+# GUI stack and winemine.exe, whose presence makes the boot run it
+# (kernel/init/main.c KiRunGui2). gui_smoke.exe is deliberately NOT here --
+# the two GUI legs stay disjoint, each convicted by its own client.
+IMG_GUI2 := $(BUILD)/proskrnl-gui2.hdd
+$(IMG_GUI2): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINEMINE) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI2) $(MODULE_SPECS) $(WINFILES) $(GUI2FILES)
+
+gui2-img: $(IMG_GUI2)
+.PHONY: gui2-img
 
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI

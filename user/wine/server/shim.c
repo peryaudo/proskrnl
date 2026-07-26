@@ -94,6 +94,13 @@ void prsk_log( const char *format, ... )
  * In wineserver these live in request.c/main.c, which are the unix event
  * loop. Same declarations, same meanings. */
 
+/* Every request, its payload size and its status on serial. Off by default
+ * -- it is the first thing to turn on when a GUI path goes wrong, and it is
+ * how every bug in this file so far was found. Requests that FAIL are
+ * reported either way, because an error a caller swallows is exactly what
+ * is hard to find later (Art. 12). */
+int prsk_trace_requests = 0;
+
 struct thread *current = NULL;
 unsigned int global_error = 0;
 int debug_level = 0;
@@ -244,6 +251,7 @@ static struct thread *create_thread_record( DWORD tid )
 
 session_shm_t *srv_shared_session;   /* renamed: win32u has its own reader */
 
+static HANDLE session_section;
 static char *session_base;
 static mem_size_t session_used;
 static object_id_t session_last_id;
@@ -283,11 +291,15 @@ static int prsk_create_session_mapping(void)
                                       ViewShare, 0, PAGE_READWRITE )))
     {
         prsk_log( "[PANIC] wineserver-lite: session map -> %08x\n", (unsigned)status );
+        NtClose( section );
         return 0;
     }
-    /* The handle is dropped: the name keeps the section alive for the
-     * readers, and this view is the only one the writer needs. */
-    NtClose( section );
+    /* The handle is HELD, for the life of the process. A name does not keep
+     * an NT section alive -- the object dies with its last handle unless it
+     * is permanent -- so closing this would leave win32u's NtOpenSection
+     * looking for a section that no longer exists (which it does, quietly,
+     * as STATUS_OBJECT_NAME_NOT_FOUND). */
+    session_section = section;
 
     session_base = view;
     session_used = sizeof(session_shm_t);
@@ -478,10 +490,33 @@ static struct list timeout_list = LIST_INIT( timeout_list );
 static HANDLE timeout_wakeup;        /* the service thread's reconfigure event */
 static HANDLE server_mutex;          /* one lock for the whole state machine */
 
+static DWORD WINAPI timeout_thread( void *arg );
+
+/* Started on the first timer rather than at bring-up: bring-up happens in
+ * win32u's DLL attach, under the loader lock, and a new thread would want
+ * that lock back for its own DLL_THREAD_ATTACH. The first timer is a
+ * SetTimer from application code, long past the loader. */
+static void ensure_timeout_thread(void)
+{
+    static int started;
+    HANDLE thread;
+
+    if (started) return;
+    started = 1;
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), timeout_thread,
+                          NULL, 0, 0, 0, 0, NULL ))
+    {
+        prsk_log( "[KTEST] wineserver-lite: no timeout thread; timers will not fire\n" );
+        return;
+    }
+    NtClose( thread );
+}
+
 struct timeout_user *add_timeout_user( timeout_t when, timeout_callback func, void *private )
 {
     struct timeout_user *user, *pos;
 
+    ensure_timeout_thread();
     if (!(user = malloc( sizeof(*user) ))) return NULL;
     user->when = (when > 0) ? when : current_time - when;
     user->callback = func;
@@ -559,15 +594,34 @@ static LONG init_state;   /* 0 untouched, 1 building, 2 ready, 3 failed */
 
 static int prsk_create_winstation_dir(void);
 
+/* A first-chance report of any access violation, with the faulting address
+ * relative to this DLL. The Wine loader catches these and reports only
+ * "failed to initialize", which names the DLL but not the instruction; this
+ * names the instruction, which is the difference between an afternoon and a
+ * minute (Art. 9: the dump is the debugger). Continues the search, so it
+ * changes nothing about how the exception is handled. */
+static LONG CALLBACK report_exception( EXCEPTION_POINTERS *info )
+{
+    void *base = NtCurrentTeb()->Peb->ImageBaseAddress;
+
+    if (info->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION)
+        prsk_log( "[KTEST] wineserver-lite: access violation at %p (image %p), rip %p\n",
+                  info->ExceptionRecord->ExceptionAddress, base,
+                  (void *)info->ContextRecord->Rip );
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static int server_bringup(void)
 {
     LARGE_INTEGER now;
-    HANDLE thread;
     OBJECT_ATTRIBUTES attr;
+    struct object *atoms;
 
     NtQuerySystemTime( &now );
     server_start_time = now.QuadPart;
     set_current_time();
+
+    RtlAddVectoredExceptionHandler( TRUE, report_exception );
 
     InitializeObjectAttributes( &attr, NULL, 0, NULL, NULL );
     if (NtCreateMutant( &server_mutex, MUTANT_ALL_ACCESS, &attr, FALSE )) return 0;
@@ -587,12 +641,19 @@ static int server_bringup(void)
     list_init( &the_process->classes );
     list_init( &the_process->rawinput_entry );
     list_init( &the_process->kernel_object );
-    if (!alloc_handle_table( the_process, 0 )) return 0;
+    /* alloc_handle_table RETURNS the table; process.c assigns it. */
+    if (!(the_process->handles = alloc_handle_table( the_process, 0 ))) return 0;
 
-    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
-                          timeout_thread, NULL, 0, 0, 0, 0, NULL ))
-        return 0;
-    NtClose( thread );
+    /* The two process-wide atom tables wineserver's init_directories makes.
+     * RegisterClass and the window-property calls add to the user one, and
+     * add_atom dereferences it without checking. */
+    if (!(atoms = create_atom_table())) return 0;
+    set_global_atom_table( atoms );
+    release_object( atoms );
+    if (!(atoms = create_atom_table())) return 0;
+    set_user_atom_table( atoms );
+    release_object( atoms );
+
     return 1;
 }
 
@@ -644,6 +705,14 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
     current->error = 0;
     memset( &reply, 0, sizeof(reply) );
 
+    if (prsk_trace_requests)
+    {
+        const unsigned int *body = (const unsigned int *)((const char *)&info->u.req + 12);
+        prsk_log( "[TRACE] wineserver-lite: %s data=%u req=%08x,%08x,%08x\n",
+                  req < prsk_req_count ? prsk_req_names[req] : "<out of range>",
+                  (unsigned)info->u.req.request_header.request_size, body[0], body[1], body[2] );
+    }
+
     if (req >= prsk_req_count || !prsk_req_handlers[req])
     {
         /* Unbuilt, not unsupported: the handler exists in wineserver, it is
@@ -654,6 +723,16 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
         set_error( STATUS_NOT_IMPLEMENTED );
     }
     else prsk_req_handlers[req]( &current->req, &reply );
+
+    if (prsk_trace_requests)
+    {
+        const unsigned int *body = (const unsigned int *)((const char *)&reply + 8);
+        prsk_log( "[TRACE] wineserver-lite: %s -> %08x reply=%08x,%08x\n", prsk_req_names[req],
+                  current->error, body[0], body[1] );
+    }
+    else if (current->error)
+        prsk_log( "[KTEST] wineserver-lite: %s failed %08x\n", prsk_req_names[req],
+                  current->error );
 
     reply.reply_header.error = current->error;
     reply.reply_header.reply_size = current->reply_size;
@@ -752,6 +831,47 @@ NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int
     prsk_log( "[KTEST] wineserver-lite: wine_server_handle_to_fd is unbuilt\n" );
     return STATUS_NOT_IMPLEMENTED;
 }
+
+/* --- case-insensitive names ------------------------------------------------
+ *
+ * The server's namespace hashes and compares names case-insensitively, and
+ * server/unicode.c does that through a lowercase table it reads out of
+ * l_intl.nls with pread() on a unix descriptor. That file is not compiled
+ * here for exactly that reason - it is a unix-fd reader, not a state
+ * machine - so the three functions the GUI sources want are expressed over
+ * the case table ntdll ALREADY has, mapped from the same l_intl.nls the
+ * image bakes (Makefile WINFILES). One table, reached a different way.
+ *
+ * The hash itself is Wine's (multiply by 65599), because it must stay
+ * consistent with nothing but itself: it indexes a namespace this process
+ * owns. What must be right is the pairing - two names equal under
+ * memicmp_strW must land in the same bucket - and both go through the same
+ * RtlDowncaseUnicodeChar. */
+
+static WCHAR to_lower_char( WCHAR ch )
+{
+    return RtlDowncaseUnicodeChar( ch );
+}
+
+unsigned int hash_strW( const WCHAR *str, data_size_t len, unsigned int hash_size )
+{
+    unsigned int i, hash = 0;
+
+    for (i = 0; i < len / sizeof(WCHAR); i++) hash = hash * 65599 + to_lower_char( str[i] );
+    return hash % hash_size;
+}
+
+int memicmp_strW( const WCHAR *str1, const WCHAR *str2, data_size_t len )
+{
+    int ret = 0;
+
+    for (len /= sizeof(WCHAR); len; str1++, str2++, len--)
+        if ((ret = to_lower_char( *str1 ) - to_lower_char( *str2 ))) break;
+    return ret;
+}
+
+/* The server's object dumper writes to stderr, which does not exist here. */
+int dump_strW( const WCHAR *str, data_size_t len, FILE *file, const char escape[2] ) { return 0; }
 
 /* --- a namespace root for window stations -----------------------------------
  *
