@@ -209,7 +209,8 @@ objects (`NtCreateDebugObject` family) are the stretch goal, not the gate.
 a loop under cmd.exe; a job-object-using build tool completes.
 *(Outcome: the stretch goal was not taken, and afterwards debug objects were ruled
 permanently out of scope — no baked consumer, and the native debugger toolchain
-expects PDB where proskrnl is DWARF end-to-end. `docs/03` "Debug objects", `docs/16`.)*
+expects PDB where proskrnl is DWARF end-to-end. ADR 0011; `docs/03` "Debug
+objects"; `docs/16`.)*
 
 ## CUI-5 — Io completion
 The file surface's last mile (12 missing ids + the refused info classes, `docs/16`),

@@ -834,12 +834,13 @@ abandoned-siblings notes, the CUI-3 job note).
   member count back through the job's accounting, and closes the handle to
   reap them.
 
-## Debug objects are out of scope (permanent; decided post-CUI-4)
+## Debug objects are out of scope (permanent; ADR 0011)
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,
 `NtRemoveProcessDebug`, `NtWaitForDebugEvent`, `NtSetInformationDebugObject` — was
 CUI-4's stretch goal; it was not taken, and it is now ruled **permanently out of
-scope** rather than deferred:
+scope** rather than deferred (the fixed decision: `docs/adr/0011-no-debug-objects.md`;
+this entry is its expanded reasoning):
 
 - **No baked consumer (Art. 1).** The entire family sits behind ntdll's on-demand
   `DbgUi*` entry points (`dlls/ntdll/process.c`) and the
