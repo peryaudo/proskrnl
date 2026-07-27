@@ -59,7 +59,9 @@ extern void winefb_cursor_update( int x, int y );
 struct winefb_toplevel
 {
     HWND hwnd;
-    RECT rect; /* window rect, screen coordinates */
+    RECT rect;   /* window rect, screen coordinates */
+    RECT client; /* client rect, screen coordinates -- what a rect-scoped
+                  * invalidation can name (blit.c) */
 };
 extern UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count );
 extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, UINT max_count );
@@ -71,6 +73,10 @@ extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, U
 #define WINEFB_DESKTOP_BG RGB( 0x3a, 0x6e, 0xa5 ) /* the classic desktop blue */
 extern void winefb_fill_rect( const RECT *screen_rect, COLORREF color );
 extern UINT winefb_pack_pixel( UINT r, UINT g, UINT b );
+
+/* blit.c: make one screen rect show what it should again -- the single
+ * repaint authority behind both the mover and the cursor. */
+extern void winefb_repaint_rect( const RECT *screen_rect, HWND exclude );
 
 /* The harness reads these off the serial log and checks the screendump
  * against them; nothing about the expected picture is hardcoded host-side

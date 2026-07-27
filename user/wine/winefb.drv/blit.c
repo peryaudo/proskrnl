@@ -313,49 +313,102 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
     return TRUE;
 }
 
-/* The mover repairs the world. The server neither clips top-level siblings
- * nor exposes them (server/window.c expose_window skips children of the
- * desktop -- that too is "up to the native windowing system"), so when this
- * window stops covering part of the screen, nobody else will notice. The
- * area it vacated is split two ways: parts other top-level windows own are
- * invalidated cross-process (NtUserRedrawWindow -> server redraw_window
- * wakes their queues; their next clipped flush restores the pixels), and
- * the desktop-owned remainder is filled with the background directly --
- * the desktop window is forced and foreign, winefb is its painter.
+/* Ask one window to repaint the part of itself that `screen_rect` covers.
  *
- * Runs OUTSIDE the surface locks (pWindowPosChanged / destroy): both
- * NtUserRedrawWindow and window_surface_flush re-enter surface code and
- * must never be called from inside flush. */
-static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_rect )
+ * Rect-scoped when the area lies wholly inside the client rect, because
+ * the cursor asks for this on every motion (cursor.c) and a whole-window
+ * repaint per mouse move is a repaint storm on anything the size of a
+ * console. Anything that reaches the frame falls back to the whole window:
+ * NtUserRedrawWindow's rect is client-relative and cannot name non-client
+ * pixels, and a redundant repaint is cheaper than a wrong one. */
+static void invalidate_covered( const struct winefb_toplevel *window, const RECT *screen_rect )
+{
+    RECT client;
+
+    if (screen_rect->left >= window->client.left && screen_rect->top >= window->client.top &&
+        screen_rect->right <= window->client.right && screen_rect->bottom <= window->client.bottom)
+    {
+        client = *screen_rect;
+        OffsetRect( &client, -window->client.left, -window->client.top );
+        NtUserRedrawWindow( window->hwnd, &client, 0,
+                            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN );
+        return;
+    }
+    NtUserRedrawWindow( window->hwnd, NULL, 0,
+                        RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+}
+
+/* Make one screen rect show what it should show again. Every visible
+ * top-level it touches is asked to repaint its part (NtUserRedrawWindow ->
+ * server redraw_window wakes their queues; their next clipped flush
+ * restores the pixels), and the remainder belongs to the desktop, whose
+ * painter is this driver -- the desktop window is forced and foreign, so
+ * the background is filled here and now.
+ *
+ * The single repaint authority (Art. 11): the mover below vacates the rect
+ * a window left, the cursor vacates the rect an arrow left, and a second
+ * copy of this walk would drift from the first even while equivalent.
+ *
+ * Runs OUTSIDE the surface locks: NtUserRedrawWindow re-enters surface
+ * code and must never be called from inside a flush. */
+void winefb_repaint_rect( const RECT *screen_rect, HWND exclude )
 {
     struct winefb_toplevel others[WINEFB_MAX_TOPLEVELS];
     char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
     RGNDATA *data = (RGNDATA *)region_buffer;
-    HRGN vacated, tmp;
+    HRGN remainder, tmp;
     UINT i, count;
     DWORD size;
+
+    if (IsRectEmpty( screen_rect )) return;
+
+    remainder = NtGdiCreateRectRgn( screen_rect->left, screen_rect->top, screen_rect->right,
+                                    screen_rect->bottom );
+    tmp = NtGdiCreateRectRgn( 0, 0, 0, 0 );
+
+    count = winefb_other_toplevels( exclude, others, WINEFB_MAX_TOPLEVELS );
+    for (i = 0; i < count; i++)
+    {
+        RECT overlap;
+
+        if (!intersect_rect( &overlap, &others[i].rect, screen_rect )) continue;
+        invalidate_covered( &others[i], &overlap );
+        NtGdiSetRectRgn( tmp, others[i].rect.left, others[i].rect.top, others[i].rect.right,
+                         others[i].rect.bottom );
+        NtGdiCombineRgn( remainder, remainder, tmp, RGN_DIFF );
+    }
+    NtGdiDeleteObjectApp( tmp );
+
+    size = NtGdiGetRegionData( remainder, sizeof(region_buffer), data );
+    NtGdiDeleteObjectApp( remainder );
+    if (size)
+    {
+        const RECT *rects = (const RECT *)data->Buffer;
+
+        for (i = 0; i < data->rdh.nCount; i++) winefb_fill_rect( &rects[i], WINEFB_DESKTOP_BG );
+    }
+}
+
+/* The mover repairs the world. The server neither clips top-level siblings
+ * nor exposes them (server/window.c expose_window skips children of the
+ * desktop -- that too is "up to the native windowing system"), so when this
+ * window stops covering part of the screen, nobody else will notice. What
+ * it vacated -- its old rect minus its new one -- is handed band by band to
+ * the repaint authority above.
+ *
+ * Runs OUTSIDE the surface locks (pWindowPosChanged / destroy). */
+static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_rect )
+{
+    char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
+    RGNDATA *data = (RGNDATA *)region_buffer;
+    HRGN vacated, tmp;
+    DWORD size;
+    UINT i;
 
     vacated = NtGdiCreateRectRgn( old_rect->left, old_rect->top, old_rect->right,
                                   old_rect->bottom );
     tmp = NtGdiCreateRectRgn( new_rect->left, new_rect->top, new_rect->right, new_rect->bottom );
     NtGdiCombineRgn( vacated, vacated, tmp, RGN_DIFF );
-
-    count = winefb_other_toplevels( hwnd, others, WINEFB_MAX_TOPLEVELS );
-    for (i = 0; i < count; i++)
-    {
-        RECT overlap;
-
-        /* Whole-window invalidation whenever the window touches the old
-         * rect: no client-coordinate translation to get wrong, and a
-         * redundant repaint of a small window is cheaper than a wrong one. */
-        if (intersect_rect( &overlap, &others[i].rect, old_rect ))
-            NtUserRedrawWindow( others[i].hwnd, NULL, 0,
-                                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
-
-        NtGdiSetRectRgn( tmp, others[i].rect.left, others[i].rect.top, others[i].rect.right,
-                         others[i].rect.bottom );
-        NtGdiCombineRgn( vacated, vacated, tmp, RGN_DIFF );
-    }
     NtGdiDeleteObjectApp( tmp );
 
     size = NtGdiGetRegionData( vacated, sizeof(region_buffer), data );
@@ -364,7 +417,7 @@ static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_r
     {
         const RECT *rects = (const RECT *)data->Buffer;
 
-        for (i = 0; i < data->rdh.nCount; i++) winefb_fill_rect( &rects[i], WINEFB_DESKTOP_BG );
+        for (i = 0; i < data->rdh.nCount; i++) winefb_repaint_rect( &rects[i], hwnd );
     }
 }
 
