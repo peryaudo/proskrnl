@@ -49,8 +49,9 @@ struct ntapi_state
     int failures;        /* hard assertion failures                */
     int todo_unexpected; /* todo_proskrnl block that unexpectedly passed */
     int skips;
-    int todo_depth;  /* >0 while inside a todo_proskrnl block   */
-    int on_proskrnl; /* runtime: no std output handle (see above) */
+    int todo_depth;   /* >0 while inside a todo_proskrnl block   */
+    int oracle_depth; /* >0 while inside a beyond_oracle block   */
+    int on_proskrnl;  /* runtime: no std output handle (see above) */
 };
 
 extern struct ntapi_state ntapi_ctx;
@@ -69,7 +70,7 @@ void ntapi_exit(int code); /* NtTerminateProcess — never returns */
  * no CRT ever wraps main. It probes the runner side, calls main, and exits
  * through ntapi_exit even if the test returns. */
 #define START_TEST(name)                                                                           \
-    struct ntapi_state ntapi_ctx = {#name, 0, 0, 0, 0, 0};                                         \
+    struct ntapi_state ntapi_ctx = {#name, 0, 0, 0, 0, 0, 0};                                         \
     static void ntapi_body(void);                                                                  \
     int main(void)                                                                                 \
     {                                                                                              \
@@ -96,5 +97,30 @@ void ntapi_exit(int code); /* NtTerminateProcess — never returns */
  *             to the behaviour now).
  */
 #define todo_proskrnl for (ntapi_ctx.todo_depth++; ntapi_ctx.todo_depth; ntapi_ctx.todo_depth--)
+
+/*
+ * beyond_oracle { ... } — the exact inverse of todo_proskrnl: assertions the
+ * ORACLE cannot answer but proskrnl must.
+ *
+ *   oracle:   skipped (counted as skips, printed once) — the pinned Wine
+ *             answers STATUS_NOT_IMPLEMENTED for this case, and an oracle
+ *             that is unbuilt has nothing to say about it (Art. 12).
+ *   proskrnl: transparent — the block must pass.
+ *
+ * This is what a Wine GAP looks like once it stops being a ceiling: a hole in
+ * the oracle is not a hole in NT, so where official Microsoft documentation
+ * fixes the behaviour, the kernel implements it and the case is pinned here
+ * instead of being left out of the suite. Art. 5's ordering still holds — the
+ * test lands before the kernel code — only its authority moves, from "green on
+ * the oracle" to "green on the target against a cited MS contract". The
+ * comment on every such block must name that source, the way G8 makes a
+ * hand-typed constant name its own (docs/09 Art. 5, Art. 12).
+ *
+ * Never use it to escape a divergence from behaviour Wine DOES implement:
+ * there the oracle is the spec, full stop (Art. 6), and the tag would be
+ * fixing the test instead of the kernel.
+ */
+#define beyond_oracle                                                                              \
+    for (ntapi_ctx.oracle_depth++; ntapi_ctx.oracle_depth; ntapi_ctx.oracle_depth--)
 
 #endif /* NTAPI_H */
