@@ -475,6 +475,13 @@ guiwtest() {
         --moduledir "$ROOT/build/modules" < "$log" \
         > "$ROOT/build/tests/guiwtest-serial.sym.log" 2>/dev/null || true
 
+    # msg.c's own assertion text, replayed out of the console screen diff
+    # (tools/unscreen.py). The VERDICT never comes from here — it is the
+    # kernel's line below — but a budget above zero is a list of named
+    # divergences, and this file is the only place their names survive.
+    "$ROOT/tools/unscreen.py" --grep 'Test (failed|succeeded)|marked todo|unhandled exception' \
+        "$log" > "$ROOT/build/tests/guiwtest-msg.log" 2>/dev/null || true
+
     # The ratchet input is the KERNEL's own verdict line (DbgPrint straight
     # to serial — never through the console, whose 80-column screen diff
     # truncates and mangles winetest's text): `[KTEST] wtest <pair> PASS` is
