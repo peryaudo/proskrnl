@@ -66,6 +66,117 @@ static void KiVerifyThreadTeb(PEPROCESS process, PETHREAD thread)
     ASSERT((uint64_t)(uintptr_t)teb->ClientId.UniqueProcess == process->uniqueProcessId);
 }
 
+/* --- the kernel-mode deadlock detector (GUI-5) ------------------------------
+ *
+ * The other half of the wedge story: a cycle in the KERNEL's own wait-for
+ * graph. Where the user-space detector below can only say "this process is
+ * stuck" (the locks are user memory it cannot read), this one NAMES the
+ * cycle — every edge is a kernel object whose owner the kernel itself
+ * records. Art. 3 is what makes it sound AND cheap: the sweep already holds
+ * the one dispatcher lock and every non-running thread is parked at a
+ * blocking point, so the graph it walks is an atomic snapshot, not a
+ * sampling of a moving target.
+ *
+ * An edge is drawn only when it is NECESSARY — a thread that cannot proceed
+ * until a specific other thread acts:
+ *   - a mutant it waits on, held by another thread (KMUTANT.ownerThread);
+ *   - a thread object it waits on (a join: only that thread's exit releases
+ *     it).
+ * A WaitAny over several objects draws none: any one of them may release the
+ * thread, so no single edge is necessary and a cycle through one would not
+ * prove anything. Timed waits are excluded (they wake on their own) and so
+ * are alertable ones (an APC or alert can break them). What survives those
+ * exclusions is a genuine cycle: an ASSERT, not a warning — unlike the
+ * user-space case there is no benign reading of it. */
+static PKTHREAD KiWaitEdge(PKTHREAD thread)
+{
+    if (thread->state != KI_THREAD_STATE_WAITING || thread->timerArmed || thread->waitAlertable)
+    {
+        return 0;
+    }
+    PKWAIT_BLOCK block = thread->waitBlockList;
+    if (block == 0)
+    {
+        return 0; /* a pure delay: it wakes on its own */
+    }
+    /* Only a wait whose EVERY object must be satisfied gives necessary
+     * edges; for those, the first owned object is enough to walk (a cycle
+     * through any of them is a real one). */
+    if (block->waitType == WaitAny && block->nextWaitBlock != 0)
+    {
+        return 0;
+    }
+    for (; block != 0; block = block->nextWaitBlock)
+    {
+        PDISPATCHER_HEADER object = block->object;
+        if (object->type == KI_OBJECT_MUTANT)
+        {
+            PKTHREAD owner = ((PRKMUTEX)object)->ownerThread;
+            if (owner != 0 && owner != thread)
+            {
+                return owner;
+            }
+        }
+        else if (object->type == KI_OBJECT_THREAD)
+        {
+            /* A join: only the awaited thread's exit signals this. */
+            PETHREAD target = CONTAINING_RECORD(object, ETHREAD, header);
+            if (target->tcb != 0 && target->tcb != thread)
+            {
+                return target->tcb;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The walk itself, exposed so a test can convict it on a known cycle
+ * (tests/kmt/m2_dispatcher.c): returns the number of threads in the cycle
+ * `start` sits on, or 0 when its wait chain terminates. */
+ULONG KiFindWaitCycle(PKTHREAD start)
+{
+    PKTHREAD walk = KiWaitEdge(start);
+
+    /* Follow the chain; a return to `start` is a cycle. The bound is the
+     * loop's own safety net — a chain longer than this cannot be a cycle
+     * through `start` that a later thread's own walk would miss. */
+    for (ULONG steps = 0; walk != 0 && steps < 64; steps++)
+    {
+        if (walk == start)
+        {
+            return steps + 1;
+        }
+        walk = KiWaitEdge(walk);
+    }
+    return 0;
+}
+
+static void KiDetectKernelDeadlock(PETHREAD thread)
+{
+    PKTHREAD start = thread->tcb;
+    ULONG members = KiFindWaitCycle(start);
+    if (members == 0)
+    {
+        return;
+    }
+
+    DbgPrint("[KTEST] deadlock: kernel wait-for cycle through tid=%lu (%lu threads)\n",
+             (unsigned long)thread->uniqueThreadId, (unsigned long)members);
+    for (PKTHREAD member = start;;)
+    {
+        PETHREAD memberThread = member->threadObject;
+        DbgPrint("[KTEST] deadlock:   tid=%lu waits-on=%p\n",
+                 memberThread ? (unsigned long)memberThread->uniqueThreadId : 0,
+                 member->waitBlockList ? member->waitBlockList->object : 0);
+        member = KiWaitEdge(member);
+        if (member == start || member == 0)
+        {
+            break;
+        }
+    }
+    ASSERT(!"kernel wait-for cycle (deadlock)");
+}
+
 /* An ETHREAD on a process's thread list is LIVE: the KTHREAD has not
  * terminated, the ETHREAD is unsignalled (retire unlinks and signals under
  * one lock hold), and — the edf9f0b invariant — it carries the running pin,
@@ -96,6 +207,7 @@ static void KiVerifyThreadObject(PEPROCESS process, PETHREAD thread)
     KiVerifyWaitList(&thread->header);
     KiVerifyWaitList(&tcb->header);
     KiVerifyThreadTeb(process, thread);
+    KiDetectKernelDeadlock(thread);
 }
 
 /* --- one process ----------------------------------------------------------- */

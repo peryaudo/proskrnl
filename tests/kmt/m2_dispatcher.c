@@ -15,6 +15,8 @@
  */
 #include "tests/kmt/kmt.h"
 #include "kernel/ke/ke.h"
+#include "kernel/init/verify.h"
+#include "kernel/lib/string.h"
 
 int kmt_failures;
 
@@ -514,6 +516,100 @@ static void test_thread_join(void)
     KiDeleteThread(worker);
 }
 
+
+/* --- the kernel-mode deadlock detector's walk ----------------------------- */
+
+/* KiFindWaitCycle (kernel/init/verify.c) is what the consistency sweep runs
+ * over every thread, treating a cycle as fatal — so it can never be
+ * convicted by letting a real deadlock form: the sweep would panic the boot
+ * before the test could report. Build the graph by hand instead. The walk
+ * reads exactly four things — a thread's state, its timed/alertable flags,
+ * its wait-block chain, and a mutant's ownerThread — so a hand-wired
+ * snapshot exercises the same code the live sweep runs, with no thread ever
+ * parked and nothing to unwind.
+ *
+ * The negative cases matter as much as the positive one: this walk runs on
+ * every thread of every sweep, so a false positive would panic a healthy
+ * boot. Each exclusion the detector makes (timed waits, alertable waits, a
+ * WaitAny with alternatives) gets its own check. */
+static void test_deadlock_walk(void)
+{
+    KTHREAD a, b;
+    KMUTEX m1, m2;
+    KWAIT_BLOCK block_a, block_b;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    KeInitializeMutex(&m1, 0);
+    KeInitializeMutex(&m2, 0);
+
+    /* The textbook ABBA: A holds m1 and waits on m2; B holds m2 and waits
+     * on m1. Neither can proceed and neither has a timeout. */
+    a.state = KI_THREAD_STATE_WAITING;
+    b.state = KI_THREAD_STATE_WAITING;
+    m1.ownerThread = &a;
+    m2.ownerThread = &b;
+    memset(&block_a, 0, sizeof(block_a));
+    block_a.thread = &a;
+    block_a.object = &m2.header;
+    block_a.waitType = WaitAny;
+    a.waitBlockList = &block_a;
+    memset(&block_b, 0, sizeof(block_b));
+    block_b.thread = &b;
+    block_b.object = &m1.header;
+    block_b.waitType = WaitAny;
+    b.waitBlockList = &block_b;
+
+    ok(KiFindWaitCycle(&a) == 2, "the ABBA cycle was not found from A");
+    ok(KiFindWaitCycle(&b) == 2, "the ABBA cycle was not found from B");
+
+    /* A timed wait wakes on its own — not a deadlock. */
+    a.timerArmed = TRUE;
+    ok(KiFindWaitCycle(&a) == 0, "a timed waiter was called deadlocked");
+    ok(KiFindWaitCycle(&b) == 0, "a cycle through a timed waiter was called a deadlock");
+    a.timerArmed = FALSE;
+
+    /* An alertable wait can be broken by an APC or an alert. */
+    a.waitAlertable = TRUE;
+    ok(KiFindWaitCycle(&a) == 0, "an alertable waiter was called deadlocked");
+    a.waitAlertable = FALSE;
+    ok(KiFindWaitCycle(&a) == 2, "the cycle did not come back after clearing the flags");
+
+    /* A running thread is not waiting on anything. */
+    b.state = KI_THREAD_STATE_RUNNING;
+    ok(KiFindWaitCycle(&a) == 0, "a cycle through a RUNNING thread was called a deadlock");
+    b.state = KI_THREAD_STATE_WAITING;
+
+    /* A free mutant has no owner: the chain terminates. */
+    m2.ownerThread = 0;
+    ok(KiFindWaitCycle(&a) == 0, "a wait on an unowned mutant was called a deadlock");
+    m2.ownerThread = &b;
+
+    /* WaitAny over SEVERAL objects: either may release A, so no single edge
+     * is necessary and nothing may be concluded. */
+    KWAIT_BLOCK spare;
+    KEVENT other;
+    KeInitializeEvent(&other, NotificationEvent, FALSE);
+    memset(&spare, 0, sizeof(spare));
+    spare.thread = &a;
+    spare.object = &other.header;
+    spare.waitType = WaitAny;
+    block_a.nextWaitBlock = &spare;
+    ok(KiFindWaitCycle(&a) == 0, "a WaitAny with an alternative was called a deadlock");
+
+    /* WaitAll over the same pair: now BOTH must be satisfied, so the edge
+     * into the cycle is necessary again. */
+    block_a.waitType = WaitAll;
+    spare.waitType = WaitAll;
+    ok(KiFindWaitCycle(&a) == 2, "a WaitAll into the cycle was not called a deadlock");
+    block_a.nextWaitBlock = 0;
+
+    /* A self-cycle is not a cycle: a mutant is recursive for its owner. */
+    m2.ownerThread = &a;
+    block_a.waitType = WaitAny;
+    ok(KiFindWaitCycle(&a) == 0, "a thread waiting on its own mutant was called a deadlock");
+}
+
 int kmt_run_m2(void)
 {
     kmt_failures = 0;
@@ -530,5 +626,6 @@ int kmt_run_m2(void)
     KMT_RUN(test_signal_beats_timeout);
     KMT_RUN(test_timers);
     KMT_RUN(test_priority);
+    KMT_RUN(test_deadlock_walk);
     return kmt_failures;
 }

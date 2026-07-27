@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+#include "abi/ntdef.h" /* ULONG */
+
 /* Completed sweeps since boot; every one either passed or panicked. */
 extern uint64_t KiSweepCount;
 
@@ -21,5 +23,12 @@ void KiVerifyKernelState(void);
 /* The idle-loop cadence: run a sweep at most once per interval. Called by
  * KiIdleLoop with interrupts already disabled. */
 void KiVerifyKernelStateIdle(void);
+
+/* The kernel-mode deadlock detector's walk (GUI-5): how many threads are in
+ * the wait-for cycle `start` sits on, or 0 when its chain terminates. The
+ * sweep runs it over every thread and treats a nonzero answer as fatal;
+ * exposed so tests/kmt can convict the walk on a cycle built by hand. */
+struct KTHREAD;
+ULONG KiFindWaitCycle(struct KTHREAD *start);
 
 #endif /* PROSKRNL_KERNEL_INIT_VERIFY_H */
