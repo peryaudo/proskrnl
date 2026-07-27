@@ -3,6 +3,7 @@
 
     qmpctl.py <socket> screendump <out.ppm>
     qmpctl.py <socket> sendkey <qcode> [<qcode>...]
+    qmpctl.py <socket> type <text>
     qmpctl.py <socket> absmove <x> <y>
     qmpctl.py <socket> button <name> <down|up>
     qmpctl.py <socket> quit
@@ -28,6 +29,14 @@ keyboard for keys.
 `screendump` is the whole point of the framebuffer verdict: the pixels
 come back out of QEMU's own device model, so the kernel is never grading
 its own homework (Art. 6).
+
+`type` (GUI-5, the gui5con leg) spells a command line as send-key chords:
+one send-key per character (shift held for the shifted US-layout glyphs),
+paced ~50 ms apart because the guest's whole input path — virtio ring,
+reader thread, server queue, conhost's window proc — is being exercised,
+not benchmarked. The mapping is the US layout the guest's kbdus tables
+implement; only the characters the leg actually types are mapped, and an
+unmapped character is a hard error, never a silent skip.
 """
 import json
 import socket
@@ -100,6 +109,29 @@ def main(argv):
         # QEMU maps to the guest's Linux evdev codes for virtio-input.
         keys = [{"type": "qcode", "data": key} for key in arguments]
         qmp.execute("send-key", keys=keys)
+    elif command == "type":
+        if len(arguments) != 1:
+            print("qmpctl: type takes one text argument", file=sys.stderr)
+            return 2
+        # US-layout spellings for the characters the gui5con leg types.
+        plain = {c: c for c in "abcdefghijklmnopqrstuvwxyz0123456789"}
+        plain.update({" ": "spc", ".": "dot", "-": "minus", "/": "slash",
+                      "\\": "backslash", ";": "semicolon", "'": "apostrophe",
+                      "=": "equal", ",": "comma", "\n": "ret"})
+        shifted = {">": "dot", ":": "semicolon", "<": "comma", "?": "slash",
+                   "_": "minus", "+": "equal", '"': "apostrophe", "|": "backslash"}
+        shifted.update({c: c.lower() for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"})
+        for char in arguments[0]:
+            if char in plain:
+                keys = [{"type": "qcode", "data": plain[char]}]
+            elif char in shifted:
+                keys = [{"type": "qcode", "data": "shift"},
+                        {"type": "qcode", "data": shifted[char]}]
+            else:
+                print(f"qmpctl: no key mapping for character {char!r}", file=sys.stderr)
+                return 2
+            qmp.execute("send-key", keys=keys)
+            time.sleep(0.05)
     elif command == "absmove":
         if len(arguments) != 2:
             print("qmpctl: absmove takes x y (0..32767)", file=sys.stderr)
