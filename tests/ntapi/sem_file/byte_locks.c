@@ -9,11 +9,10 @@
  */
 #include "util.h"
 
-/* The pinned Wine NtLockFile accepts only the bare form: a non-NULL apc,
- * io_status, or key is refused with STATUS_NOT_IMPLEMENTED (its own PE stack
- * never passes them), and NtUnlockFile likewise refuses a non-NULL key —
- * that IS the boundary contract here (Art. 6), so the helpers pass NULLs and
- * the refusal itself is pinned below. */
+/* Only the bare form is exercised: the pinned Wine's own PE stack never
+ * passes an apc, io_status, or key, so its answer for those is unbuilt
+ * (STATUS_NOT_IMPLEMENTED) rather than a contract — and an unbuilt oracle
+ * answer is never pinned (Art. 12). The helpers therefore pass NULLs. */
 static NTSTATUS lock_range(HANDLE h, long long start, long long length, BOOLEAN exclusive)
 {
     LARGE_INTEGER offset, size;
@@ -59,21 +58,6 @@ START_TEST(byte_locks)
     status = open_file(&h2, dir, W("locked.dat"), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
                        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
     ok(status == STATUS_SUCCESS, "second open -> %08lx", (unsigned long)status);
-
-    /* --- the decorated forms are refused (pinned Wine; see above). --------- */
-    {
-        IO_STATUS_BLOCK lock_iosb;
-        LARGE_INTEGER off, len;
-        ULONG key = 0;
-        off.QuadPart = 0;
-        len.QuadPart = 4;
-        status = NtLockFile(h1, NULL, NULL, NULL, &lock_iosb, &off, &len, NULL, TRUE, TRUE);
-        ok(status == STATUS_NOT_IMPLEMENTED, "lock with iosb -> %08lx", (unsigned long)status);
-        status = NtLockFile(h1, NULL, NULL, NULL, NULL, &off, &len, &key, TRUE, TRUE);
-        ok(status == STATUS_NOT_IMPLEMENTED, "lock with key -> %08lx", (unsigned long)status);
-        status = NtUnlockFile(h1, &lock_iosb, &off, &len, &key);
-        ok(status == STATUS_NOT_IMPLEMENTED, "unlock with key -> %08lx", (unsigned long)status);
-    }
 
     /* --- exclusive lock blocks overlap from the other handle. -------------- */
     status = lock_range(h1, 0, 16, TRUE);
