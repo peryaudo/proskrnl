@@ -98,10 +98,14 @@ sgdisk "$IMG" \
 
 # Copy one file onto the FAT volume, announcing it on stderr first — mcopy is
 # silent, so a wedged copy (e.g. blocked on the image lock a leftover QEMU
-# holds) is otherwise indistinguishable from a slow one.
+# holds) is otherwise indistinguishable from a slow one. -o: a later spec for
+# the same destination OVERWRITES (mtools' default is an INTERACTIVE clash
+# prompt, invisible with stderr captured) — the override is a feature: the
+# gui5con image lists $(WINFILES) and then swaps in the windowed conhost by
+# naming the same destination again, and every copy is announced above.
 copy() {
     echo "mkimage: copying $1 -> $2" >&2
-    mcopy -i "$IMG@@$ESP_OFF" "$1" "$2"
+    mcopy -o -i "$IMG@@$ESP_OFF" "$1" "$2"
 }
 
 # Create a FAT directory at most once per run. Re-running mmd on an existing

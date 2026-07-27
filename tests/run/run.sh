@@ -1345,6 +1345,153 @@ gui5() {
     return 0
 }
 
+# GUI-5, the windowed conhost (docs/02 "GUI-ifying conhost"): an interactive
+# cmd.exe session driven entirely through the REAL console — the window
+# CONHOST_GUI draws, the real input queue, conhost's own ^C mapping — with
+# the serial transport fully out of the console loop (it still carries the
+# kernel's [KTEST] lines, which is HACK-004's permanent debug role). The
+# verdict has three independent halves:
+#   pixels  the console window is found ON the scanout (no guest process
+#           declares it — conhost is stock Wine code), captioned, and the
+#           session's typing advances pixels inside it only;
+#   files   `looper > c:\ctrl.txt` then ctrl-c, `echo done > c:\out.txt`,
+#           extracted from the image post-mortem — loop-alive + loop-caught-1
+#           prove the window's WM_KEYDOWN -> map_to_ctrlevent -> CTRL_EVENT
+#           ioctl path end to end (ENABLE_PROCESSED_INPUT honoured, the
+#           CUI-4 serial intercept never involved), `done` proves the whole
+#           write path behind the window;
+#   serial  the kernel-side attach markers and the glue's mode marker.
+# The guest powers itself off (`exit` -> cmd exits -> KiRunInteractiveCmd),
+# so unlike the other gui legs QEMU's end is awaited, not quit.
+gui5con() {
+    make -C "$ROOT" gui5con-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui5con.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui5con.sock" log="$dir/gui5con.log"
+    local ppm1="$dir/gui5con-before.ppm" ppm2="$dir/gui5con-after.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm1" "$ppm2" "$log"
+
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui5con_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui5con: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    await '\[KTEST\] gui5con conhost mode=window' || { gui5con_fail "the windowed conhost never picked window mode"; return 1; }
+    await '\[KTEST\] conhost up' || { gui5con_fail "conhost never attached to condrv"; return 1; }
+    await 'starting cmd\.exe' || { gui5con_fail "the interactive cmd never started"; return 1; }
+    await '\[KTEST\] gui2 input READY' || { gui5con_fail "no keyboard reader"; return 1; }
+    await '\[KTEST\] gui4 mouse READY' || { gui5con_fail "no pointer reader"; return 1; }
+
+    # Find the console window by looking at the scanout: poll dumps until
+    # check_gui5con.py --locate sees a captioned window with prompt glyphs.
+    # The pointer has not moved yet, so no cursor can smear the search.
+    local located="" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+    while ((SECONDS < deadline)); do
+        qmp screendump "$ppm1" >/dev/null 2>&1 || true
+        if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
+                --log "$log" --ppm "$ppm1" 2>/dev/null); then
+            break
+        fi
+        located=""
+        kill -0 "$qemu_wrapper" 2>/dev/null || { gui5con_fail "QEMU died while waiting for the window"; return 1; }
+        sleep 3
+    done
+    [ -n "$located" ] || { gui5con_fail "no console window ever appeared on the scanout"; return 1; }
+    local bbox cx cy
+    bbox=$(sed -E 's/^bbox=([^ ]+) .*/\1/' <<<"$located")
+    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
+    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
+
+    # Guest-reported geometry for the pixel->tablet arithmetic (the gui4
+    # derivation; nothing assumes a size).
+    local w h maxx maxy
+    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    if [ -z "$w" ] || [ -z "$maxx" ]; then
+        gui5con_fail "could not parse guest geometry"; return 1
+    fi
+
+    # One activation click in the window's centre (click activation is
+    # exempt from the focus-stealing rule; firstboot's transient windows can
+    # therefore never leave the console unfocused). The cursor stays inside
+    # the window for the rest of the leg, so dump 2's only out-of-box pixels
+    # would be a real defect.
+    qmp absmove $(( (cx * maxx + w - 2) / (w - 1) )) $(( (cy * maxy + h - 2) / (h - 1) ))
+    sleep 1
+    qmp button left down && qmp button left up
+    sleep 2
+
+    # The session. No serial echo exists in window mode, so pacing is by
+    # what each step provably needs: looper prints loop-alive into the
+    # REDIRECTED file immediately, and its busy loop is bounded at 60 s,
+    # far beyond this choreography.
+    qmp type 'c:\looper.exe > c:\ctrl.txt
+'
+    sleep 5
+    qmp sendkey ctrl c
+    sleep 3
+    qmp type 'echo done > c:\out.txt
+'
+    sleep 3
+    qmp screendump "$ppm2" || { gui5con_fail "screendump 2 failed"; return 1; }
+
+    # `exit` powers the guest off (KiRunInteractiveCmd -> KiQemuExit).
+    qmp type 'exit
+'
+    local waited=0
+    while kill -0 "$qemu_wrapper" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        if ((waited > 120)); then
+            gui5con_fail "the guest never powered off after exit"; return 1
+        fi
+    done
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    # The FILE half: what the console session provably wrote, read back out
+    # of the image (the fatcheck idiom — mtools, not the guest).
+    local esp_off=2097152
+    rm -f "$dir/gui5con-out.txt" "$dir/gui5con-ctrl.txt"
+    mcopy -n -i "$img@@$esp_off" ::/out.txt "$dir/gui5con-out.txt" 2>/dev/null \
+        || { echo "== gui5con: FAIL (out.txt never written; see $log) =="; return 1; }
+    mcopy -n -i "$img@@$esp_off" ::/ctrl.txt "$dir/gui5con-ctrl.txt" 2>/dev/null \
+        || { echo "== gui5con: FAIL (ctrl.txt never written; see $log) =="; return 1; }
+    grep -q "done" "$dir/gui5con-out.txt" \
+        || { echo "== gui5con: FAIL (out.txt lacks 'done') =="; return 1; }
+    grep -q "loop-alive" "$dir/gui5con-ctrl.txt" \
+        || { echo "== gui5con: FAIL (looper never ran) =="; return 1; }
+    grep -q "loop-caught-1" "$dir/gui5con-ctrl.txt" \
+        || { echo "== gui5con: FAIL (ctrl-c never reached looper's handler) =="; return 1; }
+
+    if ! python3 "$ROOT/tests/gui/check_gui5con.py" --log "$log" \
+            --ppm1 "$ppm1" --ppm2 "$ppm2" --bbox "$bbox"; then
+        echo "== gui5con: FAIL (window pixels; see $log) =="
+        return 1
+    fi
+    echo "== gui5con: PASS (windowed conhost: typed, ^C-interrupted, files proven) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -1363,6 +1510,7 @@ case "$MODE" in
     gui3)     gui3 ;;
     gui4)     gui4 ;;
     gui5)     gui5 ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5}" >&2
+    gui5con)  gui5con ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con}" >&2
        exit 2 ;;
 esac

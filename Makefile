@@ -1020,6 +1020,34 @@ $(IMG_GUI5): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
 gui5-img: $(IMG_GUI5)
 .PHONY: gui5-img
 
+# GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
+# image — the full Wine userland + cmd.exe + interactive.flag, exactly the
+# make-run recipe — plus the GUI stack, the desktop server, and the
+# WINDOWED conhost overriding $(WINFILES)'s headless one (same destination,
+# listed later; mkimage's mcopy -o makes the later spec win). looper.exe is
+# the ^C acceptance's interruptible program (the CUI-4 actor, now
+# interrupted through the window's own keyboard path instead of the serial
+# hack).
+GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             win:$(CONHOST_GUI)=windows/system32/conhost.exe \
+             win:$(CMD)=windows/system32/cmd.exe \
+             win:$(LOOPER)=looper.exe \
+             win:$(BUILD)/interactive.flag=interactive.flag
+
+IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
+$(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(CONHOST_GUI) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
+
+gui5con-img: $(IMG_GUI5CON)
+.PHONY: gui5con-img
+
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
