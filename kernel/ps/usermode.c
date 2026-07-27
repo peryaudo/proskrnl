@@ -338,6 +338,23 @@ BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, ui
     DbgPrint("[KTEST] user exception code=%#lx rip=%p addr=%p pid=%lu\n",
              (unsigned long)exceptionCode, (void *)trapFrame->rip, (void *)faultAddress,
              (unsigned long)KeGetCurrentThread()->process->uniqueProcessId);
+    /* Scan the top of the faulting thread's stack for module-range values —
+     * the return addresses that name the caller chain (the wedge dump's
+     * trick, at fault time; MiCopyFromUserRange stops at unmapped pages). */
+    {
+        uint64_t stack[96];
+        uint64_t copied = MiCopyFromUserRange(&KeGetCurrentThread()->process->addressSpace, stack,
+                                              trapFrame->rsp, sizeof(stack));
+        int shown = 0;
+        for (uint64_t i = 0; i < copied / sizeof(uint64_t) && shown < 8; i++)
+        {
+            if (stack[i] >= 0x140000000ull && stack[i] < 0x200000000ull)
+            {
+                DbgPrint("[KTEST] user exception frame=%p\n", (void *)stack[i]);
+                shown++;
+            }
+        }
+    }
 
     EXCEPTION_RECORD record;
     memset(&record, 0, sizeof(record));
