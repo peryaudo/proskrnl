@@ -940,6 +940,19 @@ typedef struct {
 } SYSTEM_INTERRUPT_INFORMATION, *PSYSTEM_INTERRUPT_INFORMATION;
 
 typedef enum {
+    SystemFirmwareTable_Enumerate = 0,
+    SystemFirmwareTable_Get = 1
+} SYSTEM_FIRMWARE_TABLE_ACTION, *PSYSTEM_FIRMWARE_TABLE_ACTION;
+
+typedef struct {
+    ULONG ProviderSignature;
+    SYSTEM_FIRMWARE_TABLE_ACTION Action;
+    ULONG TableID;
+    ULONG TableBufferLength;
+    UCHAR TableBuffer[1];
+} SYSTEM_FIRMWARE_TABLE_INFORMATION, *PSYSTEM_FIRMWARE_TABLE_INFORMATION;
+
+typedef enum {
         SystemPowerPolicyAc,
         SystemPowerPolicyDc,
         VerifySystemPolicyAc,
