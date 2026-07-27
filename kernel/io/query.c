@@ -89,6 +89,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FileInternalInformation:
         needed = sizeof(FILE_INTERNAL_INFORMATION);
         break;
+    case FileEndOfFileInformation:
+        needed = sizeof(FILE_END_OF_FILE_INFORMATION);
+        break;
     case FileNameInformation:
         needed = (ULONG)offsetof(FILE_NAME_INFORMATION, FileName);
         break;
@@ -181,6 +184,16 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         }
         FILE_INTERNAL_INFORMATION *out = buffer;
         out->IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        break;
+    }
+    case FileEndOfFileInformation:
+    {
+        /* The query side of the set-EOF class: the same size
+         * FileStandardInformation reports, which is how the pinned Wine
+         * answers it (dlls/ntdll/unix/file.c fills it from the same fstat).
+         * ntdll's actctx.c asks it of every manifest file it maps. */
+        FILE_END_OF_FILE_INFORMATION *out = buffer;
+        out->EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
         break;
     }
     case FileNameInformation:
