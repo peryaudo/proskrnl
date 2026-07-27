@@ -263,15 +263,23 @@ static DWORD WINAPI pointer_thread( void *arg )
                            NULL, 0 );
     if (status == STATUS_SHARING_VIOLATION)
     {
+        /* Losing the open still answers the question the cursor asks: a
+         * pointer device EXISTS, and this process must therefore draw the
+         * arrow into its own flushes from the shared position (cursor.c).
+         * The device's exclusivity is the signal -- no protocol needed. */
+        winefb_pointer_present = TRUE;
         TRACE( "input1 already has its reader\n" );
         return 0;
     }
     if (status)
     {
-        /* No pointer: keyboard-only images say so once and stand alone. */
+        /* No pointer: keyboard-only images say so once and stand alone.
+         * winefb_pointer_present stays FALSE, so no process draws a
+         * cursor. */
         winefb_report( "[KTEST] gui4 mouse ABSENT\n" );
         return 0;
     }
+    winefb_pointer_present = TRUE;
 
     /* The device's own range, once; scaling with a stale range would be
      * wrong forever, and the range cannot change (the device model fixes
@@ -343,11 +351,11 @@ static DWORD WINAPI pointer_thread( void *arg )
         /* One line per drained batch, not per report: the harness gates on
          * position/buttons after it stops injecting, and a batch is the
          * natural coalescing unit under a fast host pointer. The cursor
-         * follows the batch's final position (cursor.c; this thread is its
-         * single writer). */
+         * follows the batch's final position (cursor.c; this thread is the
+         * only one that MOVES it, though every process draws it). */
         if (flushed)
         {
-            winefb_cursor_update( report.screen_x, report.screen_y );
+            winefb_cursor_update();
             winefb_report( "[KTEST] gui4 ptr x=%d y=%d btn=%x\n", report.screen_x,
                            report.screen_y, (unsigned)report.buttons );
         }

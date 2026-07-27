@@ -1304,14 +1304,58 @@ mode — no QEMU constant on either side) and inject as
 the unmodified server routes by capture and coordinate (`find_hardware_message_window`).
 `MOVE_NOCOALESCE` bypasses win32u's motion accumulator — QEMU already coalesced.
 
-**The cursor is a software arrow with a single writer.** No hardware cursor plane exists, so
-the pointer thread save-unders and draws a builtin 12×20 arrow at each batch's final
-position. Deliberately *not* the per-window `HCURSOR`: `WM_WINE_SETCURSOR` is delivered to
-the process owning the window under the cursor, which is not the reader — honoring shapes
-would make cursor drawing a cross-process protocol for zero milestone value (the named
-escalation path, if it is ever needed: flush-side compositing off the shared
-`desktop_shm->cursor`). Bounded artifact: an overlapping window flush stomps the picture
-until the next motion; the gui4 leg parks the cursor over background before each screendump.
+**The cursor is a software arrow, composited by every writer.** No hardware cursor plane
+exists — and acquiring one is not the cheap fix it sounds like: `-vga std` (QEMU's
+bochs-display) has no cursor plane at all, the only QEMU device that does is virtio-gpu's
+cursor queue, and a hardware cursor is a *host-side overlay* that `qmp screendump` does not
+composite into the PPM (`ui/ui-qmp-cmds.c qmp_screendump` dumps the `DisplaySurface` alone),
+so no pixel test could ever convict it (Art. 5/6). The cursor is therefore pixels this
+driver draws, and the rule is one line: **the cursor is above everything, so every writer
+that touches the scanout draws it back on top of what it just painted.** The surface flush
+and the background fill both end with `winefb_cursor_present`, in every process, and the
+position comes from `desktop_shm->cursor` — the server's own state, read through the seqlock
+`NtUserGetCursorPos` uses, which takes no user lock and is therefore legal inside the
+surface lock (the compose.c rule).
+
+There is deliberately **no save-under**, and that is the correctness argument rather than a
+simplification: a save-under is a per-process cache of pixels several processes write, so
+its snapshot goes stale the moment another process flushes over it and restoring it deposits
+a cursor-sized patch of pixels captured somewhere else. GUI-4 shipped that (with the
+artifact documented, and both gui4 clients repainting themselves to hide it); GUI-5 replaced
+it. When the pointer moves, the vacated rect is repainted **from whoever owns those
+pixels** — `winefb_repaint_rect`, the same authority the mover uses (Art. 11: the mover and
+the cursor vacate screen rects for different reasons, but there is one walk that repairs
+one). Whether a process draws a cursor at all is decided by whether a pointer *device*
+exists, which every process already learns from `\Device\Input1`'s exclusive open: the
+winner and every loser (`STATUS_SHARING_VIOLATION`) both know, and a keyboard-only image
+draws nothing.
+
+**No arrow before the pointer has reported a position**, and the test for that is the
+position itself: `(0,0)` is the desktop's initial cursor value (`server/winstation.c`) and
+so cannot be told apart from "never moved". `cursor.last_change` is the field that *looks*
+like the has-it-ever-moved flag and is not one — the server stamps it through the ordinary
+motion path every time it resyncs the cursor, which a visible window changing rect does
+(`server/window.c set_window_pos` → `update_cursor_pos`) as does releasing capture, both of
+which happen during startup on any tablet-equipped image. Gating on it painted an arrow in
+the top-left corner of every such image before the mouse moved, which the gui4 dumps caught
+— they check that corner for the background. The same arrow is a standing hazard for
+gui5con, which *locates* its console window as the bounding box of everything that is not
+background: a corner arrow would stretch that box to the screen edge for any window not
+already touching the origin (gui5con's own window sits at the origin, so it happened not to
+show there). The cost of the position test is that a pointer parked at exactly `(0,0)` draws no
+arrow until it moves again — bounded, cosmetic, self-correcting, and it fails to *no*
+cursor rather than to a cursor where the pointer has never been.
+
+The SHAPE is still not the per-window `HCURSOR`: `WM_WINE_SETCURSOR` is delivered to the
+process owning the window under the cursor, and honoring shapes would mean tracking that
+cross-process for zero milestone value.
+
+Residual, named: the vacated rect over a *window* is repainted by that window's own thread
+(rect-scoped invalidation — a whole-window repaint per mouse motion would be a repaint storm
+on anything console-sized), so a wedged window keeps the trail until it pumps again. Over
+the desktop background — the common case — the repair is immediate and local. Same latency
+class the mover already accepts for an uncovered window, and it degrades to briefly-stale
+rather than permanently-wrong.
 
 **Known residuals, named:**
 
@@ -1347,7 +1391,7 @@ project has).
   is the pinned cross-process hook coverage (moduleless by design, delivered through the
   server's `MSG_HOOK_LL` posting); msg.c's hook tests are the eventual real consumer.
 - **The GUI-4 residuals gui5 deliberately sidesteps**: no tablet on the gui5 image (no
-  cursor, so no cursor-stomp in the dumps); no `HWND_BOTTOM`; both attached threads outlive
+  pointer *device*, so no process draws a cursor at all); no `HWND_BOTTOM`; both attached threads outlive
   the AttachThreadInput phase (though attach makes the violently-killed-thread
   `thread_input` residual *more* load-bearing should a client ever die attached — same
   bound, process lifetime).
