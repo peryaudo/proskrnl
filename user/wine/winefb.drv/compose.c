@@ -60,7 +60,7 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
 
     for (i = 0; i < count && found < max_count; i++)
     {
-        RECT rect;
+        RECT rect, client;
         unsigned int style = 0;
 
         SERVER_START_REQ( get_window_info )
@@ -73,21 +73,29 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
         SERVER_END_REQ;
         if (!(style & WS_VISIBLE)) continue;
 
+        /* One reply carries both rects; the client one is what a
+         * rect-scoped invalidation needs, since RedrawWindow's rect is
+         * client-relative (blit.c invalidate_covered). */
         SERVER_START_REQ( get_window_rectangles )
         {
             req->handle   = handles[i];
             req->relative = COORDS_SCREEN;
             status = wine_server_call( req );
-            rect.left   = reply->window.left;
-            rect.top    = reply->window.top;
-            rect.right  = reply->window.right;
-            rect.bottom = reply->window.bottom;
+            rect.left     = reply->window.left;
+            rect.top      = reply->window.top;
+            rect.right    = reply->window.right;
+            rect.bottom   = reply->window.bottom;
+            client.left   = reply->client.left;
+            client.top    = reply->client.top;
+            client.right  = reply->client.right;
+            client.bottom = reply->client.bottom;
         }
         SERVER_END_REQ;
         if (status || IsRectEmpty( &rect )) continue;
 
         out[found].hwnd = wine_server_ptr_handle( handles[i] );
         out[found].rect = rect;
+        out[found].client = client;
         found++;
     }
     return found;
