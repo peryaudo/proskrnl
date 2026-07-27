@@ -621,6 +621,49 @@ static void KiRunGui4(void)
              (unsigned long)exitStatus);
 }
 
+/* The GUI-5 acceptance (docs/02 "GUI finishing"): clipboard, hooks and
+ * AttachThreadInput cross-process, plus the guest half of the font-metrics
+ * differential. Present only on the gui5 image (probe/skip like the others).
+ *
+ * fontdiff runs FIRST and is waited on: its metric lines must land
+ * un-interleaved with the clients' output, and it must have exited --
+ * releasing any exclusively-opened input device its winefb instance won --
+ * before gui5a starts and becomes the leg's input host (docs/03 GUI-4
+ * notes: the reader lives in whichever GUI process attempts first, and an
+ * exited winner orphans input until a fresh process attempts). Then the
+ * gui3/gui4 shape: gui5a fire-and-forget, gui5b waited on -- both park
+ * pumping forever; the leg owns QEMU's lifetime. */
+static void KiRunGui5(void)
+{
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui5a.exe"), &probe);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return; /* not a gui5 image */
+    }
+    ObDereferenceObject(probe);
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status =
+        PsRunWineImage(WSTR("\\??\\C:\\fontdiff.exe"), "C:\\fontdiff.exe", FALSE, &exitStatus);
+    DbgPrint("[KTEST] gui5 fontdiff exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+
+    static PEPROCESS KiGui5aProcess;
+    static PETHREAD KiGui5aThread;
+    status = PsCreateWineProcess(WSTR("\\??\\C:\\gui5a.exe"), "C:\\gui5a.exe", FALSE,
+                                 &KiGui5aProcess, &KiGui5aThread);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[KTEST] gui5 A FAIL (create=%#lx)\n", (unsigned long)status);
+        return;
+    }
+
+    status = PsRunWineImage(WSTR("\\??\\C:\\gui5b.exe"), "C:\\gui5b.exe", FALSE, &exitStatus);
+    DbgPrint("[KTEST] gui5 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
+             (unsigned long)exitStatus);
+}
+
 /* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
  * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
  * cmd.exe on the serial console, driven by tests/run/console_expect.py —
@@ -1327,6 +1370,8 @@ static void KiTestMainThread(void *context)
     KiRunGui3();
 
     KiRunGui4();
+
+    KiRunGui5();
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran
