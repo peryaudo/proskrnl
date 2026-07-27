@@ -346,6 +346,38 @@ $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
+# GUI-5: the WINDOWED conhost — the same pinned sources plus the real
+# window.c and the wrc-compiled conhost resources, linked against the real
+# user32/gdi32/advapi32 (so no '-DWINUSERAPI=': user32 references must stay
+# dllimport and bind to the import library). comctl32 alone is NOT linked:
+# window.c reaches it only from the config dialog, and window_glue.c
+# forwards those three entry points by hand (upstream's DELAYIMPORT, done
+# without mingw's delay-import machinery — '-DWINCOMMCTRLAPI=' makes the
+# declarations plain so the forwarders satisfy them). Baked as conhost.exe
+# only on images whose console is a real window (the gui5con leg, make
+# rungui); every serial-console image keeps CONHOST above.
+CONHOST_GUI := $(BUILD)/modules/conhost-gui.exe
+$(CONHOST_GUI): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
+            $(WINE_CONHOST)/window.c $(WINE_CONHOST)/conhost.res \
+            $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
+            user/conhost/proskrnl_glue.c user/conhost/window_glue.c \
+            user/wine/server/transport.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-windres -J res -O coff $(WINE_CONHOST)/conhost.res \
+	    $(BUILD)/conhost.res.o
+	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
+	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINCOMMCTRLAPI=' \
+	    -I$(WINE_CONHOST) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
+	    -Wl,--entry=conhost_start \
+	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/window.c $(WINE_CONHOST)/proskrnl.c \
+	    user/conhost/proskrnl_glue.c user/conhost/window_glue.c $(BUILD)/conhost.res.o \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
+	    $(WINE_PE)/gdi32/x86_64-windows/libgdi32.a \
+	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
+	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
 # M10: Wine's cmd.exe as a standalone CUI PE. The pinned tree's own PE build
 # provides the four cmd objects and the wrc-compiled resources UNMODIFIED
 # (programs/cmd/x86_64-windows, built by tools/setup_linux.sh); user/cmd/

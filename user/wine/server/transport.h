@@ -64,6 +64,12 @@
  * contents (GUI-5) are the first plausible consumer of a bigger slot. */
 #define PRSK_SLOT_DATA 65536
 
+/* Everything below is the wire itself and needs Wine's protocol types
+ * (union generic_request/reply). A NAMES-ONLY consumer — the conhost glue
+ * takes PRSK_SRV_IMAGE from here so the server image has one authority
+ * (Art. 11) — defines PRSK_TRANSPORT_NAMES_ONLY and stops here. */
+#ifndef PRSK_TRANSPORT_NAMES_ONLY
+
 /* Slot states. The client owns the transitions on the way in, the server on
  * the way out; each is published with a release store and read with an
  * acquire load, so the data next to it is visible when the state is. */
@@ -110,5 +116,7 @@ struct prsk_ring
 /* Bumped only if the layout above changes incompatibly; both ends check it,
  * so a stale client meets a refusal rather than a silent misparse. */
 #define PRSK_RING_VERSION 1
+
+#endif /* PRSK_TRANSPORT_NAMES_ONLY */
 
 #endif /* PRSK_TRANSPORT_H */

@@ -18,6 +18,9 @@
 #include <wincon.h>
 #include <winuser.h>
 
+/* This is the HEADLESS link (see proskrnl_glue.c conhost_start). */
+const int conhost_has_window = 0;
+
 /* Key-code conversion without a keyboard layout: the ASCII slice of the
  * US-layout mapping user32's VkKeyScanW documents (low byte = virtual key,
  * bit 8 = shift, bit 9 = control). The edit line dispatches Enter/Backspace
