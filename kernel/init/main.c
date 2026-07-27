@@ -380,7 +380,12 @@ static void KiStartConhost(void)
         DbgPrint("[KTEST] conhost FAIL (create=%#lx)\n", (unsigned long)status);
         return;
     }
-    if (CondrvWaitForServer(10000))
+    /* 30 s, not 10: the windowed conhost (GUI-5) loads user32/gdi32/win32u
+     * and completes its desktop-server connect before it can open the
+     * ConDrv server device — a long prologue under TCG. The headless
+     * conhost attaches in a fraction of either bound; only the failure
+     * detection latency changes. */
+    if (CondrvWaitForServer(30000))
     {
         DbgPrint("[KTEST] conhost up\n");
     }
@@ -512,9 +517,10 @@ static void KiRunGui2(void)
  * one of its clients. CUI-1's firstboot is exactly such a process --
  * wineboot loads user32 -> win32u -- so starting the server with the GUI
  * clients at the end of boot left two processes waiting out the client's
- * connect timeout for a server that did not exist yet. Started here, beside
- * conhost, for the same reason and with the same fire-and-forget contract:
- * the references are held forever because the process never exits.
+ * connect timeout for a server that did not exist yet. Started here,
+ * BEFORE conhost (since GUI-5 the windowed conhost is itself a win32u
+ * client at image-load time), with the same fire-and-forget contract: the
+ * references are held forever because the process never exits.
  *
  * Probe/skip on the image file, so this is a no-op on every other image. */
 static void KiStartWineserverLite(void)
@@ -1232,12 +1238,16 @@ static void KiTestMainThread(void *context)
      * boot volume, mounted above). */
     KiConfigurePanicOnNotImplemented();
 
+    /* GUI-3 image only: the desktop server, before any client can load
+     * win32u (firstboot's wineboot is one — and since GUI-5 so is the
+     * windowed conhost, whose user32 connects during image load, BEFORE its
+     * entry point could even open the ConDrv server device; the server must
+     * therefore start first). Probe/skip: on every serverless image this is
+     * a no-op and the boot is unchanged. */
+    KiStartWineserverLite();
+
     /* M9: the console server, before anything that may use a console. */
     KiStartConhost();
-
-    /* GUI-3 image only: the desktop server, before any client can load
-     * win32u (firstboot's wineboot is one). */
-    KiStartWineserverLite();
 
     /* CUI-1: firstboot — wineboot --init populates the machine state before
      * the console/test flows, so cmd.exe and the test sweeps below see the
