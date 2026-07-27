@@ -16,6 +16,7 @@
 #include "abi/ntpsapi.h"
 #include "abi/ntmmapi.h"  /* SECTION_IMAGE_INFORMATION (M10 IMAGE_INFO write-back) */
 #include "abi/ntpebteb.h" /* RTL_USER_PROCESS_PARAMETERS (M10 params capture) */
+#include "kernel/syscall/uaccess.h" /* KI_USER_SPACE_LIMIT (the dump scans) */
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/mm/virtual.h"
@@ -234,6 +235,20 @@ typedef struct PSP_CREATE_OPTIONS
 NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
                                PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
                                PETHREAD *threadOut);
+/* The stack scans in the wedge/fault dumps keep only values that could be a
+ * return address into some mapped image. The floor is the lowest PE base a
+ * loaded module can have here: 0x140000000, the linker's default x64 EXE
+ * image base (Microsoft "PE Format" / /BASE documentation; re-verify with
+ * `llvm-readobj --file-headers` on any baked .exe — e.g. user32_test.exe
+ * and our own modules all report it). Everything above is a module: the
+ * pinned Wine DLLs land at 0x170000000+ and our own win32u.dll links at
+ * 0x326170000 (re-verify the same way), so the ceiling is simply the top of
+ * user space — a stack slot at or above it cannot be user code at all.
+ * Wrong-but-plausible values only add a line to a dump a human reads; the
+ * range exists to drop obvious non-addresses, not to be authoritative. */
+#define PSP_MODULE_FLOOR 0x140000000ULL
+#define PSP_MODULE_CEIL  KI_USER_SPACE_LIMIT
+
 /* Art. 9: print every thread of a process (state, wait, user RIP, stack
  * window) — the harness-timeout dump, also fired by the sweep's wedge
  * detector (kernel/init/verify.c). Caller holds the dispatcher lock. */

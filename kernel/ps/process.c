@@ -855,22 +855,24 @@ void PsDumpWedgedProcessLocked(PEPROCESS process)
             {
                 DbgPrint("[KTEST] wedged tid=%lu waits-on=%p%s latch=%ld in=%lu out=%lu\n",
                          (unsigned long)thread->uniqueThreadId, block->object,
-                         block->object == &thread->tidAlertEvent ? " (own tid-alert latch)" : "");
+                         block->object == &thread->tidAlertEvent ? " (own tid-alert latch)" : "",
+                         (long)thread->tidAlertEvent.header.signalState,
+                         (unsigned long)thread->tidAlertsIn, (unsigned long)thread->tidAlertsOut);
             }
         }
         if (tcb != 0 && tcb->trapFrame != 0)
         {
             /* A poor man's backtrace: every user-code-looking qword in the
-             * top of the user stack. The exe sits at 0x140000000 and the
-             * Wine DLLs above 0x170000000; anything in between is a return
-             * address or a function pointer — either names a frame. */
+             * top of the user stack: any module-range value is a return
+             * address or a function pointer, and either names a frame
+             * (PSP_MODULE_FLOOR/CEIL, kernel/ps/ps.h). */
             uint64_t stack[512];
             uint64_t copied = MiCopyFromUserRange(&process->addressSpace, stack,
                                                   tcb->trapFrame->rsp, sizeof(stack));
             int shown = 0;
             for (uint64_t i = 0; i < copied / sizeof(uint64_t) && shown < 16; i++)
             {
-                if (stack[i] >= 0x140000000ull && stack[i] < 0x200000000ull)
+                if (stack[i] >= PSP_MODULE_FLOOR && stack[i] < PSP_MODULE_CEIL)
                 {
                     DbgPrint("[KTEST] wedged tid=%lu frame=%p\n",
                              (unsigned long)thread->uniqueThreadId, (void *)stack[i]);

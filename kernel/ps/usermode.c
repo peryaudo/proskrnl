@@ -348,7 +348,7 @@ BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, ui
         int shown = 0;
         for (uint64_t i = 0; i < copied / sizeof(uint64_t) && shown < 8; i++)
         {
-            if (stack[i] >= 0x140000000ull && stack[i] < 0x200000000ull)
+            if (stack[i] >= PSP_MODULE_FLOOR && stack[i] < PSP_MODULE_CEIL)
             {
                 DbgPrint("[KTEST] user exception frame=%p\n", (void *)stack[i]);
                 shown++;
