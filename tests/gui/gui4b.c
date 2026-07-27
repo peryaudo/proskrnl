@@ -11,8 +11,9 @@
  *
  * B probes its own caption with WM_NCHITTEST rather than computing metrics
  * host-side, and advertises the point on serial; the harness presses
- * exactly there. On WM_EXITSIZEMOVE it reports where it landed and
- * repaints itself, so the second screendump is deterministic.
+ * exactly there. On WM_EXITSIZEMOVE it reports where it landed -- and
+ * nothing else: B never repaints itself to tidy up after the cursor, so
+ * the dumps grade the scanout as the drivers leave it.
  */
 
 #include "ntapi.h"
@@ -43,18 +44,13 @@ static LRESULT CALLBACK wndproc_b(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_CHAR:
-        /* 'r' is the harness's repaint request: after the drag it parks the
-         * cursor and asks for one more paint, so the cursor's save-under
-         * restore (which can deposit a stale patch over the caption once
-         * the cursor leaves -- cursor.c documents the artifact) cannot be
-         * in the settled dump. */
+        /* 'r' is the harness's repaint request, and it is a STIMULUS, not a
+         * touch-up: the harness parks the cursor inside this window and
+         * then asks for this paint, so the flush lands squarely on the
+         * cursor's pixels. What the dump grades afterwards is whether the
+         * cursor survived a writer that is not the pointer thread. */
         if (wp == 'r')
-        {
-            /* RDW_FRAME: the stale patch sits where the cursor was last
-             * over the CAPTION, and a client-area invalidation would leave
-             * the non-client pixels as they are. */
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
-        }
         ntapi_printf("[KTEST] gui4 B char=%02x\n", (unsigned)wp);
         return 0;
     case WM_ACTIVATE:
@@ -67,10 +63,9 @@ static LRESULT CALLBACK wndproc_b(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         GetWindowRect(hwnd, &rect);
         ntapi_printf("[KTEST] gui4 B moved rect=%d,%d,%dx%d\n", (int)rect.left, (int)rect.top,
                      (int)(rect.right - rect.left), (int)(rect.bottom - rect.top));
-        /* Self-heal before the settled dump: the drag may have left a
-         * cursor smudge or stale band on this window (cursor.c documents
-         * the artifact); a full repaint makes dump 2 deterministic. */
-        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+        /* Deliberately no self-heal repaint here. A window that repaints
+         * itself at the end of every drag would hide whatever the cursor
+         * left on it, and that residue is the thing dump 2 grades. */
         return 0;
     }
     case WM_PAINT:

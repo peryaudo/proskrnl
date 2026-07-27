@@ -1230,9 +1230,9 @@ gui4() {
     local img="$ROOT/build/proskrnl-gui4.hdd"
     local dir="$ROOT/build/tests"
     local sock="$dir/gui4.sock" log="$dir/gui4.log"
-    local ppm1="$dir/gui4-before.ppm" ppm2="$dir/gui4-after.ppm"
+    local ppm1="$dir/gui4-before.ppm" ppm2="$dir/gui4-after.ppm" ppm3="$dir/gui4-cursor.ppm"
     mkdir -p "$dir"
-    rm -f "$sock" "$ppm1" "$ppm2" "$log"
+    rm -f "$sock" "$ppm1" "$ppm2" "$ppm3" "$log"
 
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI4-NEVER' \
@@ -1340,21 +1340,33 @@ gui4() {
         || { gui4_fail "B never reported the dragged-to rectangle"; return 1; }
 
     # Park again (a different spot, so the await cannot match the first
-    # park), then ask B -- still focused from the drag -- for one more
-    # repaint now that the cursor has left it (the save-under restore can
-    # deposit a stale patch over the caption; cursor.c documents it), and
-    # take the after-drag dump.
+    # park) and take the after-drag dump as it lands. Nothing repaints B
+    # first: the arrow rode B's caption across the screen, and what that
+    # left on the window is exactly what check_gui4.py grades (the
+    # foreign-pixel check -- no pixel of B's may wear a colour from
+    # elsewhere on the screen).
     move_px "$park2x" "$park2y" || { gui4_fail "pointer motion lost"; return 1; }
+    sleep 2
+    qmp screendump "$ppm2" || { gui4_fail "screendump 2 failed"; return 1; }
+
+    # The other half of the same question: park the cursor INSIDE B's moved
+    # client area and ask B -- still focused from the drag -- to repaint
+    # under it. The flush covers the cursor's pixels, so dump 3 is where a
+    # cursor that cannot survive a foreign writer disappears. The +150,+120
+    # is the drag delta the await above already pinned.
+    local park3x=$((cx + 150 + 40)) park3y=$((cy + 120 + 40))
+    move_px "$park3x" "$park3y" || { gui4_fail "pointer motion lost"; return 1; }
     qmp sendkey r
     await '\[KTEST\] gui4 B char=72' || { gui4_fail "the repaint request never reached B"; return 1; }
     sleep 2
-    qmp screendump "$ppm2" || { gui4_fail "screendump 2 failed"; return 1; }
+    qmp screendump "$ppm3" || { gui4_fail "screendump 3 failed"; return 1; }
 
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
 
     if ! python3 "$ROOT/tests/gui/check_gui4.py" --log "$log" --ppm1 "$ppm1" --ppm2 "$ppm2" \
-            --park1 "$park1x,$park1y" --park2 "$park2x,$park2y"; then
+            --ppm3 "$ppm3" --park1 "$park1x,$park1y" --park2 "$park2x,$park2y" \
+            --park3 "$park3x,$park3y"; then
         echo "== gui4: FAIL (behaviour or pixels; see $log) =="
         return 1
     fi
@@ -1370,9 +1382,9 @@ gui4() {
 # adds what needs the outside world: real injected keyboard input for the
 # WH_KEYBOARD_LL hook — one 'k' while armed (hook line + char), a 'u' to
 # unhook, one 'k' after (char only; the checker counts) — and the
-# screendump. Keyboard only, deliberately no tablet: no pointer means no
-# cursor on the scanout, so the fills stay pristine (the cursor-stomp
-# residual, docs/03 GUI-4 notes).
+# screendump. Keyboard only, deliberately no tablet: with no pointer
+# DEVICE no process draws a cursor at all (cursor.c winefb_pointer_present),
+# so the fills are pristine by construction rather than by timing.
 gui5() {
     make -C "$ROOT" gui5-img >/dev/null
     local img="$ROOT/build/proskrnl-gui5.hdd"
