@@ -692,6 +692,13 @@ void ObpInitializeObjectManager(void)
     PVOID session = ObpCreatePermanentDirectory(sessions, WSTR("1"));
     PVOID windows = ObpCreatePermanentDirectory(session, WSTR("Windows"));
     ObpCreatePermanentDirectory(windows, WSTR("WindowStations"));
+    /* The session's named-object home: kernelbase's
+     * BaseGetNamedObjectDirectory opens \Sessions\<SessionId>\BaseNamedObjects
+     * with no fallback (dlls/kernelbase/sync.c), so EVERY named
+     * CreateEvent/Mutex/Semaphore dies ERROR_BAD_PATHNAME without it. The
+     * pinned Wine server creates it per session too (server/directory.c,
+     * create_session). Pinned by sem_ob/session_bno. */
+    ObpCreatePermanentDirectory(session, WSTR("BaseNamedObjects"));
 }
 
 /* --- the directory / symbolic-link Nt* surface ---------------------------- */
