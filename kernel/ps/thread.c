@@ -726,6 +726,7 @@ NTSTATUS NtAlertThreadByThreadId(HANDLE threadId)
     }
     /* Safe outside the lock: no kernel preemption (Art. 3), so the target
      * cannot be reclaimed between the lookup and the set. */
+    target->tidAlertsIn++;
     KeSetEvent(&target->tidAlertEvent, 0, FALSE);
     return STATUS_SUCCESS;
 }
@@ -762,6 +763,7 @@ NTSTATUS NtAlertMultipleThreadByThreadId(HANDLE *threadIds, ULONG count, void *u
         PETHREAD target = PspFindThreadByThreadId((uint64_t)(uintptr_t)threadIds[i]);
         if (target != 0)
         {
+            target->tidAlertsIn++;
             KeSetEvent(&target->tidAlertEvent, 0, FALSE);
         }
     }
@@ -779,6 +781,10 @@ NTSTATUS NtWaitForAlertByThreadId(const void *address, const LARGE_INTEGER *time
     }
     NTSTATUS status = KeWaitForSingleObject(&self->tidAlertEvent, UserRequest, KernelMode, FALSE,
                                             (PLARGE_INTEGER)timeout);
+    if (status == STATUS_SUCCESS)
+    {
+        self->tidAlertsOut++;
+    }
     /* A satisfied wait is reported as STATUS_ALERTED (the whole point of the
      * service); timeouts pass through. */
     return status == STATUS_SUCCESS ? STATUS_ALERTED : status;

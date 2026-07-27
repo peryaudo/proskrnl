@@ -29,6 +29,7 @@
  * periodically from the idle loop. */
 #include "kernel/init/verify.h"
 #include "kernel/init/panic.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/ps/ps.h"
@@ -99,6 +100,63 @@ static void KiVerifyThreadObject(PEPROCESS process, PETHREAD thread)
 
 /* --- one process ----------------------------------------------------------- */
 
+/* The user-space deadlock detector (GUI-5). Art. 3 gives the sweep an
+ * atomic snapshot, so this is one cheap read per thread: when EVERY thread
+ * of a user process is parked in an UNTIMED wait on its own tid-alert
+ * latch, the process can only be woken by NtAlertThreadByThreadId — and
+ * ntdll's futex protocol (RtlWaitOnAddress, behind every SRW lock,
+ * condition variable and critical-section slow path) only ever alerts
+ * same-process tids. No thread of the process can run again to send that
+ * alert, so the process is deadlocked in user-space locks the kernel
+ * cannot name — msg.c's winefb ABBA sat exactly here for a 40-minute
+ * harness timeout before the dump told the story. Two consecutive sweeps
+ * with the same alert counters confirm the picture is standing (not a
+ * mid-flight handoff); then the wedge dump fires once. A diagnostic, not
+ * an ASSERT: a cross-process alert is theoretically expressible, so the
+ * report is loud but the boot is allowed to continue to its timeout. */
+static void KiDetectUserWedge(PEPROCESS process, LONG listedThreads)
+{
+    if (process->isSystemProcess || listedThreads == 0 ||
+        process->activeThreadCount != listedThreads || process->wedgeReported)
+    {
+        return;
+    }
+
+    uint64_t sig = 0;
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PETHREAD thread = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        PKTHREAD tcb = thread->tcb;
+        PKWAIT_BLOCK block = tcb->waitBlockList;
+        if (tcb->state != KI_THREAD_STATE_WAITING || tcb->timerArmed || block == 0 ||
+            block->nextWaitBlock != 0 || block->object != &thread->tidAlertEvent)
+        {
+            process->wedgeSweeps = 0;
+            return;
+        }
+        sig = sig * 1000003 + thread->uniqueThreadId * 31 + thread->tidAlertsIn;
+    }
+
+    if (process->wedgeSig != sig)
+    {
+        process->wedgeSig = sig;
+        process->wedgeSweeps = 1;
+        return;
+    }
+    if (++process->wedgeSweeps < 3)
+    {
+        return;
+    }
+
+    process->wedgeReported = TRUE;
+    DbgPrint("[KTEST] wedge-detect pid=%lu image=%s: every thread parked on its own "
+             "tid-alert latch, untimed, across %d sweeps — user-space deadlock\n",
+             (unsigned long)process->uniqueProcessId, process->imageName ? process->imageName : "?",
+             process->wedgeSweeps);
+    PsDumpWedgedProcessLocked(process);
+}
+
 static void KiVerifyProcess(PEPROCESS process)
 {
     POBJECT_HEADER header = ObpGetHeader(process);
@@ -134,6 +192,8 @@ static void KiVerifyProcess(PEPROCESS process)
     /* Every listed thread pins its process (plus handles; parked ETHREADs and
      * creator references only push the count higher). */
     ASSERT(header->pointerCount >= header->handleCount + listedThreads);
+
+    KiDetectUserWedge(process, listedThreads);
 }
 
 /* --- global client-id uniqueness ------------------------------------------- */
