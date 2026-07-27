@@ -210,6 +210,8 @@ struct prsk_client
     HANDLE          handle;
     DWORD           pid;
     ULONG           session;
+    struct object  *idle_sync; /* the process idle event (GUI-5); see
+                                * req_get_process_idle_event below */
 };
 
 static struct list clients = LIST_INIT( clients );
@@ -308,6 +310,14 @@ static struct prsk_client *create_client( DWORD pid, HANDLE handle )
     client->handle = handle;
     client->pid = pid;
     client->session = prsk_process_session( handle );
+    /* The process idle event (wineserver creates one per GUI process at
+     * init_process_done; every client here IS a GUI process). Manual-reset,
+     * born unsignalled; only CLIENTS ever signal or wait on it, through the
+     * handles get_msg_queue_handle and get_process_idle_event duplicate out
+     * (win32u's NtSetEvent when its queue idles - message.c). A failed
+     * create leaves NULL and the handlers answer no-event, wineserver's own
+     * shape for a CUI process. */
+    client->idle_sync = create_internal_sync( 1, 0 );
     list_add_tail( &clients, &client->entry );
     return client;
 }
@@ -952,7 +962,7 @@ static void fixup_request( struct __server_request_info *info, enum request req,
          * runs - reading current->queue here was a NULL deref. */
         struct object *queue = (struct object *)thread->queue, *sync;
         struct prsk_client *client = find_client_by_process( thread->process );
-        HANDLE event = NULL;
+        HANDLE event = NULL, idle = NULL;
 
         if (client && queue && (sync = get_obj_sync( queue )))
         {
@@ -960,7 +970,60 @@ static void fixup_request( struct __server_request_info *info, enum request req,
             release_object( sync );
         }
         info->u.reply.get_msg_queue_handle_reply.handle = wine_server_obj_handle( event );
+        /* The reply's second handle is the caller's own process idle event
+         * (queue.c fills it from process->idle_event on Wine). win32u
+         * stashes it as thread_info->idle_event and SIGNALS it from the
+         * client side whenever its queue goes idle (message.c NtSetEvent) -
+         * that signalling is the whole input-idle protocol, so without this
+         * handle WaitForInputIdle on this process could never wake. */
+        if (client && client->idle_sync)
+            idle = dup_sync_handle( client->idle_sync, client->handle );
+        info->u.reply.get_msg_queue_handle_reply.idle_event = wine_server_obj_handle( idle );
     }
+}
+
+/* WaitForInputIdle's server half. server/process.c (where wineserver keeps
+ * this handler) is not compiled - it is the unix process model - but the
+ * request itself is pure bookkeeping over records this build does keep, so
+ * it lives here rather than leaving a NULL slot msg.c trips over.
+ *
+ * The caller hands over ITS OWN handle to the target process; the kernel
+ * says which process that names (a cross-process duplicate + a pid query,
+ * the prsk_client_handle_is_directory pattern), and the client list says
+ * whether that process is one of ours. The reply is a handle - valid in
+ * the CALLER - to the target's idle event; the event is only ever
+ * signalled by the TARGET's own win32u (see the get_msg_queue_handle
+ * fix-up above), never by the server: wineserver's exact split. */
+DECL_HANDLER(get_process_idle_event)
+{
+    struct prsk_client *caller = find_client_by_process( current->process );
+    struct prsk_client *target;
+    PROCESS_BASIC_INFORMATION info;
+    HANDLE local = NULL;
+
+    reply->event = 0;
+    if (!caller)
+    {
+        set_error( STATUS_INVALID_HANDLE );
+        return;
+    }
+    if (NtDuplicateObject( caller->handle, wine_server_ptr_handle( req->handle ),
+                           GetCurrentProcess(), &local, PROCESS_QUERY_LIMITED_INFORMATION, 0, 0 ) ||
+        NtQueryInformationProcess( local, ProcessBasicInformation, &info, sizeof(info), NULL ))
+    {
+        if (local) NtClose( local );
+        set_error( STATUS_INVALID_HANDLE );
+        return;
+    }
+    NtClose( local );
+    if (!(target = find_client( (DWORD)(ULONG_PTR)info.UniqueProcessId )))
+    {
+        set_error( STATUS_INVALID_HANDLE );
+        return;
+    }
+    if (target->idle_sync)
+        reply->event =
+            wine_server_obj_handle( dup_sync_handle( target->idle_sync, caller->handle ) );
 }
 
 /* Run one request on behalf of `client`'s thread `tid`. This is the whole
@@ -1083,6 +1146,14 @@ void prsk_reap_client( struct prsk_client *client )
     }
     list_remove( &client->entry );
     release_object( client->process );
+    /* The idle event: this reference is the OWNING one (wineserver's
+     * process_destroy releases idle_event the same way); handles clients
+     * hold on it die with their handle tables. */
+    if (client->idle_sync)
+    {
+        release_object( client->idle_sync );
+        client->idle_sync = NULL;
+    }
     if (client->handle && client->handle != GetCurrentProcess()) NtClose( client->handle );
     free( client );
     server_unlock();
