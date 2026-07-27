@@ -36,7 +36,12 @@ stated as hard gates.
   Wine/Windows oracle *before* the kernel implements it, and green on proskrnl before the
   change is "done"; not-yet-implemented cases are tagged `todo_proskrnl`, never left
   failing. A test never asserts `STATUS_NOT_IMPLEMENTED` — the oracle refusing is not a
-  behaviour to reproduce (see G12). (Art. 5, `docs/08`)
+  behaviour to reproduce (see G12). **A Wine gap is not a ceiling:** where the pinned Wine
+  refuses, the case may be built against NT's own documented contract and pinned in a
+  `beyond_oracle { ... }` block (skipped on the oracle, enforced on proskrnl) whose comment
+  names the Microsoft documentation it is written against. That tag is only for cases the
+  oracle *cannot* answer — using it where Wine does implement the behaviour fixes the test
+  instead of the kernel and FAILS G6. (Art. 5, `docs/08`)
 
 - **G6 — Conviction by differential test.** Sanitizers/asserts name suspects; only a
   passing differential/conformance test closes an issue. "Sanitizer went quiet" is not a
@@ -109,7 +114,8 @@ stated as hard gates.
   so a `tests/ntapi/` case must never assert it — not even when the oracle answers it,
   because an oracle that refuses is unbuilt too, never authoritative. A diff that adds
   such an assertion, or a `KiPinnedNotImplemented`-style exemption that spares a refusal
-  from the dispatcher's panic, FAILS. Where a real caller depends on a refusal, that
+  from the dispatcher's panic, FAILS. An oracle that refuses is also not a reason to
+  leave the case unbuilt — see G5's `beyond_oracle`. Where a real caller depends on a refusal, that
   refusal is the specific NT failure for the case (`STATUS_INVALID_INFO_CLASS`,
   `STATUS_INVALID_DEVICE_REQUEST`, …), implemented and pinned like any other behaviour.
   (Art. 12)

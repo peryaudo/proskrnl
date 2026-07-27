@@ -899,6 +899,10 @@ The full accounting of which missing syscalls are out of scope vs. planned is
   (`sem_file/byte_locks`). Those kernel paths still answer
   `STATUS_NOT_IMPLEMENTED`, and reaching one from ring 3 now stops the
   machine — which is the point: it converts a frozen hole into a work item.
+  A skipped case is **not** a decision to leave it unbuilt: a gap in Wine is
+  a gap in the oracle, not in NT, so any of those cases may be built against
+  NT's own documented contract and moved from a skip to a `beyond_oracle`
+  block (Art. 5) whenever a real caller wants it.
   A refusal a real caller *depends* on is a different status entirely (the
   specific NT failure for the case), implemented and pinned like any other
   behaviour.
