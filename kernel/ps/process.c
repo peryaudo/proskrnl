@@ -823,6 +823,62 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
     return PsRunWineImageEx(exeNtPath, imageDosPath, 0, console, 0, exitStatusOut);
 }
 
+/* Art. 9: on a harness timeout the serial log IS the debugger, so say what
+ * every thread of the wedged process was doing before giving up on it —
+ * its state, whether its wait is alertable, the user RIP its last ring-3
+ * entry saved (trapFrame), WHAT it is waiting on (the wait-block chain,
+ * with the thread's own tid-alert latch called out by name — a thread
+ * parked there is inside ntdll's RtlWaitOnAddress/critical-section slow
+ * path), and the return addresses on its user stack. With no ASLR the
+ * module layout is deterministic, so the raw values symbolize offline. A
+ * silent timeout was just "it hung"; this is a backtrace. */
+static void PspDumpWedgedProcess(PEPROCESS process)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    DbgPrint("[KTEST] wedged pid=%lu image=%s\n", (unsigned long)process->uniqueProcessId,
+             process->imageName ? process->imageName : "?");
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PETHREAD thread = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        PKTHREAD tcb = thread->tcb;
+        DbgPrint("[KTEST] wedged tid=%lu state=%d alertable=%d rip=%p\n",
+                 (unsigned long)thread->uniqueThreadId, tcb ? tcb->state : -1,
+                 tcb ? (int)tcb->waitAlertable : -1,
+                 tcb && tcb->trapFrame ? (void *)tcb->trapFrame->rip : 0);
+        if (tcb != 0)
+        {
+            for (PKWAIT_BLOCK block = tcb->waitBlockList; block != 0; block = block->nextWaitBlock)
+            {
+                DbgPrint("[KTEST] wedged tid=%lu waits-on=%p%s\n",
+                         (unsigned long)thread->uniqueThreadId, block->object,
+                         block->object == &thread->tidAlertEvent ? " (own tid-alert latch)" : "");
+            }
+        }
+        if (tcb != 0 && tcb->trapFrame != 0)
+        {
+            /* A poor man's backtrace: every user-code-looking qword in the
+             * top of the user stack. The exe sits at 0x140000000 and the
+             * Wine DLLs above 0x170000000; anything in between is a return
+             * address or a function pointer — either names a frame. */
+            uint64_t stack[512];
+            uint64_t copied = MiCopyFromUserRange(&process->addressSpace, stack,
+                                                  tcb->trapFrame->rsp, sizeof(stack));
+            int shown = 0;
+            for (uint64_t i = 0; i < copied / sizeof(uint64_t) && shown < 16; i++)
+            {
+                if (stack[i] >= 0x140000000ull && stack[i] < 0x200000000ull)
+                {
+                    DbgPrint("[KTEST] wedged tid=%lu frame=%p\n",
+                             (unsigned long)thread->uniqueThreadId, (void *)stack[i]);
+                    shown++;
+                }
+            }
+        }
+    }
+    KiReleaseDispatcherLock(flags);
+}
+
 NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
                           BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut)
 {
@@ -849,7 +905,9 @@ NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, cons
     if (status == STATUS_TIMEOUT)
     {
         /* Still running; no foreign terminate exists (docs/03), so the
-         * creator references stay leaked rather than freeing a live process. */
+         * creator references stay leaked rather than freeing a live process.
+         * Dump what it was doing first (Art. 9). */
+        PspDumpWedgedProcess(process);
         return STATUS_TIMEOUT;
     }
     ASSERT(status == STATUS_SUCCESS);
