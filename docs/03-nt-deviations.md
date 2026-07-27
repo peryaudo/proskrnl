@@ -1481,31 +1481,73 @@ the manifest's new optional per-pair timeout field).
   commit as the fix that earned it (G13: the number is that commit's test expectation). An
   exit outside a sane count range is a CRASH and fails the leg by name regardless of budget.
   The end state is 0 — msg.c green with only its own `todo_wine` marks.
+- **The per-assertion text is recovered, not read by eye** (`tools/unscreen.py`, run by the
+  leg into `build/tests/guiwtest-msg.log`). HACK-004's console is a screen, so a test's
+  output reaches serial as a diff: cursor moves, erases and changed cells. Replaying `CSI n
+  C` as n spaces and dropping the rest turns the fragments back into
+  `msg.c:20062: Test failed: ...`. Nothing machine-read depends on it — the verdict is
+  still the kernel's own `[KTEST]` line — but a budget above zero is a list of named
+  divergences, and this is where the names come from.
 
-**Where the campaign stands at the end of GUI-5** (the gate is infrastructure-complete and
-the suite is not green; the leg is red by design and out of CI until it is):
+**What the campaign convicted** — every one of these was found by the gate and is now
+fixed, pinned, or convicted by a green leg:
 
-1. *Fixed — the named-event hole.* `test_WaitForInputIdle`'s ~20 child processes all failed
-   at `CreateEventA`: `\Sessions\1\BaseNamedObjects` did not exist (`sem_ob/session_bno`
-   pins it, `ob` creates it).
-2. *Fixed — the only refused server request.* `get_process_idle_event` lives in
-   `server/process.c`, which this build does not compile; the shim implements it, and
-   `get_msg_queue_handle` now hands out the idle event so win32u's client-side idle
-   signalling works (see the GUI-5 notes above).
-3. *Fixed — a real lock-order inversion of ours.* `winefb_surface_flush` called
+1. *The named-event hole.* `test_WaitForInputIdle`'s ~20 child processes all failed at
+   `CreateEventA`: `\Sessions\1\BaseNamedObjects` did not exist (`sem_ob/session_bno` pins
+   it, `ob` creates it).
+2. *The only refused server request.* `get_process_idle_event` lives in `server/process.c`,
+   which this build does not compile; the shim implements it, and `get_msg_queue_handle`
+   now hands out the idle event so win32u's client-side idle signalling works.
+3. *A real lock-order inversion of ours.* `winefb_surface_flush` called
    `NtUserGetWindowLongW` (which takes win32u's user lock) while holding the surface mutex,
    inverting every `user lock -> surface mutex` path in win32u; `DestroyWindow` against a
    concurrent flush deadlocked the suite for the whole harness timeout. The flush path's
    clip query is now raw server requests and takes no win32u lock. **This one was ours, not
-   Wine's** — the value the trophy gate has already returned.
-4. *Open — an access violation in the combobox/edit area.* The run reaches
-   `test_combobox_messages` (roughly a third of the module's ~85 test functions, with only
-   `todo_wine`-marked divergences before it) and dies `0xC0000005` at a non-module address,
-   called through ntdll's `NtdllEditWndProc_A` — the `RtlInitializeNtUserPfn` client-proc
-   table user32 registers. That table (or our loading of it) is the next thread to pull.
+   Wine's** — the value the trophy gate returned before it could even finish a run.
+4. *An unbuilt file info class, refusing exactly as designed.* The run died `0xC0000005`
+   in the combobox area for as long as the module could not get past it; the fault was a
+   red herring of an earlier build. What actually stopped a complete run was
+   `NtQueryInformationFile(FileEndOfFileInformation)` — ntdll's `actctx.c` asks it of every
+   manifest file it maps, msg.c's activation-context tests build one, and the class was
+   unbuilt, so the armed dispatcher panicked the boot (Art. 12 working as intended). Built,
+   pinned by `sem_file/info_classes` on the oracle first.
+5. *The process idle event is a GUI-process thing.* wineserver creates it only when the
+   image subsystem is not `IMAGE_SUBSYSTEM_WINDOWS_CUI`; this build created one for every
+   client, on the assumption that every client is a GUI process. `user32_test.exe` is a
+   console binary that loads user32, so `WaitForInputIdle` waited on an event nobody would
+   signal instead of failing the way Wine and Windows both fail it. −3 failures.
+6. *The forced desktop window re-homed the whole process.* GUI-2's fixture answers every
+   `get_desktop_window` with `force`, so the ASKING app creates the desktop window — and
+   `server/window.c` hands whoever creates a desktop's top window that desktop as its
+   process default, a line that on Wine only explorer reaches. One `run_in_temp_desktop`
+   later the process default was a throwaway desktop: `CloseDesktop` refused it as busy,
+   every later thread inherited it, child windows whose parent lived on the real desktop
+   were refused `ACCESS_DENIED`, and a thread-wide winevent hook landed on the wrong hook
+   table. The fixture now restores the default it displaced. −10 failures.
 
-The three fixes above are each pinned or convicted by a green leg; the fourth is where a
-GUI-6-era session picks the campaign back up.
+**What is left, and why** (the budget is a ceiling — `msg-budget.txt` explains the
+difference from the measured count):
+
+- *Two assertions wait on GUI-6.* `SetFocus(GetDesktopWindow())` and
+  `SetForegroundWindow(GetDesktopWindow())` both go through
+  `check_queue_input_window`/`get_window_thread` on the desktop window, and here that
+  window has **no owning thread** — GUI-2's forced-foreign fixture again. Wine answers
+  `ERROR_ACCESS_DENIED` because the desktop belongs to explorer, a different input queue;
+  we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. Explorer owning the
+  desktop is precisely what GUI-6 builds (docs/02 says the fixture retires there), so this
+  is the one divergence deliberately left for that milestone rather than papered over.
+- *Twelve assertions are decided by emulated-machine speed, not by semantics.*
+  `test_PeekMessage3` sets a 100 ms timer, never kills it, and then asserts seven times
+  that the queue is empty — true where the intervening block runs in microseconds, false
+  where 100 ms of guest time passes first (Wine's own `restart_timer` makes a late timer
+  due immediately). `test_WM_COPYDATA` polls `FindWindow` for one second for a child
+  process's window, and a process start on this stack costs more than that under TCG. Both
+  families would pass on a fast machine and neither says anything about NT semantics; the
+  budget carries the headroom the first can swing by, and names it.
+- *Two message-sequence divergences remain in `test_interthread_messages`* ("destroy child
+  on thread exit", a missing `WM_ERASEBKGND` in the expected order). These are real and
+  unexplained — they were previously masked by item 6, which stopped the child windows
+  from being created at all, and are the next honest thread to pull.
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
 ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an

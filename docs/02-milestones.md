@@ -437,7 +437,7 @@ GUI-3 (docs/03 "the font oracle": oracle and target now share backend, version a
 set). What GUI-3 did *not* pin is the metric differential itself — the same measurement
 run on both sides — which belongs here.
 
-**Partly done** — everything except the trophy. `tests/run/run.sh gui5` is green:
+**Done.** `tests/run/run.sh gui5` is green:
 clipboard, hooks and `AttachThreadInput` all hold cross-process over the unmodified pinned
 server, which needed **nothing built** — every server half has been compiled and
 dispatchable since GUI-2, and the leg passed on first bring-up (the strongest statement yet
@@ -456,14 +456,24 @@ through conhost's own `map_to_ctrlevent` (the CUI-4 serial intercept out of the 
 the session's files read back out of the image. `make rungui` now boots that command prompt.
 The serial console is **permanent** by decision (docs/10 HACK-004 rescoped, not retired):
 a console that works while the GUI stack is broken is a kept debugging capability.
-**Not done: the trophy.** `user32:msg` builds, boots and runs on the full stack
-(`run.sh guiwtest`, budget-ratcheted), and has already convicted three real bugs — a missing
-per-session `BaseNamedObjects`, an unimplemented `get_process_idle_event`, and a lock-order
-inversion of ours that deadlocked the suite — but it dies of an access violation about a
-third of the way in. The leg is red by design and out of CI; state and next thread:
-docs/03 "GUI-5 winetest notes". Two tools the hunt left behind: a timeout/deadlock dump that
-prints every thread's state, waits, user RIP and stack frames, and a sweep-driven detector
-that catches a user-space deadlock within seconds of it forming (docs/03 GUI-5 notes).
+**The trophy: `user32:msg` runs end to end** on the full GUI stack (`run.sh guiwtest`,
+now IN CI) — 21.5 kloc and ~85 test functions, every one of them entered, winetest's own
+failure count arriving as the NT exit status and ratcheted against
+`tests/winetest/msg-budget.txt`: **9999 (a sentinel: the module could not reach a verdict)
+→ 23 → 20 → 18**. Six real bugs convicted along the way, three of them by the run *not*
+finishing: a missing per-session `BaseNamedObjects`, an unimplemented
+`get_process_idle_event`, a lock-order inversion of ours that deadlocked the suite, an
+unbuilt `NtQueryInformationFile` class that ntdll's activation-context loader needs, an
+idle event handed to console processes that should not have one, and — worth ten failures
+on its own — GUI-2's forced desktop-window creation silently re-homing the whole process
+onto whatever desktop a thread last visited. What is left is named and split in docs/03
+"GUI-5 winetest notes": two assertions that wait on GUI-6 (the desktop window has no
+owning thread until explorer owns it), twelve decided by how slow TCG is rather than by
+any semantics, and two genuine message-sequence divergences. Three tools the campaign left
+behind: a timeout/deadlock dump that prints every thread's state, waits, user RIP and stack
+frames; a sweep-driven detector that catches a user-space deadlock within seconds of it
+forming (docs/03 GUI-5 notes); and `tools/unscreen.py`, which replays a test's own text
+back out of the console screen diff so a non-zero budget is a list of names.
 
 ## GUI-6 — Desktop *(Wine desktop; not the ReactOS shell)*
 `wineboot` has already run (CUI-1's firstboot), so this is

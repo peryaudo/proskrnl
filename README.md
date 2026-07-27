@@ -288,7 +288,7 @@ is named in `docs/03`), `HWND_BOTTOM` lowering exposure, and the earlier
 milestones' residuals (`docs/03` "GUI-4 notes" collects them, including
 the focus-stealing lesson the leg surfaced).
 
-**GUI-5 partly complete — everything except the trophy.** Clipboard,
+**GUI-5 complete — including the trophy.** Clipboard,
 hooks and `AttachThreadInput` hold cross-process (`tests/run/run.sh
 gui5`): a delayed-render round trip driving `WM_RENDERFORMAT` into
 another process, the clipboard ownership handoff seen from the old
@@ -312,21 +312,35 @@ the loop, and reads the results back out of the image. `make rungui` now
 boots that command prompt. The serial console is **permanent** by
 decision — HACK-004 is rescoped, not retired: a console that still works
 when the GUI stack is broken is a kept debugging capability.
-**Not yet: the trophy.** Wine's `user32:msg` builds, boots and runs on the
-full stack (`run.sh guiwtest`, budget-ratcheted) and has already convicted
-three real bugs — a missing per-session `BaseNamedObjects` directory, an
-unimplemented `get_process_idle_event`, and a lock-order inversion of
-*ours* that deadlocked the suite (the winefb flush took win32u's user lock
-under the surface mutex) — but it still dies of an access violation about
-a third of the way through the module, so the leg is red by design and out
-of CI (`docs/03` "GUI-5 winetest notes" has the state and the next
-thread). The hunt left two tools behind: a dump that prints every thread's
-state, waits, user RIP and stack frames when a process wedges or faults,
-and a consistency-sweep detector that catches a *user-space* deadlock
-within seconds of it forming — Art. 3's atomic snapshot making "every
-thread parked on its own tid-alert latch" a sound verdict.
+**And the trophy: Wine's own `user32:msg` runs end to end** on the full
+stack — 21.5 kloc, ~85 test functions, every one of them entered — with
+winetest's failure count arriving as the NT exit status and ratcheted
+against a committed budget (`run.sh guiwtest`, **now in CI**): **9999 (a
+sentinel — the module could not reach a verdict at all) → 23 → 20 → 18**.
+Six real bugs convicted, three of them by the run *not* finishing: a
+missing per-session `BaseNamedObjects` directory; an unimplemented
+`get_process_idle_event`; a lock-order inversion of *ours* that deadlocked
+the suite (the winefb flush took win32u's user lock under the surface
+mutex); an unbuilt `NtQueryInformationFile` class that ntdll's
+activation-context loader asks of every manifest it maps — which panicked
+the boot exactly as Art. 12 intends; an idle event handed to console
+processes that Wine and Windows both deny them; and, worth ten failures on
+its own, GUI-2's forced desktop-window creation quietly re-homing the
+whole process onto whichever desktop a thread last visited, because on
+Wine only *explorer* ever creates a desktop window. What remains is named
+and split in `docs/03` "GUI-5 winetest notes": two assertions that wait on
+GUI-6 (the desktop window has no owning thread until explorer owns it),
+twelve decided by how slow TCG is rather than by any semantics of ours,
+and two genuine message-sequence divergences. Three tools the campaign
+left behind: a dump that prints every thread's state, waits, user RIP and
+stack frames when a process wedges or faults; a consistency-sweep detector
+that catches a *user-space* deadlock within seconds of it forming — Art.
+3's atomic snapshot making "every thread parked on its own tid-alert
+latch" a sound verdict; and `tools/unscreen.py`, which replays a test's
+own text back out of the console's 80-column screen diff, so a non-zero
+budget is a list of names instead of a number.
 
-Also next: finishing GUI-5's trophy, then **GUI-6** — the Wine desktop; or **CUI-5** (Io
+Next: **GUI-6** — the Wine desktop; or **CUI-5** (Io
 completion, led by file rename) through **CUI-7**,
 the measured syscall gap and its plan (`docs/16-syscall-status.md`,
 `docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former

@@ -132,8 +132,8 @@ needed for a usable windowing system.
 
 GUI-1 (pixels/input) ✅ · GUI-2 (win32u + winefb.drv, single process →
 **winemine.exe on screen**) ✅ · GUI-3 (wineserver-lite becomes a process ⛰️ — the
-mountain, half-climbed at GUI-2) · GUI-4 (compositing + input routing) ·
-GUI-5 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) · GUI-6 (Wine desktop).
+mountain, half-climbed at GUI-2) ✅ · GUI-4 (compositing + input routing) ✅ ·
+GUI-5 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) ✅ · GUI-6 (Wine desktop).
 Current wording and done-criteria live in `docs/02`; the deliberate GUI-2 single-process
 shortcuts that GUI-3 must retire are in `docs/03` "GUI-2 notes".
 
@@ -175,8 +175,9 @@ if GUI collapses, subtract the ledger entries and the CUI kernel remains untouch
   and "same FreeType ⇒ same numbers" is a fact rather than a plan. This was not
   touched-oracle territory: no font test existed to fail, so the spec was *extended*
   rather than moved to make something pass (docs/03 "the font oracle"). Dialog-layout
-  tests (GUI-5) are unblocked; what is still owed there is the metric differential
-  itself — GUI-3 pins only that the oracle's backend loads and answers
+  tests (GUI-5) are unblocked, and GUI-5 paid the metric differential itself off (one
+  binary on both sides against `tests/gdi/fontdiff.golden`) — GUI-3 pins only that the
+  oracle's backend loads and answers
   (`tests/gdi/fontsmoke.c`), which guards a real failure mode, since win32u `dlopen`s its
   backend and silently falls back to *no fonts* rather than failing.
 - **Machine-state furniture** — *the risk class that actually bit, unlisted here before.*
