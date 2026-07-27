@@ -49,7 +49,7 @@ returns a page cache whose frames are the scanout's physical pages, so
 `NtCreateSection` + `NtMapViewOfSection` over the handle work unchanged and
 `kernel/mm` gains nothing (G10/Art. 11). The wire contract is
 `drivers/fbproto.h`; the mode ioctl is the only verb, and every other code
-refuses through `KiPinnedNotImplemented` (Art. 12).
+names itself on serial and refuses with `STATUS_NOT_IMPLEMENTED` (Art. 12).
 
 ## HACK-002: `\Device\Input0` / `\Device\Input1`
 

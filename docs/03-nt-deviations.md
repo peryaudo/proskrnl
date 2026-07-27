@@ -883,30 +883,40 @@ The full accounting of which missing syscalls are out of scope vs. planned is
 - **Every image carries `C:\panic_not_implemented.flag` by default**
   (`tools/mkimage.sh`; `PANIC_NOTIMPL=0` omits it). While the marker is
   present (`kernel/init/main.c KiConfigurePanicOnNotImplemented`), a ring-3
-  syscall that answers an *unpinned* `STATUS_NOT_IMPLEMENTED` — a
-  `KI_SYSCALL_MISSING` id or a partial service's unbuilt case — panics at
-  the dispatcher (`kernel/syscall/table.c`) after naming the service (and
-  its first two arguments) on serial. Art. 12's loud refusal becomes an
-  immediate, attributable stop instead of a status a caller may limp past.
-- **Pinned refusals stay non-fatal**: a `STATUS_NOT_IMPLEMENTED` that IS
-  the contract — the pinned oracle's own answer for the case, or a
-  deviation below that an ntapi test exercises — returns through
-  `KiPinnedNotImplemented()` (`kernel/syscall/syscall.h`) and does not
-  panic. Current pinned sites: the token/file/volume info-class refusals
-  the oracle itself shapes (`sem_se/se_query`, `sem_file/info_classes`,
-  `sem_file/volume_info`), the byte-lock bare-form contract
-  (`sem_file/byte_locks`), suspending an ever-run thread
-  (`sem_ps/suspend_resume`, the M10 note above), and
-  `SystemWineVersionInformation` (below).
-- **`NtQuerySystemInformation(SystemWineVersionInformation)` (1000) is a
-  pinned refusal**: the oracle's unix layer answers
+  syscall that answers `STATUS_NOT_IMPLEMENTED` — a `KI_SYSCALL_MISSING` id
+  or a partial service's unbuilt case — panics at the dispatcher
+  (`kernel/syscall/table.c`) after naming the service (and its first two
+  arguments) on serial. Art. 12's loud refusal becomes an immediate,
+  attributable stop instead of a status a caller may limp past.
+- **No refusal is exempt.** There is no "pinned refusal" category and no
+  `KiPinnedNotImplemented()` escape hatch (removed): the status means
+  *unbuilt*, and an oracle that answers it is unbuilt for that case too,
+  never authoritative — so matching it is not a contract worth reproducing
+  and **no `tests/ntapi/` case may assert it** (Art. 12, gate G12). Where the
+  pinned Wine refuses, the test skips the case with a comment saying why:
+  the unsupported token classes (`sem_se/se_query`), the unsupported file
+  info classes (`sem_file/info_classes`), and the decorated byte-lock forms
+  (`sem_file/byte_locks`). Those kernel paths still answer
+  `STATUS_NOT_IMPLEMENTED`, and reaching one from ring 3 now stops the
+  machine — which is the point: it converts a frozen hole into a work item.
+  A refusal a real caller *depends* on is a different status entirely (the
+  specific NT failure for the case), implemented and pinned like any other
+  behaviour.
+- **`NtQuerySystemInformation(SystemWineVersionInformation)` (1000)
+  refuses, and the refusal is fatal**: the oracle's unix layer answers
   `version\0build\0sysname\0release` from its own uname
   (`dlls/ntdll/unix/system.c`); proskrnl is not Wine-on-unix, and
   fabricating a uname would be exactly the plausible-answer stub Art. 12
-  forbids. ntdll's `version_init` — the caller, at every process start —
-  ignores the status (`wine_version` stays empty; the reported Windows
-  version is unaffected). Pinned `todo_proskrnl` by
-  `sem_ps/process_query`.
+  forbids. ntdll's `version_init` calls it at **every process start**
+  (`dlls/ntdll/version.c`) and ignores the status, so before the exemption
+  was removed this refusal was invisible; with the marker armed it now
+  panics on the first user process. `sem_ps/process_query` tags the case
+  `todo_proskrnl` — it pins the oracle's *success*, never the refusal — so
+  the standing work item is to answer this class properly (or to establish
+  the honest NT status for it), not to re-exempt it.
+  `SystemFirmwareTableInformation` (76) is the same shape: host-DMI-derived
+  data proskrnl has no source for, refused loudly, `todo_proskrnl` in the
+  same test.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
@@ -965,7 +975,8 @@ performance deviation to revisit — never a correctness one (Art. 3).
 Limine reported them, so a client composes pixels from the masks rather than assuming BGRA. A
 framebuffer that is absent, not RGB, or not 32bpp means the device is **not published** and an
 open fails `STATUS_OBJECT_NAME_NOT_FOUND` — the honest refusal, never a fabricated mode
-(Art. 12). Any ioctl other than the mode query refuses through `KiPinnedNotImplemented`.
+(Art. 12). Any ioctl other than the mode query names itself on serial and refuses with
+`STATUS_NOT_IMPLEMENTED`, which the dispatcher's armed panic turns into a stop.
 
 **`FileFsDeviceInformation` answers `FILE_DEVICE_VIDEO`**, generated from the pinned Wine
 `winioctl.h` like every other device type (Art. 4) rather than recalled — it is `0x23`, not the
@@ -1033,8 +1044,8 @@ nothing, so identity survives a reordered command line.
 **One ioctl, `IOCTL_PRSHID_GET_ABS_INFO`** (`drivers/hidproto.h`), reporting the ABS_X/ABS_Y
 min/max the device published — verbatim, cached at init, the `IOCTL_PRSFB_GET_MODE` precedent.
 Events are still untranslated and unscaled: scaling to screen pixels is user mode's, exactly as
-scancode translation is. The keyboard keeps no `DeviceControl` op at all, so its pinned refusal
-shape never shifts. **`FileFsDeviceInformation` answers `FILE_DEVICE_MOUSE`**, generated (Art. 4).
+scancode translation is. The keyboard keeps no `DeviceControl` op at all, so the Io layer's own
+refusal shape for it never shifts. **`FileFsDeviceInformation` answers `FILE_DEVICE_MOUSE`**, generated (Art. 4).
 
 **The G5 adaptation, restated for the pointer:** no oracle can have `\Device\Input1`, so the
 conviction is that QMP-injected `input-send-event` abs moves and button presses come back out of

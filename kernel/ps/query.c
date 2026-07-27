@@ -16,7 +16,6 @@
 #include "kernel/mm/pool.h"
 #include "kernel/mm/section.h"
 #include "kernel/io/io.h"
-#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -952,16 +951,17 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * the firstboot registry differential already excludes the derived
          * keys as host-derived. wineboot's create_bios_key tolerates the
          * refusal (GetSystemFirmwareTable answers 0 and the SMBIOS parse
-         * finds nothing). Pinned todo_proskrnl by sem_ps/process_query
-         * (docs/03). */
-        return KiPinnedNotImplemented();
+         * finds nothing). todo_proskrnl in sem_ps/process_query — the test
+         * pins the oracle's SUCCESS, never this refusal (docs/03). */
+        return STATUS_NOT_IMPLEMENTED;
     case SystemWineVersionInformation:
         /* The oracle's unix layer answers its version/uname strings here
          * (dlls/ntdll/unix/system.c) and ntdll's version_init — the caller,
          * at every process start — ignores the status. proskrnl is not
          * Wine-on-unix and refuses rather than fabricate a uname (docs/03;
-         * pinned todo_proskrnl by sem_ps/process_query). */
-        return KiPinnedNotImplemented();
+         * todo_proskrnl in sem_ps/process_query, which pins the oracle's
+         * SUCCESS, never this refusal). */
+        return STATUS_NOT_IMPLEMENTED;
     default:
         return STATUS_NOT_IMPLEMENTED;
     }
