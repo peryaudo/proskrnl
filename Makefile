@@ -1185,11 +1185,20 @@ $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) 
 run: $(IMG_RUN)
 	INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
 
-# GUI-2: the gui2 image (winemine over the whole Wine GUI stack) with a host
-# window on the scanout and a virtio keyboard; serial stays on the terminal.
-rungui: $(IMG_GUI2)
-	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI2)
+# GUI-5: the interactive command prompt — the gui5con image (windowed
+# conhost + cmd.exe over the whole GUI stack) with a host window on the
+# scanout and a virtio keyboard + tablet: click the console, type, `exit`
+# powers the VM off. Serial stays on the terminal carrying the kernel's
+# lines (HACK-004's permanent debug role).
+rungui: $(IMG_GUI5CON)
+	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} \
+	    EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" tools/qemu.sh $(IMG_GUI5CON)
 .PHONY: rungui
+
+# GUI-2's winemine boot, kept under its own name (rungui's old target).
+rungui2: $(IMG_GUI2)
+	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI2)
+.PHONY: rungui2
 
 clean:
 	rm -rf $(BUILD)
