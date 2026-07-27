@@ -76,6 +76,24 @@ Contract-shaped behaviour (event/IOSB ordering, wait semantics, share modes) *mu
 tested first, or the implementation certifies its own bug. Semantic bugs caught in M3 cost
 hours; the same bug found at GUI-3 costs months and is un-triageable across four suspects.
 
+**A gap in Wine is a gap in the oracle, not a ceiling on the kernel.** Where the pinned
+Wine answers `STATUS_NOT_IMPLEMENTED`, it has nothing to say (Art. 12) — and "the oracle
+cannot answer" is not a reason to leave the service unbuilt. If NT's own documented
+contract fixes the behaviour, **implement it**: the ordering of this article is unchanged
+(the test still lands first), only its *authority* moves, from "green on the oracle" to
+"green on the target against a cited Microsoft contract". Such cases are pinned in a
+`beyond_oracle { ... }` block (`tests/ntapi/ntapi.h`, the exact inverse of
+`todo_proskrnl`: skipped on the oracle, enforced on proskrnl), and the comment on the
+block names the MS documentation it is written against — the same citation discipline
+Art. 4 imposes on a hand-typed constant, applied to a behaviour.
+
+Two limits keep this from becoming an escape hatch. It never applies where Wine *does*
+implement the case: there Wine is the spec, full stop (Art. 6), and reaching for
+`beyond_oracle` would be fixing the test instead of the kernel. And it is a permission,
+not an instruction to go build every service Wine lacks — the loud refusal (Art. 12)
+stays the right answer until something real needs the case; what changes is that the
+answer is then "build it", never "Wine does not have it either".
+
 ## Article 6 — Only a differential test convicts
 
 Sanitizers, asserts, and unit tests **name suspects**. Only a passing differential/
@@ -234,8 +252,10 @@ status means *unbuilt*; an oracle that answers it is an oracle that is unbuilt f
 case, which is the one thing the oracle has no authority to specify. So there is no such
 thing as a "pinned refusal": a `tests/ntapi/` case must never assert
 `STATUS_NOT_IMPLEMENTED` — asserting it converts a work item into a contract and freezes
-the hole in place, exactly inverting Art. 5. Where Wine refuses, the test simply does not
-exercise the case (a comment says why), and the kernel's own refusal stays a **kernel
+the hole in place, exactly inverting Art. 5. Where Wine refuses, the case is either built
+against NT's documented contract and pinned `beyond_oracle` (Art. 5 — a hole in the
+oracle is not a hole in NT) or simply not exercised, with a comment saying which; what it
+must never be is *pinned as a refusal*. The kernel's own refusal stays a **kernel
 panic**: every `STATUS_NOT_IMPLEMENTED` a ring-3 syscall answers stops the machine at the
 point of first contact (`kernel/syscall/table.c`, armed per `docs/03`), naming the service
 and the arguments on serial. A refusal that is genuinely a contract — one a real caller

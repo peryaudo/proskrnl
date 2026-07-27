@@ -52,6 +52,14 @@ is known and documented is gated in-source by `todo_proskrnl` (borrow Wine's own
 **green-or-real-regression**, and a red there always means something broke — the only way
 red stays meaningful across a dozen milestones.
 
+The one case that inverts this is a service the pinned Wine does not implement. An oracle
+answering `STATUS_NOT_IMPLEMENTED` is unbuilt, not authoritative (Art. 12), and a gap in
+Wine is not a gap in NT — so where Microsoft's own documentation fixes the behaviour, the
+kernel builds it and the case is tagged `beyond_oracle`: skipped on the oracle, enforced on
+proskrnl, with the comment naming the MS contract it is written against (Art. 5). It is the
+mirror image of `todo_proskrnl` in every respect, including the discipline that the tag is
+wrong wherever the oracle *can* answer.
+
 **Contract-shaped tests first; boring surface can come after.** The bugs that kill this
 project are wrong-*contract* bugs (e.g. signalling the event before writing the IOSB) —
 memory-safe, no crash, invisible to sanitizers. For those (IOSB/event ordering, wait-all/any
