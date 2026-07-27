@@ -176,6 +176,20 @@ jobs:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
 
+      # GUI-5's trophy: Wine's own user32:msg — 21.5 kloc, ~85 test functions
+      # — over the full GUI stack, with the failure count ratcheted against
+      # tests/winetest/msg-budget.txt (docs/03 "GUI-5 winetest notes" has the
+      # policy and the named divergences behind the current number). It was
+      # out of CI while the module could not reach a verdict at all; it can
+      # now, so the ratchet is a gate like any other and a regression above
+      # the budget — or any crash exit, whatever the budget says — fails the
+      # job. One whole run is the single longest leg here (the manifest's
+      # per-pair timeout is 3000 s under TCG), hence the outer bound.
+      - name: GUI-5 trophy — user32:msg, budget-ratcheted (tests/run/run.sh guiwtest)
+        run: tests/run/run.sh guiwtest
+        env:
+          TIMEOUT: "3600"
+
       # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
       # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
       # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.
