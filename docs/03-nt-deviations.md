@@ -1388,6 +1388,29 @@ and their reasons:
   rides it. The hack's scope shrank (GUI images now run the windowed conhost); the entry
   stays. See docs/10.
 
+### Deadlock detection, both sides of the boundary (GUI-5)
+
+The consistency sweep (`KiVerifyKernelState`, docs/08) gained two detectors, because the
+msg.c hunt cost a 40-minute harness timeout to learn one fact a sweep already had in hand.
+Art. 3 is what makes both sound *and* cheap: the sweep holds the one dispatcher lock and
+every non-running thread is parked at a blocking point, so what it walks is an atomic
+snapshot of the whole executive, not a sample of a moving target.
+
+- **Kernel-mode — a wait-for cycle, and it is fatal.** Edges come from objects whose owner
+  the kernel records: a mutant held by another thread, a thread object being joined. Only
+  *necessary* edges are drawn — a `WaitAny` over several objects draws none (any one may
+  release the waiter), and timed and alertable waits are excluded (they wake themselves, or
+  an APC breaks them). What survives is a proof, so it ASSERTs. Convicted by
+  `tests/kmt` `test_deadlock_walk`, which builds the graph by hand (a real deadlock would
+  panic the boot before a test could report) and checks every exclusion, because a false
+  positive here would panic a healthy boot.
+- **User-mode — a wedge, and it is a loud diagnostic.** The kernel cannot name a cycle whose
+  locks live in user memory, but it can prove the *process* is dead: when every thread sits
+  in an untimed wait on its own tid-alert latch, only `NtAlertThreadByThreadId` can wake it,
+  and ntdll's futex protocol only alerts same-process tids. After the picture stands across
+  consecutive sweeps the wedge dump fires once. Not an ASSERT: a cross-process alert is
+  theoretically expressible, so this one reports and lets the boot run to its timeout.
+
 ### GUI-5 winetest notes (user32:msg — the budget ratchet)
 
 The trophy gate (`tests/run/run.sh guiwtest`) runs the pinned tree's own
