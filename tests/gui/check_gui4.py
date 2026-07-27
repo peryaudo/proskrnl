@@ -3,7 +3,7 @@
 moved; clicks reach the right window").
 
     check_gui4.py --log <serial.log> --ppm1 <before.ppm> --ppm2 <after.ppm> \\
-                  --park1 X,Y --park2 X,Y
+                  --ppm3 <cursor-on-window.ppm> --park1 X,Y --park2 X,Y --park3 X,Y
 
 Two halves, and both must hold (the check_gui3.py reasoning applies
 unchanged; QEMU's own device model returns the pixels, Art. 6).
@@ -26,6 +26,21 @@ background point. Dump 2 (after the drag): B's fill sits at its reported
 NEW rectangle, A's full rectangle is A's fill again (the mover invalidated
 what it uncovered, A repainted cross-process), the vacated strip is
 background again, and the cursor sits at the second park point.
+
+The cursor is graded past "it is drawn somewhere", because a scanout with
+more than one writer is where a software cursor goes wrong:
+
+- dump 2 additionally forbids FOREIGN pixels inside B's moved window rect.
+  B is opaque over its whole rect and nothing is above it, so a pixel
+  there wearing the desktop background or A's fill did not come from B --
+  it is the cursor depositing pixels it captured somewhere else (the
+  save-under stale patch). Neither client repaints itself to hide this any
+  more: the drag ends, the cursor parks, and the picture is graded as it
+  lands.
+- dump 3 puts the cursor INSIDE B's client area and then makes B repaint
+  under it. The arrow must still be there afterwards, with B's fill (not
+  the desktop background) beside it: a flush that overlaps the cursor must
+  not erase it, and must not leave a hole where it was.
 
 No golden image until GUI-6; every check is structural, against what the
 guest declared on serial.
@@ -68,6 +83,12 @@ A_FILL = (0x20, 0x60, 0xC0)
 B_FILL = (0xC0, 0x40, 0x20)
 CURSOR_BLACK = (0x00, 0x00, 0x00)
 CURSOR_WHITE = (0xFF, 0xFF, 0xFF)
+# cursor.c's bitmap, so a park point's footprint can be excluded from a census.
+CURSOR_W, CURSOR_H = 12, 20
+# Slack for a themed window frame that happens to sample near a forbidden
+# colour. A stale patch is a whole cursor footprint (240 px), so this floor
+# separates the two by an order of magnitude on any window this leg makes.
+MAX_FOREIGN = 0.001
 
 
 def close(a, b, tol=TOL):
@@ -126,17 +147,54 @@ def dominant_check(failures, dump, rect, fill, what):
         )
 
 
-def cursor_check(failures, dump, park, background, what):
+def cursor_check(failures, dump, park, beneath, what):
+    """The arrow is at `park`, and `beneath` (the desktop background, or a
+    window's fill when the cursor is parked over one) is what shows beside
+    it."""
     x, y = park
     hotspot = dump.at(x, y)
     fill = dump.at(x + 1, y + 3)  # inside the arrow's white fill (cursor.c's bitmap)
-    beside = dump.at(x + 20, y)  # right of the 12px-wide arrow: background again
+    beside = dump.at(x + 20, y)  # right of the 12px-wide arrow: what is under it again
     if not close(hotspot, CURSOR_BLACK):
         failures.append(f"{what}: no cursor outline at park point {park} (got {hotspot})")
     if not close(fill, CURSOR_WHITE):
         failures.append(f"{what}: no cursor fill at {(x + 1, y + 3)} (got {fill})")
-    if not close(beside, background):
-        failures.append(f"{what}: expected background beside the cursor at {(x + 20, y)}, got {beside}")
+    if not close(beside, beneath):
+        failures.append(f"{what}: expected {beneath} beside the cursor at {(x + 20, y)}, got {beside}")
+
+
+def foreign_pixel_check(failures, dump, rect, forbidden, parks, what):
+    """No pixel inside `rect` may wear one of the `forbidden` colours.
+
+    Used on a window that is opaque over its whole rect with nothing above
+    it: a pixel there carrying a colour that belongs somewhere else on the
+    screen was deposited by the cursor's save-under, not painted by the
+    window. Park footprints are excluded -- the arrow itself is legitimately
+    foreign-coloured (black and white) but its own colours are never in
+    `forbidden`, and skipping the rects keeps that independent."""
+    left, top = max(rect[0], 0), max(rect[1], 0)
+    right, bottom = min(rect[2], dump.width), min(rect[3], dump.height)
+    area = max((right - left) * (bottom - top), 0)
+    if not area:
+        failures.append(f"{what}: empty sample region {rect}")
+        return
+
+    found = collections.Counter()
+    for py in range(top, bottom):
+        for px in range(left, right):
+            if any(p[0] <= px < p[0] + CURSOR_W and p[1] <= py < p[1] + CURSOR_H for p in parks):
+                continue
+            colour = dump.at(px, py)
+            for name, value in forbidden:
+                if close(colour, value):
+                    found[name] += 1
+    total = sum(found.values())
+    if total > area * MAX_FOREIGN:
+        failures.append(
+            f"{what}: {total}/{area} pixels in {rect} of {dump.path} carry a colour from "
+            f"elsewhere on the screen ({dict(found)}) -- the cursor deposited pixels it "
+            f"captured before that area was repainted"
+        )
 
 
 def main():
@@ -144,14 +202,17 @@ def main():
     parser.add_argument("--log", required=True)
     parser.add_argument("--ppm1", required=True)
     parser.add_argument("--ppm2", required=True)
+    parser.add_argument("--ppm3", required=True)
     parser.add_argument("--park1", required=True)
     parser.add_argument("--park2", required=True)
+    parser.add_argument("--park3", required=True)
     args = parser.parse_args()
 
     with open(args.log, "rb") as handle:
         text = handle.read().decode("utf-8", "replace")
     park1 = tuple(int(v) for v in args.park1.split(","))
     park2 = tuple(int(v) for v in args.park2.split(","))
+    park3 = tuple(int(v) for v in args.park3.split(","))
 
     failures = []
 
@@ -192,8 +253,8 @@ def main():
         failures.append("A never reported activation after being clicked")
 
     # --- the pixel half -----------------------------------------------------
-    dump1, dump2 = Dump(args.ppm1), Dump(args.ppm2)
-    for dump in (dump1, dump2):
+    dump1, dump2, dump3 = Dump(args.ppm1), Dump(args.ppm2), Dump(args.ppm3)
+    for dump in (dump1, dump2, dump3):
         if (dump.width, dump.height) != (int(mode["w"]), int(mode["h"])):
             failures.append(
                 f"{dump.path} is {dump.width}x{dump.height}, but the guest reported "
@@ -252,6 +313,26 @@ def main():
             f"to the background"
         )
     cursor_check(failures, dump2, park2, background, "dump2 cursor")
+    # Nothing repaints B after the drag, so the drag's own cursor traffic --
+    # the arrow rode B's caption across the screen -- has to have left the
+    # window clean by itself.
+    foreign_pixel_check(
+        failures, dump2, b_moved,
+        [("desktop background", background), ("A's fill", A_FILL)],
+        [park2], "dump2 B's moved window rect"
+    )
+
+    # Dump 3: the cursor sits inside B's client area and B has repainted
+    # under it. Both halves of the stomp are graded -- the arrow survived
+    # the flush, and B's fill (not a hole, and not a leftover of what the
+    # cursor was over before) is what surrounds it.
+    cursor_check(failures, dump3, park3, B_FILL, "dump3 cursor over B")
+    dominant_check(failures, dump3, b_crect2, B_FILL, "dump3 B's client area (cursor inside)")
+    foreign_pixel_check(
+        failures, dump3, b_moved,
+        [("desktop background", background), ("A's fill", A_FILL)],
+        [park3], "dump3 B's moved window rect"
+    )
 
     if failures:
         for failure in failures:
@@ -263,7 +344,7 @@ def main():
         f"overlap B-wins at {overlap_client}, click routing clean "
         f"({len(clicks['B'])} to B, {len(clicks['A'])} to A), "
         f"B moved {b_wrect[:2]} -> {b_moved[:2]}, uncovered area repaired, "
-        f"cursor at {park1} then {park2}"
+        f"cursor at {park1} then {park2}, and it survives a flush under it at {park3}"
     )
     return 0
 
