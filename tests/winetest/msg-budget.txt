@@ -7,8 +7,24 @@
 # (winetest's failure count arrives as the NT exit status). The named
 # divergences behind the current number are listed in docs/03 "GUI-5
 # winetest notes"; 0 is the end state, and build/tests/guiwtest-msg.log
-# names whichever are left after any run.
+# names whichever are left after any run (tools/unscreen.py replays them
+# out of the console screen diff).
 #
 #   23  first honest measurement (the module runs end to end)
 #   20  the process idle event is a GUI-process thing
-20
+#   18  the forced desktop window no longer re-homes the process
+#
+# The number is a CEILING, not the measured count, and deliberately so.
+# The measured count for the entry above was 15 on this TCG runner, but
+# seven of msg.c's assertions are decided by how fast the emulated machine
+# is rather than by any semantics of ours: test_PeekMessage3 sets a 100 ms
+# timer and never kills it, then asserts seven times that the queue is
+# empty — true on a machine that runs the intervening block in microseconds,
+# false on one where 100 ms of guest time passes first (four of the seven
+# failed in the measured run, one in the run before it). 18 = 15 - 4 + 7 is
+# the most that family can contribute, so a run above it is a real
+# regression rather than a slower runner. The five test_WM_COPYDATA
+# failures are the same kind of thing — a child process that must create
+# its window inside the test's own one-second poll — but they already fail
+# as a block, so they cost no headroom. docs/03 says which is which.
+18
