@@ -1250,6 +1250,101 @@ gui4() {
     return 0
 }
 
+# GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
+# cross-process over the unmodified pinned server, plus the guest half of
+# the font-metrics differential (the same fontdiff.exe the oracle block
+# above runs, diffed against the same committed golden). The clients judge
+# everything they can from inside (gui5b's verdict lines); the harness only
+# adds what needs the outside world: real injected keyboard input for the
+# WH_KEYBOARD_LL hook — one 'k' while armed (hook line + char), a 'u' to
+# unhook, one 'k' after (char only; the checker counts) — and the
+# screendump. Keyboard only, deliberately no tablet: no pointer means no
+# cursor on the scanout, so the fills stay pristine (the cursor-stomp
+# residual, docs/03 GUI-4 notes).
+gui5() {
+    make -C "$ROOT" gui5-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui5.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui5.sock" log="$dir/gui5.log" ppm="$dir/gui5.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm" "$log"
+
+    # gui3's sizing reasoning: no COW and four Wine processes across the leg
+    # (the server, fontdiff, then the two clients).
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
+        TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    # Count-gated await: the second 'k' press repeats a line the log already
+    # holds, so presence alone cannot sequence it.
+    await_count() {
+        local pattern="$1" n="$2" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            [ "$(grep -cE "$pattern" "$log" 2>/dev/null)" -ge "$n" ] && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    gui5_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui5: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    await '\[KTEST\] gui3 server READY' || { gui5_fail "wineserver-lite never published its transport"; return 1; }
+    await '\[KTEST\] fontdiff done n=' || { gui5_fail "fontdiff never finished its table"; return 1; }
+    await '\[KTEST\] gui5 A ready rect=' || { gui5_fail "A never came up"; return 1; }
+    await '\[KTEST\] gui5 verdict (PASS|FAIL)' || { gui5_fail "B never reached a verdict"; return 1; }
+    await '\[KTEST\] gui5 hooks armed' || { gui5_fail "the LL hook was never armed"; return 1; }
+    await '\[KTEST\] gui2 input READY' || { gui5_fail "no keyboard reader"; return 1; }
+
+    # 'k' with the LL hook armed: the hook line must precede the char
+    # reaching the (focused) judge window.
+    qmp sendkey k
+    await '\[KTEST\] gui5 llhook vk=4b' || { gui5_fail "the LL hook never saw the keystroke"; return 1; }
+    await '\[KTEST\] gui5 B char=6b' || { gui5_fail "the keystroke never reached the window"; return 1; }
+
+    # 'u' unhooks from inside the wndproc...
+    qmp sendkey u
+    await '\[KTEST\] gui5 unhook ok=1' || { gui5_fail "UnhookWindowsHookEx never ran"; return 1; }
+
+    # ...and the second 'k' must reach the window but NOT the hook — the
+    # checker convicts on the line counts.
+    qmp sendkey k
+    await_count '\[KTEST\] gui5 B char=6b' 2 || { gui5_fail "the post-unhook keystroke never arrived"; return 1; }
+
+    # The listener notification is posted, so give it its own await rather
+    # than assuming it beat the verdict line.
+    await '\[KTEST\] gui5 A clipupdate' || { gui5_fail "A's clipboard listener never fired"; return 1; }
+
+    sleep 2   # let the last flush settle (the gui2 reasoning)
+    qmp screendump "$ppm" || { gui5_fail "screendump failed"; return 1; }
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! python3 "$ROOT/tests/gui/check_gui5.py" --log "$log" --ppm "$ppm" \
+            --golden "$ROOT/tests/gdi/fontdiff.golden"; then
+        echo "== gui5: FAIL (behaviour, pixels or metrics; see $log) =="
+        return 1
+    fi
+    echo "== gui5: PASS (clipboard, hooks, AttachThreadInput, font differential) =="
+    return 0
+}
+
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
@@ -1267,6 +1362,7 @@ case "$MODE" in
     gui2)     gui2 ;;
     gui3)     gui3 ;;
     gui4)     gui4 ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4}" >&2
+    gui5)     gui5 ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5}" >&2
        exit 2 ;;
 esac

@@ -943,6 +943,48 @@ $(IMG_GUI4): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
 gui4-img: $(IMG_GUI4)
 .PHONY: gui4-img
 
+# GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
+# exercised cross-process over the unmodified pinned server, plus the guest
+# half of the font-metrics differential. Same link rule and libs as the
+# gui3/gui4 clients; fontdiff.exe is the SAME source the oracle leg runs
+# (tests/gdi/fontdiff.c), baked here so tests/gui/check_gui5.py can diff the
+# guest's metric table against the same committed golden.
+GUI5A := $(BUILD)/modules/gui5a.exe
+GUI5B := $(BUILD)/modules/gui5b.exe
+FONTDIFF := $(BUILD)/modules/fontdiff.exe
+
+$(BUILD)/modules/gui5%.exe: tests/gui/gui5%.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h \
+        $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
+	    tests/gui/gui5$*.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
+
+$(FONTDIFF): tests/gdi/fontdiff.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
+	    tests/gdi/fontdiff.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
+
+GUI5FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             win:$(GUI5A)=gui5a.exe \
+             win:$(GUI5B)=gui5b.exe \
+             win:$(FONTDIFF)=fontdiff.exe
+
+IMG_GUI5 := $(BUILD)/proskrnl-gui5.hdd
+$(IMG_GUI5): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(WINESERVER_LITE) $(GUI5A) $(GUI5B) $(FONTDIFF) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_GUI5) $(MODULE_SPECS) $(WINFILES) $(GUI5FILES)
+
+gui5-img: $(IMG_GUI5)
+.PHONY: gui5-img
+
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
 # subset of Wine's own test suite, run by tests/run/run.sh winetest against
