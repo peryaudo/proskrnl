@@ -103,6 +103,7 @@ void winefb_fill_rect( const RECT *screen_rect, COLORREF color )
 
         for (x = 0; x < r.right - r.left; x++) out[x] = pixel;
     }
+    winefb_cursor_present();
 }
 
 /* The slow path: the scanout's channel layout is not the DIB's. Same
@@ -230,6 +231,13 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
         for (i = 0; i < data->rdh.nCount; i++)
             blit_rect( surface, &rects[i], color_bits, src_pitch );
     }
+
+    /* The cursor is above every window, so a writer that just painted the
+     * scanout owes the arrow back on top of it (cursor.c). Nothing is
+     * coordinated and nothing is saved: the position comes from the
+     * server's shared desktop state, which is readable here -- inside the
+     * surface lock -- precisely because that read takes no user lock. */
+    winefb_cursor_present();
 
     /* The harness needs one self-describing line naming where a window
      * actually reached the scanout (tests/gui/check_window.py). The first

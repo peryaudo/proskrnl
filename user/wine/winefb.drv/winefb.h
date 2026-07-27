@@ -49,7 +49,15 @@ extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_
                                        UINT swp_flags, const struct window_rects *new_rects,
                                        struct window_surface *surface );
 extern void winefb_start_input(void);
-extern void winefb_cursor_update( int x, int y );
+
+/* cursor.c: the software cursor. winefb_cursor_present is the overlay
+ * every scanout writer owes back (the cursor is above everything);
+ * winefb_cursor_update is the pointer thread's move. winefb_pointer_present
+ * says whether this session has a pointer device at all -- no device, no
+ * cursor. */
+extern BOOL winefb_pointer_present;
+extern void winefb_cursor_present(void);
+extern void winefb_cursor_update(void);
 
 /* compose.c: the z-order queries behind the compositing flush and the
  * uncover repair (blit.c). More top-level windows than this and the excess
