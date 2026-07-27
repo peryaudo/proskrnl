@@ -325,20 +325,23 @@ $(M9ECHO): user/m9/m9_echo.c $(WINE_PE_DLLS)
 # tree — the wineserver seam lives as a runtime-dormant fork commit on
 # proskrnl-target (programs/conhost/proskrnl.{c,h}, taken when
 # __wine_unix_call_dispatcher is NULL; Art. 10 / docs/06). user/conhost/
-# carries only the standalone-PE glue: entry, mini-CRT, headless user32/
-# window.c stands-ins. Built like the other native PEs: mingw, no CRT,
-# Wine import libraries.
+# carries only the standalone-PE glue: entry + mini-CRT (proskrnl_glue.c,
+# shared with the windowed link) and the headless user32/window.c stand-ins
+# (headless_stubs.c, this link only — the windowed CONHOST_GUI links the
+# real user32 and the real window.c instead). Built like the other native
+# PEs: mingw, no CRT, Wine import libraries.
 WINE_CONHOST := third_party/wine/programs/conhost
 CONHOST := $(BUILD)/modules/conhost.exe
 $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
             $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
-            user/conhost/proskrnl_glue.c $(WINE_PE_DLLS)
+            user/conhost/proskrnl_glue.c user/conhost/headless_stubs.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
 	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' \
 	    -I$(WINE_CONHOST) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
 	    -Wl,--entry=conhost_start \
 	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/proskrnl.c user/conhost/proskrnl_glue.c \
+	    user/conhost/headless_stubs.c \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
