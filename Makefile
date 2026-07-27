@@ -773,9 +773,16 @@ $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS)
 # (tools/gen_server_table.py, Art. 12).
 SRV_OBJS := $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS))
 SRV_TABLE := $(W32U_BUILD)/prsk_request_table.c
-$(SRV_TABLE): $(SRV_OBJS) tools/gen_server_table.py $(WINE_SRV)/request_handlers.h
+# shim.o joins the generator's inputs (GUI-5): the shim may implement a
+# handler whose OWNING server file is not compiled (get_process_idle_event
+# lives in server/process.c, which is the process model this build leaves
+# out) — the table must see those too, or a linked handler would still get
+# a NULL slot.
+$(SRV_TABLE): $(SRV_OBJS) $(W32U_BUILD)/glue/server/shim.o tools/gen_server_table.py \
+        $(WINE_SRV)/request_handlers.h
 	@mkdir -p $(dir $@)
-	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $@ $(SRV_OBJS)
+	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $@ $(SRV_OBJS) \
+	    $(W32U_BUILD)/glue/server/shim.o
 
 $(W32U_BUILD)/prsk_request_table.o: $(SRV_TABLE) user/wine/server/prsk_request_table.h
 	$(MINGW) $(W32U_CFLAGS) -Iuser/wine/server -c $< -o $@
