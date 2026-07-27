@@ -1407,11 +1407,38 @@ the manifest's new optional per-pair timeout field).
   Building an X/Xvfb oracle was considered and rejected: an X11-driver-driven message
   environment is no more "the spec" for a winefb target than nulldrv is, and it would
   drag X into a tree that deliberately has none.
-- **The verdict is a budget ratchet** (`tests/winetest/msg-budget.txt`): the leg parses
-  winetest's own summary line off serial (the exit code clips at 255; the count does not)
+- **The verdict is a budget ratchet** (`tests/winetest/msg-budget.txt`): the leg reads the
+  kernel's own verdict line off serial (winetest's text reaches the console through an
+  80-column screen diff that mangles it; the NT exit status carries the full failure count)
   and fails on any count above the budget. The budget only ever decreases, in the same
-  commit as the fix that earned it (G13: the number is that commit's test expectation).
-  GUI-5's end state is 0 — msg.c green on proskrnl with only its own `todo_wine` marks.
+  commit as the fix that earned it (G13: the number is that commit's test expectation). An
+  exit outside a sane count range is a CRASH and fails the leg by name regardless of budget.
+  The end state is 0 — msg.c green with only its own `todo_wine` marks.
+
+**Where the campaign stands at the end of GUI-5** (the gate is infrastructure-complete and
+the suite is not green; the leg is red by design and out of CI until it is):
+
+1. *Fixed — the named-event hole.* `test_WaitForInputIdle`'s ~20 child processes all failed
+   at `CreateEventA`: `\Sessions\1\BaseNamedObjects` did not exist (`sem_ob/session_bno`
+   pins it, `ob` creates it).
+2. *Fixed — the only refused server request.* `get_process_idle_event` lives in
+   `server/process.c`, which this build does not compile; the shim implements it, and
+   `get_msg_queue_handle` now hands out the idle event so win32u's client-side idle
+   signalling works (see the GUI-5 notes above).
+3. *Fixed — a real lock-order inversion of ours.* `winefb_surface_flush` called
+   `NtUserGetWindowLongW` (which takes win32u's user lock) while holding the surface mutex,
+   inverting every `user lock -> surface mutex` path in win32u; `DestroyWindow` against a
+   concurrent flush deadlocked the suite for the whole harness timeout. The flush path's
+   clip query is now raw server requests and takes no win32u lock. **This one was ours, not
+   Wine's** — the value the trophy gate has already returned.
+4. *Open — an access violation in the combobox/edit area.* The run reaches
+   `test_combobox_messages` (roughly a third of the module's ~85 test functions, with only
+   `todo_wine`-marked divergences before it) and dies `0xC0000005` at a non-module address,
+   called through ntdll's `NtdllEditWndProc_A` — the `RtlInitializeNtUserPfn` client-proc
+   table user32 registers. That table (or our loading of it) is the next thread to pull.
+
+The three fixes above are each pinned or convicted by a green leg; the fourth is where a
+GUI-6-era session picks the campaign back up.
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
 ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an
