@@ -793,6 +793,10 @@ NTSTATUS FatReadDirectoryEntry(PFAT_FCB dir, ULONG *slot, IO_DIR_ENTRY *out)
     out->info.lastWriteTime =
         FatTimeToNtTime(FatdRead16(entry.sfn + 24), FatdRead16(entry.sfn + 22), 0);
     out->info.isDirectory = (entry.sfn[11] & FAT_ATTR_DIRECTORY) != 0;
+    /* The listed entry's own identity key. Caveat for a future FileId*
+     * directory class: "." and ".." resolve here to their slot in THIS
+     * directory, not to the directory they name. */
+    out->info.fileId = FatFileId(FatDirCluster(dir), entry.sfnSlot);
     out->info.endOfFile = FatdRead16(entry.sfn + 28) | ((uint64_t)FatdRead16(entry.sfn + 30) << 16);
     PFAT_VOLUME volume = dir->volume;
     uint64_t clusterBytes = (uint64_t)volume->sectorsPerCluster * volume->bytesPerSector;

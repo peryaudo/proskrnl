@@ -613,6 +613,7 @@ static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
     info->lastWriteTime = FatTimeToNtTime(fcb->writeDate, fcb->writeTime, 0);
     info->endOfFile = fcb->fileSize;
     info->allocationSize = (fcb->fileSize + clusterBytes - 1) / clusterBytes * clusterBytes;
+    info->fileId = FatFileId(fcb->parentDirCluster, fcb->dirEntryIndex);
     info->fileAttributes = FatAttributesToNt(fcb->attributes);
     info->isDirectory = fcb->isDirectory;
     return STATUS_SUCCESS;

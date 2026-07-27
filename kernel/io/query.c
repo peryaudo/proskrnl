@@ -86,6 +86,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FilePositionInformation:
         needed = sizeof(FILE_POSITION_INFORMATION);
         break;
+    case FileInternalInformation:
+        needed = sizeof(FILE_INTERNAL_INFORMATION);
+        break;
     case FileNameInformation:
         needed = (ULONG)offsetof(FILE_NAME_INFORMATION, FileName);
         break;
@@ -133,7 +136,11 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         ObDereferenceObject(file);
         return status;
     }
+    /* Backends without a per-file identity (devices) never touch fileId;
+     * zeroing here keeps their FileInternalInformation answer 0 rather
+     * than stack garbage. */
     IO_FILE_INFO raw;
+    memset(&raw, 0, sizeof(raw));
     status = file->device->ops->GetInfo(file, &raw);
     if (!NT_SUCCESS(status))
     {
@@ -156,6 +163,21 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         out->CurrentByteOffset = file->currentByteOffset;
         break;
     }
+    case FileInternalInformation:
+    {
+        /* A backend without a per-file identity (devices, pipes; also the
+         * FAT root, whose key is (0,0)) refuses loudly rather than serving
+         * a fabricated constant id — the pinned Wine answers with a real
+         * unix inode there, so 0 would be a silent divergence (Art. 12). */
+        if (raw.fileId == 0)
+        {
+            ObDereferenceObject(file);
+            return KiPinnedNotImplemented();
+        }
+        FILE_INTERNAL_INFORMATION *out = buffer;
+        out->IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        break;
+    }
     case FileNameInformation:
     {
         ULONG written = 0;
@@ -169,6 +191,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         memset(out, 0, offsetof(FILE_ALL_INFORMATION, NameInformation));
         IopFillBasic(&raw, &out->BasicInformation);
         IopFillStandard(&raw, file->fcb, &out->StandardInformation);
+        out->InternalInformation.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
         out->PositionInformation.CurrentByteOffset = file->currentByteOffset;
         out->AccessInformation.AccessFlags = file->grantedAccess;
         out->ModeInformation.Mode = file->synchronousIo ? FILE_SYNCHRONOUS_IO_NONALERT : 0;

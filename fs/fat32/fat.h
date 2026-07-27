@@ -92,6 +92,25 @@ typedef struct FAT_FCB
     BOOLEAN unlinkPending; /* a delete intent deferred past its own close */
 } FAT_FCB, *PFAT_FCB;
 
+/* The directory cluster half of the FCB identity key: the cluster whose
+ * chain holds `dir`'s entries (FatGetFcb dedups on it; spec §6.7 makes the
+ * root's own first cluster the BPB's rootCluster). */
+static inline ULONG FatDirCluster(PFAT_FCB dir)
+{
+    return dir->isRoot ? dir->volume->rootCluster : dir->firstCluster;
+}
+
+/* The 64-bit NT file id (FileInternalInformation IndexNumber, IO_FILE_INFO
+ * fileId): the FCB identity key (directory cluster, SFN slot) serialized —
+ * the SAME pair FatGetFcb dedups FCBs on, so id equality and one-FCB-per-file
+ * can never disagree. Stable while the file exists: deletion marks slots
+ * 0xE5 in place, never compacts (spec §6.1). The root has no directory
+ * entry; its key is (0, 0) and so its id is 0. */
+static inline uint64_t FatFileId(ULONG dirCluster, ULONG sfnSlot)
+{
+    return ((uint64_t)dirCluster << 32) | sfnSlot;
+}
+
 /* --- fat.c: mount, FAT chains, cluster allocation, sector I/O -------------- */
 
 /* Scan the GPT boot disk, mount the first FAT32 data partition. */

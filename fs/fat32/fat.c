@@ -205,7 +205,7 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     /* One FCB per on-disk file: identity = (directory cluster, SFN slot).
      * A slot index is stable for the file's lifetime — deletion marks 0xE5
      * in place, never compacts (spec §6.1). */
-    ULONG dirCluster = dir->isRoot ? volume->rootCluster : dir->firstCluster;
+    ULONG dirCluster = FatDirCluster(dir);
     for (PLIST_ENTRY entry = volume->fcbList.Flink; entry != &volume->fcbList; entry = entry->Flink)
     {
         PFAT_FCB fcb = CONTAINING_RECORD(entry, FAT_FCB, volumeEntry);
