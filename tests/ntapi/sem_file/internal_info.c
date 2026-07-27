@@ -41,19 +41,7 @@ START_TEST(internal_info)
     poison_iosb(&iosb);
     memset(&ia, 0, sizeof(ia));
     status = NtQueryInformationFile(a, &iosb, &ia, sizeof(ia), FileInternalInformation);
-    todo_proskrnl
-    {
-        ok(status == STATUS_SUCCESS, "query internal -> %08lx", (unsigned long)status);
-    }
-    if (status != STATUS_SUCCESS)
-    {
-        /* Unimplemented on the target (the todo above absorbed the refusal);
-         * the identity pins below would vacuously pass on zeroes. */
-        NtClose(a);
-        NtClose(b);
-        NtClose(dir);
-        return;
-    }
+    ok(status == STATUS_SUCCESS, "query internal -> %08lx", (unsigned long)status);
     ok(iosb.Status == STATUS_SUCCESS, "iosb.Status %08lx", (unsigned long)iosb.Status);
     ok(iosb.Information == sizeof(ia), "Information %lu", (unsigned long)iosb.Information);
     ok(ia.IndexNumber.QuadPart != 0, "IndexNumber is nonzero for a regular file");

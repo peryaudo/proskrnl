@@ -60,6 +60,9 @@ typedef struct
     LARGE_INTEGER lastWriteTime;
     uint64_t endOfFile;
     uint64_t allocationSize;
+    uint64_t fileId;      /* FileInternalInformation IndexNumber: unique and
+                           * stable per on-disk file; 0 = the backend has no
+                           * per-file identity (devices, the FAT root) */
     ULONG fileAttributes; /* FILE_ATTRIBUTE_* */
     BOOLEAN isDirectory;
 } IO_FILE_INFO;
