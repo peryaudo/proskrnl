@@ -302,7 +302,15 @@ static int prsk_process_is_gui( HANDLE process )
     SECTION_IMAGE_INFORMATION image;
 
     if (NtQueryInformationProcess( process, ProcessImageInformation, &image, sizeof(image), NULL ))
+    {
+        /* Not a silent fallback: the answer decides whether a whole
+         * WaitForInputIdle protocol exists for this client, so a query that
+         * fails says so rather than letting "console process" pass for a
+         * measurement (Art. 12). */
+        prsk_log( "[KTEST] wineserver-lite: no image information for a client; "
+                  "assuming a console process\n" );
         return 0;
+    }
     return image.SubSystemType != IMAGE_SUBSYSTEM_WINDOWS_CUI;
 }
 
@@ -1090,7 +1098,13 @@ unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
      * So the fixture pays for its own side effect: a default the process
      * already had is restored across the forced call. Nothing is restored
      * when there was none (that first assignment is the one wineserver
-     * would also have made, from connect_process_winstation). */
+     * would also have made, from connect_process_winstation).
+     *
+     * The field is put back directly rather than through
+     * set_process_default_desktop, whose extra job -- handing the new
+     * default to threads that have none yet -- cannot apply here: this path
+     * runs only when the process ALREADY had a default, and every thread
+     * record is born holding it (create_thread_record). */
     obj_handle_t defaultDesktop = 0;
     if (req < prsk_req_count)
     {
