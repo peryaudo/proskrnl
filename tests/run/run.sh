@@ -400,6 +400,111 @@ winetest() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# GUI-5's trophy gate (docs/02 "the real trophy: run Wine's
+# user32/tests/msg.c"): the pinned tree's own user32_test.exe, whole msg
+# module, over the full GUI stack — win32u, wineserver-lite, winefb, the
+# windowed message machinery — swept by the same kernel wtest runner the
+# CUI manifest uses (per-pair timeout via the manifest's third field).
+#
+# PROSKRNL-ONLY, by measurement (tests/winetest/manifest-gui.txt has the
+# full finding): the --without-x oracle cannot host msg.c at all — its null
+# display driver refuses every window and the suite hangs. The spec is
+# msg.c's own ok()/todo_wine assertions (third-party, Windows-verified;
+# todo_wine applies identically on proskrnl). The verdict is a BUDGET
+# RATCHET: tests/winetest/msg-budget.txt holds the currently-accepted
+# failure count, parsed against winetest's own summary line (the exit code
+# clips at 255 and the count does not); more failures than the budget is a
+# regression and fails the leg, fewer is a note to ratchet the file down in
+# the commit that earned it. 0 is the milestone's end state.
+guiwtest() {
+    local manifest="$ROOT/tests/winetest/manifest-gui.txt"
+    local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
+    local budget
+    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]')"
+    if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
+        echo "== guiwtest: msg-budget.txt holds no number ==" >&2
+        return 2
+    fi
+
+    local kernel img
+    kernel="$ROOT/build/proskrnl"
+    img="$ROOT/build/tests/guiwtest.hdd"
+    if [[ ! -f "$kernel" ]]; then
+        make -C "$ROOT" >/dev/null
+    fi
+    make -C "$ROOT" winestrip win32u wineserver-lite \
+        build/modules/cmd.exe build/modules/conhost.exe >/dev/null
+
+    # The winetest image recipe (DLLs, nls, conhost, cmd, the M5 seeds that
+    # keep the in-kernel M6 suite green) plus the GUI stack the msg module
+    # lives on, plus hid/imm32/setupapi (msg.c's own imports) — all from the
+    # same stripped set.
+    local specs=()
+    local seed
+    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+        [[ -f "$seed" ]] && specs+=("$seed=initrd")
+    done
+    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
+               cryptbase setupapi cfgmgr32 hid user32 gdi32 comctl32 imm32 ole32 combase coml2; do
+        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
+    done
+    specs+=("win:$ROOT/build/modules/win32u.dll=windows/system32/win32u.dll")
+    specs+=("win:$ROOT/build/modules/wineserver-lite.exe=windows/system32/wineserver-lite.exe")
+    local nlsfile
+    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
+        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
+    done
+    local fontfile
+    for fontfile in "$ROOT"/third_party/wine/fonts/*.ttf "$ROOT"/third_party/wine/fonts/*.fon; do
+        specs+=("win:$fontfile=windows/fonts/$(basename "$fontfile")")
+    done
+    specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
+    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
+    specs+=("win:$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe=wtests/user32_test.exe")
+    specs+=("win:$manifest=wtests/manifest.txt")
+
+    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+
+    # 2 GiB: no COW and this boot holds the server, conhost, a multi-MB
+    # test binary and its spawned children resident at once.
+    local log="$ROOT/build/tests/guiwtest-serial.log"
+    LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+
+    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
+        --moduledir "$ROOT/build/modules" < "$log" \
+        > "$ROOT/build/tests/guiwtest-serial.sym.log" 2>/dev/null || true
+
+    # The ratchet input is the KERNEL's own verdict line (DbgPrint straight
+    # to serial — never through the console, whose 80-column screen diff
+    # truncates and mangles winetest's text): `[KTEST] wtest <pair> PASS` is
+    # zero failures, `FAIL (exit=0xN)` carries winetest's failure count as
+    # the exit status (a full 32-bit value — NT exit codes do not clip at
+    # 255). A timeout/create failure has no count and always fails the leg.
+    local verdict failures
+    verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1)"
+    if [[ -z "$verdict" ]]; then
+        echo "== guiwtest: FAIL (no kernel verdict — hung, panicked or timed out; see $log) =="
+        return 1
+    fi
+    if [[ "$verdict" == *PASS ]]; then
+        failures=0
+    else
+        failures=$(( $(grep -oE '0x[0-9a-f]+' <<<"$verdict") ))
+    fi
+    echo "[KTEST] guiwtest user32:msg failures=$failures budget=$budget"
+    if (( failures > budget )); then
+        echo "== guiwtest: FAIL ($failures failures against a budget of $budget; see $log) =="
+        return 1
+    fi
+    if (( failures < budget )); then
+        echo "== guiwtest: PASS — and $failures < budget $budget: ratchet msg-budget.txt down =="
+    else
+        echo "== guiwtest: PASS ($failures failures, at budget) =="
+    fi
+    return 0
+}
+
 # The FAT interop battery (docs/08 "The FAT on-disk format has its own
 # oracles"): bake an adversarial corpus with mtools + host-side FAT surgery
 # (tests/run/fatgen.py), boot, and let the in-kernel suite
@@ -1511,6 +1616,7 @@ case "$MODE" in
     gui4)     gui4 ;;
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con}" >&2
+    guiwtest) guiwtest ;;
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        exit 2 ;;
 esac
