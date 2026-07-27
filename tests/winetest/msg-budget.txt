@@ -1,0 +1,6 @@
+# The guiwtest ratchet (tests/run/run.sh guiwtest): the currently-accepted
+# user32:msg failure count on proskrnl. Only ever DECREASE this number, in
+# the same commit as the fix that earned it (G13); the leg fails on any
+# count above it. 0 is GUI-5's end state. Policy: docs/03 "GUI-5 winetest
+# notes".
+9999

@@ -1,0 +1,21 @@
+# The GUI winetest manifest (tests/run/run.sh guiwtest) — GUI-5's trophy
+# gate: Wine's own user32:msg, whole-module, on proskrnl over the full GUI
+# stack (win32u + wineserver-lite + winefb).
+#
+# There is NO oracle half for this manifest, by measurement, not by choice:
+# the pinned oracle is --without-x (GUI-3 made it the FONT oracle, nothing
+# more), and under its null display driver user32 refuses every window
+# ("The graphics driver is missing"), msg.c fails its very first
+# CreateWindow and then hangs forever in test_SendMessage_other_thread's
+# INFINITE wait. The spec authority for this gate is therefore msg.c's own
+# ok()/todo_wine assertions — winetest is third-party, Windows-verified
+# spec (docs/08), and todo_wine evaluates on proskrnl exactly as on Wine
+# (docs/03 "M10 winetest notes"). The verdict is budget-ratcheted against
+# tests/winetest/msg-budget.txt: the accepted failure count only ever goes
+# DOWN, and the milestone's end state is 0. docs/03 "GUI-5 winetest notes"
+# records the whole policy.
+#
+# <exe>:<subtest>[:<timeout_s>] — the third field is the per-pair timeout
+# (kernel/init/main.c KiWtestParseManifest); one whole msg run outlasts the
+# 300 s default under TCG.
+user32_test.exe:msg:3000

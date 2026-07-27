@@ -513,7 +513,7 @@ $(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
 # only the disk payload is lean.
 WINESTRIP := $(BUILD)/winestrip
 WINESTRIP_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-                   cryptbase setupapi cfgmgr32 ws2_32 secur32 userenv
+                   cryptbase setupapi cfgmgr32 ws2_32 secur32 userenv hid
 WINESTRIP_DLLS := $(foreach d,$(WINESTRIP_NAMES),$(WINESTRIP)/$(d).dll)
 # One explicit rule per dll (the name appears twice in the source path, which
 # a pattern rule's single stem cannot express).
