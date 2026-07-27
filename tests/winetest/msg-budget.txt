@@ -1,6 +1,11 @@
 # The guiwtest ratchet (tests/run/run.sh guiwtest): the currently-accepted
 # user32:msg failure count on proskrnl. Only ever DECREASE this number, in
 # the same commit as the fix that earned it (G13); the leg fails on any
-# count above it. 0 is GUI-5's end state. Policy: docs/03 "GUI-5 winetest
-# notes".
+# count above it, and on any CRASH exit regardless of the number.
+#
+# 9999 is a sentinel, not a measurement: the run does not yet reach a
+# verdict (it dies 0xC0000005 in the combobox area — docs/03 "GUI-5
+# winetest notes" item 4), so no honest count exists to ratchet from. The
+# first run that completes replaces this with its real count; 0 is the end
+# state. Until then the leg is red by design and stays out of CI.
 9999
