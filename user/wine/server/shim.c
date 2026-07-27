@@ -908,6 +908,7 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
         prsk_log( "[KTEST] wineserver-lite: %s failed %08x (pid=%u tid=%u)\n", prsk_req_names[req],
                   current->error, (unsigned)current->process->id, (unsigned)current->id );
 
+
     reply.reply_header.error = current->error;
     reply.reply_header.reply_size = current->reply_size;
     info->u.reply = reply;
@@ -931,9 +932,14 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
  * so every caller gets `force`: the desktop is created on the spot - the
  * same code path the server takes for the forcing caller - and win32u
  * never goes looking for an explorer.exe the image does not carry. */
+static int request_forces_desktop( enum request req )
+{
+    return !strcmp( prsk_req_names[req], "get_desktop_window" );
+}
+
 static void fixup_request_before( struct __server_request_info *info, enum request req )
 {
-    if (!strcmp( prsk_req_names[req], "get_desktop_window" ))
+    if (request_forces_desktop( req ))
         info->u.req.get_desktop_window_request.force = 1;
 
 }
@@ -1066,8 +1072,33 @@ unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
         server_unlock();
         return STATUS_NO_MEMORY;
     }
-    if (req < prsk_req_count) fixup_request_before( info, req );
+    /* The forced create above has a side effect that belongs to EXPLORER,
+     * not to an app: server/window.c hands the process that creates a
+     * desktop's top window that desktop as its process DEFAULT
+     * (set_process_default_desktop). On Wine only explorer ever reaches
+     * that line, so an app's default is never touched; here the app itself
+     * is the desktop-window creator, so the first window on any NEW desktop
+     * silently re-homed the whole process onto it.
+     *
+     * msg.c's run_in_temp_desktop is exactly that: a thread switches to a
+     * throwaway desktop, and from then on the process default was the
+     * throwaway — CloseDesktop refused it as busy (desktop_close_handle
+     * checks process->desktop), every thread created afterwards inherited
+     * it, and a child window whose parent lived on the real desktop was
+     * refused ACCESS_DENIED for being on another one.
+     *
+     * So the fixture pays for its own side effect: a default the process
+     * already had is restored across the forced call. Nothing is restored
+     * when there was none (that first assignment is the one wineserver
+     * would also have made, from connect_process_winstation). */
+    obj_handle_t defaultDesktop = 0;
+    if (req < prsk_req_count)
+    {
+        fixup_request_before( info, req );
+        if (request_forces_desktop( req )) defaultDesktop = thread->process->desktop;
+    }
     ret = dispatch_request( info, thread );
+    if (defaultDesktop) thread->process->desktop = defaultDesktop;
     if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
     server_unlock();
     return ret;
