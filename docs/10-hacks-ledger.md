@@ -135,6 +135,44 @@ Retirement: when the real input path (\Device\Input0, GUI-1 / HACK-002) exists a
 
 ---
 
+## HACK-005: `NtQuerySystemInformation(SystemWineVersionInformation)` (class 1000)
+
+```
+Status:     active (answers version\0build\0sysname\0release)
+Introduced: (this change — the Art. 12 tightening that made unbuilt fatal)
+Not in NT:  NT has no class 1000 at all. It is a Wine extension — the pinned tree's own
+            switch files it under "/* Wine extensions */" (dlls/ntdll/unix/system.c), and
+            real NT answers an out-of-range class STATUS_INVALID_INFO_CLASS.
+Reason:     The unmodified PE ntdll asks for it at EVERY process start (version_init,
+            dlls/ntdll/version.c) and ignores the status. Once Art. 12 made an unbuilt
+            answer a kernel panic, "refuse it" stopped meaning "the caller limps on" and
+            started meaning "the first user process kills the machine" — so the only
+            options were to implement the class or to stop booting.
+Scope:      kernel/ps/query.c (PspQueryWineVersion + its one switch arm)
+Retirement: when the Wine fork stops asking — i.e. if version_init ever gains a
+            "no unixlib below" path, or the class leaves Wine. Deleting the arm restores
+            the refusal, and nothing else in the kernel refers to it.
+```
+
+**This entry is a weaker fit for Article 2 than HACK-001..004, and says so.** The other
+four add a new *device* or *process* at the boundary's outside, which Art. 2's GUI
+exception explicitly allows. This one adds an info class **inside the `Nt*` surface** —
+the thing Art. 2 names first. It is logged rather than quietly taken because the
+alternative (the kernel panicking on every boot) is worse, and because the cost is
+bounded: one `case` arm, one static string, no new state, no new device, and no other
+kernel code depends on it.
+
+The values are facts about the image, never an imitation of a host. `version`/`build` name
+the Wine the PE stack is built from (what `wine_get_version`'s real consumers mean: wined3d
+parses it as a version triple, shell32's About box prints the build id); `sysname` is
+`proskrnl`, which is precisely what `wine_get_host_version` exists to report; `release` is
+**empty**, because proskrnl has no release versioning and inventing a number would be the
+plausible-answer stub Art. 12 forbids. `tests/ntapi/sem_ps/process_query` pins the shape —
+a non-empty version and the four-string layout — and never the text, which differs between
+the two runners by construction.
+
+---
+
 ## Non-hacks (recorded here to prevent re-litigation)
 
 These are sometimes *mistaken* for hacks but are real NT mechanisms, so they carry **no**

@@ -163,20 +163,31 @@ START_TEST(process_query)
                                        sizeof(image_info) - 8, NULL);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "image info short -> %08lx", (unsigned long)status);
 
-    /* --- SystemWineVersionInformation (1000): the oracle's unix layer
-     * answers version\0build\0sysname\0release (dlls/ntdll/unix/system.c);
-     * proskrnl PINS a refusal instead — it is not Wine-on-unix and has no
-     * truthful uname to fabricate, and ntdll's version_init ignores the
-     * status (docs/03). */
+    /* --- SystemWineVersionInformation (1000): version\0build\0sysname\0
+     * release. Only the SHAPE is pinned — a non-empty version string and the
+     * four-string layout. The values differ by construction: the oracle's
+     * sysname/release come from its host uname, proskrnl's say "proskrnl"
+     * (HACK-005, docs/03), and pinning either side's text would pin the host
+     * the suite happens to run on. */
     char wine_version[512];
     wine_version[0] = 0;
     status = NtQuerySystemInformation(PS_SystemWineVersionInformation, wine_version,
                                       sizeof(wine_version), NULL);
-    todo_proskrnl
+    ok(status == STATUS_SUCCESS, "SystemWineVersionInformation -> %08lx", (unsigned long)status);
+    ok(wine_version[0] != 0, "wine version string empty");
     {
-        ok(status == STATUS_SUCCESS, "SystemWineVersionInformation -> %08lx",
-           (unsigned long)status);
-        ok(wine_version[0] != 0, "wine version string empty");
+        /* The build id and sysname follow the version, each NUL-terminated;
+         * walking to the third string proves the layout rather than the
+         * bytes. No CRT here (ntapi.h), so step the NULs by hand. */
+        const char *p = wine_version;
+        while (*p != 0)
+            p++;
+        p++; /* build id */
+        ok(*p != 0, "build id string empty");
+        while (*p != 0)
+            p++;
+        p++; /* sysname */
+        ok(*p != 0, "sysname string empty");
     }
 
     /* --- ProcessDefaultHardErrorMode: SetErrorMode's kernel half ---------
@@ -225,16 +236,32 @@ START_TEST(process_query)
     status = NtPowerInformation(ProcessorInformation, NULL, 0, NULL, 0);
     ok(status == STATUS_INVALID_PARAMETER, "null power buffer -> %08lx", (unsigned long)status);
 
-    /* --- SystemFirmwareTableInformation (76): host SMBIOS pass-through --
-     * The oracle serves the RSMB provider from the host's DMI tables
-     * (dlls/ntdll/unix/system.c create_smbios_data); proskrnl pins a
-     * refusal — host-derived data with no kernel source, and wineboot's
-     * create_bios_key tolerates it (docs/03). GetSystemFirmwareTable is
-     * kernelbase's thin wrapper over the class. */
+    /* --- SystemFirmwareTableInformation (76): the RSMB provider ----------
+     * The oracle synthesizes its blob from the host's DMI files
+     * (dlls/ntdll/unix/system.c create_smbios_data); proskrnl reads its own
+     * firmware (arch/x86_64/smbios.c). Both are SMBIOS, so the pin is the
+     * shape both must satisfy — never the bytes, which name the machine.
+     * GetSystemFirmwareTable is kernelbase's thin wrapper over the class:
+     * the NULL/0 sizing call returns the length, and a full-size call fills
+     * the RawSMBIOSData prologue whose Length field must agree with it. */
     UINT smbios_len =
         GetSystemFirmwareTable(('R' << 24) | ('S' << 16) | ('M' << 8) | 'B', 0, NULL, 0);
-    todo_proskrnl
+    ok(smbios_len > 8, "RSMB firmware table size %u", smbios_len);
+    if (smbios_len > 8 && smbios_len <= 65536)
     {
-        ok(smbios_len != 0, "RSMB firmware table absent on the oracle");
+        BYTE *smbios = (BYTE *)HeapAlloc(GetProcessHeap(), 0, smbios_len);
+        ok(smbios != NULL, "HeapAlloc %u", smbios_len);
+        UINT got = GetSystemFirmwareTable(('R' << 24) | ('S' << 16) | ('M' << 8) | 'B', 0, smbios,
+                                          smbios_len);
+        ok(got == smbios_len, "RSMB second call %u vs %u", got, smbios_len);
+        /* RawSMBIOSData: byte 1 is the SMBIOS major version, and the DWORD
+         * at offset 4 is the structure table's length, which must account
+         * for everything after the 8-byte prologue. */
+        ok(smbios[1] >= 2, "SMBIOS major version %u", smbios[1]);
+        ULONG table_len;
+        memcpy(&table_len, smbios + 4, sizeof(table_len));
+        ok(table_len == smbios_len - 8, "prologue length %lu vs blob %u", (unsigned long)table_len,
+           smbios_len - 8);
+        HeapFree(GetProcessHeap(), 0, smbios);
     }
 }

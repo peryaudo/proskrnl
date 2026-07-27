@@ -22,6 +22,7 @@
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/smbios.h"
 
 #include "abi/ntpsapi.h"
 #include "abi/ntimage.h"
@@ -698,6 +699,179 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
     return STATUS_SUCCESS;
 }
 
+/* --- SystemFirmwareTableInformation (76) ------------------------------------
+ *
+ * The RSMB provider, served from the machine's OWN firmware (arch/x86_64/
+ * smbios.c) rather than from anything host-derived — this is ordinary OS work,
+ * not an oracle imitation. The oracle synthesizes its answer from the host's
+ * DMI files (dlls/ntdll/unix/system.c create_smbios_data) because it has no
+ * firmware of its own to read; proskrnl does, so it passes the real table
+ * through. Only the SHAPE is the contract (pinned by sem_ps/process_query
+ * through GetSystemFirmwareTable) — never the bytes, which are the machine's.
+ */
+
+/* The provider signature callers spell as 'RSMB' (pinned Wine
+ * dlls/ntdll/unix/system.c `#define RSMB 0x52534D42`). */
+#define PSP_FIRMWARE_PROVIDER_RSMB 0x52534D42
+
+/* The RawSMBIOSData prologue GetSystemFirmwareTable(RSMB) hands back, ahead of
+ * the raw structure table (MS docs "GetSystemFirmwareTable"; the same five
+ * fields the pinned Wine calls struct smbios_prologue,
+ * dlls/ntdll/unix/system.c). */
+typedef struct
+{
+    UCHAR Used20CallingMethod;
+    UCHAR SmbiosMajorVersion;
+    UCHAR SmbiosMinorVersion;
+    UCHAR DmiRevision;
+    ULONG Length;
+} PSP_RAW_SMBIOS_DATA;
+
+static NTSTATUS PspQueryFirmwareTable(PVOID buffer, ULONG length, PULONG returnLength)
+{
+    const ULONG fixed = (ULONG)offsetof(SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer);
+    /* Wine gates on the fixed part alone, then reports the full requirement
+     * through returnLength — which is exactly what kernelbase's
+     * get_firmware_table sizing call depends on (dlls/kernelbase/memory.c:
+     * it allocates only the fixed part, then subtracts it from *returnLength
+     * to learn the table size). */
+    if (length < fixed)
+    {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS status = KiProbeForWrite(buffer, length, 1);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    SYSTEM_FIRMWARE_TABLE_INFORMATION request;
+    status = KiCopyFromUser(&request, buffer, fixed);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (request.ProviderSignature != PSP_FIRMWARE_PROVIDER_RSMB)
+    {
+        /* ACPI/FIRM and the rest are unbuilt: refuse loudly (Art. 12). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+
+    SYSTEM_FIRMWARE_TABLE_INFORMATION *reply = buffer;
+    ULONG tableLength;
+    if (request.Action == SystemFirmwareTable_Enumerate)
+    {
+        /* One RSMB table, id 0 — the whole SMBIOS blob is a single table. */
+        tableLength = sizeof(ULONG);
+    }
+    else if (request.Action == SystemFirmwareTable_Get)
+    {
+        const KI_SMBIOS_TABLE *smbios = KiSmbiosGetTable();
+        if (smbios == 0)
+        {
+            /* Firmware published no SMBIOS. Refusing is the honest answer —
+             * a synthesized table would be the fabrication Art. 12 forbids —
+             * and under QEMU (the only target) it never fires. */
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        tableLength = (ULONG)sizeof(PSP_RAW_SMBIOS_DATA) + smbios->tableLength;
+    }
+    else
+    {
+        return STATUS_NOT_IMPLEMENTED; /* an unbuilt action */
+    }
+
+    ULONG needed = fixed + tableLength;
+    /* Written before the size gate, as the oracle does: the sizing call asks
+     * with room for the fixed part only and still reads this back. */
+    reply->TableBufferLength = tableLength;
+    if (returnLength != 0)
+    {
+        *returnLength = needed;
+    }
+    if (length < needed)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    if (request.Action == SystemFirmwareTable_Enumerate)
+    {
+        ULONG tableId = 0;
+        memcpy(reply->TableBuffer, &tableId, sizeof(tableId));
+        return STATUS_SUCCESS;
+    }
+
+    const KI_SMBIOS_TABLE *smbios = KiSmbiosGetTable();
+    PSP_RAW_SMBIOS_DATA prologue;
+    prologue.Used20CallingMethod = 0; /* the 2.0 calling method is not used */
+    prologue.SmbiosMajorVersion = smbios->majorVersion;
+    prologue.SmbiosMinorVersion = smbios->minorVersion;
+    prologue.DmiRevision = smbios->docRevision;
+    prologue.Length = smbios->tableLength;
+    memcpy(reply->TableBuffer, &prologue, sizeof(prologue));
+    memcpy(reply->TableBuffer + sizeof(prologue), smbios->tableData, smbios->tableLength);
+    return STATUS_SUCCESS;
+}
+
+/* --- SystemWineVersionInformation (1000) ------------------------------------
+ *
+ * HACK-005 (docs/10, docs/03): a class NT does not have, answered inside the
+ * Nt* surface. It exists because the unmodified PE ntdll asks for it at every
+ * process start (dlls/ntdll/version.c version_init), and Art. 12 makes an
+ * unbuilt answer fatal — so the choice is to implement it or to stop booting.
+ *
+ * The reply is the oracle's own layout: four NUL-separated strings
+ * version\0build\0sysname\0release, and *returnLength is their total including
+ * the four terminators. Every value is a fact about THIS image, not an
+ * imitation of a host:
+ *   - version/build name the Wine the image's PE stack is built from, which is
+ *     what wine_get_version's consumers mean by it (wined3d parses it as a
+ *     version triple, shell32's About box prints the build id).
+ *   - sysname is the host kernel, which here really is proskrnl —
+ *     wine_get_host_version exists to answer exactly this.
+ *   - release is empty: proskrnl has no release versioning to report, and
+ *     inventing a number would be the plausible-answer stub Art. 12 forbids.
+ *     Nothing in the tree reads it (only wine_get_host_version exposes it).
+ */
+
+/* Re-verify against the pinned Wine tree on a submodule pin bump:
+ * third_party/wine/VERSION ("Wine version 11.13") and the wine_build string
+ * it produces (dlls/ntdll/unix/version.c: `const char wine_build[]`). */
+#define PSP_WINE_VERSION "11.13"
+#define PSP_WINE_BUILD   "wine-" PSP_WINE_VERSION
+
+/* The four strings back to back, each NUL-terminated — the trailing literal
+ * "" contributes the empty release plus the array's own final NUL, so
+ * sizeof() IS the oracle's length (strlen of all four, plus four). */
+static const char PspWineVersionReply[] = PSP_WINE_VERSION "\0" PSP_WINE_BUILD "\0"
+                                                           "proskrnl"
+                                                           "\0"
+                                                           "";
+
+static NTSTATUS PspQueryWineVersion(PVOID buffer, ULONG length, PULONG returnLength)
+{
+    ULONG needed = (ULONG)sizeof(PspWineVersionReply);
+    if (returnLength != 0)
+    {
+        *returnLength = needed;
+    }
+    if (length < needed)
+    {
+        /* The oracle fills what fits and still reports the shortfall
+         * (dlls/ntdll/unix/system.c: snprintf into `size`, then
+         * INFO_LENGTH_MISMATCH). version_init passes a 256-byte buffer, so
+         * this is the pathological caller's path. */
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    NTSTATUS status = KiProbeForWrite(buffer, needed, 1);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    memcpy(buffer, PspWineVersionReply, needed);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buffer, ULONG length,
                                   PULONG returnLength)
 {
@@ -945,23 +1119,9 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
     case SystemFirmwareTableInformation:
-        /* SMBIOS pass-through: the oracle synthesizes its answer from the
-         * HOST's DMI tables (dlls/ntdll/unix/system.c create_smbios_data) —
-         * host-derived data proskrnl deliberately has no source for, and
-         * the firstboot registry differential already excludes the derived
-         * keys as host-derived. wineboot's create_bios_key tolerates the
-         * refusal (GetSystemFirmwareTable answers 0 and the SMBIOS parse
-         * finds nothing). todo_proskrnl in sem_ps/process_query — the test
-         * pins the oracle's SUCCESS, never this refusal (docs/03). */
-        return STATUS_NOT_IMPLEMENTED;
+        return PspQueryFirmwareTable(buffer, length, returnLength);
     case SystemWineVersionInformation:
-        /* The oracle's unix layer answers its version/uname strings here
-         * (dlls/ntdll/unix/system.c) and ntdll's version_init — the caller,
-         * at every process start — ignores the status. proskrnl is not
-         * Wine-on-unix and refuses rather than fabricate a uname (docs/03;
-         * todo_proskrnl in sem_ps/process_query, which pins the oracle's
-         * SUCCESS, never this refusal). */
-        return STATUS_NOT_IMPLEMENTED;
+        return PspQueryWineVersion(buffer, length, returnLength);
     default:
         return STATUS_NOT_IMPLEMENTED;
     }

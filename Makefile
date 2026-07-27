@@ -125,6 +125,7 @@ CSRC := kernel/init/main.c \
         kernel/io/ioctl.c \
         arch/x86_64/serial.c \
         arch/x86_64/rtc.c \
+        arch/x86_64/smbios.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
         arch/x86_64/gdt.c \
