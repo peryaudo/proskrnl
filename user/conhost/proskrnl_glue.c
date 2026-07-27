@@ -11,8 +11,11 @@
  *   1. the process entry: open \Device\ConDrv\Server + the \Device\Serial0
  *      tty pair (HACK-004), then hand wmain its headless command line
  *   2. the mini CRT (heap over kernel32, string/memory over own loops)
- *   3. no-op stands-ins for user32 + window.c (headless: never executed) -
- *      except VkKeyScanW, whose ASCII slice the edit line dispatches on
+ *
+ * The user32 + window.c stand-ins that used to be section 3 here live in
+ * headless_stubs.c: they belong to the HEADLESS link only (the windowed
+ * conhost links the real user32 and the real window.c), while this file is
+ * shared by both links.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -287,106 +290,4 @@ long wcstol( const wchar_t *str, wchar_t **end, int base )
 int iswalnum( wint_t ch )
 {
     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
-}
-
-/* --- 3. user32 + window.c stands-ins ---------------------------------------- */
-
-/* Key-code conversion without a keyboard layout: the ASCII slice of the
- * US-layout mapping user32's VkKeyScanW documents (low byte = virtual key,
- * bit 8 = shift, bit 9 = control). The edit line dispatches Enter/Backspace
- * /Escape by VIRTUAL KEY (conhost's std_key_map), so these must be real;
- * everything unmapped returns -1 and the character still inserts by its
- * UnicodeChar. */
-SHORT WINAPI VkKeyScanW( WCHAR ch )
-{
-    if (ch == '\r') return VK_RETURN;
-    if (ch == '\b') return VK_BACK;
-    if (ch == '\t') return VK_TAB;
-    if (ch == 0x1b) return VK_ESCAPE;
-    if (ch == ' ') return VK_SPACE;
-    if (ch >= '0' && ch <= '9') return (SHORT)ch;
-    if (ch >= 'A' && ch <= 'Z') return (SHORT)(0x100 | ch);
-    if (ch >= 'a' && ch <= 'z') return (SHORT)(ch - 'a' + 'A');
-    if (ch >= 1 && ch <= 26) return (SHORT)(0x200 | ('A' + ch - 1)); /* ^A..^Z */
-    return -1;
-}
-
-UINT WINAPI MapVirtualKeyW( UINT code, UINT type )
-{
-    (void)code;
-    (void)type;
-    return 0;
-}
-
-/* Window-mode machinery: unreachable in headless mode. */
-DWORD WINAPI MsgWaitForMultipleObjects( DWORD count, const HANDLE *handles, BOOL all,
-                                        DWORD timeout, DWORD mask )
-{
-    (void)mask;
-    return WaitForMultipleObjects( count, handles, all, timeout );
-}
-
-BOOL WINAPI PeekMessageW( MSG *msg, HWND hwnd, UINT first, UINT last, UINT remove )
-{
-    (void)msg; (void)hwnd; (void)first; (void)last; (void)remove;
-    return FALSE;
-}
-
-BOOL WINAPI TranslateMessage( const MSG *msg )
-{
-    (void)msg;
-    return FALSE;
-}
-
-LRESULT WINAPI DispatchMessageW( const MSG *msg )
-{
-    (void)msg;
-    return 0;
-}
-
-BOOL WINAPI SetWindowTextW( HWND hwnd, LPCWSTR text )
-{
-    (void)hwnd; (void)text;
-    return FALSE;
-}
-
-BOOL WINAPI ShowWindow( HWND hwnd, INT cmd )
-{
-    (void)hwnd; (void)cmd;
-    return FALSE;
-}
-
-struct console;
-struct screen_buffer;
-
-void update_console_font( struct console *console, const WCHAR *face_name, size_t face_name_size,
-                          unsigned int height, unsigned int weight )
-{
-    (void)console; (void)face_name; (void)face_name_size; (void)height; (void)weight;
-}
-
-BOOL init_window( struct console *console )
-{
-    (void)console;
-    return FALSE; /* no GUI before M11+ (docs/02) */
-}
-
-void init_message_window( struct console *console )
-{
-    (void)console;
-}
-
-void update_window_region( struct console *console, const RECT *update )
-{
-    (void)console; (void)update;
-}
-
-void update_window_config( struct console *console, BOOL delay )
-{
-    (void)console; (void)delay;
-}
-
-void teardown_window( struct console *console )
-{
-    (void)console;
 }
