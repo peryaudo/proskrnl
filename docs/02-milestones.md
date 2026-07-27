@@ -437,6 +437,34 @@ GUI-3 (docs/03 "the font oracle": oracle and target now share backend, version a
 set). What GUI-3 did *not* pin is the metric differential itself — the same measurement
 run on both sides — which belongs here.
 
+**Partly done** — everything except the trophy. `tests/run/run.sh gui5` is green:
+clipboard, hooks and `AttachThreadInput` all hold cross-process over the unmodified pinned
+server, which needed **nothing built** — every server half has been compiled and
+dispatchable since GUI-2, and the leg passed on first bring-up (the strongest statement yet
+about route (a)'s "compile the pinned server unmodified" bet). The delayed-render round trip
+(`WM_RENDERFORMAT` into another process), the ownership handoff, a thread-local `WH_CBT`
+hook, the cross-thread focus wall opening and closing, and a `WH_KEYBOARD_LL` hook meeting
+real injected virtio input — with the unhook proved by counting, not by absence.
+The **font-metrics differential** GUI-3 deferred here is pinned: one binary, both sides, one
+committed golden table (`tests/gdi/fontdiff.golden`), re-diffed on every oracle run so it
+cannot go stale, and compared exactly (no epsilon) on the target.
+`tests/run/run.sh gui5con` is green: conhost is **dual-mode** — the pinned tree's `window.c`
+and resources compiled UNMODIFIED (zero fork commits, hack meter unchanged) and linked
+against the real user32/gdi32, chosen by which binary an image bakes. A windowed console
+found on the scanout, typed into through the real input queue, `^C` reaching a busy program
+through conhost's own `map_to_ctrlevent` (the CUI-4 serial intercept out of the loop), and
+the session's files read back out of the image. `make rungui` now boots that command prompt.
+The serial console is **permanent** by decision (docs/10 HACK-004 rescoped, not retired):
+a console that works while the GUI stack is broken is a kept debugging capability.
+**Not done: the trophy.** `user32:msg` builds, boots and runs on the full stack
+(`run.sh guiwtest`, budget-ratcheted), and has already convicted three real bugs — a missing
+per-session `BaseNamedObjects`, an unimplemented `get_process_idle_event`, and a lock-order
+inversion of ours that deadlocked the suite — but it dies of an access violation about a
+third of the way in. The leg is red by design and out of CI; state and next thread:
+docs/03 "GUI-5 winetest notes". Two tools the hunt left behind: a timeout/deadlock dump that
+prints every thread's state, waits, user RIP and stack frames, and a sweep-driven detector
+that catches a user-space deadlock within seconds of it forming (docs/03 GUI-5 notes).
+
 ## GUI-6 — Desktop *(Wine desktop; not the ReactOS shell)*
 `wineboot` has already run (CUI-1's firstboot), so this is
 `explorer.exe /desktop=shell,WxH` plus whatever machine-state furniture explorer/shell32

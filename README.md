@@ -288,9 +288,45 @@ is named in `docs/03`), `HWND_BOTTOM` lowering exposure, and the earlier
 milestones' residuals (`docs/03` "GUI-4 notes" collects them, including
 the focus-stealing lesson the leg surfaced).
 
-Also next: **GUI-5** — GUI finishing: clipboard, hooks,
-`AttachThreadInput`, GUI-ifying conhost, and Wine's `user32/tests/msg.c`
-(the font-metrics differential lands there too); or **CUI-5** (Io
+**GUI-5 partly complete — everything except the trophy.** Clipboard,
+hooks and `AttachThreadInput` hold cross-process (`tests/run/run.sh
+gui5`): a delayed-render round trip driving `WM_RENDERFORMAT` into
+another process, the clipboard ownership handoff seen from the old
+owner's side, a `WH_CBT` hook observing window creation, the cross-thread
+focus wall opening under `AttachThreadInput` and closing after detach,
+and a `WH_KEYBOARD_LL` hook meeting real injected virtio input — with the
+unhook proved by *counting* the hook's lines, not by their absence. None
+of it needed building: every server half has been compiled and
+dispatchable since GUI-2, and the leg passed on first bring-up. The
+**font-metrics differential** GUI-3 deferred here is pinned — one binary
+on both sides against one committed golden table, re-diffed on every
+oracle run so it cannot go stale, compared exactly on the target.
+**conhost is dual-mode** (`tests/run/run.sh gui5con`): the pinned tree's
+`window.c` and resources compiled *unmodified* — zero fork commits, hack
+meter unchanged — and linked against the real user32/gdi32, selected by
+which binary an image bakes. The leg finds the console window on the
+scanout (no guest declares it), clicks it, types a session through the
+real input queue, interrupts a busy program with `^C` through conhost's
+own `map_to_ctrlevent` with the CUI-4 serial intercept entirely out of
+the loop, and reads the results back out of the image. `make rungui` now
+boots that command prompt. The serial console is **permanent** by
+decision — HACK-004 is rescoped, not retired: a console that still works
+when the GUI stack is broken is a kept debugging capability.
+**Not yet: the trophy.** Wine's `user32:msg` builds, boots and runs on the
+full stack (`run.sh guiwtest`, budget-ratcheted) and has already convicted
+three real bugs — a missing per-session `BaseNamedObjects` directory, an
+unimplemented `get_process_idle_event`, and a lock-order inversion of
+*ours* that deadlocked the suite (the winefb flush took win32u's user lock
+under the surface mutex) — but it still dies of an access violation about
+a third of the way through the module, so the leg is red by design and out
+of CI (`docs/03` "GUI-5 winetest notes" has the state and the next
+thread). The hunt left two tools behind: a dump that prints every thread's
+state, waits, user RIP and stack frames when a process wedges or faults,
+and a consistency-sweep detector that catches a *user-space* deadlock
+within seconds of it forming — Art. 3's atomic snapshot making "every
+thread parked on its own tid-alert latch" a sound verdict.
+
+Also next: finishing GUI-5's trophy, then **GUI-6** — the Wine desktop; or **CUI-5** (Io
 completion, led by file rename) through **CUI-7**,
 the measured syscall gap and its plan (`docs/16-syscall-status.md`,
 `docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
