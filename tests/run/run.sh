@@ -187,6 +187,38 @@ oracle() {
         fails=$((fails+1))
     fi
 
+    # GUI-5: the metric differential itself (tests/gdi/fontdiff.c — the half
+    # docs/03 "the font oracle" deferred here). The same binary the gui5 leg
+    # bakes prints a fixed metric table; the oracle's table is pinned as
+    # tests/gdi/fontdiff.golden and re-diffed HERE on every run, so the
+    # golden can never go silently stale. The gui5 leg diffs the guest's
+    # table against the same file — exact integers, no epsilon (same pinned
+    # FreeType, same font bytes, 96 dpi on both sides). Regenerate with
+    # FONTDIFF_REFRESH=1 and commit the diff: a pin bump that moves a metric
+    # is a reviewed change, never a silent one.
+    local fdexe fdout fdlines fdgold="$ROOT/tests/gdi/fontdiff.golden"
+    fdexe="$BUILD/ntapi/fontdiff.exe"
+    if [[ ! -f "$fdexe" || "$ROOT/tests/gdi/fontdiff.c" -nt "$fdexe" || \
+          "$NTAPI/ntapi.c" -nt "$fdexe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontdiff.c" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fdexe" >&2
+    fi
+    fdout="$("$WINE" "$fdexe" 2>&1 || true)"
+    echo "$fdout"
+    fdlines="$(echo "$fdout" | tr -d '\r' | grep -E '^\[KTEST\] fontdiff (dpi=|face=|done )')"
+    if ! echo "$fdout" | tr -d '\r' | grep -qE '^\[KTEST\] fontdiff PASS$'; then
+        fails=$((fails+1))
+    elif [[ "${FONTDIFF_REFRESH:-0}" == "1" ]]; then
+        echo "$fdlines" > "$fdgold"
+        echo "== fontdiff: golden refreshed ($fdgold) — review and commit the diff =="
+    elif ! diff -u "$fdgold" <(echo "$fdlines") >&2; then
+        echo "[KTEST] fontdiff-golden FAIL (oracle metrics differ from tests/gdi/fontdiff.golden)"
+        fails=$((fails+1))
+    else
+        echo "[KTEST] fontdiff-golden PASS"
+    fi
+
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
 }

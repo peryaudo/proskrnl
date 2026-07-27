@@ -1,0 +1,22 @@
+[KTEST] fontdiff dpi=96,96
+[KTEST] fontdiff face=Tahoma w=400 h=-11 tm=13,11,2,2,0,5,16,400,0,0x27,0 ext=294x13 cw=3,10,6,3,180 abc=0,10,0
+[KTEST] fontdiff face=Tahoma w=400 h=-13 tm=16,13,3,3,0,6,19,400,0,0x27,0 ext=346x16 cw=3,12,7,4,212 abc=0,12,0
+[KTEST] fontdiff face=Tahoma w=400 h=-16 tm=19,16,3,3,0,7,23,400,0,0x27,0 ext=433x19 cw=4,14,9,5,259 abc=0,15,-1
+[KTEST] fontdiff face=Tahoma w=400 h=-24 tm=29,24,5,5,0,11,35,400,0,0x27,0 ext=629x29 cw=5,22,13,7,388 abc=0,22,0
+[KTEST] fontdiff face=Tahoma w=400 h=16 tm=16,13,3,3,0,6,19,400,0,0x27,0 ext=346x16 cw=3,12,7,4,212 abc=0,12,0
+[KTEST] fontdiff face=Tahoma w=700 h=-11 tm=13,11,2,2,0,6,17,700,0,0x27,0 ext=355x13 cw=4,11,7,3,216 abc=0,12,-1
+[KTEST] fontdiff face=Tahoma w=700 h=-13 tm=16,13,3,3,0,7,20,700,0,0x27,0 ext=407x16 cw=4,13,8,4,246 abc=0,14,-1
+[KTEST] fontdiff face=Tahoma w=700 h=-16 tm=19,16,3,3,0,8,25,700,0,0x27,0 ext=493x19 cw=5,16,10,5,299 abc=0,17,-1
+[KTEST] fontdiff face=Tahoma w=700 h=-24 tm=29,24,5,5,0,12,37,700,0,0x27,0 ext=716x29 cw=8,25,15,7,442 abc=0,25,0
+[KTEST] fontdiff face=Tahoma w=700 h=16 tm=16,13,3,3,0,7,20,700,0,0x27,0 ext=407x16 cw=4,13,8,4,246 abc=0,14,-1
+[KTEST] fontdiff face=MS_Sans_Serif w=400 h=-11 tm=13,11,2,2,0,5,11,400,0,0x21,0 ext=274x13 cw=2,11,6,3,188 abc=0,11,0
+[KTEST] fontdiff face=MS_Sans_Serif w=400 h=-13 tm=16,13,3,3,0,7,14,400,0,0x21,0 ext=335x16 cw=3,13,7,3,234 abc=0,13,0
+[KTEST] fontdiff face=MS_Sans_Serif w=400 h=-16 tm=20,16,4,4,0,8,16,400,0,0x21,0 ext=403x20 cw=3,15,9,4,283 abc=0,15,0
+[KTEST] fontdiff face=MS_Sans_Serif w=400 h=-24 tm=20,16,4,4,0,8,16,400,0,0x21,0 ext=403x20 cw=3,15,9,4,283 abc=0,15,0
+[KTEST] fontdiff face=MS_Sans_Serif w=400 h=16 tm=16,13,3,3,0,7,14,400,0,0x21,0 ext=335x16 cw=3,13,7,3,234 abc=0,13,0
+[KTEST] fontdiff face=Courier w=400 h=-11 tm=13,11,2,0,0,8,8,400,0,0x30,0 ext=432x13 cw=8,8,8,8,208 abc=0,8,0
+[KTEST] fontdiff face=Courier w=400 h=-13 tm=13,11,2,0,0,8,8,400,0,0x30,0 ext=432x13 cw=8,8,8,8,208 abc=0,8,0
+[KTEST] fontdiff face=Courier w=400 h=-16 tm=13,11,2,0,0,8,8,400,0,0x30,0 ext=432x13 cw=8,8,8,8,208 abc=0,8,0
+[KTEST] fontdiff face=Courier w=400 h=-24 tm=26,22,4,0,0,16,16,400,0,0x30,0 ext=864x26 cw=16,16,16,16,416 abc=0,16,0
+[KTEST] fontdiff face=Courier w=400 h=16 tm=13,11,2,0,0,8,8,400,0,0x30,0 ext=432x13 cw=8,8,8,8,208 abc=0,8,0
+[KTEST] fontdiff done n=20
