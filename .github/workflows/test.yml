@@ -75,7 +75,15 @@ jobs:
       # the generated config.h) and would rebuild it from source, but that
       # costs hours on every run until the key moves — which is the point of
       # moving it. freetype's new x86_64-linux output joins the paths below.
-      # Kept in lockstep with the tp-v4 release assets: if only one door
+      # v5: the same failure mode again, one build set over. GUI-5 adds
+      # dlls/user32/tests to what setup_linux.sh builds in the pinned tree
+      # (the msg-gate binary, user32_test.exe). The pins did not move, so
+      # every v4 entry — a tree without that exe — would satisfy the skip
+      # guard forever; the prefix bump is what forces the one incremental
+      # build. Expect the first run on this key to pay it (minutes, not the
+      # hours of a full rebuild: the tree itself is already built).
+      #
+      # Kept in lockstep with the tp-v5 release assets: if only one door
       # moved, the stale oracle would come back in through the other.
       - name: Restore third_party builds
         id: tp-cache
@@ -87,7 +95,7 @@ jobs:
             third_party/wine
             third_party/freetype/x86_64-windows
             third_party/freetype/x86_64-linux
-          key: third-party-v4-${{ steps.pins.outputs.key }}
+          key: third-party-v5-${{ steps.pins.outputs.key }}
 
       # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
       # repo budget) far more eagerly than the release-cache assets the
@@ -197,7 +205,7 @@ jobs:
             third_party/wine
             third_party/freetype/x86_64-windows
             third_party/freetype/x86_64-linux
-          key: third-party-v4-${{ steps.pins.outputs.key }}
+          key: third-party-v5-${{ steps.pins.outputs.key }}
 
       # Mirror the finished builds to the rolling `third-party-cache`
       # prerelease so ephemeral containers outside Actions (Claude Code on
@@ -236,7 +244,7 @@ jobs:
           # font-metrics oracle); the immutable-sentinel argument above
           # applies unchanged, and the same lockstep rule holds.
           existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          if grep -qx "tp-v4-$KEY-distro.txt" <<<"$existing"; then
+          if grep -qx "tp-v5-$KEY-distro.txt" <<<"$existing"; then
             echo "assets for key $KEY already published — skipping"
             exit 0
           fi
@@ -245,7 +253,7 @@ jobs:
           # The tarballs hold binaries linked against this runner's glibc;
           # fetch_third_party.sh refuses to restore onto a different distro
           # release, so record which one built them.
-          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v4-$KEY-distro.txt"
+          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v5-$KEY-distro.txt"
           # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
           # side concatenates partNN in order.
           # freetype packs BOTH build outputs (PE static library + the native
@@ -256,15 +264,15 @@ jobs:
                       "freetype:third_party/freetype/x86_64-windows third_party/freetype/x86_64-linux"; do
             name="${spec%%:*}"; paths="${spec#*:}"
             tar -C "$GITHUB_WORKSPACE" --zstd -cf - $paths \
-              | split -b 1900m -d -a 2 - "$pack/tp-v4-$KEY-$name.tar.zst.part"
+              | split -b 1900m -d -a 2 - "$pack/tp-v5-$KEY-$name.tar.zst.part"
           done
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v4-"$KEY"-*.part* --clobber
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v4-$KEY-distro.txt" --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v5-"$KEY"-*.part* --clobber
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v5-$KEY-distro.txt" --clobber
           # Prune stale keys only after the new key uploaded whole, so a
           # failed upload never leaves the release empty.
           for a in $existing; do
             case "$a" in
-              tp-v4-"$KEY"-*) ;;
+              tp-v5-"$KEY"-*) ;;
               *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
             esac
           done

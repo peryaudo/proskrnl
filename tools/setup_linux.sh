@@ -172,8 +172,9 @@ fi
 # — so re-configuring with tests enabled is incremental over the build above.
 # Only the five in-scope CUI test directories are built; note a bare `make`
 # in third_party/wine after this point would build every test module.
-echo "== wine: the CUI test modules (the winetest gate) =="
-if [[ $wineStale -eq 0 && -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe ]]; then
+echo "== wine: the CUI test modules (the winetest gate) + user32 (the GUI-5 msg gate) =="
+if [[ $wineStale -eq 0 && -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe &&
+      -f third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe ]]; then
     echo "   already built — skipping"
 else
     (cd third_party/wine &&
@@ -181,7 +182,7 @@ else
     LD_LIBRARY_PATH="$FT_NATIVE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         make -C third_party/wine -j"$JOBS" \
         dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
-        dlls/ucrtbase/tests/all programs/cmd/tests/all
+        dlls/ucrtbase/tests/all programs/cmd/tests/all dlls/user32/tests/all
 fi
 
 echo
