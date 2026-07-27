@@ -116,7 +116,9 @@ trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` lin
   `ThreadQuerySetWin32StartAddress`. → CUI-6.
 - **`NtQuerySystemInformation`** (11 classes): no `SystemHandleInformation`,
   `SystemModuleInformation`, `SystemProcessorPerformanceInformation`. → CUI-6.
-- **`NtQueryInformationFile`** (18 classes): no `FileNetworkOpenInformation`,
+- **`NtQueryInformationFile`** (19 classes since GUI-5 built the query side of
+  `FileEndOfFileInformation`, which ntdll's activation-context loader asks for):
+  no `FileNetworkOpenInformation`,
   `FileAttributeTagInformation`, `FileStreamInformation`; `NtQueryDirectoryFile`
   lacks `FileIdBothDirectoryInformation`; volume queries lack
   `FileFsFullSizeInformation`. → CUI-5.
