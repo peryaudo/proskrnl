@@ -32,6 +32,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/gdt.h"
 
 #include "abi/ntcontext.h"
@@ -329,6 +330,15 @@ static BOOLEAN KiEnterUserExceptionDispatcher(PKTRAP_FRAME trapFrame,
 
 BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, uint64_t faultAddress)
 {
+    /* Art. 9: name every exception the kernel hands to user mode — when an
+     * unhandled one later kills the process, this line is the only record
+     * of where it struck (no ASLR: the rip symbolizes offline). Intentional
+     * faults (guard pages, IsBad*Ptr probes) make this chatty in bursts;
+     * measured against the winetest sweeps the volume stays readable. */
+    DbgPrint("[KTEST] user exception code=%#lx rip=%p addr=%p pid=%lu\n",
+             (unsigned long)exceptionCode, (void *)trapFrame->rip, (void *)faultAddress,
+             (unsigned long)KeGetCurrentThread()->process->uniqueProcessId);
+
     EXCEPTION_RECORD record;
     memset(&record, 0, sizeof(record));
     record.ExceptionCode = exceptionCode;

@@ -121,6 +121,18 @@ typedef struct EPROCESS
      * failed create that never ran). */
     BOOLEAN isSystemProcess;
     BOOLEAN shutdownAccounted;
+
+    /* GUI-5: the consistency sweep's wedge detector (kernel/init/verify.c).
+     * When EVERY thread of a user process sits in an untimed wait on its own
+     * tid-alert latch, no in-process waker can ever run again — ntdll's
+     * futex protocol (RtlWaitOnAddress) only ever alerts same-process tids —
+     * so the process is deadlocked in user-space locks the kernel cannot
+     * see. The sweep confirms the picture is STANDING (same alert counters
+     * across consecutive sweeps) and then dumps it once, loudly, instead of
+     * letting a harness timeout discover it forty minutes later. */
+    uint64_t wedgeSig;
+    int wedgeSweeps;
+    BOOLEAN wedgeReported;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
@@ -140,6 +152,13 @@ typedef struct ETHREAD
      * synchronization event IS the contract: set-while-not-waiting latches,
      * one wait consumes (Wine dlls/ntdll/unix/sync.c futex semantics). */
     KEVENT tidAlertEvent;
+    /* Diagnostic counters for the wedge dump (kernel/ps/process.c): how many
+     * alerts ever landed on this thread and how many alert waits were
+     * satisfied. alertsIn == alertsOut with a waiter parked on the latch is
+     * "the wake was never sent"; alertsIn > alertsOut with signalState 0 is
+     * a consumed-elsewhere trail. Cheap enough to keep. */
+    uint64_t tidAlertsIn;
+    uint64_t tidAlertsOut;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;
@@ -215,6 +234,11 @@ typedef struct PSP_CREATE_OPTIONS
 NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
                                PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
                                PETHREAD *threadOut);
+/* Art. 9: print every thread of a process (state, wait, user RIP, stack
+ * window) — the harness-timeout dump, also fired by the sweep's wedge
+ * detector (kernel/init/verify.c). Caller holds the dispatcher lock. */
+void PsDumpWedgedProcessLocked(PEPROCESS process);
+
 NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut);
 

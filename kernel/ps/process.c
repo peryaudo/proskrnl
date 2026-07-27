@@ -832,9 +832,9 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
  * path), and the return addresses on its user stack. With no ASLR the
  * module layout is deterministic, so the raw values symbolize offline. A
  * silent timeout was just "it hung"; this is a backtrace. */
-static void PspDumpWedgedProcess(PEPROCESS process)
+void PsDumpWedgedProcessLocked(PEPROCESS process)
 {
-    uint64_t flags = KiAcquireDispatcherLock();
+    ASSERT(KiIsDispatcherLockHeld());
     DbgPrint("[KTEST] wedged pid=%lu image=%s\n", (unsigned long)process->uniqueProcessId,
              process->imageName ? process->imageName : "?");
     for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
@@ -842,15 +842,18 @@ static void PspDumpWedgedProcess(PEPROCESS process)
     {
         PETHREAD thread = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
         PKTHREAD tcb = thread->tcb;
-        DbgPrint("[KTEST] wedged tid=%lu state=%d alertable=%d rip=%p\n",
+        DbgPrint("[KTEST] wedged tid=%lu state=%d alertable=%d rip=%p entry=%p\n",
                  (unsigned long)thread->uniqueThreadId, tcb ? tcb->state : -1,
                  tcb ? (int)tcb->waitAlertable : -1,
-                 tcb && tcb->trapFrame ? (void *)tcb->trapFrame->rip : 0);
+                 tcb && tcb->trapFrame ? (void *)tcb->trapFrame->rip : 0,
+                 /* the thread's real start routine (RtlUserThreadStart's
+                  * first argument) — names an anonymous worker offline */
+                 tcb ? (void *)tcb->userStartArg1 : 0);
         if (tcb != 0)
         {
             for (PKWAIT_BLOCK block = tcb->waitBlockList; block != 0; block = block->nextWaitBlock)
             {
-                DbgPrint("[KTEST] wedged tid=%lu waits-on=%p%s\n",
+                DbgPrint("[KTEST] wedged tid=%lu waits-on=%p%s latch=%ld in=%lu out=%lu\n",
                          (unsigned long)thread->uniqueThreadId, block->object,
                          block->object == &thread->tidAlertEvent ? " (own tid-alert latch)" : "");
             }
@@ -874,8 +877,25 @@ static void PspDumpWedgedProcess(PEPROCESS process)
                     shown++;
                 }
             }
+            /* The raw top of the stack too: the blocked call's locals live
+             * here (RtlWaitOnAddress's futex entry — the waited address and
+             * the tid the waker must alert — sits in this window), and the
+             * filter above cannot know which non-code values matter. */
+            for (uint64_t i = 0; i + 4 <= copied / sizeof(uint64_t) && i < 32; i += 4)
+            {
+                DbgPrint("[KTEST] wedged tid=%lu rsp+%03lx: %p %p %p %p\n",
+                         (unsigned long)thread->uniqueThreadId, (unsigned long)(i * 8),
+                         (void *)stack[i], (void *)stack[i + 1], (void *)stack[i + 2],
+                         (void *)stack[i + 3]);
+            }
         }
     }
+}
+
+static void PspDumpWedgedProcess(PEPROCESS process)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    PsDumpWedgedProcessLocked(process);
     KiReleaseDispatcherLock(flags);
 }
 
