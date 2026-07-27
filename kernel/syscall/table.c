@@ -65,18 +65,6 @@ static const KI_SERVICE_DESCRIPTOR KiServiceTable[NTSYS_SYSCALL_LIMIT] = {
  * C:\panic_not_implemented.flag by kernel/init/main.c. */
 BOOLEAN KiPanicOnNotImplemented = FALSE;
 
-/* The pinned-refusal latch: set by KiPinnedNotImplemented, cleared by the
- * dispatcher before each service call. A plain global is safe under Art. 3
- * (uniprocessor, no kernel preemption): a pinned site sets it and returns
- * without blocking, so no other thread's syscall can run in between. */
-static BOOLEAN KiNotImplementedPinned = FALSE;
-
-NTSTATUS KiPinnedNotImplemented(void)
-{
-    KiNotImplementedPinned = TRUE;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
 const char *KiSystemCallName(uint64_t number)
 {
     if (number >= NTSYS_SYSCALL_LIMIT || KiServiceTable[number].name == 0)
@@ -128,7 +116,6 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
     {
         ASSERT(thread->previousMode == KernelMode); /* syscalls never nest */
         thread->previousMode = UserMode;
-        KiNotImplementedPinned = FALSE;
 
         uint64_t stackArguments[KI_MAX_SYSCALL_ARGUMENTS - 4] = {0};
         status = STATUS_SUCCESS;
@@ -153,9 +140,10 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
 
         /* A partial service's unbuilt case (an info class, an ioctl verb, a
          * flag) refusing loudly per Art. 12: name it like the MISSING row
-         * does — unless the refusal is the pinned contract itself
-         * (KiPinnedNotImplemented), which is an implementation, not a stub. */
-        if (status == STATUS_NOT_IMPLEMENTED && !KiNotImplementedPinned)
+         * does. No case is exempt — STATUS_NOT_IMPLEMENTED means "unbuilt",
+         * and matching an oracle that is itself unbuilt is not a contract
+         * worth reproducing, so there is nothing here to spare. */
+        if (status == STATUS_NOT_IMPLEMENTED)
         {
             /* arg1/arg2 name the refused case (the info class / verb usually
              * rides in one of them) — the bring-up loop needs the exact

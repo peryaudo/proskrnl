@@ -1,15 +1,11 @@
 /* kernel/io/lock.c — byte-range locks: NtLockFile / NtUnlockFile (M6).
  *
  * Semantics pinned by tests/ntapi/sem_file/byte_locks.c on the Wine oracle:
- * the decorated forms (non-NULL apc / io_status / key) are refused with
- * STATUS_NOT_IMPLEMENTED exactly as the pinned Wine refuses them (its own
- * PE stack never passes them — that IS the boundary contract, Art. 6);
  * a FailImmediately conflict is STATUS_FILE_LOCK_CONFLICT; unlock demands
  * the exact previously-locked range and owner; a handle's locks die with
  * its last handle (IopCloseFileObject).
  */
 #include "kernel/io/io.h"
-#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/ke/ke.h"
 #include "kernel/mm/pool.h"
@@ -118,11 +114,13 @@ NTSTATUS NtLockFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apcC
                     ULONG *key, BOOLEAN failImmediately, BOOLEAN exclusive)
 {
     (void)apcContext;
-    /* The pinned Wine contract (sem_file/byte_locks): only the bare form is
-     * implemented — the oracle's own refusal, not a stub. */
+    /* Only the bare form is built: a non-NULL apc, io_status, or key is an
+     * unbuilt case refusing loudly (Art. 12). The pinned Wine refuses these
+     * too, but an oracle refusal is not a contract — it is the oracle being
+     * unbuilt — so nothing pins this and the dispatcher convicts it. */
     if (apc != 0 || iosb != 0 || key != 0)
     {
-        return KiPinnedNotImplemented();
+        return STATUS_NOT_IMPLEMENTED;
     }
     if (byteOffset == 0 || length == 0)
     {
@@ -191,7 +189,7 @@ NTSTATUS NtUnlockFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteO
 {
     if (key != 0)
     {
-        return KiPinnedNotImplemented(); /* the pinned Wine contract */
+        return STATUS_NOT_IMPLEMENTED; /* the keyed form is unbuilt (Art. 12) */
     }
     if (iosb == 0 || byteOffset == 0 || length == 0)
     {

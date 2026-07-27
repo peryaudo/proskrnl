@@ -154,7 +154,7 @@ for spec in ${WIN_SPECS[@]+"${WIN_SPECS[@]}"}; do
     copy "$src" "::/$dest"
 done
 # Art. 12 dialed to fatal, by default on EVERY image: the marker makes the
-# kernel panic on any unpinned STATUS_NOT_IMPLEMENTED syscall answer
+# kernel panic on any STATUS_NOT_IMPLEMENTED syscall answer, no exemptions
 # (kernel/init/main.c KiConfigurePanicOnNotImplemented, kernel/syscall/
 # table.c). PANIC_NOTIMPL=0 omits the marker for a limp-along boot.
 if [[ "${PANIC_NOTIMPL:-1}" != 0 ]]; then

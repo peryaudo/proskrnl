@@ -2,12 +2,12 @@
  * NtQueryDirectoryFile info classes (M6; docs/05 calls this the mechanical
  * file). Class coverage and error conventions pinned by
  * tests/ntapi/sem_file/{info_classes,query_dir,read_write,delete_on_close}.c
- * on the Wine oracle — including the pinned-Wine choices: an unsupported
- * class is STATUS_NOT_IMPLEMENTED, and a directory mask binds to the handle
- * (a NULL mask on a later call reuses the previous one).
+ * on the Wine oracle — including the pinned-Wine choice that a directory
+ * mask binds to the handle (a NULL mask on a later call reuses the previous
+ * one). An unsupported class is an unbuilt case, not a contract: it refuses
+ * with STATUS_NOT_IMPLEMENTED and nothing pins it (Art. 12).
  */
 #include "kernel/io/io.h"
-#include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
@@ -100,9 +100,10 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         needed = 0; /* length checking lives in the pipe FS (M9) */
         break;
     default:
-        /* Unsupported class: STATUS_NOT_IMPLEMENTED (pinned Wine; real NT
-         * says INVALID_INFO_CLASS — Wine wins, Art. 6). */
-        return KiPinnedNotImplemented();
+        /* An unbuilt class refuses loudly (Art. 12). The pinned Wine answers
+         * STATUS_NOT_IMPLEMENTED here as well, which makes it unbuilt too —
+         * not a contract, so no test pins it. */
+        return STATUS_NOT_IMPLEMENTED;
     }
     if (length < needed)
     {
@@ -168,11 +169,15 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         /* A backend without a per-file identity (devices, pipes; also the
          * FAT root, whose key is (0,0)) refuses loudly rather than serving
          * a fabricated constant id — the pinned Wine answers with a real
-         * unix inode there, so 0 would be a silent divergence (Art. 12). */
+         * unix inode there, so 0 would be a silent divergence (Art. 12).
+         * The refusal is unbuilt, not a contract: nothing pins it, and the
+         * dispatcher's armed panic convicts a ring-3 caller that reaches it
+         * — which is how the missing identity gets built rather than
+         * tolerated. */
         if (raw.fileId == 0)
         {
             ObDereferenceObject(file);
-            return KiPinnedNotImplemented();
+            return STATUS_NOT_IMPLEMENTED;
         }
         FILE_INTERNAL_INFORMATION *out = buffer;
         out->IndexNumber.QuadPart = (LONGLONG)raw.fileId;
@@ -289,7 +294,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         requiredAccess = 0;
         break;
     default:
-        return KiPinnedNotImplemented(); /* pinned Wine, as in query above */
+        return STATUS_NOT_IMPLEMENTED; /* unbuilt class, as in query above */
     }
     if (length < needed)
     {
@@ -764,7 +769,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = KiPinnedNotImplemented(); /* pipes/console: wineserver's answer */
+            status = STATUS_NOT_IMPLEMENTED; /* pipes/console: no volume, unbuilt */
             break;
         }
         if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
@@ -794,7 +799,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = KiPinnedNotImplemented(); /* wineserver's answer, as above */
+            status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
             break;
         }
         if (length < sizeof(FILE_FS_SIZE_INFORMATION))
@@ -821,7 +826,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
-            status = KiPinnedNotImplemented(); /* wineserver's answer, as above */
+            status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
             break;
         }
         if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))

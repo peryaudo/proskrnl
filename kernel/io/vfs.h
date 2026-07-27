@@ -145,9 +145,11 @@ typedef struct IO_VFS_OPS
 
     /* The volume's identity and geometry, for the FileFsVolume/Size/
      * AttributeInformation classes. NULL = not a filesystem volume: those
-     * classes answer STATUS_NOT_IMPLEMENTED, matching what Wine's
-     * pipe/console server objects reply (server/named_pipe.c
-     * pipe_end_get_volume_info default arm). */
+     * classes are unbuilt for it and refuse with STATUS_NOT_IMPLEMENTED
+     * (Art. 12 — the dispatcher's armed panic convicts a ring-3 caller that
+     * reaches one). Wine's pipe/console server objects refuse them too
+     * (server/named_pipe.c pipe_end_get_volume_info default arm), which
+     * makes the oracle unbuilt here as well — so nothing pins it. */
     NTSTATUS (*QueryVolumeInfo)(struct IO_DEVICE *device, IO_VOLUME_INFO *info);
 
     /* --- M9 optional device ops (NULL = the page-cache file behaviour) ----

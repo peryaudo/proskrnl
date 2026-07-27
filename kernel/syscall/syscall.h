@@ -32,15 +32,10 @@ const char *KiSystemCallName(uint64_t number);
  * While armed, a ring-3 syscall that answers STATUS_NOT_IMPLEMENTED —
  * a KI_SYSCALL_MISSING id or a partial service's unbuilt case — panics
  * instead of returning, so a run convicts the exact first unbuilt service
- * it needed rather than limping past it. */
+ * it needed rather than limping past it. No refusal is exempt: the status
+ * means "unbuilt", and the oracle answering it too makes the oracle unbuilt
+ * as well — never a contract worth reproducing (Art. 12). */
 extern BOOLEAN KiPanicOnNotImplemented;
-
-/* A pinned refusal: STATUS_NOT_IMPLEMENTED that IS the contract — the pinned
- * oracle's own answer for the case (G12: "then it's an implementation, not a
- * stub") or a docs/03 deviation an ntapi test exercises. Returning through
- * this helper marks the status so the armed panic above does not convict it;
- * a bare `return STATUS_NOT_IMPLEMENTED` stays a loud stub. */
-NTSTATUS KiPinnedNotImplemented(void);
 
 /* entry.S: first descent into ring 3 (kernel/ps). KERNEL_GS_BASE must already
  * carry the thread's TEB; the kernel stack is abandoned. arg1/arg2 seed the

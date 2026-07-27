@@ -35,7 +35,6 @@
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/pagecache.h"
-#include "kernel/syscall/syscall.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -170,7 +169,7 @@ static NTSTATUS FbDeviceControl(PFILE_OBJECT file, ULONG code, const void *input
     /* Art. 12: name the refusal on serial and return the refusal status —
      * never a no-op success for a verb this device does not have. */
     DbgPrint("fb: unimplemented ioctl %#lx\n", (unsigned long)code);
-    return KiPinnedNotImplemented();
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 static const IO_VFS_OPS FbOps = {

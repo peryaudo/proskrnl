@@ -672,8 +672,8 @@ static BOOLEAN KiIsInteractiveBoot(void)
 
 /* Art. 12 dialed to fatal: C:\panic_not_implemented.flag (baked into every
  * image by tools/mkimage.sh unless PANIC_NOTIMPL=0) arms the dispatcher's
- * panic on any unpinned STATUS_NOT_IMPLEMENTED answer (kernel/syscall/
- * table.c). Same image-decides pattern as KiIsInteractiveBoot. */
+ * panic on any STATUS_NOT_IMPLEMENTED answer (kernel/syscall/table.c) — no
+ * refusal is exempt. Same image-decides pattern as KiIsInteractiveBoot. */
 static void KiConfigurePanicOnNotImplemented(void)
 {
     KiPanicOnNotImplemented = KiBootFileExists(WSTR("\\??\\C:\\panic_not_implemented.flag"));

@@ -28,7 +28,6 @@
 #include "kernel/io/io.h"
 #include "kernel/io/vfs.h"
 #include "kernel/ke/ke.h"
-#include "kernel/syscall/syscall.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -196,7 +195,7 @@ static NTSTATUS HidPointerDeviceControl(PFILE_OBJECT file, ULONG code, const voi
     /* Art. 12: name the refusal on serial and return the refusal status —
      * never a no-op success for a verb this device does not have. */
     DbgPrint("hid: unimplemented pointer ioctl %#lx\n", (unsigned long)code);
-    return KiPinnedNotImplemented();
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 /* No Write and no DeviceControl on the keyboard: the statusq that would
