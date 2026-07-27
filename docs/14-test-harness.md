@@ -1,4 +1,4 @@
-# 14 — The ntapi test harness & the `todo_proskrnl` convention
+# 14 — The ntapi test harness & the `todo_proskrnl` / `beyond_oracle` conventions
 
 This makes Article 5 (`docs/09`) and the verification strategy (`docs/08`) concrete. It
 specifies the one piece of infrastructure every boundary behaviour passes through: a test
@@ -67,6 +67,17 @@ Deliberately close to Wine's, so distilling `ok()`s out of Wine tests is near-me
   - **on proskrnl:** an `ok()` failure inside is **not** a test failure; an `ok()` that
     unexpectedly *passes* is reported as `todo succeeded` — a signal to delete the tag,
     because the behaviour now works and should be held to it.
+- `beyond_oracle { ... }` — the exact inverse: assertions the **oracle cannot answer** but
+  proskrnl must, for a service the pinned Wine does not implement.
+  - **on the oracle:** skipped (counted, printed once) — a Wine `STATUS_NOT_IMPLEMENTED`
+    is unbuilt, never authoritative (Art. 12), so there is no verdict to take from it.
+  - **on proskrnl:** transparent — the block must pass.
+
+  The block's comment names the Microsoft documentation the behaviour is written against;
+  that citation is the tag's whole authority, standing in for the oracle's green run
+  (Art. 5, G5 — the same discipline G8 imposes on a hand-typed constant). It is wrong
+  wherever Wine *does* implement the case: there the oracle is the spec (Art. 6) and the
+  tag would be fixing the test instead of the kernel.
 - `skip(reason, fmt, ...)` — record and continue; for unavailable preconditions.
 
 `ntapi.c` also carries the freestanding pieces a CRT would otherwise provide (`mem*`,

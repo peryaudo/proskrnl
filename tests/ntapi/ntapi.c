@@ -262,6 +262,25 @@ void ntapi_printf(const char *fmt, ...)
 
 void ntapi_okv(int cond, const char *file, int line, const char *fmt, ...)
 {
+    if (ntapi_ctx.oracle_depth > 0 && !ntapi_ctx.on_proskrnl)
+    {
+        /* Inside beyond_oracle on the ORACLE: the pinned Wine is unbuilt for
+         * this case, so it is not a verdict either way — counted as a skip so
+         * the oracle log still shows the case exists. On proskrnl the block is
+         * transparent and the assertion is enforced. */
+        ntapi_ctx.skips++;
+        ntapi_printf("[SKIP] %s:%d: beyond_oracle (the pinned Wine does not implement it): ", file,
+                     line);
+        {
+            va_list ap;
+            va_start(ap, fmt);
+            ntapi_vout(fmt, ap);
+            va_end(ap);
+        }
+        ntapi_out("\n");
+        return;
+    }
+
     if (ntapi_ctx.todo_depth > 0 && ntapi_ctx.on_proskrnl)
     {
         /* Inside todo_proskrnl on the target: failure is expected (silent);
