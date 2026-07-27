@@ -52,6 +52,17 @@
 #undef SONAME_LIBEGL
 #undef SONAME_LIBVULKAN
 
+/* Same rule, one class further: a HAVE_<header> the oracle's configure
+ * answered YES for because that host had the dev package installed. The
+ * server's object.c #includes <valgrind/memcheck.h> under this one and
+ * annotates its freed memory with the client requests -- a unix-debugger
+ * facility that has no meaning in a PE cross-build, and whose header a
+ * mingw target does not have on its search path at all (the build simply
+ * fails to compile on a box whose /usr/include the oracle builder's had).
+ * Pinned off so the annotations compile out everywhere, identically. */
+#undef HAVE_VALGRIND_MEMCHECK_H
+#undef HAVE_VALGRIND_VALGRIND_H
+
 #ifdef PRSK_WITH_FREETYPE
 
 #undef HAVE_FT2BUILD_H
