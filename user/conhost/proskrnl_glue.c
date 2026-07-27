@@ -30,7 +30,38 @@
 
 /* --- 1. the process entry --------------------------------------------------- */
 
+/* One authority for the server image's on-disk name (Art. 11): the same
+ * macro win32u's transport probe uses. Names only — the wire structs need
+ * Wine's protocol types, which conhost does not carry. */
+#define PRSK_TRANSPORT_NAMES_ONLY
+#include "../wine/server/transport.h"
+
 int __cdecl wmain( int argc, WCHAR *argv[] );
+
+/* Which conhost link this is, decided at LINK time: headless_stubs.c (the
+ * CONHOST target) defines 0, window_glue.c (CONHOST_GUI) defines 1. The
+ * baked binary — not a runtime probe — decides the mode: a disk probe here
+ * would misfire on the gui3/gui4/guiwtest images, which carry the desktop
+ * server but need the HEADLESS conhost (their verdicts ride the serial
+ * transport). */
+extern const int conhost_has_window;
+
+static void display( const char *text )
+{
+    WCHAR wide[128];
+    UNICODE_STRING string;
+    USHORT n = 0;
+
+    while (text[n] && n < 127)
+    {
+        wide[n] = (WCHAR)(unsigned char)text[n];
+        n++;
+    }
+    string.Length = (USHORT)(n * sizeof(WCHAR));
+    string.MaximumLength = string.Length;
+    string.Buffer = wide;
+    NtDisplayString( &string );
+}
 
 static HANDLE open_device( const WCHAR *path, ACCESS_MASK access )
 {
@@ -58,11 +89,16 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access )
 void __attribute__((ms_abi)) conhost_start( void *peb )
 {
     static WCHAR arg_server[19]; /* L"0x" + 16 digits */
-    static WCHAR *argv[] = { (WCHAR *)L"conhost.exe", (WCHAR *)L"--headless",
-                             (WCHAR *)L"--width", (WCHAR *)L"80",
-                             (WCHAR *)L"--height", (WCHAR *)L"25",
-                             (WCHAR *)L"--server", arg_server, NULL };
-    HANDLE server, tty_in, tty_out;
+    static WCHAR *argv_headless[] = { (WCHAR *)L"conhost.exe", (WCHAR *)L"--headless",
+                                      (WCHAR *)L"--width", (WCHAR *)L"80",
+                                      (WCHAR *)L"--height", (WCHAR *)L"25",
+                                      (WCHAR *)L"--server", arg_server, NULL };
+    /* Window mode: no --headless, no tty, no size override — the screen
+     * buffer and window take conhost's own defaults exactly as under Wine
+     * (80x150 buffer, an 80x25 window from load_config). */
+    static WCHAR *argv_window[] = { (WCHAR *)L"conhost.exe", (WCHAR *)L"--server", arg_server,
+                                    NULL };
+    HANDLE server;
     ULONG_PTR value;
     int pos = 0;
     int ret = 1;
@@ -72,16 +108,8 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
     server = open_device( L"\\Device\\ConDrv\\Server",
                           FILE_WRITE_PROPERTIES | FILE_READ_PROPERTIES |
                           FILE_READ_DATA | FILE_WRITE_DATA );
-    tty_in = open_device( L"\\Device\\Serial0", FILE_READ_DATA );
-    tty_out = open_device( L"\\Device\\Serial0", FILE_WRITE_DATA );
-
-    if (server && tty_in && tty_out)
+    if (server)
     {
-        /* wmain's headless path takes the tty pair from the std handles. */
-        SetStdHandle( STD_INPUT_HANDLE, tty_in );
-        SetStdHandle( STD_OUTPUT_HANDLE, tty_out );
-        SetStdHandle( STD_ERROR_HANDLE, tty_out );
-
         value = (ULONG_PTR)server;
         arg_server[pos++] = '0';
         arg_server[pos++] = 'x';
@@ -92,8 +120,42 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
         }
         arg_server[pos] = 0;
 
-        ret = wmain( 8, argv );
+        if (conhost_has_window)
+        {
+            /* The windowed link is a desktop-server CLIENT at image-load
+             * time (user32 -> win32u connects during Ldr init). If this
+             * binary was baked on an image without the server, win32u went
+             * in-process and this conhost would become the desktop's OWNER
+             * — the split-brain user/wine/server/call.c names. Refuse
+             * loudly instead of running wrong (G12). */
+            HANDLE srv_image = open_device( PRSK_SRV_IMAGE, FILE_READ_ATTRIBUTES );
+            if (!srv_image)
+            {
+                display( "[KTEST] gui5con conhost FAIL "
+                         "(windowed link on an image without wineserver-lite)\n" );
+                ExitProcess( 1 );
+            }
+            NtClose( srv_image );
+            display( "[KTEST] gui5con conhost mode=window\n" );
+            ret = wmain( 3, argv_window );
+        }
+        else
+        {
+            HANDLE tty_in = open_device( L"\\Device\\Serial0", FILE_READ_DATA );
+            HANDLE tty_out = open_device( L"\\Device\\Serial0", FILE_WRITE_DATA );
+            if (tty_in && tty_out)
+            {
+                /* wmain's headless path takes the tty pair from the std
+                 * handles (HACK-004 — the serial console, permanent). */
+                SetStdHandle( STD_INPUT_HANDLE, tty_in );
+                SetStdHandle( STD_OUTPUT_HANDLE, tty_out );
+                SetStdHandle( STD_ERROR_HANDLE, tty_out );
+                ret = wmain( 8, argv_headless );
+            }
+        }
     }
+    if (ret)
+        display( "[KTEST] gui5con conhost FAIL (wmain returned nonzero)\n" );
     ExitProcess( (UINT)ret );
 }
 
@@ -290,4 +352,24 @@ long wcstol( const wchar_t *str, wchar_t **end, int base )
 int iswalnum( wint_t ch )
 {
     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+/* window.c's additions (GUI-5): wcscpy for the registry key composition,
+ * _wtoi for the font-size dialog, abs for the selection rectangle — real
+ * calls under -fno-builtin, harmlessly unused in the headless link. */
+wchar_t *wcscpy( wchar_t *dst, const wchar_t *src )
+{
+    wchar_t *ret = dst;
+    while ((*dst++ = *src++)) ;
+    return ret;
+}
+
+int _wtoi( const wchar_t *str )
+{
+    return (int)wcstol( str, NULL, 10 );
+}
+
+int abs( int value )
+{
+    return value < 0 ? -value : value;
 }

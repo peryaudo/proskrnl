@@ -115,8 +115,14 @@ Retirement: if/when route (b) moves desktop state into kernel/win32k.
 ## HACK-004: serial-backed console (COM1 ↔ condrv)
 
 ```
-Status:     active (M9: \Device\Serial0 over the UART, RX polled — no IRQ4;
-            conhost opens it as its tty both ways)
+Status:     active, PERMANENT by decision (GUI-5). Since GUI-5 conhost is dual-mode:
+            the windowed link (CONHOST_GUI — real window.c, input from the real input
+            queue, exactly NT's shape) is the console on images that carry the desktop
+            server, and this entry no longer covers those. The serial backend remains
+            the console on every CUI image and stays indefinitely as a debug channel —
+            a serial console that works while the whole GUI stack is broken is a
+            debugging capability deliberately kept (decided at GUI-5 planning; it also
+            carries the entire CUI test surface: console/scm/procs/winetest legs).
 Introduced: M9
 Not in NT:  conhost's input arrives from win32k's raw input path (i8042prt/kbdclass →
             win32k → conhost) and its output is drawn into a window. A COM port is never
@@ -127,10 +133,12 @@ Reason:     M9 needs interactive console I/O before any display or keyboard hard
             kernel output, and a socket/pty chardev keeps the headless scripted test
             loop (docs/08) unchanged — the cheapest input source an LLM-driven runner
             can drive deterministically.
-Scope:      drivers/condrv.c (backend hookup) ; arch/x86_64/serial.c (RX side)
-Retirement: when the real input path (\Device\Input0, GUI-1 / HACK-002) exists and conhost
-            is GUI-ified (GUI-5), delete the serial backend; condrv's transport becomes
-            the input queue + window like real NT.
+Scope:      drivers/condrv.c (backend hookup) ; arch/x86_64/serial.c (RX side) ;
+            user/conhost/headless_stubs.c (the headless link's user32/window stand-ins)
+Retirement: none planned — see Status. The original retirement condition ("delete the
+            serial backend once conhost is GUI-ified") was met at GUI-5 and explicitly
+            NOT taken: the hack shrank in scope (GUI images run the windowed conhost)
+            but the serial console is a kept debug feature, not a debt.
 ```
 
 ---
