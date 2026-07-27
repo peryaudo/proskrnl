@@ -985,6 +985,7 @@ typedef struct KI_WTEST_LIST
     {
         char exe[KI_WTEST_EXE_CHARS];
         char subtest[KI_WTEST_SUBTEST_CHARS];
+        ULONG timeoutMs; /* 0 = KI_WTEST_TIMEOUT_MS (the two-field lines) */
     } pairs[KI_WTEST_MAX_PAIRS];
     int count;
     BOOLEAN overflow;
@@ -1040,9 +1041,12 @@ static BOOLEAN KiWtestReadManifest(UCHAR **bufferOut, ULONG *lengthOut)
     return ok;
 }
 
-/* Parse `<exe>:<subtest>` lines; '#' comments and blank lines skipped,
- * CRLF tolerated. Malformed/oversized lines are loud (a silently dropped
- * pair would read as "covered"). Returns FALSE on a parse failure. */
+/* Parse `<exe>:<subtest>[:<timeout_s>]` lines; '#' comments and blank
+ * lines skipped, CRLF tolerated. The optional third field (GUI-5: a whole
+ * user32:msg run outlasts the default bound under TCG) is seconds, decimal,
+ * nonzero; absent means KI_WTEST_TIMEOUT_MS. Malformed/oversized lines are
+ * loud (a silently dropped pair would read as "covered"). Returns FALSE on
+ * a parse failure. */
 static BOOLEAN KiWtestParseManifest(const UCHAR *buffer, ULONG length, KI_WTEST_LIST *list)
 {
     ULONG pos = 0;
@@ -1065,10 +1069,36 @@ static BOOLEAN KiWtestParseManifest(const UCHAR *buffer, ULONG length, KI_WTEST_
             {
                 colon++;
             }
+            ULONG subEnd = colon + 1;
+            while (subEnd < lineEnd && buffer[subEnd] != ':')
+            {
+                subEnd++;
+            }
             ULONG exeChars = colon - pos;
-            ULONG subChars = (colon < lineEnd) ? lineEnd - colon - 1 : 0;
+            ULONG subChars = (colon < lineEnd) ? subEnd - colon - 1 : 0;
+            ULONG timeoutMs = 0;
+            BOOLEAN timeoutBad = FALSE;
+            if (subEnd < lineEnd)
+            {
+                ULONG seconds = 0, digits = 0;
+                for (ULONG i = subEnd + 1; i < lineEnd; i++)
+                {
+                    if (buffer[i] < '0' || buffer[i] > '9' || seconds > 100000)
+                    {
+                        timeoutBad = TRUE;
+                        break;
+                    }
+                    seconds = seconds * 10 + (buffer[i] - '0');
+                    digits++;
+                }
+                if (digits == 0 || seconds == 0)
+                {
+                    timeoutBad = TRUE;
+                }
+                timeoutMs = seconds * 1000;
+            }
             if (colon >= lineEnd || exeChars == 0 || exeChars >= KI_WTEST_EXE_CHARS ||
-                subChars == 0 || subChars >= KI_WTEST_SUBTEST_CHARS)
+                subChars == 0 || subChars >= KI_WTEST_SUBTEST_CHARS || timeoutBad)
             {
                 DbgPrint("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
                          (unsigned)pos);
@@ -1090,6 +1120,7 @@ static BOOLEAN KiWtestParseManifest(const UCHAR *buffer, ULONG length, KI_WTEST_
                 list->pairs[list->count].subtest[i] = (char)buffer[colon + 1 + i];
             }
             list->pairs[list->count].subtest[subChars] = 0;
+            list->pairs[list->count].timeoutMs = timeoutMs;
             list->count++;
         }
         pos = end + 1;
@@ -1163,8 +1194,9 @@ static int KiRunWineTests(void)
         }
 
         NTSTATUS exitStatus = 0;
+        ULONG timeoutMs = list.pairs[i].timeoutMs ? list.pairs[i].timeoutMs : KI_WTEST_TIMEOUT_MS;
         NTSTATUS status =
-            PsRunWineImageEx(widePath, dosPath, cmdLine, TRUE, KI_WTEST_TIMEOUT_MS, &exitStatus);
+            PsRunWineImageEx(widePath, dosPath, cmdLine, TRUE, timeoutMs, &exitStatus);
         if (status == STATUS_TIMEOUT)
         {
             /* The wedged process owns the console; further pairs would be
