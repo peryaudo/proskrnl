@@ -866,6 +866,13 @@ WINESTRIP_GUI_NAMES := user32 gdi32 comctl32 imm32 ole32 combase coml2
 WINESTRIP_GUI_DLLS := $(foreach d,$(WINESTRIP_GUI_NAMES),$(WINESTRIP)/$(d).dll)
 $(foreach d,$(WINESTRIP_GUI_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
+# The named handle on that set, for legs that assemble their own image spec
+# instead of depending on an IMG_* rule (tests/run/run.sh guiwtest): without
+# it a clean tree stages the CUI set only and mkimage dies on the first
+# missing win: file.
+winestrip-gui: $(WINESTRIP_GUI_DLLS)
+.PHONY: winestrip-gui
+
 WINEMINE := $(WINESTRIP)/winemine.exe
 $(WINEMINE): third_party/wine/programs/winemine/x86_64-windows/winemine.exe
 	@mkdir -p $(dir $@)
