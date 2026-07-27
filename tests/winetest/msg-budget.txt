@@ -3,10 +3,12 @@
 # the same commit as the fix that earned it (G13); the leg fails on any
 # count above it, and on any CRASH exit regardless of the number.
 #
-# 23 is the FIRST honest measurement: the whole module now runs to its own
-# verdict (winetest's failure count arrives as the NT exit status,
-# exit=0x17), so the 9999 sentinel is retired. The named divergences behind
-# this number are listed in docs/03 "GUI-5 winetest notes"; 0 is the end
-# state, and build/tests/guiwtest-msg.log names whichever are left after
-# any run.
-23
+# The 9999 sentinel is retired: the whole module runs to its own verdict
+# (winetest's failure count arrives as the NT exit status). The named
+# divergences behind the current number are listed in docs/03 "GUI-5
+# winetest notes"; 0 is the end state, and build/tests/guiwtest-msg.log
+# names whichever are left after any run.
+#
+#   23  first honest measurement (the module runs end to end)
+#   20  the process idle event is a GUI-process thing
+20

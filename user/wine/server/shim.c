@@ -287,6 +287,25 @@ static ULONG prsk_process_session( HANDLE process )
     return session;
 }
 
+/* Is the client a GUI process? wineserver asks the same question of the
+ * same fact -- server/process.c creates the idle event at init_process_done
+ * only when image_info.subsystem != IMAGE_SUBSYSTEM_WINDOWS_CUI -- but it
+ * learns the subsystem from the client's own init_process_done request,
+ * which this build's attach does not carry. The kernel kept the main
+ * image's SECTION_IMAGE_INFORMATION at process creation and answers
+ * ProcessImageInformation from it (kernel/ps/query.c, pinned by
+ * sem_ps/process_query), so the fact comes from one authority either way.
+ * A failed query reads as CUI: the conservative half (no idle event is
+ * wineserver's answer for every console process). */
+static int prsk_process_is_gui( HANDLE process )
+{
+    SECTION_IMAGE_INFORMATION image;
+
+    if (NtQueryInformationProcess( process, ProcessImageInformation, &image, sizeof(image), NULL ))
+        return 0;
+    return image.SubSystemType != IMAGE_SUBSYSTEM_WINDOWS_CUI;
+}
+
 static struct prsk_client *create_client( DWORD pid, HANDLE handle )
 {
     struct prsk_client *client;
@@ -310,14 +329,17 @@ static struct prsk_client *create_client( DWORD pid, HANDLE handle )
     client->handle = handle;
     client->pid = pid;
     client->session = prsk_process_session( handle );
-    /* The process idle event (wineserver creates one per GUI process at
-     * init_process_done; every client here IS a GUI process). Manual-reset,
-     * born unsignalled; only CLIENTS ever signal or wait on it, through the
-     * handles get_msg_queue_handle and get_process_idle_event duplicate out
-     * (win32u's NtSetEvent when its queue idles - message.c). A failed
-     * create leaves NULL and the handlers answer no-event, wineserver's own
-     * shape for a CUI process. */
-    client->idle_sync = create_internal_sync( 1, 0 );
+    /* The process idle event, for a GUI process only -- wineserver's own
+     * rule (server/process.c init_process_done), and NOT "every client here
+     * is a GUI process" as this once assumed: a console program that loads
+     * user32 is a client too, and user32:msg is exactly that program.
+     * Manual-reset, born unsignalled; only CLIENTS ever signal or wait on
+     * it, through the handles get_msg_queue_handle and
+     * get_process_idle_event duplicate out (win32u's NtSetEvent when its
+     * queue idles - message.c). NULL here is not a failure: the handlers
+     * answer no-event, which is what makes WaitForInputIdle on a console
+     * process fail the way it does on Wine and on Windows. */
+    client->idle_sync = prsk_process_is_gui( handle ) ? create_internal_sync( 1, 0 ) : NULL;
     list_add_tail( &clients, &client->entry );
     return client;
 }
