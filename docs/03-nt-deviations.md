@@ -1327,7 +1327,91 @@ until the next motion; the gui4 leg parks the cursor over background before each
   Show-order determinism (B created after A) is now pinned in gui3b/gui4b; click-driven
   activation (the gui4 way) is exempt because a click *is* fresh user input.
 
-## WOW64 (not a deviation)
+## GUI-5 notes
+
+What "GUI finishing" (docs/02) actually landed, and the shortcuts/residuals it created or
+retired. The clipboard/hook/AttachThreadInput machinery itself needed **nothing built** —
+every server half has been compiled and dispatchable since GUI-2, and the gui5 leg's whole
+job was to exercise it cross-process for the first time (it passed on first bring-up, which
+is the strongest statement about route (a)'s "compile the pinned server unmodified" bet the
+project has).
+
+- **Clipboard payload ceiling.** Cross-process clipboard is live within the transport slot
+  (`PRSK_SLOT_DATA`, 64 KiB — `user/wine/server/transport.h`); a larger `set_clipboard_data`
+  refuses loudly by request name rather than truncating (Art. 12). Named residual,
+  grow-on-demand: msg.c and a windowed conhost's copy-paste are the plausible consumers, and
+  neither has needed it yet.
+- **Cross-process non-LL global hooks are unexercised.** A global `WH_CBT`-class hook needs
+  hook-module injection into the hooked process (`ERROR_HOOK_NEEDS_HMOD`, the module loaded
+  by name over there) — freestanding no-CRT test clients cannot host that. `WH_KEYBOARD_LL`
+  is the pinned cross-process hook coverage (moduleless by design, delivered through the
+  server's `MSG_HOOK_LL` posting); msg.c's hook tests are the eventual real consumer.
+- **The GUI-4 residuals gui5 deliberately sidesteps**: no tablet on the gui5 image (no
+  cursor, so no cursor-stomp in the dumps); no `HWND_BOTTOM`; both attached threads outlive
+  the AttachThreadInput phase (though attach makes the violently-killed-thread
+  `thread_input` residual *more* load-bearing should a client ever die attached — same
+  bound, process lifetime).
+
+### The windowed conhost (dual-mode; the serial console is permanent)
+
+`CONHOST_GUI` compiles the pinned tree's `window.c` and `conhost.rc` **unmodified** and
+links the real user32/gdi32/advapi32 — zero fork commits, hack meter unchanged. Decisions
+and their reasons:
+
+- **The baked binary decides the mode, not a runtime probe.** headless_stubs.c /
+  window_glue.c define a link-time capability flag the shared entry branches on. A disk
+  probe of the server image was rejected: gui3/gui4/guiwtest images carry wineserver-lite
+  *and* need the headless conhost (their verdicts ride serial). The windowed binary still
+  probes `PRSK_SRV_IMAGE`, but only as a refusal — windowed conhost on a serverless image
+  would make win32u go in-process and conhost the desktop's OWNER (the split-brain
+  `user/wine/server/call.c` names); it exits loudly instead (G12).
+- **comctl32 is a manual delay-load** (`user/conhost/window_glue.c`), mirroring upstream's
+  DELAYIMPORT: reachable only from the config dialog, resolved by LoadLibrary on first
+  call, refusing with the API's real failure shapes if absent. No load-time import of a
+  DllMain path no boot has exercised (the GUI-2 imm32 delay-import abort is the precedent).
+- **Start order**: wineserver-lite now starts BEFORE conhost (`kernel/init/main.c`) — a
+  GUI-linked conhost is a win32u client during Ldr init, before its entry point runs. On
+  serverless images the swap is a probe/skip no-op. The condrv attach window widened
+  10 s → 30 s for the same prologue.
+- **^C**: in window mode the whole CUI-4 deviation ("Ctrl+C is detected on the serial RX
+  path; `ENABLE_PROCESSED_INPUT` is not consulted") does not apply — conhost's own
+  `map_to_ctrlevent` runs from `WM_KEYDOWN`/`ToUnicode`, honours `ENABLE_PROCESSED_INPUT`,
+  and reaches the kernel through `IOCTL_CONDRV_CTRL_EVENT` like real NT. The gui5con leg
+  convicts that path end to end (looper interrupted with the serial intercept never
+  involved). The CUI-4 cost paragraph is now CUI-image-only.
+- **conhost is the input-reader host** on its images (first surface-creating GUI process,
+  the GUI-4 rule) — and being a permanent process, the "orphaned input if the winner dies"
+  residual attaches to something that cannot die early. An improvement, recorded.
+- **The serial-backed console is PERMANENT** (decision, GUI-5 planning): HACK-004's
+  retirement condition was met and explicitly not taken. A console that works while the
+  whole GUI stack is broken is a debugging capability we keep, and the CUI test surface
+  rides it. The hack's scope shrank (GUI images now run the windowed conhost); the entry
+  stays. See docs/10.
+
+### GUI-5 winetest notes (user32:msg — the budget ratchet)
+
+The trophy gate (`tests/run/run.sh guiwtest`) runs the pinned tree's own
+`user32_test.exe msg` — 21.5 kloc, ~85 test functions — over the full GUI stack, swept by
+the same kernel wtest runner as the CUI manifest (`tests/winetest/manifest-gui.txt`, with
+the manifest's new optional per-pair timeout field).
+
+- **There is no oracle leg, by measurement.** The pinned oracle is `--without-x` (GUI-3
+  made it the *font* oracle, deliberately nothing more). Under its null display driver
+  user32 refuses every window ("The graphics driver is missing", `nodrv_CreateWindow`),
+  msg.c fails its first `CreateWindow` and then hangs forever in
+  `test_SendMessage_other_thread` (an INFINITE wait on a thread whose window never
+  existed). The recorded oracle baseline is therefore *cannot run*, not a failure count.
+  The spec authority for this gate is msg.c's own `ok()`/`todo_wine` assertions — winetest
+  is third-party, Windows-verified spec (docs/08), and `todo_wine` evaluates on proskrnl
+  exactly as on Wine (the M10 finding: `winetest_platform_is_wine` is TRUE here).
+  Building an X/Xvfb oracle was considered and rejected: an X11-driver-driven message
+  environment is no more "the spec" for a winefb target than nulldrv is, and it would
+  drag X into a tree that deliberately has none.
+- **The verdict is a budget ratchet** (`tests/winetest/msg-budget.txt`): the leg parses
+  winetest's own summary line off serial (the exit code clips at 255; the count does not)
+  and fails on any count above the budget. The budget only ever decreases, in the same
+  commit as the fix that earned it (G13: the number is that commit's test expectation).
+  GUI-5's end state is 0 — msg.c green on proskrnl with only its own `todo_wine` marks.
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
 ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an
