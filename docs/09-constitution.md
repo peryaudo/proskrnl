@@ -229,6 +229,20 @@ is legitimate only when it is pinned by a `tests/ntapi/` case green on the oracl
 (Art. 5) or recorded in `docs/03-nt-deviations.md` — a value *invented so callers keep
 going* is a violation regardless of how reasonable it looks.
 
+**The carve-out never covers `STATUS_NOT_IMPLEMENTED`, and no test ever pins it.** The
+status means *unbuilt*; an oracle that answers it is an oracle that is unbuilt for that
+case, which is the one thing the oracle has no authority to specify. So there is no such
+thing as a "pinned refusal": a `tests/ntapi/` case must never assert
+`STATUS_NOT_IMPLEMENTED` — asserting it converts a work item into a contract and freezes
+the hole in place, exactly inverting Art. 5. Where Wine refuses, the test simply does not
+exercise the case (a comment says why), and the kernel's own refusal stays a **kernel
+panic**: every `STATUS_NOT_IMPLEMENTED` a ring-3 syscall answers stops the machine at the
+point of first contact (`kernel/syscall/table.c`, armed per `docs/03`), naming the service
+and the arguments on serial. A refusal that is genuinely a contract — one a real caller
+depends on — is not this status: it is the specific NT failure for the case
+(`STATUS_INVALID_INFO_CLASS`, `STATUS_INVALID_DEVICE_REQUEST`, …), implemented and pinned
+like any other behaviour.
+
 ## Article 13 — History is part of the deliverable
 
 A PR's commit history is **curated into meaningful units**, not left as the accident of

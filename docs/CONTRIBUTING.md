@@ -35,7 +35,8 @@ stated as hard gates.
 - **G5 — Test first.** A boundary behaviour needs a `tests/ntapi/` test green on the
   Wine/Windows oracle *before* the kernel implements it, and green on proskrnl before the
   change is "done"; not-yet-implemented cases are tagged `todo_proskrnl`, never left
-  failing. (Art. 5, `docs/08`)
+  failing. A test never asserts `STATUS_NOT_IMPLEMENTED` — the oracle refusing is not a
+  behaviour to reproduce (see G12). (Art. 5, `docs/08`)
 
 - **G6 — Conviction by differential test.** Sanitizers/asserts name suspects; only a
   passing differential/conformance test closes an issue. "Sanitizer went quiet" is not a
@@ -104,7 +105,14 @@ stated as hard gates.
   the pinned oracle behaviour — backed by a `tests/ntapi/` case green on the oracle or
   a `docs/03-nt-deviations.md` entry — which makes it an implementation, not a stub. A
   value invented so callers keep going is rejected regardless of how reasonable it
-  looks. (Art. 12)
+  looks. **`STATUS_NOT_IMPLEMENTED` is never such a fixed answer**: it means *unbuilt*,
+  so a `tests/ntapi/` case must never assert it — not even when the oracle answers it,
+  because an oracle that refuses is unbuilt too, never authoritative. A diff that adds
+  such an assertion, or a `KiPinnedNotImplemented`-style exemption that spares a refusal
+  from the dispatcher's panic, FAILS. Where a real caller depends on a refusal, that
+  refusal is the specific NT failure for the case (`STATUS_INVALID_INFO_CLASS`,
+  `STATUS_INVALID_DEVICE_REQUEST`, …), implemented and pinned like any other behaviour.
+  (Art. 12)
 
 - **G13 — Commits are meaningful units.** A PR's history is curated: each commit is one
   logical change — a test pin, a kernel behaviour with its `docs/03` note, an `abi/`
