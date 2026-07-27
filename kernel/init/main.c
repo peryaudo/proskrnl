@@ -16,6 +16,7 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/mmu.h"
+#include "arch/x86_64/smbios.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -74,6 +75,16 @@ __attribute__((
     used,
     section(".limine_requests"))) static volatile struct limine_module_request LiModuleRequest = {
     .id = LIMINE_MODULE_REQUEST_ID,
+    .revision = 0,
+};
+
+/* The firmware's SMBIOS entry point, for the SystemFirmwareTableInformation
+ * RSMB provider (arch/x86_64/smbios.c). Absent on firmware that publishes no
+ * SMBIOS at all, which the class then refuses. */
+__attribute__((
+    used,
+    section(".limine_requests"))) static volatile struct limine_smbios_request LiSmbiosRequest = {
+    .id = LIMINE_SMBIOS_REQUEST_ID,
     .revision = 0,
 };
 
@@ -1393,6 +1404,18 @@ void KiSystemStartup(void)
         KiPanic("pool self-test failed");
     }
     DbgPrint("[KTEST] pool PASS\n");
+
+    /* The firmware tables, once paging can reach reserved memory: Limine
+     * reports the entry point physically (base revision 3). */
+    if (LiSmbiosRequest.response != 0)
+    {
+        KiSmbiosInitialize((uint64_t)(uintptr_t)LiSmbiosRequest.response->entry_32,
+                           (uint64_t)(uintptr_t)LiSmbiosRequest.response->entry_64);
+    }
+    else
+    {
+        KiSmbiosInitialize(0, 0); /* no response: the table stays absent */
+    }
 
     /* M3: the object manager and its namespace roots, on top of the pool. */
     ObpInitializeObjectManager();

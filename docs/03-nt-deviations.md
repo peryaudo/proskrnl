@@ -902,21 +902,61 @@ The full accounting of which missing syscalls are out of scope vs. planned is
   A refusal a real caller *depends* on is a different status entirely (the
   specific NT failure for the case), implemented and pinned like any other
   behaviour.
-- **`NtQuerySystemInformation(SystemWineVersionInformation)` (1000)
-  refuses, and the refusal is fatal**: the oracle's unix layer answers
-  `version\0build\0sysname\0release` from its own uname
-  (`dlls/ntdll/unix/system.c`); proskrnl is not Wine-on-unix, and
-  fabricating a uname would be exactly the plausible-answer stub Art. 12
-  forbids. ntdll's `version_init` calls it at **every process start**
-  (`dlls/ntdll/version.c`) and ignores the status, so before the exemption
-  was removed this refusal was invisible; with the marker armed it now
-  panics on the first user process. `sem_ps/process_query` tags the case
-  `todo_proskrnl` — it pins the oracle's *success*, never the refusal — so
-  the standing work item is to answer this class properly (or to establish
-  the honest NT status for it), not to re-exempt it.
-  `SystemFirmwareTableInformation` (76) is the same shape: host-DMI-derived
-  data proskrnl has no source for, refused loudly, `todo_proskrnl` in the
-  same test.
+- **The two classes the tightening forced to be built.** Making unbuilt
+  fatal is only honest if "unbuilt" is then *fixed* rather than re-exempted,
+  and two refusals sat directly on the boot path. Both are now implemented
+  and their `sem_ps/process_query` pins carry no `todo_proskrnl`:
+  `SystemFirmwareTableInformation` (76) and `SystemWineVersionInformation`
+  (1000), below.
+
+## `SystemFirmwareTableInformation` (76) — the RSMB provider
+
+Not a deviation so much as ordinary OS work that had been mistaken for a
+host dependency. The oracle *synthesizes* its SMBIOS blob from the host's
+DMI files (`dlls/ntdll/unix/system.c create_smbios_data`) because
+Wine-on-unix has no firmware of its own to read. proskrnl does: Limine
+reports the SMBIOS entry point (physically, under base revision 3), and
+`arch/x86_64/smbios.c` parses it — the 64-bit `_SM3_` form preferred, the
+32-bit `_SM_` form otherwise, anchors and checksum verified, the 3.x table
+length recovered by walking to the type-127 end-of-table marker because that
+entry point reports only a maximum size (DMTF DSP0134 §5.2). Under QEMU this
+finds SMBIOS 2.8, ~400 bytes.
+
+`kernel/ps/query.c` shapes the answer: the `RawSMBIOSData` prologue followed
+by the raw structure table, `Enumerate` reporting the single table id 0, and
+`*returnLength` carrying the full requirement even on
+`STATUS_BUFFER_TOO_SMALL` — which is what kernelbase's sizing call depends on
+(`dlls/kernelbase/memory.c get_firmware_table` allocates only the fixed part
+and subtracts it from `*returnLength`). Providers other than RSMB, and
+actions other than the two, stay unbuilt and refuse loudly.
+
+**Only the shape is pinned, never the bytes** — those name the machine, and
+the two runners run on different ones. wineboot's `create_bios_key` now finds
+real tables on proskrnl instead of nothing; the firstboot registry
+differential stays at 0 divergences (its scope already excludes the
+host-derived keys).
+
+## `SystemWineVersionInformation` (1000) — implemented as HACK-005
+
+NT has no class 1000; it is a Wine extension, and adding it puts an NT-absent
+entity **inside the `Nt*` surface** — which Article 2 names first, and which
+the GUI carve-out (a new device or process at the boundary's *outside*) does
+not cover. It is taken deliberately and logged as **HACK-005**
+(`docs/10-hacks-ledger.md`), because the alternative is worse: ntdll's
+`version_init` calls the class at every process start
+(`dlls/ntdll/version.c`) and ignores the status, so once Art. 12 made an
+unbuilt answer fatal, refusing it meant the first user process panicked the
+machine.
+
+The reply is the oracle's layout — `version\0build\0sysname\0release` — with
+values that are facts about this image rather than an imitation of a host:
+`version`/`build` name the Wine the PE stack is built from (hand-typed
+against `third_party/wine/VERSION` and re-verified on a pin bump, G8);
+`sysname` is `proskrnl`, which is exactly what `wine_get_host_version` exists
+to report; and `release` is **empty**, because proskrnl has no release
+versioning and inventing a number would be the plausible-answer stub Art. 12
+forbids. `sem_ps/process_query` pins the shape — a non-empty version and the
+four-string walk — never the text.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
