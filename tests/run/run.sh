@@ -491,6 +491,13 @@ guiwtest() {
         failures=0
     else
         failures=$(( $(grep -oE '0x[0-9a-f]+' <<<"$verdict") ))
+        # A failure COUNT is a small number; an NT status (0xC0000005, a
+        # crash) is not a count and no budget forgives it.
+        if (( failures < 0 || failures > 65535 )); then
+            printf -v crash '0x%x' "$(( failures & 0xffffffff ))"
+            echo "== guiwtest: FAIL (the msg run crashed, exit=$crash; see $log) =="
+            return 1
+        fi
     fi
     echo "[KTEST] guiwtest user32:msg failures=$failures budget=$budget"
     if (( failures > budget )); then
