@@ -111,10 +111,10 @@ START_TEST(info_classes)
     status = NtQueryInformationFile(h, &iosb, &std, sizeof(std) - 4, FileStandardInformation);
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "short standard buffer -> %08lx",
        (unsigned long)status);
-    /* An unsupported class is STATUS_NOT_IMPLEMENTED on the pinned Wine
-     * (real NT says STATUS_INVALID_INFO_CLASS; Wine wins per Art. 6). */
-    status = NtQueryInformationFile(h, &iosb, &std, sizeof(std), FileMaximumInformation);
-    ok(status == STATUS_NOT_IMPLEMENTED, "bad info class -> %08lx", (unsigned long)status);
+    /* An unsupported class is deliberately NOT pinned here: the pinned Wine
+     * answers STATUS_NOT_IMPLEMENTED, which is the oracle being unbuilt
+     * rather than a contract, and an unbuilt answer is never pinned
+     * (Art. 12). proskrnl refuses it loudly and fatally instead. */
 
     /* --- FileAllInformation aggregates the pieces. ------------------------- */
     struct

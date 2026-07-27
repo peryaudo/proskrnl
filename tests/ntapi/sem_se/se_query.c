@@ -5,8 +5,10 @@
  * Oracle: dlls/ntdll/unix/security.c NtQueryInformationToken — the info_len[]
  * table decides *retlen FIRST (pre-write, even when the call later fails),
  * then a short buffer is STATUS_BUFFER_TOO_SMALL, and only then the class
- * switch runs; a class with no case (TokenSource, TokenRestrictedSids, and
- * everything past the switch) is STATUS_NOT_IMPLEMENTED. Identity values are
+ * switch runs. Classes the switch has no case for (TokenSource,
+ * TokenRestrictedSids, everything past the switch) answer
+ * STATUS_NOT_IMPLEMENTED on the oracle — the oracle being unbuilt, not a
+ * contract — so nothing below pins them (Art. 12). Identity values are
  * wineserver's token_create_admin (server/token.c): a parentless process
  * gets a primary admin token, TokenElevationTypeLimited, session 1.
  */
@@ -187,33 +189,19 @@ START_TEST(se_query)
     ok(container.info.TokenAppContainer == NULL, "app container sid %p",
        container.info.TokenAppContainer);
 
-    /* --- classes with a fixed length but NO implementation -----------------
-     * TokenSource: a short buffer still fails BUFFER_TOO_SMALL (the length
-     * gate runs first), an adequate one reaches the switch and finds no case.
+    /* --- the length gate runs before the class switch -----------------------
+     * TokenSource has an info_len[] entry but no case in the switch. A SHORT
+     * buffer therefore fails BUFFER_TOO_SMALL with *retlen already written —
+     * the gate-first protocol, pinned here. An ADEQUATE buffer would reach
+     * the switch and find no case, and that answer (STATUS_NOT_IMPLEMENTED)
+     * is the oracle being unbuilt rather than a contract, so it is not
+     * exercised — same for TokenRestrictedSids and out-of-range classes.
      */
     TOKEN_SOURCE source;
     retlen = 0xdead;
     status = NtQueryInformationToken(token, TokenSource, &source, sizeof(source) - 1, &retlen);
     ok(status == STATUS_BUFFER_TOO_SMALL, "short TokenSource -> %08lx", (unsigned long)status);
     ok(retlen == sizeof(TOKEN_SOURCE), "short TokenSource retlen %lu", (unsigned long)retlen);
-
-    retlen = 0xdead;
-    status = NtQueryInformationToken(token, TokenSource, &source, sizeof(source), &retlen);
-    ok(status == STATUS_NOT_IMPLEMENTED, "TokenSource -> %08lx", (unsigned long)status);
-    ok(retlen == sizeof(TOKEN_SOURCE), "TokenSource retlen %lu", (unsigned long)retlen);
-
-    BYTE big[256];
-    retlen = 0xdead;
-    status = NtQueryInformationToken(token, TokenRestrictedSids, big, sizeof(big), &retlen);
-    ok(status == STATUS_NOT_IMPLEMENTED, "TokenRestrictedSids -> %08lx", (unsigned long)status);
-    ok(retlen == 0, "TokenRestrictedSids retlen %lu", (unsigned long)retlen);
-
-    /* a class beyond MaxTokenInfoClass: retlen pre-written to 0 */
-    retlen = 0xdead;
-    status =
-        NtQueryInformationToken(token, (TOKEN_INFORMATION_CLASS)200, big, sizeof(big), &retlen);
-    ok(status == STATUS_NOT_IMPLEMENTED, "class 200 -> %08lx", (unsigned long)status);
-    ok(retlen == 0, "class 200 retlen %lu", (unsigned long)retlen);
 
     /* --- access enforcement: TOKEN_QUERY is required ------------------------ */
     HANDLE dup_only = NULL;
