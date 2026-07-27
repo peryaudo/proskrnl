@@ -432,7 +432,7 @@ guiwtest() {
     if [[ ! -f "$kernel" ]]; then
         make -C "$ROOT" >/dev/null
     fi
-    make -C "$ROOT" winestrip win32u wineserver-lite \
+    make -C "$ROOT" winestrip winestrip-gui win32u wineserver-lite \
         build/modules/cmd.exe build/modules/conhost.exe >/dev/null
 
     # The winetest image recipe (DLLs, nls, conhost, cmd, the M5 seeds that
