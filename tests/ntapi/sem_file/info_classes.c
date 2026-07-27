@@ -50,6 +50,27 @@ START_TEST(info_classes)
     ok(std.DeletePending == FALSE, "DeletePending clear");
     ok(std.NumberOfLinks == 1, "NumberOfLinks %lu", (unsigned long)std.NumberOfLinks);
 
+    /* --- FileEndOfFileInformation is a QUERY class too. --------------------- */
+    /* Not just the set-EOF class exercised below: ntdll's own actctx.c asks
+     * exactly this of a manifest file it has just mapped
+     * (get_manifest_in_manifest_file), so any process that builds an
+     * activation context reaches it. The pinned Wine fills it from the same
+     * fstat FileStandardInformation uses, and reports sizeof() in
+     * Information like every other fixed-size class. */
+    {
+        FILE_END_OF_FILE_INFORMATION eof;
+        poison_iosb(&iosb);
+        memset(&eof, 0, sizeof(eof));
+        status = NtQueryInformationFile(h, &iosb, &eof, sizeof(eof), FileEndOfFileInformation);
+        ok(status == STATUS_SUCCESS, "query eof -> %08lx", (unsigned long)status);
+        ok(eof.EndOfFile.QuadPart == 10, "query eof: EndOfFile %ld", (long)eof.EndOfFile.QuadPart);
+        ok(iosb.Information == sizeof(eof), "query eof: Information %lu",
+           (unsigned long)iosb.Information);
+        status = NtQueryInformationFile(h, &iosb, &eof, sizeof(eof) - 4, FileEndOfFileInformation);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short eof buffer -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- FilePositionInformation round-trips. ------------------------------ */
     pos.CurrentByteOffset.QuadPart = 7;
     status = NtSetInformationFile(h, &iosb, &pos, sizeof(pos), FilePositionInformation);
