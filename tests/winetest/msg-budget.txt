@@ -3,9 +3,10 @@
 # the same commit as the fix that earned it (G13); the leg fails on any
 # count above it, and on any CRASH exit regardless of the number.
 #
-# 9999 is a sentinel, not a measurement: the run does not yet reach a
-# verdict (it dies 0xC0000005 in the combobox area — docs/03 "GUI-5
-# winetest notes" item 4), so no honest count exists to ratchet from. The
-# first run that completes replaces this with its real count; 0 is the end
-# state. Until then the leg is red by design and stays out of CI.
-9999
+# 23 is the FIRST honest measurement: the whole module now runs to its own
+# verdict (winetest's failure count arrives as the NT exit status,
+# exit=0x17), so the 9999 sentinel is retired. The named divergences behind
+# this number are listed in docs/03 "GUI-5 winetest notes"; 0 is the end
+# state, and build/tests/guiwtest-msg.log names whichever are left after
+# any run.
+23
