@@ -1699,6 +1699,18 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(
                 winternl, "_SYSTEM_INTERRUPT_INFORMATION", "SYSTEM_INTERRUPT_INFORMATION"
             ),
+            # SystemFirmwareTableInformation (76): the request/reply blob
+            # kernelbase's GetSystemFirmwareTable wraps, and the two actions
+            # it selects between. TableBuffer is the trailing variable array,
+            # so the fixed part's offsets are what the asserts pin.
+            extract_enum(
+                winternl, "_SYSTEM_FIRMWARE_TABLE_ACTION", "SYSTEM_FIRMWARE_TABLE_ACTION"
+            ),
+            extract_struct(
+                winternl,
+                "_SYSTEM_FIRMWARE_TABLE_INFORMATION",
+                "SYSTEM_FIRMWARE_TABLE_INFORMATION",
+            ),
             # CUI-1: wineboot's ~MHz registry source —
             # NtPowerInformation(ProcessorInformation): the level selector
             # and the per-CPU record it fills (winnt.h).
