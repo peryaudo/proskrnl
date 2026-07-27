@@ -25,9 +25,19 @@ WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
 /* The desktop's visible top-level windows, topmost first (the get_window_list
  * reply order is the same walk the server's own hit-testing does in
- * shallow_window_from_point), with screen rects. Style is a session
- * shared-mapping read, not a round-trip; a window this process cannot
- * resolve answers 0, which reads as invisible -- the safe direction. */
+ * shallow_window_from_point), with screen rects. A window this process
+ * cannot resolve answers 0, which reads as invisible -- the safe direction.
+ *
+ * Every read here is a RAW server request on purpose, style included: this
+ * runs from winefb_surface_flush, INSIDE win32u's per-surface mutex, and a
+ * blocking NtUser* call here is a lock-order inversion against every
+ * user-lock -> surface-mutex path win32u has (DestroyWindow holding the
+ * user lock while releasing the window surface deadlocked against a
+ * concurrent flush doing exactly that -- the user32:msg wedge, two threads
+ * parked forever on each other's mutex). NtUserGetWindowLongW looks
+ * innocent but takes the user lock for own-process windows; the server's
+ * get_window_info answers the same style for ANY window (it is what win32u
+ * itself uses for other-process windows) with no client lock at all. */
 static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count )
 {
     user_handle_t handles[WINEFB_MAX_TOPLEVELS];
@@ -51,9 +61,17 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
     for (i = 0; i < count && found < max_count; i++)
     {
         RECT rect;
+        unsigned int style = 0;
 
-        if (!(NtUserGetWindowLongW( wine_server_ptr_handle( handles[i] ), GWL_STYLE ) & WS_VISIBLE))
-            continue;
+        SERVER_START_REQ( get_window_info )
+        {
+            req->handle = handles[i];
+            req->offset = GWL_STYLE;
+            req->size   = sizeof(LONG);
+            if (!wine_server_call( req )) style = reply->info;
+        }
+        SERVER_END_REQ;
+        if (!(style & WS_VISIBLE)) continue;
 
         SERVER_START_REQ( get_window_rectangles )
         {
