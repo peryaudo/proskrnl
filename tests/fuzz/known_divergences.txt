@@ -39,3 +39,12 @@
 # wrinkle, recorded in docs/03 "M7 fuzzer notes" — todo_proskrnl in the same
 # test keeps it visible.
 NtWaitForMultipleObjects oracle=c0000008 proskrnl=c0000024   # waitable-anything wineserver wrinkle; docs/03
+
+# CUI-5 op-model reshuffle exposure: with the new file ops in the stream, a
+# program reached NtTestAlert with a different set of undelivered user APCs
+# queued than the oracle reports (equal SUCCESS statuses; the apcs/sum
+# payload differs — delivery count/order at the alertable edge). A latent
+# APC-delivery-timing divergence, not a CUI-5 surface; scheduled with the
+# CUI-6 APC work (NtQueueApcThreadEx2 / NtAlertResumeThread), where the
+# delivery contract gets its own pins.
+NtTestAlert oracle=00000000 proskrnl=00000000   # APC delivery count/order at the alertable edge; CUI-6
