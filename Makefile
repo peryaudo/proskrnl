@@ -228,7 +228,7 @@ $(BUILD)/user/init-tests/syscall_stubs.o: tests/ntapi/syscall/syscall_stubs.S
 $(BUILD)/modules/%.bin: $(BUILD)/user/init-tests/%.o $(USER_RT) user/init-tests/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(ULDFLAGS) $(USER_RT) $< -o $(@:.bin=.elf)
-	$(OBJCOPY) -O binary $(@:.bin=.elf) $@
+	$(OBJCOPY) --set-section-flags .data=alloc,load,contents -O binary $(@:.bin=.elf) $@
 
 $(BUILD)/modules/pe_smoke.exe: user/init-tests/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
