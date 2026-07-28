@@ -38,6 +38,30 @@ NTSYSAPI NTSTATUS NTAPI NtQueryIoCompletion(HANDLE, IO_COMPLETION_INFORMATION_CL
                                             PULONG);
 NTSYSAPI DWORD NTAPI RtlQueueWorkItem(WORKERCALLBACKFUNC, PVOID, ULONG);
 
+/* char16_t (2-byte) string literal, as Wine's tests spell it. */
+#define W(s) u##s
+
+/* CUI-5 additions. */
+NTSYSAPI NTSTATUS NTAPI NtOpenIoCompletion(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
+NTSYSAPI NTSTATUS NTAPI NtSetIoCompletionEx(HANDLE, HANDLE, ULONG_PTR, ULONG_PTR, NTSTATUS, SIZE_T);
+
+static void init_name(UNICODE_STRING *name, OBJECT_ATTRIBUTES *attr, const void *wide)
+{
+    const unsigned short *p = (const unsigned short *)wide;
+    unsigned len = 0;
+    while (p[len])
+        len++;
+    name->Length = (USHORT)(len * 2);
+    name->MaximumLength = (USHORT)(len * 2 + 2);
+    name->Buffer = (PWSTR)(void *)p;
+    attr->Length = sizeof(*attr);
+    attr->RootDirectory = NULL;
+    attr->ObjectName = name;
+    attr->Attributes = OBJ_CASE_INSENSITIVE;
+    attr->SecurityDescriptor = NULL;
+    attr->SecurityQualityOfService = NULL;
+}
+
 #ifndef IO_COMPLETION_ALL_ACCESS
 #define IO_COMPLETION_ALL_ACCESS 0x001F0003 /* wine/include/winternl.h */
 #endif
@@ -111,6 +135,52 @@ START_TEST(ports)
     status = NtRemoveIoCompletion(port, &key, &value, &iosb, &timeout);
     ok(status == STATUS_SUCCESS && key == 3, "third packet -> %08lx key %lu", (unsigned long)status,
        (unsigned long)key);
+
+    /* --- CUI-5: open-by-name and the Ex post -------------------------------- */
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE named = NULL, opened = NULL;
+        init_name(&name, &attr, W("\\BaseNamedObjects\\prs_ports_cui5"));
+        status = NtCreateIoCompletion(&named, IO_COMPLETION_ALL_ACCESS, &attr, 0);
+        ok(status == STATUS_SUCCESS, "create named -> %08lx", (unsigned long)status);
+        status = NtOpenIoCompletion(&opened, IO_COMPLETION_ALL_ACCESS, &attr);
+        ok(status == STATUS_SUCCESS, "open named -> %08lx", (unsigned long)status);
+
+        /* One object behind both handles: post through the created handle,
+         * drain through the opened one. */
+        status = NtSetIoCompletion(named, 0x51, 0x52, STATUS_SUCCESS, 53);
+        ok(status == STATUS_SUCCESS, "set named -> %08lx", (unsigned long)status);
+        timeout.QuadPart = 0;
+        key = value = 0;
+        status = NtRemoveIoCompletion(opened, &key, &value, &iosb, &timeout);
+        ok(status == STATUS_SUCCESS && key == 0x51 && value == 0x52,
+           "cross-handle packet -> %08lx %lx/%lx", (unsigned long)status, (unsigned long)key,
+           (unsigned long)value);
+
+        /* A missing name refuses. */
+        {
+            HANDLE absent = NULL;
+            init_name(&name, &attr, W("\\BaseNamedObjects\\prs_ports_absent"));
+            status = NtOpenIoCompletion(&absent, IO_COMPLETION_ALL_ACCESS, &attr);
+            ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "open absent -> %08lx",
+               (unsigned long)status);
+        }
+
+        /* NtSetIoCompletionEx: a NULL reserve handle refuses up front, and a
+         * bogus one must at least be a real handle (the pinned Wine's server
+         * resolves it — server/completion.c add_completion). A wrong-TYPE
+         * reserve is deliberately unpinned: reserve objects are permanently
+         * out of scope on proskrnl (docs/16 — NtAllocateReserveObject has no
+         * consumer), so proskrnl validates existence, not type. */
+        status = NtSetIoCompletionEx(opened, NULL, 1, 2, STATUS_SUCCESS, 3);
+        ok(status == STATUS_INVALID_HANDLE, "set-ex NULL reserve -> %08lx", (unsigned long)status);
+        status = NtSetIoCompletionEx(opened, (HANDLE)(ULONG_PTR)0xdead0, 1, 2, STATUS_SUCCESS, 3);
+        ok(status == STATUS_INVALID_HANDLE, "set-ex bogus reserve -> %08lx", (unsigned long)status);
+
+        NtClose(named);
+        NtClose(opened);
+    }
 
     /* A blocking remove satisfied by a later set from another thread. */
     late_port = port;
