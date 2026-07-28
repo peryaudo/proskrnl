@@ -9,6 +9,9 @@
  */
 #include "util.h"
 
+NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG,
+                                          ULONG);
+
 static int wstr_contains(const WCHAR *haystack, const WCHAR *needle)
 {
     size_t nlen = 0;
@@ -82,6 +85,25 @@ static void test_limits(HANDLE job)
      * enum is shorter, so spell the probe as a raw id). */
     status = NtSetInformationJobObject(job, (JOBOBJECTINFOCLASS)1000, &ext, sizeof(ext));
     ok(status == STATUS_INVALID_PARAMETER, "class ceiling -> %08lx", (unsigned long)status);
+
+    /* CUI-5 fuzzer-found: a handle without JOB_OBJECT_SET_ATTRIBUTES cannot
+     * set limits (wine server/process.c set_job_limits resolves the handle
+     * with exactly that right). */
+    {
+        HANDLE weak = NULL;
+        NTSTATUS dupStatus = NtDuplicateObject(GetCurrentProcess(), job, GetCurrentProcess(), &weak,
+                                               JOB_OBJECT_QUERY, 0, 0);
+        ok(dupStatus == STATUS_SUCCESS, "dup query-only -> %08lx", (unsigned long)dupStatus);
+        if (NT_SUCCESS(dupStatus))
+        {
+            memset(&ext, 0, sizeof(ext));
+            status = NtSetInformationJobObject(weak, JobObjectExtendedLimitInformation, &ext,
+                                               sizeof(ext));
+            ok(status == STATUS_ACCESS_DENIED, "set without SET_ATTRIBUTES -> %08lx",
+               (unsigned long)status);
+            NtClose(weak);
+        }
+    }
 
     /* The exact call services.exe makes at startup (services.c main). */
     memset(&ext, 0, sizeof(ext));

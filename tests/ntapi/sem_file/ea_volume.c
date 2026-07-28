@@ -76,6 +76,10 @@ START_TEST(ea_volume)
         memset(buffer, 0, sizeof(buffer));
         status = NtSetEaFile(h, &iosb, buffer, sizeof(buffer));
         ok(status == STATUS_ACCESS_DENIED, "set ea -> %08lx", (unsigned long)status);
+        /* The refusal never looks at the handle (fuzzer-found: the pinned
+         * Wine's arm is an unconditional ACCESS_DENIED stub). */
+        status = NtSetEaFile((HANDLE)(ULONG_PTR)0xdead0, &iosb, buffer, sizeof(buffer));
+        ok(status == STATUS_ACCESS_DENIED, "set ea bad handle -> %08lx", (unsigned long)status);
     }
 
     /* --- NtFlushBuffersFileEx ----------------------------------------------- */

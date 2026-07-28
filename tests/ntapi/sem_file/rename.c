@@ -328,6 +328,34 @@ START_TEST(rename)
         ok(status == STATUS_INVALID_PARAMETER_3, "short buffer -> %08lx", (unsigned long)status);
     }
 
+    /* --- 9b. the target path resolves BEFORE the handle (fuzzer-found) ------ */
+    /* Wine's order (unix/file.c rename case): length check, then
+     * get_nt_and_unix_names on the target, and only the server call touches
+     * the handle — so a bad handle with a bad target reports the PATH
+     * error, and a wrong-type handle with a good target reports the type
+     * mismatch from the handle resolution. */
+    {
+        NTSTATUS order_status = do_rename_class((HANDLE)(ULONG_PTR)0xdead0, NULL,
+                                                W("\\??\\C:\\prstest\\rename\\nosuchdir\\x.txt"),
+                                                FALSE, FileRenameInformation, 0, &iosb);
+        ok(order_status == STATUS_OBJECT_PATH_NOT_FOUND, "bad handle + bad path -> %08lx",
+           (unsigned long)order_status);
+        HANDLE order_event = NULL;
+        order_status =
+            NtCreateEvent(&order_event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+        ok(order_status == STATUS_SUCCESS, "order event -> %08lx", (unsigned long)order_status);
+        order_status =
+            do_rename_class(order_event, NULL, W("\\??\\C:\\prstest\\rename\\nosuchdir\\x.txt"),
+                            FALSE, FileRenameInformation, 0, &iosb);
+        ok(order_status == STATUS_OBJECT_PATH_NOT_FOUND, "event handle + bad path -> %08lx",
+           (unsigned long)order_status);
+        order_status = do_rename_class(order_event, NULL, W("\\??\\C:\\prstest\\rename\\evt.txt"),
+                                       FALSE, FileRenameInformation, 0, &iosb);
+        ok(order_status == STATUS_OBJECT_TYPE_MISMATCH, "event handle + good path -> %08lx",
+           (unsigned long)order_status);
+        NtClose(order_event);
+    }
+
     /* --- 10. RootDirectory-relative rename --------------------------------- */
     status = do_rename_class(src, dir, W("reltarget.txt"), FALSE, FileRenameInformation, 0, &iosb);
     ok(status == STATUS_SUCCESS, "relative rename -> %08lx", (unsigned long)status);
