@@ -369,7 +369,7 @@ static int KiRunSessionManager(int abiFailures)
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
         PsRunUserImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                         "C:\\windows\\system32\\smss.exe", commandLine, FALSE, 0, &exitStatus);
+                         "C:\\windows\\system32\\smss.exe", commandLine, 0, &exitStatus);
     if (!NT_SUCCESS(status))
     {
         DbgPrint("[KTEST] smss.exe FAIL (create=%#lx)\n", (unsigned long)status);

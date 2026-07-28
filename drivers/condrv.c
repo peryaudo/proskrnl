@@ -245,8 +245,7 @@ static struct
                               * it (wineserver's read_queue shape) */
     PCONDRV_REQUEST current; /* delivered non-read verb, awaiting its reply */
     uint64_t nextRequestId;
-    ULONG nextOutputId;   /* fresh screen-buffer ids (2+) */
-    KEVENT serverPresent; /* notification: a conhost attached */
+    ULONG nextOutputId; /* fresh screen-buffer ids (2+) */
 } CondrvConsole;
 
 static IO_FCB CondrvConsoleFcb;
@@ -492,7 +491,6 @@ static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *i
 static void CondrvServerGone(void)
 {
     CondrvConsole.serverFile = 0;
-    KeClearEvent(&CondrvConsole.serverPresent);
     if (CondrvConsole.current != 0)
     {
         CondrvCompleteRequest(CondrvConsole.current, STATUS_INVALID_DEVICE_STATE, 0, 0);
@@ -601,7 +599,6 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
         /* Born signaled (io.h); the server handle signals "requests
          * pending", so start clear. */
         KeClearEvent((PKEVENT)&file->header);
-        KeSetEvent(&CondrvConsole.serverPresent, 0, FALSE);
         DbgPrint("condrv: console server attached\n");
     }
     *information = FILE_OPENED;
@@ -778,107 +775,6 @@ static const IO_VFS_OPS CondrvConsoleOps = {
 
 static PIO_DEVICE CondrvConsoleDevice;
 
-/* --- process console plumbing (kernel/ps seam) ------------------------------- */
-
-BOOLEAN CondrvWaitForServer(ULONG timeoutMilliseconds)
-{
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -(LONGLONG)timeoutMilliseconds * 10000;
-    return KeWaitForSingleObject(&CondrvConsole.serverPresent, Executive, KernelMode, FALSE,
-                                 &timeout) == STATUS_SUCCESS;
-}
-
-/* Build one ConDrv FILE_OBJECT of `kind` outside the NtCreateFile path (no
- * name walk — the creator seeds a child that cannot open anything yet). */
-static NTSTATUS CondrvBuildOpen(CONDRV_OPEN_KIND kind, ULONG outputId, PFILE_OBJECT *fileOut)
-{
-    PCONDRV_OPEN open = MiAllocatePool(sizeof(CONDRV_OPEN));
-    if (open == 0)
-    {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    open->kind = kind;
-    open->outputId = outputId;
-
-    PVOID body;
-    NTSTATUS status = ObpAllocateObject(&IoFileObjectType, sizeof(FILE_OBJECT), &body);
-    if (!NT_SUCCESS(status))
-    {
-        MiFreePool(open);
-        return status;
-    }
-    PFILE_OBJECT file = body;
-    KiInitializeDispatcherHeader(&file->header, KI_OBJECT_NOTIFICATION_EVENT, 1);
-    ObfReferenceObject(CondrvConsoleDevice);
-    file->device = CondrvConsoleDevice;
-    file->fsContext = open;
-    file->fcb = &CondrvConsoleFcb;
-    file->synchronousIo = TRUE;
-    file->grantedAccess = FILE_ALL_ACCESS;
-    file->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE;
-    *fileOut = file;
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS CondrvCreateProcessHandles(struct EPROCESS *process, HANDLE *consoleOut, HANDLE *inOut,
-                                    HANDLE *outOut, HANDLE *errOut)
-{
-    if (CondrvConsoleDevice == 0)
-    {
-        return STATUS_INVALID_DEVICE_STATE;
-    }
-    PFILE_OBJECT reference = 0;
-    PFILE_OBJECT input = 0;
-    PFILE_OBJECT output = 0;
-    NTSTATUS status = CondrvBuildOpen(CondrvOpenConnection, 0, &reference);
-    if (NT_SUCCESS(status))
-    {
-        status = CondrvBuildOpen(CondrvOpenInput, 0, &input);
-    }
-    if (NT_SUCCESS(status))
-    {
-        status = CondrvBuildOpen(CondrvOpenOutput, 1, &output);
-    }
-    POBP_HANDLE_TABLE table = &process->handleTable;
-    if (NT_SUCCESS(status))
-    {
-        status = ObpCreateHandleInTable(table, reference, FILE_ALL_ACCESS, 0, consoleOut);
-    }
-    if (NT_SUCCESS(status))
-    {
-        /* Std handles are born inheritable, as NT console handles are —
-         * cmd's pipe children receive them through the M10 inherit-all
-         * copy at the same values (sem_ps/inherit semantics). */
-        status = ObpCreateHandleInTable(table, input, FILE_ALL_ACCESS, OBJ_INHERIT, inOut);
-    }
-    if (NT_SUCCESS(status))
-    {
-        /* hStdOutput and hStdError share ONE output open — the shape
-         * kernelbase's own std-handle setup produces (DuplicateHandle). */
-        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, OBJ_INHERIT, outOut);
-    }
-    if (NT_SUCCESS(status))
-    {
-        status = ObpCreateHandleInTable(table, output, FILE_ALL_ACCESS, OBJ_INHERIT, errOut);
-    }
-    /* The handles hold their own references (or nothing does: on failure
-     * the creator references drop everything, and ObpCloseAllHandles at
-     * process exit releases the seeded ones). */
-    if (reference != 0)
-    {
-        ObDereferenceObject(reference);
-    }
-    if (input != 0)
-    {
-        ObDereferenceObject(input);
-    }
-    if (output != 0)
-    {
-        ObDereferenceObject(output);
-    }
-    return status;
-}
-
 /* --- initialization ---------------------------------------------------------- */
 
 void CondrvInitialize(void)
@@ -888,7 +784,6 @@ void CondrvInitialize(void)
     InitializeListHead(&CondrvConsole.requestQueue);
     InitializeListHead(&CondrvConsole.readQueue);
     CondrvConsole.nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
-    KeInitializeEvent(&CondrvConsole.serverPresent, NotificationEvent, FALSE);
     /* GetFileType maps FILE_DEVICE_SERIAL_PORT and FILE_DEVICE_CONSOLE to
      * FILE_TYPE_CHAR (Wine dlls/kernelbase/file.c); the console value is
      * what wineserver's console objects report (server/console.c
