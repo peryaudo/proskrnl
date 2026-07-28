@@ -103,6 +103,7 @@ CSRC := kernel/init/main.c \
         kernel/io/file.c \
         kernel/io/rw.c \
         kernel/io/async.c \
+        kernel/io/notify.c \
         kernel/io/query.c \
         kernel/io/lock.c \
         kernel/io/completion.c \

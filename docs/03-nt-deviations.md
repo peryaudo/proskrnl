@@ -876,6 +876,17 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
   Junctions" — NTFS only; kernelbase surfaces `ERROR_INVALID_FUNCTION`).
   The oracle's ext4 *can* link, so the refusal is pinned `beyond_oracle`
   — the suite's first use of the tag.
+- **Directory-change watches deliver one record and do not buffer between
+  watches** (`kernel/io/notify.c`): a parked watch completes on the first
+  matching change with a single `FILE_NOTIFY_INFORMATION` record; a change
+  arriving while no watch is parked is dropped. Real NT (and the pinned
+  Wine, which queues changes on the directory handle) buffers across the
+  re-arm window, so a watcher that changes-then-rearms can miss events on
+  proskrnl. `sem_file/notify_change.c` is written one-change-per-watch and
+  drains the oracle's queue explicitly; the winetest change pairs stay
+  parked where they lean on the buffered window (see the unpark notes).
+  Escalation: give the watch list a per-handle backlog when a real watcher
+  convicts the gap.
 - **`NtCancelSynchronousIoFile` cancels npfs parks only**
   (`kernel/io/async.c IoWaitCancellable`): the Io layer marks every
   potentially-blocking device op, but only npfs's waits (blocking

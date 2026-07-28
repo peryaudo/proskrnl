@@ -178,6 +178,15 @@ void IopEnterSyncIo(void *userIosb);
 void IopLeaveSyncIo(void);
 NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
 
+/* CUI-5 NtNotifyChangeDirectoryFile (kernel/io/notify.c): the FS mutation
+ * sites report changes here (cheap when no watch is armed); the cancel and
+ * close paths sweep the kernel-owned watch list. */
+BOOLEAN IoDirectoryWatchesActive(void);
+void IoReportDirectoryChange(struct IO_DEVICE *device, const UNICODE_STRING *parentPath,
+                             const UNICODE_STRING *name, ULONG filterBit, ULONG action);
+ULONG IopCancelDirectoryWatches(struct FILE_OBJECT *file, PKTHREAD issuer,
+                                PIO_STATUS_BLOCK targetIosb);
+
 /* Complete a pending request from any context: IOSB into the owner's
  * address space strictly BEFORE the event signal (docs/08), then drop both
  * references and free. */
