@@ -112,18 +112,31 @@ static BOOLEAN KiMaterializeUserRange(uint64_t base, uint64_t size)
 /* MXCSR bits FXRSTOR accepts: the CPU's MXCSR_MASK, read once from a clean
  * FXSAVE image (bytes 28-31; 0 means the default 0xffbf). Restoring a
  * user-supplied MXCSR unmasked would #GP in ring 0 (Intel SDM Vol. 1
- * "FXRSTOR"), so KiRestoreFxState filters through this. */
+ * "FXRSTOR"), so KiRestoreFxState filters through this. BOTH paths
+ * initialize it: a restore runs before any capture on every boot (ntdll's
+ * startup NtContinue), and filtering through a still-zero mask would strip
+ * the exception-mask bits from the restored MXCSR — every later inexact
+ * SSE op in that thread then dies with #XM (tests/ntapi
+ * sem_ps/initial_fpu.c pins the startup state). */
 static uint32_t KiMxcsrMask;
+
+static void KiEnsureMxcsrMask(void)
+{
+    if (KiMxcsrMask == 0)
+    {
+        __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
+        memset(&area, 0, sizeof(area));
+        __asm__ volatile("fxsave64 %0" : "=m"(area));
+        KiMxcsrMask = area.MxCsr_Mask != 0 ? area.MxCsr_Mask : 0xffbf;
+    }
+}
 
 static void KiCaptureFxState(CONTEXT *context)
 {
     __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
     memset(&area, 0, sizeof(area));
     __asm__ volatile("fxsave64 %0" : "=m"(area));
-    if (KiMxcsrMask == 0)
-    {
-        KiMxcsrMask = area.MxCsr_Mask != 0 ? area.MxCsr_Mask : 0xffbf;
-    }
+    KiEnsureMxcsrMask();
     memcpy(&context->FltSave, &area, sizeof(area));
     context->MxCsr = area.MxCsr;
 }
@@ -131,6 +144,7 @@ static void KiCaptureFxState(CONTEXT *context)
 static void KiRestoreFxState(const CONTEXT *context)
 {
     __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
+    KiEnsureMxcsrMask();
     memcpy(&area, &context->FltSave, sizeof(area));
     area.MxCsr = context->MxCsr & KiMxcsrMask;
     area.MxCsr_Mask = KiMxcsrMask;
