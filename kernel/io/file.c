@@ -468,6 +468,31 @@ NTSTATUS NtDeleteFile(POBJECT_ATTRIBUTES attributes)
     return status;
 }
 
+/* CUI-5 rename support: the pinned Wine resolves the caller's whole target
+ * path (dlls/ntdll/unix/file.c get_nt_and_unix_names with FILE_OPEN_IF)
+ * before it ever references the rename handle, so a dead intermediate
+ * directory in the target answers even over a bad handle (fuzzer-found;
+ * pinned by sem_file/rename.c). Mirror the gate with an attribute-only
+ * internal open: an existing target or a merely missing leaf passes, any
+ * other failure is the caller's answer. */
+NTSTATUS IopProbeTargetPath(POBJECT_ATTRIBUTES attributes)
+{
+    HANDLE handle;
+    IO_STATUS_BLOCK iosb;
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* the handle is kernel-internal */
+    NTSTATUS status =
+        IopCreateFile(&handle, FILE_READ_ATTRIBUTES, attributes, &iosb, 0,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
+    if (NT_SUCCESS(status))
+    {
+        NtClose(handle);
+    }
+    thread->previousMode = saved;
+    return status == STATUS_OBJECT_NAME_NOT_FOUND ? STATUS_SUCCESS : status;
+}
+
 NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMATION *info)
 {
     if (info == 0)

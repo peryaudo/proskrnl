@@ -111,6 +111,11 @@ void IopReleaseAllLocks(PIO_FCB fcb, PFILE_OBJECT owner);
 /* Resolve a file handle with an access check. Caller dereferences. */
 NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut);
 
+/* Attribute-only internal open of a rename/link target: SUCCESS when the
+ * target exists or only its leaf is missing, the open's failure otherwise
+ * (kernel/io/file.c; the Wine pre-handle target-resolution gate). */
+NTSTATUS IopProbeTargetPath(POBJECT_ATTRIBUTES attributes);
+
 /* Kernel-internal: open `ntPath` (e.g. \??\C:\windows\system32\ntdll.dll) and
  * build a SEC_IMAGE section over it (the M7 process bootstrap + the NLS
  * mapping syscalls use the data flavour below). The caller owns the returned
