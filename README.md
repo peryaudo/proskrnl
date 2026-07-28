@@ -258,6 +258,36 @@ a fabricated number; `^C` is detected on the serial transport rather than by
 conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
 process-ecosystem notes").
 
+**CUI-5 complete**: Io completion — the file surface's last mile. **Rename
+exists**: `FileRenameInformation(Ex)`/`FileLinkInformation` in
+`NtSetInformationFile`, with the FAT entry mover rewriting the live FCB's
+identity in place (dedup, share state and open handles survive; a directory
+move rewrites `..`), the pinned replace rules (collision, open/read-only/
+directory targets, the Ex `IGNORE_READONLY` override, rename-to-self,
+case-change renames), and `move`/`ren`/`move /Y` proven at a live cmd.exe
+prompt (`tests/run/run.sh files` — the write-tmp-then-rename shape
+included). The other eleven CUI-5 ids landed with it:
+`NtNotifyChangeDirectoryFile` (kernel-owned one-shot watches fed by the FAT
+mutation sites — event, APC and subtree forms), `NtCancelSynchronousIoFile`
+(cancellable npfs parks via a per-thread mark), `NtReadFileScatter`/
+`NtWriteFileGather`, `NtFlushBuffersFileEx` (flushes now require a writable
+handle, as the oracle does), `NtDeleteFile` (composed through the one
+create engine), the EA pair's honest refusals, `NtSetVolumeInformationFile`
+(a real FAT label write where the oracle stubs success),
+`NtQueryDirectoryObject` (kernelbase's volume-enumeration loop), and
+`NtOpenIoCompletion`/`NtSetIoCompletionEx`. The query surface closed too:
+`FileNetworkOpen`/`FileAttributeTag`/`FileIdBothDirectory` classes,
+`FileFsFullSizeInformation`, and the `FileStreamInformation` refusal
+NT-on-FAT gives. Pinned by six new/extended `tests/ntapi/` suites green on
+the oracle AND proskrnl, the kmt FAT-churn shadow model learning rename,
+two fuzzer op groups, and the suite's first `beyond_oracle` uses (hard
+links, streams, the label write-back, subtree watches — each cited against
+NT's own FAT contract where the oracle cannot answer). **Not yet:** changes
+are not buffered between watches (real NT queues across the re-arm window);
+`FileCompletionInformation` port association awaits a convicting consumer;
+non-npfs blocking reads stay uncancellable (`docs/03` "CUI-5 Io-completion
+notes").
+
 ![two windows composited on the proskrnl scanout, one just dragged](docs/img/gui4-drag.png)
 
 **GUI-4 complete — grabbed, moved, clicked** (`tests/run/run.sh gui4`;

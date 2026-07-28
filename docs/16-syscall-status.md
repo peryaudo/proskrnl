@@ -1,8 +1,8 @@
 # 16 — Syscall status (the boundary, measured)
 
-A snapshot of the `Nt*` surface after **CUI-4**: what is implemented, what is missing,
+A snapshot of the `Nt*` surface after **CUI-5**: what is implemented, what is missing,
 what will never be built, and where the gaps that bite real software actually are. The
-build plan that closes the closable part lives in `docs/02` (CUI-5…CUI-7, Net-1).
+build plan that closes the closable part lives in `docs/02` (CUI-6…CUI-7, Net-1).
 
 **How to re-derive this (never trust the prose over the table):** the id space is the
 pinned Wine tree's own 64-bit syscall table, generated into `kernel/syscall/table.inc`
@@ -20,12 +20,12 @@ bump; re-run the count then.
 | | count |
 |---|---|
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
-| Implemented (`KI_SYSCALL` rows) | **147** |
-| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **117** |
+| Implemented (`KI_SYSCALL` rows) | **159** |
+| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **105** |
 | …of the missing: permanently out of scope (below) | **62** |
-| …of the missing: to be built (docs/02 CUI-5…CUI-7) | **55** |
-| …of the missing: with a live caller in the baked x64 CUI DLL set | **~43** |
-| End state once CUI-5…CUI-7 land | **202 / 264** |
+| …of the missing: to be built (docs/02 CUI-6…CUI-7) | **43** |
+| …of the missing: with a live caller in the baked x64 CUI DLL set | **~31** |
+| End state once CUI-6…CUI-7 land | **202 / 264** |
 
 The missing-id count **understates** the gap: a second dimension — implemented
 services that refuse most of their info classes — bites real software harder than any
@@ -55,14 +55,10 @@ consumer) and G12 (they refuse loudly forever, they don't fake success):
 An id in this table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out of
 scope" means we never *implement* it, not that it ever fakes success.
 
-### To be built — 55 (the plan: docs/02 CUI-5…CUI-7)
+### To be built — 43 (the plan: docs/02 CUI-6…CUI-7)
 
-**File / I/O — 12 → CUI-5**
-★`NtNotifyChangeDirectoryFile` (`ReadDirectoryChangesW` — every file watcher and many
-build tools) · ★`NtCancelSynchronousIoFile` · ★`NtReadFileScatter`
-★`NtWriteFileGather` · `NtFlushBuffersFileEx` · `NtDeleteFile` · `NtQueryEaFile`
-`NtSetEaFile` · `NtSetVolumeInformationFile` · ★`NtQueryDirectoryObject`
-(kernelbase's volume enumeration) · `NtOpenIoCompletion` · `NtSetIoCompletionEx`
+*(CUI-5's 12 file/IO ids — rename led — landed; see docs/02 CUI-5 and
+docs/03 "CUI-5 Io-completion notes".)*
 
 **Object manager / sync / process — 10 → CUI-6**
 ★`NtSetInformationObject` (**`SetHandleInformation`** — the stdio-redirect idiom) ·
@@ -103,10 +99,6 @@ These read as "implemented" in any id tally and are what an off-the-shelf CUI ap
 trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` line,
 `kernel/syscall/table.c`). Ranked roughly by blast radius:
 
-- **`NtSetInformationFile`: no `FileRenameInformation(Ex)` / `FileLinkInformation`**
-  — `MoveFile`/`ren`/`move` and every write-tmp-then-rename tool fail; rename does
-  not exist anywhere in `kernel/`, `fs/`, or `drivers/`. The single largest hole on
-  either list. → CUI-5.
 - **`NtQueryObject`: no `ObjectHandleFlagInformation`** — `GetHandleInformation`
   fails (pairs with the missing `NtSetInformationObject` above). → CUI-6.
 - **`NtQueryInformationProcess`** (9 classes today): no `ProcessTimes`
@@ -116,12 +108,6 @@ trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` lin
   `ThreadQuerySetWin32StartAddress`. → CUI-6.
 - **`NtQuerySystemInformation`** (11 classes): no `SystemHandleInformation`,
   `SystemModuleInformation`, `SystemProcessorPerformanceInformation`. → CUI-6.
-- **`NtQueryInformationFile`** (19 classes since GUI-5 built the query side of
-  `FileEndOfFileInformation`, which ntdll's activation-context loader asks for):
-  no `FileNetworkOpenInformation`,
-  `FileAttributeTagInformation`, `FileStreamInformation`; `NtQueryDirectoryFile`
-  lacks `FileIdBothDirectoryInformation`; volume queries lack
-  `FileFsFullSizeInformation`. → CUI-5.
 - **Jobs**: nesting refuses; most limit set/query classes refuse; per-job and
   per-process CPU/IO accounting reads back zero (`docs/03` "CUI-4 notes"). → CUI-6.
 - **`NtGetContextThread`/`NtSetContextThread`: self only** — a foreign thread's
@@ -130,5 +116,8 @@ trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` lin
   slippable to CUI-7.
 - **`NtOpenThread` by CLIENT_ID** refuses (only `NtOpenProcess` got the CUI-4
   treatment). → CUI-6.
-- **Async I/O is one verb wide** — only `FSCTL_PIPE_LISTEN` pends
-  (`docs/03` "CUI-3 SCM notes"); data transfers are synchronous. → CUI-5.
+- **Async I/O is two verbs wide** — `FSCTL_PIPE_LISTEN` (`docs/03` "CUI-3
+  SCM notes") and CUI-5's directory watches pend; data transfers stay
+  synchronous, and no consumer has convicted a wider surface
+  (`FileCompletionInformation` port association stays unbuilt — `docs/03`
+  "CUI-5 Io-completion notes").
