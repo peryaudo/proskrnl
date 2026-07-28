@@ -468,8 +468,10 @@ idle event handed to console processes that should not have one, and — worth t
 on its own — GUI-2's forced desktop-window creation silently re-homing the whole process
 onto whatever desktop a thread last visited. What is left is named and split in docs/03
 "GUI-5 winetest notes": two assertions that wait on GUI-6 (the desktop window has no
-owning thread until explorer owns it), twelve decided by how slow TCG is rather than by
-any semantics, and two genuine message-sequence divergences. Three tools the campaign left
+owning thread until explorer owns it), up to twelve decided by how slow TCG is rather than
+by any semantics of ours, two genuine message-sequence divergences still open, and two `todo_wine`
+tags that are stale here because proskrnl passes what Wine fails — winetest counts those
+against us and only Wine can retire them. Three tools the campaign left
 behind: a timeout/deadlock dump that prints every thread's state, waits, user RIP and stack
 frames; a sweep-driven detector that catches a user-space deadlock within seconds of it
 forming (docs/03 GUI-5 notes); and `tools/unscreen.py`, which replays a test's own text
