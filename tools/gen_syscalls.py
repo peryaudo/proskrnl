@@ -209,6 +209,8 @@ IMPLEMENTED = [
     "NtQueryEaFile",
     "NtSetEaFile",
     "NtSetVolumeInformationFile",
+    "NtOpenIoCompletion",
+    "NtSetIoCompletionEx",
 ]
 
 
