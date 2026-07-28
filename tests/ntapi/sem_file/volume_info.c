@@ -131,6 +131,52 @@ START_TEST(volume_info)
     ok(iosb.Information == (ULONG_PTR)~0ULL, "short size Information %lu",
        (unsigned long)iosb.Information);
 
+    /* --- CUI-5: FileFsFullSizeInformation ----------------------------------- */
+    /* No baked kernelbase caller (GetDiskFreeSpaceEx uses the size class
+     * above), but the class completes the volume query surface (docs/16).
+     * Pinned Wine (dlls/ntdll/unix/file.c get_full_size_info): same facts,
+     * with caller-available == actual-available (no quotas on either
+     * backend), and the same BUFFER_TOO_SMALL short-buffer shape. */
+    {
+        FILE_FS_FULL_SIZE_INFORMATION full_size;
+        poison_iosb(&iosb);
+        memset(&full_size, 0xcc, sizeof(full_size));
+        status = NtQueryVolumeInformationFile(root, &iosb, &full_size, sizeof(full_size),
+                                              FileFsFullSizeInformation);
+        ok(status == STATUS_SUCCESS, "full-size info -> %08lx", (unsigned long)status);
+        ok(iosb.Information == sizeof(full_size), "full-size Information %lu",
+           (unsigned long)iosb.Information);
+        ok(full_size.BytesPerSector == 512, "full-size BytesPerSector %lu",
+           (unsigned long)full_size.BytesPerSector);
+        ok(full_size.SectorsPerAllocationUnit == size.SectorsPerAllocationUnit,
+           "full-size SectorsPerAllocationUnit %lu vs %lu",
+           (unsigned long)full_size.SectorsPerAllocationUnit,
+           (unsigned long)size.SectorsPerAllocationUnit);
+        ok(full_size.TotalAllocationUnits.QuadPart == size.TotalAllocationUnits.QuadPart,
+           "full-size TotalAllocationUnits %lld",
+           (long long)full_size.TotalAllocationUnits.QuadPart);
+        /* Caller-available <= actual-available (the oracle's statvfs
+         * f_bavail excludes ext4's root reserve; FAT has no reserve, so
+         * proskrnl answers them equal). */
+        ok(full_size.CallerAvailableAllocationUnits.QuadPart <=
+               full_size.ActualAvailableAllocationUnits.QuadPart,
+           "full-size caller vs actual available");
+        ok(full_size.ActualAvailableAllocationUnits.QuadPart >= 0 &&
+               full_size.ActualAvailableAllocationUnits.QuadPart <=
+                   full_size.TotalAllocationUnits.QuadPart,
+           "full-size available %lld of %lld",
+           (long long)full_size.ActualAvailableAllocationUnits.QuadPart,
+           (long long)full_size.TotalAllocationUnits.QuadPart);
+
+        poison_iosb(&iosb);
+        status = NtQueryVolumeInformationFile(root, &iosb, &full_size, sizeof(full_size) - 1,
+                                              FileFsFullSizeInformation);
+        ok(status == STATUS_BUFFER_TOO_SMALL, "short full-size buffer -> %08lx",
+           (unsigned long)status);
+        ok(iosb.Status == IOSB_POISON_STATUS, "short full-size iosb untouched %08lx",
+           (unsigned long)iosb.Status);
+    }
+
     /* --- FileFsAttributeInformation ---------------------------------------- */
     char attrbuf[sizeof(FILE_FS_ATTRIBUTE_INFORMATION) + 32 * sizeof(WCHAR)];
     FILE_FS_ATTRIBUTE_INFORMATION *fsattr = (FILE_FS_ATTRIBUTE_INFORMATION *)attrbuf;
