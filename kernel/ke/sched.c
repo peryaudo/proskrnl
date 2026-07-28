@@ -64,6 +64,7 @@ void KiInitializeScheduler(void)
     KiIdleThread.trapFrame = 0;
     InitializeListHead(&KiIdleThread.userApcListHead);
     InitializeListHead(&KiIdleThread.mutantListHead);
+    KeInitializeEvent(&KiIdleThread.syncIoCancelEvent, NotificationEvent, FALSE);
     KeInitializeTimerEx(&KiIdleThread.timer, NotificationTimer);
     KiCurrentThread = &KiIdleThread;
 }

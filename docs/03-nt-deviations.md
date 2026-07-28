@@ -876,6 +876,15 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
   Junctions" — NTFS only; kernelbase surfaces `ERROR_INVALID_FUNCTION`).
   The oracle's ext4 *can* link, so the refusal is pinned `beyond_oracle`
   — the suite's first use of the tag.
+- **`NtCancelSynchronousIoFile` cancels npfs parks only**
+  (`kernel/io/async.c IoWaitCancellable`): the Io layer marks every
+  potentially-blocking device op, but only npfs's waits (blocking
+  read/write/listen, `FSCTL_PIPE_WAIT`) park on the cancellable event.
+  The other blocking reads — condrv/serial input, `\Device\Input*` — keep
+  their own uncancellable waits; a canceller still finds the op (SUCCESS,
+  the mark is set) but the thread wakes only when its device does. Wine
+  cancels any server-side async; the gap is unpinned (no baked caller
+  cancels a console read) and closes if a consumer ever convicts it.
 
 ## Debug objects are out of scope (permanent; ADR 0011)
 

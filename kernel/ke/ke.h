@@ -230,6 +230,15 @@ struct KTHREAD
     BOOLEAN alerted;           /* NtAlertThread */
     BOOLEAN waitAlertable;     /* the current wait is alertable */
 
+    /* CUI-5 NtCancelSynchronousIoFile: the in-flight synchronous I/O this
+     * thread is inside (kernel/io marks it around blocking device ops via
+     * IopEnterSyncIo/IopLeaveSyncIo); the cancel event breaks the
+     * cancellable parks (IoWaitCancellable — npfs's blocking waits). */
+    void *syncIoUserIosb;    /* the op's user IOSB VA, the cancel filter key */
+    BOOLEAN syncIoActive;    /* inside a cancellable synchronous op */
+    BOOLEAN syncIoCancelled; /* a canceller marked this op */
+    KEVENT syncIoCancelEvent;
+
     /* M7: a user thread's initial ring-3 register state (NtCreateThreadEx /
      * NtCreateUserProcess set these before readying it; PspUserThreadStartup
      * descends to ring 3 with them). */

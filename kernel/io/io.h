@@ -171,6 +171,13 @@ typedef struct IOP_PENDING_REQUEST
  * the current process). The caller's IOSB must already be probed. */
 NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDING_REQUEST *out);
 
+/* CUI-5 NtCancelSynchronousIoFile (kernel/io/async.c): mark the current
+ * thread's in-flight synchronous I/O around a potentially-blocking device
+ * op, and the cancellable park npfs's blocking waits use. */
+void IopEnterSyncIo(void *userIosb);
+void IopLeaveSyncIo(void);
+NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
+
 /* Complete a pending request from any context: IOSB into the owner's
  * address space strictly BEFORE the event signal (docs/08), then drop both
  * references and free. */
