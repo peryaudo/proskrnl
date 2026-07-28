@@ -1034,6 +1034,47 @@ $(IMG_GUI5): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
 gui5-img: $(IMG_GUI5)
 .PHONY: gui5-img
 
+# For fun (make rungui): the pinned tree's stock applets, launchable from
+# the prompt by name (every process is minted PATH=C:\windows\system32 --
+# kernel/ps/peb.c), plus the DLL import closure they need beyond the GUI2
+# set: comdlg32 -> shell32 -> shlwapi -> shcore; mpr (winefile); riched20
+# -> oleaut32 (wordpad's runtime-loaded edit control); uxtheme (the SxS
+# comctl32's delay import — absent, its failure hook aborts the process).
+# Baked debug-stripped like everything else. Unmodified pure-PE binaries,
+# the whoami precedent; an applet that reaches an unbuilt syscall panics
+# loudly (Art. 12), which is the point of running them.
+WINESTRIP_APPLET_NAMES := comdlg32 shell32 shlwapi shcore mpr oleaut32 riched20 uxtheme
+WINESTRIP_APPLET_DLLS := $(foreach d,$(WINESTRIP_APPLET_NAMES),$(WINESTRIP)/$(d).dll)
+$(foreach d,$(WINESTRIP_APPLET_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+
+WINESTRIP_APPLET_EXE_NAMES := notepad clock winver taskmgr winefile regedit \
+                              wordpad winhlp32 progman start
+WINESTRIP_APPLET_EXES := $(foreach p,$(WINESTRIP_APPLET_EXE_NAMES),$(WINESTRIP)/$(p).exe)
+$(foreach p,$(WINESTRIP_APPLET_EXE_NAMES),$(eval $(call WINESTRIP_EXE_RULE,$(p))))
+
+# The Microsoft.Windows.Common-Controls SxS assembly, laid out exactly as
+# wineboot's fakedll installer builds it in a prefix (dir + manifests entry
+# name per third_party/wine/dlls/setupapi/fakedll.c create_winsxs_dll_path /
+# create_manifest, arch filled in): the applets' comctl32-v6 manifests
+# resolve against it, and without it comdlg32's DllMain fails its
+# CreateActCtx (14001) and takes the whole applet down. The dll is
+# comctl32_v6 renamed comctl32.dll, stripped like everything baked.
+# Firstboot cannot create this itself: the fakedll sources live in the
+# build tree, not on the image.
+SXS_CC_DIR := windows/winsxs/amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.2600.2982_none_deadbeef
+$(eval $(call WINESTRIP_RULE,comctl32_v6))
+$(WINESTRIP)/common-controls.manifest: third_party/wine/dlls/comctl32_v6/comctl32.manifest
+	@mkdir -p $(dir $@)
+	sed 's/processorArchitecture=""/processorArchitecture="amd64"/' $< > $@
+
+# winemine rides along in system32 (NOT the image root -- C:\winemine.exe
+# is the GUI-2 boot trigger, kernel/init/main.c KiRunGui2).
+APPLETFILES := $(foreach d,$(WINESTRIP_APPLET_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+               $(foreach p,$(WINESTRIP_APPLET_EXE_NAMES),win:$(WINESTRIP)/$(p).exe=windows/system32/$(p).exe) \
+               win:$(WINEMINE)=windows/system32/winemine.exe \
+               win:$(WINESTRIP)/comctl32_v6.dll=$(SXS_CC_DIR)/comctl32.dll \
+               win:$(WINESTRIP)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR)).manifest
+
 # GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
 # image — the full Wine userland + cmd.exe + interactive.flag, exactly the
 # make-run recipe — plus the GUI stack, the desktop server, and the
@@ -1049,12 +1090,15 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(CONHOST_GUI)=windows/system32/conhost.exe \
              win:$(CMD)=windows/system32/cmd.exe \
              win:$(LOOPER)=looper.exe \
-             win:$(BUILD)/interactive.flag=interactive.flag
+             win:$(BUILD)/interactive.flag=interactive.flag \
+             $(APPLETFILES)
 
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
 $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(CONHOST_GUI) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
+        $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
+        $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
