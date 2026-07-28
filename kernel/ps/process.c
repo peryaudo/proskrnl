@@ -22,6 +22,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/init/verify.h"
 #include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
 
@@ -68,6 +69,10 @@ static void PspDeleteProcess(PVOID body)
     {
         MiDeleteAddressSpace(&process->addressSpace);
     }
+    /* Ask the idle loop for a prompt consistency sweep: a fully-gone process
+     * is exactly the "did it leave debris?" moment the per-test kernel-runner
+     * sweeps used to audit (kernel/init/verify.c). */
+    KiSweepRequested = TRUE;
 }
 
 OBJECT_TYPE PspProcessType = {

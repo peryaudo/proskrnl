@@ -15,6 +15,11 @@
 /* Completed sweeps since boot; every one either passed or panicked. */
 extern uint64_t KiSweepCount;
 
+/* Set by process teardown (kernel/ps/process.c PspDeleteProcess): the next
+ * idle iteration sweeps immediately instead of waiting out the throttle, so
+ * every exited process — each smss-run test — still gets a prompt audit. */
+extern BOOLEAN KiSweepRequested;
+
 /* Run one full sweep (takes the dispatcher lock). Callable from any thread
  * context at a blocking-point boundary — never from interrupt context. A
  * violated invariant is fatal through the ASSERT path. */
