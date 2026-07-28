@@ -105,6 +105,15 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FilePipeLocalInformation:
         needed = 0; /* length checking lives in the pipe FS (M9) */
         break;
+    case FileNetworkOpenInformation:
+        needed = sizeof(FILE_NETWORK_OPEN_INFORMATION); /* CUI-5 */
+        break;
+    case FileAttributeTagInformation:
+        needed = sizeof(FILE_ATTRIBUTE_TAG_INFORMATION); /* CUI-5 */
+        break;
+    case FileStreamInformation:
+        needed = 0; /* refused below with the handle validated first */
+        break;
     default:
         /* An unbuilt class refuses loudly (Art. 12). The pinned Wine answers
          * STATUS_NOT_IMPLEMENTED here as well, which makes it unbuilt too —
@@ -205,6 +214,41 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         out->EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
         break;
     }
+    case FileNetworkOpenInformation:
+    {
+        /* CUI-5: the by-handle sibling of NtQueryFullAttributesFile — the
+         * same times/sizes/attributes facts (pinned Wine fill_file_info;
+         * sem_file/info_classes holds it to the basic/standard answers). */
+        FILE_NETWORK_OPEN_INFORMATION *out = buffer;
+        memset(out, 0, sizeof(*out));
+        out->CreationTime = raw.creationTime;
+        out->LastAccessTime = raw.lastAccessTime;
+        out->LastWriteTime = raw.lastWriteTime;
+        out->ChangeTime = raw.lastWriteTime;
+        out->AllocationSize.QuadPart = (LONGLONG)raw.allocationSize;
+        out->EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
+        out->FileAttributes = raw.fileAttributes;
+        break;
+    }
+    case FileAttributeTagInformation:
+    {
+        /* CUI-5: GetFileInformationByHandleEx(FileAttributeTagInfo) and
+         * GetVolumePathNameW's reparse-point walk. No reparse points exist
+         * on FAT; the pinned Wine answers tag 0 for a plain file too. */
+        FILE_ATTRIBUTE_TAG_INFORMATION *out = buffer;
+        out->FileAttributes = raw.fileAttributes;
+        out->ReparseTag = 0;
+        break;
+    }
+    case FileStreamInformation:
+        /* CUI-5: FAT has no alternate data streams, and NT's own FAT driver
+         * refuses the class with STATUS_INVALID_PARAMETER
+         * (microsoft/Windows-driver-samples filesys/fastfat/fileinfo.c
+         * FatCommonQueryInformation — FileStreamInformation is not in the
+         * case list; the default arm refuses). The pinned Wine has no arm
+         * at all, so the pin is beyond_oracle (sem_file/info_classes.c). */
+        status = STATUS_INVALID_PARAMETER;
+        break;
     case FileNameInformation:
     {
         ULONG written = 0;
@@ -719,6 +763,8 @@ static ULONG IopDirEntryFixedSize(FILE_INFORMATION_CLASS informationClass)
         return (ULONG)offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName);
     case FileNamesInformation:
         return (ULONG)offsetof(FILE_NAMES_INFORMATION, FileName);
+    case FileIdBothDirectoryInformation: /* CUI-5 */
+        return (ULONG)offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName);
     default:
         return 0;
     }
@@ -782,6 +828,26 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         FILE_NAMES_INFORMATION *d = out;
         memset(d, 0, offsetof(FILE_NAMES_INFORMATION, FileName));
         d->FileNameLength = entry->nameLength;
+        memcpy(d->FileName, entry->name, nameBytes);
+        break;
+    }
+    case FileIdBothDirectoryInformation:
+    {
+        /* CUI-5: the Both shape + the listed entry's file id (the same
+         * identity FileInternalInformation serves — fat.h FatFileId).
+         * EaSize stays 0 (no EAs on FAT) and ShortName stays empty like
+         * the Both class above. */
+        FILE_ID_BOTH_DIRECTORY_INFORMATION *d = out;
+        memset(d, 0, offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName));
+        d->CreationTime = entry->info.creationTime;
+        d->LastAccessTime = entry->info.lastAccessTime;
+        d->LastWriteTime = entry->info.lastWriteTime;
+        d->ChangeTime = entry->info.lastWriteTime;
+        d->EndOfFile.QuadPart = (LONGLONG)entry->info.endOfFile;
+        d->AllocationSize.QuadPart = (LONGLONG)entry->info.allocationSize;
+        d->FileAttributes = entry->info.fileAttributes;
+        d->FileNameLength = entry->nameLength;
+        d->FileId.QuadPart = (LONGLONG)entry->info.fileId;
         memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
@@ -1071,6 +1137,39 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
         out->BytesPerSector = facts.bytesPerSector;
         information = sizeof(FILE_FS_SIZE_INFORMATION);
+        break;
+    }
+
+    case FileFsFullSizeInformation:
+    {
+        /* CUI-5: the size class's wide form. FAT has no quotas, so caller-
+         * available == actual-available (sem_file/volume_info pins caller
+         * <= actual — the oracle's statvfs f_bavail excludes ext4's root
+         * reserve). Same BUFFER_TOO_SMALL short shape as the size class
+         * (pinned Wine dlls/ntdll/unix/file.c). */
+        if (file->device->ops->QueryVolumeInfo == 0)
+        {
+            status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
+            break;
+        }
+        if (length < sizeof(FILE_FS_FULL_SIZE_INFORMATION))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        FILE_FS_FULL_SIZE_INFORMATION *out = buffer;
+        out->TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
+        out->CallerAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out->ActualAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
+        out->BytesPerSector = facts.bytesPerSector;
+        information = sizeof(FILE_FS_FULL_SIZE_INFORMATION);
         break;
     }
 
