@@ -56,6 +56,8 @@ typedef struct FILE_OBJECT
     BOOLEAN isDirectory;
     BOOLEAN synchronousIo; /* FILE_SYNCHRONOUS_IO_* at create */
     BOOLEAN deleteOnClose; /* FILE_DELETE_ON_CLOSE at create */
+    BOOLEAN nonBuffered;   /* FILE_NO_INTERMEDIATE_BUFFERING at create
+                            * (CUI-5: the scatter/gather qualifier) */
     BOOLEAN shareCounted;  /* this open holds share-access slots */
     ACCESS_MASK grantedAccess;
     ULONG shareAccess; /* this open's FILE_SHARE_* */

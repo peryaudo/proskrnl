@@ -909,6 +909,7 @@ def gen_ntioapi(wine: Path) -> str:
             "FILE_DIRECTORY_FILE",
             "FILE_WRITE_THROUGH",
             "FILE_SEQUENTIAL_ONLY",
+            "FILE_NO_INTERMEDIATE_BUFFERING",  # CUI-5: the scatter/gather qualifier
             "FILE_SYNCHRONOUS_IO_ALERT",
             "FILE_SYNCHRONOUS_IO_NONALERT",
             "FILE_NON_DIRECTORY_FILE",

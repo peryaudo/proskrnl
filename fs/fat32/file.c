@@ -860,6 +860,11 @@ static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
     return FatQueryVolumeInfo((PFAT_VOLUME)device->context, info);
 }
 
+static NTSTATUS FatVfsSetVolumeLabel(PIO_DEVICE device, const WCHAR *label, ULONG labelBytes)
+{
+    return FatSetVolumeLabel((PFAT_VOLUME)device->context, label, labelBytes);
+}
+
 const IO_VFS_OPS FatVfsOps = {
     .Create = FatVfsCreate,
     .Cleanup = FatVfsCleanup,
@@ -874,4 +879,5 @@ const IO_VFS_OPS FatVfsOps = {
     .ReadDirectory = FatVfsReadDirectory,
     .QueryName = FatVfsQueryName,
     .QueryVolumeInfo = FatVfsQueryVolumeInfo,
+    .SetVolumeLabel = FatVfsSetVolumeLabel,
 };

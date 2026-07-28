@@ -1215,3 +1215,141 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     }
     return status;
 }
+
+/* --- CUI-5: the EA pair ------------------------------------------------------ */
+
+/* FAT has no extended attributes on either backend, and the pinned Wine
+ * answers exactly this shape (dlls/ntdll/unix/file.c: query zeroes the
+ * caller's buffer and returns STATUS_NO_EAS_ON_FILE with the IOSB
+ * untouched; set refuses STATUS_ACCESS_DENIED). Pinned by
+ * sem_file/ea_volume.c. */
+NTSTATUS NtQueryEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length,
+                       BOOLEAN returnSingleEntry, PVOID eaList, ULONG eaListLength, PULONG eaIndex,
+                       BOOLEAN restartScan)
+{
+    (void)iosb; /* deliberately untouched (pinned) */
+    (void)returnSingleEntry;
+    (void)eaList;
+    (void)eaListLength;
+    (void)eaIndex;
+    (void)restartScan;
+    NTSTATUS status;
+    if (buffer != 0 && length != 0)
+    {
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    PFILE_OBJECT file;
+    status = IopReferenceFileByHandle(handle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ObDereferenceObject(file);
+    if (buffer != 0 && length != 0)
+    {
+        memset(buffer, 0, length);
+    }
+    return STATUS_NO_EAS_ON_FILE;
+}
+
+NTSTATUS NtSetEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length)
+{
+    (void)iosb;
+    (void)buffer;
+    (void)length;
+    PFILE_OBJECT file;
+    NTSTATUS status = IopReferenceFileByHandle(handle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ObDereferenceObject(file);
+    return STATUS_ACCESS_DENIED;
+}
+
+/* --- CUI-5: NtSetVolumeInformationFile --------------------------------------- */
+
+/* FILE_FS_LABEL_INFORMATION is absent from the pinned Wine's headers (its
+ * own set-volume-info is an unconditional-success FIXME stub), so the
+ * layout is hand-typed against the official Microsoft documentation
+ * ("FILE_FS_LABEL_INFORMATION structure", ntifs.h): the label byte count
+ * followed by the label characters (G8). */
+typedef struct
+{
+    ULONG VolumeLabelLength;
+    WCHAR VolumeLabel[1];
+} IOP_FS_LABEL_INFORMATION;
+
+NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer,
+                                    ULONG length, FS_INFORMATION_CLASS infoClass)
+{
+    if (iosb == 0 || buffer == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForRead(buffer, length, 1);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PFILE_OBJECT file;
+    status = IopReferenceFileByHandle(handle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    switch (infoClass)
+    {
+    case FileFsLabelInformation:
+    {
+        /* The one class NT's FAT driver sets (fastfat volinfo.c
+         * FatCommonSetVolumeInfo -> FatSetFsLabelInfo); the oracle's stub
+         * pins only the SUCCESS status, the write-back is beyond_oracle
+         * (sem_file/ea_volume.c). */
+        if (length < (ULONG)offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        IOP_FS_LABEL_INFORMATION header;
+        memcpy(&header, buffer, offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel));
+        if (header.VolumeLabelLength > length - offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        if (file->device->ops->SetVolumeLabel == 0)
+        {
+            status = STATUS_INVALID_PARAMETER; /* no volume behind the handle */
+            break;
+        }
+        const WCHAR *label =
+            (const WCHAR *)((const char *)buffer + offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel));
+        status = file->device->ops->SetVolumeLabel(file->device, label, header.VolumeLabelLength);
+        break;
+    }
+    default:
+        /* NT's FAT driver refuses every other set class (fastfat volinfo.c
+         * default arm: STATUS_INVALID_PARAMETER); the oracle's arm is an
+         * unconditional-success stub — unbuilt, never pinned (Art. 12). */
+        status = STATUS_INVALID_PARAMETER;
+        break;
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        iosb->Status = status;
+        iosb->Information = 0;
+    }
+    ObDereferenceObject(file);
+    return status;
+}

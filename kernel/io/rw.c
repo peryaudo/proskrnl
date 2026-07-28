@@ -14,6 +14,7 @@
 #include "kernel/init/panic.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
+#include "kernel/mm/phys.h" /* CUI-5: PAGE_SIZE for the scatter/gather segments */
 
 /* The APC leg of the async-completion protocol (pinned by
  * sem_file/apc_completion.c on the oracle): a transfer carrying a user
@@ -352,7 +353,7 @@ abandon:
     return status;
 }
 
-NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
+static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
 {
     if (iosb == 0)
     {
@@ -368,6 +369,15 @@ NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+    /* A flush needs a writable handle (CUI-5, pinned sem_file/ea_volume.c:
+     * the pinned Wine's flush asks the server for FILE_WRITE_DATA and
+     * falls back to FILE_APPEND_DATA — dlls/ntdll/unix/file.c
+     * NtFlushBuffersFileEx). */
+    if ((file->grantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)) == 0)
+    {
+        ObDereferenceObject(file);
+        return STATUS_ACCESS_DENIED;
     }
     /* Writes are already through (immediate writeback); what may be dirty
      * is mapped-view stores into the cache — push the whole stream out. A
@@ -400,4 +410,199 @@ NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
     }
     ObDereferenceObject(file);
     return status;
+}
+
+NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
+{
+    return IopFlushBuffers(handle, iosb);
+}
+
+NTSTATUS NtFlushBuffersFileEx(HANDLE handle, ULONG flags, void *parameters, ULONG parametersSize,
+                              IO_STATUS_BLOCK *iosb)
+{
+    /* CUI-5: the plain form IS the Ex form with flags 0 in the pinned tree
+     * (dlls/ntdll/unix/file.c NtFlushBuffersFile), and the oracle ignores
+     * flags/params with a FIXME — pinned by sem_file/ea_volume.c. */
+    (void)flags;
+    (void)parameters;
+    (void)parametersSize;
+    return IopFlushBuffers(handle, iosb);
+}
+
+/* --- CUI-5: NtReadFileScatter / NtWriteFileGather --------------------------- */
+
+/* The pinned Wine's contract (dlls/ntdll/unix/file.c, pinned by
+ * sem_file/scatter_gather.c): only a regular file opened NON-synchronous
+ * with FILE_NO_INTERMEDIATE_BUFFERING qualifies — anything else refuses
+ * STATUS_INVALID_PARAMETER; gather refuses a non-page-multiple length
+ * before touching the handle; `length` counts bytes, spread across
+ * one-page FILE_SEGMENT_ELEMENTs; the scatter side returns STATUS_PENDING
+ * with the IOSB already completed while the gather side returns the final
+ * status directly (an oracle asymmetry, pinned as-is). Under Art. 3 both
+ * complete synchronously against the page cache. */
+static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE event,
+                                     PIO_APC_ROUTINE apc, PIO_STATUS_BLOCK iosb,
+                                     FILE_SEGMENT_ELEMENT *segments, ULONG length,
+                                     PLARGE_INTEGER byteOffset)
+{
+    if (isWrite && (length % PAGE_SIZE) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (iosb == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (apc != 0 && ExGetPreviousMode() == UserMode)
+    {
+        /* No baked caller passes an APC (kernelbase sends NULL and uses the
+         * event/key legs); unbuilt refuses loudly (Art. 12). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+
+    PFILE_OBJECT file;
+    status = IopReferenceFileByHandle(handle, isWrite ? FILE_WRITE_DATA : FILE_READ_DATA, &file);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (file->device->ops->GetCache == 0 || file->isDirectory || file->synchronousIo ||
+        !file->nonBuffered)
+    {
+        ObDereferenceObject(file);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    ULONG segmentCount = (ULONG)(((uint64_t)length + PAGE_SIZE - 1) / PAGE_SIZE);
+    if (segmentCount != 0)
+    {
+        status =
+            KiProbeForRead(segments, segmentCount * sizeof(FILE_SEGMENT_ELEMENT), sizeof(void *));
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+    }
+
+    uint64_t offset = (uint64_t)file->currentByteOffset.QuadPart;
+    if (byteOffset != 0)
+    {
+        LARGE_INTEGER stackOffset;
+        status = KiProbeForRead(byteOffset, sizeof(*byteOffset), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+        memcpy(&stackOffset, byteOffset, sizeof(stackOffset));
+        if (stackOffset.QuadPart >= 0)
+        {
+            offset = (uint64_t)stackOffset.QuadPart;
+        }
+    }
+
+    PMI_PAGE_CACHE cache;
+    status = file->device->ops->GetCache(file, &cache);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(file);
+        return status;
+    }
+
+    if (isWrite)
+    {
+        if (offset + length > cache->fileSize)
+        {
+            status = file->device->ops->SetEndOfFile(file, offset + length);
+            if (!NT_SUCCESS(status))
+            {
+                ObDereferenceObject(file);
+                return status;
+            }
+        }
+        for (ULONG i = 0; i < segmentCount; i++)
+        {
+            const void *page = (const void *)segments[i].Buffer;
+            status = KiProbeForRead((void *)(uintptr_t)page, PAGE_SIZE, 1);
+            if (!NT_SUCCESS(status))
+            {
+                ObDereferenceObject(file);
+                return status;
+            }
+            MiCacheWrite(cache, offset + (uint64_t)i * PAGE_SIZE, page, PAGE_SIZE);
+        }
+        if (length != 0)
+        {
+            status = file->device->ops->WritebackRange(file, offset, length);
+            if (!NT_SUCCESS(status))
+            {
+                ObDereferenceObject(file);
+                return status;
+            }
+        }
+        status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, length);
+        ObDereferenceObject(file);
+        return status; /* gather returns the final status (oracle shape) */
+    }
+
+    /* Scatter: short reads across EOF; nothing at all is END_OF_FILE. */
+    NTSTATUS finalStatus = STATUS_SUCCESS;
+    uint64_t total = 0;
+    if (offset >= cache->fileSize)
+    {
+        finalStatus = STATUS_END_OF_FILE;
+    }
+    else
+    {
+        uint64_t avail = cache->fileSize - offset;
+        if (avail > length)
+        {
+            avail = length;
+        }
+        for (uint64_t position = 0; position < avail;)
+        {
+            uint64_t chunk = PAGE_SIZE;
+            if (chunk > avail - position)
+            {
+                chunk = avail - position;
+            }
+            void *page = (void *)segments[position / PAGE_SIZE].Buffer;
+            status = KiProbeForWrite(page, (SIZE_T)chunk, 1);
+            if (!NT_SUCCESS(status))
+            {
+                ObDereferenceObject(file);
+                return status;
+            }
+            MiCacheRead(cache, offset + position, page, chunk);
+            position += chunk;
+        }
+        total = avail;
+    }
+    IopCompleteRequest(iosb, event, finalStatus, (ULONG_PTR)total);
+    ObDereferenceObject(file);
+    return STATUS_PENDING; /* scatter always answers PENDING (oracle shape) */
+}
+
+NTSTATUS NtReadFileScatter(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcContext,
+                           PIO_STATUS_BLOCK iosb, FILE_SEGMENT_ELEMENT *segments, ULONG length,
+                           PLARGE_INTEGER byteOffset, PULONG key)
+{
+    (void)apcContext;
+    (void)key;
+    return IopSegmentedTransfer(FALSE, handle, event, apc, iosb, segments, length, byteOffset);
+}
+
+NTSTATUS NtWriteFileGather(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcContext,
+                           PIO_STATUS_BLOCK iosb, FILE_SEGMENT_ELEMENT *segments, ULONG length,
+                           PLARGE_INTEGER byteOffset, PULONG key)
+{
+    (void)apcContext;
+    (void)key;
+    return IopSegmentedTransfer(TRUE, handle, event, apc, iosb, segments, length, byteOffset);
 }

@@ -595,6 +595,99 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     return STATUS_SUCCESS;
 }
 
+/* CUI-5: NtSetVolumeInformationFile(FileFsLabelInformation). NT's FAT
+ * driver is the contract (fastfat volinfo.c FatSetFsLabelInfo — the pinned
+ * Wine's set-volume-info is an unconditional-success stub); the write-back
+ * is pinned beyond_oracle by sem_file/ea_volume.c. The label lands in
+ * BS_VolLab (spec §3.3, offset 71) and in the root directory's volume-id
+ * entry when one exists (spec §6.2), stored upper-case OEM space-padded
+ * (spec §6.1); an empty label writes the spec's "NO NAME    " sentinel. */
+NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBytes)
+{
+    ULONG units = labelBytes / sizeof(WCHAR);
+    if (units > 11)
+    {
+        return STATUS_INVALID_VOLUME_LABEL;
+    }
+    unsigned char oem[11];
+    memset(oem, ' ', sizeof(oem));
+    for (ULONG i = 0; i < units; i++)
+    {
+        WCHAR c = label[i];
+        if (c < 0x20 || c > 0x7E)
+        {
+            return STATUS_INVALID_VOLUME_LABEL; /* OEM-representable only */
+        }
+        if (c >= 'a' && c <= 'z')
+        {
+            c = (WCHAR)(c - 'a' + 'A');
+        }
+        oem[i] = (unsigned char)c;
+    }
+    if (units == 0)
+    {
+        memcpy(oem, "NO NAME    ", 11);
+    }
+
+    unsigned char boot[FAT_SECTOR_SIZE];
+    NTSTATUS status = FatReadSector(volume, 0, boot);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    memcpy(boot + 71, oem, 11);
+    status = FatWriteSector(volume, 0, boot);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    for (ULONG slot = 0;; slot++)
+    {
+        unsigned char entry[32];
+        status = FatReadDirSlot(volume->root, slot, entry);
+        if (status == STATUS_NO_MORE_FILES)
+        {
+            break;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (entry[0] == 0x00)
+        {
+            break;
+        }
+        if (entry[0] == 0xE5 ||
+            (entry[11] & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME)
+        {
+            continue;
+        }
+        if (entry[11] & FAT_ATTR_VOLUME_ID)
+        {
+            memcpy(entry, oem, 11);
+            status = FatWriteDirSlot(volume->root, slot, entry);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            break;
+        }
+    }
+
+    ULONG served = units;
+    if (units == 0)
+    {
+        served = 0;
+    }
+    for (ULONG i = 0; i < served; i++)
+    {
+        volume->volumeLabel[i] = (WCHAR)oem[i];
+    }
+    volume->volumeLabelLength = (USHORT)(served * sizeof(WCHAR));
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS FatQueryVolumeInfo(PFAT_VOLUME volume, IO_VOLUME_INFO *info)
 {
     ASSERT(volume->clusterCount + 2 <= volume->fatSizeSectors * volume->bytesPerSector / 4);

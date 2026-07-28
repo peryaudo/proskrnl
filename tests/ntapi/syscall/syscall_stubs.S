@@ -1812,6 +1812,102 @@ NtDeleteFile:
     syscall
     ret
 
+    .global NtReadFileScatter
+NtReadFileScatter:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x2e, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtWriteFileGather
+NtWriteFileGather:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x1b, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtFlushBuffersFileEx
+NtFlushBuffersFileEx:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x98, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtQueryEaFile
+NtQueryEaFile:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov 0x80(%rsp), %rax
+    mov %rax, 0x38(%rsp)
+    mov 0x88(%rsp), %rax
+    mov %rax, 0x40(%rsp)
+    mov 0x90(%rsp), %rax
+    mov %rax, 0x48(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc3, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtSetEaFile
+NtSetEaFile:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xe8, %eax
+    syscall
+    ret
+
+    .global NtSetVolumeInformationFile
+NtSetVolumeInformationFile:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf7, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

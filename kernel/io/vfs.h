@@ -161,6 +161,12 @@ typedef struct IO_VFS_OPS
      * makes the oracle unbuilt here as well — so nothing pins it. */
     NTSTATUS (*QueryVolumeInfo)(struct IO_DEVICE *device, IO_VOLUME_INFO *info);
 
+    /* CUI-5 NtSetVolumeInformationFile(FileFsLabelInformation): set the
+     * volume label (labelBytes counts bytes; 0 clears it). NULL = not a
+     * filesystem volume. */
+    NTSTATUS(*SetVolumeLabel)
+    (struct IO_DEVICE *device, const WCHAR *label, ULONG labelBytes);
+
     /* --- M9 optional device ops (NULL = the page-cache file behaviour) ----
      * Devices whose data is a live stream (npfs, condrv, the serial port)
      * implement these instead of GetCache. Buffers are kernel pool copies

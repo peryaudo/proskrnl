@@ -90,6 +90,9 @@ typedef enum {
     FZ_OP_SET_EOF_FILE,
     FZ_OP_QUERY_STANDARD_FILE,
     FZ_OP_RENAME_FILE,
+    FZ_OP_FLUSH_EX_FILE,
+    FZ_OP_QUERY_EA_FILE,
+    FZ_OP_SET_EA_FILE,
     FZ_OP_QUERY_PROCESS_BASIC,
     FZ_OP_QUERY_SYSTEM_BASIC,
     FZ_OP_PROTECT_MEMORY,
@@ -153,6 +156,9 @@ static const FzOperandKind fz_kinds_write_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH
 static const FzOperandKind fz_kinds_set_eof_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOOFF };
 static const FzOperandKind fz_kinds_query_standard_file[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_rename_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_FNAME, FZ_OPND_CH_BOOL };
+static const FzOperandKind fz_kinds_flush_ex_file[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_query_ea_file[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_set_ea_file[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_query_process_basic[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_query_system_basic[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_protect_memory[] = { FZ_OPND_CH_PROTECT_PAGE };
@@ -213,6 +219,9 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_SET_EOF_FILE] = { fz_kinds_set_eof_file, 2, "NtSetInformationFile" },
     [FZ_OP_QUERY_STANDARD_FILE] = { fz_kinds_query_standard_file, 1, "NtQueryInformationFile" },
     [FZ_OP_RENAME_FILE] = { fz_kinds_rename_file, 3, "NtSetInformationFile" },
+    [FZ_OP_FLUSH_EX_FILE] = { fz_kinds_flush_ex_file, 1, "NtFlushBuffersFileEx" },
+    [FZ_OP_QUERY_EA_FILE] = { fz_kinds_query_ea_file, 2, "NtQueryEaFile" },
+    [FZ_OP_SET_EA_FILE] = { fz_kinds_set_ea_file, 1, "NtSetEaFile" },
     [FZ_OP_QUERY_PROCESS_BASIC] = { fz_kinds_query_process_basic, 1, "NtQueryInformationProcess" },
     [FZ_OP_QUERY_SYSTEM_BASIC] = { fz_kinds_query_system_basic, 1, "NtQuerySystemInformation" },
     [FZ_OP_PROTECT_MEMORY] = { fz_kinds_protect_memory, 1, "NtProtectVirtualMemory" },
