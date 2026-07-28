@@ -120,6 +120,9 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut);
  * free units counted live off the in-pool FAT. */
 NTSTATUS FatQueryVolumeInfo(PFAT_VOLUME volume, IO_VOLUME_INFO *info);
 
+/* CUI-5: set the volume label (BS_VolLab + the root volume-id entry). */
+NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBytes);
+
 /* Volume-relative sector I/O. */
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer);
 NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer);

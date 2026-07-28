@@ -1007,6 +1007,31 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_FLUSH_EX_FILE:
+    {
+        IO_STATUS_BLOCK iosb;
+        st = NtFlushBuffersFileEx(fz_slots[a[0]], 0, NULL, 0, &iosb);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_EA_FILE:
+    {
+        IO_STATUS_BLOCK iosb;
+        unsigned char ea[128];
+        st = NtQueryEaFile(fz_slots[a[0]], &iosb, ea, fz_query_len((unsigned)a[1], sizeof(ea)),
+                           TRUE, NULL, 0, NULL, TRUE);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_SET_EA_FILE:
+    {
+        IO_STATUS_BLOCK iosb;
+        unsigned char ea[32];
+        fz_bzero(ea, sizeof(ea));
+        st = NtSetEaFile(fz_slots[a[0]], &iosb, ea, sizeof(ea));
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
     case FZ_OP_QUERY_STANDARD_FILE:
     {
         IO_STATUS_BLOCK iosb;

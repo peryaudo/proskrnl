@@ -159,6 +159,12 @@
 #define NTSYS_NtOpenJobObject 0x00b5
 #define NTSYS_NtIsProcessInJob 0x004f
 #define NTSYS_NtDeleteFile 0x0093
+#define NTSYS_NtReadFileScatter 0x002e
+#define NTSYS_NtWriteFileGather 0x001b
+#define NTSYS_NtFlushBuffersFileEx 0x0098
+#define NTSYS_NtQueryEaFile 0x00c3
+#define NTSYS_NtSetEaFile 0x00e8
+#define NTSYS_NtSetVolumeInformationFile 0x00f7
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

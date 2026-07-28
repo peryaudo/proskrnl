@@ -203,6 +203,12 @@ IMPLEMENTED = [
     # CUI-5 Io completion: the file surface's last mile (docs/02); each
     # row's kernel service lands in its own commit.
     "NtDeleteFile",
+    "NtReadFileScatter",
+    "NtWriteFileGather",
+    "NtFlushBuffersFileEx",
+    "NtQueryEaFile",
+    "NtSetEaFile",
+    "NtSetVolumeInformationFile",
 ]
 
 
@@ -571,6 +577,10 @@ FUZZ_OPS = [
     # CUI-5: FileRenameInformation between the fixed fuzz paths (the interp's
     # per-program scrub keeps the replay deterministic)
     ("rename_file", "NtSetInformationFile", ["slot_in", "fname", "ch_bool"]),
+    # CUI-5: the flush/EA trio (stateless against any slot)
+    ("flush_ex_file", "NtFlushBuffersFileEx", ["slot_in"]),
+    ("query_ea_file", "NtQueryEaFile", ["slot_in", "ch_len"]),
+    ("set_ea_file", "NtSetEaFile", ["slot_in"]),
     # M7 mechanical Ps/Mm surface — process/system information
     # length-checking and the in-place reprotect.
     ("query_process_basic", "NtQueryInformationProcess", ["ch_len"]),
