@@ -32,3 +32,8 @@ ucrtbase_test.exe:environ
 ucrtbase_test.exe:printf
 ucrtbase_test.exe:scanf
 ucrtbase_test.exe:string
+# CUI-5 unpark: cmd's directory subtests joined once rename landed (its
+# 6 proskrnl-only failures were all the missing MoveFile path). The
+# ntdll/kernel32 change pairs stay parked on the single-record/no-buffering
+# watch model - causes in docs/03 "M10 winetest notes".
+cmd.exe_test.exe:directory
