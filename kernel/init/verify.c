@@ -39,6 +39,7 @@
 #include "abi/ntpebteb.h"
 
 uint64_t KiSweepCount;
+BOOLEAN KiSweepRequested;
 
 /* --- one thread ------------------------------------------------------------ */
 
@@ -454,12 +455,17 @@ void KiVerifyKernelStateIdle(void)
 {
     /* Once a second of idle: cheap enough that a wedged-but-idle kernel keeps
      * auditing itself, throttled so the interrupts-off walk cannot distort
-     * timer-driven tests (the sweep holds the dispatcher lock throughout). */
+     * timer-driven tests (the sweep holds the dispatcher lock throughout).
+     * A process teardown bypasses the throttle (KiSweepRequested): with smss
+     * driving the test sweeps from ring 3, this is what keeps "every exited
+     * test leaves a clean executive" audited per process, the way the kernel
+     * runner's explicit between-test sweeps used to. */
     static uint64_t KiLastIdleSweepTick;
-    if (KeTickCount - KiLastIdleSweepTick < 1000)
+    if (!KiSweepRequested && KeTickCount - KiLastIdleSweepTick < 1000)
     {
         return;
     }
+    KiSweepRequested = FALSE;
     KiLastIdleSweepTick = KeTickCount;
     KiVerifyKernelState();
 }
