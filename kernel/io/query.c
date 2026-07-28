@@ -10,6 +10,8 @@
 #include "kernel/io/io.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/mm/pool.h"
+#include "kernel/ob/ob.h" /* CUI-5: ObpLookupParseObject for rename targets */
+#include "kernel/ke/ke.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
@@ -267,6 +269,144 @@ static NTSTATUS IopCheckSetEofAccess(PFILE_OBJECT file, uint64_t target)
     return target < raw.endOfFile ? STATUS_INVALID_PARAMETER : STATUS_INVALID_HANDLE;
 }
 
+/* FileRenameInformation(Ex) / FileLinkInformation (CUI-5): resolve the
+ * caller's target name to (device, volume-relative path) and drive the FS
+ * rename op. The contract is the pinned Wine's (dlls/ntdll/unix/file.c
+ * NtSetInformationFile rename/link cases + server/fd.c set_fd_name), pinned
+ * by sem_file/rename.c: kernelbase's MoveFileWithProgressW sends
+ * offsetof(FileName)+FileNameLength bytes with the union's bytes 1-3
+ * uninitialized, so the non-Ex classes read only the BOOLEAN arm; a buffer
+ * shorter than the full struct is STATUS_INVALID_PARAMETER_3; unknown flag
+ * bits are ignored (the oracle FIXMEs and continues); a target on another
+ * device is STATUS_NOT_SAME_DEVICE (MoveFileExW keys its copy+delete
+ * fallback on it). */
+static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, ULONG length,
+                                        FILE_INFORMATION_CLASS informationClass)
+{
+    if (length < sizeof(FILE_RENAME_INFORMATION))
+    {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+    PFILE_RENAME_INFORMATION info = MiAllocatePool(length);
+    if (info == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(info, buffer, length);
+
+    NTSTATUS status;
+    PFILE_OBJECT relativeTo = 0;
+    PIO_DEVICE parsedDevice = 0;
+    PWSTR reparseBuffer = 0;
+
+    if (info->FileNameLength > length - offsetof(FILE_RENAME_INFORMATION, FileName) ||
+        info->FileNameLength > 0xFFFE || info->FileNameLength % sizeof(WCHAR) != 0)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto out;
+    }
+    UNICODE_STRING name;
+    name.Buffer = info->FileName;
+    name.Length = (USHORT)info->FileNameLength;
+    name.MaximumLength = name.Length;
+    if (name.Length == 0)
+    {
+        status = STATUS_OBJECT_PATH_SYNTAX_BAD;
+        goto out;
+    }
+
+    ULONG flags;
+    if (informationClass == FileRenameInformationEx)
+    {
+        flags = info->Flags;
+    }
+    else
+    {
+        /* The BOOLEAN arm only — the Flags arm's upper bytes are heap
+         * garbage on every real kernelbase call. */
+        flags = info->ReplaceIfExists ? FILE_RENAME_REPLACE_IF_EXISTS : 0;
+    }
+
+    /* Resolve the target to a device + volume-relative path, mirroring
+     * IopCreateFile's two forms. */
+    PIO_DEVICE targetDevice;
+    UNICODE_STRING fsPath;
+    if (info->RootDirectory != 0)
+    {
+        status = IopReferenceFileByHandle(info->RootDirectory, 0, &relativeTo);
+        if (!NT_SUCCESS(status))
+        {
+            goto out;
+        }
+        fsPath = name;
+        if (fsPath.Buffer[0] == '\\')
+        {
+            status = STATUS_OBJECT_PATH_SYNTAX_BAD;
+            goto out;
+        }
+        targetDevice = relativeTo->device;
+    }
+    else
+    {
+        OBJECT_ATTRIBUTES attributes;
+        attributes.Length = sizeof(attributes);
+        attributes.RootDirectory = 0;
+        attributes.ObjectName = &name;
+        attributes.Attributes = OBJ_CASE_INSENSITIVE;
+        attributes.SecurityDescriptor = 0;
+        attributes.SecurityQualityOfService = 0;
+        /* Kernel-built attributes over a pool copy: skip the user probes
+         * (the NtQueryAttributesFile internal-open pattern). */
+        PKTHREAD thread = KeGetCurrentThread();
+        KPROCESSOR_MODE saved = thread->previousMode;
+        thread->previousMode = KernelMode;
+        PVOID deviceBody;
+        status =
+            ObpLookupParseObject(&attributes, &IoDeviceType, &deviceBody, &fsPath, &reparseBuffer);
+        thread->previousMode = saved;
+        if (!NT_SUCCESS(status))
+        {
+            goto out;
+        }
+        parsedDevice = deviceBody;
+        targetDevice = parsedDevice;
+    }
+
+    if (targetDevice != file->device)
+    {
+        status = STATUS_NOT_SAME_DEVICE;
+        goto out;
+    }
+    if (informationClass == FileLinkInformation)
+    {
+        /* FAT has no hard links (MS "Hard Links and Junctions": NTFS only;
+         * kernelbase surfaces ERROR_INVALID_FUNCTION). Pinned beyond_oracle
+         * in sem_file/rename.c — the oracle's ext4 backing store can link,
+         * so it cannot answer for a FAT volume. */
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        goto out;
+    }
+    status = file->device->ops->Rename != 0
+                 ? file->device->ops->Rename(file, relativeTo, &fsPath, flags)
+                 : STATUS_INVALID_DEVICE_REQUEST;
+
+out:
+    if (relativeTo != 0)
+    {
+        ObDereferenceObject(relativeTo);
+    }
+    if (parsedDevice != 0)
+    {
+        ObDereferenceObject(parsedDevice);
+    }
+    if (reparseBuffer != 0)
+    {
+        MiFreePool(reparseBuffer);
+    }
+    MiFreePool(info);
+    return status;
+}
+
 NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length,
                               FILE_INFORMATION_CLASS informationClass)
 {
@@ -312,6 +452,16 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     case FilePipeInformation:
         needed = sizeof(FILE_PIPE_INFORMATION); /* M9: read/completion mode */
         requiredAccess = 0;
+        break;
+    case FileRenameInformation:
+    case FileRenameInformationEx:
+    case FileLinkInformation:
+        needed = 0;         /* class-specific check: a short buffer is
+                             * STATUS_INVALID_PARAMETER_3 (the pinned Wine),
+                             * not INFO_LENGTH_MISMATCH */
+        requiredAccess = 0; /* the pinned Wine takes the handle with no
+                             * specific access (server/fd.c
+                             * set_fd_name_info: get_handle_fd_obj(..., 0)) */
         break;
     default:
         return STATUS_NOT_IMPLEMENTED; /* unbuilt class, as in query above */
@@ -415,6 +565,11 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         status = file->device->ops->SetPipeInfo(file, &pipeInfo);
         break;
     }
+    case FileRenameInformation:
+    case FileRenameInformationEx:
+    case FileLinkInformation:
+        status = IopSetRenameInformation(file, buffer, length, informationClass);
+        break;
     default:
         break;
     }

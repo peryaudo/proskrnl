@@ -133,6 +133,15 @@ typedef struct IO_VFS_OPS
      * directory, live sections). */
     NTSTATUS (*SetDisposition)(struct FILE_OBJECT *file, BOOLEAN deleteFile);
 
+    /* CUI-5 FileRenameInformation(Ex): move the open file to `path`
+     * (volume-relative, or relative to the open directory `relativeTo` when
+     * non-NULL), applying the NT replace rules for an existing target.
+     * `renameFlags` carries the FILE_RENAME_* bits (abi/ntioapi.h). NULL =
+     * the device cannot rename (streams). */
+    NTSTATUS(*Rename)
+    (struct FILE_OBJECT *file, struct FILE_OBJECT *relativeTo, const UNICODE_STRING *path,
+     ULONG renameFlags);
+
     /* Read the directory entry at *cursor (an opaque FS position), advance
      * the cursor. STATUS_NO_MORE_FILES at the end. */
     NTSTATUS (*ReadDirectory)(struct FILE_OBJECT *file, ULONG *cursor, IO_DIR_ENTRY *entry);

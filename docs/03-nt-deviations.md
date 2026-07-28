@@ -843,6 +843,40 @@ abandoned-siblings notes, the CUI-3 job note).
   member count back through the job's accounting, and closes the handle to
   reap them.
 
+## CUI-5 Io-completion notes (rename and the file surface's last mile)
+
+The milestone's own deviations (docs/02 CUI-5; the pins live in
+`tests/ntapi/sem_file/rename.c` and its siblings).
+
+- **Rename is not atomic on disk** (`fs/fat32/dir.c FatRenameEntry`): the
+  new directory entry run is written before the old run is freed (and before
+  a target being replaced is deleted, the target's entry goes first), so a
+  crash inside the window leaves either the replaced target already gone
+  with the source still under its old name, or the file reachable under
+  *both* names — never under neither. NTFS journals this; FAT under Art. 3
+  (write-through, no journal) cannot, and the fatstress/tornwrite legs'
+  fsck oracle bounds the damage to exactly these shapes. Order chosen so
+  the file's data chain is never unreachable.
+- **The NT FileId changes across a rename** (`fs/fat32/fat.h FatFileId`):
+  the id *is* the (directory cluster, SFN slot) identity key, and the entry
+  moves. Real Windows on FAT behaves the same way (the id is the entry
+  location; only NTFS has stable file ids); the oracle's ext4 backing store
+  keeps its inode number instead, so nothing pins id stability either way
+  and `sem_file/rename.c` deliberately does not assert it. The live FCB is
+  rewritten in place, so one-FCB-per-file, share state, and open handles
+  all survive the move.
+- **Rename checks no handle access** (`kernel/io/query.c`
+  `IopSetRenameInformation`): the pinned Wine's server takes the rename
+  handle with zero required access (`server/fd.c set_fd_name_info:
+  get_handle_fd_obj(..., 0)`), so a read-only handle can rename. Real NT
+  wants DELETE; the oracle is the spec (Art. 6), and every real caller
+  (kernelbase `MoveFileWithProgressW`) opens DELETE anyway.
+- **`FileLinkInformation` refuses with `STATUS_INVALID_DEVICE_REQUEST`**
+  (`kernel/io/query.c`): FAT has no hard links (MS "Hard Links and
+  Junctions" — NTFS only; kernelbase surfaces `ERROR_INVALID_FUNCTION`).
+  The oracle's ext4 *can* link, so the refusal is pinned `beyond_oracle`
+  — the suite's first use of the tag.
+
 ## Debug objects are out of scope (permanent; ADR 0011)
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,

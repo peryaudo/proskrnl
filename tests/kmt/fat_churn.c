@@ -483,29 +483,54 @@ static void churn_wet_rmdir(int dir, BOOLEAN expectEmpty, ULONG iter)
     NtClose(handle);
 }
 
-/* A rename probe: FileRenameInformation is not implemented (kernel/io/
- * query.c default arm). This pins today's boundary — the day rename lands,
- * this fails loudly and the shadow model must learn the op. */
-static void churn_wet_rename_probe(const churn_file *f, ULONG iter)
+/* Rename `oldf`'s on-disk file to `f`'s (dir, name) — the shadow already
+ * moved (CUI-5: FileRenameInformation, kernel/io/query.c + fs/fat32).
+ * Returns FALSE only for STATUS_DISK_FULL on an expect_diskfull leg (a
+ * rename can extend the target directory by a cluster); the caller reverts
+ * the shadow — those legs never replay dry, so the wet-only divergence is
+ * safe (see the config comment above). */
+static BOOLEAN churn_wet_rename(const churn_file *oldf, const churn_file *f, ULONG iter)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE handle;
-    init_attr(&attr, &name, churn_nt_path(f->dir, f));
-    NTSTATUS status = NtOpenFile(&handle, FILE_GENERIC_WRITE | DELETE, &attr, &iosb, 0,
+    init_attr(&attr, &name, churn_nt_path(oldf->dir, oldf));
+    NTSTATUS status = NtOpenFile(&handle, DELETE | SYNCHRONIZE, &attr, &iosb,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                  FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_SUCCESS, "iter %lu: rename-open %s -> %08lx", iter, churn_rel_path(oldf),
+       (unsigned long)status);
     if (!NT_SUCCESS(status))
     {
-        ok(0, "iter %lu: open %s -> %08lx", iter, churn_rel_path(f), (unsigned long)status);
-        return;
+        return TRUE; /* the assert above already convicted */
     }
-    unsigned char info[64];
-    memset(info, 0, sizeof(info));
-    status = NtSetInformationFile(handle, &iosb, info, sizeof(info), FileRenameInformation);
-    ok(status == STATUS_NOT_IMPLEMENTED, "iter %lu: rename probe -> %08lx", iter,
-       (unsigned long)status);
+
+    const WCHAR *target = churn_nt_path(f->dir, f);
+    ULONG targetChars = 0;
+    while (target[targetChars] != 0)
+    {
+        targetChars++;
+    }
+    unsigned char buffer[sizeof(FILE_RENAME_INFORMATION) + CHURN_PATH_CHARS * sizeof(WCHAR)];
+    FILE_RENAME_INFORMATION *info = (FILE_RENAME_INFORMATION *)buffer;
+    memset(buffer, 0, sizeof(buffer));
+    info->ReplaceIfExists = FALSE;
+    info->RootDirectory = 0;
+    info->FileNameLength = targetChars * sizeof(WCHAR);
+    memcpy(info->FileName, target, info->FileNameLength);
+    status = NtSetInformationFile(
+        handle, &iosb, info,
+        (ULONG)(offsetof(FILE_RENAME_INFORMATION, FileName) + info->FileNameLength),
+        FileRenameInformation);
     NtClose(handle);
+    if (churn_cfg.expectDiskFull && status == STATUS_DISK_FULL)
+    {
+        return FALSE;
+    }
+    ok(status == STATUS_SUCCESS, "iter %lu: rename %s -> %08lx", iter, churn_rel_path(f),
+       (unsigned long)status);
+    return TRUE;
 }
 
 /* --- verification (wet or cold) ---------------------------------------------- */
@@ -965,12 +990,36 @@ static void churn_run_model(BOOLEAN wet)
                 churn_verify_enum(d, iter);
             }
         }
-        else /* rename probe */
+        else /* rename to a fresh name, possibly across directories (CUI-5) */
         {
             churn_file *f = churn_pick(churn_rng());
-            if (f != 0 && wet)
+            ULONG dirDraw = churn_rng();
+            if (f == 0)
             {
-                churn_wet_rename_probe(f, iter);
+                continue;
+            }
+            int candidates[CHURN_MAX_DIRS + 1];
+            int nc = 0;
+            candidates[nc++] = -1;
+            for (int d = 0; d < CHURN_MAX_DIRS; d++)
+            {
+                if (churn_dirs[d])
+                {
+                    candidates[nc++] = d;
+                }
+            }
+            /* The shadow moves first — from the PRNG alone, identically on
+             * the dry replay (churn_new_name advances the counter + rng). */
+            churn_file old = *f;
+            f->dir = candidates[dirDraw % (ULONG)nc];
+            churn_new_name(f);
+            if (wet && !churn_wet_rename(&old, f, iter))
+            {
+                /* DISK_FULL on an expect_diskfull leg: keep the old
+                 * identity (those legs never replay dry). */
+                f->dir = old.dir;
+                f->nameChars = old.nameChars;
+                memcpy(f->name, old.name, sizeof(f->name));
             }
         }
 

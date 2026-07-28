@@ -568,8 +568,8 @@ static NTSTATUS FatFindFreeSlots(PFAT_FCB dir, ULONG count, ULONG *firstOut)
     return STATUS_DISK_FULL;
 }
 
-NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN directory,
-                        UCHAR attributes, PFAT_FCB *fcbOut)
+NTSTATUS FatWriteEntrySlots(PFAT_FCB dir, const UNICODE_STRING *component,
+                            unsigned char shortEntry[32], ULONG *sfnSlotOut, ULONG *lfnStartOut)
 {
     ASSERT(dir->isDirectory);
     ULONG units = component->Length / sizeof(WCHAR);
@@ -588,6 +588,7 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
             return status;
         }
     }
+    memcpy(shortEntry, sfn, 11);
 
     ULONG lfnEntries =
         needLfn ? (units + FAT_LFN_CHARS_PER_ENTRY - 1) / FAT_LFN_CHARS_PER_ENTRY : 0;
@@ -597,48 +598,6 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
     {
         return status;
     }
-
-    /* A directory gets one zeroed cluster with "." / ".." (spec §6.5). */
-    ULONG firstCluster = 0;
-    if (directory)
-    {
-        status = FatAllocateCluster(dir->volume, 0, &firstCluster);
-        if (!NT_SUCCESS(status))
-        {
-            return status;
-        }
-        unsigned char zero[FAT_SECTOR_SIZE];
-        memset(zero, 0, sizeof(zero));
-        for (ULONG i = 0; i < dir->volume->sectorsPerCluster; i++)
-        {
-            status = FatWriteSector(dir->volume, FatClusterToSector(dir->volume, firstCluster) + i,
-                                    zero);
-            if (!NT_SUCCESS(status))
-            {
-                FatFreeChain(dir->volume, firstCluster);
-                return status;
-            }
-        }
-    }
-
-    LARGE_INTEGER now = FatCurrentNtTime();
-    USHORT date, time;
-    FatNtTimeToFatTime(now, &date, &time);
-
-    /* The short entry (spec §6 field layout). */
-    unsigned char shortEntry[32];
-    memset(shortEntry, 0, sizeof(shortEntry));
-    memcpy(shortEntry, sfn, 11);
-    shortEntry[11] = (unsigned char)(attributes | (directory ? FAT_ATTR_DIRECTORY : 0));
-    shortEntry[13] = 0;                 /* DIR_CrtTimeTenth */
-    FatdWrite16(shortEntry + 14, time); /* DIR_CrtTime */
-    FatdWrite16(shortEntry + 16, date); /* DIR_CrtDate */
-    FatdWrite16(shortEntry + 18, date); /* DIR_LstAccDate */
-    FatdWrite16(shortEntry + 20, (uint16_t)(firstCluster >> 16));
-    FatdWrite16(shortEntry + 22, time); /* DIR_WrtTime */
-    FatdWrite16(shortEntry + 24, date); /* DIR_WrtDate */
-    FatdWrite16(shortEntry + 26, (uint16_t)firstCluster);
-    FatdWrite32(shortEntry + 28, 0); /* DIR_FileSize */
 
     /* LFN run: last (highest-ordinal) entry first on disk (spec §7),
      * NUL-terminated then 0xFFFF-padded (spec §7.3). */
@@ -685,7 +644,69 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
     {
         return status;
     }
+    *sfnSlotOut = firstSlot + lfnEntries;
+    *lfnStartOut = firstSlot;
+    return STATUS_SUCCESS;
+}
 
+NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN directory,
+                        UCHAR attributes, PFAT_FCB *fcbOut)
+{
+    ASSERT(dir->isDirectory);
+
+    /* A directory gets one zeroed cluster with "." / ".." (spec §6.5). */
+    ULONG firstCluster = 0;
+    NTSTATUS status;
+    if (directory)
+    {
+        status = FatAllocateCluster(dir->volume, 0, &firstCluster);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        unsigned char zero[FAT_SECTOR_SIZE];
+        memset(zero, 0, sizeof(zero));
+        for (ULONG i = 0; i < dir->volume->sectorsPerCluster; i++)
+        {
+            status = FatWriteSector(dir->volume, FatClusterToSector(dir->volume, firstCluster) + i,
+                                    zero);
+            if (!NT_SUCCESS(status))
+            {
+                FatFreeChain(dir->volume, firstCluster);
+                return status;
+            }
+        }
+    }
+
+    LARGE_INTEGER now = FatCurrentNtTime();
+    USHORT date, time;
+    FatNtTimeToFatTime(now, &date, &time);
+
+    /* The short entry (spec §6 field layout); the name bytes are filled by
+     * the slot writer. */
+    unsigned char shortEntry[32];
+    memset(shortEntry, 0, sizeof(shortEntry));
+    shortEntry[11] = (unsigned char)(attributes | (directory ? FAT_ATTR_DIRECTORY : 0));
+    shortEntry[13] = 0;                 /* DIR_CrtTimeTenth */
+    FatdWrite16(shortEntry + 14, time); /* DIR_CrtTime */
+    FatdWrite16(shortEntry + 16, date); /* DIR_CrtDate */
+    FatdWrite16(shortEntry + 18, date); /* DIR_LstAccDate */
+    FatdWrite16(shortEntry + 20, (uint16_t)(firstCluster >> 16));
+    FatdWrite16(shortEntry + 22, time); /* DIR_WrtTime */
+    FatdWrite16(shortEntry + 24, date); /* DIR_WrtDate */
+    FatdWrite16(shortEntry + 26, (uint16_t)firstCluster);
+    FatdWrite32(shortEntry + 28, 0); /* DIR_FileSize */
+
+    ULONG sfnSlot, lfnStart;
+    status = FatWriteEntrySlots(dir, component, shortEntry, &sfnSlot, &lfnStart);
+    if (!NT_SUCCESS(status))
+    {
+        if (firstCluster != 0)
+        {
+            FatFreeChain(dir->volume, firstCluster);
+        }
+        return status;
+    }
     if (directory)
     {
         /* "." and ".." (spec §6.5: first cluster of ".." is 0 when the
@@ -718,17 +739,14 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
     }
 
     UNICODE_STRING longName = *component;
-    return FatGetFcb(dir, firstSlot + lfnEntries, firstSlot, shortEntry, &longName, fcbOut);
+    return FatGetFcb(dir, sfnSlot, lfnStart, shortEntry, &longName, fcbOut);
 }
 
 /* --- deletion, metadata ----------------------------------------------------- */
 
-NTSTATUS FatDeleteEntry(PFAT_FCB fcb)
+NTSTATUS FatFreeEntrySlots(PFAT_FCB dir, ULONG lfnStart, ULONG sfnSlot)
 {
-    ASSERT(!fcb->isRoot);
-    PFAT_FCB dir = fcb->parent;
-
-    for (ULONG slot = fcb->lfnStartIndex; slot <= fcb->dirEntryIndex; slot++)
+    for (ULONG slot = lfnStart; slot <= sfnSlot; slot++)
     {
         unsigned char entry[32];
         NTSTATUS status = FatReadDirSlot(dir, slot, entry);
@@ -743,6 +761,17 @@ NTSTATUS FatDeleteEntry(PFAT_FCB fcb)
             return status;
         }
     }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS FatDeleteEntry(PFAT_FCB fcb)
+{
+    ASSERT(!fcb->isRoot);
+    NTSTATUS status = FatFreeEntrySlots(fcb->parent, fcb->lfnStartIndex, fcb->dirEntryIndex);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     if (fcb->firstCluster != 0)
     {
         FatFreeChain(fcb->volume, fcb->firstCluster);
@@ -750,6 +779,106 @@ NTSTATUS FatDeleteEntry(PFAT_FCB fcb)
     }
     fcb->fileSize = 0;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS FatRenameEntry(PFAT_FCB fcb, PFAT_FCB newParent, const UNICODE_STRING *newName)
+{
+    ASSERT(!fcb->isRoot);
+    ASSERT(newParent->isDirectory);
+
+    /* The moved short entry: current metadata, exactly the fields
+     * FatFlushFcbMetadata persists; the slot writer fills the name bytes. */
+    unsigned char shortEntry[32];
+    memset(shortEntry, 0, sizeof(shortEntry));
+    shortEntry[11] = fcb->attributes;
+    shortEntry[13] = fcb->createTimeTenth;
+    FatdWrite16(shortEntry + 14, fcb->createTime);
+    FatdWrite16(shortEntry + 16, fcb->createDate);
+    FatdWrite16(shortEntry + 18, fcb->accessDate);
+    FatdWrite16(shortEntry + 20, (uint16_t)(fcb->firstCluster >> 16));
+    FatdWrite16(shortEntry + 22, fcb->writeTime);
+    FatdWrite16(shortEntry + 24, fcb->writeDate);
+    FatdWrite16(shortEntry + 26, (uint16_t)fcb->firstCluster);
+    FatdWrite32(shortEntry + 28, (uint32_t)fcb->fileSize);
+
+    PWSTR nameCopy = MiAllocatePool(newName->Length);
+    if (nameCopy == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(nameCopy, newName->Buffer, newName->Length);
+
+    /* New slots before the old run is freed: a failure part-way leaves the
+     * file reachable under at least one of its names (write-through, no
+     * journal — the crash window is a docs/03 "CUI-5 notes" deviation). */
+    ULONG sfnSlot, lfnStart;
+    NTSTATUS status = FatWriteEntrySlots(newParent, newName, shortEntry, &sfnSlot, &lfnStart);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(nameCopy);
+        return status;
+    }
+    status = FatFreeEntrySlots(fcb->parent, fcb->lfnStartIndex, fcb->dirEntryIndex);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(nameCopy);
+        return status;
+    }
+    if (fcb->isDirectory && newParent != fcb->parent)
+    {
+        status = FatRewriteDotDot(fcb, newParent);
+        if (!NT_SUCCESS(status))
+        {
+            MiFreePool(nameCopy);
+            return status;
+        }
+    }
+
+    /* Rewrite the live FCB's identity in place: the (directory cluster,
+     * SFN slot) key — which is also the NT FileId (fat.h FatFileId) — moves
+     * with the entry, keeping FatGetFcb's dedup coherent. The parent pin
+     * swaps before the old pin drops (the old parent may only die after it
+     * has no children). */
+    if (newParent != fcb->parent)
+    {
+        PFAT_FCB oldParent = fcb->parent;
+        FatReferenceFcb(newParent);
+        fcb->parent = newParent;
+        FatDereferenceFcb(oldParent);
+    }
+    fcb->parentDirCluster = FatDirCluster(newParent);
+    fcb->dirEntryIndex = sfnSlot;
+    fcb->lfnStartIndex = lfnStart;
+    MiFreePool(fcb->longName.Buffer);
+    fcb->longName.Buffer = nameCopy;
+    fcb->longName.Length = newName->Length;
+    fcb->longName.MaximumLength = newName->Length;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS FatRewriteDotDot(PFAT_FCB dir, PFAT_FCB newParent)
+{
+    /* A moved directory's ".." entry names its new parent (spec §6.5: the
+     * stored cluster is 0 when the parent is the root). ".." is always slot
+     * 1 of the directory's first sector (spec §6.5: "." then ".."). */
+    ASSERT(dir->isDirectory && !dir->isRoot);
+    PFAT_VOLUME volume = dir->volume;
+    uint64_t firstSector = FatClusterToSector(volume, dir->firstCluster);
+    unsigned char sector[FAT_SECTOR_SIZE];
+    NTSTATUS status = FatReadSector(volume, firstSector, sector);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    unsigned char *dotdot = sector + 32;
+    if (dotdot[0] != '.' || dotdot[1] != '.')
+    {
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
+    ULONG parentCluster = newParent->isRoot ? 0 : FatDirFirstCluster(newParent);
+    FatdWrite16(dotdot + 20, (uint16_t)(parentCluster >> 16));
+    FatdWrite16(dotdot + 26, (uint16_t)parentCluster);
+    return FatWriteSector(volume, firstSector, sector);
 }
 
 NTSTATUS FatIsDirectoryEmpty(PFAT_FCB dir, BOOLEAN *empty)
