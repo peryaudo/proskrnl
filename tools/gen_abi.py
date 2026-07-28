@@ -80,6 +80,21 @@ def extract_struct(src: str, tag: str, typedef: str, keep_tag: bool = False) -> 
     return intro + match.group(1) + "} " + match.group(2).strip() + ";"
 
 
+def extract_union(src: str, tag: str, typedef: str) -> str:
+    """Pull one `typedef union _TAG { ... } NAME, *PNAME...;` body verbatim
+    (the winnt.h FILE_SEGMENT_ELEMENT shape). Same contract as
+    extract_struct: the reserved `_TAG` tag is dropped, members are kept
+    byte-for-byte."""
+    match = re.search(
+        r"typedef union " + tag + r"\s*\{(.*?)\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
+        src,
+        re.S,
+    )
+    if not match:
+        sys.exit(f"gen_abi: union {typedef} not found")
+    return "typedef union {" + match.group(1) + "} " + match.group(2).strip() + ";"
+
+
 def extract_plain_struct(src: str, name: str) -> str:
     """Pull one `struct NAME { ... };` body verbatim (the wine/condrv.h shape:
     plain struct tags, no typedef)."""
@@ -327,6 +342,7 @@ typedef unsigned int ULONG;
 typedef long long LONGLONG;
 typedef unsigned long long ULONGLONG;
 typedef void *PVOID;
+typedef void *PVOID64; /* x86_64: identical to PVOID (winnt.h `typedef VOID *PVOID64`) */
 typedef ULONGLONG ULONG_PTR;
 typedef ULONG_PTR *PULONG_PTR;
 
@@ -396,6 +412,7 @@ typedef struct LIST_ENTRY {
 _Static_assert(sizeof(LONG) == 4, "LLP64: LONG is 4 bytes");
 _Static_assert(sizeof(ULONGLONG) == 8, "LLP64: ULONGLONG is 8 bytes");
 _Static_assert(sizeof(PVOID) == 8, "x86_64: pointers are 8 bytes");
+_Static_assert(sizeof(PVOID64) == 8, "x86_64: PVOID64 is 8 bytes");
 _Static_assert(sizeof(LARGE_INTEGER) == 8, "LARGE_INTEGER is 8 bytes");
 _Static_assert(sizeof(LIST_ENTRY) == 16, "LIST_ENTRY is two pointers");
 _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
@@ -488,6 +505,8 @@ NTOBAPI_FUNCTIONS = [
     "NtSetTimer",
     "NtCancelTimer",
     "NtQueryTimer",
+    # CUI-5: kernelbase's volume enumeration (QueryDosDeviceW/GetLogicalDrives)
+    "NtQueryDirectoryObject",
 ]
 
 
@@ -516,7 +535,14 @@ def gen_ntobapi(wine: Path) -> str:
             ("_MUTANT_BASIC_INFORMATION", "MUTANT_BASIC_INFORMATION"),
             ("_SEMAPHORE_BASIC_INFORMATION", "SEMAPHORE_BASIC_INFORMATION"),
             ("_TIMER_BASIC_INFORMATION", "TIMER_BASIC_INFORMATION"),
+            # CUI-5: NtQueryDirectoryObject's per-entry shape (Wine's name for
+            # what ntifs.h calls OBJECT_DIRECTORY_INFORMATION).
+            ("_DIRECTORY_BASIC_INFORMATION", "DIRECTORY_BASIC_INFORMATION"),
         ]
+    )
+    dir_asserts = (
+        "_Static_assert(sizeof(DIRECTORY_BASIC_INFORMATION) == 32, "
+        '"DIRECTORY_BASIC_INFORMATION x64 layout");'
     )
     timer_apc = extract_typedef_line(winternl, "winternl.h", "PTIMER_APC_ROUTINE")
     prototypes = extract_prototypes(winternl, NTOBAPI_FUNCTIONS)
@@ -530,6 +556,8 @@ def gen_ntobapi(wine: Path) -> str:
         + enums
         + "\n\n"
         + structs
+        + "\n\n"
+        + dir_asserts
         + "\n\n"
         + timer_apc
 
@@ -811,6 +839,18 @@ NTIOAPI_FUNCTIONS = [
     # CUI-3 (the SCM's cancel path)
     "NtCancelIoFile",
     "NtCancelIoFileEx",
+    # CUI-5 (the file surface's last mile, docs/02)
+    "NtNotifyChangeDirectoryFile",
+    "NtCancelSynchronousIoFile",
+    "NtReadFileScatter",
+    "NtWriteFileGather",
+    "NtFlushBuffersFileEx",
+    "NtDeleteFile",
+    "NtQueryEaFile",
+    "NtSetEaFile",
+    "NtSetVolumeInformationFile",
+    "NtOpenIoCompletion",
+    "NtSetIoCompletionEx",
 ]
 
 
@@ -906,6 +946,8 @@ def gen_ntioapi(wine: Path) -> str:
             ("_FILE_FS_SIZE_INFORMATION", "FILE_FS_SIZE_INFORMATION"),
             ("_FILE_FS_DEVICE_INFORMATION", "FILE_FS_DEVICE_INFORMATION"),
             ("_FILE_FS_ATTRIBUTE_INFORMATION", "FILE_FS_ATTRIBUTE_INFORMATION"),
+            # CUI-5: FileFsFullSizeInformation
+            ("_FILE_FS_FULL_SIZE_INFORMATION", "FILE_FS_FULL_SIZE_INFORMATION"),
         ]
     )
     device_types = extract_defines(
@@ -1032,8 +1074,67 @@ def gen_ntioapi(wine: Path) -> str:
             ("_FILE_NETWORK_OPEN_INFORMATION", "FILE_NETWORK_OPEN_INFORMATION"),
             ("_FILE_ATTRIBUTE_TAG_INFORMATION", "FILE_ATTRIBUTE_TAG_INFORMATION"),
             ("_FILE_ALL_INFORMATION", "FILE_ALL_INFORMATION"),
+            # CUI-5: rename/link (NtSetInformationFile) and the id-carrying
+            # directory-enumeration class.
+            ("_FILE_RENAME_INFORMATION", "FILE_RENAME_INFORMATION"),
+            ("_FILE_LINK_INFORMATION", "FILE_LINK_INFORMATION"),
+            (
+                "_FILE_ID_BOTH_DIRECTORY_INFORMATION",
+                "FILE_ID_BOTH_DIRECTORY_INFORMATION",
+            ),
         ]
     )
+
+    # CUI-5: rename/link flag bits (the *Ex classes' Flags field).
+    rename_link_flags = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "FILE_RENAME_REPLACE_IF_EXISTS",
+            "FILE_RENAME_POSIX_SEMANTICS",
+            "FILE_RENAME_IGNORE_READONLY_ATTRIBUTE",
+            "FILE_LINK_REPLACE_IF_EXISTS",
+            "FILE_LINK_POSIX_SEMANTICS",
+            "FILE_LINK_IGNORE_READONLY_ATTRIBUTE",
+        ],
+    )
+
+    # CUI-5: NtNotifyChangeDirectoryFile — the completion filter bits, the
+    # per-record action codes, and the output record shape.
+    notify_defines = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "FILE_NOTIFY_CHANGE_FILE_NAME",
+            "FILE_NOTIFY_CHANGE_DIR_NAME",
+            "FILE_NOTIFY_CHANGE_NAME",
+            "FILE_NOTIFY_CHANGE_ATTRIBUTES",
+            "FILE_NOTIFY_CHANGE_SIZE",
+            "FILE_NOTIFY_CHANGE_LAST_WRITE",
+            "FILE_NOTIFY_CHANGE_LAST_ACCESS",
+            "FILE_NOTIFY_CHANGE_CREATION",
+            "FILE_NOTIFY_CHANGE_EA",
+            "FILE_NOTIFY_CHANGE_SECURITY",
+            "FILE_NOTIFY_CHANGE_STREAM_NAME",
+            "FILE_NOTIFY_CHANGE_STREAM_SIZE",
+            "FILE_NOTIFY_CHANGE_STREAM_WRITE",
+            "FILE_ACTION_ADDED",
+            "FILE_ACTION_REMOVED",
+            "FILE_ACTION_MODIFIED",
+            "FILE_ACTION_RENAMED_OLD_NAME",
+            "FILE_ACTION_RENAMED_NEW_NAME",
+        ],
+    )
+    notify_struct = extract_struct(
+        winnt, "_FILE_NOTIFY_INFORMATION", "FILE_NOTIFY_INFORMATION"
+    )
+
+    # CUI-5: NtReadFileScatter/NtWriteFileGather page-list element (a union;
+    # the prototypes below reference it, so it must be emitted first).
+    segment_element = extract_union(
+        winnt, "_FILE_SEGMENT_ELEMENT", "FILE_SEGMENT_ELEMENT"
+    )
+
     prototypes = extract_prototypes(winternl, NTIOAPI_FUNCTIONS)
 
     asserts = """\
@@ -1055,6 +1156,17 @@ _Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFOR
 _Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
 _Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_FOR_BUFFER x64 layout");
+_Static_assert(sizeof(FILE_RENAME_INFORMATION) == 24, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_RENAME_INFORMATION, RootDirectory) == 8, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_RENAME_INFORMATION, FileName) == 20, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_LINK_INFORMATION) == 24, "FILE_LINK_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_LINK_INFORMATION, FileName) == 20, "FILE_LINK_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, ShortName) == 70, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileId) == 96, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName) == 104, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_NOTIFY_INFORMATION, FileName) == 12, "FILE_NOTIFY_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_SEGMENT_ELEMENT) == 8, "FILE_SEGMENT_ELEMENT x64 layout");
+_Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_INFORMATION x64 layout");
 """
 
     return (
@@ -1106,6 +1218,17 @@ _Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_
         + completion_enum
         + "\n\n"
         + completion_struct
+        + "\n\n/* CUI-5: rename/link flag bits, extracted from\n"
+        + " * wine/include/winternl.h. */\n"
+        + rename_link_flags
+        + "\n\n/* CUI-5: NtNotifyChangeDirectoryFile filter/action bits and record\n"
+        + " * shape, extracted from wine/include/winnt.h. */\n"
+        + notify_defines
+        + "\n\n"
+        + notify_struct
+        + "\n\n/* CUI-5: scatter/gather page-list element, extracted from\n"
+        + " * wine/include/winnt.h. */\n"
+        + segment_element
         + "\n\n"
         + asserts
         + "\n/* The M6+M7 Io Nt* surface; signatures extracted verbatim from\n"

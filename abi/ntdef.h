@@ -18,6 +18,7 @@ typedef unsigned int ULONG;
 typedef long long LONGLONG;
 typedef unsigned long long ULONGLONG;
 typedef void *PVOID;
+typedef void *PVOID64; /* x86_64: identical to PVOID (winnt.h `typedef VOID *PVOID64`) */
 typedef ULONGLONG ULONG_PTR;
 typedef ULONG_PTR *PULONG_PTR;
 
@@ -87,6 +88,7 @@ typedef struct LIST_ENTRY {
 _Static_assert(sizeof(LONG) == 4, "LLP64: LONG is 4 bytes");
 _Static_assert(sizeof(ULONGLONG) == 8, "LLP64: ULONGLONG is 8 bytes");
 _Static_assert(sizeof(PVOID) == 8, "x86_64: pointers are 8 bytes");
+_Static_assert(sizeof(PVOID64) == 8, "x86_64: PVOID64 is 8 bytes");
 _Static_assert(sizeof(LARGE_INTEGER) == 8, "LARGE_INTEGER is 8 bytes");
 _Static_assert(sizeof(LIST_ENTRY) == 16, "LIST_ENTRY is two pointers");
 _Static_assert(sizeof(BOOLEAN) == 1, "BOOLEAN is 1 byte");
