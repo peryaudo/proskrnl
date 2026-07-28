@@ -121,8 +121,11 @@ NTSTATUS NtSetInformationJobObject(HANDLE handle, JOBOBJECTINFOCLASS infoClass, 
     }
 
     PVOID body;
-    NTSTATUS status =
-        ObReferenceObjectByHandle(handle, 0, &PspJobType, ExGetPreviousMode(), &body, 0);
+    /* JOB_OBJECT_SET_ATTRIBUTES is required (wine server/process.c
+     * set_job_limits; fuzzer-found when access 0 let a query-only handle
+     * set limits — pinned by sem_ps/job.c). */
+    NTSTATUS status = ObReferenceObjectByHandle(handle, JOB_OBJECT_SET_ATTRIBUTES, &PspJobType,
+                                                ExGetPreviousMode(), &body, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
