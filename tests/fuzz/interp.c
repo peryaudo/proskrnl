@@ -984,6 +984,29 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_RENAME_FILE:
+    {
+        /* CUI-5: FileRenameInformation to one of the fixed fuzz paths —
+         * renames stay inside the per-program-scrubbed \??\C:\fuzz set, so
+         * the replay is deterministic on both runners. Built as kernelbase
+         * builds it: offsetof(FileName)+FileNameLength bytes. */
+        IO_STATUS_BLOCK iosb;
+        unsigned char buffer[sizeof(FILE_RENAME_INFORMATION) + 64 * sizeof(WCHAR)];
+        FILE_RENAME_INFORMATION *info = (FILE_RENAME_INFORMATION *)buffer;
+        UNICODE_STRING target;
+        init_ustr(&target, fz_fnames[a[1]]);
+        fz_bzero(buffer, sizeof(buffer));
+        info->ReplaceIfExists = (BOOLEAN)a[2];
+        info->RootDirectory = NULL;
+        info->FileNameLength = target.Length;
+        memcpy(info->FileName, target.Buffer, target.Length);
+        st = NtSetInformationFile(
+            fz_slots[a[0]], &iosb, info,
+            (ULONG)(offsetof(FILE_RENAME_INFORMATION, FileName) + target.Length),
+            FileRenameInformation);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
     case FZ_OP_QUERY_STANDARD_FILE:
     {
         IO_STATUS_BLOCK iosb;

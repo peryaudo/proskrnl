@@ -155,6 +155,18 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
  * rules); the FCB stays alive until its references drop. */
 NTSTATUS FatDeleteEntry(PFAT_FCB fcb);
 
+/* CUI-5 rename primitives: write one name's LFN run + short entry into
+ * `dir` (shortEntry carries metadata in; its name bytes are replaced), and
+ * free a slot run without touching the data chain. */
+NTSTATUS FatWriteEntrySlots(PFAT_FCB dir, const UNICODE_STRING *component,
+                            unsigned char shortEntry[32], ULONG *sfnSlotOut, ULONG *lfnStartOut);
+NTSTATUS FatFreeEntrySlots(PFAT_FCB dir, ULONG lfnStart, ULONG sfnSlot);
+/* Point a moved directory's ".." entry at its new parent. */
+NTSTATUS FatRewriteDotDot(PFAT_FCB dir, PFAT_FCB newParent);
+/* Move fcb's directory entry under (newParent, newName), rewriting the live
+ * FCB's identity key in place (caller checked the NT replace rules). */
+NTSTATUS FatRenameEntry(PFAT_FCB fcb, PFAT_FCB newParent, const UNICODE_STRING *newName);
+
 /* Is the directory empty ("." / ".." only)? */
 NTSTATUS FatIsDirectoryEmpty(PFAT_FCB dir, BOOLEAN *empty);
 

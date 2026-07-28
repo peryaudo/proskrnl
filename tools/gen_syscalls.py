@@ -565,6 +565,9 @@ FUZZ_OPS = [
     ("write_file", "NtWriteFile", ["slot_in", "ch_iolen", "ch_iooff"]),
     ("set_eof_file", "NtSetInformationFile", ["slot_in", "ch_iooff"]),
     ("query_standard_file", "NtQueryInformationFile", ["slot_in"]),
+    # CUI-5: FileRenameInformation between the fixed fuzz paths (the interp's
+    # per-program scrub keeps the replay deterministic)
+    ("rename_file", "NtSetInformationFile", ["slot_in", "fname", "ch_bool"]),
     # M7 mechanical Ps/Mm surface — process/system information
     # length-checking and the in-place reprotect.
     ("query_process_basic", "NtQueryInformationProcess", ["ch_len"]),

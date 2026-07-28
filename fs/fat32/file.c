@@ -684,6 +684,114 @@ static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const UNICODE_STRING *path,
+                             ULONG renameFlags)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    PFAT_VOLUME volume = fcb->volume;
+    if (fcb->isRoot)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    PFAT_FCB base = relativeTo != 0 ? FatFcbOf(relativeTo) : volume->root;
+    if (relativeTo != 0 && !base->isDirectory)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PFAT_FCB newParent;
+    UNICODE_STRING leaf;
+    BOOLEAN trailingSlash;
+    NTSTATUS status = FatResolveParent(base, path, &newParent, &leaf, &trailingSlash);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (leaf.Length == 0 || (trailingSlash && !fcb->isDirectory))
+    {
+        FatDereferenceFcb(newParent);
+        return STATUS_OBJECT_NAME_INVALID;
+    }
+    /* Moving a directory under itself (or into itself) would detach its
+     * subtree from the namespace: refuse before touching the disk. */
+    for (PFAT_FCB ancestor = newParent; ancestor != 0; ancestor = ancestor->parent)
+    {
+        if (ancestor == fcb)
+        {
+            FatDereferenceFcb(newParent);
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    PFAT_FCB existing = 0;
+    status = FatLookup(newParent, &leaf, &existing);
+    if (NT_SUCCESS(status))
+    {
+        if (existing == fcb)
+        {
+            /* The target names the source itself. Identical spelling is the
+             * pinned no-op success (Wine server/fd.c set_fd_name: same
+             * dev+ino returns without error); a different spelling is a
+             * case-change rename and falls through to the slot rewrite. */
+            BOOLEAN identical = leaf.Length == fcb->longName.Length &&
+                                memcmp(leaf.Buffer, fcb->longName.Buffer, leaf.Length) == 0;
+            FatDereferenceFcb(existing);
+            if (identical)
+            {
+                FatDereferenceFcb(newParent);
+                return STATUS_SUCCESS;
+            }
+        }
+        else
+        {
+            /* The replace rules, in the pinned Wine's order (server/fd.c
+             * set_fd_name): collision without the flag; a non-regular
+             * target, a read-only target without IGNORE_READONLY, and a
+             * currently-open target all refuse with ACCESS_DENIED. */
+            NTSTATUS refuse = STATUS_SUCCESS;
+            if (!(renameFlags & FILE_RENAME_REPLACE_IF_EXISTS))
+            {
+                refuse = STATUS_OBJECT_NAME_COLLISION;
+            }
+            else if (existing->isDirectory)
+            {
+                refuse = STATUS_ACCESS_DENIED;
+            }
+            else if ((existing->attributes & FAT_ATTR_READ_ONLY) &&
+                     !(renameFlags & FILE_RENAME_IGNORE_READONLY_ATTRIBUTE))
+            {
+                refuse = STATUS_ACCESS_DENIED;
+            }
+            else if (existing->openObjectCount != 0 || existing->header.sectionCount != 0)
+            {
+                refuse = STATUS_ACCESS_DENIED;
+            }
+            if (refuse != STATUS_SUCCESS)
+            {
+                FatDereferenceFcb(existing);
+                FatDereferenceFcb(newParent);
+                return refuse;
+            }
+            status = FatDeleteEntry(existing);
+            FatDereferenceFcb(existing);
+            if (!NT_SUCCESS(status))
+            {
+                FatDereferenceFcb(newParent);
+                return status;
+            }
+        }
+    }
+    else if (status != STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        FatDereferenceFcb(newParent);
+        return status;
+    }
+
+    status = FatRenameEntry(fcb, newParent, &leaf);
+    FatDereferenceFcb(newParent);
+    return status;
+}
+
 static NTSTATUS FatVfsReadDirectory(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENTRY *entry)
 {
     PFAT_FCB fcb = FatFcbOf(file);
@@ -762,6 +870,7 @@ const IO_VFS_OPS FatVfsOps = {
     .GetInfo = FatVfsGetInfo,
     .SetBasic = FatVfsSetBasic,
     .SetDisposition = FatVfsSetDisposition,
+    .Rename = FatVfsRename,
     .ReadDirectory = FatVfsReadDirectory,
     .QueryName = FatVfsQueryName,
     .QueryVolumeInfo = FatVfsQueryVolumeInfo,
