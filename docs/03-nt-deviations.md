@@ -1540,18 +1540,44 @@ difference from the measured count):
   we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. Explorer owning the
   desktop is precisely what GUI-6 builds (docs/02 says the fixture retires there), so this
   is the one divergence deliberately left for that milestone rather than papered over.
-- *Twelve assertions are decided by emulated-machine speed, not by semantics.*
-  `test_PeekMessage3` sets a 100 ms timer, never kills it, and then asserts seven times
+- *Up to twelve assertions are decided by emulated-machine speed, not by semantics,* and
+  they are the reason the budget is a ceiling rather than a measurement.
+  `test_PeekMessage3` sets a 100 ms timer, never kills it, and then asserts **seven** times
   that the queue is empty — true where the intervening block runs in microseconds, false
   where 100 ms of guest time passes first (Wine's own `restart_timer` makes a late timer
-  due immediately). `test_WM_COPYDATA` polls `FindWindow` for one second for a child
-  process's window, and a process start on this stack costs more than that under TCG. Both
-  families would pass on a fast machine and neither says anything about NT semantics; the
-  budget carries the headroom the first can swing by, and names it.
-- *Two message-sequence divergences remain in `test_interthread_messages`* ("destroy child
-  on thread exit", a missing `WM_ERASEBKGND` in the expected order). These are real and
-  unexplained — they were previously masked by item 6, which stopped the child windows
-  from being created at all, and are the next honest thread to pull.
+  due immediately). Measured runs have put **1 and 4** of those seven on the failing side,
+  which is the whole observed movement between two otherwise identical runs.
+  `test_WM_COPYDATA` contributes a further **five**: it polls `FindWindow` for one second
+  for a child process's window, and a process start on this stack costs more than that
+  under TCG — but they fail as a block, so they cost the budget no headroom. Neither family
+  says anything about NT semantics; both would pass on a fast machine.
+- *Two message-sequence divergences in `test_interthread_messages`* — **still open**, and
+  the hunt is recorded because two fixes came out of it and neither closed it. "destroy
+  child on thread exit" expects `WM_PAINT` then `WM_ERASEBKGND` and gets `WM_NCPAINT` and
+  `WM_GETTEXT` in between: the parent's non-client area is dirty when it paints, so
+  `BeginPaint` sends `WM_NCPAINT` and `DefWindowProc`'s caption paint asks for the title.
+  The uncover repair was the suspect twice over — it invalidated whole windows, and a
+  request trace showed a `RDW_FRAME` `redraw_window` reaching a top-level from another
+  thread. Both are real defects and `winefb_repaint_rect`/`invalidate_covered` now handle
+  both (rect-scoped in client coords when the covered area lies inside the client rect,
+  whole-window only when it reaches the frame) — which matters because
+  `server/window.c redraw_window` sets `PAINT_NONCLIENT` **unconditionally** on seeing
+  `RDW_FRAME` rather than reading it as a description of the region handed with it. But
+  **neither moved this count**, measured before and after: the compositor is not this
+  divergence's cause. The reason is now known and is the useful residue of the hunt —
+  win32u never gives a child window a surface (`window.c`: `is_child` ⇒
+  `needs_surface = FALSE`), so a child's destruction never reaches the repair path at all.
+  The frame must therefore be dirtied by one of the other two `PAINT_NONCLIENT` setters,
+  `init_window_info` or `set_window_info(GWL_STYLE)`; logging both in the shim is how the
+  first trace was got, and that is the thread to pull next.
+- *Two are `todo_wine` tags that are stale on proskrnl* — winetest counts a test that
+  *succeeds* inside a todo block as a failure (`winetest_failures + winetest_todo_failures`
+  is the exit status), so these are cases where **we are right and Wine is not**:
+  `ShowWindow(SW_SHOWMAXIMIZED)` on an overlapped window produces the message sequence
+  Windows produces (msg.c:5730 marks the whole sequence todo), and a 500 ms wait for a
+  window proc completes here where Wine times out (msg.c:18349). Neither is fixable in this
+  tree: the fix is upstream in Wine, and editing msg.c to make the number smaller would be
+  fixing the oracle instead of the kernel (G9).
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
 ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an

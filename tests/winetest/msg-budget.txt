@@ -14,17 +14,28 @@
 #   20  the process idle event is a GUI-process thing
 #   18  the forced desktop window no longer re-homes the process
 #
-# The number is a CEILING, not the measured count, and deliberately so.
-# The measured count for the entry above was 15 on this TCG runner, but
-# seven of msg.c's assertions are decided by how fast the emulated machine
-# is rather than by any semantics of ours: test_PeekMessage3 sets a 100 ms
-# timer and never kills it, then asserts seven times that the queue is
-# empty — true on a machine that runs the intervening block in microseconds,
-# false on one where 100 ms of guest time passes first (four of the seven
-# failed in the measured run, one in the run before it). 18 = 15 - 4 + 7 is
-# the most that family can contribute, so a run above it is a real
-# regression rather than a slower runner. The five test_WM_COPYDATA
-# failures are the same kind of thing — a child process that must create
-# its window inside the test's own one-second poll — but they already fail
-# as a block, so they cost no headroom. docs/03 says which is which.
+# The number is a CEILING, not the measured count, and deliberately so:
+# the count has two parts.
+#
+#   STABLE: two waiting on GUI-6 (the desktop window has no owning
+#   thread), five in test_WM_COPYDATA (a child process must create its
+#   window inside the test's own one-second FindWindow poll, and a process
+#   start on this stack costs more than that under TCG - they fail as a
+#   block, so they cost no headroom), and two todo_wine tags that are stale
+#   here because proskrnl passes what Wine fails (winetest counts a success
+#   inside a todo block as a failure, so being RIGHT costs two).
+#
+#   VOLATILE, 0..7: test_PeekMessage3 sets a 100 ms timer, never kills it,
+#   and then asserts seven times that the queue is empty - true where the
+#   intervening block runs in microseconds, false where 100 ms of guest
+#   time passes first (Wine's own restart_timer makes a late timer due
+#   immediately). Measured runs have put 1 and 4 of the seven on the
+#   failing side with nothing else changed.
+#
+# The budget is the stable part plus the volatile family's worst case, so a
+# run above it is a real regression rather than a slower runner. It also
+# means the ratchet moves only when a STABLE failure is fixed: a run
+# measuring 12 rather than 15 has not earned a lower budget, it just got
+# lucky with the timer. Ratchet from the stable part, never from the
+# measurement.
 18

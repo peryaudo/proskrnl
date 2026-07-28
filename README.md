@@ -330,8 +330,10 @@ whole process onto whichever desktop a thread last visited, because on
 Wine only *explorer* ever creates a desktop window. What remains is named
 and split in `docs/03` "GUI-5 winetest notes": two assertions that wait on
 GUI-6 (the desktop window has no owning thread until explorer owns it),
-twelve decided by how slow TCG is rather than by any semantics of ours,
-and two genuine message-sequence divergences. Three tools the campaign
+up to twelve decided by how slow TCG is rather than by any semantics of
+ours, two genuine message-sequence divergences still open, and two `todo_wine` tags
+that are stale here because proskrnl passes what Wine fails — winetest
+counts those against us, and only Wine can retire them. Three tools the campaign
 left behind: a dump that prints every thread's state, waits, user RIP and
 stack frames when a process wedges or faults; a consistency-sweep detector
 that catches a *user-space* deadlock within seconds of it forming — Art.
