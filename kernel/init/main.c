@@ -300,7 +300,7 @@ static int KiRunWineHello(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", TRUE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
@@ -335,7 +335,7 @@ static int KiRunInitialChain(void)
     ObDereferenceObject(probe);
 
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
                                      "C:\\windows\\system32\\smss.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
@@ -370,9 +370,9 @@ static void KiStartConhost(void)
 
     /* The main-thread ETHREAD reference is held forever: conhost is a
      * permanent process (its thread never exits, so the reference may never
-     * be dropped — PsCreateWineProcess contract). */
+     * be dropped — PsCreateUserImage contract). */
     static PETHREAD KiConhostThread;
-    status = PsCreateWineProcess(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"),
+    status = PsCreateUserImage(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"),
                                  "C:\\windows\\system32\\conhost.exe", FALSE, &KiConhostProcess,
                                  &KiConhostThread);
     if (!NT_SUCCESS(status))
@@ -423,7 +423,7 @@ static int KiRunM9(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\m9_smoke.exe"), "C:\\m9_smoke.exe", TRUE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\m9_smoke.exe"), "C:\\m9_smoke.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     if (!NT_SUCCESS(status))
     {
@@ -454,7 +454,7 @@ static int KiRunM9Echo(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\m9_echo.exe"), "C:\\m9_echo.exe", TRUE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\m9_echo.exe"), "C:\\m9_echo.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     DbgPrint("[KTEST] module m9_echo.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
              (unsigned long)exitStatus);
@@ -478,7 +478,7 @@ static void KiRunGuiSmoke(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\gui_smoke.exe"), "C:\\gui_smoke.exe", FALSE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\gui_smoke.exe"), "C:\\gui_smoke.exe", FALSE, &exitStatus);
     /* Only reached if the client exited, which it is written never to do:
      * say so rather than letting the boot fall through to a sweep verdict
      * the harness would read as a healthy end (Art. 12). */
@@ -503,7 +503,7 @@ static void KiRunGui2(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\winemine.exe"), "C:\\winemine.exe", FALSE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\winemine.exe"), "C:\\winemine.exe", FALSE, &exitStatus);
     /* Reached when the window is closed (the harness's Alt+F4 probe) or
      * when the app dies. Either way the exit code is the diagnosis, so
      * print it rather than falling through to a sweep verdict the harness
@@ -536,7 +536,7 @@ static void KiStartWineserverLite(void)
 
     static PEPROCESS KiWineserverProcess;
     static PETHREAD KiWineserverThread;
-    status = PsCreateWineProcess(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"),
+    status = PsCreateUserImage(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"),
                                  "C:\\windows\\system32\\wineserver-lite.exe", FALSE,
                                  &KiWineserverProcess, &KiWineserverThread);
     if (!NT_SUCCESS(status))
@@ -575,7 +575,7 @@ static void KiRunGui3(void)
      * server that does not exist yet (KiStartWineserverLite). */
     static PEPROCESS KiGui3aProcess;
     static PETHREAD KiGui3aThread;
-    NTSTATUS status = PsCreateWineProcess(WSTR("\\??\\C:\\gui3a.exe"), "C:\\gui3a.exe", FALSE,
+    NTSTATUS status = PsCreateUserImage(WSTR("\\??\\C:\\gui3a.exe"), "C:\\gui3a.exe", FALSE,
                                           &KiGui3aProcess, &KiGui3aThread);
     if (!NT_SUCCESS(status))
     {
@@ -584,7 +584,7 @@ static void KiRunGui3(void)
     }
 
     NTSTATUS exitStatus = 0;
-    status = PsRunWineImage(WSTR("\\??\\C:\\gui3b.exe"), "C:\\gui3b.exe", FALSE, &exitStatus);
+    status = PsRunUserImage(WSTR("\\??\\C:\\gui3b.exe"), "C:\\gui3b.exe", FALSE, &exitStatus);
     DbgPrint("[KTEST] gui3 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
              (unsigned long)exitStatus);
 }
@@ -613,7 +613,7 @@ static void KiRunGui4(void)
 
     static PEPROCESS KiGui4aProcess;
     static PETHREAD KiGui4aThread;
-    NTSTATUS status = PsCreateWineProcess(WSTR("\\??\\C:\\gui4a.exe"), "C:\\gui4a.exe", FALSE,
+    NTSTATUS status = PsCreateUserImage(WSTR("\\??\\C:\\gui4a.exe"), "C:\\gui4a.exe", FALSE,
                                           &KiGui4aProcess, &KiGui4aThread);
     if (!NT_SUCCESS(status))
     {
@@ -622,7 +622,7 @@ static void KiRunGui4(void)
     }
 
     NTSTATUS exitStatus = 0;
-    status = PsRunWineImage(WSTR("\\??\\C:\\gui4b.exe"), "C:\\gui4b.exe", FALSE, &exitStatus);
+    status = PsRunUserImage(WSTR("\\??\\C:\\gui4b.exe"), "C:\\gui4b.exe", FALSE, &exitStatus);
     DbgPrint("[KTEST] gui4 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
              (unsigned long)exitStatus);
 }
@@ -651,13 +651,13 @@ static void KiRunGui5(void)
 
     NTSTATUS exitStatus = 0;
     NTSTATUS status =
-        PsRunWineImage(WSTR("\\??\\C:\\fontdiff.exe"), "C:\\fontdiff.exe", FALSE, &exitStatus);
+        PsRunUserImage(WSTR("\\??\\C:\\fontdiff.exe"), "C:\\fontdiff.exe", FALSE, &exitStatus);
     DbgPrint("[KTEST] gui5 fontdiff exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
              (unsigned long)exitStatus);
 
     static PEPROCESS KiGui5aProcess;
     static PETHREAD KiGui5aThread;
-    status = PsCreateWineProcess(WSTR("\\??\\C:\\gui5a.exe"), "C:\\gui5a.exe", FALSE,
+    status = PsCreateUserImage(WSTR("\\??\\C:\\gui5a.exe"), "C:\\gui5a.exe", FALSE,
                                  &KiGui5aProcess, &KiGui5aThread);
     if (!NT_SUCCESS(status))
     {
@@ -665,7 +665,7 @@ static void KiRunGui5(void)
         return;
     }
 
-    status = PsRunWineImage(WSTR("\\??\\C:\\gui5b.exe"), "C:\\gui5b.exe", FALSE, &exitStatus);
+    status = PsRunUserImage(WSTR("\\??\\C:\\gui5b.exe"), "C:\\gui5b.exe", FALSE, &exitStatus);
     DbgPrint("[KTEST] gui5 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
              (unsigned long)exitStatus);
 }
@@ -689,7 +689,7 @@ static int KiRunCmdConsole(void)
 
     DbgPrint("[KTEST] cmd interactive start\n");
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
+    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
                                      "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
     BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
     DbgPrint("[KTEST] module cmd.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
@@ -759,7 +759,7 @@ static int KiRunFirstBoot(void)
     }
 
     NTSTATUS exitStatus = STATUS_UNSUCCESSFUL;
-    NTSTATUS status = PsRunWineImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+    NTSTATUS status = PsRunUserImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
                                        "C:\\windows\\system32\\smss.exe", "smss.exe firstboot",
                                        FALSE, 0, &exitStatus);
     if (!NT_SUCCESS(status) || exitStatus != 0)
@@ -779,7 +779,7 @@ __attribute__((noreturn)) static void KiRunInteractiveCmd(void)
 {
     DbgPrint("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunWineImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
+    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
                                      "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
     if (!NT_SUCCESS(status))
     {
@@ -909,7 +909,7 @@ static int KiRunNtapiTests(void)
     {
         /* Sequential runs: one static path set, rebuilt per test (the
          * process holds the imageName pointer only while it runs, and
-         * PsRunWineImage waits for exit). */
+         * PsRunUserImage waits for exit). */
         static WCHAR widePath[32 + KI_NTAPI_NAME_CHARS];
         static char dosPath[32 + KI_NTAPI_NAME_CHARS];
         static const WCHAR prefix[] = WSTR("\\??\\C:\\ntapi\\");
@@ -934,7 +934,7 @@ static int KiRunNtapiTests(void)
         const char *ascii = dosPath + 9; /* past "C:\ntapi\" */
 
         NTSTATUS exitStatus = 0;
-        status = PsRunWineImage(widePath, dosPath, FALSE, &exitStatus);
+        status = PsRunUserImage(widePath, dosPath, FALSE, &exitStatus);
         if (!NT_SUCCESS(status))
         {
             DbgPrint("[KTEST] module ntapi/%s FAIL (create=%#lx)\n", ascii, (unsigned long)status);
@@ -1152,7 +1152,7 @@ static int KiRunWineTests(void)
     {
         /* Sequential runs, one static path set (the KiRunNtapiTests shape;
          * the process copies the command line and holds imageName only
-         * while PsRunWineImageEx waits). */
+         * while PsRunUserImageEx waits). */
         static WCHAR widePath[16 + KI_WTEST_EXE_CHARS];
         static char dosPath[12 + KI_WTEST_EXE_CHARS];
         static char cmdLine[12 + KI_WTEST_EXE_CHARS + 1 + KI_WTEST_SUBTEST_CHARS];
@@ -1196,7 +1196,7 @@ static int KiRunWineTests(void)
         NTSTATUS exitStatus = 0;
         ULONG timeoutMs = list.pairs[i].timeoutMs ? list.pairs[i].timeoutMs : KI_WTEST_TIMEOUT_MS;
         NTSTATUS status =
-            PsRunWineImageEx(widePath, dosPath, cmdLine, TRUE, timeoutMs, &exitStatus);
+            PsRunUserImageEx(widePath, dosPath, cmdLine, TRUE, timeoutMs, &exitStatus);
         if (status == STATUS_TIMEOUT)
         {
             /* The wedged process owns the console; further pairs would be

@@ -423,7 +423,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
         }
     }
     /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — same
-     * discipline as PsCreateWineProcessEx: a TEB id that disagrees with what
+     * discipline as PspCreateUserProcessImage: a TEB id that disagrees with what
      * NtQueryInformationThread reports is exactly the class the ABI probe
      * convicts (user/init-tests/abi_probe.c). */
     uint64_t mainThreadId = PspAllocateProcessId();
@@ -514,9 +514,9 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
  * `imageDosPath` the DOS path ntdll sees in ProcessParameters. */
 #define PSP_NTDLL_PATH WSTR("\\??\\C:\\windows\\system32\\ntdll.dll")
 
-NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
-                               PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
-                               PETHREAD *threadOut)
+static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *imageDosPath,
+                                          PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
+                                          PETHREAD *threadOut)
 {
     PMI_SECTION exeSection;
     NTSTATUS status = IoOpenImageSection(exeNtPath, &exeSection);
@@ -807,20 +807,20 @@ out_sections:
     return status;
 }
 
-NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+NTSTATUS PsCreateUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                              PEPROCESS *processOut, PETHREAD *threadOut)
 {
     PSP_CREATE_OPTIONS options;
     memset(&options, 0, sizeof(options));
     options.console = console;
-    return PsCreateWineProcessEx(exeNtPath, imageDosPath, &options, processOut, threadOut);
+    return PspCreateUserProcessImage(exeNtPath, imageDosPath, &options, processOut, threadOut);
 }
 
-/* Run a Wine-loaded PE to completion (the M7 acceptance runner). */
-NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+/* Run a user image to completion (the M7 acceptance runner). */
+NTSTATUS PsRunUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut)
 {
-    return PsRunWineImageEx(exeNtPath, imageDosPath, 0, console, 0, exitStatusOut);
+    return PsRunUserImageEx(exeNtPath, imageDosPath, 0, console, 0, exitStatusOut);
 }
 
 /* Art. 9: on a harness timeout the serial log IS the debugger, so say what
@@ -901,7 +901,7 @@ static void PspDumpWedgedProcess(PEPROCESS process)
     KiReleaseDispatcherLock(flags);
 }
 
-NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
+NTSTATUS PsRunUserImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
                           BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
@@ -911,7 +911,7 @@ NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, cons
     options.console = console;
     options.commandLine = commandLine;
     NTSTATUS status =
-        PsCreateWineProcessEx(exeNtPath, imageDosPath, &options, &process, &mainThread);
+        PspCreateUserProcessImage(exeNtPath, imageDosPath, &options, &process, &mainThread);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1574,7 +1574,7 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         options.handleCount = handleCount;
         options.imageInfoOut = &imageInfo;
         captured = 0;
-        status = PsCreateWineProcessEx(ntPath, dosPath, &options, &process, &threadObject);
+        status = PspCreateUserProcessImage(ntPath, dosPath, &options, &process, &threadObject);
     }
     MiFreePool(ntPath);
     if (handleList != 0)
@@ -1587,7 +1587,7 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         MiFreePool(dosPath);
         return status;
     }
-    process->imageName = dosPath; /* PsCreateWineProcess stored the caller's
+    process->imageName = dosPath; /* PsCreateUserImage stored the caller's
                                    * pointer; keep the pool copy instead */
     process->imageNamePooled = TRUE;
 

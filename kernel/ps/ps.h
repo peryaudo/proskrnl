@@ -14,8 +14,8 @@
 
 #include "abi/ntdef.h"
 #include "abi/ntpsapi.h"
-#include "abi/ntmmapi.h"  /* SECTION_IMAGE_INFORMATION (M10 IMAGE_INFO write-back) */
-#include "abi/ntpebteb.h" /* RTL_USER_PROCESS_PARAMETERS (M10 params capture) */
+#include "abi/ntmmapi.h"            /* SECTION_IMAGE_INFORMATION (M10 IMAGE_INFO write-back) */
+#include "abi/ntpebteb.h"           /* RTL_USER_PROCESS_PARAMETERS (M10 params capture) */
 #include "kernel/syscall/uaccess.h" /* KI_USER_SPACE_LIMIT (the dump scans) */
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
@@ -201,18 +201,6 @@ void PsInitializeProcessSubsystem(void);
  * thread is readied. The caller owns the returned creator reference. */
 NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETHREAD *threadOut);
 
-/* M7 Wine bring-up: build a process from an on-disk PE plus the on-disk
- * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
- * initial thread on the NT CONTEXT protocol. PsRunWineImage waits for exit.
- * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
- * handle table. `console` (M9) seeds ConDrv handles + the ConsoleHandle/
- * hStd* process-parameter fields, so kernelbase binds to the console.
- * `threadOut` receives the main thread's ETHREAD (creator reference); the
- * caller MUST hold it until the thread has exited — dropping it early frees
- * a running thread. */
-NTSTATUS PsCreateWineProcess(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                             PEPROCESS *processOut, PETHREAD *threadOut);
-
 /* M10: the full-control variant NtCreateUserProcess uses. */
 struct PSP_CAPTURED_PARAMS; /* defined below (peb.c section) */
 typedef struct PSP_CREATE_OPTIONS
@@ -232,9 +220,6 @@ typedef struct PSP_CREATE_OPTIONS
                                               * (0 = the image path, the M7 shape) */
 } PSP_CREATE_OPTIONS;
 
-NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
-                               PSP_CREATE_OPTIONS *options, PEPROCESS *processOut,
-                               PETHREAD *threadOut);
 /* The stack scans in the wedge/fault dumps keep only values that could be a
  * return address into some mapped image. The floor is the lowest PE base a
  * loaded module can have here: 0x140000000, the linker's default x64 EXE
@@ -254,7 +239,22 @@ NTSTATUS PsCreateWineProcessEx(const WCHAR *exeNtPath, const char *imageDosPath,
  * detector (kernel/init/verify.c). Caller holds the dispatcher lock. */
 void PsDumpWedgedProcessLocked(PEPROCESS process);
 
-NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+/* The boot-path image launchers (kernel/init/main.c's acceptance runs).
+ *
+ * PsCreateUserImage builds a process from an on-disk PE plus the on-disk
+ * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
+ * initial thread on the NT CONTEXT protocol (the M7 Wine bring-up path), and
+ * returns without waiting; PsRunUserImage does the same and waits for exit.
+ * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
+ * handle table. `console` (M9) seeds ConDrv handles + the ConsoleHandle/
+ * hStd* process-parameter fields, so kernelbase binds to the console.
+ * PsCreateUserImage's `threadOut` receives the main thread's ETHREAD (creator
+ * reference); the caller MUST hold it until the thread has exited — dropping
+ * it early frees a running thread. */
+NTSTATUS PsCreateUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
+                           PEPROCESS *processOut, PETHREAD *threadOut);
+
+NTSTATUS PsRunUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
                         NTSTATUS *exitStatusOut);
 
 /* The winetest sweep's variant (M10 stretch): an explicit command line for
@@ -262,7 +262,7 @@ NTSTATUS PsRunWineImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEA
  * process is STILL RUNNING and cannot be reaped (no foreign terminate —
  * docs/03); its creator references are deliberately leaked and the caller
  * must not run further console clients. */
-NTSTATUS PsRunWineImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
+NTSTATUS PsRunUserImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
                           BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
