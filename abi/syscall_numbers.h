@@ -158,6 +158,7 @@
 #define NTSYS_NtTerminateJobObject 0x00fd
 #define NTSYS_NtOpenJobObject 0x00b5
 #define NTSYS_NtIsProcessInJob 0x004f
+#define NTSYS_NtDeleteFile 0x0093
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

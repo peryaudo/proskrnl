@@ -200,6 +200,9 @@ IMPLEMENTED = [
     "NtTerminateJobObject",
     "NtOpenJobObject",
     "NtIsProcessInJob",
+    # CUI-5 Io completion: the file surface's last mile (docs/02); each
+    # row's kernel service lands in its own commit.
+    "NtDeleteFile",
 ]
 
 
