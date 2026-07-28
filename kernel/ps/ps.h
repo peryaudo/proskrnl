@@ -93,14 +93,11 @@ typedef struct EPROCESS
     LIST_ENTRY threadListHead;
     LONG activeThreadCount;
 
-    /* M9: the console handles seeded into THIS process's handle table at
-     * creation (drivers/condrv.c); 0 = not a console process. The values go
-     * into RTL_USER_PROCESS_PARAMETERS (ConsoleHandle/hStd*), where
-     * kernelbase's init_console finds them and binds to the console. */
+    /* M9/CUI-4: the console handle duplicated into THIS process's handle
+     * table by the create-path console fixup (a child inherits its parent's
+     * console through its RTL_USER_PROCESS_PARAMETERS.ConsoleHandle); 0 =
+     * not a console process — what the Ctrl+C fanout selects on. */
     HANDLE consoleHandle;
-    HANDLE stdInput;
-    HANDLE stdOutput;
-    HANDLE stdError;
 
     /* CUI-2: the primary token — a per-process DUPLICATE of the creator's
      * (never shared; wineserver's child rule, server/process.c), minted by
@@ -209,7 +206,6 @@ typedef struct PSP_CREATE_OPTIONS
     struct PSP_CAPTURED_PARAMS *params;
     BOOLEAN userParams; /* params came from ring 3: apply the console/std
                          * fixups (server/process.c mirror) */
-    BOOLEAN console;    /* seed fresh ConDrv handles (kernel launches only) */
     BOOLEAN createSuspended;
     BOOLEAN inheritHandles;
     const HANDLE *handleList; /* kernel copy; 0 = inherit-all */
@@ -239,31 +235,20 @@ typedef struct PSP_CREATE_OPTIONS
  * detector (kernel/init/verify.c). Caller holds the dispatcher lock. */
 void PsDumpWedgedProcessLocked(PEPROCESS process);
 
-/* The boot-path image launchers (kernel/init/main.c's acceptance runs).
+/* The boot-path image launcher (kernel/init/main.c KiRunSessionManager —
+ * its ONE remaining caller; every other user process is spawned by smss
+ * through NtCreateUserProcess).
  *
- * PsCreateUserImage builds a process from an on-disk PE plus the on-disk
- * ntdll.dll (\??\C:\windows\system32), dispatchers resolved from ntdll,
- * initial thread on the NT CONTEXT protocol (the M7 Wine bring-up path), and
- * returns without waiting; PsRunUserImage does the same and waits for exit.
- * Both need the boot volume mounted (IoMountBootVolume) and a thread with a
- * handle table. `console` (M9) seeds ConDrv handles + the ConsoleHandle/
- * hStd* process-parameter fields, so kernelbase binds to the console.
- * PsCreateUserImage's `threadOut` receives the main thread's ETHREAD (creator
- * reference); the caller MUST hold it until the thread has exited — dropping
- * it early frees a running thread. */
-NTSTATUS PsCreateUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                           PEPROCESS *processOut, PETHREAD *threadOut);
-
-NTSTATUS PsRunUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                        NTSTATUS *exitStatusOut);
-
-/* The winetest sweep's variant (M10 stretch): an explicit command line for
- * the default parameter block, and a bounded wait. On STATUS_TIMEOUT the
- * process is STILL RUNNING and cannot be reaped (no foreign terminate —
- * docs/03); its creator references are deliberately leaked and the caller
- * must not run further console clients. */
+ * Builds a process from an on-disk PE plus the on-disk ntdll.dll
+ * (\??\C:\windows\system32), dispatchers resolved from ntdll, initial
+ * thread on the NT CONTEXT protocol (the M7 Wine bring-up path), and waits
+ * for exit. Needs the boot volume mounted (IoMountBootVolume) and a thread
+ * with a handle table. `commandLine` 0 = the DOS image path; timeoutMs 0 =
+ * forever. On STATUS_TIMEOUT the process is STILL RUNNING and cannot be
+ * reaped (no foreign terminate — docs/03); its creator references are
+ * deliberately leaked. */
 NTSTATUS PsRunUserImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
-                          BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut);
+                          ULONG timeoutMs, NTSTATUS *exitStatusOut);
 
 /* Terminate the calling thread's process: close its handles, publish the
  * exit status, signal the process object, never return. The user-fault

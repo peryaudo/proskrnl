@@ -122,9 +122,6 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->activeThreadCount = 0;
     InitializeListHead(&process->threadListHead);
     process->consoleHandle = 0;
-    process->stdInput = 0;
-    process->stdOutput = 0;
-    process->stdError = 0;
     /* CUI-2: every process is born with a primary-token duplicate (the ONE
      * mint site, G11). Failure means pool exhaustion — already fatal under
      * one-pool/no-eviction (Art. 3). */
@@ -700,22 +697,6 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         status = PspMapSharedUserData(process);
     }
-    /* M9: seed the console plumbing BEFORE the PEB so PspBuildPeb can write
-     * the handle values into the process parameters (kernel-launched console
-     * processes; user-created children carry the parent's console through
-     * the fixups above instead). */
-    if (NT_SUCCESS(status) && options->console)
-    {
-        status = CondrvCreateProcessHandles(process, &process->consoleHandle, &process->stdInput,
-                                            &process->stdOutput, &process->stdError);
-        if (NT_SUCCESS(status))
-        {
-            params->header.ConsoleHandle = process->consoleHandle;
-            params->header.hStdInput = process->stdInput;
-            params->header.hStdOutput = process->stdOutput;
-            params->header.hStdError = process->stdError;
-        }
-    }
     if (NT_SUCCESS(status))
     {
         status = PspBuildPeb(process, imageBase, params);
@@ -812,22 +793,6 @@ out_sections:
     return status;
 }
 
-NTSTATUS PsCreateUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                             PEPROCESS *processOut, PETHREAD *threadOut)
-{
-    PSP_CREATE_OPTIONS options;
-    memset(&options, 0, sizeof(options));
-    options.console = console;
-    return PspCreateUserProcessImage(exeNtPath, imageDosPath, &options, processOut, threadOut);
-}
-
-/* Run a user image to completion (the M7 acceptance runner). */
-NTSTATUS PsRunUserImage(const WCHAR *exeNtPath, const char *imageDosPath, BOOLEAN console,
-                        NTSTATUS *exitStatusOut)
-{
-    return PsRunUserImageEx(exeNtPath, imageDosPath, 0, console, 0, exitStatusOut);
-}
-
 /* Art. 9: on a harness timeout the serial log IS the debugger, so say what
  * every thread of the wedged process was doing before giving up on it —
  * its state, whether its wait is alertable, the user RIP its last ring-3
@@ -907,13 +872,12 @@ static void PspDumpWedgedProcess(PEPROCESS process)
 }
 
 NTSTATUS PsRunUserImageEx(const WCHAR *exeNtPath, const char *imageDosPath, const char *commandLine,
-                          BOOLEAN console, ULONG timeoutMs, NTSTATUS *exitStatusOut)
+                          ULONG timeoutMs, NTSTATUS *exitStatusOut)
 {
     PEPROCESS process;
     PETHREAD mainThread;
     PSP_CREATE_OPTIONS options;
     memset(&options, 0, sizeof(options));
-    options.console = console;
     options.commandLine = commandLine;
     NTSTATUS status =
         PspCreateUserProcessImage(exeNtPath, imageDosPath, &options, &process, &mainThread);
@@ -1592,7 +1556,7 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         MiFreePool(dosPath);
         return status;
     }
-    process->imageName = dosPath; /* PsCreateUserImage stored the caller's
+    process->imageName = dosPath; /* PsRunUserImageEx stores the caller's
                                    * pointer; keep the pool copy instead */
     process->imageNamePooled = TRUE;
 

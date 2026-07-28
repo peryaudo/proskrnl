@@ -364,7 +364,7 @@ first (Art. 5). Wrinkles worth remembering:
   unlinked from the console queue on abort (a vanished console read completes
   as `STATUS_INVALID_HANDLE`, which conhost tolerates). `KiAbortThreadWait`
   asserts a non-kernel thread, so kernel-internal waits (cm hive mutex, the
-  `PsRunUserImage` joins, the reaper) are never targets. **Any future
+  `PsRunUserImageEx` joins, the reaper) are never targets. **Any future
   indefinite user-thread wait must join this audit.** Pinned by
   `sem_ps/terminate_process.c`.
 - **Thread-id alerts are process-local** — *retired by the winetest gate*:
