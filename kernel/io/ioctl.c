@@ -92,8 +92,10 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
 
     IO_CONTROL_CONTEXT request = {.eventHandle = event, .userIosb = iosb};
     ULONG_PTR information = 0;
+    IopEnterSyncIo(iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
                                               outputLength, &information, &request);
+    IopLeaveSyncIo();
     /* IOSB Information is not always an output-payload count (a console
      * WRITE_FILE reports bytes CONSUMED); copy back only what the output
      * buffer can hold. */

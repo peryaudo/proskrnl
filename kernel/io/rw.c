@@ -178,7 +178,9 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
             goto abandon;
         }
         ULONG_PTR transferred = 0;
+        IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred);
+        IopLeaveSyncIo();
         if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && transferred != 0)
         {
             memcpy(buffer, bounce, transferred); /* probed above */
@@ -287,7 +289,9 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             memcpy(bounce, buffer, length); /* probed above */
         }
         ULONG_PTR transferred = 0;
+        IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Write(file, bounce, length, &transferred);
+        IopLeaveSyncIo();
         if (bounce != 0)
         {
             MiFreePool(bounce);

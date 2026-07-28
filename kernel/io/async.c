@@ -148,3 +148,86 @@ NTSTATUS NtCancelIoFileEx(HANDLE handle, PIO_STATUS_BLOCK targetIosb, PIO_STATUS
      * compared against the parked VA, never dereferenced. */
     return IopCancelIo(handle, 0, targetIosb, ioStatus);
 }
+
+/* --- CUI-5: NtCancelSynchronousIoFile ---------------------------------------- */
+
+/* Mark/unmark the current thread's in-flight synchronous I/O. The Io layer
+ * wraps every potentially-blocking device op (kernel/io/rw.c, ioctl.c) so a
+ * canceller can find the op by thread; the user IOSB VA is the filter key
+ * the pinned Wine's cancel_sync compares (never dereferenced here). */
+void IopEnterSyncIo(void *userIosb)
+{
+    PKTHREAD self = KeGetCurrentThread();
+    self->syncIoUserIosb = userIosb;
+    self->syncIoCancelled = FALSE;
+    KeClearEvent(&self->syncIoCancelEvent);
+    self->syncIoActive = TRUE;
+}
+
+void IopLeaveSyncIo(void)
+{
+    PKTHREAD self = KeGetCurrentThread();
+    self->syncIoActive = FALSE;
+    self->syncIoUserIosb = 0;
+}
+
+/* A cancellable park for blocking device waits (npfs): the device's wake
+ * event OR this thread's cancel event, whichever fires first (timeout
+ * optional, the KeWaitFor* convention). */
+NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout)
+{
+    PKTHREAD self = KeGetCurrentThread();
+    void *objects[2] = {event, &self->syncIoCancelEvent};
+    NTSTATUS status =
+        KeWaitForMultipleObjects(2, objects, WaitAny, Executive, KernelMode, FALSE, timeout, 0);
+    if (self->syncIoCancelled)
+    {
+        return STATUS_CANCELLED;
+    }
+    return status;
+}
+
+/* The by-thread cancel (CancelSynchronousIo). Contract: pinned Wine
+ * dlls/ntdll/unix/file.c + server/async.c cancel_sync (the thread handle
+ * is resolved with THREAD_TERMINATE; `filterIosb` narrows to one request
+ * by its user IOSB VA; nothing in flight is STATUS_NOT_FOUND; the result
+ * IOSB receives {status, 0} either way). Pinned by sem_pipe/cancel_sync.c.
+ * Only npfs's blocking waits are cancellable — every other blocking device
+ * read (condrv/serial, hid) stays uncancellable (docs/03 "CUI-5 notes"). */
+NTSTATUS NtCancelSynchronousIoFile(HANDLE threadHandle, PIO_STATUS_BLOCK filterIosb,
+                                   PIO_STATUS_BLOCK ioStatus)
+{
+    if (ioStatus == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(ioStatus, sizeof(*ioStatus), sizeof(void *));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PVOID body;
+    status = ObReferenceObjectByHandle(threadHandle, THREAD_TERMINATE, &PspThreadType,
+                                       ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PETHREAD thread = body;
+    PKTHREAD target = thread->tcb; /* freed only with the ETHREAD (thread.c) */
+    if (target != 0 && target->syncIoActive && !target->syncIoCancelled &&
+        (filterIosb == 0 || (void *)filterIosb == target->syncIoUserIosb))
+    {
+        target->syncIoCancelled = TRUE;
+        KeSetEvent(&target->syncIoCancelEvent, 0, FALSE);
+        status = STATUS_SUCCESS;
+    }
+    else
+    {
+        status = STATUS_NOT_FOUND;
+    }
+    ioStatus->Status = status;
+    ioStatus->Information = 0;
+    ObDereferenceObject(body);
+    return status;
+}

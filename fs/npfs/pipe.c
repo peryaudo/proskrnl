@@ -141,7 +141,9 @@ static void NpfsWakeAll(PNPFS_INSTANCE instance)
 static NTSTATUS NpfsWait(PKEVENT event)
 {
     KeClearEvent(event);
-    return KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
+    /* CUI-5: the park is cancellable — NtCancelSynchronousIoFile against
+     * the parked thread breaks it with STATUS_CANCELLED. */
+    return IoWaitCancellable(event, 0);
 }
 
 static void NpfsFlushQueue(PNPFS_QUEUE queue)
@@ -469,8 +471,7 @@ static NTSTATUS NpfsWaitForPipe(const void *input, ULONG inputLength)
          * NpfsWait is — nothing runs between the listener check above and
          * this park (uniprocessor, no preemption). */
         KeClearEvent(&NpfsListenersChangedEvent);
-        NTSTATUS status = KeWaitForSingleObject(&NpfsListenersChangedEvent, Executive, KernelMode,
-                                                FALSE, &deadline);
+        NTSTATUS status = IoWaitCancellable(&NpfsListenersChangedEvent, &deadline);
         if (status == STATUS_TIMEOUT)
         {
             return STATUS_IO_TIMEOUT;

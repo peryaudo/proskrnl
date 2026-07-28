@@ -116,6 +116,10 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     thread->exitStatus = STATUS_SUCCESS;
     InitializeListHead(&thread->userApcListHead);
     InitializeListHead(&thread->mutantListHead);
+    thread->syncIoUserIosb = 0;
+    thread->syncIoActive = FALSE;
+    thread->syncIoCancelled = FALSE;
+    KeInitializeEvent(&thread->syncIoCancelEvent, NotificationEvent, FALSE);
     /* The thread's private timeout timer (wait.c arms it for timed waits). */
     KeInitializeTimerEx(&thread->timer, NotificationTimer);
 

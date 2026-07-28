@@ -212,6 +212,7 @@ IMPLEMENTED = [
     "NtOpenIoCompletion",
     "NtSetIoCompletionEx",
     "NtQueryDirectoryObject",
+    "NtCancelSynchronousIoFile",
 ]
 
 

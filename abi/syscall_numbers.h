@@ -168,6 +168,7 @@
 #define NTSYS_NtOpenIoCompletion 0x00b4
 #define NTSYS_NtSetIoCompletionEx 0x00f0
 #define NTSYS_NtQueryDirectoryObject 0x00c2
+#define NTSYS_NtCancelSynchronousIoFile 0x0075
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
