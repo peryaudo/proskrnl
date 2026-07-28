@@ -316,7 +316,7 @@ when the GUI stack is broken is a kept debugging capability.
 stack — 21.5 kloc, ~85 test functions, every one of them entered — with
 winetest's failure count arriving as the NT exit status and ratcheted
 against a committed budget (`run.sh guiwtest`, **now in CI**): **9999 (a
-sentinel — the module could not reach a verdict at all) → 23 → 20 → 18**.
+sentinel — the module could not reach a verdict at all) → 23 → 20 → 18 → 17**.
 Six real bugs convicted, three of them by the run *not* finishing: a
 missing per-session `BaseNamedObjects` directory; an unimplemented
 `get_process_idle_event`; a lock-order inversion of *ours* that deadlocked

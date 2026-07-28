@@ -13,6 +13,7 @@
 #   23  first honest measurement (the module runs end to end)
 #   20  the process idle event is a GUI-process thing
 #   18  the forced desktop window no longer re-homes the process
+#   17  the two speed-dependent families cannot both be at maximum
 #
 # The number is a CEILING, not the measured count, and deliberately so:
 # the count has two parts.
@@ -32,10 +33,29 @@
 #   immediately). Measured runs have put 1 and 4 of the seven on the
 #   failing side with nothing else changed.
 #
-# The budget is the stable part plus the volatile family's worst case, so a
-# run above it is a real regression rather than a slower runner. It also
-# means the ratchet moves only when a STABLE failure is fixed: a run
-# measuring 12 rather than 15 has not earned a lower budget, it just got
-# lucky with the timer. Ratchet from the stable part, never from the
-# measurement.
-18
+# The ceiling is what the count can reach on the SLOWEST machine that still
+# runs the suite, and it is not the sum of every family's maximum, because
+# two of them move in OPPOSITE directions with machine speed:
+#
+#   slower  test_PeekMessage3 fails more of its seven (more guest time
+#           elapses per block), and test_WM_COPYDATA keeps failing all five;
+#   faster  both of those pass, but msg.c:18349 starts failing - it is a
+#           stale todo_wine on a 500 ms wait, so it counts against us
+#           exactly when we are fast enough to BEAT Wine.
+#
+# A machine slow enough to fail all seven timer assertions is far too slow
+# to win that 500 ms race, so 7 and that 1 cannot co-occur. The bound is
+#
+#   2 (GUI-6) + 2 (interthread) + 1 (todo, ShowWindow) + 5 (WM_COPYDATA)
+#     + 7 (test_PeekMessage3 worst case) + 0 (msg.c:18349 cannot also fail)
+#   = 17
+#
+# and a run above it is a real regression rather than a slower runner.
+#
+# The ratchet moves only when a STABLE failure is fixed: a run measuring 12
+# rather than 15 has not earned a lower budget, it just got lucky with the
+# timer. Ratchet from the bound, never from the measurement. The next real
+# drop is the interthread pair (-2, to 15); collapsing the volatile range
+# itself needs deterministic guest time (QEMU -icount), which would slow
+# every leg and is not worth it for this alone.
+17
