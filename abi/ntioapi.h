@@ -305,6 +305,44 @@ typedef struct {
     FILE_NAME_INFORMATION      NameInformation;
 } FILE_ALL_INFORMATION, *PFILE_ALL_INFORMATION;
 
+typedef struct {
+    union {
+        BOOLEAN ReplaceIfExists;
+        ULONG Flags;
+    } DUMMYUNIONNAME;
+    HANDLE RootDirectory;
+    ULONG FileNameLength;
+    WCHAR FileName[1];
+} FILE_RENAME_INFORMATION, *PFILE_RENAME_INFORMATION;
+
+typedef struct {
+    union {
+        BOOLEAN ReplaceIfExists;
+        ULONG Flags;
+    } DUMMYUNIONNAME;
+    HANDLE RootDirectory;
+    ULONG FileNameLength;
+    WCHAR FileName[1];
+} FILE_LINK_INFORMATION, *PFILE_LINK_INFORMATION;
+
+typedef struct {
+    ULONG               NextEntryOffset;
+    ULONG               FileIndex;
+    LARGE_INTEGER       CreationTime;
+    LARGE_INTEGER       LastAccessTime;
+    LARGE_INTEGER       LastWriteTime;
+    LARGE_INTEGER       ChangeTime;
+    LARGE_INTEGER       EndOfFile;
+    LARGE_INTEGER       AllocationSize;
+    ULONG               FileAttributes;
+    ULONG               FileNameLength;
+    ULONG               EaSize;
+    CHAR                ShortNameLength;
+    WCHAR               ShortName[12];
+    LARGE_INTEGER       FileId;
+    WCHAR               FileName[ANYSIZE_ARRAY];
+} FILE_ID_BOTH_DIRECTORY_INFORMATION, *PFILE_ID_BOTH_DIRECTORY_INFORMATION;
+
 /* Volume information (M7: RtlSetCurrentDirectory_U queries it at
  * ntdll startup); enum from wine/include/winternl.h, structs and
  * device types from wine/include/winioctl.h. */
@@ -354,6 +392,14 @@ typedef struct {
 	ULONG	FileSystemNameLength;
 	WCHAR	FileSystemName[1];
 } FILE_FS_ATTRIBUTE_INFORMATION, *PFILE_FS_ATTRIBUTE_INFORMATION;
+
+typedef struct {
+	LARGE_INTEGER	TotalAllocationUnits;
+	LARGE_INTEGER	CallerAvailableAllocationUnits;
+	LARGE_INTEGER	ActualAvailableAllocationUnits;
+	ULONG		SectorsPerAllocationUnit;
+	ULONG		BytesPerSector;
+} FILE_FS_FULL_SIZE_INFORMATION, *PFILE_FS_FULL_SIZE_INFORMATION;
 
 #define FILE_DEVICE_DISK 0x00000007
 #define FILE_DEVICE_DISK_FILE_SYSTEM 0x00000008
@@ -450,6 +496,50 @@ typedef struct {
     IO_STATUS_BLOCK IoStatusBlock;
 } FILE_IO_COMPLETION_INFORMATION, *PFILE_IO_COMPLETION_INFORMATION;
 
+/* CUI-5: rename/link flag bits, extracted from
+ * wine/include/winternl.h. */
+#define FILE_RENAME_REPLACE_IF_EXISTS 0x00000001
+#define FILE_RENAME_POSIX_SEMANTICS 0x00000002
+#define FILE_RENAME_IGNORE_READONLY_ATTRIBUTE 0x00000040
+#define FILE_LINK_REPLACE_IF_EXISTS 0x00000001
+#define FILE_LINK_POSIX_SEMANTICS 0x00000002
+#define FILE_LINK_IGNORE_READONLY_ATTRIBUTE 0x00000040
+
+/* CUI-5: NtNotifyChangeDirectoryFile filter/action bits and record
+ * shape, extracted from wine/include/winnt.h. */
+#define FILE_NOTIFY_CHANGE_FILE_NAME 0x00000001
+#define FILE_NOTIFY_CHANGE_DIR_NAME 0x00000002
+#define FILE_NOTIFY_CHANGE_NAME 0x00000003
+#define FILE_NOTIFY_CHANGE_ATTRIBUTES 0x00000004
+#define FILE_NOTIFY_CHANGE_SIZE 0x00000008
+#define FILE_NOTIFY_CHANGE_LAST_WRITE 0x00000010
+#define FILE_NOTIFY_CHANGE_LAST_ACCESS 0x00000020
+#define FILE_NOTIFY_CHANGE_CREATION 0x00000040
+#define FILE_NOTIFY_CHANGE_EA 0x00000080
+#define FILE_NOTIFY_CHANGE_SECURITY 0x00000100
+#define FILE_NOTIFY_CHANGE_STREAM_NAME 0x00000200
+#define FILE_NOTIFY_CHANGE_STREAM_SIZE 0x00000400
+#define FILE_NOTIFY_CHANGE_STREAM_WRITE 0x00000800
+#define FILE_ACTION_ADDED 0x00000001
+#define FILE_ACTION_REMOVED 0x00000002
+#define FILE_ACTION_MODIFIED 0x00000003
+#define FILE_ACTION_RENAMED_OLD_NAME 0x00000004
+#define FILE_ACTION_RENAMED_NEW_NAME 0x00000005
+
+typedef struct {
+	DWORD NextEntryOffset;
+	DWORD Action;
+	DWORD FileNameLength;
+	WCHAR FileName[1];
+} FILE_NOTIFY_INFORMATION, *PFILE_NOTIFY_INFORMATION;
+
+/* CUI-5: scatter/gather page-list element, extracted from
+ * wine/include/winnt.h. */
+typedef union {
+	PVOID64 Buffer;
+	ULONGLONG Alignment;
+} FILE_SEGMENT_ELEMENT, *PFILE_SEGMENT_ELEMENT;
+
 #include <stddef.h>
 _Static_assert(sizeof(IO_STATUS_BLOCK) == 16, "IO_STATUS_BLOCK x64 layout");
 _Static_assert(offsetof(IO_STATUS_BLOCK, Information) == 8, "IO_STATUS_BLOCK x64 layout");
@@ -468,6 +558,17 @@ _Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFOR
 _Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
 _Static_assert(offsetof(FILE_PIPE_WAIT_FOR_BUFFER, Name) == 14, "FILE_PIPE_WAIT_FOR_BUFFER x64 layout");
+_Static_assert(sizeof(FILE_RENAME_INFORMATION) == 24, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_RENAME_INFORMATION, RootDirectory) == 8, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_RENAME_INFORMATION, FileName) == 20, "FILE_RENAME_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_LINK_INFORMATION) == 24, "FILE_LINK_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_LINK_INFORMATION, FileName) == 20, "FILE_LINK_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, ShortName) == 70, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileId) == 96, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName) == 104, "FILE_ID_BOTH_DIRECTORY_INFORMATION x64 layout");
+_Static_assert(offsetof(FILE_NOTIFY_INFORMATION, FileName) == 12, "FILE_NOTIFY_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_SEGMENT_ELEMENT) == 8, "FILE_SEGMENT_ELEMENT x64 layout");
+_Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_INFORMATION x64 layout");
 
 /* The M6+M7 Io Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
@@ -494,5 +595,16 @@ NTSTATUS NtRemoveIoCompletionEx(HANDLE,FILE_IO_COMPLETION_INFORMATION*,ULONG,ULO
 NTSTATUS NtQueryIoCompletion(HANDLE,IO_COMPLETION_INFORMATION_CLASS,PVOID,ULONG,PULONG);
 NTSTATUS NtCancelIoFile(HANDLE,PIO_STATUS_BLOCK);
 NTSTATUS NtCancelIoFileEx(HANDLE,PIO_STATUS_BLOCK,PIO_STATUS_BLOCK);
+NTSTATUS NtNotifyChangeDirectoryFile(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,PVOID,ULONG,ULONG,BOOLEAN);
+NTSTATUS NtCancelSynchronousIoFile(HANDLE,PIO_STATUS_BLOCK,PIO_STATUS_BLOCK);
+NTSTATUS NtReadFileScatter(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,FILE_SEGMENT_ELEMENT*,ULONG,PLARGE_INTEGER,PULONG);
+NTSTATUS NtWriteFileGather(HANDLE,HANDLE,PIO_APC_ROUTINE,PVOID,PIO_STATUS_BLOCK,FILE_SEGMENT_ELEMENT*,ULONG,PLARGE_INTEGER,PULONG);
+NTSTATUS NtFlushBuffersFileEx(HANDLE,ULONG,void*,ULONG,IO_STATUS_BLOCK*);
+NTSTATUS NtDeleteFile(POBJECT_ATTRIBUTES);
+NTSTATUS NtQueryEaFile(HANDLE,PIO_STATUS_BLOCK,PVOID,ULONG,BOOLEAN,PVOID,ULONG,PULONG,BOOLEAN);
+NTSTATUS NtSetEaFile(HANDLE,PIO_STATUS_BLOCK,PVOID,ULONG);
+NTSTATUS NtSetVolumeInformationFile(HANDLE,PIO_STATUS_BLOCK,PVOID,ULONG,FS_INFORMATION_CLASS);
+NTSTATUS NtOpenIoCompletion(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
+NTSTATUS NtSetIoCompletionEx(HANDLE,HANDLE,ULONG_PTR,ULONG_PTR,NTSTATUS,SIZE_T);
 
 #endif /* PROSKRNL_ABI_NTIOAPI_H */
