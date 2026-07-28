@@ -225,10 +225,11 @@ oracle() {
 
 # Bake the SAME .exes into a disk image under C:\ntapi beside the Wine PE
 # userland (ntdll/kernel32/kernelbase + the NLS tables), boot it, and read
-# each test's own [KTEST] <name> PASS line off the serial log. The kernel's
-# ntapi runner (kernel/init/main.c) sweeps C:\ntapi, runs every .exe as a
-# console-less Wine process, and prints '[KTEST] ntapi done' when the sweep
-# finishes — the boot's stop condition here.
+# each test's own [KTEST] <name> PASS line off the serial log. The session
+# manager (user/smss/session.c, launched by the kernel at end of boot)
+# sweeps C:\ntapi, runs every .exe as a console-less Wine process, and
+# prints '[KTEST] ntapi done' when the sweep finishes — the boot's stop
+# condition here.
 proskrnl() {
     local kernel img
     kernel="$ROOT/build/proskrnl"
@@ -255,6 +256,10 @@ proskrnl() {
                cryptbase; do
         specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
     done
+    # The session manager drives the sweep (it is what enumerates C:\ntapi
+    # and spawns each test through NtCreateUserProcess).
+    make -C "$ROOT" build/modules/smss.exe >/dev/null
+    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$(build_helper_dll)=ntapi/prshelper.dll")
     for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
                normidna; do
@@ -302,8 +307,8 @@ proskrnl() {
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
 # proskrnl. The binaries are the pinned tree's own test objects linked
 # standalone (Makefile `wtests`) — ONE binary, two runners, like everything
-# else here. On proskrnl the kernel sweep (kernel/init/main.c
-# KiRunWineTests) reads the baked manifest, runs each pair on the console
+# else here. On proskrnl the session manager's sweep (user/smss/
+# session.c) reads the baked manifest, runs each pair on the console
 # (winetest prints through msvcrt stdout -> conhost -> serial), and the exit
 # code — winetest's failure count — is the verdict.
 winetest() {
@@ -343,7 +348,8 @@ winetest() {
     if [[ ! -f "$kernel" ]]; then
         make -C "$ROOT" >/dev/null
     fi
-    make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe >/dev/null
+    make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe \
+        build/modules/smss.exe >/dev/null
 
     # The Wine PE userland (the run.sh proskrnl set) + conhost (winetest
     # processes run on the console) + cmd.exe (%COMSPEC%, the cmd tests'
@@ -364,6 +370,7 @@ winetest() {
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
         specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
     done
+    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
     for exe in ntdll_test.exe kernel32_test.exe msvcrt_test.exe ucrtbase_test.exe \
@@ -433,7 +440,7 @@ guiwtest() {
         make -C "$ROOT" >/dev/null
     fi
     make -C "$ROOT" winestrip winestrip-gui win32u wineserver-lite \
-        build/modules/cmd.exe build/modules/conhost.exe >/dev/null
+        build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe >/dev/null
 
     # The winetest image recipe (DLLs, nls, conhost, cmd, the M5 seeds that
     # keep the in-kernel M6 suite green) plus the GUI stack the msg module
@@ -458,6 +465,7 @@ guiwtest() {
     for fontfile in "$ROOT"/third_party/wine/fonts/*.ttf "$ROOT"/third_party/wine/fonts/*.fon; do
         specs+=("win:$fontfile=windows/fonts/$(basename "$fontfile")")
     done
+    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
     specs+=("win:$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe=wtests/user32_test.exe")
@@ -1492,7 +1500,7 @@ gui5() {
 #           CUI-4 serial intercept never involved), `done` proves the whole
 #           write path behind the window;
 #   serial  the kernel-side attach markers and the glue's mode marker.
-# The guest powers itself off (`exit` -> cmd exits -> KiRunInteractiveCmd),
+# The guest powers itself off (`exit` -> cmd exits -> smss exits -> KiQemuExit),
 # so unlike the other gui legs QEMU's end is awaited, not quit.
 gui5con() {
     make -C "$ROOT" gui5con-img >/dev/null
@@ -1586,7 +1594,7 @@ gui5con() {
     sleep 3
     qmp screendump "$ppm2" || { gui5con_fail "screendump 2 failed"; return 1; }
 
-    # `exit` powers the guest off (KiRunInteractiveCmd -> KiQemuExit).
+    # `exit` powers the guest off (cmd -> smss exit -> KiQemuExit).
     qmp type 'exit
 '
     local waited=0

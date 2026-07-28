@@ -22,7 +22,7 @@
  * proves the two implementations agree.
  *
  * Gating: the suite runs only when C:\fatcorpus\manifest.txt exists (the
- * KiRunNtapiTests "the image decides" pattern) — the run.sh fatinterop leg's
+ * ntapi-sweep "the image decides" pattern) — the run.sh fatinterop leg's
  * image; silently absent everywhere else.
  */
 #include "tests/kmt/kmt.h"
@@ -82,7 +82,7 @@ static void init_attr(OBJECT_ATTRIBUTES *attr, UNICODE_STRING *name, const WCHAR
 }
 
 /* Build "\??\C:\<base>\<relPath>" with '/' -> '\'; relPath may be empty.
- * Returns a static buffer (sequential tests, the KiRunNtapiTests shape). */
+ * Returns a static buffer (sequential tests, the ntapi-sweep shape). */
 static const WCHAR *fat_build_path(const char *base, const WCHAR *rel, USHORT relChars)
 {
     static WCHAR path[FAT_INTEROP_PATH_CHARS + 32];

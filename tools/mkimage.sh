@@ -16,7 +16,8 @@
 # /<dest> (intermediate directories created) WITHOUT registering a Limine
 # module — the same ESP partition is the kernel's FAT32 boot volume (\??\C:),
 # so this is how the Wine userland (windows/system32/ntdll.dll, the NLS
-# files) and hello.exe reach C:\ (kernel/init/main.c KiRunWineHello).
+# files) and hello.exe reach C:\ (the session manager's M8 chain,
+# user/smss/session.c).
 set -euo pipefail
 
 KERNEL="${1:?usage: mkimage.sh <kernel-elf> <out-hdd> [module.bin=cmdline ...] [win:src=dest ...]}"

@@ -104,7 +104,7 @@ Reason:     Reusing Wine's 30-years-tuned GUI state code without transplanting i
 Scope:      user/wine/wineserver/main.c (the process), user/wine/server/
             {transport.h,call.c,srv_glue.c,shim.c} (the wire and the state
             machine's environment), the WINESERVER_LITE link in the Makefile,
-            and KiStartWineserverLite in kernel/init/main.c, which starts it.
+            and smss_start_wineserver in user/smss/launch.c, which starts it.
             The exe is a NEW LINK over the same objects win32u.dll uses, never
             a stripped copy of server/ (docs/06). The transport itself is not
             part of this entry -- NT carries win32k state in sections shared

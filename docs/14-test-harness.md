@@ -111,8 +111,9 @@ tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firs
 
 Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image
 carries the Wine PE userland (`windows/system32`: ntdll/kernel32/kernelbase + NLS tables)
-plus every test under `C:\ntapi\`; the kernel sweep (`KiRunNtapiTests`) runs whatever is
-there — **the image, not a kernel-side list, decides what runs** — and ends with
+plus every test under `C:\ntapi\` and `smss.exe`; the session manager's sweep
+(`user/smss/session.c`) runs whatever is there — **the image, not a baked-in list,
+decides what runs** — and ends with
 `[KTEST] ntapi done tests=<n> failures=<n>`, the boot's stop condition. Both modes collect
 `[KTEST] … PASS/FAIL` lines and exit non-zero if any test fails.
 
@@ -141,8 +142,8 @@ tests/
 ```
 
 The winetest gate's binaries are NOT ntapi tests — they are Wine's own `dlls/*/tests`
-objects linked standalone (Makefile `wtests`, glue in `user/wtest/`), swept by
-`KiRunWineTests` from `C:\wtests\manifest.txt` with a console. The manifest is curated:
+objects linked standalone (Makefile `wtests`, glue in `user/wtest/`), swept by the
+session manager (`user/smss/session.c`) from `C:\wtests\manifest.txt` with a console. The manifest is curated:
 a pair joins only when it exits 0 on BOTH runners (`docs/03` "M10 winetest notes").
 
 (`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
