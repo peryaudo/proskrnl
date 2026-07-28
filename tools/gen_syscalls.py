@@ -213,6 +213,7 @@ IMPLEMENTED = [
     "NtSetIoCompletionEx",
     "NtQueryDirectoryObject",
     "NtCancelSynchronousIoFile",
+    "NtNotifyChangeDirectoryFile",
 ]
 
 

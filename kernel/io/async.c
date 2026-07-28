@@ -127,6 +127,9 @@ static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK tar
         {
             cancelled = file->device->ops->CancelPending(file, issuer, targetIosb);
         }
+        /* CUI-5: parked directory watches are kernel-owned — sweep them
+         * here rather than through a second per-FS cancel path (Art. 11). */
+        cancelled += IopCancelDirectoryWatches(file, issuer, targetIosb);
     }
     /* Thread-scoped (issuer != 0): success regardless; by-IOSB/all: the
      * count decides. */

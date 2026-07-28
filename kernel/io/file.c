@@ -48,6 +48,9 @@ static void IopCloseFileObject(PVOID body)
     {
         return;
     }
+    /* CUI-5: a watch parked on this handle dies with it (event signalled,
+     * IOSB untouched — the cancel shape). */
+    IopCancelDirectoryWatches(file, 0, 0);
     IopReleaseAllLocks(file->fcb, file);
     if (file->shareCounted)
     {

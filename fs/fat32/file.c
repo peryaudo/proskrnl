@@ -247,6 +247,17 @@ static PFAT_FCB FatFcbOf(PFILE_OBJECT file)
     return (PFAT_FCB)file->fsContext;
 }
 
+/* CUI-5 change notification (bodies below, past the vfs ops they hook). */
+static NTSTATUS FatBuildFcbPath(PFAT_FCB target, WCHAR *buffer, ULONG capacity, ULONG *lengthOut);
+static void FatReportChange(PIO_DEVICE device, PFAT_FCB parent, const UNICODE_STRING *name,
+                            ULONG filterBit, ULONG action);
+
+/* The name-class filter bit for an entry (files vs directories). */
+static ULONG FatNameFilterBit(PFAT_FCB fcb)
+{
+    return fcb->isDirectory ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME;
+}
+
 /* Map FILE_ATTRIBUTE_* to the FAT attribute byte (files get ARCHIVE, the
  * classic FAT dirty-bit convention). */
 static UCHAR FatAttributesFromNt(ULONG ntAttributes, BOOLEAN directory)
@@ -509,6 +520,11 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
         *information = created ? FILE_CREATED : FILE_OPENED;
     }
 
+    if (created)
+    {
+        FatReportChange(device, fcb->parent, &fcb->longName, FatNameFilterBit(fcb),
+                        FILE_ACTION_ADDED);
+    }
     file->fsContext = fcb;
     file->fcb = &fcb->header;
     file->isDirectory = fcb->isDirectory;
@@ -554,6 +570,8 @@ static void FatVfsCleanup(PFILE_OBJECT file)
         return; /* live mapped sections pin the file */
     }
     FatDeleteEntry(fcb);
+    FatReportChange(file->device, fcb->parent, &fcb->longName, FatNameFilterBit(fcb),
+                    FILE_ACTION_REMOVED);
     fcb->header.deletePending = FALSE;
     fcb->unlinkPending = FALSE;
     MiResizePageCache(&fcb->cache, 0);
@@ -591,6 +609,12 @@ static NTSTATUS FatVfsWritebackRange(PFILE_OBJECT file, uint64_t offset, uint64_
     {
         status = FatFlushFcbMetadata(fcb);
     }
+    if (NT_SUCCESS(status) && !fcb->isRoot)
+    {
+        FatReportChange(file->device, fcb->parent, &fcb->longName,
+                        FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE,
+                        FILE_ACTION_MODIFIED);
+    }
     return status;
 }
 
@@ -601,7 +625,14 @@ static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
     {
         return STATUS_INVALID_DEVICE_REQUEST;
     }
-    return FatSetFileSize(fcb, endOfFile);
+    NTSTATUS status = FatSetFileSize(fcb, endOfFile);
+    if (NT_SUCCESS(status))
+    {
+        FatReportChange(file->device, fcb->parent, &fcb->longName,
+                        FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                        FILE_ACTION_MODIFIED);
+    }
+    return status;
 }
 
 static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
@@ -644,7 +675,13 @@ static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *
         USHORT ignoredTime;
         FatNtTimeToFatTime(basic->LastAccessTime, &fcb->accessDate, &ignoredTime);
     }
-    return FatFlushFcbMetadata(fcb);
+    NTSTATUS status = FatFlushFcbMetadata(fcb);
+    if (NT_SUCCESS(status) && !fcb->isRoot)
+    {
+        FatReportChange(file->device, fcb->parent, &fcb->longName, FILE_NOTIFY_CHANGE_ATTRIBUTES,
+                        FILE_ACTION_MODIFIED);
+    }
+    return status;
 }
 
 static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
@@ -787,7 +824,39 @@ static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const U
         return status;
     }
 
+    /* Capture the pre-move identity for the change reports (the rename
+     * rewrites the FCB in place; the old parent could otherwise die with
+     * its pin inside FatRenameEntry). */
+    PFAT_FCB oldParent = fcb->parent;
+    FatReferenceFcb(oldParent);
+    WCHAR oldName[260];
+    ULONG oldNameBytes = fcb->longName.Length <= sizeof(oldName) ? fcb->longName.Length : 0;
+    memcpy(oldName, fcb->longName.Buffer, oldNameBytes);
+
     status = FatRenameEntry(fcb, newParent, &leaf);
+    if (NT_SUCCESS(status) && IoDirectoryWatchesActive())
+    {
+        UNICODE_STRING oldNameString;
+        oldNameString.Buffer = oldName;
+        oldNameString.Length = (USHORT)oldNameBytes;
+        oldNameString.MaximumLength = (USHORT)oldNameBytes;
+        ULONG bit = FatNameFilterBit(fcb);
+        if (oldParent == newParent)
+        {
+            /* The pinned pair for an in-place rename; one-shot watches see
+             * the OLD_NAME record. */
+            FatReportChange(file->device, oldParent, &oldNameString, bit,
+                            FILE_ACTION_RENAMED_OLD_NAME);
+            FatReportChange(file->device, newParent, &fcb->longName, bit,
+                            FILE_ACTION_RENAMED_NEW_NAME);
+        }
+        else
+        {
+            FatReportChange(file->device, oldParent, &oldNameString, bit, FILE_ACTION_REMOVED);
+            FatReportChange(file->device, newParent, &fcb->longName, bit, FILE_ACTION_ADDED);
+        }
+    }
+    FatDereferenceFcb(oldParent);
     FatDereferenceFcb(newParent);
     return status;
 }
@@ -802,12 +871,12 @@ static NTSTATUS FatVfsReadDirectory(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENT
     return FatReadDirectoryEntry(fcb, cursor, entry);
 }
 
-static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
+static NTSTATUS FatBuildFcbPath(PFAT_FCB target, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
 {
     /* Reconstruct "\a\b\c" by walking the parent chain. */
     PFAT_FCB chain[64];
     ULONG depth = 0;
-    for (PFAT_FCB fcb = FatFcbOf(file); fcb != 0 && !fcb->isRoot; fcb = fcb->parent)
+    for (PFAT_FCB fcb = target; fcb != 0 && !fcb->isRoot; fcb = fcb->parent)
     {
         if (depth == 64)
         {
@@ -853,6 +922,34 @@ static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity
         written = sizeof(WCHAR);
     }
     return written <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
+}
+
+static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
+{
+    return FatBuildFcbPath(FatFcbOf(file), buffer, capacity, lengthOut);
+}
+
+/* CUI-5: report one directory change to the kernel's watch list (cheap
+ * when nothing is armed). `parent` is the mutated directory's FCB. */
+static void FatReportChange(PIO_DEVICE device, PFAT_FCB parent, const UNICODE_STRING *name,
+                            ULONG filterBit, ULONG action)
+{
+    if (!IoDirectoryWatchesActive())
+    {
+        return;
+    }
+    WCHAR path[260];
+    ULONG lengthBytes = 0;
+    if (!NT_SUCCESS(FatBuildFcbPath(parent, path, sizeof(path), &lengthBytes)) ||
+        lengthBytes > sizeof(path))
+    {
+        return;
+    }
+    UNICODE_STRING parentPath;
+    parentPath.Buffer = path;
+    parentPath.Length = (USHORT)lengthBytes;
+    parentPath.MaximumLength = (USHORT)lengthBytes;
+    IoReportDirectoryChange(device, &parentPath, name, filterBit, action);
 }
 
 static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
