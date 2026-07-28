@@ -165,6 +165,8 @@
 #define NTSYS_NtQueryEaFile 0x00c3
 #define NTSYS_NtSetEaFile 0x00e8
 #define NTSYS_NtSetVolumeInformationFile 0x00f7
+#define NTSYS_NtOpenIoCompletion 0x00b4
+#define NTSYS_NtSetIoCompletionEx 0x00f0
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

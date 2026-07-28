@@ -111,6 +111,41 @@ NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTAT
     return status;
 }
 
+/* CUI-5: open-by-name over the one Ob open engine (Art. 11), the
+ * NtOpenDirectoryObject shape. Pinned by sem_port/ports.c. */
+NTSTATUS NtOpenIoCompletion(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
+{
+    if (handle == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    return ObpOpenObjectByName(&IoCompletionType, attr, access, handle);
+}
+
+/* CUI-5: the reserve-object post. The pinned Wine's server refuses a NULL
+ * reserve handle up front and resolves a non-NULL one before posting
+ * (server/completion.c add_completion); reserve objects themselves are
+ * permanently out of scope (docs/16 — NtAllocateReserveObject has no baked
+ * consumer), so the resolution here is existence, not type. Pinned by
+ * sem_port/ports.c. */
+NTSTATUS NtSetIoCompletionEx(HANDLE handle, HANDLE reserveHandle, ULONG_PTR key, ULONG_PTR value,
+                             NTSTATUS packetStatus, SIZE_T information)
+{
+    if (reserveHandle == 0)
+    {
+        return STATUS_INVALID_HANDLE;
+    }
+    PVOID reserveBody;
+    NTSTATUS status =
+        ObReferenceObjectByHandle(reserveHandle, 0, 0, ExGetPreviousMode(), &reserveBody, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ObDereferenceObject(reserveBody);
+    return NtSetIoCompletion(handle, key, value, packetStatus, information);
+}
+
 /* Wait for one packet (bounded by `timeout`), pop it FIFO. */
 static NTSTATUS IopRemoveOnePacket(PIO_COMPLETION port, PLARGE_INTEGER timeout,
                                    IOP_COMPLETION_PACKET *packetOut)
