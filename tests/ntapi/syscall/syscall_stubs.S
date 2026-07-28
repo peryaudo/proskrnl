@@ -1802,6 +1802,16 @@ NtIsProcessInJob:
     syscall
     ret
 
+    .global NtDeleteFile
+NtDeleteFile:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x93, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

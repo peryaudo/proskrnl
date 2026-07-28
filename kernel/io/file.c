@@ -441,6 +441,29 @@ NTSTATUS NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
                          options);
 }
 
+/* CUI-5: the by-name delete. The pinned Wine implements it as exactly this
+ * open (GENERIC_READ|GENERIC_WRITE|DELETE, full sharing, FILE_OPEN,
+ * FILE_DELETE_ON_CLOSE) followed by a close (dlls/ntdll/unix/file.c
+ * NtDeleteFile), so proskrnl composes the same primitives through the one
+ * create engine (Art. 11). Pinned by sem_file/delete_file.c. */
+NTSTATUS NtDeleteFile(POBJECT_ATTRIBUTES attributes)
+{
+    HANDLE handle;
+    IO_STATUS_BLOCK iosb;
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* the handle is kernel-internal */
+    NTSTATUS status = IopCreateFile(
+        &handle, GENERIC_READ | GENERIC_WRITE | DELETE, attributes, &iosb, 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_DELETE_ON_CLOSE);
+    if (NT_SUCCESS(status))
+    {
+        NtClose(handle);
+    }
+    thread->previousMode = saved;
+    return status;
+}
+
 NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMATION *info)
 {
     if (info == 0)
