@@ -323,8 +323,10 @@ static NTSTATUS IopCheckSetEofAccess(PFILE_OBJECT file, uint64_t target)
  * shorter than the full struct is STATUS_INVALID_PARAMETER_3; unknown flag
  * bits are ignored (the oracle FIXMEs and continues); a target on another
  * device is STATUS_NOT_SAME_DEVICE (MoveFileExW keys its copy+delete
- * fallback on it). */
-static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, ULONG length,
+ * fallback on it). The ORDER is wine's too (fuzzer-found, pinned): the
+ * target path resolves before the handle is ever referenced, so a bad
+ * handle with a bad target reports the path error. */
+static NTSTATUS IopSetRenameInformation(HANDLE handle, const void *buffer, ULONG length,
                                         FILE_INFORMATION_CLASS informationClass)
 {
     if (length < sizeof(FILE_RENAME_INFORMATION))
@@ -339,6 +341,7 @@ static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, U
     memcpy(info, buffer, length);
 
     NTSTATUS status;
+    PFILE_OBJECT file = 0;
     PFILE_OBJECT relativeTo = 0;
     PIO_DEVICE parsedDevice = 0;
     PWSTR reparseBuffer = 0;
@@ -369,6 +372,25 @@ static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, U
         /* The BOOLEAN arm only — the Flags arm's upper bytes are heap
          * garbage on every real kernelbase call. */
         flags = info->ReplaceIfExists ? FILE_RENAME_REPLACE_IF_EXISTS : 0;
+    }
+
+    /* Wine resolves the caller's whole target path before referencing the
+     * rename handle (get_nt_and_unix_names with FILE_OPEN_IF: an existing
+     * target or a merely missing leaf passes; a dead intermediate directory
+     * is the answer). Fuzzer-found; pinned by sem_file/rename.c. */
+    {
+        OBJECT_ATTRIBUTES probeAttributes;
+        probeAttributes.Length = sizeof(probeAttributes);
+        probeAttributes.RootDirectory = info->RootDirectory;
+        probeAttributes.ObjectName = &name;
+        probeAttributes.Attributes = OBJ_CASE_INSENSITIVE;
+        probeAttributes.SecurityDescriptor = 0;
+        probeAttributes.SecurityQualityOfService = 0;
+        status = IopProbeTargetPath(&probeAttributes);
+        if (!NT_SUCCESS(status))
+        {
+            goto out;
+        }
     }
 
     /* Resolve the target to a device + volume-relative path, mirroring
@@ -416,6 +438,13 @@ static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, U
         targetDevice = parsedDevice;
     }
 
+    /* Only now the handle (no specific access — server/fd.c
+     * set_fd_name_info takes it with 0). */
+    status = IopReferenceFileByHandle(handle, 0, &file);
+    if (!NT_SUCCESS(status))
+    {
+        goto out;
+    }
     if (targetDevice != file->device)
     {
         status = STATUS_NOT_SAME_DEVICE;
@@ -435,6 +464,10 @@ static NTSTATUS IopSetRenameInformation(PFILE_OBJECT file, const void *buffer, U
                  : STATUS_INVALID_DEVICE_REQUEST;
 
 out:
+    if (file != 0)
+    {
+        ObDereferenceObject(file);
+    }
     if (relativeTo != 0)
     {
         ObDereferenceObject(relativeTo);
@@ -468,6 +501,21 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         return status;
     }
 
+    /* CUI-5 rename/link dispatch before the common handle reference: the
+     * pinned Wine resolves the target path first and only the server call
+     * touches the handle (fuzzer-found order, pinned by rename.c). */
+    if (informationClass == FileRenameInformation || informationClass == FileRenameInformationEx ||
+        informationClass == FileLinkInformation)
+    {
+        status = IopSetRenameInformation(handle, buffer, length, informationClass);
+        if (NT_SUCCESS(status))
+        {
+            iosb->Status = status;
+            iosb->Information = 0;
+        }
+        return status;
+    }
+
     ULONG needed;
     ACCESS_MASK requiredAccess;
     switch (informationClass)
@@ -496,16 +544,6 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     case FilePipeInformation:
         needed = sizeof(FILE_PIPE_INFORMATION); /* M9: read/completion mode */
         requiredAccess = 0;
-        break;
-    case FileRenameInformation:
-    case FileRenameInformationEx:
-    case FileLinkInformation:
-        needed = 0;         /* class-specific check: a short buffer is
-                             * STATUS_INVALID_PARAMETER_3 (the pinned Wine),
-                             * not INFO_LENGTH_MISMATCH */
-        requiredAccess = 0; /* the pinned Wine takes the handle with no
-                             * specific access (server/fd.c
-                             * set_fd_name_info: get_handle_fd_obj(..., 0)) */
         break;
     default:
         return STATUS_NOT_IMPLEMENTED; /* unbuilt class, as in query above */
@@ -609,11 +647,6 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         status = file->device->ops->SetPipeInfo(file, &pipeInfo);
         break;
     }
-    case FileRenameInformation:
-    case FileRenameInformationEx:
-    case FileLinkInformation:
-        status = IopSetRenameInformation(file, buffer, length, informationClass);
-        break;
     default:
         break;
     }
@@ -1258,16 +1291,13 @@ NTSTATUS NtQueryEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG
 
 NTSTATUS NtSetEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length)
 {
+    /* Unconditional, never touching the handle — the pinned Wine's arm is
+     * exactly this stub (fuzzer-found when a bad-handle call answered
+     * INVALID_HANDLE here; pinned by ea_volume.c). */
+    (void)handle;
     (void)iosb;
     (void)buffer;
     (void)length;
-    PFILE_OBJECT file;
-    NTSTATUS status = IopReferenceFileByHandle(handle, 0, &file);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    ObDereferenceObject(file);
     return STATUS_ACCESS_DENIED;
 }
 
