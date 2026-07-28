@@ -211,6 +211,7 @@ IMPLEMENTED = [
     "NtSetVolumeInformationFile",
     "NtOpenIoCompletion",
     "NtSetIoCompletionEx",
+    "NtQueryDirectoryObject",
 ]
 
 

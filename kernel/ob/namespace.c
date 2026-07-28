@@ -13,7 +13,8 @@
  * STATUS_OBJECT_NAME_EXISTS, wrong final type = STATUS_OBJECT_TYPE_MISMATCH.
  */
 #include "kernel/ob/ob.h"
-#include "kernel/ke/ke.h" /* KiVerifyWaitList (the consistency sweep) */
+#include "kernel/ke/ke.h"           /* KiVerifyWaitList (the consistency sweep) */
+#include "kernel/syscall/uaccess.h" /* CUI-5: NtQueryDirectoryObject's mode */
 #include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -727,6 +728,144 @@ NTSTATUS NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, const OBJECT_
         return STATUS_ACCESS_VIOLATION;
     }
     return ObpOpenObjectByName(&ObpDirectoryType, attr, access, handle);
+}
+
+/* CUI-5: NtQueryDirectoryObject — kernelbase's volume enumeration
+ * (QueryDosDeviceW list-all, GetLogicalDrives) loops single-entry calls
+ * over \?? until a non-zero status. The protocol is the pinned Wine's
+ * (dlls/ntdll/unix/sync.c + server/directory.c get_directory_entries),
+ * pinned by sem_ob/query_directory.c: entries carry name + type name as
+ * NUL-terminated UNICODE_STRINGs pointing into the caller's buffer (string
+ * pool after the entry array), a zeroed terminator entry follows, and the
+ * kernel owns the cursor. */
+NTSTATUS NtQueryDirectoryObject(HANDLE handle, PDIRECTORY_BASIC_INFORMATION buffer, ULONG size,
+                                BOOLEAN singleEntry, BOOLEAN restartScan, PULONG context,
+                                PULONG returnedSize)
+{
+    if (buffer == 0 || context == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    ULONG index = restartScan ? 0 : *context;
+
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(handle, DIRECTORY_QUERY, &ObpDirectoryType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    POBP_DIRECTORY directory = body;
+
+    /* First pass: how many entries from `index` fit (wine's sizing — each
+     * entry costs its struct + both strings + both NULs; one struct is
+     * reserved for the terminator). totalLength tracks the strings of every
+     * entry CONSIDERED, feeding the BUFFER_TOO_SMALL hint. */
+    ULONG maxCount = singleEntry ? 1 : 0xFFFFFFFFu;
+    ULONG usedCount = 0;
+    ULONG usedSize = sizeof(DIRECTORY_BASIC_INFORMATION);
+    ULONG totalLength = 0;
+    BOOLEAN more = FALSE;
+    BOOLEAN any = FALSE;
+
+    ULONG position = 0;
+    for (PLIST_ENTRY entry = directory->entryListHead.Flink;
+         entry != &directory->entryListHead && usedCount < maxCount; entry = entry->Flink)
+    {
+        if (position++ < index)
+        {
+            continue;
+        }
+        any = TRUE;
+        POBJECT_HEADER header = CONTAINING_RECORD(entry, OBJECT_HEADER, directoryEntry);
+        ULONG nameBytes = header->name.Length;
+        ULONG typeBytes = 0;
+        for (const char *c = header->type->name; *c != '\0'; c++)
+        {
+            typeBytes += sizeof(WCHAR);
+        }
+        totalLength += nameBytes + typeBytes;
+        ULONG entrySize =
+            sizeof(DIRECTORY_BASIC_INFORMATION) + nameBytes + typeBytes + 2 * sizeof(WCHAR);
+        if (usedSize + entrySize > size)
+        {
+            more = TRUE;
+            break;
+        }
+        usedCount++;
+        usedSize += entrySize;
+    }
+    /* Entries beyond the fitted window also mean MORE_ENTRIES on a
+     * multi-entry sweep only when one failed to fit above — a window that
+     * ends exactly at the directory's end is SUCCESS (wine's server stops
+     * iterating without error). */
+
+    if (!any && !more)
+    {
+        ObDereferenceObject(body);
+        if (returnedSize != 0)
+        {
+            *returnedSize = sizeof(DIRECTORY_BASIC_INFORMATION);
+        }
+        return STATUS_NO_MORE_ENTRIES;
+    }
+    if (singleEntry && usedCount == 0)
+    {
+        ObDereferenceObject(body);
+        if (returnedSize != 0)
+        {
+            *returnedSize =
+                2 * sizeof(DIRECTORY_BASIC_INFORMATION) + 2 * sizeof(WCHAR) + totalLength;
+        }
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    /* Second pass: emit the fitted entries + the string pool. */
+    ULONG strpoolHead = sizeof(DIRECTORY_BASIC_INFORMATION) * (usedCount + 1);
+    ULONG emitted = 0;
+    position = 0;
+    for (PLIST_ENTRY entry = directory->entryListHead.Flink;
+         entry != &directory->entryListHead && emitted < usedCount; entry = entry->Flink)
+    {
+        if (position++ < index)
+        {
+            continue;
+        }
+        POBJECT_HEADER header = CONTAINING_RECORD(entry, OBJECT_HEADER, directoryEntry);
+        PWCHAR pool = (PWCHAR)((char *)buffer + strpoolHead);
+        buffer[emitted].ObjectName.Buffer = pool;
+        buffer[emitted].ObjectName.Length = header->name.Length;
+        buffer[emitted].ObjectName.MaximumLength = header->name.Length + sizeof(WCHAR);
+        memcpy(pool, header->name.Buffer, header->name.Length);
+        pool[header->name.Length / sizeof(WCHAR)] = 0;
+        strpoolHead += header->name.Length + sizeof(WCHAR);
+
+        pool = (PWCHAR)((char *)buffer + strpoolHead);
+        ULONG typeUnits = 0;
+        for (const char *c = header->type->name; *c != '\0'; c++)
+        {
+            pool[typeUnits++] = (WCHAR)*c;
+        }
+        pool[typeUnits] = 0;
+        buffer[emitted].ObjectTypeName.Buffer = pool;
+        buffer[emitted].ObjectTypeName.Length = (USHORT)(typeUnits * sizeof(WCHAR));
+        buffer[emitted].ObjectTypeName.MaximumLength =
+            (USHORT)(typeUnits * sizeof(WCHAR) + sizeof(WCHAR));
+        strpoolHead += typeUnits * sizeof(WCHAR) + sizeof(WCHAR);
+        emitted++;
+    }
+    if (size >= sizeof(DIRECTORY_BASIC_INFORMATION))
+    {
+        memset(&buffer[usedCount], 0, sizeof(buffer[usedCount]));
+    }
+
+    ObDereferenceObject(body);
+    *context = index + usedCount;
+    if (returnedSize != 0)
+    {
+        *returnedSize = strpoolHead;
+    }
+    return more ? STATUS_MORE_ENTRIES : STATUS_SUCCESS;
 }
 
 NTSTATUS NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
