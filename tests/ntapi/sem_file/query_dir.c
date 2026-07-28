@@ -205,9 +205,9 @@ START_TEST(query_dir)
     {
         UNICODE_STRING mask;
         init_ustr(&mask, W("*.txt"));
-        status = open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE,
-                           &iosb);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
         ok(status == STATUS_SUCCESS, "mask handle 1 -> %08lx", (unsigned long)status);
         memset(&set, 0, sizeof(set));
         enumerate(sub2, &set, &mask, TRUE);
@@ -220,9 +220,9 @@ START_TEST(query_dir)
         /* An exact-name mask finds exactly that file. */
         UNICODE_STRING mask;
         init_ustr(&mask, W("gamma.dat"));
-        status = open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE,
-                           &iosb);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
         ok(status == STATUS_SUCCESS, "mask handle 2 -> %08lx", (unsigned long)status);
         memset(&set, 0, sizeof(set));
         enumerate(sub2, &set, &mask, TRUE);
@@ -234,9 +234,9 @@ START_TEST(query_dir)
         unsigned char buffer[512];
         UNICODE_STRING mask;
         init_ustr(&mask, W("zzz.*"));
-        status = open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE,
-                           &iosb);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
         ok(status == STATUS_SUCCESS, "mask handle 3 -> %08lx", (unsigned long)status);
         poison_iosb(&iosb);
         status = NtQueryDirectoryFile(sub2, NULL, NULL, NULL, &iosb, buffer, sizeof(buffer),
@@ -247,14 +247,105 @@ START_TEST(query_dir)
         NtClose(sub2);
     }
 
+    /* --- the DOS-special mask forms every FindFirstFile emits. A PE-side
+     * wildcard never reaches NtQueryDirectoryFile verbatim: kernelbase's
+     * fixup_mask (third_party/wine/dlls/kernelbase/file.c) rewrites a '.'
+     * before '*'/'?' to DOS_DOT '"', every '?' to DOS_QM '>', and a
+     * trailing "*." to DOS_STAR '<' before the query. cmd.exe's bare-name
+     * PATH search is the everyday caller: typing `winemine` searches each
+     * PATH entry with FindFirstFile("winemine.*"), i.e. mask winemine"*.
+     * Semantics per FsRtlIsNameInExpression (MS docs): DOS_DOT matches a
+     * '.' or nothing at the end of the name; DOS_QM matches one character
+     * but collapses at a '.' or the end; DOS_STAR matches any run that
+     * stops at or before the name's final '.'. NT quirk the oracle keeps:
+     * ".." is matched as if it were ".". Fresh handle per mask (binding,
+     * as above). ------------------------------------------------------- */
+    {
+        /* alpha"* (from "alpha.*"): the extension-bearing name. */
+        UNICODE_STRING mask;
+        init_ustr(&mask, W("alpha\"*"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "dos-dot handle -> %08lx", (unsigned long)status);
+        memset(&set, 0, sizeof(set));
+        enumerate(sub2, &set, &mask, TRUE);
+        NtClose(sub2);
+        ok(set.count == 1 && set_has(&set, W("alpha.txt")), "dos-dot finds alpha.txt (count %u)",
+           set.count);
+    }
+    {
+        /* nested"* (from "nested.*"): DOS_DOT matches ZERO characters at
+         * the end, so an extensionless name is found — the exact query
+         * cmd's PATH search makes for `nested`. */
+        UNICODE_STRING mask;
+        init_ustr(&mask, W("nested\"*"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "dos-dot-empty handle -> %08lx", (unsigned long)status);
+        memset(&set, 0, sizeof(set));
+        enumerate(sub2, &set, &mask, TRUE);
+        NtClose(sub2);
+        ok(set.count == 1 && set_has(&set, W("nested")), "dos-dot matches no-extension (count %u)",
+           set.count);
+    }
+    {
+        /* *"* (from "*.*"): matches every name, dotted or not, including
+         * "." and "..". */
+        UNICODE_STRING mask;
+        init_ustr(&mask, W("*\"*"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "star-dot-star handle -> %08lx", (unsigned long)status);
+        memset(&set, 0, sizeof(set));
+        enumerate(sub2, &set, &mask, TRUE);
+        NtClose(sub2);
+        ok(set.count == 7, "star-dot-star matches everything (count %u)", set.count);
+    }
+    {
+        /* >>>>>.txt (from "?????.txt"): DOS_QM collapses at the '.', so
+         * four-letter beta matches alongside five-letter alpha — the
+         * behavior plain '?' does not have. */
+        UNICODE_STRING mask;
+        init_ustr(&mask, W(">>>>>.txt"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "dos-qm handle -> %08lx", (unsigned long)status);
+        memset(&set, 0, sizeof(set));
+        enumerate(sub2, &set, &mask, TRUE);
+        NtClose(sub2);
+        ok(set_has(&set, W("alpha.txt")) && set_has(&set, W("beta.txt")),
+           "dos-qm collapses at the dot");
+        ok(set.count == 2, "dos-qm count %u", set.count);
+    }
+    {
+        /* < (from "*."): extensionless names only — nested, ".", "..". */
+        UNICODE_STRING mask;
+        init_ustr(&mask, W("<"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "dos-star handle -> %08lx", (unsigned long)status);
+        memset(&set, 0, sizeof(set));
+        enumerate(sub2, &set, &mask, TRUE);
+        NtClose(sub2);
+        ok(set_has(&set, W("nested")) && set_has(&set, W(".")) && set_has(&set, W("..")),
+           "dos-star keeps the extensionless names");
+        ok(!set_has(&set, W("alpha.txt")), "dos-star drops dotted names");
+        ok(set.count == 3, "dos-star count %u", set.count);
+    }
+
     /* --- FileBothDirectoryInformation carries sizes. ------------------------ */
     {
         unsigned char buffer[2048];
         UNICODE_STRING mask;
         init_ustr(&mask, W("alpha.txt"));
-        status = open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE,
-                           &iosb);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
         ok(status == STATUS_SUCCESS, "mask handle 4 -> %08lx", (unsigned long)status);
         poison_iosb(&iosb);
         status = NtQueryDirectoryFile(sub2, NULL, NULL, NULL, &iosb, buffer, sizeof(buffer),
@@ -273,9 +364,9 @@ START_TEST(query_dir)
     /* --- FileNamesInformation is the thin class. ---------------------------- */
     {
         unsigned char buffer[2048];
-        status = open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE,
-                           &iosb);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
         ok(status == STATUS_SUCCESS, "names handle -> %08lx", (unsigned long)status);
         poison_iosb(&iosb);
         status = NtQueryDirectoryFile(sub2, NULL, NULL, NULL, &iosb, buffer, sizeof(buffer),
