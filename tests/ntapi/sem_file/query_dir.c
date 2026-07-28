@@ -361,6 +361,78 @@ START_TEST(query_dir)
         }
     }
 
+    /* --- CUI-5: FileIdBothDirectoryInformation carries the file id. --------- */
+    /* kernelbase's GetFileInformationByHandleEx(FileIdBothDirectoryInfo)
+     * issues exactly this (single_entry FALSE, no mask). The id must agree
+     * with FileInternalInformation.IndexNumber — the same identity
+     * sem_file/internal_info pins (pinned Wine: both are st_ino). */
+    {
+        unsigned char buffer[2048];
+        UNICODE_STRING mask;
+        init_ustr(&mask, W("alpha.txt"));
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "id-both handle -> %08lx", (unsigned long)status);
+        poison_iosb(&iosb);
+        status = NtQueryDirectoryFile(sub2, NULL, NULL, NULL, &iosb, buffer, sizeof(buffer),
+                                      FileIdBothDirectoryInformation, TRUE, &mask, TRUE);
+        ok(status == STATUS_SUCCESS, "id-both query -> %08lx", (unsigned long)status);
+        if (status == STATUS_SUCCESS)
+        {
+            FILE_ID_BOTH_DIR_INFORMATION *entry = (FILE_ID_BOTH_DIR_INFORMATION *)buffer;
+            ok(entry->EndOfFile.QuadPart == 1, "id-both EOF %ld", (long)entry->EndOfFile.QuadPart);
+            ok((entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0, "id-both attrs %lx",
+               (unsigned long)entry->FileAttributes);
+            ok(entry->FileNameLength == 9 * sizeof(WCHAR), "id-both name length %lu",
+               (unsigned long)entry->FileNameLength);
+
+            FILE_INTERNAL_INFORMATION internal;
+            memset(&internal, 0xcc, sizeof(internal));
+            status = open_file(&h, dir, W("pop\\alpha.txt"), FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+            ok(status == STATUS_SUCCESS, "id-both open child -> %08lx", (unsigned long)status);
+            if (NT_SUCCESS(status))
+            {
+                status = NtQueryInformationFile(h, &iosb, &internal, sizeof(internal),
+                                                FileInternalInformation);
+                ok(status == STATUS_SUCCESS, "id-both internal -> %08lx", (unsigned long)status);
+                ok(entry->FileId.QuadPart == internal.IndexNumber.QuadPart,
+                   "id-both FileId %llx vs IndexNumber %llx",
+                   (unsigned long long)entry->FileId.QuadPart,
+                   (unsigned long long)internal.IndexNumber.QuadPart);
+                NtClose(h);
+            }
+        }
+
+        /* The multi-entry chain walks like the classic classes (fresh
+         * handle: the mask above bound to sub2). */
+        NtClose(sub2);
+        status =
+            open_file(&sub2, dir, W("pop"), FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, &iosb);
+        ok(status == STATUS_SUCCESS, "id-both chain handle -> %08lx", (unsigned long)status);
+        poison_iosb(&iosb);
+        status = NtQueryDirectoryFile(sub2, NULL, NULL, NULL, &iosb, buffer, sizeof(buffer),
+                                      FileIdBothDirectoryInformation, FALSE, NULL, TRUE);
+        ok(status == STATUS_SUCCESS, "id-both chain query -> %08lx", (unsigned long)status);
+        if (status == STATUS_SUCCESS)
+        {
+            unsigned offset = 0, count = 0;
+            for (;;)
+            {
+                FILE_ID_BOTH_DIR_INFORMATION *entry =
+                    (FILE_ID_BOTH_DIR_INFORMATION *)(buffer + offset);
+                count++;
+                if (entry->NextEntryOffset == 0)
+                    break;
+                offset += entry->NextEntryOffset;
+            }
+            ok(count == 7, "id-both count %u", count);
+        }
+        NtClose(sub2);
+    }
+
     /* --- FileNamesInformation is the thin class. ---------------------------- */
     {
         unsigned char buffer[2048];

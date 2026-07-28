@@ -153,6 +153,74 @@ START_TEST(info_classes)
        (long)all.all.PositionInformation.CurrentByteOffset.QuadPart);
     ok(all.all.NameInformation.FileNameLength != 0, "all: name filled");
 
+    /* --- CUI-5: FileNetworkOpenInformation by handle ----------------------- */
+    /* kernelbase's GetFileInformationByHandleEx has no arm for it, but the
+     * by-name sibling (NtQueryFullAttributesFile, sem_file/full_attributes)
+     * fills the same struct — the by-handle class must agree with the
+     * classes it aggregates (pinned Wine fill_file_info). */
+    {
+        FILE_NETWORK_OPEN_INFORMATION net;
+        poison_iosb(&iosb);
+        memset(&net, 0xcc, sizeof(net));
+        status = NtQueryInformationFile(h, &iosb, &net, sizeof(net), FileNetworkOpenInformation);
+        ok(status == STATUS_SUCCESS, "query network-open -> %08lx", (unsigned long)status);
+        ok(iosb.Information == sizeof(net), "network-open Information %lu",
+           (unsigned long)iosb.Information);
+        ok(net.EndOfFile.QuadPart == 10, "network-open EOF %ld", (long)net.EndOfFile.QuadPart);
+        ok(net.AllocationSize.QuadPart >= 10, "network-open AllocationSize %ld",
+           (long)net.AllocationSize.QuadPart);
+        ok((net.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0, "network-open attributes %lx",
+           (unsigned long)net.FileAttributes);
+        memset(&basic, 0, sizeof(basic));
+        status = NtQueryInformationFile(h, &iosb, &basic, sizeof(basic), FileBasicInformation);
+        ok(status == STATUS_SUCCESS, "basic for agreement -> %08lx", (unsigned long)status);
+        ok(net.FileAttributes == basic.FileAttributes, "network-open vs basic attributes");
+        ok(net.LastWriteTime.QuadPart == basic.LastWriteTime.QuadPart,
+           "network-open vs basic LastWriteTime");
+        status =
+            NtQueryInformationFile(h, &iosb, &net, sizeof(net) - 4, FileNetworkOpenInformation);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short network-open buffer -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- CUI-5: FileAttributeTagInformation -------------------------------- */
+    /* GetFileInformationByHandleEx(FileAttributeTagInfo), and
+     * GetVolumePathNameW's reparse-point walk reads ReparseTag — 0 for a
+     * plain file on either backend (pinned Wine fd_get_file_info). */
+    {
+        FILE_ATTRIBUTE_TAG_INFORMATION tag;
+        poison_iosb(&iosb);
+        memset(&tag, 0xcc, sizeof(tag));
+        status = NtQueryInformationFile(h, &iosb, &tag, sizeof(tag), FileAttributeTagInformation);
+        ok(status == STATUS_SUCCESS, "query attribute-tag -> %08lx", (unsigned long)status);
+        ok(iosb.Information == sizeof(tag), "attribute-tag Information %lu",
+           (unsigned long)iosb.Information);
+        ok(tag.FileAttributes == basic.FileAttributes, "attribute-tag vs basic attributes");
+        ok(tag.ReparseTag == 0, "attribute-tag ReparseTag %lx", (unsigned long)tag.ReparseTag);
+        status =
+            NtQueryInformationFile(h, &iosb, &tag, sizeof(tag) - 4, FileAttributeTagInformation);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short attribute-tag buffer -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- CUI-5: FileStreamInformation refuses on FAT ------------------------ */
+    /* The pinned Wine has no arm for it at all (dlls/ntdll/unix/file.c
+     * NtQueryInformationFile default FIXME), so the oracle cannot answer;
+     * NT's own FAT driver refuses the class with STATUS_INVALID_PARAMETER
+     * (microsoft/Windows-driver-samples filesys/fastfat/fileinfo.c,
+     * FatCommonQueryInformation: FileStreamInformation is not in the case
+     * list and the default arm returns STATUS_INVALID_PARAMETER). */
+    {
+        char stream_buf[256];
+        status =
+            NtQueryInformationFile(h, &iosb, stream_buf, sizeof(stream_buf), FileStreamInformation);
+        beyond_oracle
+        {
+            ok(status == STATUS_INVALID_PARAMETER, "stream info on FAT -> %08lx",
+               (unsigned long)status);
+        }
+    }
+
     NtClose(h);
 
     /* --- FileEndOfFileInformation on a handle without FILE_WRITE_DATA ------ */
