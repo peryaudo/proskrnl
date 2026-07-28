@@ -157,9 +157,12 @@ oracle() {
     make -C "$ROOT" build/modules/cmd.exe >/dev/null
     local cmdexe="$ROOT/build/modules/cmd.exe" cmdout
     cmdout="$(cd "$BUILD" && "$WINE" "$cmdexe" /c \
-        "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & del cmdsmoke.txt" \
+        "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & echo ren-data > cmdren.txt & ren cmdren.txt cmdren2.txt & type cmdren2.txt & del cmdsmoke.txt & del cmdren2.txt" \
         2>/dev/null | tr -d '\r')"
-    if echo "$cmdout" | grep -q "smoke-echo" && echo "$cmdout" | grep -q "smoke-data"; then
+    # ren-data through the RENAMED name: the CUI-5 ren path spec-checked
+    # off-target (the same cmd binary the files leg types at).
+    if echo "$cmdout" | grep -q "smoke-echo" && echo "$cmdout" | grep -q "smoke-data" &&
+       echo "$cmdout" | grep -q "ren-data"; then
         echo "[KTEST] cmd-standalone PASS"
     else
         echo "[KTEST] cmd-standalone FAIL"
@@ -1012,6 +1015,36 @@ procs() {
     return 1
 }
 
+# CUI-5 acceptance (docs/02 "move/ren work under cmd.exe; a
+# write-tmp-then-rename tool completes"). One interactive boot over the
+# console image: the EXPECT_FILES block in console_expect.py types a ren, a
+# cross-directory move, and a move /Y replace (the write-tmp-then-rename
+# shape), asserting each file's content through its post-rename name.
+files() {
+    # A VIRGIN console image (the procs() pattern).
+    rm -f "$ROOT/build/proskrnl-console.hdd"
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/tests/files.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local sock="$ROOT/build/tests/files.sock" log="$ROOT/build/tests/files.log"
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_FILES=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        if grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+            echo "== files: PASS (ren + move + move /Y replace under cmd.exe) =="
+            return 0
+        fi
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+    echo "== files: FAIL (see $log) =="
+    return 1
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -1641,6 +1674,7 @@ case "$MODE" in
     console)  console ;;
     scm)      scm ;;
     procs)    procs ;;
+    files)    files ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
@@ -1651,6 +1685,6 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        exit 2 ;;
 esac

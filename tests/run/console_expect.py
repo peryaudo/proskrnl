@@ -245,6 +245,44 @@ def main() -> int:
         if not expect_after(mark, b"jobtool-done-2", "the kill-on-close cleanup"):
             return 1
 
+    # ---- CUI-5: the file-surface acceptance (docs/02 "move/ren work under
+    # cmd.exe; a write-tmp-then-rename tool completes") ---------------------
+    if os.environ.get("EXPECT_FILES", ""):
+        # 1. ren: the proof travels through the RENAMED name. The dash in
+        #    "ren-proof" cannot come from any typed line below.
+        if not command(b"echo ren-proof>C:\\renin.txt", b"C:\\", "the prompt after ren setup"):
+            return 1
+        if not command(b"ren C:\\renin.txt renout.txt", b"C:\\", "the prompt after ren"):
+            return 1
+        if not command(b"type C:\\renout.txt", b"ren-proof", "the renamed file's content"):
+            return 1
+        # The old name is gone (type fails; the digit cannot come from the
+        # typed line — the scm block's zz-wrap pattern).
+        if not command(b"type C:\\renin.txt", b"C:\\", "the prompt after the stale type"):
+            return 1
+        if not command(b"echo zz%errorlevel%zz", b"zz1zz", "the stale name's errorlevel"):
+            return 1
+        # 2. move across directories (kernelbase MoveFileW ->
+        #    FileRenameInformation; the FAT '..' rewrite rides along).
+        if not command(b"mkdir C:\\mvdir", b"C:\\", "the prompt after mkdir"):
+            return 1
+        if not command(b"move C:\\renout.txt C:\\mvdir\\moved.txt", b"C:\\",
+                       "the prompt after move"):
+            return 1
+        if not command(b"type C:\\mvdir\\moved.txt", b"ren-proof", "the moved file's content"):
+            return 1
+        # 3. The write-tmp-then-rename shape: the replace (`move /Y`) must
+        #    land the NEW content under the OLD name ("new-data"'s 'w' cannot
+        #    come from the typed type line).
+        if not command(b"echo old-data>C:\\cfg.txt", b"C:\\", "the target setup"):
+            return 1
+        if not command(b"echo new-data>C:\\cfg.tmp", b"C:\\", "the tmp setup"):
+            return 1
+        if not command(b"move /Y C:\\cfg.tmp C:\\cfg.txt", b"C:\\", "the prompt after replace"):
+            return 1
+        if not command(b"type C:\\cfg.txt", b"new-data", "the replaced content"):
+            return 1
+
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
