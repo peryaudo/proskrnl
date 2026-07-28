@@ -283,16 +283,18 @@ $(HELLO): user/hello/hello.c user/hello/hello_seh.S $(WINE_PE)/ntdll/x86_64-wind
 	    user/hello/hello.c user/hello/hello_seh.S \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
-# The M8 smss-equivalent (docs/02): the initial user process — verifies the
-# registry from ring 3, spawns hello.exe via NtCreateUserProcess, exits with
-# the child's code. Same recipe as hello.exe: ntdll-only native PE.
+# The session manager (docs/02 M8, then some): the ONE user image the kernel
+# launches at the end of boot. It starts the servers (wineserver-lite,
+# conhost), runs firstboot, and drives every acceptance flow and test sweep
+# through NtCreateUserProcess. Same recipe as hello.exe: ntdll-only native PE.
 SMSS := $(BUILD)/modules/smss.exe
-$(SMSS): user/smss/smss.c user/smss/firstboot.c user/smss/smss.h \
+$(SMSS): user/smss/smss.c user/smss/launch.c user/smss/session.c \
+        user/smss/firstboot.c user/smss/smss.h \
         $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
 	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=smss_start \
-	    user/smss/smss.c user/smss/firstboot.c \
+	    user/smss/smss.c user/smss/launch.c user/smss/session.c user/smss/firstboot.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
 # The M9 acceptance client (docs/02): threaded blocking pipes + a console

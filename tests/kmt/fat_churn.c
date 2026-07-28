@@ -29,7 +29,7 @@
  * / RFC 1952 §8) — the same function as python's zlib.crc32 on the host.
  *
  * Gating: runs only when C:\churn.cfg exists (the image decides — the
- * KiRunNtapiTests precedent). The config line carries
+ * ntapi-sweep precedent, user/smss/session.c). The config line carries
  *   seed=0x... ops=N maxfiles=N maxsize=N budget=N expect_diskfull=0|1
  * so run.sh legs vary geometry/pressure without a kernel rebuild. On an
  * expect_diskfull leg STATUS_DISK_FULL timing depends on real allocation

@@ -111,8 +111,9 @@ proskrnl/
 ├── user/                            # user-mode side
 │   ├── ntdll-stubs/
 │   │   └── syscall_stubs.S          # generated from abi/syscall_numbers.h
-│   ├── smss/                        # initial process: mount hive, set \??, launch next
-│   │   └── firstboot.c              # runs wineboot.exe on first boot (GUI path)
+│   ├── smss/                        # the session manager: the ONE image the kernel starts;
+│   │   │                            #   spawns servers + every flow via NtCreateUserProcess
+│   │   └── firstboot.c              # runs wineboot.exe on first boot
 │   ├── wine/                        # build glue; Wine itself is the third_party/wine
 │   │   │                            #   submodule — unixlib→syscall swaps live as commits
 │   │   │                            #   on its proskrnl-target fork branch (Art. 10 / G9)

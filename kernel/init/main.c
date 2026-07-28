@@ -274,429 +274,6 @@ static int KiRunAbiProbe(void)
     return failures;
 }
 
-/* Run the M7 Wine acceptance (docs/02 "Done when"): hello.exe from the boot
- * volume, loaded beside the unmodified Wine PE ntdll.dll and started through
- * LdrInitializeThunk — ntdll's loader runs the process, and hello's SEH test
- * exercises KiUserExceptionDispatcher end to end. Exit 0 = PASS. */
-static int KiRunWineHello(void)
-{
-    /* The ntapi/fuzz images carry the windows/ tree but not hello.exe
-     * (tests/run/run.sh bakes only the test .exes); skip cleanly there.
-     * The `make test` image ships it (Makefile WINFILES), so a load failure
-     * on it IS a FAIL, not a skip. */
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\hello.exe"), &probe);
-    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
-    {
-        DbgPrint("[KTEST] module hello.exe SKIP (not on the boot volume)\n");
-        return 0;
-    }
-    if (!NT_SUCCESS(probeStatus))
-    {
-        DbgPrint("[KTEST] module hello.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
-        return 1;
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\hello.exe"), "C:\\hello.exe", TRUE, &exitStatus);
-    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] module hello.exe FAIL (create=%#lx)\n", (unsigned long)status);
-    }
-    else
-    {
-        DbgPrint("[KTEST] module hello.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
-                 (unsigned long)exitStatus);
-    }
-    return pass ? 0 : 1;
-}
-
-/* Run the M8 initial process chain (docs/02): kernel → smss-equiv → test
- * process. smss.exe exits with hello.exe's code, so one verdict covers the
- * whole pipeline — including NtCreateUserProcess and the ring-3 registry. */
-static int KiRunInitialChain(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus =
-        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\smss.exe"), &probe);
-    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
-    {
-        DbgPrint("[KTEST] module smss.exe SKIP (no smss.exe on the boot volume)\n");
-        return 0;
-    }
-    if (!NT_SUCCESS(probeStatus))
-    {
-        DbgPrint("[KTEST] module smss.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
-        return 1;
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                                     "C:\\windows\\system32\\smss.exe", TRUE, &exitStatus);
-    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] module smss.exe FAIL (create=%#lx)\n", (unsigned long)status);
-    }
-    else
-    {
-        DbgPrint("[KTEST] module smss.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
-                 (unsigned long)exitStatus);
-    }
-    return pass ? 0 : 1;
-}
-
-/* Start the M9 console server (docs/02): the ported Wine conhost, pumping
- * the kernel ConDrv transport with the COM1 serial tty behind it
- * (HACK-004). Fire-and-forget — conhost outlives every console client; the
- * kept reference pins the process object (KTHREAD does not reference its
- * process). Absent conhost.exe (the ntapi/fuzz images) is not an error:
- * console requests then fail fast and nothing here blocks. */
-static PEPROCESS KiConhostProcess;
-
-static void KiStartConhost(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS status = IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"), &probe);
-    if (!NT_SUCCESS(status))
-    {
-        return;
-    }
-    ObDereferenceObject(probe);
-
-    /* The main-thread ETHREAD reference is held forever: conhost is a
-     * permanent process (its thread never exits, so the reference may never
-     * be dropped — PsCreateUserImage contract). */
-    static PETHREAD KiConhostThread;
-    status = PsCreateUserImage(WSTR("\\??\\C:\\windows\\system32\\conhost.exe"),
-                                 "C:\\windows\\system32\\conhost.exe", FALSE, &KiConhostProcess,
-                                 &KiConhostThread);
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] conhost FAIL (create=%#lx)\n", (unsigned long)status);
-        return;
-    }
-    /* 30 s, not 10: the windowed conhost (GUI-5) loads user32/gdi32/win32u
-     * and completes its desktop-server connect before it can open the
-     * ConDrv server device — a long prologue under TCG. The headless
-     * conhost attaches in a fraction of either bound; only the failure
-     * detection latency changes. */
-    if (CondrvWaitForServer(30000))
-    {
-        DbgPrint("[KTEST] conhost up\n");
-    }
-    else
-    {
-        DbgPrint("[KTEST] conhost FAIL (no server attach)\n");
-    }
-}
-
-/* Run the M9 acceptance client (docs/02 "Done when"): m9_smoke.exe drives
- * the threaded blocking-pipe protocol (the proskrnl twin of the oracle-only
- * sem_pipe/pipe_blocking.c) and writes through the real console stack —
- * kernelbase -> ConDrv -> conhost -> serial. */
-static int KiRunM9(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\m9_smoke.exe"), &probe);
-    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
-    {
-        DbgPrint("[KTEST] module m9_smoke.exe SKIP (not on the boot volume)\n");
-        return 0;
-    }
-    if (!NT_SUCCESS(probeStatus))
-    {
-        DbgPrint("[KTEST] module m9_smoke.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
-        return 1;
-    }
-    ObDereferenceObject(probe);
-
-    if (KiConhostProcess == 0)
-    {
-        DbgPrint("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
-        return 1;
-    }
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\m9_smoke.exe"), "C:\\m9_smoke.exe", TRUE, &exitStatus);
-    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] module m9_smoke.exe FAIL (create=%#lx)\n", (unsigned long)status);
-    }
-    else
-    {
-        DbgPrint("[KTEST] module m9_smoke.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
-                 (unsigned long)exitStatus);
-    }
-    return pass ? 0 : 1;
-}
-
-/* Run the M9 interactive-echo client when (and only when) the image carries
- * it — the console-mode image (Makefile console-img; tests/run/run.sh
- * console). It blocks on console input until the runner types a line into
- * the serial socket, so the plain image must never include it; absence is
- * silent (the KiRunWineHello probe/skip pattern). */
-static int KiRunM9Echo(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\m9_echo.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return 0; /* not a console-mode image */
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\m9_echo.exe"), "C:\\m9_echo.exe", TRUE, &exitStatus);
-    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
-    DbgPrint("[KTEST] module m9_echo.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
-             (unsigned long)exitStatus);
-    return pass ? 0 : 1;
-}
-
-/* The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
- * draws a rectangle visible in a screendump; key input is readable"):
- * gui_smoke.exe opens \Device\Fb0 and \Device\Input0, paints, and parks in
- * a blocking read. Present only on the gui image (probe/skip like
- * m9_echo). Does not return on that image — see the call site. */
-static void KiRunGuiSmoke(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui_smoke.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return; /* not a gui image */
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\gui_smoke.exe"), "C:\\gui_smoke.exe", FALSE, &exitStatus);
-    /* Only reached if the client exited, which it is written never to do:
-     * say so rather than letting the boot fall through to a sweep verdict
-     * the harness would read as a healthy end (Art. 12). */
-    DbgPrint("[KTEST] gui FAIL (gui_smoke.exe returned %#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-}
-
-/* The GUI-2 acceptance (docs/02 "winemine.exe appears on screen"): the
- * whole Wine GUI stack -- winemine over comctl32/user32/gdi32 over the PE
- * build of win32u (user/wine), painting through winefb.drv onto
- * \Device\Fb0. Present only on the gui2 image (probe/skip like m9_echo).
- * Does not return while the app is up -- see the call site. */
-static void KiRunGui2(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\winemine.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return; /* not a gui2 image */
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\winemine.exe"), "C:\\winemine.exe", FALSE, &exitStatus);
-    /* Reached when the window is closed (the harness's Alt+F4 probe) or
-     * when the app dies. Either way the exit code is the diagnosis, so
-     * print it rather than falling through to a sweep verdict the harness
-     * would read as a healthy end (Art. 12). */
-    DbgPrint("[KTEST] gui2 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-}
-
-/* wineserver-lite (HACK-003) is a system service, not a GUI app: it must be
- * running before ANYTHING that loads win32u, because every such process is
- * one of its clients. CUI-1's firstboot is exactly such a process --
- * wineboot loads user32 -> win32u -- so starting the server with the GUI
- * clients at the end of boot left two processes waiting out the client's
- * connect timeout for a server that did not exist yet. Started here,
- * BEFORE conhost (since GUI-5 the windowed conhost is itself a win32u
- * client at image-load time), with the same fire-and-forget contract: the
- * references are held forever because the process never exits.
- *
- * Probe/skip on the image file, so this is a no-op on every other image. */
-static void KiStartWineserverLite(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS status =
-        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"), &probe);
-    if (!NT_SUCCESS(status))
-    {
-        return; /* no server on this image: win32u stays in-process */
-    }
-    ObDereferenceObject(probe);
-
-    static PEPROCESS KiWineserverProcess;
-    static PETHREAD KiWineserverThread;
-    status = PsCreateUserImage(WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe"),
-                                 "C:\\windows\\system32\\wineserver-lite.exe", FALSE,
-                                 &KiWineserverProcess, &KiWineserverThread);
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] gui3 server FAIL (create=%#lx)\n", (unsigned long)status);
-    }
-}
-
-/* The GUI-3 acceptance (docs/02 "two GUI processes run at once; Z-order,
- * focus, cross-thread SendMessage, FindWindow all behave"): wineserver-lite
- * as a PROCESS (HACK-003) with two GUI clients above it, each an ordinary
- * Wine GUI app over the same unmodified user32/gdi32/win32u stack GUI-2
- * runs. Present only on the gui3 image (probe/skip like the others).
- *
- * Order matters only in that the server should get a head start; it is not
- * relied on. The clients wait for the server's ready event before they
- * touch the transport (user/wine/server/call.c), and gui3b waits for
- * gui3a's window with FindWindow, so a slow start under TCG costs time
- * rather than a false verdict.
- *
- * The server and gui3a are fire-and-forget, as conhost is: both are meant
- * to still be running when the harness screendumps. gui3b is the one waited
- * on -- it prints the verdict and then parks. */
-static void KiRunGui3(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui3a.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return; /* not a gui3 image */
-    }
-    ObDereferenceObject(probe);
-
-    /* The server is already up: it is started before firstboot, because
-     * anything that loads win32u is a client and would otherwise wait for a
-     * server that does not exist yet (KiStartWineserverLite). */
-    static PEPROCESS KiGui3aProcess;
-    static PETHREAD KiGui3aThread;
-    NTSTATUS status = PsCreateUserImage(WSTR("\\??\\C:\\gui3a.exe"), "C:\\gui3a.exe", FALSE,
-                                          &KiGui3aProcess, &KiGui3aThread);
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] gui3 A FAIL (create=%#lx)\n", (unsigned long)status);
-        return;
-    }
-
-    NTSTATUS exitStatus = 0;
-    status = PsRunUserImage(WSTR("\\??\\C:\\gui3b.exe"), "C:\\gui3b.exe", FALSE, &exitStatus);
-    DbgPrint("[KTEST] gui3 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-}
-
-/* The GUI-4 acceptance (docs/02 "windows can be grabbed and moved; clicks
- * reach the right window"): the gui3 arrangement -- wineserver-lite plus
- * two GUI clients -- but with overlapping windows, driven by the harness
- * through the tablet and keyboard (tests/run/run.sh gui4). Present only on
- * the gui4 image (probe/skip like the others).
- *
- * Both clients park pumping forever: every verdict past their ready
- * markers is produced by harness-injected input, and both windows must
- * still be on the scanout for the screendumps. gui4b is waited on exactly
- * because it never exits -- like every gui leg, this deliberately never
- * returns (the end-of-suite QEMU exit below would tear the windows down
- * under the harness's screendumps); the leg owns QEMU's lifetime. */
-static void KiRunGui4(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui4a.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return; /* not a gui4 image */
-    }
-    ObDereferenceObject(probe);
-
-    static PEPROCESS KiGui4aProcess;
-    static PETHREAD KiGui4aThread;
-    NTSTATUS status = PsCreateUserImage(WSTR("\\??\\C:\\gui4a.exe"), "C:\\gui4a.exe", FALSE,
-                                          &KiGui4aProcess, &KiGui4aThread);
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] gui4 A FAIL (create=%#lx)\n", (unsigned long)status);
-        return;
-    }
-
-    NTSTATUS exitStatus = 0;
-    status = PsRunUserImage(WSTR("\\??\\C:\\gui4b.exe"), "C:\\gui4b.exe", FALSE, &exitStatus);
-    DbgPrint("[KTEST] gui4 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-}
-
-/* The GUI-5 acceptance (docs/02 "GUI finishing"): clipboard, hooks and
- * AttachThreadInput cross-process, plus the guest half of the font-metrics
- * differential. Present only on the gui5 image (probe/skip like the others).
- *
- * fontdiff runs FIRST and is waited on: its metric lines must land
- * un-interleaved with the clients' output, and it must have exited --
- * releasing any exclusively-opened input device its winefb instance won --
- * before gui5a starts and becomes the leg's input host (docs/03 GUI-4
- * notes: the reader lives in whichever GUI process attempts first, and an
- * exited winner orphans input until a fresh process attempts). Then the
- * gui3/gui4 shape: gui5a fire-and-forget, gui5b waited on -- both park
- * pumping forever; the leg owns QEMU's lifetime. */
-static void KiRunGui5(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\gui5a.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return; /* not a gui5 image */
-    }
-    ObDereferenceObject(probe);
-
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status =
-        PsRunUserImage(WSTR("\\??\\C:\\fontdiff.exe"), "C:\\fontdiff.exe", FALSE, &exitStatus);
-    DbgPrint("[KTEST] gui5 fontdiff exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-
-    static PEPROCESS KiGui5aProcess;
-    static PETHREAD KiGui5aThread;
-    status = PsCreateUserImage(WSTR("\\??\\C:\\gui5a.exe"), "C:\\gui5a.exe", FALSE,
-                                 &KiGui5aProcess, &KiGui5aThread);
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] gui5 A FAIL (create=%#lx)\n", (unsigned long)status);
-        return;
-    }
-
-    status = PsRunUserImage(WSTR("\\??\\C:\\gui5b.exe"), "C:\\gui5b.exe", FALSE, &exitStatus);
-    DbgPrint("[KTEST] gui5 exit (status=%#lx, exit=%#lx)\n", (unsigned long)status,
-             (unsigned long)exitStatus);
-}
-
-/* The M10 acceptance (docs/02 "cmd.exe prompts; pipes/redirection work; an
- * off-the-shelf MSVC-built CUI app runs unmodified"): an INTERACTIVE
- * cmd.exe on the serial console, driven by tests/run/console_expect.py —
- * prompt, echo, redirection to a file, `type file | upcase` through a real
- * anonymous-pipe child, hello_crt.exe's output and %errorlevel%, and a
- * clean `exit`. Present only on the console-mode image (probe/skip like
- * m9_echo). */
-static int KiRunCmdConsole(void)
-{
-    struct MI_SECTION *probe;
-    NTSTATUS probeStatus = IoOpenImageSection(WSTR("\\??\\C:\\hello_crt.exe"), &probe);
-    if (!NT_SUCCESS(probeStatus))
-    {
-        return 0; /* not a console-mode image */
-    }
-    ObDereferenceObject(probe);
-
-    DbgPrint("[KTEST] cmd interactive start\n");
-    NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
-                                     "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
-    BOOLEAN pass = NT_SUCCESS(status) && exitStatus == 0;
-    DbgPrint("[KTEST] module cmd.exe %s (exit=%#lx)\n", pass ? "PASS" : "FAIL",
-             (unsigned long)exitStatus);
-    return pass ? 0 : 1;
-}
-
 /* Probe/skip on the boot volume's content: does `path` exist? The one
  * authority for every flag-file and presence probe below (G10). */
 static BOOLEAN KiBootFileExists(PCWSTR path)
@@ -723,8 +300,8 @@ static BOOLEAN KiBootFileExists(PCWSTR path)
 
 /* The interactive boot (make run): the image carries C:\interactive.flag
  * (Makefile IMG_RUN), meaning a human owns the serial console — the test
- * suites are skipped and the console goes straight to cmd.exe. The image,
- * not a kernel-side switch, decides (the KiRunNtapiTests pattern). */
+ * suites are skipped and the console goes straight to cmd.exe (via the
+ * session manager). The image, not a kernel-side switch, decides. */
 static BOOLEAN KiIsInteractiveBoot(void)
 {
     return KiBootFileExists(WSTR("\\??\\C:\\interactive.flag"));
@@ -744,494 +321,67 @@ static void KiConfigurePanicOnNotImplemented(void)
     }
 }
 
-/* CUI-1 firstboot: run `smss.exe firstboot` (which spawns wineboot --init,
- * user/smss/firstboot.c) so wine.inf's machine-state registry payload is
- * applied before anything else uses the hive. Probe/skip on the image
- * content (the KiIsInteractiveBoot pattern): images without wineboot.exe —
- * the hermetic ntapi/fuzz images — boot exactly as before. wineboot's own
- * .update-timestamp freshness check makes non-first boots near-instant, so
- * this runs on every boot of a full image. */
-static int KiRunFirstBoot(void)
+/* Launch the session manager (user/smss): the ONE user image the kernel
+ * starts. Everything user-mode past this point — wineserver-lite, conhost,
+ * firstboot, the interactive console, the acceptance flows, the ntapi and
+ * winetest sweeps, the GUI legs — is smss.exe's job, spawned through the
+ * real NtCreateUserProcess boundary; smss prints the same [KTEST] verdict
+ * lines this thread used to (NtDisplayString shares the serial transport,
+ * kernel/ps/display.c), so the harness greps are unchanged. Its exit code
+ * is its failure count. The kernel's ABI-probe count rides the command line
+ * so smss can fold it into the M9 verdict (the `make test` PASS_RE) exactly
+ * as the kernel runner did; on images with no smss.exe the count lands in
+ * the return value instead. On GUI images smss parks forever with its
+ * clients — the wait never returns, and the leg owns QEMU's lifetime. */
+static int KiRunSessionManager(int abiFailures)
 {
-    if (!KiBootFileExists(WSTR("\\??\\C:\\windows\\system32\\wineboot.exe")))
+    struct MI_SECTION *probe;
+    NTSTATUS probeStatus =
+        IoOpenImageSection(WSTR("\\??\\C:\\windows\\system32\\smss.exe"), &probe);
+    if (probeStatus == STATUS_OBJECT_NAME_NOT_FOUND || probeStatus == STATUS_OBJECT_PATH_NOT_FOUND)
     {
-        return 0; /* no wineboot baked: silently absent, like KiRunNtapiTests */
+        DbgPrint("[KTEST] smss.exe SKIP (not on the boot volume)\n");
+        return abiFailures;
     }
-
-    NTSTATUS exitStatus = STATUS_UNSUCCESSFUL;
-    NTSTATUS status = PsRunUserImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
-                                       "C:\\windows\\system32\\smss.exe", "smss.exe firstboot",
-                                       FALSE, 0, &exitStatus);
-    if (!NT_SUCCESS(status) || exitStatus != 0)
+    if (!NT_SUCCESS(probeStatus))
     {
-        DbgPrint("[KTEST] firstboot FAIL (status=%#lx exit=%#lx)\n", (unsigned long)status,
-                 (unsigned long)exitStatus);
-        return 1;
+        DbgPrint("[KTEST] smss.exe FAIL (probe=%#lx)\n", (unsigned long)probeStatus);
+        return abiFailures + 1;
     }
-    DbgPrint("[KTEST] firstboot PASS\n");
-    return 0;
-}
+    ObDereferenceObject(probe);
 
-/* Hand the console to a human-driven cmd.exe and power the VM off when it
- * exits (`exit` at the prompt). A start failure still powers off — an
- * interactive boot has no runner watching a timeout. */
-__attribute__((noreturn)) static void KiRunInteractiveCmd(void)
-{
-    DbgPrint("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
+    char commandLine[24] = "smss.exe abi=";
+    int n = 13;
+    int value = abiFailures < 999 ? abiFailures : 999;
+    char digits[4];
+    int d = 0;
+    do
+    {
+        digits[d++] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    while (d != 0)
+    {
+        commandLine[n++] = digits[--d];
+    }
+    commandLine[n] = '\0';
+
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = PsRunUserImage(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
-                                     "C:\\windows\\system32\\cmd.exe", TRUE, &exitStatus);
+    NTSTATUS status =
+        PsRunUserImageEx(WSTR("\\??\\C:\\windows\\system32\\smss.exe"),
+                         "C:\\windows\\system32\\smss.exe", commandLine, FALSE, 0, &exitStatus);
     if (!NT_SUCCESS(status))
     {
-        DbgPrint("proskrnl: cmd.exe failed to start (%#lx)\n", (unsigned long)status);
+        DbgPrint("[KTEST] smss.exe FAIL (create=%#lx)\n", (unsigned long)status);
+        return abiFailures + 1;
     }
-    KiQemuExit(0);
-    /* The debug-exit teardown is asynchronous; do not run past it. */
-    for (;;)
+    if (!NT_SUCCESS(exitStatus))
     {
-        __asm__ volatile("hlt");
+        /* A crash status, not a failure count — the session died. */
+        DbgPrint("[KTEST] smss.exe FAIL (exit=%#lx)\n", (unsigned long)exitStatus);
+        return abiFailures + 1;
     }
-}
-
-/* --- the ntapi single-binary test runner (docs/14) ------------------------- */
-
-/* Every tests/ntapi test is ONE PE .exe that runs unmodified on the Wine
- * oracle and here (no more flat-binary build mode). tests/run/run.sh
- * proskrnl bakes them all under C:\ntapi; this runner sweeps the directory
- * — the image, not a kernel-side list, decides what runs — and each test
- * prints its own [KTEST] <name> PASS/FAIL line, which the runner script
- * greps off the serial log. Absence of C:\ntapi (the `make test` image) is
- * silent. Tests run WITHOUT a console on purpose: no std handles is the
- * harness's "running on proskrnl" discriminator (tests/ntapi/ntapi.c). */
-#define KI_NTAPI_MAX_TESTS  96
-#define KI_NTAPI_NAME_CHARS 64
-
-typedef struct KI_NTAPI_LIST
-{
-    WCHAR names[KI_NTAPI_MAX_TESTS][KI_NTAPI_NAME_CHARS];
-    int count;
-    BOOLEAN overflow;
-} KI_NTAPI_LIST;
-
-static BOOLEAN KiNtapiCollect(const IO_DIR_ENTRY *entry, PVOID context)
-{
-    KI_NTAPI_LIST *list = context;
-    ULONG chars = entry->nameLength / sizeof(WCHAR);
-    if (entry->info.isDirectory || chars < 5 || chars >= KI_NTAPI_NAME_CHARS)
-    {
-        return TRUE;
-    }
-    const WCHAR *name = entry->name;
-    if (name[chars - 4] != L'.' || (name[chars - 3] | 0x20) != L'e' ||
-        (name[chars - 2] | 0x20) != L'x' || (name[chars - 1] | 0x20) != L'e')
-    {
-        return TRUE;
-    }
-    if (list->count >= KI_NTAPI_MAX_TESTS)
-    {
-        list->overflow = TRUE; /* a silent cap would read as "all covered" */
-        return TRUE;
-    }
-    for (ULONG i = 0; i < chars; i++)
-    {
-        list->names[list->count][i] = name[i];
-    }
-    list->names[list->count][chars] = 0;
-    list->count++;
-    return TRUE;
-}
-
-/* Case-insensitive ASCII order, so the run order (and the serial log) is
- * stable regardless of FAT directory layout. */
-static void KiNtapiSort(KI_NTAPI_LIST *list)
-{
-    for (int i = 1; i < list->count; i++)
-    {
-        WCHAR key[KI_NTAPI_NAME_CHARS];
-        for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
-        {
-            key[k] = list->names[i][k];
-        }
-        int j = i - 1;
-        while (j >= 0)
-        {
-            const WCHAR *a = list->names[j];
-            const WCHAR *b = key;
-            int cmp = 0;
-            while (*a != 0 || *b != 0)
-            {
-                WCHAR ca = (*a >= L'A' && *a <= L'Z') ? (WCHAR)(*a + 32) : *a;
-                WCHAR cb = (*b >= L'A' && *b <= L'Z') ? (WCHAR)(*b + 32) : *b;
-                if (ca != cb)
-                {
-                    cmp = ca < cb ? -1 : 1;
-                    break;
-                }
-                a++;
-                b++;
-            }
-            if (cmp <= 0)
-            {
-                break;
-            }
-            for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
-            {
-                list->names[j + 1][k] = list->names[j][k];
-            }
-            j--;
-        }
-        for (int k = 0; k < KI_NTAPI_NAME_CHARS; k++)
-        {
-            list->names[j + 1][k] = key[k];
-        }
-    }
-}
-
-static int KiRunNtapiTests(void)
-{
-    static KI_NTAPI_LIST list; /* 8 KiB: bss, not this thread's stack */
-    list.count = 0;
-    list.overflow = FALSE;
-    NTSTATUS status = IoEnumerateDirectory(WSTR("\\??\\C:\\ntapi"), KiNtapiCollect, &list);
-    if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND)
-    {
-        return 0; /* not an ntapi image */
-    }
-    if (!NT_SUCCESS(status))
-    {
-        DbgPrint("[KTEST] ntapi FAIL (enumerate=%#lx)\n", (unsigned long)status);
-        return 1;
-    }
-    KiNtapiSort(&list);
-
-    int failures = 0;
-    for (int i = 0; i < list.count; i++)
-    {
-        /* Sequential runs: one static path set, rebuilt per test (the
-         * process holds the imageName pointer only while it runs, and
-         * PsRunUserImage waits for exit). */
-        static WCHAR widePath[32 + KI_NTAPI_NAME_CHARS];
-        static char dosPath[32 + KI_NTAPI_NAME_CHARS];
-        static const WCHAR prefix[] = WSTR("\\??\\C:\\ntapi\\");
-        int n = 0;
-        while (prefix[n] != 0)
-        {
-            widePath[n] = prefix[n];
-            n++;
-        }
-        int m = 0;
-        while (list.names[i][m] != 0)
-        {
-            widePath[n + m] = list.names[i][m];
-            m++;
-        }
-        widePath[n + m] = 0;
-        for (int k = 0; widePath[4 + k] != 0; k++) /* past "\??\" */
-        {
-            dosPath[k] = (char)widePath[4 + k];
-            dosPath[k + 1] = 0;
-        }
-        const char *ascii = dosPath + 9; /* past "C:\ntapi\" */
-
-        NTSTATUS exitStatus = 0;
-        status = PsRunUserImage(widePath, dosPath, FALSE, &exitStatus);
-        if (!NT_SUCCESS(status))
-        {
-            DbgPrint("[KTEST] module ntapi/%s FAIL (create=%#lx)\n", ascii, (unsigned long)status);
-            failures++;
-        }
-        else if (exitStatus != 0)
-        {
-            DbgPrint("[KTEST] module ntapi/%s FAIL (exit=%#lx)\n", ascii,
-                     (unsigned long)exitStatus);
-            failures++;
-        }
-        else
-        {
-            DbgPrint("[KTEST] module ntapi/%s PASS\n", ascii);
-        }
-        KiVerifyKernelState(); /* between tests: each must leave a clean executive */
-    }
-    if (list.overflow)
-    {
-        DbgPrint("[KTEST] ntapi FAIL (more than %d tests; raise KI_NTAPI_MAX_TESTS)\n",
-                 KI_NTAPI_MAX_TESTS);
-        failures++;
-    }
-    DbgPrint("[KTEST] ntapi done tests=%d failures=%d\n", list.count, failures);
-    return failures;
-}
-
-/* --- the winetest sweep (M10 stretch: docs/02 "Ideal regression") ---------- */
-
-/* tests/run/run.sh winetest bakes standalone Wine-test binaries (the pinned
- * tree's own test objects, docs/14) under C:\wtests plus a manifest of
- * <exe>:<subtest> pairs curated to be green on the oracle. Each pair runs
- * WITH a console (winetest prints through msvcrt stdout -> condrv -> conhost
- * -> serial) and its exit code — winetest's failure count — is the verdict.
- * Absence of the manifest (every other image) is silent. A pair that times
- * out cannot be reaped (no foreign terminate — docs/03), so the sweep aborts
- * rather than running more clients against a wedged console. */
-#define KI_WTEST_MAX_PAIRS     128
-#define KI_WTEST_EXE_CHARS     40
-#define KI_WTEST_SUBTEST_CHARS 32
-#define KI_WTEST_MANIFEST_MAX  (64 * 1024)
-#define KI_WTEST_TIMEOUT_MS                                                                        \
-    (300 * 1000) /* TCG is ~10x native; the string tests are millions of ok()s */
-
-typedef struct KI_WTEST_LIST
-{
-    struct
-    {
-        char exe[KI_WTEST_EXE_CHARS];
-        char subtest[KI_WTEST_SUBTEST_CHARS];
-        ULONG timeoutMs; /* 0 = KI_WTEST_TIMEOUT_MS (the two-field lines) */
-    } pairs[KI_WTEST_MAX_PAIRS];
-    int count;
-    BOOLEAN overflow;
-} KI_WTEST_LIST;
-
-/* Whole-file read with a kernel-internal transient handle (the
- * CmpReadHiveFile pattern, kernel/cm/hive.c). *bufferOut is pool. */
-static BOOLEAN KiWtestReadManifest(UCHAR **bufferOut, ULONG *lengthOut)
-{
-    UNICODE_STRING name;
-    RtlInitUnicodeString(&name, WSTR("\\??\\C:\\wtests\\manifest.txt"));
-    OBJECT_ATTRIBUTES attributes;
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_CASE_INSENSITIVE;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
-                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
-    if (!NT_SUCCESS(status))
-    {
-        return FALSE;
-    }
-    BOOLEAN ok = FALSE;
-    FILE_STANDARD_INFORMATION standard;
-    status =
-        NtQueryInformationFile(handle, &iosb, &standard, sizeof(standard), FileStandardInformation);
-    if (NT_SUCCESS(status) && standard.EndOfFile.QuadPart > 0 &&
-        standard.EndOfFile.QuadPart <= KI_WTEST_MANIFEST_MAX)
-    {
-        ULONG length = (ULONG)standard.EndOfFile.QuadPart;
-        UCHAR *buffer = MiAllocatePool(length);
-        if (buffer != 0)
-        {
-            LARGE_INTEGER offset;
-            offset.QuadPart = 0;
-            status = NtReadFile(handle, 0, 0, 0, &iosb, buffer, length, &offset, 0);
-            if (NT_SUCCESS(status) && iosb.Information == length)
-            {
-                *bufferOut = buffer;
-                *lengthOut = length;
-                ok = TRUE;
-            }
-            else
-            {
-                MiFreePool(buffer);
-            }
-        }
-    }
-    NtClose(handle);
-    return ok;
-}
-
-/* Parse `<exe>:<subtest>[:<timeout_s>]` lines; '#' comments and blank
- * lines skipped, CRLF tolerated. The optional third field (GUI-5: a whole
- * user32:msg run outlasts the default bound under TCG) is seconds, decimal,
- * nonzero; absent means KI_WTEST_TIMEOUT_MS. Malformed/oversized lines are
- * loud (a silently dropped pair would read as "covered"). Returns FALSE on
- * a parse failure. */
-static BOOLEAN KiWtestParseManifest(const UCHAR *buffer, ULONG length, KI_WTEST_LIST *list)
-{
-    ULONG pos = 0;
-    while (pos < length)
-    {
-        ULONG end = pos;
-        while (end < length && buffer[end] != '\n')
-        {
-            end++;
-        }
-        ULONG lineEnd = end;
-        while (lineEnd > pos && (buffer[lineEnd - 1] == '\r' || buffer[lineEnd - 1] == ' '))
-        {
-            lineEnd--;
-        }
-        if (lineEnd > pos && buffer[pos] != '#')
-        {
-            ULONG colon = pos;
-            while (colon < lineEnd && buffer[colon] != ':')
-            {
-                colon++;
-            }
-            ULONG subEnd = colon + 1;
-            while (subEnd < lineEnd && buffer[subEnd] != ':')
-            {
-                subEnd++;
-            }
-            ULONG exeChars = colon - pos;
-            ULONG subChars = (colon < lineEnd) ? subEnd - colon - 1 : 0;
-            ULONG timeoutMs = 0;
-            BOOLEAN timeoutBad = FALSE;
-            if (subEnd < lineEnd)
-            {
-                ULONG seconds = 0, digits = 0;
-                for (ULONG i = subEnd + 1; i < lineEnd; i++)
-                {
-                    if (buffer[i] < '0' || buffer[i] > '9' || seconds > 100000)
-                    {
-                        timeoutBad = TRUE;
-                        break;
-                    }
-                    seconds = seconds * 10 + (buffer[i] - '0');
-                    digits++;
-                }
-                if (digits == 0 || seconds == 0)
-                {
-                    timeoutBad = TRUE;
-                }
-                timeoutMs = seconds * 1000;
-            }
-            if (colon >= lineEnd || exeChars == 0 || exeChars >= KI_WTEST_EXE_CHARS ||
-                subChars == 0 || subChars >= KI_WTEST_SUBTEST_CHARS || timeoutBad)
-            {
-                DbgPrint("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
-                         (unsigned)pos);
-                return FALSE;
-            }
-            if (list->count >= KI_WTEST_MAX_PAIRS)
-            {
-                list->overflow = TRUE;
-                pos = end + 1;
-                continue;
-            }
-            for (ULONG i = 0; i < exeChars; i++)
-            {
-                list->pairs[list->count].exe[i] = (char)buffer[pos + i];
-            }
-            list->pairs[list->count].exe[exeChars] = 0;
-            for (ULONG i = 0; i < subChars; i++)
-            {
-                list->pairs[list->count].subtest[i] = (char)buffer[colon + 1 + i];
-            }
-            list->pairs[list->count].subtest[subChars] = 0;
-            list->pairs[list->count].timeoutMs = timeoutMs;
-            list->count++;
-        }
-        pos = end + 1;
-    }
-    return TRUE;
-}
-
-static int KiRunWineTests(void)
-{
-    static KI_WTEST_LIST list; /* pairs table: bss, not this thread's stack */
-    list.count = 0;
-    list.overflow = FALSE;
-
-    UCHAR *manifest = 0;
-    ULONG manifestLength = 0;
-    if (!KiWtestReadManifest(&manifest, &manifestLength))
-    {
-        return 0; /* not a wtest image */
-    }
-    BOOLEAN parsed = KiWtestParseManifest(manifest, manifestLength, &list);
-    MiFreePool(manifest);
-    if (!parsed)
-    {
-        return 1;
-    }
-
-    int failures = 0;
-    for (int i = 0; i < list.count; i++)
-    {
-        /* Sequential runs, one static path set (the KiRunNtapiTests shape;
-         * the process copies the command line and holds imageName only
-         * while PsRunUserImageEx waits). */
-        static WCHAR widePath[16 + KI_WTEST_EXE_CHARS];
-        static char dosPath[12 + KI_WTEST_EXE_CHARS];
-        static char cmdLine[12 + KI_WTEST_EXE_CHARS + 1 + KI_WTEST_SUBTEST_CHARS];
-        static const WCHAR prefix[] = WSTR("\\??\\C:\\wtests\\");
-        int n = 0;
-        while (prefix[n] != 0)
-        {
-            widePath[n] = prefix[n];
-            n++;
-        }
-        for (int m = 0;; m++)
-        {
-            widePath[n + m] = (WCHAR)(unsigned char)list.pairs[i].exe[m];
-            if (list.pairs[i].exe[m] == 0)
-            {
-                break;
-            }
-        }
-        int d = 0;
-        for (int k = 4; widePath[k] != 0; k++) /* past "\??\" */
-        {
-            dosPath[d++] = (char)widePath[k];
-        }
-        dosPath[d] = 0;
-        int c = 0;
-        while (dosPath[c] != 0)
-        {
-            cmdLine[c] = dosPath[c];
-            c++;
-        }
-        cmdLine[c++] = ' ';
-        for (int m = 0;; m++)
-        {
-            cmdLine[c + m] = list.pairs[i].subtest[m];
-            if (list.pairs[i].subtest[m] == 0)
-            {
-                break;
-            }
-        }
-
-        NTSTATUS exitStatus = 0;
-        ULONG timeoutMs = list.pairs[i].timeoutMs ? list.pairs[i].timeoutMs : KI_WTEST_TIMEOUT_MS;
-        NTSTATUS status =
-            PsRunUserImageEx(widePath, dosPath, cmdLine, TRUE, timeoutMs, &exitStatus);
-        if (status == STATUS_TIMEOUT)
-        {
-            /* The wedged process owns the console; further pairs would be
-             * noise. Abort loudly — the runner sees the missing PASSes. */
-            DbgPrint("[KTEST] wtest %s:%s FAIL (timeout)\n", list.pairs[i].exe,
-                     list.pairs[i].subtest);
-            failures += list.count - i;
-            break;
-        }
-        if (!NT_SUCCESS(status))
-        {
-            DbgPrint("[KTEST] wtest %s:%s FAIL (create=%#lx)\n", list.pairs[i].exe,
-                     list.pairs[i].subtest, (unsigned long)status);
-            failures++;
-        }
-        else if (exitStatus != 0)
-        {
-            DbgPrint("[KTEST] wtest %s:%s FAIL (exit=%#lx)\n", list.pairs[i].exe,
-                     list.pairs[i].subtest, (unsigned long)exitStatus);
-            failures++;
-        }
-        else
-        {
-            DbgPrint("[KTEST] wtest %s:%s PASS\n", list.pairs[i].exe, list.pairs[i].subtest);
-        }
-        KiVerifyKernelState(); /* between pairs: each must leave a clean executive */
-    }
-    if (list.overflow)
-    {
-        DbgPrint("[KTEST] wtest FAIL (more than %d pairs; raise KI_WTEST_MAX_PAIRS)\n",
-                 KI_WTEST_MAX_PAIRS);
-        failures++;
-    }
-    DbgPrint("[KTEST] wtest done tests=%d failures=%d\n", list.count, failures);
-    return failures;
+    return (int)exitStatus; /* the session's failure count (ABI folded in) */
 }
 
 /* The in-kernel suites, run on a real kernel thread (waits need a
@@ -1266,31 +416,23 @@ static void KiTestMainThread(void *context)
     CmInitialize();
 
     /* Arm the panic-on-STATUS_NOT_IMPLEMENTED boot before anything runs
-     * ring-3 code — conhost below is already a Wine process (needs only the
-     * boot volume, mounted above). */
+     * ring-3 code — smss below is a Wine process (needs only the boot
+     * volume, mounted above). */
     KiConfigurePanicOnNotImplemented();
 
-    /* GUI-3 image only: the desktop server, before any client can load
-     * win32u (firstboot's wineboot is one — and since GUI-5 so is the
-     * windowed conhost, whose user32 connects during image load, BEFORE its
-     * entry point could even open the ConDrv server device; the server must
-     * therefore start first). Probe/skip: on every serverless image this is
-     * a no-op and the boot is unchanged. */
-    KiStartWineserverLite();
-
-    /* M9: the console server, before anything that may use a console. */
-    KiStartConhost();
-
-    /* CUI-1: firstboot — wineboot --init populates the machine state before
-     * the console/test flows, so cmd.exe and the test sweeps below see the
-     * wine.inf registry payload. Probe/skip: absent wineboot.exe is a no-op. */
-    int firstbootFailures = KiRunFirstBoot();
-
-    /* The interactive boot (make run) skips the test suites entirely: the
-     * serial console belongs to a human and cmd.exe. Never returns. */
+    /* The interactive boot (make run) skips the kernel test suites: the
+     * serial console belongs to a human — the session manager runs
+     * firstboot and hands the console to cmd.exe, and the VM powers off
+     * when it exits (`exit` at the prompt). */
     if (KiIsInteractiveBoot())
     {
-        KiRunInteractiveCmd();
+        KiRunSessionManager(0);
+        KiQemuExit(0);
+        /* The debug-exit teardown is asynchronous; do not run past it. */
+        for (;;)
+        {
+            __asm__ volatile("hlt");
+        }
     }
 
     /* Boot is quiescent: the first consistency sweep (kernel/init/verify.c)
@@ -1352,68 +494,21 @@ static void KiTestMainThread(void *context)
 
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
-     * the milestone's acceptance artifact. */
+     * the milestone's acceptance artifact. The Wine bring-up half — the
+     * unmodified PE ntdll running hello.exe — now lives in the session
+     * manager's M8 chain (user/smss/session.c), which runs the same binary
+     * through NtCreateUserProcess. */
     int m7Failures = KiRunM7Modules();
-    /* The Wine bring-up half of M7: the unmodified PE ntdll runs hello.exe. */
-    m7Failures += KiRunWineHello();
     DbgPrint(m7Failures == 0 ? "[KTEST] M7 PASS\n" : "[KTEST] M7 FAIL failures=%d\n", m7Failures);
     KiVerifyKernelState();
 
-    /* M8: the initial process chain (docs/02 "Done when: boot completes as
-     * kernel → smss-equiv → test process"): smss.exe verifies \Registry from
-     * ring 3, spawns hello.exe through NtCreateUserProcess, and exits with
-     * the child's code. */
-    int m8Failures = KiRunInitialChain();
-    DbgPrint(m8Failures == 0 ? "[KTEST] M8 PASS\n" : "[KTEST] M8 FAIL failures=%d\n", m8Failures);
-    KiVerifyKernelState();
-
-    /* M9: npfs + condrv + conhost (docs/02): the threaded pipe client/server
-     * protocol and a console write through the whole stack. The npfs
-     * differential surface itself is the sem_pipe suite (run.sh). */
-    int m9Failures = KiRunM9();
-    /* The M9 line is the verdict tools/qemu.sh greps for (PASS_RE), so it
-     * must aggregate the ABI probe too — the same fold the M6 line does for
-     * lib above; an unconsumed-convention regression must flip `make test`. */
-    m9Failures += abiFailures;
-    DbgPrint(m9Failures == 0 ? "[KTEST] M9 PASS\n" : "[KTEST] M9 FAIL failures=%d\n", m9Failures);
-    KiVerifyKernelState();
-
-    /* The ntapi image only (tests/run/run.sh proskrnl): run every single
-     * binary test baked under C:\ntapi. Absence is silent. */
-    int ntapiFailures = KiRunNtapiTests();
-
-    /* The wtest image only (tests/run/run.sh winetest): the curated pairs
-     * from Wine's own CUI test suite baked under C:\wtests. Absence is
-     * silent. */
-    int wtestFailures = KiRunWineTests();
-
-    /* Console-mode image only: block on the interactive echo (the M9
-     * acceptance's other half — input typed on the serial wire). AFTER the
-     * M9 verdict so the runner knows the boot suite is already green. */
-    int echoFailures = KiRunM9Echo();
-
-    /* Console-mode image only (M10): the interactive cmd.exe session. */
-    int cmdFailures = KiRunCmdConsole();
-
-    /* GUI image only (GUI-1): paint the framebuffer, then block forever on
-     * \Device\Input0. Deliberately LAST and deliberately never returning —
-     * the host has to see the painted frame in a screendump, so the guest
-     * must not tear the drawing down or power off underneath it. Every
-     * verdict above has already printed by this point. */
-    KiRunGuiSmoke();
-
-    /* GUI-2 image only: winemine, over the whole Wine GUI stack. Same
-     * arrangement as GUI-1 above -- last, and normally not returning, so
-     * the host can screendump a live window. */
-    KiRunGui2();
-
-    /* GUI-3 image only: two GUI processes over wineserver-lite. Same
-     * arrangement again -- last, and normally not returning. */
-    KiRunGui3();
-
-    KiRunGui4();
-
-    KiRunGui5();
+    /* The session: everything user-mode from here — the servers, firstboot,
+     * the M8/M9 acceptance flows and their [KTEST] verdicts, the ntapi and
+     * wtest sweeps, the console flows, the GUI legs (which never return on
+     * GUI images) — happens inside smss.exe. Per-process kernel sweeps
+     * continue from the idle loop: every process teardown requests one
+     * (kernel/init/verify.c), so each exited test still gets audited. */
+    int sessionFailures = KiRunSessionManager(abiFailures);
 
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran
@@ -1427,9 +522,8 @@ static void KiTestMainThread(void *context)
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = firstbootFailures + m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
-                fatInteropFailures + m7Failures + m8Failures + m9Failures + ntapiFailures +
-                wtestFailures + echoFailures + cmdFailures;
+    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
+                fatInteropFailures + m7Failures + sessionFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

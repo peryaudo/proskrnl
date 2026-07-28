@@ -471,8 +471,8 @@ boundary symbols winebuild would have emitted supplied by
   `tests/ntapi` pin is added only when the subtest's coverage of the new
   surface is incidental, or when a proskrnl-vs-oracle deviation needs a
   `todo_proskrnl`-style pin.
-- **The sweep runs each pair on the console** (`kernel/init/main.c`
-  KiRunWineTests): winetest prints through msvcrt stdout → condrv →
+- **The sweep runs each pair on the console** (`user/smss/session.c`
+  flow_wtest): winetest prints through msvcrt stdout → condrv →
   conhost → serial, so the serial log carries the per-check diagnostics;
   the exit code is the verdict. A pair that exceeds the per-pair budget
   (300 s — TCG runs the million-ok() subtests ~10x slower than native)
@@ -544,7 +544,7 @@ boundary symbols winebuild would have emitted supplied by
 
 ## CUI-1 firstboot notes (wineboot + the machine-state registry)
 
-First boot runs `wineboot --init` (`smss.exe firstboot` → `KiRunFirstBoot`),
+First boot runs `wineboot --init` (a session-manager stage: `user/smss/firstboot.c`),
 which applies `wine.inf`'s machine-state payload through
 `rundll32 setupapi,InstallHinfSection` children. Deviations and scoping:
 

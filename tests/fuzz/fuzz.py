@@ -242,6 +242,10 @@ def build_proskrnl(exe):
         path = os.path.join(ROOT, "third_party", "wine", "nls", nls + ".nls")
         if os.path.exists(path):
             specs.append("win:" + path + "=windows/system32/" + nls + ".nls")
+    # The session manager: it sweeps C:\ntapi and is what spawns the interp
+    # (user/smss/session.c — the kernel itself launches only smss.exe).
+    specs.append("win:" + os.path.join(ROOT, "build", "modules", "smss.exe")
+                 + "=windows/system32/smss.exe")
     specs.append("win:" + exe + "=ntapi/interp.exe")
     subprocess.run([os.path.join(ROOT, "tools", "mkimage.sh"), kernel, img] + specs,
                    check=True, stdout=subprocess.DEVNULL)
