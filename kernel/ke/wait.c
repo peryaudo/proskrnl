@@ -114,7 +114,7 @@ void KiAlertWaitingThread(PKTHREAD thread)
 /* CUI-4: pull a foreign-terminated thread out of its wait so it reaches a
  * ring-3 edge and reaps itself (KiProcessPendingUserSignals). Only ever
  * called for a user thread (ASSERT) — kernel-internal waits (cm hive mutex,
- * PsRunWineImage joins, the reaper) are never terminate targets, so they are
+ * PsRunUserImage joins, the reaper) are never terminate targets, so they are
  * never aborted. The wait returns STATUS_THREAD_IS_TERMINATING, which each
  * indefinite-wait site propagates up rather than re-waiting on. */
 void KiAbortThreadWait(PKTHREAD thread)
