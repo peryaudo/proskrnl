@@ -228,6 +228,16 @@ CUI-3's single pended verb (`FSCTL_PIPE_LISTEN`) where a consumer convicts it.
 **Done when:** `move`/`ren` work under cmd.exe; a write-tmp-then-rename tool
 completes; a directory watcher sees a change; the unparked winetest file pairs join
 the manifest.
+*(Outcome: complete. All 12 ids plus the refused classes landed test-first
+(`tests/run/run.sh files` is the cmd.exe acceptance; six new/extended ntapi
+suites; the churn shadow model learned rename). The suite's first
+`beyond_oracle` blocks arrived here — FAT has no hard links or streams, the
+oracle's set-volume-info is a stub, and its recursive inotify watch never
+fires in the oracle environment, so those cases pin NT's own FAT contract.
+Async widened by exactly one verb (the directory watch); completion-port
+file association stayed out for want of a consumer, and watches do not
+buffer across the re-arm window — docs/03 "CUI-5 Io-completion notes"
+carries these and the FileId-moves-on-rename deviation.)*
 
 ## CUI-6 — handles, identity, and the query surface
 What real tools ask *about* processes, threads, and handles — plus the Se leftovers.

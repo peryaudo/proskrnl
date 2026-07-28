@@ -896,6 +896,14 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
   the mark is set) but the thread wakes only when its device does. Wine
   cancels any server-side async; the gap is unpinned (no baked caller
   cancels a console read) and closes if a consumer ever convicts it.
+- **`FileCompletionInformation` (port-to-file association) stays unbuilt**:
+  docs/02 widens async I/O only "where a consumer convicts it", and no
+  baked CUI binary associates a completion port with a file handle (the
+  threadpool drives ports directly via `NtSetIoCompletion`;
+  `BindIoCompletionCallback`'s consumers are not baked). The class refuses
+  loudly like any other unbuilt `NtSetInformationFile` arm; the day a
+  consumer arrives, the packet engine (`IopPostCompletionPacket`) is
+  already the single posting authority to hook (Art. 11).
 
 ## Debug objects are out of scope (permanent; ADR 0011)
 
