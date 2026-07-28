@@ -539,8 +539,19 @@ boundary symbols winebuild would have emitted supplied by
     console, so a wedged pair fails every pair after it (the re-triage run
     showed five otherwise-green `kernel32` pairs cascade).
   - breadth not yet triaged: `kernel32:{thread,time,pipe}` (107/43/slow),
-    `msvcrt:{misc,file,time}`, `ucrtbase:misc`, `cmd.exe_test:directory`
-    (6 failures on proskrnl only).
+    `msvcrt:{misc,file,time}`, `ucrtbase:misc`. *(CUI-5 retired the
+    `cmd.exe_test:directory` entry that used to sit here — its 6
+    proskrnl-only failures were all the missing rename; the pair is on the
+    manifest now.)*
+  - `ntdll:change` / `kernel32:change` (evaluated at CUI-5, both
+    oracle-green): 9 and ~10 failures on proskrnl, all shapes of the
+    single-record / no-between-watch-buffering watch model (docs/03
+    "CUI-5 Io-completion notes") — multi-record buffers ("information
+    wrong"), notifications the suites expect the queued window to
+    suppress or deliver ("should timeout", "Got notification"), and
+    `ov.Internal` carried by a buffered completion. They join when the
+    watch list grows a per-handle backlog; `sem_file/notify_change.c`
+    covers the one-change-per-watch contract meanwhile.
 
 ## CUI-1 firstboot notes (wineboot + the machine-state registry)
 
