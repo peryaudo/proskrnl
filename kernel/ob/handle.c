@@ -657,11 +657,7 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
     }
     case ObjectTypeInformation:
     {
-        ULONG nameChars = 0;
-        while (header->type->name[nameChars] != '\0')
-        {
-            nameChars++;
-        }
+        ULONG nameChars = (ULONG)KiStringLength(header->type->name);
         ULONG nameBytes = nameChars * sizeof(WCHAR);
         ULONG needed = sizeof(OBJECT_TYPE_INFORMATION) + nameBytes + sizeof(WCHAR);
         if (length < needed)

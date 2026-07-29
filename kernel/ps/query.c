@@ -1430,12 +1430,8 @@ static NTSTATUS PspMapNlsFile(const WCHAR *fileName, uint64_t *baseOut, uint64_t
 {
     WCHAR path[64];
     static const WCHAR prefix[] = WSTR("\\??\\C:\\windows\\system32\\");
-    size_t n = 0;
-    while (prefix[n] != 0)
-    {
-        path[n] = prefix[n];
-        n++;
-    }
+    size_t n = KiWideStringLength(prefix);
+    memcpy(path, prefix, n * sizeof(WCHAR));
     for (size_t i = 0; fileName[i] != 0; i++)
     {
         ASSERT(n + 1 < sizeof(path) / sizeof(path[0]));
