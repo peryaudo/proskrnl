@@ -185,6 +185,10 @@ MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
 # --dynamicbase keeps the .reloc directory so the kmt relocation test has
 # something to chew on.
 MINGW ?= x86_64-w64-mingw32-gcc
+# The PE binutils that go with it. objdump reads the import DIRECTORY, which
+# is the only way to tell a symbol this build defines from one the linker
+# quietly bound to a DLL import (see the win32u.dll link rule).
+MINGW_OBJDUMP ?= x86_64-w64-mingw32-objdump
 PECFLAGS := -std=c11 -mabi=sysv -ffreestanding -fno-builtin -nostdlib -nostartfiles \
             -O1 -g0 -Wall -Wextra -Wno-unused-parameter -I. \
             -Wl,--entry=pe_start -Wl,--dynamicbase -Wl,--pic-executable -Wl,--high-entropy-va
@@ -754,21 +758,27 @@ W32U_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
                -Iuser/wine/include -Ithird_party/freetype/include \
                -I$(W32U_BUILD) -Ithird_party/wine/include
 
-# The DLL's glue, listed by directory: wineserver-lite/ is split so that each
-# of its two links names the halves it takes, rather than one wildcard minus
-# a filter-out. This link takes common/ (the state machine's environment) and
-# client/ (wine_server_call); the exe takes common/ and server/ instead, and
-# neither takes the other's half (see WINESERVER_LITE).
+# The DLL's glue. wineserver-lite/ is split so that each of its two links
+# names the halves it takes: this link takes client/ (wine_server_call) plus
+# srv_glue.c, which is only the WINE_UNIX_LIB shims win32u itself needs; the
+# exe takes server/ and common/ (the state machine's environment).
+#
+# What the DLL does NOT take, since the in-process dispatch mode went away,
+# is the state machine: no shim.c, no $(SRV_OBJS), no handler table. Nothing
+# in the DLL could reach them -- every request goes out over the transport --
+# so linking them shipped a dormant second copy of the desktop object model
+# in every GUI process, which is the parallel authority Art. 11 is about. The
+# one generated thing it still needs is the request NAMES, for a diagnostic;
+# they come out of the generator's second output, which references no handler.
 W32U_GLUE_SRCS := $(wildcard user/wine/dlls/win32u/*.c) \
                   $(wildcard user/wine/dlls/winefb.drv/*.c) \
-                  $(wildcard $(WSRV_DIR)/common/*.c) \
+                  $(WSRV_DIR)/common/srv_glue.c \
                   $(wildcard $(WSRV_DIR)/client/*.c)
 
-# The two glue objects both links share, named once (Art. 11: one spelling).
+# The glue objects both links share, named once (Art. 11: one spelling).
 WSRV_GLUE := $(W32U_BUILD)/glue/wineserver-lite/common
 
 W32U_OBJS := $(patsubst $(WINE_W32U)/%.c,$(W32U_BUILD)/w32u/%.o,$(W32U_SRCS)) \
-             $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS)) \
              $(patsubst user/wine/%.c,$(W32U_BUILD)/glue/%.o,$(W32U_GLUE_SRCS))
 
 $(W32U_BUILD)/w32u/%.o: $(WINE_W32U)/%.c user/wine/include/wine/unixlib.h
@@ -798,18 +808,27 @@ $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS)
 # (tools/gen_server_table.py, Art. 12).
 SRV_OBJS := $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS))
 SRV_TABLE := $(W32U_BUILD)/prsk_request_table.c
+# The generator writes the handler table AND, separately, the request names.
+# One run, one order, two objects: the server takes both, and win32u takes
+# only the names -- it needs them to name an oversized request, and taking
+# them from the handler table would drag the whole state machine back into
+# the DLL (see W32U_GLUE_SRCS).
+SRV_NAMES := $(W32U_BUILD)/prsk_request_names.c
 # shim.o joins the generator's inputs (GUI-5): the shim may implement a
 # handler whose OWNING server file is not compiled (get_process_idle_event
 # lives in server/process.c, which is the process model this build leaves
 # out) — the table must see those too, or a linked handler would still get
 # a NULL slot.
-$(SRV_TABLE): $(SRV_OBJS) $(WSRV_GLUE)/shim.o tools/gen_server_table.py \
+$(SRV_TABLE) $(SRV_NAMES) &: $(SRV_OBJS) $(WSRV_GLUE)/shim.o tools/gen_server_table.py \
         $(WINE_SRV)/request_handlers.h
 	@mkdir -p $(dir $@)
-	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $@ $(SRV_OBJS) \
-	    $(WSRV_GLUE)/shim.o
+	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $(SRV_TABLE) \
+	    $(SRV_NAMES) $(SRV_OBJS) $(WSRV_GLUE)/shim.o
 
 $(W32U_BUILD)/prsk_request_table.o: $(SRV_TABLE) $(WSRV_DIR)/common/prsk_request_table.h
+	$(MINGW) $(W32U_CFLAGS) -I$(WSRV_DIR)/common -c $< -o $@
+
+$(W32U_BUILD)/prsk_request_names.o: $(SRV_NAMES) $(WSRV_DIR)/common/prsk_request_table.h
 	$(MINGW) $(W32U_CFLAGS) -I$(WSRV_DIR)/common -c $< -o $@
 
 # The export list comes out of win32u.spec, and the generator also proves the
@@ -823,11 +842,11 @@ $(W32U_DEF): $(WINE_W32U)/win32u.spec tools/gen_win32u_def.py $(GUI_IMPORTERS)
 	python3 tools/gen_win32u_def.py $(WINE_W32U)/win32u.spec $@ $(GUI_IMPORTERS)
 
 WIN32U := $(BUILD)/modules/win32u.dll
-$(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(FREETYPE) \
+$(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_names.o $(W32U_DEF) $(FREETYPE) \
            $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -shared -nostdlib -nostartfiles -Wl,--entry=prsk_win32u_entry \
-	    $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) \
+	    $(W32U_OBJS) $(W32U_BUILD)/prsk_request_names.o $(W32U_DEF) \
 	    -Wl,--start-group \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
@@ -835,6 +854,26 @@ $(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_table.o $(W32U_DEF) $(FREETYP
 	    third_party/wine/libs/musl/x86_64-windows/libmusl.a \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    -Wl,--end-group -lgcc -o $@
+	@# No wine_server_* may come from ntdll (Art. 12). The pinned ntdll EXPORTS
+	@# the whole family, so any one of them that this build does not define
+	@# itself links CLEANLY against the import and starts answering -- turning a
+	@# refusal that names itself on serial into a plausible answer, silently, at
+	@# link time. That is how wine_server_handle_to_fd stopped refusing when the
+	@# state machine left this DLL: nothing failed, guiwtest just died with no
+	@# verdict. The definitions live in wineserver-lite/common/srv_glue.c; this
+	@# asserts none of them slipped back to the import.
+	@# Scoped to the IMPORT directory: this DLL legitimately EXPORTS
+	@# wine_server_call and wine_server_send_fd (win32u.spec), so the export
+	@# table must not be read as a violation.
+	@imports=$$($(MINGW_OBJDUMP) -p $@ \
+	    | awk '/The Import Tables/,/Export Address Table|The Export Tables/' \
+	    | grep -oE 'wine_server_[a-z_]+' | sort -u); \
+	if [ -n "$$imports" ]; then \
+	    echo "win32u.dll imports wine_server_* from ntdll:" >&2; \
+	    echo "$$imports" >&2; \
+	    echo "define it in user/wine/wineserver-lite/common/srv_glue.c (Art. 12)" >&2; \
+	    rm -f $@; exit 1; \
+	fi
 
 win32u: $(WIN32U)
 .PHONY: win32u
@@ -842,23 +881,23 @@ win32u: $(WIN32U)
 # wineserver-lite.exe (GUI-3, HACK-003): the same GUI object model, linked
 # into a process of its own instead of into every GUI client.
 #
-# This is docs/06's keep-list build: a NEW link over the very same
-# $(W32U_BUILD)/srv/*.o objects and the same generated request table the DLL
-# uses -- not a stripped copy of server/, which would mutate the oracle's
-# wineserver and corrupt the spec. Because the objects are literally shared,
-# the two modes cannot drift into two state machines (Art. 11).
+# This is docs/06's keep-list build: a link over the pinned tree's own
+# server objects -- not a stripped copy of server/, which would mutate the
+# oracle's wineserver and corrupt the spec.
 #
-# What differs is only which halves come along, which is what the source
-# tree's own split says: the exe takes wineserver-lite/common/ (the
-# environment the state machine expects) plus wineserver-lite/server/ (its
-# own main.c), and leaves out wineserver-lite/client/ -- so the server
-# carries no client of itself. The DLL takes common/ + client/ and leaves
-# out server/. SRV_RENAME_FLAGS is still applied because these are the same
-# renamed objects.
+# It is the ONLY link that carries them. The exe takes
+# wineserver-lite/common/ (the environment the state machine expects) plus
+# wineserver-lite/server/ (its own main.c), and leaves out
+# wineserver-lite/client/ -- so the server carries no client of itself; the
+# DLL takes client/ and the one shared glue file, and no state machine at
+# all. One copy, in one process, so there is nothing to drift (Art. 11).
+# SRV_RENAME_FLAGS is still applied because these are the same renamed
+# objects the pinned tree's headers expect.
 WSRV_BUILD := $(W32U_BUILD)/wineserver-lite
 WSRV_SRCS  := $(wildcard $(WSRV_DIR)/server/*.c)
 WSRV_OBJS  := $(patsubst $(WSRV_DIR)/server/%.c,$(WSRV_BUILD)/%.o,$(WSRV_SRCS)) \
-              $(WSRV_GLUE)/shim.o $(WSRV_GLUE)/srv_glue.o
+              $(WSRV_GLUE)/shim.o $(WSRV_GLUE)/srv_glue.o \
+              $(W32U_BUILD)/prsk_request_names.o
 
 $(WSRV_BUILD)/%.o: $(WSRV_DIR)/server/%.c
 	@mkdir -p $(dir $@)

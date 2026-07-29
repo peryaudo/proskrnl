@@ -45,7 +45,6 @@
 
 #include "prsk_request_table.h"
 #include "transport.h"
-#include "shim.h"
 
 /* glue.c keeps the per-thread block in TEB->Win32ThreadInfo; the claimed
  * slot rides there so a call costs no lookup. 0 means unclaimed, so the

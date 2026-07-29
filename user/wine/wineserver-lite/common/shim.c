@@ -1,17 +1,17 @@
 /*
- * shim.c - wineserver's GUI object model, running inside the GUI process.
+ * shim.c - wineserver's GUI object model, running inside wineserver-lite.
  *
- * GUI-2 keeps desktop state in-process (docs/02, docs/07 route (a)): there is
- * one GUI process, so the window tree, classes, atoms, message queues, hooks
- * and clipboard can be plain data in that process's own heap. What they must
- * NOT be is a second implementation. Wine already has exactly this state
- * machine, debugged over decades, in server/{user,atom,class,winstation,
- * window,queue,region,clipboard,hook}.c, and win32u already talks to it
- * through one function. So those files are compiled unmodified into
- * win32u.dll and this file supplies the environment they expect:
+ * The window tree, classes, atoms, message queues, hooks and clipboard are
+ * plain data in the server process's own heap. What they must NOT be is a
+ * second implementation. Wine already has exactly this state machine,
+ * debugged over decades, in server/{user,atom,class,winstation,window,queue,
+ * region,clipboard,hook}.c, and win32u already talks to it through one
+ * function. So those files are compiled unmodified into wineserver-lite.exe
+ * and this file supplies the environment they expect:
  *
- *   - wine_server_call, which normally marshals a request down a socket,
- *     here binds `current` and calls the handler on the spot;
+ *   - the server half of wine_server_call: bind `current`, call the handler,
+ *     fix up the reply (prsk_server_dispatch, driven by server/main.c's
+ *     transport loop);
  *   - one process and one thread record per Win32 thread, standing in for
  *     server/process.c and server/thread.c (which are unix-process
  *     machinery: ptrace, sockets, signals - nothing this build can host);
@@ -30,9 +30,13 @@
  * list, so a request whose handler is not linked in gets named on serial and
  * STATUS_NOT_IMPLEMENTED, never an empty success (Art. 12).
  *
- * GUI-3 turns this library back into a process (HACK-003, wineserver-lite);
- * the state machine underneath it does not change, which is the point of
- * reusing it rather than rewriting it (Art. 11: one authority).
+ * GUI-3 turned this library into a process (HACK-003, wineserver-lite)
+ * without changing the state machine underneath it, which is the point of
+ * reusing it rather than rewriting it (Art. 11: one authority). It also left
+ * a SECOND link -- win32u.dll dispatching into its own copy -- alive for as
+ * long as one test image selected it. That link is gone: this file is
+ * compiled into wineserver-lite.exe and nothing else, so the one authority
+ * is also the only copy.
  */
 
 #include <assert.h>
@@ -60,34 +64,8 @@
 #include "wine/server.h"
 
 #include "prsk_request_table.h"
+#include "transport.h"
 #include "shim.h"
-
-/* --- serial diagnostics ----------------------------------------------------
- *
- * The kernel's own convention (docs/08): machine-readable prefixes, human
- * text after. NtDisplayString is the transport the kernel's [KTEST] lines
- * use, so a refusal from in here lands in the same log the harness greps. */
-
-void prsk_log( const char *format, ... )
-{
-    char text[512];
-    WCHAR wide[512];
-    UNICODE_STRING str;
-    va_list args;
-    int len, i;
-
-    va_start( args, format );
-    len = vsnprintf( text, sizeof(text) - 1, format, args );
-    va_end( args );
-    if (len < 0) return;
-    if (len > (int)sizeof(text) - 1) len = sizeof(text) - 1;
-
-    for (i = 0; i < len; i++) wide[i] = (unsigned char)text[i];
-    str.Buffer = wide;
-    str.Length = len * sizeof(WCHAR);
-    str.MaximumLength = str.Length;
-    NtDisplayString( &str );
-}
 
 /* --- server globals --------------------------------------------------------
  *
@@ -1224,31 +1202,13 @@ void prsk_reap_client( struct prsk_client *client )
 
 /* --- what wineserver's unix half would have provided -------------------------
  *
- * Everything below is a boundary this build does not cross: file
- * descriptors, unix credentials, the process/thread lifecycle. Each refuses
- * in the shape its callers already handle - and says so once, by name, so
- * that a GUI path quietly depending on one is visible rather than silently
- * degraded. */
-
-void wine_server_send_fd( int fd )
-{
-    prsk_log( "[KTEST] wineserver-lite: wine_server_send_fd is unbuilt\n" );
-}
-
-NTSTATUS CDECL wine_server_fd_to_handle( int fd, unsigned int access, unsigned int attributes,
-                                         HANDLE *handle )
-{
-    prsk_log( "[KTEST] wineserver-lite: wine_server_fd_to_handle is unbuilt\n" );
-    *handle = NULL;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int *unix_fd,
-                                         unsigned int *options )
-{
-    prsk_log( "[KTEST] wineserver-lite: wine_server_handle_to_fd is unbuilt\n" );
-    return STATUS_NOT_IMPLEMENTED;
-}
+ * Everything below is a boundary this build does not cross: unix credentials,
+ * the process/thread lifecycle. Each refuses in the shape its callers already
+ * handle - and says so once, by name, so that a GUI path quietly depending on
+ * one is visible rather than silently degraded. (The three fd entry points
+ * are the same rule, but they live in srv_glue.c: win32u references them
+ * whether or not the state machine is in the link, so a definition only shim.c
+ * carried would rebind to ntdll's real import in the DLL.) */
 
 /* --- case-insensitive names ------------------------------------------------
  *

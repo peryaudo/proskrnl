@@ -1,18 +1,19 @@
 /*
- * srv_glue.c - the glue BOTH links of the GUI object model need.
+ * srv_glue.c - the glue BOTH links need.
  *
- * The wineserver files compiled here (server/{object,handle,user,atom,...}.c)
- * are unix sources: they expect a handful of things ntdll.so exports under
- * WINE_UNIX_LIB, a few libc corners ucrtbase does not carry, and mingw's
- * internal printf entry points. None of that is specific to win32u.
+ * Sources compiled under WINE_UNIX_LIB -- the wineserver files in the server
+ * link (server/{object,handle,user,atom,...}.c), and win32u's own sources in
+ * the DLL -- expect a handful of things ntdll.so exports, a few libc corners
+ * ucrtbase does not carry, and mingw's internal printf entry points. None of
+ * that is specific to either link, so it is spelled once here.
  *
- * It lives in its own file because GUI-3 gave the state machine a second
- * link: win32u.dll (the in-process mode) and wineserver-lite.exe (the
- * server process) both compile the same server objects, so both need this,
- * while everything else in win32u/glue.c -- the user-mode callback pair, the
- * pthread wrappers, the FreeType symbol table, the display driver hooks --
- * belongs to the DLL alone and would drag it into the server if it came
- * along. Moved verbatim out of win32u/glue.c; no behaviour changed.
+ * It lives in its own file because everything else in win32u/glue.c -- the
+ * user-mode callback pair, the pthread wrappers, the FreeType symbol table,
+ * the display driver hooks -- belongs to the DLL alone and would drag it
+ * into the server if it came along. Moved verbatim out of win32u/glue.c; no
+ * behaviour changed. It is the ONLY file of the wineserver-lite tree the DLL
+ * still takes: since the in-process dispatch mode went away the DLL links no
+ * state machine at all, only the transport client beside it.
  */
 
 #include <pthread.h>
@@ -169,10 +170,76 @@ int asprintf( char **out, const char *format, ... )
 }
 
 /* Only wineserver's dump helpers print to a FILE*, and there is no stderr
- * here - diagnostics go to serial (user/wine/wineserver-lite/common/shim.c prsk_log). */
+ * here - diagnostics go to serial (prsk_log above). */
 int __mingw_vfprintf( FILE *file, const char *format, va_list args ) { return 0; }
 int __mingw_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
 int __ms_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
 int fprintf( FILE *file, const char *format, ... ) { return 0; }
 int fscanf( FILE *file, const char *format, ... ) { return -1; }
 
+
+/* --- serial diagnostics ----------------------------------------------------
+ *
+ * The kernel's own convention (docs/08): machine-readable prefixes, human
+ * text after. NtDisplayString is the transport the kernel's [KTEST] lines
+ * use, so a refusal from in here lands in the same log the harness greps.
+ *
+ * Here rather than in shim.c because BOTH links diagnose: the DLL no longer
+ * carries the state machine, but its transport still has to name a failure. */
+
+void prsk_log( const char *format, ... )
+{
+    char text[512];
+    WCHAR wide[512];
+    UNICODE_STRING str;
+    va_list args;
+    int len, i;
+
+    va_start( args, format );
+    len = vsnprintf( text, sizeof(text) - 1, format, args );
+    va_end( args );
+    if (len < 0) return;
+    if (len > (int)sizeof(text) - 1) len = sizeof(text) - 1;
+
+    for (i = 0; i < len; i++) wide[i] = (unsigned char)text[i];
+    str.Buffer = wide;
+    str.Length = len * sizeof(WCHAR);
+    str.MaximumLength = str.Length;
+    NtDisplayString( &str );
+}
+
+/* --- the fd boundary -------------------------------------------------------
+ *
+ * win32u calls these on the paths that would pass a unix fd to the server.
+ * There are no fds here, so each refuses BY NAME (Art. 12) rather than
+ * answering.
+ *
+ * They live here, not in shim.c, and that placement is load-bearing: win32u
+ * references them whether or not the state machine is in the link, and the
+ * pinned ntdll EXPORTS all three. A definition carried only by shim.c
+ * therefore stops being a refusal the moment the DLL drops shim.o -- the
+ * linker silently rebinds the call to ntdll's import and the unbuilt path
+ * starts answering plausibly, which is exactly what Art. 12 forbids and
+ * exactly what happened to wine_server_handle_to_fd when the state machine
+ * left the DLL. The link rule for win32u.dll now asserts that no wine_server_*
+ * import survives, so a fourth one cannot repeat it. */
+
+void wine_server_send_fd( int fd )
+{
+    prsk_log( "[KTEST] wineserver-lite: wine_server_send_fd is unbuilt\n" );
+}
+
+NTSTATUS CDECL wine_server_fd_to_handle( int fd, unsigned int access, unsigned int attributes,
+                                         HANDLE *handle )
+{
+    prsk_log( "[KTEST] wineserver-lite: wine_server_fd_to_handle is unbuilt\n" );
+    *handle = NULL;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int *unix_fd,
+                                         unsigned int *options )
+{
+    prsk_log( "[KTEST] wineserver-lite: wine_server_handle_to_fd is unbuilt\n" );
+    return STATUS_NOT_IMPLEMENTED;
+}
