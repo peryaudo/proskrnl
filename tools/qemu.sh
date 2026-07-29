@@ -257,12 +257,28 @@ wait "$QPID" 2>/dev/null || true
 kill "$KPID" 2>/dev/null || true
 wait "$KPID" 2>/dev/null || true
 
-echo "--- serial log ($LOG) ---"
-# Display-time symbolization (Art. 9): annotate dump addresses with symbols
-# from the build's DWARF. The verdict grep below stays on the RAW log file —
-# the symbolizer only decorates what a reader (the LLM loop) sees.
-"$HERE/symbolize.py" --kernel "$HERE/../build/proskrnl" \
-    --moduledir "$HERE/../build/modules" < "$LOG" || cat "$LOG" || true
+# Symbolization (Art. 9): annotate dump addresses with symbols from the
+# build's DWARF. Written to a SIDECAR beside the raw log — every leg gets one
+# whether or not it reads our stdout (most of tests/run/run.sh redirects it to
+# /dev/null, and a red run's uploaded artifacts were raw hex before this).
+# "<name>.log" -> "<name>.sym.log" keeps the sidecar under the CI upload's
+# *.log glob (.github/workflows/test.yml).
+if [[ "$LOG" == *.log ]]; then
+    SYMLOG="${LOG%.log}.sym.log"
+else
+    SYMLOG="$LOG.sym"
+fi
+# The verdict grep below stays on the RAW log file — the symbolizer only
+# decorates what a reader (the LLM loop) sees, and a missing llvm-symbolizer
+# or ELF degrades to pass-through (symbolize.py), never to a failed run.
+echo "--- serial log ($LOG; symbolized: $SYMLOG) ---"
+if "$HERE/symbolize.py" --kernel "$HERE/../build/proskrnl" \
+        --moduledir "$HERE/../build/modules" < "$LOG" > "$SYMLOG" 2>/dev/null \
+        && [[ -s "$SYMLOG" ]]; then
+    cat "$SYMLOG"
+else
+    cat "$LOG" || true
+fi
 echo "--------------------------"
 if grep -q "$PASS_RE" "$LOG"; then
     echo "== run: PASS =="

@@ -283,12 +283,8 @@ proskrnl() {
     LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
-    # Symbolized sidecar for a human/LLM reading a failure (Art. 9); the
-    # verdict greps below stay on the raw log.
-    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
-        --moduledir "$ROOT/build/modules" < "$log" \
-        > "$ROOT/build/tests/proskrnl-serial.sym.log" 2>/dev/null || true
-
+    # The symbolized sidecar (proskrnl-serial.sym.log) is qemu.sh's job now —
+    # every leg gets one (Art. 9); the verdict greps stay on the raw log.
     local fails=0
     for name in "${names[@]}"; do
         if grep -qE "^\[KTEST\] $name PASS$" "$log" 2>/dev/null; then
@@ -392,10 +388,6 @@ winetest() {
     LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
-    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
-        --moduledir "$ROOT/build/modules" < "$log" \
-        > "$ROOT/build/tests/wtest-serial.sym.log" 2>/dev/null || true
-
     # No ^ anchor: conhost cursor escapes may share the verdict's line (the
     # run.sh console precedent).
     for pair in "${pairs[@]}"; do
@@ -481,10 +473,6 @@ guiwtest() {
     local log="$ROOT/build/tests/guiwtest-serial.log"
     LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
-
-    "$ROOT/tools/symbolize.py" --kernel "$kernel" \
-        --moduledir "$ROOT/build/modules" < "$log" \
-        > "$ROOT/build/tests/guiwtest-serial.sym.log" 2>/dev/null || true
 
     # msg.c's own assertion text, replayed out of the console screen diff
     # (tools/unscreen.py). The VERDICT never comes from here — it is the
@@ -593,8 +581,6 @@ PYEOF
     local log="$BUILD/fatinterop-serial.log"
     LOG="$log" PASS_RE="\[KTEST\] FATINTEROP PASS" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
-    "$ROOT/tools/symbolize.py" --kernel "$kernel" --moduledir "$ROOT/build/modules" \
-        < "$log" > "$BUILD/fatinterop-serial.sym.log" 2>/dev/null || true
 
     fails=0
     if grep -qE '\[KTEST\] FATINTEROP PASS' "$log" 2>/dev/null; then

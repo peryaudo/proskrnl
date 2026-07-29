@@ -274,6 +274,14 @@ human chasing a hard bug. Invest instead in the **panic handler** (register dump
 trace via forced frame pointers, last syscall) — under LLM-driven development, the panic
 dump *is* the debugger.
 
+**Symbols stay out of the kernel.** The dumps print raw hex; `tools/symbolize.py` resolves
+them on the host against the build's DWARF (`build/proskrnl`, and each boot module's `.elf`
+kept beside its `.bin`), so the kernel carries no symbol table and nothing has to be
+looked up from inside the failure being reported. `tools/qemu.sh` writes the annotated copy
+as a **sidecar** — `<log>.log` → `<log>.sym.log` — for *every* run, so a leg that discards
+qemu.sh's stdout still ships symbols in its CI artifacts; verdict greps stay on the raw log,
+and a missing `llvm-symbolizer` degrades to pass-through rather than to a failed run.
+
 ## Detection loses to prevention
 
 The final point. An implementer who cannot review the hardest code should rely on
