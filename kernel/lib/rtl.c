@@ -18,8 +18,7 @@ void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source)
     target->MaximumLength = (USHORT)(target->Length + sizeof(WCHAR));
 }
 
-/* ASCII-only upcase: enough for every name the kernel compares (rtl.h). */
-static WCHAR RtlpUpcase(WCHAR c)
+WCHAR RtlUpcaseUnicodeChar(WCHAR c)
 {
     if (c >= 'a' && c <= 'z')
     {
@@ -42,8 +41,8 @@ BOOLEAN RtlEqualUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2
         WCHAR c2 = s2->Buffer[i];
         if (caseInsensitive)
         {
-            c1 = RtlpUpcase(c1);
-            c2 = RtlpUpcase(c2);
+            c1 = RtlUpcaseUnicodeChar(c1);
+            c2 = RtlUpcaseUnicodeChar(c2);
         }
         if (c1 != c2)
         {
@@ -68,8 +67,8 @@ LONG RtlCompareUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2,
         WCHAR c2 = s2->Buffer[i];
         if (caseInsensitive)
         {
-            c1 = RtlpUpcase(c1);
-            c2 = RtlpUpcase(c2);
+            c1 = RtlUpcaseUnicodeChar(c1);
+            c2 = RtlUpcaseUnicodeChar(c2);
         }
         if (c1 != c2)
         {

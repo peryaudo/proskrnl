@@ -15,6 +15,14 @@
  * clang-format, which splits it from the string. */
 #define WSTR(s) u##s
 
+/* ASCII-only upcase — the one authority for case folding in this kernel
+ * (Art. 11): the Ob namespace, the I/O directory-mask matcher and the FAT32
+ * name comparison all fold through it, so they cannot disagree about what
+ * two names mean. NT folds through a 64 KiB upcase table we deliberately do
+ * not carry (docs/03 "Name case folding"), so every character outside a-z
+ * comes back unchanged. */
+WCHAR RtlUpcaseUnicodeChar(WCHAR c);
+
 void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source);
 BOOLEAN RtlEqualUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2,
                               BOOLEAN caseInsensitive);

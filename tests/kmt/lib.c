@@ -204,6 +204,22 @@ static void test_string_starts_with(void)
 
 /* --- Rtl counted-string helpers ------------------------------------------ */
 
+static void test_rtl_upcase_unicode_char(void)
+{
+    ok(RtlUpcaseUnicodeChar('a') == 'A', "'a' not upcased");
+    ok(RtlUpcaseUnicodeChar('z') == 'Z', "'z' not upcased");
+    ok(RtlUpcaseUnicodeChar('m') == 'M', "'m' not upcased");
+    ok(RtlUpcaseUnicodeChar('A') == 'A', "an upper-case letter was changed");
+    ok(RtlUpcaseUnicodeChar('0') == '0', "a digit was changed");
+    /* The boundaries either side of a-z: '`' (0x60) and '{' (0x7B). */
+    ok(RtlUpcaseUnicodeChar('`') == '`', "the character below 'a' was folded");
+    ok(RtlUpcaseUnicodeChar('{') == '{', "the character above 'z' was folded");
+    /* ASCII-only (rtl.h): no upcase table, so nothing above 0x7F moves. */
+    ok(RtlUpcaseUnicodeChar(0x00E9) == 0x00E9, "U+00E9 folded despite ASCII-only contract");
+    ok(RtlUpcaseUnicodeChar(0x0430) == 0x0430, "U+0430 folded despite ASCII-only contract");
+    ok(RtlUpcaseUnicodeChar(0) == 0, "NUL was changed");
+}
+
 static void test_rtl_init_unicode_string(void)
 {
     UNICODE_STRING str;
@@ -335,6 +351,7 @@ int kmt_run_lib(void)
     KMT_RUN(test_string_length);
     KMT_RUN(test_string_equals);
     KMT_RUN(test_string_starts_with);
+    KMT_RUN(test_rtl_upcase_unicode_char);
     KMT_RUN(test_rtl_init_unicode_string);
     KMT_RUN(test_rtl_equal_unicode_string);
     KMT_RUN(test_rtl_copy_unicode_string);
