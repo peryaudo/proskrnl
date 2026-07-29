@@ -734,7 +734,7 @@ fatstress() {
 }
 
 # Exhaustive torn-write testing (docs/08): boot a minimal image whose
-# workload module (user/init-tests/torn_workload.c) exercises every
+# workload module (tests/boot/torn_workload.c) exercises every
 # disk-write shape while QEMU's blklogwrites driver logs each block write
 # (tools/qemu.sh WRITE_LOG); then tests/run/tornreplay.py applies every
 # prefix of the log to a pristine copy of the partition — each prefix is a

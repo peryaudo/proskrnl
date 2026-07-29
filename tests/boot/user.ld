@@ -1,4 +1,4 @@
-/* user/init-tests/user.ld — flat-binary layout for M4 user clients.
+/* tests/boot/user.ld — flat-binary layout for M4 user clients.
  *
  * The kernel maps a boot module at PSP_IMAGE_BASE (0x400000) and jumps to its
  * first byte (kernel/ps: "its entry point is its first byte"). So _start must

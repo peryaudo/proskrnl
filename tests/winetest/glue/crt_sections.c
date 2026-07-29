@@ -1,5 +1,5 @@
 /*
- * user/wtest/crt_sections.c — the .CRT$X?? boundary symbols for the
+ * tests/winetest/glue/crt_sections.c — the .CRT$X?? boundary symbols for the
  * standalone Wine-test links (M10 stretch, Makefile `wtests`).
  *
  * msvcrt/ucrtbase's implib mainCRTStartup (dlls/msvcrt/crt_init.h) walks the

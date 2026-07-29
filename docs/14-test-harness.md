@@ -126,7 +126,7 @@ tests/
   ntapi/
     ntapi.h              # the harness API (this doc)
     ntapi.c              # freestanding harness impl + the ntapi_start entry
-    syscall/             # generated raw-syscall stubs (user/init-tests flat clients only)
+    syscall/             # generated raw-syscall stubs (tests/boot flat clients only)
     sem_wait/            # dispatcher/wait semantics
     sem_ob/              # object-manager semantics
     sem_mm/              # virtual memory semantics
@@ -142,12 +142,12 @@ tests/
 ```
 
 The winetest gate's binaries are NOT ntapi tests — they are Wine's own `dlls/*/tests`
-objects linked standalone (Makefile `wtests`, glue in `user/wtest/`), swept by the
+objects linked standalone (Makefile `wtests`, glue in `tests/winetest/glue/`), swept by the
 session manager (`user/smss/session.c`) from `C:\wtests\manifest.txt` with a console. The manifest is curated:
 a pair joins only when it exits 0 on BOTH runners (`docs/03` "M10 winetest notes").
 
 (`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
-for the M4/M5-era flat boot modules under `user/init-tests/`.)
+for the M4/M5-era flat boot modules under `tests/boot/`.)
 
 ---
 

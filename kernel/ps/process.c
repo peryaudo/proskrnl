@@ -427,7 +427,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — same
      * discipline as PspCreateUserProcessImage: a TEB id that disagrees with what
      * NtQueryInformationThread reports is exactly the class the ABI probe
-     * convicts (user/init-tests/abi_probe.c). */
+     * convicts (tests/boot/abi_probe.c). */
     uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status) && isPe)
     {

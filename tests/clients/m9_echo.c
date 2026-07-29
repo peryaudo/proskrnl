@@ -1,4 +1,4 @@
-/* user/m9/m9_echo.c — the M9 interactive-echo client (docs/02 "Done when":
+/* tests/clients/m9_echo.c — the M9 interactive-echo client (docs/02 "Done when":
  * input typed into the serial console echoes through conhost).
  *
  * Baked only into the console-mode image (make console-img / run.sh

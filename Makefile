@@ -156,11 +156,11 @@ UCFLAGS   := -std=c11 -target x86_64-unknown-none -ffreestanding \
              -mno-mmx -mno-sse -mno-sse2 -mno-80387 \
              -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
              -O2 -g -Wall -Wextra -Wno-unused-parameter -I.
-ULDFLAGS  := -m elf_x86_64 -static -T user/init-tests/user.ld --build-id=none
+ULDFLAGS  := -m elf_x86_64 -static -T tests/boot/user.ld --build-id=none
 
 # crt0 must lead the link so _start lands at image offset 0 (user.ld).
-USER_RT   := $(BUILD)/user/init-tests/crt0.o \
-             $(BUILD)/user/init-tests/syscall_stubs.o
+USER_RT   := $(BUILD)/tests/boot/crt0.o \
+             $(BUILD)/tests/boot/syscall_stubs.o
 MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
              $(BUILD)/modules/m8_persist.bin \
              $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/m7_smoke.exe \
@@ -199,11 +199,11 @@ DEPFLAGS := -MMD -MP
 # User client objects (own flags; not the kernel's KASAN/kernel-cmodel build).
 # These must precede the generic kernel rules: GNU Make 3.81 (macOS's stock
 # make) picks the FIRST matching pattern rule, not the shortest-stem one.
-$(BUILD)/user/init-tests/%.o: user/init-tests/%.c
+$(BUILD)/tests/boot/%.o: tests/boot/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD)/user/init-tests/%.o: user/init-tests/%.S
+$(BUILD)/tests/boot/%.o: tests/boot/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
@@ -221,16 +221,16 @@ $(KERNEL): $(OBJ) arch/x86_64/linker.ld
 
 # The generated syscall stubs live under tests/ntapi/syscall (shared with the
 # ntapi proskrnl target); build them into the user runtime.
-$(BUILD)/user/init-tests/syscall_stubs.o: tests/ntapi/syscall/syscall_stubs.S
+$(BUILD)/tests/boot/syscall_stubs.o: tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD)/modules/%.bin: $(BUILD)/user/init-tests/%.o $(USER_RT) user/init-tests/user.ld
+$(BUILD)/modules/%.bin: $(BUILD)/tests/boot/%.o $(USER_RT) tests/boot/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(ULDFLAGS) $(USER_RT) $< -o $(@:.bin=.elf)
 	$(OBJCOPY) --set-section-flags .data=alloc,load,contents -O binary $(@:.bin=.elf) $@
 
-$(BUILD)/modules/pe_smoke.exe: user/init-tests/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
+$(BUILD)/modules/pe_smoke.exe: tests/boot/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) $^ -o $@
 
@@ -238,7 +238,7 @@ $(BUILD)/modules/pe_smoke.exe: user/init-tests/pe_smoke.c tests/ntapi/syscall/sy
 # --export-all-symbols gives the image an export directory so the kernel's
 # loader can resolve KiUser{Exception,Apc}Dispatcher from it (as it will from
 # ntdll) — kernel/ps/process.c PspResolveUserDispatchers.
-$(BUILD)/modules/m7_smoke.exe: user/init-tests/m7_smoke.c user/init-tests/m7_dispatch.S \
+$(BUILD)/modules/m7_smoke.exe: tests/boot/m7_smoke.c tests/boot/m7_dispatch.S \
                                tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) -Wl,--export-all-symbols $^ -o $@
@@ -248,7 +248,7 @@ $(BUILD)/modules/m7_smoke.exe: user/init-tests/m7_smoke.c user/init-tests/m7_dis
 # agreement, the cookie, KUSER_SHARED_DATA ticking) on every boot — run by
 # kernel/init/main.c KiRunAbiProbe via the "abi" module cmdline. The entry
 # stub captures the entry state before any compiler-generated code runs.
-$(BUILD)/modules/abi_probe.exe: user/init-tests/abi_probe.c user/init-tests/abi_probe.S \
+$(BUILD)/modules/abi_probe.exe: tests/boot/abi_probe.c tests/boot/abi_probe.S \
                                 tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) $^ -o $@
@@ -277,11 +277,11 @@ $(WINE_PE_DLLS):
 	@exit 1
 
 HELLO := $(BUILD)/modules/hello.exe
-$(HELLO): user/hello/hello.c user/hello/hello_seh.S $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
+$(HELLO): tests/clients/hello.c tests/clients/hello_seh.S $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
 	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=hello_start \
-	    user/hello/hello.c user/hello/hello_seh.S \
+	    tests/clients/hello.c tests/clients/hello_seh.S \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
 # The session manager (docs/02 M8, then some): the ONE user image the kernel
@@ -302,11 +302,11 @@ $(SMSS): user/smss/smss.c user/smss/launch.c user/smss/session.c \
 # write through kernelbase -> ConDrv -> conhost. Win32-level on purpose —
 # it exercises the same kernelbase paths a real console app takes.
 M9SMOKE := $(BUILD)/modules/m9_smoke.exe
-$(M9SMOKE): user/m9/m9_smoke.c $(WINE_PE_DLLS)
+$(M9SMOKE): tests/clients/m9_smoke.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
 	    -O1 -g0 -Wall -Wextra -Wl,--entry=m9_start \
-	    user/m9/m9_smoke.c \
+	    tests/clients/m9_smoke.c \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
@@ -315,11 +315,11 @@ $(M9SMOKE): user/m9/m9_smoke.c $(WINE_PE_DLLS)
 # below (it blocks on console input, which the plain headless loop must
 # never do).
 M9ECHO := $(BUILD)/modules/m9_echo.exe
-$(M9ECHO): user/m9/m9_echo.c $(WINE_PE_DLLS)
+$(M9ECHO): tests/clients/m9_echo.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
 	    -O1 -g0 -Wall -Wextra -Wl,--entry=m9_start \
-	    user/m9/m9_echo.c \
+	    tests/clients/m9_echo.c \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
@@ -1117,14 +1117,14 @@ gui5con-img: $(IMG_GUI5CON)
 # objects (built by tools/setup_linux.sh) are linked UNMODIFIED; the CRT
 # entry is the implib's own mainCRTStartup (dlls/msvcrt/crt_main.c — the
 # entry winegcc itself picks for CRT exes), so the only glue is
-# user/wtest/user32_stubs.c standing in the user32 imports the ntdll and
+# tests/winetest/glue/user32_stubs.c standing in the user32 imports the ntdll and
 # kernel32 test objects reference (user32 is the M12 GUI path, off the image
 # per Art. 7; subtests whose assertions need the real user32 fail identically
 # on both runners and stay off the manifest).
 WTESTS := $(BUILD)/wtests
 WT_LINK := $(MINGW) -std=gnu11 -O1 -g0 -fno-builtin -nostdlib -nostartfiles \
     -Wl,--entry=mainCRTStartup
-WT_GLUE := user/wtest/crt_sections.c
+WT_GLUE := tests/winetest/glue/crt_sections.c
 WT_LIBS := third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
     $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
     $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
@@ -1161,18 +1161,18 @@ $(WT_NTDLL_OBJS) $(WT_KERNEL32_OBJS) $(WT_MSVCRT_OBJS) $(WT_UCRTBASE_OBJS) $(WT_
 	@echo "error: $@ missing - build the pinned Wine test modules first (tools/setup_linux.sh)" >&2
 	@exit 1
 
-$(WTESTS)/ntdll_test.exe: $(WT_NTDLL_OBJS) user/wtest/user32_stubs.c $(WT_GLUE)
+$(WTESTS)/ntdll_test.exe: $(WT_NTDLL_OBJS) tests/winetest/glue/user32_stubs.c $(WT_GLUE)
 	@mkdir -p $(dir $@)
-	$(WT_LINK) $(WT_NTDLL_OBJS) user/wtest/user32_stubs.c $(WT_GLUE) \
+	$(WT_LINK) $(WT_NTDLL_OBJS) tests/winetest/glue/user32_stubs.c $(WT_GLUE) \
 	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
 
 $(WTESTS)/kernel32_test.exe: $(WT_KERNEL32_OBJS) third_party/wine/dlls/kernel32/tests/resource.res \
-        user/wtest/user32_stubs.c $(WT_GLUE)
+        tests/winetest/glue/user32_stubs.c $(WT_GLUE)
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-windres -J res -O coff third_party/wine/dlls/kernel32/tests/resource.res \
 	    $(WTESTS)/kernel32_resource.res.o
 	$(WT_LINK) $(WT_KERNEL32_OBJS) $(WTESTS)/kernel32_resource.res.o \
-	    user/wtest/user32_stubs.c $(WT_GLUE) \
+	    tests/winetest/glue/user32_stubs.c $(WT_GLUE) \
 	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
 
 $(WTESTS)/msvcrt_test.exe: $(WT_MSVCRT_OBJS) $(WT_GLUE)

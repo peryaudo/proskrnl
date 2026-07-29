@@ -1,4 +1,4 @@
-/* user/init-tests/crt0.S — the flat-binary entry stub for M4 user clients.
+/* tests/boot/crt0.S — the flat-binary entry stub for M4 user clients.
  *
  * The kernel enters at _start with a fresh stack (RSP = top of the user
  * stack region) and no arguments. We call main(), then exit the process with

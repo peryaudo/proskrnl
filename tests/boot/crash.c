@@ -1,4 +1,4 @@
-/* user/init-tests/crash.c — the M4 crash-containment client (docs/02):
+/* tests/boot/crash.c — the M4 crash-containment client (docs/02):
  * "a user crash is contained as process termination, not a kernel fault."
  *
  * Deliberately dereferences an unmapped user address. The kernel's trap path
