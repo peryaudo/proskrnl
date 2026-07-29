@@ -133,7 +133,7 @@ proskrnl/
 │   │   │   ├── blit.c               #   dibdrv output → scanout
 │   │   │   ├── cursor.c             #   empty until there is a mouse (GUI-4)
 │   │   │   └── input.c              #   \Device\Input0 → input injection
-│   └── init-tests/                  # M4–M6 flat-binary / minimal-PE test clients
+│                                    # (the boot-module test clients live under tests/)
 │
 ├── third_party/
 │   ├── wine/                        # submodule, SHA-pinned (fork on GitHub recommended)
@@ -146,17 +146,21 @@ proskrnl/
 │
 ├── tests/                           # ★ first-class, expected to exceed kernel size
 │   ├── kmt/                         # in-kernel unit tests (M2–M3: wait/apc/ob)
+│   ├── boot/                        # M4–M8 boot-module clients: flat binaries (crt0.S,
+│   │                                #   user.ld) + minimal PEs, run by the kernel's runners
+│   ├── clients/                     # M7/M9 acceptance PEs over the baked userland
+│   │                                #   (hello.c = ntdll-only + SEH; m9_*.c = kernel32/base)
+│   ├── cui/                         # M10 third-party-CUI stand-ins, full mingw CRT
 │   ├── ntapi/                       # Nt* conformance: ONE PE .exe per test, oracle + proskrnl (docs/14)
 │   │   ├── ntapi.h                  # harness API: START_TEST / ok / todo_proskrnl / skip
 │   │   ├── ntapi.c                  # freestanding harness + runtime side probe + [KTEST] verdicts
-│   │   ├── syscall/                 # generated raw-syscall stubs (user/init-tests flat clients)
+│   │   ├── syscall/                 # generated raw-syscall stubs (tests/boot flat clients)
 │   │   ├── sem_file/                # share modes, info classes, async+APC
 │   │   ├── sem_mm/                  # reserve/commit, guard pages, (later) COW
 │   │   └── sem_wait/                # wait-all/any, alertable, APC interruption
 │   ├── fuzz/                        # differential fuzzer: random Nt* sequences vs. Windows
-│   ├── wine-tests/                  # imported Wine tests + todo_ ledger
-│   │   ├── user32/                  #   msg.c is the trophy
-│   │   └── gdi32/
+│   ├── winetest/                    # the curated winetest gate: manifests + glue/ (the
+│   │                                #   .CRT$X?? boundary symbols and user32 stand-ins)
 │   ├── gui/
 │   │   ├── screenshot.c             # FB hash / PPM dump
 │   │   ├── golden/                  # expected images (desktop.ppm is the goal)

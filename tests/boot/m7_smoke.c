@@ -1,4 +1,4 @@
-/* user/init-tests/m7_smoke.c — the M7 "Done when" client (docs/02).
+/* tests/boot/m7_smoke.c — the M7 "Done when" client (docs/02).
  *
  * A real PE image that exercises the M7 boundary from ring 3 the way an
  * unmodified ntdll would: it reads the byte-exact PEB / TEB / KUSER_SHARED_DATA

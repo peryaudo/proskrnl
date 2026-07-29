@@ -1,4 +1,4 @@
-/* user/m9/m9_smoke.c — the M9 acceptance client (docs/02).
+/* tests/clients/m9_smoke.c — the M9 acceptance client (docs/02).
  *
  * A real MS-ABI PE started by the unmodified Wine ntdll (kernel32 and
  * kernelbase attach at loader time). It proves, from ring 3 and through the

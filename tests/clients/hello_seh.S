@@ -1,4 +1,4 @@
-/* user/hello/hello_seh.S — the guarded region for the M7 SEH acceptance.
+/* tests/clients/hello_seh.S — the guarded region for the M7 SEH acceptance.
  *
  * mingw-gcc has no __try/__except, so the exact frame such a construct
  * compiles to is written by hand: a function with .seh_ unwind directives and

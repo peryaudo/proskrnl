@@ -1,4 +1,4 @@
-/* user/init-tests/torn_workload.c — the deterministic torn-write workload
+/* tests/boot/torn_workload.c — the deterministic torn-write workload
  * (tests/run/run.sh tornwrite; replayed prefix-by-prefix by
  * tests/run/tornreplay.py).
  *

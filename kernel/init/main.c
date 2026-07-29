@@ -230,7 +230,7 @@ static int KiRunM7Modules(void)
  * asserts ring-3 CONVENTIONS rather than features — entry-rsp alignment, the
  * FXSAVE seed values, mapped-header rebasing, TEB/query id agreement, the
  * process cookie, KUSER_SHARED_DATA ticking, the absolute-timeout contract
- * (user/init-tests/abi_probe.c). The checks guard documented contracts no
+ * (tests/boot/abi_probe.c). The checks guard documented contracts no
  * current consumer may exercise yet, so a convention regression names itself
  * here instead of surfacing as a distant Wine crash. Exit 0 = conformant;
  * a missing probe module is itself a failure (the probe must never silently
@@ -476,7 +476,7 @@ static void KiTestMainThread(void *context)
     KiVerifyKernelState();
 
     /* The standing ABI-conformance probe: ring-3 conventions asserted every
-     * boot (user/init-tests/abi_probe.c). Before the M7 clients, so a broken
+     * boot (tests/boot/abi_probe.c). Before the M7 clients, so a broken
      * convention names itself here rather than surfacing as an M7 crash. */
     int abiFailures = KiRunAbiProbe();
     DbgPrint(abiFailures == 0 ? "[KTEST] ABI PASS\n" : "[KTEST] ABI FAIL failures=%d\n",

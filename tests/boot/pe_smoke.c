@@ -1,4 +1,4 @@
-/* user/init-tests/pe_smoke.c — the M5 "Done when" client (docs/02): a real
+/* tests/boot/pe_smoke.c — the M5 "Done when" client (docs/02): a real
  * PE image, loaded by the kernel through NtCreateSection+NtMapViewOfSection's
  * engines, exercising the section syscalls and guard-page stack growth from
  * ring 3.

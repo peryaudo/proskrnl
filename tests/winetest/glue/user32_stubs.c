@@ -1,5 +1,5 @@
 /*
- * user/wtest/user32_stubs.c — user32 stand-ins for the standalone Wine-test
+ * tests/winetest/glue/user32_stubs.c — user32 stand-ins for the standalone Wine-test
  * binaries (M10 stretch, Makefile `wtests`).
  *
  * The ntdll and kernel32 test objects (the pinned tree's own PE build,

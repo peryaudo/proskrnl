@@ -103,7 +103,7 @@ int WINAPI LoadStringW(HINSTANCE instance, UINT id, WCHAR *buffer, int buflen)
     return length;
 }
 
-/* Plain wide formatting; no GUI content (user/wtest/user32_stubs.c does the
+/* Plain wide formatting; no GUI content (tests/winetest/glue/user32_stubs.c does the
  * same over ntdll's _vsnwprintf). */
 int WINAPIV wsprintfW(WCHAR *buffer, const WCHAR *format, ...)
 {

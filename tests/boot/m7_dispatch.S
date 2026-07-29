@@ -1,4 +1,4 @@
-/* user/init-tests/m7_dispatch.S — the M7 native client's ring-3 dispatchers.
+/* tests/boot/m7_dispatch.S — the M7 native client's ring-3 dispatchers.
  *
  * The kernel enters these exactly as it enters Wine's PE ntdll dispatchers
  * (kernel/ps/usermode.c): the register/stack contract is the NT one, but the

@@ -1,4 +1,4 @@
-/* user/init-tests/abi_probe.S — the ABI probe's PE entry stub.
+/* tests/boot/abi_probe.S — the ABI probe's PE entry stub.
  *
  * Captures the machine state the entry-convention checks assert BEFORE any
  * compiler-generated code can disturb it:

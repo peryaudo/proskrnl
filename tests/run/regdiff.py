@@ -41,7 +41,7 @@ ORACLE_RENAMES = [
 # Subtree prefixes (lower-cased); the key itself and everything below it.
 EXCLUDED_SUBTREES = [
     # proskrnl test artifact: the M8 persistence module seeds
-    # HKLM\Software\prsk_m8_persist on every test boot (user/init-tests/
+    # HKLM\Software\prsk_m8_persist on every test boot (tests/boot/
     # m8_persist.c); not firstboot state.
     "machine\\software\\prsk_m8_persist",
     # Host-machine state wineboot derives from the machine it runs on

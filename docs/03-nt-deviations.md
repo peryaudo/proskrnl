@@ -437,12 +437,12 @@ The binaries are standalone links of the pinned tree's own unmodified test
 objects (Makefile `wtests`, the cmd.exe recipe; entry is the msvcrt/ucrtbase
 implib's own `mainCRTStartup`, winegcc's choice, with the `.CRT$X??`
 boundary symbols winebuild would have emitted supplied by
-`user/wtest/crt_sections.c`). Decisions and wrinkles:
+`tests/winetest/glue/crt_sections.c`). Decisions and wrinkles:
 
 - **One binary, two runners (docs/14) — so user32 is stood in at link
   time.** The ntdll/kernel32 test objects declare `IMPORTS = user32`;
   user32 is the GUI-2 path, off the image per Art. 7.
-  `user/wtest/user32_stubs.c` supplies the referenced imports (honest
+  `tests/winetest/glue/user32_stubs.c` supplies the referenced imports (honest
   `ERROR_CALL_NOT_IMPLEMENTED` failures for GUI entities; real
   implementations only where ntdll/msvcrt already carry the semantics).
   A subtest whose assertions need a real window/winstation fails

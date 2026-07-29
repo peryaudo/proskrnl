@@ -210,7 +210,7 @@ the LLM-driven loop (whose only eyes are the logs) does not chase a lie.
   each write via mmap, read via `ReadFile`, write via `WriteFile`, read via mmap, verifying
   a known pattern every time. Mm consistency bugs surface *only* in this form — and
   reliably do.
-- **The standing ABI-conformance probe** — `user/init-tests/abi_probe.c`, a native PE run
+- **The standing ABI-conformance probe** — `tests/boot/abi_probe.c`, a native PE run
   on every boot (`[KTEST] ABI`, kernel runner `KiRunAbiProbe`): cheap one-line checks of
   ring-3 *conventions* rather than features — entry `rsp ≡ 8 (mod 16)` and DF clear, the
   FXSAVE seed control words (on the first thread AND a created one), the mapped PE header

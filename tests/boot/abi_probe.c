@@ -1,4 +1,4 @@
-/* user/init-tests/abi_probe.c — the standing ABI-conformance probe.
+/* tests/boot/abi_probe.c — the standing ABI-conformance probe.
  *
  * A native PE client run on EVERY boot (boot-module cmdline "abi",
  * kernel/init/main.c KiRunAbiProbe) that asserts ring-3 CONVENTIONS rather

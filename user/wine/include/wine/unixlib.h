@@ -9,7 +9,7 @@
  * (GUI-2) is its exception macros. On unix they are a setjmp trampoline over
  * ntdll_set_exception_jmp_buf, because unix code has no SEH frame to hang a
  * handler on; PE code does, and proskrnl already runs Wine's PE flavour of
- * these macros (kernelbase's own __TRY, user/hello/hello_seh.S). So the unix
+ * these macros (kernelbase's own __TRY, tests/clients/hello_seh.S). So the unix
  * definitions are dropped and wine/exception.h's are taken instead, with
  * their handlers coming from the pinned tree's own libwinecrt0.a.
  *

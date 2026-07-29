@@ -1,4 +1,4 @@
-/* user/init-tests/alloc_wait.c — the M4 "Done when" client (docs/02):
+/* tests/boot/alloc_wait.c — the M4 "Done when" client (docs/02):
  * user-mode code allocates memory and waits on an event via syscalls.
  *
  * A flat binary issuing raw Nt* through the generated stubs

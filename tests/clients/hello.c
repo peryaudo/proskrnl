@@ -1,4 +1,4 @@
-/* user/hello/hello.c — the M7 Wine-bring-up acceptance client (docs/02
+/* tests/clients/hello.c — the M7 Wine-bring-up acceptance client (docs/02
  * "Done when": a hello.exe linked only against ntdll starts and exits; an
  * SEH test — a deliberate access violation caught by __except — passes).
  *

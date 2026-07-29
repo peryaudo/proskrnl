@@ -1,4 +1,4 @@
-/* user/init-tests/m8_persist.c — the M8 persistence acceptance client
+/* tests/boot/m8_persist.c — the M8 persistence acceptance client
  * (docs/02 "Done when: a value written by a user program survives reboot").
  *
  * A flat binary issuing raw Nt* through the generated stubs, run as a boot

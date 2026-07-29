@@ -10,6 +10,15 @@ The project's lifeline (Article 5, `docs/08`). Layout and conventions are specif
   - `ntapi.h` / `ntapi.c` — the harness (`START_TEST`, `ok`, `todo_proskrnl`, `skip`).
   - `sem_wait/`, `sem_ob/`, `sem_mm/`, `sem_file/`, `sem_ps/`, `sem_reg/`, `sem_pipe/` —
     semantic buckets.
+- `boot/` — the M4–M8 boot-module clients the kernel's own runners launch: flat binaries
+  (`crt0.S` + `user.ld`) and minimal PEs over the generated raw-syscall stubs, plus the
+  standing `abi_probe.c` (docs/08).
+- `clients/` — the M7/M9 acceptance PEs that run over the baked userland: `hello.c`
+  (ntdll-only + a hand-written SEH frame) and `m9_{smoke,echo}.c` (kernel32/kernelbase).
+- `cui/` — the M10 third-party-CUI stand-ins, built with the plain mingw toolchain and its
+  full CRT (`hello_crt.c`, `upcase.c`, `svcdemo.c`, `looper.c`, `jobtool.c`).
+- `winetest/` — the curated winetest gate: the manifests, plus `glue/` (the `.CRT$X??`
+  boundary symbols and the user32 stand-ins the standalone links need).
 - `fuzz/` — the differential fuzzer; its interpreter is one more single-binary client.
 - `run/run.sh` — the runner: `oracle` (spec gate), `proskrnl` (regression gate), plus
   `fuzz`, `persist`, `console`, and the FS battery legs `fatinterop` (mtools-baked
