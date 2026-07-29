@@ -282,6 +282,13 @@ as a **sidecar** — `<log>.log` → `<log>.sym.log` — for *every* run, so a l
 qemu.sh's stdout still ships symbols in its CI artifacts; verdict greps stay on the raw log,
 and a missing `llvm-symbolizer` degrades to pass-through rather than to a failed run.
 
+That degradation is silent by design, which is why the symbolizer has its own gate:
+`tests/run/symcheck.sh` (in `make test`) asserts that the green boot's own dumps — the `#BP`
+trap self-test and `crash.bin`'s contained access violation — still resolve to
+`Name+0xoff (file:line)`. It convicts the one real coupling of the out-of-kernel design: the
+script recognizes addresses by their *printed shape* (field width, kernel link base,
+`PSP_IMAGE_BASE`, the `[USERFAULT]` block layout), and nothing else forces those to agree.
+
 ## Detection loses to prevention
 
 The final point. An implementer who cannot review the hardest code should rely on
