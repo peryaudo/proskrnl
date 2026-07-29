@@ -305,6 +305,7 @@ jobs:
           # dosdevices/z: symlinks to /, and walking it EACCESes the upload.
           path: |
             build/serial.log
+            build/serial.sym.log
             build/tests/*.log
             build/tests/*.ppm
             build/tests/wtests/*.log
