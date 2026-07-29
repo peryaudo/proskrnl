@@ -1124,6 +1124,13 @@ gui() {
 # back (Art. 6), plus the fact that everything ABOVE the driver is
 # unmodified Wine: user32, gdi32, comctl32 and winemine are the pinned
 # tree's own binaries, and win32u is its own sources compiled as PE.
+#
+# The stack under those binaries is the shipping one: wineserver-lite runs as
+# its own process here exactly as it does on the gui3/4/5 images. This leg
+# used to be the last consumer of win32u's in-process dispatch mode, which
+# made it a test of a superseded arrangement as much as of the applet; what
+# it uniquely convicts -- a STOCK unmodified Wine app reaching the scanout --
+# is unchanged, and now says something about the system that ships.
 gui2() {
     make -C "$ROOT" gui2-img >/dev/null
     local img="$ROOT/build/proskrnl-gui2.hdd"
@@ -1132,15 +1139,15 @@ gui2() {
     mkdir -p "$dir"
     rm -f "$sock" "$ppm" "$log"
 
-    # 1024M like the console leg: no COW means every process copies the
-    # DLLs it maps, and this image's userland is the whole GUI stack.
+    # gui3's sizing, for gui3's reason: no COW, and this image now runs the
+    # server beside the applet, each copying the images it maps.
     #
     # PASS_RE deliberately never matches: qemu.sh's verdict-killer reaps
     # QEMU GRACE seconds after the regex appears, and this leg still needs
     # the live QMP socket for the screendump AFTER the window marker. QEMU's
     # lifetime is owned here (qmpctl quit below), with qemu.sh's TIMEOUT as
     # the wedged-run backstop.
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1024M}" \
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='PRSK-GUI2-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
@@ -1161,6 +1168,12 @@ gui2() {
         return 1
     }
 
+    # The server first, for the localizing reason every other gui leg awaits
+    # it: a server that never came up otherwise surfaces as "no window", 900
+    # seconds later, pointing at the wrong layer.
+    if ! await '\[KTEST\] gui3 server READY'; then
+        gui2_fail "wineserver-lite never published its transport"; return 1
+    fi
     if ! await '\[KTEST\] gui2 mode '; then
         gui2_fail "winefb.drv never mapped the scanout"; return 1
     fi

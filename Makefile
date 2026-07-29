@@ -926,15 +926,27 @@ FONTFILES := $(foreach f,$(WINE_FONTS),win:$(f)=windows/fonts/$(notdir $(f)))
 GUI2FILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
              $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
              win:$(WINEMINE)=winemine.exe
 
 # The GUI-2 image (tests/run/run.sh gui2): the standard image plus the Wine
 # GUI stack and winemine.exe, whose presence makes the boot run it
-# (kernel/init/main.c KiRunGui2). gui_smoke.exe is deliberately NOT here --
-# the two GUI legs stay disjoint, each convicted by its own client.
+# (user/smss/session.c). gui_smoke.exe is deliberately NOT here -- the two
+# GUI legs stay disjoint, each convicted by its own client.
+#
+# The server ships here like it does on every other win32u image (GUI-3
+# onward). Until this change it did not, and that ABSENCE was the only thing
+# keeping win32u's in-process dispatch mode alive: the mode was probed from
+# whether wineserver-lite.exe was on the volume, so this one image was the
+# sole remaining caller of an arrangement GUI-3 superseded. What the leg
+# convicts is unchanged and is why it stays -- it is the only leg running a
+# STOCK unmodified Wine applet end to end onto the scanout, where gui3/4/5
+# run purpose-built clients that report. It now convicts that over the
+# arrangement the system actually ships.
 IMG_GUI2 := $(BUILD)/proskrnl-gui2.hdd
 $(IMG_GUI2): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINEMINE) \
+        $(WINESERVER_LITE) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI2) $(MODULE_SPECS) $(WINFILES) $(GUI2FILES)
