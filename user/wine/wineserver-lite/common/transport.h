@@ -46,10 +46,15 @@
 /* Per-slot completion events: __prsk_srv_done_<index>, decimal, no padding. */
 #define PRSK_SRV_DONE_FMT L"\\BaseNamedObjects\\__prsk_srv_done_%u"
 
-/* The image the client probes to decide whether a server is expected at
- * all. Present => attach or fail loudly; absent => in-process mode, which
- * is what the gui2 image still is. */
+/* The server image. Every image carrying win32u.dll carries it, so nothing
+ * probes for it to decide how to talk to the server -- there is one way.
+ * conhost reads it to tell a GUI image from a CUI one (proskrnl_glue.c),
+ * which is a question about the IMAGE, not about the transport. */
 #define PRSK_SRV_IMAGE L"\\??\\C:\\windows\\system32\\wineserver-lite.exe"
+
+/* Serial diagnostics for both links (srv_glue.c). [KTEST]/[PANIC] prefixes,
+ * human text after -- the kernel's own convention (docs/08). */
+extern void prsk_log( const char *format, ... );
 
 /* One slot per client THREAD, not per process: a thread blocks in its own
  * call, so two threads of one process must not share a slot. 64 is the

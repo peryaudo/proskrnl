@@ -1176,6 +1176,16 @@ GUI process (`user/wine/`, docs/07 route (a)). Three shortcuts that arrangement 
 deliberate, and each is a delta to re-examine at GUI-3, when wineserver-lite becomes a
 process again.
 
+**The arrangement itself — RETIRED after GUI-5.** GUI-3 made wineserver-lite a process but
+did not remove the in-process mode, because the gui2 test image kept selecting it: the mode
+was probed from whether `wineserver-lite.exe` was on the boot volume, and that one image
+shipped without it. So a superseded arrangement stayed alive — and stayed *mandatory*, since
+every GUI change had to be correct in both modes — because a test pinned it. The gui2 image
+now carries the server like every other win32u image; `wine_server_call` has one path; and
+win32u.dll no longer links the object model at all (it linked ~186 KB of it, dormant, into
+every GUI process — a second copy of the desktop state machine, which is the parallel
+authority Art. 11 is about). The notes below stay as the record of what GUI-2 was.
+
 **One window-station directory — RETIRED at GUI-3.** `NtUserCreateWindowStation` names
 "WinSta0" relative to a handle on `\Sessions\<id>\Windows\WindowStations`, and that handle
 comes from the KERNEL namespace (`NtOpenDirectoryObject`), which the in-process server had
@@ -1207,8 +1217,8 @@ the second check to protect.
 **One process, so any process handle names it — RETIRED at GUI-3.** GUI-2's
 `get_process_from_handle` returned the one process record for any handle a GUI request
 carried, `get_process_from_id` accepted only that process's id, and `enum_processes` visited
-the one. The server now keeps a list of clients — the in-process build registers itself as
-the single one at bringup, so there is one code path rather than two — and
+the one. The server now keeps a list of clients — it mints its own record at bringup so the
+list is never empty, and every transport client joins it through the same constructor — and
 `get_process_from_id`/`enum_processes` answer from it truthfully.
 
 `get_process_from_handle` is the exception, and it now **refuses loudly** instead of
@@ -1483,9 +1493,11 @@ and their reasons:
   window_glue.c define a link-time capability flag the shared entry branches on. A disk
   probe of the server image was rejected: gui3/gui4/guiwtest images carry wineserver-lite
   *and* need the headless conhost (their verdicts ride serial). The windowed binary still
-  probes `PRSK_SRV_IMAGE`, but only as a refusal — windowed conhost on a serverless image
-  would make win32u go in-process and conhost the desktop's OWNER (the split-brain
-  `user/wine/wineserver-lite/client/call.c` names); it exits loudly instead (G12).
+  probes `PRSK_SRV_IMAGE`, but only as a refusal — a windowed conhost on a serverless image
+  has no desktop to draw on, and would otherwise discover that as a win32u bringup failure
+  during Ldr init; it exits loudly by name instead (G12). (Before the in-process dispatch
+  mode was deleted the same probe prevented something worse: conhost would have become the
+  desktop's OWNER, the split-brain `user/wine/wineserver-lite/client/call.c` used to name.)
 - **comctl32 is a manual delay-load** (`user/wine/programs/conhost/window_glue.c`),
   mirroring upstream's DELAYIMPORT: reachable only from the config dialog, resolved by LoadLibrary on first
   call, refusing with the API's real failure shapes if absent. No load-time import of a
