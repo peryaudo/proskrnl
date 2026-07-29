@@ -12,32 +12,13 @@
 #include "drivers/virtio/blk.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
+#include "kernel/lib/le.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
 
-/* --- little-endian field readers (the disk format is little-endian and so
- * is x86-64, but unaligned loads through memcpy keep UBSan quiet) --------- */
-static uint16_t FatRead16(const unsigned char *p)
-{
-    uint16_t v;
-    memcpy(&v, p, 2);
-    return v;
-}
-static uint32_t FatRead32(const unsigned char *p)
-{
-    uint32_t v;
-    memcpy(&v, p, 4);
-    return v;
-}
-static uint64_t FatRead64(const unsigned char *p)
-{
-    uint64_t v;
-    memcpy(&v, p, 8);
-    return v;
-}
 /* --- sector I/O ------------------------------------------------------------ */
 
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer)
@@ -235,13 +216,13 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     fcb->attributes = sfn[11];
     fcb->isDirectory = (sfn[11] & FAT_ATTR_DIRECTORY) != 0;
     fcb->createTimeTenth = sfn[13];
-    fcb->createTime = FatRead16(sfn + 14);
-    fcb->createDate = FatRead16(sfn + 16);
-    fcb->accessDate = FatRead16(sfn + 18);
-    fcb->writeTime = FatRead16(sfn + 22);
-    fcb->writeDate = FatRead16(sfn + 24);
-    fcb->firstCluster = ((ULONG)FatRead16(sfn + 20) << 16) | FatRead16(sfn + 26);
-    fcb->fileSize = FatRead32(sfn + 28);
+    fcb->createTime = KiReadLe16(sfn + 14);
+    fcb->createDate = KiReadLe16(sfn + 16);
+    fcb->accessDate = KiReadLe16(sfn + 18);
+    fcb->writeTime = KiReadLe16(sfn + 22);
+    fcb->writeDate = KiReadLe16(sfn + 24);
+    fcb->firstCluster = ((ULONG)KiReadLe16(sfn + 20) << 16) | KiReadLe16(sfn + 26);
+    fcb->fileSize = KiReadLe32(sfn + 28);
     MiInitializePageCache(&fcb->cache);
     fcb->cacheLoaded = FALSE;
     fcb->openObjectCount = 0;
@@ -396,13 +377,13 @@ static NTSTATUS FatFindDataPartition(uint64_t *firstLbaOut)
     }
     /* Signature: ASCII "EFI PART" = 64-bit 0x5452415020494645 (UEFI 2.10
      * Table 5.5). */
-    if (FatRead64(sector + 0) != 0x5452415020494645ULL)
+    if (KiReadLe64(sector + 0) != 0x5452415020494645ULL)
     {
         return STATUS_UNRECOGNIZED_VOLUME;
     }
-    uint64_t entryArrayLba = FatRead64(sector + 72);
-    uint32_t entryCount = FatRead32(sector + 80);
-    uint32_t entrySize = FatRead32(sector + 84);
+    uint64_t entryArrayLba = KiReadLe64(sector + 72);
+    uint32_t entryCount = KiReadLe32(sector + 80);
+    uint32_t entrySize = KiReadLe32(sector + 84);
     if (entrySize < 128 || entrySize > FAT_SECTOR_SIZE)
     {
         return STATUS_UNRECOGNIZED_VOLUME;
@@ -435,7 +416,7 @@ static NTSTATUS FatFindDataPartition(uint64_t *firstLbaOut)
         {
             continue;
         }
-        *firstLbaOut = FatRead64(entry + 32); /* StartingLBA (UEFI Table 5.6) */
+        *firstLbaOut = KiReadLe64(entry + 32); /* StartingLBA (UEFI Table 5.6) */
         return STATUS_SUCCESS;
     }
     return STATUS_UNRECOGNIZED_VOLUME;
@@ -463,16 +444,16 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     }
 
     /* BPB fields by offset (spec §3.1/§3.3). */
-    ULONG bytesPerSector = FatRead16(boot + 11);
+    ULONG bytesPerSector = KiReadLe16(boot + 11);
     ULONG sectorsPerCluster = boot[13];
-    ULONG reservedSectors = FatRead16(boot + 14);
+    ULONG reservedSectors = KiReadLe16(boot + 14);
     ULONG fatCount = boot[16];
-    ULONG rootEntryCount = FatRead16(boot + 17);
-    ULONG totalSectors16 = FatRead16(boot + 19);
-    ULONG fatSize16 = FatRead16(boot + 22);
-    ULONG totalSectors32 = FatRead32(boot + 32);
-    ULONG fatSize32 = FatRead32(boot + 36);
-    ULONG rootCluster = FatRead32(boot + 44);
+    ULONG rootEntryCount = KiReadLe16(boot + 17);
+    ULONG totalSectors16 = KiReadLe16(boot + 19);
+    ULONG fatSize16 = KiReadLe16(boot + 22);
+    ULONG totalSectors32 = KiReadLe32(boot + 32);
+    ULONG fatSize32 = KiReadLe32(boot + 36);
+    ULONG rootCluster = KiReadLe32(boot + 44);
 
     if (bytesPerSector != FAT_SECTOR_SIZE || sectorsPerCluster == 0 || reservedSectors == 0 ||
         fatCount == 0)
@@ -518,7 +499,7 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
      * offsets Wine's mountmgr reads for a FAT32 superblock (0x43/0x47,
      * dlls/mountmgr.sys/device.c VOLUME_GetSuperblock{Serial,Label}).
      * "NO NAME    " is the spec's no-label sentinel (§3.3 BS_VolLab). */
-    volume->volumeSerial = FatRead32(boot + 67);
+    volume->volumeSerial = KiReadLe32(boot + 67);
     ULONG labelUnits = 11;
     while (labelUnits > 0 && (boot[71 + labelUnits - 1] == ' ' || boot[71 + labelUnits - 1] == 0))
     {
@@ -658,8 +639,7 @@ NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBy
         {
             break;
         }
-        if (entry[0] == 0xE5 ||
-            (entry[11] & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME)
+        if (entry[0] == 0xE5 || (entry[11] & FAT_ATTR_LONG_NAME_MASK) == FAT_ATTR_LONG_NAME)
         {
             continue;
         }

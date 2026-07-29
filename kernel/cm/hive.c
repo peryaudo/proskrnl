@@ -48,6 +48,7 @@
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/dbgprint.h"
+#include "kernel/lib/le.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
@@ -78,39 +79,6 @@ void CmpInitializeHiveLock(void)
 void CmpSetHiveReady(void)
 {
     CmpHiveReady = TRUE;
-}
-
-/* --- unaligned little-endian accessors ------------------------------------- */
-
-static void CmpPut16(UCHAR *p, USHORT v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-static void CmpPut32(UCHAR *p, ULONG v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-static void CmpPut64(UCHAR *p, ULONGLONG v)
-{
-    memcpy(p, &v, sizeof(v));
-}
-static USHORT CmpGet16(const UCHAR *p)
-{
-    USHORT v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-static ULONG CmpGet32(const UCHAR *p)
-{
-    ULONG v;
-    memcpy(&v, p, sizeof(v));
-    return v;
-}
-static ULONGLONG CmpGet64(const UCHAR *p)
-{
-    ULONGLONG v;
-    memcpy(&v, p, sizeof(v));
-    return v;
 }
 
 /* --- serialize -------------------------------------------------------------- */
@@ -148,11 +116,11 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
     USHORT nameBytes = CmpPersistedNameBytes(node);
     *cursor++ = CMP_TAG_KEY;
     *cursor++ = node->isLink ? 1 : 0;
-    CmpPut16(cursor, nameBytes / sizeof(WCHAR));
+    KiWriteLe16(cursor, nameBytes / sizeof(WCHAR));
     cursor += 2;
-    CmpPut64(cursor, (ULONGLONG)node->lastWriteTime.QuadPart);
+    KiWriteLe64(cursor, (ULONGLONG)node->lastWriteTime.QuadPart);
     cursor += 8;
-    CmpPut32(cursor, node->valueCount);
+    KiWriteLe32(cursor, node->valueCount);
     cursor += 4;
     memcpy(cursor, node->name.Buffer, nameBytes);
     cursor += nameBytes;
@@ -161,11 +129,11 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
         const CMP_VALUE *value = CONTAINING_RECORD(e, CMP_VALUE, listEntry);
         *cursor++ = CMP_TAG_VALUE;
         *cursor++ = 0;
-        CmpPut16(cursor, value->name.Length / sizeof(WCHAR));
+        KiWriteLe16(cursor, value->name.Length / sizeof(WCHAR));
         cursor += 2;
-        CmpPut32(cursor, value->type);
+        KiWriteLe32(cursor, value->type);
         cursor += 4;
-        CmpPut32(cursor, value->dataLength);
+        KiWriteLe32(cursor, value->dataLength);
         cursor += 4;
         memcpy(cursor, value->name.Buffer, value->name.Length);
         cursor += value->name.Length;
@@ -221,9 +189,9 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         {
             return FALSE;
         }
-        USHORT nameChars = CmpGet16(p + 2);
-        ULONG type = CmpGet32(p + 4);
-        ULONG dataBytes = CmpGet32(p + 8);
+        USHORT nameChars = KiReadLe16(p + 2);
+        ULONG type = KiReadLe32(p + 4);
+        ULONG dataBytes = KiReadLe32(p + 8);
         const UCHAR *nameBytes, *dataStart, *pad;
         if (!CmpReaderTake(reader, (ULONGLONG)nameChars * sizeof(WCHAR), &nameBytes) ||
             !CmpReaderTake(reader, dataBytes, &dataStart) ||
@@ -260,9 +228,9 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         {
             return FALSE;
         }
-        USHORT nameChars = CmpGet16(header);
-        ULONGLONG lastWrite = CmpGet64(header + 2);
-        ULONG childValues = CmpGet32(header + 10);
+        USHORT nameChars = KiReadLe16(header);
+        ULONGLONG lastWrite = KiReadLe64(header + 2);
+        ULONG childValues = KiReadLe32(header + 10);
         const UCHAR *nameBytes;
         if (nameChars == 0 ||
             !CmpReaderTake(reader, (ULONGLONG)nameChars * sizeof(WCHAR), &nameBytes))
@@ -384,16 +352,16 @@ void CmpLoadHive(void)
     }
 
     BOOLEAN ok = FALSE;
-    if (CmpGet32(buffer) == CMP_HIVE_MAGIC && CmpGet32(buffer + 4) == CMP_HIVE_VERSION &&
-        CmpGet32(buffer + 8) == length)
+    if (KiReadLe32(buffer) == CMP_HIVE_MAGIC && KiReadLe32(buffer + 4) == CMP_HIVE_VERSION &&
+        KiReadLe32(buffer + 8) == length)
     {
         CMP_HIVE_READER reader = {buffer, length, CMP_HIVE_HEADER_BYTES};
         const UCHAR *p;
         /* The root record: tag, flags, nameChars == 0, time, valueCount. */
-        if (CmpReaderTake(&reader, 16, &p) && p[0] == CMP_TAG_KEY && CmpGet16(p + 2) == 0)
+        if (CmpReaderTake(&reader, 16, &p) && p[0] == CMP_TAG_KEY && KiReadLe16(p + 2) == 0)
         {
-            CmpRootNode->lastWriteTime.QuadPart = (LONGLONG)CmpGet64(p + 4);
-            ok = CmpParseKeyBody(&reader, CmpRootNode, CmpGet32(p + 12), 0) &&
+            CmpRootNode->lastWriteTime.QuadPart = (LONGLONG)KiReadLe64(p + 4);
+            ok = CmpParseKeyBody(&reader, CmpRootNode, KiReadLe32(p + 12), 0) &&
                  reader.offset == reader.length;
         }
     }
@@ -424,10 +392,10 @@ void CmpSaveHive(void)
         DbgPrint("cm: hive save skipped - out of pool\n");
         return;
     }
-    CmpPut32(buffer, 0); /* magic goes in only after the body is on disk */
-    CmpPut32(buffer + 4, CMP_HIVE_VERSION);
-    CmpPut32(buffer + 8, (ULONG)total);
-    CmpPut32(buffer + 12, 0);
+    KiWriteLe32(buffer, 0); /* magic goes in only after the body is on disk */
+    KiWriteLe32(buffer + 4, CMP_HIVE_VERSION);
+    KiWriteLe32(buffer + 8, (ULONG)total);
+    KiWriteLe32(buffer + 12, 0);
     UCHAR *end = CmpEmitKey(CmpRootNode, buffer + CMP_HIVE_HEADER_BYTES);
     ASSERT(end == buffer + total);
 
@@ -456,7 +424,7 @@ void CmpSaveHive(void)
         status = NtWriteFile(handle, 0, 0, 0, &iosb, buffer, (ULONG)total, &offset, 0);
         if (NT_SUCCESS(status))
         {
-            CmpPut32(buffer, CMP_HIVE_MAGIC);
+            KiWriteLe32(buffer, CMP_HIVE_MAGIC);
             status = NtWriteFile(handle, 0, 0, 0, &iosb, buffer, 4, &offset, 0);
         }
         NtClose(handle);

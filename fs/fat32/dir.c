@@ -4,6 +4,7 @@
  */
 #include "fs/fat32/fat.h"
 #include "kernel/mm/pool.h"
+#include "kernel/lib/le.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/init/panic.h"
@@ -13,21 +14,6 @@
 #define FAT_LFN_CHARS_PER_ENTRY 13   /* 5 + 6 + 2 (spec §7 name fields) */
 #define FAT_LFN_LAST            0x40 /* LAST_LONG_ENTRY ordinal mask (spec §7) */
 #define FAT_MAX_LFN_ENTRIES     20   /* ceil(255 / 13); 255-char limit spec §7 */
-
-static uint16_t FatdRead16(const unsigned char *p)
-{
-    uint16_t v;
-    memcpy(&v, p, 2);
-    return v;
-}
-static void FatdWrite16(unsigned char *p, uint16_t v)
-{
-    memcpy(p, &v, 2);
-}
-static void FatdWrite32(unsigned char *p, uint32_t v)
-{
-    memcpy(p, &v, 4);
-}
 
 /* --- slot I/O -------------------------------------------------------------- */
 
@@ -151,15 +137,15 @@ static void FatLfnEntryChars(const unsigned char entry[32], WCHAR out[13])
 {
     for (size_t i = 0; i < 5; i++)
     {
-        out[i] = FatdRead16(entry + 1 + i * 2);
+        out[i] = KiReadLe16(entry + 1 + i * 2);
     }
     for (size_t i = 0; i < 6; i++)
     {
-        out[5 + i] = FatdRead16(entry + 14 + i * 2);
+        out[5 + i] = KiReadLe16(entry + 14 + i * 2);
     }
     for (size_t i = 0; i < 2; i++)
     {
-        out[11 + i] = FatdRead16(entry + 28 + i * 2);
+        out[11 + i] = KiReadLe16(entry + 28 + i * 2);
     }
 }
 
@@ -607,7 +593,7 @@ NTSTATUS FatWriteEntrySlots(PFAT_FCB dir, const UNICODE_STRING *component,
             lfnEntry[11] = FAT_ATTR_LONG_NAME;
             lfnEntry[12] = 0; /* LDIR_Type */
             lfnEntry[13] = checksum;
-            FatdWrite16(lfnEntry + 26, 0); /* LDIR_FstClusLO */
+            KiWriteLe16(lfnEntry + 26, 0); /* LDIR_FstClusLO */
             for (ULONG i = 0; i < FAT_LFN_CHARS_PER_ENTRY; i++)
             {
                 ULONG nameIndex = (ordinal - 1) * FAT_LFN_CHARS_PER_ENTRY + i;
@@ -625,7 +611,7 @@ NTSTATUS FatWriteEntrySlots(PFAT_FCB dir, const UNICODE_STRING *component,
                     unit = 0xFFFF;
                 }
                 ULONG offset = i < 5 ? 1 + i * 2 : (i < 11 ? 14 + (i - 5) * 2 : 28 + (i - 11) * 2);
-                FatdWrite16(lfnEntry + offset, unit);
+                KiWriteLe16(lfnEntry + offset, unit);
             }
             status = FatWriteDirSlot(dir, firstSlot + (lfnEntries - ordinal), lfnEntry);
             if (!NT_SUCCESS(status))
@@ -683,14 +669,14 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
     memset(shortEntry, 0, sizeof(shortEntry));
     shortEntry[11] = (unsigned char)(attributes | (directory ? FAT_ATTR_DIRECTORY : 0));
     shortEntry[13] = 0;                 /* DIR_CrtTimeTenth */
-    FatdWrite16(shortEntry + 14, time); /* DIR_CrtTime */
-    FatdWrite16(shortEntry + 16, date); /* DIR_CrtDate */
-    FatdWrite16(shortEntry + 18, date); /* DIR_LstAccDate */
-    FatdWrite16(shortEntry + 20, (uint16_t)(firstCluster >> 16));
-    FatdWrite16(shortEntry + 22, time); /* DIR_WrtTime */
-    FatdWrite16(shortEntry + 24, date); /* DIR_WrtDate */
-    FatdWrite16(shortEntry + 26, (uint16_t)firstCluster);
-    FatdWrite32(shortEntry + 28, 0); /* DIR_FileSize */
+    KiWriteLe16(shortEntry + 14, time); /* DIR_CrtTime */
+    KiWriteLe16(shortEntry + 16, date); /* DIR_CrtDate */
+    KiWriteLe16(shortEntry + 18, date); /* DIR_LstAccDate */
+    KiWriteLe16(shortEntry + 20, (uint16_t)(firstCluster >> 16));
+    KiWriteLe16(shortEntry + 22, time); /* DIR_WrtTime */
+    KiWriteLe16(shortEntry + 24, date); /* DIR_WrtDate */
+    KiWriteLe16(shortEntry + 26, (uint16_t)firstCluster);
+    KiWriteLe32(shortEntry + 28, 0); /* DIR_FileSize */
 
     ULONG sfnSlot, lfnStart;
     status = FatWriteEntrySlots(dir, component, shortEntry, &sfnSlot, &lfnStart);
@@ -710,7 +696,7 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
         memcpy(dot, shortEntry, 32);
         memset(dot, ' ', 11);
         dot[0] = '.';
-        FatdWrite32(dot + 28, 0);
+        KiWriteLe32(dot + 28, 0);
         /* Write via raw sectors: slot 0 = ".", slot 1 = "..". */
         unsigned char sector[FAT_SECTOR_SIZE];
         NTSTATUS s2 =
@@ -722,8 +708,8 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
             memcpy(dotdot, dot, 32);
             dotdot[1] = '.';
             ULONG parentCluster = dir->isRoot ? 0 : FatDirFirstCluster(dir);
-            FatdWrite16(dotdot + 20, (uint16_t)(parentCluster >> 16));
-            FatdWrite16(dotdot + 26, (uint16_t)parentCluster);
+            KiWriteLe16(dotdot + 20, (uint16_t)(parentCluster >> 16));
+            KiWriteLe16(dotdot + 26, (uint16_t)parentCluster);
             memcpy(sector + 32, dotdot, 32);
             s2 = FatWriteSector(dir->volume, FatClusterToSector(dir->volume, firstCluster), sector);
         }
@@ -787,14 +773,14 @@ NTSTATUS FatRenameEntry(PFAT_FCB fcb, PFAT_FCB newParent, const UNICODE_STRING *
     memset(shortEntry, 0, sizeof(shortEntry));
     shortEntry[11] = fcb->attributes;
     shortEntry[13] = fcb->createTimeTenth;
-    FatdWrite16(shortEntry + 14, fcb->createTime);
-    FatdWrite16(shortEntry + 16, fcb->createDate);
-    FatdWrite16(shortEntry + 18, fcb->accessDate);
-    FatdWrite16(shortEntry + 20, (uint16_t)(fcb->firstCluster >> 16));
-    FatdWrite16(shortEntry + 22, fcb->writeTime);
-    FatdWrite16(shortEntry + 24, fcb->writeDate);
-    FatdWrite16(shortEntry + 26, (uint16_t)fcb->firstCluster);
-    FatdWrite32(shortEntry + 28, (uint32_t)fcb->fileSize);
+    KiWriteLe16(shortEntry + 14, fcb->createTime);
+    KiWriteLe16(shortEntry + 16, fcb->createDate);
+    KiWriteLe16(shortEntry + 18, fcb->accessDate);
+    KiWriteLe16(shortEntry + 20, (uint16_t)(fcb->firstCluster >> 16));
+    KiWriteLe16(shortEntry + 22, fcb->writeTime);
+    KiWriteLe16(shortEntry + 24, fcb->writeDate);
+    KiWriteLe16(shortEntry + 26, (uint16_t)fcb->firstCluster);
+    KiWriteLe32(shortEntry + 28, (uint32_t)fcb->fileSize);
 
     PWSTR nameCopy = MiAllocatePool(newName->Length);
     if (nameCopy == 0)
@@ -871,8 +857,8 @@ NTSTATUS FatRewriteDotDot(PFAT_FCB dir, PFAT_FCB newParent)
         return STATUS_DISK_CORRUPT_ERROR;
     }
     ULONG parentCluster = newParent->isRoot ? 0 : FatDirFirstCluster(newParent);
-    FatdWrite16(dotdot + 20, (uint16_t)(parentCluster >> 16));
-    FatdWrite16(dotdot + 26, (uint16_t)parentCluster);
+    KiWriteLe16(dotdot + 20, (uint16_t)(parentCluster >> 16));
+    KiWriteLe16(dotdot + 26, (uint16_t)parentCluster);
     return FatWriteSector(volume, firstSector, sector);
 }
 
@@ -912,16 +898,16 @@ NTSTATUS FatReadDirectoryEntry(PFAT_FCB dir, ULONG *slot, IO_DIR_ENTRY *out)
     memcpy(out->name, entry.name, entry.nameLength);
     out->nameLength = entry.nameLength;
     out->info.creationTime =
-        FatTimeToNtTime(FatdRead16(entry.sfn + 16), FatdRead16(entry.sfn + 14), entry.sfn[13]);
-    out->info.lastAccessTime = FatTimeToNtTime(FatdRead16(entry.sfn + 18), 0, 0);
+        FatTimeToNtTime(KiReadLe16(entry.sfn + 16), KiReadLe16(entry.sfn + 14), entry.sfn[13]);
+    out->info.lastAccessTime = FatTimeToNtTime(KiReadLe16(entry.sfn + 18), 0, 0);
     out->info.lastWriteTime =
-        FatTimeToNtTime(FatdRead16(entry.sfn + 24), FatdRead16(entry.sfn + 22), 0);
+        FatTimeToNtTime(KiReadLe16(entry.sfn + 24), KiReadLe16(entry.sfn + 22), 0);
     out->info.isDirectory = (entry.sfn[11] & FAT_ATTR_DIRECTORY) != 0;
     /* The listed entry's own identity key. Caveat for a future FileId*
      * directory class: "." and ".." resolve here to their slot in THIS
      * directory, not to the directory they name. */
     out->info.fileId = FatFileId(FatDirCluster(dir), entry.sfnSlot);
-    out->info.endOfFile = FatdRead16(entry.sfn + 28) | ((uint64_t)FatdRead16(entry.sfn + 30) << 16);
+    out->info.endOfFile = KiReadLe16(entry.sfn + 28) | ((uint64_t)KiReadLe16(entry.sfn + 30) << 16);
     PFAT_VOLUME volume = dir->volume;
     uint64_t clusterBytes = (uint64_t)volume->sectorsPerCluster * volume->bytesPerSector;
     out->info.allocationSize =
@@ -965,13 +951,13 @@ NTSTATUS FatFlushFcbMetadata(PFAT_FCB fcb)
     }
     entry[11] = fcb->attributes;
     entry[13] = fcb->createTimeTenth;
-    FatdWrite16(entry + 14, fcb->createTime);
-    FatdWrite16(entry + 16, fcb->createDate);
-    FatdWrite16(entry + 18, fcb->accessDate);
-    FatdWrite16(entry + 20, (uint16_t)(fcb->firstCluster >> 16));
-    FatdWrite16(entry + 22, fcb->writeTime);
-    FatdWrite16(entry + 24, fcb->writeDate);
-    FatdWrite16(entry + 26, (uint16_t)fcb->firstCluster);
-    FatdWrite32(entry + 28, (uint32_t)fcb->fileSize);
+    KiWriteLe16(entry + 14, fcb->createTime);
+    KiWriteLe16(entry + 16, fcb->createDate);
+    KiWriteLe16(entry + 18, fcb->accessDate);
+    KiWriteLe16(entry + 20, (uint16_t)(fcb->firstCluster >> 16));
+    KiWriteLe16(entry + 22, fcb->writeTime);
+    KiWriteLe16(entry + 24, fcb->writeDate);
+    KiWriteLe16(entry + 26, (uint16_t)fcb->firstCluster);
+    KiWriteLe32(entry + 28, (uint32_t)fcb->fileSize);
     return FatWriteDirSlot(fcb->parent, fcb->dirEntryIndex, entry);
 }
