@@ -779,11 +779,7 @@ NTSTATUS NtQueryDirectoryObject(HANDLE handle, PDIRECTORY_BASIC_INFORMATION buff
         any = TRUE;
         POBJECT_HEADER header = CONTAINING_RECORD(entry, OBJECT_HEADER, directoryEntry);
         ULONG nameBytes = header->name.Length;
-        ULONG typeBytes = 0;
-        for (const char *c = header->type->name; *c != '\0'; c++)
-        {
-            typeBytes += sizeof(WCHAR);
-        }
+        ULONG typeBytes = (ULONG)KiStringLength(header->type->name) * sizeof(WCHAR);
         totalLength += nameBytes + typeBytes;
         ULONG entrySize =
             sizeof(DIRECTORY_BASIC_INFORMATION) + nameBytes + typeBytes + 2 * sizeof(WCHAR);

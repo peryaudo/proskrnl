@@ -109,11 +109,7 @@ static NTSTATUS HidInputQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capaci
                                   ULONG *lengthOut)
 {
     const WCHAR *name = HidStreamFromFile(file)->queryName;
-    ULONG full = 0;
-    while (name[full / sizeof(WCHAR)] != 0)
-    {
-        full += sizeof(WCHAR);
-    }
+    ULONG full = (ULONG)KiWideStringLength(name) * sizeof(WCHAR);
     *lengthOut = full;
     ULONG copy = full <= capacity ? full : capacity;
     memcpy(buffer, name, copy);

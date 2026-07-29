@@ -17,28 +17,6 @@
 static KI_RAMDISK_FILE KiRamdiskFiles[KI_RAMDISK_MAX_FILES];
 static ULONG KiRamdiskFileCount;
 
-/* No strlen/strcmp in the freestanding lib (string.h carries only the
- * compiler-mandated mem* intrinsics); local equivalents. */
-static uint64_t KipStringLength(const char *s)
-{
-    uint64_t n = 0;
-    while (s[n] != '\0')
-    {
-        n++;
-    }
-    return n;
-}
-
-static int KipStringEquals(const char *a, const char *b)
-{
-    while (*a != '\0' && *a == *b)
-    {
-        a++;
-        b++;
-    }
-    return *a == *b;
-}
-
 const char *KiRamdiskBasename(const char *path)
 {
     const char *base = path;
@@ -61,7 +39,7 @@ PKI_RAMDISK_FILE KiRegisterRamdiskFile(const char *path, const void *data, uint6
     ASSERT(((uint64_t)(uintptr_t)data & (PAGE_SIZE - 1)) == 0); /* Limine loads page-aligned */
 
     const char *base = KiRamdiskBasename(path);
-    uint64_t length = KipStringLength(base) + 1;
+    uint64_t length = KiStringLength(base) + 1;
     char *name = MiAllocatePool(length);
     if (name == 0)
     {
@@ -81,7 +59,7 @@ PKI_RAMDISK_FILE KiFindRamdiskFile(const char *name)
 {
     for (ULONG i = 0; i < KiRamdiskFileCount; i++)
     {
-        if (KipStringEquals(KiRamdiskFiles[i].name, name))
+        if (KiStringEquals(KiRamdiskFiles[i].name, name))
         {
             return &KiRamdiskFiles[i];
         }

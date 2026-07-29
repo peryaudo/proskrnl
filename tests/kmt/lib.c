@@ -1,10 +1,10 @@
 /* tests/kmt/lib.c — unit tests for kernel/lib (docs/08).
  *
- * The pure library code — LIST_ENTRY primitives, the Rtl string slice, the
- * mem* intrinsics — is load-bearing under every dispatcher list and Ob name,
- * but until this suite it was only exercised indirectly. These are plain
- * single-threaded unit tests; no waiting, no allocation, caller-owned
- * storage throughout.
+ * The pure library code — LIST_ENTRY primitives, the NUL-terminated string
+ * primitives, the Rtl string slice, the mem* intrinsics — is load-bearing
+ * under every dispatcher list, Ob name and boot cmdline, but only ever
+ * exercised indirectly by its consumers. These are plain single-threaded
+ * unit tests; no waiting, no allocation, caller-owned storage throughout.
  *
  * Deliberately absent: negative tests for the list corruption ASSERTs
  * (double-remove, scribbled links). ASSERT panics the kernel and there is no
@@ -149,6 +149,59 @@ static void test_list_containing_record(void)
        "second record not recovered through the embedded entry");
 }
 
+/* --- NUL-terminated string primitives ------------------------------------ */
+
+static void test_string_length(void)
+{
+    ok(KiStringLength("") == 0, "empty string has nonzero length");
+    ok(KiStringLength("a") == 1, "one-character length wrong");
+    ok(KiStringLength("expect=av") == 9, "length %lu, want 9",
+       (unsigned long)KiStringLength("expect=av"));
+    /* The NUL terminates; bytes after it are not counted. */
+    static const char embedded[] = {'a', 'b', '\0', 'c', 'd', '\0'};
+    ok(KiStringLength(embedded) == 2, "length ran past the first NUL");
+
+    static const WCHAR wide[] = WSTR("abcd");
+    ok(KiWideStringLength(wide) == 4, "wide length %lu, want 4",
+       (unsigned long)KiWideStringLength(wide));
+    ok(KiWideStringLength(WSTR("")) == 0, "empty wide string has nonzero length");
+    /* A high code unit is a character, not a terminator. */
+    static const WCHAR high[] = {0xFFFE, 0x0041, 0};
+    ok(KiWideStringLength(high) == 2, "wide length stopped on a non-zero unit");
+}
+
+static void test_string_equals(void)
+{
+    ok(KiStringEquals("", ""), "two empty strings compare unequal");
+    ok(KiStringEquals("m7", "m7"), "identical strings compare unequal");
+    ok(!KiStringEquals("m7", "m8"), "differing last character reads equal");
+    ok(!KiStringEquals("abc", "abcd"), "prefix reads equal to the longer string");
+    ok(!KiStringEquals("abcd", "abc"), "longer string reads equal to its prefix");
+    ok(!KiStringEquals("", "a"), "empty reads equal to non-empty");
+    ok(!KiStringEquals("a", ""), "non-empty reads equal to empty");
+    /* Case-sensitive (string.h): the boot cmdlines and PE export names it
+     * compares are case-exact. */
+    ok(!KiStringEquals("abi", "ABI"), "case difference ignored");
+    /* Distinct storage with the same content still matches — no pointer
+     * comparison hiding in there. */
+    char copy[] = {'a', 'b', 'i', '\0'};
+    ok(KiStringEquals(copy, "abi"), "equal content in distinct storage reads unequal");
+}
+
+static void test_string_starts_with(void)
+{
+    ok(KiStringStartsWith("expect=av", "expect="), "true prefix not matched");
+    ok(KiStringStartsWith("expect=", "expect="), "exact match not matched");
+    ok(!KiStringStartsWith("expect", "expect="), "prefix longer than the string matched");
+    ok(!KiStringStartsWith("initrd", "expect="), "unrelated string matched");
+    ok(!KiStringStartsWith("xexpect=", "expect="), "matched at a non-zero offset");
+    /* An empty prefix matches anything, including the empty string. */
+    ok(KiStringStartsWith("anything", ""), "empty prefix did not match");
+    ok(KiStringStartsWith("", ""), "empty prefix did not match the empty string");
+    ok(!KiStringStartsWith("", "a"), "non-empty prefix matched the empty string");
+    ok(!KiStringStartsWith("EXPECT=av", "expect="), "case difference ignored");
+}
+
 /* --- Rtl counted-string helpers ------------------------------------------ */
 
 static void test_rtl_init_unicode_string(void)
@@ -279,6 +332,9 @@ int kmt_run_lib(void)
     KMT_RUN(test_list_remove_head);
     KMT_RUN(test_list_reinsert);
     KMT_RUN(test_list_containing_record);
+    KMT_RUN(test_string_length);
+    KMT_RUN(test_string_equals);
+    KMT_RUN(test_string_starts_with);
     KMT_RUN(test_rtl_init_unicode_string);
     KMT_RUN(test_rtl_equal_unicode_string);
     KMT_RUN(test_rtl_copy_unicode_string);

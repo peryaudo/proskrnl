@@ -1358,12 +1358,7 @@ static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
     {
         return;
     }
-    ULONG bytes = 0;
-    while (data[bytes / sizeof(WCHAR)] != 0)
-    {
-        bytes += sizeof(WCHAR);
-    }
-    bytes += sizeof(WCHAR);
+    ULONG bytes = (ULONG)(KiWideStringLength(data) + 1) * sizeof(WCHAR);
     CmpSetValue(node, &nameString, REG_SZ, data, bytes);
 }
 

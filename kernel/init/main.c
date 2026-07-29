@@ -92,26 +92,6 @@ __attribute__((used,
                section(".limine_requests_end_marker"))) static volatile uint64_t LiRequestsEnd[2] =
     LIMINE_REQUESTS_END_MARKER;
 
-static int KiStringEquals(const char *a, const char *b)
-{
-    while (*a != '\0' && *a == *b)
-    {
-        a++;
-        b++;
-    }
-    return *a == *b;
-}
-
-static int KiStringStartsWith(const char *s, const char *prefix)
-{
-    while (*prefix != '\0' && *s == *prefix)
-    {
-        s++;
-        prefix++;
-    }
-    return *prefix == '\0';
-}
-
 /* Register every boot module as a RAM-disk file (M5: the seed read-only FS
  * that image and data sections map from). Call before the module runner —
  * and before the scheduler needs nothing, so early is fine. */

@@ -12,11 +12,7 @@ void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source)
         target->MaximumLength = 0;
         return;
     }
-    ULONG length = 0;
-    while (source[length] != 0)
-    {
-        length++;
-    }
+    ULONG length = (ULONG)KiWideStringLength(source);
     ASSERT(length * sizeof(WCHAR) <= 0xFFFF - sizeof(WCHAR));
     target->Length = (USHORT)(length * sizeof(WCHAR));
     target->MaximumLength = (USHORT)(target->Length + sizeof(WCHAR));

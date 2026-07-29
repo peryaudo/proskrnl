@@ -234,11 +234,7 @@ NTSTATUS PspCaptureProcessParameters(const RTL_USER_PROCESS_PARAMETERS *userPara
 /* Pooled kernel-default string (ASCII in). */
 static NTSTATUS PspDefaultString(const char *ascii, UNICODE_STRING *out)
 {
-    SIZE_T chars = 0;
-    while (ascii[chars] != '\0')
-    {
-        chars++;
-    }
+    SIZE_T chars = KiStringLength(ascii);
     WCHAR *copy = MiAllocatePool((chars + 1) * sizeof(WCHAR));
     if (copy == 0)
     {
@@ -276,12 +272,7 @@ static NTSTATUS PspBuildDefaultEnvironment(PSP_CAPTURED_PARAMS *captured)
     SIZE_T totalChars = 1; /* the final extra NUL */
     for (SIZE_T i = 0; i < sizeof(PspDefaultEnvironment) / sizeof(PspDefaultEnvironment[0]); i++)
     {
-        SIZE_T n = 0;
-        while (PspDefaultEnvironment[i][n] != '\0')
-        {
-            n++;
-        }
-        totalChars += n + 1;
+        totalChars += KiStringLength(PspDefaultEnvironment[i]) + 1;
     }
     WCHAR *block = MiAllocatePool(totalChars * sizeof(WCHAR));
     if (block == 0)

@@ -182,16 +182,6 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
     return STATUS_SUCCESS;
 }
 
-static int MipNameEquals(const char *a, const char *b)
-{
-    while (*a != '\0' && *a == *b)
-    {
-        a++;
-        b++;
-    }
-    return *a == *b;
-}
-
 /* Convert an image RVA to a file offset via the parsed segments (export data
  * lives in an initialized-data segment). Returns UINT64_MAX if the RVA is not
  * backed by raw file bytes. */
@@ -256,8 +246,8 @@ uint32_t MiLookupImageExport(const void *rawData, uint64_t rawSize, const MI_IMA
             continue;
         }
         /* The export name is NUL-terminated within the file (bounded by
-         * rawSize; MipNameEquals stops at the first mismatch or NUL). */
-        if (!MipNameEquals(name, bytes + nameOffset))
+         * rawSize; KiStringEquals stops at the first mismatch or NUL). */
+        if (!KiStringEquals(name, bytes + nameOffset))
         {
             continue;
         }
