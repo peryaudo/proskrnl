@@ -2,7 +2,7 @@
 """gen_server_table.py - the in-process wineserver's request dispatch table.
 
 GUI-2 links the pinned wineserver's GUI object model into the GUI process
-(user/wine/server/) and calls its handlers directly. Only the files that hold
+(user/wine/wineserver-lite/) and calls its handlers directly. Only the files that hold
 desktop state are compiled - the process/thread model, the fd layer and the
 security engine are not - so most of the 300-odd request handlers have no
 implementation here.

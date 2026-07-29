@@ -12,7 +12,7 @@
 #                                   hand win32u a libfreetype.so, so FreeType
 #                                   is linked into win32u.dll and reached
 #                                   through a symbol table
-#                                   (user/wine/win32u/freetype_link.c).
+#                                   (user/wine/dlls/win32u/freetype_link.c).
 #
 #   x86_64-linux/libfreetype.so.6   the ORACLE wine's font backend (GUI-3).
 #                                   third_party/wine is configured

@@ -23,7 +23,7 @@
  * The difference that remains is only how the library is reached. The oracle
  * dlopen()s a real libfreetype.so.6; here there is no dynamic loader, so the
  * same soname is answered by prsk_dlopen against the PE static library
- * linked in (user/wine/win32u/freetype_link.c).
+ * linked in (user/wine/dlls/win32u/freetype_link.c).
  *
  * fontconfig is deliberately NOT enabled -- on either side. It is a
  * font-discovery service for unix desktops; with SONAME_LIBFONTCONFIG
@@ -70,7 +70,7 @@
 
 /* The name freetype.c passes to dlopen(). There is no shared object behind
  * it -- prsk_dlopen answers for exactly this string and prsk_dlsym resolves
- * against the linked-in library (user/wine/win32u/freetype_link.c) -- but it
+ * against the linked-in library (user/wine/dlls/win32u/freetype_link.c) -- but it
  * still has to be the spelling both sides agree on. */
 #undef SONAME_LIBFREETYPE
 #define SONAME_LIBFREETYPE "libfreetype.so.6"

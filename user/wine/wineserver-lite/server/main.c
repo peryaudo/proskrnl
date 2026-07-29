@@ -3,7 +3,7 @@
  *
  * The GUI object model this serves is the pinned wineserver's own
  * (server/{object,handle,user,atom,class,winstation,window,queue,region,
- * clipboard,hook}.c, unmodified) with user/wine/server/shim.c as its
+ * clipboard,hook}.c, unmodified) with user/wine/wineserver-lite/common/shim.c as its
  * environment -- the SAME objects win32u.dll links in its in-process mode,
  * compiled once and linked into both. That is what docs/06 means by a
  * keep-list build: this is a new link of the pinned tree's files, never an

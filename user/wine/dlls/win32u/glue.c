@@ -200,7 +200,7 @@ struct user_thread_info *get_user_thread_info(void)
     return data ? &data->info : NULL;
 }
 
-/* Where user/wine/server/call.c keeps this thread's transport slot. It
+/* Where user/wine/wineserver-lite/client/call.c keeps this thread's transport slot. It
  * belongs in the per-thread block rather than in a TLS index of its own:
  * this build links no kernel32, so there is no TlsAlloc, and the block is
  * already the thread-local store everything else here uses. */
@@ -448,7 +448,7 @@ const WCHAR *ntdll_get_data_dir(void)
  * libGL, so it is upstream-exercised rather than invented here. freetype.c
  * is the one caller with a real library to find; it is linked statically, so
  * the "handle" is a cookie and the symbols come from a table
- * (user/wine/win32u/freetype_link.c). */
+ * (user/wine/dlls/win32u/freetype_link.c). */
 
 void *prsk_dlopen( const char *name, int flags )
 {

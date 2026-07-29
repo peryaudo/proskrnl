@@ -2,7 +2,7 @@
 """gen_win32u_def.py - the export list of proskrnl's win32u.dll, from Wine's spec.
 
 GUI-2 replaces win32u.dll with a PE build of the same tree's *unix-side*
-sources (user/wine/win32u, Makefile target win32u.dll): user32/gdi32/imm32
+sources (user/wine/dlls/win32u, Makefile target win32u.dll): user32/gdi32/imm32
 import ~434 NtUser*/NtGdi* entry points by name, and the replacement has to
 export exactly those names for the loader to bind them.
 

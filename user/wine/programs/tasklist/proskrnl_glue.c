@@ -1,5 +1,5 @@
 /*
- * user/tasklist/proskrnl_glue.c — standalone-PE glue for Wine's tasklist.exe
+ * user/wine/programs/tasklist/proskrnl_glue.c — standalone-PE glue for Wine's tasklist.exe
  * (CUI-4).
  *
  * The CUI-4 acceptance's process lister (docs/02 "a tasklist/taskkill pair
@@ -32,7 +32,7 @@ NTSYSAPI NTSTATUS NTAPI LdrAccessResource(HMODULE, const IMAGE_RESOURCE_DATA_ENT
                                           ULONG *);
 
 /* The ucrtbase app-startup surface, in the order a console CRT startup
- * object runs it (user/cmd/proskrnl_glue.c precedent). */
+ * object runs it (user/wine/programs/cmd/proskrnl_glue.c precedent). */
 void __cdecl _set_app_type(int);
 int __cdecl _initialize_wide_environment(void);
 int __cdecl _configure_wide_argv(int);
@@ -57,7 +57,7 @@ void __attribute__((used)) tasklist_start(void)
 /* LoadStringW over the image's own RT_STRING resources: strings live in
  * bundles of 16 counted WCHAR strings, bundle id = (id >> 4) + 1, entry =
  * id & 15 (MS resource format; Wine dlls/user32/resource.c is the reference
- * implementation). Same body as user/cmd/proskrnl_glue.c's. */
+ * implementation). Same body as user/wine/programs/cmd/proskrnl_glue.c's. */
 int WINAPI LoadStringW(HINSTANCE instance, UINT id, WCHAR *buffer, int buflen)
 {
     if (buffer == NULL || buflen == 0)

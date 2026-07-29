@@ -2,7 +2,7 @@
  * dirent.h - the directory walk win32u/freetype.c does over the fonts dir.
  *
  * Three calls, names only: opendir, readdir, closedir. Implemented over
- * NtQueryDirectoryFile in user/wine/win32u/font_unix.c. d_type and the rest
+ * NtQueryDirectoryFile in user/wine/dlls/win32u/font_unix.c. d_type and the rest
  * of POSIX's dirent are absent because freetype.c reads only d_name; adding
  * fields it does not use would be inventing a contract.
  */

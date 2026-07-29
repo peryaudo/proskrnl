@@ -153,8 +153,9 @@ AND on proskrnl (`docs/03` "M10 winetest notes").
 
 ## CUI-1 — firstboot: wineboot + machine state
 Bake rundll32/setupapi/cfgmgr32/ws2_32 + `wine.inf`; build wineboot as a standalone PE
-with cmd.exe-style glue (`user/cmd/proskrnl_glue.c` precedent: user32 stand-ins for the
-wait window / message pump; rundll32 hard-imports user32 and needs the same). `user/smss`
+with cmd.exe-style glue (`user/wine/programs/cmd/proskrnl_glue.c` precedent: user32
+stand-ins for the wait window / message pump; rundll32 hard-imports user32 and needs the
+same). `user/smss`
 grows the `firstboot.c` hand-off (`docs/04`). The registry payload (~500 `AddReg` lines:
 Classes/CurrentVersion/OLE/Services/SessionMgr/codepages) is applied by setupapi's INF
 engine inside rundll32 children (`InstallHinfSection`), so this also stress-exercises
@@ -361,7 +362,7 @@ the process when it cannot resolve — every real Windows has ole32.
 The stripped wineserver this milestone was budgeted to *build* already runs: GUI-2
 compiled the pinned server's GUI object model (window/queue/hook/clipboard/atom)
 unmodified into win32u.dll behind an in-process `wine_server_call`
-(`user/wine/server/shim.c`), publishing the session shared mapping as a real named
+(`user/wine/wineserver-lite/common/shim.c`), publishing the session shared mapping as a real named
 section (`\KernelObjects\__wine_session`, pinned by `sem_mm/session_shm` — win32u's hot
 read paths open it by name exactly as under Wine) and backing queue wake-ups with real
 kernel events, so `wait_message`'s `NtWaitForMultipleObjects` blocks and wakes unmodified

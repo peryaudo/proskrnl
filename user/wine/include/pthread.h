@@ -3,7 +3,7 @@
  *
  * win32u's unix half locks with pthreads because on Wine it IS unix code.
  * Compiled as PE (GUI-2) the same sources run above ntdll, so the primitives
- * are re-expressed over what ntdll already exports (user/wine/win32u/glue.c).
+ * are re-expressed over what ntdll already exports (user/wine/dlls/win32u/glue.c).
  * The set is closed and small: mutexes (103 unlocks, 78 locks), one-time
  * init, and one rwlock in vulkan.c. Nothing here is a general pthread
  * implementation and it must not grow into one - if a new Wine source needs

@@ -1,7 +1,7 @@
 /*
  * sem_file/internal_info.c — NtQueryInformationFile(FileInternalInformation):
  * the per-file identity (IndexNumber) win32u's font backend keys its
- * file-mapping cache on (user/wine/win32u/font_unix.c fstat -> st_ino).
+ * file-mapping cache on (user/wine/dlls/win32u/font_unix.c fstat -> st_ino).
  *
  * The contract (Wine dlls/ntdll/unix/file.c fill_file_info: IndexNumber =
  * st_ino) pins only the identity semantics, never the values: nonzero for a

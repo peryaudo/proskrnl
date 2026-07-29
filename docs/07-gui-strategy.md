@@ -72,15 +72,15 @@ surface rather than adding kernel machinery of its own.
   the `nulldrv_*` defaults are right for a framebuffer with no host WM to negotiate with,
   including the one that flushes surfaces on every message wait (the flush clock the
   driver would otherwise invent; per-window surfaces and dirty rectangles are GUI-4).
-- **win32u unix side, built as PE** ✅ (GUI-2; `user/wine/win32u`). user32/gdi32/imm32
+- **win32u unix side, built as PE** ✅ (GUI-2; `user/wine/dlls/win32u`). user32/gdi32/imm32
   bind to it by name, unmodified — all ~434 `NtUser*`/`NtGdi*` imports, checked at build
   time (`tools/gen_win32u_def.py`). FreeType is pinned and cross-built as a PE static
   library (`third_party/freetype`, `tools/build_freetype.sh`).
 - **wineserver-lite** (route (a)) — see `docs/06`. **Already running since GUI-2, but
   in-process**: the pinned server's GUI object model (window/queue/hook/clipboard/atom)
   compiled unmodified into win32u.dll behind an in-process `wine_server_call`
-  (`user/wine/server/shim.c`; 120 of 308 request handlers link, the rest refuse by name
-  from a generated table). GUI-3's job shrank accordingly: not *build* the server —
+  (`user/wine/wineserver-lite/common/shim.c`; 120 of 308 request handlers link, the rest
+  refuse by name from a generated table). GUI-3's job shrank accordingly: not *build* the server —
   give it a process boundary. Transport: **shared section + kernel events**, *not* npfs
   (which is what pulled the first-pixels path off the npfs critical path, as planned).
 
@@ -101,8 +101,8 @@ wineserver's msg_queue already had exactly the seam hoped for: a queue's signall
 is a `struct object *sync` driven by `signal_sync`/`reset_sync` (`server/queue.c`), so
 the shim implements that one object as an NT event (`create_internal_sync` →
 `NtCreateEvent`; `signal_sync`/`reset_sync` → `NtSet/ResetEvent`,
-`user/wine/server/shim.c`) and win32u's existing wait in `wait_message` blocks and wakes
-with **no changes to the message loop**. Wake bits are re-checked on wakeup; spurious →
+`user/wine/wineserver-lite/common/shim.c`) and win32u's existing wait in `wait_message`
+blocks and wakes with **no changes to the message loop**. Wake bits are re-checked on wakeup; spurious →
 wait again (Wine's own logic). GUI-3 keeps the mechanism unchanged — only the process
 that calls SetEvent moves. Bonus, still standing: user APCs and alertable waits are the
 kernel's real mechanism — closer to NT than Wine is.

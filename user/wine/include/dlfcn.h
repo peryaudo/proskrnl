@@ -12,7 +12,7 @@
  * teach freetype.c a second way to find its entry points, prsk_dlopen hands
  * back a cookie for the one soname it knows and prsk_dlsym answers from a
  * static name -> address table built out of the linked-in library
- * (user/wine/win32u/freetype_link.c). Everything else fails, loudly enough
+ * (user/wine/dlls/win32u/freetype_link.c). Everything else fails, loudly enough
  * to read on serial and quietly enough for the caller's own fallback.
  */
 #ifndef PRSK_DLFCN_H

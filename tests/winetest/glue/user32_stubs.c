@@ -5,7 +5,7 @@
  * The ntdll and kernel32 test objects (the pinned tree's own PE build,
  * linked unmodified) declare IMPORTS = user32, but user32 is the M12 GUI
  * path — constitutionally off the CUI image (Art. 7). Same precedent as
- * user/cmd/proskrnl_glue.c: the referenced imports are stood in here, so ONE
+ * user/wine/programs/cmd/proskrnl_glue.c: the referenced imports are stood in here, so ONE
  * binary runs on both runners (docs/14). Policy: honest, loud failure
  * (ERROR_CALL_NOT_IMPLEMENTED) for every GUI entity — a subtest whose
  * assertions need a real window/winstation fails IDENTICALLY under the
