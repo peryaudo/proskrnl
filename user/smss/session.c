@@ -570,115 +570,137 @@ static int flow_cmd_console(void)
 
 /* --- the GUI legs ----------------------------------------------------------- */
 
-/* GUI-1 (docs/02 "a user program maps the framebuffer and draws a rectangle
- * visible in a screendump"): gui_smoke.exe opens \Device\Fb0 and
- * \Device\Input0, paints, and parks in a blocking read. Does not return on
- * its image — see session_run. */
-static void flow_gui_smoke(void)
+/*
+ * One shape, five images. Every GUI milestone lands the same three steps in
+ * some subset: run a prologue to completion, spawn a client that must still
+ * be on screen when the host screendumps, then run the client that reports
+ * the verdict. Written out one milestone at a time, that shape became five
+ * near-identical probe functions in the session manager -- scaffolding that
+ * grows with every GUI milestone whether or not anything about the milestone
+ * is new. It is a table now: the shape is stated once, and a new leg is a
+ * row.
+ *
+ * `probe` is the image file that SELECTS the leg -- the image decides what
+ * runs, not a switch (the file's own convention) -- and every path is a
+ * verbatim [KTEST] tag away from the lines the harness greps, which are
+ * unchanged byte for byte.
+ *
+ * None of these return on their own image: the host has to screendump live
+ * windows, so the leg parks in `foreground` and the boot's end-of-boot
+ * verdict is deliberately never reached (see session_run).
+ */
+struct gui_leg
 {
-    static const WCHAR path[] = WSTR("\\??\\C:\\gui_smoke.exe");
-    if (!smss_file_exists(path, 0))
-        return; /* not a gui image */
+    const WCHAR *probe;          /* on the volume => this is the leg's image */
+    const WCHAR *prologue;       /* run to completion first, or NULL */
+    const WCHAR *background;     /* spawned and left up for the screendump, or NULL */
+    const WCHAR *foreground;     /* run last; the leg parks here */
+    const char  *tag;            /* the [KTEST] prefix: "gui", "gui2", ... */
+    const char  *prologue_tag;   /* names the prologue in its exit line */
+    const char  *foreground_name; /* set when returning at all is a FAIL */
+};
 
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(path, 0, 0, 0, &exit_status);
-    /* Only reached if the client exited, which it is written never to do:
-     * say so rather than letting the boot fall through to a sweep verdict
-     * the harness would read as a healthy end (Art. 12). */
-    smss_printf("[KTEST] gui FAIL (gui_smoke.exe returned %x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
-}
+/* Designated initializers throughout: an omitted field is the absent case
+ * (no prologue, no background client, returning is not a failure), so a row
+ * names only what its leg actually does. */
 
-/* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
- * stack painting through winefb.drv onto \Device\Fb0. */
-static void flow_gui2(void)
+static const struct gui_leg gui_legs[] = {
+    /* GUI-1 (docs/02 "a user program maps the framebuffer and draws a
+     * rectangle visible in a screendump"): gui_smoke.exe opens \Device\Fb0
+     * and \Device\Input0, paints, and parks in a blocking read. It is
+     * written never to return, so returning is the verdict. */
+    { .probe = WSTR("\\??\\C:\\gui_smoke.exe"),
+      .foreground = WSTR("\\??\\C:\\gui_smoke.exe"),
+      .tag = "gui",
+      .foreground_name = "gui_smoke.exe" },
+
+    /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
+     * stack painting through winefb.drv onto \Device\Fb0. Reached when the
+     * window is closed (the harness's Alt+F4 probe) or when the app dies --
+     * either way the exit code is the diagnosis. */
+    { .probe = WSTR("\\??\\C:\\winemine.exe"),
+      .foreground = WSTR("\\??\\C:\\winemine.exe"),
+      .tag = "gui2" },
+
+    /* GUI-3 (docs/02 "two GUI processes run at once"): wineserver-lite
+     * (already started before firstboot -- smss.c) with two GUI clients above
+     * it. gui3a is fire-and-forget (its window must still be up for the
+     * screendumps); gui3b prints the verdict and parks. */
+    { .probe = WSTR("\\??\\C:\\gui3a.exe"),
+      .background = WSTR("\\??\\C:\\gui3a.exe"),
+      .foreground = WSTR("\\??\\C:\\gui3b.exe"),
+      .tag = "gui3" },
+
+    /* GUI-4 (docs/02 "windows can be grabbed and moved"): the gui3
+     * arrangement with overlapping windows, driven by the harness through
+     * the tablet and keyboard. Both clients park pumping forever; the leg
+     * owns QEMU's lifetime. */
+    { .probe = WSTR("\\??\\C:\\gui4a.exe"),
+      .background = WSTR("\\??\\C:\\gui4a.exe"),
+      .foreground = WSTR("\\??\\C:\\gui4b.exe"),
+      .tag = "gui4" },
+
+    /* GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
+     * cross-process, plus the guest half of the font-metrics differential.
+     * fontdiff is the prologue for two reasons: its metric lines must land
+     * un-interleaved with the clients' output, and it must have EXITED --
+     * releasing any exclusively-opened input device its winefb instance won
+     * -- before gui5a starts and becomes the leg's input host (docs/03 GUI-4
+     * notes). */
+    { .probe = WSTR("\\??\\C:\\gui5a.exe"),
+      .prologue = WSTR("\\??\\C:\\fontdiff.exe"),
+      .background = WSTR("\\??\\C:\\gui5a.exe"),
+      .foreground = WSTR("\\??\\C:\\gui5b.exe"),
+      .tag = "gui5",
+      .prologue_tag = "fontdiff" },
+};
+
+static void flow_gui(void)
 {
-    static const WCHAR path[] = WSTR("\\??\\C:\\winemine.exe");
-    if (!smss_file_exists(path, 0))
-        return; /* not a gui2 image */
+    /* Kept for the process's lifetime on purpose: the background client must
+     * still be running when the host takes its screendumps, so its handles
+     * are never closed. One pair is enough -- the probes are disjoint, so at
+     * most one leg runs per image. */
+    static HANDLE background, background_thread;
 
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(path, 0, 0, 0, &exit_status);
-    /* Reached when the window is closed (the harness's Alt+F4 probe) or
-     * when the app dies. Either way the exit code is the diagnosis. */
-    smss_printf("[KTEST] gui2 exit (status=%x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
-}
-
-/* GUI-3 (docs/02 "two GUI processes run at once"): wineserver-lite (already
- * started before firstboot — smss.c) with two GUI clients above it. gui3a
- * is fire-and-forget (its window must still be up for the screendumps);
- * gui3b prints the verdict and parks. */
-static void flow_gui3(void)
-{
-    if (!smss_file_exists(WSTR("\\??\\C:\\gui3a.exe"), 0))
-        return; /* not a gui3 image */
-
-    static HANDLE a_process, a_thread;
-    NTSTATUS status = smss_spawn(WSTR("\\??\\C:\\gui3a.exe"), 0, 0, &a_process, &a_thread);
-    if (status != STATUS_SUCCESS)
+    for (unsigned int i = 0; i < sizeof(gui_legs) / sizeof(gui_legs[0]); i++)
     {
-        smss_printf("[KTEST] gui3 A FAIL (create=%x)\n", SMSS_HEX(status));
+        const struct gui_leg *leg = &gui_legs[i];
+        NTSTATUS exit_status = 0;
+        NTSTATUS status;
+
+        if (!smss_file_exists(leg->probe, 0))
+            continue; /* not this leg's image */
+
+        if (leg->prologue)
+        {
+            status = smss_run(leg->prologue, 0, 0, 0, &exit_status);
+            smss_printf("[KTEST] %s %s exit (status=%x, exit=%x)\n", leg->tag, leg->prologue_tag,
+                        SMSS_HEX(status), SMSS_HEX(exit_status));
+        }
+
+        if (leg->background)
+        {
+            status = smss_spawn(leg->background, 0, 0, &background, &background_thread);
+            if (status != STATUS_SUCCESS)
+            {
+                smss_printf("[KTEST] %s A FAIL (create=%x)\n", leg->tag, SMSS_HEX(status));
+                return;
+            }
+        }
+
+        status = smss_run(leg->foreground, 0, 0, 0, &exit_status);
+        /* Only reached if the client exited. Where it is written never to,
+         * say FAIL by name rather than letting the boot fall through to a
+         * sweep verdict the harness would read as a healthy end (Art. 12). */
+        if (leg->foreground_name)
+            smss_printf("[KTEST] %s FAIL (%s returned %x, exit=%x)\n", leg->tag,
+                        leg->foreground_name, SMSS_HEX(status), SMSS_HEX(exit_status));
+        else
+            smss_printf("[KTEST] %s exit (status=%x, exit=%x)\n", leg->tag, SMSS_HEX(status),
+                        SMSS_HEX(exit_status));
         return;
     }
-
-    NTSTATUS exit_status = 0;
-    status = smss_run(WSTR("\\??\\C:\\gui3b.exe"), 0, 0, 0, &exit_status);
-    smss_printf("[KTEST] gui3 exit (status=%x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
-}
-
-/* GUI-4 (docs/02 "windows can be grabbed and moved"): the gui3 arrangement
- * with overlapping windows, driven by the harness through the tablet and
- * keyboard. Both clients park pumping forever; the leg owns QEMU's
- * lifetime. */
-static void flow_gui4(void)
-{
-    if (!smss_file_exists(WSTR("\\??\\C:\\gui4a.exe"), 0))
-        return; /* not a gui4 image */
-
-    static HANDLE a_process, a_thread;
-    NTSTATUS status = smss_spawn(WSTR("\\??\\C:\\gui4a.exe"), 0, 0, &a_process, &a_thread);
-    if (status != STATUS_SUCCESS)
-    {
-        smss_printf("[KTEST] gui4 A FAIL (create=%x)\n", SMSS_HEX(status));
-        return;
-    }
-
-    NTSTATUS exit_status = 0;
-    status = smss_run(WSTR("\\??\\C:\\gui4b.exe"), 0, 0, 0, &exit_status);
-    smss_printf("[KTEST] gui4 exit (status=%x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
-}
-
-/* GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
- * cross-process, plus the guest half of the font-metrics differential.
- * fontdiff runs FIRST and is waited on: its metric lines must land
- * un-interleaved with the clients' output, and it must have exited —
- * releasing any exclusively-opened input device its winefb instance won —
- * before gui5a starts and becomes the leg's input host (docs/03 GUI-4
- * notes). Then the gui3/gui4 shape. */
-static void flow_gui5(void)
-{
-    if (!smss_file_exists(WSTR("\\??\\C:\\gui5a.exe"), 0))
-        return; /* not a gui5 image */
-
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(WSTR("\\??\\C:\\fontdiff.exe"), 0, 0, 0, &exit_status);
-    smss_printf("[KTEST] gui5 fontdiff exit (status=%x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
-
-    static HANDLE a_process, a_thread;
-    status = smss_spawn(WSTR("\\??\\C:\\gui5a.exe"), 0, 0, &a_process, &a_thread);
-    if (status != STATUS_SUCCESS)
-    {
-        smss_printf("[KTEST] gui5 A FAIL (create=%x)\n", SMSS_HEX(status));
-        return;
-    }
-
-    status = smss_run(WSTR("\\??\\C:\\gui5b.exe"), 0, 0, 0, &exit_status);
-    smss_printf("[KTEST] gui5 exit (status=%x, exit=%x)\n", SMSS_HEX(status),
-                SMSS_HEX(exit_status));
 }
 
 /* --- the session ------------------------------------------------------------ */
@@ -705,11 +727,7 @@ int session_run(int abi_failures, int registry_ok)
      * the host has to see the painted frames in screendumps, so the guest
      * must not tear the windows down or power off underneath them. Every
      * verdict above has already printed by this point. */
-    flow_gui_smoke();
-    flow_gui2();
-    flow_gui3();
-    flow_gui4();
-    flow_gui5();
+    flow_gui();
 
     return failures;
 }
