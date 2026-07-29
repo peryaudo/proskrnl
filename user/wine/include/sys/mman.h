@@ -4,7 +4,7 @@
  * freetype.c maps each font file once and hands FreeType the bytes
  * (map_font_file), so the two calls it needs are mmap of a whole file and
  * munmap. Implemented over NtCreateSection/NtMapViewOfSection in
- * user/wine/win32u/font_unix.c - the same pair \Device\Fb0 is mapped with.
+ * user/wine/dlls/win32u/font_unix.c - the same pair \Device\Fb0 is mapped with.
  * Nothing else here is honoured: anonymous mappings, MAP_FIXED and
  * protection changes have no caller and would be inventing semantics.
  */

@@ -297,7 +297,7 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   (HACK-004, docs/10): conhost's tty is `\Device\Serial0`, RX polled — see
   the ledger entry for scope and retirement.
 - **The proskrnl conhost build's keyboard knowledge is the ASCII slice** of the
-  US-layout `VkKeyScanW` mapping (user/conhost/proskrnl_glue.c): enough for
+  US-layout `VkKeyScanW` mapping (user/wine/programs/conhost/proskrnl_glue.c): enough for
   the tty line discipline (Enter/Backspace/Tab/Escape/^A-^Z by virtual
   key); a real layout arrives with user32 (M10+).
 - **conhost's wire output is a screen diff**, not an echo of written bytes:
@@ -417,7 +417,7 @@ first (Art. 5). Wrinkles worth remembering:
   twice — the same convention as Wine's mapper
   (`dlls/ntdll/unix/virtual.c map_image_into_view`).
 - **cmd.exe ships as a standalone PE** built from the pinned tree's own
-  cmd objects + `user/cmd/proskrnl_glue.c` (the five user32 / four shell32
+  cmd objects + `user/wine/programs/cmd/proskrnl_glue.c` (the five user32 / four shell32
   imports stood in over ntdll/kernelbase; shell verbs fail loudly).
   user32/shell32 themselves stay off the image until GUI-2 (Art. 7).
 - **services.exe is deferred** (milestone text lists it): nothing in the
@@ -1247,8 +1247,8 @@ process default desktop. Every wineserver-lite client is such a parentless first
 the create-and-ignore-the-error dance *is* the pinned behaviour — and no session bootstrap
 in the server is needed or wanted.
 
-The actual stopper was a transport infidelity: `slot_call` (`user/wine/server/call.c`)
-copied the reply back **only on success**, where Wine's wire contract delivers the full
+The actual stopper was a transport infidelity: `slot_call`
+(`user/wine/wineserver-lite/client/call.c`) copied the reply back **only on success**, where Wine's wire contract delivers the full
 reply and its data unconditionally and returns the error beside it (`send_reply`,
 `server/request.c`; `wait_reply`, `dlls/ntdll/unix/server.c`) — and the in-process dispatch
 already did the same, so the two modes had drifted (Art. 11) in exactly the way this file
@@ -1458,8 +1458,8 @@ is the strongest statement about route (a)'s "compile the pinned server unmodifi
 project has).
 
 - **Clipboard payload ceiling.** Cross-process clipboard is live within the transport slot
-  (`PRSK_SLOT_DATA`, 64 KiB — `user/wine/server/transport.h`); a larger `set_clipboard_data`
-  refuses loudly by request name rather than truncating (Art. 12). Named residual,
+  (`PRSK_SLOT_DATA`, 64 KiB — `user/wine/wineserver-lite/common/transport.h`); a larger
+  `set_clipboard_data` refuses loudly by request name rather than truncating (Art. 12). Named residual,
   grow-on-demand: msg.c and a windowed conhost's copy-paste are the plausible consumers, and
   neither has needed it yet.
 - **Cross-process non-LL global hooks are unexercised.** A global `WH_CBT`-class hook needs
@@ -1485,9 +1485,9 @@ and their reasons:
   *and* need the headless conhost (their verdicts ride serial). The windowed binary still
   probes `PRSK_SRV_IMAGE`, but only as a refusal — windowed conhost on a serverless image
   would make win32u go in-process and conhost the desktop's OWNER (the split-brain
-  `user/wine/server/call.c` names); it exits loudly instead (G12).
-- **comctl32 is a manual delay-load** (`user/conhost/window_glue.c`), mirroring upstream's
-  DELAYIMPORT: reachable only from the config dialog, resolved by LoadLibrary on first
+  `user/wine/wineserver-lite/client/call.c` names); it exits loudly instead (G12).
+- **comctl32 is a manual delay-load** (`user/wine/programs/conhost/window_glue.c`),
+  mirroring upstream's DELAYIMPORT: reachable only from the config dialog, resolved by LoadLibrary on first
   call, refusing with the API's real failure shapes if absent. No load-time import of a
   DllMain path no boot has exercised (the GUI-2 imm32 delay-import abort is the precedent).
 - **Start order**: wineserver-lite now starts BEFORE conhost (`kernel/init/main.c`) — a

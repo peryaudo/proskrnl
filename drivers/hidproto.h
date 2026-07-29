@@ -3,7 +3,7 @@
  *
  * The kernel <-> user protocol for the raw input devices, shared by
  * drivers/hid.c and everything that opens them (tests/gui, and
- * user/wine/winefb.drv/input.c from GUI-2). Outside abi/ for the same
+ * user/wine/dlls/winefb.drv/input.c from GUI-2). Outside abi/ for the same
  * reason as drivers/fbproto.h: NT has no such devices, so there is nothing
  * in Wine's headers to generate the contract from.
  *

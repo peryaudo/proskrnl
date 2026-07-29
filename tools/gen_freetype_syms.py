@@ -5,7 +5,7 @@ dlls/win32u/freetype.c reaches FreeType through dlopen/dlsym: one
 MAKE_FUNCPTR per entry point, then a LOAD_FUNCPTR that resolves it by name.
 On proskrnl there is no dynamic loader, and FreeType is linked statically
 into win32u.dll, so the lookup is answered from a table
-(user/wine/win32u/freetype_link.c).
+(user/wine/dlls/win32u/freetype_link.c).
 
 The table is generated from the MAKE_FUNCPTR list in freetype.c rather than
 typed out, so that a Wine pin which starts calling a new FreeType entry

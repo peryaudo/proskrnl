@@ -109,30 +109,42 @@ proskrnl/
 │       └── pipe.c                   # byte/message mode, listen/connect
 │
 ├── user/                            # user-mode side
-│   ├── ntdll-stubs/
-│   │   └── syscall_stubs.S          # generated from abi/syscall_numbers.h
 │   ├── smss/                        # the session manager: the ONE image the kernel starts;
 │   │   │                            #   spawns servers + every flow via NtCreateUserProcess
 │   │   └── firstboot.c              # runs wineboot.exe on first boot
-│   ├── wine/                        # build glue; Wine itself is the third_party/wine
-│   │   │                            #   submodule — unixlib→syscall swaps live as commits
-│   │   │                            #   on its proskrnl-target fork branch (Art. 10 / G9)
-│   │   ├── include/                 # the POSIX headers mingw lacks (pthread, dlfcn,
-│   │   │                            #   poll, mmap, dirent) + config.h/unixlib.h shadows
-│   │   ├── win32u/                  # ★ win32u's unix half, compiled as PE (GUI-2)
-│   │   │   ├── glue.c               #   pthreads, the user-mode callback pair, ntdll's
-│   │   │   │                        #   unix-side helpers, the libc corners
-│   │   │   ├── font_unix.c          #   open/mmap/opendir for the font backend, over Nt*
-│   │   │   └── freetype_link.c      #   dlsym → the linked-in FreeType (generated table)
-│   │   ├── server/                  # ★ wineserver's GUI object model, in-process
-│   │   │   └── shim.c               #   wine_server_call, the session mapping, queue
-│   │   │                            #   events, timeouts, the one process/thread
-│   │   ├── winefb.drv/              # ★ display backend written AS a Wine driver
-│   │   │   ├── init.c               #   user_driver_funcs table
-│   │   │   ├── display.c            #   mode enumeration, \Device\Fb0 map, desktop create
-│   │   │   ├── blit.c               #   dibdrv output → scanout
-│   │   │   ├── cursor.c             #   empty until there is a mouse (GUI-4)
-│   │   │   └── input.c              #   \Device\Input0 → input injection
+│   └── wine/                        # build glue; Wine itself is the third_party/wine
+│       │                            #   submodule — unixlib→syscall swaps live as commits
+│       │                            #   on its proskrnl-target fork branch (Art. 10 / G9)
+│       │                            # MIRRORS the pinned tree: every directory below
+│       │                            #   shadows the third_party/wine one of the same name
+│       ├── include/                 # the POSIX headers mingw lacks (pthread, dlfcn,
+│       │                            #   poll, mmap, dirent) + config.h/unixlib.h shadows
+│       ├── dlls/                    # glue for pinned sources WE compile and link
+│       │   ├── win32u/              # ★ win32u's unix half, compiled as PE (GUI-2)
+│       │   │   ├── glue.c           #   pthreads, the user-mode callback pair, ntdll's
+│       │   │   │                    #   unix-side helpers, the libc corners
+│       │   │   ├── font_unix.c      #   open/mmap/opendir for the font backend, over Nt*
+│       │   │   └── freetype_link.c  #   dlsym → the linked-in FreeType (generated table)
+│       │   └── winefb.drv/          # ★ display backend written AS a Wine driver
+│       │       ├── init.c           #   user_driver_funcs table
+│       │       ├── display.c        #   mode enumeration, \Device\Fb0 map, desktop create
+│       │       ├── blit.c           #   dibdrv output → scanout
+│       │       ├── cursor.c         #   empty until there is a mouse (GUI-4)
+│       │       └── input.c          #   \Device\Input0 → input injection
+│       ├── programs/                # per-exe standalone-PE glue (CRT entry + the imports
+│       │   │                        #   this build does not bake) around the pinned tree's
+│       │   │                        #   OWN program objects — no program source is copied
+│       │   ├── conhost/             # M9 + GUI-5: headless_stubs.c / window_glue.c are the
+│       │   │                        #   two links' halves (serial console vs. a real window)
+│       │   ├── cmd/ · rundll32/ · wineboot/          # M10 / CUI-1
+│       │   └── tasklist/ · taskkill/                 # CUI-4
+│       └── wineserver-lite/         # ★ wineserver's GUI object model (shadows server/),
+│           │                        #   ONE state machine with two links (HACK-003)
+│           ├── common/              # BOTH links: shim.c (the session mapping, queue
+│           │                        #   events, timeouts, the one process/thread),
+│           │                        #   srv_glue.c, transport.h — the wire both ends share
+│           ├── client/              # win32u.dll only: call.c == wine_server_call
+│           └── server/              # wineserver-lite.exe only: main.c == the serve loop
 │                                    # (the boot-module test clients live under tests/)
 │
 ├── third_party/
@@ -190,8 +202,8 @@ everything.
 
 One deliberate exception, added at GUI-2: the `win32u` target compiles Wine *sources* out of
 the pinned tree with mingw rather than taking a built artifact. That is not a port of Wine
-into our build system — it is the same trick `user/conhost/` has used since M9, applied to
-the half of win32u Wine builds as a `.so` and we need as a `.dll`. Nothing is copied and
+into our build system — it is the same trick `user/wine/programs/conhost/` has used since
+M9, applied to the half of win32u Wine builds as a `.so` and we need as a `.dll`. Nothing is copied and
 nothing is patched; the pinned tree stays the single source (docs/06 "one tree, three
 roles").
 
@@ -215,5 +227,6 @@ rests on.
 M1 = `arch/` + `init/` · M2 = `ke/` · M3 = `ob/` · M4 = `syscall/` + user split ·
 M5 = `mm/section+fault+pagecache` · M6 = `io/` + `fs/fat32` + `drivers/virtio/blk` ·
 M7 = `ps/usermode+peb` + `user/wine` · M8 = `cm/` + `smss` · M9 = `fs/npfs` + `condrv` ·
-GUI-1 = `drivers/{fb,hid,virtio/input}` · GUI-2–GUI-5 = `user/wine/winefb.drv` (+ `kernel/win32k` iff route (b)).
+GUI-1 = `drivers/{fb,hid,virtio/input}` · GUI-2–GUI-5 = `user/wine/dlls/winefb.drv`
+(+ `kernel/win32k` iff route (b)).
 Progress is visible as a coloring of the tree.

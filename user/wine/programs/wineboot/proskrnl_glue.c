@@ -1,5 +1,5 @@
 /*
- * user/wineboot/proskrnl_glue.c — standalone-PE glue for Wine's wineboot (CUI-1).
+ * user/wine/programs/wineboot/proskrnl_glue.c — standalone-PE glue for Wine's wineboot (CUI-1).
  *
  * wineboot.c is compiled DIRECTLY from the pinned tree (the conhost recipe:
  * programs/wineboot is in the tree's disabled PE subdirs, so there are no
@@ -11,7 +11,7 @@
  *
  *   - the narrow CRT entry (wineboot is a -mconsole main() app),
  *   - the user32/gdi32 wait-window set as headless stand-ins — the exact
- *     precedent user/cmd/proskrnl_glue.c sets (Art. 7: GUI stays absent);
+ *     precedent user/wine/programs/cmd/proskrnl_glue.c sets (Art. 7: GUI stays absent);
  *     MsgWaitForMultipleObjects degrades to WaitForMultipleObjects so the
  *     rundll32-wait loop still blocks correctly,
  *   - honest-failure stand-ins for the shell32/shlwapi/wininet/newdev/ws2_32
@@ -32,7 +32,7 @@
 #include <newdev.h>
 #undef WIN32_NO_STATUS
 
-/* ---- ucrtbase app-startup surface (user/cmd/proskrnl_glue.c precedent) --- */
+/* ---- ucrtbase app-startup surface (user/wine/programs/cmd/proskrnl_glue.c precedent) --- */
 
 void __cdecl _set_app_type(int);
 int __cdecl _initialize_narrow_environment(void);
@@ -302,7 +302,7 @@ static HINSTANCE WINAPI glue_ShellExecuteW(HWND hwnd, LPCWSTR verb, LPCWSTR file
     (void)parameters;
     (void)directory;
     (void)show;
-    /* <= 32 is the documented failure band (user/cmd/proskrnl_glue.c). */
+    /* <= 32 is the documented failure band (user/wine/programs/cmd/proskrnl_glue.c). */
     return (HINSTANCE)(ULONG_PTR)SE_ERR_ACCESSDENIED;
 }
 
@@ -397,7 +397,7 @@ void WINAPI freeaddrinfo(struct addrinfo *info)
 /* ---- dllimport indirection ----------------------------------------------- */
 
 /* These headers declare their functions dllimport, so wineboot.c's calls go
- * through __imp_* pointers (user/cmd/proskrnl_glue.c precedent). */
+ * through __imp_* pointers (user/wine/programs/cmd/proskrnl_glue.c precedent). */
 HRESULT(WINAPI *__imp_SHGetFolderPathW)(HWND, int, HANDLE, DWORD, WCHAR *) = glue_SHGetFolderPathW;
 BOOL(WINAPI *__imp_SHGetSpecialFolderPathW)
 (HWND, WCHAR *, int, BOOL) = glue_SHGetSpecialFolderPathW;

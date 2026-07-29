@@ -1,5 +1,5 @@
 /*
- * user/cmd/proskrnl_glue.c — standalone-PE glue for Wine's cmd.exe (M10).
+ * user/wine/programs/cmd/proskrnl_glue.c — standalone-PE glue for Wine's cmd.exe (M10).
  *
  * Wine's cmd sources (third_party/wine/programs/cmd/*.c, compiled unmodified
  * by the pinned tree's own PE build) import five user32 and four shell32
@@ -9,7 +9,7 @@
  * file stands those nine functions in with CUI-faithful implementations over
  * ntdll/kernelbase, plus the CRT entry point the exe needs (the ucrtbase
  * startup sequence a CRT startup object would run). Same precedent as
- * user/conhost/proskrnl_glue.c.
+ * user/wine/programs/conhost/proskrnl_glue.c.
  */
 #include <stdarg.h>
 

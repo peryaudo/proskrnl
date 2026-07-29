@@ -1,5 +1,5 @@
 /*
- * shim.h - what user/wine/server/shim.c publishes to the rest of the build.
+ * shim.h - what user/wine/wineserver-lite/common/shim.c publishes to the rest of the build.
  *
  * The GUI process compiles the pinned wineserver's GUI object model
  * (server/{object,handle,user,atom,class,winstation,window,queue,region,

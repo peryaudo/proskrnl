@@ -169,7 +169,7 @@ int asprintf( char **out, const char *format, ... )
 }
 
 /* Only wineserver's dump helpers print to a FILE*, and there is no stderr
- * here - diagnostics go to serial (user/wine/server/shim.c prsk_log). */
+ * here - diagnostics go to serial (user/wine/wineserver-lite/common/shim.c prsk_log). */
 int __mingw_vfprintf( FILE *file, const char *format, va_list args ) { return 0; }
 int __mingw_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }
 int __ms_vfscanf( FILE *file, const char *format, va_list args ) { return -1; }

@@ -34,7 +34,7 @@
  * macro win32u's transport probe uses. Names only — the wire structs need
  * Wine's protocol types, which conhost does not carry. */
 #define PRSK_TRANSPORT_NAMES_ONLY
-#include "../wine/server/transport.h"
+#include "../../wineserver-lite/common/transport.h"
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
 
@@ -126,7 +126,7 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
              * time (user32 -> win32u connects during Ldr init). If this
              * binary was baked on an image without the server, win32u went
              * in-process and this conhost would become the desktop's OWNER
-             * — the split-brain user/wine/server/call.c names. Refuse
+             * — the split-brain user/wine/wineserver-lite/client/call.c names. Refuse
              * loudly instead of running wrong (G12). */
             HANDLE srv_image = open_device( PRSK_SRV_IMAGE, FILE_READ_ATTRIBUTES );
             if (!srv_image)

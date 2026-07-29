@@ -38,7 +38,7 @@ Not in NT:  NT owns the framebuffer behind a display driver, below win32k (WDDM/
 Reason:     We implement no display-driver model; win32u needs somewhere to blit.
 Scope:      drivers/fb.c ; drivers/fb.h ; drivers/fbproto.h ;
             kernel/init/main.c (the FbInitialize call) ;
-            user/wine/winefb.drv/display.c (GUI-2)
+            user/wine/dlls/winefb.drv/display.c (GUI-2)
 Retirement: if an NtGdi-side display-driver abstraction is ever built.
 ```
 
@@ -67,8 +67,8 @@ Reason:     win32u needs a raw keyboard/mouse event source.
 Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
             drivers/virtio/input.c ; drivers/virtio/input.h ;
             kernel/io/file.c + kernel/init/main.c (the two init calls) ;
-            user/wine/winefb.drv/input.c (GUI-2; GUI-4: + the pointer
-            reader) ; user/wine/winefb.drv/cursor.c (GUI-4)
+            user/wine/dlls/winefb.drv/input.c (GUI-2; GUI-4: + the pointer
+            reader) ; user/wine/dlls/winefb.drv/cursor.c (GUI-4)
 Retirement: if input routing moves into a kernel win32k (route (b)).
 ```
 
@@ -101,7 +101,7 @@ Not in NT:  NT holds desktop state in kernel win32k (since NT 4.0). NOTE: this i
             un-NT-like in principle.
 Reason:     Reusing Wine's 30-years-tuned GUI state code without transplanting it onto Ob;
             keeps a clean kernel license; trivially removable.
-Scope:      user/wine/wineserver/main.c (the process), user/wine/server/
+Scope:      user/wine/wineserver-lite/server/main.c (the process), user/wine/wineserver-lite/
             {transport.h,call.c,srv_glue.c,shim.c} (the wire and the state
             machine's environment), the WINESERVER_LITE link in the Makefile,
             and smss_start_wineserver in user/smss/launch.c, which starts it.
@@ -134,7 +134,8 @@ Reason:     M9 needs interactive console I/O before any display or keyboard hard
             loop (docs/08) unchanged — the cheapest input source an LLM-driven runner
             can drive deterministically.
 Scope:      drivers/condrv.c (backend hookup) ; arch/x86_64/serial.c (RX side) ;
-            user/conhost/headless_stubs.c (the headless link's user32/window stand-ins)
+            user/wine/programs/conhost/headless_stubs.c (the headless link's
+            user32/window stand-ins)
 Retirement: none planned — see Status. The original retirement condition ("delete the
             serial backend once conhost is GUI-ified") was met at GUI-5 and explicitly
             NOT taken: the hack shrank in scope (GUI images run the windowed conhost)

@@ -2,7 +2,7 @@
  *
  * The kernel <-> user protocol for the framebuffer device, shared by
  * drivers/fb.c and everything that opens \Device\Fb0 (tests/gui, and
- * user/wine/winefb.drv/display.c from GUI-2). The condrvproto.h precedent:
+ * user/wine/dlls/winefb.drv/display.c from GUI-2). The condrvproto.h precedent:
  * this is a proskrnl-internal contract, so it lives outside abi/ — there is
  * nothing in Wine's headers to generate it from (Art. 4 governs values that
  * exist in the NT contract; this device does not exist in NT at all).

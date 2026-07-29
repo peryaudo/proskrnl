@@ -151,7 +151,7 @@ oracle() {
         echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
     done < <(all_tests)
 
-    # M10: the standalone cmd.exe (Wine's cmd objects + user/cmd glue) is
+    # M10: the standalone cmd.exe (Wine's cmd objects + user/wine/programs/cmd glue) is
     # spec-checked off-target here — the same binary the console image bakes
     # must behave under the oracle (docs/06 one-tree discipline).
     make -C "$ROOT" build/modules/cmd.exe >/dev/null

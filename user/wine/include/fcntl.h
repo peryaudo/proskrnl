@@ -3,7 +3,7 @@
  *
  * Read-only: freetype.c opens fonts to map them and nothing else. The write
  * and create flags exist so the source compiles, not because they work --
- * user/wine/win32u/font_unix.c ignores everything but the path.
+ * user/wine/dlls/win32u/font_unix.c ignores everything but the path.
  */
 #ifndef PRSK_FCNTL_H
 #define PRSK_FCNTL_H

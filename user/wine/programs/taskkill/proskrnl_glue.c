@@ -1,5 +1,5 @@
 /*
- * user/taskkill/proskrnl_glue.c — standalone-PE glue for Wine's taskkill.exe
+ * user/wine/programs/taskkill/proskrnl_glue.c — standalone-PE glue for Wine's taskkill.exe
  * (CUI-4).
  *
  * The CUI-4 acceptance's process killer (docs/02 "a tasklist/taskkill pair
@@ -8,7 +8,7 @@
  * supplies the wide CRT entry and the four user32 imports it references.
  *
  * Two of those are real here: LoadStringW (a resource read, same body as
- * user/cmd/proskrnl_glue.c) and wsprintfW (plain formatting over ntdll's
+ * user/wine/programs/cmd/proskrnl_glue.c) and wsprintfW (plain formatting over ntdll's
  * _vsnwprintf). The other two — EnumWindows and GetWindowThreadProcessId,
  * plus PostMessageW — belong to taskkill's GRACEFUL path, which asks a
  * process's windows to close. proskrnl has no windows until GUI-2 (Art. 7),

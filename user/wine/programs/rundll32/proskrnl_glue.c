@@ -1,5 +1,5 @@
 /*
- * user/rundll32/proskrnl_glue.c — standalone-PE glue for Wine's rundll32 (CUI-1).
+ * user/wine/programs/rundll32/proskrnl_glue.c — standalone-PE glue for Wine's rundll32 (CUI-1).
  *
  * wineboot --init applies wine.inf by spawning `rundll32.exe
  * setupapi,InstallHinfSection <section> 128 <inf>` children — the Cm
@@ -9,7 +9,7 @@
  * -municode windows app: wide argv, wWinMain) and the four user32 imports —
  * rundll32 registers a class and creates a never-shown top-level window for
  * DLLs that expect an HWND parent; headless stand-ins satisfy that without
- * the M12 GUI path (Art. 7). Same precedent as user/cmd/proskrnl_glue.c.
+ * the M12 GUI path (Art. 7). Same precedent as user/wine/programs/cmd/proskrnl_glue.c.
  */
 #include <stdarg.h>
 
@@ -17,7 +17,7 @@
 #include <windows.h>
 #undef WIN32_NO_STATUS
 
-/* ---- ucrtbase app-startup surface (user/cmd/proskrnl_glue.c precedent) --- */
+/* ---- ucrtbase app-startup surface (user/wine/programs/cmd/proskrnl_glue.c precedent) --- */
 
 void __cdecl _set_app_type(int);
 int __cdecl _initialize_wide_environment(void);
@@ -110,7 +110,7 @@ static LRESULT WINAPI glue_DefWindowProcW(HWND hwnd, UINT msg, WPARAM wparam, LP
 /* ---- dllimport indirection ----------------------------------------------- */
 
 /* rundll32.o was compiled against user32's dllimport declarations; its calls
- * go through __imp_* pointers (user/cmd/proskrnl_glue.c precedent). */
+ * go through __imp_* pointers (user/wine/programs/cmd/proskrnl_glue.c precedent). */
 ATOM(WINAPI *__imp_RegisterClassExW)(const WNDCLASSEXW *) = glue_RegisterClassExW;
 HCURSOR(WINAPI *__imp_LoadCursorW)(HINSTANCE, LPCWSTR) = glue_LoadCursorW;
 HWND(WINAPI *__imp_CreateWindowExW)(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU,

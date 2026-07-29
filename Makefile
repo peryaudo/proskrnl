@@ -324,12 +324,21 @@ $(M9ECHO): tests/clients/m9_echo.c $(WINE_PE_DLLS)
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# Where the per-exe standalone-PE glue lives: one directory per pinned
+# program, mirroring third_party/wine/programs/ (docs/04).
+PROG_GLUE := user/wine/programs
+
+# The GUI state machine's own tree (docs/04): common/ is taken by both of its
+# links, client/ by win32u.dll, server/ by wineserver-lite.exe.
+WSRV_DIR := user/wine/wineserver-lite
+
 # The M9 console server: Wine's conhost, compiled DIRECTLY from the pinned
 # tree — the wineserver seam lives as a runtime-dormant fork commit on
 # proskrnl-target (programs/conhost/proskrnl.{c,h}, taken when
-# __wine_unix_call_dispatcher is NULL; Art. 10 / docs/06). user/conhost/
-# carries only the standalone-PE glue: entry + mini-CRT (proskrnl_glue.c,
-# shared with the windowed link) and the headless user32/window.c stand-ins
+# __wine_unix_call_dispatcher is NULL; Art. 10 / docs/06).
+# user/wine/programs/conhost/ carries only the standalone-PE glue: entry +
+# mini-CRT (proskrnl_glue.c, shared with the windowed link) and the headless
+# user32/window.c stand-ins
 # (headless_stubs.c, this link only — the windowed CONHOST_GUI links the
 # real user32 and the real window.c instead). Built like the other native
 # PEs: mingw, no CRT, Wine import libraries.
@@ -337,14 +346,16 @@ WINE_CONHOST := third_party/wine/programs/conhost
 CONHOST := $(BUILD)/modules/conhost.exe
 $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
             $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
-            user/conhost/proskrnl_glue.c user/conhost/headless_stubs.c $(WINE_PE_DLLS)
+            $(PROG_GLUE)/conhost/proskrnl_glue.c \
+            $(PROG_GLUE)/conhost/headless_stubs.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
 	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' \
 	    -I$(WINE_CONHOST) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
 	    -Wl,--entry=conhost_start \
-	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/proskrnl.c user/conhost/proskrnl_glue.c \
-	    user/conhost/headless_stubs.c \
+	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/proskrnl.c \
+	    $(PROG_GLUE)/conhost/proskrnl_glue.c \
+	    $(PROG_GLUE)/conhost/headless_stubs.c \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
@@ -363,8 +374,8 @@ CONHOST_GUI := $(BUILD)/modules/conhost-gui.exe
 $(CONHOST_GUI): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
             $(WINE_CONHOST)/window.c $(WINE_CONHOST)/conhost.res \
             $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
-            user/conhost/proskrnl_glue.c user/conhost/window_glue.c \
-            user/wine/server/transport.h $(WINE_PE_DLLS)
+            $(PROG_GLUE)/conhost/proskrnl_glue.c $(PROG_GLUE)/conhost/window_glue.c \
+            $(WSRV_DIR)/common/transport.h $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-windres -J res -O coff $(WINE_CONHOST)/conhost.res \
 	    $(BUILD)/conhost.res.o
@@ -373,7 +384,8 @@ $(CONHOST_GUI): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
 	    -I$(WINE_CONHOST) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
 	    -Wl,--entry=conhost_start \
 	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/window.c $(WINE_CONHOST)/proskrnl.c \
-	    user/conhost/proskrnl_glue.c user/conhost/window_glue.c $(BUILD)/conhost.res.o \
+	    $(PROG_GLUE)/conhost/proskrnl_glue.c $(PROG_GLUE)/conhost/window_glue.c \
+	    $(BUILD)/conhost.res.o \
 	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    $(WINE_PE)/gdi32/x86_64-windows/libgdi32.a \
 	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
@@ -383,14 +395,14 @@ $(CONHOST_GUI): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
 
 # M10: Wine's cmd.exe as a standalone CUI PE. The pinned tree's own PE build
 # provides the four cmd objects and the wrc-compiled resources UNMODIFIED
-# (programs/cmd/x86_64-windows, built by tools/setup_linux.sh); user/cmd/
-# supplies only the glue — the CRT entry plus the five user32 / four shell32
-# imports, stood in over ntdll/kernelbase (user32/shell32 are the M12 GUI
+# (programs/cmd/x86_64-windows, built by tools/setup_linux.sh);
+# user/wine/programs/cmd/ supplies only the glue — the CRT entry plus the five
+# user32 / four shell32 imports, stood in over ntdll/kernelbase (user32/shell32 are the M12 GUI
 # path, additive and absent here per Art. 7). Links the real ucrtbase +
 # advapi32 import libraries; both DLLs are baked (WINFILES below).
 WINE_CMD := third_party/wine/programs/cmd
 CMD := $(BUILD)/modules/cmd.exe
-$(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
+$(CMD): $(PROG_GLUE)/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
         $(WINE_CMD)/x86_64-windows/builtins.o $(WINE_CMD)/x86_64-windows/batch.o \
         $(WINE_CMD)/x86_64-windows/directory.o $(WINE_CMD)/cmd.res $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
@@ -399,7 +411,7 @@ $(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 	    -Wl,--entry=cmd_start \
 	    $(WINE_CMD)/x86_64-windows/wcmdmain.o $(WINE_CMD)/x86_64-windows/builtins.o \
 	    $(WINE_CMD)/x86_64-windows/batch.o $(WINE_CMD)/x86_64-windows/directory.o \
-	    user/cmd/proskrnl_glue.c $(BUILD)/cmd.res.o \
+	    $(PROG_GLUE)/cmd/proskrnl_glue.c $(BUILD)/cmd.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
@@ -410,20 +422,20 @@ $(CMD): user/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 # CUI-4: Wine's tasklist.exe / taskkill.exe as standalone CUI PEs — the
 # milestone's acceptance pair (docs/02 "a tasklist/taskkill pair works
 # against live processes"). The pinned tree's own PE build provides the
-# program objects and wrc-compiled resources UNMODIFIED; user/tasklist/ and
-# user/taskkill/ supply only the wide CRT entry and the user32 imports
+# program objects and wrc-compiled resources UNMODIFIED; the tasklist/ and
+# taskkill/ glue supplies only the wide CRT entry and the user32 imports
 # (LoadStringW is a resource read; taskkill's window calls fail honestly —
 # its /f path does not use them). Same recipe shape as cmd.exe above.
 WINE_TASKLIST := third_party/wine/programs/tasklist
 TASKLIST := $(BUILD)/modules/tasklist.exe
-$(TASKLIST): user/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windows/tasklist.o \
+$(TASKLIST): $(PROG_GLUE)/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windows/tasklist.o \
         $(WINE_TASKLIST)/tasklist.res $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-windres -J res -O coff $(WINE_TASKLIST)/tasklist.res \
 	    $(BUILD)/tasklist.res.o
 	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
 	    -Wl,--entry=tasklist_start \
-	    $(WINE_TASKLIST)/x86_64-windows/tasklist.o user/tasklist/proskrnl_glue.c \
+	    $(WINE_TASKLIST)/x86_64-windows/tasklist.o $(PROG_GLUE)/tasklist/proskrnl_glue.c \
 	    $(BUILD)/tasklist.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
@@ -433,14 +445,14 @@ $(TASKLIST): user/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windows/taskl
 
 WINE_TASKKILL := third_party/wine/programs/taskkill
 TASKKILL := $(BUILD)/modules/taskkill.exe
-$(TASKKILL): user/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windows/taskkill.o \
+$(TASKKILL): $(PROG_GLUE)/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windows/taskkill.o \
         $(WINE_TASKKILL)/taskkill.res $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-windres -J res -O coff $(WINE_TASKKILL)/taskkill.res \
 	    $(BUILD)/taskkill.res.o
 	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
 	    -Wl,--entry=taskkill_start \
-	    $(WINE_TASKKILL)/x86_64-windows/taskkill.o user/taskkill/proskrnl_glue.c \
+	    $(WINE_TASKKILL)/x86_64-windows/taskkill.o $(PROG_GLUE)/taskkill/proskrnl_glue.c \
 	    $(BUILD)/taskkill.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
@@ -451,17 +463,17 @@ $(TASKKILL): user/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windows/taskk
 # CUI-1: Wine's rundll32.exe as a standalone PE — wineboot --init's vehicle
 # for the `setupapi,InstallHinfSection` children that apply wine.inf (ADR
 # 0008's Cm integration exercise). The pinned tree's own PE build provides
-# rundll32.o UNMODIFIED; user/rundll32/ supplies the wide CRT entry plus the
-# four user32 imports as headless stand-ins (Art. 7: GUI path stays absent).
+# rundll32.o UNMODIFIED; the rundll32/ glue supplies the wide CRT entry plus
+# the four user32 imports as headless stand-ins (Art. 7: GUI path stays absent).
 WINE_RUNDLL32 := third_party/wine/programs/rundll32
 RUNDLL32 := $(BUILD)/modules/rundll32.exe
-$(RUNDLL32): user/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
+$(RUNDLL32): $(PROG_GLUE)/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
         $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=gnu11 -O1 -g0 -Wall -fno-builtin -nostdlib -nostartfiles \
 	    -Wl,--entry=rundll32_start \
 	    $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
-	    user/rundll32/proskrnl_glue.c \
+	    $(PROG_GLUE)/rundll32/proskrnl_glue.c \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
@@ -471,7 +483,7 @@ $(RUNDLL32): user/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundl
 # CUI-1: wineboot.exe as a standalone PE. The pinned tree keeps
 # programs/wineboot out of its PE build (x86_64_DISABLED_SUBDIRS, same as
 # conhost), so wineboot.c is compiled DIRECTLY from the tree — the conhost
-# recipe — with user/wineboot/ supplying the narrow CRT entry, the
+# recipe — with the wineboot/ glue supplying the narrow CRT entry, the
 # user32/gdi32 wait-window set, and honest-failure stand-ins for the
 # shell32/shlwapi/ws2_32/wininet/newdev legs that degrade gracefully under
 # --init (docs/02 CUI-1). setupapi/version/advapi32/rpcrt4/uuid link real:
@@ -479,13 +491,13 @@ $(RUNDLL32): user/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundl
 # entry points are glue stubs, unreached under --init.
 WINE_WINEBOOT := third_party/wine/programs/wineboot
 WINEBOOT := $(BUILD)/modules/wineboot.exe
-$(WINEBOOT): $(WINE_WINEBOOT)/wineboot.c user/wineboot/proskrnl_glue.c $(WINE_PE_DLLS)
+$(WINEBOOT): $(WINE_WINEBOOT)/wineboot.c $(PROG_GLUE)/wineboot/proskrnl_glue.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
 	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' '-DWINGDIAPI=' '-DWINBASEAPI=' \
 	    -I$(WINE_WINEBOOT) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
 	    -Wl,--entry=wineboot_start \
-	    $(WINE_WINEBOOT)/wineboot.c user/wineboot/proskrnl_glue.c \
+	    $(WINE_WINEBOOT)/wineboot.c $(PROG_GLUE)/wineboot/proskrnl_glue.c \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
 	    $(WINE_PE)/setupapi/x86_64-windows/libsetupapi.a \
 	    $(WINE_PE)/version/x86_64-windows/libversion.a \
@@ -687,13 +699,14 @@ gui-img: $(IMG_GUI)
 #
 # The desktop state those sources talk to is the pinned wineserver's own GUI
 # object model, compiled into the same DLL and reached through an in-process
-# wine_server_call (user/wine/server/). One GUI process, no wineserver
-# (GUI-3 is where it becomes a process again).
+# wine_server_call (user/wine/wineserver-lite/). One GUI process, no
+# wineserver (GUI-3 is where it becomes a process again).
 #
 # Nothing in third_party/wine is patched for any of this: user/wine/ carries
 # the shims (POSIX headers mingw lacks), the glue (pthreads, the user-mode
 # callback pair, ntdll's unix-side helpers) and the display driver. Deleting
-# user/wine/ and the two drivers restores the CUI kernel (Art. 7).
+# user/wine/dlls/, user/wine/wineserver-lite/ and the two drivers restores the
+# CUI kernel (Art. 7) — user/wine/programs/ is the CUI side's own glue and stays.
 WINE_W32U := third_party/wine/dlls/win32u
 WINE_SRV  := third_party/wine/server
 W32U_BUILD := $(BUILD)/win32u
@@ -701,7 +714,7 @@ W32U_BUILD := $(BUILD)/win32u
 # Everything in win32u's SOURCES except the two files that ARE the syscall
 # boundary: main.c (the PE thunks this build replaces) and syscall.c (the
 # service-table registration and the pthread-key thread info, both re-done in
-# user/wine/win32u/glue.c).
+# user/wine/dlls/win32u/glue.c).
 W32U_SRCS := $(filter-out $(WINE_W32U)/main.c $(WINE_W32U)/syscall.c, \
                  $(wildcard $(WINE_W32U)/*.c) $(wildcard $(WINE_W32U)/dibdrv/*.c))
 
@@ -741,9 +754,18 @@ W32U_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
                -Iuser/wine/include -Ithird_party/freetype/include \
                -I$(W32U_BUILD) -Ithird_party/wine/include
 
-# The glue, minus the server process's own main: user/wine/wineserver/ is
-# the wineserver-lite.exe link, not part of the DLL (see WINESERVER_LITE).
-W32U_GLUE_SRCS := $(filter-out user/wine/wineserver/%.c,$(wildcard user/wine/*/*.c))
+# The DLL's glue, listed by directory: wineserver-lite/ is split so that each
+# of its two links names the halves it takes, rather than one wildcard minus
+# a filter-out. This link takes common/ (the state machine's environment) and
+# client/ (wine_server_call); the exe takes common/ and server/ instead, and
+# neither takes the other's half (see WINESERVER_LITE).
+W32U_GLUE_SRCS := $(wildcard user/wine/dlls/win32u/*.c) \
+                  $(wildcard user/wine/dlls/winefb.drv/*.c) \
+                  $(wildcard $(WSRV_DIR)/common/*.c) \
+                  $(wildcard $(WSRV_DIR)/client/*.c)
+
+# The two glue objects both links share, named once (Art. 11: one spelling).
+WSRV_GLUE := $(W32U_BUILD)/glue/wineserver-lite/common
 
 W32U_OBJS := $(patsubst $(WINE_W32U)/%.c,$(W32U_BUILD)/w32u/%.o,$(W32U_SRCS)) \
              $(patsubst $(WINE_SRV)/%.c,$(W32U_BUILD)/srv/%.o,$(SRV_SRCS)) \
@@ -755,7 +777,7 @@ $(W32U_BUILD)/w32u/%.o: $(WINE_W32U)/%.c user/wine/include/wine/unixlib.h
 
 $(W32U_BUILD)/srv/%.o: $(WINE_SRV)/%.c
 	@mkdir -p $(dir $@)
-	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I$(WINE_SRV) -Iuser/wine/server -c $< -o $@
+	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I$(WINE_SRV) -I$(WSRV_DIR)/common -c $< -o $@
 
 # The FreeType entry points freetype.c resolves by name, generated from its
 # own MAKE_FUNCPTR list so a pin that starts calling a new one fails the
@@ -767,8 +789,8 @@ $(FT_SYMS): $(WINE_W32U)/freetype.c tools/gen_freetype_syms.py
 
 $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS)
 	@mkdir -p $(dir $@)
-	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -Iuser/wine/server \
-	    -Iuser/wine/winefb.drv -c $< -o $@
+	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
+	    -Iuser/wine/dlls/winefb.drv -c $< -o $@
 
 # The dispatch table is generated from the pinned tree's own request list and
 # from which handlers actually linked: a request whose handler is not part of
@@ -781,14 +803,14 @@ SRV_TABLE := $(W32U_BUILD)/prsk_request_table.c
 # lives in server/process.c, which is the process model this build leaves
 # out) — the table must see those too, or a linked handler would still get
 # a NULL slot.
-$(SRV_TABLE): $(SRV_OBJS) $(W32U_BUILD)/glue/server/shim.o tools/gen_server_table.py \
+$(SRV_TABLE): $(SRV_OBJS) $(WSRV_GLUE)/shim.o tools/gen_server_table.py \
         $(WINE_SRV)/request_handlers.h
 	@mkdir -p $(dir $@)
 	python3 tools/gen_server_table.py $(WINE_SRV)/request_handlers.h $@ $(SRV_OBJS) \
-	    $(W32U_BUILD)/glue/server/shim.o
+	    $(WSRV_GLUE)/shim.o
 
-$(W32U_BUILD)/prsk_request_table.o: $(SRV_TABLE) user/wine/server/prsk_request_table.h
-	$(MINGW) $(W32U_CFLAGS) -Iuser/wine/server -c $< -o $@
+$(W32U_BUILD)/prsk_request_table.o: $(SRV_TABLE) $(WSRV_DIR)/common/prsk_request_table.h
+	$(MINGW) $(W32U_CFLAGS) -I$(WSRV_DIR)/common -c $< -o $@
 
 # The export list comes out of win32u.spec, and the generator also proves the
 # shipped importers find every name they need (tools/gen_win32u_def.py).
@@ -826,20 +848,22 @@ win32u: $(WIN32U)
 # wineserver and corrupt the spec. Because the objects are literally shared,
 # the two modes cannot drift into two state machines (Art. 11).
 #
-# What differs is only which halves come along: the server takes shim.c (the
-# environment the state machine expects) and its own main.c, and leaves out
-# call.c, which is the CLIENT half -- so the server carries no client of
-# itself. The DLL takes call.c and leaves out main.c. SRV_RENAME_FLAGS is
-# still applied because these are the same renamed objects.
-WSRV_BUILD := $(W32U_BUILD)/wineserver
-WSRV_SRCS  := $(wildcard user/wine/wineserver/*.c)
-WSRV_OBJS  := $(patsubst user/wine/wineserver/%.c,$(WSRV_BUILD)/%.o,$(WSRV_SRCS)) \
-              $(W32U_BUILD)/glue/server/shim.o $(W32U_BUILD)/glue/server/srv_glue.o
+# What differs is only which halves come along, which is what the source
+# tree's own split says: the exe takes wineserver-lite/common/ (the
+# environment the state machine expects) plus wineserver-lite/server/ (its
+# own main.c), and leaves out wineserver-lite/client/ -- so the server
+# carries no client of itself. The DLL takes common/ + client/ and leaves
+# out server/. SRV_RENAME_FLAGS is still applied because these are the same
+# renamed objects.
+WSRV_BUILD := $(W32U_BUILD)/wineserver-lite
+WSRV_SRCS  := $(wildcard $(WSRV_DIR)/server/*.c)
+WSRV_OBJS  := $(patsubst $(WSRV_DIR)/server/%.c,$(WSRV_BUILD)/%.o,$(WSRV_SRCS)) \
+              $(WSRV_GLUE)/shim.o $(WSRV_GLUE)/srv_glue.o
 
-$(WSRV_BUILD)/%.o: user/wine/wineserver/%.c
+$(WSRV_BUILD)/%.o: $(WSRV_DIR)/server/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) \
-	    -Iuser/wine/server -c $< -o $@
+	    -I$(WSRV_DIR)/common -c $< -o $@
 
 WINESERVER_LITE := $(BUILD)/modules/wineserver-lite.exe
 $(WINESERVER_LITE): $(WSRV_OBJS) $(SRV_OBJS) $(W32U_BUILD)/prsk_request_table.o $(WINE_PE_DLLS)

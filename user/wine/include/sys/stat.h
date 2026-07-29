@@ -3,7 +3,7 @@
  *
  * map_font_file keys its cache on (st_dev, st_ino) so that two names for
  * one file share a mapping, and reads st_size to know how much to map.
- * Implemented over NtQueryInformationFile in user/wine/win32u/font_unix.c,
+ * Implemented over NtQueryInformationFile in user/wine/dlls/win32u/font_unix.c,
  * where the NT file id stands in for the inode.
  *
  * Deliberately NOT mingw's sys/stat.h: that one declares stat() against

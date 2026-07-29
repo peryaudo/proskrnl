@@ -2,8 +2,8 @@
  * poll.h — the two declarations wineserver's object.h reaches for.
  *
  * GUI-2 compiles the pinned wineserver's GUI state machine as PE code inside
- * the GUI process (user/wine/server/). Nothing in that subset ever polls: the
- * fd layer is stubbed out (user/wine/server/shim.c), and waiting is a kernel
+ * the GUI process (user/wine/wineserver-lite/). Nothing in that subset ever polls: the
+ * fd layer is stubbed out (user/wine/wineserver-lite/common/shim.c), and waiting is a kernel
  * event, not a descriptor. Only the type has to exist so `struct object_ops`
  * can name it.
  */

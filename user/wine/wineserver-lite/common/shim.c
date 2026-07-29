@@ -1064,7 +1064,7 @@ DECL_HANDLER(get_process_idle_event)
 
 /* Run one request on behalf of `client`'s thread `tid`. This is the whole
  * server side of a call, and BOTH modes reach the state machine through it:
- * the in-process build calls it directly (user/wine/server/call.c), the
+ * the in-process build calls it directly (user/wine/wineserver-lite/client/call.c), the
  * server process calls it from its transport loop. One authority, so the
  * two modes cannot drift (Art. 11). */
 unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
