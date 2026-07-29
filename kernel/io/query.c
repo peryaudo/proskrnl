@@ -13,6 +13,7 @@
 #include "kernel/ob/ob.h" /* CUI-5: ObpLookupParseObject for rename targets */
 #include "kernel/ke/ke.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 
@@ -671,11 +672,6 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
  * the DOS glob before NtQueryDirectoryFile — cmd.exe's bare-name PATH
  * search sends winemine"* for `winemine`. Pinned differentially by
  * tests/ntapi/sem_file/query_dir.c. */
-static WCHAR IopUpcase(WCHAR c)
-{
-    return (c >= 'a' && c <= 'z') ? (WCHAR)(c - 'a' + 'A') : c;
-}
-
 static BOOLEAN IopMatchMask(const WCHAR *name, ULONG nameUnits, const WCHAR *mask, ULONG maskUnits)
 {
     while (maskUnits != 0)
@@ -757,7 +753,7 @@ static BOOLEAN IopMatchMask(const WCHAR *name, ULONG nameUnits, const WCHAR *mas
         if (m != '?')
         {
             WCHAR want = (m == '"') ? (WCHAR)'.' : m;
-            if (IopUpcase(want) != IopUpcase(name[0]))
+            if (RtlUpcaseUnicodeChar(want) != RtlUpcaseUnicodeChar(name[0]))
             {
                 return FALSE;
             }

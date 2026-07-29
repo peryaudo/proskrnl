@@ -5,6 +5,7 @@
 #include "fs/fat32/fat.h"
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/rtl.h"
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
 
@@ -96,12 +97,6 @@ NTSTATUS FatWriteDirSlot(PFAT_FCB dir, ULONG slot, const unsigned char entry[32]
 
 /* --- names ----------------------------------------------------------------- */
 
-static WCHAR FatUpcase(WCHAR c)
-{
-    /* ASCII-only, like the Ob namespace (docs/03 "Name case folding"). */
-    return (c >= 'a' && c <= 'z') ? (WCHAR)(c - 'a' + 'A') : c;
-}
-
 static BOOLEAN FatNamesEqualInsensitive(const UNICODE_STRING *a, const WCHAR *b, USHORT bLength)
 {
     if (a->Length != bLength)
@@ -110,7 +105,7 @@ static BOOLEAN FatNamesEqualInsensitive(const UNICODE_STRING *a, const WCHAR *b,
     }
     for (ULONG i = 0; i < a->Length / sizeof(WCHAR); i++)
     {
-        if (FatUpcase(a->Buffer[i]) != FatUpcase(b[i]))
+        if (RtlUpcaseUnicodeChar(a->Buffer[i]) != RtlUpcaseUnicodeChar(b[i]))
         {
             return FALSE;
         }
@@ -451,7 +446,7 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
         {
             break;
         }
-        WCHAR c = FatUpcase(name->Buffer[i]);
+        WCHAR c = RtlUpcaseUnicodeChar(name->Buffer[i]);
         if (c <= 0x20 || c > 0x7E || c == '.')
         {
             continue;
@@ -475,7 +470,7 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
     {
         for (ULONG i = (ULONG)lastDot + 1; i < units && extLength < 3; i++)
         {
-            WCHAR c = FatUpcase(name->Buffer[i]);
+            WCHAR c = RtlUpcaseUnicodeChar(name->Buffer[i]);
             if (c > 0x20 && c <= 0x7E && c != '.')
             {
                 ext[extLength++] = (unsigned char)c;
