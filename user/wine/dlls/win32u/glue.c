@@ -37,7 +37,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 
 NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status );
 extern void winefb_init(void);
-extern int prsk_server_init(void);
 extern int prsk_transport_startup(void);
 extern void prsk_client_thread_detach(void);
 extern void winefb_report( const char *format, ... );
@@ -489,9 +488,8 @@ BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved 
          * runs: shared_session_init opens \KernelObjects\__wine_session by
          * name as the FIRST thing init_user does, before any request is
          * sent, so a server that only wakes up on its first request is too
-         * late. In-process that means bringing it up here; with a server
-         * process it means waiting until that process has published the
-         * mapping. prsk_transport_startup decides which, once. */
+         * late. prsk_transport_startup does that wait, once: it returns when
+         * the server process has published the mapping, or fails. */
         if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
         winefb_init();
     }

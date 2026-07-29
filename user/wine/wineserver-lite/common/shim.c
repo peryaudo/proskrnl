@@ -215,7 +215,6 @@ struct prsk_client
 };
 
 static struct list clients = LIST_INIT( clients );
-static struct prsk_client *local_client;
 static struct list thread_records = LIST_INIT( thread_records );
 
 struct prsk_thread_record
@@ -810,12 +809,14 @@ static int server_bringup(void)
         return 0;
     if (!prsk_create_session_mapping()) return 0;
 
-    /* The process running this library is the first client. In the
-     * in-process build it is the only one; when the server is its own
-     * process the clients that attach over the transport join the same
-     * list through the same constructor. */
-    if (!(local_client = create_client( HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess ),
-                                        GetCurrentProcess() )))
+    /* The process running this library is the first client -- the server's
+     * own record, minted before any transport client exists so the list is
+     * never empty and every later client joins it through the same
+     * constructor. Its pointer is not kept: nothing dispatches on behalf of
+     * the server itself since the in-process mode went away, and the record
+     * is reachable by pid like any other (find_client). */
+    if (!create_client( HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess ),
+                        GetCurrentProcess() ))
         return 0;
 
     /* The two process-wide atom tables wineserver's init_directories makes.
@@ -1116,11 +1117,6 @@ unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
     if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
     server_unlock();
     return ret;
-}
-
-struct prsk_client *prsk_local_client(void)
-{
-    return local_client;
 }
 
 void *prsk_client_process_handle( struct prsk_client *client )

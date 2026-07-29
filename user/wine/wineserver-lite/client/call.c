@@ -1,25 +1,28 @@
 /*
- * call.c - wine_server_call: the client half, in both of its modes.
+ * call.c - wine_server_call: the client half.
  *
  * This file is linked into win32u.dll ONLY. wineserver-lite.exe compiles
  * shim.c (the state machine's environment) but never this, which is what
  * keeps the server from carrying a client of itself.
  *
  * win32u fills a struct __server_request_info and calls wine_server_call.
- * Under real Wine that marshals down a unix socket. Here it does one of two
- * things, decided once at start-up:
+ * Under real Wine that marshals down a unix socket. Here it publishes the
+ * request into a shared-section slot, rings the doorbell and waits for the
+ * reply (GUI-3, HACK-003).
  *
- *   in-process   call prsk_server_dispatch on the spot -- GUI-2's
- *                arrangement, still what the gui2 image runs;
- *   client       publish the request into a shared-section slot, ring the
- *                doorbell, wait for the reply (GUI-3, HACK-003).
+ * Until GUI-2's image was re-pointed at the server there was a SECOND mode:
+ * the DLL dispatched into its own copy of the state machine when no
+ * wineserver-lite.exe was on the boot volume. It is gone, and the absence of
+ * a server is now simply fatal. A silent fall back would be the worst
+ * outcome available -- a second process would quietly become a second writer
+ * of the session mapping and a second owner of the window tree, and the
+ * damage would surface as corrupted windows much later (Art. 12: refuse
+ * loudly) -- and keeping a mode no shipping image selected meant every GUI
+ * change had to be correct in an arrangement nothing ran.
  *
- * The MODE IS PROBED, not configured: if the server image is on the boot
- * volume a server is expected, and failing to reach it is fatal rather than
- * a fall back to in-process. Falling back would be the worst outcome
- * available -- a second process would quietly become a second writer of the
- * session mapping and a second owner of the window tree, and the damage
- * would surface as corrupted windows much later (Art. 12: refuse loudly).
+ * The invariant this leaves: an image carrying win32u.dll carries
+ * wineserver-lite.exe. Nothing probes for it -- a violation is a loud
+ * bringup failure on the first client, which is the enforcement.
  */
 
 #include <assert.h>
@@ -49,15 +52,9 @@
  * zeroed block starts out right. */
 extern unsigned int *prsk_thread_slot(void);
 
-enum prsk_mode
-{
-    PRSK_MODE_UNSET = 0,
-    PRSK_MODE_INPROC,
-    PRSK_MODE_CLIENT,
-    PRSK_MODE_FAILED
-};
-
-static LONG mode = PRSK_MODE_UNSET;
+/* Set once transport_init has the ring, the doorbell and a server that
+ * answered; every entry point below refuses while it is 0. */
+static LONG connected;
 static struct prsk_ring *ring;
 static HANDLE ring_section, doorbell, done_events[PRSK_SLOT_COUNT];
 
@@ -66,19 +63,6 @@ static void init_unicode( UNICODE_STRING *str, const WCHAR *name )
     str->Buffer = (WCHAR *)name;
     str->Length = (USHORT)(wcslen( name ) * sizeof(WCHAR));
     str->MaximumLength = str->Length;
-}
-
-/* Is a server expected at all? The gui2 image has no such file and stays
- * in-process; the gui3 image has one. */
-static int server_image_present(void)
-{
-    OBJECT_ATTRIBUTES attr;
-    FILE_NETWORK_OPEN_INFORMATION info;
-    UNICODE_STRING name;
-
-    init_unicode( &name, PRSK_SRV_IMAGE );
-    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
-    return !NtQueryFullAttributesFile( &attr, &info );
 }
 
 /* The server publishes __prsk_srv_ready last, so waiting for it is waiting
@@ -241,8 +225,7 @@ static unsigned int slot_call( unsigned int index, enum prsk_slot_op op,
      * reply fields beside an error -- win32u's NtUserCreateDesktopEx takes
      * reply->handle from a create_desktop that failed, which is how the
      * FIRST process to connect gets its desktop at all. Dropping the reply
-     * on error here is what stalled GUI-3: the in-process dispatch never
-     * dropped it, and the two modes had drifted (Art. 11). */
+     * on error here is what stalled GUI-3 while the transport was new. */
     status = slot->status;
     if (info)
     {
@@ -254,25 +237,19 @@ static unsigned int slot_call( unsigned int index, enum prsk_slot_op op,
     return status;
 }
 
-/* Decide the mode once, for the whole process. */
+/* Attach to the server once, for the whole process. */
 static int transport_init(void)
 {
-    if (!server_image_present())
-    {
-        mode = PRSK_MODE_INPROC;
-        return prsk_server_init();
-    }
     if (!wait_for_server() || !open_transport())
     {
         prsk_log( "[KTEST] gui3 server ABSENT FAIL\n" );
-        mode = PRSK_MODE_FAILED;
         return 0;
     }
-    mode = PRSK_MODE_CLIENT;
+    connected = 1;
     return 1;
 }
 
-static int ensure_mode(void)
+static int ensure_connected(void)
 {
     static LONG state; /* 0 untouched, 1 building, 2 done */
     LONG expected = 0;
@@ -284,16 +261,16 @@ static int ensure_mode(void)
         __atomic_store_n( &state, 2, __ATOMIC_RELEASE );
     }
     while (__atomic_load_n( &state, __ATOMIC_ACQUIRE ) == 1) YieldProcessor();
-    return mode == PRSK_MODE_INPROC || mode == PRSK_MODE_CLIENT;
+    return connected;
 }
 
 /* Called from win32u's DLL_PROCESS_ATTACH, before win32u's own init: the
  * state machine must be reachable before shared_session_init opens the
- * session mapping by name. Decides the mode and, in-process, brings the
- * server up. */
+ * session mapping by name, so the wait for the server process to publish it
+ * happens here rather than on the first request. */
 int prsk_transport_startup(void)
 {
-    return ensure_mode();
+    return ensure_connected();
 }
 
 unsigned int CDECL wine_server_call( void *req_ptr )
@@ -301,12 +278,7 @@ unsigned int CDECL wine_server_call( void *req_ptr )
     struct __server_request_info * const info = req_ptr;
     unsigned int index;
 
-    if (!ensure_mode()) return STATUS_UNSUCCESSFUL;
-
-    if (mode == PRSK_MODE_INPROC)
-        return prsk_server_dispatch( prsk_local_client(),
-                                     HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ),
-                                     info );
+    if (!ensure_connected()) return STATUS_UNSUCCESSFUL;
 
     if (!(index = claim_slot())) return STATUS_INSUFFICIENT_RESOURCES;
     return slot_call( index - 1, PRSK_OP_CALL, info );
@@ -319,7 +291,7 @@ void prsk_client_thread_detach(void)
     unsigned int *slot = prsk_thread_slot();
     unsigned int index;
 
-    if (mode != PRSK_MODE_CLIENT || !slot || !*slot) return;
+    if (!connected || !slot || !*slot) return;
     index = *slot - 1;
     slot_call( index, PRSK_OP_DETACH, NULL );
     if (done_events[index]) { NtClose( done_events[index] ); done_events[index] = NULL; }
