@@ -1,16 +1,18 @@
 /* tests/kmt/lib.c — unit tests for kernel/lib (docs/08).
  *
  * The pure library code — LIST_ENTRY primitives, the NUL-terminated string
- * primitives, the Rtl string slice, the mem* intrinsics — is load-bearing
- * under every dispatcher list, Ob name and boot cmdline, but only ever
- * exercised indirectly by its consumers. These are plain single-threaded
- * unit tests; no waiting, no allocation, caller-owned storage throughout.
+ * primitives, the Rtl string slice, the mem* intrinsics, the unaligned
+ * little-endian accessors — is load-bearing under every dispatcher list, Ob
+ * name, boot cmdline and on-disk record, but only ever exercised indirectly
+ * by its consumers. These are plain single-threaded unit tests; no waiting,
+ * no allocation, caller-owned storage throughout.
  *
  * Deliberately absent: negative tests for the list corruption ASSERTs
  * (double-remove, scribbled links). ASSERT panics the kernel and there is no
  * panic-recovery machinery; the firing assert is itself the diagnostic.
  */
 #include "tests/kmt/kmt.h"
+#include "kernel/lib/le.h"
 #include "kernel/lib/list.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -337,6 +339,42 @@ static void test_memmove_overlap(void)
     ok(memcmp(to, from, 4) == 0, "memcpy content differs");
 }
 
+/* --- unaligned little-endian accessors ------------------------------------ */
+
+/* Every access is deliberately made at an ODD offset into the buffer: an
+ * implementation that cast the pointer to a wider type instead of copying
+ * would be unaligned there, which is what these accessors exist to avoid
+ * (le.h) and what the UBSan build traps on. */
+static void test_le_read(void)
+{
+    static const unsigned char bytes[] = {0xFF, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0xF0,
+                                          0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12};
+    ok(KiReadLe16(bytes + 1) == 0x1234, "read16 got %#x", KiReadLe16(bytes + 1));
+    ok(KiReadLe32(bytes + 1) == 0x56781234u, "read32 got %#x", KiReadLe32(bytes + 1));
+    ok(KiReadLe64(bytes + 1) == 0xDEF0123456781234ull, "read64 wrong");
+    /* Byte order is little-endian: the lowest address is the low byte. */
+    ok(KiReadLe16(bytes + 7) == 0xDEF0, "read16 byte order reversed");
+}
+
+static void test_le_write(void)
+{
+    unsigned char buffer[16];
+    memset(buffer, 0xCC, sizeof(buffer));
+
+    KiWriteLe16(buffer + 1, 0x1234);
+    ok(buffer[1] == 0x34 && buffer[2] == 0x12, "write16 byte order wrong");
+    ok(buffer[0] == 0xCC && buffer[3] == 0xCC, "write16 spilled outside its two bytes");
+
+    KiWriteLe32(buffer + 5, 0x89ABCDEFu);
+    ok(buffer[5] == 0xEF && buffer[6] == 0xCD && buffer[7] == 0xAB && buffer[8] == 0x89,
+       "write32 byte order wrong");
+    ok(buffer[4] == 0xCC && buffer[9] == 0xCC, "write32 spilled outside its four bytes");
+
+    KiWriteLe64(buffer + 1, 0x0123456789ABCDEFull);
+    ok(KiReadLe64(buffer + 1) == 0x0123456789ABCDEFull, "write64 does not round-trip");
+    ok(buffer[0] == 0xCC && buffer[9] == 0xCC, "write64 spilled outside its eight bytes");
+}
+
 int kmt_run_lib(void)
 {
     int failures_before = kmt_failures;
@@ -358,5 +396,7 @@ int kmt_run_lib(void)
     KMT_RUN(test_memset_bounds);
     KMT_RUN(test_memcmp_sign);
     KMT_RUN(test_memmove_overlap);
+    KMT_RUN(test_le_read);
+    KMT_RUN(test_le_write);
     return kmt_failures - failures_before;
 }
