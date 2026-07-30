@@ -99,9 +99,10 @@ VGA_ARGS=(-vga std)
 # and a virtio keyboard for winefb.drv's input path; serial diagnostics
 # stay on the terminal. A host window when this QEMU build has a GUI
 # backend (gtk/sdl — tools/setup_linux.sh configures the pinned build
-# --enable-gtk); otherwise — a build restored from the CI cache predating
-# that, or a hand-built one — the scanout is served over VNC and the
-# banner says where.
+# --enable-gtk; cocoa is the same thing on a macOS host, where that is the
+# only native one QEMU offers); otherwise — a build restored from the CI
+# cache predating that, or a hand-built one — the scanout is served over
+# VNC and the banner says where.
 if [[ -n "${INTERACTIVE:-}" ]]; then
     DISPLAY_ARGS=(-display none)
     INTERACTIVE_DEVICE_ARGS=()
@@ -109,7 +110,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         # Tablet, not mouse: absolute coordinates map the host pointer to
         # the guest 1:1 with no grab (and it is what the gui4 leg drives).
         INTERACTIVE_DEVICE_ARGS=(-device virtio-keyboard-pci -device virtio-tablet-pci)
-        GUI_BACKEND="$("$QEMU" -display help 2>/dev/null | grep -m1 -E '^(gtk|sdl)$' || true)"
+        GUI_BACKEND="$("$QEMU" -display help 2>/dev/null | grep -m1 -E '^(gtk|sdl|cocoa)$' || true)"
         if [[ -n "$GUI_BACKEND" ]]; then
             DISPLAY_ARGS=(-display "$GUI_BACKEND")
             echo "qemu.sh: interactive GUI ($GUI_BACKEND window) — close it or Ctrl-A x to quit" >&2
