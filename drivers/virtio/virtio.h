@@ -8,7 +8,10 @@
  * Scope: exactly what a polling, uniprocessor, no-MSI-X driver needs — the
  * split virtqueue, the common/notify/device config capabilities, and the
  * status/feature handshake. No interrupts: requests are submitted and the
- * used ring is polled (Art. 3: synchronous under the hood).
+ * used ring is polled — the simplest correct thing (Art. 3's principle),
+ * which also makes every transfer complete inline. That second property is
+ * a consequence of this driver, not a kernel-wide rule; docs/19 is the plan
+ * for harvesting completions off the submitting path instead.
  */
 #ifndef PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
 #define PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H

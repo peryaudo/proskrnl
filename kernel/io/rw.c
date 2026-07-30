@@ -1,13 +1,16 @@
 /* kernel/io/rw.c — NtReadFile / NtWriteFile / NtFlushBuffersFile (M6).
  *
- * The async-completion protocol on a synchronous kernel (Art. 3): every
- * operation completes before the syscall returns, the IOSB is written
- * before the optional event is signalled (IopCompleteRequest), and the
- * final status is the return value — semantics pinned by
- * tests/ntapi/sem_file/read_write.c on the Wine oracle. All data moves
- * through the file's unified page cache, then writes go straight to disk
- * (immediate writeback), which is what makes the sem_mm/file_coherence
- * stress test structural rather than lucky.
+ * The async-completion protocol, with every transfer completing inline:
+ * the IOSB is written before the optional event is signalled
+ * (IopCompleteRequest) and the final status is the return value —
+ * semantics pinned by tests/ntapi/sem_file/read_write.c on the Wine
+ * oracle. Inline completion is a legal point inside the NT contract
+ * (STATUS_PENDING is permitted, never required — docs/19 §1) rather than
+ * an Art. 3 mandate; docs/19 is the plan for genuinely pending transfers.
+ *
+ * All data moves through the file's unified page cache, then writes go
+ * straight to disk (immediate writeback), which is what makes the
+ * sem_mm/file_coherence stress test structural rather than lucky.
  */
 #include "kernel/io/io.h"
 #include "kernel/syscall/uaccess.h"
@@ -442,8 +445,8 @@ NTSTATUS NtFlushBuffersFileEx(HANDLE handle, ULONG flags, void *parameters, ULON
  * before touching the handle; `length` counts bytes, spread across
  * one-page FILE_SEGMENT_ELEMENTs; the scatter side returns STATUS_PENDING
  * with the IOSB already completed while the gather side returns the final
- * status directly (an oracle asymmetry, pinned as-is). Under Art. 3 both
- * complete synchronously against the page cache. */
+ * status directly (an oracle asymmetry, pinned as-is). Both complete
+ * inline against the page cache (docs/19 §2). */
 static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE event,
                                      PIO_APC_ROUTINE apc, PIO_STATUS_BLOCK iosb,
                                      FILE_SEGMENT_ELEMENT *segments, ULONG length,

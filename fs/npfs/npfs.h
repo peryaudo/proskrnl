@@ -5,7 +5,8 @@
  * coalescing, and the message framing rpcrt4 needs. Internals are free
  * (Art. 1): one flat list of pipes on \Device\NamedPipe, each a list of
  * instances whose two ends exchange pooled message buffers; blocking uses
- * plain KEVENTs — no IRP, no cancellation, everything synchronous (Art. 3).
+ * plain KEVENTs — no IRP, no MDL. Transfers complete inline (docs/19 §2);
+ * the listen verb and the CUI-5 cancellable parks are the exceptions.
  */
 #ifndef PROSKRNL_FS_NPFS_NPFS_H
 #define PROSKRNL_FS_NPFS_NPFS_H

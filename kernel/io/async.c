@@ -1,8 +1,12 @@
 /* kernel/io/async.c — the pending-request engine (CUI-3).
  *
- * Art. 3's "everything completes before the syscall returns" narrows here,
- * not breaks: DATA transfers stay synchronous, but FSCTL_PIPE_LISTEN on an
- * asynchronous handle genuinely pends (docs/03 "CUI-3 SCM notes") because
+ * Inline completion is the Io layer's current position, not a rule handed
+ * down by Art. 3 (whose mandates are no-COW / no-eviction / one-lock-
+ * uniprocessor-no-preemption / one-pool, and say nothing about I/O): NT
+ * permits STATUS_PENDING and never requires it, so completing inside the
+ * syscall is legal exactly while the device completes in bounded time
+ * (docs/19 §1). DATA transfers still complete inline; FSCTL_PIPE_LISTEN on
+ * an asynchronous handle genuinely pends (docs/03 "CUI-3 SCM notes") because
  * rpcrt4's ncacn_np server loop deadlocks on a blocking listen — it issues
  * listens on every endpoint while holding the protseq CS and only then
  * waits (dlls/rpcrt4/rpc_transport.c rpcrt4_protseq_np_get_wait_array).
