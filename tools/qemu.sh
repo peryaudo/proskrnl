@@ -105,6 +105,10 @@ VGA_ARGS=(-vga std)
 # VNC and the banner says where.
 if [[ -n "${INTERACTIVE:-}" ]]; then
     DISPLAY_ARGS=(-display none)
+    # Stays empty on the console leg, so every expansion of it below needs
+    # the ${a[@]+"${a[@]}"} guard: macOS ships bash 3.2, where set -u treats
+    # "${empty[@]}" as an unbound variable (fixed in bash 4.4). Same reason
+    # EXTRA_DEVICE_ARGS is expanded that way further down.
     INTERACTIVE_DEVICE_ARGS=()
     if [[ -n "${GUI_DISPLAY:-}" ]]; then
         # Tablet, not mouse: absolute coordinates map the host pointer to
@@ -134,7 +138,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         "${DISPLAY_ARGS[@]}" \
         "${VGA_ARGS[@]}" \
         -serial mon:stdio \
-        "${INTERACTIVE_DEVICE_ARGS[@]}" \
+        ${INTERACTIVE_DEVICE_ARGS[@]+"${INTERACTIVE_DEVICE_ARGS[@]}"} \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
     exit 0
