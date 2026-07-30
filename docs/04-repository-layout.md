@@ -19,7 +19,7 @@ proskrnl/
 ├── Makefile                        # kernel + thin superbuild (ADR 0009)
 ├── README.md
 ├── docs/                            # this constitution
-│   ├── 00-overview.md … 18-smp-strategy.md
+│   ├── 00-overview.md … 19-io-strategy.md
 │   ├── CONTRIBUTING.md
 │   └── adr/                         # architecture decision records
 │
