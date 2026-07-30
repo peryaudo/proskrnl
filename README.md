@@ -372,13 +372,31 @@ latch" a sound verdict; and `tools/unscreen.py`, which replays a test's
 own text back out of the console's 80-column screen diff, so a non-zero
 budget is a list of names instead of a number.
 
-Next: **GUI-6** — the Wine desktop; or **CUI-5** (Io
-completion, led by file rename) through **CUI-7**,
-the measured syscall gap and its plan (`docs/16-syscall-status.md`,
-`docs/02`), or **Net-1** — sockets (virtio-net, `\Device\Afd`; the former
-CUI-5, now its own path); either way, growing the winetest manifest as its
-parked blockers land (`docs/03` "M10 winetest notes"). Debug objects are
-ruled out of scope permanently (ADR 0011).
+Next: **GUI-6** — the Wine desktop; or **CUI-6** (handles, identity and the
+query surface) then **CUI-7** (Cm-2 + Mm-2 + system furniture), which
+between them finish the measured syscall gap at 202/264
+(`docs/16-syscall-status.md`, `docs/02`); or **Net-1** — sockets
+(virtio-net, `\Device\Afd`; the former CUI-5, now its own path), whose
+prerequisite is no longer CUI-1's clock alone but **CUI-8**, since an AFD
+`accept` that never completes cannot be served by the polled-synchronous
+transfer model every device uses today.
+
+The CUI path then ends with three milestones of a different kind — they add
+no `Nt*` at all and leave `docs/16`'s count untouched, closing gaps in the
+machine rather than at the boundary: **CUI-8** overlapping I/O
+(`docs/19-io-strategy.md`), **CUI-9** copy-on-write
+(`docs/17-cow-strategy.md`), **CUI-10** SMP behind a giant lock
+(`docs/18-smp-strategy.md`). Only CUI-8 needs no constitutional amendment —
+Article 3's mandate list is closed and synchronous I/O was never on it. The
+other two each retire a mandate, and each retirement is gated on a
+measurement that is deliberately not a speed argument: for COW, eager
+per-process image copies turning RAM into a ceiling ring 3 observes as
+`STATUS_NO_MEMORY`; for SMP, slowness having already stopped a suite from
+reaching a verdict.
+
+Either way, growing the winetest manifest as its parked blockers land
+(`docs/03` "M10 winetest notes"). Debug objects are ruled out of scope
+permanently (ADR 0011).
 
 ## Build instructions
 
