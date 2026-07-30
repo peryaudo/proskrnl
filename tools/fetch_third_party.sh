@@ -8,9 +8,10 @@
 #   third_party/freetype/{x86_64-windows,x86_64-linux}
 #
 # as zstd tarballs on the rolling `third-party-cache` prerelease, named by
-# the same submodule-pin key its Actions cache uses (git ls-tree over
-# third_party — the pins ARE the key, so a restore can never version-drift
-# from the tree abi/ is generated from). This script is the download side:
+# the same submodule-pin key its Actions cache uses (git ls-tree over the
+# submodules that HAVE builds — the pins ARE the key, so a restore can never
+# version-drift from the tree abi/ is generated from). This script is the
+# download side:
 # ephemeral containers (Claude Code on the web, fresh CI-like boxes) run
 #
 #   tools/fetch_third_party.sh && tools/setup_linux.sh
@@ -38,7 +39,13 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 # The pins are the key — must match the computation in test.yml exactly.
-KEY="$(git ls-tree HEAD third_party | sha256sum | cut -c1-16)"
+# Only the submodules whose *builds* live in the cache are named: flanterm is
+# two C files the kernel Makefile compiles on every build, so pinning (or
+# bumping) it must not invalidate the hours-long QEMU/Wine/limine builds this
+# cache exists for. Naming the paths also keeps a future build-less submodule
+# from silently invalidating everything by existing.
+KEY="$(git ls-tree HEAD third_party/limine third_party/limine-protocol third_party/qemu \
+                       third_party/wine third_party/freetype | sha256sum | cut -c1-16)"
 echo "== third_party cache key: $KEY =="
 
 # Fail loudly if any submodule checkout disagrees with its pinned gitlink —

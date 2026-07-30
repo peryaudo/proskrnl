@@ -149,8 +149,11 @@ proskrnl/
 │
 ├── third_party/
 │   ├── wine/                        # submodule, SHA-pinned (fork on GitHub recommended)
-│   └── freetype/                    # submodule, SHA-pinned; cross-built as a PE static
-│                                    #   library and linked into win32u (GUI-2)
+│   ├── freetype/                    # submodule, SHA-pinned; cross-built as a PE static
+│   │                                #   library and linked into win32u (GUI-2)
+│   └── flanterm/                    # submodule, SHA-pinned; the ONLY third_party code
+│                                    #   compiled into the kernel image (BSD-2-Clause,
+│                                    #   unmodified) — kernel/init/bootvid.c (docs/11)
 │
 ├── system/                          # "furniture": data, not code (GUI/desktop era)
 │   └── skel/

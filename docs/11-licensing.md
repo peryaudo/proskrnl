@@ -12,6 +12,23 @@ root `LICENSE`.
 | `kernel/`, `abi/`, `arch/`, `drivers/`, `fs/` | proskrnl | **GPL-2.0** (`LICENSE`) |
 | Wine PE DLLs, wineserver-lite | Wine | **LGPL-2.1** |
 | ReactOS shell (optional GUI-7), its INF data | ReactOS | **GPL-2.0** |
+| `third_party/flanterm` (the boot console's glyph renderer) | Flanterm | **BSD-2-Clause** |
+
+## Third-party code inside the kernel image
+
+The default is that no third-party code is linked into the kernel: everything under
+`third_party/` is either build/run tooling or user-mode. Flanterm is the one exception,
+and it sets the rule for any future one — a third-party component may be **linked into
+the GPL-2.0 kernel image** only when all of these hold:
+
+- its license is **permissive and GPL-2.0-compatible** (BSD-2-Clause here) — never a
+  copyleft or GPL-incompatible one;
+- it is a **pinned submodule of the official upstream, used unmodified**: no vendored
+  copy, no local patches, no build-time patching, so its provenance stays a single sha;
+- we call its **public API only** and translate none of it — its source is not reference
+  material for our own code (the Art. 8 / `docs/11` "reference material" rule below is
+  unchanged: Wine headers and MS documentation);
+- it is recorded in `docs/provenance.md` with the license named.
 
 ## Route (a) and the kernel image
 
