@@ -23,6 +23,8 @@ KERNEL := $(BUILD)/proskrnl
 IMG    := $(BUILD)/proskrnl.hdd
 
 # Freestanding, higher-half, no SIMD/red-zone (interrupt-safe), fixed VMA.
+# The two third_party include paths are headers only: Limine's boot protocol,
+# and Flanterm's API for the boot console (kernel/init/bootvid.c).
 CFLAGS := -std=c11 -target x86_64-unknown-none \
           -ffreestanding -fno-stack-protector -fno-stack-check \
           -fno-pie -fno-pic -m64 -march=x86-64 -mno-red-zone -mcmodel=kernel \
@@ -30,7 +32,8 @@ CFLAGS := -std=c11 -target x86_64-unknown-none \
           -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer \
           -fsanitize=undefined -fsanitize-trap=undefined \
           -O2 -g -Wall -Wextra -Wno-unused-parameter \
-          -I. -Ithird_party/limine-protocol/include
+          -I. -Ithird_party/limine-protocol/include \
+          -Ithird_party/flanterm/src
 
 # Minimal KASAN (M3, docs/08): outline checks only (call-threshold=0) so the
 # hooks in kernel/mm/kasan.c can range-check against the pool; stack/global
@@ -59,6 +62,7 @@ LDFLAGS := -m elf_x86_64 -static -T arch/x86_64/linker.ld \
            -z max-page-size=0x1000 --build-id=none
 
 CSRC := kernel/init/main.c \
+        kernel/init/bootvid.c \
         kernel/init/panic.c \
         kernel/init/trace.c \
         kernel/init/verify.c \
@@ -143,7 +147,22 @@ CSRC := kernel/init/main.c \
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S
-OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
+# The boot console's glyph renderer (kernel/init/bootvid.c): the only
+# third_party code compiled into the kernel image, pinned and unmodified
+# (docs/11 "Third-party code inside the kernel image"). Kept OUT of CSRC on
+# purpose — `make tidy` runs clang-tidy over $(CSRC) with the docs/15 naming
+# rules, which are ours to follow and not upstream's.
+FLANTERM_SRC := third_party/flanterm/src/flanterm.c \
+                third_party/flanterm/src/flanterm_backends/fb.c
+
+OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(FLANTERM_SRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
+
+# Sanitizers are for code we can fix. A UBSan trap or a KASAN report raised
+# from inside vendored code would kill the machine in the one component whose
+# job is to still be printing when everything else is broken (Art. 9), and we
+# do not patch third_party (docs/11) — so the checks stop at our own TUs.
+$(BUILD)/third_party/flanterm/%.o: CFLAGS += -fno-sanitize=undefined
+$(BUILD)/third_party/flanterm/%.o: KASAN_FLAGS :=
 
 # --- M4 user-mode flat binaries (boot modules) ---------------------------
 # Freestanding ring-3 clients (docs/02: "the test client is a flat binary").

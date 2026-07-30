@@ -1,10 +1,21 @@
-/* kernel/lib/dbgprint.c — see dbgprint.h. Writes straight to COM1. */
+/* kernel/lib/dbgprint.c — see dbgprint.h. Every byte goes out COM1, and
+ * (until the GUI takes the framebuffer) onto the screen as well. */
 #include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/serial.h"
+#include "kernel/init/bootvid.h"
 
 #include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
+
+/* The one place kernel log text turns into output. Serial is written first
+ * and unconditionally: it is the machine channel every verdict is grepped
+ * off (docs/08), and the boot console must never be able to perturb it. */
+void DbgPutChar(char c)
+{
+    KiSerialPutChar(c);
+    KiBootVideoPutChar(c);
+}
 
 static void DbgpEmitString(const char *str)
 {
@@ -12,9 +23,9 @@ static void DbgpEmitString(const char *str)
     {
         if (*str == '\n')
         {
-            KiSerialPutChar('\r');
+            DbgPutChar('\r');
         }
-        KiSerialPutChar(*str);
+        DbgPutChar(*str);
     }
 }
 
@@ -43,30 +54,30 @@ static void DbgpEmitUnsigned(uint64_t value, unsigned base, int upper, int width
     {
         if (prefix)
         {
-            KiSerialPutChar('0');
-            KiSerialPutChar(upper ? 'X' : 'x');
+            DbgPutChar('0');
+            DbgPutChar(upper ? 'X' : 'x');
         }
         for (int w = length; w < width; w++)
         {
-            KiSerialPutChar('0');
+            DbgPutChar('0');
         }
     }
     else
     {
         for (int w = length; w < width; w++)
         {
-            KiSerialPutChar(' ');
+            DbgPutChar(' ');
         }
         if (prefix)
         {
-            KiSerialPutChar('0');
-            KiSerialPutChar(upper ? 'X' : 'x');
+            DbgPutChar('0');
+            DbgPutChar(upper ? 'X' : 'x');
         }
     }
 
     while (count > 0)
     {
-        KiSerialPutChar(buffer[--count]);
+        DbgPutChar(buffer[--count]);
     }
 }
 
@@ -78,9 +89,9 @@ static void DbgpPrintV(const char *format, va_list args)
         {
             if (*format == '\n')
             {
-                KiSerialPutChar('\r');
+                DbgPutChar('\r');
             }
-            KiSerialPutChar(*format);
+            DbgPutChar(*format);
             continue;
         }
         format++;
@@ -130,10 +141,10 @@ static void DbgpPrintV(const char *format, va_list args)
         switch (*format)
         {
         case '%':
-            KiSerialPutChar('%');
+            DbgPutChar('%');
             break;
         case 'c':
-            KiSerialPutChar((char)va_arg(args, int));
+            DbgPutChar((char)va_arg(args, int));
             break;
         case 's':
         {
@@ -153,7 +164,7 @@ static void DbgpPrintV(const char *format, va_list args)
                 value = va_arg(args, long);
             if (value < 0)
             {
-                KiSerialPutChar('-');
+                DbgPutChar('-');
                 DbgpEmitUnsigned((uint64_t)(-value), 10, 0, width > 0 ? width - 1 : 0, pad, 0);
             }
             else
@@ -186,8 +197,8 @@ static void DbgpPrintV(const char *format, va_list args)
         case '\0':
             return;
         default:
-            KiSerialPutChar('%');
-            KiSerialPutChar(*format);
+            DbgPutChar('%');
+            DbgPutChar(*format);
             break;
         }
     }

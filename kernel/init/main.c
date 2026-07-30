@@ -33,6 +33,7 @@
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
+#include "kernel/init/bootvid.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
 #include "kernel/init/verify.h"
@@ -521,6 +522,16 @@ void KiSystemStartup(void)
         KiPanic("Limine base revision 3 unsupported");
     }
     DbgPrint("[KTEST] boot PASS\n");
+
+    /* The screen joins the serial log here, before anything that can fail:
+     * the console needs no allocator and no page tables of ours, so there is
+     * no reason for it to come up later than this (kernel/init/bootvid.h).
+     * It gives the framebuffer back at FbInitialize. */
+    KiInitializeBootVideo();
+    if (!KiTestBootVideo())
+    {
+        KiPanic("boot console self-test failed: the console is up but the scanout is blank");
+    }
 
     /* Our own GDT + TSS + syscall MSRs, off the bootloader's, BEFORE the IDT
      * so its gates capture our kernel CS (M4). */

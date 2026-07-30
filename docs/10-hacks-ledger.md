@@ -193,6 +193,13 @@ ledger entry and no retirement condition:
   M9 *serial transport* is not NT, and is the logged item — HACK-004.)
 - **smss-equivalent initial process** — real NT boot structure.
 - **Section objects, APCs, unified waiting, handles** — the NT core we deliberately keep.
+- **The boot console** (`kernel/init/bootvid.c`) — NT's own boot path paints text on the
+  framebuffer (bootvid.sys / `InbvDisplayString`); mirroring the kernel log there is that
+  mechanism, not an invented one. It publishes no device and starts no process, no `Nt*`
+  call learns of it, and nothing it does is observable from an unprivileged `.exe`
+  (Art. 1) — so there is nothing here to retire. Its one genuinely new commitment is a
+  third-party renderer inside the kernel image, which is a licensing/provenance item
+  (`docs/11`, `docs/provenance.md`), not a boundary one.
 - **Shared-section transport for wineserver-lite** — NT itself uses shared sections between
   win32k and user mode; this is NT-spirited, not a hack. (Only wineserver-lite's
   *existence as a separate server* is the logged item, HACK-003.)
