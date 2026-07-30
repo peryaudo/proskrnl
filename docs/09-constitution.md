@@ -35,11 +35,43 @@ The following are **mandates**, not choices, for the initial implementation:
   at explicit waits and at user-mode return.
 - **One pool.** No Paged/NonPaged split.
 
+This list is **closed**. It says nothing about I/O completing inside the syscall — inline
+completion is a legal point inside the NT asynchronous contract, not an Article 3 mandate
+(`docs/19-io-strategy.md` §1), and Article 3 must not be cited for it. An article cited for
+a clause it does not contain is the same defect G8 forbids in a constant: an unverifiable
+source.
+
 Rationale: every hard bug in Mm/Ke is a *concurrency or optimization* bug, and every one of
 those is unobservable from user mode — i.e. not a contract. Removing them removes ~90% of
 the difficulty and, crucially, makes the un-reviewable code un-buggy. **A bug that cannot
-exist needs no review.** Optimizations (COW, eviction, SMP) are added later, behind the
-same tests, only if genuinely needed — which for a CUI-in-a-VM target is doubtful.
+exist needs no review.**
+
+### Lifting a mandate
+
+These are mandates *for the initial implementation*, not permanent prohibitions:
+optimizations are added later, behind the same tests, only if genuinely needed. The
+original text called that need "doubtful for a CUI-in-a-VM target". Two of them now have
+evidence against that, and the evidence is the point — neither is a speed argument:
+
+- **COW** — eager full copies of the baked DLL set, per process, turn RAM into a functional
+  ceiling that surfaces to ring 3 as `STATUS_NO_MEMORY` (`docs/17-cow-strategy.md`).
+- **Uniprocessor** — slowness has already stopped a suite from reaching a verdict, which is
+  a verification failure rather than a performance one (`docs/18-smp-strategy.md`).
+
+Neither is thereby approved. Each has a **strategy document that names its entry
+conditions**, and those conditions are part of this article:
+
+| Mandate | Status | Entry conditions |
+|---|---|---|
+| No COW | unbuilt; image-section scope designed | `docs/17` §10 — measurement first, then the amendment, then the oracle pins |
+| Uniprocessor | unbuilt; giant-lock form designed | `docs/18` §13 — four gates, including that `docs/19` lands first and that a seeded schedule replay exists so Article 6 stays reachable |
+| No eviction / one pool | unbuilt; no consumer, no design | none written |
+
+Until a mandate's conditions are met it remains a mandate, and that is deliberate: its
+working job is to stop the reflex `docs/12-llm-workflow.md` names — an LLM adding COW,
+fine-grained locks or demand paging by default, unmeasured and unpinned. **Lifting one is a
+commit of its own**, carrying the measurement and the `docs/03` entry, never a side effect
+of the change that wants it.
 
 Any deviation from Article 3 must be recorded in `docs/03-nt-deviations.md` and justified
 against user-observable semantics — never against performance.

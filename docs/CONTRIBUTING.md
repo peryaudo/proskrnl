@@ -25,8 +25,11 @@ stated as hard gates.
 
 - **G3 — Stupidly correct.** No COW, no eviction, immediate writeback, one dispatcher lock,
   uniprocessor, no kernel preemption, one pool. Any exception must be justified in
-  `docs/03-nt-deviations.md` against *user-observable semantics*, never performance.
-  (Art. 3)
+  `docs/03-nt-deviations.md` against *user-observable semantics*, never performance. The
+  list is closed: **synchronous I/O is not on it** (`docs/19-io-strategy.md` §1), so do not
+  cite Art. 3 for inline completion. Lifting a mandate is a commit of its own and only
+  through the entry conditions its strategy document names — COW: `docs/17` §10;
+  uniprocessor: `docs/18` §13. (Art. 3)
 
 - **G4 — Generated contract.** No hand-typed or model-recalled numeric constants in `abi/`.
   All generated from Wine headers via `tools/gen_abi.py`; layouts carry `static_assert`

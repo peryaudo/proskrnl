@@ -1039,13 +1039,25 @@ four-string walk — never the text.
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
 
-- **No COW initially** — private/image mappings copy fully on map. Costs RAM; unobservable.
+- **No COW initially** — private/image mappings copy fully on map. Costs RAM; unobservable
+  *at one process*. Past some process count the cost becomes a ceiling ring 3 observes as
+  `STATUS_NO_MEMORY`, which is the amendment argument `docs/17-cow-strategy.md` §2 builds —
+  measurement first.
 - **No eviction, immediate writeback** — makes mapped-view/`ReadFile` consistency trivial.
 - **One dispatcher lock, uniprocessor** — turns every race into a plain state machine.
-- **No kernel preemption** — context switches only at explicit waits and user-mode return.
+  Retiring "uniprocessor" is designed in `docs/18-smp-strategy.md` (giant lock, four entry
+  conditions); the other two clauses survive that design unchanged.
+- **No kernel preemption** — context switches only at explicit waits and user-mode return
+  (plus the CUI-4 preemption point at return to ring 3).
 
-Every one of these is unobservable from user mode, so none is a contract. See
-`docs/09-constitution.md`, which makes these *rules*, not options.
+**Not on this list, and not a simplification:** I/O completing inside the syscall. That is a
+legal point inside the NT asynchronous contract — `STATUS_PENDING` is permitted, never
+required — and `docs/19-io-strategy.md` §1 states the contract that inline completion
+satisfies, §3 the gaps that remain.
+
+Every simplification above is unobservable from user mode, so none is a contract. See
+`docs/09-constitution.md` "Lifting a mandate", which makes these *rules* with named exits,
+not options.
 
 ## Console/GUI-era additions that are NOT in NT (tracked as HACKs)
 
