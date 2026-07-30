@@ -13,8 +13,9 @@
 #                               the wine below is configured against
 #                               (tools/build_freetype.sh) — seconds, not a
 #                               real build like the two below
-#   third_party/qemu            qemu-system-x86_64 (>= 9.0 is required for
-#                               TCG x2APIC; Ubuntu 24.04 ships 8.2)
+#   third_party/qemu            qemu-system-x86_64, built only when the host
+#                               has none on PATH (any distro build runs the
+#                               tests — there is no version floor)
 #   third_party/wine            the ntapi oracle's wine — the SAME pinned
 #                               tree abi/ is generated from, so the oracle
 #                               can never diverge from the contract. It is
@@ -97,6 +98,12 @@ tools/build_freetype.sh
 echo "== qemu: x86_64-softmmu =="
 if [[ -x third_party/qemu/build/qemu-system-x86_64 ]]; then
     echo "   already built — skipping"
+elif command -v qemu-system-x86_64 >/dev/null 2>&1; then
+    # No version floor since the kernel's clock moved to the xAPIC MMIO window
+    # (arch/x86_64/lapic.c): a distro qemu-system-x86_64 runs the tests, so the
+    # long source build is only for hosts that have none. tools/qemu.sh still
+    # prefers an in-tree build when one exists.
+    echo "   $(qemu-system-x86_64 --version | head -1) on PATH — skipping the source build"
 else
     mkdir -p third_party/qemu/build
     # --enable-gtk (not autodetect) so `make rungui` deterministically gets a
