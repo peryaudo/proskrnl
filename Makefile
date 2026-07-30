@@ -1341,13 +1341,19 @@ gen-abi:
 	python3 tools/gen_syscalls.py
 
 # Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
-# naming (PascalCase, NT prefixes) is on you and on review.
+# naming (PascalCase, NT prefixes) is on you and on review. user/smss is our
+# own code and follows the same rules; user/wine is the exception (it mirrors
+# the pinned tree's Wine style and carries its own DisableFormat).
 format:
-	$(CLANG_FORMAT) -i $(shell find kernel arch drivers fs -name '*.[ch]')
+	$(CLANG_FORMAT) -i $(shell find kernel arch drivers fs user/smss -name '*.[ch]')
 
 # Enforce the docs/15 naming rules (and correctness lints) via clang-tidy.
+# smss is a user-mode PE, so its TUs are checked under the same mingw target
+# they are built for, not the kernel's freestanding-ELF flags.
+SMSS_TIDY_FLAGS := -std=c11 --target=x86_64-windows-gnu -ffreestanding -I.
 tidy:
 	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
+	$(CLANG_TIDY) $(wildcard user/smss/*.c) -- $(SMSS_TIDY_FLAGS)
 
 .PHONY: all test run clean format tidy gen-abi
 

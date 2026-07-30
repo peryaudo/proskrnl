@@ -92,6 +92,16 @@ automatically.
 names that must keep their PascalCase — so `tests/.clang-tidy` turns the naming check off
 there. Don't apply the kernel casing to test code.
 
+**`user/wine/` is the other exemption — and the only one under `user/`.** That glue sits
+directly against the pinned tree's sources (unixlib seams, per-program PE entry points) and
+mirrors Wine style, so `user/wine/.clang-format` disables formatting and
+`user/wine/.clang-tidy` turns the naming check off. **`user/smss/` is not exempt:** the
+session manager is our own code, so it follows this guide exactly like `kernel/`, `drivers/`
+and `fs/` — `make format` formats it and `make tidy` checks it (under the mingw target it is
+built for, since it is a PE). Its names are unprefixed-by-department but subsystem-prefixed
+all the same: `Smss*` for the process's own surface, `Session*` for the acceptance flows,
+`Firstboot*` for the wineboot hand-off.
+
 ## The M1 rename (reference)
 
 The M1 bring-up was first written in Linux style and converted to this guide:
