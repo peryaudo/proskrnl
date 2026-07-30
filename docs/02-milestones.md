@@ -373,7 +373,7 @@ The work the lock does *not* cover: per-CPU state (cheap — `KiPcr` + `swapgs` 
 exist, merely singleton; array-ify it, retire the `KiCurrentThread` global, per-CPU
 TSS/GDT/idle, global ready queues stay); **TLB shootdown**, whose hazard is a hardware
 cache rather than a data race, in broadcast-and-acknowledge form; AP bringup (INIT-SIPI-SIPI,
-trampoline, per-CPU x2APIC, IPI send); the interrupt-versus-lock policy; and user-space
+trampoline, per-CPU LAPIC, IPI send); the interrupt-versus-lock policy; and user-space
 concurrency, which gets exercised for the first time in `wineserver-lite` and its clients.
 If CUI-9 landed, its write-protect sites join the shootdown enumeration.
 Roughly 1.5 consolidation milestones, with **no permanent audit tax** — the invariant stays

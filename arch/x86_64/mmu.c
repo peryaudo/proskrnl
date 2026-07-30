@@ -7,10 +7,11 @@
  * MiAllocatePage and are reached through the HHDM.
  *
  * Constants cross-check: Intel SDM Vol. 3A, "Paging" — 4-level PTE bit
- * layout (P bit 0, R/W bit 1, U/S bit 2, PS bit 7, XD bit 63, address bits
- * 51:12 = 0x000FFFFFFFFFF000, 9-bit index per level starting at bit 12) —
- * and the IA32_EFER register there (NXE bit 11; also QEMU
- * target/i386/cpu.h MSR_EFER_NXE).
+ * layout (P bit 0, R/W bit 1, U/S bit 2, PWT bit 3, PCD bit 4, PS bit 7,
+ * XD bit 63, address bits 51:12 = 0x000FFFFFFFFFF000, 9-bit index per level
+ * starting at bit 12), the default PAT encoding there (PCD=1 PWT=1 selects
+ * entry 3 = strong uncacheable) — and the IA32_EFER register (NXE bit 11;
+ * also QEMU target/i386/cpu.h MSR_EFER_NXE).
  */
 #include "arch/x86_64/mmu.h"
 #include "arch/x86_64/io.h"
@@ -22,6 +23,8 @@
 #define PTE_PRESENT (1ULL << 0)
 #define PTE_WRITE   (1ULL << 1)
 #define PTE_USER    (1ULL << 2)
+#define PTE_PWT     (1ULL << 3) /* with PCD: PAT entry 3, strong uncacheable */
+#define PTE_PCD     (1ULL << 4)
 #define PTE_LARGE   (1ULL << 7) /* PS: 2 MiB page in a PDE */
 #define PTE_NX      (1ULL << 63)
 #define PTE_ADDRESS 0x000FFFFFFFFFF000ULL
@@ -108,6 +111,12 @@ void MiMapPage(uint64_t virtualAddress, uint64_t physicalAddress, int writable)
 {
     uint64_t flags = PTE_PRESENT | PTE_NX | (writable ? PTE_WRITE : 0);
     MiMapPageInternal(virtualAddress, physicalAddress, flags);
+}
+
+void MiMapDevicePage(uint64_t virtualAddress, uint64_t physicalAddress)
+{
+    MiMapPageInternal(virtualAddress, physicalAddress,
+                      PTE_PRESENT | PTE_WRITE | PTE_NX | PTE_PCD | PTE_PWT);
 }
 
 /* Return a pointer to the live PTE for virtualAddress, or 0 if any level is
