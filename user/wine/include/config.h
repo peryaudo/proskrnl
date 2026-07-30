@@ -63,6 +63,21 @@
 #undef HAVE_VALGRIND_MEMCHECK_H
 #undef HAVE_VALGRIND_VALGRIND_H
 
+/* asprintf() is a glibc extension win32u's opengl.c calls to build a
+ * /sys/class/drm path. mingw declares it in <stdio.h> only under
+ * _GNU_SOURCE, which the pinned tree's own config.h leaves undefined for
+ * the PE side -- so the call compiled as an IMPLICIT declaration, resolved
+ * at link time against the definition this build already ships
+ * (user/wine/wineserver-lite/common/srv_glue.c). That worked only for as
+ * long as the host toolchain tolerated it: gcc 14 turned
+ * -Wimplicit-function-declaration into an error, so the same source stopped
+ * compiling on a newer mingw while building fine on an older one. Declared
+ * here -- the same seam the defines above come through -- so the build no
+ * longer depends on which gcc the box has. Defining _GNU_SOURCE instead
+ * would change more of the pinned tree's own configuration than this needs.
+ */
+int asprintf( char **out, const char *format, ... );
+
 #ifdef PRSK_WITH_FREETYPE
 
 #undef HAVE_FT2BUILD_H

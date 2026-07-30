@@ -110,12 +110,18 @@ char *realpath( const char *path, char *resolved )
  * there spinning at CPL=3 until QEMU's registers said which symbol it was.)
  * __stdio_common_vsprintf is UCRT's actual ABI underneath all of them and no
  * macro rewrites it.
+ *
+ * The locale parameter is spelled _locale_t, UCRT's own type, rather than a
+ * plain void *: newer mingw stdio.h declares both of these itself, and a
+ * declaration that disagrees in any parameter type is a hard error there
+ * (it was merely a redundant redeclaration on the mingw that had neither).
+ * Both callers below pass NULL, so the spelling is all that changes.
  */
 
 int __cdecl __stdio_common_vsprintf( unsigned __int64 options, char *buffer, size_t count,
-                                     const char *format, void *locale, va_list args );
+                                     const char *format, _locale_t locale, va_list args );
 int __cdecl __stdio_common_vsscanf( unsigned __int64 options, const char *input, size_t count,
-                                    const char *format, void *locale, va_list args );
+                                    const char *format, _locale_t locale, va_list args );
 
 /* Ask for C99 truncation semantics (return the length that WOULD have been
  * written, always NUL-terminate) rather than MSVC's -1. The flag is UCRT's,
@@ -134,6 +140,24 @@ int __mingw_vsnprintf( char *buffer, size_t count, const char *format, va_list a
 int __ms_vsnprintf( char *buffer, size_t count, const char *format, va_list args )
 {
     return prsk_vsnprintf( buffer, count, format, args );
+}
+
+/* The variadic spelling, needed because the two mingw generations disagree
+ * about whether it is a symbol at all: the older stdio.h expanded snprintf
+ * inline onto __ms_vsnprintf above (nothing to link), while mingw 14 declares
+ * __ms_snprintf asm-aliased to a real `snprintf`, which this DLL then has to
+ * define like every other CRT entry point it answers for. Defining it
+ * unconditionally is correct on both -- an inline caller simply never
+ * references it. */
+int snprintf( char *buffer, size_t count, const char *format, ... )
+{
+    va_list args;
+    int ret;
+
+    va_start( args, format );
+    ret = prsk_vsnprintf( buffer, count, format, args );
+    va_end( args );
+    return ret;
 }
 
 int __mingw_vsscanf( const char *input, const char *format, va_list args )
