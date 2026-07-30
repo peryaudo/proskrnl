@@ -143,13 +143,26 @@ int __ms_vsnprintf( char *buffer, size_t count, const char *format, va_list args
 }
 
 /* The variadic spelling, needed because the two mingw generations disagree
- * about whether it is a symbol at all: the older stdio.h expanded snprintf
- * inline onto __ms_vsnprintf above (nothing to link), while mingw 14 declares
- * __ms_snprintf asm-aliased to a real `snprintf`, which this DLL then has to
- * define like every other CRT entry point it answers for. Defining it
- * unconditionally is correct on both -- an inline caller simply never
- * references it. */
-int snprintf( char *buffer, size_t count, const char *format, ... )
+ * about whether it is a symbol at all -- and they disagree in a way that
+ * makes the obvious `int snprintf(...)` wrong on one of them:
+ *
+ * - mingw 14 only DECLARES snprintf, and asm-aliases __ms_snprintf onto the
+ *   symbol `snprintf` (_mingw_mac.h __MINGW_ASM_CALL, reached from stdio.h
+ *   via __MINGW_UCRT_ASM_CALL), so every caller here leaves win32u.dll with
+ *   an undefined reference this DLL has to answer, like every other CRT
+ *   entry point it stands in for.
+ * - the older stdio.h (Ubuntu's, what CI builds with) instead DEFINES
+ *   snprintf itself, as an inline expanding onto __ms_vsnprintf above --
+ *   nothing to link, and an out-of-line definition of that same C identifier
+ *   is a hard redefinition error.
+ *
+ * So define the symbol without declaring the identifier: the asm label names
+ * `snprintf` for the linker while the C name stays private, which the older
+ * header's inline cannot collide with. Unconditional and correct on both --
+ * it is the entry point the newer toolchain links against, and one
+ * unreferenced function on the older one. */
+int prsk_snprintf( char *buffer, size_t count, const char *format, ... ) __asm__("snprintf");
+int prsk_snprintf( char *buffer, size_t count, const char *format, ... )
 {
     va_list args;
     int ret;
