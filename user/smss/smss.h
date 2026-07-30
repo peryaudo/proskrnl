@@ -4,8 +4,8 @@
  * (kernel/init/main.c KiRunSessionManager); everything user-mode after that
  * — servers, firstboot, the acceptance flows, the test sweeps, the GUI legs
  * — is spawned from here through the real NtCreateUserProcess boundary.
- * User clients follow the test-code conventions (Wine style, docs/15
- * exemption). */
+ * This is our own code, not Wine glue, so it follows the kernel style rules
+ * (docs/15) — only user/wine/ is exempt. */
 #ifndef PROSKRNL_USER_SMSS_H
 #define PROSKRNL_USER_SMSS_H
 
@@ -26,17 +26,17 @@
 
 /* --- smss.c: output + small utilities ------------------------------------- */
 
-void smss_say(const char *ascii);
+void SmssSay(const char *ascii);
 /* Minimal formatter over NtDisplayString (the serial [KTEST] transport —
  * kernel/ps/display.c). %s (ascii), %d, %u, and %x with the kernel DbgPrint
  * %#lx spelling (always 0x-prefixed); %x consumes unsigned long long — cast
  * at the call site (SMSS_HEX for NTSTATUS values). */
-void smss_printf(const char *fmt, ...);
-void smss_init_ustr(UNICODE_STRING *str, const WCHAR *wide);
-void smss_sleep_ms(ULONG milliseconds);
-/* Existence probe on the boot volume; *status_out (optional) gets the raw
+void SmssPrintf(const char *fmt, ...);
+void SmssInitUnicodeString(UNICODE_STRING *str, const WCHAR *wide);
+void SmssSleep(ULONG milliseconds);
+/* Existence probe on the boot volume; *statusOut (optional) gets the raw
  * NtCreateFile status so callers can tell "not found" from a broken open. */
-int smss_file_exists(const WCHAR *nt_path, NTSTATUS *status_out);
+int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut);
 
 /* --- launch.c: spawning over NtCreateUserProcess --------------------------- */
 
@@ -44,29 +44,29 @@ int smss_file_exists(const WCHAR *nt_path, NTSTATUS *status_out);
  * explicit parameter block reuse this furniture — DllPath, current
  * directory, environment — so they match what the kernel synthesizes for a
  * params-less create (kernel/ps/peb.c PspBuildDefaultParams). */
-extern RTL_USER_PROCESS_PARAMETERS *smss_own_params;
+extern RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;
 
-/* Spawn `nt_path` ("\??\C:\...") and return its handles. `cmdline` 0 means
+/* Spawn `ntPath` ("\??\C:\...") and return its handles. `cmdline` 0 means
  * the DOS image path; `console` seeds the child's ConsoleHandle/hStd*
  * process-parameter fields from smss's ConDrv handles (valid only once
- * smss_start_conhost reported the server up). */
-NTSTATUS smss_spawn(const WCHAR *nt_path, const WCHAR *cmdline, int console, HANDLE *process_out,
-                    HANDLE *thread_out);
-/* Spawn and wait. timeout_ms 0 = forever. On STATUS_TIMEOUT the child is
+ * SmssStartConhost reported the server up). */
+NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDLE *processOut,
+                   HANDLE *threadOut);
+/* Spawn and wait. timeoutMs 0 = forever. On STATUS_TIMEOUT the child is
  * STILL RUNNING and cannot be reaped (no foreign terminate — docs/03); its
  * handles are deliberately leaked and the caller must not run further
  * console clients. */
-NTSTATUS smss_run(const WCHAR *nt_path, const WCHAR *cmdline, int console, ULONG timeout_ms,
-                  NTSTATUS *exit_out);
+NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console, ULONG timeoutMs,
+                 NTSTATUS *exitOut);
 
 /* The system servers, in dependency order: wineserver-lite (HACK-003) first
  * — anything that loads win32u is its client, including the GUI-5 windowed
  * conhost — then conhost with the ConDrv attach wait. Both probe/skip on
  * the image content and are fire-and-forget (permanent processes; the
  * handles are kept forever). */
-void smss_start_wineserver(void);
-void smss_start_conhost(void);
-int smss_console_available(void);
+void SmssStartWineServer(void);
+void SmssStartConhost(void);
+int SmssConsoleAvailable(void);
 
 /* --- session.c: the acceptance flows --------------------------------------- */
 
@@ -75,15 +75,15 @@ int smss_console_available(void);
  * command line), the ntapi and winetest sweeps, m9_echo, the cmd console,
  * and the GUI legs (which park forever on GUI images). Returns the failure
  * count smss exits with. */
-int session_run(int abi_failures, int registry_ok);
+int SessionRun(int abiFailures, int registryOk);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */
-void session_interactive(void);
+void SessionInteractive(void);
 
 /* --- firstboot.c ----------------------------------------------------------- */
 
 /* Run `wineboot.exe --init` synchronously; returns the exit status (0 =
  * machine state populated / already fresh). */
-NTSTATUS firstboot_run(void);
+NTSTATUS FirstbootRun(void);
 
 #endif /* PROSKRNL_USER_SMSS_H */

@@ -17,82 +17,83 @@
  */
 #include "user/smss/smss.h"
 
-static const WCHAR image_dos[] = WSTR("C:\\windows\\system32\\wineboot.exe");
-static const WCHAR image_nt[] = WSTR("\\??\\C:\\windows\\system32\\wineboot.exe");
-static const WCHAR command_line[] = WSTR("C:\\windows\\system32\\wineboot.exe --init");
-static const WCHAR current_dir[] = WSTR("C:\\windows");
+static const WCHAR FirstbootImageDos[] = WSTR("C:\\windows\\system32\\wineboot.exe");
+static const WCHAR FirstbootImageNt[] = WSTR("\\??\\C:\\windows\\system32\\wineboot.exe");
+static const WCHAR FirstbootCommandLine[] = WSTR("C:\\windows\\system32\\wineboot.exe --init");
+static const WCHAR FirstbootCurrentDir[] = WSTR("C:\\windows");
 
 /* Alphabetical, as NT keeps environment blocks sorted (peb.c precedent). */
-static const WCHAR environment[] = WSTR("COMSPEC=C:\\windows\\system32\\cmd.exe\0"
-                                        "PATH=C:\\windows\\system32\0"
-                                        "SystemDrive=C:\0"
-                                        "SystemRoot=C:\\windows\0"
-                                        "TEMP=C:\\windows\\temp\0"
-                                        "TMP=C:\\windows\\temp\0"
-                                        "WINECONFIGDIR=\\??\\C:\\windows\0"
-                                        "WINEDATADIR=\\??\\C:\\windows\\inf\0"
-                                        "windir=C:\\windows\0");
+static const WCHAR FirstbootEnvironment[] = WSTR("COMSPEC=C:\\windows\\system32\\cmd.exe\0"
+                                                 "PATH=C:\\windows\\system32\0"
+                                                 "SystemDrive=C:\0"
+                                                 "SystemRoot=C:\\windows\0"
+                                                 "TEMP=C:\\windows\\temp\0"
+                                                 "TMP=C:\\windows\\temp\0"
+                                                 "WINECONFIGDIR=\\??\\C:\\windows\0"
+                                                 "WINEDATADIR=\\??\\C:\\windows\\inf\0"
+                                                 "windir=C:\\windows\0");
 
-NTSTATUS firstboot_run(void)
+NTSTATUS FirstbootRun(void)
 {
     NTSTATUS status;
 
-    smss_say("smss: firstboot: running wineboot --init\n");
+    SmssSay("smss: firstboot: running wineboot --init\n");
 
     UNICODE_STRING image, cmdline, curdir;
-    smss_init_ustr(&image, image_dos);
-    smss_init_ustr(&cmdline, command_line);
-    smss_init_ustr(&curdir, current_dir);
+    SmssInitUnicodeString(&image, FirstbootImageDos);
+    SmssInitUnicodeString(&cmdline, FirstbootCommandLine);
+    SmssInitUnicodeString(&curdir, FirstbootCurrentDir);
 
     RTL_USER_PROCESS_PARAMETERS *params = 0;
-    status = RtlCreateProcessParametersEx(&params, &image, 0, &curdir, &cmdline, (PWSTR)environment,
-                                          0, 0, 0, 0, PROCESS_PARAMS_FLAG_NORMALIZED);
+    status = RtlCreateProcessParametersEx(&params, &image, 0, &curdir, &cmdline,
+                                          (PWSTR)FirstbootEnvironment, 0, 0, 0, 0,
+                                          PROCESS_PARAMS_FLAG_NORMALIZED);
     if (status != STATUS_SUCCESS)
     {
-        smss_say("smss: firstboot: RtlCreateProcessParametersEx failed\n");
+        SmssSay("smss: firstboot: RtlCreateProcessParametersEx failed\n");
         return 0x41;
     }
 
     HANDLE process = 0, thread = 0;
-    CLIENT_ID client_id;
-    client_id.UniqueProcess = 0;
-    client_id.UniqueThread = 0;
+    CLIENT_ID clientId;
+    clientId.UniqueProcess = 0;
+    clientId.UniqueThread = 0;
     {
         struct
         {
-            SIZE_T total_length;
+            SIZE_T totalLength;
             PS_ATTRIBUTE attributes[2];
-        } attr_list;
-        PS_CREATE_INFO create_info;
+        } attrList;
+        PS_CREATE_INFO createInfo;
         USHORT chars = 0;
-        while (image_nt[chars] != 0)
+        while (FirstbootImageNt[chars] != 0)
             chars++;
 
-        attr_list.total_length = sizeof(attr_list);
-        attr_list.attributes[0].Attribute = PS_ATTRIBUTE_IMAGE_NAME;
-        attr_list.attributes[0].Size = (SIZE_T)chars * sizeof(WCHAR);
-        attr_list.attributes[0].ValuePtr = (void *)image_nt;
-        attr_list.attributes[0].ReturnLength = 0;
-        attr_list.attributes[1].Attribute = PS_ATTRIBUTE_CLIENT_ID;
-        attr_list.attributes[1].Size = sizeof(client_id);
-        attr_list.attributes[1].ValuePtr = &client_id;
-        attr_list.attributes[1].ReturnLength = 0;
+        attrList.totalLength = sizeof(attrList);
+        attrList.attributes[0].Attribute = PS_ATTRIBUTE_IMAGE_NAME;
+        attrList.attributes[0].Size = (SIZE_T)chars * sizeof(WCHAR);
+        attrList.attributes[0].ValuePtr = (void *)FirstbootImageNt;
+        attrList.attributes[0].ReturnLength = 0;
+        attrList.attributes[1].Attribute = PS_ATTRIBUTE_CLIENT_ID;
+        attrList.attributes[1].Size = sizeof(clientId);
+        attrList.attributes[1].ValuePtr = &clientId;
+        attrList.attributes[1].ReturnLength = 0;
 
-        for (unsigned i = 0; i < sizeof(create_info); i++)
-            ((unsigned char *)&create_info)[i] = 0;
-        create_info.Size = sizeof(create_info);
+        for (unsigned i = 0; i < sizeof(createInfo); i++)
+            ((unsigned char *)&createInfo)[i] = 0;
+        createInfo.Size = sizeof(createInfo);
 
         status = NtCreateUserProcess(&process, &thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS, 0, 0,
-                                     0, 0, params, &create_info, (PS_ATTRIBUTE_LIST *)&attr_list);
+                                     0, 0, params, &createInfo, (PS_ATTRIBUTE_LIST *)&attrList);
     }
     RtlDestroyProcessParameters(params);
     if (status != STATUS_SUCCESS)
     {
-        smss_say("smss: firstboot: NtCreateUserProcess(wineboot) failed\n");
+        SmssSay("smss: firstboot: NtCreateUserProcess(wineboot) failed\n");
         return 0x42;
     }
 
-    NTSTATUS child_status = 0x43;
+    NTSTATUS childStatus = 0x43;
     status = NtWaitForSingleObject(process, FALSE, 0);
     if (status == STATUS_SUCCESS)
     {
@@ -102,12 +103,12 @@ NTSTATUS firstboot_run(void)
                                            &returned);
         if (status == STATUS_SUCCESS)
         {
-            child_status = basic.ExitStatus;
+            childStatus = basic.ExitStatus;
         }
     }
     NtClose(thread);
     NtClose(process);
-    smss_say(child_status == 0 ? "smss: firstboot: wineboot complete\n"
-                               : "smss: firstboot: wineboot failed\n");
-    return child_status;
+    SmssSay(childStatus == 0 ? "smss: firstboot: wineboot complete\n"
+                             : "smss: firstboot: wineboot failed\n");
+    return childStatus;
 }
