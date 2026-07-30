@@ -20,48 +20,48 @@
  * process") and the M7 Wine acceptance rolled into one run: hello.exe beside
  * the unmodified Wine PE ntdll, spawned through NtCreateUserProcess. The
  * registry check (smss.c) counts here — it was the chain's first duty. */
-static int flow_m8(int registry_ok)
+static int SessionFlowM8(int registryOk)
 {
-    int failures = registry_ok ? 0 : 1;
+    int failures = registryOk ? 0 : 1;
     static const WCHAR path[] = WSTR("\\??\\C:\\hello.exe");
 
     /* The hermetic test images carry the windows/ tree but not hello.exe;
      * skip cleanly there. The `make test` image ships it (Makefile
      * WINFILES), so a load failure on it IS a FAIL, not a skip. */
     NTSTATUS probe;
-    if (!smss_file_exists(path, &probe))
+    if (!SmssFileExists(path, &probe))
     {
         if (probe == STATUS_OBJECT_NAME_NOT_FOUND || probe == STATUS_OBJECT_PATH_NOT_FOUND)
         {
-            smss_say("[KTEST] module hello.exe SKIP (not on the boot volume)\n");
+            SmssSay("[KTEST] module hello.exe SKIP (not on the boot volume)\n");
         }
         else
         {
-            smss_printf("[KTEST] module hello.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
+            SmssPrintf("[KTEST] module hello.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
             failures++;
         }
     }
     else
     {
-        NTSTATUS exit_status = 0;
-        NTSTATUS status = smss_run(path, 0, 0, 0, &exit_status);
+        NTSTATUS exitStatus = 0;
+        NTSTATUS status = SmssRun(path, 0, 0, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
-            smss_printf("[KTEST] module hello.exe FAIL (create=%x)\n", SMSS_HEX(status));
+            SmssPrintf("[KTEST] module hello.exe FAIL (create=%x)\n", SMSS_HEX(status));
             failures++;
         }
         else
         {
-            smss_printf("[KTEST] module hello.exe %s (exit=%x)\n",
-                        exit_status == 0 ? "PASS" : "FAIL", SMSS_HEX(exit_status));
-            if (exit_status != 0)
+            SmssPrintf("[KTEST] module hello.exe %s (exit=%x)\n", exitStatus == 0 ? "PASS" : "FAIL",
+                       SMSS_HEX(exitStatus));
+            if (exitStatus != 0)
                 failures++;
         }
     }
     if (failures == 0)
-        smss_say("[KTEST] M8 PASS\n");
+        SmssSay("[KTEST] M8 PASS\n");
     else
-        smss_printf("[KTEST] M8 FAIL failures=%d\n", failures);
+        SmssPrintf("[KTEST] M8 FAIL failures=%d\n", failures);
     return failures;
 }
 
@@ -73,51 +73,51 @@ static int flow_m8(int registry_ok)
  * tools/qemu.sh greps for (PASS_RE), so it aggregates the kernel's ABI
  * conformance probe too (passed on smss's command line) — an
  * unconsumed-convention regression must flip `make test`. */
-static int flow_m9(int abi_failures)
+static int SessionFlowM9(int abiFailures)
 {
     int failures = 0;
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_smoke.exe");
 
     NTSTATUS probe;
-    if (!smss_file_exists(path, &probe))
+    if (!SmssFileExists(path, &probe))
     {
         if (probe == STATUS_OBJECT_NAME_NOT_FOUND || probe == STATUS_OBJECT_PATH_NOT_FOUND)
         {
-            smss_say("[KTEST] module m9_smoke.exe SKIP (not on the boot volume)\n");
+            SmssSay("[KTEST] module m9_smoke.exe SKIP (not on the boot volume)\n");
         }
         else
         {
-            smss_printf("[KTEST] module m9_smoke.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
+            SmssPrintf("[KTEST] module m9_smoke.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
             failures++;
         }
     }
-    else if (!smss_console_available())
+    else if (!SmssConsoleAvailable())
     {
-        smss_say("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
+        SmssSay("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
         failures++;
     }
     else
     {
-        NTSTATUS exit_status = 0;
-        NTSTATUS status = smss_run(path, 0, 1, 0, &exit_status);
+        NTSTATUS exitStatus = 0;
+        NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
-            smss_printf("[KTEST] module m9_smoke.exe FAIL (create=%x)\n", SMSS_HEX(status));
+            SmssPrintf("[KTEST] module m9_smoke.exe FAIL (create=%x)\n", SMSS_HEX(status));
             failures++;
         }
         else
         {
-            smss_printf("[KTEST] module m9_smoke.exe %s (exit=%x)\n",
-                        exit_status == 0 ? "PASS" : "FAIL", SMSS_HEX(exit_status));
-            if (exit_status != 0)
+            SmssPrintf("[KTEST] module m9_smoke.exe %s (exit=%x)\n",
+                       exitStatus == 0 ? "PASS" : "FAIL", SMSS_HEX(exitStatus));
+            if (exitStatus != 0)
                 failures++;
         }
     }
-    failures += abi_failures;
+    failures += abiFailures;
     if (failures == 0)
-        smss_say("[KTEST] M9 PASS\n");
+        SmssSay("[KTEST] M9 PASS\n");
     else
-        smss_printf("[KTEST] M9 FAIL failures=%d\n", failures);
+        SmssPrintf("[KTEST] M9 FAIL failures=%d\n", failures);
     return failures;
 }
 
@@ -134,14 +134,15 @@ static int flow_m9(int abi_failures)
 #define NTAPI_MAX_TESTS  96
 #define NTAPI_NAME_CHARS 64
 
-struct ntapi_list
+typedef struct
 {
     WCHAR names[NTAPI_MAX_TESTS][NTAPI_NAME_CHARS];
     int count;
     int overflow;
-};
+} NTAPI_LIST, *PNTAPI_LIST;
 
-static void ntapi_collect(struct ntapi_list *list, const WCHAR *name, ULONG chars, ULONG attributes)
+static void SessionCollectNtapiName(NTAPI_LIST *list, const WCHAR *name, ULONG chars,
+                                    ULONG attributes)
 {
     if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || chars < 5 || chars >= NTAPI_NAME_CHARS)
         return;
@@ -159,13 +160,13 @@ static void ntapi_collect(struct ntapi_list *list, const WCHAR *name, ULONG char
     list->count++;
 }
 
-static NTSTATUS ntapi_enumerate(struct ntapi_list *list)
+static NTSTATUS SessionEnumerateNtapi(NTAPI_LIST *list)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE dir;
-    smss_init_ustr(&name, WSTR("\\??\\C:\\ntapi"));
+    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\ntapi"));
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -178,11 +179,12 @@ static NTSTATUS ntapi_enumerate(struct ntapi_list *list)
     if (status != STATUS_SUCCESS)
         return status;
 
-    static unsigned char buffer[4096]; /* sequential sweep: bss, not stack */
+    static unsigned char SessionNtapiBuffer[4096]; /* sequential sweep: bss, not stack */
     for (;;)
     {
-        status = NtQueryDirectoryFile(dir, 0, 0, 0, &iosb, buffer, sizeof(buffer),
-                                      FileDirectoryInformation, FALSE, 0, FALSE);
+        status = NtQueryDirectoryFile(dir, 0, 0, 0, &iosb, SessionNtapiBuffer,
+                                      sizeof(SessionNtapiBuffer), FileDirectoryInformation, FALSE,
+                                      0, FALSE);
         if (status == STATUS_NO_MORE_FILES)
         {
             status = STATUS_SUCCESS;
@@ -193,9 +195,10 @@ static NTSTATUS ntapi_enumerate(struct ntapi_list *list)
         ULONG offset = 0;
         for (;;)
         {
-            FILE_DIRECTORY_INFORMATION *entry = (FILE_DIRECTORY_INFORMATION *)(buffer + offset);
-            ntapi_collect(list, entry->FileName, entry->FileNameLength / sizeof(WCHAR),
-                          entry->FileAttributes);
+            FILE_DIRECTORY_INFORMATION *entry =
+                (FILE_DIRECTORY_INFORMATION *)(SessionNtapiBuffer + offset);
+            SessionCollectNtapiName(list, entry->FileName, entry->FileNameLength / sizeof(WCHAR),
+                                    entry->FileAttributes);
             if (entry->NextEntryOffset == 0)
                 break;
             offset += entry->NextEntryOffset;
@@ -207,7 +210,7 @@ static NTSTATUS ntapi_enumerate(struct ntapi_list *list)
 
 /* Case-insensitive ASCII order, so the run order (and the serial log) is
  * stable regardless of FAT directory layout. */
-static void ntapi_sort(struct ntapi_list *list)
+static void SessionSortNtapi(NTAPI_LIST *list)
 {
     for (int i = 1; i < list->count; i++)
     {
@@ -243,67 +246,69 @@ static void ntapi_sort(struct ntapi_list *list)
     }
 }
 
-static int flow_ntapi(void)
+static int SessionFlowNtapi(void)
 {
-    static struct ntapi_list list; /* 12 KiB: bss, not this thread's stack */
-    list.count = 0;
-    list.overflow = 0;
-    NTSTATUS status = ntapi_enumerate(&list);
+    static NTAPI_LIST SessionNtapiList; /* 12 KiB: bss, not this thread's stack */
+    SessionNtapiList.count = 0;
+    SessionNtapiList.overflow = 0;
+    NTSTATUS status = SessionEnumerateNtapi(&SessionNtapiList);
     if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND)
         return 0; /* not an ntapi image */
     if (status != STATUS_SUCCESS)
     {
-        smss_printf("[KTEST] ntapi FAIL (enumerate=%x)\n", SMSS_HEX(status));
+        SmssPrintf("[KTEST] ntapi FAIL (enumerate=%x)\n", SMSS_HEX(status));
         return 1;
     }
-    ntapi_sort(&list);
+    SessionSortNtapi(&SessionNtapiList);
 
     int failures = 0;
-    for (int i = 0; i < list.count; i++)
+    for (int i = 0; i < SessionNtapiList.count; i++)
     {
-        static WCHAR wide_path[32 + NTAPI_NAME_CHARS];
-        static char ascii[NTAPI_NAME_CHARS];
+        static WCHAR SessionNtapiPath[32 + NTAPI_NAME_CHARS];
+        static char SessionNtapiName[NTAPI_NAME_CHARS];
         static const WCHAR prefix[] = WSTR("\\??\\C:\\ntapi\\");
         int n = 0;
         while (prefix[n] != 0)
         {
-            wide_path[n] = prefix[n];
+            SessionNtapiPath[n] = prefix[n];
             n++;
         }
         int m = 0;
-        while (list.names[i][m] != 0)
+        while (SessionNtapiList.names[i][m] != 0)
         {
-            wide_path[n + m] = list.names[i][m];
-            ascii[m] = (char)list.names[i][m];
+            SessionNtapiPath[n + m] = SessionNtapiList.names[i][m];
+            SessionNtapiName[m] = (char)SessionNtapiList.names[i][m];
             m++;
         }
-        wide_path[n + m] = 0;
-        ascii[m] = 0;
+        SessionNtapiPath[n + m] = 0;
+        SessionNtapiName[m] = 0;
 
-        NTSTATUS exit_status = 0;
-        status = smss_run(wide_path, 0, 0, 0, &exit_status);
+        NTSTATUS exitStatus = 0;
+        status = SmssRun(SessionNtapiPath, 0, 0, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
-            smss_printf("[KTEST] module ntapi/%s FAIL (create=%x)\n", ascii, SMSS_HEX(status));
+            SmssPrintf("[KTEST] module ntapi/%s FAIL (create=%x)\n", SessionNtapiName,
+                       SMSS_HEX(status));
             failures++;
         }
-        else if (exit_status != 0)
+        else if (exitStatus != 0)
         {
-            smss_printf("[KTEST] module ntapi/%s FAIL (exit=%x)\n", ascii, SMSS_HEX(exit_status));
+            SmssPrintf("[KTEST] module ntapi/%s FAIL (exit=%x)\n", SessionNtapiName,
+                       SMSS_HEX(exitStatus));
             failures++;
         }
         else
         {
-            smss_printf("[KTEST] module ntapi/%s PASS\n", ascii);
+            SmssPrintf("[KTEST] module ntapi/%s PASS\n", SessionNtapiName);
         }
     }
-    if (list.overflow)
+    if (SessionNtapiList.overflow)
     {
-        smss_printf("[KTEST] ntapi FAIL (more than %d tests; raise NTAPI_MAX_TESTS)\n",
-                    NTAPI_MAX_TESTS);
+        SmssPrintf("[KTEST] ntapi FAIL (more than %d tests; raise NTAPI_MAX_TESTS)\n",
+                   NTAPI_MAX_TESTS);
         failures++;
     }
-    smss_printf("[KTEST] ntapi done tests=%d failures=%d\n", list.count, failures);
+    SmssPrintf("[KTEST] ntapi done tests=%d failures=%d\n", SessionNtapiList.count, failures);
     return failures;
 }
 
@@ -324,26 +329,26 @@ static int flow_ntapi(void)
 #define WTEST_TIMEOUT_MS                                                                           \
     (300 * 1000) /* TCG is ~10x native; the string tests are millions of ok()s */
 
-struct wtest_list
+typedef struct
 {
     struct
     {
         char exe[WTEST_EXE_CHARS];
         char subtest[WTEST_SUBTEST_CHARS];
-        ULONG timeout_ms; /* 0 = WTEST_TIMEOUT_MS (the two-field lines) */
+        ULONG timeoutMs; /* 0 = WTEST_TIMEOUT_MS (the two-field lines) */
     } pairs[WTEST_MAX_PAIRS];
     int count;
     int overflow;
-};
+} WTEST_LIST, *PWTEST_LIST;
 
 /* Whole-file read into the static manifest buffer; 0 on any miss. */
-static int wtest_read_manifest(unsigned char *buffer, ULONG capacity, ULONG *length_out)
+static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG *lengthOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE handle;
-    smss_init_ustr(&name, WSTR("\\??\\C:\\wtests\\manifest.txt"));
+    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\wtests\\manifest.txt"));
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -368,7 +373,7 @@ static int wtest_read_manifest(unsigned char *buffer, ULONG capacity, ULONG *len
         status = NtReadFile(handle, 0, 0, 0, &iosb, buffer, length, &offset, 0);
         if (status == STATUS_SUCCESS && iosb.Information == length)
         {
-            *length_out = length;
+            *lengthOut = length;
             ok = 1;
         }
     }
@@ -382,7 +387,7 @@ static int wtest_read_manifest(unsigned char *buffer, ULONG capacity, ULONG *len
  * nonzero; absent means WTEST_TIMEOUT_MS. Malformed/oversized lines are
  * loud (a silently dropped pair would read as "covered"). Returns 0 on a
  * parse failure. */
-static int wtest_parse_manifest(const unsigned char *buffer, ULONG length, struct wtest_list *list)
+static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, WTEST_LIST *list)
 {
     ULONG pos = 0;
     while (pos < length)
@@ -390,43 +395,43 @@ static int wtest_parse_manifest(const unsigned char *buffer, ULONG length, struc
         ULONG end = pos;
         while (end < length && buffer[end] != '\n')
             end++;
-        ULONG line_end = end;
-        while (line_end > pos && (buffer[line_end - 1] == '\r' || buffer[line_end - 1] == ' '))
-            line_end--;
-        if (line_end > pos && buffer[pos] != '#')
+        ULONG lineEnd = end;
+        while (lineEnd > pos && (buffer[lineEnd - 1] == '\r' || buffer[lineEnd - 1] == ' '))
+            lineEnd--;
+        if (lineEnd > pos && buffer[pos] != '#')
         {
             ULONG colon = pos;
-            while (colon < line_end && buffer[colon] != ':')
+            while (colon < lineEnd && buffer[colon] != ':')
                 colon++;
-            ULONG sub_end = colon + 1;
-            while (sub_end < line_end && buffer[sub_end] != ':')
-                sub_end++;
-            ULONG exe_chars = colon - pos;
-            ULONG sub_chars = (colon < line_end) ? sub_end - colon - 1 : 0;
-            ULONG timeout_ms = 0;
-            int timeout_bad = 0;
-            if (sub_end < line_end)
+            ULONG subEnd = colon + 1;
+            while (subEnd < lineEnd && buffer[subEnd] != ':')
+                subEnd++;
+            ULONG exeChars = colon - pos;
+            ULONG subChars = (colon < lineEnd) ? subEnd - colon - 1 : 0;
+            ULONG timeoutMs = 0;
+            int timeoutBad = 0;
+            if (subEnd < lineEnd)
             {
                 ULONG seconds = 0, digits = 0;
-                for (ULONG i = sub_end + 1; i < line_end; i++)
+                for (ULONG i = subEnd + 1; i < lineEnd; i++)
                 {
                     if (buffer[i] < '0' || buffer[i] > '9' || seconds > 100000)
                     {
-                        timeout_bad = 1;
+                        timeoutBad = 1;
                         break;
                     }
                     seconds = seconds * 10 + (buffer[i] - '0');
                     digits++;
                 }
                 if (digits == 0 || seconds == 0)
-                    timeout_bad = 1;
-                timeout_ms = seconds * 1000;
+                    timeoutBad = 1;
+                timeoutMs = seconds * 1000;
             }
-            if (colon >= line_end || exe_chars == 0 || exe_chars >= WTEST_EXE_CHARS ||
-                sub_chars == 0 || sub_chars >= WTEST_SUBTEST_CHARS || timeout_bad)
+            if (colon >= lineEnd || exeChars == 0 || exeChars >= WTEST_EXE_CHARS || subChars == 0 ||
+                subChars >= WTEST_SUBTEST_CHARS || timeoutBad)
             {
-                smss_printf("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
-                            (unsigned)pos);
+                SmssPrintf("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
+                           (unsigned)pos);
                 return 0;
             }
             if (list->count >= WTEST_MAX_PAIRS)
@@ -435,13 +440,13 @@ static int wtest_parse_manifest(const unsigned char *buffer, ULONG length, struc
                 pos = end + 1;
                 continue;
             }
-            for (ULONG i = 0; i < exe_chars; i++)
+            for (ULONG i = 0; i < exeChars; i++)
                 list->pairs[list->count].exe[i] = (char)buffer[pos + i];
-            list->pairs[list->count].exe[exe_chars] = 0;
-            for (ULONG i = 0; i < sub_chars; i++)
+            list->pairs[list->count].exe[exeChars] = 0;
+            for (ULONG i = 0; i < subChars; i++)
                 list->pairs[list->count].subtest[i] = (char)buffer[colon + 1 + i];
-            list->pairs[list->count].subtest[sub_chars] = 0;
-            list->pairs[list->count].timeout_ms = timeout_ms;
+            list->pairs[list->count].subtest[subChars] = 0;
+            list->pairs[list->count].timeoutMs = timeoutMs;
             list->count++;
         }
         pos = end + 1;
@@ -449,85 +454,88 @@ static int wtest_parse_manifest(const unsigned char *buffer, ULONG length, struc
     return 1;
 }
 
-static int flow_wtest(void)
+static int SessionFlowWtest(void)
 {
-    static struct wtest_list list; /* pairs table: bss, not this thread's stack */
-    static unsigned char manifest[WTEST_MANIFEST_MAX];
-    list.count = 0;
-    list.overflow = 0;
+    static WTEST_LIST SessionWtestList; /* pairs table: bss, not this thread's stack */
+    static unsigned char SessionWtestManifest[WTEST_MANIFEST_MAX];
+    SessionWtestList.count = 0;
+    SessionWtestList.overflow = 0;
 
-    ULONG manifest_length = 0;
-    if (!wtest_read_manifest(manifest, sizeof(manifest), &manifest_length))
+    ULONG manifestLength = 0;
+    if (!SessionReadWtestManifest(SessionWtestManifest, sizeof(SessionWtestManifest),
+                                  &manifestLength))
         return 0; /* not a wtest image */
-    if (!wtest_parse_manifest(manifest, manifest_length, &list))
+    if (!SessionParseWtestManifest(SessionWtestManifest, manifestLength, &SessionWtestList))
         return 1;
 
     int failures = 0;
-    for (int i = 0; i < list.count; i++)
+    for (int i = 0; i < SessionWtestList.count; i++)
     {
         /* Sequential runs, one static path set. */
-        static WCHAR wide_path[16 + WTEST_EXE_CHARS];
-        static WCHAR cmdline[16 + WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
+        static WCHAR SessionWtestPath[16 + WTEST_EXE_CHARS];
+        static WCHAR SessionWtestCmdline[16 + WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
         static const WCHAR prefix[] = WSTR("\\??\\C:\\wtests\\");
         int n = 0;
         while (prefix[n] != 0)
         {
-            wide_path[n] = prefix[n];
+            SessionWtestPath[n] = prefix[n];
             n++;
         }
         for (int m = 0;; m++)
         {
-            wide_path[n + m] = (WCHAR)(unsigned char)list.pairs[i].exe[m];
-            if (list.pairs[i].exe[m] == 0)
+            SessionWtestPath[n + m] = (WCHAR)(unsigned char)SessionWtestList.pairs[i].exe[m];
+            if (SessionWtestList.pairs[i].exe[m] == 0)
                 break;
         }
         int c = 0;
-        for (int k = 4; wide_path[k] != 0; k++) /* past "\??\" */
-            cmdline[c++] = wide_path[k];
-        cmdline[c++] = ' ';
+        for (int k = 4; SessionWtestPath[k] != 0; k++) /* past "\??\" */
+            SessionWtestCmdline[c++] = SessionWtestPath[k];
+        SessionWtestCmdline[c++] = ' ';
         for (int m = 0;; m++)
         {
-            cmdline[c + m] = (WCHAR)(unsigned char)list.pairs[i].subtest[m];
-            if (list.pairs[i].subtest[m] == 0)
+            SessionWtestCmdline[c + m] = (WCHAR)(unsigned char)SessionWtestList.pairs[i].subtest[m];
+            if (SessionWtestList.pairs[i].subtest[m] == 0)
                 break;
         }
 
-        NTSTATUS exit_status = 0;
-        ULONG timeout_ms = list.pairs[i].timeout_ms ? list.pairs[i].timeout_ms : WTEST_TIMEOUT_MS;
-        NTSTATUS status = smss_run(wide_path, cmdline, 1, timeout_ms, &exit_status);
+        NTSTATUS exitStatus = 0;
+        ULONG timeoutMs = SessionWtestList.pairs[i].timeoutMs ? SessionWtestList.pairs[i].timeoutMs
+                                                              : WTEST_TIMEOUT_MS;
+        NTSTATUS status = SmssRun(SessionWtestPath, SessionWtestCmdline, 1, timeoutMs, &exitStatus);
         if (status == STATUS_TIMEOUT)
         {
             /* The wedged process owns the console; further pairs would be
              * noise. Abort loudly — the runner sees the missing PASSes. */
-            smss_printf("[KTEST] wtest %s:%s FAIL (timeout)\n", list.pairs[i].exe,
-                        list.pairs[i].subtest);
-            failures += list.count - i;
+            SmssPrintf("[KTEST] wtest %s:%s FAIL (timeout)\n", SessionWtestList.pairs[i].exe,
+                       SessionWtestList.pairs[i].subtest);
+            failures += SessionWtestList.count - i;
             break;
         }
         if (status != STATUS_SUCCESS)
         {
-            smss_printf("[KTEST] wtest %s:%s FAIL (create=%x)\n", list.pairs[i].exe,
-                        list.pairs[i].subtest, SMSS_HEX(status));
+            SmssPrintf("[KTEST] wtest %s:%s FAIL (create=%x)\n", SessionWtestList.pairs[i].exe,
+                       SessionWtestList.pairs[i].subtest, SMSS_HEX(status));
             failures++;
         }
-        else if (exit_status != 0)
+        else if (exitStatus != 0)
         {
-            smss_printf("[KTEST] wtest %s:%s FAIL (exit=%x)\n", list.pairs[i].exe,
-                        list.pairs[i].subtest, SMSS_HEX(exit_status));
+            SmssPrintf("[KTEST] wtest %s:%s FAIL (exit=%x)\n", SessionWtestList.pairs[i].exe,
+                       SessionWtestList.pairs[i].subtest, SMSS_HEX(exitStatus));
             failures++;
         }
         else
         {
-            smss_printf("[KTEST] wtest %s:%s PASS\n", list.pairs[i].exe, list.pairs[i].subtest);
+            SmssPrintf("[KTEST] wtest %s:%s PASS\n", SessionWtestList.pairs[i].exe,
+                       SessionWtestList.pairs[i].subtest);
         }
     }
-    if (list.overflow)
+    if (SessionWtestList.overflow)
     {
-        smss_printf("[KTEST] wtest FAIL (more than %d pairs; raise WTEST_MAX_PAIRS)\n",
-                    WTEST_MAX_PAIRS);
+        SmssPrintf("[KTEST] wtest FAIL (more than %d pairs; raise WTEST_MAX_PAIRS)\n",
+                   WTEST_MAX_PAIRS);
         failures++;
     }
-    smss_printf("[KTEST] wtest done tests=%d failures=%d\n", list.count, failures);
+    SmssPrintf("[KTEST] wtest done tests=%d failures=%d\n", SessionWtestList.count, failures);
     return failures;
 }
 
@@ -537,34 +545,34 @@ static int flow_wtest(void)
  * the console-mode image (Makefile console-img). It blocks on console input
  * until the runner types a line into the serial socket, so the plain image
  * must never include it; absence is silent. */
-static int flow_m9_echo(void)
+static int SessionFlowM9Echo(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_echo.exe");
-    if (!smss_file_exists(path, 0))
+    if (!SmssFileExists(path, 0))
         return 0; /* not a console-mode image */
 
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(path, 0, 1, 0, &exit_status);
-    int pass = status == STATUS_SUCCESS && exit_status == 0;
-    smss_printf("[KTEST] module m9_echo.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
-                SMSS_HEX(exit_status));
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
+    int pass = status == STATUS_SUCCESS && exitStatus == 0;
+    SmssPrintf("[KTEST] module m9_echo.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
+               SMSS_HEX(exitStatus));
     return pass ? 0 : 1;
 }
 
 /* The M10 acceptance (docs/02): an INTERACTIVE cmd.exe on the serial
  * console, driven by tests/run/console_expect.py. Present only on the
  * console-mode image (probe/skip on hello_crt.exe, its subject). */
-static int flow_cmd_console(void)
+static int SessionFlowCmdConsole(void)
 {
-    if (!smss_file_exists(WSTR("\\??\\C:\\hello_crt.exe"), 0))
+    if (!SmssFileExists(WSTR("\\??\\C:\\hello_crt.exe"), 0))
         return 0; /* not a console-mode image */
 
-    smss_say("[KTEST] cmd interactive start\n");
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exit_status);
-    int pass = status == STATUS_SUCCESS && exit_status == 0;
-    smss_printf("[KTEST] module cmd.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
-                SMSS_HEX(exit_status));
+    SmssSay("[KTEST] cmd interactive start\n");
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
+    int pass = status == STATUS_SUCCESS && exitStatus == 0;
+    SmssPrintf("[KTEST] module cmd.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
+               SMSS_HEX(exitStatus));
     return pass ? 0 : 1;
 }
 
@@ -587,58 +595,58 @@ static int flow_cmd_console(void)
  *
  * None of these return on their own image: the host has to screendump live
  * windows, so the leg parks in `foreground` and the boot's end-of-boot
- * verdict is deliberately never reached (see session_run).
+ * verdict is deliberately never reached (see SessionRun).
  */
-struct gui_leg
+typedef struct
 {
-    const WCHAR *probe;          /* on the volume => this is the leg's image */
-    const WCHAR *prologue;       /* run to completion first, or NULL */
-    const WCHAR *background;     /* spawned and left up for the screendump, or NULL */
-    const WCHAR *foreground;     /* run last; the leg parks here */
-    const char  *tag;            /* the [KTEST] prefix: "gui", "gui2", ... */
-    const char  *prologue_tag;   /* names the prologue in its exit line */
-    const char  *foreground_name; /* set when returning at all is a FAIL */
-};
+    const WCHAR *probe;         /* on the volume => this is the leg's image */
+    const WCHAR *prologue;      /* run to completion first, or NULL */
+    const WCHAR *background;    /* spawned and left up for the screendump, or NULL */
+    const WCHAR *foreground;    /* run last; the leg parks here */
+    const char *tag;            /* the [KTEST] prefix: "gui", "gui2", ... */
+    const char *prologueTag;    /* names the prologue in its exit line */
+    const char *foregroundName; /* set when returning at all is a FAIL */
+} GUI_LEG, *PGUI_LEG;
 
 /* Designated initializers throughout: an omitted field is the absent case
  * (no prologue, no background client, returning is not a failure), so a row
  * names only what its leg actually does. */
 
-static const struct gui_leg gui_legs[] = {
+static const GUI_LEG SessionGuiLegs[] = {
     /* GUI-1 (docs/02 "a user program maps the framebuffer and draws a
      * rectangle visible in a screendump"): gui_smoke.exe opens \Device\Fb0
      * and \Device\Input0, paints, and parks in a blocking read. It is
      * written never to return, so returning is the verdict. */
-    { .probe = WSTR("\\??\\C:\\gui_smoke.exe"),
-      .foreground = WSTR("\\??\\C:\\gui_smoke.exe"),
-      .tag = "gui",
-      .foreground_name = "gui_smoke.exe" },
+    {.probe = WSTR("\\??\\C:\\gui_smoke.exe"),
+     .foreground = WSTR("\\??\\C:\\gui_smoke.exe"),
+     .tag = "gui",
+     .foregroundName = "gui_smoke.exe"},
 
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
      * window is closed (the harness's Alt+F4 probe) or when the app dies --
      * either way the exit code is the diagnosis. */
-    { .probe = WSTR("\\??\\C:\\winemine.exe"),
-      .foreground = WSTR("\\??\\C:\\winemine.exe"),
-      .tag = "gui2" },
+    {.probe = WSTR("\\??\\C:\\winemine.exe"),
+     .foreground = WSTR("\\??\\C:\\winemine.exe"),
+     .tag = "gui2"},
 
     /* GUI-3 (docs/02 "two GUI processes run at once"): wineserver-lite
      * (already started before firstboot -- smss.c) with two GUI clients above
      * it. gui3a is fire-and-forget (its window must still be up for the
      * screendumps); gui3b prints the verdict and parks. */
-    { .probe = WSTR("\\??\\C:\\gui3a.exe"),
-      .background = WSTR("\\??\\C:\\gui3a.exe"),
-      .foreground = WSTR("\\??\\C:\\gui3b.exe"),
-      .tag = "gui3" },
+    {.probe = WSTR("\\??\\C:\\gui3a.exe"),
+     .background = WSTR("\\??\\C:\\gui3a.exe"),
+     .foreground = WSTR("\\??\\C:\\gui3b.exe"),
+     .tag = "gui3"},
 
     /* GUI-4 (docs/02 "windows can be grabbed and moved"): the gui3
      * arrangement with overlapping windows, driven by the harness through
      * the tablet and keyboard. Both clients park pumping forever; the leg
      * owns QEMU's lifetime. */
-    { .probe = WSTR("\\??\\C:\\gui4a.exe"),
-      .background = WSTR("\\??\\C:\\gui4a.exe"),
-      .foreground = WSTR("\\??\\C:\\gui4b.exe"),
-      .tag = "gui4" },
+    {.probe = WSTR("\\??\\C:\\gui4a.exe"),
+     .background = WSTR("\\??\\C:\\gui4a.exe"),
+     .foreground = WSTR("\\??\\C:\\gui4b.exe"),
+     .tag = "gui4"},
 
     /* GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
      * cross-process, plus the guest half of the font-metrics differential.
@@ -647,87 +655,88 @@ static const struct gui_leg gui_legs[] = {
      * releasing any exclusively-opened input device its winefb instance won
      * -- before gui5a starts and becomes the leg's input host (docs/03 GUI-4
      * notes). */
-    { .probe = WSTR("\\??\\C:\\gui5a.exe"),
-      .prologue = WSTR("\\??\\C:\\fontdiff.exe"),
-      .background = WSTR("\\??\\C:\\gui5a.exe"),
-      .foreground = WSTR("\\??\\C:\\gui5b.exe"),
-      .tag = "gui5",
-      .prologue_tag = "fontdiff" },
+    {.probe = WSTR("\\??\\C:\\gui5a.exe"),
+     .prologue = WSTR("\\??\\C:\\fontdiff.exe"),
+     .background = WSTR("\\??\\C:\\gui5a.exe"),
+     .foreground = WSTR("\\??\\C:\\gui5b.exe"),
+     .tag = "gui5",
+     .prologueTag = "fontdiff"},
 };
 
-static void flow_gui(void)
+static void SessionFlowGui(void)
 {
     /* Kept for the process's lifetime on purpose: the background client must
      * still be running when the host takes its screendumps, so its handles
      * are never closed. One pair is enough -- the probes are disjoint, so at
      * most one leg runs per image. */
-    static HANDLE background, background_thread;
+    static HANDLE SessionGuiBackground, SessionGuiBackgroundThread;
 
-    for (unsigned int i = 0; i < sizeof(gui_legs) / sizeof(gui_legs[0]); i++)
+    for (unsigned int i = 0; i < sizeof(SessionGuiLegs) / sizeof(SessionGuiLegs[0]); i++)
     {
-        const struct gui_leg *leg = &gui_legs[i];
-        NTSTATUS exit_status = 0;
+        const GUI_LEG *leg = &SessionGuiLegs[i];
+        NTSTATUS exitStatus = 0;
         NTSTATUS status;
 
-        if (!smss_file_exists(leg->probe, 0))
+        if (!SmssFileExists(leg->probe, 0))
             continue; /* not this leg's image */
 
         if (leg->prologue)
         {
-            status = smss_run(leg->prologue, 0, 0, 0, &exit_status);
-            smss_printf("[KTEST] %s %s exit (status=%x, exit=%x)\n", leg->tag, leg->prologue_tag,
-                        SMSS_HEX(status), SMSS_HEX(exit_status));
+            status = SmssRun(leg->prologue, 0, 0, 0, &exitStatus);
+            SmssPrintf("[KTEST] %s %s exit (status=%x, exit=%x)\n", leg->tag, leg->prologueTag,
+                       SMSS_HEX(status), SMSS_HEX(exitStatus));
         }
 
         if (leg->background)
         {
-            status = smss_spawn(leg->background, 0, 0, &background, &background_thread);
+            status = SmssSpawn(leg->background, 0, 0, &SessionGuiBackground,
+                               &SessionGuiBackgroundThread);
             if (status != STATUS_SUCCESS)
             {
-                smss_printf("[KTEST] %s A FAIL (create=%x)\n", leg->tag, SMSS_HEX(status));
+                SmssPrintf("[KTEST] %s A FAIL (create=%x)\n", leg->tag, SMSS_HEX(status));
                 return;
             }
         }
 
-        status = smss_run(leg->foreground, 0, 0, 0, &exit_status);
+        status = SmssRun(leg->foreground, 0, 0, 0, &exitStatus);
         /* Only reached if the client exited. Where it is written never to,
          * say FAIL by name rather than letting the boot fall through to a
          * sweep verdict the harness would read as a healthy end (Art. 12). */
-        if (leg->foreground_name)
-            smss_printf("[KTEST] %s FAIL (%s returned %x, exit=%x)\n", leg->tag,
-                        leg->foreground_name, SMSS_HEX(status), SMSS_HEX(exit_status));
+        if (leg->foregroundName)
+            SmssPrintf("[KTEST] %s FAIL (%s returned %x, exit=%x)\n", leg->tag, leg->foregroundName,
+                       SMSS_HEX(status), SMSS_HEX(exitStatus));
         else
-            smss_printf("[KTEST] %s exit (status=%x, exit=%x)\n", leg->tag, SMSS_HEX(status),
-                        SMSS_HEX(exit_status));
+            SmssPrintf("[KTEST] %s exit (status=%x, exit=%x)\n", leg->tag, SMSS_HEX(status),
+                       SMSS_HEX(exitStatus));
         return;
     }
 }
 
 /* --- the session ------------------------------------------------------------ */
 
-int session_run(int abi_failures, int registry_ok)
+int SessionRun(int abiFailures, int registryOk)
 {
     int failures = 0;
-    failures += flow_m8(registry_ok);
-    failures += flow_m9(abi_failures);
+    failures += SessionFlowM8(registryOk);
+    failures += SessionFlowM9(abiFailures);
 
     /* The ntapi image only (tests/run/run.sh proskrnl). Absence is silent. */
-    failures += flow_ntapi();
+    failures += SessionFlowNtapi();
 
     /* The wtest image only (tests/run/run.sh winetest). Absence is silent. */
-    failures += flow_wtest();
+    failures += SessionFlowWtest();
 
     /* Console-mode image only: block on the interactive echo (the M9
      * acceptance's other half). AFTER the M9 verdict so the runner knows
      * the boot suite is already green. Then the interactive cmd session. */
-    failures += flow_m9_echo();
-    failures += flow_cmd_console();
+    failures += SessionFlowM9Echo();
+    failures += SessionFlowCmdConsole();
 
     /* GUI images only: deliberately LAST and deliberately never returning —
      * the host has to see the painted frames in screendumps, so the guest
      * must not tear the windows down or power off underneath them. Every
      * verdict above has already printed by this point. */
-    flow_gui();
+    SessionFlowGui();
 
     return failures;
 }
@@ -735,11 +744,11 @@ int session_run(int abi_failures, int registry_ok)
 /* Hand the console to a human-driven cmd.exe; the kernel powers the VM off
  * when smss exits (`exit` at the prompt). A start failure still returns —
  * an interactive boot has no runner watching a timeout. */
-void session_interactive(void)
+void SessionInteractive(void)
 {
-    smss_say("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
-    NTSTATUS exit_status = 0;
-    NTSTATUS status = smss_run(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exit_status);
+    SmssSay("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
     if (status != STATUS_SUCCESS)
-        smss_printf("proskrnl: cmd.exe failed to start (%x)\n", SMSS_HEX(status));
+        SmssPrintf("proskrnl: cmd.exe failed to start (%x)\n", SMSS_HEX(status));
 }

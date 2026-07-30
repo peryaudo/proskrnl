@@ -298,7 +298,7 @@ $(SMSS): user/smss/smss.c user/smss/launch.c user/smss/session.c \
         $(WINE_PE)/ntdll/x86_64-windows/ntdll.dll
 	@mkdir -p $(dir $@)
 	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=smss_start \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=SmssStart \
 	    user/smss/smss.c user/smss/launch.c user/smss/session.c user/smss/firstboot.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 

@@ -16,9 +16,6 @@
  * Verdict lines go out through NtDisplayString — the same serial transport
  * the kernel's [KTEST] lines use (kernel/ps/display.c), so the harness
  * greps are unchanged. A native ntdll-only PE, like hello.exe.
- *
- * User clients follow the test-code conventions (Wine style, docs/15
- * exemption).
  */
 #include "user/smss/smss.h"
 
@@ -26,7 +23,7 @@
 
 #include <stdarg.h>
 
-void smss_say(const char *ascii)
+void SmssSay(const char *ascii)
 {
     while (*ascii != '\0')
     {
@@ -46,14 +43,14 @@ void smss_say(const char *ascii)
     }
 }
 
-static void fmt_char(char *buf, unsigned size, unsigned *pos, char c)
+static void SmssFormatChar(char *buf, unsigned size, unsigned *pos, char c)
 {
     if (*pos + 1 < size)
         buf[(*pos)++] = c;
 }
 
-static void fmt_unsigned(char *buf, unsigned size, unsigned *pos, unsigned long long value,
-                         unsigned base)
+static void SmssFormatUnsigned(char *buf, unsigned size, unsigned *pos, unsigned long long value,
+                               unsigned base)
 {
     char digits[24];
     unsigned n = 0;
@@ -64,10 +61,14 @@ static void fmt_unsigned(char *buf, unsigned size, unsigned *pos, unsigned long 
         value /= base;
     } while (value != 0);
     while (n != 0)
-        fmt_char(buf, size, pos, digits[--n]);
+        SmssFormatChar(buf, size, pos, digits[--n]);
 }
 
-void smss_printf(const char *fmt, ...)
+/* The analyzer does not model the Windows target's __builtin_ms_va_start, so
+ * every va_arg below reads as "uninitialized va_list" under the mingw triple
+ * `make tidy` uses for this PE; the same code is clean under an ELF triple. */
+/* NOLINTBEGIN(clang-analyzer-valist.Uninitialized) */
+void SmssPrintf(const char *fmt, ...)
 {
     char buf[192];
     unsigned pos = 0;
@@ -77,7 +78,7 @@ void smss_printf(const char *fmt, ...)
     {
         if (*fmt != '%')
         {
-            fmt_char(buf, sizeof(buf), &pos, *fmt);
+            SmssFormatChar(buf, sizeof(buf), &pos, *fmt);
             continue;
         }
         fmt++;
@@ -87,7 +88,7 @@ void smss_printf(const char *fmt, ...)
         {
             const char *s = va_arg(ap, const char *);
             while (*s != '\0')
-                fmt_char(buf, sizeof(buf), &pos, *s++);
+                SmssFormatChar(buf, sizeof(buf), &pos, *s++);
             break;
         }
         case 'd':
@@ -96,31 +97,31 @@ void smss_printf(const char *fmt, ...)
             unsigned long long u = (unsigned long long)v;
             if (v < 0)
             {
-                fmt_char(buf, sizeof(buf), &pos, '-');
+                SmssFormatChar(buf, sizeof(buf), &pos, '-');
                 u = (unsigned long long)-(long long)v;
             }
-            fmt_unsigned(buf, sizeof(buf), &pos, u, 10);
+            SmssFormatUnsigned(buf, sizeof(buf), &pos, u, 10);
             break;
         }
         case 'u':
-            fmt_unsigned(buf, sizeof(buf), &pos, va_arg(ap, unsigned), 10);
+            SmssFormatUnsigned(buf, sizeof(buf), &pos, va_arg(ap, unsigned), 10);
             break;
         case 'x':
         {
             /* The kernel DbgPrint %#lx spelling: always 0x-prefixed
              * ("exit=0x0"), so smss verdict lines match the historical ones. */
-            fmt_char(buf, sizeof(buf), &pos, '0');
-            fmt_char(buf, sizeof(buf), &pos, 'x');
-            fmt_unsigned(buf, sizeof(buf), &pos, va_arg(ap, unsigned long long), 16);
+            SmssFormatChar(buf, sizeof(buf), &pos, '0');
+            SmssFormatChar(buf, sizeof(buf), &pos, 'x');
+            SmssFormatUnsigned(buf, sizeof(buf), &pos, va_arg(ap, unsigned long long), 16);
             break;
         }
         case '%':
-            fmt_char(buf, sizeof(buf), &pos, '%');
+            SmssFormatChar(buf, sizeof(buf), &pos, '%');
             break;
         default:
-            fmt_char(buf, sizeof(buf), &pos, '%');
+            SmssFormatChar(buf, sizeof(buf), &pos, '%');
             if (*fmt != '\0')
-                fmt_char(buf, sizeof(buf), &pos, *fmt);
+                SmssFormatChar(buf, sizeof(buf), &pos, *fmt);
             break;
         }
         if (*fmt == '\0')
@@ -128,10 +129,11 @@ void smss_printf(const char *fmt, ...)
     }
     va_end(ap);
     buf[pos] = '\0';
-    smss_say(buf);
+    SmssSay(buf);
 }
+/* NOLINTEND(clang-analyzer-valist.Uninitialized) */
 
-void smss_init_ustr(UNICODE_STRING *str, const WCHAR *wide)
+void SmssInitUnicodeString(UNICODE_STRING *str, const WCHAR *wide)
 {
     USHORT n = 0;
     while (wide[n] != 0)
@@ -141,20 +143,20 @@ void smss_init_ustr(UNICODE_STRING *str, const WCHAR *wide)
     str->Buffer = (PWSTR)wide;
 }
 
-void smss_sleep_ms(ULONG milliseconds)
+void SmssSleep(ULONG milliseconds)
 {
     LARGE_INTEGER interval;
     interval.QuadPart = -(LONGLONG)milliseconds * 10000; /* relative, 100 ns */
     NtDelayExecution(FALSE, &interval);
 }
 
-int smss_file_exists(const WCHAR *nt_path, NTSTATUS *status_out)
+int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE handle;
-    smss_init_ustr(&name, nt_path);
+    SmssInitUnicodeString(&name, ntPath);
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -164,26 +166,26 @@ int smss_file_exists(const WCHAR *nt_path, NTSTATUS *status_out)
     NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attr, &iosb, 0,
                                    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
                                    FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
-    if (status_out != 0)
-        *status_out = status;
+    if (statusOut != 0)
+        *statusOut = status;
     if (status != STATUS_SUCCESS)
         return 0;
     NtClose(handle);
     return 1;
 }
 
-RTL_USER_PROCESS_PARAMETERS *smss_own_params;
+RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;
 
 /* The kernel passes its pre-session context on the command line
  * (KiRunSessionManager): "abi=<n>" is the ABI conformance probe's failure
  * count, folded into the M9 verdict exactly as the kernel runner folded it
  * (an unconsumed-convention regression must still flip `make test`). */
-static int parse_abi_failures(void)
+static int SmssParseAbiFailures(void)
 {
-    if (smss_own_params == 0 || smss_own_params->CommandLine.Buffer == 0)
+    if (SmssOwnParams == 0 || SmssOwnParams->CommandLine.Buffer == 0)
         return 0;
-    const WCHAR *cmd = smss_own_params->CommandLine.Buffer;
-    USHORT len = (USHORT)(smss_own_params->CommandLine.Length / sizeof(WCHAR));
+    const WCHAR *cmd = SmssOwnParams->CommandLine.Buffer;
+    USHORT len = (USHORT)(SmssOwnParams->CommandLine.Length / sizeof(WCHAR));
     static const WCHAR key[] = WSTR("abi=");
     for (USHORT i = 0; i + 4 < len; i++)
     {
@@ -202,12 +204,12 @@ static int parse_abi_failures(void)
 
 /* 1. The registry the kernel mounted must be reachable from ring 3 — the M8
  * duty, kept as the session's first check. */
-static int registry_reachable(void)
+static int SmssRegistryReachable(void)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     HANDLE machine;
-    smss_init_ustr(&name, WSTR("\\Registry\\Machine"));
+    SmssInitUnicodeString(&name, WSTR("\\Registry\\Machine"));
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -217,7 +219,7 @@ static int registry_reachable(void)
     NTSTATUS status = NtOpenKey(&machine, KEY_READ, &attr);
     if (status != STATUS_SUCCESS)
     {
-        smss_say("smss: registry not reachable\n");
+        SmssSay("smss: registry not reachable\n");
         return 0;
     }
     NtClose(machine);
@@ -229,48 +231,48 @@ static int registry_reachable(void)
  * hive. Probe/skip on the image content: images without wineboot.exe — the
  * hermetic ntapi/wtest images — skip silently. wineboot's own
  * .update-timestamp freshness check makes non-first boots near-instant. */
-static int run_firstboot(void)
+static int SmssRunFirstboot(void)
 {
-    if (!smss_file_exists(WSTR("\\??\\C:\\windows\\system32\\wineboot.exe"), 0))
+    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\wineboot.exe"), 0))
         return 0;
-    NTSTATUS exit_status = firstboot_run();
-    if (exit_status != 0)
+    NTSTATUS exitStatus = FirstbootRun();
+    if (exitStatus != 0)
     {
-        smss_printf("[KTEST] firstboot FAIL (exit=%x)\n", SMSS_HEX(exit_status));
+        SmssPrintf("[KTEST] firstboot FAIL (exit=%x)\n", SMSS_HEX(exitStatus));
         return 1;
     }
-    smss_say("[KTEST] firstboot PASS\n");
+    SmssSay("[KTEST] firstboot PASS\n");
     return 0;
 }
 
-void smss_start(void *peb_arg)
+void SmssStart(void *pebArg)
 {
-    PEB *peb = peb_arg;
-    smss_own_params = peb != 0 ? peb->ProcessParameters : 0;
+    PEB *peb = pebArg;
+    SmssOwnParams = peb != 0 ? peb->ProcessParameters : 0;
 
-    smss_say("smss: session manager up\n");
-    int abi_failures = parse_abi_failures();
-    int registry_ok = registry_reachable();
+    SmssSay("smss: session manager up\n");
+    int abiFailures = SmssParseAbiFailures();
+    int registryOk = SmssRegistryReachable();
 
     /* The servers, in dependency order (launch.c): wineserver-lite before
      * ANY win32u client — firstboot's wineboot is one, and so is the GUI-5
      * windowed conhost — then conhost itself. */
-    smss_start_wineserver();
-    smss_start_conhost();
+    SmssStartWineServer();
+    SmssStartConhost();
 
-    int failures = run_firstboot();
+    int failures = SmssRunFirstboot();
 
     /* The interactive boot (make run): the image carries C:\interactive.flag
      * (Makefile IMG_RUN), meaning a human owns the serial console — the test
      * session is skipped and the console goes straight to cmd.exe. The
      * image, not a kernel- or smss-side switch, decides. */
-    if (smss_file_exists(WSTR("\\??\\C:\\interactive.flag"), 0))
+    if (SmssFileExists(WSTR("\\??\\C:\\interactive.flag"), 0))
     {
-        session_interactive();
+        SessionInteractive();
         NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, 0);
     }
 
-    failures += session_run(abi_failures, registry_ok);
+    failures += SessionRun(abiFailures, registryOk);
     NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, failures);
     for (;;)
     {
