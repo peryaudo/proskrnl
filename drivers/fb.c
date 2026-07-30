@@ -23,10 +23,12 @@
  * file, and kernel/mm gains nothing at all (G10/Art. 11: no second mapping
  * path). NtReadFile/NtWriteFile on the handle fall out of the same seam.
  *
- * The Limine request lives here rather than in kernel/init/main.c: the
- * linker script collects .limine_requests from any object
- * (arch/x86_64/linker.ld), and keeping it in the driver is what makes the
- * whole feature deletable in one piece.
+ * The framebuffer itself is not this file's to find: kernel/init/bootvid.c
+ * declares the one Limine framebuffer request in the image, because the boot
+ * console consumes it far earlier than the first kernel thread runs. We take
+ * the same response through KiGetBootFramebuffer (G10 — one authority) and
+ * shut the console down before publishing, so the scanout never has two
+ * owners (Art. 11).
  */
 #include "drivers/fb.h"
 #include "drivers/fbproto.h"
@@ -38,18 +40,11 @@
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
+#include "kernel/init/bootvid.h"
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
 
 #include <limine.h>
-
-/* Limine hands the framebuffer's address as an HHDM VIRTUAL pointer, with
- * the offset already added (limine PROTOCOL.md, "Framebuffer feature" plus
- * the protocol's pointer convention). LIMINE_FRAMEBUFFER_RGB and the
- * mask/shift fields are that same header's
- * (third_party/limine-protocol/include/limine.h). */
-__attribute__((used, section(".limine_requests"))) static volatile struct limine_framebuffer_request
-    FbLimineRequest = {.id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0, .response = 0};
 
 /* fbproto.h states the memory model to its clients without dragging the
  * Limine header into a PE build, so pin the two together here — the one
@@ -187,13 +182,12 @@ static const IO_VFS_OPS FbOps = {
 
 void FbInitialize(void)
 {
-    volatile struct limine_framebuffer_response *response = FbLimineRequest.response;
-    if (response == 0 || response->framebuffer_count == 0)
+    struct limine_framebuffer *fb = KiGetBootFramebuffer();
+    if (fb == 0)
     {
         DbgPrint("fb: no Limine framebuffer; \\Device\\Fb0 not published\n");
         return;
     }
-    struct limine_framebuffer *fb = response->framebuffers[0];
 
     /* Publish only what GUI-1 actually supports. Anything else refuses by
      * being absent rather than by being published and lying about itself. */
@@ -248,6 +242,14 @@ void FbInitialize(void)
     FbMode.memoryModel = fb->memory_model;
     FbMode.reserved = 0;
     FbMode.size = size;
+
+    /* The hand-off. From the instant \Device\Fb0 exists a client can map the
+     * scanout and blit, so the boot console stops here — one owner of these
+     * pixels at a time (Art. 11). It is deliberately the LAST thing before
+     * publishing and not one line earlier: every failure path above leaves
+     * the console alive, because nothing can take the framebuffer when the
+     * device was never published. */
+    KiBootVideoShutdown();
 
     IopInitializeFcb(&FbFcb);
     IoPublishDevice(WSTR("\\Device\\Fb0"), &FbOps, 0, FILE_DEVICE_VIDEO);

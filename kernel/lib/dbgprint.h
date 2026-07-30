@@ -11,4 +11,10 @@
  * different signature — docs/15). */
 int DbgPrint(const char *format, ...);
 
+/* One character of kernel log text, to every channel that carries it: COM1
+ * always, plus the boot console while it holds the framebuffer
+ * (kernel/init/bootvid.h). NtDisplayString writes user-mode text through the
+ * same function so both halves of the boot log land on the same channels. */
+void DbgPutChar(char c);
+
 #endif /* PROSKRNL_KERNEL_LIB_DBGPRINT_H */

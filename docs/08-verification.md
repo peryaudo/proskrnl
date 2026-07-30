@@ -261,6 +261,11 @@ echo "exit: $?"
   with an exit code and a log. (Hangs are routine early; this is the safety net.)
 - **structured log prefixes** — `[KTEST] name PASS` / `[PANIC] …` / `[ASSERT] file:line`.
   Keep machine-verdict output separate from human free-text. `tests/run/` greps these.
+- **the boot console** (`kernel/init/bootvid.c`) — the same log, mirrored onto the Limine
+  framebuffer from the second line of boot until `FbInitialize` hands the scanout to the
+  GUI. Serial stays the machine channel and is written first, always: the mirror is for a
+  human (or a `screendump`) watching a box with no serial wire, and it can never change
+  what a verdict grep sees.
 
 At M7+ the same mechanism promotes: user-mode test exes (ntapi / Wine tests) write results
 to the console → condrv → its COM1 serial backend (HACK-004, `docs/10`) → host log; the

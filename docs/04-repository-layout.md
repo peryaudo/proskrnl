@@ -37,6 +37,9 @@ proskrnl/
 ├── kernel/
 │   ├── init/
 │   │   ├── main.c                   # KiSystemStartup-equiv: per-department phase init
+│   │   ├── bootvid.c                # the boot console: DbgPrint mirrored onto the
+│   │   │                            #   Limine framebuffer (Flanterm), released to
+│   │   │                            #   the GUI at FbInitialize. Serial is unaffected
 │   │   └── initrd.c                 # M5 seed RAM-disk
 │   ├── ke/                          # M1–M2
 │   │   ├── sched.c                  # scheduler (internals free; keep it simple)
