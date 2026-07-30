@@ -44,13 +44,16 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 \
             third_party/limine third_party/limine-protocol third_party/qemu third_party/wine \
-            third_party/freetype
+            third_party/freetype third_party/flanterm
 
       # The submodule pins ARE the cache key (git ls-tree reads them from the
-      # superproject tree, no submodule checkout needed).
+      # superproject tree, no submodule checkout needed). Only the submodules
+      # whose builds this cache holds are named — flanterm has no build of its
+      # own (the kernel Makefile compiles its two C files), so its pin must not
+      # invalidate them. Must match tools/fetch_third_party.sh exactly.
       - name: Compute third_party cache key
         id: pins
-        run: echo "key=$(git ls-tree HEAD third_party | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        run: echo "key=$(git ls-tree HEAD third_party/limine third_party/limine-protocol third_party/qemu third_party/wine third_party/freetype | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       # v2: v1 entries were poisoned by a cancelled run saving a sources-only
       # snapshot (no builds) under the pins key; the version bump orphans them

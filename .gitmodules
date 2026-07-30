@@ -22,3 +22,8 @@
 	url = https://gitlab.freedesktop.org/freetype/freetype.git
 	shallow = true
 	ignore = dirty
+[submodule "third_party/flanterm"]
+	path = third_party/flanterm
+	url = https://github.com/mintsuki/flanterm.git
+	branch = trunk
+	shallow = true
