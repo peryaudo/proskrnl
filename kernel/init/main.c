@@ -533,6 +533,18 @@ void KiSystemStartup(void)
         KiPanic("boot console self-test failed: the console is up but the scanout is blank");
     }
 
+    DbgPrint("\n"
+             "  _n_\n"
+             "  o-o =3\n"
+             "    ____\n"
+             "   / ^  \\\n"
+             "   ~__* /     proskrnl - WinNT compatible toy kernel\n"
+             "     /  /     Copyright (C) 2026 Tetsui Ohkubo\n"
+             "    |=) \\_/\n"
+             "    \\____/\n"
+             "     /  \\\n"
+             "    ^    ^\n\n");
+
     /* Our own GDT + TSS + syscall MSRs, off the bootloader's, BEFORE the IDT
      * so its gates capture our kernel CS (M4). */
     KiInitializeGdt();
