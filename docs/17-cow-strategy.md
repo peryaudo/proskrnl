@@ -11,8 +11,10 @@ accepts, why COW is *safer here than in an ordinary kernel*, why the real work i
 COW at all, the full hazard list, and the test plan — including the one failure mode
 that passes every semantic test.
 
-Companion document: `docs/18-smp-strategy.md`. The two interact in exactly one place
-(write-protect becomes a TLB-shootdown site); both flag it.
+Companion documents: `docs/18-smp-strategy.md` — the two interact in exactly one place
+(write-protect becomes a TLB-shootdown site) and both flag it — and
+`docs/19-io-strategy.md`, which is independent of this one but shares its §8 failure mode
+(a correct-but-inert implementation passes every semantic test).
 
 ---
 
@@ -261,7 +263,7 @@ The good news is that most of this is directly testable, at three levels.
 |---|---|
 | In-kernel `[KTEST]` | the fault-classification table (PTE state × access kind → decision); the copy; refcount transitions; **the number of `invlpg` calls** — a counter turns hazard H into a unit test |
 | Boundary, oracle-pinned (Art. 5) | `PAGE_WRITECOPY` write leaves the file unchanged; another mapper does not observe it; the private page survives the other mapper's unmap; a write to a `PAGE_READONLY` image page is still an access violation; `NtQueryVirtualMemory`'s Protect transition and region split (hazard D) |
-| Existing regression net | `tests/ntapi/sem_mm/section_stress`, `image_section`, `stack_growth`, the M6 mapped-view/`ReadFile` coherence stress, and the SEH test already guard every dangerous neighbour. They are oracle-green today, so a COW regression in any of them is immediately attributable. |
+| Existing regression net | `tests/ntapi/sem_mm/` — `section_stress.c`, `image_section.c`, `mapped_same.c`, `guard_pages.c`, `stack_growth.c`, and `file_coherence.c` (the M6 mapped-view/`ReadFile` stress) — plus the SEH test already guard every dangerous neighbour. They are oracle-green today, so a COW regression in any of them is immediately attributable. |
 
 ### The one failure mode no semantic test catches
 

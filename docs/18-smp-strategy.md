@@ -7,12 +7,10 @@ amended, why a **giant lock** is the minimal and constitutionally coherent form 
 amendment, what it does *not* buy, the hard prerequisite it has, and — most importantly —
 how the project's verification model survives.
 
-It also documents the **block-layer I/O-overlap work** (§7), which is a prerequisite for
-SMP *and* an independent prerequisite for Net-1, and therefore the first thing to build
-regardless of whether SMP is ever taken.
-
-Companion document: `docs/17-cow-strategy.md` (§11 there, §6b here: write-protect becomes
-a shootdown site).
+Companion documents: **`docs/19-io-strategy.md`** — the block-layer I/O-overlap work, a
+hard prerequisite for this one (§7) and an independent prerequisite for Net-1, and
+therefore the first of the three to build; and `docs/17-cow-strategy.md` (§11 there, §6b
+here: write-protect becomes a shootdown site).
 
 ---
 
@@ -210,81 +208,27 @@ in Wine's object model and our glue rather than in the kernel, and note that **t
 
 ## 7. Hard prerequisite: overlap I/O in the block layer
 
+**The design lives in `docs/19-io-strategy.md`.** Only the SMP-specific consequence belongs
+here:
+
 ```c
 /* drivers/virtio/virtqueue.c — VioSubmitAndPoll, holding the "lock" */
 for (uint64_t spins = 0; spins < 1000000000ULL; spins++) { ... __asm__ volatile("pause"); }
 ```
 
-Today this stalls the machine, which is merely bad: while a disk transfer is outstanding
-the system is effectively single-threaded — no other thread runs, no APC is delivered, a
-console `^C` is not seen. It is invisible only because QEMU serves the image out of the
-host page cache in microseconds; on any slower backing store (or real hardware) the same
-code is a machine-wide stall of tens of milliseconds. **Under a giant lock it stalls every
-CPU at the kernel gate**, destroying the only thing SMP was for. Worse, the queue depth is
-**structurally 1**: `blk.c` owns a single global control header and a single bounce buffer
-(`VioBlkControlPhysical` / `VioBlkDataBounce`, with a `memcpy` per transfer), so there is
-nowhere to put a second in-flight request. Transfers are also chunked at 8 sectors, so a
-large read is *N* synchronous round trips.
+A file transfer submits and **spins**, with queue depth structurally 1. Today that stalls
+the machine, which is merely bad. **Under a giant lock it stalls every CPU at the kernel
+gate**, so SMP would deliver nothing at all — and §6d's "an interrupt handler may spin for
+the giant lock" policy is only bounded if nothing spins for I/O while holding it.
 
-So the I/O work is promoted from independent improvement to **prerequisite**. It is also
-required by Net-1 on its own account: an AFD `accept`/`recv` may never complete, so a
-polled-synchronous socket path deadlocks by construction. Either way it comes first.
+So `docs/19` is not an adjacent improvement; it is a gate on item 2 of §12. It is also
+required by Net-1 on its own account (an AFD `accept`/`recv` may never complete), which is
+why it should be built whether or not this document's amendment is ever made.
 
-### What already exists (so the gap is stated accurately)
+Its determinism story is *better* than this document's: because the completion drain point
+is chosen by us, the single-interleaving behaviour of today's runs is preserved, so
+`docs/19` needs none of §8's machinery.
 
-The *observable* async completion protocol is built and pinned: IOSB written before the
-event is signalled (`IopCompleteRequest`), a user `ApcRoutine` queued at completion and
-delivered through `KiUserApcDispatcher` at the next alertable wait (pinned on the oracle by
-`tests/ntapi/sem_file/apc_completion.c`), scatter/gather answering `STATUS_PENDING` in the
-oracle's shape (`kernel/io/rw.c:593`), IO completion ports as real objects
-(`kernel/io/completion.c`, with job lifecycle packets riding them), and
-`NtCancelIoFile(Ex)` / `NtCancelSynchronousIoFile`.
-
-What is missing is not the protocol but the *pending* — a transfer that genuinely has not
-finished when the syscall returns. Only two verbs pend today (`FSCTL_PIPE_LISTEN`,
-`NtNotifyChangeDirectoryFile`), plus npfs's and condrv's own blocking waits.
-
-### The shape
-
-The parts already exist. `kernel/io/async.c` states the current position: *"Art. 3's
-'everything completes before the syscall returns' narrows here, not breaks: DATA
-transfers stay synchronous, but `FSCTL_PIPE_LISTEN` on an asynchronous handle genuinely
-pends"*. `IopPreparePendingRequest` / `IopCompletePendingRequest` is a working
-park-and-complete engine with two consumers (`FSCTL_PIPE_LISTEN` from CUI-3;
-`NtNotifyChangeDirectoryFile` from CUI-5), and `VioTryPopUsed`
-(`drivers/virtio/virtqueue.c`) already exists for non-blocking completion harvest —
-virtio-input uses it.
-
-The work:
-
-1. **per-request buffers** in the virtio-blk driver and a queue depth above 1 (retire the
-   global bounce/control singletons);
-2. **a completion drain point** on the idle/timer path — polling is fine, no interrupt
-   path required;
-3. **FS read/write park + `STATUS_PENDING`**, using the existing pending-request engine.
-
-**The difficulty is not the driver; it is FS/Io re-entrancy.** Once a request can be in
-flight, another thread can enter the same FCB or the same page-cache page. Every comment
-that justifies lock-freedom by the no-preemption model — 21 occurrences, greppable, and
-`fs/fat32/fat.c:676` is the archetype — becomes a claim that must be re-checked. The FCB
-and page need in-flight state.
-
-### Testability of the I/O work (good)
-
-Determinism survives, because **we choose the drain point**. Drain only at explicit
-points and the existing single-interleaving behaviour is preserved; add a knob that varies
-drain aggressiveness for a stress leg. Neither the differential fuzzer nor the
-consistency-sweep deadlock detector loses its premise. This is why the I/O work can land
-*before* any constitutional argument about SMP is settled.
-
-### Related gaps worth closing in the same area
-
-- `NtCancelSynchronousIoFile` cancels npfs parks only; condrv/serial/`\Device\Input*`
-  reads keep uncancellable waits (`docs/03` CUI-5 notes).
-- `FileCompletionInformation` (port-to-file association) is unbuilt for want of a
-  consumer; `IopPostCompletionPacket` is already the single posting authority to hook
-  (Art. 11).
-- Directory-change watches do not buffer across the re-arm window.
 
 ## 8. Testability under a giant lock — the strongest argument
 
@@ -366,11 +310,8 @@ ring-3-return preemption point (`kernel/ke/sched.c:216`), and stalling-during-I/
 The three items in this document sit at opposite ends of the LLM risk scale, and the
 giant lock is what moves SMP from one end toward the other.
 
-- **§7 (I/O overlap) is LLM-friendly.** The park-and-complete engine has two existing
-  consumers to copy, the virtio per-request change is mechanical, and determinism is
-  preserved. Require *the enumeration of paths that can now be re-entered mid-flight* as a
-  named deliverable — the 21 "no preemption" comments are the greppable start of that list
-  — because that, not the driver, is where the work actually is.
+- **The I/O overlap work (`docs/19`) is LLM-friendly** — existing engine to copy, mechanical
+  driver change, determinism preserved. `docs/19` §6 and §9 carry the guidance.
 - **§10 (kernel preemption) has fine-grained SMP's risk with almost none of its payoff.**
   Do not let it be taken as a standalone task.
 - **§6 (SMP) is only tractable because the invariant is one enforceable sentence.** An
@@ -392,8 +333,8 @@ without it).
 
 ## 12. Build order and size
 
-1. **Block-layer overlap** (§7) — required by Net-1 too; land it independently of any SMP
-   decision.
+1. **Block-layer overlap** (`docs/19`, §7 here) — required by Net-1 too; land it
+   independently of any SMP decision.
 2. **Per-CPU state** (§6a) — `KiPcr` array, `KiCurrentThread` retired, per-CPU TSS/GDT/idle.
 3. **AP bringup + IPI** (§6c).
 4. **TLB shootdown, broadcast form** (§6b).
@@ -409,8 +350,8 @@ because the invariant stays one sentence. This **supersedes** the fine-grained e
 
 Do not start item 2 until all four hold:
 
-1. **§7 is done.** Otherwise the giant lock stalls every CPU at the kernel gate and SMP
-   delivers nothing.
+1. **`docs/19` is done** (§7). Otherwise the giant lock stalls every CPU at the kernel gate
+   and SMP delivers nothing.
 2. **The Article 3 amendment exists**, with the §9 measurement behind it and a `docs/03`
    entry. Under the current constitution this work is simply not writable.
 3. **The `-smp 1` permanent gate and the `-smp 4` leg exist in the harness.**
