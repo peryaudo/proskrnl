@@ -286,8 +286,10 @@ static void bind_callback_return(void)
         ULONG size = 0;
 
         if (base == (char *)peb->ImageBaseAddress) continue;    /* the .exe imports none of this */
-        if (!(imports = RtlImageDirectoryEntryToData( base, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT,
-                                                      &size )))
+        /* base stays char * for the offset arithmetic below; the cast is only
+         * to spell the HMODULE this one call declares. */
+        if (!(imports = RtlImageDirectoryEntryToData( (HMODULE)base, TRUE,
+                                                      IMAGE_DIRECTORY_ENTRY_IMPORT, &size )))
             continue;
 
         for ( ; imports->Name && imports->FirstThunk; imports++)

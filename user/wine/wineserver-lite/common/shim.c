@@ -663,7 +663,11 @@ static void ensure_timeout_thread(void)
 
     if (started) return;
     started = 1;
-    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), timeout_thread,
+    /* Wine's own cast for a DWORD-returning routine (dlls/kernelbase/thread.c,
+     * CreateRemoteThreadEx): PRTL_THREAD_START_ROUTINE is declared returning
+     * void, but the return value is the thread's exit status. */
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
+                          (PRTL_THREAD_START_ROUTINE)timeout_thread,
                           NULL, 0, 0, 0, 0, NULL ))
     {
         prsk_log( "[KTEST] wineserver-lite: no timeout thread; timers will not fire\n" );
@@ -1111,6 +1115,14 @@ struct prsk_client *prsk_attach_client( unsigned int pid, void *processHandle )
     server_unlock();
     return client;
 }
+
+/* One of SRV_RENAMES: server/window.c's copy is compiled as
+ * srv_destroy_thread_windows, but this file is built WITHOUT the rename
+ * flags, so the declaration user.h supplies carries the unrenamed spelling
+ * and the renamed one has to be named here. (It was an implicit declaration
+ * before -- which resolved to the same symbol, until a gcc that rejects
+ * implicit declarations outright made the omission fatal.) */
+extern void srv_destroy_thread_windows( struct thread *thread );
 
 /* Retire one thread's records, in wineserver's own order
  * (server/thread.c cleanup_thread): clipboard first, then the windows it

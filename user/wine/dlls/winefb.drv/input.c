@@ -378,7 +378,12 @@ void winefb_start_input(void)
 
     if (InterlockedExchange( &started, 1 )) return;
 
-    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), input_thread, NULL,
+    /* The cast is Wine's own idiom for handing a DWORD-returning routine to
+     * NtCreateThreadEx (dlls/kernelbase/thread.c, CreateRemoteThreadEx): the
+     * declared PRTL_THREAD_START_ROUTINE returns void, but the return value
+     * is what becomes the thread's exit status. */
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
+                          (PRTL_THREAD_START_ROUTINE)input_thread, NULL,
                           0, 0, 0, 0, NULL ))
     {
         ERR( "cannot start the input thread\n" );
@@ -386,7 +391,8 @@ void winefb_start_input(void)
     }
     NtClose( thread );
 
-    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(), pointer_thread,
+    if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
+                          (PRTL_THREAD_START_ROUTINE)pointer_thread,
                           NULL, 0, 0, 0, 0, NULL ))
     {
         ERR( "cannot start the pointer thread\n" );
