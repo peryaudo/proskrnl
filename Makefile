@@ -1191,7 +1191,7 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(APPLETFILES)
 
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
-$(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(CONHOST_GUI) \
+$(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
