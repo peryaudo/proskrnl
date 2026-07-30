@@ -7,8 +7,13 @@
  * case-insensitivity, delete-on-close, byte-range locks), pinned by
  * tests/ntapi/sem_file/ on the Wine oracle. Everything internal is free:
  * no IRP, no device stacks; a device is an Ob object holding a vfs.h op
- * table, and all I/O is synchronous under the hood (Art. 3), completing
- * before the syscall returns.
+ * table, and data transfers currently complete before the syscall returns.
+ * That is a legal point inside the NT contract (STATUS_PENDING is permitted,
+ * never required — docs/19 "Asynchronous I/O Strategy" §1), NOT an Art. 3
+ * mandate: Art. 3's list is no-COW / no-eviction / one-lock-uniprocessor-
+ * no-preemption / one-pool, and says nothing about I/O. It holds only for
+ * devices that always complete in bounded time; the pended verbs already
+ * exist (kernel/io/async.c) and docs/19 is the plan for widening them.
  *
  * APC completion (sem_file/apc_completion.c): a transfer carrying a user
  * ApcRoutine queues a user APC when the request completes — the IOSB is
@@ -44,7 +49,7 @@ extern OBJECT_TYPE IoFileObjectType;
 /* Body of an Ob "File" object: one open of one file. NT's FILE_OBJECT
  * concept; internal layout ours (docs/03). File handles are waitable —
  * NT signals the file object at I/O completion; with every operation
- * completing synchronously (Art. 3) the object is simply born signaled
+ * completing inline today (docs/19 §2) the object is simply born signaled
  * and stays so, which is also what the pinned Wine reports for disk
  * files (fuzzer-pinned). */
 typedef struct FILE_OBJECT

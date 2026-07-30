@@ -3,8 +3,10 @@
  *
  * Written from the OASIS virtio 1.2 cs01 specification (sections cited
  * inline) against the pinned third_party/qemu device model. Polling, no
- * MSI-X, one request queue, one in-flight request — synchronous under the
- * hood exactly like the rest of the kernel (Art. 3).
+ * MSI-X, one request queue, one in-flight request — so a transfer completes
+ * before the submitting thread returns. The depth of 1 is structural here
+ * (one global control header, one bounce buffer) and is the first thing
+ * docs/19 §5a retires.
  *
  * MMIO note: the virtio BARs live outside the Limine memmap, so their
  * frames are mapped explicitly into a dedicated kernel VA window. This

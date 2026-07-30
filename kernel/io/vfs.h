@@ -172,7 +172,8 @@ typedef struct IO_VFS_OPS
      * implement these instead of GetCache. Buffers are kernel pool copies
      * (kernel/io/rw.c, ioctl.c bounce them) because these ops may block in
      * KeWaitFor* — the NT completion protocol is unchanged: the caller
-     * writes the IOSB and signals only after the op returns (Art. 3). */
+     * writes the IOSB and signals only after the op returns (docs/19 §1:
+     * the IOSB precedes every completion signal). */
 
     /* Read up to `length` bytes; may block until data or a peer state
      * change. *infoOut = bytes read (also on STATUS_BUFFER_OVERFLOW). */
@@ -188,7 +189,7 @@ typedef struct IO_VFS_OPS
      * may return STATUS_PENDING after parking an IOP_PENDING_REQUEST built
      * from `request` (kernel/io/async.c; CUI-3 npfs listen) — the Io layer
      * then leaves the caller's IOSB untouched. Everything else ignores
-     * `request` and completes before returning (Art. 3). */
+     * `request` and completes before returning (docs/19 §2). */
     NTSTATUS(*DeviceControl)
     (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
      ULONG outputLength, ULONG_PTR *infoOut, const struct IO_CONTROL_CONTEXT *request);
