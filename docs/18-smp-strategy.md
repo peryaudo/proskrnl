@@ -178,10 +178,18 @@ optimization. A few hundred lines, and the subtlest item on this list.
 
 ### c. AP bringup
 
-INIT-SIPI-SIPI, a real-mode/long-mode trampoline, per-CPU x2APIC initialization. `arch/*.S`
+INIT-SIPI-SIPI, a real-mode/long-mode trampoline, per-CPU LAPIC initialization. `arch/*.S`
 is on `docs/12`'s danger list, but this is a bounded, write-once, Intel-SDM-cited (G8) job,
-and the x2APIC MSR plumbing already exists (`arch/x86_64/lapic.c`). IPI send (ICR write)
-is needed here for both (b) and reschedule.
+and the LAPIC register plumbing already exists (`arch/x86_64/lapic.c`). IPI send is needed
+here for both (b) and reschedule; in the xAPIC window that is the two-register ICR
+(0x310 destination first, then 0x300), not x2APIC's single 64-bit write.
+
+This is also the one item that could want x2APIC back. It buys nothing below 256 logical
+CPUs — which is far past where a single dispatcher lock stops being defensible — so
+switching modes is not part of this work. If it ever is, it is its own commit carrying the
+CPU count that justified it, and it must stay behind a CPUID check with the xAPIC path
+intact: firmware that hands off in compatibility mode is common enough that x2APIC-only
+cost us bare-metal boots once already.
 
 ### d. Interrupts versus the giant lock — a policy decision
 

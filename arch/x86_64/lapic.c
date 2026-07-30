@@ -1,8 +1,13 @@
-/* arch/x86_64/lapic.c — Local APIC + the periodic clock interrupt, x2APIC mode.
+/* arch/x86_64/lapic.c — Local APIC + the periodic clock interrupt, xAPIC mode.
  *
- * We use x2APIC (LAPIC registers via MSRs) rather than the xAPIC MMIO window:
- * MSR access needs no memory mapping. The legacy 8259 PIC is masked;
- * interrupts come from the LAPIC.
+ * We drive the LAPIC through its xAPIC MMIO window rather than x2APIC MSRs.
+ * x2APIC's advantages are 32-bit APIC IDs (>255 CPUs), no MMIO mapping, and a
+ * single-write ICR; the first and third are worth nothing to a uniprocessor
+ * kernel (Art. 3) and the second costs one page-table entry. What xAPIC buys
+ * in exchange is that it is *unconditionally present*: every x86-64 CPU and
+ * every QEMU has it, so there is no CPUID bit to test, no firmware "Local APIC
+ * Mode = Compatibility" setting to lose to, and no second code path. x2APIC
+ * comes back if and when the CPU count justifies it (docs/18 §13).
  *
  * M2 turns the M1 free-running timer into a real 1 ms clock: the LAPIC timer
  * frequency is CPU-dependent, so it is calibrated once against the PIT
@@ -11,36 +16,68 @@
  *
  * Constants cross-check: Intel SDM Vol. 3A, "Advanced Programmable Interrupt
  * Controller (APIC)" (xAPIC register offsets, LVT/SVR/divide bit layouts,
- * IA32_APIC_BASE, and the x2APIC MSR mapping 0x800 + offset>>4); Intel 8254
- * datasheet + IBM PC/AT port 0x61 for the PIT side. The pinned QEMU we run
- * on (third_party/qemu) decodes the same values in hw/intc/apic.c
- * (register index = MSR - 0x800: EOI 0x0B, SVR 0x0F, LVT timer 0x32,
- * initial/current count 0x38/0x39, divide 0x3E), target/i386/cpu.h
- * (MSR_IA32_APICBASE 0x1B, ENABLE bit 11, EXTD bit 10),
- * include/hw/timer/i8254.h (PIT_FREQ 1193182), and hw/audio/pcspk.c
- * (port 0x61: bit 0 = channel-2 gate, bit 5 = channel-2 OUT).
+ * IA32_APIC_BASE and its EN/EXTD bits, the 4 KiB register window and its
+ * 32-bit-aligned access rule); Intel 8254 datasheet + IBM PC/AT port 0x61 for
+ * the PIT side. The pinned QEMU we run on (third_party/qemu) decodes the same
+ * values in hw/intc/apic.c (register index = offset >> 4: EOI 0x0B, SVR 0x0F,
+ * LVT timer 0x32, initial/current count 0x38/0x39, divide 0x3E),
+ * target/i386/cpu.h (MSR_IA32_APICBASE 0x1B, ENABLE bit 11, EXTD bit 10;
+ * its MSR_IA32_APICBASE_BASE is the 32-bit-guest field, bits 31:12 — the
+ * 51:12 mask below is the SDM's full-width one), include/hw/timer/i8254.h
+ * (PIT_FREQ 1193182), and hw/audio/pcspk.c (port 0x61: bit 0 = channel-2
+ * gate, bit 5 = channel-2 OUT).
  */
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/mmu.h"
 #include "kernel/init/panic.h"
 
 #include <stdint.h>
 
-#define IA32_APIC_BASE 0x1B
-#define APIC_BASE_EN   (1ULL << 11) /* xAPIC global enable */
-#define APIC_BASE_EXTD (1ULL << 10) /* x2APIC enable       */
+#define IA32_APIC_BASE    0x1B
+#define APIC_BASE_EN      (1ULL << 11) /* xAPIC global enable */
+#define APIC_BASE_EXTD    (1ULL << 10) /* x2APIC enable       */
+#define APIC_BASE_ADDRESS 0x000FFFFFFFFFF000ULL
 
-/* x2APIC register MSRs = 0x800 + (xAPIC offset >> 4). */
-#define X2APIC_SVR      0x80F
-#define X2APIC_EOI      0x80B
-#define X2APIC_LVT_TMR  0x832
-#define X2APIC_TMR_INIT 0x838
-#define X2APIC_TMR_CUR  0x839
-#define X2APIC_TMR_DIV  0x83E
+/* xAPIC register offsets within the 4 KiB window. */
+#define LAPIC_EOI      0x0B0
+#define LAPIC_SVR      0x0F0
+#define LAPIC_LVT_TMR  0x320
+#define LAPIC_TMR_INIT 0x380
+#define LAPIC_TMR_CUR  0x390
+#define LAPIC_TMR_DIV  0x3E0
 
+#define LAPIC_SVR_ENABLE   (1U << 8) /* APIC software enable */
 #define LAPIC_TMR_PERIODIC (1U << 17)
 #define LAPIC_TMR_MASKED   (1U << 16)
+
+/* Kernel VA the register window is mapped at. Deliberately inside PML4 slot
+ * 511 — the kernel image's slot, which MiInitializeVirtualMemory always
+ * populates — because KiInitializeClock runs after MiFreezeKernelPml4
+ * (kernel/init/main.c order) and claiming a *fresh* PML4 slot there would
+ * panic. Lower-level tables under an existing slot are shared by every
+ * process PML4 automatically, so growing them later is safe. The kernel image
+ * itself sits in the top 2 GiB of the same slot (arch/x86_64/linker.ld),
+ * 510 GiB above this. */
+#define LAPIC_WINDOW_BASE 0xFFFFFF8000000000ULL
+
+static volatile uint8_t *KiApicWindow;
+
+/* The window is strongly uncacheable, so plain volatile 32-bit accesses are
+ * the whole contract: no reordering into or out of a cacheable line, and the
+ * SDM's "32-bit aligned accesses only" rule is satisfied by construction. */
+static uint32_t KiApicRead(uint32_t offset)
+{
+    ASSERT(KiApicWindow != 0);
+    return *(volatile uint32_t *)(KiApicWindow + offset);
+}
+
+static void KiApicWrite(uint32_t offset, uint32_t value)
+{
+    ASSERT(KiApicWindow != 0);
+    *(volatile uint32_t *)(KiApicWindow + offset) = value;
+}
 
 /* PIT: channel 2 gated by port 0x61 bit 0; OUT2 readable at 0x61 bit 5. */
 #define PIT_CHANNEL2 0x42
@@ -54,7 +91,28 @@ extern uint64_t KiTrapThunkTable[]; /* trap.S */
 
 void KiEndOfInterrupt(void)
 {
-    KiWriteMsr(X2APIC_EOI, 0);
+    KiApicWrite(LAPIC_EOI, 0);
+}
+
+/* Put the LAPIC in xAPIC mode and map its register window. Firmware or a
+ * bootloader may hand off with x2APIC already enabled, and in that mode every
+ * access to the MMIO window faults — so force the mode rather than assuming
+ * it. The SDM forbids clearing EXTD directly: the transition back to xAPIC
+ * must pass through the disabled state (EN = 0, EXTD = 0). */
+static void KiEnableXApic(void)
+{
+    uint64_t apicBase = KiReadMsr(IA32_APIC_BASE);
+    if (apicBase & APIC_BASE_EXTD)
+    {
+        KiWriteMsr(IA32_APIC_BASE, apicBase & ~(APIC_BASE_EN | APIC_BASE_EXTD));
+        apicBase &= ~APIC_BASE_EXTD;
+    }
+    KiWriteMsr(IA32_APIC_BASE, apicBase | APIC_BASE_EN);
+
+    /* The window is relocatable (bits 51:12 of the MSR), so read it rather
+     * than hardwiring the 0xFEE00000 power-on default. */
+    MiMapDevicePage(LAPIC_WINDOW_BASE, apicBase & APIC_BASE_ADDRESS);
+    KiApicWindow = (volatile uint8_t *)LAPIC_WINDOW_BASE;
 }
 
 /* Count LAPIC timer ticks (divide-by-16) across one 10 ms PIT gate. */
@@ -67,16 +125,16 @@ static uint32_t KiCalibrateApicTimer(void)
     KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT & 0xFF);
     KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT >> 8);
 
-    KiWriteMsr(X2APIC_TMR_DIV, 0x3); /* divide by 16 */
-    KiWriteMsr(X2APIC_LVT_TMR, LAPIC_TMR_MASKED | TIMER_VECTOR);
-    KiWriteMsr(X2APIC_TMR_INIT, 0xFFFFFFFFU);
+    KiApicWrite(LAPIC_TMR_DIV, 0x3); /* divide by 16 */
+    KiApicWrite(LAPIC_LVT_TMR, LAPIC_TMR_MASKED | TIMER_VECTOR);
+    KiApicWrite(LAPIC_TMR_INIT, 0xFFFFFFFFU);
 
     while ((KiInByte(PIT_GATE) & 0x20) == 0)
     {
     }
 
-    uint32_t remaining = (uint32_t)KiReadMsr(X2APIC_TMR_CUR);
-    KiWriteMsr(X2APIC_TMR_INIT, 0);        /* stop */
+    uint32_t remaining = KiApicRead(LAPIC_TMR_CUR);
+    KiApicWrite(LAPIC_TMR_INIT, 0);        /* stop */
     return (0xFFFFFFFFU - remaining) / 10; /* ticks per 1 ms */
 }
 
@@ -87,15 +145,10 @@ void KiInitializeClock(void)
     KiOutByte(0x21, 0xFF);
     KiOutByte(0xA1, 0xFF);
 
-    /* Enable xAPIC, then x2APIC (staged, as the SDM recommends). */
-    uint64_t apicBase = KiReadMsr(IA32_APIC_BASE);
-    apicBase |= APIC_BASE_EN;
-    KiWriteMsr(IA32_APIC_BASE, apicBase);
-    apicBase |= APIC_BASE_EXTD;
-    KiWriteMsr(IA32_APIC_BASE, apicBase);
+    KiEnableXApic();
 
     /* Enable the LAPIC; route spurious interrupts to vector 0xFF. */
-    KiWriteMsr(X2APIC_SVR, 0x100 | 0xFF);
+    KiApicWrite(LAPIC_SVR, LAPIC_SVR_ENABLE | 0xFF);
 
     KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
@@ -105,9 +158,9 @@ void KiInitializeClock(void)
         KiPanic("KiInitializeClock: LAPIC timer calibration failed");
     }
 
-    KiWriteMsr(X2APIC_TMR_DIV, 0x3);
-    KiWriteMsr(X2APIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
-    KiWriteMsr(X2APIC_TMR_INIT, ticksPerMs); /* 1 ms period */
+    KiApicWrite(LAPIC_TMR_DIV, 0x3);
+    KiApicWrite(LAPIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
+    KiApicWrite(LAPIC_TMR_INIT, ticksPerMs); /* 1 ms period */
 
     __asm__ volatile("sti");
 }

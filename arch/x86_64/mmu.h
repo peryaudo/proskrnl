@@ -23,6 +23,11 @@ void MiInitializeVirtualMemory(uint64_t kernelPhysicalBase, uint64_t kernelVirtu
 void MiMapPage(uint64_t virtualAddress, uint64_t physicalAddress, int writable);
 void MiUnmapPage(uint64_t virtualAddress);
 
+/* As MiMapPage(writable), but strongly uncacheable — for register windows
+ * whose reads and writes are side effects, not memory. Unmap with
+ * MiUnmapPage. */
+void MiMapDevicePage(uint64_t virtualAddress, uint64_t physicalAddress);
+
 /* Walk the kernel page tables. Returns 0 when the address is unmapped. */
 uint64_t MiVirtualToPhysical(uint64_t virtualAddress);
 
