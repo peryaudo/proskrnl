@@ -1,0 +1,12 @@
+# user/wine is the one style exception (docs/15): the glue here sits directly
+# against the pinned tree's own sources and mirrors Wine style (snake_case,
+# Wine's layout), so the NT identifier-naming rule does not apply. The
+# neighbouring .clang-format DisableFormat keeps the layout out of scope the
+# same way. user/smss, which is our own code, follows the kernel rules.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  -readability-identifier-naming
+WarningsAsErrors: ''
+HeaderFilterRegex: 'user/wine/'
+FormatStyle: none
