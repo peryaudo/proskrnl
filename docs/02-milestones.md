@@ -7,8 +7,10 @@ alone is M6-sized). M7 is both the biggest mountain and the biggest return.
 
 Ordering rules that matter:
 - **No separate "prerequisites" phase.** There is no M0. The xv6 labs a prep phase would
-  have run are unnecessary under Article 3 — you never write COW, eviction, or fine-grained
-  locking, so there is nothing to rehearse. The QEMU build→run→exit-code→log harness is the
+  have run are unnecessary under Article 3 — you write no COW, no eviction and no
+  fine-grained locking for the whole of M1…CUI-7, so there is nothing to rehearse. (COW and
+  SMP arrive at the very end, at CUI-9 and CUI-10, each behind a measurement and its own
+  amendment; fine-grained locking never does.) The QEMU build→run→exit-code→log harness is the
   first task *of M1*, proven on a trivial payload before any kernel logic. See `docs/12`.
 - **RAM-disk before real Mm** (M5 seeds it) to break the Mm↔Io circular dependency.
 - **Test-first, per milestone (Article 5).** For each milestone, write the `tests/ntapi/`
@@ -146,6 +148,9 @@ AND on proskrnl (`docs/03` "M10 winetest notes").
 > refuse the classes real apps ask for — is `docs/16-syscall-status.md`; CUI-5…CUI-7
 > are its build plan, and after them the buildable syscall surface is complete
 > (202 of the 264 Wine x64 ids; the other 62 are out of scope by decision, not debt).
+> The path then ends with three milestones of a different kind — CUI-8…CUI-10, the
+> machine-level gaps (async I/O, COW, SMP) that add no `Nt*` at all; see the note above
+> CUI-8.
 > **Verification spine:** the winetest gate (`tests/run/run.sh winetest`, live since the
 > M10 stretch work — `docs/03` "M10 winetest notes") — every CUI milestone grows its
 > manifest, unparking pairs blocked on that milestone's surface, so "fully functional"
@@ -282,13 +287,114 @@ out-of-scope decision, not debt.
 
 ---
 
+> **CUI-8…CUI-10 are a different kind of milestone.** Everything above closes gaps in the
+> *boundary* — ids and info classes a baked binary asks for. These three close gaps in the
+> *machine*: they add no `Nt*`, change no observable semantics, and would leave
+> `docs/16`'s count untouched. They sit here because they are the last things the CUI target
+> needs and because two of them gate work beyond it (Net-1 needs CUI-8; nothing needs
+> CUI-9 or CUI-10). Each has a strategy document that is the actual spec; the entries below
+> are the milestone contract, not the design. Order is fixed: **CUI-8 → CUI-9 → CUI-10**,
+> and only the CUI-8 → CUI-10 edge is a hard dependency.
+
+## CUI-8 — async: overlapping I/O in the block layer
+Spec: **`docs/19-io-strategy.md`**. The only one of the three needing **no constitutional
+amendment** — Article 3's mandate list is closed and synchronous I/O was never on it;
+inline completion is a legal point inside the NT contract, valid exactly while a device
+completes in bounded time (`docs/19` §1). Today every file transfer completes inside the
+syscall against a polled virtqueue of structural depth 1, so while the disk is busy the
+machine is effectively single-threaded — no other thread runs, no APC is delivered, a
+console `^C` is not seen.
+The work: per-request virtio-blk buffers and a depth above 1 (retiring the global
+control/bounce singletons); a completion drain on the idle/timer path via the existing
+`VioTryPopUsed` — **no interrupt path**, which is a separate change against the same seam
+if a consumer ever convicts the latency; FS read/write parking through the
+`IOP_PENDING_REQUEST` engine that CUI-3 and CUI-5 already use; and generalizing that
+engine's cross-context ownership rule from an npfs-specific note into the department's
+convention (Art. 11).
+**Landmine (the actual work, not the driver):** once a request can be in flight, another
+thread can enter the same FCB or page-cache page, and a large amount of code is lock-free
+*because that could not happen* — 21 greppable "atomic under the no-preemption model"
+justifications, `fs/fat32/fat.c:676` the archetype. The enumeration of re-enterable paths
+is a **deliverable before the code that makes re-entry possible**. Also decide and pin
+first (`docs/19` §7): whether an async-handle read pends or completes inline when the page
+cache already has the data, what cancelling a pended read leaves in the IOSB, and the
+ordering of two operations issued back-to-back on one handle.
+Ordering: hard prerequisite for **Net-1** (an AFD `accept`/`recv` may never complete, so a
+polled-synchronous socket path deadlocks by construction) and for **CUI-10** (a spin under
+a giant lock stalls every CPU at the kernel gate). Independent of CUI-1…CUI-7. Roughly one
+consolidation milestone.
+**Done when:** two threads' file I/O genuinely overlaps — in-flight depth reported as a
+`[KTEST]` verdict against a committed budget, because an implementation that pends but
+never overlaps passes every semantic test (`docs/19` §8); the `sem_file`/`sem_mm`/`sem_pipe`
+suites and the `file_coherence` stress stay green; a pended file read cancels; the
+determinism of the existing run legs is unchanged (the drain point is ours to choose).
+
+## CUI-9 — COW: shared image masters
+Spec: **`docs/17-cow-strategy.md`**. Needs an **Article 3 amendment**, and the amendment
+needs its measurement first (`docs/09` "Lifting a mandate"): today every process gets a
+full private copy of every DLL it maps, relocations applied into the copy, so the first
+deliverable is *how many MB per process and at what process count the machine refuses* —
+the justification is that ceiling surfacing as `STATUS_NO_MEMORY`, never memory efficiency.
+**Scope: image sections only.** File-backed `PAGE_WRITECOPY` stays refusing loudly (G12)
+because data sections map the file's cache, where the one genuinely hard Mm problem —
+mapped-view/`ReadFile` coherence — lives; image sections bypass the cache entirely, which
+is what makes this tractable at all.
+The work is mostly **not COW**: because relocations land in the private copy, sharing
+requires an already-relocated master keyed on `(FCB, base)`. That half touches no fault
+path, carries the large majority of the win (`.text`/`.rdata` are the bulk of a DLL; the
+IAT always dirties), and is **a legitimate stopping point** — the COW fault itself is a
+second, separately committed 200–300 lines.
+**Landmine:** kernel-side writes bypass write-protect entirely — `MiCopyToUserRange` and
+friends walk the page tables and `memcpy` into the frame, so `NtWriteVirtualMemory` would
+short-write and `KiProbeForWrite` would refuse where NT succeeds. Exactly one authority may
+resolve a write (Art. 11); fixing only the fault handler is the expected failure. Nine more
+hazards, worst-first, in `docs/17` §6.
+**Done when:** the sharing metric moves — free-frame count after N processes against a
+committed budget, plus a master-hit counter — because a non-sharing implementation passes
+every semantic test; `PAGE_WRITECOPY` semantics and the `NtQueryVirtualMemory` protection
+transition are green on the oracle *and* proskrnl; the `sem_mm` net and the SEH test stay
+green; and the debug sweep finds **no writable PTE pointing at a master frame**.
+
+## CUI-10 — uniprocessor retired: SMP behind a giant lock
+Spec: **`docs/18-smp-strategy.md`**. The amendment is **one word** — Article 3's "one
+dispatcher lock" and "no kernel preemption" survive literally; only "uniprocessor" retires.
+**Fine-grained locking is out of scope permanently at this milestone**, not for effort but
+because a race cannot be pinned by an oracle-green test and Article 6 would go out of
+reach. The giant lock keeps the existing invariant intact — "I did not block, therefore no
+one else ran" — which is why `kernel/mm/pool.c` with no lock, `fs/fat32`'s lock-free
+sweeps and the non-atomic refcounts all stay correct as written, and the 27-kloc audit
+never happens.
+Do not start until all four entry conditions hold (`docs/18` §13): **CUI-8 is done**; the
+amendment exists with its measurement (which of the timing-lost `guiwtest` assertions
+recover with more wall-clock, and whether mttcg converts vCPUs into throughput here); the
+`-smp 1` permanent gate and an `-smp 4` leg exist; and the **seeded lock hand-off** is
+designed — it is what keeps Article 6 reachable and is not retrofittable in spirit.
+The work the lock does *not* cover: per-CPU state (cheap — `KiPcr` + `swapgs` already
+exist, merely singleton; array-ify it, retire the `KiCurrentThread` global, per-CPU
+TSS/GDT/idle, global ready queues stay); **TLB shootdown**, whose hazard is a hardware
+cache rather than a data race, in broadcast-and-acknowledge form; AP bringup (INIT-SIPI-SIPI,
+trampoline, per-CPU x2APIC, IPI send); the interrupt-versus-lock policy; and user-space
+concurrency, which gets exercised for the first time in `wineserver-lite` and its clients.
+If CUI-9 landed, its write-protect sites join the shootdown enumeration.
+Roughly 1.5 consolidation milestones, with **no permanent audit tax** — the invariant stays
+one sentence.
+**Done when:** `-smp 4` is green across every existing suite with `-smp 1` still the gate
+(so any later failure bisects into "concurrency or not"); a real race is convicted by a
+seeded replay rather than by a sanitizer going quiet (Art. 6); and the `guiwtest`
+timing-lost assertions are re-measured against the budget the amendment was justified on.
+
+---
+
 ## Networking path (independent of the CUI path; formerly CUI-5)
 
 ## Net-1 — sockets: virtio-net + `\Device\Afd`
 The one genuinely new subsystem and the largest single item post-M10 (2–3× a CUI
 consolidation milestone) — moved off the CUI path because it is new capability, not
-consolidation, and nothing on CUI-5…CUI-7 depends on it (nor it on them; it needs
-only CUI-1's clock).
+consolidation, and nothing on CUI-5…CUI-7 depends on it (nor it on them). Its
+prerequisites are **CUI-1's clock and CUI-8's overlapping I/O** — the latter is not
+optional plumbing but the reason the milestone is buildable at all: an AFD
+`accept`/`recv` may never complete, so the polled-synchronous transfer model every
+device uses today deadlocks by construction (`docs/19` §4).
 virtio-net over the existing virtio-pci transport (spec-cited per constant, like
 virtio-blk); a deliberately dumb TCP/UDP stack (Article 3: correctness only, no
 performance work); the AFD ioctl surface Wine's PE ws2_32 issues via
