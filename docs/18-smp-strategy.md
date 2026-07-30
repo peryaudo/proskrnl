@@ -333,6 +333,10 @@ without it).
 
 ## 12. Build order and size
 
+This work is milestone **CUI-10** (`docs/02`), last on the CUI path. CUI-8 (`docs/19`) is a
+hard dependency; CUI-9 (`docs/17`) is not, but if it landed first its write-protect sites
+join step 4's enumeration.
+
 1. **Block-layer overlap** (`docs/19`, §7 here) — required by Net-1 too; land it
    independently of any SMP decision.
 2. **Per-CPU state** (§6a) — `KiPcr` array, `KiCurrentThread` retired, per-CPU TSS/GDT/idle.

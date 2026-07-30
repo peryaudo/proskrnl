@@ -306,6 +306,9 @@ for the commit split below, not against the work.
 
 ## 10. Build order
 
+This work is milestone **CUI-9** (`docs/02`), after CUI-8 (`docs/19`) and before CUI-10
+(`docs/18`). It depends on neither of them; the order is a risk ordering, not a dependency.
+
 1. **Measure** (§2): MB per process today; process count at refusal. No code.
 2. **Amend**: an Article 3 / `docs/03` entry justified on the observable ceiling, plus
    the explicit scope of §5 and the `docs/03` decision on hazard D. Its own commit.

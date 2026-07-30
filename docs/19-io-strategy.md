@@ -231,5 +231,7 @@ behaviourally today's kernel. Same failure shape as `docs/17` §8. Pin the win:
 - **`docs/17` (COW)** is independent of it. The one shared theme is §8's failure mode: in
   both cases a correct-but-inert implementation passes every semantic test, so both must
   pin their win as a machine verdict.
-- **Net-1** (`docs/02`) should carry an explicit dependency on this document; today its
-  entry does not mention that its transport assumption is currently unbuildable.
+- **Net-1** (`docs/02`) carries an explicit dependency on this work, alongside CUI-1's
+  clock — its transport assumption is unbuildable until this lands.
+- **This work is milestone CUI-8** (`docs/02`), the first of the three machine-level
+  milestones that close the CUI path; COW is CUI-9 and SMP is CUI-10.
