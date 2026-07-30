@@ -29,11 +29,10 @@ QEMU="${QEMU:-$(find_qemu)}"
 
 # Pick the accelerator: `-accel kvm` needs a Linux host whose /dev/kvm this
 # user can open read-write — probing the open (not the mode bits) is what
-# catches the group-vs-ACL cases. KVM virtualizes the LAPIC in the host
-# kernel, so x2APIC — the kernel's clock — works even when the host's own
-# CPUID hides it (an AMD board left in xAPIC compat mode); +x2apic names the
-# dependency explicitly so QEMU complains instead of the guest panicking in
-# timer calibration if it ever cannot be offered.
+# catches the group-vs-ACL cases. The kernel's clock is the LAPIC timer
+# reached through the xAPIC MMIO window (arch/x86_64/lapic.c), which every
+# QEMU and every accelerator has always offered — so there is no CPU feature
+# to request here and no version floor.
 find_accel() {
     if [[ "$(uname -s)" == Linux ]] && : 2>/dev/null <>/dev/kvm; then
         echo kvm
@@ -44,17 +43,9 @@ find_accel() {
 ACCEL="${ACCEL:-$(find_accel)}"
 case "$ACCEL" in
 kvm)
-    ACCEL_ARGS=(-accel kvm -cpu host,+x2apic)
+    ACCEL_ARGS=(-accel kvm -cpu host)
     ;;
 tcg)
-    # TCG only gained x2APIC in QEMU 9.0 (Ubuntu 24.04 LTS ships 8.2). Fail
-    # fast instead of hanging silently in timer calibration. Under KVM the
-    # LAPIC comes from the host kernel, so the floor is TCG-only.
-    QEMU_MAJOR="$("$QEMU" --version | sed -n 's/.*version \([0-9]*\).*/\1/p' | head -1)"
-    if [[ -n "$QEMU_MAJOR" && "$QEMU_MAJOR" -lt 9 ]]; then
-        echo "qemu.sh: QEMU $QEMU_MAJOR.x lacks TCG x2APIC (need >= 9.0, README \"Prerequisites\")" >&2
-        exit 1
-    fi
     ACCEL_ARGS=(-accel tcg -cpu max)
     ;;
 *)

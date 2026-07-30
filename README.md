@@ -64,7 +64,7 @@ The version-sensitive dependencies are **pinned git submodules** under
 `third_party/` so every environment builds against the same bits: `limine`
 (bootloader stages + deploy tool, a `-binary` release branch), `limine-protocol`
 (the kernel-facing boot-protocol header), `qemu` (the official GitHub mirror,
-pinned ≥ 9.0 — see below), `freetype` (the font backend, built twice: a PE
+a fallback for hosts with no QEMU — see below), `freetype` (the font backend, built twice: a PE
 static library for the target and a native one for the oracle), and `wine`
 (both the `abi/` generation source *and* the ntapi oracle runtime). `tools/mkimage.sh`, `tools/qemu.sh`, and
 `tests/run/run.sh` all prefer the in-tree builds automatically and fall back to
@@ -111,12 +111,12 @@ with distro packages:
   stages come prebuilt on the pinned `-binary` release branch (upstream's
   intended integration), so no autotools/nasm and no network-fetching
   bootstrap.
-- **qemu** — **QEMU must be ≥ 9.0**: the kernel's clock drives the LAPIC timer
-  in x2APIC mode, and QEMU's TCG only gained x2APIC in 9.0 — on Ubuntu 24.04
-  LTS's QEMU 8.2 the calibration silently reads a dead timer and `make test`
-  hangs after `[KTEST] pool PASS`. 24.04 ships 8.2, so the pinned submodule
-  (official GitHub mirror, `x86_64-softmmu` only) is built instead of trusting
-  the distro.
+- **qemu** — built from the pinned submodule (official GitHub mirror,
+  `x86_64-softmmu` only) **only when the host has no `qemu-system-x86_64` on
+  PATH**. There is no version floor: the kernel's clock drives the LAPIC timer
+  through the xAPIC MMIO window, which every QEMU has, so `apt install
+  qemu-system-x86` (8.2 on 24.04 LTS) runs the whole suite and the long source
+  build is skipped.
 - **wine** — the ntapi oracle runtime, built (64-bit, no X) from the very
   same pinned tree `abi/` is generated from, so the oracle and the contract
   cannot version-diverge. Since GUI-3 it is also the **font-metrics oracle**:
@@ -125,10 +125,10 @@ with distro packages:
   from the same FreeType and the same font set, and no host fonts can leak
   into the spec.
 
-The first run takes a while (QEMU and Wine are real builds); re-runs skip
-finished work. A distro QEMU ≥ 9.0 (Ubuntu ≥ 24.10, recent Fedora/Arch) also
-works — the runner scripts prefer the in-tree builds and fall back to PATH,
-and `QEMU=`, `WINE=`, `LIMINE=`/`LIMINE_SHARE=` override either way.
+The first run takes a while if Wine has to build; re-runs skip finished work.
+Any distro QEMU works and is preferred over building one — the runner scripts
+prefer the in-tree builds when they exist and fall back to PATH, and `QEMU=`,
+`WINE=`, `LIMINE=`/`LIMINE_SHARE=` override either way.
 
 ### Ephemeral containers (Claude Code on the web, fresh CI-like boxes)
 
