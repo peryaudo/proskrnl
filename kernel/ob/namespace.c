@@ -140,6 +140,52 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  * component it is substituted unless `followFinalLink` is FALSE (opening the
  * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
  * must be freed by the caller AFTER it is done with *leafName. */
+/* Validate a caller-supplied OBJECT_ATTRIBUTES before the engine reads it.
+ *
+ * Every NtCreate and NtOpen funnels through the three entry points below, and
+ * each of them dereferences attributes->ObjectName->Length and walks
+ * ->Buffer. Those are ring-3 pointers: user and kernel VA share a PML4, so an
+ * unmapped or kernel-side value faulted with CS.RPL == 0, which
+ * KiDispatchTrap does not contain -- a machine halt where the caller should
+ * have seen STATUS_ACCESS_VIOLATION. Probing here rather than in the twenty
+ * services keeps it to one authority (Art. 11); NtOpenProcess was previously
+ * the only caller in the tree that probed at all.
+ *
+ * This is a probe, not a capture, matching the model kernel/syscall/uaccess.h
+ * documents for the rest of the kernel: sound because nothing blocks between
+ * the probe and the walk. The mid-syscall-unmap window that model already
+ * calls out is unchanged by this commit, in either direction.
+ *
+ * A NULL `attributes` is left to the callers, which distinguish it
+ * (STATUS_INVALID_PARAMETER) from a present block with no name. */
+static NTSTATUS ObpProbeAttributes(const OBJECT_ATTRIBUTES *attributes)
+{
+    if (attributes == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = KiProbeForRead(attributes, sizeof(*attributes), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    const UNICODE_STRING *name = attributes->ObjectName;
+    if (name == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    status = KiProbeForRead(name, sizeof(*name), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (name->Length == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForRead(name->Buffer, name->Length, sizeof(WCHAR));
+}
+
 static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN followFinalLink,
                               BOOLEAN forCreate, POBJECT_TYPE parseType, PVOID *foundBody,
                               PVOID *parentBody, UNICODE_STRING *leafName,
@@ -384,6 +430,11 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
 {
     ACCESS_MASK granted = ObpMapDesiredAccess(type, desiredAccess);
 
+    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (attributes == 0 || attributes->ObjectName == 0 || attributes->ObjectName->Length == 0)
     {
         /* Unnamed: no ObjectName, or a present-but-empty (zero-length) one,
@@ -485,6 +536,11 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
      * reports STATUS_OBJECT_PATH_SYNTAX_BAD, the same as an empty-string name
      * (which ObpLookupName rejects below). Matches the pinned third_party/wine;
      * docs/09 Art. 6. */
+    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (attributes == 0)
     {
         return STATUS_INVALID_PARAMETER;
@@ -539,6 +595,11 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
                               PVOID *parseObject, UNICODE_STRING *remainingName,
                               PWSTR *reparseBuffer)
 {
+    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (attributes == 0)
     {
         return STATUS_INVALID_PARAMETER;
