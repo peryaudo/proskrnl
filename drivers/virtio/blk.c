@@ -129,7 +129,12 @@ static NTSTATUS VioBlkTransfer(uint32_t type, uint64_t sectorLba, uint32_t secto
                                void *buffer)
 {
     ASSERT(VioBlkPresent);
-    ASSERT(sectorCount * VIO_BLK_SECTOR_SIZE <= PAGE_SIZE);
+    /* Widen before multiplying: sectorCount is uint32_t, so the product was
+     * computed in 32 bits and sectorCount == 0x800000 wrapped to 0 -- the
+     * bound passed for a transfer eight million sectors long. Latent (every
+     * caller chunks at 8 sectors) but the assert is the only bound the
+     * bounce buffer has. */
+    ASSERT((uint64_t)sectorCount * VIO_BLK_SECTOR_SIZE <= PAGE_SIZE);
     if (sectorLba + sectorCount > VioBlkCapacitySectors)
     {
         return STATUS_IO_DEVICE_ERROR;
