@@ -115,6 +115,28 @@ typedef struct {
     UCHAR Data[1];
 } KEY_VALUE_PARTIAL_INFORMATION, *PKEY_VALUE_PARTIAL_INFORMATION;
 
+typedef struct {
+    ULONG         NameLength;
+    WCHAR         Name[1];
+} KEY_NAME_INFORMATION, *PKEY_NAME_INFORMATION;
+
+typedef struct {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         SubKeys;
+    ULONG         MaxNameLen;
+    ULONG         Values;
+    ULONG         MaxValueNameLen;
+    ULONG         MaxValueDataLen;
+    ULONG         NameLength;
+} KEY_CACHED_INFORMATION, *PKEY_CACHED_INFORMATION;
+
+typedef struct {
+    ULONG Type;
+    ULONG DataLength;
+    UCHAR Data[1];
+} KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, *PKEY_VALUE_PARTIAL_INFORMATION_ALIGN64;
+
 /* The Cm registry surface (M8);
  * signatures extracted verbatim from wine/include/winternl.h. */
 NTSTATUS NtCreateKey(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*,ULONG,const UNICODE_STRING*,ULONG,PULONG);
@@ -141,5 +163,9 @@ _Static_assert(offsetof(KEY_VALUE_FULL_INFORMATION, Name) == 20,
                "KEY_VALUE_FULL_INFORMATION x64 layout");
 _Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) == 12,
                "KEY_VALUE_PARTIAL_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_NAME_INFORMATION, Name) == 4, "KEY_NAME_INFORMATION x64 layout");
+_Static_assert(sizeof(KEY_CACHED_INFORMATION) == 40, "KEY_CACHED_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data) == 8,
+               "KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 x64 layout");
 
 #endif /* PROSKRNL_ABI_NTREGAPI_H */

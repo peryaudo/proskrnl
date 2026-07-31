@@ -2152,6 +2152,14 @@ def gen_ntregapi(wine: Path) -> str:
             ("_KEY_VALUE_BASIC_INFORMATION", "KEY_VALUE_BASIC_INFORMATION"),
             ("_KEY_VALUE_FULL_INFORMATION", "KEY_VALUE_FULL_INFORMATION"),
             ("_KEY_VALUE_PARTIAL_INFORMATION", "KEY_VALUE_PARTIAL_INFORMATION"),
+            # The three classes the oracle implements that proskrnl was
+            # refusing (docs/review-2026-07 §5).
+            ("_KEY_NAME_INFORMATION", "KEY_NAME_INFORMATION"),
+            ("_KEY_CACHED_INFORMATION", "KEY_CACHED_INFORMATION"),
+            (
+                "_KEY_VALUE_PARTIAL_INFORMATION_ALIGN64",
+                "KEY_VALUE_PARTIAL_INFORMATION_ALIGN64",
+            ),
         ]
     )
     prototypes = extract_prototypes(winternl, NTREGAPI_FUNCTIONS)
@@ -2186,6 +2194,10 @@ _Static_assert(offsetof(KEY_VALUE_FULL_INFORMATION, Name) == 20,
                "KEY_VALUE_FULL_INFORMATION x64 layout");
 _Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data) == 12,
                "KEY_VALUE_PARTIAL_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_NAME_INFORMATION, Name) == 4, "KEY_NAME_INFORMATION x64 layout");
+_Static_assert(sizeof(KEY_CACHED_INFORMATION) == 40, "KEY_CACHED_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data) == 8,
+               "KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 x64 layout");
 
 #endif /* PROSKRNL_ABI_NTREGAPI_H */
 """
