@@ -102,6 +102,19 @@ them, and excluded from the differential fuzzer's op model):
   not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
   through immediately).
 
+### Byte-range locks are tracked but not enforced against I/O
+
+`NtLockFile`/`NtUnlockFile` maintain the lock list and arbitrate lock-vs-lock
+conflicts, but `NtReadFile`/`NtWriteFile` never consult it, and the
+lock-bypass `key` argument is accepted and ignored. NT enforces byte-range
+locks against I/O; the pinned oracle does not, because wineserver's locks are
+Unix advisory locks that do not block the process holding them. Art. 6 makes
+the oracle the spec here, so the agreement is deliberate and
+`sem_file/byte_locks` pins it on both legs — including the two cases that
+would change if the oracle ever started enforcing (a foreign handle reading
+and writing across an exclusive lock, both of which succeed). Building
+enforcement means changing that test first.
+
 ## M7 process/return-protocol notes (Ps + the user boundary)
 
 The M7 boundary is the byte-exact PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA

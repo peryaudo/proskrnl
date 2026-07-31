@@ -148,6 +148,65 @@ START_TEST(byte_locks)
             unlock_range(h1, 8192, 16);
     }
 
+    /* --- byte-range locks are NOT enforced against read/write -------------
+     *
+     * proskrnl tracks byte-range locks and never consults them on I/O:
+     * IopLockConflicts is referenced only inside lock.c, and the lock-bypass
+     * `key` argument is (void)-cast away. NT enforces them; the pinned
+     * oracle does not, because wineserver's locks are Unix advisory locks
+     * that do not block the process holding them. Art. 6 makes the oracle
+     * the spec, so this pins the AGREEMENT rather than fixing proskrnl to
+     * NT -- and if the oracle ever starts enforcing, this test says so
+     * before the kernel has to guess. Recorded in docs/03. */
+    {
+        char probe[8];
+        IO_STATUS_BLOCK rw;
+        LARGE_INTEGER at;
+        HANDLE other;
+
+        /* Grow the file so an offset-64 access is not simply past EOF. */
+        at.QuadPart = 0;
+        poison_iosb(&rw);
+        status = NtWriteFile(h1, NULL, NULL, NULL, &rw, blob, sizeof(blob), &at, NULL);
+        ok(status == STATUS_SUCCESS, "refill for the enforcement probe -> %08lx",
+           (unsigned long)status);
+        at.QuadPart = 64;
+        poison_iosb(&rw);
+        status = NtWriteFile(h1, NULL, NULL, NULL, &rw, blob, sizeof(blob), &at, NULL);
+        ok(status == STATUS_SUCCESS, "extend for the enforcement probe -> %08lx",
+           (unsigned long)status);
+
+        status = lock_range(h1, 64, 8, TRUE);
+        ok(status == STATUS_SUCCESS, "exclusive lock for the enforcement probe -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            status = open_file(&other, dir, W("locked.dat"), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+            ok(status == STATUS_SUCCESS, "second handle for the enforcement probe -> %08lx",
+               (unsigned long)status);
+            if (NT_SUCCESS(status))
+            {
+                at.QuadPart = 64;
+                memset(probe, 0, sizeof(probe));
+                poison_iosb(&rw);
+                status = NtReadFile(other, NULL, NULL, NULL, &rw, probe, 8, &at, NULL);
+                ok(status == STATUS_SUCCESS,
+                   "read over another handle's exclusive lock -> %08lx (the oracle does not "
+                   "enforce)",
+                   (unsigned long)status);
+                poison_iosb(&rw);
+                status = NtWriteFile(other, NULL, NULL, NULL, &rw, probe, 8, &at, NULL);
+                ok(status == STATUS_SUCCESS,
+                   "write over another handle's exclusive lock -> %08lx (the oracle does not "
+                   "enforce)",
+                   (unsigned long)status);
+                NtClose(other);
+            }
+            unlock_range(h1, 64, 8);
+        }
+    }
+
     NtClose(h1);
     scrub_file(dir, W("locked.dat"));
     NtClose(dir);
