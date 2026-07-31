@@ -8,6 +8,14 @@
  */
 #include "util.h"
 
+/* Takes the mutant and exits still holding it, which abandons it. */
+static DWORD WINAPI abandon_mutant_thread(void *arg)
+{
+    LARGE_INTEGER zero;
+    zero.QuadPart = 0;
+    return (DWORD)NtWaitForSingleObject((HANDLE)arg, FALSE, &zero);
+}
+
 START_TEST(sync_objects)
 {
     HANDLE event, mutant, sem;
@@ -187,5 +195,50 @@ START_TEST(sync_objects)
 
         NtClose(pair[0]);
         NtClose(pair[1]);
+    }
+
+    /* --- an ABANDONED mutant in a wait-all reports the BARE base ----------
+     *
+     * A wait-all has no satisfying index -- it completes as STATUS_WAIT_0
+     * (0) because every object was satisfied -- so abandonment adds the
+     * abandoned base to zero and the answer is STATUS_ABANDONED_WAIT_0 flat,
+     * whatever position the abandoned mutant held. proskrnl added the
+     * block's index, reporting an index a wait-all never has. Oracle:
+     * server/thread.c check_wait returns STATUS_WAIT_0 for SELECT_WAIT_ALL,
+     * and end_wait then does `if (wait->abandoned) status +=
+     * STATUS_ABANDONED_WAIT_0;`.
+     *
+     * The mutant is abandoned by a thread that exits while holding it. */
+    {
+        HANDLE mutant = NULL, event = NULL, both[2];
+        HANDLE abandoner;
+        LARGE_INTEGER zero;
+        DWORD tid = 0;
+
+        zero.QuadPart = 0;
+        status = NtCreateMutant(&mutant, MUTANT_ALL_ACCESS, NULL, FALSE);
+        ok(status == STATUS_SUCCESS, "abandon mutant -> %08lx", (unsigned long)status);
+        status = NtCreateEvent(&event, EVENT_ALL_ACCESS, NULL, NotificationEvent, TRUE);
+        ok(status == STATUS_SUCCESS, "abandon event -> %08lx", (unsigned long)status);
+
+        abandoner = CreateThread(NULL, 0, abandon_mutant_thread, mutant, 0, &tid);
+        ok(abandoner != NULL, "abandoner thread");
+        if (abandoner != NULL)
+        {
+            ok(WaitForSingleObject(abandoner, 10000) == WAIT_OBJECT_0, "abandoner join");
+            CloseHandle(abandoner);
+
+            /* The mutant is at index 1, so an index-carrying answer would be
+             * STATUS_ABANDONED_WAIT_0 + 1. */
+            both[0] = event;
+            both[1] = mutant;
+            status = NtWaitForMultipleObjects(2, both, WaitAll, FALSE, &zero);
+            ok(status == STATUS_ABANDONED_WAIT_0, "abandoned wait-all -> %08lx, expected the bare "
+                                                  "STATUS_ABANDONED_WAIT_0",
+               (unsigned long)status);
+            NtReleaseMutant(mutant, NULL);
+        }
+        NtClose(event);
+        NtClose(mutant);
     }
 }
