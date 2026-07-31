@@ -422,10 +422,18 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     {
         const ACCESS_MASK generics =
             GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED;
+        /* The generic half goes through ObpMapDesiredAccess -- THE mapping
+         * authority (Art. 11) -- rather than being open-coded here. This
+         * used to grant type->validAccess for any generic wish, ignoring the
+         * type's real GENERIC_MAPPING, and the two had already drifted:
+         * duplicating a keyed-event handle with GENERIC_READ granted wake
+         * rights the original open correctly denied
+         * (docs/review-2026-07 §9). The specific bits stay verbatim, which
+         * is the pinned behaviour described above. */
         granted = desiredAccess & ~generics;
         if (desiredAccess & generics)
         {
-            granted |= type->validAccess;
+            granted |= ObpMapDesiredAccess(type, desiredAccess & generics);
         }
     }
     ULONG newAttributes = (options & DUPLICATE_SAME_ATTRIBUTES) ? source->attributes : attributes;
@@ -632,7 +640,12 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
     }
     case ObjectNameInformation:
     {
-        USHORT nameBytes = header->name.Length;
+        /* The FULL path, walked to the root -- not the leaf component. The
+         * oracle builds it the same way (its get_full_name walks
+         * name->parent), and a caller that gets "prsk_evt" where NT gives
+         * "\BaseNamedObjects\prsk_evt" cannot tell two objects of the same
+         * leaf name apart (docs/review-2026-07 §9). */
+        USHORT nameBytes = ObpFullNameLength(header);
         ULONG needed =
             sizeof(OBJECT_NAME_INFORMATION) + (nameBytes != 0 ? nameBytes + sizeof(WCHAR) : 0);
         if (length < sizeof(OBJECT_NAME_INFORMATION) || (nameBytes != 0 && length < needed))
@@ -656,7 +669,7 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         else
         {
             WCHAR *nameOut = (WCHAR *)(info + 1);
-            memcpy(nameOut, header->name.Buffer, nameBytes);
+            ObpWriteFullName(header, nameOut);
             nameOut[nameBytes / sizeof(WCHAR)] = 0;
             info->Name.Buffer = nameOut;
             info->Name.Length = nameBytes;

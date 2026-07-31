@@ -198,6 +198,16 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
 NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attributes,
                              ACCESS_MASK desiredAccess, PHANDLE handleOut);
 
+/* The full path of a named object ("\BaseNamedObjects\prsk_evt"), built by
+ * walking parentDirectory to the root -- the header carries only its own
+ * leaf component. Length in BYTES, excluding any terminator; 0 for an
+ * unnamed object. THE authority for the question (Art. 11). */
+USHORT ObpFullNameLength(POBJECT_HEADER header);
+
+/* Write that path into `out`, which must have room for
+ * ObpFullNameLength(header) bytes. No terminator is written. */
+void ObpWriteFullName(POBJECT_HEADER header, WCHAR *out);
+
 /* Retire an object's name: unlink from its directory, drop the name's and
  * the directory's references. Idempotent via parentDirectory == 0. */
 void ObpUnlinkObjectName(POBJECT_HEADER header);
