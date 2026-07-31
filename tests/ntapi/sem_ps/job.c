@@ -229,6 +229,56 @@ static void test_existing_process_packet(void)
     NtClose(job);
 }
 
+/* Assignment needs real access on BOTH handles. Both checks used to be
+ * absent: NtAssignProcessToJobObject referenced each handle with 0. Zero
+ * access on the PROCESS handle is the serious half, because a job with
+ * JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE kills its members -- so assigning a
+ * process into one is termination, and it was available without
+ * PROCESS_TERMINATE. The oracle's requirements are
+ * JOB_OBJECT_ASSIGN_PROCESS on the job and PROCESS_SET_QUOTA |
+ * PROCESS_TERMINATE on the process (wine server/process.c
+ * DECL_HANDLER(assign_job)). */
+static void test_assign_access(HANDLE job)
+{
+    PROCESS_INFORMATION pi;
+    HANDLE weakJob = NULL, weakProcess = NULL;
+    NTSTATUS status;
+
+    status = NtCreateJobObject(&weakJob, JOB_OBJECT_QUERY, NULL);
+    ok(status == STATUS_SUCCESS, "create query-only job -> %08lx", (unsigned long)status);
+    ok(spawn_suspended_child(&pi), "spawn child for the access test -> %lu",
+       (unsigned long)GetLastError());
+
+    /* A job handle without JOB_OBJECT_ASSIGN_PROCESS. */
+    if (weakJob != NULL)
+    {
+        status = NtAssignProcessToJobObject(weakJob, pi.hProcess);
+        ok(status == STATUS_ACCESS_DENIED, "assign through a query-only job handle -> %08lx",
+           (unsigned long)status);
+        NtClose(weakJob);
+    }
+
+    /* A process handle with only PROCESS_QUERY_INFORMATION. */
+    if (DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &weakProcess,
+                        PROCESS_QUERY_INFORMATION, FALSE, 0))
+    {
+        status = NtAssignProcessToJobObject(job, weakProcess);
+        ok(status == STATUS_ACCESS_DENIED, "assign a query-only process handle -> %08lx",
+           (unsigned long)status);
+        NtClose(weakProcess);
+    }
+
+    /* The full-access pair still works, so the checks are not just refusing
+     * everything. */
+    status = NtAssignProcessToJobObject(job, pi.hProcess);
+    ok(status == STATUS_SUCCESS, "assign with full access -> %08lx", (unsigned long)status);
+
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 30000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 START_TEST(job)
 {
     HANDLE job = NULL;
@@ -248,5 +298,6 @@ START_TEST(job)
     test_limits(job);
     test_lifecycle_packets(job);
     test_existing_process_packet();
+    test_assign_access(job);
     NtClose(job);
 }

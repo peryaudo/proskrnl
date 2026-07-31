@@ -221,9 +221,22 @@ NTSTATUS NtSetInformationJobObject(HANDLE handle, JOBOBJECTINFOCLASS infoClass, 
 
 NTSTATUS NtAssignProcessToJobObject(HANDLE jobHandle, HANDLE processHandle)
 {
+    /* The access both handles must carry, transcribed from the oracle
+     * (third_party/wine server/process.c DECL_HANDLER(assign_job):
+     * `get_job_obj( current->process, req->job, JOB_OBJECT_ASSIGN_PROCESS )`
+     * and `get_process_from_handle( req->process,
+     * PROCESS_SET_QUOTA | PROCESS_TERMINATE )`).
+     *
+     * Both were 0. Zero access on the process handle is the serious half: a
+     * job with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE kills its members, so
+     * assigning a process into one is termination, and it was available
+     * without PROCESS_TERMINATE (docs/review-2026-07 §11). The comment at
+     * the top of this file already records that a fuzzer found this exact
+     * class on NtSetInformationJobObject; the assign path was not fixed
+     * then. */
     PVOID body;
-    NTSTATUS status =
-        ObReferenceObjectByHandle(jobHandle, 0, &PspJobType, ExGetPreviousMode(), &body, 0);
+    NTSTATUS status = ObReferenceObjectByHandle(jobHandle, JOB_OBJECT_ASSIGN_PROCESS, &PspJobType,
+                                                ExGetPreviousMode(), &body, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -238,8 +251,8 @@ NTSTATUS NtAssignProcessToJobObject(HANDLE jobHandle, HANDLE processHandle)
     }
     else
     {
-        status = ObReferenceObjectByHandle(processHandle, 0, &PspProcessType, ExGetPreviousMode(),
-                                           &body, 0);
+        status = ObReferenceObjectByHandle(processHandle, PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                                           &PspProcessType, ExGetPreviousMode(), &body, 0);
         if (!NT_SUCCESS(status))
         {
             ObDereferenceObject(job);
