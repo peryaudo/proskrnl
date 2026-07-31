@@ -14,6 +14,18 @@
 #                     and runs each test. This is the REGRESSION gate: it must
 #                     stay all-green as the boundary is implemented.
 #
+#   Both legs take optional <subtest> arguments — a test's base name, or a
+#   glob over base names — to run a SUBSET while iterating:
+#
+#       run.sh oracle   query_dir          # one test under the oracle
+#       run.sh proskrnl query_dir          # bake+boot only that one .exe
+#       run.sh proskrnl 'se_*' handle_life # globs and several names are fine
+#
+#   A subset run is for ITERATION, never for a verdict: the gates above are
+#   the unfiltered runs, and only those may be reported as green. A pattern
+#   that matches nothing is an error (with the list of names), so a typo can
+#   never masquerade as "everything passed".
+#
 #   run.sh winetest   The M10 stretch gate: run the curated manifest of
 #                     Wine's-own-test-suite pairs (tests/winetest/) under the
 #                     oracle AND on proskrnl. Same one-binary discipline.
@@ -33,6 +45,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NTAPI="$ROOT/tests/ntapi"
 BUILD="$ROOT/build/tests"
 MODE="${1:-}"
+# The optional subtest filter (see the header). Only the two ntapi legs take
+# one — every other mode's arguments mean something else (`fuzz` forwards its
+# own), so the filter stays empty for them and they behave exactly as before.
+SUBTESTS=()
+case "$MODE" in oracle|proskrnl) SUBTESTS=("${@:2}") ;; esac
 
 : "${CC_ORACLE:=x86_64-w64-mingw32-gcc}"   # override for a different mingw
 
@@ -106,7 +123,53 @@ WINE_LIBS=("$WINE_PE/kernel32/x86_64-windows/libkernel32.a"
 
 # Every test = a .c under tests/ntapi/<bucket>/ (excludes the harness itself
 # and the helper-DLL sources under dll/).
-all_tests() { find "$NTAPI" -name '*.c' ! -name 'ntapi.c' ! -path '*/dll/*' | sort; }
+all_sources() { find "$NTAPI" -name '*.c' ! -name 'ntapi.c' ! -path '*/dll/*' | sort; }
+
+# The $SUBTESTS filter (see the header): with no filter EVERYTHING is
+# selected, so the unfiltered gates behave exactly as before. Base names are
+# unique across the buckets, so a name — or a glob over names — identifies a
+# test without its directory.
+selected() {   # $1 = test base name
+    local name="$1" pat
+    (( ${#SUBTESTS[@]} == 0 )) && return 0
+    for pat in "${SUBTESTS[@]}"; do
+        # shellcheck disable=SC2053  -- $pat is a glob on purpose
+        [[ "$name" == $pat ]] && return 0
+    done
+    return 1
+}
+
+# The selected subset of the test sources — what both legs iterate over.
+all_tests() {
+    local src
+    while read -r src; do
+        selected "$(basename "${src%.c}")" && echo "$src"
+    done < <(all_sources)
+}
+
+# A filter that matches nothing is a TYPO, not an empty run: a silently empty
+# sweep prints "0 failing" and reads as green (Art. 12's spirit — a run that
+# built nothing must not answer plausibly). $@ = the extra, non-tests/ntapi
+# names this leg can also run, so `run.sh oracle fontdiff` is legal too.
+check_subtests() {
+    (( ${#SUBTESTS[@]} == 0 )) && return 0
+    local universe=() src pat name hit
+    while read -r src; do universe+=("$(basename "${src%.c}")"); done < <(all_sources)
+    universe+=("$@")
+    for pat in "${SUBTESTS[@]}"; do
+        hit=0
+        for name in "${universe[@]}"; do
+            # shellcheck disable=SC2053
+            [[ "$name" == $pat ]] && { hit=1; break; }
+        done
+        if (( ! hit )); then
+            echo "run.sh: no test matches '$pat'. Known tests:" >&2
+            printf '  %s\n' "${universe[@]}" | sort >&2
+            exit 2
+        fi
+    done
+    echo "== $MODE: subset run (${SUBTESTS[*]}) — NOT the gate; run unfiltered for a verdict =="
+}
 
 # The search-order probe DLL (sem_ps/dll_load.c): built beside the test
 # .exes so a bare-name LoadLibrary resolves it from the application
@@ -137,7 +200,84 @@ build_test() {   # $1 = .c path; echoes the .exe path
     echo "$exe"
 }
 
+# M10: the standalone cmd.exe (Wine's cmd objects + user/wine/programs/cmd glue) is
+# spec-checked off-target here — the same binary the console image bakes
+# must behave under the oracle (docs/06 one-tree discipline).
+oracle_cmd_standalone() {
+    make -C "$ROOT" build/modules/cmd.exe >/dev/null
+    local cmdexe="$ROOT/build/modules/cmd.exe" cmdout
+    cmdout="$(cd "$BUILD" && "$WINE" "$cmdexe" /c \
+        "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & echo ren-data > cmdren.txt & ren cmdren.txt cmdren2.txt & type cmdren2.txt & del cmdsmoke.txt & del cmdren2.txt" \
+        2>/dev/null | tr -d '\r')"
+    # ren-data through the RENAMED name: the CUI-5 ren path spec-checked
+    # off-target (the same cmd binary the files leg types at).
+    if echo "$cmdout" | grep -q "smoke-echo" && echo "$cmdout" | grep -q "smoke-data" &&
+       echo "$cmdout" | grep -q "ren-data"; then
+        echo "[KTEST] cmd-standalone PASS"
+        return 0
+    fi
+    echo "[KTEST] cmd-standalone FAIL"
+    return 1
+}
+
+# GUI-3: the oracle is also the font-metrics oracle, and its font backend
+# is dlopen'd -- when the open fails win32u proceeds with NO fonts rather
+# than failing, so nothing above would notice. Ask it for a face and check
+# it answers (tests/gdi/fontsmoke.c). Oracle-only: it links gdi32, which
+# the proskrnl ntapi image does not carry.
+oracle_fontsmoke() {
+    local fontexe fontout
+    fontexe="$BUILD/ntapi/fontsmoke.exe"
+    if [[ ! -f "$fontexe" || "$ROOT/tests/gdi/fontsmoke.c" -nt "$fontexe" || \
+          "$NTAPI/ntapi.c" -nt "$fontexe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontsmoke.c" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fontexe" >&2
+    fi
+    fontout="$("$WINE" "$fontexe" 2>&1 || true)"
+    echo "$fontout"
+    echo "$fontout" | tr -d '\r' | grep -qE '^\[KTEST\] fontsmoke PASS$'
+}
+
+# GUI-5: the metric differential itself (tests/gdi/fontdiff.c — the half
+# docs/03 "the font oracle" deferred here). The same binary the gui5 leg
+# bakes prints a fixed metric table; the oracle's table is pinned as
+# tests/gdi/fontdiff.golden and re-diffed HERE on every run, so the
+# golden can never go silently stale. The gui5 leg diffs the guest's
+# table against the same file — exact integers, no epsilon (same pinned
+# FreeType, same font bytes, 96 dpi on both sides). Regenerate with
+# FONTDIFF_REFRESH=1 and commit the diff: a pin bump that moves a metric
+# is a reviewed change, never a silent one.
+oracle_fontdiff() {
+    local fdexe fdout fdlines fdgold="$ROOT/tests/gdi/fontdiff.golden"
+    fdexe="$BUILD/ntapi/fontdiff.exe"
+    if [[ ! -f "$fdexe" || "$ROOT/tests/gdi/fontdiff.c" -nt "$fdexe" || \
+          "$NTAPI/ntapi.c" -nt "$fdexe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontdiff.c" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fdexe" >&2
+    fi
+    fdout="$("$WINE" "$fdexe" 2>&1 || true)"
+    echo "$fdout"
+    fdlines="$(echo "$fdout" | tr -d '\r' | grep -E '^\[KTEST\] fontdiff (dpi=|face=|done )')"
+    if ! echo "$fdout" | tr -d '\r' | grep -qE '^\[KTEST\] fontdiff PASS$'; then
+        return 1
+    elif [[ "${FONTDIFF_REFRESH:-0}" == "1" ]]; then
+        echo "$fdlines" > "$fdgold"
+        echo "== fontdiff: golden refreshed ($fdgold) — review and commit the diff =="
+    elif ! diff -u "$fdgold" <(echo "$fdlines") >&2; then
+        echo "[KTEST] fontdiff-golden FAIL (oracle metrics differ from tests/gdi/fontdiff.golden)"
+        return 1
+    else
+        echo "[KTEST] fontdiff-golden PASS"
+    fi
+    return 0
+}
+
+# The oracle leg. The three checks above are not tests/ntapi cases, so a
+# filtered run only reaches one when it is named: `run.sh oracle fontdiff`.
 oracle() {
+    check_subtests cmd-standalone fontsmoke fontdiff
     mkdir -p "$BUILD/ntapi"
     build_helper_dll >/dev/null
     local fails=0
@@ -151,76 +291,9 @@ oracle() {
         echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
     done < <(all_tests)
 
-    # M10: the standalone cmd.exe (Wine's cmd objects + user/wine/programs/cmd glue) is
-    # spec-checked off-target here — the same binary the console image bakes
-    # must behave under the oracle (docs/06 one-tree discipline).
-    make -C "$ROOT" build/modules/cmd.exe >/dev/null
-    local cmdexe="$ROOT/build/modules/cmd.exe" cmdout
-    cmdout="$(cd "$BUILD" && "$WINE" "$cmdexe" /c \
-        "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & echo ren-data > cmdren.txt & ren cmdren.txt cmdren2.txt & type cmdren2.txt & del cmdsmoke.txt & del cmdren2.txt" \
-        2>/dev/null | tr -d '\r')"
-    # ren-data through the RENAMED name: the CUI-5 ren path spec-checked
-    # off-target (the same cmd binary the files leg types at).
-    if echo "$cmdout" | grep -q "smoke-echo" && echo "$cmdout" | grep -q "smoke-data" &&
-       echo "$cmdout" | grep -q "ren-data"; then
-        echo "[KTEST] cmd-standalone PASS"
-    else
-        echo "[KTEST] cmd-standalone FAIL"
-        fails=$((fails+1))
-    fi
-
-    # GUI-3: the oracle is also the font-metrics oracle, and its font backend
-    # is dlopen'd -- when the open fails win32u proceeds with NO fonts rather
-    # than failing, so nothing above would notice. Ask it for a face and check
-    # it answers (tests/gdi/fontsmoke.c). Oracle-only: it links gdi32, which
-    # the proskrnl ntapi image does not carry.
-    local fontexe fontout
-    fontexe="$BUILD/ntapi/fontsmoke.exe"
-    if [[ ! -f "$fontexe" || "$ROOT/tests/gdi/fontsmoke.c" -nt "$fontexe" || \
-          "$NTAPI/ntapi.c" -nt "$fontexe" ]]; then
-        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontsmoke.c" "$NTAPI/ntapi.c" \
-            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fontexe" >&2
-    fi
-    fontout="$("$WINE" "$fontexe" 2>&1 || true)"
-    echo "$fontout"
-    if echo "$fontout" | tr -d '\r' | grep -qE '^\[KTEST\] fontsmoke PASS$'; then
-        :
-    else
-        fails=$((fails+1))
-    fi
-
-    # GUI-5: the metric differential itself (tests/gdi/fontdiff.c — the half
-    # docs/03 "the font oracle" deferred here). The same binary the gui5 leg
-    # bakes prints a fixed metric table; the oracle's table is pinned as
-    # tests/gdi/fontdiff.golden and re-diffed HERE on every run, so the
-    # golden can never go silently stale. The gui5 leg diffs the guest's
-    # table against the same file — exact integers, no epsilon (same pinned
-    # FreeType, same font bytes, 96 dpi on both sides). Regenerate with
-    # FONTDIFF_REFRESH=1 and commit the diff: a pin bump that moves a metric
-    # is a reviewed change, never a silent one.
-    local fdexe fdout fdlines fdgold="$ROOT/tests/gdi/fontdiff.golden"
-    fdexe="$BUILD/ntapi/fontdiff.exe"
-    if [[ ! -f "$fdexe" || "$ROOT/tests/gdi/fontdiff.c" -nt "$fdexe" || \
-          "$NTAPI/ntapi.c" -nt "$fdexe" ]]; then
-        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-            -Wl,--entry=ntapi_start "$ROOT/tests/gdi/fontdiff.c" "$NTAPI/ntapi.c" \
-            "${WINE_LIBS[@]}" "$WINE_PE/gdi32/x86_64-windows/libgdi32.a" -lgcc -o "$fdexe" >&2
-    fi
-    fdout="$("$WINE" "$fdexe" 2>&1 || true)"
-    echo "$fdout"
-    fdlines="$(echo "$fdout" | tr -d '\r' | grep -E '^\[KTEST\] fontdiff (dpi=|face=|done )')"
-    if ! echo "$fdout" | tr -d '\r' | grep -qE '^\[KTEST\] fontdiff PASS$'; then
-        fails=$((fails+1))
-    elif [[ "${FONTDIFF_REFRESH:-0}" == "1" ]]; then
-        echo "$fdlines" > "$fdgold"
-        echo "== fontdiff: golden refreshed ($fdgold) — review and commit the diff =="
-    elif ! diff -u "$fdgold" <(echo "$fdlines") >&2; then
-        echo "[KTEST] fontdiff-golden FAIL (oracle metrics differ from tests/gdi/fontdiff.golden)"
-        fails=$((fails+1))
-    else
-        echo "[KTEST] fontdiff-golden PASS"
-    fi
+    selected cmd-standalone && { oracle_cmd_standalone || fails=$((fails+1)); }
+    selected fontsmoke     && { oracle_fontsmoke     || fails=$((fails+1)); }
+    selected fontdiff      && { oracle_fontdiff      || fails=$((fails+1)); }
 
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
@@ -233,10 +306,21 @@ oracle() {
 # sweeps C:\ntapi, runs every .exe as a console-less Wine process, and
 # prints '[KTEST] ntapi done' when the sweep finishes — the boot's stop
 # condition here.
+#
+# A filtered run bakes ONLY the named .exes, so the sweep — and the boot —
+# is as short as the subset. Its image and serial log carry their own names:
+# build/tests/proskrnl.hdd is the GATE's image, and a partial one must never
+# be mistaken for it (or feed a later fatcheck/ftrace as if it were).
 proskrnl() {
+    check_subtests
     local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/proskrnl.hdd"
+    local tag=""
+    if (( ${#SUBTESTS[@]} )); then
+        tag="-subset"
+        img="$ROOT/build/tests/proskrnl-subset.hdd"
+    fi
     mkdir -p "$BUILD/ntapi"
 
     # The kernel image must exist (make builds it); build it if missing.
@@ -279,7 +363,7 @@ proskrnl() {
 
     "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
-    local log="$ROOT/build/tests/proskrnl-serial.log"
+    local log="$ROOT/build/tests/proskrnl$tag-serial.log"
     LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
@@ -296,7 +380,7 @@ proskrnl() {
     done
     # The external FAT oracle on the mutated image (docs/08): the kernel's
     # writes must parse under implementations that have never met fs/fat32/.
-    "$ROOT/tests/run/fatcheck.sh" verify proskrnl "$img" || fails=$((fails + 1))
+    "$ROOT/tests/run/fatcheck.sh" verify "proskrnl$tag" "$img" || fails=$((fails + 1))
     echo "== proskrnl: $fails failing =="
     return $((fails > 0 ? 1 : 0))
 }
@@ -1684,6 +1768,8 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle|proskrnl|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+       echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
+       echo "                 (iteration only — the gate is the unfiltered run)" >&2
        exit 2 ;;
 esac
