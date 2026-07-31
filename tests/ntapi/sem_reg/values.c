@@ -32,7 +32,7 @@ START_TEST(values)
     status = reg_create_path(key_path, &key, NULL);
     ok(status == STATUS_SUCCESS, "create -> %08lx", (unsigned long)status);
 
-    /* REG_DWORD round-trip through KeyValuePartialInformation. */
+    /* REG_DWORD round-trip through KV_PARTIAL_INFO_CLASS. */
     {
         ULONG val = 0xa1b2c3d4, got = 0;
         status = reg_set(key, W("dword"), REG_DWORD, &val, sizeof(val));
@@ -180,6 +180,42 @@ START_TEST(values)
         ok(status == STATUS_OBJECT_TYPE_MISMATCH, "query on event handle -> %08lx",
            (unsigned long)status);
         NtClose(event);
+    }
+
+    /* --- unreadable value-name descriptors ---------------------------------
+     *
+     * NtSetValueKey, NtQueryValueKey and NtDeleteValueKey read
+     * valueName->Length and valueName->Buffer straight from caller memory.
+     * (NtSetValueKey's `data` argument, one line away in the same function,
+     * was probed -- so this was an omission, not a policy.) An unmapped or
+     * kernel-side pointer faults with CS.RPL == 0, which the trap dispatcher
+     * does not contain: a machine halt instead of a status. A readable
+     * descriptor pointing at an unmapped buffer is the same defect one
+     * indirection down, and additionally lets a kernel address be used as a
+     * comparison oracle. */
+    {
+        PUNICODE_STRING const BAD = (PUNICODE_STRING)(ULONG_PTR)0x10000;
+        UNICODE_STRING badname;
+        BYTE vbuf[64];
+        ULONG vlen = 0;
+
+        status = NtSetValueKey(key, BAD, 0, REG_DWORD, vbuf, sizeof(ULONG));
+        ok(status == STATUS_ACCESS_VIOLATION, "set with bad value name -> %08lx",
+           (unsigned long)status);
+        status = NtQueryValueKey(key, BAD, KV_PARTIAL_INFO_CLASS, vbuf, sizeof(vbuf), &vlen);
+        ok(status == STATUS_ACCESS_VIOLATION, "query with bad value name -> %08lx",
+           (unsigned long)status);
+        status = NtDeleteValueKey(key, BAD);
+        ok(status == STATUS_ACCESS_VIOLATION, "delete with bad value name -> %08lx",
+           (unsigned long)status);
+
+        badname.Length = 0x100;
+        badname.MaximumLength = 0x100;
+        badname.Buffer = (PWSTR)(ULONG_PTR)0x10000;
+        status = NtQueryValueKey(key, &badname, KV_PARTIAL_INFO_CLASS, vbuf, sizeof(vbuf),
+                                 &vlen);
+        ok(status == STATUS_ACCESS_VIOLATION, "query with bad name buffer -> %08lx",
+           (unsigned long)status);
     }
 
     /* Cleanup. */

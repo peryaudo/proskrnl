@@ -1020,11 +1020,44 @@ NTSTATUS NtDeleteKey(HANDLE keyHandle)
     return status;
 }
 
+/* Validate a caller-supplied value-name descriptor before the lookup reads
+ * it. The three value services took valueName->Length and valueName->Buffer
+ * straight from ring 3 -- NtSetValueKey probed its `data` argument one line
+ * further down, which is what shows this was an omission rather than a
+ * policy. User and kernel VA share a PML4, so a bad descriptor faulted with
+ * CS.RPL == 0, which KiDispatchTrap does not contain: the machine halted
+ * instead of the caller seeing STATUS_ACCESS_VIOLATION. A readable
+ * descriptor whose Buffer points into the kernel additionally turned
+ * RtlEqualUnicodeString into a comparison oracle over kernel memory.
+ *
+ * A NULL descriptor is the callers' own case (they already answer
+ * STATUS_ACCESS_VIOLATION for it, which is what the oracle returns). */
+static NTSTATUS CmpProbeValueName(const UNICODE_STRING *valueName)
+{
+    NTSTATUS status = KiProbeForRead(valueName, sizeof(*valueName), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (valueName->Length == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForRead(valueName->Buffer, valueName->Length, sizeof(WCHAR));
+}
+
 NTSTATUS NtDeleteValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName)
 {
     if (valueName == 0)
     {
         return STATUS_ACCESS_VIOLATION;
+    }
+    {
+        NTSTATUS probeStatus = CmpProbeValueName(valueName);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
     }
     if (valueName->Length > CMP_MAX_VALUE_NAME_BYTES)
     {
@@ -1073,6 +1106,13 @@ NTSTATUS NtSetValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName, ULONG 
     if (valueName == 0)
     {
         return STATUS_ACCESS_VIOLATION;
+    }
+    {
+        NTSTATUS probeStatus = CmpProbeValueName(valueName);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
     }
     if (valueName->Length > CMP_MAX_VALUE_NAME_BYTES)
     {
@@ -1158,6 +1198,13 @@ NTSTATUS NtQueryValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName,
     if (valueName == 0)
     {
         return STATUS_ACCESS_VIOLATION;
+    }
+    {
+        NTSTATUS probeStatus = CmpProbeValueName(valueName);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
     }
     if (valueName->Length > CMP_MAX_VALUE_NAME_BYTES)
     {
