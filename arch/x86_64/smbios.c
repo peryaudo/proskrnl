@@ -77,9 +77,25 @@ static uint64_t KiSmbiosRead64(const uint8_t *p)
  * Each structure is a formatted area of hdr.length bytes followed by the
  * unformatted string-set, which ends at a double NUL (DSP0134 6.1.3) — that
  * holds for a structure with no strings too, which is written as two NULs. */
+/* See KiSmbiosMeasureTable for why the firmware's own bound is not enough. */
+#define KI_SMBIOS_MAX_TABLE_LENGTH 0x100000u
+
 static uint32_t KiSmbiosMeasureTable(const uint8_t *table, uint32_t maxLength)
 {
-    uint32_t offset = 0;
+    /* The bound itself is firmware-supplied and was taken on trust: a
+     * maxSize of 0xFFFFFFFF turned this walk loose over four gigabytes of
+     * whatever the HHDM maps after the table, and `cursor + 1` in 32-bit
+     * arithmetic wrapped at the top of it (docs/review-2026-07 §4). Cap it
+     * at something no conforming table can exceed -- the 32-bit entry point
+     * encodes the whole table length in a WORD (DSP0134 5.2.1 "Structure
+     * Table Length"), so 64 KiB is the format's own ceiling for a complete
+     * table; 1 MiB leaves generous room for the 64-bit form's larger tables
+     * while keeping the walk inside sane memory. */
+    if (maxLength > KI_SMBIOS_MAX_TABLE_LENGTH)
+    {
+        maxLength = KI_SMBIOS_MAX_TABLE_LENGTH;
+    }
+    uint64_t offset = 0;
     for (;;)
     {
         /* The length test comes first: maxLength - 4 would wrap below it. */
@@ -93,7 +109,9 @@ static uint32_t KiSmbiosMeasureTable(const uint8_t *table, uint32_t maxLength)
         {
             return 0;
         }
-        uint32_t cursor = offset + formattedLength;
+        /* 64-bit cursor: the +1 and +2 below cannot wrap, whatever the
+         * firmware claims. */
+        uint64_t cursor = offset + formattedLength;
         /* Scan for the double NUL that ends the string-set. Needs two bytes
          * in range, so stop one short of the end. */
         while (cursor + 1 < maxLength && !(table[cursor] == 0 && table[cursor + 1] == 0))
@@ -107,7 +125,7 @@ static uint32_t KiSmbiosMeasureTable(const uint8_t *table, uint32_t maxLength)
         cursor += 2;
         if (type == KI_SMBIOS_TYPE_END_OF_TABLE)
         {
-            return cursor;
+            return (uint32_t)cursor;
         }
         offset = cursor;
     }
@@ -166,8 +184,20 @@ static BOOLEAN KiSmbiosParse32(const uint8_t *entry)
     {
         return FALSE;
     }
-    KiSmbiosTable.tableData = MiPhysicalToVirtual(tablePhysical);
-    KiSmbiosTable.tableLength = tableLength;
+    /* Walk it, exactly as the 64-bit path does. This path used to take the
+     * firmware's stated length and publish the table unexamined, so every
+     * consumer of KiSmbiosTable was reading structures nothing had checked
+     * (docs/review-2026-07 §4). The 32-bit entry point states a length
+     * rather than a maximum (DSP0134 5.2.1), so the walk must agree with it
+     * exactly rather than merely fit inside it. */
+    const uint8_t *table = MiPhysicalToVirtual(tablePhysical);
+    uint32_t measured = KiSmbiosMeasureTable(table, tableLength);
+    if (measured == 0 || measured > tableLength)
+    {
+        return FALSE;
+    }
+    KiSmbiosTable.tableData = table;
+    KiSmbiosTable.tableLength = measured;
     KiSmbiosTable.majorVersion = entry[0x06];
     KiSmbiosTable.minorVersion = entry[0x07];
     KiSmbiosTable.docRevision = 0; /* 2.x has no DocRev field */
