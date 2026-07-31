@@ -302,7 +302,12 @@ static NTSTATUS FatExtendDirectory(PFAT_FCB dir)
 {
     PFAT_VOLUME volume = dir->volume;
     ULONG first = FatDirFirstCluster(dir);
-    ULONG last = FatWalkChain(volume, first, FatChainLength(volume, first) - 1);
+    /* FatChainLength returns 0 for a directory with no chain at all (a
+     * corrupt entry, now normalised to firstCluster 0) -- `length - 1` would
+     * then walk 0xFFFFFFFF links. A zero-length chain has no last cluster,
+     * so the fresh one starts a new chain. */
+    ULONG length = FatChainLength(volume, first);
+    ULONG last = (length != 0) ? FatWalkChain(volume, first, length - 1) : 0;
     ULONG fresh;
     NTSTATUS status = FatAllocateCluster(volume, last, &fresh);
     if (!NT_SUCCESS(status))
@@ -844,6 +849,12 @@ NTSTATUS FatRewriteDotDot(PFAT_FCB dir, PFAT_FCB newParent)
      * 1 of the directory's first sector (spec §6.5: "." then ".."). */
     ASSERT(dir->isDirectory && !dir->isRoot);
     PFAT_VOLUME volume = dir->volume;
+    if (!FatIsDataCluster(volume, dir->firstCluster))
+    {
+        /* A directory entry with no valid first cluster: no "." / ".." pair
+         * to rewrite, and nothing to assert about. */
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
     uint64_t firstSector = FatClusterToSector(volume, dir->firstCluster);
     unsigned char sector[FAT_SECTOR_SIZE];
     NTSTATUS status = FatReadSector(volume, firstSector, sector);
