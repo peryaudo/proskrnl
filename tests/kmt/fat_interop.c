@@ -33,6 +33,7 @@
 
 #include "abi/ntstatus.h"
 #include "abi/ntioapi.h"
+#include "fs/fat32/fat.h"
 
 #define FAT_INTEROP_MANIFEST_MAX (256 * 1024)
 #define FAT_INTEROP_PATH_CHARS   280 /* longest corpus rel path + margin */
@@ -645,6 +646,113 @@ static void test_fat_write_battery(void)
     }
 }
 
+
+/* --- BPB validation ------------------------------------------------------
+ *
+ * The boot sector is wholly volume-author-controlled, and every cluster bound
+ * the rest of fs/fat32 relies on is derived from it. FatMountBootVolume used
+ * to check only bytesPerSector/sectorsPerCluster/reservedSectors/fatCount and
+ * the 65525-cluster FAT32 floor, which let a crafted BPB produce a
+ * clusterCount unrelated to the FAT actually read from disk -- and since
+ * FatGetNextCluster, FatSetFatEntry and FatClusterToSector all bound
+ * themselves with ASSERT(cluster < clusterCount + 2), an inflated count turns
+ * those asserts into no-ops and lets a directory entry's cluster number index
+ * far past the end of the pooled FAT, for writes as well as reads. */
+
+static void put_le16(unsigned char *p, ULONG v)
+{
+    p[0] = (unsigned char)(v & 0xFF);
+    p[1] = (unsigned char)((v >> 8) & 0xFF);
+}
+
+static void put_le32(unsigned char *p, ULONG v)
+{
+    put_le16(p, v & 0xFFFF);
+    put_le16(p + 2, (v >> 16) & 0xFFFF);
+}
+
+/* A BPB that is valid in every respect, as the baseline the cases perturb:
+ * 512-byte sectors, 1 sector per cluster, 32 reserved, 2 FATs of 1600
+ * sectors each, 200000 total sectors. That gives 196768 clusters against
+ * 204800 FAT entries -- the table has to be able to describe every cluster,
+ * which is exactly what the undersized-FAT case below violates. */
+static void fat_good_bpb(unsigned char *boot)
+{
+    memset(boot, 0, FAT_SECTOR_SIZE);
+    put_le16(boot + 11, 512);   /* BPB_BytsPerSec */
+    boot[13] = 1;               /* BPB_SecPerClus */
+    put_le16(boot + 14, 32);    /* BPB_RsvdSecCnt */
+    boot[16] = 2;               /* BPB_NumFATs    */
+    put_le16(boot + 17, 0);     /* BPB_RootEntCnt (0 on FAT32) */
+    put_le16(boot + 19, 0);     /* BPB_TotSec16   */
+    put_le16(boot + 22, 0);     /* BPB_FATSz16    */
+    put_le32(boot + 32, 200000);/* BPB_TotSec32   */
+    put_le32(boot + 36, 1600);  /* BPB_FATSz32    */
+    put_le32(boot + 44, 2);     /* BPB_RootClus   */
+    boot[510] = 0x55;
+    boot[511] = 0xAA;
+}
+
+static void test_fat_bpb_validation(void)
+{
+    unsigned char boot[FAT_SECTOR_SIZE];
+    FAT_BPB_GEOMETRY g;
+
+    /* The baseline must be accepted, or every rejection below proves nothing. */
+    fat_good_bpb(boot);
+    ok(FatValidateBpb(boot, &g) == STATUS_SUCCESS, "valid BPB rejected");
+    ok(g.clusterCount == 200000 - (32 + 2 * 1600), "cluster count %lu",
+       (unsigned long)g.clusterCount);
+    ok(g.rootCluster == 2, "root cluster %lu", (unsigned long)g.rootCluster);
+
+    /* The review's exact hostile shape: TotSec32 == 0 with a small FAT. The
+     * old code computed dataSectors = 0 - 96 = 0xFFFFFFA0 and a cluster count
+     * to match, against a FAT holding 4096 entries. */
+    fat_good_bpb(boot);
+    put_le32(boot + 32, 0);
+    put_le32(boot + 36, 32);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "zero total sectors accepted");
+
+    /* firstDataSector past the end of the volume: same underflow, reached
+     * with a nonzero total. */
+    fat_good_bpb(boot);
+    put_le32(boot + 32, 100);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "data start past EOV accepted");
+
+    /* A FAT too small to describe the clusters claimed. This is the invariant
+     * FatQueryVolumeInfo asserts at use time; mount must make it unreachable. */
+    fat_good_bpb(boot);
+    put_le32(boot + 36, 64); /* 8192 entries for ~199800 clusters */
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "undersized FAT accepted");
+
+    /* fatSize 0 -- also a MiAllocatePool(0), which panics. */
+    fat_good_bpb(boot);
+    put_le32(boot + 36, 0);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "zero FAT size accepted");
+
+    /* fatCount * fatSize wrapping ULONG back into a small firstDataSector. */
+    fat_good_bpb(boot);
+    boot[16] = 255;
+    put_le32(boot + 36, 0x01010102);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "wrapping FAT span accepted");
+
+    /* Root cluster outside the data area, both sides. */
+    fat_good_bpb(boot);
+    put_le32(boot + 44, 0);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "root cluster 0 accepted");
+    fat_good_bpb(boot);
+    put_le32(boot + 44, 0xFFFFFFF0);
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "root cluster past EOV accepted");
+
+    /* Non-power-of-two and oversized cluster sizes (spec 3.1). */
+    fat_good_bpb(boot);
+    boot[13] = 3;
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "3 sectors/cluster accepted");
+    fat_good_bpb(boot);
+    boot[13] = 255;
+    ok(FatValidateBpb(boot, &g) == STATUS_UNRECOGNIZED_VOLUME, "255 sectors/cluster accepted");
+}
+
 int kmt_run_fat_interop(void)
 {
     UCHAR *manifest;
@@ -669,6 +777,7 @@ int kmt_run_fat_interop(void)
         return 1;
     }
     DbgPrint("fat_interop: %d manifest entries\n", fat_entry_count);
+    KMT_RUN(test_fat_bpb_validation);
     KMT_RUN(test_fat_corpus_enumerate);
     KMT_RUN(test_fat_corpus_read);
     KMT_RUN(test_fat_corpus_case_open);

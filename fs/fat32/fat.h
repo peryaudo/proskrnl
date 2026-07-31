@@ -199,6 +199,28 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length);
 /* Grow/shrink: clusters + directory entry + cache. */
 NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize);
 
+/* The geometry FatValidateBpb derives from a boot sector. */
+typedef struct _FAT_BPB_GEOMETRY
+{
+    ULONG bytesPerSector;
+    ULONG sectorsPerCluster;
+    ULONG reservedSectors;
+    ULONG fatCount;
+    ULONG fatSizeSectors;
+    ULONG totalSectors;
+    ULONG firstDataSector;
+    ULONG clusterCount;
+    ULONG rootCluster;
+} FAT_BPB_GEOMETRY, *PFAT_BPB_GEOMETRY;
+
+/* Validate a 512-byte boot sector and derive the volume geometry from it, or
+ * return STATUS_UNRECOGNIZED_VOLUME. Split out of FatMountBootVolume so the
+ * hostile shapes can be pinned directly (tests/kmt/fat_interop.c): the BPB is
+ * wholly attacker-controlled input, and every cluster bound the rest of
+ * fs/fat32 asserts is derived from it. `boot` must be FAT_SECTOR_SIZE bytes;
+ * the 0x55AA signature is the caller's check, not this one's. */
+NTSTATUS FatValidateBpb(const unsigned char *boot, PFAT_BPB_GEOMETRY out);
+
 /* NT time <-> FAT date/time (spec §6.3); fat.c. */
 LARGE_INTEGER FatTimeToNtTime(USHORT fatDate, USHORT fatTime, UCHAR tenths);
 void FatNtTimeToFatTime(LARGE_INTEGER ntTime, USHORT *fatDate, USHORT *fatTime);

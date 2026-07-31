@@ -422,6 +422,102 @@ static NTSTATUS FatFindDataPartition(uint64_t *firstLbaOut)
     return STATUS_UNRECOGNIZED_VOLUME;
 }
 
+/* Every bound the rest of fs/fat32 relies on is derived here, from a boot
+ * sector the volume author controls. Anything that gets through becomes an
+ * ASSERT precondition elsewhere -- FatGetNextCluster, FatSetFatEntry and
+ * FatClusterToSector all assert `cluster < clusterCount + 2` -- so a
+ * clusterCount that does not match the FAT actually read from disk turns
+ * those asserts into no-ops and lets attacker-chosen indices run off the
+ * end of volume->fat, for writes as well as reads.
+ *
+ * Field offsets and the FAT-type rule are FAT spec §3.1/§3.3/§3.5
+ * (Microsoft "FAT32 File System Specification" 1.03). */
+NTSTATUS FatValidateBpb(const unsigned char *boot, PFAT_BPB_GEOMETRY out)
+{
+    ULONG bytesPerSector = KiReadLe16(boot + 11);
+    ULONG sectorsPerCluster = boot[13];
+    ULONG reservedSectors = KiReadLe16(boot + 14);
+    ULONG fatCount = boot[16];
+    ULONG rootEntryCount = KiReadLe16(boot + 17);
+    ULONG totalSectors16 = KiReadLe16(boot + 19);
+    ULONG fatSize16 = KiReadLe16(boot + 22);
+    ULONG totalSectors32 = KiReadLe32(boot + 32);
+    ULONG fatSize32 = KiReadLe32(boot + 36);
+    ULONG rootCluster = KiReadLe32(boot + 44);
+
+    if (bytesPerSector != FAT_SECTOR_SIZE || sectorsPerCluster == 0 || reservedSectors == 0 ||
+        fatCount == 0)
+    {
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+    /* §3.1 BPB_SecPerClus: a power of two, and at most 128 so that a cluster
+     * stays within 64 KiB. Anything else makes the cluster<->sector mapping
+     * below meaningless. */
+    if (sectorsPerCluster > 128 || (sectorsPerCluster & (sectorsPerCluster - 1)) != 0)
+    {
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+
+    /* FAT type is determined SOLELY by the cluster count (spec §3.5). */
+    ULONG fatSize = fatSize16 != 0 ? fatSize16 : fatSize32;
+    ULONG totalSectors = totalSectors16 != 0 ? totalSectors16 : totalSectors32;
+    if (fatSize == 0 || totalSectors == 0)
+    {
+        /* A zero fatSize would also reach MiAllocatePool(0), which panics. */
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+    ULONG rootDirSectors =
+        (rootEntryCount * 32 + bytesPerSector - 1) / bytesPerSector; /* 0 on FAT32 */
+
+    /* firstDataSector in 64-bit, so a large fatCount * fatSize cannot wrap
+     * into a small in-range value before the comparison below. */
+    uint64_t firstDataSector64 =
+        (uint64_t)reservedSectors + (uint64_t)fatCount * fatSize + rootDirSectors;
+    if (firstDataSector64 >= totalSectors)
+    {
+        /* Otherwise totalSectors - firstDataSector underflows and yields a
+         * near-4-billion cluster count for a tiny volume. */
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+    ULONG firstDataSector = (ULONG)firstDataSector64;
+    ULONG dataSectors = totalSectors - firstDataSector;
+    ULONG clusterCount = dataSectors / sectorsPerCluster;
+    if (clusterCount < 65525)
+    {
+        DbgPrint("fat32: volume is FAT12/16 (%lu clusters) — not supported\n",
+                 (unsigned long)clusterCount);
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+
+    /* The FAT must actually be able to describe every cluster it claims: the
+     * table holds fatSize * bytesPerSector / 4 32-bit entries, and entries 0
+     * and 1 are reserved, so the highest valid index is clusterCount + 1.
+     * This is the invariant FatQueryVolumeInfo already asserted at use time;
+     * checking it at mount is what makes that assert unreachable. */
+    uint64_t fatEntries = ((uint64_t)fatSize * bytesPerSector) / sizeof(ULONG);
+    if ((uint64_t)clusterCount + 2 > fatEntries)
+    {
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+
+    /* The root directory must start at a real data cluster. */
+    if (rootCluster < 2 || rootCluster >= clusterCount + 2)
+    {
+        return STATUS_UNRECOGNIZED_VOLUME;
+    }
+
+    out->bytesPerSector = bytesPerSector;
+    out->sectorsPerCluster = sectorsPerCluster;
+    out->reservedSectors = reservedSectors;
+    out->fatCount = fatCount;
+    out->fatSizeSectors = fatSize;
+    out->totalSectors = totalSectors;
+    out->firstDataSector = firstDataSector;
+    out->clusterCount = clusterCount;
+    out->rootCluster = rootCluster;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
 {
     uint64_t partitionLba;
@@ -443,38 +539,21 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
         return STATUS_UNRECOGNIZED_VOLUME;
     }
 
-    /* BPB fields by offset (spec §3.1/§3.3). */
-    ULONG bytesPerSector = KiReadLe16(boot + 11);
-    ULONG sectorsPerCluster = boot[13];
-    ULONG reservedSectors = KiReadLe16(boot + 14);
-    ULONG fatCount = boot[16];
-    ULONG rootEntryCount = KiReadLe16(boot + 17);
-    ULONG totalSectors16 = KiReadLe16(boot + 19);
-    ULONG fatSize16 = KiReadLe16(boot + 22);
-    ULONG totalSectors32 = KiReadLe32(boot + 32);
-    ULONG fatSize32 = KiReadLe32(boot + 36);
-    ULONG rootCluster = KiReadLe32(boot + 44);
-
-    if (bytesPerSector != FAT_SECTOR_SIZE || sectorsPerCluster == 0 || reservedSectors == 0 ||
-        fatCount == 0)
+    FAT_BPB_GEOMETRY geometry;
+    status = FatValidateBpb(boot, &geometry);
+    if (!NT_SUCCESS(status))
     {
-        return STATUS_UNRECOGNIZED_VOLUME;
+        return status;
     }
-
-    /* FAT type is determined SOLELY by the cluster count (spec §3.5). */
-    ULONG fatSize = fatSize16 != 0 ? fatSize16 : fatSize32;
-    ULONG totalSectors = totalSectors16 != 0 ? totalSectors16 : totalSectors32;
-    ULONG rootDirSectors =
-        (rootEntryCount * 32 + bytesPerSector - 1) / bytesPerSector; /* 0 on FAT32 */
-    ULONG firstDataSector = reservedSectors + fatCount * fatSize + rootDirSectors;
-    ULONG dataSectors = totalSectors - firstDataSector;
-    ULONG clusterCount = dataSectors / sectorsPerCluster;
-    if (clusterCount < 65525)
-    {
-        DbgPrint("fat32: volume is FAT12/16 (%lu clusters) — not supported\n",
-                 (unsigned long)clusterCount);
-        return STATUS_UNRECOGNIZED_VOLUME;
-    }
+    ULONG bytesPerSector = geometry.bytesPerSector;
+    ULONG sectorsPerCluster = geometry.sectorsPerCluster;
+    ULONG reservedSectors = geometry.reservedSectors;
+    ULONG fatCount = geometry.fatCount;
+    ULONG fatSize = geometry.fatSizeSectors;
+    ULONG totalSectors = geometry.totalSectors;
+    ULONG firstDataSector = geometry.firstDataSector;
+    ULONG clusterCount = geometry.clusterCount;
+    ULONG rootCluster = geometry.rootCluster;
 
     PFAT_VOLUME volume = MiAllocatePool(sizeof(FAT_VOLUME));
     if (volume == 0)
