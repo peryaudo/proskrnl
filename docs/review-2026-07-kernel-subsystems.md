@@ -23,6 +23,18 @@ still live. Every fix here was confirmed to convict first: the unfixed kernel
 produces `[PANIC] vector=14 (#PF page fault)` under the new tests, so these
 are differential results rather than a sanitizer going quiet (Art. 6).
 
+A second audit pass then re-checked every `[FIXED]` mark against the kernel
+rather than against the commit messages. It found no wrong marks, but two
+fixes that had no *convicting* test — the `peb.c` saturation and the
+`SetEndOfFile` guard — and both now have one. Three claims were also verified
+negative, i.e. they are **not** second instances of a fixed bug:
+`kernel/ps/atom.c:359` already probed its `returnLength` and checked the
+result; `kernel/se/token.c:639`'s `reply[512]` is genuinely bounded, because
+group and privilege counts are fixed at boot and only copied by
+`SepDuplicateToken`, with no path that grows them; and `kernel/io/rw.c:208`
+(the read path's `GetCache`) is unreachable today, since every shipped device
+has a `Read` or a `GetCache` — it is latent, not live.
+
 | Subdirectory | Findings | Worst |
 | --- | --- | --- |
 | `kernel/ps` | 16 | critical |
