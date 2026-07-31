@@ -718,6 +718,7 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
     memset(backing, 0, sizeof(*backing));
     backing->cache = cache;
     backing->fileObject = file; /* the caller inherits this reference */
+    backing->writable = (file->grantedAccess & FILE_WRITE_DATA) != 0;
 
     if (sectionAttributes & SEC_IMAGE)
     {

@@ -40,6 +40,7 @@ typedef struct
                           * freed on failure too */
     PVOID fileObject;    /* Ob File body the section pins (may be 0);
                           * referenced on success */
+    BOOLEAN writable;    /* the backing handle granted FILE_WRITE_DATA */
 } MI_SECTION_BACKING;
 
 typedef struct MI_SECTION
@@ -54,6 +55,15 @@ typedef struct MI_SECTION
     uint64_t rawSize;
     BOOLEAN ownsRawData;
     PVOID fileObject;     /* referenced backing File object body; 0 = none */
+    /* Did the FILE HANDLE this section was created from grant write? A
+     * writable view of a file-backed section is a write to the file (with
+     * immediate writeback, Art. 3), so a section built over a read-only
+     * handle may only be mapped read-only or write-copy. The creation
+     * PROTECTION is deliberately NOT the gate: the oracle allows a
+     * PAGE_READONLY section over a read-write handle to be mapped
+     * PAGE_READWRITE, and denies the same map over a read-only handle
+     * (verified against the pinned Wine; sem_mm/section_protect). */
+    BOOLEAN backingWritable;
     MI_IMAGE_INFO *image; /* SEC_IMAGE: parsed PE metadata (pool) */
 } MI_SECTION, *PMI_SECTION;
 
