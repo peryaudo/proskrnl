@@ -35,7 +35,14 @@ static void *VioMapMmio(uint64_t physical, uint64_t length)
     uint64_t base = VioMmioWindowCursor;
     for (uint64_t page = first; page < last; page += PAGE_SIZE)
     {
-        MiMapPage(VioMmioWindowCursor, page, 1);
+        /* MiMapDevicePage, not MiMapPage: these are device registers, and a
+         * write-back cacheable mapping means the CPU may satisfy a read from
+         * cache and hold a write in a store buffer -- `volatile` constrains
+         * the compiler, not the cache (docs/review-2026-07 §8). This worked
+         * only because firmware happens to leave the PCI hole UC in the
+         * MTRRs, which nothing here establishes or checks. arch/x86_64/mmu.c
+         * has the mapping for exactly this; lapic.c already uses it. */
+        MiMapDevicePage(VioMmioWindowCursor, page);
         VioMmioWindowCursor += PAGE_SIZE;
     }
     return (void *)(uintptr_t)(base + (physical - first));
@@ -52,7 +59,11 @@ static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
     }
     /* Capabilities pointer: low two bits reserved (PCI 3.0 §6.7). */
     uint8_t offset = KiPciReadConfig8(f, PCI_CONFIG_CAP_POINTER) & 0xFC;
-    while (offset != 0)
+    /* The list is device-supplied and a cyclic cap_next hung the boot
+     * forever (docs/review-2026-07 §4). Config space is 256 bytes and every
+     * capability is at least 4 of them, so 64 links is the most a
+     * well-formed list can have (PCI 3.0 §6.7). */
+    for (unsigned link = 0; offset != 0 && link < 64; link++)
     {
         uint8_t id = KiPciReadConfig8(f, offset);
         if (id == VIRTIO_PCI_CAP_VNDR_ID &&
@@ -62,10 +73,22 @@ static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
             uint32_t barOffset =
                 KiPciReadConfig32(f, (uint8_t)(offset + VIRTIO_PCI_CAP_OFF_OFFSET));
             uint32_t length = KiPciReadConfig32(f, (uint8_t)(offset + VIRTIO_PCI_CAP_OFF_LENGTH));
+            /* The BAR index is device-supplied too. A PCI type-0 header has
+             * six BARs (PCI 3.0 §6.1), so anything else would read config
+             * registers that are not BARs at all and map whatever they
+             * happen to hold. */
+            if (bar >= 6)
+            {
+                return 0;
+            }
             uint64_t barBase = KiPciReadMemoryBar(f, bar);
             if (barBase == 0)
             {
                 return 0; /* I/O BAR: the legacy interface; we require modern */
+            }
+            if (length == 0 || barOffset + (uint64_t)length < barOffset)
+            {
+                return 0; /* an empty or wrapping window describes nothing */
             }
             if (notifyMultiplierOut != 0)
             {
@@ -117,8 +140,8 @@ BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, con
                        command | PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
 
     out->commonCfg = VioFindCapability(&out->function, VIRTIO_PCI_CAP_COMMON_CFG, 0, 0);
-    out->notifyBase =
-        VioFindCapability(&out->function, VIRTIO_PCI_CAP_NOTIFY_CFG, &out->notifyMultiplier, 0);
+    out->notifyBase = VioFindCapability(&out->function, VIRTIO_PCI_CAP_NOTIFY_CFG,
+                                        &out->notifyMultiplier, &out->notifyLength);
     out->deviceCfg = VioFindCapability(&out->function, VIRTIO_PCI_CAP_DEVICE_CFG, 0, 0);
     if (out->commonCfg == 0 || out->notifyBase == 0 || out->deviceCfg == 0)
     {
@@ -190,10 +213,22 @@ BOOLEAN VioPciSetupQueue(VIO_PCI_DEVICE *device, VIO_VIRTQUEUE *queue, uint16_t 
     device->commonCfg->queueDesc = queue->descPhysical;
     device->commonCfg->queueDriver = queue->availPhysical;
     device->commonCfg->queueDevice = queue->usedPhysical;
-    /* Notify address = base + queue_notify_off * multiplier (§4.1.4.4). */
-    queue->notify =
-        (volatile uint16_t *)(device->notifyBase + (uint64_t)device->commonCfg->queueNotifyOff *
-                                                       device->notifyMultiplier);
+    /* Notify address = base + queue_notify_off * multiplier (§4.1.4.4).
+     * Both factors are device-supplied, so the product is bounded against
+     * the notify window the capability actually described -- unbounded, a
+     * hostile device steered the driver's doorbell writes into another
+     * device's register window (docs/review-2026-07 §4). */
+    uint64_t notifyOffset =
+        (uint64_t)device->commonCfg->queueNotifyOff * device->notifyMultiplier;
+    if (notifyOffset + sizeof(uint16_t) > device->notifyLength)
+    {
+        DbgPrint("%s: queue %u notify offset %#lx outside the %#lx-byte notify window\n",
+                 device->name, queueIndex, (unsigned long)notifyOffset,
+                 (unsigned long)device->notifyLength);
+        VioPciSetFailed(device);
+        return FALSE;
+    }
+    queue->notify = (volatile uint16_t *)(device->notifyBase + notifyOffset);
     device->commonCfg->queueEnable = 1;
     return TRUE;
 }

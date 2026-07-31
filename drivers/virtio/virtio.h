@@ -202,6 +202,7 @@ typedef struct
     volatile uint8_t *deviceCfg;  /* §4.1.4.6 device-specific config */
     volatile uint8_t *notifyBase; /* §4.1.4.4 notify structure */
     uint32_t notifyMultiplier;    /* §4.1.4.4 notify_off_multiplier */
+    uint32_t notifyLength;        /* bytes the notify capability described */
     uint32_t deviceFeaturesLow;   /* offered bits 0..31, as read */
     const char *name;             /* "virtio-blk"; log prefix only */
 } VIO_PCI_DEVICE;
