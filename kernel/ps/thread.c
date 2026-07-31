@@ -1169,15 +1169,34 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     (void)threadHandle;
     (void)buffer;
     (void)length;
-    /* The classes ntdll sets at startup (name, ideal processor, hide-from-
-     * debugger, TEB pointers) have no observable effect on a single-CPU
-     * proskrnl; accept them so the loader proceeds. */
+    /* The default arm used to be STATUS_SUCCESS for EVERY class, and it did
+     * not even name the class on serial. ThreadImpersonationToken went
+     * through it: a caller that impersonates, gets success, and then makes a
+     * security decision on that answer is exactly the deferred bug Art. 12
+     * describes. An unbuilt class refuses loudly instead, and the
+     * dispatcher's PARTIAL line names it.
+     *
+     * The accepted list is the classes ntdll sets at startup whose effect is
+     * genuinely nil on a single-CPU proskrnl -- accepting them is an
+     * IMPLEMENTATION of a no-op, not a fabrication, and each is listed
+     * explicitly so that adding one is a decision. */
     switch (infoClass)
     {
     case ThreadZeroTlsCell:
     case ThreadHideFromDebugger:
+    /* Priority and affinity: one CPU, one priority band that matters
+     * (docs/03 "Deliberate simplifications"). */
+    case ThreadPriority:
+    case ThreadBasePriority:
+    case ThreadAffinityMask:
+    case ThreadIdealProcessor:
+    case ThreadIdealProcessorEx:
+    case ThreadPriorityBoost:
+    /* The thread name is stored by ntdll in the TEB; nothing in the kernel
+     * observes it. */
+    case ThreadNameInformation:
         return STATUS_SUCCESS;
     default:
-        return STATUS_SUCCESS;
+        return STATUS_NOT_IMPLEMENTED;
     }
 }
