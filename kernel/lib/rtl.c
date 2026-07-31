@@ -92,4 +92,15 @@ void RtlCopyUnicodeString(UNICODE_STRING *target, const UNICODE_STRING *source)
     }
     memcpy(target->Buffer, source->Buffer, length);
     target->Length = length;
+    /* Append the terminator when there is room, exactly as the oracle does
+     * (third_party/wine dlls/ntdll/rtlstr.c RtlCopyUnicodeString:
+     * `if (len < dst->MaximumLength) dst->Buffer[len / sizeof(WCHAR)] = 0;`).
+     * Not terminating was latent -- only a test called this -- but this is
+     * the shared authority other departments reach for, and one of them
+     * (kernel/ob/handle.c) had already hand-rolled its own terminator
+     * instead (docs/review-2026-07 §9). */
+    if (length < target->MaximumLength)
+    {
+        target->Buffer[length / sizeof(WCHAR)] = 0;
+    }
 }
