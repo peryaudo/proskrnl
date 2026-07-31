@@ -155,6 +155,48 @@ START_TEST(se_secobj)
     ok(status == STATUS_ACCESS_DENIED, "set owner without WRITE_OWNER -> %08lx",
        (unsigned long)status);
 
+    /* --- a security descriptor larger than any fixed reply buffer ---------
+     *
+     * The kernel builds the self-relative reply into a scratch buffer before
+     * copying it out. proskrnl's was a 512-byte array on the stack guarded by
+     * ASSERT(needed <= sizeof(reply)) -- but `needed` is derived entirely from
+     * an SD the CALLER stored earlier, and an ACL may be up to 65535 bytes.
+     * The length check above it (`length < needed`) does not help: the caller
+     * just passes a big enough output buffer. Since ASSERT is always compiled
+     * in and fatal, that was an unprivileged halt of the whole machine, and a
+     * 64 KiB stack smash if the assert were ever relaxed.
+     *
+     * 40 ACEs puts the DACL alone near 800 bytes, comfortably past 512. */
+    {
+        static BYTE big_acl[4096], big_set[4096], big_out[8192];
+        ULONG n = sizeof(ACL);
+        for (int i = 0; i < 40; i++)
+            n += put_ace(big_acl + n, ACCESS_ALLOWED_ACE_TYPE, 0, EVENT_ALL_ACCESS, world.buf);
+        put_acl(big_acl, n, 40);
+        ok(n > 512, "big DACL is %lu bytes, wanted > 512", (unsigned long)n);
+
+        build_sd(big_set, NULL, NULL, 1, big_acl, n);
+        status = NtSetSecurityObject(event, DACL_SECURITY_INFORMATION, big_set);
+        ok(status == STATUS_SUCCESS, "set big DACL -> %08lx", (unsigned long)status);
+
+        memset(big_out, 0xcc, sizeof(big_out));
+        retlen = 0;
+        status = NtQuerySecurityObject(event,
+                                       OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                                           DACL_SECURITY_INFORMATION,
+                                       big_out, sizeof(big_out), &retlen);
+        ok(status == STATUS_SUCCESS, "query big DACL -> %08lx", (unsigned long)status);
+        /* Owner and group carry over from the earlier steps, so anchor on the
+         * returned offsets rather than on a recomputed SID length: what this
+         * case is about is that a reply past 512 bytes is produced at all, and
+         * arrives whole. */
+        SECURITY_DESCRIPTOR_RELATIVE *big = (SECURITY_DESCRIPTOR_RELATIVE *)big_out;
+        ok(retlen > 512, "big retlen %lu, wanted > 512", (unsigned long)retlen);
+        ok(big->Dacl != 0 && retlen == big->Dacl + n, "big retlen %lu vs dacl %lu + %lu",
+           (unsigned long)retlen, (unsigned long)big->Dacl, (unsigned long)n);
+        ok(memcmp(big_out + big->Dacl, big_acl, n) == 0, "big DACL came back changed");
+    }
+
     NtClose(narrow);
     NtClose(event);
 }
