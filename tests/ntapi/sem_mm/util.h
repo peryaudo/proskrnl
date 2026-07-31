@@ -21,6 +21,7 @@ NTSYSAPI NTSTATUS NTAPI NtClose(HANDLE);
 /* The M5 section surface (prototypes as wine/include/winternl.h; mingw's
  * winternl.h omits them). SECTION_INHERIT stays a plain ULONG so the
  * declaration is toolchain-independent. */
+NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG *);
 NTSYSAPI NTSTATUS NTAPI NtCreateSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                         const LARGE_INTEGER *, ULONG, ULONG, HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtOpenSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
