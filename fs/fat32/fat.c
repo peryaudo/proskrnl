@@ -450,9 +450,10 @@ NTSTATUS FatValidateBpb(const unsigned char *boot, PFAT_BPB_GEOMETRY out)
     {
         return STATUS_UNRECOGNIZED_VOLUME;
     }
-    /* §3.1 BPB_SecPerClus: a power of two, and at most 128 so that a cluster
-     * stays within 64 KiB. Anything else makes the cluster<->sector mapping
-     * below meaningless. */
+    /* §3.1 BPB_SecPerClus: a power of two greater than 0, and small enough
+     * that the cluster stays inside the spec's 32 KB ceiling -- 128 sectors
+     * at the 512-byte sector size required above. Anything else makes the
+     * cluster<->sector mapping below meaningless. */
     if (sectorsPerCluster > 128 || (sectorsPerCluster & (sectorsPerCluster - 1)) != 0)
     {
         return STATUS_UNRECOGNIZED_VOLUME;
