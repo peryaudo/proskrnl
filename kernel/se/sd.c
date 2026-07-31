@@ -87,8 +87,13 @@ BOOLEAN SepIsValidAcl(const ACL *acl, ULONG availableLength)
             break;
         }
         default:
-            /* unknown ACE types pass the walk, as the server's do */
-            break;
+            /* An unknown ACE type is INVALID. The comment used to claim the
+             * server's walk accepts them; it does not -- third_party/wine
+             * server/token.c acl_is_valid ends its switch with
+             * `default: return FALSE;` (docs/review-2026-07 §9). Accepting
+             * one meant the access check silently skipped an ACE that might
+             * have been a deny. */
+            return FALSE;
         }
         offset += ace->AceSize;
     }
@@ -186,6 +191,17 @@ static NTSTATUS SepResolveSdParts(PSECURITY_DESCRIPTOR userSd, SEP_SD_PARTS *par
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+    /* The revision is checked, as the named oracle function checks it
+     * (third_party/wine dlls/ntdll/sec.c RtlValidSecurityDescriptor:
+     * `sd->Revision == SECURITY_DESCRIPTOR_REVISION`). It was never looked
+     * at, so a descriptor of any revision -- including one whose layout this
+     * code has no idea how to read -- was parsed as if it were revision 1
+     * (docs/review-2026-07 §9). SECURITY_DESCRIPTOR_REVISION was already
+     * generated in abi/. */
+    if (prefix.Revision != SECURITY_DESCRIPTOR_REVISION)
+    {
+        return STATUS_UNKNOWN_REVISION;
     }
     memset(parts, 0, sizeof(*parts));
     parts->control = prefix.Control;
