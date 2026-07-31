@@ -95,9 +95,16 @@ BOOLEAN SepIsValidAcl(const ACL *acl, ULONG availableLength)
     return TRUE;
 }
 
-/* Capture one SID part from user memory into `destination` (may be 0 to
- * just measure). *length is the validated on-wire size. */
-static NTSTATUS SepCaptureSid(const void *userSid, BYTE *destination, ULONG *length)
+/* Capture one SID part from user memory into `destination` (0 to just
+ * measure). *length is the validated on-wire size.
+ *
+ * `capacity` is the room at `destination`, i.e. what the measure pass said
+ * this part was. It is checked BEFORE the copy, and that ordering is the
+ * whole point: the length lives in user memory and is re-read here, so a
+ * sibling thread that grows the SID between the two passes would otherwise
+ * have this copy run past a pool block sized by the first one
+ * (docs/review-2026-07 §1d). Ignored while measuring. */
+static NTSTATUS SepCaptureSid(const void *userSid, BYTE *destination, ULONG *length, ULONG capacity)
 {
     SID header;
     NTSTATUS status = KiCopyFromUser(&header, userSid, sizeof(SID) - sizeof(DWORD));
@@ -112,6 +119,10 @@ static NTSTATUS SepCaptureSid(const void *userSid, BYTE *destination, ULONG *len
     ULONG sidLength = SepSidLength(&header);
     if (destination != 0)
     {
+        if (sidLength != capacity)
+        {
+            return STATUS_ACCESS_VIOLATION; /* raced between the passes */
+        }
         status = KiCopyFromUser(destination, userSid, sidLength);
         if (!NT_SUCCESS(status))
         {
@@ -122,8 +133,10 @@ static NTSTATUS SepCaptureSid(const void *userSid, BYTE *destination, ULONG *len
     return STATUS_SUCCESS;
 }
 
-/* Capture one ACL part; validates the full ACE walk after the copy. */
-static NTSTATUS SepCaptureAcl(const void *userAcl, BYTE *destination, ULONG *length)
+/* Capture one ACL part; validates the full ACE walk after the copy.
+ * `capacity` as for SepCaptureSid, and checked before the copy for the same
+ * reason -- an ACL is up to 65535 bytes, so this is the wider of the two. */
+static NTSTATUS SepCaptureAcl(const void *userAcl, BYTE *destination, ULONG *length, ULONG capacity)
 {
     ACL header;
     NTSTATUS status = KiCopyFromUser(&header, userAcl, sizeof(ACL));
@@ -137,6 +150,10 @@ static NTSTATUS SepCaptureAcl(const void *userAcl, BYTE *destination, ULONG *len
     }
     if (destination != 0)
     {
+        if (header.AclSize != capacity)
+        {
+            return STATUS_ACCESS_VIOLATION; /* raced between the passes */
+        }
         status = KiCopyFromUser(destination, userAcl, header.AclSize);
         if (!NT_SUCCESS(status))
         {
@@ -233,19 +250,19 @@ NTSTATUS SepCaptureSecurityDescriptor(PSECURITY_DESCRIPTOR userSd,
 
     /* Measure pass. */
     ULONG ownerLength = 0, groupLength = 0, saclLength = 0, daclLength = 0;
-    if (parts.owner != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.owner, 0, &ownerLength)))
+    if (parts.owner != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.owner, 0, &ownerLength, 0)))
     {
         return status;
     }
-    if (parts.group != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.group, 0, &groupLength)))
+    if (parts.group != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.group, 0, &groupLength, 0)))
     {
         return status;
     }
-    if (parts.sacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.sacl, 0, &saclLength)))
+    if (parts.sacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.sacl, 0, &saclLength, 0)))
     {
         return status;
     }
-    if (parts.dacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.dacl, 0, &daclLength)))
+    if (parts.dacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.dacl, 0, &daclLength, 0)))
     {
         return status;
     }
@@ -262,34 +279,33 @@ NTSTATUS SepCaptureSecurityDescriptor(PSECURITY_DESCRIPTOR userSd,
     blob->saclLength = saclLength;
     blob->daclLength = daclLength;
 
-    /* Copy pass (validates ACL walks on the kernel copy). */
+    /* Copy pass (validates ACL walks on the kernel copy). Each part is
+     * capped at what the measure pass allocated for it, checked before its
+     * copy runs -- a part that changed size between the passes means user
+     * memory is being raced, and the refusal has to precede the write, not
+     * follow all four of them. */
     BYTE *cursor = SepSdData(blob);
-    if (parts.owner != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.owner, cursor, &ownerLength)))
+    if (parts.owner != 0 &&
+        !NT_SUCCESS(status = SepCaptureSid(parts.owner, cursor, &ownerLength, blob->ownerLength)))
     {
         goto fail;
     }
     cursor += ownerLength;
-    if (parts.group != 0 && !NT_SUCCESS(status = SepCaptureSid(parts.group, cursor, &groupLength)))
+    if (parts.group != 0 &&
+        !NT_SUCCESS(status = SepCaptureSid(parts.group, cursor, &groupLength, blob->groupLength)))
     {
         goto fail;
     }
     cursor += groupLength;
-    if (parts.sacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.sacl, cursor, &saclLength)))
+    if (parts.sacl != 0 &&
+        !NT_SUCCESS(status = SepCaptureAcl(parts.sacl, cursor, &saclLength, blob->saclLength)))
     {
         goto fail;
     }
     cursor += saclLength;
-    if (parts.dacl != 0 && !NT_SUCCESS(status = SepCaptureAcl(parts.dacl, cursor, &daclLength)))
+    if (parts.dacl != 0 &&
+        !NT_SUCCESS(status = SepCaptureAcl(parts.dacl, cursor, &daclLength, blob->daclLength)))
     {
-        goto fail;
-    }
-    /* A part that changed size between the passes means user memory is
-     * being raced; the validated kernel copy above is still self-consistent
-     * only if the sizes agree. */
-    if (ownerLength != blob->ownerLength || groupLength != blob->groupLength ||
-        saclLength != blob->saclLength || daclLength != blob->daclLength)
-    {
-        status = STATUS_ACCESS_VIOLATION;
         goto fail;
     }
 
