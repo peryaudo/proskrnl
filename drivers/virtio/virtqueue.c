@@ -42,6 +42,24 @@ int VioInitializeVirtqueue(VIO_VIRTQUEUE *queue, uint16_t queueIndex, uint16_t q
     queue->usedPhysical = MiAllocatePage();
     if (queue->descPhysical == 0 || queue->availPhysical == 0 || queue->usedPhysical == 0)
     {
+        /* Give back whatever DID come out of the allocator. A partial
+         * failure used to leak every frame it had already taken
+         * (docs/review-2026-07 §7). */
+        if (queue->descPhysical != 0)
+        {
+            MiFreePage(queue->descPhysical);
+        }
+        if (queue->availPhysical != 0)
+        {
+            MiFreePage(queue->availPhysical);
+        }
+        if (queue->usedPhysical != 0)
+        {
+            MiFreePage(queue->usedPhysical);
+        }
+        queue->descPhysical = 0;
+        queue->availPhysical = 0;
+        queue->usedPhysical = 0;
         return 0;
     }
     queue->desc = MiPhysicalToVirtual(queue->descPhysical);
