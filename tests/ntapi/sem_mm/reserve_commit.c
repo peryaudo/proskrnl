@@ -66,6 +66,21 @@ START_TEST(reserve_commit)
     ok(status == STATUS_WORKING_SET_LIMIT_RANGE, "wrapping size (explicit base) -> %08lx",
        (unsigned long)status);
 
+    /* Ordering against the type check. The oracle validates the type mask in
+     * NtAllocateVirtualMemory itself (third_party/wine
+     * dlls/ntdll/unix/virtual.c, `if (type & ~type_mask) return
+     * STATUS_INVALID_PARAMETER;`) and only then calls allocate_virtual_memory,
+     * where the working-set test lives -- so a bad type outranks an oversized
+     * size. Pinning it because it is easy to get backwards: putting the
+     * working-set test first looks equivalent until both arguments are wrong
+     * at once. */
+    addr = NULL;
+    size = ~(SIZE_T)0 - 0xFFE;
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_DECOMMIT, PAGE_READWRITE);
+    ok(status == STATUS_INVALID_PARAMETER, "bad type + wrapping size -> %08lx",
+       (unsigned long)status);
+
     /* The boundary itself. is_beyond_limit is `addr >= limit || addr + size >
      * limit` with addr == 0, so it reduces to a strict `size > limit`:
      * exactly the limit is NOT beyond and falls through to an ordinary
