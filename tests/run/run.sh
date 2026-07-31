@@ -187,15 +187,27 @@ build_helper_dll() {   # echoes the .dll path
 # Build one test into build/tests/ntapi/<name>.exe: no CRT (-nostdlib, entry
 # ntapi_start in ntapi.c), the pinned Wine import libs, -lgcc for the mingw
 # helpers the compiler may emit (___chkstk_ms). Skips work when up to date.
+#
+# The stale .exe is DELETED before the compiler runs, and a compile failure is
+# fatal to the whole run. Neither is belt-and-braces: `oracle`/`proskrnl` are
+# invoked as `... || fails=...` at the bottom of this file, which suppresses
+# `set -e` throughout their bodies, so without the explicit check a test that
+# fails to compile silently re-ran the PREVIOUS build's .exe and printed
+# green. That is the same fabricated-plausible-answer failure Art. 12 forbids
+# in the kernel, in the harness that judges it.
 build_test() {   # $1 = .c path; echoes the .exe path
     local src="$1" name exe
     name="$(basename "${src%.c}")"
     exe="$BUILD/ntapi/$name.exe"
     if [[ ! -f "$exe" || "$src" -nt "$exe" || "$NTAPI/ntapi.c" -nt "$exe" || \
           "$NTAPI/ntapi.h" -nt "$exe" ]]; then
-        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+        rm -f "$exe"
+        if ! "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
             -Wl,--entry=ntapi_start "$src" "$NTAPI/ntapi.c" \
-            "${WINE_LIBS[@]}" -lgcc -o "$exe" >&2
+            "${WINE_LIBS[@]}" -lgcc -o "$exe" >&2; then
+            echo "run.sh: FAILED to build $src — no verdict for '$name'" >&2
+            return 1
+        fi
     fi
     echo "$exe"
 }
@@ -284,7 +296,7 @@ oracle() {
     while read -r src; do
         local name exe out
         name="$(basename "${src%.c}")"
-        exe="$(build_test "$src")"
+        exe="$(build_test "$src")" || exit 1
         out="$("$WINE" "$exe" 2>&1 || true)"
         echo "$out"
         # tr -d '\r': tolerate CRLF if a console handle translates.
@@ -356,7 +368,7 @@ proskrnl() {
     while read -r src; do
         local name exe
         name="$(basename "${src%.c}")"
-        exe="$(build_test "$src")"
+        exe="$(build_test "$src")" || exit 1
         specs+=("win:$exe=ntapi/$name.exe")
         names+=("$name")
     done < <(all_tests)

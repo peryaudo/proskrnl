@@ -146,7 +146,8 @@ CSRC := kernel/init/main.c \
         tests/kmt/fat_churn.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
-        kernel/syscall/entry.S
+        kernel/syscall/entry.S \
+        kernel/syscall/recover.S
 # The boot console's glyph renderer (kernel/init/bootvid.c): the only
 # third_party code compiled into the kernel image, pinned and unmodified
 # (docs/11 "Third-party code inside the kernel image"). Kept OUT of CSRC on

@@ -79,9 +79,41 @@ const char *KiSystemCallName(uint64_t number)
  * slots, so argument 5 sits at rsp + 0x28. */
 #define KI_SYSCALL_STACK_ARGUMENT_OFFSET 0x28
 
-/* The indirect call crosses function types by design (see the table); keep
+/* Call the service with a ring-0 fault recovery frame armed (uaccess.h): a
+ * fault on a user address anywhere inside it returns STATUS_ACCESS_VIOLATION
+ * instead of halting the machine, which is what NT's KiSystemServiceHandler
+ * does for the same case.
+ *
+ * Its own frame is the unwind target, so it holds nothing across the call
+ * that it needs afterwards: on the recovery path every local is indeterminate
+ * except the recovery frame itself, and the current thread is re-derived
+ * rather than remembered. Kept separate from KiSystemServiceTrap for exactly
+ * that reason — the dispatcher's own state (trapFrame, previousFrame) must
+ * survive an unwind, and it does because this returns normally either way.
+ *
+ * The indirect call crosses function types by design (see the table); keep
  * UBSan's function-type check out of this one call site. */
-__attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
+__attribute__((no_sanitize("function"), noinline)) static NTSTATUS
+KiCallServiceGuarded(const KI_SERVICE_DESCRIPTOR *descriptor, const uint64_t *arguments)
+{
+    KI_FAULT_RECOVERY recovery;
+    ULONG unwound = KiSetFaultRecovery(&recovery);
+    if (unwound != 0)
+    {
+        KeGetCurrentThread()->faultRecovery = 0;
+        return (NTSTATUS)unwound;
+    }
+
+    KeGetCurrentThread()->faultRecovery = &recovery;
+    NTSTATUS status =
+        descriptor->service(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4],
+                            arguments[5], arguments[6], arguments[7], arguments[8], arguments[9],
+                            arguments[10], arguments[11], arguments[12], arguments[13]);
+    KeGetCurrentThread()->faultRecovery = 0;
+    return status;
+}
+
+void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
 {
     uint64_t number = trapFrame->rax;
     PKTHREAD thread = KeGetCurrentThread();
@@ -117,25 +149,21 @@ __attribute__((no_sanitize("function"))) void KiSystemServiceTrap(PKTRAP_FRAME t
         ASSERT(thread->previousMode == KernelMode); /* syscalls never nest */
         thread->previousMode = UserMode;
 
-        uint64_t stackArguments[KI_MAX_SYSCALL_ARGUMENTS - 4] = {0};
+        /* Arguments 1-4 came in registers (r10/rdx/r8/r9); 5.. come from the
+         * user stack. A service that terminates the caller never returns. */
+        uint64_t arguments[KI_MAX_SYSCALL_ARGUMENTS] = {trapFrame->r10, trapFrame->rdx,
+                                                        trapFrame->r8, trapFrame->r9};
         status = STATUS_SUCCESS;
         if (descriptor->argumentCount > 4)
         {
             ASSERT(descriptor->argumentCount <= KI_MAX_SYSCALL_ARGUMENTS);
             status = KiCopyFromUser(
-                stackArguments, (const void *)(trapFrame->rsp + KI_SYSCALL_STACK_ARGUMENT_OFFSET),
+                &arguments[4], (const void *)(trapFrame->rsp + KI_SYSCALL_STACK_ARGUMENT_OFFSET),
                 (uint64_t)(descriptor->argumentCount - 4) * sizeof(uint64_t));
         }
         if (NT_SUCCESS(status))
         {
-            /* Arguments 1-4 came in registers (r10/rdx/r8/r9); 5.. from the
-             * user stack captured above. A service that terminates the caller
-             * never returns here. */
-            status = descriptor->service(trapFrame->r10, trapFrame->rdx, trapFrame->r8,
-                                         trapFrame->r9, stackArguments[0], stackArguments[1],
-                                         stackArguments[2], stackArguments[3], stackArguments[4],
-                                         stackArguments[5], stackArguments[6], stackArguments[7],
-                                         stackArguments[8], stackArguments[9]);
+            status = KiCallServiceGuarded(descriptor, arguments);
         }
 
         /* A partial service's unbuilt case (an info class, an ioctl verb, a

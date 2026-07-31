@@ -33,12 +33,32 @@ QEMU="${QEMU:-$(find_qemu)}"
 # reached through the xAPIC MMIO window (arch/x86_64/lapic.c), which every
 # QEMU and every accelerator has always offered — so there is no CPU feature
 # to request here and no version floor.
+#
+# Opening the device is necessary but NOT sufficient: an ephemeral container
+# can expose a /dev/kvm that opens and then fails at KVM_CREATE_VM, and QEMU
+# selected on the strength of the open alone dies before the guest's first
+# instruction — every test then "fails" with an empty serial log, which reads
+# as a mass kernel regression rather than as a host problem. So the probe ends
+# with QEMU itself: boot nothing, under kvm, and see whether it comes back.
 find_accel() {
-    if [[ "$(uname -s)" == Linux ]] && : 2>/dev/null <>/dev/kvm; then
-        echo kvm
-    else
+    if [[ "$(uname -s)" != Linux ]] || ! : 2>/dev/null <>/dev/kvm; then
         echo tcg
+        return
     fi
+    "$QEMU" -accel kvm -display none -no-user-config -nodefaults \
+            -machine q35 -m 32 -S >/dev/null 2>&1 </dev/null &
+    local probe=$!
+    # -S starts the guest halted, so a live PID after the grace period means
+    # KVM initialized; a dead one means it did not.
+    sleep 0.5
+    if kill -0 "$probe" 2>/dev/null; then
+        kill "$probe" 2>/dev/null || true
+        wait "$probe" 2>/dev/null || true
+        echo kvm
+        return
+    fi
+    wait "$probe" 2>/dev/null || true
+    echo tcg
 }
 ACCEL="${ACCEL:-$(find_accel)}"
 case "$ACCEL" in
