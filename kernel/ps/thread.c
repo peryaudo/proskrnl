@@ -754,11 +754,20 @@ NTSTATUS NtAlertThread(HANDLE threadHandle)
         target = threadObject->tcb;
     }
     uint64_t flags = KiAcquireDispatcherLock();
-    target->alerted = TRUE;
     if (target->state == KI_THREAD_STATE_WAITING && target->waitAlertable)
     {
+        /* The alert is CONSUMED by the wake it causes: the woken wait
+         * returns STATUS_ALERTED, which IS the delivery. Latching the bit as
+         * well let one NtAlertThread satisfy two alertable waits -- the
+         * parked one it woke, and the next one, which found the bit still
+         * set (docs/review-2026-07 §9). A SleepEx loop spins on that. */
         target->waitAlertable = FALSE;
         KiAlertWaitingThread(target);
+    }
+    else
+    {
+        /* Nothing to wake: latch it for the target's next alertable wait. */
+        target->alerted = TRUE;
     }
     KiReleaseDispatcherLock(flags);
     if (threadObject != 0)

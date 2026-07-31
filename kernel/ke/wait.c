@@ -488,7 +488,14 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
             thread->apcDeliverPending = TRUE;
         }
         NTSTATUS alertStatus = thread->userApcPending ? STATUS_USER_APC : STATUS_ALERTED;
-        thread->alerted = FALSE;
+        /* Consume the alert ONLY when the alert is what completed the wait.
+         * Clearing it on the STATUS_USER_APC branch too silently destroyed a
+         * pending alert the caller had not been told about
+         * (docs/review-2026-07 §9). */
+        if (alertStatus == STATUS_ALERTED)
+        {
+            thread->alerted = FALSE;
+        }
         KiReleaseDispatcherLock(flags);
         return alertStatus;
     }
@@ -555,7 +562,14 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
             thread->apcDeliverPending = TRUE;
         }
         NTSTATUS alertStatus = thread->userApcPending ? STATUS_USER_APC : STATUS_ALERTED;
-        thread->alerted = FALSE;
+        /* Consume the alert ONLY when the alert is what completed the wait.
+         * Clearing it on the STATUS_USER_APC branch too silently destroyed a
+         * pending alert the caller had not been told about
+         * (docs/review-2026-07 §9). */
+        if (alertStatus == STATUS_ALERTED)
+        {
+            thread->alerted = FALSE;
+        }
         KiReleaseDispatcherLock(flags);
         return alertStatus;
     }
