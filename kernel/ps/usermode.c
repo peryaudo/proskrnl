@@ -81,12 +81,21 @@ typedef struct
 static BOOLEAN KiMaterializeUserRange(uint64_t base, uint64_t size)
 {
     /* The bound comes first and is not optional. Every caller derives `base`
-     * from a ring-3-controlled RSP, and the KiProbeForWrite that appears
-     * alongside these calls is a no-op on these paths (previousMode is
-     * KernelMode here — see KiIsUserRange). Without this test a user process
-     * that points RSP at the kernel image gets its CONTEXT memcpy'd there:
-     * the loop below would find the page present and writable, because a user
-     * PML4 shares the kernel's upper half. */
+     * from a ring-3-controlled RSP. Without this test a user process that
+     * points RSP at the kernel image gets its CONTEXT memcpy'd there: the
+     * loop below would find the page present and writable, because a user
+     * PML4 shares the kernel's upper half.
+     *
+     * This function is the WHOLE gate for the three frame writers, and it is
+     * meant to be. A KiProbeForWrite used to sit alongside each call and did
+     * nothing at all — these paths run with previousMode == KernelMode (the
+     * syscall path restores it before delivering an APC, and a trap never
+     * sets it), so the probe short-circuited to success. Making the probes
+     * mode-aware instead would be worse than useless here: they run BEFORE
+     * materialization and demand present-and-writable, which is exactly what
+     * a guard page on a growing stack is not, so a live probe would refuse
+     * the frames it is supposed to admit. One authority, and it is this one
+     * (Art. 11). */
     if (!KiIsUserRange(base, size))
     {
         return FALSE;
@@ -288,8 +297,7 @@ __attribute__((noreturn)) void PspEnterUserThread(PKTHREAD tcb)
         context.FltSave.MxCsr = 0x1f80;
 
         uint64_t contextAddr = (context.Rsp & ~(uint64_t)0xf) - sizeof(CONTEXT);
-        if (NT_SUCCESS(KiProbeForWrite((void *)contextAddr, sizeof(CONTEXT), sizeof(uint64_t))) &&
-            KiMaterializeUserRange(contextAddr, sizeof(CONTEXT)))
+        if (KiMaterializeUserRange(contextAddr, sizeof(CONTEXT)))
         {
             memcpy((void *)contextAddr, &context, sizeof(CONTEXT));
             KiEnterUserMode(process->ldrInitializeThunk, contextAddr - 8, contextAddr, 0);
@@ -323,11 +331,11 @@ static BOOLEAN KiEnterUserExceptionDispatcher(PKTRAP_FRAME trapFrame,
     sp -= KI_EXC_FRAME_SIZE;
     uint64_t frameBase = sp;
 
-    /* Probe the whole frame for write before touching user memory — and
-     * materialize it (a deep stack may still be guard pages; the kernel's
-     * own stores must not fault). */
-    if (!NT_SUCCESS(KiProbeForWrite((void *)frameBase, KI_EXC_FRAME_SIZE, sizeof(uint64_t))) ||
-        !KiMaterializeUserRange(frameBase, KI_EXC_FRAME_SIZE))
+    /* Bound and materialize the whole frame before touching user memory (a
+     * deep stack may still be guard pages; the kernel's own stores must not
+     * fault). KiMaterializeUserRange is the ONLY gate here by design — see
+     * its comment. */
+    if (!KiMaterializeUserRange(frameBase, KI_EXC_FRAME_SIZE))
     {
         return FALSE;
     }
@@ -451,8 +459,7 @@ void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame)
     sp &= ~(uint64_t)0xf;
     sp -= KI_APC_FRAME_SIZE;
     uint64_t frameBase = sp;
-    if (!NT_SUCCESS(KiProbeForWrite((void *)frameBase, KI_APC_FRAME_SIZE, sizeof(uint64_t))) ||
-        !KiMaterializeUserRange(frameBase, KI_APC_FRAME_SIZE))
+    if (!KiMaterializeUserRange(frameBase, KI_APC_FRAME_SIZE))
     {
         return;
     }
