@@ -1303,12 +1303,54 @@ NTSTATUS NtTerminateProcess(HANDLE processHandle, LONG exitStatus)
 {
     PKTHREAD thread = KeGetCurrentThread();
 
-    /* NT: handle 0 means "every thread but the caller" (ntdll calls this first
-     * when exiting). With the single-CPU no-preemption model foreign threads
-     * stop only at their own syscalls; the M7 clients join their threads
-     * before exiting, so there is nothing to stop here. */
+    /* NT: handle 0 means "every thread of this process but the caller", and
+     * the call does not return until they are gone -- which is precisely
+     * what RtlExitUserProcess relies on to drain siblings before it runs DLL
+     * detach. This used to return STATUS_SUCCESS having terminated nothing:
+     * a fabricated answer whose caller then ran detach routines against
+     * threads still executing in the DLLs being detached
+     * (docs/review-2026-07 §5). The old comment argued that the M7 clients
+     * joined their threads first; the M10 Wine userland does not.
+     *
+     * Under Art. 3 a sibling reaps ITSELF at its next ring-3 edge, so the
+     * flag-and-wake is only half the job -- the caller then has to wait for
+     * the reaping to happen. The wait is bounded: a sibling wedged in a
+     * kernel path that never returns to ring 3 must not hang the exit of
+     * every process in the system, and returning after the deadline is no
+     * worse than the unconditional success this replaces. */
     if (processHandle == 0)
     {
+        PEPROCESS self = thread->process;
+        uint64_t lockFlags = KiAcquireDispatcherLock();
+        for (PLIST_ENTRY entry = self->threadListHead.Flink; entry != &self->threadListHead;
+             entry = entry->Flink)
+        {
+            PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+            if (tcb != thread)
+            {
+                PspFlagThreadTermination(tcb, (NTSTATUS)exitStatus);
+            }
+        }
+        KiReleaseDispatcherLock(lockFlags);
+
+        /* 5 s in 1 ms steps. KeDelayExecutionThread is also the yield that
+         * lets the siblings run at all under the no-preemption model. */
+        for (int waited = 0; waited < 5000; waited++)
+        {
+            lockFlags = KiAcquireDispatcherLock();
+            LONG remaining = self->activeThreadCount;
+            KiReleaseDispatcherLock(lockFlags);
+            if (remaining <= 1)
+            {
+                break;
+            }
+            LARGE_INTEGER interval;
+            interval.QuadPart = -10000; /* 1 ms, relative */
+            if (KeDelayExecutionThread(KernelMode, FALSE, &interval) != STATUS_SUCCESS)
+            {
+                break; /* the caller itself is being terminated */
+            }
+        }
         return STATUS_SUCCESS;
     }
 
