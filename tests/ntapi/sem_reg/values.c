@@ -16,6 +16,45 @@ static const WCHAR sz_data[] = W("registry-string");
 static const WCHAR multi_data[] = W("one\0two\0"); /* + implicit terminating NUL */
 static const UCHAR bin_data[] = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x55};
 
+
+/* --- the short-buffer status differs between QUERY and ENUMERATE ---------
+ *
+ * proskrnl shared one helper for both and therefore reported
+ * STATUS_BUFFER_TOO_SMALL from enumerate when the buffer could not even hold
+ * the fixed header. The oracle has no such arm there: its whole short-buffer
+ * answer for NtEnumerateValueKey is `if (length < *result_len) ret =
+ * STATUS_BUFFER_OVERFLOW;` (dlls/ntdll/unix/registry.c), whatever the
+ * shortfall -- and the standard grow-and-retry loop treats TOO_SMALL as
+ * fatal. Query really does distinguish the two, which is why this is pinned
+ * as a PAIR: the divergence is only in one of them.
+ */
+static void test_short_buffer_statuses(HANDLE key)
+{
+    UNICODE_STRING name;
+    unsigned char tiny[4];
+    ULONG length = 0;
+    NTSTATUS status;
+
+    init_ustr(&name, W("shortbuf"));
+    status = NtSetValueKey(key, &name, 0, REG_DWORD, (void *)"\x01\x02\x03\x04", 4);
+    ok(status == STATUS_SUCCESS, "set shortbuf -> %08lx", (unsigned long)status);
+
+    /* Enumerate with a buffer far below the fixed header. */
+    status = NtEnumerateValueKey(key, 0, KV_PARTIAL_INFO_CLASS, tiny, sizeof(tiny), &length);
+    ok(status == STATUS_BUFFER_OVERFLOW, "enumerate with a tiny buffer -> %08lx",
+       (unsigned long)status);
+    ok(length > sizeof(tiny), "enumerate reported required length %lu", (unsigned long)length);
+
+    /* Query with the same buffer: TOO_SMALL, because it cannot hold the
+     * header either -- but that IS the oracle's answer here. */
+    length = 0;
+    status = NtQueryValueKey(key, &name, KV_PARTIAL_INFO_CLASS, tiny, sizeof(tiny), &length);
+    ok(status == STATUS_BUFFER_TOO_SMALL, "query with a tiny buffer -> %08lx",
+       (unsigned long)status);
+
+    NtDeleteValueKey(key, &name);
+}
+
 START_TEST(values)
 {
     UNICODE_STRING name;
@@ -217,6 +256,8 @@ START_TEST(values)
         ok(status == STATUS_ACCESS_VIOLATION, "query with bad name buffer -> %08lx",
            (unsigned long)status);
     }
+
+    test_short_buffer_statuses(key);
 
     /* Cleanup. */
     status = NtDeleteKey(key);
