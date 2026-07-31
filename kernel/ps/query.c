@@ -1640,6 +1640,10 @@ NTSTATUS NtCallbackReturn(PVOID result, ULONG resultLength, NTSTATUS status)
     (void)resultLength;
     (void)status;
     /* Kernel callbacks (win32k) are not on the CUI path (docs/03 M7 map);
-     * PEB->KernelCallbackTable is null, so this is never reached. */
-    return STATUS_UNSUCCESSFUL;
+     * PEB->KernelCallbackTable is null, so this is never reached -- and if
+     * it ever IS reached, that unreachability argument has broken and the
+     * caller needs to hear about it. STATUS_UNSUCCESSFUL was a hardwired
+     * plausible answer, invisible to the KiPanicOnNotImplemented net that
+     * exists to catch exactly this (docs/review-2026-07 §5). */
+    return STATUS_NOT_IMPLEMENTED;
 }
