@@ -176,4 +176,42 @@ START_TEST(create_open)
            (unsigned long)bstatus);
     }
 
+    /* --- a request whose MAPPED access is empty is denied ------------------
+     *
+     * The zero-access refusal tested the raw DesiredAccess, but the oracle's
+     * alloc_handle tests it AFTER map_access. KEY_WOW64_64KEY is a nonzero
+     * bit that maps to no right at all, so asking for only that used to come
+     * back as a usable-looking handle granting nothing -- which is how
+     * RegOpenKeyEx with KEY_WOW64_32KEY breaks. */
+    {
+        HANDLE wow = NULL;
+        NTSTATUS wstatus;
+
+        status = reg_create_path(base_path, &base, NULL);
+        ok(status == STATUS_SUCCESS, "recreate base for the wow64 case -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            wstatus = reg_open_path_access(base_path, KEY_WOW64_64KEY, &wow);
+            ok(wstatus == STATUS_ACCESS_DENIED, "open with only KEY_WOW64_64KEY -> %08lx",
+               (unsigned long)wstatus);
+            if (NT_SUCCESS(wstatus))
+                NtClose(wow);
+            wstatus = reg_open_path_access(base_path, KEY_WOW64_32KEY, &wow);
+            ok(wstatus == STATUS_ACCESS_DENIED, "open with only KEY_WOW64_32KEY -> %08lx",
+               (unsigned long)wstatus);
+            if (NT_SUCCESS(wstatus))
+                NtClose(wow);
+            /* The same bit ALONGSIDE a real right is fine -- the refusal is
+             * about an empty mapped mask, not about the bit. */
+            wstatus = reg_open_path_access(base_path, KEY_READ | KEY_WOW64_64KEY, &wow);
+            ok(wstatus == STATUS_SUCCESS, "open with KEY_READ|KEY_WOW64_64KEY -> %08lx",
+               (unsigned long)wstatus);
+            if (NT_SUCCESS(wstatus))
+                NtClose(wow);
+            NtDeleteKey(base);
+            NtClose(base);
+        }
+    }
+
 }

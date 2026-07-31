@@ -158,6 +158,18 @@ static inline NTSTATUS reg_create_sub(HANDLE root, const void *sub, HANDLE *out,
 }
 
 /* Open a key by absolute path. */
+/* reg_open_path with an explicit DesiredAccess. */
+static inline NTSTATUS reg_open_path_access(const void *path, ACCESS_MASK access, HANDLE *out)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+
+    init_ustr(&name, path);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    *out = NULL;
+    return NtOpenKey(out, access, &attr);
+}
+
 static inline NTSTATUS reg_open_path(const void *path, HANDLE *out)
 {
     UNICODE_STRING name;
