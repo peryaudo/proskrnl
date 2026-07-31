@@ -22,6 +22,29 @@
 #define CHILD_TITLE   0x08
 #define CHILD_ALL     (CHILD_BASE | CHILD_ENV | CHILD_CWD | CHILD_CMDLINE | CHILD_TITLE)
 
+/* The maximal-command-line child (see test_long_command_line below): the
+ * length it saw and its last character are the two things that matter, so
+ * they get their own bits. */
+#define CHILD_LONG_BASE 0x80
+#define CHILD_LONG_LEN  0x01
+#define CHILD_LONG_TAIL 0x02
+
+/* The longest process-parameter strings a CreateProcessW caller can actually
+ * deliver. MEASURED against the oracle, not assumed: both the command line
+ * and the window title come back clamped to 32766 characters (Length 0xFFFC)
+ * however much longer the caller's buffer is, so this is the real ceiling of
+ * the ring-3-reachable path.
+ *
+ * It matters that it is 0xFFFC and not 0xFFFE: the kernel sizes each string's
+ * slot in the parameter block from (USHORT)(Length + sizeof(WCHAR)), which
+ * wraps to 0 at Length 0xFFFE and to 1 at 0xFFFF. Those two lengths are one
+ * and two bytes past what this test can reach, so the wrap itself is guarded
+ * structurally in PspCaptureString rather than pinned here; what this pins is
+ * that the largest reachable string survives the trip intact, which is the
+ * regression a careless "just clamp it" fix would cause. */
+#define LONG_CMDLINE_CHARS 32766
+#define LONG_TITLE_CHARS   32766
+
 static int wstr_contains(const WCHAR *haystack, const WCHAR *needle)
 {
     size_t nlen = 0;
@@ -48,6 +71,40 @@ static int wstr_equal(const WCHAR *a, const WCHAR *b)
     return *a == *b;
 }
 
+/* Static, not stack: 32768 WCHARs is 64 KiB and both runners start a thread
+ * on a 1 MiB stack that ntdll has already dug into. */
+static WCHAR long_cmdline[LONG_CMDLINE_CHARS + 1];
+static WCHAR long_title[LONG_TITLE_CHARS + 1];
+
+static int wstr_length(const WCHAR *s)
+{
+    int n = 0;
+    while (s[n])
+        n++;
+    return n;
+}
+
+/* The maximal-string child: report what actually arrived. */
+static void child_long_main(void)
+{
+    UINT code = CHILD_LONG_BASE;
+    const WCHAR *cmd = GetCommandLineW();
+    int len = wstr_length(cmd);
+
+    if (len == LONG_CMDLINE_CHARS && cmd[len - 1] == 'Z')
+        code |= CHILD_LONG_LEN;
+
+    /* The title travels the same capture path as the command line but through
+     * a different STARTUPINFO field, so it is worth its own bit: a slot-sizing
+     * bug that drops one string tends to drop them all. */
+    STARTUPINFOW si;
+    GetStartupInfoW(&si);
+    if (si.lpTitle && wstr_length(si.lpTitle) == LONG_TITLE_CHARS &&
+        si.lpTitle[LONG_TITLE_CHARS - 1] == 'T')
+        code |= CHILD_LONG_TAIL;
+    ExitProcess(code);
+}
+
 /* The child: silent; result bits in the exit code. */
 static void child_main(void)
 {
@@ -68,8 +125,56 @@ static void child_main(void)
     ExitProcess(code);
 }
 
+/* Maximal process-parameter strings must reach the child intact. The kernel
+ * copies Length bytes into a heap slot it sizes from MaximumLength, and
+ * proskrnl computed that as (USHORT)(Length + sizeof(WCHAR)) -- which wraps
+ * for exactly the lengths an ordinary CreateProcessW caller can produce. */
+static void test_long_strings(const WCHAR *self)
+{
+    int n = 0;
+    long_cmdline[n++] = '"';
+    for (int i = 0; self[i]; i++)
+        long_cmdline[n++] = self[i];
+    long_cmdline[n++] = '"';
+    const WCHAR *tail = L" --child-long ";
+    for (int i = 0; tail[i]; i++)
+        long_cmdline[n++] = tail[i];
+    /* Pad to exactly LONG_CMDLINE_CHARS, last character a sentinel. */
+    while (n < LONG_CMDLINE_CHARS - 1)
+        long_cmdline[n++] = 'x';
+    long_cmdline[n++] = 'Z';
+    long_cmdline[n] = 0;
+    ok(n == LONG_CMDLINE_CHARS, "built %d chars, wanted %d", n, LONG_CMDLINE_CHARS);
+
+    for (int i = 0; i < LONG_TITLE_CHARS - 1; i++)
+        long_title[i] = 't';
+    long_title[LONG_TITLE_CHARS - 1] = 'T';
+    long_title[LONG_TITLE_CHARS] = 0;
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.lpTitle = long_title;
+    BOOL created = CreateProcessW(NULL, long_cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    ok(created, "CreateProcessW (maximal cmdline + title) -> %lu", (unsigned long)GetLastError());
+    if (!created)
+        return;
+    ok(WaitForSingleObject(pi.hProcess, 30000) == WAIT_OBJECT_0, "long-string child wait");
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    ok(code == (CHILD_LONG_BASE | CHILD_LONG_LEN | CHILD_LONG_TAIL),
+       "long-string child exit %#lx (want %#x)", (unsigned long)code,
+       CHILD_LONG_BASE | CHILD_LONG_LEN | CHILD_LONG_TAIL);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 START_TEST(create_process)
 {
+    /* --child-long is checked first: it also contains "--child". */
+    if (wstr_contains(GetCommandLineW(), L"--child-long"))
+        child_long_main(); /* never returns */
     if (wstr_contains(GetCommandLineW(), L"--child"))
         child_main(); /* never returns */
 
@@ -155,4 +260,6 @@ START_TEST(create_process)
     ok(!created, "missing image created a process");
     ok(GetLastError() == ERROR_FILE_NOT_FOUND, "missing image -> %lu",
        (unsigned long)GetLastError());
+
+    test_long_strings(self);
 }

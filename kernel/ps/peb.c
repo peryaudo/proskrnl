@@ -138,7 +138,19 @@ static NTSTATUS PspCaptureString(const UNICODE_STRING *source, UNICODE_STRING *o
     copy[source->Length / sizeof(WCHAR)] = 0;
     out->Buffer = copy;
     out->Length = source->Length;
-    out->MaximumLength = (USHORT)(source->Length + sizeof(WCHAR));
+    /* Saturate, never wrap. MaximumLength is a USHORT and Length can be up to
+     * 0xFFFF, so Length + sizeof(WCHAR) leaves the type: 0xFFFE would wrap to
+     * 0 and 0xFFFF to 1. PspBuildPeb sizes this string's slot in the
+     * parameter block from MaximumLength and then copies Length bytes into
+     * it, so a wrapped value is not a cosmetic mistake -- at 0 the slot
+     * vanishes and the string is silently dropped, and at 1 a 16-byte slot
+     * receives a 65535-byte memcpy into the kernel pool. The invariant the
+     * copy depends on is MaximumLength >= Length; keeping room for the
+     * terminator is best-effort on top of it. (The pool block above is sized
+     * in size_t arithmetic and is unaffected -- it always has the extra
+     * WCHAR.) */
+    ULONG maximum = (ULONG)source->Length + sizeof(WCHAR);
+    out->MaximumLength = maximum > 0xFFFF ? source->Length : (USHORT)maximum;
     return STATUS_SUCCESS;
 }
 
