@@ -336,20 +336,33 @@ static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, u
              * https://learn.microsoft.com/en-us/windows/win32/debug/pe-format). */
             USHORT entry = entries[i];
             ULONG offset = entry & 0xFFF;
-            uint64_t va = base + block.VirtualAddress + offset;
+            /* block.VirtualAddress comes straight out of a user-supplied
+             * PE's .reloc and was never bounded. Out of the image it is
+             * either an unmapped page -- MipAddDelta's ASSERT(frame != 0),
+             * i.e. any process halting the kernel by mapping a crafted image
+             * -- or a mapped one, i.e. silent corruption of unrelated memory
+             * in that process (docs/review-2026-07 §2). A fixup outside the
+             * image is a malformed image, and NT says so. */
+            uint64_t rva = (uint64_t)block.VirtualAddress + offset;
+            int width;
             switch (entry >> 12)
             {
             case IMAGE_REL_BASED_ABSOLUTE:
-                break;
+                continue; /* the padding entry: no fixup, no bound to check */
             case IMAGE_REL_BASED_HIGHLOW:
-                MipAddDelta(space, va, 4, delta);
+                width = 4;
                 break;
             case IMAGE_REL_BASED_DIR64:
-                MipAddDelta(space, va, 8, delta);
+                width = 8;
                 break;
             default:
                 return STATUS_INVALID_IMAGE_FORMAT;
             }
+            if (rva + (uint64_t)width > image->sizeOfImage)
+            {
+                return STATUS_INVALID_IMAGE_FORMAT;
+            }
+            MipAddDelta(space, base + rva, width, delta);
         }
         cursor += block.SizeOfBlock;
     }
