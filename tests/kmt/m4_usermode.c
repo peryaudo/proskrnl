@@ -15,6 +15,7 @@
 #include "tests/kmt/kmt.h"
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/phys.h"
+#include "kernel/syscall/uaccess.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntmmapi.h"
@@ -158,10 +159,45 @@ static void test_free_conventions(void)
        (unsigned long)MiGetFreePageCount(), (unsigned long)freeAtStart);
 }
 
+/* The bound every ring-3-supplied frame address is held to. Regression for
+ * the arbitrary-kernel-write hole: the dispatch paths in kernel/ps/usermode.c
+ * run with previousMode == KernelMode, so KiProbeForWrite short-circuits to
+ * success there and this bound is the only thing standing between a
+ * user-chosen RSP and a kernel-address memcpy. It must therefore hold
+ * regardless of previous mode, which is why it is tested here rather than
+ * through a probe. */
+static void test_user_range_bound(void)
+{
+    /* Ordinary user addresses pass. */
+    ok(KiIsUserRange(0x10000, 0x1000), "user range accepted");
+    ok(KiIsUserRange(KI_USER_SPACE_LIMIT - 0x1000, 0x1000), "range ending exactly at the limit");
+
+    /* A zero-length range is vacuously in bounds (the probes treat it as a
+     * no-op too), including at an address that would otherwise be refused. */
+    ok(KiIsUserRange(0xFFFF800000000000ULL, 0), "zero length is vacuously in bounds");
+
+    /* Kernel addresses are refused. The higher half is mapped in every user
+     * PML4 (MiCreateUserPml4 shares the top 256 slots), so a page-table walk
+     * alone would have said "present and writable" here. */
+    ok(!KiIsUserRange(0xFFFFFFFF80100000ULL, 0x5c0), "kernel image address refused");
+    ok(!KiIsUserRange(0xFFFF800000000000ULL, 0x1000), "HHDM address refused");
+
+    /* Straddling the limit is refused even though the base is a user address. */
+    ok(!KiIsUserRange(KI_USER_SPACE_LIMIT - 0x800, 0x1000), "range straddling the limit refused");
+    ok(!KiIsUserRange(KI_USER_SPACE_LIMIT, 0x1000), "range starting at the limit refused");
+
+    /* base + size wrapping past 2^64 must not read as "small and in bounds".
+     * KI_EXC_FRAME_SIZE past the very top of the address space is the shape
+     * the exception dispatcher would compute from a hostile RSP. */
+    ok(!KiIsUserRange(0xFFFFFFFFFFFFF000ULL, 0x2000), "wrapping range refused");
+    ok(!KiIsUserRange(0xFFFFFFFFFFFFFFFFULL, 1), "wrap by one refused");
+}
+
 int kmt_run_m4(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_reserve_commit_engine);
     KMT_RUN(test_free_conventions);
+    KMT_RUN(test_user_range_bound);
     return kmt_failures - before;
 }

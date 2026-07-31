@@ -80,6 +80,18 @@ typedef struct
  * dispatcher frame onto a guarded stack). FALSE = truly unwritable. */
 static BOOLEAN KiMaterializeUserRange(uint64_t base, uint64_t size)
 {
+    /* The bound comes first and is not optional. Every caller derives `base`
+     * from a ring-3-controlled RSP, and the KiProbeForWrite that appears
+     * alongside these calls is a no-op on these paths (previousMode is
+     * KernelMode here — see KiIsUserRange). Without this test a user process
+     * that points RSP at the kernel image gets its CONTEXT memcpy'd there:
+     * the loop below would find the page present and writable, because a user
+     * PML4 shares the kernel's upper half. */
+    if (!KiIsUserRange(base, size))
+    {
+        return FALSE;
+    }
+
     PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
     uint64_t page = base & ~(uint64_t)(PAGE_SIZE - 1);
     for (; page < base + size; page += PAGE_SIZE)
