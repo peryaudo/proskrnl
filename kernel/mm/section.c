@@ -27,7 +27,7 @@
  * mapping-count raised); IopSectionBackingReleased drops the mapping count
  * when a section (or a failed create) lets go. */
 NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULONG pageProtection,
-                                MI_SECTION_BACKING *backing);
+                                const LARGE_INTEGER *maximumSize, MI_SECTION_BACKING *backing);
 void IopSectionBackingReleased(PVOID fileObjectBody);
 
 static void MipDeleteSection(PVOID body)
@@ -135,9 +135,10 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
             }
             if ((uint64_t)maximumSize->QuadPart > cache->fileSize)
             {
-                /* NT would extend a writable file here; no caller needs it
-                 * yet. Loud, not wrong (Art. 3). */
-                return STATUS_NOT_IMPLEMENTED;
+                /* Io already extended the file (or refused) before handing
+                 * the cache over -- see IopBuildSectionBacking. Reaching
+                 * here means the extension did not take. */
+                return STATUS_SECTION_TOO_BIG;
             }
             size = (uint64_t)maximumSize->QuadPart;
         }
@@ -670,7 +671,7 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
     BOOLEAN haveBacking = FALSE;
     if (file != 0)
     {
-        status = IopBuildSectionBacking(file, secFlags, protect, &backing);
+        status = IopBuildSectionBacking(file, secFlags, protect, sizeArg, &backing);
         if (!NT_SUCCESS(status))
         {
             return status;

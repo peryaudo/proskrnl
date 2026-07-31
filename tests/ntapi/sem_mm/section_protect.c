@@ -115,6 +115,50 @@ START_TEST(section_protect)
     }
     NtClose(file);
 
+    /* --- a section LARGER than its file ------------------------------------
+     *
+     * CreateFileMapping with a size larger than the file is an everyday Win32
+     * pattern: NT extends the file when the protection allows writing
+     * ("If an application specifies a size for the file mapping object that
+     * is larger than the size of the actual named file on disk and if the
+     * page protection allows write access, then the file on disk is
+     * increased" -- Microsoft, CreateFileMappingW), and refuses with
+     * STATUS_SECTION_TOO_BIG when it does not. proskrnl answered
+     * STATUS_NOT_IMPLEMENTED, which under the default-on arming flag is a
+     * kernel panic. */
+    max.QuadPart = 3 * 4096;
+    status = open_file(&file, dir, W("s.bin"), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+    ok(status == STATUS_SUCCESS, "reopen for the grow case -> %08lx", (unsigned long)status);
+    status =
+        NtCreateSection(&section, SECTION_ALL_ACCESS, NULL, &max, PAGE_READWRITE, SEC_COMMIT, file);
+    ok(status == STATUS_SUCCESS, "section larger than the file -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        FILE_STANDARD_INFORMATION std;
+        NtClose(section);
+        memset(&std, 0, sizeof(std));
+        status = NtQueryInformationFile(file, &iosb, &std, sizeof(std), FileStandardInformation);
+        ok(status == STATUS_SUCCESS, "query size after the grow -> %08lx", (unsigned long)status);
+        ok(std.EndOfFile.QuadPart == 3 * 4096, "the file grew to %ld, wanted %d",
+           (long)std.EndOfFile.QuadPart, 3 * 4096);
+    }
+    NtClose(file);
+
+    /* Without write access it is refused, not silently truncated. */
+    status = open_file(&file, dir, W("s.bin"), FILE_GENERIC_READ,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+    ok(status == STATUS_SUCCESS, "reopen read-only for the grow case -> %08lx",
+       (unsigned long)status);
+    max.QuadPart = 8 * 4096;
+    status =
+        NtCreateSection(&section, SECTION_ALL_ACCESS, NULL, &max, PAGE_READONLY, SEC_COMMIT, file);
+    ok(status == STATUS_SECTION_TOO_BIG, "oversized section over a read-only handle -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(section);
+    NtClose(file);
+
     scrub_file(dir, W("s.bin"));
     NtClose(dir);
 }

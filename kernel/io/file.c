@@ -679,7 +679,7 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
 /* --- the Mm seam: file-backed sections (kernel/mm/section.c) ---------------- */
 
 NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULONG pageProtection,
-                                MI_SECTION_BACKING *backing)
+                                const LARGE_INTEGER *maximumSize, MI_SECTION_BACKING *backing)
 {
     /* The file handle must grant what the section will exercise (the NT
      * rule Wine also applies): read always; write for a writable non-image
@@ -705,6 +705,42 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
          * cannot back a section. */
         ObDereferenceObject(file);
         return STATUS_INVALID_FILE_FOR_SECTION;
+    }
+
+    /* CreateFileMapping with a size LARGER than the file is an everyday
+     * Win32 pattern, and NT extends the file to match when the protection
+     * allows writing ("If an application specifies a size for the file
+     * mapping object that is larger than the size of the actual named file
+     * on disk and if the page protection allows write access, then the file
+     * on disk is increased" -- Microsoft, CreateFileMappingW). proskrnl
+     * answered STATUS_NOT_IMPLEMENTED, which under the default-on arming
+     * flag is a kernel panic (docs/review-2026-07 §5). Without write
+     * access, NT refuses with STATUS_SECTION_TOO_BIG. The extension happens
+     * HERE, before the cache is measured, so the section is built over the
+     * grown file rather than the old size. */
+    if (maximumSize != 0 && maximumSize->QuadPart > 0 && (sectionAttributes & SEC_IMAGE) == 0)
+    {
+        PMI_PAGE_CACHE existing;
+        status = file->device->ops->GetCache(file, &existing);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+        if ((uint64_t)maximumSize->QuadPart > existing->fileSize)
+        {
+            if ((needed & FILE_WRITE_DATA) == 0 || file->device->ops->SetEndOfFile == 0)
+            {
+                ObDereferenceObject(file);
+                return STATUS_SECTION_TOO_BIG;
+            }
+            status = file->device->ops->SetEndOfFile(file, (uint64_t)maximumSize->QuadPart);
+            if (!NT_SUCCESS(status))
+            {
+                ObDereferenceObject(file);
+                return status;
+            }
+        }
     }
 
     PMI_PAGE_CACHE cache;
@@ -781,7 +817,7 @@ static NTSTATUS IopOpenFileSection(const WCHAR *ntPath, ULONG sectionAttributes,
     if (NT_SUCCESS(status))
     {
         MI_SECTION_BACKING backing;
-        status = IopBuildSectionBacking(handle, sectionAttributes, pageProtection, &backing);
+        status = IopBuildSectionBacking(handle, sectionAttributes, pageProtection, 0, &backing);
         if (NT_SUCCESS(status))
         {
             status =
