@@ -528,11 +528,23 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
         return status;
     }
 
+    /* The transient handle lives in the CALLER's handle table, so it is
+     * user-closable: a sibling thread racing NtClose against this window
+     * makes the reference fail, and an ASSERT here would turn that into a
+     * machine halt (docs/review-2026-07 §2). Today Art. 3's no-preemption
+     * mandate closes the window, but the mandate has a named exit
+     * (docs/18 §13) and this outlives it. */
     PFILE_OBJECT file;
     thread->previousMode = KernelMode;
     NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file);
     thread->previousMode = saved;
-    ASSERT(NT_SUCCESS(refStatus));
+    if (!NT_SUCCESS(refStatus))
+    {
+        thread->previousMode = KernelMode;
+        NtClose(handle);
+        thread->previousMode = saved;
+        return refStatus;
+    }
     IO_FILE_INFO raw;
     status = file->device->ops->GetInfo(file, &raw);
     if (NT_SUCCESS(status))
@@ -583,11 +595,23 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
         return status;
     }
 
+    /* The transient handle lives in the CALLER's handle table, so it is
+     * user-closable: a sibling thread racing NtClose against this window
+     * makes the reference fail, and an ASSERT here would turn that into a
+     * machine halt (docs/review-2026-07 §2). Today Art. 3's no-preemption
+     * mandate closes the window, but the mandate has a named exit
+     * (docs/18 §13) and this outlives it. */
     PFILE_OBJECT file;
     thread->previousMode = KernelMode;
     NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file);
     thread->previousMode = saved;
-    ASSERT(NT_SUCCESS(refStatus));
+    if (!NT_SUCCESS(refStatus))
+    {
+        thread->previousMode = KernelMode;
+        NtClose(handle);
+        thread->previousMode = saved;
+        return refStatus;
+    }
     IO_FILE_INFO raw;
     status = file->device->ops->GetInfo(file, &raw);
     if (NT_SUCCESS(status))
