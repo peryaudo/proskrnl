@@ -987,6 +987,11 @@ NTSTATUS NtGetNextThread(HANDLE processHandle, HANDLE threadHandle, ACCESS_MASK 
 NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, PVOID buffer,
                                   ULONG length, PULONG returnLength)
 {
+    NTSTATUS probeStatus = PspProbeReturnLength(returnLength);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     PKTHREAD caller = KeGetCurrentThread();
     PETHREAD self = caller->threadObject;
 
