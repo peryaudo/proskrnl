@@ -127,19 +127,6 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
 
 /* --- the path walk -------------------------------------------------------- */
 
-/* Walk `attributes` down the namespace.
- *
- * Found:      *foundBody = referenced object, STATUS_SUCCESS.
- * Leaf free:  *foundBody = 0, *parentBody = referenced directory,
- *             *leafName = the remaining single component (pointing into the
- *             caller's or the reparse buffer — copy before returning to the
- *             caller), STATUS_SUCCESS.
- * Otherwise the failing NTSTATUS.
- *
- * A symbolic link met mid-path is always substituted; met as the FINAL
- * component it is substituted unless `followFinalLink` is FALSE (opening the
- * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
- * must be freed by the caller AFTER it is done with *leafName. */
 /* Validate a caller-supplied OBJECT_ATTRIBUTES before the engine reads it.
  *
  * Every NtCreate and NtOpen funnels through the three entry points below, and
@@ -192,6 +179,19 @@ NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes)
     return KiProbeForRead(name->Buffer, name->Length, sizeof(WCHAR));
 }
 
+/* Walk `attributes` down the namespace.
+ *
+ * Found:      *foundBody = referenced object, STATUS_SUCCESS.
+ * Leaf free:  *foundBody = 0, *parentBody = referenced directory,
+ *             *leafName = the remaining single component (pointing into the
+ *             caller's or the reparse buffer — copy before returning to the
+ *             caller), STATUS_SUCCESS.
+ * Otherwise the failing NTSTATUS.
+ *
+ * A symbolic link met mid-path is always substituted; met as the FINAL
+ * component it is substituted unless `followFinalLink` is FALSE (opening the
+ * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
+ * must be freed by the caller AFTER it is done with *leafName. */
 static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN followFinalLink,
                               BOOLEAN forCreate, POBJECT_TYPE parseType, PVOID *foundBody,
                               PVOID *parentBody, UNICODE_STRING *leafName,
