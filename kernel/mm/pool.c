@@ -97,20 +97,34 @@ static int MiExpandPool(uint64_t bytesNeeded)
 {
     uint64_t pages = (bytesNeeded + PAGE_SIZE - 1) / PAGE_SIZE;
     PMI_POOL_HEADER block = (PMI_POOL_HEADER)(uintptr_t)MiPoolEnd;
-    for (uint64_t i = 0; i < pages; i++)
+    uint64_t mapped = 0;
+    for (; mapped < pages; mapped++)
     {
         uint64_t frame = MiAllocatePage();
         if (frame == 0)
         {
-            return 0; /* pages already mapped stay part of the heap */
+            break;
         }
         MiMapPage(MiPoolEnd, frame, 1);
         MiPoolEnd += PAGE_SIZE;
         MiKasanCoverPool(MiPoolEnd); /* new heap starts shadow-poisoned */
     }
-    block->size = pages * PAGE_SIZE;
+    if (mapped == 0)
+    {
+        return 0;
+    }
+    /* A PARTIAL expansion still hands what it got to the free list. The old
+     * code returned early on the first failed page, so MiPoolEnd had already
+     * advanced past frames that were never inserted anywhere: permanently
+     * unreachable, and unreachable in a way that compounds -- a large
+     * MEM_RESERVE costs size/1024 bytes of pool per VAD, so a caller can
+     * drain physical memory this way (docs/review-2026-07 §7). The block is
+     * still short of what was asked for, so this returns failure when it is
+     * -- the caller retries or fails, but the frames are accounted for
+     * either way. */
+    block->size = mapped * PAGE_SIZE;
     MiInsertFreeBlock(block);
-    return 1;
+    return mapped == pages;
 }
 
 void *MiAllocatePool(uint64_t numberOfBytes)
