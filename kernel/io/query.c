@@ -900,6 +900,14 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     {
         status = KiProbeForWrite(buffer, length, 1);
     }
+    if (NT_SUCCESS(status))
+    {
+        /* The mask is the third ring-3 pointer here, and the one that used to
+         * be read raw: its Buffer is memcpy'd into the handle's retained
+         * dirMask below (docs/review-2026-07 §1a). Same authority as every
+         * other counted-string argument. */
+        status = ObProbeUnicodeStringRead(mask);
+    }
     if (!NT_SUCCESS(status))
     {
         return status;

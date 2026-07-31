@@ -9,6 +9,7 @@
 static const void *link_name = W("\\BaseNamedObjects\\prsk_nse_link");
 static const void *link2_name = W("\\BaseNamedObjects\\prsk_nse_link2");
 static const void *dangler_name = W("\\BaseNamedObjects\\prsk_nse_dangler");
+static const void *probe_link = W("\\BaseNamedObjects\\prsk_nse_probe");
 static const void *missing_tgt = W("\\BaseNamedObjects\\prsk_nse_missing");
 static const void *base_name = W("\\BaseNamedObjects");
 static const void *root_name = W("\\");
@@ -136,8 +137,8 @@ START_TEST(namespace_errors)
         void *const BAD = (void *)(ULONG_PTR)0x10000;
         UNICODE_STRING badname;
 
-        status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, (POBJECT_ATTRIBUTES)BAD, NotificationEvent,
-                               FALSE);
+        status =
+            NtCreateEvent(&h2, EVENT_ALL_ACCESS, (POBJECT_ATTRIBUTES)BAD, NotificationEvent, FALSE);
         ok(status == STATUS_ACCESS_VIOLATION, "create with bad attributes -> %08lx",
            (unsigned long)status);
         status = NtOpenEvent(&h2, EVENT_ALL_ACCESS, (POBJECT_ATTRIBUTES)BAD);
@@ -159,6 +160,49 @@ START_TEST(namespace_errors)
         status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
         ok(status == STATUS_ACCESS_VIOLATION, "create with bad name buffer -> %08lx",
            (unsigned long)status);
+
+        /* The symbolic-link pair takes a counted string OUTSIDE the
+         * OBJECT_ATTRIBUTES, so the engine's probe never saw it: the create
+         * memcpy'd up to 64 KB from an unvalidated Buffer, and the query
+         * wrote back through an unvalidated one. Together they are also a
+         * kernel-memory disclosure channel -- store from a kernel address,
+         * read it back out. */
+        init_ustr(&name, probe_link);
+        init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+
+        status =
+            NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_ALL_ACCESS, &attr, (PUNICODE_STRING)BAD);
+        ok(status == STATUS_ACCESS_VIOLATION, "symlink create, bad target descriptor -> %08lx",
+           (unsigned long)status);
+
+        badname.Length = 0x100;
+        badname.MaximumLength = 0x100;
+        badname.Buffer = (PWSTR)BAD;
+        status = NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_ALL_ACCESS, &attr, &badname);
+        ok(status == STATUS_ACCESS_VIOLATION, "symlink create, bad target buffer -> %08lx",
+           (unsigned long)status);
+
+        /* A real link, then query it into unreadable/unwritable places. */
+        init_ustr(&target, base_name);
+        status = NtCreateSymbolicLinkObject(&h2, SYMBOLIC_LINK_ALL_ACCESS, &attr, &target);
+        ok(status == STATUS_SUCCESS, "symlink create -> %08lx", (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            status = NtQuerySymbolicLinkObject(h2, (PUNICODE_STRING)BAD, NULL);
+            ok(status == STATUS_ACCESS_VIOLATION, "symlink query, bad descriptor -> %08lx",
+               (unsigned long)status);
+
+            /* A readable descriptor naming an UNWRITABLE Buffer is left
+             * out on purpose: the oracle cannot answer it. Wine's server
+             * writes the reply into the client's buffer itself, so the bad
+             * address kills the wine client outright ("wine client error:
+             * read: Bad address") rather than returning a status, and there
+             * is no NT contract to pin against instead -- only an oracle
+             * that cannot be asked. proskrnl probes that buffer for write
+             * before the memcpy regardless; the descriptor case above is
+             * what convicts the service. */
+            NtClose(h2);
+        }
     }
 
     NtClose(h);
