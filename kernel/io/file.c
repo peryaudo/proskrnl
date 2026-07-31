@@ -177,6 +177,30 @@ NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFIL
     return STATUS_SUCCESS;
 }
 
+/* Resolve a completion-event handle. THE authority for the question, used
+ * both by the up-front check every operation makes before doing any work and
+ * by the completion below. */
+static NTSTATUS IopReferenceCompletionEvent(HANDLE eventHandle, PVOID *eventOut)
+{
+    return ObReferenceObjectByHandle(eventHandle, EVENT_MODIFY_STATE, &ObpEventType,
+                                     ExGetPreviousMode(), eventOut, 0);
+}
+
+NTSTATUS IopValidateEventHandle(HANDLE eventHandle)
+{
+    if (eventHandle == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    PVOID eventBody;
+    NTSTATUS status = IopReferenceCompletionEvent(eventHandle, &eventBody);
+    if (NT_SUCCESS(status))
+    {
+        ObDereferenceObject(eventBody);
+    }
+    return status;
+}
+
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information)
 {
@@ -187,14 +211,22 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
     if (eventHandle != 0)
     {
         PVOID eventBody;
-        NTSTATUS eventStatus = ObReferenceObjectByHandle(
-            eventHandle, EVENT_MODIFY_STATE, &ObpEventType, ExGetPreviousMode(), &eventBody, 0);
-        if (!NT_SUCCESS(eventStatus))
+        /* A failure to signal the event is DISCARDED, and the operation's
+         * own status is returned. That is the oracle's behaviour --
+         * third_party/wine dlls/ntdll/unix/file.c spells it
+         * `if (event) NtSetEvent( event, NULL );` at every completion, with
+         * no test of the result -- and it is also the only answer that can
+         * be honest: by the time this runs the transfer HAS happened, so
+         * reporting STATUS_INVALID_HANDLE would tell the caller nothing
+         * occurred while the bytes were already gone
+         * (docs/review-2026-07 §7). Services whose oracle refuses a bad
+         * event handle do so BEFORE any work, through
+         * IopValidateEventHandle. */
+        if (NT_SUCCESS(IopReferenceCompletionEvent(eventHandle, &eventBody)))
         {
-            return eventStatus;
+            KeSetEvent(eventBody, 0, FALSE);
+            ObDereferenceObject(eventBody);
         }
-        KeSetEvent(eventBody, 0, FALSE);
-        ObDereferenceObject(eventBody);
     }
     return status;
 }

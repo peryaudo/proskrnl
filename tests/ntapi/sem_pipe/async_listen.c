@@ -68,6 +68,23 @@ static void test_pending_listen(void)
     ok(GetExitCodeThread(thread, &client) && client != 0, "connector had a handle");
     CloseHandle(thread);
 
+    /* An invalid EVENT handle is refused BEFORE the verb runs. Unlike the
+     * read/write pair -- where the oracle discards an event-signal failure
+     * and returns the transfer's own status (sem_file/read_write) -- the
+     * ioctl/FSCTL request carries the event to the wineserver, which
+     * rejects the whole request up front. proskrnl resolved the handle only
+     * at completion time, so the verb had already run
+     * (docs/review-2026-07 §7). The pipe is CONNECTED here, so a listen that
+     * does run answers STATUS_PIPE_CONNECTED -- a status distinct from the
+     * refusal, which is what makes this observable. */
+    poison_iosb(&iosb2);
+    status = NtFsControlFile(server, (HANDLE)(ULONG_PTR)0xdeadbee0, NULL, NULL, &iosb2,
+                             FSCTL_PIPE_LISTEN, NULL, 0, NULL, 0);
+    ok(status == STATUS_INVALID_HANDLE, "listen with a bad event handle -> %08lx",
+       (unsigned long)status);
+    ok(iosb2.Status == IOSB_POISON_STATUS, "refused listen wrote the iosb: %08lx",
+       (unsigned long)iosb2.Status);
+
     /* Listening again while connected answers synchronously. */
     poison_iosb(&iosb2);
     status =

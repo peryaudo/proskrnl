@@ -141,6 +141,48 @@ START_TEST(read_write)
        (unsigned long)iosb.Information);
     NtClose(ev);
 
+    /* --- an INVALID event handle does not stop the transfer. ---------------
+     *
+     * proskrnl used to resolve the event only at completion time and then
+     * return its failure as the CALL's status: a bad handle on NtReadFile
+     * consumed the bytes, advanced the file pointer and queued the
+     * completion APC, and reported STATUS_INVALID_HANDLE -- the data gone
+     * and the caller told nothing had happened (docs/review-2026-07 §7).
+     *
+     * The oracle's answer is that the transfer's own status wins and the
+     * event-signal failure is discarded: third_party/wine
+     * dlls/ntdll/unix/file.c writes `if (event) NtSetEvent( event, NULL );`
+     * with no test of the result. So the bytes AND the status agree, which
+     * is the property that matters either way. */
+    {
+        FILE_POSITION_INFORMATION before, after;
+        IO_STATUS_BLOCK posIosb;
+
+        poison_iosb(&iosb);
+        status = NtReadFile(h, NULL, NULL, NULL, &iosb, buffer, 4, NULL, NULL);
+        ok(status == STATUS_SUCCESS, "positional read before bad-event -> %08lx",
+           (unsigned long)status);
+
+        poison_iosb(&posIosb);
+        status =
+            NtQueryInformationFile(h, &posIosb, &before, sizeof(before), FilePositionInformation);
+        ok(status == STATUS_SUCCESS, "query position -> %08lx", (unsigned long)status);
+
+        poison_iosb(&iosb);
+        status = NtReadFile(h, (HANDLE)(ULONG_PTR)0xdeadbee0, NULL, NULL, &iosb, buffer, 4, NULL,
+                            NULL);
+        ok(status == STATUS_SUCCESS, "read with a bad event handle -> %08lx",
+           (unsigned long)status);
+
+        poison_iosb(&posIosb);
+        status =
+            NtQueryInformationFile(h, &posIosb, &after, sizeof(after), FilePositionInformation);
+        ok(status == STATUS_SUCCESS, "re-query position -> %08lx", (unsigned long)status);
+        ok(after.CurrentByteOffset.QuadPart == before.CurrentByteOffset.QuadPart + 4,
+           "the read reported success but moved the pointer by %ld, not 4",
+           (long)(after.CurrentByteOffset.QuadPart - before.CurrentByteOffset.QuadPart));
+    }
+
     /* --- file handles are waitable and signalled (fuzzer-found pin: NT
      * signals the file object at I/O completion; with synchronous
      * completion it reads as signalled). ------------------------------------ */

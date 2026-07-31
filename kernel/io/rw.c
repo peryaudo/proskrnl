@@ -68,10 +68,10 @@ static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC a
  * FILE_USE_FILE_POINTER_POSITION sentinel (same header) — unpinned, no
  * baked caller; a consumer would get a distinguishable
  * STATUS_INVALID_PARAMETER, never a fabricated position (docs/03). */
-static NTSTATUS IopStartTransfer(HANDLE handle, ACCESS_MASK needed, PIO_APC_ROUTINE apc,
-                                 PVOID apcContext, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteOffset,
-                                 PFILE_OBJECT *fileOut, uint64_t *offsetOut, PKAPC *apcOut,
-                                 BOOLEAN *writeToEndOut)
+static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed,
+                                 PIO_APC_ROUTINE apc, PVOID apcContext, PIO_STATUS_BLOCK iosb,
+                                 PLARGE_INTEGER byteOffset, PFILE_OBJECT *fileOut,
+                                 uint64_t *offsetOut, PKAPC *apcOut, BOOLEAN *writeToEndOut)
 {
     if (iosb == 0)
     {
@@ -157,7 +157,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     PFILE_OBJECT file;
     uint64_t offset;
     PKAPC apcBlock = 0;
-    NTSTATUS status = IopStartTransfer(handle, FILE_READ_DATA, apc, apcContext, iosb, byteOffset,
+    NTSTATUS status = IopStartTransfer(handle, event, FILE_READ_DATA, apc, apcContext, iosb, byteOffset,
                                        &file, &offset, &apcBlock, 0);
     if (!NT_SUCCESS(status))
     {
@@ -255,8 +255,8 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     /* The access gate is NOT plain FILE_WRITE_DATA: an APPEND-ONLY handle
      * (FILE_APPEND_DATA without WRITE_DATA — kernelbase's append-mode
      * loggers) writes too, forced to EOF below (pinned sem_file/append.c). */
-    NTSTATUS status = IopStartTransfer(handle, 0, apc, apcContext, iosb, byteOffset, &file, &offset,
-                                       &apcBlock, &writeToEnd);
+    NTSTATUS status = IopStartTransfer(handle, event, 0, apc, apcContext, iosb, byteOffset, &file,
+                                       &offset, &apcBlock, &writeToEnd);
     if (!NT_SUCCESS(status))
     {
         return status;
