@@ -175,7 +175,26 @@ static NTSTATUS PspAllocateUserRegion(PEPROCESS process, uint64_t requestedBase,
 static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
                                      uint64_t *stackTopOut, uint64_t *stackLimitOut)
 {
+    /* Both sizes come from the image's optional header, i.e. from a file the
+     * caller supplies. Round with a guard and floor the reserve at something
+     * the layout below can actually hold: unguarded, a SizeOfStackReserve
+     * near 2^64 rounded to 0, and `reserve - 2 * PAGE_SIZE` then underflowed
+     * to a huge commit (docs/review-2026-07 §3). The floor is the guard page
+     * plus one committed page plus one page of slack -- the smallest stack
+     * the guard-page growth logic is meaningful on. */
+    if (reserve > KI_USER_SPACE_LIMIT - MI_ALLOCATION_GRANULARITY)
+    {
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
+    if (reserve < 3ULL * PAGE_SIZE)
+    {
+        reserve = MI_ALLOCATION_GRANULARITY;
+    }
+    if (commit > KI_USER_SPACE_LIMIT - PAGE_SIZE)
+    {
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
     commit = (commit + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
     if (commit < PAGE_SIZE)
     {
