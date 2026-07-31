@@ -78,10 +78,17 @@ typedef struct NPFS_INSTANCE
     NPFS_QUEUE outbound; /* server -> client */
     KEVENT connectEvent; /* notification: connect / state changed */
 
-    /* CUI-3: the one parked async listen (kernel/io/async.c). Owned here:
-     * completed by client attach, NtCancelIoFile(Ex), or the server end's
-     * cleanup — whichever comes first (G11). */
-    PIOP_PENDING_REQUEST pendingListen;
+    /* CUI-3: the parked async listens (kernel/io/async.c), in submission
+     * order. Owned here: completed by client attach, NtCancelIoFile(Ex), or
+     * the server end's cleanup — whichever comes first (G11).
+     *
+     * A QUEUE, not one slot. A second concurrent async listen used to
+     * refuse with STATUS_NOT_IMPLEMENTED, which under the (default-on)
+     * arming flag is a kernel panic — reached by the standard accept-loop
+     * idiom, which submits the next listen before the previous one
+     * completes, and which the oracle supports by queueing
+     * (docs/review-2026-07 §5). */
+    LIST_ENTRY pendingListenHead;
 } NPFS_INSTANCE, *PNPFS_INSTANCE;
 
 typedef struct NPFS_END
@@ -520,13 +527,14 @@ static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CO
                  * blocking listen). One slot: no baked caller stacks two
                  * listens on one instance; a second is refused loudly, not
                  * given a made-up answer (Art. 12). */
-                if (instance->pendingListen != 0)
+                PIOP_PENDING_REQUEST pending = 0;
+                NTSTATUS status = IopPreparePendingRequest(request, &pending);
+                if (!NT_SUCCESS(status))
                 {
-                    DbgPrint("npfs: second concurrent listen on one instance\n");
-                    return STATUS_NOT_IMPLEMENTED;
+                    return status;
                 }
-                NTSTATUS status = IopPreparePendingRequest(request, &instance->pendingListen);
-                return NT_SUCCESS(status) ? STATUS_PENDING : status;
+                InsertTailList(&instance->pendingListenHead, &pending->queueEntry);
+                return STATUS_PENDING;
             }
             {
                 NTSTATUS waitStatus = NpfsWait(&instance->connectEvent);
@@ -559,7 +567,7 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
     }
     /* A listen can pend only in the listening state, which the guard above
      * rejects — nothing to cancel here. */
-    ASSERT(instance->pendingListen == 0);
+    ASSERT(IsListEmpty(&instance->pendingListenHead));
     /* Unread bytes are DISCARDED (pinned) and the client end is orphaned. */
     NpfsFlushQueue(&instance->inbound);
     NpfsFlushQueue(&instance->outbound);
@@ -841,12 +849,19 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     instance->endCount++;
     instance->state = FILE_PIPE_CONNECTED_STATE;
     NpfsWakeAll(instance); /* satisfy a parked FSCTL_PIPE_LISTEN */
-    if (instance->pendingListen != 0)
+    while (!IsListEmpty(&instance->pendingListenHead))
     {
-        /* Complete the pended async listen: IOSB {SUCCESS, 0} in the
-         * server's address space, then its event (pinned async_listen.c). */
-        PIOP_PENDING_REQUEST pending = instance->pendingListen;
-        instance->pendingListen = 0;
+        /* Complete EVERY pended async listen: IOSB {SUCCESS, 0} in the
+         * server's address space, then its event (pinned async_listen.c).
+         * All of them, not just the oldest -- the instance is connected now,
+         * and a listen submitted against a connected instance answers
+         * STATUS_PIPE_CONNECTED anyway, so leaving one queued would park it
+         * forever. This is the oracle's own behaviour: wineserver wakes the
+         * whole listen queue (server/named_pipe.c, async_wake_up on the
+         * server's listen queue). */
+        PIOP_PENDING_REQUEST pending =
+            CONTAINING_RECORD(instance->pendingListenHead.Flink, IOP_PENDING_REQUEST, queueEntry);
+        RemoveEntryList(&pending->queueEntry);
         IopCompletePendingRequest(pending, STATUS_SUCCESS, 0);
     }
 
@@ -874,13 +889,15 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
     }
     if (instance->serverEnd == end)
     {
-        if (instance->pendingListen != 0)
+        while (!IsListEmpty(&instance->pendingListenHead))
         {
-            /* The owning handle is going away: cancel-complete the parked
-             * listen before the instance loses its server end (G11 — the
+            /* The owning handle is going away: cancel-complete every parked
+             * listen before the instance loses its server end (G11 — a
              * request never outlives the handle that issued it). */
-            PIOP_PENDING_REQUEST pending = instance->pendingListen;
-            instance->pendingListen = 0;
+            PIOP_PENDING_REQUEST pending =
+                CONTAINING_RECORD(instance->pendingListenHead.Flink, IOP_PENDING_REQUEST,
+                                  queueEntry);
+            RemoveEntryList(&pending->queueEntry);
             IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
         }
         instance->serverEnd = 0;
@@ -943,15 +960,25 @@ static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BL
         return 0;
     }
     PNPFS_INSTANCE instance = end->instance;
-    PIOP_PENDING_REQUEST pending = instance->pendingListen;
-    if (pending == 0 || (issuer != 0 && pending->issuer != issuer) ||
-        (userIosb != 0 && pending->userIosb != userIosb))
+    /* Cancel EVERY queued listen the filter matches, oldest first -- one
+     * NtCancelIoFile cancels all of that thread's pending I/O on the handle,
+     * not just the first. */
+    int cancelled = 0;
+    PLIST_ENTRY entry = instance->pendingListenHead.Flink;
+    while (entry != &instance->pendingListenHead)
     {
-        return 0;
+        PIOP_PENDING_REQUEST pending = CONTAINING_RECORD(entry, IOP_PENDING_REQUEST, queueEntry);
+        entry = entry->Flink;
+        if ((issuer != 0 && pending->issuer != issuer) ||
+            (userIosb != 0 && pending->userIosb != userIosb))
+        {
+            continue;
+        }
+        RemoveEntryList(&pending->queueEntry);
+        IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
+        cancelled = 1;
     }
-    instance->pendingListen = 0;
-    IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
-    return 1;
+    return cancelled;
 }
 
 const IO_VFS_OPS NpfsVfsOps = {
@@ -1092,6 +1119,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     IopInitializeFcb(&instance->header);
     instance->pipe = pipe;
     instance->state = FILE_PIPE_LISTENING_STATE;
+    InitializeListHead(&instance->pendingListenHead);
     NpfsInitializeQueue(&instance->inbound, pipe->inQuota);
     NpfsInitializeQueue(&instance->outbound, pipe->outQuota);
     KeInitializeEvent(&instance->connectEvent, NotificationEvent, FALSE);

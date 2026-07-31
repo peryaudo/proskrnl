@@ -184,6 +184,9 @@ typedef struct IOP_PENDING_REQUEST
     PKEVENT event;             /* referenced event body, or 0 */
     PKTHREAD issuer;           /* NtCancelIoFile scoping; compared, never
                                 * dereferenced */
+    LIST_ENTRY queueEntry;     /* for a device that queues several pending
+                                * requests of one kind (npfs's listen
+                                * queue); unused when a device holds one */
 } IOP_PENDING_REQUEST, *PIOP_PENDING_REQUEST;
 
 /* Build a pending request in the ISSUER's context (references the event and
