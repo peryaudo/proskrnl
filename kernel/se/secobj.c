@@ -83,9 +83,22 @@ NTSTATUS NtQuerySecurityObject(HANDLE handle, SECURITY_INFORMATION securityInfor
     }
 
     /* Build the self-relative reply: header, then owner, group, sacl, dacl
-     * in that order (the same order the parts are stored in). */
-    BYTE reply[512];
-    ASSERT(needed <= sizeof(reply));
+     * in that order (the same order the parts are stored in).
+     *
+     * Pooled and sized to `needed`, not a fixed stack array. `needed` is
+     * derived entirely from a descriptor the CALLER stored earlier, and
+     * SepCaptureAcl accepts an ACL of up to 65535 bytes, so no constant is
+     * large enough. The `length < needed` test above does not bound it
+     * either -- the caller simply supplies a big enough output buffer. This
+     * was previously BYTE reply[512] under an ASSERT, i.e. an unprivileged
+     * halt of the machine (ASSERT is always compiled in and fatal) and a
+     * 64 KiB stack overflow if that assert were ever relaxed. */
+    BYTE *reply = MiAllocatePool(needed);
+    if (reply == 0)
+    {
+        ObDereferenceObject(body);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     SECURITY_DESCRIPTOR_RELATIVE *header = (SECURITY_DESCRIPTOR_RELATIVE *)reply;
     memset(header, 0, sizeof(*header));
     header->Revision = SECURITY_DESCRIPTOR_REVISION;
@@ -127,9 +140,11 @@ NTSTATUS NtQuerySecurityObject(HANDLE handle, SECURITY_INFORMATION securityInfor
     status = KiProbeForWrite(descriptor, needed, sizeof(ULONG));
     if (!NT_SUCCESS(status))
     {
+        MiFreePool(reply);
         return status;
     }
     memcpy(descriptor, reply, needed);
+    MiFreePool(reply);
     return STATUS_SUCCESS;
 }
 
