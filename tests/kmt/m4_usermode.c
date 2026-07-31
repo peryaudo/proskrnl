@@ -16,6 +16,7 @@
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/phys.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/ke/ke.h"
 #include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
@@ -196,7 +197,6 @@ static void test_user_range_bound(void)
     ok(!KiIsUserRange(0xFFFFFFFFFFFFFFFFULL, 1), "wrap by one refused");
 }
 
-
 /* Regression for the process-parameter slot-sizing overflow. PspCaptureString
  * computed MaximumLength as (USHORT)(Length + sizeof(WCHAR)); Length is itself
  * a USHORT, so 0xFFFE wrapped to 0 and 0xFFFF to 1. PspBuildPeb then sizes
@@ -235,8 +235,7 @@ static void test_param_capture_saturates(void)
 
         PSP_CAPTURED_PARAMS *captured = 0;
         NTSTATUS status = PspCaptureProcessParameters(&params, &captured);
-        ok(status == STATUS_SUCCESS, "capture len %x -> %08lx", lengths[c],
-           (unsigned long)status);
+        ok(status == STATUS_SUCCESS, "capture len %x -> %08lx", lengths[c], (unsigned long)status);
         if (!NT_SUCCESS(status) || captured == 0)
         {
             continue;
@@ -251,6 +250,72 @@ static void test_param_capture_saturates(void)
     }
 }
 
+/* The ring-0 fault recovery frame (kernel/syscall/uaccess.h,
+ * kernel/syscall/recover.S). The system service dispatcher arms one around
+ * every ring-3-originated service so that a fault on a user address inside a
+ * service returns STATUS_ACCESS_VIOLATION instead of halting the machine; the
+ * mechanism itself is invisible from ring 3, so it is convicted here.
+ *
+ * Without KiDispatchTrap's unwind hook this test does not fail — it takes the
+ * whole kernel down with [PANIC] vector=14, which is exactly the failure mode
+ * the review named as its highest-leverage single fix (§1b). The address
+ * touched is a low user-space VA that no address space maps.
+ *
+ * `volatile` on the two locals is load-bearing, not decoration: after an
+ * unwind every non-callee-saved local is indeterminate, so anything read on
+ * that path has to live in memory. */
+#define KMT_UNMAPPED_USER_VA 0x00000000000A5000ULL
+
+static void test_kernel_fault_recovery(void)
+{
+    volatile int recovered = 0;
+    volatile ULONG status = 0;
+    PKTHREAD thread = KeGetCurrentThread();
+    ok(thread->faultRecovery == 0, "no recovery frame armed on entry");
+
+    KI_FAULT_RECOVERY recovery;
+    ULONG unwound = KiSetFaultRecovery(&recovery);
+    if (unwound == 0)
+    {
+        thread->faultRecovery = &recovery;
+        /* A ring-0 read of an unmapped user address: #PF with CPL 0. */
+        volatile const unsigned char *victim =
+            (volatile const unsigned char *)(uintptr_t)KMT_UNMAPPED_USER_VA;
+        unsigned char sink = *victim;
+        (void)sink;
+        ok(0, "ring-0 access to an unmapped user VA did not fault");
+    }
+    else
+    {
+        recovered = 1;
+        status = unwound;
+    }
+    KeGetCurrentThread()->faultRecovery = 0;
+
+    ok(recovered == 1, "unwound to the recovery frame");
+    ok(status == (ULONG)STATUS_ACCESS_VIOLATION,
+       "unwind status %08lx, wanted STATUS_ACCESS_VIOLATION", (unsigned long)status);
+
+    /* A write faults the same way, and the frame is re-armable. */
+    recovered = 0;
+    KI_FAULT_RECOVERY second;
+    if (KiSetFaultRecovery(&second) == 0)
+    {
+        KeGetCurrentThread()->faultRecovery = &second;
+        volatile unsigned char *victim =
+            (volatile unsigned char *)(uintptr_t)(KMT_UNMAPPED_USER_VA + 0x1000);
+        *victim = 1;
+        ok(0, "ring-0 write to an unmapped user VA did not fault");
+    }
+    else
+    {
+        recovered = 1;
+    }
+    KeGetCurrentThread()->faultRecovery = 0;
+    ok(recovered == 1, "unwound to the second recovery frame");
+    ok(KeGetCurrentThread()->faultRecovery == 0, "recovery frame disarmed after the unwind");
+}
+
 int kmt_run_m4(void)
 {
     int before = kmt_failures;
@@ -258,5 +323,6 @@ int kmt_run_m4(void)
     KMT_RUN(test_free_conventions);
     KMT_RUN(test_user_range_bound);
     KMT_RUN(test_param_capture_saturates);
+    KMT_RUN(test_kernel_fault_recovery);
     return kmt_failures - before;
 }
