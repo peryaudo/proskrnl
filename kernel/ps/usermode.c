@@ -174,15 +174,58 @@ static void KiRestoreFxState(const CONTEXT *context)
 
 /* --- CONTEXT <-> KTRAP_FRAME --------------------------------------------- */
 
+/* Capture the trap frame into `context`, honouring the ContextFlags the
+ * CALLER put there. NT's documented idiom is to ask for a subset --
+ * `ContextFlags = CONTEXT_INTEGER; NtGetContextThread(...)` -- and only the
+ * requested groups are filled; the returned ContextFlags say which. This
+ * used to ignore the caller's request entirely and stamp CONTEXT_FULL over
+ * it, which paired with the set side made the documented get-modify-set
+ * sequence overwrite Rip and Rsp with zero (docs/review-2026-07 §9).
+ *
+ * The four groups follow the AMD64 CONTEXT layout (abi/ntcontext.h):
+ * CONTROL is SegSs/Rsp/SegCs/Rip/EFlags, INTEGER the 16 GPRs minus Rsp,
+ * SEGMENTS the four data selectors, FLOATING_POINT the FltSave area + MxCsr.
+ * SEGMENTS was never filled at all -- KiTrapFrameToContext zeroed the
+ * selectors and CONTEXT_FULL claimed otherwise. */
 static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
 {
-    memset(context, 0, sizeof(*context));
-    context->ContextFlags = CONTEXT_FULL;
+    ULONG wanted = context->ContextFlags;
+    if ((wanted & CONTEXT_AMD64) != CONTEXT_AMD64)
+    {
+        wanted = CONTEXT_FULL; /* an unset/foreign architecture tag: give it all */
+    }
+    /* Fields OUTSIDE the requested groups are left exactly as the caller
+     * left them -- not zeroed. Verified against the pinned oracle: a
+     * CONTEXT_INTEGER get returns the caller's own Rip untouched, and a
+     * CONTEXT_CONTROL get its own Rax. */
+    context->ContextFlags = wanted;
+    if (wanted & CONTEXT_SEGMENTS)
+    {
+        context->SegDs = KI_USER_DS_SELECTOR;
+        context->SegEs = KI_USER_DS_SELECTOR;
+        context->SegFs = KI_USER_DS_SELECTOR;
+        context->SegGs = KI_USER_DS_SELECTOR;
+    }
+    if (wanted & CONTEXT_CONTROL)
+    {
+        context->SegSs = (WORD)frame->segSs;
+        context->Rsp = frame->rsp;
+        context->SegCs = (WORD)frame->segCs;
+        context->Rip = frame->rip;
+        context->EFlags = (DWORD)frame->eflags;
+    }
+    if (wanted & CONTEXT_FLOATING_POINT)
+    {
+        KiCaptureFxState(context);
+    }
+    if ((wanted & CONTEXT_INTEGER) == 0)
+    {
+        return;
+    }
     context->Rax = frame->rax;
     context->Rcx = frame->rcx;
     context->Rdx = frame->rdx;
     context->Rbx = frame->rbx;
-    context->Rsp = frame->rsp;
     context->Rbp = frame->rbp;
     context->Rsi = frame->rsi;
     context->Rdi = frame->rdi;
@@ -194,11 +237,6 @@ static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
     context->R13 = frame->r13;
     context->R14 = frame->r14;
     context->R15 = frame->r15;
-    context->Rip = frame->rip;
-    context->SegCs = (WORD)frame->segCs;
-    context->SegSs = (WORD)frame->segSs;
-    context->EFlags = (DWORD)frame->eflags;
-    KiCaptureFxState(context);
 }
 
 /* Apply a user-supplied CONTEXT to the outgoing trap frame. Segment selectors
@@ -206,36 +244,56 @@ static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
  * to return to ring 0 or set IOPL/IF-off via NtContinue). */
 static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
 {
-    frame->rax = context->Rax;
-    frame->rcx = context->Rcx;
-    frame->rdx = context->Rdx;
-    frame->rbx = context->Rbx;
-    frame->rsp = context->Rsp;
-    frame->rbp = context->Rbp;
-    frame->rsi = context->Rsi;
-    frame->rdi = context->Rdi;
-    frame->r8 = context->R8;
-    frame->r9 = context->R9;
-    frame->r10 = context->R10;
-    frame->r11 = context->R11;
-    frame->r12 = context->R12;
-    frame->r13 = context->R13;
-    frame->r14 = context->R14;
-    frame->r15 = context->R15;
-    frame->rip = context->Rip;
-    if (context->ContextFlags & (CONTEXT_FLOATING_POINT & ~CONTEXT_AMD64))
+    /* Apply only the groups the caller declared. Applying everything
+     * unconditionally is what made the documented get-modify-set idiom --
+     * ask for CONTEXT_INTEGER, change one register, set it back -- write Rip
+     * and Rsp as zero (docs/review-2026-07 §9). */
+    ULONG wanted = context->ContextFlags;
+    if ((wanted & CONTEXT_AMD64) != CONTEXT_AMD64)
+    {
+        wanted = CONTEXT_FULL;
+    }
+    if (wanted & CONTEXT_INTEGER)
+    {
+        frame->rax = context->Rax;
+        frame->rcx = context->Rcx;
+        frame->rdx = context->Rdx;
+        frame->rbx = context->Rbx;
+        frame->rbp = context->Rbp;
+        frame->rsi = context->Rsi;
+        frame->rdi = context->Rdi;
+        frame->r8 = context->R8;
+        frame->r9 = context->R9;
+        frame->r10 = context->R10;
+        frame->r11 = context->R11;
+        frame->r12 = context->R12;
+        frame->r13 = context->R13;
+        frame->r14 = context->R14;
+        frame->r15 = context->R15;
+    }
+    if (wanted & CONTEXT_FLOATING_POINT)
     {
         KiRestoreFxState(context);
     }
+    if (wanted & CONTEXT_CONTROL)
+    {
+        frame->rsp = context->Rsp;
+        frame->rip = context->Rip;
+        /* Sanitize the RFLAGS a ring-3 CONTEXT may set (our security policy,
+         * not an external contract — analogous to the SFMASK choice in
+         * arch/x86_64/gdt.c): keep the user-settable status/control bits
+         * CF(0) PF(2) AF(4) ZF(6) SF(7) TF(8) DF(10) OF(11), then force IF
+         * on and the always-1 bit 1 (0x202), so NtContinue can never return
+         * to ring 0, raise IOPL, or run with interrupts masked. TF is in the
+         * kept set: dropping it made user single-stepping impossible, which
+         * is a debugger's whole mechanism (SDM Vol. 1 "EFLAGS Register";
+         * mask 0xdd5). */
+        frame->eflags = (context->EFlags & 0x00000dd5ULL) | 0x202ULL;
+    }
+    /* The selectors are ALWAYS forced, whatever the caller declared: a ring-3
+     * CONTEXT must never choose its own CS/SS. */
     frame->segCs = KI_USER_CS_SELECTOR;
     frame->segSs = KI_USER_DS_SELECTOR;
-    /* Sanitize the RFLAGS a ring-3 CONTEXT may set (our security policy, not an
-     * external contract — analogous to the SFMASK choice in arch/x86_64/gdt.c):
-     * keep only the user-settable status/control bits CF(0) PF(2) AF(4) ZF(6)
-     * SF(7) DF(10) OF(11) (mask 0xcd5; SDM Vol. 1 "EFLAGS Register"), then force
-     * IF on and the always-1 bit 1 (0x202), so NtContinue can never return to
-     * ring 0, raise IOPL, or run with interrupts masked. */
-    frame->eflags = (context->EFlags & 0x00000cd5ULL) | 0x202ULL;
 }
 
 /* --- the first descent into ring 3 ---------------------------------------- */
@@ -406,6 +464,8 @@ BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, ui
     }
 
     CONTEXT context;
+    memset(&context, 0, sizeof(context));
+    context.ContextFlags = CONTEXT_FULL; /* the dispatchers want everything */
     KiTrapFrameToContext(trapFrame, &context);
     return KiEnterUserExceptionDispatcher(trapFrame, &record, &context);
 }
@@ -448,6 +508,8 @@ void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame)
      * passes back to NtContinueEx sits at 0x4f0, and the machine frame its
      * unwind info reads at 0x530 (offsets pinned at the top of this file). */
     CONTEXT context;
+    memset(&context, 0, sizeof(context));
+    context.ContextFlags = CONTEXT_FULL; /* the dispatchers want everything */
     KiTrapFrameToContext(trapFrame, &context);
     context.P1Home = arg1;
     context.P2Home = arg2;
@@ -628,7 +690,18 @@ NTSTATUS NtGetContextThread(HANDLE threadHandle, PCONTEXT context)
     {
         return status;
     }
+    /* The caller's ContextFlags is an INPUT: it names the groups it wants
+     * (the documented `ContextFlags = CONTEXT_INTEGER; get; modify; set`
+     * idiom). Reading it was the missing half -- see KiTrapFrameToContext. */
+    /* Capture the caller's whole CONTEXT first: its ContextFlags names the
+     * groups it wants, and everything outside those groups must come back
+     * unchanged. */
     CONTEXT captured;
+    status = KiCopyFromUser(&captured, context, sizeof(CONTEXT));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     KiTrapFrameToContext(thread->trapFrame, &captured);
     memcpy(context, &captured, sizeof(CONTEXT));
     return STATUS_SUCCESS;
