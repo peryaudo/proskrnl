@@ -320,6 +320,20 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         PspExitCurrentProcess(faultStatus);
     }
 
+    /* A ring-0 fault on a USER address inside a system service: unwind to the
+     * dispatcher's recovery frame and let the service return
+     * STATUS_ACCESS_VIOLATION, exactly as NT's KiSystemServiceHandler does.
+     * Without this every missing or stale user-pointer probe is an
+     * unprivileged machine halt rather than a failed syscall. Returns only
+     * when there is nothing to unwind to (a genuine kernel-address bug), and
+     * then the panic below is the right answer. */
+    if (trapFrame->vector == 14 || trapFrame->vector == 12)
+    {
+        uint64_t faultAddress = 0;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(faultAddress));
+        KiRecoverFromKernelFault(faultAddress, trapFrame->vector);
+    }
+
     KiPanicLatch();
     KiDumpTrapFrame("[PANIC]", trapFrame);
     KiDumpStackTrace(trapFrame->rbp);

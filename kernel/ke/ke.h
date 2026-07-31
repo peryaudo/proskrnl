@@ -203,6 +203,13 @@ struct KTHREAD
     void *teb;         /* user-space TEB, 0 for kernel-only threads */
     KPROCESSOR_MODE previousMode;
 
+    /* The armed ring-0 fault recovery frame (KI_FAULT_RECOVERY *, opaque
+     * here — kernel/syscall/uaccess.h owns the shape). The system service
+     * dispatcher arms one around every ring-3-originated service; a ring-0
+     * fault on a user address unwinds to it with STATUS_ACCESS_VIOLATION
+     * rather than halting the machine. 0 whenever no service is running. */
+    void *faultRecovery;
+
     /* wait machinery */
     NTSTATUS waitStatus;
     PKWAIT_BLOCK waitBlockList; /* chain via nextWaitBlock; 0 = pure delay */

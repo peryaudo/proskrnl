@@ -7,6 +7,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/mm/phys.h"
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
 
 KPROCESSOR_MODE ExGetPreviousMode(void)
@@ -71,6 +72,34 @@ NTSTATUS KiProbeForRead(const void *address, uint64_t length, uint64_t alignment
 NTSTATUS KiProbeForWrite(void *address, uint64_t length, uint64_t alignment)
 {
     return KiProbeRange(address, length, alignment, 1);
+}
+
+void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    if (thread == 0 || thread->faultRecovery == 0)
+    {
+        return; /* nothing armed: a kernel bug, and the caller panics */
+    }
+    /* Only a USER address unwinds. A ring-0 fault on a kernel address is
+     * never a bad-user-pointer bug, and swallowing it would hide exactly the
+     * class the panic dump exists to convict (Art. 9). Vector 14 (#PF) and 12
+     * (#SS) are the only ones a stray pointer produces; anything else in ring
+     * 0 is a control-flow bug, not a data one. */
+    if (vector != 14 && vector != 12)
+    {
+        return;
+    }
+    if (!KiIsUserRange(faultAddress, 1))
+    {
+        return;
+    }
+
+    PKI_FAULT_RECOVERY frame = (PKI_FAULT_RECOVERY)thread->faultRecovery;
+    thread->faultRecovery = 0;
+    DbgPrint("[KTEST] uaccess RECOVER va=%#018lx (unwinding the service)\n",
+             (unsigned long)faultAddress);
+    KiJumpFaultRecovery(frame, (ULONG)STATUS_ACCESS_VIOLATION);
 }
 
 NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t length)
