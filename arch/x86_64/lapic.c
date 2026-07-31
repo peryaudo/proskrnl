@@ -122,12 +122,23 @@ static uint32_t KiCalibrateApicTimer(void)
      * OUT rises at terminal count). */
     KiOutByte(PIT_GATE, (uint8_t)((KiInByte(PIT_GATE) & 0xFC) | 0x01));
     KiOutByte(PIT_COMMAND, 0xB0);
-    KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT & 0xFF);
-    KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT >> 8);
 
+    /* Arm the LAPIC timer BEFORE the PIT starts counting, and start them as
+     * close together as the two buses allow. In mode 0 with lobyte/hibyte
+     * access the PIT loads and begins on the HIGH-byte write, so the low
+     * byte goes out first, the LAPIC's initial-count store next, and the
+     * high byte last -- one I/O write apart.
+     *
+     * The whole LAPIC setup used to sit after both count bytes, so the
+     * LAPIC missed the head of the gate: the tick count came out low, the
+     * derived ticks-per-ms came out low, and every timeout in the system
+     * expired early. Small (<0.1%) but one-directional, which is what makes
+     * it worth fixing rather than tolerating (docs/review-2026-07 §8). */
+    KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT & 0xFF);
     KiApicWrite(LAPIC_TMR_DIV, 0x3); /* divide by 16 */
     KiApicWrite(LAPIC_LVT_TMR, LAPIC_TMR_MASKED | TIMER_VECTOR);
     KiApicWrite(LAPIC_TMR_INIT, 0xFFFFFFFFU);
+    KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT >> 8);
 
     while ((KiInByte(PIT_GATE) & 0x20) == 0)
     {
@@ -147,8 +158,14 @@ void KiInitializeClock(void)
 
     KiEnableXApic();
 
-    /* Enable the LAPIC; route spurious interrupts to vector 0xFF. */
-    KiApicWrite(LAPIC_SVR, LAPIC_SVR_ENABLE | 0xFF);
+    /* Enable the LAPIC; route spurious interrupts to vector 0xFF -- and give
+     * that vector a gate. Without one, the architecturally-defined "ignore
+     * this" event raised a #GP and panicked blaming an unrelated RIP
+     * (docs/review-2026-07 §8). The handler returns WITHOUT an EOI, as the
+     * SDM requires for a spurious interrupt (Vol. 3A §11.9 "Spurious
+     * Interrupt"). */
+    KiSetInterruptGate(KI_SPURIOUS_VECTOR, (uint64_t)(uintptr_t)KiSpuriousInterruptThunk);
+    KiApicWrite(LAPIC_SVR, LAPIC_SVR_ENABLE | KI_SPURIOUS_VECTOR);
 
     KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
