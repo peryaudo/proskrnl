@@ -117,6 +117,28 @@ decides what runs** — and ends with
 `[KTEST] ntapi done tests=<n> failures=<n>`, the boot's stop condition. Both modes collect
 `[KTEST] … PASS/FAIL` lines and exit non-zero if any test fails.
 
+### Iterating on one test
+
+Both legs take optional `<subtest>` arguments — a test's base name (unique across the
+buckets), or a glob over base names:
+
+```
+tests/run/run.sh oracle   query_dir           # one test under the oracle
+tests/run/run.sh proskrnl query_dir           # bake+boot ONLY that .exe
+tests/run/run.sh proskrnl 'se_*' handle_life  # globs and several names are fine
+```
+
+Because the image decides what runs, the proskrnl leg needs no kernel-side filter: a
+subset run bakes only the named `.exe`s, so the sweep — and the boot — is as short as the
+subset. It writes its own image and log (`build/tests/proskrnl-subset.hdd`,
+`proskrnl-subset-serial.log`) so a partial image can never be mistaken for the gate's,
+and it runs the structural FAT oracles only (the full leg's per-test expectations do not
+hold when only some tests ran).
+
+A subset run is for **iteration, never for a verdict** — it says so on stdout, and the
+gates in `docs/CONTRIBUTING.md` are the unfiltered runs. A pattern matching nothing is an
+error listing the known names, so a typo can never read as "everything passed".
+
 ---
 
 ## Directory layout
@@ -135,7 +157,8 @@ tests/
     sem_reg/             # registry semantics
     sem_pipe/            # named-pipe semantics
   run/
-    run.sh               # oracle | proskrnl | winetest | fuzz | persist | console
+    run.sh               # oracle [subtest...] | proskrnl [subtest...] | winetest
+                         #   | fuzz | persist | console | ...
   winetest/
     manifest.txt         # the winetest gate's curated <test_exe>:<subtest> pairs
   fuzz/                  # the differential fuzzer (same single-binary shape)
@@ -157,7 +180,8 @@ for the M4/M5-era flat boot modules under `tests/boot/`.)
    relevant `ok()`s into a `tests/ntapi/<bucket>/<name>.c` using this harness.
 2. `tests/run/run.sh oracle` → the new test is **green on the oracle**. It is now the
    executable spec. Commit it *before* kernel code (Article 5).
-3. Implement the `Nt*` in the kernel until `tests/run/run.sh proskrnl` passes it. A
+3. Implement the `Nt*` in the kernel until `tests/run/run.sh proskrnl` passes it —
+   iterate with `run.sh proskrnl <name>`, then confirm with the unfiltered leg. A
    still-wrong corner that is a *documented deviation* (`docs/03`) gets `todo_proskrnl`;
    anything else stays red until fixed.
 4. "Done" = the test is green on **both** runners (`docs/09` Art. 5), not the code
