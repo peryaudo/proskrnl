@@ -113,6 +113,41 @@ START_TEST(byte_locks)
     status = unlock_range(h1, 0, 32);
     ok(status == STATUS_SUCCESS, "final unlock -> %08lx", (unsigned long)status);
 
+    /* --- ends that wrap past 2^64 ----------------------------------------
+     *
+     * offset + length was computed with no guard at all, so a range ending
+     * past 2^64 wrapped to a small end and stopped overlapping anything:
+     * two "exclusive" locks over the same bytes could both be granted
+     * (docs/review-2026-07 §3). The oracle's model, now proskrnl's, is that
+     * a wrap to anything OTHER than exactly 0 is refused, and an end of
+     * exactly 0 is the UNBOUNDED lock -- everything from the offset up
+     * (third_party/wine server/fd.c lock_fd and lock_overlaps). */
+    status = lock_range(h1, 4096, -8 /* end wraps to 0xFFF8 */, TRUE);
+    ok(status == STATUS_INVALID_PARAMETER, "exclusive lock with a wrapping end -> %08lx",
+       (unsigned long)status);
+
+    /* end == exactly 0: legal, and it covers everything above the offset. */
+    status = lock_range(h1, 4096, -4096 /* 2^64 - 4096: end == 0 */, TRUE);
+    ok(status == STATUS_SUCCESS, "unbounded exclusive lock -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        status = lock_range(h1, 8192, 16, TRUE);
+        ok(status == STATUS_FILE_LOCK_CONFLICT, "range inside the unbounded lock -> %08lx",
+           (unsigned long)status);
+        status = lock_range(h1, 0, 16, TRUE);
+        ok(status == STATUS_SUCCESS, "range below the unbounded lock -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            unlock_range(h1, 0, 16);
+        status = unlock_range(h1, 4096, -4096);
+        ok(status == STATUS_SUCCESS, "unlock the unbounded range -> %08lx", (unsigned long)status);
+        status = lock_range(h1, 8192, 16, TRUE);
+        ok(status == STATUS_SUCCESS, "range free once it is unlocked -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            unlock_range(h1, 8192, 16);
+    }
+
     NtClose(h1);
     scrub_file(dir, W("locked.dat"));
     NtClose(dir);
