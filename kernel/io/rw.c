@@ -311,6 +311,20 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         return status;
     }
 
+    /* Falling out of the device branch above means ops->Write is absent; a
+     * device that also has no GetCache cannot be written at all, and calling
+     * through the NULL pointer would be a ring-0 fault -- which KiDispatchTrap
+     * does not contain, so a KiPanic. HidInputOps/HidPointerOps are exactly
+     * that shape (Read, no Write, no GetCache) and their Create does not
+     * filter grantedAccess, so ring 3 reaches here with one open + one write.
+     * STATUS_INVALID_DEVICE_REQUEST is NT's answer for a major function the
+     * device does not implement. */
+    if (file->device->ops->GetCache == 0)
+    {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        goto abandon;
+    }
+
     PMI_PAGE_CACHE cache;
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
@@ -324,9 +338,17 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     }
 
     /* A write past EOF extends the file; the gap reads as zeroes (the
-     * cache's new pages are zero-filled, and the FS zeroed the clusters). */
+     * cache's new pages are zero-filled, and the FS zeroed the clusters).
+     * A cache device with no SetEndOfFile cannot be resized -- FbOps is one
+     * (the scanout is a fixed mode), and its Create ignores grantedAccess
+     * too, so this was the same NULL dispatch one write past EOF away. */
     if (offset + length > cache->fileSize)
     {
+        if (file->device->ops->SetEndOfFile == 0)
+        {
+            status = STATUS_INVALID_DEVICE_REQUEST;
+            goto abandon;
+        }
         status = file->device->ops->SetEndOfFile(file, offset + length);
         if (!NT_SUCCESS(status))
         {
@@ -526,6 +548,15 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     {
         if (offset + length > cache->fileSize)
         {
+            /* Same unresizable-cache-device case as NtWriteFile: the gate at
+             * the top of this function checks GetCache but not SetEndOfFile,
+             * so FILE_NO_INTERMEDIATE_BUFFERING + NtWriteFileGather reached
+             * the NULL pointer by this route instead. */
+            if (file->device->ops->SetEndOfFile == 0)
+            {
+                ObDereferenceObject(file);
+                return STATUS_INVALID_DEVICE_REQUEST;
+            }
             status = file->device->ops->SetEndOfFile(file, offset + length);
             if (!NT_SUCCESS(status))
             {
