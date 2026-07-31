@@ -785,6 +785,14 @@ void IopSectionBackingReleased(PVOID fileObjectBody)
     PFILE_OBJECT file = fileObjectBody;
     ASSERT(file->fcb->sectionCount > 0);
     file->fcb->sectionCount--;
+    /* The last section is gone: give the FS its chance to apply a
+     * delete-on-close it had to defer while the file was mapped. Nothing
+     * else re-enters the FS at this moment, so without this the deferred
+     * delete was simply dropped (docs/review-2026-07 §7). */
+    if (file->fcb->sectionCount == 0 && file->device->ops->SectionsReleased != 0)
+    {
+        file->device->ops->SectionsReleased(file);
+    }
 }
 
 /* --- kernel-internal path -> section (the M7 process bootstrap + NLS) ------ */

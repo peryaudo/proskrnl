@@ -10,6 +10,40 @@
  */
 #include "util.h"
 
+
+/* A create that fails a TYPE check must leave NOTHING behind. The FS wrote
+ * the directory entry before running those checks, so a trailing backslash
+ * without FILE_DIRECTORY_FILE refused with STATUS_OBJECT_NAME_INVALID and
+ * left a zero-length orphan file with that name
+ * (docs/review-2026-07 §7). */
+static void test_failed_create_leaves_nothing(HANDLE dir)
+{
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status;
+    HANDLE h;
+
+    scrub_file(dir, W("orphan.tmp"));
+
+    /* "orphan.tmp\\" with no FILE_DIRECTORY_FILE: the name is invalid for a
+     * file, and the create must not have happened. */
+    status = open_file(&h, dir, W("orphan.tmp\\"), FILE_GENERIC_READ | FILE_GENERIC_WRITE, 0,
+                       FILE_CREATE, 0, &iosb);
+    ok(status == STATUS_OBJECT_NAME_INVALID, "create with a trailing backslash -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(h);
+
+    status = open_file(&h, dir, W("orphan.tmp"), FILE_GENERIC_READ, FILE_SHARE_READ, FILE_OPEN, 0,
+                       &iosb);
+    ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "the refused create left a file behind -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        NtClose(h);
+        scrub_file(dir, W("orphan.tmp"));
+    }
+}
+
 START_TEST(create_basic)
 {
     IO_STATUS_BLOCK iosb;
@@ -171,6 +205,7 @@ START_TEST(create_basic)
     scrub_file(dir, W("new.txt"));
     scrub_file(dir, W("openif.txt"));
     scrub_file(dir, W("CaseFile.txt"));
+    test_failed_create_leaves_nothing(dir);
     NtClose(dir);
     /* An unreadable OBJECT_ATTRIBUTES must be a status, not a kernel fault.
      * NtCreateFile does not route its attributes through the Ob namespace

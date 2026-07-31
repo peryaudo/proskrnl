@@ -566,6 +566,26 @@ NTSTATUS FatWriteEntrySlots(PFAT_FCB dir, const UNICODE_STRING *component,
 
     unsigned char sfn[11];
     BOOLEAN needLfn = !FatBuildExact83(component, sfn);
+    if (!needLfn)
+    {
+        /* An exact 8.3 name still has to be UNIQUE. FatBuildExact83 accepts
+         * '~' and digits, so creating "AAAAAA~1.TXT" beside an LFN whose
+         * generated short name is "AAAAAA~1TXT" produced two entries with
+         * identical 11-byte short names, and FatLookup then returned
+         * whichever came first -- a plain wrong-file open
+         * (docs/review-2026-07 §12). A collision falls back to the generated
+         * form, which is exactly what the generator's tail search is for. */
+        BOOLEAN exists = FALSE;
+        NTSTATUS status = FatShortNameExists(dir, sfn, &exists);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (exists)
+        {
+            needLfn = TRUE;
+        }
+    }
     if (needLfn)
     {
         NTSTATUS status = FatGenerateShortName(dir, component, sfn);
@@ -720,6 +740,16 @@ NTSTATUS FatCreateEntry(PFAT_FCB dir, const UNICODE_STRING *component, BOOLEAN d
         }
         if (!NT_SUCCESS(s2))
         {
+            /* The parent's entry is already on disk, so failing here would
+             * leave an ENUMERABLE directory with no "." / ".." pair --
+             * permanently corrupt, and with no FCB anyone could use to
+             * repair it (docs/review-2026-07 §12). Undo the entry and the
+             * cluster so the create fails cleanly instead. */
+            FatFreeEntrySlots(dir, lfnStart, sfnSlot);
+            if (firstCluster != 0)
+            {
+                FatFreeChain(dir->volume, firstCluster);
+            }
             return s2;
         }
     }
@@ -760,10 +790,22 @@ NTSTATUS FatDeleteEntry(PFAT_FCB fcb)
     }
     if (fcb->firstCluster != 0)
     {
-        FatFreeChain(fcb->volume, fcb->firstCluster);
+        NTSTATUS freeStatus = FatFreeChain(fcb->volume, fcb->firstCluster);
         fcb->firstCluster = 0;
+        if (!NT_SUCCESS(freeStatus))
+        {
+            /* The entry is already gone, so the delete has happened as far
+             * as the namespace is concerned -- but the FAT write failed and
+             * the caller should hear it (§12). */
+            fcb->fileSize = 0;
+            fcb->entryDeleted = TRUE;
+            return freeStatus;
+        }
     }
     fcb->fileSize = 0;
+    /* The slot is reusable from here, so this FCB's identity key no longer
+     * names it -- see FAT_FCB.entryDeleted. */
+    fcb->entryDeleted = TRUE;
     return STATUS_SUCCESS;
 }
 

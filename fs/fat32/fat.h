@@ -54,6 +54,8 @@ typedef struct FAT_VOLUME
     USHORT volumeLabelLength; /* bytes */
     uint32_t *fat;            /* the whole first FAT in pool; write-through */
     ULONG nextFreeHint;       /* allocation cursor */
+    ULONG fsInfoSector;       /* BPB_FSInfo (spec §3.3 offset 48); 0 = absent */
+    ULONG freeClusters;       /* live count, maintained by FatSetFatEntry */
     LIST_ENTRY fcbList;       /* live FAT_FCBs, for the one-FCB-per-file rule */
     struct FAT_FCB *root;     /* the root directory's FCB (never dies) */
 } FAT_VOLUME, *PFAT_VOLUME;
@@ -70,6 +72,14 @@ typedef struct FAT_FCB
     BOOLEAN isRoot;
     ULONG parentDirCluster; /* identity key: where our SFN entry lives... */
     ULONG dirEntryIndex;    /* ...and its 32-byte slot index in that directory */
+    /* ...and whether that key still names US. A deleted entry's slot is
+     * immediately reusable (deletion writes 0xE5 in place, spec §6.1), so a
+     * new file landing on it would otherwise ALIAS this FCB through the
+     * identity lookup -- inheriting its isDirectory, its name, its cached
+     * size and its page cache (docs/review-2026-07 §12). Set when the entry
+     * goes away (delete, or a rename's replace); such an FCB is never
+     * matched again, only released by its remaining references. */
+    BOOLEAN entryDeleted;
     ULONG lfnStartIndex;    /* first slot of our LFN run (== dirEntryIndex if none) */
 
     ULONG firstCluster; /* 0 = no data allocated yet (spec §6.7) */
@@ -140,7 +150,15 @@ uint64_t FatClusterToSector(PFAT_VOLUME volume, ULONG cluster);
 ULONG FatGetNextCluster(PFAT_VOLUME volume, ULONG cluster); /* 0 = end/bad */
 NTSTATUS FatSetFatEntry(PFAT_VOLUME volume, ULONG cluster, ULONG value);
 NTSTATUS FatAllocateCluster(PFAT_VOLUME volume, ULONG previousOrZero, ULONG *clusterOut);
-void FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster);
+/* Release a whole cluster chain. Returns the first FatSetFatEntry failure
+ * (the walk still releases the rest), so a caller whose user is waiting on a
+ * status can report one. */
+NTSTATUS FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster);
+
+/* Rewrite the FSInfo sector's free count + next-free hint (spec §5). Best
+ * effort: FSInfo is a hint and the FAT is authoritative, so a failure never
+ * fails the operation that triggered it. */
+void FatUpdateFsInfo(PFAT_VOLUME volume);
 /* The Nth cluster of a chain (0-based); 0 when the chain is shorter. */
 ULONG FatWalkChain(PFAT_VOLUME volume, ULONG firstCluster, ULONG index);
 ULONG FatChainLength(PFAT_VOLUME volume, ULONG firstCluster);
