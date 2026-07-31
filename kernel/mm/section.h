@@ -54,7 +54,7 @@ typedef struct MI_SECTION
     const void *rawData;  /* image sections: raw file bytes for copy/reloc */
     uint64_t rawSize;
     BOOLEAN ownsRawData;
-    PVOID fileObject;     /* referenced backing File object body; 0 = none */
+    PVOID fileObject; /* referenced backing File object body; 0 = none */
     /* Did the FILE HANDLE this section was created from grant write? A
      * writable view of a file-backed section is a write to the file (with
      * immediate writeback, Art. 3), so a section built over a read-only

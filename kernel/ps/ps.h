@@ -357,8 +357,7 @@ typedef struct PSP_THREAD_OPTIONS
  * Returns a handle in the CURRENT process's table. */
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
                              BOOLEAN createSuspended, const PSP_THREAD_OPTIONS *options,
-                             PHANDLE threadHandleOut, uint64_t *threadIdOut,
-                             uint64_t *tebBaseOut);
+                             PHANDLE threadHandleOut, uint64_t *threadIdOut, uint64_t *tebBaseOut);
 
 /* CUI-4: start a thread in `process` with NO handle in any table — the
  * kernel-initiated injection the console-control fanout uses (ntdll's unix

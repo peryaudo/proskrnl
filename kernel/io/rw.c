@@ -157,8 +157,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     PFILE_OBJECT file;
     uint64_t offset;
     PKAPC apcBlock = 0;
-    NTSTATUS status = IopStartTransfer(handle, event, FILE_READ_DATA, apc, apcContext, iosb, byteOffset,
-                                       &file, &offset, &apcBlock, 0);
+    NTSTATUS status = IopStartTransfer(handle, event, FILE_READ_DATA, apc, apcContext, iosb,
+                                       byteOffset, &file, &offset, &apcBlock, 0);
     if (!NT_SUCCESS(status))
     {
         return status;

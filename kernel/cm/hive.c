@@ -58,7 +58,6 @@
 #define CMP_HIVE_HEADER_BYTES 16u
 #define CMP_HIVE_MAX_BYTES    (64u << 20) /* sanity cap for load */
 
-
 #define CMP_TAG_KEY   'K'
 #define CMP_TAG_VALUE 'V'
 #define CMP_TAG_END   'E'
