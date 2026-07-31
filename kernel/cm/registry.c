@@ -936,8 +936,15 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
          * STATUS_ACCESS_DENIED); a newly created key is exempt (the
          * alloc_handle_no_access_check path). Same rule Ob's open engine
          * applies (kernel/ob/namespace.c); fuzzer-found, pinned by
-         * sem_reg/create_open. */
-        if (desiredAccess == 0)
+         * sem_reg/create_open.
+         *
+         * The test is on the MAPPED mask, which is the whole point: the
+         * oracle's alloc_handle refuses when `access` is 0 AFTER
+         * map_access(), so a request of nothing-but-KEY_WOW64_64KEY -- a
+         * nonzero bit that maps to no right at all -- used to come back as a
+         * usable-looking handle granting nothing
+         * (docs/review-2026-07 §11). */
+        if (ObpMapDesiredAccess(&CmpKeyType, desiredAccess) == 0)
         {
             return STATUS_ACCESS_DENIED;
         }
@@ -1029,8 +1036,10 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
         return status;
     }
     /* An open must request at least one access right (wine alloc_handle;
-     * the same rule as Ob's open engine). */
-    if (desiredAccess == 0)
+     * the same rule as Ob's open engine) -- tested on the MAPPED mask, as
+     * alloc_handle does, so KEY_WOW64_64KEY alone denies rather than
+     * yielding a handle that grants nothing (see NtCreateKey). */
+    if (ObpMapDesiredAccess(&CmpKeyType, desiredAccess) == 0)
     {
         return STATUS_ACCESS_DENIED;
     }
