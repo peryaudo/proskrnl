@@ -37,6 +37,12 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     {
         return STATUS_NOT_IMPLEMENTED;
     }
+    /* Before the verb runs, not at completion time (io.h). */
+    status = IopValidateEventHandle(event);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     if (inputLength != 0)
     {
         status = KiProbeForRead(input, inputLength, 1);

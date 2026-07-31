@@ -916,6 +916,13 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     {
         return STATUS_NOT_IMPLEMENTED; /* io.h: user APCs arrive with M7 */
     }
+    /* Before the enumeration runs, not at completion time (io.h): a failed
+     * call must not have advanced the directory cursor. */
+    status = IopValidateEventHandle(event);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     ULONG fixedSize = IopDirEntryFixedSize(informationClass);
     if (fixedSize == 0)
     {

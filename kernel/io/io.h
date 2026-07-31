@@ -139,6 +139,15 @@ NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
 
 /* Complete one operation: write the IOSB, then signal the optional event —
  * in exactly that order (the docs/08 contract). `eventHandle` may be 0. */
+/* Check a completion-event handle BEFORE the operation runs, for the
+ * services whose oracle refuses a bad one: the ioctl/FSCTL pair, whose
+ * request the wineserver rejects up front, and the directory enumeration,
+ * whose cursor a refused call must not advance. The read/write pair
+ * deliberately does NOT call this -- the oracle discards an event-signal
+ * failure there and returns the transfer's own status (see
+ * IopCompleteRequest). A 0 handle (no event) succeeds. */
+NTSTATUS IopValidateEventHandle(HANDLE eventHandle);
+
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information);
 
