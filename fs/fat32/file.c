@@ -486,6 +486,16 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
         FatDereferenceFcb(fcb);
         return STATUS_ACCESS_DENIED;
     }
+    /* And so is FILE_DELETE_ON_CLOSE, which is the same deletion
+     * FatVfsSetDisposition already refuses on a read-only file -- it just
+     * arrives by a different door, and used to walk straight past the check
+     * (docs/review-2026-07 §11). The oracle answers STATUS_CANNOT_DELETE
+     * here, at OPEN, not silently at close. */
+    if (!created && (fcb->attributes & FAT_ATTR_READ_ONLY) && (options & FILE_DELETE_ON_CLOSE))
+    {
+        FatDereferenceFcb(fcb);
+        return STATUS_CANNOT_DELETE;
+    }
 
     /* Share modes: the NT point — after existence and typing, before any
      * overwrite side effect. */

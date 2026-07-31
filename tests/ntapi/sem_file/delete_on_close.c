@@ -6,6 +6,59 @@
  */
 #include "util.h"
 
+
+/* A read-only file cannot be deleted through FILE_DELETE_ON_CLOSE either.
+ * The FS refused it through NtSetInformationFile(FileDispositionInformation)
+ * but not through the create option -- the same deletion arriving by a
+ * different door, walking straight past the check. The oracle answers at
+ * OPEN, not silently at close. */
+static void test_readonly_delete_on_close(HANDLE dir)
+{
+    IO_STATUS_BLOCK iosb;
+    FILE_BASIC_INFORMATION basic;
+    NTSTATUS status;
+    HANDLE h;
+
+    scrub_file(dir, W("ro_doc.bin"));
+    status = open_file(&h, dir, W("ro_doc.bin"), FILE_GENERIC_READ | FILE_GENERIC_WRITE, 0,
+                       FILE_OVERWRITE_IF, 0, &iosb);
+    ok(status == STATUS_SUCCESS, "create ro_doc.bin -> %08lx", (unsigned long)status);
+    if (!NT_SUCCESS(status))
+        return;
+    memset(&basic, 0, sizeof(basic));
+    basic.FileAttributes = FILE_ATTRIBUTE_READONLY;
+    status = NtSetInformationFile(h, &iosb, &basic, sizeof(basic), FileBasicInformation);
+    ok(status == STATUS_SUCCESS, "mark read-only -> %08lx", (unsigned long)status);
+    NtClose(h);
+
+    status = open_file(&h, dir, W("ro_doc.bin"), DELETE | SYNCHRONIZE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                       FILE_DELETE_ON_CLOSE, &iosb);
+    ok(status == STATUS_CANNOT_DELETE, "FILE_DELETE_ON_CLOSE on a read-only file -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(h);
+
+    status = open_file(&h, dir, W("ro_doc.bin"), FILE_GENERIC_READ, FILE_SHARE_READ, FILE_OPEN, 0,
+                       &iosb);
+    ok(status == STATUS_SUCCESS, "the read-only file survived -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(h);
+
+    /* Clear the bit so the scrub can remove it. */
+    status = open_file(&h, dir, W("ro_doc.bin"), FILE_GENERIC_WRITE | FILE_WRITE_ATTRIBUTES,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0,
+                       &iosb);
+    if (NT_SUCCESS(status))
+    {
+        memset(&basic, 0, sizeof(basic));
+        basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        NtSetInformationFile(h, &iosb, &basic, sizeof(basic), FileBasicInformation);
+        NtClose(h);
+    }
+    scrub_file(dir, W("ro_doc.bin"));
+}
+
 START_TEST(delete_on_close)
 {
     IO_STATUS_BLOCK iosb;
@@ -197,5 +250,6 @@ START_TEST(delete_on_close)
            (unsigned long)status);
     }
 
+    test_readonly_delete_on_close(dir);
     NtClose(dir);
 }
