@@ -29,6 +29,21 @@ void IopInitializeFcb(PIO_FCB fcb)
     fcb->sectionCount = 0;
 }
 
+/* Do two ranges overlap? Ends are exclusive, and an end of exactly 0 means
+ * "to the end of the address space" -- the oracle's own model
+ * (third_party/wine server/fd.c lock_overlaps: `if (lock->end && start >=
+ * lock->end) return 0;`), which is why the wrap is not an accident there.
+ *
+ * The ends are computed once by IopLockEnd and never inside a comparison:
+ * `bOffset + bLength` used to overflow to a small value, and two
+ * "exclusive" locks over the same bytes could both be granted
+ * (docs/review-2026-07 §3). A range that wraps to anything OTHER than 0 is
+ * refused outright at IopLockRange, so it never reaches this function. */
+static uint64_t IopLockEnd(uint64_t offset, uint64_t length)
+{
+    return offset + length; /* 0 == unbounded, as the oracle spells it */
+}
+
 static BOOLEAN IopRangesOverlap(uint64_t aOffset, uint64_t aLength, uint64_t bOffset,
                                 uint64_t bLength)
 {
@@ -36,7 +51,17 @@ static BOOLEAN IopRangesOverlap(uint64_t aOffset, uint64_t aLength, uint64_t bOf
     {
         return FALSE;
     }
-    return aOffset < bOffset + bLength && bOffset < aOffset + aLength;
+    uint64_t aEnd = IopLockEnd(aOffset, aLength);
+    uint64_t bEnd = IopLockEnd(bOffset, bLength);
+    if (aEnd != 0 && bOffset >= aEnd)
+    {
+        return FALSE;
+    }
+    if (bEnd != 0 && aOffset >= bEnd)
+    {
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /* Would [offset, offset+length) as exclusive/shared conflict now? */
@@ -60,6 +85,16 @@ static BOOLEAN IopLockConflicts(PIO_FCB fcb, uint64_t offset, uint64_t length, B
 NTSTATUS IopLockRange(PIO_FCB fcb, PFILE_OBJECT owner, uint64_t offset, uint64_t length,
                       BOOLEAN exclusive)
 {
+    /* A range whose end wraps past 2^64 is refused, exactly as the oracle
+     * refuses it (third_party/wine server/fd.c lock_fd: "don't allow
+     * wrapping locks", `if (end && end < start) set_error(
+     * STATUS_INVALID_PARAMETER )`). An end of exactly 0 is NOT a wrap there:
+     * it is the unbounded lock, and it stays legal. */
+    uint64_t end = IopLockEnd(offset, length);
+    if (end != 0 && end < offset)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
     if (IopLockConflicts(fcb, offset, length, exclusive))
     {
         return STATUS_FILE_LOCK_CONFLICT;
