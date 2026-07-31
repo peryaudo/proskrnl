@@ -507,6 +507,31 @@ static NTSTATUS KiContinue(const CONTEXT *userContext, BOOLEAN testAlert)
     KiContextToTrapFrame(&context, trapFrame);
     thread->userContextReplaced = TRUE; /* the dispatcher must not overwrite rax */
 
+    /* A Rip outside user space -- non-canonical, or simply a kernel address
+     * -- must not reach the iretq that ends this syscall: IRET checks the
+     * new CS:RIP itself, so a bad one raises #GP with the KERNEL CS still
+     * loaded, and that panics the machine (docs/review-2026-07 §8).
+     * Choosing iretq over sysret correctly avoided the classic
+     * non-canonical-RCX hole; IRET has its own.
+     *
+     * The oracle's answer is not a refusal but an ACCESS VIOLATION delivered
+     * to the process -- verified against the pinned Wine, which reports
+     * c0000005 to a vectored handler for exactly this input -- so deliver
+     * that, through the same path a real fault takes. The frame is already
+     * rewritten above, so the exception reports the Rip the caller asked to
+     * resume at, as it would have if that address were merely unmapped. */
+    if (!KiIsUserRange(trapFrame->rip, 1))
+    {
+        if (thread->process->userExceptionDispatcher != 0 &&
+            PspDispatchUserException(trapFrame, (ULONG)STATUS_ACCESS_VIOLATION, trapFrame->rip))
+        {
+            return STATUS_SUCCESS; /* iretq into the exception dispatcher */
+        }
+        DbgPrint("[USERFAULT] NtContinue to %#018lx (outside user space); terminating process\n",
+                 (unsigned long)trapFrame->rip);
+        PspExitCurrentProcess(STATUS_ACCESS_VIOLATION);
+    }
+
     if (testAlert)
     {
         uint64_t flags = KiAcquireDispatcherLock();
