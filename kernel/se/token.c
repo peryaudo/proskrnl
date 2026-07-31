@@ -636,9 +636,21 @@ static NTSTATUS SepWriteReturnLength(PULONG returnLength, ULONG value)
 NTSTATUS NtQueryInformationToken(HANDLE tokenHandle, TOKEN_INFORMATION_CLASS infoClass,
                                  PVOID buffer, ULONG length, PULONG returnLength)
 {
+    /* Zeroed once, for every class. The structures assembled in here are
+     * pinned by abi/ntseapi.h and therefore have PADDING -- 4 bytes in
+     * TOKEN_USER, 4 + 4 per group in TOKEN_GROUPS (36 with the boot token's
+     * eight groups), 4 in TOKEN_MANDATORY_LABEL, which does not even need a
+     * valid handle -- and every one of those bytes was copied out to ring 3
+     * verbatim from an uninitialized kernel stack buffer: a repeatable
+     * kernel-stack disclosure oracle (docs/review-2026-07 §10).
+     * TokenStatistics already memset for exactly this reason; doing it once
+     * here is what makes the property hold for the classes nobody thought
+     * about, including ones added later. */
     BYTE reply[SEP_QUERY_REPLY_MAX];
     PTOKEN token;
     NTSTATUS status;
+
+    memset(reply, 0, sizeof(reply));
 
     /* The retlen pre-write, then the fixed-length gate — both BEFORE the
      * class logic, exactly the unix-layer order (so a short TokenSource

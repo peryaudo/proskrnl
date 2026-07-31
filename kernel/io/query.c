@@ -1341,8 +1341,18 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
     {
         return status;
     }
+    /* FILE_WRITE_DATA, not 0. This service MUTATES the on-disk volume label,
+     * and a zero-access reference let a FILE_READ_ATTRIBUTES handle do it
+     * (docs/review-2026-07 §11). The oracle cannot arbitrate the access
+     * here -- its NtSetVolumeInformationFile is a FIXME stub that returns
+     * STATUS_SUCCESS without touching anything, i.e. unbuilt in the sense
+     * Art. 12 means -- so the requirement follows NT's own rule for
+     * IRP_MJ_SET_VOLUME_INFORMATION, which is the same write access the
+     * equivalent data mutation needs. The read-side sibling
+     * (NtQueryVolumeInformationFile) keeps its zero-access reference,
+     * because there the oracle IS built and uses 0. */
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, FILE_WRITE_DATA, &file);
     if (!NT_SUCCESS(status))
     {
         return status;
