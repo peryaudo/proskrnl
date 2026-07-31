@@ -241,6 +241,40 @@ START_TEST(reserve_commit)
     status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
     ok(status == STATUS_MEMORY_NOT_ALLOCATED, "double release -> %08lx", (unsigned long)status);
 
+    /* --- a RegionSize whose page rounding wraps -------------------------
+     *
+     * ROUND_SIZE(addr, size) overflows SIZE_T for a size near 2^64 and comes
+     * out as 0 -- which is MEM_RELEASE's sentinel for "the whole region". So
+     * a crafted length releases an entire reservation and reports success,
+     * with the reported size being the region's, not the caller's. That
+     * reads like a bug and is not one to fix here: it is exactly what the
+     * pinned oracle does (third_party/wine dlls/ntdll/unix/virtual.c
+     * NtFreeVirtualMemory, `if (size) size = ROUND_SIZE(...)` then
+     * `if (!size) size = view->size`), so the divergence would be to
+     * validate it. Pinned so the agreement is deliberate rather than
+     * incidental -- and so that a future decision to refuse it shows up here
+     * as a failure against the oracle first (Art. 6). */
+    addr = NULL;
+    size = 0x10000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size,
+                                     MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "wrap-case reserve -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        PVOID wrapBase = addr;
+        size = (SIZE_T)0 - 0x800; /* rounds up to exactly 0 */
+        status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+        ok(status == STATUS_SUCCESS, "release with a wrapping size -> %08lx",
+           (unsigned long)status);
+        ok(addr == wrapBase, "wrap release addr %p, expected %p", addr, wrapBase);
+        ok(size == 0x10000, "wrap release size %lx, expected the whole region 10000",
+           (unsigned long)size);
+        status = NtQueryVirtualMemory(NtCurrentProcess(), wrapBase, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                      sizeof(mbi), NULL);
+        ok(status == STATUS_SUCCESS, "query after wrap release -> %08lx", (unsigned long)status);
+        ok(mbi.State == MEM_FREE, "after wrap release State %lx", (unsigned long)mbi.State);
+    }
+
     /* An explicit-base reserve rounds the base down to the granularity. */
     addr = base + 0x1234;
     size = 0x1000;
