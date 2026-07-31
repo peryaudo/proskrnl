@@ -123,5 +123,43 @@ START_TEST(namespace_errors)
     status = NtOpenEvent(&h2, EVENT_ALL_ACCESS, &attr);
     ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "open under non-dir -> %08lx",
        (unsigned long)status);
+
+    /* --- unreadable OBJECT_ATTRIBUTES / ObjectName ------------------------
+     *
+     * The Ob create/open engine read attributes->ObjectName->Length and
+     * walked ->Buffer straight from the caller's memory. Every NtCreate and
+     * NtOpen in the system funnels through it, and kernel and user VA share
+     * a PML4, so an unmapped or kernel pointer faulted in ring 0 -- which
+     * KiDispatchTrap does not contain, i.e. a machine halt rather than a
+     * status. NtOpenProcess was the only caller in the tree that probed. */
+    {
+        void *const BAD = (void *)(ULONG_PTR)0x10000;
+        UNICODE_STRING badname;
+
+        status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, (POBJECT_ATTRIBUTES)BAD, NotificationEvent,
+                               FALSE);
+        ok(status == STATUS_ACCESS_VIOLATION, "create with bad attributes -> %08lx",
+           (unsigned long)status);
+        status = NtOpenEvent(&h2, EVENT_ALL_ACCESS, (POBJECT_ATTRIBUTES)BAD);
+        ok(status == STATUS_ACCESS_VIOLATION, "open with bad attributes -> %08lx",
+           (unsigned long)status);
+
+        /* Attributes readable, ObjectName pointer not. */
+        init_attr(&attr, NULL, (PUNICODE_STRING)BAD, OBJ_CASE_INSENSITIVE);
+        status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+        ok(status == STATUS_ACCESS_VIOLATION, "create with bad ObjectName -> %08lx",
+           (unsigned long)status);
+
+        /* Both readable, the name BUFFER not -- and a Length that would walk
+         * far past any real allocation. */
+        badname.Length = 0x100;
+        badname.MaximumLength = 0x100;
+        badname.Buffer = (PWSTR)BAD;
+        init_attr(&attr, NULL, &badname, OBJ_CASE_INSENSITIVE);
+        status = NtCreateEvent(&h2, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+        ok(status == STATUS_ACCESS_VIOLATION, "create with bad name buffer -> %08lx",
+           (unsigned long)status);
+    }
+
     NtClose(h);
 }
