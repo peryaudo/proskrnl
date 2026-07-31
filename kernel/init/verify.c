@@ -61,10 +61,27 @@ static void KiVerifyThreadTeb(PEPROCESS process, PETHREAD thread)
     {
         return;
     }
+    /* NOT an ASSERT, and that is the point. The TEB is a PAGE_READWRITE user
+     * page: every field below is memory ring 3 owns and may legally scribble
+     * on, so asserting on it hands any process a one-store kernel halt at the
+     * next sweep (docs/review-2026-07 §2). What the sweep can still say
+     * usefully is that the kernel STAMPED the mirror correctly, so a
+     * disagreement is reported and the run continues -- a suspect named on
+     * serial, which is all an assert on user state was ever worth. */
     const TEB *teb = MiPhysicalToVirtual(frame);
-    ASSERT((uint64_t)(uintptr_t)teb->Tib.Self == thread->tebBase);
-    ASSERT((uint64_t)(uintptr_t)teb->ClientId.UniqueThread == thread->uniqueThreadId);
-    ASSERT((uint64_t)(uintptr_t)teb->ClientId.UniqueProcess == process->uniqueProcessId);
+    if ((uint64_t)(uintptr_t)teb->Tib.Self != thread->tebBase ||
+        (uint64_t)(uintptr_t)teb->ClientId.UniqueThread != thread->uniqueThreadId ||
+        (uint64_t)(uintptr_t)teb->ClientId.UniqueProcess != process->uniqueProcessId)
+    {
+        DbgPrint("verify: TEB %#018lx disagrees with its ETHREAD "
+                 "(Self=%#018lx tid=%#lx pid=%#lx, want Self=%#018lx tid=%#lx pid=%#lx) — "
+                 "user-writable memory, so reported, not asserted\n",
+                 (unsigned long)thread->tebBase, (unsigned long)(uintptr_t)teb->Tib.Self,
+                 (unsigned long)(uintptr_t)teb->ClientId.UniqueThread,
+                 (unsigned long)(uintptr_t)teb->ClientId.UniqueProcess,
+                 (unsigned long)thread->tebBase, (unsigned long)thread->uniqueThreadId,
+                 (unsigned long)process->uniqueProcessId);
+    }
 }
 
 /* --- the kernel-mode deadlock detector (GUI-5) ------------------------------
