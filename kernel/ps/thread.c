@@ -24,6 +24,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntpsapi.h"
@@ -403,12 +404,47 @@ NTSTATUS PspInjectUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
 }
 
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
-                             BOOLEAN createSuspended, PHANDLE threadHandleOut,
-                             uint64_t *threadIdOut, uint64_t *tebBaseOut)
+                             BOOLEAN createSuspended, const PSP_THREAD_OPTIONS *options,
+                             PHANDLE threadHandleOut, uint64_t *threadIdOut, uint64_t *tebBaseOut)
 {
+    /* Stack geometry, following the oracle's own rules
+     * (third_party/wine dlls/ntdll/unix/virtual.c virtual_alloc_thread_stack):
+     * a 0 size means the image's default, the RESERVE is the larger of the
+     * two, and the whole thing is floored at 1 MiB and rounded to the
+     * allocation granularity. The floor is not decoration -- without it a
+     * caller asking for a small stack gets one, and ntdll's own thread
+     * startup overflows it. */
+    /* The RESERVE is the caller's, floored and rounded as the oracle floors
+     * and rounds it (third_party/wine dlls/ntdll/unix/virtual.c
+     * virtual_alloc_thread_stack: `size = max( reserve_size, commit_size );
+     * if (size < 1024 * 1024) size = 1024 * 1024;` then round to the
+     * granularity). It was hardcoded at 1 MiB (docs/review-2026-07 §11).
+     *
+     * The COMMIT is the caller's as a FLOOR only, never below the 64 KiB
+     * default. That is deliberate and it is not laziness: this kernel grows
+     * a thread stack one page at a time off a single guard page, so a
+     * function whose frame is larger than the gap steps clean over the guard
+     * and takes a plain access violation. Wine does not have the problem
+     * because it commits the WHOLE reservation up front and uses the guard
+     * page only as an overflow tripwire. Honouring a 4 KiB commit literally
+     * -- which is what ntdll's own threadpool asks for -- crashes those
+     * threads in ntdll startup, convicted by sem_port/ports. The commit is
+     * not part of any pinned contract; the reserve is (the TEB's
+     * DeallocationStack). */
+    uint64_t reserve = options->stackReserve != 0 ? options->stackReserve : 0x100000;
+    uint64_t commit = options->stackCommit > 0x10000 ? options->stackCommit : 0x10000;
+    if (reserve < commit)
+    {
+        reserve = commit;
+    }
+    if (reserve < 0x100000)
+    {
+        reserve = 0x100000;
+    }
+    reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
     NTSTATUS status =
-        PspAllocateThreadStack(process, 0x100000, 0x10000, &allocBase, &stackTop, &stackLimit);
+        PspAllocateThreadStack(process, reserve, commit, &allocBase, &stackTop, &stackLimit);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -454,7 +490,12 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     /* Write the handle straight into the caller's (user) PHANDLE — ObpCreateHandle
      * is the choke point that probes it under the current previous mode. A
      * kernel-local out-pointer would be rejected as a bad user pointer. */
-    status = ObpCreateHandle(thread, THREAD_ALL_ACCESS, 0, threadHandleOut);
+    /* The caller's DesiredAccess and OBJECT_ATTRIBUTES, not THREAD_ALL_ACCESS
+     * and 0. NtCreateThreadEx used to grant every right regardless of what
+     * was asked for and to drop OBJ_INHERIT on the floor
+     * (docs/review-2026-07 §11). */
+    status = ObpCreateHandle(thread, ObpMapDesiredAccess(&PspThreadType, options->desiredAccess),
+                             options->handleAttributes, threadHandleOut);
     if (!NT_SUCCESS(status))
     {
         PspUnwindUnstartedThread(thread); /* the running pin + the process link */
@@ -493,11 +534,7 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
                           ULONG_PTR zeroBits, SIZE_T stackSize, SIZE_T maximumStackSize,
                           PS_ATTRIBUTE_LIST *attributeList)
 {
-    (void)desiredAccess;
-    (void)objectAttributes;
     (void)zeroBits;
-    (void)stackSize;
-    (void)maximumStackSize;
 
     PKTHREAD caller = KeGetCurrentThread();
     PEPROCESS process;
@@ -519,11 +556,33 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
         referenced = TRUE;
     }
 
+    /* stackSize is the COMMIT and maximumStackSize the RESERVE, as
+     * kernelbase's CreateThread fills them (Wine dlls/ntdll/unix/thread.c
+     * NtCreateThreadEx: stack_commit / stack_reserve). Both were hardcoded. */
+    PSP_THREAD_OPTIONS options;
+    memset(&options, 0, sizeof(options));
+    options.desiredAccess = desiredAccess;
+    options.stackCommit = stackSize;
+    options.stackReserve = maximumStackSize;
+    if (objectAttributes != 0)
+    {
+        NTSTATUS probeStatus = ObProbeObjectAttributes(objectAttributes);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            if (referenced)
+            {
+                ObDereferenceObject(process);
+            }
+            return probeStatus;
+        }
+        options.handleAttributes = objectAttributes->Attributes;
+    }
+
     BOOLEAN suspended = (createFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0;
     uint64_t threadId = 0, tebBase = 0;
     NTSTATUS status = PspCreateUserThread(process, (uint64_t)(uintptr_t)startRoutine,
-                                          (uint64_t)(uintptr_t)argument, suspended, threadHandle,
-                                          &threadId, &tebBase);
+                                          (uint64_t)(uintptr_t)argument, suspended, &options,
+                                          threadHandle, &threadId, &tebBase);
 
     /* Output attributes, exactly Wine's update_attr_list (dlls/ntdll/unix/
      * thread.c): CLIENT_ID and TEB_ADDRESS write back min(Size, actual) and
