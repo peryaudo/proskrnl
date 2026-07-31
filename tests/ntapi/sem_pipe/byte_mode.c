@@ -110,8 +110,75 @@ static void test_nonblocking_and_available(void)
     NtClose(server);
 }
 
+/* --- a byte-mode PEEK with a short buffer is not an overflow --------------
+ *
+ * proskrnl reported STATUS_BUFFER_OVERFLOW from FSCTL_PIPE_PEEK whenever any
+ * data was left behind. Only a truncated MESSAGE overflows; in byte mode
+ * there is no message to truncate, so leaving data behind is ordinary -- and
+ * the normal 1-byte PeekNamedPipe poll, which asks for one byte precisely
+ * because it only wants to know whether anything is there, failed.
+ *
+ * And a byte-type pipe may not be put into message READ mode at all: the
+ * oracle refuses at set-info as well as at create, and accepting it made the
+ * read path fabricate message framing at arbitrary quota boundaries.
+ */
+static void test_peek_and_read_mode(void)
+{
+    HANDLE server = NULL, client = NULL;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status;
+    unsigned char reply[sizeof(SEM_FILE_PIPE_PEEK_BUFFER) + 8];
+    SEM_FILE_PIPE_PEEK_BUFFER *peek = (SEM_FILE_PIPE_PEEK_BUFFER *)reply;
+    SEM_FILE_PIPE_INFORMATION pipeInfo;
+
+    status = create_pipe_instance(&server, W("\\??\\pipe\\prstest_bytepeek"),
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, 0 /* FILE_PIPE_BYTE_STREAM_TYPE */,
+                                  FILE_PIPE_BYTE_STREAM_MODE, 1, &iosb);
+    ok(status == STATUS_SUCCESS, "peek pipe server -> %08lx", (unsigned long)status);
+    if (!NT_SUCCESS(status))
+        return;
+    status = open_pipe_client(&client, W("\\??\\pipe\\prstest_bytepeek"), &iosb);
+    ok(status == STATUS_SUCCESS, "peek pipe client -> %08lx", (unsigned long)status);
+    if (!NT_SUCCESS(status))
+    {
+        NtClose(server);
+        return;
+    }
+
+    status = pipe_write(client, "abcdefgh", 8, &iosb);
+    ok(status == STATUS_SUCCESS, "seed the peek pipe -> %08lx", (unsigned long)status);
+
+    /* A one-byte peek with seven bytes still queued: SUCCESS, not overflow. */
+    memset(reply, 0, sizeof(reply));
+    poison_iosb(&iosb);
+    status = NtFsControlFile(server, NULL, NULL, NULL, &iosb, FSCTL_PIPE_PEEK, NULL, 0, reply,
+                             sizeof(SEM_FILE_PIPE_PEEK_BUFFER) + 1);
+    ok(status == STATUS_SUCCESS, "byte-mode peek with a short buffer -> %08lx",
+       (unsigned long)status);
+    ok(peek->ReadDataAvailable == 8, "peek reports %lu bytes available",
+       (unsigned long)peek->ReadDataAvailable);
+
+    /* Message READ mode on a byte-type pipe is refused. */
+    pipeInfo.ReadMode = FILE_PIPE_MESSAGE_MODE;
+    pipeInfo.CompletionMode = FILE_PIPE_QUEUE_OPERATION;
+    poison_iosb(&iosb);
+    status = NtSetInformationFile(server, &iosb, &pipeInfo, sizeof(pipeInfo), FilePipeInformation);
+    ok(status == STATUS_INVALID_PARAMETER, "message read mode on a byte pipe -> %08lx",
+       (unsigned long)status);
+
+    /* Byte read mode is of course fine. */
+    pipeInfo.ReadMode = FILE_PIPE_BYTE_STREAM_MODE;
+    poison_iosb(&iosb);
+    status = NtSetInformationFile(server, &iosb, &pipeInfo, sizeof(pipeInfo), FilePipeInformation);
+    ok(status == STATUS_SUCCESS, "byte read mode on a byte pipe -> %08lx", (unsigned long)status);
+
+    NtClose(client);
+    NtClose(server);
+}
+
 START_TEST(byte_mode)
 {
     test_round_trip();
     test_nonblocking_and_available();
+    test_peek_and_read_mode();
 }
