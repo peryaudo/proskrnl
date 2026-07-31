@@ -45,6 +45,10 @@
 #define LONG_CMDLINE_CHARS 32766
 #define LONG_TITLE_CHARS   32766
 
+/* The exit code the hostile-RSP child would report if it somehow kept
+ * running. Any other code means it died, which is the point. */
+#define CHILD_RSP_SURVIVED 0x55
+
 static int wstr_contains(const WCHAR *haystack, const WCHAR *needle)
 {
     size_t nlen = 0;
@@ -82,6 +86,26 @@ static int wstr_length(const WCHAR *s)
     while (s[n])
         n++;
     return n;
+}
+
+/* Fault with RSP pointing into the kernel half. The kernel must kill this
+ * process; it must not write the exception frame where RSP says.
+ *
+ * This is the end-to-end half of the KiIsUserRange bound. The kmt case tests
+ * the predicate, but nothing tested that KiMaterializeUserRange actually
+ * consults it before the three frame writers memcpy -- delete the call and
+ * the kmt case still passes. Here the kernel really does have to build an
+ * exception frame at a ring-3-chosen RSP, which is the exploit: a user PML4
+ * shares the kernel's upper half, so the page walk alone reports the target
+ * present and writable, and the KiProbeForWrite alongside it is a no-op on
+ * this path (previousMode is KernelMode during exception dispatch).
+ *
+ * Run in a child so the failure is observable: on a kernel without the bound
+ * this halts the machine, and the parent's verdict never prints at all. */
+static void child_bad_rsp_main(void)
+{
+    __asm__ volatile("movq %0, %%rsp\n\tud2" ::"r"(0xFFFFFFFF80100000ULL) : "memory");
+    ExitProcess(CHILD_RSP_SURVIVED); /* not reached */
 }
 
 /* The maximal-string child: report what actually arrived. */
@@ -172,6 +196,8 @@ static void test_long_strings(const WCHAR *self)
 
 START_TEST(create_process)
 {
+    if (wstr_contains(GetCommandLineW(), L"--child-badrsp"))
+        child_bad_rsp_main(); /* never returns */
     /* --child-long is checked first: it also contains "--child". */
     if (wstr_contains(GetCommandLineW(), L"--child-long"))
         child_long_main(); /* never returns */
@@ -262,4 +288,37 @@ START_TEST(create_process)
        (unsigned long)GetLastError());
 
     test_long_strings(self);
+    /* Faulting with a kernel-half RSP must kill only the child. */
+    {
+        WCHAR badcmdline[600];
+        int n = 0;
+        badcmdline[n++] = '"';
+        for (int i = 0; self[i]; i++)
+            badcmdline[n++] = self[i];
+        badcmdline[n++] = '"';
+        const WCHAR *tail = L" --child-badrsp";
+        for (int i = 0; tail[i]; i++)
+            badcmdline[n++] = tail[i];
+        badcmdline[n] = 0;
+
+        STARTUPINFOW bsi;
+        PROCESS_INFORMATION bpi;
+        memset(&bsi, 0, sizeof(bsi));
+        bsi.cb = sizeof(bsi);
+        BOOL made = CreateProcessW(NULL, badcmdline, NULL, NULL, FALSE, 0, NULL, NULL, &bsi, &bpi);
+        ok(made, "CreateProcessW (hostile RSP child) -> %lu", (unsigned long)GetLastError());
+        if (made)
+        {
+            ok(WaitForSingleObject(bpi.hProcess, 30000) == WAIT_OBJECT_0, "hostile-RSP child wait");
+            DWORD bcode = 0;
+            GetExitCodeProcess(bpi.hProcess, &bcode);
+            ok(bcode != CHILD_RSP_SURVIVED, "hostile-RSP child survived (%#lx)",
+               (unsigned long)bcode);
+            CloseHandle(bpi.hThread);
+            CloseHandle(bpi.hProcess);
+        }
+        /* Reaching here at all is the real assertion: the machine is alive. */
+        ok(1, "parent survived the hostile-RSP child");
+    }
+
 }
