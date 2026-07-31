@@ -633,7 +633,15 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
         }
     }
     *infoOut = fixed + copied;
-    return copied < queue->bytesAvailable ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+    /* Only a truncated MESSAGE overflows. On a byte-mode read there is no
+     * message to truncate, so leaving data behind is ordinary -- reporting
+     * STATUS_BUFFER_OVERFLOW whenever anything remained made the normal
+     * 1-byte PeekNamedPipe poll fail (docs/review-2026-07 §9). */
+    if (end->readMode == FILE_PIPE_MESSAGE_MODE && copied < queue->bytesAvailable)
+    {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
@@ -737,6 +745,17 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, const FILE_PIPE_INFORMATION *
     if (end == 0)
     {
         return STATUS_INVALID_DEVICE_REQUEST; /* the root is not a pipe end */
+    }
+    /* A BYTE-type pipe may not be put into message READ mode. The oracle
+     * refuses it at set-info as well as at create (wine
+     * server/named_pipe.c: a byte pipe with message read mode is
+     * STATUS_INVALID_PARAMETER); accepting it made the read path fabricate
+     * message framing at whatever quota boundary the data happened to land
+     * on (docs/review-2026-07 §9). */
+    if (info->ReadMode == FILE_PIPE_MESSAGE_MODE && end->instance->pipe != 0 &&
+        end->instance->pipe->pipeType != FILE_PIPE_TYPE_MESSAGE)
+    {
+        return STATUS_INVALID_PARAMETER;
     }
     end->readMode = info->ReadMode;
     end->completionMode = info->CompletionMode;

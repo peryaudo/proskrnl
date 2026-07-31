@@ -91,6 +91,17 @@ typedef struct
     ULONG CompletionMode;
 } SEM_FILE_PIPE_INFORMATION;
 
+/* FSCTL_PIPE_PEEK reply (wine/include/ddk/ntifs.h FILE_PIPE_PEEK_BUFFER;
+ * a local name because mingw keeps the real one in the DDK headers). */
+typedef struct
+{
+    ULONG NamedPipeState;
+    ULONG ReadDataAvailable;
+    ULONG NumberOfMessages;
+    ULONG MessageLength;
+    CHAR Data[1];
+} SEM_FILE_PIPE_PEEK_BUFFER;
+
 /* FSCTL_PIPE_WAIT input (wine/include/winioctl.h FILE_PIPE_WAIT_FOR_BUFFER;
  * a local name because mingw keeps the real one in the DDK headers). */
 typedef struct
