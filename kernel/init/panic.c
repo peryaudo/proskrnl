@@ -260,10 +260,17 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         return;
     }
 
-    /* #BP is a trap: RIP already points past int3, so dump and resume. This is
-     * how M1 demonstrates "an exception dumps registers over serial" while
-     * keeping the run green. Every other vector is fatal. */
-    if (trapFrame->vector == 3)
+    /* #BP taken in RING 0 is a trap: RIP already points past int3, so dump
+     * and resume. This is how M1 demonstrates "an exception dumps registers
+     * over serial" while keeping the run green. Every other vector is fatal.
+     *
+     * The ring test is load-bearing and belongs BEFORE the vector test: now
+     * that vector 3's gate is DPL 3 (arch/x86_64/idt.c), a ring-3 `int3`
+     * actually reaches here, and swallowing it as the M1 demo would hand
+     * ring 3 an unbounded serial-spam primitive AND resume the faulting
+     * thread instead of delivering STATUS_BREAKPOINT to its exception
+     * dispatcher. */
+    if (trapFrame->vector == 3 && (trapFrame->segCs & 3) == 0)
     {
         KiDumpTrapFrame("[KTEST] trap", trapFrame);
         KiDumpStackTrace(trapFrame->rbp);
