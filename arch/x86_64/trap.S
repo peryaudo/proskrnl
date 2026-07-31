@@ -55,8 +55,15 @@ KiTrap\num:
     KI_TRAP_NOERR 26
     KI_TRAP_NOERR 27
     KI_TRAP_NOERR 28
-    KI_TRAP_NOERR 29
-    KI_TRAP_NOERR 30
+    /* #VC (29) and #SX (30) BOTH push an error code -- AMD APM Vol. 2
+     * §8.2.18 "#VC (VMM Communication Exception)" and §8.2.19 "#SX (Security
+     * Exception)". Declaring them no-error-code shifted the whole trap frame
+     * by 8 bytes, which also made the entry swapgs decision below read
+     * RFLAGS instead of CS. Not reachable under the pinned QEMU config (SEV
+     * and the security exception are both off), which is why it went
+     * unnoticed. */
+    KI_TRAP_ERR   29
+    KI_TRAP_ERR   30
     KI_TRAP_NOERR 31
     KI_TRAP_NOERR 32          /* LAPIC timer IRQ (M1) */
 
@@ -82,6 +89,13 @@ KiTrapCommon:
     push %r13
     push %r14
     push %r15
+    /* DF is architecturally UNDEFINED on entry through an interrupt gate --
+     * only `syscall` clears it, via IA32_FMASK (kernel/syscall/entry.S). The
+     * SysV ABI requires DF clear at every function entry and the C code
+     * below (and every thread a context switch reaches from it) assumes it,
+     * so clear it here rather than relying on nobody emitting a rep-string
+     * instruction. One instruction; see docs/review-2026-07 §8. */
+    cld
     mov %rsp, %rdi          /* PKTRAP_FRAME */
     call KiDispatchTrap
     pop %r15
@@ -105,6 +119,14 @@ KiTrapCommon:
     jz 2f
     swapgs
 2:
+    iretq
+
+/* The LAPIC spurious-interrupt vector's handler. The SDM (Vol. 3A §11.9
+ * "Spurious Interrupt") says a spurious interrupt does NOT set an ISR bit
+ * and the handler must return without sending an EOI -- so there is nothing
+ * to do but come back, and nothing to save in order to do it. */
+.globl KiSpuriousInterruptThunk
+KiSpuriousInterruptThunk:
     iretq
 
     /* Table of stub addresses, indexed by vector, for idt.c. */
