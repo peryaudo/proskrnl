@@ -1262,7 +1262,13 @@ NTSTATUS NtDeleteValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName)
         return status;
     }
     PCMP_KEY_NODE node = body->node;
-    PCMP_VALUE value = CmpFindValue(node, valueName);
+    /* Round an odd Length down to whole WCHARs, exactly as NtQueryValueKey
+     * does a few lines up. Without it query and delete disagreed about which
+     * names exist WITHIN proskrnl: a caller could look a value up and then
+     * fail to delete it with the same string (docs/review-2026-07 §9). */
+    UNICODE_STRING name = *valueName;
+    name.Length &= ~1u;
+    PCMP_VALUE value = CmpFindValue(node, &name);
     if (value == 0)
     {
         status = STATUS_OBJECT_NAME_NOT_FOUND;
@@ -1473,6 +1479,18 @@ NTSTATUS NtEnumerateValueKey(HANDLE keyHandle, ULONG index, KEY_VALUE_INFORMATIO
         }
         status = CmpFillValueInfo(CONTAINING_RECORD(e, CMP_VALUE, listEntry), infoClass,
                                   information, length, resultLength);
+        if (status == STATUS_BUFFER_TOO_SMALL)
+        {
+            /* Enumerate has NO too-small arm in the oracle: its whole
+             * short-buffer answer is `if (length < *result_len) ret =
+             * STATUS_BUFFER_OVERFLOW;` (third_party/wine
+             * dlls/ntdll/unix/registry.c NtEnumerateValueKey), whatever the
+             * shortfall. Reporting TOO_SMALL here broke the standard
+             * grow-and-retry loop, which treats it as fatal
+             * (docs/review-2026-07 §9). Query keeps the two-status protocol
+             * -- there the oracle really does distinguish them. */
+            status = STATUS_BUFFER_OVERFLOW;
+        }
     }
     ObDereferenceObject(body);
     return status;
