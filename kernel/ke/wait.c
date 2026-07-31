@@ -160,7 +160,15 @@ static NTSTATUS KiSatisfyWaitAll(PKTHREAD thread)
     {
         if (KiSatisfyObject(block->object, thread) && status == STATUS_SUCCESS)
         {
-            status = STATUS_ABANDONED_WAIT_0 + block->waitKey;
+            /* BARE STATUS_ABANDONED_WAIT_0, with no index added. A wait-all
+             * completes as STATUS_WAIT_0 (index 0, because there is no
+             * single satisfying object), and abandonment adds the abandoned
+             * base to THAT: third_party/wine server/thread.c check_wait
+             * returns STATUS_WAIT_0 for SELECT_WAIT_ALL and end_wait then
+             * does `if (wait->abandoned) status += STATUS_ABANDONED_WAIT_0;`
+             * (docs/review-2026-07 §9). Adding the block's index reported an
+             * abandoned index a wait-all never has. */
+            status = STATUS_ABANDONED_WAIT_0;
         }
     }
     return status;
@@ -462,7 +470,7 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
             {
                 if (KiSatisfyObject(objects[i], thread) && status == STATUS_SUCCESS)
                 {
-                    status = STATUS_ABANDONED_WAIT_0 + (NTSTATUS)i;
+                    status = STATUS_ABANDONED_WAIT_0; /* bare: see KiSatisfyWaitAll */
                 }
             }
             KiReleaseDispatcherLock(flags);
