@@ -241,6 +241,52 @@ START_TEST(reserve_commit)
     status = NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
     ok(status == STATUS_MEMORY_NOT_ALLOCATED, "double release -> %08lx", (unsigned long)status);
 
+    /* --- NtProtectVirtualMemory applies to ALL of the range, or none ------
+     *
+     * NT requires every page in the range to be committed. proskrnl rewrote
+     * PTEs page by page and only then discovered an uncommitted one, leaving
+     * the range HALF-reprotected while reporting failure -- ntdll's loader
+     * flips section protections through this path, so a partly-applied
+     * change is a process running with the wrong permissions on part of an
+     * image. */
+    addr = NULL;
+    size = 0x3000;
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "reserve for the protect case -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        PVOID region = addr;
+        PVOID commitAt = region;
+        SIZE_T commitSize = 0x1000;
+        ULONG oldProtect = 0;
+
+        /* Commit only the FIRST page of a three-page reservation. */
+        status = NtAllocateVirtualMemory(NtCurrentProcess(), &commitAt, 0, &commitSize, MEM_COMMIT,
+                                         PAGE_READWRITE);
+        ok(status == STATUS_SUCCESS, "commit the head page -> %08lx", (unsigned long)status);
+
+        /* Reprotect all three: the second page is not committed, so the call
+         * fails -- and the FIRST page must be untouched. */
+        addr = region;
+        size = 0x3000;
+        status = NtProtectVirtualMemory(NtCurrentProcess(), &addr, &size, PAGE_READONLY,
+                                        &oldProtect);
+        ok(!NT_SUCCESS(status), "protect across an uncommitted page -> %08lx",
+           (unsigned long)status);
+
+        status = NtQueryVirtualMemory(NtCurrentProcess(), region, MEMORY_BASIC_INFO_CLASS, &mbi,
+                                      sizeof(mbi), NULL);
+        ok(status == STATUS_SUCCESS, "query the head page -> %08lx", (unsigned long)status);
+        ok(mbi.Protect == PAGE_READWRITE,
+           "the failed protect changed the head page: Protect %lx, wanted PAGE_READWRITE",
+           (unsigned long)mbi.Protect);
+
+        addr = region;
+        size = 0;
+        NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+    }
+
     /* --- a RegionSize whose page rounding wraps -------------------------
      *
      * ROUND_SIZE(addr, size) overflows SIZE_T for a size near 2^64 and comes
