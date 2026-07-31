@@ -140,6 +140,34 @@ START_TEST(scatter_gather)
        (unsigned long)status);
     NtClose(h);
 
+    /* --- a NEGATIVE ByteOffset is a sentinel or an error, never 0 ---------
+     *
+     * proskrnl silently kept offset 0 for any negative value, so a gather
+     * with FILE_WRITE_TO_END_OF_FILE (-1) overwrote the START of the file
+     * instead of appending. Every other negative value is refused, as
+     * NtReadFile/NtWriteFile refuse it -- including the -2
+     * FILE_USE_FILE_POINTER_POSITION sentinel. */
+    status = open_sg(&h, dir, FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                     FILE_NO_INTERMEDIATE_BUFFERING, FILE_OPEN, &iosb);
+    ok(status == STATUS_SUCCESS, "open for the negative-offset cases -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        offset.QuadPart = -3;
+        status = NtWriteFileGather(h, NULL, NULL, NULL, &iosb, segments, SG_PAGE, &offset, NULL);
+        ok(status == STATUS_INVALID_PARAMETER, "gather at offset -3 -> %08lx",
+           (unsigned long)status);
+        /* -2 (FILE_USE_FILE_POINTER_POSITION) is left out: proskrnl refuses
+         * it here for the same reason NtReadFile/NtWriteFile do -- an
+         * unbuilt sentinel gets a distinguishable status rather than a
+         * fabricated position, which is the docs/03 deviation those two
+         * already carry -- while the oracle accepts it. Pinning it either
+         * way would either certify the divergence or contradict the
+         * deviation. The read side is left out too: an asynchronous handle
+         * pends there, so the status does not report the offset check. */
+        NtClose(h);
+    }
+
     scrub_file(dir, W("sg.bin"));
     NtClose(dir);
 }

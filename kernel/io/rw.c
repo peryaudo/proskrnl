@@ -519,6 +519,16 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         }
     }
 
+    /* The cache is resolved BEFORE the offset, because the
+     * FILE_WRITE_TO_END_OF_FILE sentinel needs the current file size. */
+    PMI_PAGE_CACHE cache;
+    status = file->device->ops->GetCache(file, &cache);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(file);
+        return status;
+    }
+
     uint64_t offset = (uint64_t)file->currentByteOffset.QuadPart;
     if (byteOffset != 0)
     {
@@ -534,14 +544,23 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         {
             offset = (uint64_t)stackOffset.QuadPart;
         }
-    }
-
-    PMI_PAGE_CACHE cache;
-    status = file->device->ops->GetCache(file, &cache);
-    if (!NT_SUCCESS(status))
-    {
-        ObDereferenceObject(file);
-        return status;
+        else if (isWrite && stackOffset.QuadPart == -1)
+        {
+            /* FILE_WRITE_TO_END_OF_FILE, the same sentinel NtWriteFile
+             * honours (third_party/wine dlls/ntdll/unix/unix_private.h).
+             * Silently keeping offset 0 for a negative value meant
+             * NtWriteFileGather with this sentinel overwrote the START of
+             * the file instead of appending (docs/review-2026-07 §9). */
+            offset = cache->fileSize;
+        }
+        else
+        {
+            /* Every other negative offset is refused rather than folded to
+             * 0 -- including the -2 FILE_USE_FILE_POINTER_POSITION sentinel,
+             * which NtReadFile/NtWriteFile also refuse. */
+            ObDereferenceObject(file);
+            return STATUS_INVALID_PARAMETER;
+        }
     }
 
     if (isWrite)
