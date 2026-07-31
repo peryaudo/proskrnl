@@ -165,7 +165,14 @@ static void DbgpPrintV(const char *format, va_list args)
             if (value < 0)
             {
                 DbgPutChar('-');
-                DbgpEmitUnsigned((uint64_t)(-value), 10, 0, width > 0 ? width - 1 : 0, pad, 0);
+                /* Negate in the UNSIGNED domain: -value on LLONG_MIN is
+                 * signed overflow, and the kernel builds with
+                 * -fsanitize-trap=undefined, so it is a ud2 INSIDE the
+                 * logging path -- the one place that must never be the thing
+                 * that dies (Art. 9). 0 - (uint64_t)value is the same
+                 * magnitude for every other value and is defined for this
+                 * one. */
+                DbgpEmitUnsigned(0ULL - (uint64_t)value, 10, 0, width > 0 ? width - 1 : 0, pad, 0);
             }
             else
             {
