@@ -85,6 +85,62 @@ static void test_pending_listen(void)
     ok(iosb2.Status == IOSB_POISON_STATUS, "refused listen wrote the iosb: %08lx",
        (unsigned long)iosb2.Status);
 
+    /* TWO concurrent async listens on one instance -- the standard
+     * accept-loop shape, where the next listen is submitted before the
+     * previous one completes. proskrnl refused the second with
+     * STATUS_NOT_IMPLEMENTED, which under the default-on arming flag is a
+     * kernel panic; the oracle queues them (docs/review-2026-07 §5). The
+     * pipe is CONNECTED here, so disconnect first to get back to listening.
+     */
+    status = NtFsControlFile(server, NULL, NULL, NULL, &iosb2, FSCTL_PIPE_DISCONNECT, NULL, 0,
+                             NULL, 0);
+    ok(status == STATUS_SUCCESS, "disconnect before the double listen -> %08lx",
+       (unsigned long)status);
+    if (client)
+    {
+        NtClose((HANDLE)(ULONG_PTR)client);
+        client = 0;
+    }
+    {
+        HANDLE event2 = CreateEventW(NULL, TRUE, FALSE, NULL);
+        IO_STATUS_BLOCK iosbA, iosbB;
+
+        ok(event2 != NULL, "second event");
+        poison_iosb(&iosbA);
+        poison_iosb(&iosbB);
+        status = NtFsControlFile(server, event, NULL, NULL, &iosbA, FSCTL_PIPE_LISTEN, NULL, 0,
+                                 NULL, 0);
+        ok(status == STATUS_PENDING, "first of two listens -> %08lx", (unsigned long)status);
+        status = NtFsControlFile(server, event2, NULL, NULL, &iosbB, FSCTL_PIPE_LISTEN, NULL, 0,
+                                 NULL, 0);
+        ok(status == STATUS_PENDING, "second concurrent listen -> %08lx", (unsigned long)status);
+
+        /* One connect satisfies exactly one of them (the older). */
+        thread = CreateThread(NULL, 0, connect_after_delay, W("\\??\\pipe\\prstest_alisten"), 0,
+                              NULL);
+        ok(thread != NULL, "second connector");
+        wait = WaitForSingleObject(event, 10000);
+        ok(wait == WAIT_OBJECT_0, "the first listen completed -> %lu", (unsigned long)wait);
+        wait = WaitForSingleObject(event2, 10000);
+        ok(wait == WAIT_OBJECT_0, "the second listen completed -> %lu", (unsigned long)wait);
+        /* One connect wakes the WHOLE queue: the instance is connected, and
+         * a listen against a connected instance answers STATUS_PIPE_CONNECTED
+         * anyway, so a survivor would park forever. */
+        ok(iosbA.Status == STATUS_SUCCESS, "first listen iosb -> %08lx",
+           (unsigned long)iosbA.Status);
+        ok(iosbB.Status == STATUS_SUCCESS, "second listen iosb -> %08lx",
+           (unsigned long)iosbB.Status);
+
+        wait = WaitForSingleObject(thread, 10000);
+        ok(wait == WAIT_OBJECT_0, "second connector join");
+        GetExitCodeThread(thread, &client);
+        CloseHandle(thread);
+        thread = NULL;
+
+        if (event2)
+            CloseHandle(event2);
+    }
+
     /* Listening again while connected answers synchronously. */
     poison_iosb(&iosb2);
     status =
