@@ -31,6 +31,9 @@ Quick start (needs a mingw toolchain + the pinned `third_party/wine` build):
 
 ```sh
 tests/run/run.sh oracle
+tests/run/run.sh oracle query_dir     # one test (or a glob) while iterating; both
+tests/run/run.sh proskrnl query_dir   # legs take it — iteration only, the gate is
+                                      # the unfiltered run (docs/14)
 ```
 
 Workflow for one `Nt*`: write the test → green on `oracle` (commit before kernel code) →

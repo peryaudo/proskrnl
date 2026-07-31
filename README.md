@@ -406,6 +406,7 @@ make run     # boot interactively: a cmd.exe prompt on your terminal ('exit' pow
 make rungui  # boot the GUI-2 image with a host window on the scanout (winemine.exe)
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
+tests/run/run.sh proskrnl query_dir   # ...or one test / a glob, while iterating (both legs)
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 tests/run/run.sh persist    # tests that registry values survive a reboot (boot twice)
 tests/run/run.sh console    # tests that typing into the serial console is working
