@@ -338,13 +338,27 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
 
 /* --- thread.c (M7) ------------------------------------------------------- */
 
+/* The caller-controlled parts of a thread create that are not the entry
+ * point: the handle's access and attributes, and the stack geometry. All
+ * optional -- 0 means "the image's / the default" for the sizes, and a 0
+ * desiredAccess is mapped like any other (an empty mapped mask is refused by
+ * the handle layer, as NT refuses it). */
+typedef struct PSP_THREAD_OPTIONS
+{
+    ACCESS_MASK desiredAccess;
+    ULONG handleAttributes; /* OBJ_INHERIT etc., from OBJECT_ATTRIBUTES */
+    uint64_t stackReserve;  /* 0 = the default 1 MiB */
+    uint64_t stackCommit;   /* 0 = the default 64 KiB */
+} PSP_THREAD_OPTIONS;
+
 /* Create and ready an additional user thread in `process`: its own guard-page
  * stack + TEB, entering ring 3 at `startRoutine(argument)` through the image's
  * RtlUserThreadStart-shaped entry protocol (rcx=startRoutine, rdx=argument).
  * Returns a handle in the CURRENT process's table. */
 NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
-                             BOOLEAN createSuspended, PHANDLE threadHandleOut,
-                             uint64_t *threadIdOut, uint64_t *tebBaseOut);
+                             BOOLEAN createSuspended, const PSP_THREAD_OPTIONS *options,
+                             PHANDLE threadHandleOut, uint64_t *threadIdOut,
+                             uint64_t *tebBaseOut);
 
 /* CUI-4: start a thread in `process` with NO handle in any table — the
  * kernel-initiated injection the console-control fanout uses (ntdll's unix
