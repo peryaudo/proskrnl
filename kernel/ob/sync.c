@@ -493,12 +493,27 @@ NTSTATUS NtSetTimer(HANDLE handle, const LARGE_INTEGER *dueTime, PTIMER_APC_ROUT
     {
         return status;
     }
+    /* The out-parameter is validated BEFORE the timer is armed, and its
+     * failure is the call's failure. Probing after the side effect and
+     * swallowing the result reported success while the caller's
+     * PreviousState was never written -- and the timer WAS armed
+     * (docs/review-2026-07 §5). Optional means "may be NULL", not "may be
+     * unwritable". */
+    if (previousState != 0)
+    {
+        NTSTATUS probe = KiProbeForWrite(previousState, sizeof(*previousState), 1);
+        if (!NT_SUCCESS(probe))
+        {
+            ObDereferenceObject(body);
+            return probe;
+        }
+    }
     PKTIMER timer = body;
     BOOLEAN wasSignaled = timer->header.signalState != 0;
     KeSetTimerEx(timer, due, (LONG)period, 0);
     ObDereferenceObject(body);
 
-    if (previousState != 0 && NT_SUCCESS(KiProbeForWrite(previousState, sizeof(*previousState), 1)))
+    if (previousState != 0)
     {
         *previousState = wasSignaled;
     }
@@ -514,12 +529,23 @@ NTSTATUS NtCancelTimer(HANDLE handle, BOOLEAN *currentState)
     {
         return status;
     }
+    /* As NtSetTimer: probe before the cancel, and let the failure be the
+     * call's. */
+    if (currentState != 0)
+    {
+        NTSTATUS probe = KiProbeForWrite(currentState, sizeof(*currentState), 1);
+        if (!NT_SUCCESS(probe))
+        {
+            ObDereferenceObject(body);
+            return probe;
+        }
+    }
     PKTIMER timer = body;
     BOOLEAN wasSignaled = timer->header.signalState != 0;
     KeCancelTimer(timer);
     ObDereferenceObject(body);
 
-    if (currentState != 0 && NT_SUCCESS(KiProbeForWrite(currentState, sizeof(*currentState), 1)))
+    if (currentState != 0)
     {
         *currentState = wasSignaled;
     }
@@ -538,6 +564,10 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
         return STATUS_INFO_LENGTH_MISMATCH;
     }
     NTSTATUS probe = KiProbeForWrite(buffer, sizeof(TIMER_BASIC_INFORMATION), sizeof(uint64_t));
+    if (NT_SUCCESS(probe) && returnLength != 0)
+    {
+        probe = KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
+    }
     if (!NT_SUCCESS(probe))
     {
         return probe;
@@ -563,10 +593,9 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
     ObDereferenceObject(body);
 
     memcpy(buffer, &info, sizeof(info));
-    if (returnLength != 0 &&
-        NT_SUCCESS(KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG))))
+    if (returnLength != 0)
     {
-        *returnLength = sizeof(info);
+        *returnLength = sizeof(info); /* probed above, with the buffer */
     }
     return STATUS_SUCCESS;
 }
