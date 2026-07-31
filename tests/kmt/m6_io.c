@@ -15,6 +15,7 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "drivers/virtio/blk.h"
+#include "fs/fat32/fat.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntstatus.h"
@@ -234,11 +235,91 @@ static void test_image_section_from_disk(void)
     NtClose(file);
 }
 
+/* --- hostile cluster chains ------------------------------------------------
+ *
+ * Every cluster number the filesystem uses comes off the media: a FAT entry,
+ * or a directory entry's DIR_FstClus. Two shapes used to be fatal.
+ *
+ * An OUT-OF-RANGE value: FatGetNextCluster asserted its input was a data
+ * cluster and returned the raw entry unchecked, so a file whose DIR_FstClus
+ * is 0x0FFFFFF0 panicked the kernel on first read, and so did any chain whose
+ * next-pointer left the volume.
+ *
+ * A CYCLE: nothing bounded a chain walk, and with one dispatcher lock, no
+ * preemption and no blocking inside the walk, a cyclic chain hangs the whole
+ * machine forever -- reached by MOUNTING a crafted image, without any syscall
+ * at all (docs/review-2026-07 §4).
+ *
+ * Driven against a synthetic FAT_VOLUME rather than the mounted one: the
+ * chain primitives read only `fat` and `clusterCount`, so no disk is
+ * involved, and the boot volume is not put at risk to test what happens to a
+ * corrupt one. Same shape as fat_interop.c's BPB battery. */
+static void test_fat_hostile_chains(void)
+{
+    FAT_VOLUME volume;
+    const ULONG clusters = 64;
+
+    memset(&volume, 0, sizeof(volume));
+    volume.clusterCount = clusters;
+    volume.fat = MiAllocatePool((clusters + 2) * sizeof(ULONG));
+    ok(volume.fat != 0, "synthetic FAT allocated");
+    if (volume.fat == 0)
+        return;
+    memset(volume.fat, 0, (clusters + 2) * sizeof(ULONG));
+
+    /* The bound itself. */
+    ok(!FatIsDataCluster(&volume, 0), "cluster 0 is not a data cluster");
+    ok(!FatIsDataCluster(&volume, 1), "cluster 1 is not a data cluster");
+    ok(FatIsDataCluster(&volume, 2), "cluster 2 is a data cluster");
+    ok(FatIsDataCluster(&volume, clusters + 1), "the last cluster is a data cluster");
+    ok(!FatIsDataCluster(&volume, clusters + 2), "one past the last is not");
+    ok(!FatIsDataCluster(&volume, 0x0FFFFFF0u), "an EOC-looking number is not");
+
+    /* An out-of-range INPUT reads as end-of-chain instead of asserting. */
+    ok(FatGetNextCluster(&volume, 0x0FFFFFF0u) == 0, "out-of-range input");
+    ok(FatGetNextCluster(&volume, 0) == 0, "cluster 0 as input");
+    ok(FatGetNextCluster(&volume, clusters + 2) == 0, "past-the-end input");
+
+    /* An out-of-range RETURNED value likewise. 3 -> 0x00001234 (off the
+     * volume, and not an EOC marker) must not be handed back. */
+    volume.fat[3] = 0x00001234u;
+    ok(FatGetNextCluster(&volume, 3) == 0, "out-of-range next pointer");
+    volume.fat[4] = 0x0FFFFFF7u; /* the bad-cluster marker (spec §4) */
+    ok(FatGetNextCluster(&volume, 4) == 0, "bad-cluster marker");
+    volume.fat[5] = 6;
+    ok(FatGetNextCluster(&volume, 5) == 6, "an ordinary next pointer still works");
+
+    /* A cycle: 10 -> 11 -> 12 -> 10. Every walk must terminate. */
+    volume.fat[10] = 11;
+    volume.fat[11] = 12;
+    volume.fat[12] = 10;
+    ok(FatChainLength(&volume, 10) <= clusters + 1, "cyclic chain length is bounded");
+    ok(FatWalkChain(&volume, 10, 0xFFFFFFFFu) == 0, "walking a cyclic chain terminates");
+    ok(FatWalkChain(&volume, 10, 1) == 11, "a short walk into a cycle is still exact");
+
+    /* A one-cluster self-loop, the tightest case. */
+    volume.fat[20] = 20;
+    ok(FatChainLength(&volume, 20) <= clusters + 1, "self-loop length is bounded");
+    ok(FatWalkChain(&volume, 20, 0xFFFFFFFFu) == 0, "walking a self-loop terminates");
+
+    /* And a well-formed chain still measures and walks exactly. */
+    volume.fat[30] = 31;
+    volume.fat[31] = 32;
+    volume.fat[32] = FAT_ENTRY_MASK; /* EOC */
+    ok(FatChainLength(&volume, 30) == 3, "clean chain length %lu",
+       (unsigned long)FatChainLength(&volume, 30));
+    ok(FatWalkChain(&volume, 30, 2) == 32, "clean chain walk");
+    ok(FatWalkChain(&volume, 30, 3) == 0, "walk past a clean chain's end");
+
+    MiFreePool(volume.fat);
+}
+
 int kmt_run_m6(void)
 {
     int before = kmt_failures;
     DbgPrint("kmt: M6 io suite\n");
     KMT_RUN(test_virtio_blk);
+    KMT_RUN(test_fat_hostile_chains);
     if (VioBlkIsPresent())
     {
         kmt_run_m6_blk();

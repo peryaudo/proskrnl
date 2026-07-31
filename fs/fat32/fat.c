@@ -31,11 +31,21 @@ NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer)
     return VioBlkWriteSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
+BOOLEAN FatIsDataCluster(PFAT_VOLUME volume, ULONG cluster)
+{
+    /* Cluster numbering starts at 2 and the last valid one is
+     * clusterCount + 1 (spec §4). */
+    return cluster >= 2 && cluster < volume->clusterCount + 2;
+}
+
 uint64_t FatClusterToSector(PFAT_VOLUME volume, ULONG cluster)
 {
     /* FirstSectorofCluster = ((N-2) * BPB_SecPerClus) + FirstDataSector
-     * (spec §6.7); cluster numbering starts at 2 (spec §4). */
-    ASSERT(cluster >= 2 && cluster < volume->clusterCount + 2);
+     * (spec §6.7); cluster numbering starts at 2 (spec §4). This ASSERT is a
+     * genuine kernel invariant rather than a check on disk contents: every
+     * cluster number that reaches here has already been filtered by
+     * FatIsDataCluster, at the point it was read off the volume. */
+    ASSERT(FatIsDataCluster(volume, cluster));
     return (uint64_t)(cluster - 2) * volume->sectorsPerCluster + volume->firstDataSector;
 }
 
@@ -43,9 +53,25 @@ uint64_t FatClusterToSector(PFAT_VOLUME volume, ULONG cluster)
 
 ULONG FatGetNextCluster(PFAT_VOLUME volume, ULONG cluster)
 {
-    ASSERT(cluster >= 2 && cluster < volume->clusterCount + 2);
+    /* Both ends are checked, and both used to be assumed. The INPUT arrives
+     * from a directory entry's DIR_FstClus, so a file whose entry names
+     * 0x0FFFFFF0 tripped the old ASSERT and panicked the kernel on first
+     * read; the RETURNED value is a raw FAT entry, equally attacker-chosen
+     * on a crafted image, and it was handed straight back to a caller that
+     * would index with it next time round (docs/review-2026-07 §4). An
+     * out-of-range value on either side reads as end-of-chain -- the same
+     * answer this already gives for the EOC and bad-cluster markers, which
+     * every caller already handles. */
+    if (!FatIsDataCluster(volume, cluster))
+    {
+        return 0;
+    }
     ULONG value = volume->fat[cluster] & FAT_ENTRY_MASK; /* mask: spec §4.1 read code */
     if (value >= FAT_END_OF_CHAIN || value == 0x0FFFFFF7u /* bad cluster, spec §4 */)
+    {
+        return 0;
+    }
+    if (!FatIsDataCluster(volume, value))
     {
         return 0;
     }
@@ -57,7 +83,7 @@ ULONG FatGetNextCluster(PFAT_VOLUME volume, ULONG cluster)
  * mformat images mirror). */
 NTSTATUS FatSetFatEntry(PFAT_VOLUME volume, ULONG cluster, ULONG value)
 {
-    ASSERT(cluster >= 2 && cluster < volume->clusterCount + 2);
+    ASSERT(FatIsDataCluster(volume, cluster));
     /* Preserve the reserved high 4 bits (spec §4.1 write code). */
     volume->fat[cluster] = (volume->fat[cluster] & 0xF0000000u) | (value & FAT_ENTRY_MASK);
 
@@ -113,7 +139,7 @@ NTSTATUS FatAllocateCluster(PFAT_VOLUME volume, ULONG previousOrZero, ULONG *clu
 void FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster)
 {
     ULONG cluster = firstCluster;
-    while (cluster >= 2 && cluster < volume->clusterCount + 2)
+    while (FatIsDataCluster(volume, cluster))
     {
         ULONG next = FatGetNextCluster(volume, cluster);
         FatSetFatEntry(volume, cluster, 0);
@@ -121,11 +147,24 @@ void FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster)
     }
 }
 
+/* Every chain walk in the filesystem is bounded by the number of clusters on
+ * the volume, because a chain longer than that has revisited one -- i.e. it
+ * is cyclic. A crafted image with a cyclic chain otherwise hangs the kernel
+ * FOREVER: uniprocessor, no preemption, and the walk never blocks, so
+ * nothing else ever runs again (docs/review-2026-07 §4). Reaching the bound
+ * ends the walk as if the chain ended, which is what every caller of these
+ * primitives already copes with; there is no repair to attempt here and no
+ * caller that could act on a distinct status. */
 ULONG FatWalkChain(PFAT_VOLUME volume, ULONG firstCluster, ULONG index)
 {
     ULONG cluster = firstCluster;
+    ULONG steps = 0;
     while (index != 0 && cluster != 0)
     {
+        if (steps++ > volume->clusterCount)
+        {
+            return 0; /* cyclic chain */
+        }
         cluster = FatGetNextCluster(volume, cluster);
         index--;
     }
@@ -142,7 +181,10 @@ ULONG FatChainLength(PFAT_VOLUME volume, ULONG firstCluster)
         cluster = FatGetNextCluster(volume, cluster);
         if (count > volume->clusterCount)
         {
-            KiPanic("fat32: cluster chain loop");
+            /* Was a KiPanic. A cyclic chain is a property of the MEDIA, not
+             * of the kernel, and mounting a crafted image must not halt the
+             * machine. */
+            break;
         }
     }
     return count;
@@ -222,6 +264,13 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     fcb->writeTime = KiReadLe16(sfn + 22);
     fcb->writeDate = KiReadLe16(sfn + 24);
     fcb->firstCluster = ((ULONG)KiReadLe16(sfn + 20) << 16) | KiReadLe16(sfn + 26);
+    /* An entry naming a cluster off the volume is a corrupt entry; treat it
+     * as the empty chain (which 0 already means here) rather than letting it
+     * reach FatClusterToSector's ASSERT. */
+    if (fcb->firstCluster != 0 && !FatIsDataCluster(dir->volume, fcb->firstCluster))
+    {
+        fcb->firstCluster = 0;
+    }
     fcb->fileSize = KiReadLe32(sfn + 28);
     MiInitializePageCache(&fcb->cache);
     fcb->cacheLoaded = FALSE;

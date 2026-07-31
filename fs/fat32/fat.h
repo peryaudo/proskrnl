@@ -127,6 +127,12 @@ NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBy
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer);
 NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer);
 
+/* Is `cluster` a real data cluster of this volume, i.e. in [2, count+2)?
+ * THE authority for the question: every cluster number that arrives from the
+ * media -- a FAT entry, a directory entry's DIR_FstClus -- passes through
+ * here before it is used to index anything. */
+BOOLEAN FatIsDataCluster(PFAT_VOLUME volume, ULONG cluster);
+
 /* First volume-relative sector of cluster N (spec §6.7). */
 uint64_t FatClusterToSector(PFAT_VOLUME volume, ULONG cluster);
 
