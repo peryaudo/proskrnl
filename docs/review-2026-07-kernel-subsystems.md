@@ -6,7 +6,22 @@ each reading its directory in full plus the seams it depends on, and
 cross-checking against the pinned Wine oracle (`third_party/wine`) and the
 relevant vendor specs.
 
-**169 findings.** Nothing in this document has been fixed; it is a work list.
+**169 findings.**
+
+**Status.** Every finding this document rates *critical* is fixed, along with
+four rated *high* that shared their code paths. Nothing else is. Fixed items
+carry a **[FIXED `<commit>`]** mark inline below — read the marks, not the
+section headings: sections 1–4 are *themes*, and each still contains unfixed
+items alongside the fixed ones.
+
+Fixing section 1a took two passes. The first covered the Ob namespace engine
+and assumed that reached every `NtCreate*`/`NtOpen*`; re-checking against the
+kernel showed Io and Cm parse `ObjectName` into their own namespaces without
+entering the engine, so `NtCreateFile`, `NtCreateKey` and `NtOpenKey` were
+still halting the machine. Three further paths in the same section were also
+still live. Every fix here was confirmed to convict first: the unfixed kernel
+produces `[PANIC] vector=14 (#PF page fault)` under the new tests, so these
+are differential results rather than a sanitizer going quiet (Art. 6).
 
 | Subdirectory | Findings | Worst |
 | --- | --- | --- |
@@ -39,37 +54,38 @@ amplified by one design decision.
 register arguments. Validation is therefore each service's own responsibility,
 and the coverage is close to random. Confirmed unprobed user dereferences:
 
-- **`kernel/ob/namespace.c:152-248, 387`** — the *entire* Ob create/open engine
+- **[FIXED ae98013, c4d0eb3] `kernel/ob/namespace.c:152-248, 387`** — the *entire* Ob create/open engine
   reads `attributes->ObjectName->Length` and walks `Buffer[]` raw. Every
   `NtCreateEvent` / `NtCreateMutant` / `NtCreateSemaphore` / `NtCreateSection` /
   `NtCreateFile` / `NtCreateDirectoryObject` / `NtCreateJobObject` /
   `NtCreateIoCompletion` reaches it with an unvalidated ring-3 pointer. The only
   `OBJECT_ATTRIBUTES` probe in the tree is in `NtOpenProcess`
   (`kernel/ps/process.c:1129`).
-- **`kernel/ps/query.c`, `kernel/ps/job.c`, `kernel/ps/thread.c`** — roughly 25
+- **[FIXED 6b87fc6] `kernel/ps/query.c`, `kernel/ps/job.c`, `kernel/ps/thread.c`** — roughly 25
   `*returnLength = ...` stores with no probe at all
   (`query.c:89,111,133,180,208,239,254,280,314,327,646,790,856,892,914,932,953,984,1030,1048,1068,1176,1196`;
   `job.c:375,407,439,452`; `thread.c:1044,1067`). Exactly one site
   (`query.c:1085`, `SystemInterruptInformation`) probes, which is what shows the
   rest are oversights rather than policy.
-- **`kernel/ob/namespace.c:741-864`** — `NtQueryDirectoryObject` validates
+- **[FIXED c4d0eb3] `kernel/ob/namespace.c:741-864`** — `NtQueryDirectoryObject` validates
   nothing at all; it reads `*context` before even resolving the handle, then
   writes `buffer[]`, `*context`, and `*returnedSize`.
-- **`kernel/ob/namespace.c:874-951`** — `NtCreateSymbolicLinkObject` /
+- **NOT FIXED. `kernel/ob/namespace.c:874-951`** — `NtCreateSymbolicLinkObject` /
   `NtQuerySymbolicLinkObject` read and `memcpy` up to 64 KB through an
   unvalidated `UNICODE_STRING`.
-- **`kernel/cm/registry.c:852,856,1025,1077,1096,1159,1182`** — `valueName` and
+- **[FIXED 7d399f1, c4d0eb3] `kernel/cm/registry.c:852,856,1025,1077,1096,1159,1182`** — `valueName` and
   `attributes` raw in `NtSetValueKey` / `NtQueryValueKey` / `NtDeleteValueKey` /
   `NtCreateKey` / `NtOpenKeyEx`. Cm's `data` parameter *is* probed, one line
   away.
-- **`kernel/io/file.c:309,341`, `kernel/io/query.c:942-950`** —
+- **[FIXED c4d0eb3 — `NtCreateFile` only] `kernel/io/file.c:309,341`, `kernel/io/query.c:942-950`** —
   `NtCreateFile`'s `OBJECT_ATTRIBUTES`, and `NtQueryDirectoryFile`'s `mask`
   (whose `Buffer` is then `memcpy`'d into the handle's retained `dirMask`).
-- **`kernel/ke/wait.c:459`, `kernel/ob/wait.c:38,60,83`** — the `timeout`
+  The `mask` half is **NOT FIXED**.
+- **[FIXED c4d0eb3] `kernel/ke/wait.c:459`, `kernel/ob/wait.c:38,60,83`** — the `timeout`
   pointer and the `handles[]` array of `NtWaitForSingleObject` /
   `NtWaitForMultipleObjects`. `kernel/ps/thread.c:746` probes an identical
   `HANDLE` array, so again the omission is local.
-- **`kernel/ob/handle.c:626-630, 665-669`** — `NtQueryObject` calls
+- **[FIXED c4d0eb3] `kernel/ob/handle.c:626-630, 665-669`** — `NtQueryObject` calls
   `KiProbeForWrite` and then **discards the result**, writing regardless. Its
   three success paths do not probe at all.
 
@@ -116,6 +132,14 @@ single finding in the review. Two independent fixes are needed — probe with
 `UserMode` semantics on the dispatch paths, **and** bound
 `KiMaterializeUserRange` against `KI_USER_SPACE_LIMIT`.
 
+**[FIXED b775f4e]** via the second of those. `KiIsUserRange` is now the one
+authority for the bound, phrased to hold regardless of previous mode, and is
+checked first in `KiMaterializeUserRange` — which all three frame writers
+(`usermode.c:292`, `:330`, `:455`) pass through before their `memcpy`. The
+probes on those paths remain no-ops, which is now harmless rather than
+load-bearing; making them mode-aware is still worth doing so the weaker
+guarantee is not relied on again.
+
 ### 1d. Probe-then-block TOCTOU is now live
 
 `kernel/syscall/uaccess.h:8-10` states the probe is sound because "the kernel
@@ -140,7 +164,7 @@ copies that many bytes. The equality check that would catch it sits at
 Several sites assert on values ring 3 controls, turning a diagnostic into a
 denial-of-service primitive:
 
-- **`kernel/se/secobj.c:87-88` (critical)** — `BYTE reply[512]` with
+- **[FIXED 901cf20] `kernel/se/secobj.c:87-88` (critical)** — `BYTE reply[512]` with
   `ASSERT(needed <= sizeof(reply))`, where `needed` derives from an SD the
   caller stored earlier and `SepCaptureAcl` accepts ACLs up to 65535 bytes. An
   `NtCreateEvent` + `NtSetSecurityObject` (2 KB DACL) + `NtQuerySecurityObject`
@@ -173,13 +197,13 @@ denial-of-service primitive:
 
 ## 3. Integer overflow in size arithmetic
 
-- **`kernel/ps/peb.c:141,521` (critical)** — `PspCaptureString` computes
+- **[FIXED 5ab7738] `kernel/ps/peb.c:141,521` (critical)** — `PspCaptureString` computes
   `MaximumLength = (USHORT)(source->Length + sizeof(WCHAR))`, which wraps to 1
   for `Length == 0xFFFF`. `PspBuildPeb` sizes the scratch region from
   `MaximumLength` (16 bytes reserved) but `memcpy`s `Length` (65535) bytes — a
   fully attacker-controlled kernel pool overflow via `NtCreateUserProcess`.
   `Length == 0xFFFE` wraps to 0 and silently drops the string instead.
-- **`kernel/mm/virtual.c:311,321` (critical)** — `MiRoundUp(requestedBase + size,
+- **[FIXED 0db0498] `kernel/mm/virtual.c:311,321` (critical)** — `MiRoundUp(requestedBase + size,
   PAGE_SIZE) - base` wraps to 0 with no guard; the `size == 0` check at `:286`
   runs on the *pre-rounding* value, and the `base + size < base` test does not
   fire when the rounded size is exactly 0. Reaches `MiCreateVad(base, 0, ...)`
@@ -205,7 +229,7 @@ denial-of-service primitive:
 
 ## 4. Untrusted external input parsed without validation
 
-- **`fs/fat32/fat.c:465-477` (critical)** — mount validates neither
+- **[FIXED e7a0bd8] `fs/fat32/fat.c:465-477` (critical)** — mount validates neither
   `fatSize != 0`, nor `totalSectors != 0`, nor
   `clusterCount + 2 <= fatSize * bytesPerSector / 4`. The author knew the
   invariant — it appears as an `ASSERT` in `FatQueryVolumeInfo` at `:673` — but
@@ -275,7 +299,7 @@ larger than the file, an everyday Win32 pattern).
 
 Two ring-3-reachable calls through NULL function pointers, both critical:
 
-- **`kernel/io/rw.c:315`** — the device branch is entered only when
+- **[FIXED b236449] `kernel/io/rw.c:315`** — the device branch is entered only when
   `ops->Write != 0`; otherwise control falls through to
   `ops->GetCache(...)` with no check. `HidInputOps` / `HidPointerOps`
   (`drivers/hid.c:202,213`) have `Read` but neither `Write` nor `GetCache`, and
@@ -285,7 +309,7 @@ Two ring-3-reachable calls through NULL function pointers, both critical:
   Note `drivers/hid.c:198` carries a comment asserting that "their absence
   makes the Io layer refuse with its own distinct status". The Io layer does
   not; the comment documents behavior that was never implemented.
-- **`kernel/io/rw.c:330,529`** — `ops->SetEndOfFile` is called unchecked on the
+- **[FIXED b236449] `kernel/io/rw.c:330,529`** — `ops->SetEndOfFile` is called unchecked on the
   cache path. `FbOps` (`drivers/fb.c:170`) has `GetCache` but no
   `SetEndOfFile`, and `FbCreate` ignores `grantedAccess`. A write at
   `fileSize - 1` of length 2 on `\Device\Fb0` panics.
@@ -536,24 +560,54 @@ Beyond the mount validation above:
 
 ## Suggested order of work
 
-1. **`kernel/ps/usermode.c` + `kernel/syscall/uaccess.c`** (§1c) — the
-   arbitrary kernel write. Two small fixes.
-2. **A ring-0 fault fixup path** (§1b) — converts the whole missing-probe class
-   from "machine halts" to "returns `STATUS_ACCESS_VIOLATION`", which buys time
-   for the rest.
-3. **Capture + probe in the Ob and Cm engines** (§1a) — one place each, per G10,
-   not per call site. Then the `*returnLength` sweep in `kernel/ps`.
-4. **`kernel/mm/virtual.c` rounding overflow, `kernel/ps/peb.c` USHORT wrap,
-   `kernel/se/secobj.c` fixed reply** (§2, §3) — three independent
-   single-syscall kills.
-5. **`kernel/io/rw.c` NULL dispatch** (§6) — two `if` statements.
-6. **`fs/fat32` mount validation** (§4) — one function, closes the pool-write.
-7. Everything else, pinning each behavior in `tests/ntapi/` first (G5).
+Items 1–6 of the original plan are done (see the marks above). What remains,
+in the order the findings argue for:
 
-Themes worth treating as policy rather than as individual fixes: probes must be
-mandatory and centralized; `ASSERT` must never fire on user-controlled state;
-size arithmetic on user-supplied lengths must be checked at the point of
-rounding; and a comment asserting a safety property (`drivers/hid.c:198`,
-`kernel/ps/thread.c:436`, `kernel/mm/pecoff.c:250`, `kernel/se/sd.c:91`) was
-wrong in every case a reviewer checked it — several of these findings are
-exactly the gap between what a comment claims and what the code does.
+1. **A ring-0 fault fixup path** (§1b). Still the highest-leverage single
+   change in the document: it converts every *remaining* missing probe — and
+   every one added by future code — from "machine halts" into
+   `STATUS_ACCESS_VIOLATION`. The probes added so far fix specific sites; this
+   fixes the failure mode.
+2. **The rest of §1a** — `NtQueryDirectoryFile`'s `mask`, and the symbolic-link
+   pair (which is also a kernel-memory disclosure channel, §10).
+3. **§2's remaining `ASSERT`-on-user-state sites** — `verify.c:65` (a process
+   writing its own TEB), `mm/section.c:339` (a crafted `.reloc`),
+   `io/async.c:83` and `notify.c:81,96` (unmapping a pended buffer), and
+   `ke/wait.c:56` (a duplicate handle in a `WaitAll`). Each is an
+   unprivileged halt.
+4. **§4's remaining untrusted-input paths** — the FAT entry values and the
+   cyclic-chain hang in particular, which a mounted image reaches without any
+   syscall at all.
+5. Everything else, pinning each behaviour in `tests/ntapi/` first (G5).
+
+Themes worth treating as policy rather than as individual fixes; the first is
+now partly enforced, the rest are not:
+
+- **Probes belong in the engine, not the service.** Section 1a took two passes
+  precisely because "the engine covers it" was assumed rather than checked —
+  Io and Cm resolve names outside Ob. `ObProbeObjectAttributes` is now shared
+  by all three, but the general lesson stands: when a check moves to one
+  authority, enumerate the callers that bypass that authority.
+- `ASSERT` must never fire on user-controlled state.
+- Size arithmetic on user-supplied lengths must be checked at the point of
+  rounding, not after.
+- A comment asserting a safety property (`drivers/hid.c:198`,
+  `kernel/ps/thread.c:436`, `kernel/mm/pecoff.c:250`, `kernel/se/sd.c:91`) was
+  wrong in every case a reviewer checked it. `drivers/hid.c:198` claimed the
+  Io layer refused writes it did not implement; that is true only as of
+  b236449, and the comment predated it by the whole life of the file.
+
+### Test-harness issues found while fixing
+
+Neither is a kernel bug, both cost real time:
+
+- **`tests/run/run.sh` reports `PASS` when a test fails to compile** — the
+  stale `.exe` from the previous build runs instead, so a broken test prints
+  green. This happened four times during this work (an undeclared info-class
+  constant, a `*/` inside a comment, a wrong enum name, a missing `util.h`
+  include). It is the same silent-plausible-answer failure Art. 12 forbids in
+  the kernel, in the harness that judges it.
+- **`/dev/kvm` present but unusable** (e.g. an ephemeral container) makes
+  `qemu.sh` select KVM and every test fail with an empty serial log, which
+  reads as a mass kernel regression. `ACCEL=tcg` is the workaround; the
+  accelerator probe could check usability rather than existence.
