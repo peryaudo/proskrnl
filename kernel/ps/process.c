@@ -1581,10 +1581,25 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
 
     status = ObpCreateHandle(process, ObpMapDesiredAccess(&PspProcessType, processAccess), 0,
                              processHandle);
-    if (NT_SUCCESS(status))
+    BOOLEAN processHandleMade = NT_SUCCESS(status);
+    if (processHandleMade)
     {
         status = ObpCreateHandle(threadObject, ObpMapDesiredAccess(&PspThreadType, threadAccess), 0,
                                  threadHandle);
+        if (!NT_SUCCESS(status))
+        {
+            /* The caller is about to be told the whole call failed, so it
+             * will not close a handle it believes was never made -- the
+             * process handle would leak for the life of the caller
+             * (docs/review-2026-07 §7). Close it here; the process itself
+             * runs on unparented, which is the pre-existing behaviour this
+             * function documents below. */
+            KPROCESSOR_MODE saved = KeGetCurrentThread()->previousMode;
+            KeGetCurrentThread()->previousMode = KernelMode;
+            NtClose(*processHandle);
+            KeGetCurrentThread()->previousMode = saved;
+            *processHandle = 0;
+        }
     }
     if (NT_SUCCESS(status))
     {
