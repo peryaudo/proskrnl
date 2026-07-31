@@ -14,6 +14,19 @@ KPROCESSOR_MODE ExGetPreviousMode(void)
     return KeGetCurrentThread()->previousMode;
 }
 
+BOOLEAN KiIsUserRange(uint64_t base, uint64_t size)
+{
+    if (size == 0)
+    {
+        return TRUE;
+    }
+    if (base + size < base) /* wraps past the top of the address space */
+    {
+        return FALSE;
+    }
+    return base + size <= KI_USER_SPACE_LIMIT;
+}
+
 static NTSTATUS KiProbeRange(const void *address, uint64_t length, uint64_t alignment, int forWrite)
 {
     if (ExGetPreviousMode() == KernelMode)
@@ -30,7 +43,7 @@ static NTSTATUS KiProbeRange(const void *address, uint64_t length, uint64_t alig
     {
         return STATUS_DATATYPE_MISALIGNMENT;
     }
-    if (start + length < start || start + length > KI_USER_SPACE_LIMIT)
+    if (!KiIsUserRange(start, length))
     {
         return STATUS_ACCESS_VIOLATION;
     }

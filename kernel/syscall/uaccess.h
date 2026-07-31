@@ -30,6 +30,22 @@
  * current thread entered the kernel from. */
 KPROCESSOR_MODE ExGetPreviousMode(void);
 
+/* Does [base, base+size) lie wholly below KI_USER_SPACE_LIMIT? Bounds only —
+ * no page walk — and, unlike the probes below, INDEPENDENT of the previous
+ * mode. This is the one authority for the question (Art. 11): the probes
+ * layer page presence on top of it, and the ring-3 frame writers in
+ * kernel/ps/usermode.c call it directly.
+ *
+ * They must, because a probe cannot serve them: the exception and user-APC
+ * dispatch paths run with previousMode == KernelMode (the syscall path
+ * restores it before delivering an APC, and a trap never sets it), so
+ * KiProbeForWrite short-circuits to success there — while the address they
+ * are about to write is computed from a ring-3-controlled RSP. A page walk
+ * would not catch it either: MiCreateUserPml4 shares the upper 256 PML4
+ * slots with the kernel, so a kernel address reads back present-and-writable
+ * in a user address space. A zero-length range is vacuously in bounds. */
+BOOLEAN KiIsUserRange(uint64_t base, uint64_t size);
+
 /* Validate a user range for the current process: bounds, alignment, and
  * page presence (write probes also require the write bit). Returns
  * STATUS_SUCCESS, STATUS_ACCESS_VIOLATION, or (misaligned, as NT's
