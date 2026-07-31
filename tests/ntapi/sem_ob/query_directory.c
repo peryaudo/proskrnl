@@ -210,4 +210,28 @@ START_TEST(query_directory)
     if (opened != NULL)
         NtClose(opened);
     NtClose(dir);
+    /* The remaining unvalidated ring-3 pointers in the Ob/Ke surface, per the
+     * 2026-07 review section 1a. Each must be a status, never a kernel fault. */
+    {
+        void *const BAD = (void *)(ULONG_PTR)0x10000;
+        NTSTATUS bs;
+        ULONG ctx = 0, rl = 0;
+        BYTE b[128];
+        HANDLE h = NULL;
+
+        bs = NtQueryDirectoryObject((HANDLE)NULL, b, sizeof(b), TRUE, TRUE, (PULONG)BAD, &rl);
+        ok(bs == STATUS_ACCESS_VIOLATION || bs == STATUS_INVALID_HANDLE,
+           "QueryDirectoryObject bad context -> %08lx", (unsigned long)bs);
+
+        bs = NtQueryObject((HANDLE)(LONG_PTR)-1, ObjectTypeInformation, b, sizeof(b),
+                           (PULONG)BAD);
+        ok(bs == STATUS_ACCESS_VIOLATION, "NtQueryObject bad retlen -> %08lx", (unsigned long)bs);
+
+        bs = NtWaitForSingleObject((HANDLE)(LONG_PTR)-1, FALSE, (PLARGE_INTEGER)BAD);
+        ok(bs == STATUS_ACCESS_VIOLATION, "wait bad timeout -> %08lx", (unsigned long)bs);
+
+        (void)ctx;
+        (void)h;
+    }
+
 }

@@ -151,6 +151,12 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  * services keeps it to one authority (Art. 11); NtOpenProcess was previously
  * the only caller in the tree that probed at all.
  *
+ * Public because two subsystems resolve names WITHOUT going through the
+ * engine below -- kernel/io/file.c reads attributes->ObjectName itself to
+ * build a filesystem path, and kernel/cm/registry.c does the same for the
+ * registry path -- so they must reach the same check rather than grow their
+ * own.
+ *
  * This is a probe, not a capture, matching the model kernel/syscall/uaccess.h
  * documents for the rest of the kernel: sound because nothing blocks between
  * the probe and the walk. The mid-syscall-unmap window that model already
@@ -158,7 +164,7 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  *
  * A NULL `attributes` is left to the callers, which distinguish it
  * (STATUS_INVALID_PARAMETER) from a present block with no name. */
-static NTSTATUS ObpProbeAttributes(const OBJECT_ATTRIBUTES *attributes)
+NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes)
 {
     if (attributes == 0)
     {
@@ -430,7 +436,7 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
 {
     ACCESS_MASK granted = ObpMapDesiredAccess(type, desiredAccess);
 
-    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
     if (!NT_SUCCESS(probeStatus))
     {
         return probeStatus;
@@ -536,7 +542,7 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
      * reports STATUS_OBJECT_PATH_SYNTAX_BAD, the same as an empty-string name
      * (which ObpLookupName rejects below). Matches the pinned third_party/wine;
      * docs/09 Art. 6. */
-    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
     if (!NT_SUCCESS(probeStatus))
     {
         return probeStatus;
@@ -595,7 +601,7 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
                               PVOID *parseObject, UNICODE_STRING *remainingName,
                               PWSTR *reparseBuffer)
 {
-    NTSTATUS probeStatus = ObpProbeAttributes(attributes);
+    NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
     if (!NT_SUCCESS(probeStatus))
     {
         return probeStatus;
@@ -806,6 +812,30 @@ NTSTATUS NtQueryDirectoryObject(HANDLE handle, PDIRECTORY_BASIC_INFORMATION buff
     if (buffer == 0 || context == 0)
     {
         return STATUS_ACCESS_VIOLATION;
+    }
+    /* Every one of these was written or read raw. *context is read before the
+     * handle is even resolved, and the entry array plus its string pool are
+     * filled in the caller's buffer -- with kernel and user VA sharing a
+     * PML4, that was a kernel write with attacker-influenced content. */
+    {
+        NTSTATUS probeStatus = KiProbeForWrite(context, sizeof(*context), sizeof(ULONG));
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+        probeStatus = KiProbeForWrite(buffer, size, sizeof(uint64_t));
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+        if (returnedSize != 0)
+        {
+            probeStatus = KiProbeForWrite(returnedSize, sizeof(*returnedSize), sizeof(ULONG));
+            if (!NT_SUCCESS(probeStatus))
+            {
+                return probeStatus;
+            }
+        }
     }
     ULONG index = restartScan ? 0 : *context;
 

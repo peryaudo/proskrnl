@@ -112,4 +112,14 @@ START_TEST(handle_life)
         NtClose(waitable);
         NtClose(dir);
     }
+    /* The wait surface's own ring-3 pointers (2026-07 review section 1a):
+     * NtWaitForMultipleObjects reads the handle array directly, and both wait
+     * services pass the timeout pointer down to KeWaitFor* which dereferences
+     * it. Neither was probed. */
+    {
+        NTSTATUS bs = NtWaitForMultipleObjects(2, (PHANDLE)(ULONG_PTR)0x10000, WaitAll, FALSE,
+                                               NULL);
+        ok(bs == STATUS_ACCESS_VIOLATION, "wait bad handle array -> %08lx", (unsigned long)bs);
+    }
+
 }

@@ -581,6 +581,20 @@ NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HAN
 NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID buffer,
                        ULONG length, PULONG returnLength)
 {
+    /* Validate the out-length once, up front. The class arms below each
+     * wrote through it: the success paths with no probe at all, and the two
+     * length-mismatch paths with a KiProbeForWrite whose RESULT WAS
+     * DISCARDED -- the store went ahead regardless, which made a bad pointer
+     * a 4-byte kernel write of a caller-influenced value rather than the
+     * refusal the probe had just computed. */
+    if (returnLength != 0)
+    {
+        NTSTATUS probeStatus = KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
     if (entry == 0)
     {
@@ -625,7 +639,6 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         {
             if (returnLength != 0)
             {
-                KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
                 memcpy(returnLength, &needed, sizeof(needed));
             }
             return STATUS_INFO_LENGTH_MISMATCH;
@@ -664,7 +677,6 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         {
             if (returnLength != 0)
             {
-                KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
                 memcpy(returnLength, &needed, sizeof(needed));
             }
             return STATUS_INFO_LENGTH_MISMATCH;
