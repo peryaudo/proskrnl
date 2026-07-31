@@ -387,6 +387,35 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
         blocks = thread->waitBlocks;
     }
 
+    /* A wait-all may not name the same object twice. Nothing de-duplicated
+     * the array, so KiSatisfyWaitAll consumed a count-1 semaphore twice and
+     * fired KiSatisfyObject's ASSERT(signalState > 0) -- an unprivileged
+     * kernel halt from two identical handles (docs/review-2026-07 §2).
+     *
+     * The refusal, rather than a tolerated double-consume, is NT's documented
+     * contract: WaitForMultipleObjects, lpHandles -- "the array ... may not
+     * contain multiple copies of the same handle", and such a call fails with
+     * ERROR_INVALID_PARAMETER
+     * (https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjects).
+     * The oracle cannot arbitrate this one: the pinned Wine's server has the
+     * identical assertion (server/semaphore.c semaphore_sync_satisfied,
+     * `assert( sem->count )`) and dies on the same input, so it is unbuilt
+     * there in the sense Art. 12 means. WaitAny is untouched -- it satisfies
+     * exactly one object, so duplicates are harmless and legal. */
+    if (waitType == WaitAll)
+    {
+        for (ULONG i = 1; i < count; i++)
+        {
+            for (ULONG j = 0; j < i; j++)
+            {
+                if (objects[i] == objects[j])
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+            }
+        }
+    }
+
     uint64_t flags = KiAcquireDispatcherLock();
 
     /* A foreign-terminated thread never parks (CUI-4): fail the wait so it
