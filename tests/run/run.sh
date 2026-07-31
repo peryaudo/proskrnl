@@ -339,7 +339,7 @@ proskrnl() {
     # the regression gate, and judging a stale kernel against fresh test
     # sources reports the previous build's verdict as this one's. make is
     # incremental, so the cost is nil when nothing changed.
-    make -C "$ROOT" >/dev/null
+    make -C "$ROOT" >/dev/null || exit 1
 
     # The M5 RAM-disk seed files (built by make with the kernel): kmt's
     # image/file section tests read them; they are data, never run.
@@ -441,7 +441,7 @@ winetest() {
     local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/wtest.hdd"
-    make -C "$ROOT" >/dev/null   # always: see the ntapi leg's note
+    make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
     make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe \
         build/modules/smss.exe >/dev/null
 
@@ -526,7 +526,7 @@ guiwtest() {
     local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/guiwtest.hdd"
-    make -C "$ROOT" >/dev/null   # always: see the ntapi leg's note
+    make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
     make -C "$ROOT" winestrip winestrip-gui win32u wineserver-lite \
         build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe >/dev/null
 
@@ -621,7 +621,7 @@ guiwtest() {
 fatinterop() {
     local kernel="$ROOT/build/proskrnl" img="$BUILD/fatinterop.hdd"
     local work="$BUILD/fatinterop" off=2097152    # mkimage.sh ESP_OFF
-    make -C "$ROOT" build/proskrnl >/dev/null   # always: see the ntapi leg's note
+    make -C "$ROOT" build/proskrnl >/dev/null || exit 1   # always: see the ntapi leg's note
     rm -rf "$work"
     mkdir -p "$work"
 
@@ -707,7 +707,7 @@ PYEOF
 # extraction + crc diff (churn_verify.py), fsck.fat + the sweeper.
 fatstress() {
     local kernel="$ROOT/build/proskrnl"
-    make -C "$ROOT" build/proskrnl >/dev/null   # always: see the ntapi leg's note
+    make -C "$ROOT" build/proskrnl >/dev/null || exit 1   # always: see the ntapi leg's note
     make -C "$ROOT" build/modules/pe_smoke.exe build/modules/sample.dat >/dev/null 2>&1 || true
     mkdir -p "$BUILD"
 
@@ -864,7 +864,7 @@ persist() {
     # an earlier `make test` (m8_persist runs on every boot), which would make
     # boot 1 verify instead of seed. Rebuilding the image resets the disk.
     rm -f "$ROOT/build/proskrnl.hdd"
-    make -C "$ROOT" >/dev/null
+    make -C "$ROOT" >/dev/null || exit 1
     local img="$ROOT/build/tests/persist.hdd"
     mkdir -p "$ROOT/build/tests"
     cp "$ROOT/build/proskrnl.hdd" "$img"
@@ -906,7 +906,7 @@ firstboot() {
 
     # --- proskrnl leg: virgin image (the persist() pattern), one boot ---
     rm -f "$ROOT/build/proskrnl.hdd"
-    make -C "$ROOT" >/dev/null
+    make -C "$ROOT" >/dev/null || exit 1
     local img="$BUILD/firstboot.hdd"
     cp "$ROOT/build/proskrnl.hdd" "$img"
     local log="$BUILD/firstboot.log"
