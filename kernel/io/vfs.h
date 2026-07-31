@@ -112,6 +112,15 @@ typedef struct IO_VFS_OPS
      * performs delete-on-close/disposition deletion here. */
     void (*Cleanup)(struct FILE_OBJECT *file);
 
+    /* Optional. The file's LAST section backing has just been released.
+     * Only a filesystem that DEFERS work while a file is mapped needs this:
+     * fat32 defers a delete-on-close (a mapped file cannot be unlinked), and
+     * without a re-entry at this moment the deferred delete was simply
+     * dropped, since nothing else calls into the FS when a section goes away
+     * (docs/review-2026-07 §7). NOT Cleanup: no handle is closing here, so
+     * the per-open bookkeeping must not run again. */
+    void (*SectionsReleased)(struct FILE_OBJECT *file);
+
     /* Last reference to this open is gone: release the FCB. */
     void (*Close)(struct FILE_OBJECT *file);
 

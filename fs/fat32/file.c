@@ -169,29 +169,57 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
     }
     else if (wantClusters < haveClusters)
     {
+        /* The shrink's statuses are kept, not dropped. A failed FAT write
+         * here leaves the chain and the on-disk metadata disagreeing, which
+         * is exactly what the caller needs to be told (§12). */
         if (wantClusters == 0)
         {
-            FatFreeChain(volume, fcb->firstCluster);
+            NTSTATUS freeStatus = FatFreeChain(volume, fcb->firstCluster);
             fcb->firstCluster = 0;
+            if (!NT_SUCCESS(freeStatus))
+            {
+                status = freeStatus;
+            }
         }
         else
         {
             ULONG lastKept = FatWalkChain(volume, fcb->firstCluster, wantClusters - 1);
             ULONG firstFreed = FatGetNextCluster(volume, lastKept);
-            FatSetFatEntry(volume, lastKept, FAT_ENTRY_MASK); /* EOC */
+            NTSTATUS cutStatus = FatSetFatEntry(volume, lastKept, FAT_ENTRY_MASK); /* EOC */
             if (firstFreed != 0)
             {
-                FatFreeChain(volume, firstFreed);
+                NTSTATUS freeStatus = FatFreeChain(volume, firstFreed);
+                if (NT_SUCCESS(cutStatus))
+                {
+                    cutStatus = freeStatus;
+                }
+            }
+            if (!NT_SUCCESS(cutStatus))
+            {
+                status = cutStatus;
             }
         }
+    }
+
+    /* The recorded size follows the CHAIN, whatever happens next. Returning
+     * early from here left fcb->fileSize describing a chain that no longer
+     * existed, and the next read of the vanished tail silently zero-filled
+     * (§12). Metadata is flushed on the way out of every path below. */
+    fcb->fileSize = newSize;
+    LARGE_INTEGER shrinkNow = FatCurrentNtTime();
+    FatNtTimeToFatTime(shrinkNow, &fcb->writeDate, &fcb->writeTime);
+    if (!NT_SUCCESS(status))
+    {
+        FatFlushFcbMetadata(fcb);
+        return status;
     }
 
     status = MiResizePageCache(&fcb->cache, newSize);
     if (!NT_SUCCESS(status))
     {
+        FatFlushFcbMetadata(fcb);
         return status;
     }
-    fcb->fileSize = newSize;
 
     if (newSize > oldSize && oldSize != 0)
     {
@@ -230,6 +258,7 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
             status = FatWritebackRange(fcb, oldSize, diskEnd - oldSize);
             if (!NT_SUCCESS(status))
             {
+                FatFlushFcbMetadata(fcb);
                 return status;
             }
         }
@@ -463,21 +492,34 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
             return STATUS_OBJECT_NAME_COLLISION;
         }
     }
+    /* A create that fails a TYPE check below has already written the
+     * directory entry, so the refusal must take it back -- a trailing
+     * backslash without FILE_DIRECTORY_FILE used to leave a zero-length
+     * orphan file behind (docs/review-2026-07 §7). `created` is the flag
+     * that says the entry is ours to undo. */
+#define FAT_REFUSE_CREATED(refusalStatus)                                                          \
+    do                                                                                             \
+    {                                                                                              \
+        if (created)                                                                               \
+        {                                                                                          \
+            FatDeleteEntry(fcb);                                                                   \
+        }                                                                                          \
+        FatDereferenceFcb(fcb);                                                                    \
+        return (refusalStatus);                                                                    \
+    } while (0)
+
     if (fcb->isDirectory && (options & FILE_NON_DIRECTORY_FILE))
     {
-        FatDereferenceFcb(fcb);
-        return STATUS_FILE_IS_A_DIRECTORY;
+        FAT_REFUSE_CREATED(STATUS_FILE_IS_A_DIRECTORY);
     }
     if (!fcb->isDirectory && ((options & FILE_DIRECTORY_FILE) || trailingSlash))
     {
-        FatDereferenceFcb(fcb);
-        return trailingSlash ? STATUS_OBJECT_NAME_INVALID : STATUS_NOT_A_DIRECTORY;
+        FAT_REFUSE_CREATED(trailingSlash ? STATUS_OBJECT_NAME_INVALID : STATUS_NOT_A_DIRECTORY);
     }
     if (fcb->isDirectory && (disposition == FILE_OVERWRITE || disposition == FILE_OVERWRITE_IF ||
                              disposition == FILE_SUPERSEDE))
     {
-        FatDereferenceFcb(fcb);
-        return STATUS_FILE_IS_A_DIRECTORY;
+        FAT_REFUSE_CREATED(STATUS_FILE_IS_A_DIRECTORY);
     }
     /* Write access to a read-only file is refused at open (NT rule). */
     if (!created && (fcb->attributes & FAT_ATTR_READ_ONLY) &&
@@ -502,9 +544,9 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
     status = IoCheckShareAccess(grantedAccess, shareAccess, &fcb->header);
     if (!NT_SUCCESS(status))
     {
-        FatDereferenceFcb(fcb);
-        return status;
+        FAT_REFUSE_CREATED(status);
     }
+#undef FAT_REFUSE_CREATED
     IoSetShareAccess(grantedAccess, shareAccess, &fcb->header);
     file->shareCounted = TRUE;
 
@@ -577,7 +619,43 @@ static void FatVfsCleanup(PFILE_OBJECT file)
     }
     if (fcb->header.sectionCount != 0)
     {
-        return; /* live mapped sections pin the file */
+        /* Live mapped sections pin the file -- but the intent is LATCHED so
+         * the section's own release can apply it. Returning without latching
+         * dropped the delete forever, since nothing re-enters the FS when
+         * the section goes away (docs/review-2026-07 §7). */
+        fcb->unlinkPending = TRUE;
+        return;
+    }
+    FatDeleteEntry(fcb);
+    FatReportChange(file->device, fcb->parent, &fcb->longName, FatNameFilterBit(fcb),
+                    FILE_ACTION_REMOVED);
+    fcb->header.deletePending = FALSE;
+    fcb->unlinkPending = FALSE;
+    MiResizePageCache(&fcb->cache, 0);
+    fcb->cacheLoaded = FALSE;
+}
+
+/* The file's last section backing is gone: apply a delete the mapped state
+ * forced FatVfsCleanup to defer (see there). No handle is closing, so none
+ * of Cleanup's per-open bookkeeping runs -- only the latched intent. */
+static void FatVfsSectionsReleased(PFILE_OBJECT file)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->isRoot || fcb->openObjectCount != 0)
+    {
+        return; /* still open: the last cleanup will apply it */
+    }
+    if (!fcb->unlinkPending && !fcb->header.deletePending)
+    {
+        return;
+    }
+    if (fcb->isDirectory)
+    {
+        BOOLEAN empty;
+        if (!NT_SUCCESS(FatIsDirectoryEmpty(fcb, &empty)) || !empty)
+        {
+            return;
+        }
     }
     FatDeleteEntry(fcb);
     FatReportChange(file->device, fcb->parent, &fcb->longName, FatNameFilterBit(fcb),
@@ -975,6 +1053,7 @@ static NTSTATUS FatVfsSetVolumeLabel(PIO_DEVICE device, const WCHAR *label, ULON
 const IO_VFS_OPS FatVfsOps = {
     .Create = FatVfsCreate,
     .Cleanup = FatVfsCleanup,
+    .SectionsReleased = FatVfsSectionsReleased,
     .Close = FatVfsClose,
     .GetCache = FatVfsGetCache,
     .WritebackRange = FatVfsWritebackRange,

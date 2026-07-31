@@ -84,6 +84,20 @@ ULONG FatGetNextCluster(PFAT_VOLUME volume, ULONG cluster)
 NTSTATUS FatSetFatEntry(PFAT_VOLUME volume, ULONG cluster, ULONG value)
 {
     ASSERT(FatIsDataCluster(volume, cluster));
+    /* The free count is maintained HERE, at the single site that changes a
+     * FAT entry, rather than rescanned: FSInfo is rewritten on every
+     * allocation and every chain release, and an O(clusterCount) scan per
+     * cluster made the boot itself too slow to finish. */
+    BOOLEAN wasFree = (volume->fat[cluster] & FAT_ENTRY_MASK) == 0;
+    BOOLEAN nowFree = (value & FAT_ENTRY_MASK) == 0;
+    if (wasFree && !nowFree)
+    {
+        volume->freeClusters--;
+    }
+    else if (!wasFree && nowFree)
+    {
+        volume->freeClusters++;
+    }
     /* Preserve the reserved high 4 bits (spec §4.1 write code). */
     volume->fat[cluster] = (volume->fat[cluster] & 0xF0000000u) | (value & FAT_ENTRY_MASK);
 
@@ -104,6 +118,38 @@ NTSTATUS FatSetFatEntry(PFAT_VOLUME volume, ULONG cluster, ULONG value)
         }
     }
     return STATUS_SUCCESS;
+}
+
+/* Rewrite the FSInfo sector's free-cluster count and next-free hint (spec
+ * §5: FSI_LeadSig 0x41615252 at 0, FSI_StrucSig 0x61417272 at 484,
+ * FSI_Free_Count at 488, FSI_Nxt_Free at 492, FSI_TrailSig 0xAA550000 at
+ * 508). It was never read OR written, so free-space reports from Windows and
+ * mtools were stale after proskrnl wrote anything
+ * (docs/review-2026-07 §12).
+ *
+ * Best effort by design: FSInfo is a HINT, and the authoritative free count
+ * is the FAT itself, which FatQueryVolumeInfo already counts live. A failure
+ * here must not fail the allocation that triggered it. */
+void FatUpdateFsInfo(PFAT_VOLUME volume)
+{
+    if (volume->fsInfoSector == 0)
+    {
+        return;
+    }
+    unsigned char sector[FAT_SECTOR_SIZE];
+    if (!NT_SUCCESS(FatReadSector(volume, volume->fsInfoSector, sector)))
+    {
+        return;
+    }
+    if (KiReadLe32(sector) != 0x41615252u || KiReadLe32(sector + 484) != 0x61417272u ||
+        KiReadLe32(sector + 508) != 0xAA550000u)
+    {
+        volume->fsInfoSector = 0; /* not an FSInfo sector after all */
+        return;
+    }
+    KiWriteLe32(sector + 488, volume->freeClusters);
+    KiWriteLe32(sector + 492, volume->nextFreeHint);
+    (void)FatWriteSector(volume, volume->fsInfoSector, sector);
 }
 
 NTSTATUS FatAllocateCluster(PFAT_VOLUME volume, ULONG previousOrZero, ULONG *clusterOut)
@@ -129,6 +175,7 @@ NTSTATUS FatAllocateCluster(PFAT_VOLUME volume, ULONG previousOrZero, ULONG *clu
             }
             volume->nextFreeHint = candidate + 1;
             *clusterOut = candidate;
+            FatUpdateFsInfo(volume);
             return STATUS_SUCCESS;
         }
         candidate++;
@@ -136,15 +183,33 @@ NTSTATUS FatAllocateCluster(PFAT_VOLUME volume, ULONG previousOrZero, ULONG *clu
     return STATUS_DISK_FULL;
 }
 
-void FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster)
+NTSTATUS FatFreeChain(PFAT_VOLUME volume, ULONG firstCluster)
 {
+    /* Returns a status now. It was `void` and swallowed every
+     * FatSetFatEntry failure, so a write error while releasing a chain --
+     * which leaves the FAT and the file's metadata disagreeing on disk --
+     * was invisible to every caller (docs/review-2026-07 §12). The walk
+     * continues past a failure so the rest of the chain is still released,
+     * and the FIRST failure is what comes back. */
+    NTSTATUS result = STATUS_SUCCESS;
     ULONG cluster = firstCluster;
+    BOOLEAN freedAny = FALSE;
     while (FatIsDataCluster(volume, cluster))
     {
         ULONG next = FatGetNextCluster(volume, cluster);
-        FatSetFatEntry(volume, cluster, 0);
+        NTSTATUS status = FatSetFatEntry(volume, cluster, 0);
+        if (!NT_SUCCESS(status) && NT_SUCCESS(result))
+        {
+            result = status;
+        }
+        freedAny = TRUE;
         cluster = next;
     }
+    if (freedAny)
+    {
+        FatUpdateFsInfo(volume);
+    }
+    return result;
 }
 
 /* Every chain walk in the filesystem is bounded by the number of clusters on
@@ -232,7 +297,8 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     for (PLIST_ENTRY entry = volume->fcbList.Flink; entry != &volume->fcbList; entry = entry->Flink)
     {
         PFAT_FCB fcb = CONTAINING_RECORD(entry, FAT_FCB, volumeEntry);
-        if (fcb->parentDirCluster == dirCluster && fcb->dirEntryIndex == sfnSlot && !fcb->isRoot)
+        if (fcb->parentDirCluster == dirCluster && fcb->dirEntryIndex == sfnSlot && !fcb->isRoot &&
+            !fcb->entryDeleted)
         {
             FatReferenceFcb(fcb);
             *out = fcb;
@@ -276,6 +342,7 @@ NTSTATUS FatGetFcb(PFAT_FCB dir, ULONG sfnSlot, ULONG lfnStartSlot, const unsign
     fcb->cacheLoaded = FALSE;
     fcb->openObjectCount = 0;
     fcb->unlinkPending = FALSE;
+    fcb->entryDeleted = FALSE;
 
     PWSTR nameCopy = MiAllocatePool(longName->Length);
     if (nameCopy == 0)
@@ -621,6 +688,15 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     volume->firstDataSector = firstDataSector;
     volume->clusterCount = clusterCount;
     volume->nextFreeHint = 2;
+    /* BPB_FSInfo (spec §3.3, offset 48): the sector holding the free-cluster
+     * count and the next-free hint. 0 and 0xFFFF both mean "absent"
+     * (§3.5 / §4). */
+    volume->fsInfoSector = KiReadLe16(boot + 48);
+    if (volume->fsInfoSector == 0 || volume->fsInfoSector == 0xFFFF ||
+        volume->fsInfoSector >= reservedSectors)
+    {
+        volume->fsInfoSector = 0; /* no usable FSInfo on this volume */
+    }
     InitializeListHead(&volume->fcbList);
 
     /* Volume identity for the FileFs* classes: BS_VolID at 67, BS_VolLab at
@@ -664,6 +740,17 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
         }
     }
 
+    /* Count the free clusters ONCE, at mount; FatSetFatEntry keeps it
+     * current from here (see there). */
+    volume->freeClusters = 0;
+    for (ULONG cluster = 2; cluster < clusterCount + 2; cluster++)
+    {
+        if ((volume->fat[cluster] & FAT_ENTRY_MASK) == 0)
+        {
+            volume->freeClusters++;
+        }
+    }
+
     /* The root FCB: no directory entry of its own, no times, no size
      * (spec §6.6). It lives forever (one permanent self-reference). */
     PFAT_FCB root = MiAllocatePool(sizeof(FAT_FCB));
@@ -696,6 +783,7 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     root->cacheLoaded = FALSE;
     root->openObjectCount = 0;
     root->unlinkPending = FALSE;
+    root->entryDeleted = FALSE;
     InsertTailList(&volume->fcbList, &root->volumeEntry);
     volume->root = root;
 
