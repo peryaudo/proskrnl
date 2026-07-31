@@ -236,6 +236,18 @@ and 16383-char value-name limits — are each cross-checked against
   oracle would resolve the foreign object and fail its type check.
 - **`\Registry\Machine`/`\Registry\User` are undeletable** (parent-of-root protection);
   wine would allow an empty hive root's deletion but never exercises it.
+- **Key-tree depth is capped at 96 levels**, where NT documents 512 ("Registry element
+  size limits"). `NtCreateKey` past the cap refuses with `STATUS_INVALID_PARAMETER`;
+  `CMP_HIVE_MAX_DEPTH` (`kernel/cm/cm.h`) is the single number the create path, the hive
+  serializer and the hive parser all use. The reason is the serializer: `CmpMeasureKey`,
+  `CmpEmitKey` and `CmpFreeSubtree` recurse once per level on a 16 KiB pool-allocated
+  kernel stack with no guard page, and 512 levels does not fit. Before this cap the three
+  numbers disagreed — create was unlimited, the parser stopped at 96, and a parse failure
+  discards the whole hive — so a 100-deep path saved successfully, reported durability,
+  and threw the ENTIRE registry away at the next boot. One number makes anything that
+  saves also load. Pinned by `sem_reg/deep_keys`, whose "all 200 levels creatable"
+  assertion is `todo_proskrnl`: the oracle manages it and proskrnl refuses. Lifting the
+  cap to NT's 512 means making the three walks iterative, not raising the constant.
 
 **The initial process chain** (`kernel → smss.exe → hello.exe`): `NtCreateUserProcess`
 implements the common single-image spawn — `PS_ATTRIBUTE_IMAGE_NAME` (+ optional

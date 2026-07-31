@@ -75,6 +75,19 @@ void CmpFreeValues(PCMP_KEY_NODE node);
 
 /* Allocate a node with a pool copy of `name`, linked under `parent`
  * (parent == 0 for the root). 0 on pool exhaustion. */
+/* Maximum key-tree depth, counting the root as level 1. ONE number for
+ * three things that must agree: the hive parser's recursion cap, the
+ * serializer's (CmpMeasureKey/CmpEmitKey recurse per level on a 16 KiB stack
+ * with no guard page), and the create path's -- see CmpAllocateNode for why
+ * an asymmetry between them is worse than either limit. */
+#define CMP_HIVE_MAX_DEPTH 96u
+
+/* Depth of `node` counting itself, 0 for the null parent of the root. THE
+ * authority for the question. */
+ULONG CmpKeyDepth(const CMP_KEY_NODE *node);
+
+/* Returns 0 when the parent is already at CMP_HIVE_MAX_DEPTH, as well as on
+ * allocation failure. */
 PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name);
 
 /* Set/replace value `name` on `node` from a kernel-side buffer. */

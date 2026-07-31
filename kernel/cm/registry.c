@@ -97,8 +97,41 @@ static LARGE_INTEGER CmpNow(void)
     return now;
 }
 
+ULONG CmpKeyDepth(const CMP_KEY_NODE *node)
+{
+    ULONG depth = 0;
+    for (; node != 0; node = node->parent)
+    {
+        depth++;
+    }
+    return depth;
+}
+
 PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name)
 {
+    /* Depth is capped HERE, at the only site that ever deepens the tree,
+     * because three walks over it recurse once per level -- CmpMeasureKey,
+     * CmpEmitKey and CmpFreeSubtree -- on a 16 KiB pool-allocated kernel
+     * stack with no guard page. Uncapped, ~400 levels of NtCreateKey
+     * followed by any mutation ran the stack off its block and corrupted the
+     * neighbouring pool headers (docs/review-2026-07 §13).
+     *
+     * The cap is the PARSER's cap, and that is the second half of the fix.
+     * Create depth used to be unlimited while load depth stopped at
+     * CMP_HIVE_MAX_DEPTH, and CmpLoadHive treats any parse failure as "hive
+     * invalid" -- so a 100-deep key path saved successfully, reported
+     * durability, and discarded the ENTIRE registry at the next boot. One
+     * number for both directions means anything that saves also loads.
+     *
+     * NT's own limit is 512 levels ("Registry element size limits",
+     * https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-element-size-limits);
+     * 96 is recorded as a deviation in docs/03 because the recursive
+     * serializer cannot afford 512 on this stack. */
+    if (CmpKeyDepth(parent) >= CMP_HIVE_MAX_DEPTH)
+    {
+        return 0;
+    }
+
     PCMP_KEY_NODE node = MiAllocatePool(sizeof(*node));
     if (node == 0)
     {
@@ -917,6 +950,13 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
         if (parent->isVolatile && (options & REG_OPTION_VOLATILE) == 0)
         {
             return STATUS_CHILD_MUST_BE_VOLATILE;
+        }
+        if (CmpKeyDepth(parent) >= CMP_HIVE_MAX_DEPTH)
+        {
+            /* Too deep to serialize (CmpAllocateNode explains the cap).
+             * Refused with a status of its own rather than folded into the
+             * out-of-pool answer -- the caller's request is what is wrong. */
+            return STATUS_INVALID_PARAMETER;
         }
         found = CmpAllocateNode(parent, &leaf);
         if (found == 0)
