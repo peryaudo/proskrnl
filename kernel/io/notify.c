@@ -78,8 +78,10 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
         }
         else
         {
-            MiCopyToUserRange(&watch->owner->addressSpace, (uint64_t)(uintptr_t)watch->userBuffer,
-                              record, recordBytes);
+            /* Checked, not asserting: the owner may have freed the buffer
+             * while the watch was parked (docs/review-2026-07 §2). */
+            MiCopyToUserRangeChecked(&watch->owner->addressSpace,
+                                     (uint64_t)(uintptr_t)watch->userBuffer, record, recordBytes);
         }
     }
     if (!isError)
@@ -93,8 +95,9 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
         }
         else
         {
-            MiCopyToUserRange(&watch->owner->addressSpace, (uint64_t)(uintptr_t)watch->userIosb,
-                              &result, sizeof(result));
+            MiCopyToUserRangeChecked(&watch->owner->addressSpace,
+                                     (uint64_t)(uintptr_t)watch->userIosb, &result,
+                                     sizeof(result));
         }
     }
     if (watch->event != 0)
