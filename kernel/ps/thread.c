@@ -118,6 +118,30 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     return STATUS_SUCCESS;
 }
 
+/* Undo PspCreateThreadObject for a thread that was built but never started.
+ *
+ * The caller's single ObDereferenceObject was not enough, and the comment
+ * that claimed it "deletes the never-started thread" was wrong: the object's
+ * pointerCount is 2 at that point (the allocation's, plus the RUNNING PIN
+ * this function takes), so the ETHREAD survived -- still on
+ * threadListHead, still counted in activeThreadCount. `remaining` then never
+ * reached 0, so the process could NEVER exit: handles never closed,
+ * exitStatus never published, every wait on that process hanging forever
+ * (docs/review-2026-07 §7).
+ *
+ * This drops exactly what PspCreateThreadObject added, in reverse, leaving
+ * the caller's own creator reference to release the object. The KTHREAD goes
+ * with it through PspDeleteThread, so the caller must NOT also free it. */
+static void PspUnwindUnstartedThread(PETHREAD thread)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    ASSERT(thread->process->activeThreadCount > 0);
+    RemoveEntryList(&thread->threadListEntry);
+    thread->process->activeThreadCount--;
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(thread); /* the running pin */
+}
+
 /* --- deferred ETHREAD release (M10) ---------------------------------------
  * A LIVE thread pins its own ETHREAD (the "running pin",
  * PspCreateThreadObject): NT semantics — closing the last handle to a
@@ -433,7 +457,8 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     status = ObpCreateHandle(thread, THREAD_ALL_ACCESS, 0, threadHandleOut);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(thread); /* deletes the never-started thread */
+        PspUnwindUnstartedThread(thread); /* the running pin + the process link */
+        ObDereferenceObject(thread);      /* the creator reference: now it dies */
         return status;
     }
 
