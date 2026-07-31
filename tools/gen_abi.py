@@ -1724,6 +1724,9 @@ def gen_ntpsapi(wine: Path) -> str:
             "PROCESS_DUP_HANDLE",
             "PROCESS_QUERY_INFORMATION",
             "PROCESS_SET_INFORMATION",
+            # The pair NtAssignProcessToJobObject requires on its process
+            # handle (wine server/process.c DECL_HANDLER(assign_job)).
+            "PROCESS_SET_QUOTA",
             "PROCESS_SUSPEND_RESUME",
             "PROCESS_QUERY_LIMITED_INFORMATION",
             "PROCESS_ALL_ACCESS",
