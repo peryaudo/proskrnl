@@ -225,4 +225,12 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
  * "present but nameless" themselves. See kernel/ob/namespace.c. */
 NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes);
 
+/* The same check for a bare UNICODE_STRING argument -- the descriptor, then
+ * its Length bytes of Buffer. ObProbeObjectAttributes is layered on this, so
+ * a service taking a counted string outside an OBJECT_ATTRIBUTES (the
+ * symbolic-link target, a directory-enumeration mask) reaches the identical
+ * authority rather than growing its own. A NULL string succeeds; callers that
+ * require one reject it themselves. */
+NTSTATUS ObProbeUnicodeStringRead(const UNICODE_STRING *string);
+
 #endif /* PROSKRNL_KERNEL_OB_OB_H */

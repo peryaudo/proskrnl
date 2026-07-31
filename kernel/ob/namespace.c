@@ -151,6 +151,24 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  *
  * A NULL `attributes` is left to the callers, which distinguish it
  * (STATUS_INVALID_PARAMETER) from a present block with no name. */
+NTSTATUS ObProbeUnicodeStringRead(const UNICODE_STRING *string)
+{
+    if (string == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    NTSTATUS status = KiProbeForRead(string, sizeof(*string), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (string->Length == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForRead(string->Buffer, string->Length, sizeof(WCHAR));
+}
+
 NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes)
 {
     if (attributes == 0)
@@ -162,21 +180,7 @@ NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes)
     {
         return status;
     }
-    const UNICODE_STRING *name = attributes->ObjectName;
-    if (name == 0)
-    {
-        return STATUS_SUCCESS;
-    }
-    status = KiProbeForRead(name, sizeof(*name), sizeof(uint64_t));
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    if (name->Length == 0)
-    {
-        return STATUS_SUCCESS;
-    }
-    return KiProbeForRead(name->Buffer, name->Length, sizeof(WCHAR));
+    return ObProbeUnicodeStringRead(attributes->ObjectName);
 }
 
 /* Walk `attributes` down the namespace.
@@ -962,6 +966,21 @@ NTSTATUS NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_
     {
         return STATUS_ACCESS_VIOLATION;
     }
+    /* `target` is a ring-3 UNICODE_STRING whose Buffer is memcpy'd whole
+     * below -- up to 64 KB. Unprobed it was both a machine halt on a bad
+     * pointer and, pointed at kernel memory, a clean disclosure primitive:
+     * NtQuerySymbolicLinkObject reads the copy straight back out
+     * (docs/review-2026-07 §1a, §10). */
+    NTSTATUS probeStatus = ObProbeUnicodeStringRead(target);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
+    probeStatus = KiProbeForWrite(handle, sizeof(*handle), sizeof(uint64_t));
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (target->Length == 0 || (target->Length & 1) != 0)
     {
         return STATUS_INVALID_PARAMETER;
@@ -1015,9 +1034,26 @@ NTSTATUS NtQuerySymbolicLinkObject(HANDLE handle, PUNICODE_STRING target, PULONG
     {
         return STATUS_ACCESS_VIOLATION;
     }
+    /* The descriptor is read (MaximumLength) AND written (Length), so it is
+     * probed for write; the Buffer is probed for exactly the bytes written,
+     * once the length is known. */
+    NTSTATUS status = KiProbeForWrite(target, sizeof(*target), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (returnedLength != 0)
+    {
+        status = KiProbeForWrite(returnedLength, sizeof(*returnedLength), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+
     PVOID body;
-    NTSTATUS status = ObReferenceObjectByHandle(handle, SYMBOLIC_LINK_QUERY, &ObpSymbolicLinkType,
-                                                KernelMode, &body, 0);
+    status = ObReferenceObjectByHandle(handle, SYMBOLIC_LINK_QUERY, &ObpSymbolicLinkType,
+                                       KernelMode, &body, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1033,6 +1069,12 @@ NTSTATUS NtQuerySymbolicLinkObject(HANDLE handle, PUNICODE_STRING target, PULONG
     {
         ObDereferenceObject(body);
         return STATUS_BUFFER_TOO_SMALL;
+    }
+    status = KiProbeForWrite(target->Buffer, link->target.Length + sizeof(WCHAR), sizeof(WCHAR));
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(body);
+        return status;
     }
     memcpy(target->Buffer, link->target.Buffer, link->target.Length);
     target->Length = link->target.Length;
