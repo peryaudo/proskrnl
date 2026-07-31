@@ -80,7 +80,7 @@ typedef struct FAT_FCB
      * goes away (delete, or a rename's replace); such an FCB is never
      * matched again, only released by its remaining references. */
     BOOLEAN entryDeleted;
-    ULONG lfnStartIndex;    /* first slot of our LFN run (== dirEntryIndex if none) */
+    ULONG lfnStartIndex; /* first slot of our LFN run (== dirEntryIndex if none) */
 
     ULONG firstCluster; /* 0 = no data allocated yet (spec §6.7) */
     uint64_t fileSize;

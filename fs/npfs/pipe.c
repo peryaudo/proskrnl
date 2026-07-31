@@ -913,9 +913,8 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
             /* The owning handle is going away: cancel-complete every parked
              * listen before the instance loses its server end (G11 — a
              * request never outlives the handle that issued it). */
-            PIOP_PENDING_REQUEST pending =
-                CONTAINING_RECORD(instance->pendingListenHead.Flink, IOP_PENDING_REQUEST,
-                                  queueEntry);
+            PIOP_PENDING_REQUEST pending = CONTAINING_RECORD(instance->pendingListenHead.Flink,
+                                                             IOP_PENDING_REQUEST, queueEntry);
             RemoveEntryList(&pending->queueEntry);
             IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
         }

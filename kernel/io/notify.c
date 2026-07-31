@@ -96,8 +96,7 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
         else
         {
             MiCopyToUserRangeChecked(&watch->owner->addressSpace,
-                                     (uint64_t)(uintptr_t)watch->userIosb, &result,
-                                     sizeof(result));
+                                     (uint64_t)(uintptr_t)watch->userIosb, &result, sizeof(result));
         }
     }
     if (watch->event != 0)

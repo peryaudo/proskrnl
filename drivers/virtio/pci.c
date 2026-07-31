@@ -218,8 +218,7 @@ BOOLEAN VioPciSetupQueue(VIO_PCI_DEVICE *device, VIO_VIRTQUEUE *queue, uint16_t 
      * the notify window the capability actually described -- unbounded, a
      * hostile device steered the driver's doorbell writes into another
      * device's register window (docs/review-2026-07 §4). */
-    uint64_t notifyOffset =
-        (uint64_t)device->commonCfg->queueNotifyOff * device->notifyMultiplier;
+    uint64_t notifyOffset = (uint64_t)device->commonCfg->queueNotifyOff * device->notifyMultiplier;
     if (notifyOffset + sizeof(uint16_t) > device->notifyLength)
     {
         DbgPrint("%s: queue %u notify offset %#lx outside the %#lx-byte notify window\n",
