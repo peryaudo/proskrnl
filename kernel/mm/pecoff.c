@@ -245,9 +245,13 @@ uint32_t MiLookupImageExport(const void *rawData, uint64_t rawSize, const MI_IMA
         {
             continue;
         }
-        /* The export name is NUL-terminated within the file (bounded by
-         * rawSize; KiStringEquals stops at the first mismatch or NUL). */
-        if (!KiStringEquals(name, bytes + nameOffset))
+        /* Bounded by what is actually left in the file, not by the first
+         * byte. The old check was `nameOffset < rawSize` plus a
+         * NUL-terminated compare, so a crafted PE whose tail spells a prefix
+         * of the looked-up name read past the end of the page-cache block
+         * (docs/review-2026-07 §4). A "name" with no NUL before the end of
+         * the image is not a name. */
+        if (!KiStringEqualsWithin(name, (const char *)bytes + nameOffset, rawSize - nameOffset))
         {
             continue;
         }

@@ -66,6 +66,31 @@ static inline BOOLEAN KiStringEquals(const char *a, const char *b)
     return *a == *b;
 }
 
+/* KiStringEquals for a `b` that is NOT known to be NUL-terminated: compares
+ * at most `bBytes` bytes of it, and a run of bytes that ends without a NUL
+ * inside that window is NOT equal. For parsing untrusted images, where the
+ * "string" is whatever the file happens to hold at an offset. */
+static inline BOOLEAN KiStringEqualsWithin(const char *a, const char *b, uint64_t bBytes)
+{
+    uint64_t i = 0;
+    for (;;)
+    {
+        if (i == bBytes)
+        {
+            return FALSE; /* ran off the buffer before either string ended */
+        }
+        if (a[i] != b[i])
+        {
+            return FALSE;
+        }
+        if (a[i] == '\0')
+        {
+            return TRUE;
+        }
+        i++;
+    }
+}
+
 /* Does `s` begin with `prefix`? An empty prefix matches everything. */
 static inline BOOLEAN KiStringStartsWith(const char *s, const char *prefix)
 {
