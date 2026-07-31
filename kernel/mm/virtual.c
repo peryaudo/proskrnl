@@ -957,16 +957,27 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
         return STATUS_INVALID_ADDRESS; /* not a single committed region */
     }
 
+    /* Check the WHOLE range before touching any of it. NT requires every
+     * page in the range to be committed, and discovering an uncommitted one
+     * halfway through used to leave the range half-reprotected while
+     * reporting failure -- ntdll's loader flips section protections through
+     * this path, so a partly-applied change is a process that runs with the
+     * wrong page permissions (docs/review-2026-07 §7). */
+    for (uint64_t page = base; page < end; page += PAGE_SIZE)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->pageProtect[index] == 0)
+        {
+            return STATUS_NOT_COMMITTED;
+        }
+    }
+
     int present, writable, executable;
     MiProtectToPteBits(newProtect, &present, &writable, &executable);
     ULONG oldProtect = 0;
     for (uint64_t page = base; page < end; page += PAGE_SIZE)
     {
         ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
-        if (vad->pageProtect[index] == 0)
-        {
-            return STATUS_NOT_COMMITTED; /* NT: the whole range must be committed */
-        }
         if (page == base)
         {
             oldProtect = vad->pageProtect[index];
