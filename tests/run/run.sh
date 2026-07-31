@@ -335,10 +335,11 @@ proskrnl() {
     fi
     mkdir -p "$BUILD/ntapi"
 
-    # The kernel image must exist (make builds it); build it if missing.
-    if [[ ! -f "$kernel" ]]; then
-        make -C "$ROOT" >/dev/null
-    fi
+    # ALWAYS rebuild, never just "build it if missing": the proskrnl leg is
+    # the regression gate, and judging a stale kernel against fresh test
+    # sources reports the previous build's verdict as this one's. make is
+    # incremental, so the cost is nil when nothing changed.
+    make -C "$ROOT" >/dev/null
 
     # The M5 RAM-disk seed files (built by make with the kernel): kmt's
     # image/file section tests read them; they are data, never run.
@@ -440,9 +441,7 @@ winetest() {
     local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/wtest.hdd"
-    if [[ ! -f "$kernel" ]]; then
-        make -C "$ROOT" >/dev/null
-    fi
+    make -C "$ROOT" >/dev/null   # always: see the ntapi leg's note
     make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe \
         build/modules/smss.exe >/dev/null
 
@@ -527,9 +526,7 @@ guiwtest() {
     local kernel img
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/guiwtest.hdd"
-    if [[ ! -f "$kernel" ]]; then
-        make -C "$ROOT" >/dev/null
-    fi
+    make -C "$ROOT" >/dev/null   # always: see the ntapi leg's note
     make -C "$ROOT" winestrip winestrip-gui win32u wineserver-lite \
         build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe >/dev/null
 
@@ -624,9 +621,7 @@ guiwtest() {
 fatinterop() {
     local kernel="$ROOT/build/proskrnl" img="$BUILD/fatinterop.hdd"
     local work="$BUILD/fatinterop" off=2097152    # mkimage.sh ESP_OFF
-    if [[ ! -f "$kernel" ]]; then
-        make -C "$ROOT" build/proskrnl >/dev/null
-    fi
+    make -C "$ROOT" build/proskrnl >/dev/null   # always: see the ntapi leg's note
     rm -rf "$work"
     mkdir -p "$work"
 
@@ -712,9 +707,7 @@ PYEOF
 # extraction + crc diff (churn_verify.py), fsck.fat + the sweeper.
 fatstress() {
     local kernel="$ROOT/build/proskrnl"
-    if [[ ! -f "$kernel" ]]; then
-        make -C "$ROOT" build/proskrnl >/dev/null
-    fi
+    make -C "$ROOT" build/proskrnl >/dev/null   # always: see the ntapi leg's note
     make -C "$ROOT" build/modules/pe_smoke.exe build/modules/sample.dat >/dev/null 2>&1 || true
     mkdir -p "$BUILD"
 
