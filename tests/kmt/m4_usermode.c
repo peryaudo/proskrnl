@@ -16,6 +16,9 @@
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/phys.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/ps/ps.h"
+#include "kernel/mm/pool.h"
+#include "kernel/lib/string.h"
 #include "arch/x86_64/mmu.h"
 
 #include "abi/ntmmapi.h"
@@ -193,11 +196,67 @@ static void test_user_range_bound(void)
     ok(!KiIsUserRange(0xFFFFFFFFFFFFFFFFULL, 1), "wrap by one refused");
 }
 
+
+/* Regression for the process-parameter slot-sizing overflow. PspCaptureString
+ * computed MaximumLength as (USHORT)(Length + sizeof(WCHAR)); Length is itself
+ * a USHORT, so 0xFFFE wrapped to 0 and 0xFFFF to 1. PspBuildPeb then sizes
+ * each string's slot in the parameter block from MaximumLength and copies
+ * Length bytes into it, so the invariant that matters is
+ * MaximumLength >= Length -- at 0 the slot vanished and the string was
+ * dropped, at 1 a 16-byte slot took a 65535-byte memcpy into the pool.
+ *
+ * Driven here rather than from tests/ntapi because CreateProcessW clamps both
+ * the command line and the window title to 32766 characters (Length 0xFFFC),
+ * one and two bytes short of the wrap -- so no ring-3 caller going through
+ * kernelbase can reach these lengths, and the ntapi pin in
+ * sem_ps/create_process.c can only cover the largest REACHABLE string.
+ * Capturing runs in KernelMode here, where the probes are no-ops by design,
+ * which is exactly what lets the test hand over a maximal descriptor. */
+static void test_param_capture_saturates(void)
+{
+    static WCHAR scratch[0x10000 / sizeof(WCHAR)];
+    for (unsigned i = 0; i < sizeof(scratch) / sizeof(scratch[0]); i++)
+    {
+        scratch[i] = 'p';
+    }
+
+    /* 0xFFFE and 0xFFFF are the two wrapping lengths; 0xFFFC is the largest
+     * that never wrapped, included so the normal case stays covered. */
+    static const USHORT lengths[] = {0xFFFC, 0xFFFE, 0xFFFF};
+    for (unsigned c = 0; c < sizeof(lengths) / sizeof(lengths[0]); c++)
+    {
+        RTL_USER_PROCESS_PARAMETERS params;
+        memset(&params, 0, sizeof(params));
+        params.Size = sizeof(params);
+        params.AllocationSize = sizeof(params);
+        params.CommandLine.Length = lengths[c];
+        params.CommandLine.MaximumLength = lengths[c];
+        params.CommandLine.Buffer = scratch;
+
+        PSP_CAPTURED_PARAMS *captured = 0;
+        NTSTATUS status = PspCaptureProcessParameters(&params, &captured);
+        ok(status == STATUS_SUCCESS, "capture len %x -> %08lx", lengths[c],
+           (unsigned long)status);
+        if (!NT_SUCCESS(status) || captured == 0)
+        {
+            continue;
+        }
+        const UNICODE_STRING *out = &captured->strings[PSP_PARAM_COMMAND_LINE];
+        ok(out->Length == lengths[c], "captured Length %x, wanted %x", out->Length, lengths[c]);
+        /* The invariant PspBuildPeb's memcpy depends on. */
+        ok(out->MaximumLength >= out->Length, "len %x: MaximumLength %x < Length %x", lengths[c],
+           out->MaximumLength, out->Length);
+        ok(out->Buffer != 0, "len %x: string dropped", lengths[c]);
+        PspFreeCapturedParams(captured);
+    }
+}
+
 int kmt_run_m4(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_reserve_commit_engine);
     KMT_RUN(test_free_conventions);
     KMT_RUN(test_user_range_bound);
+    KMT_RUN(test_param_capture_saturates);
     return kmt_failures - before;
 }

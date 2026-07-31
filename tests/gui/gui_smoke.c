@@ -173,6 +173,31 @@ static int test_framebuffer(void)
         fail("fb", status);
         return 1;
     }
+
+    /* A write that would EXTEND the scanout must be refused, not dispatched.
+     * FbOps has a GetCache but no SetEndOfFile -- the mode is fixed -- and
+     * kernel/io/rw.c called ops->SetEndOfFile unchecked whenever a write
+     * passed EOF, so this was a call through a NULL pointer in ring 0: a #PF
+     * with CS.RPL == 0, which KiDispatchTrap does not contain, i.e. KiPanic
+     * from an unprivileged process. FbCreate does not filter grantedAccess,
+     * so the writable handle above is all it took.
+     *
+     * Same documented contract as the input-write case below
+     * (STATUS_INVALID_DEVICE_REQUEST for a major function the device does not
+     * implement); no oracle leg exists for a HACK device. The write starts
+     * one byte inside the scanout so only its TAIL is past the end -- that is
+     * the shape that reaches the resize path rather than a bounds check. */
+    {
+        LARGE_INTEGER past;
+        BYTE two[2] = {0, 0};
+        past.QuadPart = (LONGLONG)mode.pitch * mode.height - 1;
+        NTSTATUS extend = NtWriteFile(fb, NULL, NULL, NULL, &iosb, two, sizeof(two), &past, NULL);
+        if (extend != STATUS_INVALID_DEVICE_REQUEST)
+        {
+            fail("fb-extend", extend);
+            return 1;
+        }
+    }
     if (mode.bpp != 32 || mode.memoryModel != FB_MEMORY_MODEL_RGB)
     {
         fail("fb", STATUS_NOT_SUPPORTED);
