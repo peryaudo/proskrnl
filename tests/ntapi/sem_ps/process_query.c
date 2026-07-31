@@ -264,4 +264,53 @@ START_TEST(process_query)
            smbios_len - 8);
         HeapFree(GetProcessHeap(), 0, smbios);
     }
+    /* --- a bad ReturnLength pointer is an access violation, not a write ----
+     *
+     * Every one of these classes wrote *returnLength through a raw user
+     * pointer with no probe. Kernel VA is mapped in the same PML4 as user VA,
+     * so the store landed wherever the caller pointed -- a kernel address
+     * included. ProcessDefaultHardErrorMode is the cheapest of the family:
+     * proskrnl answered it before checking the buffer or the handle's rights,
+     * so no valid buffer and no access were even needed to reach the write.
+     *
+     * BAD_PTR is a user address that is merely unmapped, which is what the
+     * oracle can be asked about; the kernel-address case it cannot model is
+     * the same store with a different operand. */
+    {
+        ULONG *const BAD_PTR = (ULONG *)(ULONG_PTR)0x10000;
+        ULONG mode = 0;
+        BYTE buf[64];
+
+        status = NtQueryInformationProcess(NtCurrentProcess(), ProcessDefaultHardErrorMode,
+                                           &mode, sizeof(mode), BAD_PTR);
+        ok(status == STATUS_ACCESS_VIOLATION, "hard-error-mode bad retlen -> %08lx",
+           (unsigned long)status);
+
+        /* Same store on the length-mismatch path, which runs even earlier. */
+        status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessBasicInformation, NULL, 0,
+                                           BAD_PTR);
+        ok(status == STATUS_ACCESS_VIOLATION, "basic-info bad retlen (short buffer) -> %08lx",
+           (unsigned long)status);
+
+        /* And on the success path, where the buffer is fine and only the
+         * length pointer is bad. */
+        status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessBasicInformation, buf,
+                                           sizeof(buf), BAD_PTR);
+        ok(status == STATUS_ACCESS_VIOLATION, "basic-info bad retlen (good buffer) -> %08lx",
+           (unsigned long)status);
+
+        status = NtQuerySystemInformation(PS_SystemBasicInformation, buf, sizeof(buf), BAD_PTR);
+        ok(status == STATUS_ACCESS_VIOLATION, "system-basic bad retlen -> %08lx",
+           (unsigned long)status);
+
+        /* Ordering: the length pointer is validated BEFORE the info class is
+         * dispatched, so a bad pointer outranks an unknown class. This is
+         * what makes a single probe at the top of each service correct,
+         * rather than one guard per class. */
+        status = NtQueryInformationProcess(NtCurrentProcess(), (PROCESSINFOCLASS)0x7fff, buf,
+                                           sizeof(buf), BAD_PTR);
+        ok(status == STATUS_ACCESS_VIOLATION, "bogus class + bad retlen -> %08lx",
+           (unsigned long)status);
+    }
+
 }

@@ -342,6 +342,11 @@ void PspUnlinkProcessFromJob(PEPROCESS process)
 NTSTATUS NtQueryInformationJobObject(HANDLE handle, JOBOBJECTINFOCLASS infoClass, PVOID buffer,
                                      ULONG length, PULONG returnLength)
 {
+    NTSTATUS probeStatus = PspProbeReturnLength(returnLength);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     /* Class ceiling first, as the set path does (wine/dlls/ntdll/unix/sync.c). */
     if ((ULONG)infoClass >= (ULONG)MaxJobObjectInfoClass)
     {

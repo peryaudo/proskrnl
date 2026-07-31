@@ -35,6 +35,11 @@
 NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClass, PVOID buffer,
                                    ULONG length, PULONG returnLength)
 {
+    NTSTATUS probeStatus = PspProbeReturnLength(returnLength);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     PKTHREAD thread = KeGetCurrentThread();
     PEPROCESS process;
     BOOLEAN referenced = FALSE;
@@ -875,6 +880,11 @@ static NTSTATUS PspQueryWineVersion(PVOID buffer, ULONG length, PULONG returnLen
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buffer, ULONG length,
                                   PULONG returnLength)
 {
+    NTSTATUS probeStatus = PspProbeReturnLength(returnLength);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     switch (infoClass)
     {
     case SystemProcessInformation:
@@ -1131,6 +1141,11 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
                                     ULONG queryLength, PVOID buffer, ULONG length,
                                     PULONG returnLength)
 {
+    NTSTATUS probeStatus = PspProbeReturnLength(returnLength);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     switch (infoClass)
     {
     case SystemSupportedProcessorArchitectures:

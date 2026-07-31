@@ -412,4 +412,25 @@ struct EXCEPTION_RECORD;
 BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode,
                                  uint64_t faultAddress);
 
+/* Validate a query service's optional ReturnLength out-parameter, once, at
+ * the top of the service — NT's ProbeForWriteUlong placement, and the one
+ * the oracle's ordering demands: a bad pointer outranks an unknown info
+ * class (pinned in tests/ntapi/sem_ps/process_query.c). A NULL pointer is
+ * legal and succeeds.
+ *
+ * It lives here, and is called once per service rather than at each of the
+ * ~25 sites that assign through the pointer, because every one of those
+ * sites was previously a raw store: user and kernel VA share a PML4, so an
+ * unprobed `*returnLength = ...` wrote wherever the caller pointed, and an
+ * unmapped target faulted in ring 0 — which is a KiPanic, not a fault the
+ * caller can catch. */
+static inline NTSTATUS PspProbeReturnLength(PULONG returnLength)
+{
+    if (returnLength == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
+}
+
 #endif /* PROSKRNL_KERNEL_PS_PS_H */
