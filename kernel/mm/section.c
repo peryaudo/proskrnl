@@ -78,6 +78,8 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
 {
     memset(scratch, 0, sizeof(*scratch));
     scratch->pageProtection = pageProtection;
+    /* An anonymous section has no backing file to constrain it. */
+    scratch->backingWritable = backing == 0 || backing->fileObject == 0 || backing->writable;
 
     switch (attributes & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_FILE))
     {
@@ -517,6 +519,23 @@ NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64
      * everything else shares the section's frames. */
     ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
     BOOLEAN privateCopy = bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
+
+    /* A SHARED writable view of a file-backed section writes the file's page
+     * cache -- and with immediate writeback (Art. 3) that IS a write to the
+     * file. Nothing checked the backing handle's access at map time, so
+     * opening a file FILE_READ_DATA, creating a section over it, and mapping
+     * the section PAGE_READWRITE wrote a file the caller could not write
+     * (docs/review-2026-07 §11). The oracle refuses that with
+     * STATUS_ACCESS_DENIED -- verified against the pinned Wine, which also
+     * shows the gate is the HANDLE's access and not the section's creation
+     * protection: a PAGE_READONLY section over a read-write handle maps
+     * PAGE_READWRITE quite happily there. A private copy writes nothing back
+     * and stays legal. */
+    if (!privateCopy && !section->backingWritable &&
+        (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE))
+    {
+        return STATUS_ACCESS_DENIED;
+    }
 
     uint64_t base = *baseInOut;
     if (base != 0)
