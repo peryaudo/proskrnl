@@ -77,11 +77,16 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     }
     else
     {
-        /* The issue-time probe faulted the page in and required it writable;
-         * no eviction (Art. 3) keeps it resident, and the owner's handles
-         * close before its address space dies (G11 audit in io.h). */
-        MiCopyToUserRange(&request->owner->addressSpace, (uint64_t)(uintptr_t)request->userIosb,
-                          &iosb, sizeof(iosb));
+        /* The issue-time probe faulted the page in and required it writable,
+         * and no eviction (Art. 3) keeps it resident -- but the owner may
+         * have freed it while the request was parked, which is why this is
+         * the CHECKED copy. MiCopyToUserRange asserts on a missing frame, so
+         * NtNotifyChangeDirectoryFile + NtFreeVirtualMemory + touch the
+         * directory used to halt the kernel (docs/review-2026-07 §2). A
+         * caller that unmaps its own IOSB gets no IOSB; there is nobody left
+         * to report a status to. */
+        MiCopyToUserRangeChecked(&request->owner->addressSpace,
+                                 (uint64_t)(uintptr_t)request->userIosb, &iosb, sizeof(iosb));
     }
     if (request->event != 0)
     {
