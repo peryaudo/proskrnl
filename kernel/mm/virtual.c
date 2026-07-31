@@ -287,6 +287,23 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
     {
         return STATUS_INVALID_PARAMETER;
     }
+    /* Refuse an oversized request BEFORE the page rounding below, which
+     * otherwise wraps: MiRoundUp(requestedBase + size, PAGE_SIZE) - base can
+     * come out as 0 (or as a small value), and the size == 0 test above has
+     * already been passed on the pre-rounding value. A rounded size of 0
+     * reaches MiCreateVad and then MiAllocatePool(0), which panics.
+     *
+     * The oracle opens allocate_virtual_memory with exactly this test —
+     * `if (is_beyond_limit( 0, size, working_set_limit )) return
+     * STATUS_WORKING_SET_LIMIT_RANGE;` (third_party/wine
+     * dlls/ntdll/unix/virtual.c) — where working_set_limit starts at
+     * 0x7fffffff0000, i.e. KI_USER_SPACE_LIMIT. With addr == 0 the macro
+     * reduces to a strict `size > limit`, so exactly the limit falls through
+     * to the ordinary out-of-memory path (pinned in sem_mm/reserve_commit). */
+    if (size > KI_USER_SPACE_LIMIT)
+    {
+        return STATUS_WORKING_SET_LIMIT_RANGE;
+    }
     if (type & ~(ULONG)(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET))
     {
         return STATUS_INVALID_PARAMETER;
@@ -319,6 +336,16 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
     {
         base = 0;
         size = MiRoundUp(size, PAGE_SIZE);
+    }
+
+    /* Structural backstop for the rounding above. The size > limit test at the
+     * top of this function is what a caller observes, but nothing downstream
+     * is prepared for a zero-sized VAD: MiCreateVad would call
+     * MiAllocatePool(0) (a panic), and a zero-length VAD could never be found
+     * by MiFindVad afterwards, so it would be unfreeable and unqueryable. */
+    if (size == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
     }
 
     if (type & MEM_RESET)
