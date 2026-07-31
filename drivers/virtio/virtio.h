@@ -48,10 +48,14 @@ _Static_assert(sizeof(VIRTQ_DESC) == 16, "virtq_desc is 16 bytes (virtio 1.2 cs0
 #define VIRTQ_DESC_F_WRITE 2 /* §2.7.5: device write-only buffer */
 
 /* §2.7.6: avail ring — le16 flags, le16 idx, le16 ring[qsize]. */
+/* `idx` is volatile because the DEVICE writes it: it is the one field in
+ * these rings that changes without the driver storing to it, and a spin loop
+ * that polls a non-volatile load with no call and no clobber in the loop
+ * body is free to hoist that load out of the loop entirely. */
 typedef struct
 {
     uint16_t flags;
-    uint16_t idx;
+    volatile uint16_t idx;
     uint16_t ring[]; /* qsize entries */
 } VIRTQ_AVAIL;
 
