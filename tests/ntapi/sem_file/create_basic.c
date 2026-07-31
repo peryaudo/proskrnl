@@ -172,4 +172,19 @@ START_TEST(create_basic)
     scrub_file(dir, W("openif.txt"));
     scrub_file(dir, W("CaseFile.txt"));
     NtClose(dir);
+    /* An unreadable OBJECT_ATTRIBUTES must be a status, not a kernel fault.
+     * NtCreateFile does not route its attributes through the Ob namespace
+     * engine -- it reads attributes->ObjectName itself -- so the engine-level
+     * probe does not cover this path. */
+    {
+        HANDLE bh = NULL;
+        IO_STATUS_BLOCK biosb;
+        NTSTATUS bstatus =
+            NtCreateFile(&bh, GENERIC_READ | SYNCHRONIZE, (POBJECT_ATTRIBUTES)(ULONG_PTR)0x10000,
+                         &biosb, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
+                         FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+        ok(bstatus == STATUS_ACCESS_VIOLATION, "NtCreateFile bad attributes -> %08lx",
+           (unsigned long)bstatus);
+    }
+
 }

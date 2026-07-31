@@ -404,6 +404,14 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
                                BOOLEAN openLink, PCMP_KEY_NODE *parentOut, UNICODE_STRING *leafOut,
                                WCHAR *leafScratch, PCMP_KEY_NODE *foundOut)
 {
+    /* Cm parses attributes->ObjectName into the registry namespace itself,
+     * not through the Ob engine, so the same validation has to be asked for
+     * here. Every key service reaches a path resolve through this function. */
+    NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (attributes == 0 || attributes->ObjectName == 0)
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;
@@ -849,6 +857,15 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
             return status;
         }
     }
+    {
+        /* attributes->Length is read here, before CmpResolvePath below gets
+         * a chance to validate the block. */
+        NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
     if (attributes == 0 || attributes->Length != sizeof(OBJECT_ATTRIBUTES))
     {
         return STATUS_INVALID_PARAMETER;
@@ -946,6 +963,15 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
         return status;
     }
     *keyHandle = 0; /* as wine ntdll's NtOpenKeyEx */
+    {
+        /* attributes->Length is read here, before CmpResolvePath below gets
+         * a chance to validate the block. */
+        NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
     if (attributes == 0 || attributes->Length != sizeof(OBJECT_ATTRIBUTES))
     {
         return STATUS_INVALID_PARAMETER;

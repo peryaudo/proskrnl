@@ -217,4 +217,12 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
                               PVOID *parseObject, UNICODE_STRING *remainingName,
                               PWSTR *reparseBuffer);
 
+/* Validate a caller-supplied OBJECT_ATTRIBUTES (the block, its ObjectName,
+ * and the name buffer) before any of it is read. The Ob create/open engine
+ * calls this itself; Io and Cm must call it too, because they parse
+ * attributes->ObjectName into their own namespaces without entering the
+ * engine. A NULL block succeeds -- callers distinguish "absent" from
+ * "present but nameless" themselves. See kernel/ob/namespace.c. */
+NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes);
+
 #endif /* PROSKRNL_KERNEL_OB_OB_H */

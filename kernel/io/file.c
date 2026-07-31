@@ -306,6 +306,15 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     {
         return STATUS_INVALID_PARAMETER;
     }
+    /* Io parses attributes->ObjectName into a filesystem path itself rather
+     * than through the Ob namespace engine, so it has to ask for the same
+     * validation the engine does -- otherwise a ring-3 pointer is read here
+     * with no check at all. */
+    NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     if (attributes == 0 || attributes->ObjectName == 0)
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;

@@ -9,6 +9,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/mm/pool.h"
 #include "kernel/init/panic.h"
+#include "kernel/syscall/uaccess.h"
 
 /* Resolve one wait-source handle: needs SYNCHRONIZE and a waitable type. */
 static NTSTATUS ObpReferenceWaitObject(HANDLE handle, PVOID *body)
@@ -26,8 +27,26 @@ static NTSTATUS ObpReferenceWaitObject(HANDLE handle, PVOID *body)
     return STATUS_SUCCESS;
 }
 
+/* KeWaitFor* dereferences `timeout` directly, so a ring-3 pointer has to be
+ * validated before it is handed over -- an unmapped one faults with
+ * CS.RPL == 0, which KiDispatchTrap does not contain. NULL means "wait
+ * forever" and is not a pointer to check. */
+static NTSTATUS ObpProbeTimeout(const LARGE_INTEGER *timeout)
+{
+    if (timeout == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return KiProbeForRead(timeout, sizeof(*timeout), sizeof(uint64_t));
+}
+
 NTSTATUS NtWaitForSingleObject(HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout)
 {
+    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
     PVOID body;
     NTSTATUS status = ObpReferenceWaitObject(handle, &body);
     if (!NT_SUCCESS(status))
@@ -50,6 +69,18 @@ NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE 
     if (waitType != WaitAll && waitType != WaitAny)
     {
         return STATUS_INVALID_PARAMETER_3;
+    }
+    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
+    /* The handle array is read element by element below; validate the whole
+     * span once, after the count has been bounded. */
+    probeStatus = KiProbeForRead(handles, (uint64_t)count * sizeof(HANDLE), sizeof(HANDLE));
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
     }
 
     PVOID objects[MAXIMUM_WAIT_OBJECTS];

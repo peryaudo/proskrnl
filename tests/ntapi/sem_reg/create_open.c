@@ -162,4 +162,18 @@ START_TEST(create_open)
     status = reg_open_path(base_path, &second);
     ok(status == STATUS_OBJECT_NAME_NOT_FOUND, "reopen after delete -> %08lx",
        (unsigned long)status);
+    /* Same for NtCreateKey/NtOpenKey: Cm reads attributes->ObjectName
+     * directly rather than through the Ob engine. */
+    {
+        HANDLE bk = NULL;
+        NTSTATUS bstatus =
+            NtCreateKey(&bk, KEY_ALL_ACCESS, (POBJECT_ATTRIBUTES)(ULONG_PTR)0x10000, 0, NULL, 0,
+                        NULL);
+        ok(bstatus == STATUS_ACCESS_VIOLATION, "NtCreateKey bad attributes -> %08lx",
+           (unsigned long)bstatus);
+        bstatus = NtOpenKey(&bk, KEY_READ, (POBJECT_ATTRIBUTES)(ULONG_PTR)0x10000);
+        ok(bstatus == STATUS_ACCESS_VIOLATION, "NtOpenKey bad attributes -> %08lx",
+           (unsigned long)bstatus);
+    }
+
 }
