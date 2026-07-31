@@ -141,6 +141,18 @@ void KiInitializeGdt(void)
     uint64_t cr = 0;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr));
     cr |= (1ULL << 9) | (1ULL << 10);
+    /* SMEP (CR4 bit 20) and SMAP (CR4 bit 21) are put into a DEFINED state
+     * rather than inherited from whatever the bootloader left behind
+     * (docs/review-2026-07 §8). Both are cleared, and that is a decision,
+     * not an omission: kernel/syscall/uaccess.c dereferences user addresses
+     * from ring 0 directly (KiCopyFromUser, the probes, MiCopyToUserRange)
+     * and kernel/init/panic.c walks a user RBP chain for the dump, so SMAP
+     * would fault every one of them; and turning SMEP on without SMAP would
+     * leave the weaker half of the pair guarding nothing this kernel does.
+     * Enabling them belongs with STAC/CLAC annotations on the copy routines,
+     * which is a change of its own. Bits: Intel SDM Vol. 3A §2.5
+     * "Control Registers", Table 2-2. */
+    cr &= ~((1ULL << 20) | (1ULL << 21));
     __asm__ volatile("mov %0, %%cr4" : : "r"(cr));
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr));
     cr = (cr | (1ULL << 1)) & ~((1ULL << 2) | (1ULL << 3));
