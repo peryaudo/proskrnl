@@ -435,7 +435,17 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     status = ObpCreateHandle(file, granted, attributes->Attributes, handleOut);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file); /* close/cleanup run via the type hooks */
+        /* The comment here used to say "close/cleanup run via the type
+         * hooks". Only HALF of that was true: deleteProcedure runs on the
+         * last reference, but closeProcedure fires on handle count 1 -> 0
+         * and no handle was ever made -- so IoRemoveShareAccess,
+         * IopReleaseAllLocks and ops->Cleanup were all skipped, and the
+         * FCB's share counts stayed inflated for its whole lifetime, i.e.
+         * STATUS_SHARING_VIOLATION on every later open of that file
+         * (docs/review-2026-07 §7). The create SUCCEEDED, so this open needs
+         * the cleanup half explicitly. */
+        IopCloseFileObject(file);
+        ObDereferenceObject(file);
         iosb->Status = status;
         iosb->Information = 0;
         goto out;
