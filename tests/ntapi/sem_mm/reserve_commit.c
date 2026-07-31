@@ -36,6 +36,54 @@ START_TEST(reserve_commit)
         NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_DECOMMIT, PAGE_READWRITE);
     ok(status == STATUS_INVALID_PARAMETER, "bad type bits -> %08lx", (unsigned long)status);
 
+    /* A size larger than the working-set limit is refused BEFORE any page
+     * rounding happens. The oracle's rule is one line: allocate_virtual_memory
+     * opens with `if (is_beyond_limit( 0, size, working_set_limit )) return
+     * STATUS_WORKING_SET_LIMIT_RANGE;` (third_party/wine
+     * dlls/ntdll/unix/virtual.c), and working_set_limit starts at
+     * 0x7fffffff0000 -- the same user-space limit the rest of the boundary
+     * uses -- so the test is just `size > limit`.
+     *
+     * Ordering is the whole point. These sizes round up to zero, and proskrnl
+     * computed MiRoundUp(base + size, PAGE_SIZE) - base with no overflow
+     * guard, while the size==0 rejection above it ran on the PRE-rounding
+     * value. A rounded size of 0 therefore reached MiCreateVad and then
+     * MiAllocatePool(0), which is a KiPanic: one syscall, any process, whole
+     * machine. Note 0x40000002 is not an NT_ERROR, so a caller checking
+     * NT_SUCCESS sees this as a (zero-page) success -- pinning the exact
+     * value, not just "it failed", is what keeps that faithful. */
+    addr = NULL;
+    size = ~(SIZE_T)0 - 0xFFE; /* 0xFFFFFFFFFFFFF001: rounds up to 0 */
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE | MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_WORKING_SET_LIMIT_RANGE, "wrapping size (no base) -> %08lx",
+       (unsigned long)status);
+
+    addr = (void *)0x10000; /* explicit base: the rounding is base-relative */
+    size = ~(SIZE_T)0 - 0xFFE;
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ok(status == STATUS_WORKING_SET_LIMIT_RANGE, "wrapping size (explicit base) -> %08lx",
+       (unsigned long)status);
+
+    /* The boundary itself. is_beyond_limit is `addr >= limit || addr + size >
+     * limit` with addr == 0, so it reduces to a strict `size > limit`:
+     * exactly the limit is NOT beyond and falls through to an ordinary
+     * out-of-memory, one byte over it is. Pinning both sides keeps the
+     * comparison from drifting to >= later. */
+    addr = NULL;
+    size = (SIZE_T)0x7fffffff0000;
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ok(status == STATUS_NO_MEMORY, "size == limit -> %08lx", (unsigned long)status);
+
+    addr = NULL;
+    size = (SIZE_T)0x7fffffff0000 + 1;
+    status =
+        NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, MEM_RESERVE, PAGE_READWRITE);
+    ok(status == STATUS_WORKING_SET_LIMIT_RANGE, "size == limit + 1 -> %08lx",
+       (unsigned long)status);
+
     /* --- reserve, then query the reserved region ------------------------- */
 
     base = NULL;
