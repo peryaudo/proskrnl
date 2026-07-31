@@ -737,6 +737,72 @@ static NTSTATUS CmpFinishInfo(ULONG length, ULONG fixedSize, ULONG required, ULO
     return STATUS_SUCCESS;
 }
 
+/* The key's FULL path, as the oracle's get_full_name builds it for
+ * KeyNameInformation: "\REGISTRY\..." from the root down, backslash
+ * separated, with no trailing NUL. Writes at most `capacity` WCHARs and
+ * returns the number of BYTES the whole path needs, so a short buffer still
+ * gets the right required size. */
+static ULONG CmpBuildFullPath(const CMP_KEY_NODE *node, WCHAR *out, ULONG capacity)
+{
+    if (node == 0)
+    {
+        return 0;
+    }
+    ULONG used = CmpBuildFullPath(node->parent, out, capacity);
+    if (node->name.Length == 0)
+    {
+        return used; /* the anonymous root contributes nothing */
+    }
+    /* A separator before every named component, including the first: the
+     * root itself is anonymous, so "\Registry\Machine\..." needs the leading
+     * backslash to come from Registry, not from the root. */
+    if (used / sizeof(WCHAR) < capacity)
+    {
+        out[used / sizeof(WCHAR)] = '\\';
+    }
+    used += sizeof(WCHAR);
+    for (ULONG i = 0; i < node->name.Length / sizeof(WCHAR); i++)
+    {
+        if (used / sizeof(WCHAR) < capacity)
+        {
+            out[used / sizeof(WCHAR)] = node->name.Buffer[i];
+        }
+        used += sizeof(WCHAR);
+    }
+    return used;
+}
+
+/* MaxNameLen/MaxClassLen/MaxValueNameLen/MaxValueDataLen over one key's
+ * children -- shared by KeyFullInformation and KeyCachedInformation, which
+ * the oracle computes in one arm (wine server/registry.c enumerate_key). */
+static void CmpMeasureChildren(const CMP_KEY_NODE *node, ULONG *maxNameLen, ULONG *maxValueNameLen,
+                               ULONG *maxValueDataLen)
+{
+    *maxNameLen = 0;
+    *maxValueNameLen = 0;
+    *maxValueDataLen = 0;
+    for (PLIST_ENTRY e = node->subkeyListHead.Flink; e != &node->subkeyListHead; e = e->Flink)
+    {
+        const CMP_KEY_NODE *child = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
+        if (child->name.Length > *maxNameLen)
+        {
+            *maxNameLen = child->name.Length;
+        }
+    }
+    for (PLIST_ENTRY e = node->valueListHead.Flink; e != &node->valueListHead; e = e->Flink)
+    {
+        const CMP_VALUE *value = CONTAINING_RECORD(e, CMP_VALUE, listEntry);
+        if (value->name.Length > *maxValueNameLen)
+        {
+            *maxValueNameLen = value->name.Length;
+        }
+        if (value->dataLength > *maxValueDataLen)
+        {
+            *maxValueDataLen = value->dataLength;
+        }
+    }
+}
+
 /* Fill key information about `node` (NtQueryKey and NtEnumerateKey share
  * this — wine dlls/ntdll/unix/registry.c enumerate_key). */
 static NTSTATUS CmpFillKeyInfo(const CMP_KEY_NODE *node, KEY_INFORMATION_CLASS infoClass,
@@ -806,9 +872,47 @@ static NTSTATUS CmpFillKeyInfo(const CMP_KEY_NODE *node, KEY_INFORMATION_CLASS i
         memcpy(out, &info, length < fixed ? length : fixed);
         return CmpFinishInfo(length, fixed, fixed, resultLength);
     }
+    case KeyNameInformation:
+    {
+        /* The FULL path, not the leaf: the oracle calls get_full_name for
+         * this class (wine server/registry.c enumerate_key). Refusing it
+         * broke RegOpenKeyEx with KEY_WOW64_32KEY
+         * (docs/review-2026-07 §5). */
+        ULONG fixed = offsetof(KEY_NAME_INFORMATION, Name);
+        WCHAR *nameOut = (WCHAR *)(out + fixed);
+        ULONG capacity = length > fixed ? (length - fixed) / sizeof(WCHAR) : 0;
+        ULONG nameBytes = CmpBuildFullPath(node, nameOut, capacity);
+        KEY_NAME_INFORMATION info;
+        info.NameLength = nameBytes;
+        memcpy(out, &info, length < fixed ? length : fixed);
+        return CmpFinishInfo(length, fixed, fixed + nameBytes, resultLength);
+    }
+    case KeyCachedInformation:
+    {
+        /* KeyFullInformation's counters plus the key's own name LENGTH, and
+         * no name or class bytes at all -- the oracle sets classlen = 0 and
+         * namelen = 0 for this class after filling the maxima. */
+        KEY_CACHED_INFORMATION info;
+        ULONG fixed = sizeof(KEY_CACHED_INFORMATION);
+        ULONG maxNameLen, maxValueNameLen, maxValueDataLen;
+        CmpMeasureChildren(node, &maxNameLen, &maxValueNameLen, &maxValueDataLen);
+        info.LastWriteTime = node->lastWriteTime;
+        info.TitleIndex = 0;
+        info.SubKeys = node->subkeyCount;
+        info.MaxNameLen = maxNameLen;
+        info.Values = node->valueCount;
+        info.MaxValueNameLen = maxValueNameLen;
+        info.MaxValueDataLen = maxValueDataLen;
+        info.NameLength = node->name.Length;
+        memcpy(out, &info, length < fixed ? length : fixed);
+        return CmpFinishInfo(length, fixed, fixed, resultLength);
+    }
     default:
         /* Unimplemented classes are STATUS_INVALID_PARAMETER (wine
-         * enumerate_key's default arm). */
+         * enumerate_key's default arm). Note the arm sits BELOW the
+         * implemented cases there too -- crediting a refusal to it for a
+         * class the oracle implements above it was the review's §5
+         * finding. */
         return STATUS_INVALID_PARAMETER;
     }
 }
@@ -852,6 +956,19 @@ static NTSTATUS CmpFillValueInfo(const CMP_VALUE *value, KEY_VALUE_INFORMATION_C
         KEY_VALUE_PARTIAL_INFORMATION info;
         ULONG fixed = offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data);
         info.TitleIndex = 0;
+        info.Type = value->type;
+        info.DataLength = value->dataLength;
+        memcpy(out, &info, length < fixed ? length : fixed);
+        CmpCopyVariable(out, length, fixed, value->data, value->dataLength);
+        return CmpFinishInfo(length, fixed, fixed + value->dataLength, resultLength);
+    }
+    case KeyValuePartialInformationAlign64:
+    {
+        /* The same payload with no TitleIndex, so the data lands 8-aligned
+         * (wine dlls/ntdll/unix/registry.c copy_key_value_info). It was
+         * refused; the oracle implements it. */
+        KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 info;
+        ULONG fixed = offsetof(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data);
         info.Type = value->type;
         info.DataLength = value->dataLength;
         memcpy(out, &info, length < fixed ? length : fixed);
@@ -1291,9 +1408,9 @@ NTSTATUS NtQueryValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName,
         return status;
     }
     if (infoClass != KeyValueBasicInformation && infoClass != KeyValueFullInformation &&
-        infoClass != KeyValuePartialInformation)
+        infoClass != KeyValuePartialInformation && infoClass != KeyValuePartialInformationAlign64)
     {
-        return STATUS_INVALID_PARAMETER; /* incl. the Align64 flavours: unbuilt */
+        return STATUS_INVALID_PARAMETER; /* KeyValueFullInformationAlign64: still unbuilt */
     }
     PCM_KEY_BODY body;
     status = CmpReferenceKey(keyHandle, KEY_QUERY_VALUE, FALSE, &body);
@@ -1332,7 +1449,7 @@ NTSTATUS NtEnumerateValueKey(HANDLE keyHandle, ULONG index, KEY_VALUE_INFORMATIO
         return status;
     }
     if (infoClass != KeyValueBasicInformation && infoClass != KeyValueFullInformation &&
-        infoClass != KeyValuePartialInformation)
+        infoClass != KeyValuePartialInformation && infoClass != KeyValuePartialInformationAlign64)
     {
         return STATUS_INVALID_PARAMETER;
     }
