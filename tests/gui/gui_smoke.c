@@ -256,6 +256,51 @@ static int test_input(void)
     int sawPress = 0;
     unsigned int scanned = 0;
 
+    /* Writing to an input stream must be REFUSED, not dispatched. HidInputOps
+     * has a Read and no Write, and no GetCache either -- and kernel/io/rw.c
+     * only entered its device branch when ops->Write was non-NULL, falling
+     * through to an unchecked ops->GetCache(...) call otherwise. HidInputCreate
+     * does not filter grantedAccess, so a FILE_GENERIC_WRITE open succeeds and
+     * NtWriteFile's own access gate passes: the result was a call through a
+     * NULL function pointer in ring 0, i.e. a #PF with CS.RPL == 0, which
+     * KiDispatchTrap does not contain -- KiPanic, from an unprivileged
+     * process.
+     *
+     * STATUS_INVALID_DEVICE_REQUEST is what NT returns when a device does not
+     * implement the requested operation (Microsoft, "NTSTATUS values" /
+     * IRP_MJ_WRITE: a driver with no dispatch routine for a major function
+     * completes the IRP with this status). There is no oracle leg here at all
+     * -- \Device\Input0 is HACK-002 (docs/10), which NT does not have -- so
+     * this is pinned against that documented contract.
+     *
+     * This runs BEFORE the read handle is opened: open_device asks for
+     * exclusive share access, so a second handle on the same device would
+     * fail with a sharing violation and silently skip the case. */
+    {
+        HANDLE writable = NULL;
+        NTSTATUS wstatus;
+        open_device(L"\\Device\\Input0", FILE_GENERIC_READ | FILE_GENERIC_WRITE, &writable,
+                    &wstatus);
+        if (!NT_SUCCESS(wstatus))
+        {
+            fail("input-write-open", wstatus);
+            return 1;
+        }
+        {
+            IO_STATUS_BLOCK wiosb;
+            HID_INPUT_EVENT bogus;
+            memset(&bogus, 0, sizeof(bogus));
+            wstatus = NtWriteFile(writable, NULL, NULL, NULL, &wiosb, &bogus, sizeof(bogus), NULL,
+                                  NULL);
+            NtClose(writable);
+            if (wstatus != STATUS_INVALID_DEVICE_REQUEST)
+            {
+                fail("input-write", wstatus);
+                return 1;
+            }
+        }
+    }
+
     open_device(L"\\Device\\Input0", FILE_GENERIC_READ, &input, &status);
     if (!NT_SUCCESS(status))
     {
