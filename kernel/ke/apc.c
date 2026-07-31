@@ -14,10 +14,23 @@
  */
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
+#include "kernel/mm/pool.h"
 
 void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
 {
     uint64_t flags = KiAcquireDispatcherLock();
+    if (thread->state == KI_THREAD_STATE_TERMINATED)
+    {
+        /* A terminated thread will never reach an alertable point, so the
+         * APC can only sit on the list forever -- and the queue is
+         * unbounded, so looping NtQueueApcThread at an exited thread leaked
+         * pool without limit (docs/review-2026-07 §7). Dropping it here is
+         * observably identical (it was never going to run) and costs
+         * nothing. */
+        KiReleaseDispatcherLock(flags);
+        MiFreePool(apc);
+        return;
+    }
     InsertTailList(&thread->userApcListHead, &apc->apcListEntry);
     thread->userApcPending = TRUE;
 
@@ -55,4 +68,21 @@ BOOLEAN KiTestAlertCurrentThread(void)
         result = TRUE;
     }
     return result;
+}
+
+/* Free every APC still queued to a thread that is exiting. The queue's
+ * blocks are pool allocations owned by the queue, and nothing else can
+ * release them once the thread is gone (docs/review-2026-07 §7). Called
+ * from KiTerminateThread with the dispatcher lock held. */
+void KiDrainUserApcQueue(PKTHREAD thread)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    while (!IsListEmpty(&thread->userApcListHead))
+    {
+        PKAPC apc = CONTAINING_RECORD(thread->userApcListHead.Flink, KAPC, apcListEntry);
+        RemoveEntryList(&apc->apcListEntry);
+        MiFreePool(apc);
+    }
+    thread->userApcPending = FALSE;
+    thread->apcDeliverPending = FALSE;
 }

@@ -161,6 +161,10 @@ __attribute__((noreturn)) void KiTerminateThread(void)
         KiReleaseMutant(mutant, TRUE);
     }
 
+    /* Undelivered user APCs die with the thread: it will never reach another
+     * alertable point, and their pool blocks have no other owner. */
+    KiDrainUserApcQueue(thread);
+
     thread->state = KI_THREAD_STATE_TERMINATED;
     thread->header.signalState = 1; /* never reset: joins always satisfy */
     KiWaitTest(&thread->header);

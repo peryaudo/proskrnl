@@ -406,6 +406,11 @@ void KiUpdateClock(void);
  * pool-owned; delivery/teardown frees it. Wakes an alertable wait. */
 void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc);
 
+/* Free every user APC still queued to an exiting thread (dispatcher lock
+ * held). The queue owns those pool blocks and nothing else can release
+ * them once the thread is gone. */
+void KiDrainUserApcQueue(PKTHREAD thread);
+
 /* Does the current thread have a user APC (or a pending alert) to deliver on
  * the way back to ring 3? Called by the trap/syscall return path. */
 BOOLEAN KiUserApcPending(PKTHREAD thread);
