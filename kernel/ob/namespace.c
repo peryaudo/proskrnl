@@ -151,6 +151,68 @@ static PVOID ObpFindEntry(PVOID directoryBody, const UNICODE_STRING *component,
  *
  * A NULL `attributes` is left to the callers, which distinguish it
  * (STATUS_INVALID_PARAMETER) from a present block with no name. */
+/* --- the full path of a named object --------------------------------------
+ *
+ * "\BaseNamedObjects\prsk_evt", not "prsk_evt". Built by walking
+ * parentDirectory to the root, which is where the name actually lives -- the
+ * header carries only its own leaf component. THE authority for the
+ * question, so NtQueryObject and anything else that needs a path agree
+ * (Art. 11). The root directory has no name of its own and contributes only
+ * the leading backslash.
+ *
+ * The pair is deliberate: the length is needed before the buffer can be
+ * sized, and computing it twice from one recursive walk is cheaper and less
+ * error-prone than a measure-and-copy that can disagree. */
+static USHORT ObpFullNameWrite(POBJECT_HEADER header, WCHAR *out, USHORT written)
+{
+    if (header == 0)
+    {
+        return written;
+    }
+    if (header->parentDirectory != 0)
+    {
+        written = ObpFullNameWrite(ObpGetHeader(header->parentDirectory), out, written);
+    }
+    if (header->name.Length == 0)
+    {
+        return written; /* the anonymous root */
+    }
+    if (out != 0)
+    {
+        out[written++] = '\\';
+    }
+    else
+    {
+        written++;
+    }
+    for (USHORT i = 0; i < header->name.Length / sizeof(WCHAR); i++)
+    {
+        if (out != 0)
+        {
+            out[written] = header->name.Buffer[i];
+        }
+        written++;
+    }
+    return written;
+}
+
+USHORT ObpFullNameLength(POBJECT_HEADER header)
+{
+    if (header->name.Length == 0)
+    {
+        return 0; /* unnamed objects have no path at all */
+    }
+    return (USHORT)(ObpFullNameWrite(header, 0, 0) * sizeof(WCHAR));
+}
+
+void ObpWriteFullName(POBJECT_HEADER header, WCHAR *out)
+{
+    if (header->name.Length != 0)
+    {
+        ObpFullNameWrite(header, out, 0);
+    }
+}
+
 NTSTATUS ObProbeUnicodeStringRead(const UNICODE_STRING *string)
 {
     if (string == 0)

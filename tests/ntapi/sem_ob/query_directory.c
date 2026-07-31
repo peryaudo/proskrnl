@@ -234,4 +234,55 @@ START_TEST(query_directory)
         (void)h;
     }
 
+    /* --- ObjectNameInformation reports the FULL path ----------------------
+     *
+     * proskrnl returned the leaf component. A caller that gets "prsk_qd_evt"
+     * where NT gives "\BaseNamedObjects\prsk_qd_evt" cannot tell two
+     * objects with the same leaf name apart; the oracle walks name->parent
+     * to the root. */
+    {
+        static const void *evt_name = W("\\BaseNamedObjects\\prsk_qd_named");
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE evt = NULL;
+        NTSTATUS s;
+        BYTE raw[512];
+        ULONG used = 0;
+
+        init_name(&name, &attr, NULL, evt_name);
+        s = NtCreateEvent(&evt, EVENT_ALL_ACCESS, &attr, NotificationEvent, FALSE);
+        ok(s == STATUS_SUCCESS, "create named event -> %08lx", (unsigned long)s);
+        if (NT_SUCCESS(s))
+        {
+            memset(raw, 0, sizeof(raw));
+            s = NtQueryObject(evt, ObjectNameInformation, raw, sizeof(raw), &used);
+            ok(s == STATUS_SUCCESS, "ObjectNameInformation -> %08lx", (unsigned long)s);
+            if (NT_SUCCESS(s))
+            {
+                UNICODE_STRING *reported = (UNICODE_STRING *)raw;
+                const WCHAR *want = (const WCHAR *)evt_name;
+                unsigned want_units = 0, i, same = 1;
+                while (want[want_units])
+                    want_units++;
+                ok(reported->Length == want_units * sizeof(WCHAR),
+                   "ObjectNameInformation Length %u, wanted %u (the full path, not the leaf)",
+                   (unsigned)reported->Length, (unsigned)(want_units * sizeof(WCHAR)));
+                if (reported->Length == want_units * sizeof(WCHAR))
+                {
+                    for (i = 0; i < want_units; i++)
+                    {
+                        WCHAR a = reported->Buffer[i], b2 = want[i];
+                        if (a >= 'A' && a <= 'Z')
+                            a = (WCHAR)(a - 'A' + 'a');
+                        if (b2 >= 'A' && b2 <= 'Z')
+                            b2 = (WCHAR)(b2 - 'A' + 'a');
+                        if (a != b2)
+                            same = 0;
+                    }
+                    ok(same, "ObjectNameInformation spells the whole path");
+                }
+            }
+            NtClose(evt);
+        }
+    }
 }
