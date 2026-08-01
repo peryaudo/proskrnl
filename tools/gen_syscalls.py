@@ -260,6 +260,7 @@ IMPLEMENTED = [
     "NtQueryInstallUILanguage",
     "NtSetSystemTime",
     "NtSetSystemInformation",
+    "NtShutdownSystem",
 ]
 
 

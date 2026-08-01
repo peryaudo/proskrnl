@@ -2488,6 +2488,16 @@ NtSetSystemInformation:
     syscall
     ret
 
+    .global NtShutdownSystem
+NtShutdownSystem:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf8, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
