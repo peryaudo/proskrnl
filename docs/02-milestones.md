@@ -366,8 +366,8 @@ engine's cross-context ownership rule from an npfs-specific note into the depart
 convention (Art. 11).
 **Landmine (the actual work, not the driver):** once a request can be in flight, another
 thread can enter the same FCB or page-cache page, and a large amount of code is lock-free
-*because that could not happen* — 21 greppable "atomic under the no-preemption model"
-justifications, `fs/fat32/fat.c:676` the archetype. The enumeration of re-enterable paths
+*because that could not happen* — 35 greppable "atomic under the no-preemption model"
+justifications, `fs/fat32/fat.c:893` the archetype. The enumeration of re-enterable paths
 is a **deliverable before the code that makes re-entry possible**. Also decide and pin
 first (`docs/19` §7): whether an async-handle read pends or completes inline when the page
 cache already has the data, what cancelling a pended read leaves in the IOSB, and the

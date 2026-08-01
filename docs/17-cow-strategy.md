@@ -21,20 +21,21 @@ Companion documents: `docs/18-smp-strategy.md` — the two interact in exactly o
 ## 1. What the kernel does today (measured, not remembered)
 
 - **Every image view is a full private copy.** `MipMapImageView`
-  (`kernel/mm/section.c:382`) is commented "a full private copy of the PE, relocated if
+  (`kernel/mm/section.c:398`) is commented "a full private copy of the PE, relocated if
   the base differs", and the mapping loop says so plainly: *"everything is copied — no
-  COW, no demand paging"* (`section.c:427`). Every process that maps `ntdll`,
+  COW, no demand paging"* (`section.c:443`). Every process that maps `ntdll`,
   `kernelbase`, `user32`, `gdi32`, `ole32`, … gets its own byte-for-byte copy of each.
 - **Relocations are applied into that private copy.** `MipRelocateImage`
-  (`section.c:306`) fixes up the mapped copy after `MipCommitImageRange` has memcpy'd
-  the raw bytes in. There is no relocated master anywhere.
-- **The user fault handler is 82 lines and handles exactly one case.**
-  `MiHandleUserFault` (`kernel/mm/fault.c:24`) clears a guard page and grows the
-  faulting thread's stack. Anything that is not a guard page returns
-  `STATUS_ACCESS_VIOLATION` — the M4 containment path. There is no demand paging: every
-  committed page has a frame behind it before user mode can touch it.
+  (`section.c:309`) fixes up the mapped copy after `MipCommitImageRange` has memcpy'd
+  the raw bytes in (`section.c:393`). There is no relocated master anywhere.
+- **The fault handler already has a write arm, and it is not the guard arm.** CUI-7's
+  write-watch changed this: `MiHandleUserFault` (`kernel/mm/fault.c:24`) now takes
+  `BOOLEAN writeAccess`, and a store into a present, protection-writable but clean
+  watched page is resolved *before* the guard arm (`fault.c:36`). Anything neither arm
+  claims is still `STATUS_ACCESS_VIOLATION` — the M4 containment path. There is still no
+  demand paging: every committed page has a frame behind it before user mode can touch it.
 - **Image sections do not touch the page cache.** `MiCreateSection`
-  (`section.c:231`): *"Data sections map the file's cache; image sections read the raw
+  (`section.c:234`): *"Data sections map the file's cache; image sections read the raw
   module bytes directly and need no cache."* This single fact is what makes a scoped COW
   tractable — see §4.
 
@@ -55,7 +56,7 @@ requires of a deviation.
 
 There is a second cost with the same shape: **process creation time**. Every process pays
 a `memcpy` of every DLL it maps (`MipCommitImageRange` → `MiCopyToUserRange`,
-`section.c:377`), plus a full relocation pass when it is not at its preferred base. On the
+`section.c:393`), plus a full relocation pass when it is not at its preferred base. On the
 paths that spawn processes in bulk — CUI-1's `rundll32` children, cmd.exe pipelines, a
 build tool — that is the dominant cost of `NtCreateUserProcess`. It is weaker as a
 constitutional argument (latency, not a ceiling), so lead with the ceiling; record this as
@@ -81,7 +82,7 @@ of what makes COW dangerous elsewhere:
 | TLB shootdown races on write-protect | **Uniprocessor.** A local `invlpg` suffices; no IPI, no cross-CPU window. (This changes the day `docs/18` lands — see §11.) |
 | The fault path interleaving with an unmap or another fault | **No kernel preemption.** The fault path runs to completion. |
 | The shared master being evicted mid-fault | **No eviction, immediate writeback.** Nothing pages out; the master cannot vanish. |
-| COW colliding with the file cache and mapped-view coherence | **Image sections bypass the page cache entirely** (`section.c:231`). The one genuinely hard problem in Mm — mapped-view/`ReadFile` coherence, T4's "structurally trivial because everything looks at the same page-cache page" — is *untouched* by an image-only COW. |
+| COW colliding with the file cache and mapped-view coherence | **Image sections bypass the page cache entirely** (`section.c:234`). The one genuinely hard problem in Mm — mapped-view/`ReadFile` coherence, T4's "structurally trivial because everything looks at the same page-cache page" — is *untouched* by an image-only COW. |
 
 The contract COW implements is also **observable from ring 3**, which means Articles 5
 and 6 apply normally: write to a `PAGE_WRITECOPY` view, then assert that the file did
@@ -95,7 +96,7 @@ convict (`docs/18` §3).
 Because relocations are applied *into the private copy* (§1), naive COW shares nothing:
 two processes' copies of `ntdll` differ wherever a fixup landed unless both are mapped
 at the same base. `MipMapImageView` already distinguishes this case — `atBase` is true
-when `image->preferredBase` was free (`section.c:411`) — and Wine's DLLs normally do get
+when `image->preferredBase` was free (`section.c:427`) — and Wine's DLLs normally do get
 their preferred base.
 
 So the work decomposes, and the two halves have very different risk:
@@ -116,7 +117,7 @@ read-only pages share. Risk is bought in two instalments instead of one.
 **In scope:** `SEC_IMAGE` sections — the read-only-shared master plus COW on write.
 
 **Out of scope for the first implementation:** `PAGE_WRITECOPY` on *file-backed data*
-sections. Data sections map the file's cache (`section.c:231`), so writecopy there lands
+sections. Data sections map the file's cache (`section.c:234`), so writecopy there lands
 squarely on mapped-view/`ReadFile` coherence — the one thing T4 bought outright and the
 one thing we must not spend. Until a baked consumer convicts it, the class **refuses
 loudly** per G12: no plausible no-op, no silent promotion to `PAGE_READWRITE`.
@@ -126,46 +127,57 @@ second mapper to diverge from.
 
 ## 6. Hazards, worst first
 
-### A. Kernel-side writes bypass COW entirely — the structural trap
+### A. Kernel-side writes bypass the hardware — but the authority now exists
 
-`MiCopyToUserRange` (`kernel/mm/virtual.c:619`), `MiCopyToUserRangeChecked`
-(`virtual.c:693`) and `MiTranslateUserPage` walk the page tables and `memcpy` **straight
-into the physical frame**. They never let the CPU evaluate the PTE's writable bit.
-A COW scheme that relies on write faults therefore **does not exist** from their point of
-view, and there are 20-plus call sites (IOSB completion, APC delivery, PEB/TEB
-construction in `kernel/ps/peb.c`, image mapping itself at `section.c:377`, …).
+`MiCopyToUserRange` (`kernel/mm/virtual.c:738`), `MiCopyToUserRangeChecked`
+(`virtual.c:812`) and `MiTranslateUserPage` walk the page tables and `memcpy` **straight
+into the physical frame**. They never let the CPU evaluate the PTE's writable bit, so a
+scheme that relies on write faults does not exist from their point of view — and there are
+20-plus call sites (IOSB completion, APC delivery, PEB/TEB construction in
+`kernel/ps/peb.c`, image mapping itself at `section.c:393`, …).
 
-Two concrete, checkable breakages:
-
-```c
-/* kernel/mm/virtual.c:693 — NtWriteVirtualMemory's engine */
-if (frame == 0 || !present || !writable) { break; }   /* a COW page stops the copy */
-```
-`NtWriteVirtualMemory` into a writecopy page would report a **short write**. Real NT
-faults, copies, and completes.
+**CUI-7 already solved this shape**, for write-watch rather than for COW, and solved it the
+way Article 11 requires — one authority, consulted by everyone:
 
 ```c
-/* kernel/syscall/uaccess.c:44 — KiProbeRange */
-if (... || (forWrite && !writable)) { return STATUS_ACCESS_VIOLATION; }
+/* kernel/mm/virtual.c:872 */
+/* Space-parameterized so the kernel's own user-memory writers (probe retry,
+ * the cross-process checked copy) resolve through the SAME arm the ring-3
+ * fault takes (Art. 11). */
+BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
 ```
-A syscall whose **output buffer** lies in a writecopy page would fail with
-`STATUS_ACCESS_VIOLATION`. Real NT succeeds.
 
-**Required shape (Article 11, one authority):** exactly one function decides "resolve
-this VA for write, performing the copy if the page is COW, and return a writable frame."
-The fault path and the `uaccess`/copy paths both go through it. Nothing else may
-interpret the writable bit. An implementation that fixes only `MiHandleUserFault` is
-wrong, and this is the single most likely thing to be missed.
+Its three consumers are already wired:
 
-### B. The PTE's writable bit is an insufficient record
+- the ring-3 fault (`kernel/mm/fault.c:36`);
+- `MiCopyToUserRangeChecked` — `NtWriteVirtualMemory`'s engine — which on a non-writable
+  page calls the resolver and re-translates instead of reporting a short write
+  (`virtual.c:830`);
+- `KiProbeRange`, where the comment states the principle exactly: *"the probe IS the
+  kernel's write intent, and it is the single chokepoint every service that writes a user
+  buffer passes (Art. 11)"* (`kernel/syscall/uaccess.c:63-70`).
+
+**So COW's job here is to add an arm to an existing authority, not to invent one** —
+extend, never fork. That is a materially smaller and much better-understood task than this
+document originally described, and it removes what was its single most likely omission
+(fixing only the fault handler). What remains is genuine but narrow: the resolver's write-watch
+arm *marks and opens the gate*, while a COW arm must *copy and re-point*, and the two must
+compose on a page that is both watched and writecopy.
+
+### B. The PTE's writable bit is an insufficient record — with precedent for the fix
 
 `PAGE_READONLY` image pages and `PAGE_WRITECOPY` image pages are **both non-writable in
 the PTE**. If the COW decision is taken by inspecting hardware state, a write to a
 genuinely read-only page silently copies and succeeds — **a real access violation
-disappears**, which is a boundary-semantics regression, not an internal one. The
-writecopy attribute must live in the VAD / section bookkeeping, and the PTE is only a
-trigger. (Conversely: never satisfy a writecopy page by just setting the writable bit —
-that corrupts the shared master for everyone.)
+disappears**, which is a boundary-semantics regression, not an internal one. (Conversely:
+never satisfy a writecopy page by just setting the writable bit — that corrupts the shared
+master for everyone.)
+
+Again CUI-7 set the pattern: `MiResolveWriteWatchFault` consults `vad->pageProtect[index]`
+and derives the hardware bits with `MiProtectToPteBits` (`virtual.c:94`), refusing when the
+recorded protection is not writable — *"a real protection violation, or already open"*. The
+per-page protection array is the authority; the PTE is a trigger and a cache of it. Follow
+that, and hazard B is closed by construction rather than by care.
 
 ### C. NX / execute bits must survive the copy
 
@@ -193,7 +205,7 @@ after the fact.
 A COW fault that cannot allocate a frame must leave **no** intermediate state — in
 particular it must never have made the master writable. Note that today's handler
 deliberately warns and continues when a guard-page commit fails
-(`kernel/mm/fault.c:69`, "Out of frames mid-growth: the touched page itself is usable,
+(`kernel/mm/fault.c:78`, "Out of frames mid-growth: the touched page itself is usable,
 so resume"). **That policy is wrong for COW**: continuing means the write lands in the
 master. Decide the status now — NT raises `STATUS_IN_PAGE_ERROR` — and assert the
 absence of the half-state.
@@ -213,12 +225,16 @@ absence of the half-state.
   each point, who frees it when the last matching view unmaps, and what happens if the
   owning process dies at the earliest legal moment (including mid-fault).
 
-### G. Guard pages × writecopy — fault classification becomes three-valued
+### G. Guard pages × writecopy — one more arm, and the order is already established
 
-Today `MiHandleUserFault` is a two-valued decision: guard page, or access violation. A
-page can be both `PAGE_GUARD` and writecopy. NT consumes the guard first; the *next*
-write then triggers the copy. Fix the order, and `ASSERT` it — a three-way classification
-silently collapsing to two is hazard B in another costume.
+`MiHandleUserFault` is now a two-armed decision (write-watch, then guard, then access
+violation), and CUI-7 already had to reason about the ordering — the write-watch arm is
+placed first with the justification that *"the guard arm only ever sees not-present
+pages"*. COW adds a third arm and inherits the same obligation: a page can be both
+`PAGE_GUARD` and writecopy, NT consumes the guard first, and the *next* write triggers the
+copy. Note the resolver already declines guard pages explicitly (`(protect & PAGE_GUARD)
+!= 0` → FALSE), so the precedent to copy is right there. Fix the order and `ASSERT` it — a
+classification silently collapsing arms is hazard B in another costume.
 
 ### H. The missing `invlpg`
 
@@ -265,26 +281,27 @@ The good news is that most of this is directly testable, at three levels.
 | Boundary, oracle-pinned (Art. 5) | `PAGE_WRITECOPY` write leaves the file unchanged; another mapper does not observe it; the private page survives the other mapper's unmap; a write to a `PAGE_READONLY` image page is still an access violation; `NtQueryVirtualMemory`'s Protect transition and region split (hazard D) |
 | Existing regression net | `tests/ntapi/sem_mm/` — `section_stress.c`, `image_section.c`, `mapped_same.c`, `guard_pages.c`, `stack_growth.c`, and `file_coherence.c` (the M6 mapped-view/`ReadFile` stress) — plus the SEH test already guard every dangerous neighbour. They are oracle-green today, so a COW regression in any of them is immediately attributable. |
 
-### The worst hazard has no test in that table
+### The hazard-A tests already exist — as write-watch's
 
-Hazard A is named as the structural trap and then nothing above convicts it. The existing
-suite cannot: `sem_mm/file_coherence` reads into an ordinary heap buffer, so **no test in
-the tree has the shape "the kernel writes into a page the CPU would have write-protected"**.
-The sweep below catches the resulting state, but only after the fact and only in a debug
-build. Three cases, all oracle-pinnable, all of which fail today for reasons already
-located in the code:
+The previous revision of this document said no test in the tree had the shape "the kernel
+writes into a page the CPU would have write-protected". **CUI-7 added exactly that**, for
+write-watch. `tests/ntapi/sem_mm/write_watch.c` states it in its own header:
 
-1. **`NtWriteVirtualMemory` into a writecopy image page** must copy and complete.
-   `MiCopyToUserRangeChecked` (`virtual.c:693`) breaks at `!writable` and would report a
-   short write.
-2. **A syscall whose output buffer lies in a writecopy page** — `NtReadFile` reading into a
-   DLL's data page, or any `NtQuery*` writing there — must succeed. `KiProbeRange`
-   (`uaccess.c:44`) returns `STATUS_ACCESS_VIOLATION`.
-3. **The same two against a genuinely `PAGE_READONLY` page must still fail** — hazard B's
-   pin, and the reason 1 and 2 cannot be fixed by loosening the check.
+> *KERNEL-side writes mark too: `NtWriteVirtualMemory` into one's own watched page, and a
+> syscall out-buffer (`NtQueryVirtualMemory`) placed [in one].*
 
-Write these before the resolver, not after: they are the specification of what "one
-authority for resolving a write" has to mean.
+So the two cases are already written, oracle-green, and pointed at the same resolver COW
+will extend. They are the **template**, not work to invent:
+
+1. `NtWriteVirtualMemory` into a writecopy image page must copy and complete.
+2. A syscall whose output buffer lies in a writecopy page must succeed.
+3. **The neighbour that write-watch does not have to pin**: both must still *fail* on a
+   genuinely `PAGE_READONLY` page. That is hazard B's boundary case and it is the one new
+   test of the three — write-watch never faces it, because a watched page's recorded
+   protection is writable by definition.
+
+Write them before the resolver arm, not after: they are the specification of what the new
+arm must mean.
 
 ### Which tests gate which commit
 
@@ -294,8 +311,9 @@ has to say what "done" means there or the option is not real:
 - **Step 1** is gated by the sharing metric and the sweep below, plus the whole existing
   regression net staying green. No `PAGE_WRITECOPY` behaviour changes, so no new boundary
   pin is due.
-- **Step 2** adds the three hazard-A cases, the `NtQueryVirtualMemory` protection
-  transition (hazard D), and the `invlpg` counter.
+- **Step 2** adds the three hazard-A cases (two of them cloned from
+  `sem_mm/write_watch.c`), the `NtQueryVirtualMemory` protection transition (hazard D),
+  and the `invlpg` counter.
 - **Hazard E (failure atomicity) is only reachable by fault injection** — a knob that fails
   the frame allocation inside the COW fault. Without it, "never leaves the master writable
   in the out-of-frames path" is an assertion nobody has executed.
@@ -347,11 +365,17 @@ is defensible for the others and **weakest here**, for two reasons:
    pinnable by a differential test. An SMP bug is not (`docs/18` §3).
 2. **The hazards are enumerable** — §6 is a finite checklist, not an invariant that has
    to be invented across 27 kloc. The danger is omission, not conception.
+3. **CUI-7 left a worked example of the hardest part.** Write-watch is the same problem in
+   miniature: a page whose hardware writability is a lie, resolved through one authority
+   that the fault path, the checked copy and the probe all consult, pinned by a test that
+   includes the kernel-side writes. Point the task at `MiResolveWriteWatchFault` and
+   `sem_mm/write_watch.c` before it writes a line.
 
-The failure mode to plan around is therefore *dropping a listed item*, and the three
-that get dropped are: **A** (fixing only the fault handler), **H** (the flush), and **F**
-(master ownership / base in the key). Name them in the task, and require the §8 sweep and
-counters as deliverables rather than as follow-up.
+The failure mode to plan around is therefore *dropping a listed item*, and the two that
+still get dropped are **H** (the flush) and **F** (master ownership / base in the key) —
+hazard A's omission is now much less likely, because the authority exists and not using it
+is a visible choice rather than an oversight. Require the §8 sweep and counters as
+deliverables rather than as follow-up.
 
 `docs/12-llm-workflow.md` marks `mm/` as a dangerous region. That still holds — it argues
 for the commit split below, not against the work.
@@ -368,9 +392,9 @@ This work is milestone **CUI-9** (`docs/02`), after CUI-8 (`docs/19`) and before
    the `NtQueryVirtualMemory` shape from §8.
 4. **Shared read-only master** keyed on `(FCB, base)` — no fault-path change — plus the
    sharing metric and the §8 sweep. Most of the win; a legitimate stopping point.
-5. **The COW fault**: the single write-resolution authority (hazard A), three-valued
-   classification (G), NX preservation (C), failure atomicity (E), `invlpg` + its counter
-   (H), KASAN shadow (I).
+5. **The COW arm on `MiResolveWriteWatchFault`'s authority** (hazard A — extend, never
+   fork), the added fault-classification arm and its ordering (G), NX preservation (C),
+   failure atomicity (E), `invlpg` + its counter (H), KASAN shadow (I).
 6. **Optionally** re-examine file-backed `PAGE_WRITECOPY` — only if a baked consumer
    convicts it, and only with the mapped-view coherence stress test as the gate.
 
