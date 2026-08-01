@@ -664,6 +664,16 @@ RESTRICTED := $(BUILD)/modules/restricted.exe
 $(RESTRICTED): tests/cui/restricted.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $< -ladvapi32
+# CUI-7 acceptance: the reg save/load round-trip driver (advapi32) and the
+# VirtualAlloc2/write-watch app. Same third-party CUI shape as above.
+REGTOOL := $(BUILD)/modules/regtool.exe
+$(REGTOOL): tests/cui/regtool.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $< -ladvapi32
+WATCHAPP := $(BUILD)/modules/watchapp.exe
+$(WATCHAPP): tests/cui/watchapp.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
 
 # The M9 interactive-console image (tests/run/run.sh console): the standard
 # image plus m9_echo.exe, whose presence makes the boot block on console
@@ -679,7 +689,7 @@ WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
         $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) $(TASKLIST) $(TASKKILL) \
-        $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) \
+        $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) $(REGTOOL) $(WATCHAPP) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
         arch/x86_64/limine.conf
@@ -695,6 +705,8 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 	    win:$(TIMEIT)=timeit.exe \
 	    win:$(REDIRCHAIN)=redirchain.exe \
 	    win:$(RESTRICTED)=restricted.exe \
+	    win:$(REGTOOL)=regtool.exe \
+	    win:$(WATCHAPP)=watchapp.exe \
 	    win:$(TASKLIST)=windows/system32/tasklist.exe \
 	    win:$(TASKKILL)=windows/system32/taskkill.exe
 
