@@ -432,7 +432,7 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
 
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
     PMI_VAD vad = MiCreateMappedVad(space, base, size, PAGE_EXECUTE_WRITECOPY, MEM_IMAGE, section,
-                                    TRUE /* a private full copy */);
+                                    TRUE /* a private full copy */, 0);
     if (vad == 0)
     {
         ObDereferenceObject(section);
@@ -565,7 +565,8 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
     }
 
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
-    PMI_VAD vad = MiCreateMappedVad(space, base, size, protect, MEM_MAPPED, section, privateCopy);
+    PMI_VAD vad = MiCreateMappedVad(space, base, size, protect, MEM_MAPPED, section, privateCopy,
+                                    offset);
     if (vad == 0)
     {
         ObDereferenceObject(section);

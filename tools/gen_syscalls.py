@@ -250,6 +250,10 @@ IMPLEMENTED = [
     "NtUnmapViewOfSectionEx",
     "NtGetWriteWatch",
     "NtResetWriteWatch",
+    "NtFlushVirtualMemory",
+    "NtLockVirtualMemory",
+    "NtUnlockVirtualMemory",
+    "NtSetInformationVirtualMemory",
 ]
 
 

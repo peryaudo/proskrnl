@@ -441,6 +441,34 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
     return status;
 }
 
+/* CUI-7 (NtFlushVirtualMemory): write one file's cached byte range through
+ * to the device — the range form of the IopFlushBuffers writeback above.
+ * Declared at its Mm call site (kernel/mm/virtual.c), the same seam
+ * direction as IopBuildSectionBacking. */
+NTSTATUS IoWritebackSectionRange(PVOID fileObjectBody, uint64_t offset, uint64_t length)
+{
+    PFILE_OBJECT file = fileObjectBody;
+    if (file->device->ops->GetCache == 0 || file->device->ops->WritebackRange == 0)
+    {
+        return STATUS_SUCCESS; /* a cache-less device has nothing to flush */
+    }
+    PMI_PAGE_CACHE cache;
+    NTSTATUS status = file->device->ops->GetCache(file, &cache);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (offset >= cache->fileSize)
+    {
+        return STATUS_SUCCESS; /* the view extends past EOF: nothing on disk */
+    }
+    if (length > cache->fileSize - offset)
+    {
+        length = cache->fileSize - offset;
+    }
+    return file->device->ops->WritebackRange(file, offset, length);
+}
+
 NTSTATUS NtFlushBuffersFile(HANDLE handle, IO_STATUS_BLOCK *iosb)
 {
     return IopFlushBuffers(handle, iosb);

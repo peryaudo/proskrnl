@@ -88,7 +88,7 @@ NTSTATUS PspMapSharedUserData(PEPROCESS process)
     /* A mapped VAD that does NOT own its frame: teardown unmaps the page but
      * never frees the single shared frame (mm/virtual.c ownsFrames == FALSE). */
     PMI_VAD vad = MiCreateMappedVad(space, PSP_SHARED_USER_DATA_VA, PAGE_SIZE, PAGE_READONLY,
-                                    MEM_MAPPED, 0, FALSE);
+                                    MEM_MAPPED, 0, FALSE, 0);
     if (vad == 0)
     {
         return STATUS_NO_MEMORY;
