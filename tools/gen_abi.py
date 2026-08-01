@@ -49,18 +49,23 @@ def gen_ntstatus(wine: Path) -> str:
 def extract_defines(src: str, source_name: str, names: list[str]) -> str:
     """Pull `#define NAME value` lines verbatim, in the order given (so a
     definition may reference an earlier one). Backslash-continued definitions
-    (e.g. winnt.h's FILE_GENERIC_READ) are joined. Values are never retyped."""
+    (e.g. winnt.h's FILE_GENERIC_READ) are joined; function-like macros
+    (e.g. winnt.h's LANGIDFROMLCID) keep their parameter list. Values are
+    never retyped."""
     lines = []
     for name in names:
         match = re.search(
-            r"^#define\s+" + re.escape(name) + r"\s+((?:[^\n]*\\\n)*[^\n]*?)\s*$",
+            r"^#define\s+"
+            + re.escape(name)
+            + r"(\([^)\n]*\))?\s+((?:[^\n]*\\\n)*[^\n]*?)\s*$",
             src,
             re.M,
         )
         if not match:
             sys.exit(f"gen_abi: #define {name} not found in {source_name}")
-        value = re.sub(r"\s*\\\n\s*", " ", match.group(1))
-        lines.append(f"#define {name} {value}")
+        params = match.group(1) or ""
+        value = re.sub(r"\s*\\\n\s*", " ", match.group(2))
+        lines.append(f"#define {name}{params} {value}")
     return "\n".join(lines)
 
 
@@ -124,6 +129,21 @@ def extract_plain_enum(src: str, name: str) -> str:
     if not match:
         sys.exit(f"gen_abi: enum {name} not found")
     return "enum " + name + "\n{" + match.group(1) + "};"
+
+
+def extract_anonymous_enum(src: str, typedef: str) -> str:
+    """Pull one tagless `typedef enum { ... } NAME;` body verbatim (the
+    winternl.h VIRTUAL_MEMORY_INFORMATION_CLASS shape). Anchored on the
+    typedef name so the search cannot start at an earlier unrelated
+    tagless enum (values are positional — never retyped)."""
+    match = re.search(
+        r"typedef enum\s*\{([^{}]*?)\}\s*(" + re.escape(typedef) + r"[^;{}]*)\s*;",
+        src,
+        re.S,
+    )
+    if not match:
+        sys.exit(f"gen_abi: anonymous enum {typedef} not found")
+    return "typedef enum\n{" + match.group(1) + "} " + match.group(2).strip() + ";"
 
 
 def extract_prototypes(src: str, names: list[str]) -> str:
@@ -596,6 +616,18 @@ NTMMAPI_FUNCTIONS = [
     # CUI-4: cross-process memory access (toolhelp/debug-adjacent readers).
     "NtReadVirtualMemory",
     "NtWriteVirtualMemory",
+    # CUI-7: the VirtualAlloc2/MapViewOfFile3 *Ex family, write-watch, and
+    # the flush/lock/prefetch furniture kernelbase routes straight through.
+    "NtAllocateVirtualMemoryEx",
+    "NtCreateSectionEx",
+    "NtMapViewOfSectionEx",
+    "NtUnmapViewOfSectionEx",
+    "NtFlushVirtualMemory",
+    "NtLockVirtualMemory",
+    "NtUnlockVirtualMemory",
+    "NtGetWriteWatch",
+    "NtResetWriteWatch",
+    "NtSetInformationVirtualMemory",
 ]
 
 
@@ -627,6 +659,16 @@ def gen_ntmmapi(wine: Path) -> str:
             "MEM_PRIVATE",
             "MEM_MAPPED",
             "MEM_WRITE_WATCH",
+            # CUI-7: the *Ex allocation/unmap flag space (placeholders stay
+            # unbuilt but the kernel must recognize the bits to refuse them)
+            # and the write-watch scan flag.
+            "MEM_REPLACE_PLACEHOLDER",
+            "MEM_RESERVE_PLACEHOLDER",
+            "MEM_COALESCE_PLACEHOLDERS",
+            "MEM_PRESERVE_PLACEHOLDER",
+            "MEM_UNMAP_WITH_TRANSIENT_BOOST",
+            "WRITE_WATCH_FLAG_RESET",
+            "MEM_EXTENDED_PARAMETER_TYPE_BITS",
         ],
     )
 
@@ -658,6 +700,28 @@ def gen_ntmmapi(wine: Path) -> str:
     info_class = extract_enum(
         winternl, "_MEMORY_INFORMATION_CLASS", "MEMORY_INFORMATION_CLASS"
     )
+    # CUI-7: the extended-parameter contract the *Ex family carries
+    # (winnt.h), and the NtSetInformationVirtualMemory shapes (winternl.h).
+    # MEM_EXTENDED_PARAMETER's DECLSPEC_ALIGN(8) is dropped with the tag
+    # (abi/ntmmapi.h only includes ntdef.h); the DWORD64 members make the
+    # struct naturally 8-aligned, which the asserts below pin.
+    ext_param_structs = "\n\n".join(
+        [
+            extract_struct(
+                winnt, "_MEM_ADDRESS_REQUIREMENTS", "MEM_ADDRESS_REQUIREMENTS"
+            ),
+            extract_enum(
+                winnt, "MEM_EXTENDED_PARAMETER_TYPE", "MEM_EXTENDED_PARAMETER_TYPE"
+            ),
+            extract_struct(
+                winnt,
+                r"DECLSPEC_ALIGN\(8\) MEM_EXTENDED_PARAMETER",
+                "MEM_EXTENDED_PARAMETER",
+            ),
+            extract_struct(winternl, "_MEMORY_RANGE_ENTRY", "MEMORY_RANGE_ENTRY"),
+            extract_anonymous_enum(winternl, "VIRTUAL_MEMORY_INFORMATION_CLASS"),
+        ]
+    )
     section_enums = "\n\n".join(
         extract_enum(winternl, tag, typedef)
         for tag, typedef in [
@@ -685,6 +749,16 @@ _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Protect) == 36, "MEMORY_BASIC_
 _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INFORMATION x64 layout");
 """
 
+    ext_param_asserts = """\
+_Static_assert(sizeof(MEM_ADDRESS_REQUIREMENTS) == 24, "MEM_ADDRESS_REQUIREMENTS x64 layout");
+_Static_assert(offsetof(MEM_ADDRESS_REQUIREMENTS, Alignment) == 16,
+               "MEM_ADDRESS_REQUIREMENTS x64 layout");
+_Static_assert(sizeof(MEM_EXTENDED_PARAMETER) == 16, "MEM_EXTENDED_PARAMETER x64 layout");
+_Static_assert(_Alignof(MEM_EXTENDED_PARAMETER) == 8,
+               "MEM_EXTENDED_PARAMETER x64 layout (DECLSPEC_ALIGN(8) in the Wine header)");
+_Static_assert(sizeof(MEMORY_RANGE_ENTRY) == 16, "MEMORY_RANGE_ENTRY x64 layout");
+"""
+
     section_asserts = """\
 _Static_assert(sizeof(SECTION_BASIC_INFORMATION) == 24, "SECTION_BASIC_INFORMATION x64 layout");
 _Static_assert(offsetof(SECTION_BASIC_INFORMATION, Attributes) == 8, "SECTION_BASIC_INFORMATION x64 layout");
@@ -703,7 +777,8 @@ _Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMA
         )
         + "#ifndef PROSKRNL_ABI_NTMMAPI_H\n"
         + "#define PROSKRNL_ABI_NTMMAPI_H\n\n"
-        + '#include "abi/ntdef.h"\n\n'
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* IO_STATUS_BLOCK in NtFlushVirtualMemory (CUI-7) */\n\n'
         + "/* Allocation/protection flags, extracted from wine/include/winnt.h. */\n"
         + mem_flags
         + "\n\n/* Section allocation attributes + access rights (M5), extracted from\n"
@@ -716,7 +791,14 @@ _Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMA
         + mbi_asserts
         + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
         + info_class
-        + "\n\n/* Section enums/structs (M5), extracted verbatim from\n"
+        + "\n\n/* CUI-7: the *Ex extended-parameter contract, extracted verbatim from\n"
+        + " * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold\n"
+        + " * (wine/include/basetsd.h: unsigned 64-bit). */\n"
+        + "typedef ULONGLONG DWORD64;\n\n"
+        + ext_param_structs
+        + "\n\n"
+        + ext_param_asserts
+        + "\n/* Section enums/structs (M5), extracted verbatim from\n"
         + " * wine/include/winternl.h; static_asserts pin the x64 layout. */\n"
         + section_enums
         + "\n\n"
@@ -1720,6 +1802,16 @@ NTPSAPI_FUNCTIONS = [
     "NtFlushProcessWriteBuffers",
     "NtGetCurrentProcessorNumber",
     "NtSetThreadExecutionState",
+    # CUI-7: the locale/system furniture (ntdll locale.c + kernelbase
+    # SetSystemTime/SetSystemTimeAdjustment; NtShutdownSystem completes the
+    # buildable id surface).
+    "NtQueryDefaultUILanguage",
+    "NtQueryInstallUILanguage",
+    "NtSetDefaultUILanguage",
+    "NtSetDefaultLocale",
+    "NtSetSystemTime",
+    "NtSetSystemInformation",
+    "NtShutdownSystem",
 ]
 
 
@@ -2055,6 +2147,18 @@ def gen_ntpsapi(wine: Path) -> str:
     )
     # CUI-1: SYSTEM_CPU_INFORMATION.ProcessorArchitecture answer (winnt.h).
     arch_defines = extract_defines(winnt, "winnt.h", ["PROCESSOR_ARCHITECTURE_AMD64"])
+    # CUI-7: the shutdown action enum and the time-adjustment shapes
+    # (winternl.h), plus the LCID→LANGID projection macro (winnt.h) the
+    # install-UI-language answer is defined by.
+    shutdown_enum = extract_enum(winternl, "_SHUTDOWN_ACTION", "SHUTDOWN_ACTION")
+    time_adjustment = (
+        extract_struct(winternl, "_SYSTEM_TIME_ADJUSTMENT", "SYSTEM_TIME_ADJUSTMENT")
+        + "\n\n"
+        + extract_struct(
+            winternl, "_SYSTEM_TIME_ADJUSTMENT_QUERY", "SYSTEM_TIME_ADJUSTMENT_QUERY"
+        )
+    )
+    langid_defines = extract_defines(winnt, "winnt.h", ["LANGIDFROMLCID"])
     kcontinue = (
         extract_enum(winternl, "_KCONTINUE_TYPE", "KCONTINUE_TYPE")
         + "\n\n"
@@ -2099,6 +2203,8 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + '#include "abi/ntcontext.h" /* CONTEXT/EXCEPTION_RECORD in prototypes */\n\n'
         + "/* Win32 alias scaffold used by extracted prototypes. */\n"
         + "typedef ULONG LCID, *PLCID;\n"
+        + "/* winnt.h: `typedef WORD LANGID` (WORD is USHORT in abi/ntdef.h). */\n"
+        + "typedef USHORT LANGID, *PLANGID;\n"
         + "/* winternl.h: `typedef unsigned short RTL_ATOM` (the atom handle). */\n"
         + "typedef unsigned short RTL_ATOM, *PRTL_ATOM;\n\n"
         + "/* The byte-exact bodies live in abi/ntpebteb.h (same tags); these\n"
@@ -2131,7 +2237,20 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + ps_attribute_defines
         + "\n\n"
         + arch_defines
-        + "\n\n/* CUI-3: the job-object contract (services.exe), extracted verbatim\n"
+        + "\n\n/* CUI-7: shutdown actions + time adjustment, extracted verbatim from\n"
+        + " * wine/include/{winternl.h,winnt.h}; asserts pin the x64 layout. */\n"
+        + shutdown_enum
+        + "\n\n"
+        + time_adjustment
+        + "\n"
+        + langid_defines
+        + "\n_Static_assert(sizeof(SYSTEM_TIME_ADJUSTMENT) == 8, "
+        + '"SYSTEM_TIME_ADJUSTMENT x64 layout");\n'
+        + "_Static_assert(sizeof(SYSTEM_TIME_ADJUSTMENT_QUERY) == 12, "
+        + '"SYSTEM_TIME_ADJUSTMENT_QUERY x64 layout");\n'
+        + "_Static_assert(offsetof(SYSTEM_TIME_ADJUSTMENT_QUERY, TimeAdjustmentDisabled) == 8, "
+        + '"SYSTEM_TIME_ADJUSTMENT_QUERY x64 layout");\n'
+        + "\n/* CUI-3: the job-object contract (services.exe), extracted verbatim\n"
         + " * from wine/include/winnt.h. */\n"
         + job_enum
         + "\n\n"
@@ -2192,6 +2311,20 @@ NTREGAPI_FUNCTIONS = [
     "NtEnumerateValueKey",
     "NtQueryKey",
     "NtFlushKey",
+    # CUI-7 (Cm-2): hive attach/save, rename, change notification, and the
+    # multi-value/set-information forms.
+    "NtLoadKey",
+    "NtLoadKey2",
+    "NtLoadKeyEx",
+    "NtUnloadKey",
+    "NtSaveKey",
+    "NtRestoreKey",
+    "NtReplaceKey",
+    "NtRenameKey",
+    "NtNotifyChangeKey",
+    "NtNotifyChangeMultipleKeys",
+    "NtSetInformationKey",
+    "NtQueryMultipleValueKey",
 ]
 
 
@@ -2231,6 +2364,12 @@ def gen_ntregapi(wine: Path) -> str:
             "REG_OPTION_CREATE_LINK",
             "REG_CREATED_NEW_KEY",
             "REG_OPENED_EXISTING_KEY",
+            # CUI-7: the NtNotifyChangeKey filter bits.
+            "REG_NOTIFY_CHANGE_NAME",
+            "REG_NOTIFY_CHANGE_ATTRIBUTES",
+            "REG_NOTIFY_CHANGE_LAST_SET",
+            "REG_NOTIFY_CHANGE_SECURITY",
+            "REG_NOTIFY_THREAD_AGNOSTIC",
         ],
     )
     info_class = (
@@ -2257,6 +2396,8 @@ def gen_ntregapi(wine: Path) -> str:
                 "_KEY_VALUE_PARTIAL_INFORMATION_ALIGN64",
                 "KEY_VALUE_PARTIAL_INFORMATION_ALIGN64",
             ),
+            # CUI-7: the NtQueryMultipleValueKey entry record.
+            ("_KEY_MULTIPLE_VALUE_INFORMATION", "KEY_MULTIPLE_VALUE_INFORMATION"),
         ]
     )
     prototypes = extract_prototypes(winternl, NTREGAPI_FUNCTIONS)
@@ -2267,7 +2408,9 @@ def gen_ntregapi(wine: Path) -> str:
         )
         + "#ifndef PROSKRNL_ABI_NTREGAPI_H\n"
         + "#define PROSKRNL_ABI_NTREGAPI_H\n\n"
-        + '#include "abi/ntdef.h"\n\n'
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* PIO_APC_ROUTINE/IO_STATUS_BLOCK in the\n'
+        + "                          * CUI-7 notify/load prototypes */\n\n"
         + "/* Key access rights + value types, extracted from wine/include/winnt.h. */\n"
         + key_rights
         + "\n\n/* Extracted verbatim from wine/include/winternl.h. */\n"
@@ -2295,6 +2438,10 @@ _Static_assert(offsetof(KEY_NAME_INFORMATION, Name) == 4, "KEY_NAME_INFORMATION 
 _Static_assert(sizeof(KEY_CACHED_INFORMATION) == 40, "KEY_CACHED_INFORMATION x64 layout");
 _Static_assert(offsetof(KEY_VALUE_PARTIAL_INFORMATION_ALIGN64, Data) == 8,
                "KEY_VALUE_PARTIAL_INFORMATION_ALIGN64 x64 layout");
+_Static_assert(sizeof(KEY_MULTIPLE_VALUE_INFORMATION) == 24,
+               "KEY_MULTIPLE_VALUE_INFORMATION x64 layout");
+_Static_assert(offsetof(KEY_MULTIPLE_VALUE_INFORMATION, DataLength) == 8,
+               "KEY_MULTIPLE_VALUE_INFORMATION x64 layout");
 
 #endif /* PROSKRNL_ABI_NTREGAPI_H */
 """
