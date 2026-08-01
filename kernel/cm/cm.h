@@ -31,6 +31,7 @@ typedef struct CMP_KEY_NODE
     LIST_ENTRY siblingEntry;     /* in parent->subkeyListHead */
     LIST_ENTRY subkeyListHead;   /* CMP_KEY_NODE.siblingEntry */
     LIST_ENTRY valueListHead;    /* CMP_VALUE.listEntry */
+    LIST_ENTRY notifyListHead;   /* CMP_NOTIFY.entry (notify.c) */
     ULONG subkeyCount;
     ULONG valueCount;
     LARGE_INTEGER lastWriteTime;
@@ -56,6 +57,24 @@ typedef struct CM_KEY_BODY
 {
     PCMP_KEY_NODE node;
 } CM_KEY_BODY, *PCM_KEY_BODY;
+
+/* One change-notification record: wineserver's `struct notify`, keyed by the
+ * arming open (one CM_KEY_BODY per open ≈ the server's (process, hkey) key;
+ * a NtDuplicateHandle'd key handle shares its body and therefore its record
+ * — docs/03 "CUI-7" notes). Lives on the WATCHED node's notifyListHead; the
+ * body pointer is an identity for matching only, never dereferenced. The
+ * record can never outlive its body: it is freed when the body's last handle
+ * closes (CmpCloseKeyBody) and the body's node reference keeps the node
+ * alive until then. */
+typedef struct CMP_NOTIFY
+{
+    LIST_ENTRY entry;        /* on CMP_KEY_NODE.notifyListHead */
+    const CM_KEY_BODY *body; /* identity of the arming open */
+    BOOLEAN subtree;         /* fixed at the FIRST arm (server semantics) */
+    ULONG filter;            /* fixed at the FIRST arm (server semantics) */
+    ULONG eventCount;
+    PVOID *events; /* referenced event bodies, signalled together */
+} CMP_NOTIFY, *PCMP_NOTIFY;
 
 extern OBJECT_TYPE CmpKeyType;
 
@@ -93,6 +112,25 @@ PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name);
 /* Set/replace value `name` on `node` from a kernel-side buffer. */
 NTSTATUS CmpSetValue(PCMP_KEY_NODE node, const UNICODE_STRING *name, ULONG type, const void *data,
                      ULONG dataLength);
+
+/* Resolve a key handle for one operation: type check, access check, and the
+ * stale-handle STATUS_KEY_DELETED rule (registry.c; wine server/registry.c
+ * get_hkey_obj). The caller dereferences *bodyOut on success. */
+NTSTATUS CmpReferenceKey(HANDLE handle, ACCESS_MASK desiredAccess, BOOLEAN allowDeleted,
+                         PCM_KEY_BODY *bodyOut);
+
+/* --- notify.c ---------------------------------------------------------------- */
+
+/* Fire the change notifications a mutation of `node` owes: every
+ * matching-filter record on the node itself, then subtree records up the
+ * ancestor chain (wineserver touch_key/check_notify). THE single authority —
+ * every mutation site calls this, none signals an event itself. */
+void CmpNotifyChange(PCMP_KEY_NODE node, ULONG change);
+
+/* CmpKeyType.closeProcedure: the arming open's last handle closed — fire the
+ * body's accumulated events and free its record (wineserver
+ * key_close_handle). */
+void CmpCloseKeyBody(PVOID bodyPointer);
 
 /* --- hive.c ----------------------------------------------------------------- */
 

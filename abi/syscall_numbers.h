@@ -185,6 +185,8 @@
 #define NTSYS_NtAdjustGroupsToken 0x0063
 #define NTSYS_NtImpersonateAnonymousToken 0x00a3
 #define NTSYS_NtRenameKey 0x00db
+#define NTSYS_NtNotifyChangeKey 0x00b2
+#define NTSYS_NtNotifyChangeMultipleKeys 0x00b3
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

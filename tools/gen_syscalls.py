@@ -233,6 +233,8 @@ IMPLEMENTED = [
     # CUI-7 Cm-2/Mm-2/system furniture (docs/02); each row's kernel service
     # lands in its own commit.
     "NtRenameKey",
+    "NtNotifyChangeKey",
+    "NtNotifyChangeMultipleKeys",
 ]
 
 
