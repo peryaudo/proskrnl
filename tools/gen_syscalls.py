@@ -240,6 +240,10 @@ IMPLEMENTED = [
     "NtLoadKey2",
     "NtLoadKeyEx",
     "NtUnloadKey",
+    "NtRestoreKey",
+    "NtReplaceKey",
+    "NtSetInformationKey",
+    "NtQueryMultipleValueKey",
 ]
 
 

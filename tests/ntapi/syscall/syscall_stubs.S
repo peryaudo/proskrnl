@@ -2248,6 +2248,50 @@ NtUnloadKey:
     syscall
     ret
 
+    .global NtRestoreKey
+NtRestoreKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xdf, %eax
+    syscall
+    ret
+
+    .global NtReplaceKey
+NtReplaceKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xdc, %eax
+    syscall
+    ret
+
+    .global NtSetInformationKey
+NtSetInformationKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xeb, %eax
+    syscall
+    ret
+
+    .global NtQueryMultipleValueKey
+NtQueryMultipleValueKey:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xca, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
