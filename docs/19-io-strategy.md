@@ -192,18 +192,52 @@ implementing.
 
 ## 8. Testability
 
-**Determinism survives, because we choose the drain point.** Draining only at explicit
-points preserves today's single-interleaving behaviour exactly; a knob that varies drain
-aggressiveness gives a stress leg without making the default runs nondeterministic.
-Neither the differential fuzzer's minimization nor the GUI-5 consistency-sweep deadlock
-detector loses its premise (contrast `docs/18` §8, where the premise must be bought back).
+### 8.1 Determinism survives, because we choose the drain point
 
-The regression net already exists and is oracle-green: `tests/ntapi/sem_file/read_write.c`,
-`sem_file/apc_completion.c`, `sem_pipe/async_listen.c`, `sem_pipe/cancel_sync.c`,
-`sem_file/notify_change.c`, and the `sem_mm/file_coherence` mapped-view/read-write stress —
-the last one being the direct guard on §6's re-entrancy.
+Draining only at explicit points preserves today's single-interleaving behaviour exactly; a
+knob that varies drain aggressiveness gives a stress leg without making the default runs
+nondeterministic. Neither the differential fuzzer's minimization nor the GUI-5
+consistency-sweep deadlock detector loses its premise (contrast `docs/18` §8, where the
+premise must be bought back).
 
-### The win must be a verdict, not an inference
+That is a claim about the design, so **check it rather than assert it**: the existing run
+legs' serial verdicts must be unchanged, and the aggressiveness knob must default to off.
+A stress leg that leaks into the default runs takes the project's most valuable property
+with it.
+
+### 8.2 The regression net that already exists
+
+Oracle-green today, and every one of them is a guard on this work:
+`tests/ntapi/sem_file/read_write.c`, `sem_file/apc_completion.c`, `sem_pipe/async_listen.c`,
+`sem_pipe/cancel_sync.c`, `sem_file/notify_change.c`, `sem_mm/file_coherence`.
+
+**None of it convicts a re-entrancy bug**, which is the milestone's actual risk. Every one
+of these runs single-threaded — `docs/02` M6 says so of `file_coherence` explicitly — so
+they guard the semantics an in-flight operation must not break, not the in-flight state
+itself. §8.3 is what has to be built.
+
+### 8.3 Three tests this milestone has to add
+
+1. **The acceptance test — progress during I/O.** The property §4 exists for is that the
+   machine is no longer single-threaded while the disk is busy, and no test states it.
+   Thread A issues a large read; thread B must observably advance before A completes — a
+   counter, a delivered APC, a `^C` reaching a console read. Assert B advanced. This, not
+   the depth counter, is the milestone's acceptance: the counter measures the driver, this
+   measures the kernel.
+2. **A concurrent `file_coherence`.** The existing stress becomes multi-threaded against
+   one file: two threads interleaving mapped-view stores, `NtReadFile` and `NtWriteFile`
+   over the same FCB and the same page-cache page, with a transfer in flight. This is the
+   direct guard on §6, and it is the test the re-entrancy enumeration is written *for* —
+   each entry on that list should name the interleaving here that would catch it.
+3. **The fuzzer must learn that operations can be in flight.** Today
+   `tests/fuzz/interp.c:424` is explicit: *"Single-threaded and drained only at the explicit
+   `test_alert` op"* — so the differential instrument is blind to this entire milestone.
+   The op model needs issue-now/collect-later ops (and cancel interleaved with them) so a
+   divergence in pended-completion behaviour can be *minimized and pinned*. Under Article 6
+   this is not optional garnish: KASAN and asserts will name a re-entrancy suspect, and only
+   this can convict one.
+
+### 8.4 The win must be a verdict, not an inference
 
 An implementation that pends correctly but never actually overlaps — depth still 1, drain
 immediately after submit — **passes every semantic test above**, because it is
@@ -213,16 +247,30 @@ behaviourally today's kernel. Same failure shape as `docs/17` §8. Pin the win:
   workload that issues concurrent I/O;
 - and/or wall-clock of a two-thread read workload against a committed budget.
 
+### 8.5 The winetest spine
+
+`docs/02` makes every CUI milestone grow the winetest manifest by unparking pairs blocked
+on its surface. CUI-8 adds no `Nt*`, so the expected answer is **no unparks** — but that
+must be *recorded* rather than left implied, and it is worth re-checking the parked list
+once pending is real: a pair parked on overlapped-I/O behaviour rather than on a missing id
+would be invisible in today's list.
+
 ## 9. Build order
 
 1. **Pin the §7 decisions on the oracle** (Art. 5), before kernel code.
-2. **The re-entrancy enumeration** (§6) — its own artifact, from the 21 justifications.
-3. **virtio-blk per-request buffers + depth** (§5a), still submit-and-wait: no behaviour
+2. **The re-entrancy enumeration** (§6) — its own artifact, from the 21 justifications,
+   each entry naming the interleaving in §8.3's concurrent stress that would catch it.
+3. **The concurrent `file_coherence`** (§8.3) — written and green *before* anything can
+   re-enter, so it is a regression guard rather than a post-hoc check.
+4. **virtio-blk per-request buffers + depth** (§5a), still submit-and-wait: no behaviour
    change, purely structural. Own commit.
-4. **Drain point** (§5b) + the depth verdict (§8).
-5. **FS/Io park + `STATUS_PENDING`** (§5c) and the generalized ownership rule (§5d).
-6. **Widen cancellation** to the newly pended verbs; revisit the console-read gap only if
-   a consumer convicts it.
+5. **Drain point** (§5b) + the depth verdict (§8.4) + the determinism check (§8.1).
+6. **FS/Io park + `STATUS_PENDING`** (§5c) and the generalized ownership rule (§5d).
+7. **The progress-during-I/O acceptance test** (§8.3) — the milestone's actual verdict.
+8. **The fuzzer's in-flight op model** (§8.3), so a pended-completion divergence can be
+   convicted rather than merely suspected.
+9. **Widen cancellation** to the newly pended verbs; revisit the console-read gap only if
+   a consumer convicts it. Record the winetest answer (§8.5).
 
 ## 10. Relationship to the other two strategy documents
 
