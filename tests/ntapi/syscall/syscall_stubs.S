@@ -2468,6 +2468,26 @@ NtQueryInstallUILanguage:
     syscall
     ret
 
+    .global NtSetSystemTime
+NtSetSystemTime:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf4, %eax
+    syscall
+    ret
+
+    .global NtSetSystemInformation
+NtSetSystemInformation:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf3, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

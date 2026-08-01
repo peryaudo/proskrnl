@@ -258,6 +258,8 @@ IMPLEMENTED = [
     "NtQueryDefaultUILanguage",
     "NtSetDefaultUILanguage",
     "NtQueryInstallUILanguage",
+    "NtSetSystemTime",
+    "NtSetSystemInformation",
 ]
 
 

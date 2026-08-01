@@ -85,6 +85,20 @@ static void KiUpdateUserSharedDataTime(void)
     KiWriteKSystemTime(&usd->TickCount, tickMs);
     usd->TickCountLowDeprecated = (ULONG)tickMs;
 }
+/* CUI-7 (NtSetSystemTime): move the wall-clock base so base + uptime lands
+ * on `newTime`, and republish the shared page immediately. Armed absolute
+ * timers are NOT re-evaluated — their due points were fixed against the
+ * interrupt clock at arm time (KiComputeDueTime) and stand; NT re-signals
+ * them on a clock change, a recorded deviation with no baked consumer
+ * (docs/03 "CUI-7" notes). */
+void KeSetSystemTime(LONGLONG newTime)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    KiSystemTimeBase = (uint64_t)newTime - KiInterruptTime;
+    KiReleaseDispatcherLock(flags);
+    KiUpdateUserSharedDataTime();
+}
+
 
 void KiSeedUserSharedDataTime(void)
 {
