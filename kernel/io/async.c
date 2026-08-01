@@ -167,6 +167,43 @@ NTSTATUS NtCancelIoFileEx(HANDLE handle, PIO_STATUS_BLOCK targetIosb, PIO_STATUS
  * wraps every potentially-blocking device op (kernel/io/rw.c, ioctl.c) so a
  * canceller can find the op by thread; the user IOSB VA is the filter key
  * the pinned Wine's cancel_sync compares (never dereferenced here). */
+/* --- the completion-APC leg (one authority — io.h) ------------------------- */
+
+NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
+                                 PIO_STATUS_BLOCK iosb, PKAPC *apcOut)
+{
+    *apcOut = 0;
+    if (apcRoutine == 0 || ExGetPreviousMode() != UserMode)
+    {
+        return STATUS_SUCCESS;
+    }
+    PKAPC apc = MiAllocatePool(sizeof(KAPC));
+    if (apc == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
+    apc->normalContext = (ULONG_PTR)apcContext;
+    apc->systemArgument1 = (ULONG_PTR)iosb; /* the caller's very IOSB */
+    apc->systemArgument2 = 0;               /* the reserved argument */
+    *apcOut = apc;
+    return STATUS_SUCCESS;
+}
+
+void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc)
+{
+    if (apc == 0)
+    {
+        return;
+    }
+    if (issuer == 0 || issuer->terminating)
+    {
+        MiFreePool(apc); /* the dying issuer's next edge is the reaper */
+        return;
+    }
+    KiInsertQueueUserApc(issuer, apc);
+}
+
 void IopEnterSyncIo(void *userIosb)
 {
     PKTHREAD self = KeGetCurrentThread();

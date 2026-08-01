@@ -166,16 +166,32 @@ NTSTATUS IopPostCompletionPacket(PIO_COMPLETION port, ULONG_PTR key, ULONG_PTR v
 
 /* --- pending requests (kernel/io/async.c; CUI-3) --------------------------- */
 
-/* One operation that returned STATUS_PENDING (an npfs listen on an
- * asynchronous handle). Everything a later completer — running in ANY
- * process context — needs was resolved in the issuer's context: the event
- * BODY (a handle would be meaningless elsewhere) and the owning process
- * (whose address space holds the IOSB). Ownership (G11): the parking
- * filesystem holds the only pointer and always completes the request —
- * client attach, cancel, or the owning handle's cleanup, whichever comes
- * first; handles close before the owner's address space dies
- * (PspExitCurrentProcess vs. PspDeleteProcess), so the IOSB write cannot
- * hit a torn-down space. */
+/* THE DEPARTMENT'S CROSS-CONTEXT OWNERSHIP CONVENTION (docs/19 §5d, G11 —
+ * stated once here, inherited by every in-flight verb rather than
+ * re-derived). An operation that outlives its syscall, whoever completes
+ * it and in whatever context:
+ *
+ *  1. Everything context-dependent is resolved in the ISSUER's context at
+ *     issue time: object BODIES not handles (the event), the owning
+ *     process (whose address space holds the IOSB/buffer), the issuer
+ *     thread — referenced if it will be dereferenced later (the dir-watch
+ *     issuerObject), compared-only otherwise (the cancel scoping here).
+ *  2. Exactly one party holds the request and ALWAYS completes it — every
+ *     exit (success, cancel, handle cleanup, thread teardown) reaches a
+ *     completer; none abandons. Handles close before the owner's address
+ *     space dies (PspExitCurrentProcess vs. PspDeleteProcess), so the
+ *     IOSB write cannot hit a torn-down space; cross-context user writes
+ *     go through the CHECKED copies, never a faulting path.
+ *  3. When the holder is a caller FRAME rather than a heap record (the
+ *     CUI-8 data park: VIO_BLK_REQUEST / fs FAT_IO_BATCH), the frame
+ *     never unwinds past an in-flight request — a refused park polls the
+ *     request home first (docs/20 R4).
+ *
+ * The instances: this struct (npfs's parked listens), IOP_DIR_WATCH
+ * (kernel/io/notify.c), and the CUI-8 block-layer park. A future genuinely
+ * pended DATA transfer (Net-1's AFD is the expected consumer) grows THIS
+ * engine — buffer/length legs beside the IOSB — rather than a fourth
+ * bookkeeping shape. */
 typedef struct IOP_PENDING_REQUEST
 {
     struct EPROCESS *owner;    /* referenced; the IOSB's address space */
@@ -192,6 +208,18 @@ typedef struct IOP_PENDING_REQUEST
 /* Build a pending request in the ISSUER's context (references the event and
  * the current process). The caller's IOSB must already be probed. */
 NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDING_REQUEST *out);
+
+/* The completion-APC leg, one authority (Art. 11; the rw.c and notify.c
+ * copies drifted apart on allocation timing before this): allocate the KAPC
+ * at ISSUE time so completion itself cannot fail, queue it at completion —
+ * after the IOSB is in place — to the ISSUER, whose next alertable wait
+ * delivers PIO_APC_ROUTINE(ApcContext, iosb, 0) via KiUserApcDispatcher.
+ * Prepare returns 0 in *apcOut for a NULL routine or a kernel-mode issuer;
+ * queue eats the block for a dead or dying issuer (its next edge is the
+ * reaper, not the dispatcher). */
+NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
+                                 PIO_STATUS_BLOCK iosb, PKAPC *apcOut);
+void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc);
 
 /* CUI-5 NtCancelSynchronousIoFile (kernel/io/async.c): mark the current
  * thread's in-flight synchronous I/O around a potentially-blocking device

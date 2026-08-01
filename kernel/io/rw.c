@@ -21,43 +21,15 @@
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h" /* CUI-5: PAGE_SIZE for the scatter/gather segments */
 
-/* The APC leg of the async-completion protocol (pinned by
- * sem_file/apc_completion.c on the oracle): a transfer carrying a user
- * ApcRoutine queues a user APC when the request completes — i.e. exactly
- * when the IOSB is written — and KiUserApcDispatcher later calls
- * PIO_APC_ROUTINE(ApcContext, iosb, reserved) at the next alertable wait.
- * The block is allocated up front so completion itself cannot fail. */
-static NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
-                                        PIO_STATUS_BLOCK iosb, PKAPC *apcOut)
-{
-    *apcOut = 0;
-    if (apcRoutine == 0 || ExGetPreviousMode() != UserMode)
-    {
-        return STATUS_SUCCESS;
-    }
-    PKAPC apc = MiAllocatePool(sizeof(KAPC));
-    if (apc == 0)
-    {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
-    apc->normalContext = (ULONG_PTR)apcContext;
-    apc->systemArgument1 = (ULONG_PTR)iosb; /* the caller's very IOSB */
-    apc->systemArgument2 = 0;               /* the reserved argument */
-    *apcOut = apc;
-    return STATUS_SUCCESS;
-}
-
 /* Write the IOSB / signal the event (IopCompleteRequest), then queue the
- * completion APC — the IOSB is in place before the routine can run. */
+ * completion APC through the engine authority (io.h) — the IOSB is in
+ * place before the routine can run, and the issuer here is the completing
+ * thread itself (inline completion). Pinned by sem_file/apc_completion.c. */
 static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc, NTSTATUS status,
                                     ULONG_PTR information)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
-    if (apc != 0)
-    {
-        KiInsertQueueUserApc(KeGetCurrentThread(), apc);
-    }
+    IopQueueCompletionApc(KeGetCurrentThread(), apc);
     return final;
 }
 
