@@ -19,6 +19,7 @@
 #include "drivers/virtio/virtio.h"
 #include "drivers/pci.h"
 #include "arch/x86_64/mmu.h"
+#include "kernel/ob/ob.h" /* KPROCESSOR_MODE enum for the await park */
 #include "kernel/mm/phys.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/string.h"
@@ -73,6 +74,13 @@ static VIO_BLK_REQUEST *VioBlkSlotRequest[VIO_BLK_MAX_INFLIGHT]; /* slot -> owne
  * chain head). Sized for the largest ring VioInitializeVirtqueue allows. */
 static VIO_BLK_REQUEST *VioBlkRequestByHead[256];
 static ULONG VioBlkInFlight;
+
+/* Depth statistics (docs/19 §8.4: the win must be a verdict, not an
+ * inference — an implementation that never overlaps passes every semantic
+ * test). Sampled at submit, after the increment. */
+static ULONG VioBlkDepthMax;
+static uint64_t VioBlkDepthSampleSum;
+static uint64_t VioBlkDepthSamples;
 
 /* One-page bounce for the sector-API path (blk.h): those payloads may live
  * in physically discontiguous pool memory. The page-cache data path hands
@@ -146,16 +154,17 @@ uint64_t VioBlkSectorCount(void)
     return VioBlkCapacitySectors;
 }
 
-/* --- submit / drain --------------------------------------------------------- */
+/* --- submit / await / drain ------------------------------------------------- */
 
 /* Harvest every completion the device has published and complete the owning
- * requests. THE single harvest authority (Art. 11): every path that waits —
- * the sync poll below today, the tick/idle drain points later — funnels
- * here, so a poller completing ANOTHER request's transfer is routine, not a
- * race. Does nothing but bookkeeping and the completion stores: no
- * allocation, no user memory (docs/20 R2). Caller serializes (thread
- * context today; the dispatcher lock once the drain points exist). */
-static void VioBlkDrain(void)
+ * requests: result store, completed flag, event — nothing else. No
+ * allocation, no user memory (docs/20 R2; IoDrainDeviceCompletions arms the
+ * assert). Called with the dispatcher lock held everywhere — the tick holds
+ * it implicitly, idle runs interrupts-off, thread-context waiters acquire
+ * it — so a completion cannot interleave with a submit's bookkeeping. The
+ * KeSetEvent wake is the same edge the tick's timer expiry already drives
+ * (KiWaitTest readies, never switches). */
+void VioBlkDrain(void)
 {
     uint16_t head;
     uint32_t length;
@@ -171,17 +180,30 @@ static void VioBlkDrain(void)
         VioBlkInFlight--;
         request->result = slot->status == VIO_BLK_S_OK ? STATUS_SUCCESS : STATUS_IO_DEVICE_ERROR;
         request->completed = TRUE; /* the owner may reuse the request now */
+        KeSetEvent(&request->done, 0, FALSE);
     }
 }
 
-/* Submit one prepared request: claim a control slot, chain header/data/
- * status, register the cookie. The whole path is non-blocking; when slots
- * or descriptors are exhausted it spins a drain — with only synchronous
- * callers today the retry never actually loops. NOTE (docs/20 F2): once
- * the tick drain exists, claim-submit-register must be one uninterruptible
- * step (dispatcher lock) so a completion cannot beat the cookie into the
- * map; today only thread context touches any of this. */
-static void VioBlkSubmitRequest(VIO_BLK_REQUEST *request)
+ULONG VioBlkInFlightCount(void)
+{
+    return VioBlkInFlight;
+}
+
+void VioBlkQueryDepthStats(ULONG *maxDepthOut, ULONG *meanDepthTimes100Out)
+{
+    *maxDepthOut = VioBlkDepthMax;
+    *meanDepthTimes100Out =
+        VioBlkDepthSamples != 0 ? (ULONG)(VioBlkDepthSampleSum * 100 / VioBlkDepthSamples) : 0;
+}
+
+void VioBlkResetDepthStats(void)
+{
+    VioBlkDepthMax = 0;
+    VioBlkDepthSampleSum = 0;
+    VioBlkDepthSamples = 0;
+}
+
+static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
 {
     ASSERT(VioBlkPresent);
     ASSERT(request->sectorCount != 0);
@@ -189,11 +211,25 @@ static void VioBlkSubmitRequest(VIO_BLK_REQUEST *request)
      * would wrap (0x800000 sectors passed the old bound). One page per
      * request is the transfer unit (docs/19 §5a: page granularity). */
     ASSERT((uint64_t)request->sectorCount * VIO_BLK_SECTOR_SIZE <= PAGE_SIZE);
+    /* The deliberate-wrap capacity check (sectorLba == ~0 wraps past it and
+     * reaches the device's own range check — the pinned IOERR path,
+     * tests/kmt/m6_blk.c). A refusal leaves nothing in flight. */
+    if (request->sectorLba + request->sectorCount > VioBlkCapacitySectors)
+    {
+        return STATUS_IO_DEVICE_ERROR;
+    }
 
     request->completed = FALSE;
     request->result = STATUS_PENDING;
+    KeInitializeEvent(&request->done, NotificationEvent, FALSE);
 
-    /* Claim a control slot. */
+    /* Claim-fill-submit-register is ONE lock hold (docs/20 F2): the tick
+     * drain must not observe a submitted chain whose cookie is not yet in
+     * the map, and the free lists it splices are the ones VioSubmitChain
+     * consumes. The exhausted-retry drains inline under the same hold —
+     * progress comes from the device, not from another thread. */
+    uint64_t flags = KiAcquireDispatcherLock();
+
     uint8_t slotIndex;
     for (;;)
     {
@@ -239,34 +275,102 @@ static void VioBlkSubmitRequest(VIO_BLK_REQUEST *request)
     VioBlkRequestByHead[head] = request;
     VioBlkSlotRequest[slotIndex] = request;
     VioBlkInFlight++;
+    if (VioBlkInFlight > VioBlkDepthMax)
+    {
+        VioBlkDepthMax = VioBlkInFlight;
+    }
+    VioBlkDepthSampleSum += VioBlkInFlight;
+    VioBlkDepthSamples++;
+
+    KiReleaseDispatcherLock(flags);
+    return STATUS_SUCCESS;
 }
 
-/* Submit and poll to completion — the synchronous shape every caller has
- * today. The poll drains ALL completions, not just this request's, so it
- * coexists with other requests in flight. */
+/* Pre-park drain-spin bound. An internal latency choice, not a spec value:
+ * QEMU typically serves a host-page-cache transfer within microseconds of
+ * the notify MMIO exit, so a bounded spin completes the common request
+ * without paying the park's context-switch round trip — the difference
+ * between wineboot's thousands of single-sector hive writes costing
+ * microseconds each and costing a scheduler round trip each. A transfer
+ * that outlives the spin parks below, which is the CUI-8 property: the
+ * machine's stall is bounded by this spin, never by the device. */
+#define VIO_BLK_AWAIT_SPINS 4096
+
+NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request)
+{
+    for (unsigned spins = 0; spins < VIO_BLK_AWAIT_SPINS && !request->completed; spins++)
+    {
+        uint64_t flags = KiAcquireDispatcherLock();
+        VioBlkDrain();
+        KiReleaseDispatcherLock(flags);
+        __asm__ volatile("pause");
+    }
+
+    /* The park (docs/19 §5c): the issuer blocks and other threads run while
+     * the device works; the tick/idle drain sets the event. The 10 s bound
+     * keeps a wedged device as loud as the old spin's panic. */
+    if (!request->completed)
+    {
+        LARGE_INTEGER timeout;
+        timeout.QuadPart = -100000000LL; /* 10 s, relative */
+        NTSTATUS wait =
+            KeWaitForSingleObject(&request->done, Executive, KernelMode, FALSE, &timeout);
+        if (wait == STATUS_TIMEOUT && !request->completed)
+        {
+            KiPanic("virtio-blk: request timed out");
+        }
+        /* STATUS_THREAD_IS_TERMINATING: a dying thread cannot park (CUI-4),
+         * but its frame still owns the request until the device is done with
+         * it (docs/20 R4) — poll it home below. Progress needs no other
+         * thread: the device completes on its own and this loop harvests. */
+    }
+    for (uint64_t spins = 0; !request->completed; spins++)
+    {
+        if (spins >= 1000000000ULL)
+        {
+            KiPanic("virtio-blk: request timed out");
+        }
+        uint64_t flags = KiAcquireDispatcherLock();
+        VioBlkDrain();
+        KiReleaseDispatcherLock(flags);
+        __asm__ volatile("pause");
+    }
+    return request->result;
+}
+
+static NTSTATUS VioBlkSubmitTyped(VIO_BLK_REQUEST *request, uint32_t type, uint64_t sectorLba,
+                                  uint32_t sectorCount, uint64_t dataPhysical)
+{
+    request->type = type;
+    request->sectorLba = sectorLba;
+    request->sectorCount = sectorCount;
+    request->dataPhysical = dataPhysical;
+    return VioBlkSubmitPrepared(request);
+}
+
+NTSTATUS VioBlkSubmitRead(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                          uint64_t physical)
+{
+    return VioBlkSubmitTyped(request, VIO_BLK_T_IN, sectorLba, sectorCount, physical);
+}
+
+NTSTATUS VioBlkSubmitWrite(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                           uint64_t physical)
+{
+    return VioBlkSubmitTyped(request, VIO_BLK_T_OUT, sectorLba, sectorCount, physical);
+}
+
+/* Submit and await — the synchronous shape the sector API keeps. */
 static NTSTATUS VioBlkSyncTransfer(uint32_t type, uint64_t sectorLba, uint32_t sectorCount,
                                    uint64_t dataPhysical)
 {
-    if (sectorLba + sectorCount > VioBlkCapacitySectors)
-    {
-        return STATUS_IO_DEVICE_ERROR;
-    }
     VIO_BLK_REQUEST request;
-    request.type = type;
-    request.sectorLba = sectorLba;
-    request.sectorCount = sectorCount;
-    request.dataPhysical = dataPhysical;
-    VioBlkSubmitRequest(&request);
-    for (uint64_t spins = 0; spins < 1000000000ULL; spins++)
+    NTSTATUS status = VioBlkSubmitTyped(&request, type, sectorLba, sectorCount, dataPhysical);
+    if (!NT_SUCCESS(status))
     {
-        VioBlkDrain();
-        if (request.completed)
-        {
-            return request.result;
-        }
-        __asm__ volatile("pause");
+        return status;
     }
-    KiPanic("virtio-blk: request timed out");
+    return VioBlkAwait(&request);
 }
 
 /* One bounced transfer of at most a page (8 sectors). */

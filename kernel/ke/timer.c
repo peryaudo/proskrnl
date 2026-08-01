@@ -226,6 +226,13 @@ void KiUpdateClock(BOOLEAN interruptedUser)
         timer->header.signalState = 1;
         KiWaitTest(&timer->header);
     }
+
+    /* CUI-8 (docs/19 §5b): harvest device completions each tick, so a
+     * parked issuer wakes within a millisecond even when compute-bound
+     * threads keep the machine out of idle. The wake this performs
+     * (KeSetEvent → KiWaitTest) is the same ready-never-switch edge the
+     * timer expiry above already drives (irq.c's contract). */
+    IoDrainDeviceCompletions();
 }
 
 void KeInitializeTimerEx(PKTIMER timer, TIMER_TYPE type)

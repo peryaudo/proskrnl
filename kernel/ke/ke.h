@@ -378,6 +378,14 @@ BOOLEAN KiTryAcquireEventGate(PRKEVENT event);
  * prohibition (kernel/mm/pool.c, kernel/mm/phys.c). Defined in sched.c. */
 extern BOOLEAN KiInCompletionDrain;
 
+/* CUI-8 (docs/19 §5b): the device-completion drain upcall, implemented in
+ * kernel/io/file.c beside the transport it drains. Called with the
+ * dispatcher lock held — the tick holds it implicitly (KiUpdateClock),
+ * idle runs with interrupts off (KiIdleLoop) — and from thread-context
+ * waiters that acquire it. Returns the number of requests still in flight
+ * after the harvest, which is idle's poll-versus-hlt decision. */
+ULONG IoDrainDeviceCompletions(void);
+
 void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit);
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait);
 

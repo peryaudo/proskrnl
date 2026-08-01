@@ -265,6 +265,23 @@ PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID conte
 
 static PIO_DEVICE IopBootVolumeDevice;
 
+/* CUI-8 (docs/19 §5b): the one completion-drain authority the tick, idle,
+ * and every thread-context waiter call (contract in ke.h — dispatcher lock
+ * held). The KiInCompletionDrain bracket is docs/20 R2's arming: any
+ * allocator call the drain ever grows asserts immediately instead of
+ * corrupting a free list once in a thousand boots. */
+ULONG IoDrainDeviceCompletions(void)
+{
+    if (!VioBlkIsPresent())
+    {
+        return 0;
+    }
+    KiInCompletionDrain = TRUE;
+    VioBlkDrain();
+    KiInCompletionDrain = FALSE;
+    return VioBlkInFlightCount();
+}
+
 void IoInitializeTransport(void)
 {
     if (!VioBlkInitialize())
