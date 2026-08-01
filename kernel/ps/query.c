@@ -1702,8 +1702,7 @@ NTSTATUS NtShutdownSystem(SHUTDOWN_ACTION action)
     }
 }
 
-NTSTATUS NtSetSystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID information,
-                                ULONG length)
+NTSTATUS NtSetSystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID information, ULONG length)
 {
     /* One served class - SystemTimeAdjustmentInformation, the only one the
      * baked stack issues (kernelbase SetSystemTimeAdjustment) - built

@@ -96,7 +96,8 @@ static USHORT CmpPersistedNameBytes(const CMP_KEY_NODE *node, BOOLEAN asRoot)
  * a loaded — volatile — key still saves its content). */
 static ULONGLONG CmpMeasureKey(const CMP_KEY_NODE *node, BOOLEAN asRoot)
 {
-    ULONGLONG bytes = 1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node, asRoot) + 2; /* K..name + E,0 */
+    ULONGLONG bytes =
+        1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node, asRoot) + 2; /* K..name + E,0 */
     for (PLIST_ENTRY e = node->valueListHead.Flink; e != &node->valueListHead; e = e->Flink)
     {
         const CMP_VALUE *value = CONTAINING_RECORD(e, CMP_VALUE, listEntry);

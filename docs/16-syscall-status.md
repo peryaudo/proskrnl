@@ -1,8 +1,8 @@
 # 16 — Syscall status (the boundary, measured)
 
-A snapshot of the `Nt*` surface after **CUI-6**: what is implemented, what is missing,
-what will never be built, and where the gaps that bite real software actually are. The
-build plan that closes the closable part lives in `docs/02` (CUI-7, Net-1).
+A snapshot of the `Nt*` surface after **CUI-7**: the buildable surface is **complete**
+— every id either has a kernel service or is missing by decision, not debt. The one
+remaining build plan on the boundary is `docs/02` Net-1 (sockets, a new subsystem).
 
 **How to re-derive this (never trust the prose over the table):** the id space is the
 pinned Wine tree's own 64-bit syscall table, generated into `kernel/syscall/table.inc`
@@ -20,32 +20,35 @@ bump; re-run the count then.
 | | count |
 |---|---|
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
-| Implemented (`KI_SYSCALL` rows) | **173** |
-| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **91** |
+| Implemented (`KI_SYSCALL` rows) | **202** |
+| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **62** |
 | …of the missing: permanently out of scope (below) | **62** |
-| …of the missing: to be built (docs/02 CUI-7) | **29** |
-| …of the missing: with a live caller in the baked x64 CUI DLL set | **~20** |
-| End state once CUI-7 lands | **202 / 264** |
+| …of the missing: to be built | **0** |
 
-**CUI-6 closed its 14 ids** (`NtSetInformationObject`, `NtCompareObjects`,
-`NtMakePermanentObject`, `NtSignalAndWaitForSingleObject`, `NtOpenTimer`,
-`NtQueueApcThreadEx2`, `NtAlertResumeThread`, `NtFlushProcessWriteBuffers`,
-`NtGetCurrentProcessorNumber`, `NtSetThreadExecutionState`,
-`NtSetInformationToken`, `NtFilterToken`, `NtAdjustGroupsToken`,
-`NtImpersonateAnonymousToken`) plus the partial-service classes below;
-`NtOpenThread` by CLIENT_ID and foreign `NtGet/SetContextThread` are real. Only
-CUI-7's 29 (registry hive attach, the `VirtualAlloc2`/write-watch family, and
-the locale/system furniture) remain on the build plan.
+**CUI-7 closed its 29 ids** — the registry hive surface (`NtLoadKey`,
+`NtLoadKey2`, `NtLoadKeyEx`, `NtUnloadKey`, `NtSaveKey`, `NtRestoreKey`,
+`NtReplaceKey`, `NtRenameKey`, `NtNotifyChangeKey`,
+`NtNotifyChangeMultipleKeys`, `NtSetInformationKey`,
+`NtQueryMultipleValueKey`), the modern memory family
+(`NtAllocateVirtualMemoryEx`, `NtCreateSectionEx`, `NtMapViewOfSectionEx`,
+`NtUnmapViewOfSectionEx`, `NtFlushVirtualMemory`, `NtLockVirtualMemory`,
+`NtUnlockVirtualMemory`, `NtGetWriteWatch`, `NtResetWriteWatch`,
+`NtSetInformationVirtualMemory`) and the locale/system furniture
+(`NtQueryDefaultUILanguage`, `NtQueryInstallUILanguage`,
+`NtSetDefaultUILanguage`, `NtSetDefaultLocale`, `NtSetSystemTime`,
+`NtSetSystemInformation`, `NtShutdownSystem`) — after CUI-6's 14 and CUI-5's
+12 (`docs/02`; deviations in `docs/03` "CUI-7 Cm-2/Mm-2/system notes").
 
-The missing-id count **understates** the gap: a second dimension — implemented
-services that refuse most of their info classes — bites real software harder than any
-missing id. See "Partial services" at the bottom; those items ride the same CUI-5…7
-milestones as the ids do.
+Sub-surface refusals that remain are decisions, recorded where they live:
+placeholder allocation (`MEM_RESERVE/REPLACE/PRESERVE_PLACEHOLDER`) refuses
+loudly inside the implemented `*Ex` ids (no baked consumer; `docs/03`), and
+`NtSetSystemInformation` serves exactly the one class the baked stack issues.
 
-## The 117 missing syscalls by area
+## The 62 missing syscalls by area
 
-★ = a live caller exists in the currently-baked CUI userland (ntdll PE side,
-kernelbase, kernel32, advapi32), i.e. an off-the-shelf app can hit it today.
+Every one is a decision, not debt. ★ = a live caller exists in the
+currently-baked CUI userland (ntdll PE side, kernelbase, kernel32, advapi32)
+— none of the remaining ids carries one on a real path.
 
 ### Permanently out of scope — 62
 
@@ -65,40 +68,15 @@ consumer) and G12 (they refuse loudly forever, they don't fake success):
 An id in this table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out of
 scope" means we never *implement* it, not that it ever fakes success.
 
-### To be built — 29 (the plan: docs/02 CUI-7)
-
-*(CUI-5's 12 file/IO ids — rename led — landed; see docs/02 CUI-5 and
-docs/03 "CUI-5 Io-completion notes". **CUI-6's 14 ids landed too** — the
-object-manager/sync/process 10 and the security/token 4 — see docs/02 CUI-6
-and docs/03 "CUI-6 handles/identity notes".)*
-
-**Registry — 12 → CUI-7**
-★`NtLoadKey` `NtLoadKey2` `NtLoadKeyEx` ★`NtUnloadKey` ★`NtSaveKey` `NtRestoreKey`
-`NtReplaceKey` (`reg save/load`, hive attach) · ★`NtRenameKey` · ★`NtNotifyChangeKey`
-`NtNotifyChangeMultipleKeys` (`RegNotifyChangeKeyValue` — services and settings
-watchers block on it) · `NtSetInformationKey` · `NtQueryMultipleValueKey`
-
-**Memory — 10 → CUI-7**
-★`NtAllocateVirtualMemoryEx` ★`NtCreateSectionEx` ★`NtMapViewOfSectionEx`
-★`NtUnmapViewOfSectionEx` (the modern `VirtualAlloc2`/`MapViewOfFile3`/
-`CreateFileMapping2` family kernelbase routes through) · ★`NtFlushVirtualMemory`
-(`FlushViewOfFile`) · ★`NtLockVirtualMemory` ★`NtUnlockVirtualMemory`
-(`VirtualLock/Unlock`) · ★`NtGetWriteWatch` ★`NtResetWriteWatch` (write-watch heaps;
-GC-style runtimes) · ★`NtSetInformationVirtualMemory` (`PrefetchVirtualMemory`)
-
-**Locale / system — 7 → CUI-7**
-★`NtQueryDefaultUILanguage` ★`NtQueryInstallUILanguage` (`ntdll/locale.c` +
-kernelbase — `GetUserDefaultUILanguage`, MUI resource loading) ·
-`NtSetDefaultUILanguage` · `NtSetDefaultLocale` · ★`NtSetSystemTime` ·
-★`NtSetSystemInformation` · `NtShutdownSystem`
-
 ## Partial services (implemented ids that refuse the class real apps ask for)
 
 These read as "implemented" in any id tally and are what an off-the-shelf CUI app
 trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` line,
 `kernel/syscall/table.c`). Ranked roughly by blast radius:
 
-*(CUI-6 closed the process/thread/handle query gaps: `NtQueryObject`'s
+*(CUI-7 closed the `SystemTimeAdjustmentInformation` set/query pair and the
+`NtQueryVirtualMemory`-adjacent `*Ex` surface; CUI-6 closed the
+process/thread/handle query gaps: `NtQueryObject`'s
 `ObjectHandleFlagInformation`; `NtQueryInformationProcess`'s `ProcessTimes`/
 `ProcessPriorityClass`/`ProcessHandleCount`/`ProcessImageFileName`;
 `NtQueryInformationThread`'s `ThreadTimes`/`ThreadQuerySetWin32StartAddress`;

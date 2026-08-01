@@ -306,6 +306,33 @@ query surface); CUI-7 is independent and can land in parallel or slot anywhere.
 `VirtualAlloc2`/write-watch path runs; after CUI-5…7 the buildable id surface is
 complete (202/264, `docs/16`) and every remaining `KI_SYSCALL_MISSING` row is an
 out-of-scope decision, not debt.
+*(Outcome: complete. All 29 ids landed test-first (`tests/run/run.sh cui7` is
+the cmd.exe acceptance — a regtool save/load round trip that survives a power
+cycle, the watchapp `VirtualAlloc2`/write-watch run, and a ring-3
+`NtShutdownSystem` poweroff; eleven new ntapi suites across
+`sem_reg`/`sem_mm`/`sem_ps`). The `*Ex` forms extended the existing engines as
+promised — placement constraints ride the one free-range search, the map path
+delegates, `NtCreateSectionEx` ignores its parameters as the oracle does — and
+the two pieces of new machinery were fault-driven write-watch (per-VAD dirty
+array authoritative, kernel writes marking through the probe chokepoint) and
+wineserver-shaped registry notification records keyed by the arming open.
+Hive attach reuses the PHV1 engine both ways (subtree serialize for
+`NtSaveKey`, volatile grafts for `NtLoadKey`); the four oracle-FIXME ids
+(`NtRestoreKey`/`NtReplaceKey`/`NtSetInformationKey`/`NtQueryMultipleValueKey`)
+are built against their MS contracts `beyond_oracle`, as are the privileged
+set-time/shutdown arms (the CMOS writeback pairs with CUI-1's RTC read; a
+privileged set survives reboot). The pin runs themselves convicted two
+server truths the plan had wrong — load's dropped destination attributes
+(collision, not open-if) and mlock's PROT_NONE refusal. The buildable id
+surface is complete: 202/264, every remaining `KI_SYSCALL_MISSING` row an
+out-of-scope decision (`docs/16` re-derived). Deviations in `docs/03` "CUI-7
+Cm-2/Mm-2/system notes": volatile grafts and `CHILD_MUST_BE_VOLATILE`, the
+notify dup-handle footnote, placeholders' loud refusal, lock/prefetch as
+validating no-ops, absolute-timer non-reevaluation, and the set-info
+unknown-class refusal vs the oracle's blanket success. The fuzzer gained
+eight deterministic CUI-7 ops; the winetest manifest again gained no pairs —
+the parked `ntdll:virtual`/`kernel32:virtual` pairs exercise placeholders,
+which stay deliberately unbuilt.)*
 
 ---
 

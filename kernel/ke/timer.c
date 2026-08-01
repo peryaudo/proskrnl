@@ -99,7 +99,6 @@ void KeSetSystemTime(LONGLONG newTime)
     KiUpdateUserSharedDataTime();
 }
 
-
 void KiSeedUserSharedDataTime(void)
 {
     uint64_t flags = KiAcquireDispatcherLock();

@@ -565,8 +565,8 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
     }
 
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
-    PMI_VAD vad = MiCreateMappedVad(space, base, size, protect, MEM_MAPPED, section, privateCopy,
-                                    offset);
+    PMI_VAD vad =
+        MiCreateMappedVad(space, base, size, protect, MEM_MAPPED, section, privateCopy, offset);
     if (vad == 0)
     {
         ObDereferenceObject(section);
@@ -740,8 +740,8 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
 }
 
 NTSTATUS NtCreateSectionEx(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
-                           const LARGE_INTEGER *size, ULONG protect, ULONG attributes,
-                           HANDLE file, MEM_EXTENDED_PARAMETER *parameters, ULONG count)
+                           const LARGE_INTEGER *size, ULONG protect, ULONG attributes, HANDLE file,
+                           MEM_EXTENDED_PARAMETER *parameters, ULONG count)
 {
     /* The parameter array is accepted and ignored, exactly as the pinned
      * oracle does (wine dlls/ntdll/unix/sync.c NtCreateSectionEx: FIXME +
@@ -944,9 +944,9 @@ NTSTATUS NtMapViewOfSectionEx(HANDLE sectionHandle, HANDLE processHandle, PVOID 
         ObDereferenceObject(sectionBody);
         return status;
     }
-    status = MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base,
-                                  (uint64_t)offset.QuadPart, &viewSize, protect,
-                                  extended.limitLow, extended.limitHigh);
+    status =
+        MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base, (uint64_t)offset.QuadPart,
+                             &viewSize, protect, extended.limitLow, extended.limitHigh);
     if (NT_SUCCESS(status))
     {
         *baseInOut = (PVOID)(uintptr_t)base;

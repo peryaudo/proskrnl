@@ -1034,8 +1034,8 @@ NTSTATUS NtFlushVirtualMemory(HANDLE process, LPCVOID *addressInOut, SIZE_T *siz
      * IOSB (its own FIXME; pinned by sem_mm/flush_lock). */
     (void)process;
     (void)ioStatusBlock;
-    NTSTATUS status = KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut),
-                                      sizeof(*addressInOut));
+    NTSTATUS status =
+        KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut), sizeof(*addressInOut));
     if (NT_SUCCESS(status))
     {
         status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));
@@ -1091,8 +1091,8 @@ NTSTATUS NtFlushVirtualMemory(HANDLE process, LPCVOID *addressInOut, SIZE_T *siz
  * already so locking is a validating no-op (docs/03 "CUI-7"). */
 static NTSTATUS MipLockWalk(PVOID *addressInOut, SIZE_T *sizeInOut)
 {
-    NTSTATUS status = KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut),
-                                      sizeof(*addressInOut));
+    NTSTATUS status =
+        KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut), sizeof(*addressInOut));
     if (NT_SUCCESS(status))
     {
         status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));

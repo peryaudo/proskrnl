@@ -50,8 +50,8 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
  * limitLow/limitHigh bound the block inclusive of its last byte, align
  * raises the 64K placement step; zeros mean unconstrained. */
 NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
-                                   ULONG type, ULONG protect, uint64_t limitLow,
-                                   uint64_t limitHigh, uint64_t align);
+                                   ULONG type, ULONG protect, uint64_t limitLow, uint64_t limitHigh,
+                                   uint64_t align);
 
 /* The captured/validated MEM_EXTENDED_PARAMETER contract (CUI-7); ONE
  * parser for the whole *Ex family (virtual.c MiCaptureExtendedParams,
