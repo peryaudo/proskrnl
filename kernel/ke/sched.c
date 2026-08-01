@@ -256,6 +256,9 @@ __attribute__((noreturn)) void KiIdleLoop(void)
     for (;;)
     {
         __asm__ volatile("cli");
+        /* CUI-8 (docs/19 §5b): harvest device completions before the ready
+         * check, so a drain-readied thread is swapped to immediately. */
+        ULONG inFlight = IoDrainDeviceCompletions();
         if (KiReadySummary != 0)
         {
             KiIdleThread.state = KI_THREAD_STATE_READY;
@@ -265,6 +268,15 @@ __attribute__((noreturn)) void KiIdleLoop(void)
          * blocking point: sweep the executive's cross-references here
          * (throttled inside; interrupts are already off = lock held). */
         KiVerifyKernelStateIdle();
+        if (inFlight != 0)
+        {
+            /* Transfers in flight: poll, don't hlt. No completion interrupt
+             * exists to cut a hlt short (docs/19 §5b — no interrupt path),
+             * so sleeping here would tax every transfer with up to a full
+             * tick of latency; sti-pause still lets the tick preempt. */
+            __asm__ volatile("sti; pause");
+            continue;
+        }
         /* sti;hlt back-to-back: an interrupt arriving in between still wakes
          * the hlt (sti takes effect after the next instruction). */
         __asm__ volatile("sti; hlt");

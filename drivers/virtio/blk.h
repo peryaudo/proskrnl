@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "abi/ntdef.h"
+#include "kernel/ke/ke.h" /* CUI-8: the per-request completion event */
 
 /* virtio-blk always speaks 512-byte sectors regardless of blk_size
  * (virtio 1.2 cs01 §5.2.5: "does not affect the units used in the
@@ -24,21 +25,51 @@
 
 /* One block request, CALLER-embedded (stack or batch array — never pool
  * owned by the driver): the issuer's frame owns the request from submit to
- * observed completion and never unwinds past it (docs/20 R4). The caller
- * fills the transfer description; the driver owns the bookkeeping fields
- * from submit until `completed` reads TRUE, after which `result` is the
- * verdict. */
+ * observed completion and never unwinds past it (docs/20 R4). Every field
+ * is the driver's from submit until the await returns. */
 typedef struct VIO_BLK_REQUEST
 {
     uint32_t type; /* driver-internal VIO_BLK_T_* */
     uint64_t sectorLba;
     uint32_t sectorCount;
     uint64_t dataPhysical; /* one physically contiguous run */
+    KEVENT done;           /* set by the drain; the issuer's park (docs/19 §5c) */
     volatile BOOLEAN completed;
     NTSTATUS result;
     uint16_t descHead;
     uint8_t controlSlot;
 } VIO_BLK_REQUEST;
+
+/* Submit one direct-DMA transfer without waiting (up to
+ * VIO_BLK_MAX_INFLIGHT in flight — the docs/19 §5a depth) and collect it
+ * later: VioBlkAwait completes the common QEMU-fast request in a bounded
+ * drain-spin, else parks the issuer on the request's event until a drain
+ * point completes it — other threads run while the device works. A refused
+ * submit (out-of-range LBA) leaves nothing in flight. The await never
+ * abandons: it returns only once the device is done with the request's
+ * memory (docs/20 R4), polling home when the caller's park is refused (a
+ * terminating thread). At most a page per request. */
+NTSTATUS VioBlkSubmitRead(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                          uint64_t physical);
+NTSTATUS VioBlkSubmitWrite(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                           uint64_t physical);
+NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request);
+
+/* Harvest every published completion. THE single harvest authority
+ * (Art. 11); every drain point funnels here. Call with the dispatcher lock
+ * held (the tick holds it implicitly; idle runs with interrupts off; thread
+ * context acquires it) — preferably through Io's IoDrainDeviceCompletions,
+ * which brackets the docs/20 R2 allocator prohibition. */
+void VioBlkDrain(void);
+
+/* Requests currently in flight (submitted, not yet harvested). */
+ULONG VioBlkInFlightCount(void);
+
+/* The docs/19 §8.4 depth verdict's raw numbers: the maximum in-flight
+ * depth observed and the mean sampled at each submit (x100), since the
+ * last reset. */
+void VioBlkQueryDepthStats(ULONG *maxDepthOut, ULONG *meanDepthTimes100Out);
+void VioBlkResetDepthStats(void);
 
 /* Probe PCI bus 0, bring the device up per the virtio 1.2 cs01 §3.1.1
  * initialization sequence, and set up the request queue. Returns TRUE when
