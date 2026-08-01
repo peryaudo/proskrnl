@@ -283,6 +283,36 @@ def main() -> int:
         if not command(b"type C:\\cfg.txt", b"new-data", "the replaced content"):
             return 1
 
+    # ---- CUI-6: the handle/identity acceptance (docs/02 "a handle-
+    # inheritance redirect chain round-trips; a timeit-style tool reads real
+    # process/thread times; a restricted-token launch works") -------------
+    if os.environ.get("EXPECT_CUI6", ""):
+        # 1. timeit: a spawned child burns CPU; the parent reads
+        #    GetProcessTimes/GetThreadTimes back. "timeit-cpu-1" means real
+        #    accounting (the digit cannot come from the typed line).
+        mark = len(buffered)
+        sock.sendall(b"C:\\timeit.exe\r")
+        if not expect_after(mark, b"timeit-cpu-1", "the child's accounted CPU time"):
+            return 1
+        if not expect_after(mark, b"timeit-order-1", "create <= exit"):
+            return 1
+        if not expect_after(mark, b"timeit-done", "the timeit completion"):
+            return 1
+        # 2. redirchain: an inheritable file handle wired as a child's
+        #    stdout carries the marker back; inherit then flips off.
+        mark = len(buffered)
+        sock.sendall(b"C:\\redirchain.exe\r")
+        if not expect_after(mark, b"redirchain-ok", "the inherited-handle round trip"):
+            return 1
+        # 3. restricted: a CreateRestrictedToken launch whose child confirms
+        #    the dropped privilege is gone.
+        mark = len(buffered)
+        sock.sendall(b"C:\\restricted.exe\r")
+        if not expect_after(mark, b"restricted-child-ok", "the restricted child's check"):
+            return 1
+        if not expect_after(mark, b"restricted-ok", "the restricted-token launch"):
+            return 1
+
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
