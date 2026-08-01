@@ -27,10 +27,22 @@
 
 /* --- the type ------------------------------------------------------------- */
 
+/* CUI-6: free the side-allocated default-DACL override (the token's inline
+ * blob is part of the object block and needs no free). */
+static void SepDeleteToken(PVOID body)
+{
+    PTOKEN token = body;
+    if (token->defaultDaclOverride != 0)
+    {
+        MiFreePool(token->defaultDaclOverride);
+    }
+}
+
 OBJECT_TYPE SeTokenType = {
     .name = "Token",
     .validAccess = TOKEN_ALL_ACCESS | SYNCHRONIZE,
     .waitable = FALSE,
+    .deleteProcedure = SepDeleteToken,
     /* The real NT generic mapping, composed exactly as wineserver's
      * token_type (third_party/wine server/token.c) composes it. */
     .genericRead = STANDARD_RIGHTS_READ | TOKEN_QUERY_SOURCE | TOKEN_QUERY | TOKEN_DUPLICATE,
@@ -223,6 +235,8 @@ static NTSTATUS SepCreateToken(BOOLEAN primary, LONG impersonationLevel, ULONG s
     token->groupSidsLength = groupSidsLength;
     token->privilegesOffset = privilegesOffset;
     token->defaultDaclOffset = defaultDaclOffset;
+    token->defaultDaclOverride = 0; /* CUI-6: no override until a set installs one */
+    token->defaultDaclOverrideLength = 0;
 
     BYTE *data = SepTokenData(token);
     memcpy(data + userSidOffset, userSid, userSidLength);
@@ -260,8 +274,85 @@ NTSTATUS SepDuplicateToken(PTOKEN source, BOOLEAN primary, LONG impersonationLev
                           SepTokenUserSid(source), SepTokenGroupAttrs(source),
                           SepTokenGroupSids(source), source->groupSidsLength, source->groupCount,
                           SepTokenPrivileges(source), source->privilegeCount,
-                          SepTokenDefaultDacl(source), source->defaultDaclLength, modifiedId,
-                          source->primaryGroupIndex, newToken);
+                          SepTokenDefaultDacl(source), SepTokenDefaultDaclLength(source),
+                          modifiedId, source->primaryGroupIndex, newToken);
+}
+
+/* CUI-6: THE filter engine (wineserver filter_token -> token_duplicate with
+ * disable/delete lists), extending — not forking — SepCreateToken (G11). A
+ * disabled group survives as SE_GROUP_USE_FOR_DENY_ONLY (server/token.c
+ * token_duplicate), a deleted privilege is dropped, and the type/level/
+ * modified-id are the source's (same-type same-level duplicate). */
+static NTSTATUS SepFilterToken(PTOKEN source, const BYTE *disableSids, ULONG disableCount,
+                               const LUID *deleteLuids, ULONG deleteCount, PTOKEN *out)
+{
+    /* Modified group attributes: same count, deny-only for disabled SIDs. */
+    ULONG *attrs = MiAllocatePool(source->groupCount * sizeof(ULONG) + 1);
+    if (attrs == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    const ULONG *srcAttrs = SepTokenGroupAttrs(source);
+    const BYTE *cursor = SepTokenGroupSids(source);
+    for (ULONG i = 0; i < source->groupCount; i++)
+    {
+        const SID *sid = (const SID *)cursor;
+        ULONG sidLen = SepSidLength(sid);
+        ULONG a = srcAttrs[i];
+        const BYTE *dcursor = disableSids;
+        for (ULONG d = 0; d < disableCount; d++)
+        {
+            const SID *dsid = (const SID *)dcursor;
+            ULONG dlen = SepSidLength(dsid);
+            if (dlen == sidLen && memcmp(dsid, sid, sidLen) == 0)
+            {
+                a &= ~(ULONG)(SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT);
+                a |= SE_GROUP_USE_FOR_DENY_ONLY;
+                break;
+            }
+            dcursor += dlen;
+        }
+        attrs[i] = a;
+        cursor += sidLen;
+    }
+
+    /* Filtered privileges: drop those named in the delete list. */
+    ULONG maxPriv = source->privilegeCount;
+    PSEP_PRIVILEGE privs = MiAllocatePool(maxPriv * sizeof(SEP_PRIVILEGE) + 1);
+    if (privs == 0)
+    {
+        MiFreePool(attrs);
+        return STATUS_NO_MEMORY;
+    }
+    const SEP_PRIVILEGE *srcPrivs = SepTokenPrivileges(source);
+    ULONG privCount = 0;
+    for (ULONG i = 0; i < source->privilegeCount; i++)
+    {
+        BOOLEAN deleted = FALSE;
+        for (ULONG d = 0; d < deleteCount; d++)
+        {
+            if (deleteLuids[d].LowPart == srcPrivs[i].luid.LowPart &&
+                deleteLuids[d].HighPart == srcPrivs[i].luid.HighPart)
+            {
+                deleted = TRUE;
+                break;
+            }
+        }
+        if (!deleted)
+        {
+            privs[privCount++] = srcPrivs[i];
+        }
+    }
+
+    /* Same type/level -> the modified id is copied (token_duplicate rule). */
+    NTSTATUS status = SepCreateToken(
+        source->primary, source->impersonationLevel, source->sessionId, source->elevationType,
+        SepTokenUserSid(source), attrs, SepTokenGroupSids(source), source->groupSidsLength,
+        source->groupCount, privs, privCount, SepTokenDefaultDacl(source),
+        SepTokenDefaultDaclLength(source), &source->modifiedId, source->primaryGroupIndex, out);
+    MiFreePool(privs);
+    MiFreePool(attrs);
+    return status;
 }
 
 /* --- the boot mint ---------------------------------------------------------- */
@@ -816,7 +907,7 @@ NTSTATUS NtQueryInformationToken(HANDLE tokenHandle, TOKEN_INFORMATION_CLASS inf
             SepWriteReturnLength(returnLength, sizeof(TOKEN_DEFAULT_DACL));
             return status;
         }
-        ULONG daclLength = token->defaultDaclLength;
+        ULONG daclLength = SepTokenDefaultDaclLength(token);
         ULONG needed = sizeof(TOKEN_DEFAULT_DACL) + daclLength;
         SepWriteReturnLength(returnLength, needed);
         if (length < needed)
@@ -1336,5 +1427,233 @@ NTSTATUS NtDuplicateToken(HANDLE existingToken, ACCESS_MASK desiredAccess,
     /* drop the creator reference: on success the handle holds its own */
     ObDereferenceObject(duplicate);
     ObDereferenceObject(source);
+    return status;
+}
+
+/* CUI-6: SetTokenInformation's back end. Only TokenDefaultDacl has real
+ * semantics (dlls/ntdll/unix/security.c NtSetInformationToken); the length
+ * is checked BEFORE the null-pointer test, a zero DACL clears it, and it
+ * needs TOKEN_ADJUST_DEFAULT. TokenSessionId / TokenIntegrityLevel are
+ * accepted no-ops (the oracle's pinned FIXME answer). Everything else
+ * refuses loudly (Art. 12). */
+/* CUI-6 filter/set-info capture bounds. SIDs are at most 8 subauthorities
+ * (winnt.h SID_MAX_SUB_AUTHORITIES); the group/privilege caps bound a
+ * malicious count so a huge value cannot exhaust the pool. */
+#define SEP_MAX_ACL_LENGTH 65535
+#define SEP_MAX_SID_LENGTH (8 + 4 * 15)
+#define SEP_MAX_GROUPS     256
+#define SEP_MAX_PRIVILEGES 256
+
+NTSTATUS NtSetInformationToken(HANDLE tokenHandle, TOKEN_INFORMATION_CLASS infoClass, PVOID buffer,
+                               ULONG length)
+{
+    switch (infoClass)
+    {
+    case TokenDefaultDacl:
+    {
+        if (length < sizeof(TOKEN_DEFAULT_DACL))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        TOKEN_DEFAULT_DACL header;
+        NTSTATUS status = KiCopyFromUser(&header, buffer, sizeof(header));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        /* Capture the replacement ACL (a nested user pointer) up front. */
+        PACL newDacl = 0;
+        ULONG newDaclLength = 0;
+        if (header.DefaultDacl != 0)
+        {
+            ACL aclHeader;
+            status = KiCopyFromUser(&aclHeader, header.DefaultDacl, sizeof(ACL));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            newDaclLength = aclHeader.AclSize;
+            if (newDaclLength < sizeof(ACL) || newDaclLength > SEP_MAX_ACL_LENGTH)
+            {
+                return STATUS_INVALID_ACL;
+            }
+            newDacl = MiAllocatePool(newDaclLength);
+            if (newDacl == 0)
+            {
+                return STATUS_NO_MEMORY;
+            }
+            status = KiCopyFromUser(newDacl, header.DefaultDacl, newDaclLength);
+            if (!NT_SUCCESS(status))
+            {
+                MiFreePool(newDacl);
+                return status;
+            }
+        }
+        PTOKEN token;
+        status = SepReferenceTokenByHandle(tokenHandle, TOKEN_ADJUST_DEFAULT, &token, 0);
+        if (!NT_SUCCESS(status))
+        {
+            if (newDacl != 0)
+            {
+                MiFreePool(newDacl);
+            }
+            return status;
+        }
+        /* Install as the side-allocated override (the one exception to the
+         * shrink-only blob rule, se.h): free any prior override, abandon the
+         * inline slot, and point at the new one — 0 means cleared. */
+        if (token->defaultDaclOverride != 0)
+        {
+            MiFreePool(token->defaultDaclOverride);
+        }
+        token->defaultDaclOverride = newDacl;
+        token->defaultDaclOverrideLength = newDaclLength;
+        token->defaultDaclLength = 0; /* the inline slot no longer governs */
+        token->modifiedId = SepAllocateLuid();
+        ObDereferenceObject(token);
+        return STATUS_SUCCESS;
+    }
+    case TokenSessionId:
+    case TokenIntegrityLevel:
+        /* The oracle's FIXME-success (dlls/ntdll/unix/security.c): a pinned
+         * fixed answer, not a stub — no state here observes either. */
+        return STATUS_SUCCESS;
+    default:
+        return STATUS_NOT_IMPLEMENTED;
+    }
+}
+
+/* CUI-6: CreateRestrictedToken's back end. Needs TOKEN_DUPLICATE; the Flags
+ * and RestrictedSids arguments are ignored exactly as the oracle ignores
+ * them (dlls/ntdll/unix/security.c NtFilterToken FIXMEs). The new handle
+ * carries the source handle's granted access. */
+NTSTATUS NtFilterToken(HANDLE existingToken, ULONG flags, PTOKEN_GROUPS sidsToDisable,
+                       PTOKEN_PRIVILEGES privilegesToDelete, PTOKEN_GROUPS restrictedSids,
+                       PHANDLE newTokenHandle)
+{
+    (void)flags;          /* LUA_TOKEN etc. — ignored, as the oracle does */
+    (void)restrictedSids; /* restricted-SID lists — ignored, as the oracle does */
+
+    NTSTATUS status = SepPreZeroHandle(newTokenHandle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Capture the disable-SIDs into a contiguous blob (nested user SID
+     * pointers) and the delete-LUIDs into a flat array. */
+    BYTE *disableBlob = 0;
+    ULONG disableCount = 0;
+    if (sidsToDisable != 0)
+    {
+        ULONG count;
+        status = KiCopyFromUser(&count, sidsToDisable, sizeof(count));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (count > 0 && count <= SEP_MAX_GROUPS)
+        {
+            disableBlob = MiAllocatePool(count * SEP_MAX_SID_LENGTH);
+            if (disableBlob == 0)
+            {
+                return STATUS_NO_MEMORY;
+            }
+            BYTE *out = disableBlob;
+            for (ULONG i = 0; i < count; i++)
+            {
+                SID_AND_ATTRIBUTES entry;
+                status = KiCopyFromUser(&entry, &sidsToDisable->Groups[i], sizeof(entry));
+                if (NT_SUCCESS(status) && entry.Sid != 0)
+                {
+                    SID sidHeader;
+                    status = KiCopyFromUser(&sidHeader, entry.Sid, sizeof(SID));
+                    if (NT_SUCCESS(status))
+                    {
+                        ULONG sidLen = SepSidLength(&sidHeader);
+                        if (sidLen <= SEP_MAX_SID_LENGTH)
+                        {
+                            status = KiCopyFromUser(out, entry.Sid, sidLen);
+                            out += sidLen;
+                            disableCount++;
+                        }
+                    }
+                }
+                if (!NT_SUCCESS(status))
+                {
+                    MiFreePool(disableBlob);
+                    return status;
+                }
+            }
+        }
+    }
+
+    LUID *deleteLuids = 0;
+    ULONG deleteCount = 0;
+    if (privilegesToDelete != 0)
+    {
+        ULONG count;
+        status = KiCopyFromUser(&count, privilegesToDelete, sizeof(count));
+        if (!NT_SUCCESS(status))
+        {
+            if (disableBlob != 0)
+            {
+                MiFreePool(disableBlob);
+            }
+            return status;
+        }
+        if (count > 0 && count <= SEP_MAX_PRIVILEGES)
+        {
+            deleteLuids = MiAllocatePool(count * sizeof(LUID));
+            if (deleteLuids == 0)
+            {
+                if (disableBlob != 0)
+                {
+                    MiFreePool(disableBlob);
+                }
+                return STATUS_NO_MEMORY;
+            }
+            for (ULONG i = 0; i < count; i++)
+            {
+                LUID_AND_ATTRIBUTES entry;
+                status = KiCopyFromUser(&entry, &privilegesToDelete->Privileges[i], sizeof(entry));
+                if (!NT_SUCCESS(status))
+                {
+                    MiFreePool(deleteLuids);
+                    if (disableBlob != 0)
+                    {
+                        MiFreePool(disableBlob);
+                    }
+                    return status;
+                }
+                deleteLuids[deleteCount++] = entry.Luid;
+            }
+        }
+    }
+
+    PTOKEN source;
+    OBJECT_HANDLE_INFORMATION handleInformation;
+    status = SepReferenceTokenByHandle(existingToken, TOKEN_DUPLICATE, &source, &handleInformation);
+    if (NT_SUCCESS(status))
+    {
+        PTOKEN filtered;
+        status =
+            SepFilterToken(source, disableBlob, disableCount, deleteLuids, deleteCount, &filtered);
+        if (NT_SUCCESS(status))
+        {
+            /* The new handle inherits the source HANDLE's granted access. */
+            status = ObpCreateHandle(filtered, handleInformation.GrantedAccess, 0, newTokenHandle);
+            ObDereferenceObject(filtered);
+        }
+        ObDereferenceObject(source);
+    }
+    if (deleteLuids != 0)
+    {
+        MiFreePool(deleteLuids);
+    }
+    if (disableBlob != 0)
+    {
+        MiFreePool(disableBlob);
+    }
     return status;
 }

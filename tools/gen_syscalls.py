@@ -226,6 +226,8 @@ IMPLEMENTED = [
     "NtSignalAndWaitForSingleObject",
     "NtQueueApcThreadEx2",
     "NtAlertResumeThread",
+    "NtSetInformationToken",
+    "NtFilterToken",
 ]
 
 
