@@ -259,6 +259,14 @@ struct KTHREAD
 
     void (*startRoutine)(void *startContext);
     void *startContext;
+
+    /* CUI-6: per-thread CPU time, whole-tick sampling at the clock interrupt
+     * (KiUpdateClock charges KI_100NS_PER_TICK to the interrupted thread,
+     * kernel or user by the interrupted CS — exactly NT's clock-interrupt
+     * accounting). Read under the dispatcher lock; written with interrupts
+     * off, which on the uniprocessor IS the lock. */
+    uint64_t kernelTime100ns;
+    uint64_t userTime100ns;
 };
 
 /* --- sched.c ------------------------------------------------------------- */
@@ -398,7 +406,19 @@ void KiRemoveTimer(PKTIMER timer);
  * absolute interrupt-time deadline. */
 uint64_t KiComputeDueTime(PLARGE_INTEGER timeout);
 /* The clock tick: advance time, expire due timers. Interrupt context. */
-void KiUpdateClock(void);
+void KiUpdateClock(BOOLEAN interruptedUser);
+
+/* CUI-6: machine-wide CPU time totals, charged in KiUpdateClock alongside
+ * the per-thread counters. Their sum plus idle equals KiInterruptTime by
+ * construction (every tick charged exactly once — asserted at the charge
+ * site). Readers hold the dispatcher lock. */
+extern volatile uint64_t KiIdleTime100ns;
+extern volatile uint64_t KiTotalKernelTime100ns;
+extern volatile uint64_t KiTotalUserTime100ns;
+
+/* CUI-6: is this KTHREAD the boot/idle thread? (sched.c owns the idle
+ * thread's identity; the clock tick charges it to idle time.) */
+BOOLEAN KiThreadIsIdle(PKTHREAD thread);
 
 /* --- apc.c (M7) ---------------------------------------------------------- */
 
@@ -425,6 +445,6 @@ BOOLEAN KiTestAlertCurrentThread(void);
 
 /* --- irq.c --------------------------------------------------------------- */
 
-void KiDispatchInterrupt(uint64_t vector);
+void KiDispatchInterrupt(uint64_t vector, BOOLEAN interruptedUser);
 
 #endif /* PROSKRNL_KERNEL_KE_KE_H */

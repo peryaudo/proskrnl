@@ -160,11 +160,40 @@ void KiVerifyTimerList(void)
     }
 }
 
-void KiUpdateClock(void)
+/* CUI-6: machine-wide CPU-time totals (ke.h). Charged below, one tick to
+ * exactly one bucket, so their sum always equals KiInterruptTime. */
+volatile uint64_t KiIdleTime100ns;
+volatile uint64_t KiTotalKernelTime100ns;
+volatile uint64_t KiTotalUserTime100ns;
+
+void KiUpdateClock(BOOLEAN interruptedUser)
 {
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
     KeTickCount++;
     KiInterruptTime += KI_100NS_PER_TICK;
+
+    /* CUI-6: whole-tick sampling accounting, NT's clock-interrupt shape —
+     * the interrupted thread is charged the whole tick, kernel or user by
+     * the interrupted CS; the idle thread's ticks (and any tick before the
+     * scheduler exists) are idle time. One tick, one bucket: the invariant
+     * below is the subsystem's cheapest defence. */
+    PKTHREAD current = KiCurrentThread;
+    if (current == 0 || KiThreadIsIdle(current))
+    {
+        KiIdleTime100ns += KI_100NS_PER_TICK;
+    }
+    else if (interruptedUser)
+    {
+        current->userTime100ns += KI_100NS_PER_TICK;
+        KiTotalUserTime100ns += KI_100NS_PER_TICK;
+    }
+    else
+    {
+        current->kernelTime100ns += KI_100NS_PER_TICK;
+        KiTotalKernelTime100ns += KI_100NS_PER_TICK;
+    }
+    ASSERT(KiIdleTime100ns + KiTotalKernelTime100ns + KiTotalUserTime100ns == KiInterruptTime);
+
     KiUpdateUserSharedDataTime();
 
     while (!IsListEmpty(&KiTimerListHead))
