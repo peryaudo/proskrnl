@@ -7,6 +7,7 @@
  * SetDisposition/Cleanup here (docs/04 "ntsem" concern, folded into the ops).
  */
 #include "fs/fat32/fat.h"
+#include "drivers/virtio/blk.h" /* CUI-8: batched direct-DMA page transfers */
 #include "kernel/io/io.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h"
@@ -45,6 +46,58 @@ static uint32_t FatRunSectors(PFAT_VOLUME volume, ULONG sectorInCluster, uint64_
     return run;
 }
 
+/* A batch of in-flight page transfers — the docs/19 §5a depth source: a
+ * multi-page fill or writeback puts up to VIO_BLK_MAX_INFLIGHT device
+ * requests in flight before awaiting any of them, so the device overlaps
+ * the work that used to be strictly sequential round trips. The request
+ * array is the issuer's frame (docs/20 R4): FatBatchFlush awaits EVERY
+ * submitted request even after a failure — the device may still be writing
+ * the earlier requests' frames — and no caller returns past a non-empty
+ * batch. */
+typedef struct
+{
+    VIO_BLK_REQUEST requests[VIO_BLK_MAX_INFLIGHT];
+    ULONG count;
+} FAT_IO_BATCH;
+
+static NTSTATUS FatBatchFlush(FAT_IO_BATCH *batch)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    for (ULONG i = 0; i < batch->count; i++)
+    {
+        NTSTATUS one = VioBlkAwait(&batch->requests[i]);
+        if (NT_SUCCESS(status) && !NT_SUCCESS(one))
+        {
+            status = one; /* first failure wins; the awaits still run to the end */
+        }
+    }
+    batch->count = 0;
+    return status;
+}
+
+static NTSTATUS FatBatchTransfer(FAT_IO_BATCH *batch, BOOLEAN isWrite, PFAT_VOLUME volume,
+                                 uint64_t sector, uint32_t sectorCount, uint64_t physical)
+{
+    NTSTATUS status;
+    if (batch->count == VIO_BLK_MAX_INFLIGHT)
+    {
+        status = FatBatchFlush(batch);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    VIO_BLK_REQUEST *request = &batch->requests[batch->count];
+    uint64_t lba = volume->partitionFirstLba + sector;
+    status = isWrite ? VioBlkSubmitWrite(request, lba, sectorCount, physical)
+                     : VioBlkSubmitRead(request, lba, sectorCount, physical);
+    if (NT_SUCCESS(status))
+    {
+        batch->count++;
+    }
+    return status;
+}
+
 NTSTATUS FatEnsureCache(PFAT_FCB fcb)
 {
     ASSERT(!fcb->isDirectory);
@@ -58,12 +111,14 @@ NTSTATUS FatEnsureCache(PFAT_FCB fcb)
         return status;
     }
 
-    /* Page-granularity runs straight into the cache frames: the device DMAs
-     * the frame itself, no bounce (docs/19 §5a). */
+    /* Page-granularity runs straight into the cache frames (no bounce),
+     * batched so the whole-file load keeps the device deep (docs/19 §5a). */
+    FAT_IO_BATCH batch;
+    batch.count = 0;
     PFAT_VOLUME volume = fcb->volume;
     ULONG cluster = fcb->firstCluster;
     uint64_t position = 0;
-    while (cluster != 0 && position < fcb->fileSize)
+    while (cluster != 0 && position < fcb->fileSize && NT_SUCCESS(status))
     {
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG s = 0;
@@ -71,15 +126,25 @@ NTSTATUS FatEnsureCache(PFAT_FCB fcb)
         {
             uint32_t run = FatRunSectors(volume, s, position, fcb->fileSize);
             uint64_t physical = fcb->cache.frames[position / PAGE_SIZE] + (position % PAGE_SIZE);
-            status = FatReadSectorsPhysical(volume, clusterSector + s, run, physical);
+            status = FatBatchTransfer(&batch, FALSE, volume, clusterSector + s, run, physical);
             if (!NT_SUCCESS(status))
             {
-                return status;
+                break;
             }
             s += run;
             position += (uint64_t)run * FAT_SECTOR_SIZE;
         }
         cluster = FatGetNextCluster(volume, cluster);
+    }
+    /* Await unconditionally: outstanding reads own their frames (R4). */
+    NTSTATUS flush = FatBatchFlush(&batch);
+    if (NT_SUCCESS(status))
+    {
+        status = flush;
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
     }
     fcb->cacheLoaded = TRUE;
     return STATUS_SUCCESS;
@@ -104,7 +169,10 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
     ULONG clusterIndex = (ULONG)(firstByte / clusterBytes);
     ULONG cluster = FatWalkChain(volume, fcb->firstCluster, clusterIndex);
 
-    for (uint64_t position = firstByte; position < endByte && cluster != 0;)
+    FAT_IO_BATCH batch;
+    batch.count = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+    for (uint64_t position = firstByte; position < endByte && cluster != 0 && NT_SUCCESS(status);)
     {
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG sectorInCluster = (ULONG)((position % clusterBytes) / FAT_SECTOR_SIZE);
@@ -112,18 +180,19 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
         {
             uint32_t run = FatRunSectors(volume, sectorInCluster, position, endByte);
             uint64_t physical = fcb->cache.frames[position / PAGE_SIZE] + (position % PAGE_SIZE);
-            NTSTATUS status =
-                FatWriteSectorsPhysical(volume, clusterSector + sectorInCluster, run, physical);
+            status = FatBatchTransfer(&batch, TRUE, volume, clusterSector + sectorInCluster, run,
+                                      physical);
             if (!NT_SUCCESS(status))
             {
-                return status;
+                break;
             }
             sectorInCluster += run;
             position += (uint64_t)run * FAT_SECTOR_SIZE;
         }
         cluster = FatGetNextCluster(volume, cluster);
     }
-    return STATUS_SUCCESS;
+    NTSTATUS flush = FatBatchFlush(&batch);
+    return NT_SUCCESS(status) ? flush : status;
 }
 
 NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
