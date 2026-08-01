@@ -39,7 +39,7 @@ The result is a chimera: **an NT skeleton with Unix-teaching-kernel viscera.**
 | **Ps** | PEB/TEB/params layout, user-mode return protocol | EPROCESS/ETHREAD internal layout (nobody reads it) |
 | **Io** | async completion protocol (IOSB, APC/event/port) | no IRP, no driver stack — a VFS-style internal interface |
 | **Cm** | `NtCreateKey` semantics, information classes | hive format (our own), no transactions/notifications |
-| **Se** | token shape read by advapi32 | "always allow" — a stub |
+| **Se** | token shape read by advapi32; one fixed identity; SD-bearing objects get the real DACL check (CUI-6) | no-SD objects stay permissive; one admin identity, no audit |
 
 The forced column is, almost exactly, **the good, deliberate core of Cutler's NT
 design** (unified waitable objects, handles, async I/O with APCs, section objects). The

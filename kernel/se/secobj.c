@@ -344,3 +344,22 @@ NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInforma
     MiFreePool(incoming);
     return STATUS_SUCCESS;
 }
+
+/* CUI-6: capture a create-time OBJECT_ATTRIBUTES security descriptor onto the
+ * object header (se.h). The stored blob is freed by Ob on object delete. */
+NTSTATUS SeCaptureObjectSecurity(PVOID objectHeader, PSECURITY_DESCRIPTOR userSd)
+{
+    POBJECT_HEADER header = objectHeader;
+    if (userSd == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    PSEP_SECURITY_DESCRIPTOR captured;
+    NTSTATUS status = SepCaptureSecurityDescriptor(userSd, &captured);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    header->securityDescriptor = captured; /* one create-time SD site (G11) */
+    return STATUS_SUCCESS;
+}

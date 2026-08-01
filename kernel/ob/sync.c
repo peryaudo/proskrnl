@@ -21,6 +21,12 @@ OBJECT_TYPE ObpEventType = {
     .validAccess = EVENT_ALL_ACCESS,
     .waitable = TRUE,
     .deleteProcedure = 0,
+    /* CUI-6: the real NT GENERIC_MAPPING, as wineserver event_type
+     * (server/event.c) composes it. */
+    .genericRead = STANDARD_RIGHTS_READ | EVENT_QUERY_STATE,
+    .genericWrite = STANDARD_RIGHTS_WRITE | EVENT_MODIFY_STATE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
+    .genericAll = EVENT_ALL_ACCESS,
 };
 
 /* A mutant can die while owned (last handle closed mid-hold): take it off
@@ -41,6 +47,11 @@ OBJECT_TYPE ObpMutantType = {
     .validAccess = MUTANT_ALL_ACCESS,
     .waitable = TRUE,
     .deleteProcedure = ObpDeleteMutant,
+    /* CUI-6: wineserver mutex_type (server/mutex.c). */
+    .genericRead = STANDARD_RIGHTS_READ | MUTANT_QUERY_STATE,
+    .genericWrite = STANDARD_RIGHTS_WRITE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
+    .genericAll = MUTANT_ALL_ACCESS,
 };
 
 OBJECT_TYPE ObpSemaphoreType = {
@@ -48,6 +59,11 @@ OBJECT_TYPE ObpSemaphoreType = {
     .validAccess = SEMAPHORE_ALL_ACCESS,
     .waitable = TRUE,
     .deleteProcedure = 0,
+    /* CUI-6: wineserver semaphore_type (server/semaphore.c). */
+    .genericRead = STANDARD_RIGHTS_READ | SEMAPHORE_QUERY_STATE,
+    .genericWrite = STANDARD_RIGHTS_WRITE | SEMAPHORE_MODIFY_STATE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
+    .genericAll = SEMAPHORE_ALL_ACCESS,
 };
 
 /* Probe an optional out-parameter for a UserMode caller (no-op in KernelMode);
@@ -501,6 +517,11 @@ OBJECT_TYPE ObpTimerType = {
     .name = "Timer",
     .validAccess = TIMER_ALL_ACCESS,
     .waitable = TRUE,
+    /* CUI-6: wineserver timer_type (server/timer.c). */
+    .genericRead = STANDARD_RIGHTS_READ | TIMER_QUERY_STATE,
+    .genericWrite = STANDARD_RIGHTS_WRITE | TIMER_MODIFY_STATE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE | SYNCHRONIZE,
+    .genericAll = TIMER_ALL_ACCESS,
 };
 
 NTSTATUS NtCreateTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,

@@ -52,11 +52,11 @@ third-party drivers, we owe that contract to no one, and SMP becomes ordinary fu
 
 | Faked | Shape preserved | Inside |
 |---|---|---|
-| **Se (security)** | CUI-2: a real Ob token object with the full query/adjust/duplicate/access-check surface (`kernel/se/`, pinned by `tests/ntapi/sem_se/` — see "CUI-2 Se notes") | ONE fixed admin identity (wineserver's `token_create_admin`, byte-identical); object create/open stays "always allow" — `NtAccessCheck` exists as a service, but Ob never consults tokens or SDs when granting handles |
+| **Se (security)** | CUI-2: a real Ob token object with the full query/adjust/duplicate/access-check surface (`kernel/se/`, pinned by `tests/ntapi/sem_se/` — see "CUI-2 Se notes"). **CUI-6 retired always-allow**: an object carrying a security descriptor now gets the real DACL check at open (`SeCheckObjectAccess`, wineserver `check_object_access`) | ONE fixed admin identity (wineserver's `token_create_admin`, byte-identical); a create-time `OBJECT_ATTRIBUTES.SecurityDescriptor` is captured and enforced, but an object with **no** SD stays permissive (as wineserver's null-SD path does) |
 | **Cm hive format** | `NtCreateKey`/value semantics | our own on-disk format; no MS hive binary compat |
 | **EPROCESS/ETHREAD** | exist as internal structs | layout entirely ours; nobody reads it (no drivers) |
 | **DPC/IRQL surface** | absent, not stubbed | callers don't exist (no drivers) |
-| **Generic access mapping** (M3) | `GENERIC_*`/`MAXIMUM_ALLOWED` accepted everywhere a `DesiredAccess` goes | any generic bit grants the type's FULL access mask instead of NT's per-type `GENERIC_MAPPING` — an over-grant, consistent with always-allow Se. Handle-granted access is still enforced per use (`EVENT_MODIFY_STATE` etc., pinned by `tests/ntapi/sem_ob/`) |
+| **Generic access mapping** (M3 → CUI-6) | `GENERIC_*`/`MAXIMUM_ALLOWED` accepted everywhere a `DesiredAccess` goes | **CUI-6** gave the named object types their real per-type `GENERIC_MAPPING` (wineserver's, cited per type in `kernel/ob/sync.c`/`namespace.c`); the types without an explicit one (process/thread/job/section/completion/device) still over-grant a generic wish to `validAccess` (no baked caller opens them by generic bit — Art. 1). Handle-granted access is still enforced per use (`EVENT_MODIFY_STATE` etc., pinned by `tests/ntapi/sem_ob/`) |
 | **Name case folding** (M3) | `OBJ_CASE_INSENSITIVE` honoured per lookup | upcasing is ASCII-only; NT carries a full Unicode upcase table. Kernel-created names are ASCII, so this is unobservable until user mode invents non-ASCII object names |
 | **Adversarial namespace error classification** (M3) | the ordinary namespace contract (`tests/ntapi/sem_ob/namespace{,_errors}`): missing leaf / missing intermediate / collision / type mismatch / empty-and-root names / symbolic-link resolution and loops all match Wine exactly | the *exact* `NTSTATUS` among the several "namespace is malformed or conflicting" codes for deliberately pathological inputs — a graph of symbolic links pointing at each other or at wrong-typed objects, the *same* name created under several incompatible object types — can still differ from Wine. Wine's PE stack only ever uses well-formed, type-stable namespace paths (`\BaseNamedObjects\Name`, `\??\C:`), so these sequences (the differential fuzzer's `--names named`/`malformed` modes construct them; they do not minimize below ~13 calls) are unobservable in practice. Fixing them byte-exact is deferred object-manager work, not a boundary Wine depends on |
 
@@ -681,11 +681,18 @@ real-NT folklore, the oracle wins (Art. 6). Scoping and deviations:
   `NtAccessCheck*AndAuditAlarm` family. `TokenLinkedToken` likewise stays
   unanswered (the oracle would mint a Full-elevation linked token) until a
   UAC-probing caller convicts it.
-- **Object access remains always-allow**: `OBJECT_ATTRIBUTES.
-  SecurityDescriptor` at create time is accepted and ignored; Ob's
-  create/open/handle paths never evaluate SDs or tokens. `NtAccessCheck`
-  is a pure *service* over a caller-supplied SD (the wineserver ACE walk,
-  transcribed exactly).
+- **Object access: always-allow retired for SD-bearing objects (CUI-6)**:
+  a create-time `OBJECT_ATTRIBUTES.SecurityDescriptor` is now captured
+  (`SeCaptureObjectSecurity`) and enforced at open through
+  `SeCheckObjectAccess` — wineserver's `check_object_access`: the effective
+  token (thread impersonation else process primary) walks the object's DACL,
+  a denied right is `STATUS_ACCESS_DENIED`, `MAXIMUM_ALLOWED` resolves to the
+  granted subset. An object with **no** SD stays permissive, exactly as the
+  server's null-SD path does. Create does not ACE-check its own new SD (the
+  creator gets the requested access; the DACL bites at open), and a partial
+  create-time SD is stored as given — token-defaulting of missing parts is
+  `NtSetSecurityObject`'s job (no baked create passes a partial SD).
+  `NtAccessCheck` remains the caller-supplied-SD service it always was.
 - **`NtQuery/SetSecurityObject` scope**: pinned on named events (kernel
   objects generally); FILE SDs are out — the oracle's come from host
   `stat()` shapes. Mandatory-label SACL surgery
