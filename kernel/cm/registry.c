@@ -71,7 +71,10 @@ static void CmpDeleteKeyBody(PVOID bodyPointer)
     if (node->deleted && node->bodyCount == 0)
     {
         /* Values were freed at delete time; the node itself waited for the
-         * last stale handle. */
+         * last stale handle. Notify records cannot survive here: each is
+         * freed when its arming body closes, and every record on this node
+         * belongs to a body referencing this node (cm.h CMP_NOTIFY). */
+        ASSERT(IsListEmpty(&node->notifyListHead));
         ASSERT(node->subkeyCount == 0);
         if (node->name.Buffer != 0)
         {
@@ -86,6 +89,9 @@ OBJECT_TYPE CmpKeyType = {
     .validAccess = KEY_ALL_ACCESS,
     .waitable = FALSE,
     .deleteProcedure = CmpDeleteKeyBody,
+    /* CUI-7: the arming open's last handle close fires-and-frees its
+     * notification record (notify.c; wineserver key_close_handle). */
+    .closeProcedure = CmpCloseKeyBody,
 };
 
 /* --- tree primitives -------------------------------------------------------- */
@@ -172,6 +178,7 @@ PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name)
     }
     InitializeListHead(&node->subkeyListHead);
     InitializeListHead(&node->valueListHead);
+    InitializeListHead(&node->notifyListHead);
     node->parent = parent;
     node->lastWriteTime = CmpNow();
     if (parent != 0)
@@ -689,8 +696,8 @@ static NTSTATUS CmpCreateKeyHandle(PCMP_KEY_NODE node, ACCESS_MASK desiredAccess
  * stale-handle rule (every op through a deleted key's handle is
  * STATUS_KEY_DELETED — wine server/registry.c get_hkey_obj). The caller
  * dereferences *bodyOut on success. */
-static NTSTATUS CmpReferenceKey(HANDLE handle, ACCESS_MASK desiredAccess, BOOLEAN allowDeleted,
-                                PCM_KEY_BODY *bodyOut)
+NTSTATUS CmpReferenceKey(HANDLE handle, ACCESS_MASK desiredAccess, BOOLEAN allowDeleted,
+                         PCM_KEY_BODY *bodyOut)
 {
     PVOID body;
     NTSTATUS status = ObReferenceObjectByHandle(handle, desiredAccess, &CmpKeyType,
@@ -1108,9 +1115,15 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     {
         *disposition = dispositionValue;
     }
-    if (dispositionValue == REG_CREATED_NEW_KEY && !found->isVolatile)
+    if (dispositionValue == REG_CREATED_NEW_KEY)
     {
-        CmpSaveHive();
+        if (!found->isVolatile)
+        {
+            CmpSaveHive();
+        }
+        /* Creation notifies the PARENT (wineserver create_key:
+         * touch_key(get_parent(key), REG_NOTIFY_CHANGE_NAME)). */
+        CmpNotifyChange(found->parent, REG_NOTIFY_CHANGE_NAME);
     }
     return STATUS_SUCCESS;
 }
@@ -1202,9 +1215,10 @@ NTSTATUS NtDeleteKey(HANDLE keyHandle)
         else
         {
             BOOLEAN wasVolatile = node->isVolatile;
+            PCMP_KEY_NODE parent = node->parent;
             RemoveEntryList(&node->siblingEntry);
-            node->parent->subkeyCount--;
-            node->parent->lastWriteTime = CmpNow();
+            parent->subkeyCount--;
+            parent->lastWriteTime = CmpNow();
             node->parent = 0;
             node->deleted = TRUE;
             CmpFreeValues(node);
@@ -1212,6 +1226,10 @@ NTSTATUS NtDeleteKey(HANDLE keyHandle)
             {
                 CmpSaveHive();
             }
+            /* Deletion notifies the PARENT; the deleted key's own watchers
+             * stay silent until their handles close (wineserver delete_key:
+             * touch_key(parent, REG_NOTIFY_CHANGE_NAME); pinned). */
+            CmpNotifyChange(parent, REG_NOTIFY_CHANGE_NAME);
         }
     }
     ObDereferenceObject(body);
@@ -1300,6 +1318,9 @@ NTSTATUS NtRenameKey(HANDLE keyHandle, UNICODE_STRING *newName)
         {
             CmpSaveHive();
         }
+        /* Rename notifies the key ITSELF (wineserver rename_key:
+         * touch_key(key, REG_NOTIFY_CHANGE_NAME)). */
+        CmpNotifyChange(node, REG_NOTIFY_CHANGE_NAME);
         status = STATUS_SUCCESS;
     }
 
@@ -1388,6 +1409,7 @@ NTSTATUS NtDeleteValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName)
         {
             CmpSaveHive();
         }
+        CmpNotifyChange(node, REG_NOTIFY_CHANGE_LAST_SET);
     }
     ObDereferenceObject(body);
     return status;
@@ -1461,6 +1483,7 @@ NTSTATUS NtSetValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName, ULONG 
         {
             CmpSaveHive();
         }
+        CmpNotifyChange(node, REG_NOTIFY_CHANGE_LAST_SET);
     }
     ObDereferenceObject(body);
     return status;

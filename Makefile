@@ -113,6 +113,7 @@ CSRC := kernel/init/main.c \
         kernel/io/completion.c \
         kernel/cm/registry.c \
         kernel/cm/hive.c \
+        kernel/cm/notify.c \
         kernel/syscall/table.c \
         kernel/syscall/uaccess.c \
         drivers/pci.c \
