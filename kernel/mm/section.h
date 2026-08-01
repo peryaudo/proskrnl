@@ -89,4 +89,11 @@ NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProte
 NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                             uint64_t offset, uint64_t *viewSizeInOut, ULONG protect);
 
+/* CUI-7 constrained form (NtMapViewOfSectionEx placement limits, inclusive
+ * of the last byte; zeros mean unconstrained). The classic entry delegates
+ * here — one mapping engine (Art. 11). */
+NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
+                              uint64_t offset, uint64_t *viewSizeInOut, ULONG protect,
+                              uint64_t limitLow, uint64_t limitHigh);
+
 #endif /* PROSKRNL_KERNEL_MM_SECTION_H */

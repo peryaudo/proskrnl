@@ -52,6 +52,21 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
 NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                    ULONG type, ULONG protect, uint64_t limitLow,
                                    uint64_t limitHigh, uint64_t align);
+
+/* The captured/validated MEM_EXTENDED_PARAMETER contract (CUI-7); ONE
+ * parser for the whole *Ex family (virtual.c MiCaptureExtendedParams,
+ * mirroring the oracle's get_extended_params ladder — Art. 11). */
+typedef struct
+{
+    uint64_t limitLow;
+    uint64_t limitHigh; /* inclusive last usable byte; 0 = unconstrained */
+    uint64_t align;
+    ULONG attributes;
+    USHORT machine;
+} MI_EXTENDED_PARAMS;
+
+NTSTATUS MiCaptureExtendedParams(const MEM_EXTENDED_PARAMETER *parameters, ULONG count,
+                                 MI_EXTENDED_PARAMS *out);
 NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                              ULONG type);
 NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
