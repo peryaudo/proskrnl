@@ -258,6 +258,40 @@ a fabricated number; `^C` is detected on the serial transport rather than by
 conhost, so `ENABLE_PROCESSED_INPUT` is not consulted (`docs/03` "CUI-4
 process-ecosystem notes").
 
+**CUI-6 complete**: handles, identity, and the query surface — what real
+tools ask *about* processes, threads and handles. All 14 ids landed
+test-first: the `SetHandleInformation`/`GetHandleInformation` idiom
+(`NtSetInformationObject` + `ObjectHandleFlagInformation`, with
+protect-from-close now enforced at `NtClose`), `NtCompareObjects`,
+`NtSignalAndWaitForSingleObject` (atomic under the one dispatcher lock),
+`NtOpenTimer`, `NtMakePermanentObject`, `NtQueueApcThreadEx2`,
+`NtAlertResumeThread`, and the no-power trio (`NtFlushProcessWriteBuffers`,
+`NtGetCurrentProcessorNumber`, `NtSetThreadExecutionState`). The query
+surface real tools read opened up on one piece of new machinery —
+**per-thread CPU-time accounting**, whole-tick sampling at the clock
+interrupt discriminated by the interrupted CS — which `ProcessTimes`,
+`ThreadTimes`, `SystemProcessorPerformanceInformation` and the real job
+accounting all ride; plus `ProcessPriorityClass`/`HandleCount`/
+`ImageFileName`, `ThreadQuerySetWin32StartAddress`, and
+`SystemHandleInformation`/`SystemModuleInformation`. Jobs finished with
+wineserver's parent/child **nesting**, create-time **breakaway**, and
+subtree accounting. Foreign `NtGet/SetContextThread` reads a suspended,
+parked target's saved trap frame and `fxArea` (the
+`SuspendThread`+`GetThreadContext` profiler pattern); `NtOpenThread` opens
+by CLIENT_ID. Se-2 added token set-info/filter (`CreateRestrictedToken`),
+**thread impersonation attach** (retiring the CUI-2 "no impersonation"
+deviation), and the two oracle-stub ids
+(`NtAdjustGroupsToken`/`NtImpersonateAnonymousToken`) pinned
+`beyond_oracle`. As its own commit, Ob's **always-allow access check was
+retired**: an object created with a security descriptor now gets the real
+DACL check at open, while no-SD objects stay permissive. Acceptance:
+`tests/run/run.sh cui6` runs `timeit`/`redirchain`/`restricted` under a live
+cmd.exe. The buildable id surface is now **173/264**. **Not yet:** CPU time
+is 1 ms whole-tick sampling (not NT's finer accounting); foreign context is
+suspended-parked targets only; `SystemModuleInformation` reports the one
+real kernel module, not the oracle's three fakes; the job memory/time limit
+flags stay stored-not-enforced (`docs/03` "CUI-6 handles/identity notes").
+
 **CUI-5 complete**: Io completion — the file surface's last mile. **Rename
 exists**: `FileRenameInformation(Ex)`/`FileLinkInformation` in
 `NtSetInformationFile`, with the FAT entry mover rewriting the live FCB's
@@ -372,10 +406,10 @@ latch" a sound verdict; and `tools/unscreen.py`, which replays a test's
 own text back out of the console's 80-column screen diff, so a non-zero
 budget is a list of names instead of a number.
 
-Next: **GUI-6** — the Wine desktop; or **CUI-6** (handles, identity and the
-query surface) then **CUI-7** (Cm-2 + Mm-2 + system furniture), which
-between them finish the measured syscall gap at 202/264
-(`docs/16-syscall-status.md`, `docs/02`); or **Net-1** — sockets
+Next: **GUI-6** — the Wine desktop; or **CUI-7** (Cm-2 + Mm-2 + system
+furniture), which finishes the measured syscall gap at 202/264
+(`docs/16-syscall-status.md`, `docs/02`) now that CUI-6 has closed its 14
+ids (173/264); or **Net-1** — sockets
 (virtio-net, `\Device\Afd`; the former CUI-5, now its own path), whose
 prerequisite is no longer CUI-1's clock alone but **CUI-8**, since an AFD
 `accept` that never completes cannot be served by the polled-synchronous

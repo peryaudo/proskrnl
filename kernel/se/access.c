@@ -337,9 +337,8 @@ out:
  * one falls back to {read,write,exec}=STANDARD_RIGHTS_* and all=validAccess,
  * so a generic ACE still resolves within the type's rights (no baked caller
  * puts a generic ACE on such a type — docs/03). */
-NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor,
-                             ACCESS_MASK desiredAccess, ACCESS_MASK mappedAccess,
-                             ACCESS_MASK *grantedAccess)
+NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor, ACCESS_MASK desiredAccess,
+                             ACCESS_MASK mappedAccess, ACCESS_MASK *grantedAccess)
 {
     if (securityDescriptor == 0)
     {
@@ -369,9 +368,8 @@ NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor,
     ULONG privilegeCount = 1;
     ACCESS_MASK granted = 0;
     NTSTATUS accessResult = STATUS_SUCCESS;
-    NTSTATUS status =
-        SepTokenAccessCheck(SeCurrentToken(), securityDescriptor, expanded, &mapping, &privilege,
-                            &privilegeCount, &granted, &accessResult);
+    NTSTATUS status = SepTokenAccessCheck(SeCurrentToken(), securityDescriptor, expanded, &mapping,
+                                          &privilege, &privilegeCount, &granted, &accessResult);
     if (!NT_SUCCESS(status))
     {
         return status;
