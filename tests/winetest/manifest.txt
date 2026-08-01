@@ -41,3 +41,10 @@ cmd.exe_test.exe:directory
 # identity/query surface it built, and none was added unverified (a pair
 # joins only once green on BOTH runners). The object-manager/token subtests
 # are candidates for a future unpark once a winetest run confirms them.
+# CUI-7 added no pairs either: the natural candidates (ntdll:virtual,
+# kernel32:virtual - parked since M10 on the missing Mm surface) both
+# exercise placeholder allocation (test_NtAllocateVirtualMemoryEx and the
+# VirtualAlloc2 blocks), which proskrnl deliberately refuses loudly
+# (docs/03 "CUI-7"; no baked consumer) - and under the armed
+# panic-on-NOT_IMPLEMENTED boot that refusal is fatal by design, so the
+# pairs cannot run to a verdict until placeholders are built.

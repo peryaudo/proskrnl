@@ -313,6 +313,68 @@ def main() -> int:
         if not expect_after(mark, b"restricted-ok", "the restricted-token launch"):
             return 1
 
+    # ---- CUI-7: the registry save/load + write-watch acceptance (docs/02
+    # "reg save/load round-trips and survives reboot; an app on the
+    # VirtualAlloc2/write-watch path runs") --------------------------------
+    if os.environ.get("EXPECT_CUI7", ""):
+        # 1. seed + save + load + notify: the reg round trip's first boot.
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe seed\r")
+        if not expect_after(mark, b"regtool-seed-ok", "the seeded key"):
+            return 1
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe save\r")
+        if not expect_after(mark, b"regtool-save-ok", "the saved hive file"):
+            return 1
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe load\r")
+        if not expect_after(mark, b"regtool-load-ok", "the loaded hive's content"):
+            return 1
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe watch\r")
+        if not expect_after(mark, b"regtool-watch-ok", "the change notification"):
+            return 1
+        # 2. watchapp: VirtualAlloc2 placement + write-watch end to end.
+        mark = len(buffered)
+        sock.sendall(b"C:\\watchapp.exe\r")
+        if not expect_after(mark, b"watchapp-watch-3", "the stride's dirty pages"):
+            return 1
+        if not expect_after(mark, b"watchapp-read-ok", "the kernel-write marking"):
+            return 1
+        if not expect_after(mark, b"watchapp-done", "the watchapp completion"):
+            return 1
+
+    if os.environ.get("EXPECT_CUI7_VERIFY", ""):
+        # Boot 2: the seeded key and the saved hive file both survived the
+        # power cycle; then the machine ends itself through ring-3
+        # NtShutdownSystem (no `exit` — the clean QEMU exit IS the verdict,
+        # checked by the cui7 leg in tests/run/run.sh).
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe verify\r")
+        if not expect_after(mark, b"regtool-verify-ok", "the reboot-surviving registry"):
+            return 1
+        mark = len(buffered)
+        sock.sendall(b"C:\\regtool.exe shutdown\r")
+        if not expect_after(mark, b"regtool-shutdown-go", "the shutdown handoff"):
+            return 1
+        # Drain until the guest's poweroff closes the socket so the kernel's
+        # own "[KTEST] shutdown action=2" line lands in the log (the cui7
+        # leg greps it as the live arm's verdict).
+        end = time.monotonic() + 30
+        while time.monotonic() < end:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not data:
+                break
+            log.write(data)
+            log.flush()
+        print("console_expect: cui7 verify + shutdown handed off")
+        return 0
+
     mark = len(buffered)
     sock.sendall(b"exit\r")
     if not pump_until(lambda b: b"[KTEST] module cmd.exe PASS" in b[mark:], "the cmd verdict"):
