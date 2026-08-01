@@ -372,11 +372,17 @@ Ordering: hard prerequisite for **Net-1** (an AFD `accept`/`recv` may never comp
 polled-synchronous socket path deadlocks by construction) and for **CUI-10** (a spin under
 a giant lock stalls every CPU at the kernel gate). Independent of CUI-1…CUI-7. Roughly one
 consolidation milestone.
-**Done when:** two threads' file I/O genuinely overlaps — in-flight depth reported as a
-`[KTEST]` verdict against a committed budget, because an implementation that pends but
-never overlaps passes every semantic test (`docs/19` §8); the `sem_file`/`sem_mm`/`sem_pipe`
-suites and the `file_coherence` stress stay green; a pended file read cancels; the
-determinism of the existing run legs is unchanged (the drain point is ours to choose).
+**Done when:** a second thread observably makes progress while the first waits on the disk
+— the property the milestone exists for, and one no current test states; two threads' file
+I/O genuinely overlaps, with in-flight depth reported as a `[KTEST]` verdict against a
+committed budget, because an implementation that pends but never overlaps passes every
+semantic test (`docs/19` §8.4); a **concurrent** `file_coherence` is green (today's runs
+single-threaded, so the existing net guards the semantics an in-flight operation must not
+break, never the in-flight state itself); the differential fuzzer has learned that
+operations can be in flight, so a pended-completion divergence can be convicted rather than
+suspected (Art. 6; `tests/fuzz/interp.c` is single-threaded today); a pended file read
+cancels; and the existing run legs' verdicts are byte-identical, with the drain-stress knob
+off by default.
 
 ## CUI-9 — COW: shared image masters
 Spec: **`docs/17-cow-strategy.md`**. Needs an **Article 3 amendment**, and the amendment
