@@ -75,6 +75,12 @@ CHOICES = {
     'process_cid': (3, []),
     'vm_scenario': (3, []),
     'job_query': (4, []),
+    'ren_name': (4, []),
+    'allocex_scenario': (6, []),
+    'lock_scenario': (3, []),
+    'flush_scenario': (3, []),
+    'watch_scenario': (4, []),
+    'prefetch_scenario': (5, []),
 }
 
 # op name -> (opcode, [operand kind strings])
@@ -146,4 +152,12 @@ OPS = [
     ('query_handle_flags', 64, 'NtQueryObject', ['slot_in', 'ch_len']),
     ('flush_write_buffers', 65, 'NtFlushProcessWriteBuffers', []),
     ('current_processor', 66, 'NtGetCurrentProcessorNumber', []),
+    ('rename_key', 67, 'NtRenameKey', ['slot_in', 'ch_ren_name']),
+    ('alloc_ex', 68, 'NtAllocateVirtualMemoryEx', ['ch_allocex_scenario']),
+    ('lock_virtual', 69, 'NtLockVirtualMemory', ['ch_lock_scenario']),
+    ('unlock_virtual', 70, 'NtUnlockVirtualMemory', ['ch_lock_scenario']),
+    ('flush_virtual', 71, 'NtFlushVirtualMemory', ['ch_flush_scenario']),
+    ('get_write_watch', 72, 'NtGetWriteWatch', ['ch_watch_scenario']),
+    ('reset_write_watch', 73, 'NtResetWriteWatch', ['ch_watch_scenario']),
+    ('prefetch_vm', 74, 'NtSetInformationVirtualMemory', ['ch_prefetch_scenario']),
 ]

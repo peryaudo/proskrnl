@@ -56,6 +56,12 @@ typedef enum {
     FZ_OPND_CH_PROCESS_CID,
     FZ_OPND_CH_VM_SCENARIO,
     FZ_OPND_CH_JOB_QUERY,
+    FZ_OPND_CH_REN_NAME,
+    FZ_OPND_CH_ALLOCEX_SCENARIO,
+    FZ_OPND_CH_LOCK_SCENARIO,
+    FZ_OPND_CH_FLUSH_SCENARIO,
+    FZ_OPND_CH_WATCH_SCENARIO,
+    FZ_OPND_CH_PREFETCH_SCENARIO,
 } FzOperandKind;
 
 typedef enum {
@@ -126,6 +132,14 @@ typedef enum {
     FZ_OP_QUERY_HANDLE_FLAGS,
     FZ_OP_FLUSH_WRITE_BUFFERS,
     FZ_OP_CURRENT_PROCESSOR,
+    FZ_OP_RENAME_KEY,
+    FZ_OP_ALLOC_EX,
+    FZ_OP_LOCK_VIRTUAL,
+    FZ_OP_UNLOCK_VIRTUAL,
+    FZ_OP_FLUSH_VIRTUAL,
+    FZ_OP_GET_WRITE_WATCH,
+    FZ_OP_RESET_WRITE_WATCH,
+    FZ_OP_PREFETCH_VM,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -197,6 +211,14 @@ static const FzOperandKind fz_kinds_set_handle_info[] = { FZ_OPND_SLOT_IN, FZ_OP
 static const FzOperandKind fz_kinds_query_handle_flags[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_flush_write_buffers[1];
 static const FzOperandKind fz_kinds_current_processor[1];
+static const FzOperandKind fz_kinds_rename_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_REN_NAME };
+static const FzOperandKind fz_kinds_alloc_ex[] = { FZ_OPND_CH_ALLOCEX_SCENARIO };
+static const FzOperandKind fz_kinds_lock_virtual[] = { FZ_OPND_CH_LOCK_SCENARIO };
+static const FzOperandKind fz_kinds_unlock_virtual[] = { FZ_OPND_CH_LOCK_SCENARIO };
+static const FzOperandKind fz_kinds_flush_virtual[] = { FZ_OPND_CH_FLUSH_SCENARIO };
+static const FzOperandKind fz_kinds_get_write_watch[] = { FZ_OPND_CH_WATCH_SCENARIO };
+static const FzOperandKind fz_kinds_reset_write_watch[] = { FZ_OPND_CH_WATCH_SCENARIO };
+static const FzOperandKind fz_kinds_prefetch_vm[] = { FZ_OPND_CH_PREFETCH_SCENARIO };
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -265,6 +287,14 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_QUERY_HANDLE_FLAGS] = { fz_kinds_query_handle_flags, 2, "NtQueryObject" },
     [FZ_OP_FLUSH_WRITE_BUFFERS] = { fz_kinds_flush_write_buffers, 0, "NtFlushProcessWriteBuffers" },
     [FZ_OP_CURRENT_PROCESSOR] = { fz_kinds_current_processor, 0, "NtGetCurrentProcessorNumber" },
+    [FZ_OP_RENAME_KEY] = { fz_kinds_rename_key, 2, "NtRenameKey" },
+    [FZ_OP_ALLOC_EX] = { fz_kinds_alloc_ex, 1, "NtAllocateVirtualMemoryEx" },
+    [FZ_OP_LOCK_VIRTUAL] = { fz_kinds_lock_virtual, 1, "NtLockVirtualMemory" },
+    [FZ_OP_UNLOCK_VIRTUAL] = { fz_kinds_unlock_virtual, 1, "NtUnlockVirtualMemory" },
+    [FZ_OP_FLUSH_VIRTUAL] = { fz_kinds_flush_virtual, 1, "NtFlushVirtualMemory" },
+    [FZ_OP_GET_WRITE_WATCH] = { fz_kinds_get_write_watch, 1, "NtGetWriteWatch" },
+    [FZ_OP_RESET_WRITE_WATCH] = { fz_kinds_reset_write_watch, 1, "NtResetWriteWatch" },
+    [FZ_OP_PREFETCH_VM] = { fz_kinds_prefetch_vm, 1, "NtSetInformationVirtualMemory" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8
@@ -322,5 +352,11 @@ static const ACCESS_MASK fz_ch_access_job[] = { (ACCESS_MASK)(JOB_OBJECT_ALL_ACC
 #define FZ_CH_PROCESS_CID_COUNT 3
 #define FZ_CH_VM_SCENARIO_COUNT 3
 #define FZ_CH_JOB_QUERY_COUNT 4
+#define FZ_CH_REN_NAME_COUNT 4
+#define FZ_CH_ALLOCEX_SCENARIO_COUNT 6
+#define FZ_CH_LOCK_SCENARIO_COUNT 3
+#define FZ_CH_FLUSH_SCENARIO_COUNT 3
+#define FZ_CH_WATCH_SCENARIO_COUNT 4
+#define FZ_CH_PREFETCH_SCENARIO_COUNT 5
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */

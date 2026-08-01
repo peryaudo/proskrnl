@@ -47,6 +47,18 @@ NTSYSAPI NTSTATUS NTAPI NtOpenProcess(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBU
                                       const CLIENT_ID *);
 NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE, const void *, void *, SIZE_T, SIZE_T *);
 NTSYSAPI NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE, void *, const void *, SIZE_T, SIZE_T *);
+NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE, UNICODE_STRING *);
+NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG, PVOID,
+                                                  ULONG);
+NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtLockVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtUnlockVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtFlushVirtualMemory(HANDLE, LPCVOID *, SIZE_T *, PVOID);
+NTSYSAPI NTSTATUS NTAPI NtGetWriteWatch(HANDLE, ULONG, PVOID, SIZE_T, PVOID *, ULONG_PTR *,
+                                        ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtResetWriteWatch(HANDLE, PVOID, SIZE_T);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationVirtualMemory(HANDLE, ULONG, ULONG_PTR, PVOID, PVOID,
+                                                      ULONG);
 /* NtGetNlsSectionPtr's section types, as wine/dlls/ntdll/locale_private.h
  * defines them (winternl.h omits the enum; NORM_FORM comes via windows.h).
  * Before fuzz_model.h: its nls choice tables name these. */
@@ -1494,6 +1506,261 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         /* The value differs by host CPU count on the oracle; trace only that
          * it returned (the call cannot fail). */
         ntapi_printf("[FUZZ] p%u c%u %s ran cpu_lt_max=%u\n", prog, call, nt, cpu < 0x10000u);
+        break;
+    }
+    case FZ_OP_RENAME_KEY:
+    {
+        /* The ren_name shapes over whatever the slot holds: a key renames
+         * (or collides deterministically), a non-key is the type mismatch,
+         * an empty slot the invalid handle. Renamed keys stay under the
+         * scrubbed fz_reg prefix. */
+        static const WCHAR renA[] = {'f', 'z', 'r', 'e', 'n', '_', 'a', 0};
+        static const WCHAR renB[] = {'f', 'z', 'r', 'e', 'n', '_', 'b', 0};
+        static const WCHAR renPath[] = {'a', '\\', 'b', 0};
+        UNICODE_STRING name;
+        switch (a[1])
+        {
+        case 0: /* FZ_REN_PLAIN */
+            init_ustr(&name, renA);
+            break;
+        case 1: /* FZ_REN_OTHER */
+            init_ustr(&name, renB);
+            break;
+        case 2: /* FZ_REN_PATH */
+            init_ustr(&name, renPath);
+            break;
+        default: /* FZ_REN_EMPTY */
+            init_ustr(&name, renA);
+            name.Length = 0;
+            break;
+        }
+        st = NtRenameKey(fz_slots[a[0]], &name);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_ALLOC_EX:
+    {
+        /* Each scenario allocates, exercises and frees inside this one
+         * call; the placement window (0x30000000..0x3fffffff) is free on
+         * both sides (the interp image and its DLLs sit far above it). */
+        struct
+        {
+            ULONGLONG type_bits;
+            union
+            {
+                ULONGLONG u64;
+                PVOID pointer;
+            } u;
+        } params[2];
+        struct
+        {
+            PVOID lowest;
+            PVOID highest;
+            SIZE_T alignment;
+        } req;
+        PVOID base = NULL;
+        SIZE_T size = 0x10000;
+        ULONG type = MEM_RESERVE | MEM_COMMIT;
+        PVOID paramPtr = params;
+        ULONG count = 1;
+        fz_bzero(params, sizeof(params));
+        fz_bzero(&req, sizeof(req));
+        params[0].type_bits = 1; /* MemExtendedParameterAddressRequirements */
+        params[0].u.pointer = &req;
+        switch (a[0])
+        {
+        case 0: /* FZ_AX_CONSTRAINED */
+            req.lowest = (PVOID)(ULONG_PTR)0x30000000;
+            req.highest = (PVOID)(ULONG_PTR)0x3fffffff;
+            req.alignment = 0x20000;
+            break;
+        case 1: /* FZ_AX_DUP_TYPE */
+            params[1] = params[0];
+            count = 2;
+            break;
+        case 2: /* FZ_AX_BAD_ALIGN */
+            req.alignment = 0x8000;
+            break;
+        case 3: /* FZ_AX_TYPE32 */
+            params[0].type_bits = 32;
+            break;
+        case 4: /* FZ_AX_ZERO_SIZE */
+            size = 0;
+            count = 0;
+            paramPtr = NULL;
+            break;
+        default: /* FZ_AX_BASE_WITH_LIMITS */
+            base = (PVOID)(ULONG_PTR)0x30000000;
+            req.lowest = (PVOID)(ULONG_PTR)0x30000000;
+            req.highest = (PVOID)(ULONG_PTR)0x3fffffff;
+            break;
+        }
+        st = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &base, &size, type, PAGE_READWRITE,
+                                       paramPtr, count);
+        unsigned inWindow = 0;
+        if (fz_ok(st))
+        {
+            inWindow = (ULONG_PTR)base >= 0x30000000 && (ULONG_PTR)base < 0x40000000;
+            SIZE_T freeSize = 0;
+            NtFreeVirtualMemory(NtCurrentProcess(), &base, &freeSize, MEM_RELEASE);
+        }
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x in_window=%u\n", prog, call, nt, (unsigned)st,
+                     inWindow);
+        break;
+    }
+    case FZ_OP_LOCK_VIRTUAL:
+    case FZ_OP_UNLOCK_VIRTUAL:
+    {
+        /* Build the state, exercise, tear down — all inside the call. */
+        PVOID region = NULL;
+        SIZE_T regionSize = 0x1000;
+        ULONG type = a[0] == 1 ? MEM_RESERVE : (MEM_RESERVE | MEM_COMMIT);
+        PVOID addr;
+        SIZE_T len = 0x1000;
+        if (a[0] != 2) /* not FZ_LK_UNMAPPED */
+        {
+            if (!fz_ok(NtAllocateVirtualMemory(NtCurrentProcess(), &region, 0, &regionSize, type,
+                                               PAGE_READWRITE)))
+            {
+                ntapi_printf("[FUZZ] p%u c%u %s setup-failed\n", prog, call, nt);
+                break;
+            }
+            addr = region;
+        }
+        else
+        {
+            addr = (PVOID)(ULONG_PTR)0x1000;
+        }
+        if (op == FZ_OP_LOCK_VIRTUAL)
+            st = NtLockVirtualMemory(NtCurrentProcess(), &addr, &len, 1);
+        else
+            st = NtUnlockVirtualMemory(NtCurrentProcess(), &addr, &len, 1);
+        if (region != NULL)
+        {
+            SIZE_T freeSize = 0;
+            NtFreeVirtualMemory(NtCurrentProcess(), &region, &freeSize, MEM_RELEASE);
+        }
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_FLUSH_VIRTUAL:
+    {
+        PVOID region = NULL;
+        SIZE_T regionSize = 3 * 0x1000;
+        LPCVOID addr;
+        SIZE_T len;
+        if (a[0] != 2) /* not FZ_FL_UNMAPPED */
+        {
+            if (!fz_ok(NtAllocateVirtualMemory(NtCurrentProcess(), &region, 0, &regionSize,
+                                               MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)))
+            {
+                ntapi_printf("[FUZZ] p%u c%u %s setup-failed\n", prog, call, nt);
+                break;
+            }
+        }
+        if (a[0] == 0) /* FZ_FL_ANON_WHOLE */
+        {
+            addr = region;
+            len = 0;
+        }
+        else if (a[0] == 1) /* FZ_FL_PARTIAL */
+        {
+            addr = (const unsigned char *)region + 0x1000;
+            len = 0x1000;
+        }
+        else
+        {
+            addr = (LPCVOID)(ULONG_PTR)0x1000;
+            len = 0x1000;
+        }
+        st = NtFlushVirtualMemory(NtCurrentProcess(), &addr, &len, NULL);
+        unsigned wholeLen = fz_ok(st) && len == regionSize;
+        if (region != NULL)
+        {
+            SIZE_T freeSize = 0;
+            NtFreeVirtualMemory(NtCurrentProcess(), &region, &freeSize, MEM_RELEASE);
+        }
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x whole=%u\n", prog, call, nt, (unsigned)st,
+                     wholeLen);
+        break;
+    }
+    case FZ_OP_GET_WRITE_WATCH:
+    case FZ_OP_RESET_WRITE_WATCH:
+    {
+        /* A fresh two-page watch region per call: clean, dirtied, the flag
+         * refusal, and the non-watch refusal. */
+        PVOID region = NULL;
+        SIZE_T regionSize = 2 * 0x1000;
+        ULONG type = a[0] == 3 ? (MEM_RESERVE | MEM_COMMIT)
+                               : (MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH);
+        if (!fz_ok(NtAllocateVirtualMemory(NtCurrentProcess(), &region, 0, &regionSize, type,
+                                           PAGE_READWRITE)))
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s setup-failed\n", prog, call, nt);
+            break;
+        }
+        if (a[0] == 1) /* FZ_WW_DIRTY */
+            *(volatile unsigned char *)region = 1;
+        if (op == FZ_OP_GET_WRITE_WATCH)
+        {
+            PVOID addresses[2];
+            ULONG_PTR count = 2;
+            ULONG granularity = 0;
+            ULONG flags = a[0] == 2 ? 4 : 0; /* FZ_WW_BAD_FLAGS */
+            st = NtGetWriteWatch(NtCurrentProcess(), flags, region, regionSize, addresses,
+                                 &count, &granularity);
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x n=%u g=%u\n", prog, call, nt, (unsigned)st,
+                         fz_ok(st) ? (unsigned)count : 0,
+                         fz_ok(st) ? (unsigned)granularity : 0);
+        }
+        else
+        {
+            SIZE_T resetSize = a[0] == 2 ? 0 : regionSize; /* the zero-size arm */
+            st = NtResetWriteWatch(NtCurrentProcess(), region, resetSize);
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        }
+        {
+            SIZE_T freeSize = 0;
+            NtFreeVirtualMemory(NtCurrentProcess(), &region, &freeSize, MEM_RELEASE);
+        }
+        break;
+    }
+    case FZ_OP_PREFETCH_VM:
+    {
+        struct
+        {
+            PVOID virtual_address;
+            SIZE_T number_of_bytes;
+        } ranges[2];
+        static unsigned char prefetchTarget[0x100];
+        ULONG flags = 0;
+        PVOID flagsPtr = &flags;
+        ULONG flagsSize = sizeof(flags);
+        ULONG_PTR count = 2;
+        ranges[0].virtual_address = prefetchTarget;
+        ranges[0].number_of_bytes = sizeof(prefetchTarget);
+        ranges[1].virtual_address = (PVOID)(ULONG_PTR)0x30000000; /* unmapped: fine */
+        ranges[1].number_of_bytes = 0x1000;
+        switch (a[0])
+        {
+        case 0: /* FZ_PF_VALID */
+            break;
+        case 1: /* FZ_PF_NULL_FLAGS */
+            flagsPtr = NULL;
+            break;
+        case 2: /* FZ_PF_BAD_SIZE */
+            flagsSize = 2;
+            break;
+        case 3: /* FZ_PF_ZERO_COUNT */
+            count = 0;
+            break;
+        default: /* FZ_PF_EMPTY_RANGE */
+            ranges[1].number_of_bytes = 0;
+            break;
+        }
+        st = NtSetInformationVirtualMemory(NtCurrentProcess(), 0 /* VmPrefetchInformation */,
+                                           count, ranges, flagsPtr, flagsSize);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
     default:
