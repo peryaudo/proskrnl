@@ -324,3 +324,62 @@ out:
     MiFreePool(sd);
     return status;
 }
+
+/* CUI-6: the Ob create/open access authority — wineserver check_object_access
+ * (server/token.c). An object with no security descriptor stays permissive
+ * (the caller's mapped access is granted, MAXIMUM_ALLOWED already resolved to
+ * the type's full mask by ObpMapDesiredAccess); an object that carries one
+ * gets the real DACL ACE walk against the effective token
+ * (SeCurrentToken = thread impersonation token else process token). This is
+ * the retirement of the always-allow shortcut for SD-bearing objects.
+ *
+ * The mapping is the type's own GENERIC_MAPPING; a type without an explicit
+ * one falls back to {read,write,exec}=STANDARD_RIGHTS_* and all=validAccess,
+ * so a generic ACE still resolves within the type's rights (no baked caller
+ * puts a generic ACE on such a type — docs/03). */
+NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor,
+                             ACCESS_MASK desiredAccess, ACCESS_MASK mappedAccess,
+                             ACCESS_MASK *grantedAccess)
+{
+    if (securityDescriptor == 0)
+    {
+        *grantedAccess = mappedAccess;
+        return STATUS_SUCCESS;
+    }
+    GENERIC_MAPPING mapping;
+    if (type->genericAll != 0)
+    {
+        mapping.GenericRead = type->genericRead;
+        mapping.GenericWrite = type->genericWrite;
+        mapping.GenericExecute = type->genericExecute;
+        mapping.GenericAll = type->genericAll;
+    }
+    else
+    {
+        mapping.GenericRead = STANDARD_RIGHTS_READ;
+        mapping.GenericWrite = STANDARD_RIGHTS_WRITE;
+        mapping.GenericExecute = STANDARD_RIGHTS_EXECUTE;
+        mapping.GenericAll = type->validAccess;
+    }
+    /* Expand generic bits before the walk (it refuses them); MAXIMUM_ALLOWED
+     * is resolved inside SepTokenAccessCheck. */
+    ACCESS_MASK expanded = SepMapAccess(desiredAccess, &mapping);
+    LUID_AND_ATTRIBUTES privilege;
+    memset(&privilege, 0, sizeof(privilege));
+    ULONG privilegeCount = 1;
+    ACCESS_MASK granted = 0;
+    NTSTATUS accessResult = STATUS_SUCCESS;
+    NTSTATUS status =
+        SepTokenAccessCheck(SeCurrentToken(), securityDescriptor, expanded, &mapping, &privilege,
+                            &privilegeCount, &granted, &accessResult);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (!NT_SUCCESS(accessResult))
+    {
+        return accessResult;
+    }
+    *grantedAccess = granted;
+    return STATUS_SUCCESS;
+}

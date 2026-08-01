@@ -215,6 +215,17 @@ static inline ULONG SepSdTotalLength(PSEP_SECURITY_DESCRIPTOR sd)
 NTSTATUS SepCaptureSecurityDescriptor(PSECURITY_DESCRIPTOR userSd,
                                       PSEP_SECURITY_DESCRIPTOR *captured);
 
+/* CUI-6: capture an OBJECT_ATTRIBUTES security descriptor onto an object at
+ * create time (`objectHeader` is a POBJECT_HEADER; the stored blob is freed
+ * on object delete — the ONE create-time SD site, G11). A partial SD is
+ * stored as given; token-defaulting of missing parts is NtSetSecurityObject's
+ * job (no baked create passes a partial SD). No-op for a NULL descriptor. */
+NTSTATUS SeCaptureObjectSecurity(PVOID objectHeader, PSECURITY_DESCRIPTOR userSd);
+
+/* CUI-6: the Ob create/open access authority (access.c). */
+NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor, ACCESS_MASK desiredAccess,
+                             ACCESS_MASK mappedAccess, ACCESS_MASK *grantedAccess);
+
 /* sd.c internals shared with access.c/secobj.c: validated-part helpers. */
 BOOLEAN SepIsValidSid(const SID *sid, ULONG availableLength);
 BOOLEAN SepIsValidAcl(const ACL *acl, ULONG availableLength);

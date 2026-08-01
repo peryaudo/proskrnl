@@ -14,6 +14,7 @@
  */
 #include "kernel/ob/ob.h"
 #include "kernel/ke/ke.h"           /* KiVerifyWaitList (the consistency sweep) */
+#include "kernel/se/se.h"           /* CUI-6: SeCaptureObjectSecurity / SeCheckObjectAccess */
 #include "kernel/syscall/uaccess.h" /* CUI-5: NtQueryDirectoryObject's mode */
 #include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
@@ -60,6 +61,11 @@ OBJECT_TYPE ObpDirectoryType = {
     .validAccess = DIRECTORY_ALL_ACCESS,
     .waitable = FALSE,
     .deleteProcedure = ObpDeleteDirectory,
+    /* CUI-6: wineserver directory_type (server/directory.c). */
+    .genericRead = STANDARD_RIGHTS_READ,
+    .genericWrite = STANDARD_RIGHTS_WRITE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE,
+    .genericAll = DIRECTORY_ALL_ACCESS,
 };
 
 OBJECT_TYPE ObpSymbolicLinkType = {
@@ -67,6 +73,11 @@ OBJECT_TYPE ObpSymbolicLinkType = {
     .validAccess = SYMBOLIC_LINK_ALL_ACCESS,
     .waitable = FALSE,
     .deleteProcedure = ObpDeleteSymbolicLink,
+    /* CUI-6: wineserver symlink_type (server/symlink.c). */
+    .genericRead = STANDARD_RIGHTS_READ | SYMBOLIC_LINK_QUERY,
+    .genericWrite = STANDARD_RIGHTS_WRITE,
+    .genericExecute = STANDARD_RIGHTS_EXECUTE | SYMBOLIC_LINK_QUERY,
+    .genericAll = SYMBOLIC_LINK_ALL_ACCESS,
 };
 
 /* --- name linkage --------------------------------------------------------- */
@@ -578,6 +589,16 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
     {
         header->permanent = TRUE;
     }
+    /* CUI-6: capture a create-time security descriptor onto the new object
+     * (the create handle is granted the requested access without a self
+     * ACE-check, as wineserver does; the DACL bites at open). */
+    status = SeCaptureObjectSecurity(header, attributes->SecurityDescriptor);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(parent);
+        ObDereferenceObject(*body);
+        goto out;
+    }
     status = ObpLinkObjectName(parent, header, &leaf);
     ObDereferenceObject(parent);
     if (!NT_SUCCESS(status))
@@ -657,8 +678,19 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
         ObDereferenceObject(found);
         return STATUS_ACCESS_DENIED;
     }
-    status = ObpCreateHandle(found, ObpMapDesiredAccess(ObpGetHeader(found)->type, desiredAccess),
-                             attributes->Attributes, handleOut);
+    /* CUI-6: retire always-allow — an object carrying a security descriptor
+     * gets the real DACL check; one without stays permissive (the mapped
+     * access). SeCheckObjectAccess is wineserver's check_object_access. */
+    POBJECT_HEADER foundHeader = ObpGetHeader(found);
+    ACCESS_MASK granted = 0;
+    status = SeCheckObjectAccess(foundHeader->type, foundHeader->securityDescriptor, desiredAccess,
+                                 ObpMapDesiredAccess(foundHeader->type, desiredAccess), &granted);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(found);
+        return status;
+    }
+    status = ObpCreateHandle(found, granted, attributes->Attributes, handleOut);
     ObDereferenceObject(found);
     return status;
 }
