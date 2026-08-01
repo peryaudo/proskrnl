@@ -2428,6 +2428,46 @@ NtSetInformationVirtualMemory:
     add $0x78, %rsp
     ret
 
+    .global NtSetDefaultLocale
+NtSetDefaultLocale:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xe6, %eax
+    syscall
+    ret
+
+    .global NtQueryDefaultUILanguage
+NtQueryDefaultUILanguage:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x44, %eax
+    syscall
+    ret
+
+    .global NtSetDefaultUILanguage
+NtSetDefaultUILanguage:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xe7, %eax
+    syscall
+    ret
+
+    .global NtQueryInstallUILanguage
+NtQueryInstallUILanguage:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc7, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

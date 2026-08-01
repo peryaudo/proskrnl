@@ -206,6 +206,10 @@
 #define NTSYS_NtLockVirtualMemory 0x00ad
 #define NTSYS_NtUnlockVirtualMemory 0x0103
 #define NTSYS_NtSetInformationVirtualMemory 0x00ed
+#define NTSYS_NtSetDefaultLocale 0x00e6
+#define NTSYS_NtQueryDefaultUILanguage 0x0044
+#define NTSYS_NtSetDefaultUILanguage 0x00e7
+#define NTSYS_NtQueryInstallUILanguage 0x00c7
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

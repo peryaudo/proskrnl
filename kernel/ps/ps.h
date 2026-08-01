@@ -494,4 +494,8 @@ static inline NTSTATUS PspProbeReturnLength(PULONG returnLength)
     return KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
 }
 
+/* CUI-7 (nls.c): seed the default-locale slots from the registry once the
+ * Cm tree is up (kernel/init/main.c, right after CmInitialize). */
+void PspInitializeLanguage(void);
+
 #endif /* PROSKRNL_KERNEL_PS_PS_H */
