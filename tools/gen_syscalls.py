@@ -579,6 +579,53 @@ FUZZ_CHOICES = {
         ("FZ_JOBQ_BASIC_LIMITS", False),
         ("FZ_JOBQ_CLASS_CEILING", False),
     ]),
+    # CUI-7: the NtRenameKey new-name shapes (deterministic per program:
+    # plain components, a path, the empty name).
+    "ren_name": (None, [
+        ("FZ_REN_PLAIN", False),
+        ("FZ_REN_OTHER", False),
+        ("FZ_REN_PATH", False),
+        ("FZ_REN_EMPTY", False),
+    ]),
+    # CUI-7: NtAllocateVirtualMemoryEx extended-parameter scenarios over
+    # interp-owned allocations (allocate + free inside one call).
+    "allocex_scenario": (None, [
+        ("FZ_AX_CONSTRAINED", False),
+        ("FZ_AX_DUP_TYPE", False),
+        ("FZ_AX_BAD_ALIGN", False),
+        ("FZ_AX_TYPE32", False),
+        ("FZ_AX_ZERO_SIZE", False),
+        ("FZ_AX_BASE_WITH_LIMITS", False),
+    ]),
+    # CUI-7: lock/unlock coverage states, each built and torn down inside
+    # the call.
+    "lock_scenario": (None, [
+        ("FZ_LK_COMMITTED", False),
+        ("FZ_LK_RESERVED", False),
+        ("FZ_LK_UNMAPPED", False),
+    ]),
+    # CUI-7: flush shapes (whole anonymous region, a partial range, an
+    # unmapped address).
+    "flush_scenario": (None, [
+        ("FZ_FL_ANON_WHOLE", False),
+        ("FZ_FL_PARTIAL", False),
+        ("FZ_FL_UNMAPPED", False),
+    ]),
+    # CUI-7: write-watch scan/reset states over a per-call watch region.
+    "watch_scenario": (None, [
+        ("FZ_WW_CLEAN", False),
+        ("FZ_WW_DIRTY", False),
+        ("FZ_WW_BAD_FLAGS", False),
+        ("FZ_WW_NON_WATCH", False),
+    ]),
+    # CUI-7: the VmPrefetchInformation argument ladder.
+    "prefetch_scenario": (None, [
+        ("FZ_PF_VALID", False),
+        ("FZ_PF_NULL_FLAGS", False),
+        ("FZ_PF_BAD_SIZE", False),
+        ("FZ_PF_ZERO_COUNT", False),
+        ("FZ_PF_EMPTY_RANGE", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -702,6 +749,22 @@ FUZZ_OPS = [
     ("query_handle_flags", "NtQueryObject", ["slot_in", "ch_len"]),
     ("flush_write_buffers", "NtFlushProcessWriteBuffers", []),
     ("current_processor", "NtGetCurrentProcessorNumber", []),
+    # CUI-7 Cm-2/Mm-2 ops. Only the DETERMINISTIC, side-effect-bounded
+    # slice: renaming interp-owned fz_reg keys (collisions, paths and the
+    # empty name are all deterministic statuses; renamed keys stay under
+    # the scrubbed prefix), and memory scenarios that allocate, exercise
+    # and free inside one call. Hive save/load/unload (file I/O + the
+    # privilege global), notify (event-slot interplay), restore/replace,
+    # and the locale/time/shutdown setters (irreversible or global state)
+    # stay out — the cancel_io/suspend precedent.
+    ("rename_key", "NtRenameKey", ["slot_in", "ch_ren_name"]),
+    ("alloc_ex", "NtAllocateVirtualMemoryEx", ["ch_allocex_scenario"]),
+    ("lock_virtual", "NtLockVirtualMemory", ["ch_lock_scenario"]),
+    ("unlock_virtual", "NtUnlockVirtualMemory", ["ch_lock_scenario"]),
+    ("flush_virtual", "NtFlushVirtualMemory", ["ch_flush_scenario"]),
+    ("get_write_watch", "NtGetWriteWatch", ["ch_watch_scenario"]),
+    ("reset_write_watch", "NtResetWriteWatch", ["ch_watch_scenario"]),
+    ("prefetch_vm", "NtSetInformationVirtualMemory", ["ch_prefetch_scenario"]),
 ]
 
 
