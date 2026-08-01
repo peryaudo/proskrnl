@@ -679,8 +679,13 @@ NTSTATUS NtTerminateThread(HANDLE threadHandle, LONG exitStatus)
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,
-                          ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
+/* THE user-APC queue engine, shared by NtQueueApcThread and
+ * NtQueueApcThreadEx2 (the pinned tree funnels the classic entry into Ex2:
+ * dlls/ntdll/unix/thread.c). The target handle needs THREAD_SET_CONTEXT —
+ * the server's APC_USER gate (server/thread.c queue_apc), which
+ * sem_ps/apc_ex pins. */
+static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,
+                                ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
 {
     PKTHREAD target;
     PETHREAD threadObject = 0;
@@ -691,7 +696,7 @@ NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR 
     else
     {
         PVOID body;
-        NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
+        NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_CONTEXT,
                                                     &PspThreadType, ExGetPreviousMode(), &body, 0);
         if (!NT_SUCCESS(status))
         {
@@ -723,6 +728,32 @@ NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR 
     return STATUS_SUCCESS;
 }
 
+NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,
+                          ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
+{
+    return PspQueueUserApc(threadHandle, apcRoutine, apcArgument1, apcArgument2, apcArgument3);
+}
+
+/* CUI-6: QueueUserAPC2's back end. The flag bits change nothing at this
+ * boundary — the pinned server carries SERVER_USER_APC_SPECIAL only to
+ * refuse wow64 targets and delivery is identical (sem_ps/apc_ex pins it;
+ * Art. 6: the oracle is the spec). Reserve objects do not exist
+ * (NtAllocateReserveObject is permanently out of scope, docs/16), so a
+ * non-NULL reserve handle refuses loudly (Art. 12) — no baked caller
+ * passes one (kernelbase always sends NULL). */
+NTSTATUS NtQueueApcThreadEx2(HANDLE threadHandle, HANDLE reserveHandle, ULONG flags,
+                             PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1, ULONG_PTR apcArgument2,
+                             ULONG_PTR apcArgument3)
+{
+    (void)flags; /* accepted; unmapped bits are dropped exactly as the
+                  * oracle's unix layer drops them */
+    if (reserveHandle != 0)
+    {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    return PspQueueUserApc(threadHandle, apcRoutine, apcArgument1, apcArgument2, apcArgument3);
+}
+
 NTSTATUS NtTestAlert(void)
 {
     uint64_t flags = KiAcquireDispatcherLock();
@@ -731,6 +762,28 @@ NTSTATUS NtTestAlert(void)
     /* A queued APC is delivered by the syscall-return path (table.c) which
      * checks KiUserApcPending after this service. */
     return STATUS_SUCCESS;
+}
+
+/* THE alert-delivery core (lock held), shared by NtAlertThread and
+ * NtAlertResumeThread (G10). */
+static void PspAlertTcbLocked(PKTHREAD target)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    if (target->state == KI_THREAD_STATE_WAITING && target->waitAlertable)
+    {
+        /* The alert is CONSUMED by the wake it causes: the woken wait
+         * returns STATUS_ALERTED, which IS the delivery. Latching the bit as
+         * well let one NtAlertThread satisfy two alertable waits -- the
+         * parked one it woke, and the next one, which found the bit still
+         * set (docs/review-2026-07 §9). A SleepEx loop spins on that. */
+        target->waitAlertable = FALSE;
+        KiAlertWaitingThread(target);
+    }
+    else
+    {
+        /* Nothing to wake: latch it for the target's next alertable wait. */
+        target->alerted = TRUE;
+    }
 }
 
 NTSTATUS NtAlertThread(HANDLE threadHandle)
@@ -754,25 +807,43 @@ NTSTATUS NtAlertThread(HANDLE threadHandle)
         target = threadObject->tcb;
     }
     uint64_t flags = KiAcquireDispatcherLock();
-    if (target->state == KI_THREAD_STATE_WAITING && target->waitAlertable)
-    {
-        /* The alert is CONSUMED by the wake it causes: the woken wait
-         * returns STATUS_ALERTED, which IS the delivery. Latching the bit as
-         * well let one NtAlertThread satisfy two alertable waits -- the
-         * parked one it woke, and the next one, which found the bit still
-         * set (docs/review-2026-07 §9). A SleepEx loop spins on that. */
-        target->waitAlertable = FALSE;
-        KiAlertWaitingThread(target);
-    }
-    else
-    {
-        /* Nothing to wake: latch it for the target's next alertable wait. */
-        target->alerted = TRUE;
-    }
+    PspAlertTcbLocked(target);
     KiReleaseDispatcherLock(flags);
     if (threadObject != 0)
     {
         ObDereferenceObject(threadObject);
+    }
+    return STATUS_SUCCESS;
+}
+
+/* CUI-6: the alert+resume pair. The resume half is the oracle's
+ * (NtResumeThread with the previous-count write-back); the alert half is
+ * the documented NT contract the pinned unix side drops under its own
+ * FIXME, pinned beyond_oracle by sem_ps/apc_ex. One lock hold covers both
+ * so the previous count and the alert are one atomic observation. */
+NTSTATUS NtAlertResumeThread(HANDLE threadHandle, PULONG previousCount)
+{
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SUSPEND_RESUME, &PspThreadType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PETHREAD thread = body;
+    PKTHREAD tcb = thread->tcb;
+
+    uint64_t flags = KiAcquireDispatcherLock();
+    ULONG previous = (ULONG)tcb->suspendCount;
+    PspResumeTcb(tcb);
+    PspAlertTcbLocked(tcb);
+    KiReleaseDispatcherLock(flags);
+    ObDereferenceObject(thread);
+
+    if (previousCount != 0 &&
+        NT_SUCCESS(KiProbeForWrite(previousCount, sizeof(ULONG), sizeof(ULONG))))
+    {
+        *previousCount = previous;
     }
     return STATUS_SUCCESS;
 }
