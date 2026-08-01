@@ -56,6 +56,13 @@ typedef struct EPROCESS
     LARGE_INTEGER exitTime;
     uint64_t exitedKernelTime100ns;
     uint64_t exitedUserTime100ns;
+    /* CUI-6: Get/SetPriorityClass's stored value (store/report only — one
+     * CPU, one priority band that matters; wineserver likewise only maps it
+     * to nice, invisible at this boundary) and the NT-form image path
+     * ProcessImageFileName serves (pooled WCHAR buffer, empty for
+     * flat/boot processes that never had an NT path). */
+    UCHAR priorityClass;
+    UNICODE_STRING imageNtPath;
     uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
     uint64_t parentProcessId;         /* CUI-4: the creator's id, reported by
                                        * SystemProcessInformation.ParentProcessId
@@ -169,9 +176,13 @@ typedef struct ETHREAD
     uint64_t tidAlertsIn;
     uint64_t tidAlertsOut;
     /* CUI-6: the ThreadTimes wall-clock stamps (CPU counters live on the
-     * KTHREAD, where the clock tick charges them). */
+     * KTHREAD, where the clock tick charges them), and the
+     * ThreadQuerySetWin32StartAddress value — stamped from the creation
+     * start routine, rewritable through the set arm as the oracle's
+     * SET_THREAD_INFO_ENTRYPOINT is. */
     LARGE_INTEGER createTime;
     LARGE_INTEGER exitTime;
+    uint64_t win32StartAddress;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

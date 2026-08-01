@@ -60,6 +60,10 @@ static void PspDeleteProcess(PVOID body)
     {
         MiFreePool((void *)process->imageName);
     }
+    if (process->imageNtPath.Buffer != 0)
+    {
+        MiFreePool(process->imageNtPath.Buffer);
+    }
     PspUnlinkProcessFromJob(process);
     PspShutdownNoteProcessExit(process); /* idempotent: covers a process
                                           * deleted without ever exiting */
@@ -116,6 +120,11 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->exitTime.QuadPart = 0;
     process->exitedKernelTime100ns = 0;
     process->exitedUserTime100ns = 0;
+    /* CUI-6: a fresh process is NORMAL (wineserver process_create,
+     * server/process.c; sem_ps/proc_classes); no NT path until
+     * NtCreateUserProcess attaches one. */
+    process->priorityClass = PROCESS_PRIOCLASS_NORMAL;
+    memset(&process->imageNtPath, 0, sizeof(process->imageNtPath));
     process->isSystemProcess = FALSE;
     if (process != PsInitialSystemProcess)
     {
@@ -1614,7 +1623,6 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         captured = 0;
         status = PspCreateUserProcessImage(ntPath, dosPath, &options, &process, &threadObject);
     }
-    MiFreePool(ntPath);
     if (handleList != 0)
     {
         MiFreePool(handleList);
@@ -1622,12 +1630,19 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     }
     if (!NT_SUCCESS(status))
     {
+        MiFreePool(ntPath);
         MiFreePool(dosPath);
         return status;
     }
     process->imageName = dosPath; /* PsRunUserImageEx stores the caller's
                                    * pointer; keep the pool copy instead */
     process->imageNamePooled = TRUE;
+    /* CUI-6: retain the NT-form path for ProcessImageFileName (ownership
+     * moves to the EPROCESS; freed at process delete). */
+    process->imageNtPath.Buffer = ntPath;
+    process->imageNtPath.Length = (USHORT)(imageNameChars * sizeof(WCHAR));
+    process->imageNtPath.MaximumLength = (USHORT)((imageNameChars + 1) * sizeof(WCHAR));
+    ntPath = 0;
 
     status = ObpCreateHandle(process, ObpMapDesiredAccess(&PspProcessType, processAccess), 0,
                              processHandle);

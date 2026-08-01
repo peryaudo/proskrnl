@@ -166,6 +166,103 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
             (length > sizeof(KERNEL_USER_TIMES)) ? STATUS_INFO_LENGTH_MISMATCH : STATUS_SUCCESS;
         break;
     }
+    case ProcessPriorityClass:
+    {
+        /* CUI-6 (sem_ps/proc_classes): the 2-byte struct, size EXACT
+         * (dlls/ntdll/unix/process.c); Foreground is always FALSE (the
+         * oracle's own "not yet supported"). */
+        if (length != sizeof(PROCESS_PRIORITY_CLASS))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(PROCESS_PRIORITY_CLASS), 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        PROCESS_PRIORITY_CLASS info;
+        memset(&info, 0, sizeof(info));
+        info.Foreground = FALSE;
+        info.PriorityClass = process->priorityClass;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
+    case ProcessHandleCount:
+    {
+        /* CUI-6 (sem_ps/proc_classes): the oracle's odd protocol verbatim —
+         * size >= 4 writes the ULONG, size > 4 ALSO refuses, size < 4
+         * refuses with length 4. The value is the real in-use handle count
+         * (beyond_oracle: the oracle fabricates 0 under its own FIXME). */
+        if (length < sizeof(ULONG))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(ULONG);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG), 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        ULONG count = process->handleTable.inUse;
+        memcpy(buffer, &count, sizeof(count));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(count);
+        }
+        status = (length > sizeof(ULONG)) ? STATUS_INFO_LENGTH_MISMATCH : STATUS_SUCCESS;
+        break;
+    }
+    case ProcessImageFileName:
+    {
+        /* CUI-6 (sem_ps/proc_classes): UNICODE_STRING + embedded
+         * NUL-terminated buffer, NT (\??\) form; min-size refusal reports
+         * header + name (dlls/ntdll/unix/process.c). Boot/flat processes
+         * with no NT path answer an empty string. */
+        ULONG minSize = sizeof(UNICODE_STRING) + sizeof(WCHAR);
+        ULONG nameBytes = process->imageNtPath.Length;
+        if (length < minSize + nameBytes)
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = minSize + nameBytes;
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, minSize + nameBytes, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        UNICODE_STRING header;
+        WCHAR *userBuffer = (WCHAR *)((UNICODE_STRING *)buffer + 1);
+        header.Length = (USHORT)nameBytes;
+        header.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        header.Buffer = userBuffer;
+        memcpy(buffer, &header, sizeof(header));
+        if (nameBytes != 0)
+        {
+            memcpy(userBuffer, process->imageNtPath.Buffer, nameBytes);
+        }
+        WCHAR nul = 0;
+        memcpy(userBuffer + nameBytes / sizeof(WCHAR), &nul, sizeof(nul));
+        if (returnLength != 0)
+        {
+            *returnLength = minSize + nameBytes;
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
     case ProcessDebugPort:
     {
         if (length < sizeof(HANDLE))
@@ -551,6 +648,44 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
         if (referenced)
         {
             ObDereferenceObject(process);
+        }
+        return STATUS_SUCCESS;
+    }
+    /* CUI-6 (sem_ps/proc_classes): the stored priority class — an explicit
+     * case BEFORE the accept-as-no-op default arm, so this class can never
+     * again "succeed" silently without effect (Art. 12). Size exact, the
+     * oracle's own refusal status (dlls/ntdll/unix/process.c). Store and
+     * report only: one CPU, one priority band that matters (docs/03). */
+    if (infoClass == ProcessPriorityClass)
+    {
+        if (length != sizeof(PROCESS_PRIORITY_CLASS))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        PROCESS_PRIORITY_CLASS info;
+        NTSTATUS status = KiCopyFromUser(&info, buffer, sizeof(info));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PEPROCESS target = KeGetCurrentThread()->process;
+        BOOLEAN referenced = FALSE;
+        if (processHandle != NtCurrentProcess())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(processHandle, PROCESS_SET_INFORMATION,
+                                               &PspProcessType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        target->priorityClass = info.PriorityClass;
+        if (referenced)
+        {
+            ObDereferenceObject(target);
         }
         return STATUS_SUCCESS;
     }
