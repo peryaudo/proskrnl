@@ -21,7 +21,9 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
+#include "kernel/se/se.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/rtc.h"
 #include "arch/x86_64/smbios.h"
 
 #include "abi/ntpsapi.h"
@@ -1059,6 +1061,20 @@ static NTSTATUS PspQueryWineVersion(PVOID buffer, ULONG length, PULONG returnLen
     return STATUS_SUCCESS;
 }
 
+/* CUI-7: the stored time-adjustment pair (SetSystemTimeAdjustment's state;
+ * seeded to the oracle's fixed answer so the pre-set query is identical on
+ * both sides). One home for the value; the query class reads it back. */
+static ULONG PspTimeAdjustment = 156250;
+static BOOLEAN PspTimeAdjustmentDisabled = TRUE;
+
+static LUID PspSystemtimeLuid(void)
+{
+    LUID luid;
+    luid.LowPart = SE_SYSTEMTIME_PRIVILEGE;
+    luid.HighPart = 0;
+    return luid;
+}
+
 NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buffer, ULONG length,
                                   PULONG returnLength)
 {
@@ -1303,6 +1319,39 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    case SystemTimeAdjustmentInformation:
+    {
+        /* Exact-length only (wine dlls/ntdll/unix/system.c class 28; pinned
+         * by sem_ps/set_time BEFORE any set, where the oracle's fixed
+         * {156250, 156250, TRUE} and this stored state coincide). The
+         * post-set observability of the stored pair is the recorded
+         * divergence from the oracle's fixed answer (docs/03 "CUI-7"). */
+        SYSTEM_TIME_ADJUSTMENT_QUERY info;
+        if (length != sizeof(info))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(info);
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        info.TimeAdjustment = PspTimeAdjustment;
+        info.TimeIncrement = 156250; /* the 15.625 ms tick, as the oracle */
+        info.TimeAdjustmentDisabled = PspTimeAdjustmentDisabled;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemTimeOfDayInformation:
     {
         /* A PARTIAL buffer is served here — `if (size <= sizeof(sti)) copy
@@ -1570,6 +1619,83 @@ NTSTATUS NtQuerySystemTime(PLARGE_INTEGER time)
     KeQuerySystemTime(&now);
     memcpy(time, &now, sizeof(now));
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtSetSystemTime(const LARGE_INTEGER *newTime, LARGE_INTEGER *oldTime)
+{
+    /* The oracle's shape first (wine dlls/ntdll/unix/sync.c NtSetSystemTime;
+     * pinned by sem_ps/set_time): *old always carries the current time, a
+     * set within half a second is a success no-op, and only then does the
+     * privilege speak. The privileged arm is beyond_oracle (MS
+     * SetSystemTime): really move the clock, and write the CMOS back so the
+     * set survives a reboot (the CUI-1 RTC read's inverse). */
+    NTSTATUS status = KiProbeForRead(newTime, sizeof(*newTime), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    LARGE_INTEGER target;
+    memcpy(&target, newTime, sizeof(target));
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    if (oldTime != 0)
+    {
+        status = KiProbeForWrite(oldTime, sizeof(*oldTime), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(oldTime, &now, sizeof(now));
+    }
+    LONGLONG diff = target.QuadPart - now.QuadPart;
+    if (diff > -10000000 / 2 && diff < 10000000 / 2)
+    {
+        return STATUS_SUCCESS; /* within half a second: the oracle's no-op */
+    }
+    if (!SeSinglePrivilegeCheck(PspSystemtimeLuid(), ExGetPreviousMode()))
+    {
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+    KeSetSystemTime(target.QuadPart);
+    KiWriteRtcTime((uint64_t)target.QuadPart);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtSetSystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID information,
+                                ULONG length)
+{
+    /* One served class - SystemTimeAdjustmentInformation, the only one the
+     * baked stack issues (kernelbase SetSystemTimeAdjustment) - built
+     * against the MS contract (SetSystemTimeAdjustment; pinned
+     * beyond_oracle by sem_ps/set_time). Everything else refuses with the
+     * specific NT failure, a recorded divergence from the oracle's blanket
+     * FIXME-success (docs/03 "CUI-7"; G12: never a fabricated success). */
+    switch (infoClass)
+    {
+    case SystemTimeAdjustmentInformation:
+    {
+        SYSTEM_TIME_ADJUSTMENT adjustment;
+        if (length != sizeof(adjustment))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(information, sizeof(adjustment), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (!SeSinglePrivilegeCheck(PspSystemtimeLuid(), ExGetPreviousMode()))
+        {
+            return STATUS_PRIVILEGE_NOT_HELD;
+        }
+        memcpy(&adjustment, information, sizeof(adjustment));
+        PspTimeAdjustment = adjustment.TimeAdjustment;
+        PspTimeAdjustmentDisabled = adjustment.TimeAdjustmentDisabled;
+        return STATUS_SUCCESS;
+    }
+    default:
+        return STATUS_INVALID_INFO_CLASS;
+    }
 }
 
 /* Wine's fixed resolution triple (dlls/ntdll/unix/sync.c

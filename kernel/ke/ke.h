@@ -380,6 +380,10 @@ extern volatile uint64_t KeTickCount;
 ULONGLONG KeQueryInterruptTime(void);
 void KeQuerySystemTime(LARGE_INTEGER *time);
 
+/* CUI-7 (NtSetSystemTime): move the wall-clock base (armed absolute timers
+ * stand — docs/03 "CUI-7" notes) and republish KUSER_SHARED_DATA. */
+void KeSetSystemTime(LONGLONG newTime);
+
 /* Wall-clock base (100 ns since 1601 at boot): seeded once from the CMOS RTC
  * during KiSystemStartup (CUI-1); the initializer is the fixed-date fallback
  * (docs/03). SystemTime = base + interrupt time. */

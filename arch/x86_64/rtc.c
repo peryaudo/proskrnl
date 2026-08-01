@@ -1,10 +1,12 @@
-/* arch/x86_64/rtc.c — MC146818 CMOS RTC, read once at boot (CUI-1).
+/* arch/x86_64/rtc.c — MC146818 CMOS RTC: read once at boot (CUI-1), written
+ * back only by NtSetSystemTime (CUI-7).
  *
  * The one wall-clock read in the system: KiSystemTimeBase is seeded from it
  * and every later timestamp is base + interrupt time (kernel/ke/timer.c).
- * There is no periodic RTC interrupt, no alarm, no writeback — QEMU's
- * `-rtc base=utc` default supplies host UTC and the clock only needs to be
- * right once (docs/03: the no-RTC deviation this file retires).
+ * There is no periodic RTC interrupt and no alarm — QEMU's `-rtc base=utc`
+ * default supplies host UTC and the clock only needs to be right once
+ * (docs/03: the no-RTC deviation CUI-1 retired); the CUI-7 writeback exists
+ * so a privileged SetSystemTime survives a reboot.
  *
  * Register map and flag bits: MC146818A datasheet (address map, registers
  * 0x00-0x0D) — the pinned QEMU tree mirrors it verbatim in
@@ -34,6 +36,7 @@
 #define RTC_CENTURY      0x32
 
 #define RTC_REG_A_UIP  0x80 /* update in progress */
+#define RTC_REG_B_SET  0x80 /* halt updates while the time is being written */
 #define RTC_REG_B_DM   0x04 /* data mode: 1 = binary, 0 = BCD */
 #define RTC_REG_B_2412 0x02 /* 1 = 24-hour, 0 = 12-hour with PM in hour bit 7 */
 
@@ -163,4 +166,94 @@ uint64_t KiReadRtcTime(void)
     uint64_t totalSeconds = RtcDaysSinceNtEpoch(century * 100 + year, month, day) * 86400ULL +
                             (uint64_t)hours * 3600 + (uint64_t)minutes * 60 + (uint64_t)seconds;
     return totalSeconds * 10000000ULL; /* 100 ns units */
+}
+
+/* --- the CUI-7 writeback ----------------------------------------------------- */
+
+static void RtcWriteRegister(uint8_t index, uint8_t value)
+{
+    KiOutByte(RTC_INDEX_PORT, index);
+    KiOutByte(RTC_DATA_PORT, value);
+}
+
+/* Encode per the chip's current data mode (the decode inverse). */
+static uint8_t RtcEncodeField(int value, uint8_t regB)
+{
+    if (regB & RTC_REG_B_DM)
+    {
+        return (uint8_t)value;
+    }
+    return (uint8_t)(((value / 10) << 4) | (value % 10));
+}
+
+void KiWriteRtcTime(uint64_t ntTime)
+{
+    /* 100 ns units -> calendar fields, the KiReadRtcTime derivation run
+     * backwards (calendar arithmetic, no recalled constants). */
+    uint64_t totalSeconds = ntTime / 10000000ULL;
+    int seconds = (int)(totalSeconds % 60);
+    int minutes = (int)((totalSeconds / 60) % 60);
+    int hours = (int)((totalSeconds / 3600) % 24);
+    uint64_t days = totalSeconds / 86400ULL;
+
+    static const int daysPerMonth[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int year = 1601;
+    for (;;)
+    {
+        uint64_t inYear = RtcIsLeapYear(year) ? 366 : 365;
+        if (days < inYear)
+        {
+            break;
+        }
+        days -= inYear;
+        year++;
+        if (year > 9999)
+        {
+            return; /* implausible input: leave the CMOS alone */
+        }
+    }
+    int month = 1;
+    for (;;)
+    {
+        uint64_t inMonth = (uint64_t)daysPerMonth[month - 1];
+        if (month == 2 && RtcIsLeapYear(year))
+        {
+            inMonth += 1;
+        }
+        if (days < inMonth)
+        {
+            break;
+        }
+        days -= inMonth;
+        month++;
+    }
+    int day = (int)days + 1;
+
+    /* Halt the update cycle (register B SET — datasheet: the divider keeps
+     * counting but the calendar bytes are safe to write), store per the
+     * chip's own modes, then release. */
+    uint8_t regB = RtcReadRegister(RTC_REG_B);
+    RtcWriteRegister(RTC_REG_B, regB | RTC_REG_B_SET);
+    RtcWriteRegister(RTC_SECONDS, RtcEncodeField(seconds, regB));
+    RtcWriteRegister(RTC_MINUTES, RtcEncodeField(minutes, regB));
+    if (regB & RTC_REG_B_2412)
+    {
+        RtcWriteRegister(RTC_HOURS, RtcEncodeField(hours, regB));
+    }
+    else
+    {
+        /* 12-hour mode: PM in hour bit 7, 12 AM stored as 12 (datasheet). */
+        int pm = hours >= 12;
+        int hour12 = hours % 12;
+        if (hour12 == 0)
+        {
+            hour12 = 12;
+        }
+        RtcWriteRegister(RTC_HOURS, (uint8_t)(RtcEncodeField(hour12, regB) | (pm ? 0x80 : 0)));
+    }
+    RtcWriteRegister(RTC_DAY_OF_MONTH, RtcEncodeField(day, regB));
+    RtcWriteRegister(RTC_MONTH, RtcEncodeField(month, regB));
+    RtcWriteRegister(RTC_YEAR, RtcEncodeField(year % 100, regB));
+    RtcWriteRegister(RTC_CENTURY, RtcEncodeField(year / 100, regB));
+    RtcWriteRegister(RTC_REG_B, regB);
 }
