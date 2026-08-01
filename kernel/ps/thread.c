@@ -16,6 +16,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
+#include "kernel/se/se.h" /* CUI-6: SeTokenType / TOKEN_IMPERSONATE for impersonation attach */
 #include "kernel/mm/pool.h"
 #include "kernel/mm/virtual.h"
 #include "kernel/mm/phys.h"
@@ -52,6 +53,10 @@ static BOOLEAN PspIdWasAllocated(uint64_t id)
 static void PspDeleteThread(PVOID body)
 {
     PETHREAD thread = body;
+    if (thread->impersonationToken != 0)
+    {
+        ObDereferenceObject(thread->impersonationToken); /* CUI-6: the one token ref */
+    }
     if (thread->tcb != 0)
     {
         KiDeleteThread(thread->tcb);
@@ -60,6 +65,18 @@ static void PspDeleteThread(PVOID body)
     {
         ObDereferenceObject(thread->process);
     }
+}
+
+/* CUI-6: the current thread's impersonation token (ps.h; G11). Null-safe
+ * for the early-boot window before the scheduler has a current thread. */
+PVOID PsCurrentThreadImpersonationToken(void)
+{
+    PKTHREAD tcb = KeGetCurrentThread();
+    if (tcb == 0 || tcb->threadObject == 0)
+    {
+        return 0;
+    }
+    return ((PETHREAD)tcb->threadObject)->impersonationToken;
 }
 
 OBJECT_TYPE PspThreadType = {
@@ -105,6 +122,7 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     /* CUI-6: birth stamp (sem_ps/times); exit stamped at retire. */
     KeQuerySystemTime(&thread->createTime);
     thread->exitTime.QuadPart = 0;
+    thread->impersonationToken = 0; /* not impersonating until SetThreadToken */
     /* CUI-6: the Win32 start address — userStartArg1 IS the creation start
      * routine for user threads (the RtlUserThreadStart argument protocol);
      * 0 for main threads built before their entry is known, answered from
@@ -1397,6 +1415,49 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
 NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, LPCVOID buffer,
                                 ULONG length)
 {
+    /* CUI-6 (sem_se/se_impersonate): thread impersonation attach. The buffer
+     * is a HANDLE naming a token to impersonate, or 0 to revert
+     * (RevertToSelf); the token handle is resolved with TOKEN_IMPERSONATE
+     * (server/thread.c security_set_thread_token), and a failed resolve
+     * leaves the old token in place. */
+    if (infoClass == ThreadImpersonationToken)
+    {
+        if (length != sizeof(HANDLE))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        HANDLE tokenHandle;
+        NTSTATUS status = KiCopyFromUser(&tokenHandle, buffer, sizeof(tokenHandle));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        /* Impersonation targets the CURRENT thread (RtlImpersonateSelf /
+         * SetThreadToken(NULL, ...) — no baked caller sets another thread's
+         * token, and the server path resolves req->handle with 0 access). */
+        PETHREAD self = KeGetCurrentThread()->threadObject;
+        if (self == 0)
+        {
+            return STATUS_INVALID_HANDLE; /* a kernel thread has no ETHREAD */
+        }
+        PVOID newToken = 0;
+        if (tokenHandle != 0)
+        {
+            status = ObReferenceObjectByHandle(tokenHandle, TOKEN_IMPERSONATE, &SeTokenType,
+                                               ExGetPreviousMode(), &newToken, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status; /* the old token stays in place */
+            }
+        }
+        /* Replace: drop the old reference only after the new one is secured. */
+        if (self->impersonationToken != 0)
+        {
+            ObDereferenceObject(self->impersonationToken);
+        }
+        self->impersonationToken = newToken; /* keeps the reference (or 0) */
+        return STATUS_SUCCESS;
+    }
     /* CUI-6 (sem_ps/proc_classes): the one stored set — the Win32 start
      * address, sizeof(PVOID) exactly (dlls/ntdll/unix/thread.c
      * SET_THREAD_INFO_ENTRYPOINT). */

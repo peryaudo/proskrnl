@@ -479,6 +479,14 @@ PTOKEN SeCurrentToken(void)
     {
         return SeBootToken;
     }
+    /* CUI-6: the thread's impersonation token wins when one is attached
+     * (server/token.c check_object_access: current->token ?: process->token),
+     * else the process's primary token. */
+    PVOID impersonation = PsCurrentThreadImpersonationToken();
+    if (impersonation != 0)
+    {
+        return (PTOKEN)impersonation;
+    }
     return (PTOKEN)thread->process->token;
 }
 
@@ -600,19 +608,23 @@ NTSTATUS NtOpenProcessToken(HANDLE processHandle, DWORD desiredAccess, HANDLE *t
 NTSTATUS NtOpenThreadTokenEx(HANDLE threadHandle, DWORD desiredAccess, BOOLEAN openAsSelf,
                              DWORD handleAttributes, HANDLE *tokenHandle)
 {
-    (void)desiredAccess;
     (void)openAsSelf;
-    (void)handleAttributes;
     NTSTATUS status = SepPreZeroHandle(tokenHandle);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    /* Validate the thread handle, then report what the oracle reports for
-     * every fresh thread: no thread token exists (wineserver open_token:
-     * `thread->token == NULL -> STATUS_NO_TOKEN`). Impersonation attach is
-     * CUI-3's problem (docs/03 CUI-2 notes). */
-    if (threadHandle != NtCurrentThread())
+    /* CUI-6: resolve the thread's impersonation token, if any (wineserver
+     * open_token OPEN_TOKEN_THREAD; sem_se/se_impersonate). No token ->
+     * STATUS_NO_TOKEN; an anonymous-level one -> STATUS_CANT_OPEN_ANONYMOUS.
+     * The handle is resolved with no required access (get_thread_from_handle
+     * ..., 0). */
+    PETHREAD thread;
+    if (threadHandle == NtCurrentThread())
+    {
+        thread = KeGetCurrentThread()->threadObject;
+    }
+    else
     {
         PVOID body;
         status = ObReferenceObjectByHandle(threadHandle, 0, &PspThreadType, ExGetPreviousMode(),
@@ -621,9 +633,29 @@ NTSTATUS NtOpenThreadTokenEx(HANDLE threadHandle, DWORD desiredAccess, BOOLEAN o
         {
             return status;
         }
-        ObDereferenceObject(body);
+        thread = body;
     }
-    return STATUS_NO_TOKEN;
+
+    PTOKEN token = thread != 0 ? (PTOKEN)thread->impersonationToken : 0;
+    if (token == 0)
+    {
+        status = STATUS_NO_TOKEN;
+    }
+    else if (!token->primary && token->impersonationLevel <= SecurityAnonymous)
+    {
+        status = STATUS_CANT_OPEN_ANONYMOUS;
+    }
+    else
+    {
+        ACCESS_MASK granted = ObpMapDesiredAccess(&SeTokenType, desiredAccess);
+        status = ObpCreateHandle(token, granted, handleAttributes, tokenHandle);
+    }
+
+    if (threadHandle != NtCurrentThread() && thread != 0)
+    {
+        ObDereferenceObject(thread);
+    }
+    return status;
 }
 
 NTSTATUS NtOpenThreadToken(HANDLE threadHandle, DWORD desiredAccess, BOOLEAN openAsSelf,

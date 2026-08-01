@@ -266,10 +266,26 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
     ULONG_PTR value = (ULONG_PTR)handle;
     if (value >= (ULONG_PTR)-6 && value <= (ULONG_PTR)-4)
     {
+        /* CUI-6: -4 = process token, -5 = thread (impersonation) token,
+         * -6 = effective token (thread's if impersonating, else process's).
+         * The thread token is 0 unless SetThreadToken attached one, which is
+         * STATUS_INVALID_HANDLE for -5 and the fallback for -6. */
         PVOID token = 0;
-        if (value != (ULONG_PTR)-5) /* ~3 and ~5 resolve to the process token */
+        if (value == (ULONG_PTR)-4)
         {
             token = KeGetCurrentThread()->process->token;
+        }
+        else if (value == (ULONG_PTR)-5)
+        {
+            token = PsCurrentThreadImpersonationToken();
+        }
+        else /* -6: effective */
+        {
+            token = PsCurrentThreadImpersonationToken();
+            if (token == 0)
+            {
+                token = KeGetCurrentThread()->process->token;
+            }
         }
         if (token == 0)
         {

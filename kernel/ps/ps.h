@@ -183,6 +183,11 @@ typedef struct ETHREAD
     LARGE_INTEGER createTime;
     LARGE_INTEGER exitTime;
     uint64_t win32StartAddress;
+    /* CUI-6: the thread impersonation token (SetThreadToken/RevertToSelf).
+     * A referenced TOKEN body, 0 when not impersonating; released on
+     * replacement and at thread delete (G11: the ONE thread-token
+     * reference). SeCurrentToken and the ~4/~5 magic handles prefer it. */
+    PVOID impersonationToken;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;
@@ -205,6 +210,11 @@ void PspUnlinkProcessFromJob(PEPROCESS process);
  * current thread's process. */
 NTSTATUS PspCheckCreatorBreakaway(BOOLEAN breakawayRequested);
 void PspJoinCreatorJob(PEPROCESS child, BOOLEAN breakawayRequested);
+
+/* CUI-6 (kernel/ps/thread.c): the current thread's impersonation token body
+ * (a TOKEN *), or 0 when not impersonating. The ONE reader for Ob's magic
+ * pseudo-handles and Se's effective-token resolution (G11). */
+PVOID PsCurrentThreadImpersonationToken(void);
 
 /* CUI-3 (kernel/ps/query.c): the ProcessWineMakeProcessSystem accounting —
  * count a user process at birth; un-count at exit (called from
