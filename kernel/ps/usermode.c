@@ -152,24 +152,43 @@ static void KiEnsureMxcsrMask(void)
     }
 }
 
-static void KiCaptureFxState(CONTEXT *context)
+/* foreignFx != 0 (CUI-6): read the SUSPENDED target's saved FXSAVE image
+ * (KTHREAD.fxArea) instead of the live CPU — the foreign thread's SSE state
+ * is off-CPU, saved by KiSwapContext. NULL means the self path (live). */
+static void KiCaptureFxState(CONTEXT *context, const unsigned char *foreignFx)
 {
     __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
     memset(&area, 0, sizeof(area));
-    __asm__ volatile("fxsave64 %0" : "=m"(area));
+    if (foreignFx != 0)
+    {
+        memcpy(&area, foreignFx, sizeof(area));
+    }
+    else
+    {
+        __asm__ volatile("fxsave64 %0" : "=m"(area));
+    }
     KiEnsureMxcsrMask();
     memcpy(&context->FltSave, &area, sizeof(area));
     context->MxCsr = area.MxCsr;
 }
 
-static void KiRestoreFxState(const CONTEXT *context)
+/* foreignFx != 0 (CUI-6): write the SUSPENDED target's saved FXSAVE image so
+ * it is restored when the target next runs; NULL restores the live CPU. */
+static void KiRestoreFxState(const CONTEXT *context, unsigned char *foreignFx)
 {
     __attribute__((aligned(16))) XMM_SAVE_AREA32 area;
     KiEnsureMxcsrMask();
     memcpy(&area, &context->FltSave, sizeof(area));
     area.MxCsr = context->MxCsr & KiMxcsrMask;
     area.MxCsr_Mask = KiMxcsrMask;
-    __asm__ volatile("fxrstor64 %0" : : "m"(area));
+    if (foreignFx != 0)
+    {
+        memcpy(foreignFx, &area, sizeof(area));
+    }
+    else
+    {
+        __asm__ volatile("fxrstor64 %0" : : "m"(area));
+    }
 }
 
 /* --- CONTEXT <-> KTRAP_FRAME --------------------------------------------- */
@@ -187,7 +206,8 @@ static void KiRestoreFxState(const CONTEXT *context)
  * SEGMENTS the four data selectors, FLOATING_POINT the FltSave area + MxCsr.
  * SEGMENTS was never filled at all -- KiTrapFrameToContext zeroed the
  * selectors and CONTEXT_FULL claimed otherwise. */
-static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
+static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context,
+                                 const unsigned char *foreignFx)
 {
     ULONG wanted = context->ContextFlags;
     if ((wanted & CONTEXT_AMD64) != CONTEXT_AMD64)
@@ -216,7 +236,7 @@ static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
     }
     if (wanted & CONTEXT_FLOATING_POINT)
     {
-        KiCaptureFxState(context);
+        KiCaptureFxState(context, foreignFx);
     }
     if ((wanted & CONTEXT_INTEGER) == 0)
     {
@@ -242,7 +262,8 @@ static void KiTrapFrameToContext(const KTRAP_FRAME *frame, CONTEXT *context)
 /* Apply a user-supplied CONTEXT to the outgoing trap frame. Segment selectors
  * and RFLAGS are forced back to safe ring-3 values (a process must not be able
  * to return to ring 0 or set IOPL/IF-off via NtContinue). */
-static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
+static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame,
+                                 unsigned char *foreignFx)
 {
     /* Apply only the groups the caller declared. Applying everything
      * unconditionally is what made the documented get-modify-set idiom --
@@ -273,7 +294,7 @@ static void KiContextToTrapFrame(const CONTEXT *context, KTRAP_FRAME *frame)
     }
     if (wanted & CONTEXT_FLOATING_POINT)
     {
-        KiRestoreFxState(context);
+        KiRestoreFxState(context, foreignFx);
     }
     if (wanted & CONTEXT_CONTROL)
     {
@@ -466,7 +487,7 @@ BOOLEAN PspDispatchUserException(PKTRAP_FRAME trapFrame, ULONG exceptionCode, ui
     CONTEXT context;
     memset(&context, 0, sizeof(context));
     context.ContextFlags = CONTEXT_FULL; /* the dispatchers want everything */
-    KiTrapFrameToContext(trapFrame, &context);
+    KiTrapFrameToContext(trapFrame, &context, 0);
     return KiEnterUserExceptionDispatcher(trapFrame, &record, &context);
 }
 
@@ -510,7 +531,7 @@ void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame)
     CONTEXT context;
     memset(&context, 0, sizeof(context));
     context.ContextFlags = CONTEXT_FULL; /* the dispatchers want everything */
-    KiTrapFrameToContext(trapFrame, &context);
+    KiTrapFrameToContext(trapFrame, &context, 0);
     context.P1Home = arg1;
     context.P2Home = arg2;
     context.P3Home = arg3;
@@ -566,7 +587,7 @@ static NTSTATUS KiContinue(const CONTEXT *userContext, BOOLEAN testAlert)
         return status;
     }
     memcpy(&context, userContext, sizeof(CONTEXT));
-    KiContextToTrapFrame(&context, trapFrame);
+    KiContextToTrapFrame(&context, trapFrame, 0);
     thread->userContextReplaced = TRUE; /* the dispatcher must not overwrite rax */
 
     /* A Rip outside user space -- non-canonical, or simply a kernel address
@@ -672,46 +693,136 @@ NTSTATUS NtRaiseException(PEXCEPTION_RECORD userRecord, PCONTEXT userContext, BO
     PspExitCurrentThread(record.ExceptionCode);
 }
 
-NTSTATUS NtGetContextThread(HANDLE threadHandle, PCONTEXT context)
+/* CUI-6: resolve a foreign thread handle to its saved ring-3 frame and
+ * FXSAVE image for NtGet/SetContextThread. The target must have descended to
+ * ring 3 and be off-CPU with a live published frame — a suspended-and-parked
+ * thread (the sanctioned SuspendThread+GetThreadContext pattern), whose
+ * trapFrame stays published across the park (kernel/init/panic.c,
+ * kernel/syscall/table.c) and whose SSE state KiSwapContext has spilled to
+ * fxArea. A never-descended or currently-running target has no frame and
+ * refuses loudly (Art. 12; the profiler pattern always suspends first).
+ * Self resolves to the live trap frame and live SSE (foreignFx = 0). */
+static NTSTATUS KiResolveContextTarget(HANDLE threadHandle, ACCESS_MASK access,
+                                       PKTRAP_FRAME *frameOut, unsigned char **foreignFxOut,
+                                       PETHREAD *referenceOut)
 {
-    PKTHREAD thread = KeGetCurrentThread();
-    /* M7: self only (a running foreign thread cannot be stopped under Art. 3's
-     * no-preemption model without the suspend machinery). */
-    if (threadHandle != NtCurrentThread() && threadHandle != 0)
+    *referenceOut = 0;
+    if (threadHandle == NtCurrentThread() || threadHandle == 0)
     {
+        PKTHREAD self = KeGetCurrentThread();
+        if (self->trapFrame == 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        *frameOut = self->trapFrame;
+        *foreignFxOut = 0;
+        return STATUS_SUCCESS;
+    }
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(threadHandle, access, &PspThreadType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PETHREAD target = body;
+    PKTHREAD tcb = target->tcb;
+    if (tcb == KeGetCurrentThread())
+    {
+        /* A handle that happens to name the caller: the live path. */
+        if (tcb->trapFrame == 0)
+        {
+            ObDereferenceObject(target);
+            return STATUS_INVALID_PARAMETER;
+        }
+        *frameOut = tcb->trapFrame;
+        *foreignFxOut = 0;
+        *referenceOut = target;
+        return STATUS_SUCCESS;
+    }
+    /* A foreign target is only readable when it is off-CPU with a published
+     * ring-3 frame — the suspended-and-parked case. */
+    uint64_t flags = KiAcquireDispatcherLock();
+    PKTRAP_FRAME frame = tcb->trapFrame;
+    KiReleaseDispatcherLock(flags);
+    if (frame == 0)
+    {
+        ObDereferenceObject(target);
         return STATUS_NOT_IMPLEMENTED;
     }
-    if (thread->trapFrame == 0)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-    NTSTATUS status = KiProbeForWrite(context, sizeof(CONTEXT), sizeof(uint64_t));
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    /* The caller's ContextFlags is an INPUT: it names the groups it wants
-     * (the documented `ContextFlags = CONTEXT_INTEGER; get; modify; set`
-     * idiom). Reading it was the missing half -- see KiTrapFrameToContext. */
-    /* Capture the caller's whole CONTEXT first: its ContextFlags names the
-     * groups it wants, and everything outside those groups must come back
-     * unchanged. */
-    CONTEXT captured;
-    status = KiCopyFromUser(&captured, context, sizeof(CONTEXT));
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    KiTrapFrameToContext(thread->trapFrame, &captured);
-    memcpy(context, &captured, sizeof(CONTEXT));
+    *frameOut = frame;
+    *foreignFxOut = tcb->fxArea;
+    *referenceOut = target;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS NtGetContextThread(HANDLE threadHandle, PCONTEXT context)
+{
+    PKTRAP_FRAME frame;
+    unsigned char *foreignFx;
+    PETHREAD reference;
+    NTSTATUS status =
+        KiResolveContextTarget(threadHandle, THREAD_GET_CONTEXT, &frame, &foreignFx, &reference);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = KiProbeForWrite(context, sizeof(CONTEXT), sizeof(uint64_t));
+    if (NT_SUCCESS(status))
+    {
+        /* The caller's ContextFlags is an INPUT: it names the groups it
+         * wants (the documented get-modify-set idiom); everything outside
+         * those groups must come back unchanged, so capture the whole CONTEXT
+         * first (see KiTrapFrameToContext). */
+        CONTEXT captured;
+        status = KiCopyFromUser(&captured, context, sizeof(CONTEXT));
+        if (NT_SUCCESS(status))
+        {
+            KiTrapFrameToContext(frame, &captured, foreignFx);
+            memcpy(context, &captured, sizeof(CONTEXT));
+        }
+    }
+    if (reference != 0)
+    {
+        ObDereferenceObject(reference);
+    }
+    return status;
 }
 
 NTSTATUS NtSetContextThread(HANDLE threadHandle, const CONTEXT *context)
 {
-    if (threadHandle != NtCurrentThread() && threadHandle != 0)
+    if (threadHandle == NtCurrentThread() || threadHandle == 0)
     {
-        return STATUS_NOT_IMPLEMENTED;
+        return KiContinue(context, FALSE);
     }
-    return KiContinue(context, FALSE);
+    PKTRAP_FRAME frame;
+    unsigned char *foreignFx;
+    PETHREAD reference;
+    NTSTATUS status =
+        KiResolveContextTarget(threadHandle, THREAD_SET_CONTEXT, &frame, &foreignFx, &reference);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (reference != 0 && reference->tcb == KeGetCurrentThread())
+    {
+        /* A handle naming the caller: the live continue path (KiContinue
+         * rewrites the current frame and returns through it). */
+        ObDereferenceObject(reference);
+        return KiContinue(context, FALSE);
+    }
+    CONTEXT captured;
+    status = KiCopyFromUser(&captured, context, sizeof(CONTEXT));
+    if (NT_SUCCESS(status))
+    {
+        /* Apply onto the target's saved frame + FXSAVE image in place; it
+         * takes effect when the target next returns to ring 3 (its iretq
+         * reads this frame, KiSwapContext its fxArea). */
+        KiContextToTrapFrame(&captured, frame, foreignFx);
+    }
+    if (reference != 0)
+    {
+        ObDereferenceObject(reference);
+    }
+    return status;
 }

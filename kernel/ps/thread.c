@@ -1052,11 +1052,45 @@ NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousCount)
 NTSTATUS NtOpenThread(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
                       const OBJECT_ATTRIBUTES *objectAttributes, const CLIENT_ID *clientId)
 {
-    (void)threadHandle;
-    (void)desiredAccess;
-    (void)objectAttributes;
-    (void)clientId;
-    return STATUS_NOT_IMPLEMENTED; /* open-by-CLIENT_ID: not on the M7 path */
+    /* CUI-6: open by CLIENT_ID (sem_ps/open_thread). Only UniqueThread is
+     * consulted, matching the oracle (server/thread.c open_thread sends just
+     * req->tid; get_thread_from_id fails with STATUS_INVALID_CID). Reuses
+     * the one by-id thread lookup (PspFindThreadByThreadId, G11) — never a
+     * second walk. */
+    CLIENT_ID capturedId;
+    NTSTATUS status = KiCopyFromUser(&capturedId, clientId, sizeof(capturedId));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG attributes = 0;
+    if (objectAttributes != 0)
+    {
+        OBJECT_ATTRIBUTES capturedAttr;
+        status = KiCopyFromUser(&capturedAttr, objectAttributes, sizeof(capturedAttr));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        attributes = capturedAttr.Attributes;
+    }
+
+    uint64_t threadId = (uint64_t)(uintptr_t)capturedId.UniqueThread;
+    uint64_t flags = KiAcquireDispatcherLock();
+    PETHREAD target = PspFindThreadByThreadId(threadId);
+    if (target != 0)
+    {
+        ObfReferenceObject(target); /* pin across the lock drop */
+    }
+    KiReleaseDispatcherLock(flags);
+    if (target == 0)
+    {
+        return STATUS_INVALID_CID;
+    }
+    status = ObpCreateHandle(target, ObpMapDesiredAccess(&PspThreadType, desiredAccess), attributes,
+                             threadHandle);
+    ObDereferenceObject(target); /* the handle holds its own reference */
+    return status;
 }
 
 NTSTATUS NtGetNextThread(HANDLE processHandle, HANDLE threadHandle, ACCESS_MASK desiredAccess,

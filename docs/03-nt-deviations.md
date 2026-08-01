@@ -953,6 +953,19 @@ The milestone's own deviations (docs/02 CUI-6; the pins live in
   1 ms tick instead of NT's ~15.6 ms default. A thread that always yields
   before the tick accrues nothing, as on real NT. `sem_ps/times` asserts
   growth under wall-clock burns, never exact quanta.
+- **Foreign `NtGet/SetContextThread` reads a suspended, parked target only**
+  (`kernel/ps/usermode.c KiResolveContextTarget`): the sanctioned
+  `SuspendThread`+`GetThreadContext` profiler/GC pattern. A target that has
+  descended to ring 3 and is off-CPU carries a published trap frame across
+  the park (`kernel/init/panic.c` publishes the interrupted ring-3 frame for
+  the whole off-CPU window, the way the syscall edge does — a syscall-free
+  spinner is otherwise invisible) and its SSE state in `KTHREAD.fxArea`
+  (spilled by `KiSwapContext`); those are what the foreign path reads and
+  writes. A never-descended or currently-running target has no frame and
+  refuses `STATUS_NOT_IMPLEMENTED` (Art. 12) — the debugger consumer that
+  would read a running thread is gone with debug objects, and every baked
+  caller suspends first. `sem_ps/context_foreign` pins the read-back, the Rip
+  redirect and the XMM round-trip.
 
 ## Debug objects are out of scope (permanent; ADR 0011)
 

@@ -255,11 +255,23 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
          * here. Only when returning to ring 3. */
         if ((trapFrame->segCs & 3) == 3)
         {
-            KiProcessPendingUserSignals(KeGetCurrentThread());
+            /* CUI-6: publish the interrupted ring-3 frame for the whole time
+             * this user thread is off-CPU (parked on a closed suspend gate
+             * OR round-robined out just below), the way the syscall edge
+             * publishes its own (table.c). A syscall-free spinner is
+             * otherwise invisible to foreign NtGetContextThread — its
+             * trapFrame would be stale. Restored only when it is genuinely
+             * about to re-enter ring 3, so nothing downstream reads an
+             * interrupt frame as a syscall frame. */
+            PKTHREAD current = KeGetCurrentThread();
+            PKTRAP_FRAME previousFrame = current->trapFrame;
+            current->trapFrame = trapFrame;
+            KiProcessPendingUserSignals(current);
             /* The one preemption point: round-robin a ring-3 thread at the
              * timer tick so a syscall-free busy loop cannot starve others
              * (CUI-4 — without it a killer/parent never regains the CPU). */
             KiPreemptAtUserReturn();
+            current->trapFrame = previousFrame;
         }
         return;
     }
