@@ -1661,6 +1661,47 @@ NTSTATUS NtSetSystemTime(const LARGE_INTEGER *newTime, LARGE_INTEGER *oldTime)
     return STATUS_SUCCESS;
 }
 
+NTSTATUS NtShutdownSystem(SHUTDOWN_ACTION action)
+{
+    /* Built against the MS contract (NtShutdownSystem + Privilege Constants,
+     * learn.microsoft.com; the pinned oracle stubs the service) and pinned
+     * beyond_oracle by sem_ps/shutdown; the live arms are the tests/run
+     * cui7 acceptance leg. Every mutation is already durable at syscall
+     * return (Art. 3 immediate writeback), so there is nothing to flush
+     * before stopping the machine. */
+    LUID luid;
+    luid.LowPart = SE_SHUTDOWN_PRIVILEGE;
+    luid.HighPart = 0;
+    if (!SeSinglePrivilegeCheck(luid, ExGetPreviousMode()))
+    {
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+    if (action != ShutdownNoReboot && action != ShutdownReboot && action != ShutdownPowerOff)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    DbgPrint("[KTEST] shutdown action=%u (ring-3 NtShutdownSystem)\n", (unsigned)action);
+    if (action == ShutdownReboot)
+    {
+        /* 8042 keyboard-controller command 0xFE pulses the CPU reset line
+         * (IBM PC AT convention; pinned QEMU hw/input/pckbd.c
+         * KBD_CCMD_RESET 0xFE -> qemu_system_reset_request). */
+        KiOutByte(0x64, 0xfe);
+    }
+    else
+    {
+        /* NoReboot and PowerOff both stop the VM through the existing
+         * clean-exit convention (arch/x86_64/io.h KiQemuExit). */
+        KiQemuExit(0);
+    }
+    /* The teardown is asynchronous (the KiQemuExit comment); park until it
+     * lands. */
+    for (;;)
+    {
+        __asm__ volatile("hlt");
+    }
+}
+
 NTSTATUS NtSetSystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID information,
                                 ULONG length)
 {

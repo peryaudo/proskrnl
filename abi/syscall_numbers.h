@@ -212,6 +212,7 @@
 #define NTSYS_NtQueryInstallUILanguage 0x00c7
 #define NTSYS_NtSetSystemTime 0x00f4
 #define NTSYS_NtSetSystemInformation 0x00f3
+#define NTSYS_NtShutdownSystem 0x00f8
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
