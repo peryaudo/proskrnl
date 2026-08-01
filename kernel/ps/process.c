@@ -806,6 +806,12 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
                sizeof(process->imageInformation));
     }
 
+    /* CUI-6: enrol the child in the creator's job chain BEFORE it can run
+     * (the creator is still the current process here), so job membership —
+     * and JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — hold from the child's first
+     * instruction. */
+    PspJoinCreatorJob(process, options->breakawayRequested);
+
     if (options->createSuspended)
     {
         /* THREAD_CREATE_FLAGS_CREATE_SUSPENDED: kernelbase resumes the
@@ -1450,7 +1456,8 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
      * skips its NtResumeThread — dlls/kernelbase/process.c). Anything else a
      * caller sets is named on serial and refused (never faked — docs/03). */
     if ((processFlags &
-         ~(ULONG)(PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED)) != 0)
+         ~(ULONG)(PROCESS_CREATE_FLAGS_INHERIT_HANDLES | PROCESS_CREATE_FLAGS_SUSPENDED |
+                  PROCESS_CREATE_FLAGS_BREAKAWAY)) != 0)
     {
         DbgPrint("NtCreateUserProcess: unsupported process flags %#lx\n",
                  (unsigned long)processFlags);
@@ -1459,6 +1466,15 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
     BOOLEAN inheritHandles = (processFlags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES) != 0;
     BOOLEAN createSuspended = (threadFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0 ||
                               (processFlags & PROCESS_CREATE_FLAGS_SUSPENDED) != 0;
+    /* CUI-6: CREATE_BREAKAWAY_FROM_JOB. A breakaway the creator's job forbids
+     * fails creation up front (sem_ps/job_nest); the join itself is applied
+     * by PspCreateUserProcessImage before the child is readied. */
+    BOOLEAN breakawayRequested = (processFlags & PROCESS_CREATE_FLAGS_BREAKAWAY) != 0;
+    status = PspCheckCreatorBreakaway(breakawayRequested);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
 
     /* Walk the attribute list for the image name (+ optional CLIENT_ID
      * write-back); other attributes a Wine client passes are tolerated. */
@@ -1616,6 +1632,7 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
         options.params = captured; /* ownership moves (freed on every path) */
         options.userParams = captured != 0;
         options.createSuspended = createSuspended;
+        options.breakawayRequested = breakawayRequested;
         options.inheritHandles = inheritHandles;
         options.handleList = handleList;
         options.handleCount = handleCount;
