@@ -187,6 +187,11 @@
 #define NTSYS_NtRenameKey 0x00db
 #define NTSYS_NtNotifyChangeKey 0x00b2
 #define NTSYS_NtNotifyChangeMultipleKeys 0x00b3
+#define NTSYS_NtSaveKey 0x00e2
+#define NTSYS_NtLoadKey 0x00a9
+#define NTSYS_NtLoadKey2 0x00aa
+#define NTSYS_NtLoadKeyEx 0x00ab
+#define NTSYS_NtUnloadKey 0x0101
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

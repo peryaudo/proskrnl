@@ -187,6 +187,25 @@ BOOLEAN SepTokenCheckPrivileges(PTOKEN token, BOOLEAN allRequired,
     return allRequired ? (enabledCount == count) : (enabledCount > 0);
 }
 
+BOOLEAN SeSinglePrivilegeCheck(LUID privilegeValue, KPROCESSOR_MODE previousMode)
+{
+    /* NT's real export shape ("SeSinglePrivilegeCheck function (wdm.h)",
+     * MS Learn — absent from the pinned Wine's ddk headers): a KernelMode
+     * caller always passes; otherwise the caller's EFFECTIVE token must
+     * hold the privilege enabled (wineserver thread_single_check_privilege,
+     * server/token.c: current->token ?: process->token). One check engine
+     * (Art. 11): the same SepTokenCheckPrivileges walk NtPrivilegeCheck
+     * uses. */
+    if (previousMode == KernelMode)
+    {
+        return TRUE;
+    }
+    LUID_AND_ATTRIBUTES required;
+    required.Luid = privilegeValue;
+    required.Attributes = 0;
+    return SepTokenCheckPrivileges(SeCurrentToken(), TRUE, &required, 1, 0);
+}
+
 /* --- THE create engine (G11) ----------------------------------------------
  * Everything is one pool block: TOKEN + user SID + group attrs + packed
  * group SIDs + privilege array + default DACL. Offsets 8-aligned. */

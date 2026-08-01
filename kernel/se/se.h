@@ -176,6 +176,13 @@ BOOLEAN SepTokenCheckPrivileges(PTOKEN token, BOOLEAN allRequired,
                                 const LUID_AND_ATTRIBUTES *required, ULONG count,
                                 LUID_AND_ATTRIBUTES *used);
 
+/* One-privilege caller check, NT's export shape ("SeSinglePrivilegeCheck
+ * function (wdm.h)", MS Learn; not in the pinned Wine's ddk headers).
+ * KernelMode always passes; else the effective token must hold the
+ * privilege enabled. CUI-7: the Cm hive services' SeBackup/SeRestore gates
+ * and the Ke time/shutdown gates all go through here. */
+BOOLEAN SeSinglePrivilegeCheck(LUID privilegeValue, KPROCESSOR_MODE previousMode);
+
 /* Resolve a token handle (magic pseudo-handles included, via
  * ObReferenceObjectByHandle). Caller dereferences. */
 NTSTATUS SepReferenceTokenByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PTOKEN *token,
