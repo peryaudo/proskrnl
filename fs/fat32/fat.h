@@ -137,6 +137,14 @@ NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBy
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer);
 NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer);
 
+/* Volume-relative direct-DMA sector I/O for physically contiguous targets
+ * (page-cache frames): no bounce, no copy, at most one page per call
+ * (CUI-8, docs/19 §5a). */
+NTSTATUS FatReadSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
+                                uint64_t physical);
+NTSTATUS FatWriteSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
+                                 uint64_t physical);
+
 /* Is `cluster` a real data cluster of this volume, i.e. in [2, count+2)?
  * THE authority for the question: every cluster number that arrives from the
  * media -- a FAT entry, a directory entry's DIR_FstClus -- passes through
