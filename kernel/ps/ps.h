@@ -48,6 +48,14 @@ typedef struct EPROCESS
      * PS_ATTRIBUTE_IMAGE_INFO write-back serve this one copy (G11).
      * All-zero when the image had no PE parse (M4 flat clients). */
     SECTION_IMAGE_INFORMATION imageInformation;
+    /* CUI-6: the ProcessTimes surface. Wall-clock stamps from
+     * KeQuerySystemTime; the exited totals accumulate each dying thread's
+     * tick counters at retire time (under the dispatcher lock), so a
+     * process query is exited totals + the live threads' counters. */
+    LARGE_INTEGER createTime;
+    LARGE_INTEGER exitTime;
+    uint64_t exitedKernelTime100ns;
+    uint64_t exitedUserTime100ns;
     uint64_t uniqueProcessId;         /* CLIENT_ID.UniqueProcess (a plain counter) */
     uint64_t parentProcessId;         /* CUI-4: the creator's id, reported by
                                        * SystemProcessInformation.ParentProcessId
@@ -160,6 +168,10 @@ typedef struct ETHREAD
      * a consumed-elsewhere trail. Cheap enough to keep. */
     uint64_t tidAlertsIn;
     uint64_t tidAlertsOut;
+    /* CUI-6: the ThreadTimes wall-clock stamps (CPU counters live on the
+     * KTHREAD, where the clock tick charges them). */
+    LARGE_INTEGER createTime;
+    LARGE_INTEGER exitTime;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

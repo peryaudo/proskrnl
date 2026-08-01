@@ -111,6 +111,11 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     /* CUI-6: the awake triple every fresh process starts from (Wine
      * dlls/ntdll/unix/system.c NtSetThreadExecutionState's static init). */
     process->executionState = ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_USER_PRESENT;
+    /* CUI-6: birth stamp + zeroed accounting (sem_ps/times). */
+    KeQuerySystemTime(&process->createTime);
+    process->exitTime.QuadPart = 0;
+    process->exitedKernelTime100ns = 0;
+    process->exitedUserTime100ns = 0;
     process->isSystemProcess = FALSE;
     if (process != PsInitialSystemProcess)
     {

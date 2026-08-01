@@ -23,6 +23,12 @@
 PKTHREAD KiCurrentThread;
 
 static KTHREAD KiIdleThread; /* the boot context; stack is Limine's */
+
+/* CUI-6: the clock tick asks (timer.c) so idle ticks land in idle time. */
+BOOLEAN KiThreadIsIdle(PKTHREAD thread)
+{
+    return thread == &KiIdleThread;
+}
 static LIST_ENTRY KiReadyQueues[KI_PRIORITY_LEVELS];
 static uint32_t KiReadySummary; /* bit n set <=> queue n non-empty */
 

@@ -10,11 +10,11 @@
 #include "kernel/init/panic.h"
 #include "arch/x86_64/lapic.h"
 
-void KiDispatchInterrupt(uint64_t vector)
+void KiDispatchInterrupt(uint64_t vector, BOOLEAN interruptedUser)
 {
     if (vector == TIMER_VECTOR)
     {
-        KiUpdateClock();
+        KiUpdateClock(interruptedUser);
         KiEndOfInterrupt();
         return;
     }

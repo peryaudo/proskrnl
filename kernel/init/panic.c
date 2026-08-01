@@ -244,7 +244,11 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     /* Hardware interrupts route to Ke's dispatcher (kernel/ke/irq.c). */
     if (trapFrame->vector >= 32)
     {
-        KiDispatchInterrupt(trapFrame->vector);
+        /* CUI-6: the interrupted CS discriminates the CPU-time charge — a
+         * user-CS tick is user time, a kernel-CS one kernel time (NT's
+         * clock-interrupt accounting; previousMode flags "inside a syscall",
+         * not "was running ring-3 code", so it cannot serve here). */
+        KiDispatchInterrupt(trapFrame->vector, (trapFrame->segCs & 3) == 3);
         /* CUI-4: the interrupt-return edge — the one that catches a syscall-
          * free ring-3 busy loop at the next timer tick (the EOI is already
          * sent). A foreign terminate reaps here; a closed suspend gate parks

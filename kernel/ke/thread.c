@@ -114,6 +114,8 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     thread->userStartArg2 = 0;
     thread->threadObject = 0;
     thread->exitStatus = STATUS_SUCCESS;
+    thread->kernelTime100ns = 0;
+    thread->userTime100ns = 0;
     InitializeListHead(&thread->userApcListHead);
     InitializeListHead(&thread->mutantListHead);
     thread->syncIoUserIosb = 0;

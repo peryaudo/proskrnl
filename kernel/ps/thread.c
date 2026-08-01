@@ -102,6 +102,9 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     thread->stackAllocationBase = stackAllocationBase;
     thread->stackBase = stackBase;
     KeInitializeEvent(&thread->tidAlertEvent, SynchronizationEvent, FALSE);
+    /* CUI-6: birth stamp (sem_ps/times); exit stamped at retire. */
+    KeQuerySystemTime(&thread->createTime);
+    thread->exitTime.QuadPart = 0;
 
     ObfReferenceObject(process); /* the thread pins its process */
     ObfReferenceObject(thread);  /* the RUNNING PIN: a live thread pins its own
@@ -204,7 +207,13 @@ void PspRetireCurrentThread(NTSTATUS exitStatus)
         return; /* kernel threads and flat-binary main threads */
     }
     KiTraceEvent(KiTraceThreadExit, (uint64_t)(uintptr_t)tcb, (uint64_t)(uint32_t)exitStatus, 0);
+    /* CUI-6: the exit stamp, and the dying thread's tick counters roll into
+     * the process's exited totals — from here on ProcessTimes = exited
+     * totals + live threads, with this thread counted exactly once. */
+    KeQuerySystemTime(&thread->exitTime);
     uint64_t flags = KiAcquireDispatcherLock();
+    thread->process->exitedKernelTime100ns += tcb->kernelTime100ns;
+    thread->process->exitedUserTime100ns += tcb->userTime100ns;
     RemoveEntryList(&thread->threadListEntry);
     thread->header.signalState = 1; /* joins on the thread handle satisfy */
     KiWaitTest(&thread->header);
@@ -250,7 +259,8 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
     {
         ObpCloseAllHandles(&process->handleTable);
         process->exitStatus = exitStatus;
-        PspNotifyProcessExit(process); /* CUI-3: the job's EXIT_PROCESS packets */
+        KeQuerySystemTime(&process->exitTime); /* CUI-6 (sem_ps/times) */
+        PspNotifyProcessExit(process);         /* CUI-3: the job's EXIT_PROCESS packets */
         KiTraceEvent(KiTraceProcessExit, (uint64_t)(uintptr_t)process,
                      (uint64_t)(uint32_t)exitStatus, 0);
         uint64_t f3 = KiAcquireDispatcherLock();
