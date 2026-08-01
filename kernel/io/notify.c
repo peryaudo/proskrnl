@@ -40,8 +40,8 @@ typedef struct IOP_DIR_WATCH
     IO_STATUS_BLOCK *userIosb;
     void *userBuffer;
     ULONG bufferLength;
-    PIO_APC_ROUTINE apcRoutine;
-    PVOID apcContext;
+    PKAPC apcBlock;         /* pre-allocated at arm (engine authority, io.h);
+                             * queued to `issuer` on a non-error completion */
     PKEVENT event;          /* referenced; 0 = none */
     UNICODE_STRING dirPath; /* pool copy, volume-relative ("\" = root) */
     ULONG filter;
@@ -104,20 +104,15 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
         KeSetEvent(watch->event, 0, FALSE);
         ObDereferenceObject(watch->event);
     }
-    if (!isError && watch->apcRoutine != 0 && watch->issuer != 0 && !watch->issuer->terminating)
+    if (!isError)
     {
-        /* The rw.c completion-APC shape: KiUserApcDispatcher calls
-         * PIO_APC_ROUTINE(ApcContext, iosb, reserved) at the issuer's next
-         * alertable wait; the IOSB above is in place before it can run. */
-        PKAPC apc = MiAllocatePool(sizeof(KAPC));
-        if (apc != 0)
-        {
-            apc->normalRoutine = (uint64_t)(uintptr_t)watch->apcRoutine;
-            apc->normalContext = (ULONG_PTR)watch->apcContext;
-            apc->systemArgument1 = (ULONG_PTR)watch->userIosb;
-            apc->systemArgument2 = 0;
-            KiInsertQueueUserApc(watch->issuer, apc);
-        }
+        /* The engine's APC leg (io.h): pre-allocated at arm, queued to the
+         * issuer now that the IOSB above is in place. */
+        IopQueueCompletionApc(watch->issuer, watch->apcBlock);
+    }
+    else if (watch->apcBlock != 0)
+    {
+        MiFreePool(watch->apcBlock); /* error completion: the APC never fires */
     }
     if (watch->issuerObject != 0)
     {
@@ -203,6 +198,17 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     watch->dirPath.Length = (USHORT)pathBytes;
     watch->dirPath.MaximumLength = (USHORT)pathBytes;
 
+    /* The completion APC, pre-allocated so completion cannot fail — the
+     * engine authority (io.h; the old at-completion allocation dropped the
+     * APC silently on a full pool). */
+    status = IopPrepareCompletionApc(apcRoutine, apcContext, iosb, &watch->apcBlock);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(pathCopy);
+        MiFreePool(watch);
+        ObDereferenceObject(file);
+        return status;
+    }
     if (eventHandle != 0)
     {
         /* Resolve now — the completer runs in another context; reset at
@@ -212,6 +218,10 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
                                            ExGetPreviousMode(), &eventBody, 0);
         if (!NT_SUCCESS(status))
         {
+            if (watch->apcBlock != 0)
+            {
+                MiFreePool(watch->apcBlock);
+            }
             MiFreePool(pathCopy);
             MiFreePool(watch);
             ObDereferenceObject(file);
@@ -219,11 +229,6 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
         }
         watch->event = eventBody;
         KeClearEvent(watch->event);
-    }
-    if (apcRoutine != 0 && ExGetPreviousMode() == UserMode)
-    {
-        watch->apcRoutine = apcRoutine;
-        watch->apcContext = apcContext;
     }
     watch->owner = KeGetCurrentThread()->process;
     ObfReferenceObject(watch->owner);
