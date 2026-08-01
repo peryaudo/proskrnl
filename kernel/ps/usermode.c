@@ -114,7 +114,7 @@ static BOOLEAN KiMaterializeUserRange(uint64_t base, uint64_t size)
             {
                 break;
             }
-            if (attempt == 1 || !NT_SUCCESS(MiHandleUserFault(page)))
+            if (attempt == 1 || !NT_SUCCESS(MiHandleUserFault(page, TRUE)))
             {
                 return FALSE;
             }

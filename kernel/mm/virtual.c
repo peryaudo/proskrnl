@@ -38,6 +38,16 @@ struct MI_VAD
     ULONG type;        /* MEM_PRIVATE / MEM_MAPPED / MEM_IMAGE */
     PVOID sectionBody; /* referenced Section body; 0 for private */
     BOOLEAN ownsFrames;
+    /* CUI-7 write-watch (MEM_WRITE_WATCH at reserve): one dirty byte per
+     * page, the AUTHORITATIVE record — the PTE's writable bit is only the
+     * trap mechanism (docs/17 §6.B names why the bit alone is not a
+     * record). A committed protection-writable page is mapped read-only
+     * while clean; the write fault marks it and remaps (fault.c). Kernel
+     * writes bypass PTEs, so every kernel path that writes user memory
+     * marks through MiResolveWriteWatchFault (uaccess probe retry,
+     * MiCopyToUserRangeChecked). */
+    BOOLEAN writeWatch;
+    UCHAR *watchDirty; /* one byte per page; pool, zeroed */
 };
 
 /* NT never allocates the first 64K. Cross-check: third_party/wine
@@ -190,6 +200,23 @@ static void MiInsertVad(PMI_ADDRESS_SPACE space, PMI_VAD vad)
 
 /* Commit (or re-protect) the pages [base, base+size) inside `vad`. Frames
  * appear immediately, zeroed (Art. 3: no demand paging). */
+/* The hardware writable bit for one page: the page's protection, minus the
+ * write-watch trap — a watched CLEAN page maps read-only so ring-3's first
+ * store faults into the mark (fault.c). ONE authority for the rule; commit,
+ * re-protect and the watch re-arm all go through here. */
+static int MipVadPageHwWritable(PMI_VAD vad, ULONG index, int protectionWritable)
+{
+    if (!protectionWritable)
+    {
+        return 0;
+    }
+    if (vad->writeWatch && vad->watchDirty != 0 && !vad->watchDirty[index])
+    {
+        return 0;
+    }
+    return 1;
+}
+
 static NTSTATUS MiCommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base, uint64_t size,
                               ULONG protect)
 {
@@ -198,6 +225,7 @@ static NTSTATUS MiCommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t bas
     for (uint64_t page = base; page < base + size; page += PAGE_SIZE)
     {
         ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        int hwWritable = MipVadPageHwWritable(vad, index, writable);
         if (vad->pageProtect[index] == 0)
         {
             uint64_t frame = MiAllocatePage();
@@ -206,14 +234,14 @@ static NTSTATUS MiCommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t bas
                 return STATUS_NO_MEMORY; /* earlier pages stay committed, as NT */
             }
             memset(MiPhysicalToVirtual(frame), 0, PAGE_SIZE);
-            MiMapUserPage(space->pml4Physical, page, frame, present, writable, executable);
+            MiMapUserPage(space->pml4Physical, page, frame, present, hwWritable, executable);
         }
         else if (vad->pageProtect[index] != protect)
         {
             uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
             ASSERT(frame != 0); /* committed pages always keep their frame */
             MiUnmapUserPage(space->pml4Physical, page);
-            MiMapUserPage(space->pml4Physical, page, frame, present, writable, executable);
+            MiMapUserPage(space->pml4Physical, page, frame, present, hwWritable, executable);
         }
         vad->pageProtect[index] = protect;
     }
@@ -246,6 +274,10 @@ static void MiUnlinkAndFreeVad(PMI_VAD vad)
     {
         ObDereferenceObject(vad->sectionBody); /* the view's pin on the section */
     }
+    if (vad->watchDirty != 0)
+    {
+        MiFreePool(vad->watchDirty);
+    }
     MiFreePool(vad->pageProtect);
     MiFreePool(vad);
 }
@@ -263,6 +295,8 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->type = MEM_PRIVATE;
     vad->sectionBody = 0;
     vad->ownsFrames = TRUE;
+    vad->writeWatch = FALSE;
+    vad->watchDirty = 0;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
     {
@@ -414,6 +448,18 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         if (vad == 0)
         {
             return STATUS_NO_MEMORY;
+        }
+        if (type & MEM_WRITE_WATCH)
+        {
+            /* Not yet linked: free by hand on failure. */
+            vad->watchDirty = MiAllocatePool(size / PAGE_SIZE); /* pool zeroes */
+            if (vad->watchDirty == 0)
+            {
+                MiFreePool(vad->pageProtect);
+                MiFreePool(vad);
+                return STATUS_NO_MEMORY;
+            }
+            vad->writeWatch = TRUE;
         }
         MiInsertVad(space, vad);
         if (type & MEM_COMMIT)
@@ -775,6 +821,12 @@ uint64_t MiCopyToUserRangeChecked(PMI_ADDRESS_SPACE space, uint64_t userBase, co
         int writable = 0;
         uint64_t frame =
             MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
+        if (frame != 0 && present && !writable && MiResolveWriteWatchFault(space, va - pageOffset))
+        {
+            /* A clean watched page: the kernel-side write marks it exactly
+             * as a ring-3 store would (CUI-7). */
+            frame = MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
+        }
         if (frame == 0 || !present || !writable)
         {
             break;
@@ -783,6 +835,182 @@ uint64_t MiCopyToUserRangeChecked(PMI_ADDRESS_SPACE space, uint64_t userBase, co
         written += chunk;
     }
     return written;
+}
+
+/* --- write-watch (CUI-7) ----------------------------------------------------- */
+
+/* Remap one committed page's PTE to the current rule (dirty state changed).
+ * MiMapUserPage refuses a live PTE, so re-protect is unmap-then-map
+ * (the MiCommitPages precedent). */
+static void MipRemapWatchPage(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t page, ULONG index)
+{
+    ULONG protect = vad->pageProtect[index];
+    int present, writable, executable;
+    MiProtectToPteBits(protect, &present, &writable, &executable);
+    if (!present)
+    {
+        return; /* PAGE_NOACCESS / guard: nothing mapped to change */
+    }
+    uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
+    ASSERT(frame != 0);
+    MiUnmapUserPage(space->pml4Physical, page);
+    MiMapUserPage(space->pml4Physical, page, frame, present,
+                  MipVadPageHwWritable(vad, index, writable), executable);
+}
+
+/* A write hit a present, protection-writable but CLEAN watched page: record
+ * the write and open the hardware gate. FALSE = not a write-watch fault.
+ * Space-parameterized so the kernel's own user-memory writers (probe retry,
+ * the cross-process checked copy) resolve through the SAME arm the ring-3
+ * fault takes (Art. 11). */
+BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
+{
+    ASSERT((pageAddress & (PAGE_SIZE - 1)) == 0);
+    PMI_VAD vad = MiFindVad(space, pageAddress);
+    if (vad == 0 || !vad->writeWatch)
+    {
+        return FALSE;
+    }
+    ULONG index = (ULONG)((pageAddress - vad->base) / PAGE_SIZE);
+    ULONG protect = vad->pageProtect[index];
+    if (protect == 0 || (protect & PAGE_GUARD) != 0)
+    {
+        return FALSE; /* uncommitted or guard: not ours */
+    }
+    int present, writable, executable;
+    MiProtectToPteBits(protect, &present, &writable, &executable);
+    if (!writable || vad->watchDirty[index])
+    {
+        return FALSE; /* a real protection violation, or already open */
+    }
+    vad->watchDirty[index] = 1;
+    MipRemapWatchPage(space, vad, pageAddress, index);
+    return TRUE;
+}
+
+/* The get/reset engines (wine dlls/ntdll/unix/virtual.c NtGetWriteWatch /
+ * NtResetWriteWatch; pinned by sem_mm/write_watch). The range must sit
+ * inside ONE write-watch VAD. */
+static PMI_VAD MipFindWatchRange(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size)
+{
+    PMI_VAD vad = MiFindVad(space, base);
+    if (vad == 0 || !vad->writeWatch || base + size > vad->base + vad->size)
+    {
+        return 0;
+    }
+    return vad;
+}
+
+/* Re-arm [base, base+size): clear dirty and close the hardware gate. */
+static void MipRearmWatchRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base, uint64_t size)
+{
+    for (uint64_t page = base; page < base + size; page += PAGE_SIZE)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->watchDirty[index])
+        {
+            vad->watchDirty[index] = 0;
+            MipRemapWatchPage(space, vad, page, index);
+        }
+    }
+}
+
+NTSTATUS NtGetWriteWatch(HANDLE process, ULONG flags, PVOID baseAddress, SIZE_T size,
+                         PVOID *addresses, ULONG_PTR *count, ULONG *granularity)
+{
+    /* The oracle operates on the CALLER's address space whatever the handle
+     * says (its implementation never consults `process`); reproduced. The
+     * ladder order is the oracle's own (pinned). */
+    (void)process;
+    uint64_t start = (uint64_t)(uintptr_t)baseAddress;
+    uint64_t base = start & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t length = (size + (start - base) + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+
+    if (count == 0 || granularity == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(count, sizeof(*count), sizeof(*count));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(granularity, sizeof(*granularity), sizeof(*granularity));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG_PTR capacity = *count;
+    if (capacity == 0 || size == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (flags & ~(ULONG)WRITE_WATCH_FLAG_RESET)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (addresses == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    uint64_t maxEntries = length / PAGE_SIZE;
+    if (capacity < maxEntries)
+    {
+        maxEntries = capacity;
+    }
+    status = KiProbeForWrite(addresses, maxEntries * sizeof(PVOID), sizeof(PVOID));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    PMI_VAD vad = MipFindWatchRange(space, base, length);
+    if (vad == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    ULONG_PTR pos = 0;
+    uint64_t page = base;
+    uint64_t end = base + length;
+    while (pos < capacity && page < end)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->watchDirty[index])
+        {
+            addresses[pos++] = (PVOID)(uintptr_t)page;
+        }
+        page += PAGE_SIZE;
+    }
+    if (flags & WRITE_WATCH_FLAG_RESET)
+    {
+        /* Only the SCANNED subrange re-arms (the oracle's `size = addr -
+         * base` before its reset; pinned): dirty pages past a filled count
+         * stay dirty. */
+        MipRearmWatchRange(space, vad, base, page - base);
+    }
+    *count = pos;
+    *granularity = PAGE_SIZE;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtResetWriteWatch(HANDLE process, PVOID baseAddress, SIZE_T size)
+{
+    (void)process; /* as the get side: the caller's space */
+    uint64_t start = (uint64_t)(uintptr_t)baseAddress;
+    uint64_t base = start & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t length = (size + (start - base) + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    if (size == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    PMI_VAD vad = MipFindWatchRange(space, base, length);
+    if (vad == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    MipRearmWatchRange(space, vad, base, length);
+    return STATUS_SUCCESS;
 }
 
 /* --- guard pages (virtual.h; used by mm/fault.c) ---------------------------- */
@@ -1182,7 +1410,11 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
         uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
         ASSERT(frame != 0);
         MiUnmapUserPage(space->pml4Physical, page);
-        MiMapUserPage(space->pml4Physical, page, frame, present, writable, executable);
+        /* The watch trap survives a protection change (pinned by
+         * sem_mm/write_watch): a clean watched page stays hardware
+         * read-only whatever the protection says. */
+        MiMapUserPage(space->pml4Physical, page, frame, present,
+                      MipVadPageHwWritable(vad, index, writable), executable);
         vad->pageProtect[index] = newProtect;
     }
     *baseInOut = base;

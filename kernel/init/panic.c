@@ -307,7 +307,9 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         if (trapFrame->vector == 14)
         {
             __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-            faultStatus = MiHandleUserFault(cr2);
+            /* #PF error code bit 1 = the access was a write (Intel SDM
+             * Vol. 3A §4.7, "Page-Fault Exceptions"). */
+            faultStatus = MiHandleUserFault(cr2, (trapFrame->errorCode & 2) != 0);
             if (faultStatus == STATUS_SUCCESS)
             {
                 /* Resolved fault returning to ring 3: same suspend/terminate

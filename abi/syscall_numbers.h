@@ -200,6 +200,8 @@
 #define NTSYS_NtCreateSectionEx 0x0088
 #define NTSYS_NtMapViewOfSectionEx 0x00b0
 #define NTSYS_NtUnmapViewOfSectionEx 0x0104
+#define NTSYS_NtGetWriteWatch 0x00a2
+#define NTSYS_NtResetWriteWatch 0x00de
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

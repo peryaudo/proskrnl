@@ -7,6 +7,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "kernel/mm/phys.h"
+#include "kernel/mm/virtual.h"
 #include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
 
@@ -49,16 +50,26 @@ static NTSTATUS KiProbeRange(const void *address, uint64_t length, uint64_t alig
         return STATUS_ACCESS_VIOLATION;
     }
 
-    uint64_t pml4 = KeGetCurrentThread()->process->addressSpace.pml4Physical;
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
     uint64_t end = start + length;
     for (uint64_t page = start & ~(uint64_t)(PAGE_SIZE - 1); page < end; page += PAGE_SIZE)
     {
         int writable = 0;
         int present = 0;
-        if (MiTranslateUserPage(pml4, page, &writable, &present) == 0 || !present ||
-            (forWrite && !writable))
+        if (MiTranslateUserPage(space->pml4Physical, page, &writable, &present) == 0 || !present)
         {
             return STATUS_ACCESS_VIOLATION;
+        }
+        if (forWrite && !writable)
+        {
+            /* CUI-7 write-watch: the probe IS the kernel's write intent, and
+             * it is the single chokepoint every service that writes a user
+             * buffer passes (Art. 11) — a clean watched page marks here,
+             * exactly as the ring-3 store's fault would mark it. */
+            if (!MiResolveWriteWatchFault(space, page))
+            {
+                return STATUS_ACCESS_VIOLATION;
+            }
         }
     }
     return STATUS_SUCCESS;
