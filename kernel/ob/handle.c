@@ -340,8 +340,66 @@ NTSTATUS NtClose(HANDLE handle)
     {
         return STATUS_INVALID_HANDLE;
     }
+    /* CUI-6: protect-from-close is enforced here, not stored-and-ignored
+     * (wineserver close_handle: RESERVED_CLOSE_PROTECT refuses and the
+     * handle stays live; sem_ob/handle_flags pins it). */
+    if (entry->attributes & OBJ_PROTECT_CLOSE)
+    {
+        return STATUS_HANDLE_NOT_CLOSABLE;
+    }
     ObpCloseHandleEntry(entry);
     return STATUS_SUCCESS;
+}
+
+/* CUI-6: the SetHandleInformation back end. One class; per-handle flag bits
+ * stored in the entry's attributes word, the same bits OBJ_INHERIT/
+ * OBJ_PROTECT_CLOSE occupy at create/duplicate time. The set always writes
+ * BOTH flags (the oracle's mask is INHERIT|PROTECT_FROM_CLOSE, never
+ * partial: dlls/ntdll/unix/file.c NtSetInformationObject); magic
+ * pseudo-handles refuse with STATUS_ACCESS_DENIED (server/handle.c
+ * set_handle_flags: "we can retrieve but not set info for magic handles"). */
+NTSTATUS NtSetInformationObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID buffer,
+                                ULONG length)
+{
+    switch (infoClass)
+    {
+    case ObjectHandleFlagInformation:
+    {
+        if (length < sizeof(OBJECT_HANDLE_FLAG_INFORMATION))
+        {
+            return STATUS_INVALID_BUFFER_SIZE;
+        }
+        OBJECT_HANDLE_FLAG_INFORMATION info;
+        NTSTATUS status = KiCopyFromUser(&info, buffer, sizeof(info));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if ((ULONG_PTR)handle >= (ULONG_PTR)-6)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
+        if (entry == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        entry->attributes &= ~(OBJ_INHERIT | OBJ_PROTECT_CLOSE);
+        if (info.Inherit)
+        {
+            entry->attributes |= OBJ_INHERIT;
+        }
+        if (info.ProtectFromClose)
+        {
+            entry->attributes |= OBJ_PROTECT_CLOSE;
+        }
+        return STATUS_SUCCESS;
+    }
+    default:
+        /* Unbuilt classes refuse loudly (Art. 12); the oracle's unix layer
+         * answers the same status for every class it does not marshal. */
+        return STATUS_NOT_IMPLEMENTED;
+    }
 }
 
 /* Resolve one end of a duplication to its process. The current-process
@@ -603,6 +661,32 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             return probeStatus;
         }
     }
+    /* CUI-6: a magic pseudo-handle answers the flag query with both flags
+     * clear (wineserver set_handle_flags returns 0 for a zero mask on a
+     * magic handle; sem_ob/handle_flags pins it) — resolved before the
+     * table, which knows nothing of pseudo handles. */
+    if (infoClass == ObjectHandleFlagInformation && (ULONG_PTR)handle >= (ULONG_PTR)-6)
+    {
+        if (length < sizeof(OBJECT_HANDLE_FLAG_INFORMATION))
+        {
+            return STATUS_INVALID_BUFFER_SIZE;
+        }
+        NTSTATUS magicStatus = KiProbeForWrite(buffer, sizeof(OBJECT_HANDLE_FLAG_INFORMATION), 1);
+        if (!NT_SUCCESS(magicStatus))
+        {
+            return magicStatus;
+        }
+        OBJECT_HANDLE_FLAG_INFORMATION magicInfo;
+        memset(&magicInfo, 0, sizeof(magicInfo));
+        memcpy(buffer, &magicInfo, sizeof(magicInfo));
+        if (returnLength != 0)
+        {
+            ULONG used = sizeof(magicInfo);
+            memcpy(returnLength, &used, sizeof(used));
+        }
+        return STATUS_SUCCESS;
+    }
+
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
     if (entry == 0)
     {
@@ -713,6 +797,32 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         if (returnLength != 0)
         {
             ULONG used = (ULONG)sizeof(*info) + info->TypeName.MaximumLength;
+            memcpy(returnLength, &used, sizeof(used));
+        }
+        return STATUS_SUCCESS;
+    }
+    case ObjectHandleFlagInformation:
+    {
+        /* CUI-6: GetHandleInformation — the entry's own flag bits back out
+         * (dlls/ntdll/unix/file.c NtQueryObject: full struct or
+         * STATUS_INVALID_BUFFER_SIZE; sem_ob/handle_flags pins it). */
+        if (length < sizeof(OBJECT_HANDLE_FLAG_INFORMATION))
+        {
+            return STATUS_INVALID_BUFFER_SIZE;
+        }
+        status = KiProbeForWrite(buffer, sizeof(OBJECT_HANDLE_FLAG_INFORMATION), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        OBJECT_HANDLE_FLAG_INFORMATION info;
+        memset(&info, 0, sizeof(info));
+        info.Inherit = (entry->attributes & OBJ_INHERIT) != 0;
+        info.ProtectFromClose = (entry->attributes & OBJ_PROTECT_CLOSE) != 0;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            ULONG used = sizeof(info);
             memcpy(returnLength, &used, sizeof(used));
         }
         return STATUS_SUCCESS;

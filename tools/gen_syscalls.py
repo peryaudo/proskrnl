@@ -219,6 +219,7 @@ IMPLEMENTED = [
     "NtFlushProcessWriteBuffers",
     "NtGetCurrentProcessorNumber",
     "NtSetThreadExecutionState",
+    "NtSetInformationObject",
 ]
 
 
