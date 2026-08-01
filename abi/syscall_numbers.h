@@ -177,6 +177,7 @@
 #define NTSYS_NtCompareObjects 0x0077
 #define NTSYS_NtMakePermanentObject 0x00ae
 #define NTSYS_NtOpenTimer 0x00bf
+#define NTSYS_NtSignalAndWaitForSingleObject 0x00f9
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

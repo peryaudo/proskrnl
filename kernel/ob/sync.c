@@ -242,6 +242,22 @@ NTSTATUS NtOpenMutant(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTE
     return ObpOpenObjectByName(&ObpMutantType, attr, access, handle);
 }
 
+/* THE release core (ownership gate + Ke release), shared by NtReleaseMutant
+ * and the signal half of NtSignalAndWaitForSingleObject (G10). */
+static NTSTATUS ObpReleaseMutantBody(PKMUTANT mutant, LONG *previousOut)
+{
+    if (mutant->ownerThread != KeGetCurrentThread())
+    {
+        return STATUS_MUTANT_NOT_OWNED;
+    }
+    LONG previous = KeReleaseMutex(mutant, FALSE);
+    if (previousOut != 0)
+    {
+        *previousOut = previous;
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtReleaseMutant(HANDLE handle, PLONG previousCount)
 {
     NTSTATUS probe =
@@ -257,19 +273,14 @@ NTSTATUS NtReleaseMutant(HANDLE handle, PLONG previousCount)
     {
         return status;
     }
-    PKMUTANT mutant = body;
-    if (mutant->ownerThread != KeGetCurrentThread())
-    {
-        ObDereferenceObject(body);
-        return STATUS_MUTANT_NOT_OWNED;
-    }
-    LONG previous = KeReleaseMutex(mutant, FALSE);
-    if (previousCount != 0)
+    LONG previous = 0;
+    status = ObpReleaseMutantBody(body, &previous);
+    if (NT_SUCCESS(status) && previousCount != 0)
     {
         *previousCount = previous;
     }
     ObDereferenceObject(body);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS NtQueryMutant(HANDLE handle, MUTANT_INFORMATION_CLASS informationClass, PVOID buffer,
@@ -344,6 +355,31 @@ NTSTATUS NtOpenSemaphore(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIB
     return ObpOpenObjectByName(&ObpSemaphoreType, attr, access, handle);
 }
 
+/* THE release core (limit gate + Ke release), shared by NtReleaseSemaphore
+ * and the signal half of NtSignalAndWaitForSingleObject (G10). */
+static NTSTATUS ObpReleaseSemaphoreBody(PKSEMAPHORE semaphore, ULONG releaseCount,
+                                        LONG *previousOut)
+{
+    /* Ke panics on over-release (kernel callers are in-tree); the Nt surface
+     * reports it. No preemption: the check cannot go stale before the call.
+     * Unsigned compare so a high-bit count reads as "huge" -> limit exceeded,
+     * as the server's unsigned arithmetic does, not as a negative LONG. */
+    LONG previous = semaphore->header.signalState;
+    if (releaseCount > (ULONG)(semaphore->limit - previous))
+    {
+        return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
+    }
+    if (releaseCount != 0)
+    {
+        KeReleaseSemaphore(semaphore, 0, (LONG)releaseCount, FALSE);
+    }
+    if (previousOut != 0)
+    {
+        *previousOut = previous;
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtReleaseSemaphore(HANDLE handle, ULONG releaseCount, PULONG previousCount)
 {
     /* The handle is resolved BEFORE ReleaseCount is examined: a bad, wrong-type
@@ -365,27 +401,52 @@ NTSTATUS NtReleaseSemaphore(HANDLE handle, ULONG releaseCount, PULONG previousCo
     {
         return status;
     }
-    PKSEMAPHORE semaphore = body;
-    /* Ke panics on over-release (kernel callers are in-tree); the Nt surface
-     * reports it. No preemption: the check cannot go stale before the call.
-     * Unsigned compare so a high-bit count reads as "huge" -> limit exceeded,
-     * as the server's unsigned arithmetic does, not as a negative LONG. */
-    LONG previous = semaphore->header.signalState;
-    if (releaseCount > (ULONG)(semaphore->limit - previous))
-    {
-        ObDereferenceObject(body);
-        return STATUS_SEMAPHORE_LIMIT_EXCEEDED;
-    }
-    if (releaseCount != 0)
-    {
-        KeReleaseSemaphore(semaphore, 0, (LONG)releaseCount, FALSE);
-    }
-    if (previousCount != 0)
+    LONG previous = 0;
+    status = ObpReleaseSemaphoreBody(body, releaseCount, &previous);
+    if (NT_SUCCESS(status) && previousCount != 0)
     {
         *previousCount = (ULONG)previous;
     }
     ObDereferenceObject(body);
-    return STATUS_SUCCESS;
+    return status;
+}
+
+/* CUI-6: the signal half of NtSignalAndWaitForSingleObject — wineserver's
+ * signal_object dispatch (server/thread.c) over the per-type signal ops:
+ * event needs EVENT_MODIFY_STATE (server/event.c event_signal), semaphore
+ * SEMAPHORE_MODIFY_STATE (server/semaphore.c), mutant SYNCHRONIZE plus
+ * ownership (server/mutex.c), anything else refuses with
+ * STATUS_OBJECT_TYPE_MISMATCH (server/object.c no_signal). The release
+ * cores are the SAME ones the plain services use (G10). */
+NTSTATUS ObpSignalObjectForWait(PVOID body, ACCESS_MASK grantedAccess)
+{
+    POBJECT_TYPE type = ObpGetHeader(body)->type;
+    if (type == &ObpEventType)
+    {
+        if (!(grantedAccess & EVENT_MODIFY_STATE))
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        ObpSetEvent(body);
+        return STATUS_SUCCESS;
+    }
+    if (type == &ObpMutantType)
+    {
+        if (!(grantedAccess & SYNCHRONIZE))
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        return ObpReleaseMutantBody(body, 0);
+    }
+    if (type == &ObpSemaphoreType)
+    {
+        if (!(grantedAccess & SEMAPHORE_MODIFY_STATE))
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        return ObpReleaseSemaphoreBody(body, 1, 0);
+    }
+    return STATUS_OBJECT_TYPE_MISMATCH;
 }
 
 NTSTATUS NtQuerySemaphore(HANDLE handle, SEMAPHORE_INFORMATION_CLASS informationClass, PVOID buffer,

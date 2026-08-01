@@ -223,6 +223,7 @@ IMPLEMENTED = [
     "NtCompareObjects",
     "NtMakePermanentObject",
     "NtOpenTimer",
+    "NtSignalAndWaitForSingleObject",
 ]
 
 
