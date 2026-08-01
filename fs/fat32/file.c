@@ -120,6 +120,15 @@ NTSTATUS FatEnsureCache(PFAT_FCB fcb)
     uint64_t position = 0;
     while (cluster != 0 && position < fcb->fileSize && NT_SUCCESS(status))
     {
+        /* CUI-8 (docs/19 §9.9): a landed NtCancelSynchronousIoFile stops
+         * the ISSUING here; the flush below still awaits what is out
+         * (docs/20 R4). cacheLoaded stays FALSE — a later fill redoes the
+         * whole load, which is merely repeated work, never a torn cache. */
+        if (IoSyncIoCancelled())
+        {
+            status = STATUS_CANCELLED;
+            break;
+        }
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG s = 0;
         while (s < volume->sectorsPerCluster && position < fcb->fileSize)
@@ -174,6 +183,15 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
     NTSTATUS status = STATUS_SUCCESS;
     for (uint64_t position = firstByte; position < endByte && cluster != 0 && NT_SUCCESS(status);)
     {
+        /* CUI-8 (docs/19 §9.9): as in FatEnsureCache — stop issuing on a
+         * landed cancel; sectors already written stay written (NT's
+         * too-late-to-cancel writeback semantics), and the flush below
+         * still awaits them (docs/20 R4). */
+        if (IoSyncIoCancelled())
+        {
+            status = STATUS_CANCELLED;
+            break;
+        }
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG sectorInCluster = (ULONG)((position % clusterBytes) / FAT_SECTOR_SIZE);
         while (sectorInCluster < volume->sectorsPerCluster && position < endByte)

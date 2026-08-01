@@ -200,7 +200,14 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     }
 
     PMI_PAGE_CACHE cache;
+    /* CUI-8 (docs/19 §9.9): the cold cache fill parks; mark the span so
+     * NtCancelSynchronousIoFile finds it. A landed cancel surfaces as
+     * STATUS_CANCELLED from GetCache with the IOSB untouched — the same
+     * shape as npfs's cancelled reads (pinned sem_pipe/cancel_sync.c;
+     * sem_file/cancel_data_io.c holds the race-tolerant boundary). */
+    IopEnterSyncIo(iosb);
     status = file->device->ops->GetCache(file, &cache);
+    IopLeaveSyncIo();
     if (!NT_SUCCESS(status))
     {
         goto abandon;
@@ -323,10 +330,17 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     }
 
     PMI_PAGE_CACHE cache;
+    /* CUI-8 (docs/19 §9.9): every disk-touching leg of the write — the
+     * fill, the extension's zero-fill, the writeback — parks; one marked
+     * span makes them cancellable (STATUS_CANCELLED, IOSB untouched, the
+     * cancel_data_io.c boundary). MiCacheWrite sits inside the span only
+     * because splitting it costs more than the benign self-healing
+     * IopEnterSyncIo already performs on a recovery-unwound span. */
+    IopEnterSyncIo(iosb);
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
     {
-        goto abandon;
+        goto abandonSyncIo;
     }
 
     if (writeToEnd)
@@ -344,12 +358,12 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         if (file->device->ops->SetEndOfFile == 0)
         {
             status = STATUS_INVALID_DEVICE_REQUEST;
-            goto abandon;
+            goto abandonSyncIo;
         }
         status = file->device->ops->SetEndOfFile(file, offset + length);
         if (!NT_SUCCESS(status))
         {
-            goto abandon;
+            goto abandonSyncIo;
         }
     }
     if (length != 0)
@@ -358,9 +372,10 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         status = file->device->ops->WritebackRange(file, offset, length);
         if (!NT_SUCCESS(status))
         {
-            goto abandon;
+            goto abandonSyncIo;
         }
     }
+    IopLeaveSyncIo();
     if (file->synchronousIo)
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + length;
@@ -370,6 +385,8 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     ObDereferenceObject(file);
     return status;
 
+abandonSyncIo:
+    IopLeaveSyncIo();
 abandon:
     /* The request never completed (no IOSB write): the APC must not fire. */
     if (apcBlock != 0)
