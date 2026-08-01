@@ -119,6 +119,53 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
                                                               : STATUS_SUCCESS;
         break;
     }
+    case ProcessTimes:
+    {
+        /* CUI-6 (sem_ps/times): exact-length protocol as
+         * ProcessBasicInformation above; the answer is the EPROCESS wall
+         * stamps plus exited totals plus every live thread's tick counters,
+         * summed under the dispatcher lock so a thread mid-exit is counted
+         * exactly once. */
+        if (length < sizeof(KERNEL_USER_TIMES))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(KERNEL_USER_TIMES);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(KERNEL_USER_TIMES), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        KERNEL_USER_TIMES times;
+        memset(&times, 0, sizeof(times));
+        uint64_t flags = KiAcquireDispatcherLock();
+        times.CreateTime = process->createTime;
+        times.ExitTime = process->exitTime;
+        uint64_t kernel100ns = process->exitedKernelTime100ns;
+        uint64_t user100ns = process->exitedUserTime100ns;
+        for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+             entry = entry->Flink)
+        {
+            PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+            kernel100ns += tcb->kernelTime100ns;
+            user100ns += tcb->userTime100ns;
+        }
+        KiReleaseDispatcherLock(flags);
+        times.KernelTime.QuadPart = (LONGLONG)kernel100ns;
+        times.UserTime.QuadPart = (LONGLONG)user100ns;
+        memcpy(buffer, &times, sizeof(times));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(times);
+        }
+        status =
+            (length > sizeof(KERNEL_USER_TIMES)) ? STATUS_INFO_LENGTH_MISMATCH : STATUS_SUCCESS;
+        break;
+    }
     case ProcessDebugPort:
     {
         if (length < sizeof(HANDLE))
@@ -922,6 +969,41 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         if (returnLength != 0)
         {
             *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+    case SystemProcessorPerformanceInformation:
+    {
+        /* CUI-6 (sem_ps/times): one entry per CPU — one CPU here (Art. 3).
+         * The answer scales to whole entries and a zero-entry buffer refuses
+         * with length 0; kernel time folds idle IN, exactly the oracle's
+         * Linux reading of /proc/stat (dlls/ntdll/unix/system.c: sys +=
+         * idle). Idle/user/kernel come from the tick-charge totals. */
+        if (length < sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = 0;
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS perfStatus = KiProbeForWrite(
+            buffer, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION), sizeof(uint64_t));
+        if (!NT_SUCCESS(perfStatus))
+        {
+            return perfStatus;
+        }
+        SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION perf;
+        memset(&perf, 0, sizeof(perf));
+        uint64_t flags = KiAcquireDispatcherLock();
+        perf.IdleTime.QuadPart = (LONGLONG)KiIdleTime100ns;
+        perf.KernelTime.QuadPart = (LONGLONG)(KiTotalKernelTime100ns + KiIdleTime100ns);
+        perf.UserTime.QuadPart = (LONGLONG)KiTotalUserTime100ns;
+        KiReleaseDispatcherLock(flags);
+        memcpy(buffer, &perf, sizeof(perf));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(perf);
         }
         return STATUS_SUCCESS;
     }
