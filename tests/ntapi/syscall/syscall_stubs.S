@@ -2132,6 +2132,16 @@ NtImpersonateAnonymousToken:
     syscall
     ret
 
+    .global NtRenameKey
+NtRenameKey:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xdb, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
