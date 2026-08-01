@@ -19,6 +19,38 @@
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
 
+/* --- the volume I/O gate (CUI-8, docs/20 R1) ------------------------------- */
+
+void FatAcquireVolumeGate(PFAT_VOLUME volume)
+{
+    for (;;)
+    {
+        NTSTATUS status = KeWaitForSingleObject(&volume->ioGate, Executive, KernelMode, FALSE, 0);
+        if (status == STATUS_SUCCESS)
+        {
+            return;
+        }
+        /* Only a dying thread's wait refuses (CUI-4: a foreign-terminated
+         * thread never parks) — and its rundown still does real I/O
+         * (delete-on-close, cleanup writeback), so it acquires without
+         * waiting: try, then yield so the holder can run to its release.
+         * The holder always progresses — its own device waits complete by
+         * DEVICE action harvested at the tick, never by this thread. */
+        ASSERT(status == STATUS_THREAD_IS_TERMINATING);
+        if (KiTryAcquireEventGate(&volume->ioGate))
+        {
+            return;
+        }
+        KiYield();
+    }
+}
+
+void FatReleaseVolumeGate(PFAT_VOLUME volume)
+{
+    ASSERT(KeReadStateEvent(&volume->ioGate) == 0); /* held: release must pair */
+    KeSetEvent(&volume->ioGate, 0, FALSE);
+}
+
 /* --- sector I/O ------------------------------------------------------------ */
 
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer)
@@ -710,6 +742,8 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
         volume->fsInfoSector = 0; /* no usable FSInfo on this volume */
     }
     InitializeListHead(&volume->fcbList);
+    /* Born signalled: the gate is free until its first holder (CUI-8). */
+    KeInitializeEvent(&volume->ioGate, SynchronizationEvent, TRUE);
 
     /* Volume identity for the FileFs* classes: BS_VolID at 67, BS_VolLab at
      * 71 (11 OEM chars, space-padded) — spec §3.3 FAT32 boot sector; same

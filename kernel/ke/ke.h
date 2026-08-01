@@ -365,6 +365,11 @@ LONG KeResetEvent(PRKEVENT event);
 void KeClearEvent(PRKEVENT event);
 LONG KeReadStateEvent(PRKEVENT event);
 
+/* Consume a synchronization event's signal without ever waiting — the gate
+ * acquire for callers whose waits refuse (a terminating thread's rundown
+ * I/O; see event.c). Returns TRUE when the signal was taken. */
+BOOLEAN KiTryAcquireEventGate(PRKEVENT event);
+
 void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit);
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait);
 

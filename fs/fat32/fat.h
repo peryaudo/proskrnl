@@ -19,6 +19,7 @@
 
 #include "abi/ntdef.h"
 #include "kernel/io/vfs.h"
+#include "kernel/ke/ke.h" /* CUI-8: the volume I/O gate is a KEVENT */
 #include "kernel/lib/list.h"
 #include "kernel/mm/pagecache.h"
 
@@ -58,6 +59,12 @@ typedef struct FAT_VOLUME
     ULONG freeClusters;       /* live count, maintained by FatSetFatEntry */
     LIST_ENTRY fcbList;       /* live FAT_FCBs, for the one-FCB-per-file rule */
     struct FAT_FCB *root;     /* the root directory's FCB (never dies) */
+    KEVENT ioGate;            /* CUI-8 (docs/20 R1): one holder at a time
+                               * across every IO_VFS_OPS entry that can touch
+                               * the disk or volume/FCB metadata — a
+                               * synchronization event born signalled, i.e. a
+                               * binary semaphore over existing dispatcher
+                               * machinery (docs/18 §3: no new lock kinds). */
 } FAT_VOLUME, *PFAT_VOLUME;
 
 typedef struct FAT_FCB
@@ -132,6 +139,14 @@ NTSTATUS FatQueryVolumeInfo(PFAT_VOLUME volume, IO_VOLUME_INFO *info);
 
 /* CUI-5: set the volume label (BS_VolLab + the root volume-id entry). */
 NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBytes);
+
+/* The volume I/O gate (CUI-8, docs/20 R1). Taken ONLY at the IO_VFS_OPS
+ * entry points (fs/fat32/file.c wrappers) — never on internal calls, so it
+ * cannot recurse. Acquire parks the caller when contended; the one caller
+ * class whose waits refuse — a terminating thread running rundown I/O —
+ * falls back to try/yield inside. */
+void FatAcquireVolumeGate(PFAT_VOLUME volume);
+void FatReleaseVolumeGate(PFAT_VOLUME volume);
 
 /* Volume-relative sector I/O. */
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer);

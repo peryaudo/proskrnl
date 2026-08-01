@@ -67,6 +67,23 @@ void KeClearEvent(PRKEVENT event)
     KeResetEvent(event);
 }
 
+/* Non-waiting acquire of a synchronization event used as a binary-semaphore
+ * gate (CUI-8: the fat32 volume gate, docs/20 R1): consume the signal if it
+ * is up. Exists for the one caller class a wait refuses outright — a
+ * terminating thread's rundown I/O (KiWaitAbortedForTermination) — whose
+ * acquire loop is try / drain / KiYield instead of a park. Internal Ki name:
+ * NT has no such export (docs/15). */
+BOOLEAN KiTryAcquireEventGate(PRKEVENT event)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    KiAssertIsEvent(event);
+    ASSERT(event->header.type == KI_OBJECT_SYNCHRONIZATION_EVENT);
+    BOOLEAN acquired = event->header.signalState != 0;
+    event->header.signalState = 0;
+    KiReleaseDispatcherLock(flags);
+    return acquired;
+}
+
 LONG KeReadStateEvent(PRKEVENT event)
 {
     return event->header.signalState;
