@@ -795,6 +795,25 @@ typedef struct {
 #define JOB_OBJECT_BASIC_LIMIT_VALID_FLAGS 0x000000ff
 #define JOB_OBJECT_EXTENDED_LIMIT_VALID_FLAGS 0x00007fff
 
+#define PROCESS_PRIOCLASS_IDLE 1
+#define PROCESS_PRIOCLASS_NORMAL 2
+#define PROCESS_PRIOCLASS_HIGH 3
+#define PROCESS_PRIOCLASS_REALTIME 4
+#define PROCESS_PRIOCLASS_BELOW_NORMAL 5
+#define PROCESS_PRIOCLASS_ABOVE_NORMAL 6
+
+typedef DWORD		EXECUTION_STATE;
+#define ES_SYSTEM_REQUIRED 0x00000001
+#define ES_DISPLAY_REQUIRED 0x00000002
+#define ES_USER_PRESENT 0x00000004
+#define ES_CONTINUOUS 0x80000000
+
+typedef enum {
+    QUEUE_USER_APC_FLAGS_NONE,
+    QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC = 0x00000001,
+    QUEUE_USER_APC_CALLBACK_DATA_CONTEXT = 0x00010000,
+} QUEUE_USER_APC_FLAGS;
+
 typedef struct {
     NTSTATUS  ExitStatus;
     PVOID     TebBaseAddress;
@@ -1176,6 +1195,60 @@ typedef struct {
     };
 } PS_CREATE_INFO, *PPS_CREATE_INFO;
 
+typedef struct {
+    LARGE_INTEGER  CreateTime;
+    LARGE_INTEGER  ExitTime;
+    LARGE_INTEGER  KernelTime;
+    LARGE_INTEGER  UserTime;
+} KERNEL_USER_TIMES, *PKERNEL_USER_TIMES;
+
+typedef struct {
+    BOOLEAN     Foreground;
+    UCHAR       PriorityClass;
+} PROCESS_PRIORITY_CLASS, *PPROCESS_PRIORITY_CLASS;
+
+typedef struct {
+    LARGE_INTEGER IdleTime;
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER Reserved1[2];
+    ULONG Reserved2;
+} SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, *PSYSTEM_PROCESSOR_PERFORMANCE_INFORMATION;
+
+typedef struct {
+    ULONG  OwnerPid;
+    BYTE   ObjectType;
+    BYTE   HandleFlags;
+    USHORT HandleValue;
+    PVOID  ObjectPointer;
+    ULONG  AccessMask;
+} SYSTEM_HANDLE_ENTRY, *PSYSTEM_HANDLE_ENTRY;
+
+typedef struct {
+    ULONG               Count;
+    SYSTEM_HANDLE_ENTRY Handle[1];
+} SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
+
+#define MAXIMUM_FILENAME_LENGTH 256
+
+typedef struct {
+    PVOID               Section;                        /* 00/00 */
+    PVOID               MappedBaseAddress;              /* 04/08 */
+    PVOID               ImageBaseAddress;               /* 08/10 */
+    ULONG               ImageSize;                      /* 0c/18 */
+    ULONG               Flags;                          /* 10/1c */
+    WORD                LoadOrderIndex;                 /* 14/20 */
+    WORD                InitOrderIndex;                 /* 16/22 */
+    WORD                LoadCount;                      /* 18/24 */
+    WORD                NameOffset;                     /* 1a/26 */
+    BYTE                Name[MAXIMUM_FILENAME_LENGTH];  /* 1c/28 */
+} RTL_PROCESS_MODULE_INFORMATION, *PRTL_PROCESS_MODULE_INFORMATION;
+
+typedef struct {
+    ULONG               ModulesCount;
+    RTL_PROCESS_MODULE_INFORMATION Modules[1]; /* FIXME: should be Modules[0] */
+} RTL_PROCESS_MODULES, *PRTL_PROCESS_MODULES;
+
 /* Layout pins, generated from the offset comments in the SAME Wine
  * header the structs were extracted from (Art. 4). */
 _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, KernelTime) == 0x00, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
@@ -1209,6 +1282,26 @@ _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessKey) == 0x68, "
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, vmCounters) == 0x70, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ioCounters) == 0xd0, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, ti) == 0x100, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, Section) == 0x00, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, MappedBaseAddress) == 0x08, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, ImageBaseAddress) == 0x10, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, ImageSize) == 0x18, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, Flags) == 0x1c, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, LoadOrderIndex) == 0x20, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, InitOrderIndex) == 0x22, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, LoadCount) == 0x24, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, NameOffset) == 0x26, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(RTL_PROCESS_MODULE_INFORMATION, Name) == 0x28, "RTL_PROCESS_MODULE_INFORMATION x64 layout (offset comment in the Wine header)");
+
+/* CUI-6 layout pins (no offset-comment column in the Wine header;
+ * sizes hand-checked once against the extracted x64 layout). */
+_Static_assert(sizeof(KERNEL_USER_TIMES) == 32, "KERNEL_USER_TIMES x64 layout");
+_Static_assert(sizeof(PROCESS_PRIORITY_CLASS) == 2, "PROCESS_PRIORITY_CLASS x64 layout");
+_Static_assert(sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) == 48, "SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION x64 layout");
+_Static_assert(sizeof(SYSTEM_HANDLE_ENTRY) == 24, "SYSTEM_HANDLE_ENTRY x64 layout");
+_Static_assert(offsetof(SYSTEM_HANDLE_INFORMATION, Handle) == 8, "SYSTEM_HANDLE_INFORMATION x64 layout");
+_Static_assert(sizeof(RTL_PROCESS_MODULE_INFORMATION) == 296, "RTL_PROCESS_MODULE_INFORMATION x64 layout");
+_Static_assert(offsetof(RTL_PROCESS_MODULES, Modules) == 8, "RTL_PROCESS_MODULES x64 layout");
 
 /* The M4+M7 Ps Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
@@ -1267,5 +1360,10 @@ NTSTATUS NtResumeProcess(HANDLE);
 NTSTATUS NtOpenJobObject(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*);
 NTSTATUS NtTerminateJobObject(HANDLE,NTSTATUS);
 NTSTATUS NtIsProcessInJob(HANDLE,HANDLE);
+NTSTATUS NtQueueApcThreadEx2(HANDLE,HANDLE,ULONG,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
+NTSTATUS NtAlertResumeThread(HANDLE,PULONG);
+NTSTATUS NtFlushProcessWriteBuffers(void);
+ULONG NtGetCurrentProcessorNumber(void);
+NTSTATUS NtSetThreadExecutionState(EXECUTION_STATE,EXECUTION_STATE*);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */

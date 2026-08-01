@@ -507,6 +507,12 @@ NTOBAPI_FUNCTIONS = [
     "NtQueryTimer",
     # CUI-5: kernelbase's volume enumeration (QueryDosDeviceW/GetLogicalDrives)
     "NtQueryDirectoryObject",
+    # CUI-6: the handle/identity surface (docs/02).
+    "NtSetInformationObject",
+    "NtCompareObjects",
+    "NtMakePermanentObject",
+    "NtSignalAndWaitForSingleObject",
+    "NtOpenTimer",
 ]
 
 
@@ -538,6 +544,9 @@ def gen_ntobapi(wine: Path) -> str:
             # CUI-5: NtQueryDirectoryObject's per-entry shape (Wine's name for
             # what ntifs.h calls OBJECT_DIRECTORY_INFORMATION).
             ("_DIRECTORY_BASIC_INFORMATION", "DIRECTORY_BASIC_INFORMATION"),
+            # CUI-6: GetHandleInformation/SetHandleInformation's exchange shape
+            # (NtQuery/SetInformationObject ObjectHandleFlagInformation).
+            ("_OBJECT_HANDLE_FLAG_INFORMATION", "OBJECT_HANDLE_FLAG_INFORMATION"),
         ]
     )
     dir_asserts = (
@@ -1703,12 +1712,22 @@ NTPSAPI_FUNCTIONS = [
     "NtOpenJobObject",
     "NtTerminateJobObject",
     "NtIsProcessInJob",
+    # CUI-6: the query surface real tools ask about processes and threads,
+    # plus the APC/alert/no-power ids kernel32 forwards straight to ntdll.
+    "NtQueueApcThreadEx2",
+    "NtAlertResumeThread",
+    "NtFlushProcessWriteBuffers",
+    "NtGetCurrentProcessorNumber",
+    "NtSetThreadExecutionState",
 ]
 
 
 def gen_ntpsapi(wine: Path) -> str:
     winnt = (wine / "include/winnt.h").read_text()
     winternl = (wine / "include/winternl.h").read_text()
+    # CUI-6: QUEUE_USER_APC_FLAGS (NtQueueApcThreadEx2) lives in the
+    # processthreadsapi.h split-out, not winternl.h.
+    processthreadsapi = (wine / "include/processthreadsapi.h").read_text()
 
     process_rights = extract_defines(
         winnt,
@@ -1788,6 +1807,12 @@ def gen_ntpsapi(wine: Path) -> str:
         "__WINESRC__",
         True,
     )
+    # CUI-6: extracted by name so their Wine offset comments become layout
+    # pins below (RTL_PROCESS_MODULE_INFORMATION carries the 32/64 comment
+    # column; the others get hand-checked sizeof pins in the template).
+    process_module_info = extract_struct(
+        winternl, "_RTL_PROCESS_MODULE_INFORMATION", "RTL_PROCESS_MODULE_INFORMATION"
+    )
     info_structs = "\n\n".join(
         [
             extract_struct(winternl, "_THREAD_BASIC_INFORMATION", "THREAD_BASIC_INFORMATION"),
@@ -1865,6 +1890,22 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(winternl, "_PS_ATTRIBUTE", "PS_ATTRIBUTE"),
             extract_struct(winternl, "_PS_ATTRIBUTE_LIST", "PS_ATTRIBUTE_LIST"),
             extract_struct(winternl, "_PS_CREATE_INFO", "PS_CREATE_INFO"),
+            # CUI-6: the query surface real tools read (ProcessTimes/
+            # ThreadTimes, Get/SetPriorityClass, SystemHandleInformation,
+            # SystemModuleInformation, SystemProcessorPerformanceInformation).
+            extract_struct(winternl, "_KERNEL_USER_TIMES", "KERNEL_USER_TIMES"),
+            extract_struct(winternl, "_PROCESS_PRIORITY_CLASS", "PROCESS_PRIORITY_CLASS"),
+            extract_struct(
+                winternl,
+                "_SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION",
+                "SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION",
+            ),
+            extract_struct(winternl, "_SYSTEM_HANDLE_ENTRY", "SYSTEM_HANDLE_ENTRY"),
+            extract_struct(winternl, "_SYSTEM_HANDLE_INFORMATION", "SYSTEM_HANDLE_INFORMATION"),
+            # RTL_PROCESS_MODULE_INFORMATION's Name[] is sized by this.
+            extract_defines(winternl, "winternl.h", ["MAXIMUM_FILENAME_LENGTH"]),
+            process_module_info,
+            extract_struct(winternl, "_RTL_PROCESS_MODULES", "RTL_PROCESS_MODULES"),
         ]
     )
     ps_attribute_defines = extract_defines(
@@ -1906,6 +1947,37 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_typedef_line(winternl, "winternl.h", "PNTAPCFUNC"),
             extract_typedef_line(winternl, "winternl.h", "PRTL_THREAD_START_ROUTINE"),
         ]
+    )
+    # CUI-6: Get/SetPriorityClass values (winternl.h) and the execution-state
+    # flags NtSetThreadExecutionState exchanges (winnt.h).
+    prioclass_defines = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "PROCESS_PRIOCLASS_IDLE",
+            "PROCESS_PRIOCLASS_NORMAL",
+            "PROCESS_PRIOCLASS_HIGH",
+            "PROCESS_PRIOCLASS_REALTIME",
+            "PROCESS_PRIOCLASS_BELOW_NORMAL",
+            "PROCESS_PRIOCLASS_ABOVE_NORMAL",
+        ],
+    )
+    execution_state = (
+        extract_typedef_line(winnt, "winnt.h", "EXECUTION_STATE")
+        + "\n"
+        + extract_defines(
+            winnt,
+            "winnt.h",
+            [
+                "ES_SYSTEM_REQUIRED",
+                "ES_DISPLAY_REQUIRED",
+                "ES_USER_PRESENT",
+                "ES_CONTINUOUS",
+            ],
+        )
+    )
+    apc_flags = extract_enum(
+        processthreadsapi, "_QUEUE_USER_APC_FLAGS", "QUEUE_USER_APC_FLAGS"
     )
     # CUI-3: the job-object contract services.exe exercises (winnt.h). The
     # completion messages are what the SCM's process monitor drains from the
@@ -2066,13 +2138,37 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + "\n\n"
         + job_defines
         + "\n\n"
+        + prioclass_defines
+        + "\n\n"
+        + execution_state
+        + "\n\n"
+        + apc_flags
+        + "\n\n"
         + info_structs
         + "\n\n/* Layout pins, generated from the offset comments in the SAME Wine\n"
         + " * header the structs were extracted from (Art. 4). */\n"
         + gen_offset_asserts(sys_thread_info, "SYSTEM_THREAD_INFORMATION")
         + "\n"
         + gen_offset_asserts(sys_process_info, "SYSTEM_PROCESS_INFORMATION")
-        + "\n\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"
+        + "\n"
+        + gen_offset_asserts(process_module_info, "RTL_PROCESS_MODULE_INFORMATION")
+        + "\n\n/* CUI-6 layout pins (no offset-comment column in the Wine header;\n"
+        + " * sizes hand-checked once against the extracted x64 layout). */\n"
+        + "_Static_assert(sizeof(KERNEL_USER_TIMES) == 32, "
+        + '"KERNEL_USER_TIMES x64 layout");\n'
+        + "_Static_assert(sizeof(PROCESS_PRIORITY_CLASS) == 2, "
+        + '"PROCESS_PRIORITY_CLASS x64 layout");\n'
+        + "_Static_assert(sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) == 48, "
+        + '"SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION x64 layout");\n'
+        + "_Static_assert(sizeof(SYSTEM_HANDLE_ENTRY) == 24, "
+        + '"SYSTEM_HANDLE_ENTRY x64 layout");\n'
+        + "_Static_assert(offsetof(SYSTEM_HANDLE_INFORMATION, Handle) == 8, "
+        + '"SYSTEM_HANDLE_INFORMATION x64 layout");\n'
+        + "_Static_assert(sizeof(RTL_PROCESS_MODULE_INFORMATION) == 296, "
+        + '"RTL_PROCESS_MODULE_INFORMATION x64 layout");\n'
+        + "_Static_assert(offsetof(RTL_PROCESS_MODULES, Modules) == 8, "
+        + '"RTL_PROCESS_MODULES x64 layout");\n'
+        + "\n/* The M4+M7 Ps Nt* surface; signatures extracted verbatim from\n"
         + " * wine/include/winternl.h (linkage macros dropped). */\n"
         + prototypes
         + "\n\n#endif /* PROSKRNL_ABI_NTPSAPI_H */\n"
@@ -2221,6 +2317,11 @@ NTSEAPI_FUNCTIONS = [
     "NtQueryInformationToken",
     "NtQuerySecurityObject",
     "NtSetSecurityObject",
+    # CUI-6 (Se-2): token mutation, restriction, and impersonation.
+    "NtSetInformationToken",
+    "NtFilterToken",
+    "NtAdjustGroupsToken",
+    "NtImpersonateAnonymousToken",
 ]
 
 
