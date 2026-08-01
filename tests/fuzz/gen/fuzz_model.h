@@ -121,6 +121,11 @@ typedef enum {
     FZ_OP_WRITE_OWN_MEMORY,
     FZ_OP_IS_PROCESS_IN_JOB,
     FZ_OP_QUERY_JOB_INFO,
+    FZ_OP_COMPARE_OBJECTS,
+    FZ_OP_SET_HANDLE_INFO,
+    FZ_OP_QUERY_HANDLE_FLAGS,
+    FZ_OP_FLUSH_WRITE_BUFFERS,
+    FZ_OP_CURRENT_PROCESSOR,
     FZ_OP_COUNT
 } FzOpcode;
 
@@ -187,6 +192,11 @@ static const FzOperandKind fz_kinds_read_own_memory[] = { FZ_OPND_CH_VM_SCENARIO
 static const FzOperandKind fz_kinds_write_own_memory[] = { FZ_OPND_CH_VM_SCENARIO };
 static const FzOperandKind fz_kinds_is_process_in_job[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_query_job_info[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_QUERY };
+static const FzOperandKind fz_kinds_compare_objects[] = { FZ_OPND_SLOT_IN, FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_set_handle_info[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_BOOL, FZ_OPND_CH_BOOL };
+static const FzOperandKind fz_kinds_query_handle_flags[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_LEN };
+static const FzOperandKind fz_kinds_flush_write_buffers[1];
+static const FzOperandKind fz_kinds_current_processor[1];
 static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CREATE_EVENT] = { fz_kinds_create_event, 6, "NtCreateEvent" },
     [FZ_OP_OPEN_EVENT] = { fz_kinds_open_event, 4, "NtOpenEvent" },
@@ -250,6 +260,11 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_WRITE_OWN_MEMORY] = { fz_kinds_write_own_memory, 1, "NtWriteVirtualMemory" },
     [FZ_OP_IS_PROCESS_IN_JOB] = { fz_kinds_is_process_in_job, 1, "NtIsProcessInJob" },
     [FZ_OP_QUERY_JOB_INFO] = { fz_kinds_query_job_info, 2, "NtQueryInformationJobObject" },
+    [FZ_OP_COMPARE_OBJECTS] = { fz_kinds_compare_objects, 2, "NtCompareObjects" },
+    [FZ_OP_SET_HANDLE_INFO] = { fz_kinds_set_handle_info, 3, "NtSetInformationObject" },
+    [FZ_OP_QUERY_HANDLE_FLAGS] = { fz_kinds_query_handle_flags, 2, "NtQueryObject" },
+    [FZ_OP_FLUSH_WRITE_BUFFERS] = { fz_kinds_flush_write_buffers, 0, "NtFlushProcessWriteBuffers" },
+    [FZ_OP_CURRENT_PROCESSOR] = { fz_kinds_current_processor, 0, "NtGetCurrentProcessorNumber" },
 };
 
 #define FZ_CH_ACCESS_EVENT_COUNT 8

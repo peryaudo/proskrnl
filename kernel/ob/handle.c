@@ -736,16 +736,20 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             return probeStatus;
         }
     }
-    /* CUI-6: a magic pseudo-handle answers the flag query with both flags
-     * clear (wineserver set_handle_flags returns 0 for a zero mask on a
-     * magic handle; sem_ob/handle_flags pins it) — resolved before the
-     * table, which knows nothing of pseudo handles. */
+    /* CUI-6: ObjectHandleFlagInformation checks its buffer size BEFORE the
+     * handle (dlls/ntdll/unix/file.c NtQueryObject: the length gate precedes
+     * the server call; a short buffer is STATUS_INVALID_BUFFER_SIZE even for
+     * an invalid handle — a fuzzer-found ordering divergence). */
+    if (infoClass == ObjectHandleFlagInformation && length < sizeof(OBJECT_HANDLE_FLAG_INFORMATION))
+    {
+        return STATUS_INVALID_BUFFER_SIZE;
+    }
+    /* A magic pseudo-handle answers the flag query with both flags clear
+     * (wineserver set_handle_flags returns 0 for a zero mask on a magic
+     * handle; sem_ob/handle_flags pins it) — resolved before the table,
+     * which knows nothing of pseudo handles. */
     if (infoClass == ObjectHandleFlagInformation && (ULONG_PTR)handle >= (ULONG_PTR)-6)
     {
-        if (length < sizeof(OBJECT_HANDLE_FLAG_INFORMATION))
-        {
-            return STATUS_INVALID_BUFFER_SIZE;
-        }
         NTSTATUS magicStatus = KiProbeForWrite(buffer, sizeof(OBJECT_HANDLE_FLAG_INFORMATION), 1);
         if (!NT_SUCCESS(magicStatus))
         {
