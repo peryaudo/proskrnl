@@ -220,6 +220,9 @@ IMPLEMENTED = [
     "NtGetCurrentProcessorNumber",
     "NtSetThreadExecutionState",
     "NtSetInformationObject",
+    "NtCompareObjects",
+    "NtMakePermanentObject",
+    "NtOpenTimer",
 ]
 
 

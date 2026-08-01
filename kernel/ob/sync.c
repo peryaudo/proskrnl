@@ -463,6 +463,13 @@ NTSTATUS NtCreateTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUT
     return status;
 }
 
+NTSTATUS NtOpenTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
+{
+    /* CUI-6: OpenWaitableTimer's back end (sem_ob/compare_permanent pins
+     * the open/wrong-type/missing-name shapes). */
+    return ObpOpenObjectByName(&ObpTimerType, attr, access, handle);
+}
+
 NTSTATUS NtSetTimer(HANDLE handle, const LARGE_INTEGER *dueTime, PTIMER_APC_ROUTINE apcRoutine,
                     PVOID apcContext, BOOLEAN resume, ULONG period, BOOLEAN *previousState)
 {

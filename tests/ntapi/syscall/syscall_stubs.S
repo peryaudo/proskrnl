@@ -2018,6 +2018,36 @@ NtSetInformationObject:
     syscall
     ret
 
+    .global NtCompareObjects
+NtCompareObjects:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x77, %eax
+    syscall
+    ret
+
+    .global NtMakePermanentObject
+NtMakePermanentObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xae, %eax
+    syscall
+    ret
+
+    .global NtOpenTimer
+NtOpenTimer:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xbf, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
