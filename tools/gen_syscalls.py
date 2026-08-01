@@ -246,6 +246,8 @@ IMPLEMENTED = [
     "NtQueryMultipleValueKey",
     "NtAllocateVirtualMemoryEx",
     "NtCreateSectionEx",
+    "NtMapViewOfSectionEx",
+    "NtUnmapViewOfSectionEx",
 ]
 
 

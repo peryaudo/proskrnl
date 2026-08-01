@@ -490,6 +490,15 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
 NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                             uint64_t offset, uint64_t *viewSizeInOut, ULONG protect)
 {
+    return MiMapViewOfSectionEx(section, space, baseInOut, offset, viewSizeInOut, protect, 0, 0);
+}
+
+/* CUI-7 constrained form (NtMapViewOfSectionEx placement limits); the
+ * classic entry delegates with zeros — one mapping engine (Art. 11). */
+NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
+                              uint64_t offset, uint64_t *viewSizeInOut, ULONG protect,
+                              uint64_t limitLow, uint64_t limitHigh)
+{
     if (section->image != 0)
     {
         if (offset != 0)
@@ -548,7 +557,7 @@ NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64
     }
     else
     {
-        base = MiFindFreeViewBase(space, size);
+        base = MiFindFreeViewBaseEx(space, size, limitLow, limitHigh, 0);
         if (base == 0)
         {
             return STATUS_NO_MEMORY;
@@ -849,6 +858,107 @@ NTSTATUS NtMapViewOfSection(HANDLE sectionHandle, HANDLE processHandle, PVOID *b
     return status;
 }
 
+NTSTATUS NtMapViewOfSectionEx(HANDLE sectionHandle, HANDLE processHandle, PVOID *baseInOut,
+                              const LARGE_INTEGER *offsetPtr, SIZE_T *viewSizeInOut,
+                              ULONG allocType, ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
+                              ULONG count)
+{
+    NTSTATUS status = KiProbeForWrite((void *)baseInOut, sizeof(*baseInOut), sizeof(*baseInOut));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(viewSizeInOut, sizeof(*viewSizeInOut), sizeof(*viewSizeInOut));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t base = (uint64_t)(uintptr_t)*baseInOut;
+    uint64_t viewSize = *viewSizeInOut;
+    LARGE_INTEGER offset;
+    offset.QuadPart = 0;
+    if (offsetPtr != 0)
+    {
+        status = KiCopyFromUser(&offset, offsetPtr, sizeof(offset));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+
+    /* The oracle's ladder (wine dlls/ntdll/unix/virtual.c
+     * NtMapViewOfSectionEx; pinned by sem_mm/map_ex): parameters, then an
+     * Alignment requirement refuses outright (mapping has no alignment),
+     * an explicit address with limits refuses, AT_ROUND_TO_PAGE refuses on
+     * win64, then the 64K granularity on offset and address. */
+    MI_EXTENDED_PARAMS extended;
+    status = MiCaptureExtendedParams(parameters, count, &extended);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (extended.align != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (base != 0 && (extended.limitLow != 0 || extended.limitHigh != 0))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (allocType & AT_ROUND_TO_PAGE)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (allocType & MEM_REPLACE_PLACEHOLDER)
+    {
+        /* Placeholders stay unbuilt (docs/03 "CUI-7"; Art. 12). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    if ((offset.QuadPart & (MI_ALLOCATION_GRANULARITY - 1)) != 0 || offset.QuadPart < 0)
+    {
+        return STATUS_MAPPED_ALIGNMENT;
+    }
+    if ((base & (MI_ALLOCATION_GRANULARITY - 1)) != 0)
+    {
+        return STATUS_MAPPED_ALIGNMENT;
+    }
+
+    ACCESS_MASK requiredAccess;
+    status = MipViewProtectToAccess(protect, &requiredAccess);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PVOID sectionBody;
+    status = ObReferenceObjectByHandle(sectionHandle, requiredAccess, &MiSectionType,
+                                       ExGetPreviousMode(), &sectionBody, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PEPROCESS process;
+    BOOLEAN referenced;
+    status = MiReferenceProcessByHandle(processHandle, PROCESS_VM_OPERATION, &process, &referenced);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(sectionBody);
+        return status;
+    }
+    status = MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base,
+                                  (uint64_t)offset.QuadPart, &viewSize, protect,
+                                  extended.limitLow, extended.limitHigh);
+    if (NT_SUCCESS(status))
+    {
+        *baseInOut = (PVOID)(uintptr_t)base;
+        *viewSizeInOut = viewSize;
+    }
+    if (referenced)
+    {
+        ObDereferenceObject(process);
+    }
+    ObDereferenceObject(sectionBody);
+    return status;
+}
+
 NTSTATUS NtUnmapViewOfSection(HANDLE processHandle, PVOID baseAddress)
 {
     PEPROCESS process;
@@ -865,6 +975,23 @@ NTSTATUS NtUnmapViewOfSection(HANDLE processHandle, PVOID baseAddress)
         ObDereferenceObject(process);
     }
     return status;
+}
+
+NTSTATUS NtUnmapViewOfSectionEx(HANDLE processHandle, PVOID baseAddress, ULONG flags)
+{
+    /* The oracle's flag mask (wine dlls/ntdll/unix/virtual.c
+     * NtUnmapViewOfSectionEx; pinned by sem_mm/map_ex): anything outside
+     * refuses, the transient boost is an ignored no-op, and the
+     * placeholder-preserving unmap stays unbuilt (docs/03 "CUI-7"). */
+    if (flags & ~(ULONG)(MEM_UNMAP_WITH_TRANSIENT_BOOST | MEM_PRESERVE_PLACEHOLDER))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (flags & MEM_PRESERVE_PLACEHOLDER)
+    {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    return NtUnmapViewOfSection(processHandle, baseAddress);
 }
 
 NTSTATUS NtQuerySection(HANDLE handle, SECTION_INFORMATION_CLASS informationClass, PVOID buffer,

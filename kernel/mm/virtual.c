@@ -886,15 +886,6 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
 
 /* --- the VirtualAlloc2 extended-parameter contract (CUI-7) ------------------ */
 
-typedef struct
-{
-    uint64_t limitLow;
-    uint64_t limitHigh; /* inclusive last usable byte; 0 = unconstrained */
-    uint64_t align;
-    ULONG attributes;
-    USHORT machine;
-} MIP_EXTENDED_PARAMS;
-
 /* Capture + validate a user MEM_EXTENDED_PARAMETER array, mirroring the
  * oracle's ladder exactly (wine dlls/ntdll/unix/virtual.c
  * get_extended_params; pinned by sem_mm/alloc_ex): unknown or duplicated
@@ -902,8 +893,8 @@ typedef struct
  * >= the 64K granularity), a 64K-aligned Lowest below the user-space
  * limit, and a page-end Highest above Lowest within the limit;
  * NumaNode/PartitionHandle/UserPhysicalHandle are accepted and ignored. */
-static NTSTATUS MipCaptureExtendedParams(const MEM_EXTENDED_PARAMETER *parameters, ULONG count,
-                                         MIP_EXTENDED_PARAMS *out)
+NTSTATUS MiCaptureExtendedParams(const MEM_EXTENDED_PARAMETER *parameters, ULONG count,
+                                 MI_EXTENDED_PARAMS *out)
 {
     memset(out, 0, sizeof(*out));
     if (count == 0)
@@ -1005,8 +996,8 @@ NTSTATUS NtAllocateVirtualMemoryEx(HANDLE process, PVOID *baseInOut, SIZE_T *siz
 
     /* The oracle's own order (pinned by sem_mm/alloc_ex): parameters first,
      * then the Ex type mask, then base-vs-requirements, then the size. */
-    MIP_EXTENDED_PARAMS extended;
-    status = MipCaptureExtendedParams(parameters, count, &extended);
+    MI_EXTENDED_PARAMS extended;
+    status = MiCaptureExtendedParams(parameters, count, &extended);
     if (!NT_SUCCESS(status))
     {
         return status;
