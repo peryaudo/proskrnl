@@ -1301,6 +1301,44 @@ NTSTATUS NtSetTimerResolution(ULONG requestedResolution, BOOLEAN set, PULONG cur
     return STATUS_SUCCESS;
 }
 
+/* Nothing to flush: one processor, no store buffer another CPU could still
+ * see (Art. 3 uniprocessor — the cross-CPU membarrier this call exists for
+ * has no second CPU to reach; Wine's wrapper likewise always succeeds,
+ * dlls/ntdll/unix/virtual.c NtFlushProcessWriteBuffers). */
+NTSTATUS NtFlushProcessWriteBuffers(void)
+{
+    return STATUS_SUCCESS;
+}
+
+/* The only processor there is (Art. 3 uniprocessor; SystemBasicInformation
+ * reports NumberOfProcessors = 1 and sem_ps/exec_state pins the bound). */
+ULONG NtGetCurrentProcessorNumber(void)
+{
+    return 0;
+}
+
+/* The per-process latch of Wine's NtSetThreadExecutionState
+ * (dlls/ntdll/unix/system.c): report the current state, replace it unless
+ * the current state is continuous and the new one is a mere pulse. No power
+ * management exists to act on it — the latch IS the pinned behaviour
+ * (sem_ps/exec_state), not a stub. */
+NTSTATUS NtSetThreadExecutionState(EXECUTION_STATE newState, EXECUTION_STATE *oldState)
+{
+    NTSTATUS status = KiProbeForWrite(oldState, sizeof(EXECUTION_STATE), sizeof(EXECUTION_STATE));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PEPROCESS process = KeGetCurrentThread()->process;
+    EXECUTION_STATE current = process->executionState;
+    memcpy(oldState, &current, sizeof(current));
+    if (!(current & ES_CONTINUOUS) || (newState & ES_CONTINUOUS))
+    {
+        process->executionState = newState;
+    }
+    return STATUS_SUCCESS;
+}
+
 /* No auxiliary counter exists — probe the two required pointers (a NULL is
  * STATUS_ACCESS_VIOLATION, as the oracle's unix-side write would fault) and
  * refuse without writing anything (Wine answers STATUS_NOT_SUPPORTED and

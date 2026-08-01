@@ -170,6 +170,9 @@
 #define NTSYS_NtQueryDirectoryObject 0x00c2
 #define NTSYS_NtCancelSynchronousIoFile 0x0075
 #define NTSYS_NtNotifyChangeDirectoryFile 0x00b1
+#define NTSYS_NtFlushProcessWriteBuffers 0x009b
+#define NTSYS_NtGetCurrentProcessorNumber 0x009e
+#define NTSYS_NtSetThreadExecutionState 0x00f5
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
