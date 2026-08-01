@@ -228,6 +228,15 @@ void IopEnterSyncIo(void *userIosb);
 void IopLeaveSyncIo(void);
 NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
 
+/* CUI-8 (docs/19 §9.9): has the current thread's marked synchronous I/O
+ * been cancelled? The data path's loops poll this between transfers: a
+ * cancelled fill/writeback stops ISSUING and returns STATUS_CANCELLED, but
+ * every transfer already submitted is still awaited — the device owns
+ * those frames until it is done (docs/20 R4), so cancel latency is bounded
+ * by one in-flight batch, never by abandonment. FALSE outside a marked
+ * span (a section-create cache fill is not cancellable I/O). */
+BOOLEAN IoSyncIoCancelled(void);
+
 /* CUI-5 NtNotifyChangeDirectoryFile (kernel/io/notify.c): the FS mutation
  * sites report changes here (cheap when no watch is armed); the cancel and
  * close paths sweep the kernel-owned watch list. */

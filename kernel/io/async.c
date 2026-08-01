@@ -204,6 +204,12 @@ void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc)
     KiInsertQueueUserApc(issuer, apc);
 }
 
+BOOLEAN IoSyncIoCancelled(void)
+{
+    PKTHREAD self = KeGetCurrentThread();
+    return self->syncIoActive && self->syncIoCancelled;
+}
+
 void IopEnterSyncIo(void *userIosb)
 {
     PKTHREAD self = KeGetCurrentThread();
