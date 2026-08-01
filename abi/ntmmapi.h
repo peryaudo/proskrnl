@@ -6,6 +6,7 @@
 #define PROSKRNL_ABI_NTMMAPI_H
 
 #include "abi/ntdef.h"
+#include "abi/ntioapi.h" /* IO_STATUS_BLOCK in NtFlushVirtualMemory (CUI-7) */
 
 /* Allocation/protection flags, extracted from wine/include/winnt.h. */
 #define PAGE_NOACCESS 0x00000001
@@ -28,6 +29,13 @@
 #define MEM_PRIVATE 0x00020000
 #define MEM_MAPPED 0x00040000
 #define MEM_WRITE_WATCH 0x00200000
+#define MEM_REPLACE_PLACEHOLDER 0x00004000
+#define MEM_RESERVE_PLACEHOLDER 0x00040000
+#define MEM_COALESCE_PLACEHOLDERS 0x00000001
+#define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#define MEM_UNMAP_WITH_TRANSIENT_BOOST 0x00000001
+#define WRITE_WATCH_FLAG_RESET 0x00000001
+#define MEM_EXTENDED_PARAMETER_TYPE_BITS 8
 
 /* Section allocation attributes + access rights (M5), extracted from
  * wine/include/winnt.h. */
@@ -94,6 +102,70 @@ typedef enum {
     MemoryWineUnloadUnixLib,
 #endif
 } MEMORY_INFORMATION_CLASS;
+
+/* CUI-7: the *Ex extended-parameter contract, extracted verbatim from
+ * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold
+ * (wine/include/basetsd.h: unsigned 64-bit). */
+typedef ULONGLONG DWORD64;
+
+typedef struct {
+  void      *LowestStartingAddress;
+  void      *HighestEndingAddress;
+  SIZE_T     Alignment;
+} MEM_ADDRESS_REQUIREMENTS, *PMEM_ADDRESS_REQUIREMENTS;
+
+typedef enum {
+    MemExtendedParameterInvalidType = 0,
+    MemExtendedParameterAddressRequirements,
+    MemExtendedParameterNumaNode,
+    MemExtendedParameterPartitionHandle,
+    MemExtendedParameterUserPhysicalHandle,
+    MemExtendedParameterAttributeFlags,
+    MemExtendedParameterImageMachine,
+    MemExtendedParameterMax
+} MEM_EXTENDED_PARAMETER_TYPE, *PMEM_EXTENDED_PARAMETER_TYPE;
+
+typedef struct {
+    struct
+    {
+        DWORD64 Type : MEM_EXTENDED_PARAMETER_TYPE_BITS;
+        DWORD64 Reserved : 64 - MEM_EXTENDED_PARAMETER_TYPE_BITS;
+    } DUMMYSTRUCTNAME;
+
+    union
+    {
+        DWORD64 ULong64;
+        PVOID Pointer;
+        SIZE_T Size;
+        HANDLE Handle;
+        DWORD ULong;
+    } DUMMYUNIONNAME;
+} MEM_EXTENDED_PARAMETER, *PMEM_EXTENDED_PARAMETER;
+
+typedef struct {
+    PVOID  VirtualAddress;
+    SIZE_T NumberOfBytes;
+} MEMORY_RANGE_ENTRY, *PMEMORY_RANGE_ENTRY;
+
+typedef enum
+{
+    VmPrefetchInformation,
+    VmPagePriorityInformation,
+    VmCfgCallTargetInformation,
+    VmPageDirtyStateInformation,
+    VmImageHotPatchInformation,
+    VmPhysicalContiguityInformation,
+    VmVirtualMachinePrepopulateInformation,
+    VmRemoveFromWorkingSetInformation,
+} VIRTUAL_MEMORY_INFORMATION_CLASS, *PVIRTUAL_MEMORY_INFORMATION_CLASS;
+
+_Static_assert(sizeof(MEM_ADDRESS_REQUIREMENTS) == 24, "MEM_ADDRESS_REQUIREMENTS x64 layout");
+_Static_assert(offsetof(MEM_ADDRESS_REQUIREMENTS, Alignment) == 16,
+               "MEM_ADDRESS_REQUIREMENTS x64 layout");
+_Static_assert(sizeof(MEM_EXTENDED_PARAMETER) == 16, "MEM_EXTENDED_PARAMETER x64 layout");
+_Static_assert(_Alignof(MEM_EXTENDED_PARAMETER) == 8,
+               "MEM_EXTENDED_PARAMETER x64 layout (DECLSPEC_ALIGN(8) in the Wine header)");
+_Static_assert(sizeof(MEMORY_RANGE_ENTRY) == 16, "MEMORY_RANGE_ENTRY x64 layout");
 
 /* Section enums/structs (M5), extracted verbatim from
  * wine/include/winternl.h; static_asserts pin the x64 layout. */
@@ -174,5 +246,15 @@ NTSTATUS NtFlushInstructionCache(HANDLE,LPCVOID,SIZE_T);
 NTSTATUS NtAreMappedFilesTheSame(PVOID,PVOID);
 NTSTATUS NtReadVirtualMemory(HANDLE,const void*,void*,SIZE_T,SIZE_T*);
 NTSTATUS NtWriteVirtualMemory(HANDLE,void*,const void*,SIZE_T,SIZE_T*);
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE,PVOID*,SIZE_T*,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+NTSTATUS NtCreateSectionEx(HANDLE*,ACCESS_MASK,const OBJECT_ATTRIBUTES*,const LARGE_INTEGER*,ULONG,ULONG,HANDLE,MEM_EXTENDED_PARAMETER*,ULONG);
+NTSTATUS NtMapViewOfSectionEx(HANDLE,HANDLE,PVOID*,const LARGE_INTEGER*,SIZE_T*,ULONG,ULONG,MEM_EXTENDED_PARAMETER*,ULONG);
+NTSTATUS NtUnmapViewOfSectionEx(HANDLE,PVOID,ULONG);
+NTSTATUS NtFlushVirtualMemory(HANDLE,LPCVOID*,SIZE_T*,IO_STATUS_BLOCK*);
+NTSTATUS NtLockVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG);
+NTSTATUS NtUnlockVirtualMemory(HANDLE,PVOID*,SIZE_T*,ULONG);
+NTSTATUS NtGetWriteWatch(HANDLE,ULONG,PVOID,SIZE_T,PVOID*,ULONG_PTR*,ULONG*);
+NTSTATUS NtResetWriteWatch(HANDLE,PVOID,SIZE_T);
+NTSTATUS NtSetInformationVirtualMemory(HANDLE,VIRTUAL_MEMORY_INFORMATION_CLASS,ULONG_PTR,PMEMORY_RANGE_ENTRY,PVOID,ULONG);
 
 #endif /* PROSKRNL_ABI_NTMMAPI_H */

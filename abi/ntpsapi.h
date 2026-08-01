@@ -10,6 +10,8 @@
 
 /* Win32 alias scaffold used by extracted prototypes. */
 typedef ULONG LCID, *PLCID;
+/* winnt.h: `typedef WORD LANGID` (WORD is USHORT in abi/ntdef.h). */
+typedef USHORT LANGID, *PLANGID;
 /* winternl.h: `typedef unsigned short RTL_ATOM` (the atom handle). */
 typedef unsigned short RTL_ATOM, *PRTL_ATOM;
 
@@ -646,6 +648,29 @@ typedef enum {
 #define PROCESS_PARAMS_IMAGE_KEY_MISSING 0x00004000
 
 #define PROCESSOR_ARCHITECTURE_AMD64 9
+
+/* CUI-7: shutdown actions + time adjustment, extracted verbatim from
+ * wine/include/{winternl.h,winnt.h}; asserts pin the x64 layout. */
+typedef enum {
+  ShutdownNoReboot,
+  ShutdownReboot,
+  ShutdownPowerOff
+} SHUTDOWN_ACTION, *PSHUTDOWN_ACTION;
+
+typedef struct {
+    ULONG   TimeAdjustment;
+    BOOLEAN TimeAdjustmentDisabled;
+} SYSTEM_TIME_ADJUSTMENT, *PSYSTEM_TIME_ADJUSTMENT;
+
+typedef struct {
+    ULONG   TimeAdjustment;
+    ULONG   TimeIncrement;
+    BOOLEAN TimeAdjustmentDisabled;
+} SYSTEM_TIME_ADJUSTMENT_QUERY, *PSYSTEM_TIME_ADJUSTMENT_QUERY;
+#define LANGIDFROMLCID(lcid) ((WORD)(lcid))
+_Static_assert(sizeof(SYSTEM_TIME_ADJUSTMENT) == 8, "SYSTEM_TIME_ADJUSTMENT x64 layout");
+_Static_assert(sizeof(SYSTEM_TIME_ADJUSTMENT_QUERY) == 12, "SYSTEM_TIME_ADJUSTMENT_QUERY x64 layout");
+_Static_assert(offsetof(SYSTEM_TIME_ADJUSTMENT_QUERY, TimeAdjustmentDisabled) == 8, "SYSTEM_TIME_ADJUSTMENT_QUERY x64 layout");
 
 /* CUI-3: the job-object contract (services.exe), extracted verbatim
  * from wine/include/winnt.h. */
@@ -1365,5 +1390,12 @@ NTSTATUS NtAlertResumeThread(HANDLE,PULONG);
 NTSTATUS NtFlushProcessWriteBuffers(void);
 ULONG NtGetCurrentProcessorNumber(void);
 NTSTATUS NtSetThreadExecutionState(EXECUTION_STATE,EXECUTION_STATE*);
+NTSTATUS NtQueryDefaultUILanguage(LANGID*);
+NTSTATUS NtQueryInstallUILanguage(LANGID*);
+NTSTATUS NtSetDefaultUILanguage(LANGID);
+NTSTATUS NtSetDefaultLocale(BOOLEAN,LCID);
+NTSTATUS NtSetSystemTime(const LARGE_INTEGER*,LARGE_INTEGER*);
+NTSTATUS NtSetSystemInformation(SYSTEM_INFORMATION_CLASS,PVOID,ULONG);
+NTSTATUS NtShutdownSystem(SHUTDOWN_ACTION);
 
 #endif /* PROSKRNL_ABI_NTPSAPI_H */
