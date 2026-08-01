@@ -198,6 +198,10 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
 NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attributes,
                              ACCESS_MASK desiredAccess, PHANDLE handleOut);
 
+/* CUI-6: the signal half of NtSignalAndWaitForSingleObject (sync.c) —
+ * wineserver's signal_object dispatch over the per-type release cores. */
+NTSTATUS ObpSignalObjectForWait(PVOID body, ACCESS_MASK grantedAccess);
+
 /* The full path of a named object ("\BaseNamedObjects\prsk_evt"), built by
  * walking parentDirectory to the root -- the header carries only its own
  * leaf component. Length in BYTES, excluding any terminator; 0 for an

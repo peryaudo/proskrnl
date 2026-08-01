@@ -59,6 +59,50 @@ NTSTATUS NtWaitForSingleObject(HANDLE handle, BOOLEAN alertable, const LARGE_INT
     return status;
 }
 
+/* CUI-6: SignalObjectAndWait's back end. Order is the pinned server's
+ * (server/thread.c select_on SELECT_SIGNAL_AND_WAIT): NULL signal refuses
+ * first, the WAIT handle is resolved before the signal runs, and a failing
+ * signal aborts without waiting. Atomicity needs no extra machinery here:
+ * under Art. 3 (one dispatcher lock, no kernel preemption) no other thread
+ * can run between the signal below and the wait's arming — the signal
+ * readies waiters but never switches, so signalling the very object being
+ * waited on satisfies our own wait exactly as the server's
+ * "check if we woke ourselves up" does (sem_wait/signal_wait pins it). */
+NTSTATUS NtSignalAndWaitForSingleObject(HANDLE signalHandle, HANDLE waitHandle, BOOLEAN alertable,
+                                        const LARGE_INTEGER *timeout)
+{
+    if (signalHandle == 0)
+    {
+        return STATUS_INVALID_HANDLE;
+    }
+    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
+    if (!NT_SUCCESS(probeStatus))
+    {
+        return probeStatus;
+    }
+    PVOID waitBody;
+    NTSTATUS status = ObpReferenceWaitObject(waitHandle, &waitBody);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PVOID signalBody;
+    OBJECT_HANDLE_INFORMATION signalInfo;
+    status = ObReferenceObjectByHandle(signalHandle, 0, 0, KernelMode, &signalBody, &signalInfo);
+    if (NT_SUCCESS(status))
+    {
+        status = ObpSignalObjectForWait(signalBody, signalInfo.GrantedAccess);
+        ObDereferenceObject(signalBody);
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = KeWaitForSingleObject(waitBody, UserRequest, KernelMode, alertable,
+                                       (PLARGE_INTEGER)timeout);
+    }
+    ObDereferenceObject(waitBody);
+    return status;
+}
+
 NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE waitType,
                                   BOOLEAN alertable, const LARGE_INTEGER *timeout)
 {
