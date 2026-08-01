@@ -105,6 +105,11 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
     /* CUI-6: birth stamp (sem_ps/times); exit stamped at retire. */
     KeQuerySystemTime(&thread->createTime);
     thread->exitTime.QuadPart = 0;
+    /* CUI-6: the Win32 start address — userStartArg1 IS the creation start
+     * routine for user threads (the RtlUserThreadStart argument protocol);
+     * 0 for main threads built before their entry is known, answered from
+     * the process entry at query time. */
+    thread->win32StartAddress = tcb->userStartArg1;
 
     ObfReferenceObject(process); /* the thread pins its process */
     ObfReferenceObject(thread);  /* the RUNNING PIN: a live thread pins its own
@@ -1282,6 +1287,54 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadQuerySetWin32StartAddress:
+    {
+        /* CUI-6 (sem_ps/proc_classes): the oracle copies min(length,
+         * sizeof) with no length gate (dlls/ntdll/unix/thread.c
+         * get_thread_info ENTRYPOINT read-back). A main thread stamped
+         * before its entry was known answers the process entry. */
+        PETHREAD target = self;
+        PKTHREAD targetTcb = caller;
+        BOOLEAN referenced = FALSE;
+        NTSTATUS status;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            targetTcb = target->tcb;
+            referenced = TRUE;
+        }
+        uint64_t entry = target != 0 ? target->win32StartAddress : 0;
+        if (entry == 0)
+        {
+            entry = targetTcb->process->entryRip;
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        ULONG copy = length < sizeof(entry) ? length : (ULONG)sizeof(entry);
+        if (copy != 0)
+        {
+            status = KiProbeForWrite(buffer, copy, 1);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            memcpy(buffer, &entry, copy);
+        }
+        if (returnLength != 0)
+        {
+            *returnLength = copy;
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadAmILastThread:
     {
         if (length < sizeof(ULONG))
@@ -1310,6 +1363,45 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
 NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, LPCVOID buffer,
                                 ULONG length)
 {
+    /* CUI-6 (sem_ps/proc_classes): the one stored set — the Win32 start
+     * address, sizeof(PVOID) exactly (dlls/ntdll/unix/thread.c
+     * SET_THREAD_INFO_ENTRYPOINT). */
+    if (infoClass == ThreadQuerySetWin32StartAddress)
+    {
+        if (length != sizeof(PVOID))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        uint64_t entry;
+        NTSTATUS status = KiCopyFromUser(&entry, buffer, sizeof(entry));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PETHREAD target = KeGetCurrentThread()->threadObject;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION, &PspThreadType,
+                                               ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        if (target != 0)
+        {
+            target->win32StartAddress = entry;
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        return STATUS_SUCCESS;
+    }
     (void)threadHandle;
     (void)buffer;
     (void)length;
