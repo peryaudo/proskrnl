@@ -1556,19 +1556,6 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
     }
 }
 
-NTSTATUS NtQueryDefaultLocale(BOOLEAN userProfile, LCID *lcid)
-{
-    (void)userProfile;
-    NTSTATUS status = KiProbeForWrite(lcid, sizeof(ULONG), sizeof(ULONG));
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    ULONG enUs = 0x0409; /* LOCALE_USER_DEFAULT en-US */
-    memcpy(lcid, &enUs, sizeof(enUs));
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS NtQuerySystemTime(PLARGE_INTEGER time)
 {
     NTSTATUS status = KiProbeForWrite(time, sizeof(LARGE_INTEGER), sizeof(uint64_t));

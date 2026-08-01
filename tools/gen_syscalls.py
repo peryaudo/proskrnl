@@ -254,6 +254,10 @@ IMPLEMENTED = [
     "NtLockVirtualMemory",
     "NtUnlockVirtualMemory",
     "NtSetInformationVirtualMemory",
+    "NtSetDefaultLocale",
+    "NtQueryDefaultUILanguage",
+    "NtSetDefaultUILanguage",
+    "NtQueryInstallUILanguage",
 ]
 
 

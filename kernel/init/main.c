@@ -395,6 +395,7 @@ static void KiTestMainThread(void *context)
      * volume (an absent/invalid hive starts empty: first boot). Needs the
      * volume above and a thread with a handle table for the hive file I/O. */
     CmInitialize();
+    PspInitializeLanguage();
 
     /* Arm the panic-on-STATUS_NOT_IMPLEMENTED boot before anything runs
      * ring-3 code — smss below is a Wine process (needs only the boot
