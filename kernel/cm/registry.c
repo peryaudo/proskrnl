@@ -107,6 +107,27 @@ ULONG CmpKeyDepth(const CMP_KEY_NODE *node)
     return depth;
 }
 
+/* Link `node` into `parent`'s sibling list at its case-insensitive sort
+ * position (wine server/registry.c find_subkey: enumeration order is
+ * observable). The caller maintains subkeyCount. */
+static void CmpLinkSubkeySorted(PCMP_KEY_NODE parent, PCMP_KEY_NODE node)
+{
+    PLIST_ENTRY e = parent->subkeyListHead.Flink;
+    for (; e != &parent->subkeyListHead; e = e->Flink)
+    {
+        PCMP_KEY_NODE sibling = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
+        if (RtlCompareUnicodeString(&node->name, &sibling->name, TRUE) < 0)
+        {
+            break;
+        }
+    }
+    /* insert before e (possibly the head = append) */
+    node->siblingEntry.Flink = e;
+    node->siblingEntry.Blink = e->Blink;
+    e->Blink->Flink = &node->siblingEntry;
+    e->Blink = &node->siblingEntry;
+}
+
 PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name)
 {
     /* Depth is capped HERE, at the only site that ever deepens the tree,
@@ -155,22 +176,7 @@ PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name)
     node->lastWriteTime = CmpNow();
     if (parent != 0)
     {
-        /* Keep the sibling list in case-insensitive sorted order (wine
-         * server/registry.c find_subkey: enumeration order is observable). */
-        PLIST_ENTRY e = parent->subkeyListHead.Flink;
-        for (; e != &parent->subkeyListHead; e = e->Flink)
-        {
-            PCMP_KEY_NODE sibling = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
-            if (RtlCompareUnicodeString(&node->name, &sibling->name, TRUE) < 0)
-            {
-                break;
-            }
-        }
-        /* insert before e (possibly the head = append) */
-        node->siblingEntry.Flink = e;
-        node->siblingEntry.Blink = e->Blink;
-        e->Blink->Flink = &node->siblingEntry;
-        e->Blink = &node->siblingEntry;
+        CmpLinkSubkeySorted(parent, node);
         parent->subkeyCount++;
     }
     return node;
@@ -1208,6 +1214,96 @@ NTSTATUS NtDeleteKey(HANDLE keyHandle)
             }
         }
     }
+    ObDereferenceObject(body);
+    return status;
+}
+
+NTSTATUS NtRenameKey(HANDLE keyHandle, UNICODE_STRING *newName)
+{
+    /* The ntdll-side ladder (wine dlls/ntdll/unix/registry.c NtRenameKey):
+     * NULL name is an access violation; a NULL buffer or empty name is
+     * invalid before anything reads the buffer. */
+    if (newName == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForRead(newName, sizeof(*newName), sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (newName->Buffer == 0 || newName->Length == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    UNICODE_STRING name = *newName;
+    name.Length &= ~1u; /* whole WCHARs, as the value paths do */
+    status = KiProbeForRead(name.Buffer, name.Length, sizeof(WCHAR));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Handle checks precede the server-side name ladder (wine
+     * server/registry.c DECL_HANDLER(rename_key): get_hkey_obj resolves
+     * KEY_WRITE and the deleted state before rename_key validates). */
+    PCM_KEY_BODY body;
+    status = CmpReferenceKey(keyHandle, KEY_WRITE, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PCMP_KEY_NODE node = body->node;
+
+    /* The server-side name ladder (wine server/registry.c rename_key): a
+     * path (any backslash) or an over-long component is invalid; a
+     * parentless key and a sibling collision - including the key itself, so
+     * a case-only self-rename refuses - are CANNOT_DELETE. */
+    if (name.Length > CMP_MAX_COMPONENT_BYTES)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto out;
+    }
+    for (ULONG i = 0; i < name.Length / sizeof(WCHAR); i++)
+    {
+        if (name.Buffer[i] == '\\')
+        {
+            status = STATUS_INVALID_PARAMETER;
+            goto out;
+        }
+    }
+    if (node->parent == 0 || CmpFindSubkey(node->parent, &name) != 0)
+    {
+        status = STATUS_CANNOT_DELETE;
+        goto out;
+    }
+
+    {
+        PWSTR nameCopy = MiAllocatePool(name.Length);
+        if (nameCopy == 0)
+        {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto out;
+        }
+        memcpy(nameCopy, name.Buffer, name.Length);
+        if (node->name.Buffer != 0)
+        {
+            MiFreePool(node->name.Buffer);
+        }
+        node->name.Buffer = nameCopy;
+        node->name.Length = name.Length;
+        node->name.MaximumLength = name.Length;
+        RemoveEntryList(&node->siblingEntry);
+        CmpLinkSubkeySorted(node->parent, node);
+        node->lastWriteTime = CmpNow();
+        if (!node->isVolatile)
+        {
+            CmpSaveHive();
+        }
+        status = STATUS_SUCCESS;
+    }
+
+out:
     ObDereferenceObject(body);
     return status;
 }
