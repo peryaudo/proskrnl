@@ -941,6 +941,19 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
   consumer arrives, the packet engine (`IopPostCompletionPacket`) is
   already the single posting authority to hook (Art. 11).
 
+## CUI-6 handles/identity notes (the query surface and Se-2)
+
+The milestone's own deviations (docs/02 CUI-6; the pins live in
+`tests/ntapi/sem_ps/times.c` and its siblings).
+
+- **CPU time is whole-tick sampling at 1 ms granularity**
+  (`kernel/ke/timer.c KiUpdateClock`): the clock interrupt charges
+  `KI_100NS_PER_TICK` to the interrupted thread, kernel or user by the
+  interrupted CS — exactly NT's clock-interrupt accounting shape, at the
+  1 ms tick instead of NT's ~15.6 ms default. A thread that always yields
+  before the tick accrues nothing, as on real NT. `sem_ps/times` asserts
+  growth under wall-clock burns, never exact quanta.
+
 ## Debug objects are out of scope (permanent; ADR 0011)
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,

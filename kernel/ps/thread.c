@@ -1228,6 +1228,60 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadTimes:
+    {
+        /* CUI-6 (sem_ps/times): wall stamps from the ETHREAD, CPU time from
+         * the KTHREAD's tick counters. The oracle has NO length gate here —
+         * it copies min(length, sizeof) and reports that as the return
+         * length (dlls/ntdll/unix/thread.c ThreadTimes). */
+        PETHREAD target = self;
+        PKTHREAD targetTcb = caller;
+        BOOLEAN referenced = FALSE;
+        NTSTATUS status;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            targetTcb = target->tcb;
+            referenced = TRUE;
+        }
+        KERNEL_USER_TIMES times;
+        memset(&times, 0, sizeof(times));
+        uint64_t flags = KiAcquireDispatcherLock();
+        if (target != 0)
+        {
+            times.CreateTime = target->createTime;
+            times.ExitTime = target->exitTime;
+        }
+        times.KernelTime.QuadPart = (LONGLONG)targetTcb->kernelTime100ns;
+        times.UserTime.QuadPart = (LONGLONG)targetTcb->userTime100ns;
+        KiReleaseDispatcherLock(flags);
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        ULONG copy = length < sizeof(times) ? length : (ULONG)sizeof(times);
+        if (copy != 0)
+        {
+            status = KiProbeForWrite(buffer, copy, 1);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            memcpy(buffer, &times, copy);
+        }
+        if (returnLength != 0)
+        {
+            *returnLength = copy;
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadAmILastThread:
     {
         if (length < sizeof(ULONG))
