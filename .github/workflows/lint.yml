@@ -1,10 +1,15 @@
 # CI gate: the committed tree is already formatted — running the style tools
 # over a checkout must leave it byte-for-byte unchanged.
 #
-# Separate workflow from test.yml on purpose: this one needs nothing but the
-# apt clang toolchain and two header-only submodules, so it answers in a
-# minute or two instead of waiting behind the QEMU/Wine build and the boot
-# suites. Merge blocking is repo configuration, not workflow code — add this
+# The same question is asked of the generated contract: `make gen-abi` reads
+# the pinned Wine tree's headers, so re-running it must reproduce the
+# committed abi/ byte for byte (Art. 4 / gate G4).
+#
+# Separate workflow from test.yml on purpose: this one needs the apt clang
+# toolchain and shallow submodule SOURCES — no configure, no compile of
+# anything in third_party — so it answers in minutes instead of waiting
+# behind the QEMU/Wine build and the boot suites. Merge blocking is repo
+# configuration, not workflow code — add this
 # workflow's `lint` check to the same branch protection rule that gates
 # `test` (Settings -> Rules -> Rulesets; the check appears in the picker
 # after this workflow has run once).
@@ -33,16 +38,18 @@ jobs:
       - uses: actions/checkout@v4
 
       # `make tidy` compiles each TU for real, so it needs the two header-only
-      # includes in CFLAGS (Limine's boot protocol, Flanterm's API). Nothing
-      # else from third_party is on the include path, and no kernel source
-      # includes a generated header, so there is no build and no cache here.
+      # includes in CFLAGS (Limine's boot protocol, Flanterm's API); no kernel
+      # source includes a generated header, so nothing else is needed to
+      # parse the tree. `make gen-abi` needs the pinned Wine tree's SOURCES
+      # (include/*.h and dlls/ntdll/ntsyscalls.h) — a shallow checkout, not a
+      # build, which is why this job skips the cache dance test.yml does.
       # .gitmodules pins third_party/wine by SSH URL and the runner has no SSH
       # key, hence the HTTPS rewrite (same as test.yml).
-      - name: Fetch the header-only submodules
+      - name: Fetch the submodule sources
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 \
-            third_party/limine-protocol third_party/flanterm
+            third_party/limine-protocol third_party/flanterm third_party/wine
 
       - name: Install the clang toolchain
         run: |
@@ -73,7 +80,31 @@ jobs:
             exit 1
           fi
 
-      # Neither target may leave build droppings behind either: an untracked
+      # G4 / Art. 4: abi/ is generated, never authored. `make gen-abi` is the
+      # only writer of the committed files below, and it is a pure function of
+      # the pinned Wine tree — so a diff here means exactly one of two things:
+      # a value was hand-edited (or model-recalled) into a generated file, or
+      # the Wine pin moved without the regen commit that has to ride with it.
+      #
+      #     tools/gen_abi.py       abi/nt*.h
+      #     tools/gen_syscalls.py  abi/syscall_numbers.h, kernel/syscall/table.inc,
+      #                            tests/ntapi/syscall/syscall_stubs.S,
+      #                            tests/fuzz/gen/fuzz_model.{h,py}
+      #
+      # The other four tools/gen_*.py (filter_inf, gen_freetype_syms,
+      # gen_server_table, gen_win32u_def) are deliberately NOT here: they write
+      # into build/, nothing they emit is committed, and they depend on built
+      # Wine artifacts (objects, PE dlls). Every build regenerates them, so
+      # `make test` already convicts them — there is no staleness to gate.
+      - name: make gen-abi reproduces the committed contract
+        run: |
+          make gen-abi
+          if ! git diff --exit-code; then
+            echo "::error::abi/ does not match tools/gen_*.py output — run 'make gen-abi' and commit the result (Constitution Art. 4 / gate G4)."
+            exit 1
+          fi
+
+      # No target may leave build droppings behind either: an untracked
       # file here means a tool wrote outside the tracked tree.
       - name: No untracked files left behind
         run: |

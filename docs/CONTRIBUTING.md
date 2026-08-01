@@ -33,7 +33,9 @@ stated as hard gates.
 
 - **G4 — Generated contract.** No hand-typed or model-recalled numeric constants in `abi/`.
   All generated from Wine headers via `tools/gen_abi.py`; layouts carry `static_assert`
-  offsets. (Art. 4)
+  offsets. CI enforces it mechanically: `.github/workflows/lint.yml` re-runs `make gen-abi`
+  against the pinned Wine tree and fails if the committed output moves — so a hand-edited
+  generated file is red, and a Wine pin bump must carry its regen commit. (Art. 4)
 
 - **G5 — Test first.** A boundary behaviour needs a `tests/ntapi/` test green on the
   Wine/Windows oracle *before* the kernel implements it, and green on proskrnl before the
