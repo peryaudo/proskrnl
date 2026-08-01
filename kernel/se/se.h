@@ -62,6 +62,13 @@ typedef struct TOKEN
     ULONG groupSidsLength;
     ULONG privilegesOffset; /* SEP_PRIVILEGE[privilegeCount] */
     ULONG defaultDaclOffset;
+    /* CUI-6: NtSetInformationToken(TokenDefaultDacl) can install a DACL that
+     * does not fit the inline slot — the ONE documented exception to the
+     * "only ever SHRINKS" rule above. A non-null override is a separate pool
+     * allocation that takes precedence over the inline DACL (freed at token
+     * delete; the ONE owning site, G11). */
+    PACL defaultDaclOverride;
+    ULONG defaultDaclOverrideLength;
 } TOKEN, *PTOKEN;
 
 extern OBJECT_TYPE SeTokenType;
@@ -98,10 +105,25 @@ static inline PSEP_PRIVILEGE SepTokenPrivileges(PTOKEN token)
     return (PSEP_PRIVILEGE)(SepTokenData(token) + token->privilegesOffset);
 }
 
+/* The effective default DACL: the CUI-6 override if one was installed,
+ * else the inline slot (0 = none). The ONE reader of the token's default
+ * DACL — the query and the secobj default-from-token merge both route
+ * through it, so the override is honoured everywhere (G11). */
 static inline ACL *SepTokenDefaultDacl(PTOKEN token)
 {
+    if (token->defaultDaclOverride != 0)
+    {
+        return token->defaultDaclOverride;
+    }
     return token->defaultDaclLength != 0 ? (ACL *)(SepTokenData(token) + token->defaultDaclOffset)
                                          : 0;
+}
+
+/* The effective default DACL's length (override or inline). */
+static inline ULONG SepTokenDefaultDaclLength(PTOKEN token)
+{
+    return token->defaultDaclOverride != 0 ? token->defaultDaclOverrideLength
+                                           : token->defaultDaclLength;
 }
 
 /* On-wire SID size from its own header. */

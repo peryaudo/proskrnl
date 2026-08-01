@@ -180,6 +180,8 @@
 #define NTSYS_NtSignalAndWaitForSingleObject 0x00f9
 #define NTSYS_NtQueueApcThreadEx2 0x00d4
 #define NTSYS_NtAlertResumeThread 0x0065
+#define NTSYS_NtSetInformationToken 0x00ec
+#define NTSYS_NtFilterToken 0x0097
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

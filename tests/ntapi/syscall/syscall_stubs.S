@@ -2084,6 +2084,30 @@ NtAlertResumeThread:
     syscall
     ret
 
+    .global NtSetInformationToken
+NtSetInformationToken:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xec, %eax
+    syscall
+    ret
+
+    .global NtFilterToken
+NtFilterToken:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x97, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
