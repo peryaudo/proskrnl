@@ -108,6 +108,9 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->cookie = cookie != 0 ? cookie : 0xd1ce; /* never 0: 0 means "unset" to ntdll */
     process->job = 0;
     process->jobExitNotified = FALSE;
+    /* CUI-6: the awake triple every fresh process starts from (Wine
+     * dlls/ntdll/unix/system.c NtSetThreadExecutionState's static init). */
+    process->executionState = ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_USER_PRESENT;
     process->isSystemProcess = FALSE;
     if (process != PsInitialSystemProcess)
     {

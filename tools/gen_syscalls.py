@@ -214,6 +214,11 @@ IMPLEMENTED = [
     "NtQueryDirectoryObject",
     "NtCancelSynchronousIoFile",
     "NtNotifyChangeDirectoryFile",
+    # CUI-6 handles/identity/query surface (docs/02); each row's kernel
+    # service lands in its own commit.
+    "NtFlushProcessWriteBuffers",
+    "NtGetCurrentProcessorNumber",
+    "NtSetThreadExecutionState",
 ]
 
 

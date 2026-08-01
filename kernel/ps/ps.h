@@ -63,6 +63,9 @@ typedef struct EPROCESS
                                        * Set/GetErrorMode); fresh process = 0 */
     BOOLEAN timerResolutionRequested; /* NtSetTimerResolution's per-process
                                        * has-a-request latch (M10 winetest) */
+    EXECUTION_STATE executionState;   /* NtSetThreadExecutionState's per-process
+                                       * latch (CUI-6); Wine's is a per-ntdll
+                                       * static, i.e. per process */
     LIST_ENTRY activeProcessLinks;    /* PspActiveProcessListHead (the NT
                                        * PsActiveProcessHead shape) — the
                                        * global tid lookup walks it */

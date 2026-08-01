@@ -1978,6 +1978,36 @@ NtNotifyChangeDirectoryFile:
     add $0x78, %rsp
     ret
 
+    .global NtFlushProcessWriteBuffers
+NtFlushProcessWriteBuffers:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9b, %eax
+    syscall
+    ret
+
+    .global NtGetCurrentProcessorNumber
+NtGetCurrentProcessorNumber:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9e, %eax
+    syscall
+    ret
+
+    .global NtSetThreadExecutionState
+NtSetThreadExecutionState:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf5, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
