@@ -39,6 +39,10 @@ NTSYSAPI NTSTATUS NTAPI NtSetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PV
 NTSYSAPI NTSTATUS NTAPI NtQueryInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PVOID, ULONG,
                                                     PULONG);
 NTSYSAPI NTSTATUS NTAPI NtIsProcessInJob(HANDLE, HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtCompareObjects(HANDLE, HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE, ULONG, PVOID, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtFlushProcessWriteBuffers(void);
+NTSYSAPI ULONG NTAPI NtGetCurrentProcessorNumber(void);
 NTSYSAPI NTSTATUS NTAPI NtOpenProcess(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *,
                                       const CLIENT_ID *);
 NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE, const void *, void *, SIZE_T, SIZE_T *);
@@ -1440,6 +1444,56 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
                          (unsigned)retLen);
         else
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_COMPARE_OBJECTS:
+        st = NtCompareObjects(fz_slots[a[0]], fz_slots[a[1]]);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_SET_HANDLE_INFO:
+    {
+        struct
+        {
+            unsigned char inherit;
+            unsigned char protect;
+        } flags;
+        flags.inherit = (unsigned char)(a[1] & 1);
+        flags.protect = (unsigned char)(a[2] & 1);
+        st = NtSetInformationObject(fz_slots[a[0]], 4 /* ObjectHandleFlagInformation */, &flags,
+                                    sizeof(flags));
+        /* Clear protect-from-close again so the slot can be closed at reset. */
+        if (fz_ok(st) && flags.protect)
+        {
+            flags.protect = 0;
+            NtSetInformationObject(fz_slots[a[0]], 4, &flags, sizeof(flags));
+        }
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_QUERY_HANDLE_FLAGS:
+    {
+        unsigned char buffer[8];
+        ULONG retLen = 0;
+        fz_bzero(buffer, sizeof(buffer));
+        st = NtQueryObject(fz_slots[a[0]], (OBJECT_INFORMATION_CLASS)4, buffer,
+                           fz_query_len((unsigned)a[1], 2), &retLen);
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x rlen=%u inh=%u prot=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)retLen, buffer[0], buffer[1]);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_FLUSH_WRITE_BUFFERS:
+        st = NtFlushProcessWriteBuffers();
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    case FZ_OP_CURRENT_PROCESSOR:
+    {
+        ULONG cpu = NtGetCurrentProcessorNumber();
+        /* The value differs by host CPU count on the oracle; trace only that
+         * it returned (the call cannot fail). */
+        ntapi_printf("[FUZZ] p%u c%u %s ran cpu_lt_max=%u\n", prog, call, nt, cpu < 0x10000u);
         break;
     }
     default:

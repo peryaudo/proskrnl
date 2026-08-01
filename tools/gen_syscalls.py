@@ -660,6 +660,17 @@ FUZZ_OPS = [
     ("write_own_memory", "NtWriteVirtualMemory", ["ch_vm_scenario"]),
     ("is_process_in_job", "NtIsProcessInJob", ["slot_in"]),
     ("query_job_info", "NtQueryInformationJobObject", ["slot_in", "ch_job_query"]),
+    # CUI-6 handles/identity ops. Only the DETERMINISTIC, side-effect-bounded
+    # slice: comparing two interp slots, the handle-flag get/set idiom on a
+    # slot, and the two no-argument no-power ids (flush is always SUCCESS, the
+    # processor number is 0 on the uniprocessor). Foreign-thread context,
+    # make-permanent (irreversible named-object state) and signal-and-wait
+    # (may block) stay out, the cancel_io/suspend precedent.
+    ("compare_objects", "NtCompareObjects", ["slot_in", "slot_in"]),
+    ("set_handle_info", "NtSetInformationObject", ["slot_in", "ch_bool", "ch_bool"]),
+    ("query_handle_flags", "NtQueryObject", ["slot_in", "ch_len"]),
+    ("flush_write_buffers", "NtFlushProcessWriteBuffers", []),
+    ("current_processor", "NtGetCurrentProcessorNumber", []),
 ]
 
 

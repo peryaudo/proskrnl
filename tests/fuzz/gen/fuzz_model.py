@@ -141,4 +141,9 @@ OPS = [
     ('write_own_memory', 59, 'NtWriteVirtualMemory', ['ch_vm_scenario']),
     ('is_process_in_job', 60, 'NtIsProcessInJob', ['slot_in']),
     ('query_job_info', 61, 'NtQueryInformationJobObject', ['slot_in', 'ch_job_query']),
+    ('compare_objects', 62, 'NtCompareObjects', ['slot_in', 'slot_in']),
+    ('set_handle_info', 63, 'NtSetInformationObject', ['slot_in', 'ch_bool', 'ch_bool']),
+    ('query_handle_flags', 64, 'NtQueryObject', ['slot_in', 'ch_len']),
+    ('flush_write_buffers', 65, 'NtFlushProcessWriteBuffers', []),
+    ('current_processor', 66, 'NtGetCurrentProcessorNumber', []),
 ]
