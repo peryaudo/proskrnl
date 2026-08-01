@@ -98,7 +98,8 @@ them, and excluded from the differential fuzzer's op model):
   exact upper-case 8.3 name gets an LFN run (spec-conformant; preserves case exactly).
 - **FSInfo free-count is not maintained** (the FAT spec marks it advisory and requires
   validation anyway).
-- **Mapped-view dirty pages** are written back on `NtFlushBuffersFile` and at file close,
+- **Mapped-view dirty pages** are written back on `NtFlushBuffersFile`, on
+  `NtFlushVirtualMemory` over the view's covered file range (CUI-7), and at file close —
   not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
   through immediately).
 
@@ -1003,6 +1004,90 @@ The milestone's own deviations (docs/02 CUI-6; the pins live in
   would read a running thread is gone with debug objects, and every baked
   caller suspends first. `sem_ps/context_foreign` pins the read-back, the Rip
   redirect and the XMM round-trip.
+
+## CUI-7 Cm-2/Mm-2/system notes (hive attach, write-watch, the furniture)
+
+The milestone's own deviations (docs/02 CUI-7; the pins live in
+`tests/ntapi/sem_reg/{rename,notify,save_load,restore_setinfo}.c`,
+`sem_mm/{alloc_ex,map_ex,write_watch,flush_lock}.c` and
+`sem_ps/{locale,set_time,shutdown}.c`). The buildable id surface is complete:
+202/264, every remaining `KI_SYSCALL_MISSING` row an out-of-scope decision
+(`docs/16`).
+
+- **`NtSaveKey` writes a PHV1 subtree image** (`kernel/cm/hive.c`
+  `CmpSerializeSubtree` — the M8 "our own on-disk format" deviation extended to
+  explicit saves; wineserver writes its text format there). Round-trips are pinned
+  semantically (save → load → query equality), never by file bytes; `tests/run/regdump.py`
+  parses both formats.
+- **A loaded hive is a volatile graft** (`NtLoadKey{,2,Ex}`): the mount never persists —
+  NT's own contract for loaded hives, and `CmpSaveHive`'s skip-volatile rule prunes it —
+  while the parsed CONTENT keys are ordinary, so an explicit `NtSaveKey` of the loaded
+  root round-trips. Observable cost: a non-volatile subkey created directly under a
+  loaded root answers `STATUS_CHILD_MUST_BE_VOLATILE` where the oracle (whose loaded
+  keys are ordinary keys) allows it — the arm is deliberately not exercised.
+- **The load family reproduces the server's dropped destination attributes**: loading
+  onto an existing key is `STATUS_OBJECT_NAME_COLLISION` (the ntdll-forced `OBJ_OPENIF`
+  never reaches wineserver's `create_key`) and a failed parse leaves the just-created
+  destination behind, empty — both pinned. Destinations are only exercised
+  RootDirectory-relative (the one shape kernelbase issues; the oracle's absolute form
+  falls over its own case-sensitive root lookup, a server quirk left unpinned — proskrnl
+  resolves absolute destinations through the one `CmpResolvePath` authority and simply
+  works, an unexercised superset). The `NtLoadKeyEx` extras
+  (flags/trustkey/event/access/roothandle/iostatus) are accepted-and-ignored, the pinned
+  oracle FIXME shape.
+- **Notify records are keyed by the arming OPEN** (`kernel/cm/notify.c`: one
+  `CM_KEY_BODY` per open ≈ wineserver's (process, hkey) key). A `NtDuplicateHandle`d key
+  handle shares its body and therefore its record — the record dies at the LAST close of
+  that body's handles where wineserver's dies per handle; untested, unobserved by any
+  consumer. The `count`/`attr`/`apc`/`buffer` arguments are accepted-and-ignored and the
+  IOSB is never written (the pinned oracle shape); the sync form blocks kernel-side on an
+  internal event where ntdll emulates it PE-side — observably identical.
+- **`NtRestoreKey` refuses open handles anywhere below the target** with
+  `STATUS_CANNOT_DELETE` (the MS docs are silent; wineserver's unload shape is the
+  model), and nonzero flags with `STATUS_INVALID_PARAMETER` (`REG_FORCE_RESTORE` etc.
+  stay unbuilt). **`NtReplaceKey`'s refusal is total**: after the `SeRestorePrivilege`
+  gate every key answers the documented not-a-hive-root `STATUS_INVALID_PARAMETER` —
+  proskrnl has no replaceable file-backed hive roots (one SYSTEM image + volatile
+  grafts). `KEY_SET_INFORMATION_CLASS` is hand-typed in `kernel/cm/registry.c` with its
+  wdm.h citation (the pinned Wine tree has no trace of it); only
+  `KeyWriteTimeInformation` is served.
+- **Placeholders stay unbuilt** (`MEM_RESERVE/REPLACE/PRESERVE_PLACEHOLDER`): recognized
+  and refused loudly with `STATUS_NOT_IMPLEMENTED` (Art. 12; the `SEC_RESERVE`
+  precedent) — no baked consumer, and the milestone's `*Ex` scope is the delegating
+  forms. `NtCreateSectionEx`'s parameter array is accepted-and-ignored (the pinned
+  oracle FIXME shape).
+- **Write-watch is fault-driven with the dirty array authoritative**
+  (`kernel/mm/virtual.c` `MI_VAD.watchDirty`; the PTE writable bit is only the trap —
+  `docs/17` §6.B's rule applied). Kernel writes mark through the same
+  `MiResolveWriteWatchFault` authority at the probe chokepoint (`KiProbeForWrite`) and
+  the cross-process checked copy — which means a service that probes a watched buffer
+  for write and then fails before writing has still marked it (the oracle marks only on
+  the actual store; unobserved by the pinned suites, recorded here).
+  `NtGetWriteWatch`/`NtResetWriteWatch` operate on the CALLER's address space whatever
+  the process handle says, as the oracle's implementations do.
+- **`NtLock/UnlockVirtualMemory` validate and do nothing**: everything is resident
+  (Art. 3 — no eviction), so a committed, accessible range answers `STATUS_SUCCESS` with
+  the oracle's rounding echo and reserved-only/unmapped ranges answer
+  `STATUS_ACCESS_DENIED` (the oracle's mlock cannot populate `PROT_NONE`).
+  `VmPrefetchInformation` likewise validates its ladder and succeeds without work.
+- **The locale slots are kernel state seeded from the registry** (`kernel/ps/nls.c`:
+  HKLM `...\Control\Nls\Language` "Default", HKCU `Control Panel\International`
+  "Locale", 0x0409 fallback) where the oracle seeds from the host locale; the setters
+  are in-memory only on both sides (nothing writes back to the registry).
+- **A privileged `NtSetSystemTime` does not re-evaluate armed absolute timers**: their
+  due points were fixed against the interrupt clock at arm time (`KiComputeDueTime`) and
+  stand; NT re-signals absolute timers on a clock change. No baked consumer observes it;
+  the NT-faithful exit is an absolute flag on KTIMER plus a re-insert walk, deliberately
+  unbuilt (`docs/12` names ke/wait as a danger zone). The set writes the CMOS back
+  (`arch/x86_64/rtc.c` `KiWriteRtcTime`), so it survives a reboot.
+- **`NtSetSystemInformation` refuses unknown classes with
+  `STATUS_INVALID_INFO_CLASS`** where the oracle FIXME-succeeds for every class (G12: a
+  blanket success is a fabricated answer); the one served class
+  (`SystemTimeAdjustmentInformation`) stores its pair, and the query side reflects the
+  STORED state after a set where the oracle's answer is fixed — pinned pre-set, where
+  the two coincide. `NtShutdownSystem`'s live arms ride the existing `KiQemuExit`
+  convention and the 8042 reset pulse; the refusal arms are the ntapi pins, the live
+  arms the `tests/run/run.sh cui7` leg.
 
 ## Debug objects are out of scope (permanent; ADR 0011)
 

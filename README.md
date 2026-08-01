@@ -292,6 +292,35 @@ suspended-parked targets only; `SystemModuleInformation` reports the one
 real kernel module, not the oracle's three fakes; the job memory/time limit
 flags stay stored-not-enforced (`docs/03` "CUI-6 handles/identity notes").
 
+**CUI-7 complete**: Cm-2 + Mm-2 + the system furniture — the last id-closing
+milestone. Registry: hive attach/save (`NtLoadKey{,2,Ex}`/`NtUnloadKey`/`NtSaveKey`
+over the PHV1 engine both ways — subtree images out, volatile grafts in),
+`NtRenameKey`, wineserver-shaped change notification
+(`NtNotifyChangeKey{,MultipleKeys}` — per-open records on the key,
+fire-and-keep, close-and-free), and the four oracle-stubbed ids
+(`NtRestoreKey`/`NtReplaceKey`/`NtSetInformationKey`/`NtQueryMultipleValueKey`)
+built against their MS contracts `beyond_oracle` (kernel/cm/notify.c is new;
+kernel/cm/registry.c + hive.c extended). Memory: the
+`VirtualAlloc2`/`MapViewOfFile3` family (`NtAllocateVirtualMemoryEx` placement
+constraints riding the one free-range search, `NtCreateSectionEx`/
+`NtMap/UnmapViewOfSectionEx` delegating), **fault-driven write-watch**
+(`NtGet/ResetWriteWatch`: a per-VAD dirty array is the record, the PTE
+writable bit only the trap; kernel writes mark through the probe chokepoint),
+`NtFlushVirtualMemory` routing a file view's bytes to the FS writeback, and
+lock/prefetch as validating no-ops (everything is resident). System:
+registry-seeded locale slots (kernel/ps/nls.c), a privileged `NtSetSystemTime`
+that moves the clock AND writes the CMOS back (arch/x86_64/rtc.c gains the
+CUI-1 read's inverse), the `SystemTimeAdjustmentInformation` set/query pair,
+and `NtShutdownSystem` ending the machine from ring 3. Acceptance:
+`tests/run/run.sh cui7` — a regtool `RegSaveKey`/`RegLoadKey` round trip that
+survives a power cycle, the watchapp write-watch run, and a ring-3 poweroff.
+The buildable id surface is **complete: 202/264** — every remaining
+`KI_SYSCALL_MISSING` row is an out-of-scope decision (`docs/16`). **Not yet:**
+placeholder allocation refuses loudly (no baked consumer); armed absolute
+timers are not re-evaluated on a clock change; a duplicated key handle shares
+its notify record; the notify APC/buffer arguments stay ignored as the oracle
+ignores them (`docs/03` "CUI-7 Cm-2/Mm-2/system notes").
+
 **CUI-5 complete**: Io completion — the file surface's last mile. **Rename
 exists**: `FileRenameInformation(Ex)`/`FileLinkInformation` in
 `NtSetInformationFile`, with the FAT entry mover rewriting the live FCB's
@@ -406,10 +435,7 @@ latch" a sound verdict; and `tools/unscreen.py`, which replays a test's
 own text back out of the console's 80-column screen diff, so a non-zero
 budget is a list of names instead of a number.
 
-Next: **GUI-6** — the Wine desktop; or **CUI-7** (Cm-2 + Mm-2 + system
-furniture), which finishes the measured syscall gap at 202/264
-(`docs/16-syscall-status.md`, `docs/02`) now that CUI-6 has closed its 14
-ids (173/264); or **Net-1** — sockets
+Next: **GUI-6** — the Wine desktop; or **Net-1** — sockets
 (virtio-net, `\Device\Afd`; the former CUI-5, now its own path), whose
 prerequisite is no longer CUI-1's clock alone but **CUI-8**, since an AFD
 `accept` that never completes cannot be served by the polled-synchronous
