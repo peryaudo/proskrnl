@@ -22,7 +22,11 @@ Ordering rules that matter:
 - **The differential fuzzer is available from M5, not gated to M7.** Its prerequisites — the
   one-source/two-mode `ntapi` harness, the generated syscall list, the deterministic
   serial-log verdict — all exist from M4/M5, so it was built early (`tests/fuzz/`, `docs/08`)
-  and its op model grows with each milestone's new `Nt*`. Run it with `tests/run/run.sh fuzz`.
+  and its op model grows with each milestone's new `Nt*` — and, where a milestone adds no
+  `Nt*` but adds a new *state* a call can be in, with that (CUI-8's in-flight operation is
+  the first: `tests/fuzz/interp.c` is single-threaded and drains only at `test_alert`, so
+  without the extension the fuzzer is blind to the whole milestone). Run it with
+  `tests/run/run.sh fuzz`.
 - **The critical path to winemine.exe deliberately excludes npfs/condrv/conhost/cmd.** See
   the GUI note below and `docs/07`.
 
