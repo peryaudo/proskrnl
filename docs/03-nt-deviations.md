@@ -954,6 +954,28 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
 The milestone's own deviations (docs/02 CUI-6; the pins live in
 `tests/ntapi/sem_ps/times.c` and its siblings).
 
+- **Impersonation attach is real** (`kernel/ps/thread.c`, `kernel/se/token.c`,
+  `kernel/ob/handle.c`): a thread carries an impersonation token
+  (`ETHREAD.impersonationToken`), attached through
+  `NtSetInformationThread(ThreadImpersonationToken)`, preferred by
+  `SeCurrentToken` and the `~4`/`~5` magic pseudo-handles, and read back by a
+  now-real `NtOpenThreadToken(Ex)`. Retires the CUI-2 "no impersonation
+  anywhere" deviation (`sem_se/se_impersonate`).
+- **`NtAdjustGroupsToken` and `NtImpersonateAnonymousToken` are built against
+  the NT contract, `beyond_oracle`** (the pinned Wine stubs both,
+  `dlls/ntdll/unix/security.c`): AdjustGroups refuses to disable an
+  `SE_GROUP_MANDATORY` group and resets to default (the fixed identity's
+  groups are all mandatory-and-enabled, so no adjust changes state and the
+  previous-state buffer truthfully reports zero groups — not a fabrication);
+  ImpersonateAnonymous mints an S-1-5-7 impersonation token onto the thread
+  slot. `sem_se/se_adjgroups` pins both against MS documentation.
+- **`NtSetInformationToken` serves `TokenDefaultDacl` via a side allocation**
+  (`kernel/se/token.c`, `kernel/se/se.h`): the one documented exception to the
+  token blob's shrink-only rule — a replacement DACL that does not fit the
+  inline slot is a separate pool allocation, preferred by the single default-
+  DACL accessor and freed by the token delete procedure. `TokenSessionId`/
+  `TokenIntegrityLevel` are accepted no-ops, the oracle's own pinned answer.
+
 - **CPU time is whole-tick sampling at 1 ms granularity**
   (`kernel/ke/timer.c KiUpdateClock`): the clock interrupt charges
   `KI_100NS_PER_TICK` to the interrupted thread, kernel or user by the

@@ -182,6 +182,8 @@
 #define NTSYS_NtAlertResumeThread 0x0065
 #define NTSYS_NtSetInformationToken 0x00ec
 #define NTSYS_NtFilterToken 0x0097
+#define NTSYS_NtAdjustGroupsToken 0x0063
+#define NTSYS_NtImpersonateAnonymousToken 0x00a3
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

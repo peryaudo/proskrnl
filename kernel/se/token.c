@@ -98,6 +98,8 @@ SEP_SID(SepBuiltinUsersSid, 2, SECURITY_NT_AUTHORITY, SECURITY_BUILTIN_DOMAIN_RI
         DOMAIN_ALIAS_RID_USERS);
 SEP_SID(SepLogonSid, 3, SECURITY_NT_AUTHORITY, SECURITY_LOGON_IDS_RID, 0, 0);
 SEP_SID(SepHighLabelSid, 1, SECURITY_MANDATORY_LABEL_AUTHORITY, SECURITY_MANDATORY_HIGH_RID);
+/* CUI-6: S-1-5-7, the ANONYMOUS LOGON user NtImpersonateAnonymousToken mints. */
+SEP_SID(SepAnonymousLogonSid, 1, SECURITY_NT_AUTHORITY, SECURITY_ANONYMOUS_LOGON_RID);
 
 static const SID *SepSidOf(const SEP_SID_BUFFER *buffer)
 {
@@ -1688,4 +1690,251 @@ NTSTATUS NtFilterToken(HANDLE existingToken, ULONG flags, PTOKEN_GROUPS sidsToDi
         MiFreePool(disableBlob);
     }
     return status;
+}
+
+/* Find a token group by SID; returns its index or -1. */
+static LONG SepTokenFindGroup(PTOKEN token, const SID *sid, ULONG sidLen)
+{
+    const BYTE *cursor = SepTokenGroupSids(token);
+    for (ULONG i = 0; i < token->groupCount; i++)
+    {
+        const SID *group = (const SID *)cursor;
+        ULONG groupLen = SepSidLength(group);
+        if (groupLen == sidLen && memcmp(group, sid, sidLen) == 0)
+        {
+            return (LONG)i;
+        }
+        cursor += groupLen;
+    }
+    return -1;
+}
+
+/* CUI-6: NtAdjustGroupsToken — the AdjustTokenGroups back end
+ * (beyond_oracle, sem_se/se_adjgroups; the oracle stubs it). ResetToDefault
+ * restores every group's enabled-by-default state; otherwise each named
+ * group's SE_GROUP_ENABLED bit is set/cleared, but an SE_GROUP_MANDATORY
+ * group cannot be disabled (STATUS_CANT_DISABLE_MANDATORY, MS docs). The
+ * fixed identity's groups are all mandatory-and-enabled, so no adjust ever
+ * changes state — the previous-state buffer therefore reports zero groups,
+ * which is the true previous state, not a fabrication (G12). */
+NTSTATUS NtAdjustGroupsToken(HANDLE tokenHandle, BOOLEAN resetToDefault, PTOKEN_GROUPS newState,
+                             ULONG bufferLength, PTOKEN_GROUPS previousState, PULONG returnLength)
+{
+    ACCESS_MASK access = TOKEN_ADJUST_GROUPS | (previousState != 0 ? TOKEN_QUERY : 0);
+
+    /* Capture the requested groups (nested SIDs) up front. */
+    BYTE *sidBlob = 0;
+    ULONG *wantAttrs = 0;
+    ULONG wantCount = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+    if (!resetToDefault && newState != 0)
+    {
+        status = KiCopyFromUser(&wantCount, newState, sizeof(wantCount));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (wantCount > SEP_MAX_GROUPS)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (wantCount != 0)
+        {
+            sidBlob = MiAllocatePool(wantCount * SEP_MAX_SID_LENGTH);
+            wantAttrs = MiAllocatePool(wantCount * sizeof(ULONG) + 1);
+            if (sidBlob == 0 || wantAttrs == 0)
+            {
+                if (sidBlob != 0)
+                    MiFreePool(sidBlob);
+                if (wantAttrs != 0)
+                    MiFreePool(wantAttrs);
+                return STATUS_NO_MEMORY;
+            }
+            BYTE *out = sidBlob;
+            for (ULONG i = 0; i < wantCount; i++)
+            {
+                SID_AND_ATTRIBUTES entry;
+                status = KiCopyFromUser(&entry, &newState->Groups[i], sizeof(entry));
+                if (NT_SUCCESS(status) && entry.Sid != 0)
+                {
+                    SID sidHeader;
+                    status = KiCopyFromUser(&sidHeader, entry.Sid, sizeof(SID));
+                    if (NT_SUCCESS(status))
+                    {
+                        ULONG sidLen = SepSidLength(&sidHeader);
+                        if (sidLen <= SEP_MAX_SID_LENGTH)
+                        {
+                            status = KiCopyFromUser(out, entry.Sid, sidLen);
+                            wantAttrs[i] = entry.Attributes;
+                            out += sidLen;
+                        }
+                    }
+                }
+                if (!NT_SUCCESS(status))
+                {
+                    MiFreePool(sidBlob);
+                    MiFreePool(wantAttrs);
+                    return status;
+                }
+            }
+        }
+    }
+
+    PTOKEN token;
+    status = SepReferenceTokenByHandle(tokenHandle, access, &token, 0);
+    if (!NT_SUCCESS(status))
+    {
+        goto cleanup;
+    }
+    ULONG *attrs = SepTokenGroupAttrs(token);
+
+    if (resetToDefault)
+    {
+        for (ULONG i = 0; i < token->groupCount; i++)
+        {
+            attrs[i] &= ~(ULONG)SE_GROUP_ENABLED;
+            if (attrs[i] & SE_GROUP_ENABLED_BY_DEFAULT)
+            {
+                attrs[i] |= SE_GROUP_ENABLED;
+            }
+        }
+    }
+    else
+    {
+        /* Validation pass: a mandatory group cannot be disabled. */
+        const BYTE *cursor = sidBlob;
+        for (ULONG i = 0; i < wantCount; i++)
+        {
+            const SID *sid = (const SID *)cursor;
+            ULONG sidLen = SepSidLength(sid);
+            LONG idx = SepTokenFindGroup(token, sid, sidLen);
+            if (idx >= 0 && (attrs[idx] & SE_GROUP_MANDATORY) && !(wantAttrs[i] & SE_GROUP_ENABLED))
+            {
+                status = STATUS_CANT_DISABLE_MANDATORY;
+                ObDereferenceObject(token);
+                goto cleanup;
+            }
+            cursor += sidLen;
+        }
+        /* Apply pass. */
+        cursor = sidBlob;
+        for (ULONG i = 0; i < wantCount; i++)
+        {
+            const SID *sid = (const SID *)cursor;
+            ULONG sidLen = SepSidLength(sid);
+            LONG idx = SepTokenFindGroup(token, sid, sidLen);
+            if (idx >= 0)
+            {
+                if (wantAttrs[i] & SE_GROUP_ENABLED)
+                {
+                    attrs[idx] |= SE_GROUP_ENABLED;
+                }
+                else
+                {
+                    attrs[idx] &= ~(ULONG)SE_GROUP_ENABLED;
+                }
+            }
+            cursor += sidLen;
+        }
+    }
+    token->modifiedId = SepAllocateLuid();
+    ObDereferenceObject(token);
+
+    /* Previous state: no group on this fixed identity actually changes
+     * enabled-state, so the true previous state is empty. */
+    if (previousState != 0)
+    {
+        ULONG headerLength = (ULONG)offsetof(TOKEN_GROUPS, Groups);
+        if (returnLength != 0)
+        {
+            ULONG needed = headerLength;
+            status = SepCopyToUser(returnLength, &needed, sizeof(needed));
+            if (!NT_SUCCESS(status))
+            {
+                goto cleanup;
+            }
+        }
+        if (bufferLength < headerLength)
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            goto cleanup;
+        }
+        DWORD zero = 0;
+        status = SepCopyToUser(previousState, &zero, sizeof(zero));
+    }
+
+cleanup:
+    if (sidBlob != 0)
+    {
+        MiFreePool(sidBlob);
+    }
+    if (wantAttrs != 0)
+    {
+        MiFreePool(wantAttrs);
+    }
+    return status;
+}
+
+/* CUI-6: NtImpersonateAnonymousToken — mint an ANONYMOUS LOGON (S-1-5-7)
+ * impersonation token and attach it to the thread (beyond_oracle,
+ * sem_se/se_impersonate + se_adjgroups; the oracle stubs it). Rides the same
+ * ETHREAD.impersonationToken slot the ThreadImpersonationToken attach uses
+ * (G11). */
+NTSTATUS NtImpersonateAnonymousToken(HANDLE threadHandle)
+{
+    /* One group (World), no privileges, no default DACL; SecurityImpersonation
+     * so NtOpenThreadToken does not refuse it as anonymous-level. */
+    const SID *worldSid = SepSidOf(&SepWorldSid);
+    ULONG worldLen = SepSidLength(worldSid);
+    ULONG groupAttrs[1] = {SE_GROUP_MANDATORY | SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT};
+    BYTE groupSids[SEP_MAX_SID_LENGTH];
+    memcpy(groupSids, worldSid, worldLen);
+
+    PTOKEN anon;
+    NTSTATUS status = SepCreateToken(FALSE, SecurityImpersonation, 1, TokenElevationTypeLimited,
+                                     SepSidOf(&SepAnonymousLogonSid), groupAttrs, groupSids,
+                                     worldLen, 1, 0, 0, 0, 0, 0, 0, &anon);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PETHREAD thread;
+    BOOLEAN referenced = FALSE;
+    if (threadHandle == NtCurrentThread())
+    {
+        thread = KeGetCurrentThread()->threadObject;
+    }
+    else
+    {
+        PVOID body;
+        status = ObReferenceObjectByHandle(threadHandle, THREAD_IMPERSONATE, &PspThreadType,
+                                           ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(anon);
+            return status;
+        }
+        thread = body;
+        referenced = TRUE;
+    }
+    if (thread == 0)
+    {
+        ObDereferenceObject(anon);
+        if (referenced)
+        {
+            ObDereferenceObject((PVOID)thread);
+        }
+        return STATUS_INVALID_HANDLE;
+    }
+    if (thread->impersonationToken != 0)
+    {
+        ObDereferenceObject(thread->impersonationToken);
+    }
+    thread->impersonationToken = anon; /* transfer the creator reference */
+    if (referenced)
+    {
+        ObDereferenceObject(thread);
+    }
+    return STATUS_SUCCESS;
 }
