@@ -47,6 +47,7 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
+#include "kernel/se/se.h"
 #include "kernel/syscall/syscall.h"
 #include "kernel/syscall/uaccess.h"
 
@@ -1685,6 +1686,366 @@ NTSTATUS NtFlushKey(HANDLE keyHandle)
     /* Every mutation is already durable at syscall return (immediate
      * writeback, Art. 3) — nothing left to flush. */
     ObDereferenceObject(body);
+    return STATUS_SUCCESS;
+}
+
+/* --- hive attach/save (CUI-7) ----------------------------------------------- */
+
+/* The privilege LUIDs the hive services gate on, spelled from abi/ (the
+ * same ordinals wineserver's SeBackupPrivilege/SeRestorePrivilege carry —
+ * server/token.c). */
+static LUID CmpLuid(ULONG low)
+{
+    LUID luid;
+    luid.LowPart = low;
+    luid.HighPart = 0;
+    return luid;
+}
+
+/* Capture a user OBJECT_ATTRIBUTES' name into pool so the file can be opened
+ * under previousMode == KernelMode (the CmpSaveHive precedent: user pointers
+ * must not be dereferenced once the mode is flipped). */
+static NTSTATUS CmpCaptureFileName(const OBJECT_ATTRIBUTES *attributes, UNICODE_STRING *nameOut)
+{
+    NTSTATUS status = ObProbeObjectAttributes(attributes);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (attributes == 0 || attributes->ObjectName == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (attributes->RootDirectory != 0)
+    {
+        /* Wine's RegLoadKeyW always passes an absolute NT path for the
+         * file; a relative one has no consumer. */
+        return STATUS_OBJECT_PATH_SYNTAX_BAD;
+    }
+    UNICODE_STRING name = *attributes->ObjectName;
+    name.Length &= ~1u;
+    if (name.Length == 0)
+    {
+        return STATUS_OBJECT_NAME_INVALID;
+    }
+    status = KiProbeForRead(name.Buffer, name.Length, sizeof(WCHAR));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PWSTR copy = MiAllocatePool(name.Length);
+    if (copy == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memcpy(copy, name.Buffer, name.Length);
+    nameOut->Buffer = copy;
+    nameOut->Length = name.Length;
+    nameOut->MaximumLength = name.Length;
+    return STATUS_SUCCESS;
+}
+
+/* Open a hive file by (captured, kernel-side) name. Caller runs under
+ * previousMode == KernelMode. */
+static NTSTATUS CmpOpenUserHiveFile(const UNICODE_STRING *name, ACCESS_MASK access,
+                                    PHANDLE handleOut)
+{
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = (UNICODE_STRING *)name;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK iosb;
+    return NtCreateFile(handleOut, access, &attributes, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
+                        FILE_SHARE_READ, FILE_OPEN,
+                        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+}
+
+NTSTATUS NtSaveKey(HANDLE keyHandle, HANDLE fileHandle)
+{
+    /* wineserver save_registry: no particular KEY access is required (the
+     * stale-handle rule still applies), the gate is SeBackupPrivilege. */
+    PCM_KEY_BODY body;
+    NTSTATUS status = CmpReferenceKey(keyHandle, 0, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (!SeSinglePrivilegeCheck(CmpLuid(SE_BACKUP_PRIVILEGE), ExGetPreviousMode()))
+    {
+        ObDereferenceObject(body);
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+    UCHAR *buffer;
+    ULONG total;
+    status = CmpSerializeSubtree(body->node, &buffer, &total);
+    ObDereferenceObject(body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    /* The CALLER's file handle carries the write: its granted access is
+     * enforced by Ob regardless of the mode flip (a read-only handle
+     * refuses), only the kernel-pool buffer needs KernelMode probes. */
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode;
+    IO_STATUS_BLOCK iosb;
+    LARGE_INTEGER offset;
+    offset.QuadPart = 0;
+    status = NtWriteFile(fileHandle, 0, 0, 0, &iosb, buffer, total, &offset, 0);
+    thread->previousMode = saved;
+    MiFreePool(buffer);
+    return status;
+}
+
+NTSTATUS NtLoadKeyEx(const OBJECT_ATTRIBUTES *attributes, OBJECT_ATTRIBUTES *fileAttributes,
+                     ULONG flags, HANDLE trustClassKey, HANDLE event, ACCESS_MASK desiredAccess,
+                     HANDLE *rootHandle, IO_STATUS_BLOCK *ioStatus)
+{
+    /* The extra arguments are accepted and ignored, the pinned oracle
+     * behaviour (wine dlls/ntdll/unix/registry.c NtLoadKeyEx FIXMEs each;
+     * docs/03 "CUI-7" notes). */
+    (void)flags;
+    (void)trustClassKey;
+    (void)event;
+    (void)desiredAccess;
+    (void)rootHandle;
+    (void)ioStatus;
+
+    /* File first (the oracle's ntdll opens it before the server sees the
+     * request): a missing file answers even without the privilege. */
+    UNICODE_STRING fileName;
+    NTSTATUS status = CmpCaptureFileName(fileAttributes, &fileName);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode;
+    HANDLE fileHandle;
+    status = CmpOpenUserHiveFile(&fileName, FILE_GENERIC_READ, &fileHandle);
+    thread->previousMode = saved;
+    MiFreePool(fileName.Buffer);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    UCHAR *buffer = 0;
+    ULONGLONG length = 0;
+    if (!SeSinglePrivilegeCheck(CmpLuid(SE_RESTORE_PRIVILEGE), ExGetPreviousMode()))
+    {
+        status = STATUS_PRIVILEGE_NOT_HELD;
+        goto closeFile;
+    }
+
+    /* Read the whole image while the handle is ours; the destination is
+     * resolved after (probes there run under the caller's real mode). */
+    {
+        thread->previousMode = KernelMode;
+        IO_STATUS_BLOCK iosb;
+        FILE_STANDARD_INFORMATION standard;
+        status = NtQueryInformationFile(fileHandle, &iosb, &standard, sizeof(standard),
+                                        FileStandardInformation);
+        if (NT_SUCCESS(status))
+        {
+            length = (ULONGLONG)standard.EndOfFile.QuadPart;
+            if (length < 32 || length > (64u << 20))
+            {
+                status = STATUS_NOT_REGISTRY_FILE;
+            }
+        }
+        if (NT_SUCCESS(status))
+        {
+            buffer = MiAllocatePool(length);
+            if (buffer == 0)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+        }
+        if (NT_SUCCESS(status))
+        {
+            LARGE_INTEGER offset;
+            offset.QuadPart = 0;
+            status = NtReadFile(fileHandle, 0, 0, 0, &iosb, buffer, (ULONG)length, &offset, 0);
+            if (NT_SUCCESS(status) && iosb.Information != length)
+            {
+                status = STATUS_NOT_REGISTRY_FILE;
+            }
+        }
+        thread->previousMode = saved;
+        if (!NT_SUCCESS(status))
+        {
+            goto closeFile;
+        }
+    }
+
+    /* The destination: created fresh — an existing key collides, because
+     * the oracle's load_registry drops the ntdll-forced OBJ_OPENIF with the
+     * rest of the attributes (pinned by sem_reg/save_load). The graft ROOT
+     * is volatile: the mount does not survive reboot (NT's own contract for
+     * loaded hives; wineserver's periodic branch saves likewise never
+     * persist it) and CmpSaveHive's skip-volatile rule prunes it; the
+     * CONTENT keys parse as ordinary keys so an explicit NtSaveKey of the
+     * loaded root round-trips (docs/03 "CUI-7" notes). */
+    {
+        PCMP_KEY_NODE parent, found;
+        UNICODE_STRING leaf;
+        WCHAR leafScratch[CMP_MAX_COMPONENT_BYTES / sizeof(WCHAR)];
+        status = CmpResolvePath(attributes, TRUE, FALSE, &parent, &leaf, leafScratch, &found);
+        if (NT_SUCCESS(status))
+        {
+            if (found != 0)
+            {
+                status = STATUS_OBJECT_NAME_COLLISION;
+            }
+            else if (CmpKeyDepth(parent) >= CMP_HIVE_MAX_DEPTH)
+            {
+                status = STATUS_INVALID_PARAMETER;
+            }
+            else
+            {
+                found = CmpAllocateNode(parent, &leaf);
+                if (found == 0)
+                {
+                    status = STATUS_INSUFFICIENT_RESOURCES;
+                }
+                else
+                {
+                    found->isVolatile = TRUE;
+                    parent->lastWriteTime = CmpNow();
+                    /* A malformed image unwinds its content but the created
+                     * destination STAYS (the pinned oracle shape). */
+                    status = CmpParseSubtreeInto(found, buffer, length);
+                    CmpNotifyChange(parent, REG_NOTIFY_CHANGE_NAME);
+                }
+            }
+        }
+    }
+
+closeFile:
+    if (buffer != 0)
+    {
+        MiFreePool(buffer);
+    }
+    thread->previousMode = KernelMode;
+    NtClose(fileHandle);
+    thread->previousMode = saved;
+    return status;
+}
+
+NTSTATUS NtLoadKey(const OBJECT_ATTRIBUTES *attributes, OBJECT_ATTRIBUTES *fileAttributes)
+{
+    return NtLoadKeyEx(attributes, fileAttributes, 0, 0, 0, 0, 0, 0);
+}
+
+NTSTATUS NtLoadKey2(const OBJECT_ATTRIBUTES *attributes, OBJECT_ATTRIBUTES *fileAttributes,
+                    ULONG flags)
+{
+    return NtLoadKeyEx(attributes, fileAttributes, flags, 0, 0, 0, 0, 0);
+}
+
+/* Recursively delete `node`'s subtree, then `node` itself (already unlinked
+ * by the caller). Nodes with live bodies survive in the stale KEY_DELETED
+ * limbo until their last body closes (wineserver delete_key recursive).
+ * Recursion depth is bounded by the create-time CMP_HIVE_MAX_DEPTH cap. */
+static void CmpDeleteNodeRecursive(PCMP_KEY_NODE node)
+{
+    while (!IsListEmpty(&node->subkeyListHead))
+    {
+        PCMP_KEY_NODE child =
+            CONTAINING_RECORD(node->subkeyListHead.Flink, CMP_KEY_NODE, siblingEntry);
+        RemoveEntryList(&child->siblingEntry);
+        node->subkeyCount--;
+        child->parent = 0;
+        CmpDeleteNodeRecursive(child);
+    }
+    CmpFreeValues(node);
+    node->deleted = TRUE;
+    if (node->bodyCount == 0)
+    {
+        ASSERT(IsListEmpty(&node->notifyListHead));
+        if (node->name.Buffer != 0)
+        {
+            MiFreePool(node->name.Buffer);
+        }
+        MiFreePool(node);
+    }
+}
+
+NTSTATUS NtUnloadKey(OBJECT_ATTRIBUTES *attributes)
+{
+    /* The ntdll-side ladder (wine dlls/ntdll/unix/registry.c NtUnloadKey),
+     * which runs BEFORE the privilege check. */
+    if (attributes == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    {
+        NTSTATUS probeStatus = KiProbeForRead(attributes, sizeof(*attributes), sizeof(uint64_t));
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
+    if (attributes->ObjectName == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (attributes->Length != sizeof(*attributes))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    {
+        NTSTATUS probeStatus =
+            KiProbeForRead(attributes->ObjectName, sizeof(UNICODE_STRING), sizeof(uint64_t));
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
+    if ((attributes->ObjectName->Length & 1) != 0)
+    {
+        return STATUS_OBJECT_NAME_INVALID;
+    }
+    if (!SeSinglePrivilegeCheck(CmpLuid(SE_RESTORE_PRIVILEGE), ExGetPreviousMode()))
+    {
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+
+    PCMP_KEY_NODE found;
+    UNICODE_STRING leaf;
+    WCHAR leafScratch[CMP_MAX_COMPONENT_BYTES / sizeof(WCHAR)];
+    NTSTATUS status = CmpResolvePath(attributes, FALSE, FALSE, 0, &leaf, leafScratch, &found);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    /* wineserver unload_registry: open handles to the NAMED key refuse;
+     * the root and the skeleton hive roots are permanent. A child handle
+     * does not block — its key goes stale (pinned by sem_reg/save_load). */
+    if (found->bodyCount != 0)
+    {
+        return STATUS_CANNOT_DELETE;
+    }
+    if (found->parent == 0 || found->parent == CmpRootNode)
+    {
+        return STATUS_ACCESS_DENIED;
+    }
+    PCMP_KEY_NODE parent = found->parent;
+    BOOLEAN wasVolatile = found->isVolatile;
+    RemoveEntryList(&found->siblingEntry);
+    parent->subkeyCount--;
+    parent->lastWriteTime = CmpNow();
+    found->parent = 0;
+    CmpDeleteNodeRecursive(found);
+    if (!wasVolatile)
+    {
+        CmpSaveHive();
+    }
+    CmpNotifyChange(parent, REG_NOTIFY_CHANGE_NAME);
     return STATUS_SUCCESS;
 }
 

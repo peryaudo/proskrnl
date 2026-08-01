@@ -235,6 +235,11 @@ IMPLEMENTED = [
     "NtRenameKey",
     "NtNotifyChangeKey",
     "NtNotifyChangeMultipleKeys",
+    "NtSaveKey",
+    "NtLoadKey",
+    "NtLoadKey2",
+    "NtLoadKeyEx",
+    "NtUnloadKey",
 ]
 
 

@@ -82,17 +82,21 @@ void CmpSetHiveReady(void)
 
 /* --- serialize -------------------------------------------------------------- */
 
-/* The root record is stored with an EMPTY name: its in-memory name
- * ("REGISTRY", query-visible) is fixed by CmInitialize, not by the file. */
-static USHORT CmpPersistedNameBytes(const CMP_KEY_NODE *node)
+/* The image's top record is stored with an EMPTY name whichever node it is:
+ * the SYSTEM hive's root name ("REGISTRY") is fixed by CmInitialize, and a
+ * subtree image's top name is fixed by wherever it is later attached
+ * (NtLoadKey's destination) — the wineserver save_all_subkeys shape. */
+static USHORT CmpPersistedNameBytes(const CMP_KEY_NODE *node, BOOLEAN asRoot)
 {
-    return node->parent == 0 ? 0 : node->name.Length;
+    return asRoot ? 0 : node->name.Length;
 }
 
-/* Byte size of one KEY record (with descendants), volatile subtrees skipped. */
-static ULONGLONG CmpMeasureKey(const CMP_KEY_NODE *node)
+/* Byte size of one KEY record (with descendants). Volatile CHILDREN are
+ * skipped; the top node itself is always measured (an explicit NtSaveKey of
+ * a loaded — volatile — key still saves its content). */
+static ULONGLONG CmpMeasureKey(const CMP_KEY_NODE *node, BOOLEAN asRoot)
 {
-    ULONGLONG bytes = 1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node) + 2; /* K..name + E,0 */
+    ULONGLONG bytes = 1 + 1 + 2 + 8 + 4 + CmpPersistedNameBytes(node, asRoot) + 2; /* K..name + E,0 */
     for (PLIST_ENTRY e = node->valueListHead.Flink; e != &node->valueListHead; e = e->Flink)
     {
         const CMP_VALUE *value = CONTAINING_RECORD(e, CMP_VALUE, listEntry);
@@ -104,15 +108,15 @@ static ULONGLONG CmpMeasureKey(const CMP_KEY_NODE *node)
         const CMP_KEY_NODE *child = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
         if (!child->isVolatile)
         {
-            bytes += CmpMeasureKey(child);
+            bytes += CmpMeasureKey(child, FALSE);
         }
     }
     return bytes;
 }
 
-static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
+static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor, BOOLEAN asRoot)
 {
-    USHORT nameBytes = CmpPersistedNameBytes(node);
+    USHORT nameBytes = CmpPersistedNameBytes(node, asRoot);
     *cursor++ = CMP_TAG_KEY;
     *cursor++ = node->isLink ? 1 : 0;
     KiWriteLe16(cursor, nameBytes / sizeof(WCHAR));
@@ -148,12 +152,39 @@ static UCHAR *CmpEmitKey(const CMP_KEY_NODE *node, UCHAR *cursor)
         const CMP_KEY_NODE *child = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
         if (!child->isVolatile)
         {
-            cursor = CmpEmitKey(child, cursor);
+            cursor = CmpEmitKey(child, cursor, FALSE);
         }
     }
     *cursor++ = CMP_TAG_END;
     *cursor++ = 0; /* keep the stream 2-aligned */
     return cursor;
+}
+
+/* Build a complete PHV1 image of `top`'s subtree (top's name stored empty,
+ * magic set — ready to hand to a caller's file). *bufferOut is pool, caller
+ * frees. CUI-7: the NtSaveKey engine; CmpSaveHive uses the same emitters
+ * with its own torn-write header dance. */
+NTSTATUS CmpSerializeSubtree(const CMP_KEY_NODE *top, UCHAR **bufferOut, ULONG *totalOut)
+{
+    ULONGLONG total = CMP_HIVE_HEADER_BYTES + CmpMeasureKey(top, TRUE);
+    if (total > CMP_HIVE_MAX_BYTES)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    UCHAR *buffer = MiAllocatePool(total);
+    if (buffer == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    KiWriteLe32(buffer, CMP_HIVE_MAGIC);
+    KiWriteLe32(buffer + 4, CMP_HIVE_VERSION);
+    KiWriteLe32(buffer + 8, (ULONG)total);
+    KiWriteLe32(buffer + 12, 0);
+    UCHAR *end = CmpEmitKey(top, buffer + CMP_HIVE_HEADER_BYTES, TRUE);
+    ASSERT(end == buffer + total);
+    *bufferOut = buffer;
+    *totalOut = (ULONG)total;
+    return STATUS_SUCCESS;
 }
 
 /* --- parse ------------------------------------------------------------------ */
@@ -272,6 +303,39 @@ static void CmpFreeSubtree(PCMP_KEY_NODE node)
     CmpFreeValues(node);
 }
 
+/* Parse a whole PHV1 image into `top` (fresh or wiped; content merges via
+ * CmpSetValue/CmpAllocateNode). Any malformation unwinds everything parsed
+ * so far and answers STATUS_NOT_REGISTRY_FILE — the caller keeps `top`
+ * itself (the oracle's failed load also leaves its created destination
+ * behind; pinned by sem_reg/save_load). */
+NTSTATUS CmpParseSubtreeInto(PCMP_KEY_NODE top, const UCHAR *buffer, ULONGLONG length)
+{
+    if (length < CMP_HIVE_HEADER_BYTES + 16 || length > CMP_HIVE_MAX_BYTES ||
+        KiReadLe32(buffer) != CMP_HIVE_MAGIC || KiReadLe32(buffer + 4) != CMP_HIVE_VERSION ||
+        KiReadLe32(buffer + 8) != length)
+    {
+        return STATUS_NOT_REGISTRY_FILE;
+    }
+    CMP_HIVE_READER reader = {buffer, length, CMP_HIVE_HEADER_BYTES};
+    const UCHAR *p;
+    ULONG depth = CmpKeyDepth(top);
+    if (!CmpReaderTake(&reader, 16, &p) || p[0] != CMP_TAG_KEY || KiReadLe16(p + 2) != 0 ||
+        depth == 0 || depth > CMP_HIVE_MAX_DEPTH)
+    {
+        return STATUS_NOT_REGISTRY_FILE;
+    }
+    LARGE_INTEGER lastWrite;
+    lastWrite.QuadPart = (LONGLONG)KiReadLe64(p + 4);
+    if (!CmpParseKeyBody(&reader, top, KiReadLe32(p + 12), depth - 1) ||
+        reader.offset != reader.length)
+    {
+        CmpFreeSubtree(top);
+        return STATUS_NOT_REGISTRY_FILE;
+    }
+    top->lastWriteTime = lastWrite;
+    return STATUS_SUCCESS;
+}
+
 /* --- the file --------------------------------------------------------------- */
 
 /* Open the hive (or its directory) with a kernel-internal transient handle;
@@ -383,7 +447,7 @@ void CmpSaveHive(void)
      * before returning (immediate writeback, Art. 3). */
     KeWaitForSingleObject(&CmpHiveMutex, Executive, KernelMode, FALSE, 0);
 
-    ULONGLONG total = CMP_HIVE_HEADER_BYTES + CmpMeasureKey(CmpRootNode);
+    ULONGLONG total = CMP_HIVE_HEADER_BYTES + CmpMeasureKey(CmpRootNode, TRUE);
     UCHAR *buffer = MiAllocatePool(total);
     if (buffer == 0)
     {
@@ -395,7 +459,7 @@ void CmpSaveHive(void)
     KiWriteLe32(buffer + 4, CMP_HIVE_VERSION);
     KiWriteLe32(buffer + 8, (ULONG)total);
     KiWriteLe32(buffer + 12, 0);
-    UCHAR *end = CmpEmitKey(CmpRootNode, buffer + CMP_HIVE_HEADER_BYTES);
+    UCHAR *end = CmpEmitKey(CmpRootNode, buffer + CMP_HIVE_HEADER_BYTES, TRUE);
     ASSERT(end == buffer + total);
 
     PKTHREAD thread = KeGetCurrentThread();

@@ -144,4 +144,12 @@ void CmpSetHiveReady(void);
 void CmpLoadHive(void);
 void CmpSaveHive(void);
 
+/* CUI-7 subtree forms of the same engine (one serializer, one parser —
+ * Art. 11): a complete PHV1 image of `top` (name stored empty, caller frees
+ * *bufferOut), and the inverse — parse a whole image into `top`, unwinding
+ * everything on malformation with STATUS_NOT_REGISTRY_FILE (`top` itself
+ * stays, as the oracle's failed load leaves its destination). */
+NTSTATUS CmpSerializeSubtree(const CMP_KEY_NODE *top, UCHAR **bufferOut, ULONG *totalOut);
+NTSTATUS CmpParseSubtreeInto(PCMP_KEY_NODE top, const UCHAR *buffer, ULONGLONG length);
+
 #endif /* PROSKRNL_KERNEL_CM_CM_H */
