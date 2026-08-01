@@ -273,6 +273,48 @@ The harness already has many legs (`files`, `console`, `scm`, `gui`…`gui5con`,
   is *optional* under a giant lock and would only earn its keep if fine-grained locking is
   ever attempted. Under Article 6 it names suspects; the seeded replay is what convicts.
 
+### The win must be a verdict, not an inference
+
+The same failure mode as `docs/17` §8 and `docs/19` §8.4, and it is easier to hit here: a
+kernel where the APs boot but never actually execute user code — every thread scheduled on
+CPU 0, or every AP parked in its idle loop — **passes `-smp 4` on every suite**, because
+every suite would then be running exactly as it does today. "Green under `-smp 4`" is a
+non-regression result, not evidence that anything ran in parallel.
+
+Pin it: per-CPU user-mode time (or scheduled-thread counts) emitted as a `[KTEST]` verdict,
+asserting that more than one CPU executed ring-3 code; plus the wall-clock of a
+deliberately parallel user workload against a committed budget. Without those, the
+milestone's own justification (§9) cannot be checked, because the thing being claimed is
+throughput that a serialized kernel would silently withhold.
+
+### Instruments that lose their premise
+
+Two existing tools state their soundness in terms of Article 3, and a giant lock does not
+automatically preserve it. Auditing them is part of this milestone, not follow-up:
+
+- **`kernel/init/verify.c` — the consistency sweep, the kernel wait-for-graph cycle
+  detector, and the GUI-5 user-space wedge detector.** Its comments are explicit: *"Art. 3
+  is what makes it sound AND cheap … the graph it walks is an atomic snapshot"*. Under a
+  giant lock the *kernel* half of that survives — no other CPU can be inside the kernel
+  mutating wait records — but anything the sweep reads out of **user** memory does not: a
+  thread running in ring 3 on another CPU is live while the sweep looks at it. Re-derive
+  the wedge signature's premise; do not assume it carries. This matters beyond hygiene,
+  because the wedge detector is the instrument that turns §6e's expected user-space
+  deadlocks into a fast verdict instead of a harness timeout.
+- **KASAN** (`kernel/mm/kasan.c`) instruments kernel accesses only, and the giant lock
+  serializes all of them, so its unsynchronized shadow updates stay correct. Recorded here
+  because it is the obvious next worry and the answer is "already covered" — that
+  conclusion should be written down rather than re-derived under pressure later.
+
+### Coverage the legs must actually reach
+
+`-smp 4` over the existing suites is the baseline, but two areas need it aimed
+deliberately: the **GUI legs** (`gui3`/`gui5con`/`guiwtest`), because §6e's untested
+user-space concurrency lives in `wineserver-lite` and its clients and nothing else will
+exercise it; and the **winetest manifest**, whose parked-pair answer must be recorded like
+every other CUI milestone's — expected to be "no unparks", since this milestone adds no
+`Nt*` and changes no observable answer.
+
 ### What is at risk if this is skipped
 
 The project's most valuable asset is that **bugs reproduce deterministically**. It is what
@@ -351,8 +393,9 @@ join step 4's enumeration.
 3. **AP bringup + IPI** (§6c).
 4. **TLB shootdown, broadcast form** (§6b).
 5. **Interrupt-versus-lock policy** (§6d), asserted.
-6. **Test legs**: `-smp 4`, seeded schedule replay, schedule fuzz (§8) — in the same
-   milestone, not after.
+6. **Test legs and instruments** (§8), in the same milestone, not after: `-smp 4` including
+   the GUI legs, seeded schedule replay, schedule fuzz, the parallelism verdict, and the
+   `kernel/init/verify.c` premise audit.
 
 **Size:** roughly **1.5 CUI-consolidation milestones, with no permanent audit tax** —
 because the invariant stays one sentence. This **supersedes** the fine-grained estimate of

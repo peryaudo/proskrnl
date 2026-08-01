@@ -265,6 +265,41 @@ The good news is that most of this is directly testable, at three levels.
 | Boundary, oracle-pinned (Art. 5) | `PAGE_WRITECOPY` write leaves the file unchanged; another mapper does not observe it; the private page survives the other mapper's unmap; a write to a `PAGE_READONLY` image page is still an access violation; `NtQueryVirtualMemory`'s Protect transition and region split (hazard D) |
 | Existing regression net | `tests/ntapi/sem_mm/` — `section_stress.c`, `image_section.c`, `mapped_same.c`, `guard_pages.c`, `stack_growth.c`, and `file_coherence.c` (the M6 mapped-view/`ReadFile` stress) — plus the SEH test already guard every dangerous neighbour. They are oracle-green today, so a COW regression in any of them is immediately attributable. |
 
+### The worst hazard has no test in that table
+
+Hazard A is named as the structural trap and then nothing above convicts it. The existing
+suite cannot: `sem_mm/file_coherence` reads into an ordinary heap buffer, so **no test in
+the tree has the shape "the kernel writes into a page the CPU would have write-protected"**.
+The sweep below catches the resulting state, but only after the fact and only in a debug
+build. Three cases, all oracle-pinnable, all of which fail today for reasons already
+located in the code:
+
+1. **`NtWriteVirtualMemory` into a writecopy image page** must copy and complete.
+   `MiCopyToUserRangeChecked` (`virtual.c:693`) breaks at `!writable` and would report a
+   short write.
+2. **A syscall whose output buffer lies in a writecopy page** — `NtReadFile` reading into a
+   DLL's data page, or any `NtQuery*` writing there — must succeed. `KiProbeRange`
+   (`uaccess.c:44`) returns `STATUS_ACCESS_VIOLATION`.
+3. **The same two against a genuinely `PAGE_READONLY` page must still fail** — hazard B's
+   pin, and the reason 1 and 2 cannot be fixed by loosening the check.
+
+Write these before the resolver, not after: they are the specification of what "one
+authority for resolving a write" has to mean.
+
+### Which tests gate which commit
+
+§4 offers step 1 (shared master, no fault path) as a legitimate stopping point, so the plan
+has to say what "done" means there or the option is not real:
+
+- **Step 1** is gated by the sharing metric and the sweep below, plus the whole existing
+  regression net staying green. No `PAGE_WRITECOPY` behaviour changes, so no new boundary
+  pin is due.
+- **Step 2** adds the three hazard-A cases, the `NtQueryVirtualMemory` protection
+  transition (hazard D), and the `invlpg` counter.
+- **Hazard E (failure atomicity) is only reachable by fault injection** — a knob that fails
+  the frame allocation inside the COW fault. Without it, "never leaves the master writable
+  in the out-of-frames path" is an assertion nobody has executed.
+
 ### The one failure mode no semantic test catches
 
 **An implementation that copies everything eagerly — i.e. shares nothing — passes every
@@ -277,6 +312,23 @@ test above.** It is exactly today's behaviour, and today's behaviour is green. S
 
 Without this, "COW landed" is unfalsifiable. With it, the RAM argument of §2 stays true
 over time instead of being a one-off measurement.
+
+**The acceptance, though, is the ceiling itself.** §2 justifies the amendment on a process
+count at which the machine refuses; the milestone is done when **that number moves** — the
+same measurement re-run, with process counts that previously failed now completing. The
+frame counter is a proxy for it and a good regression guard; the ceiling is the claim.
+
+### Two more things the plan owes
+
+- **The fuzzer.** A writecopy page has a state the op model cannot currently express:
+  not-yet-copied versus copied. Under `docs/02`'s rule (widened at CUI-8 to cover new
+  *states*, not only new `Nt*`) that is an op-model extension — a mapped image view plus
+  writes and protection queries against it.
+- **The winetest spine, and here it cuts the other way.** CUI-8 and CUI-10 add no observable
+  answer, so their question is only "what unparks". COW *changes* one:
+  `NtQueryVirtualMemory`'s `Protect` and `RegionSize` (hazard D). **It is the only one of
+  the three that can make a currently-green winetest pair go red**, so the manifest must be
+  re-run and the delta recorded either way.
 
 ### The highest-value single check
 

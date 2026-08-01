@@ -408,11 +408,17 @@ friends walk the page tables and `memcpy` into the frame, so `NtWriteVirtualMemo
 short-write and `KiProbeForWrite` would refuse where NT succeeds. Exactly one authority may
 resolve a write (Art. 11); fixing only the fault handler is the expected failure. Nine more
 hazards, worst-first, in `docs/17` §6.
-**Done when:** the sharing metric moves — free-frame count after N processes against a
-committed budget, plus a master-hit counter — because a non-sharing implementation passes
-every semantic test; `PAGE_WRITECOPY` semantics and the `NtQueryVirtualMemory` protection
-transition are green on the oracle *and* proskrnl; the `sem_mm` net and the SEH test stay
-green; and the debug sweep finds **no writable PTE pointing at a master frame**.
+**Done when:** the §2 ceiling moves — process counts that previously refused now complete,
+the measurement the amendment was justified on, re-run; the sharing metric backs it up
+(free-frame count and a master-hit counter, since a non-sharing implementation passes every
+semantic test); the three hazard-A cases are green on the oracle *and* proskrnl —
+`NtWriteVirtualMemory` into a writecopy page, a syscall output buffer in one, and both
+still failing on a genuinely read-only page — because **no test in the tree has that shape
+today**; `PAGE_WRITECOPY` semantics and the `NtQueryVirtualMemory` protection transition
+are pinned; the `sem_mm` net and the SEH test stay green and the winetest manifest is
+re-run (this is the only one of the three milestones that changes an observable answer, so
+it is the only one that can turn a green pair red); and the debug sweep finds **no writable
+PTE pointing at a master frame**.
 
 ## CUI-10 — uniprocessor retired: SMP behind a giant lock
 Spec: **`docs/18-smp-strategy.md`**. The amendment is **one word** — Article 3's "one
@@ -437,10 +443,15 @@ concurrency, which gets exercised for the first time in `wineserver-lite` and it
 If CUI-9 landed, its write-protect sites join the shootdown enumeration.
 Roughly 1.5 consolidation milestones, with **no permanent audit tax** — the invariant stays
 one sentence.
-**Done when:** `-smp 4` is green across every existing suite with `-smp 1` still the gate
-(so any later failure bisects into "concurrency or not"); a real race is convicted by a
-seeded replay rather than by a sanitizer going quiet (Art. 6); and the `guiwtest`
-timing-lost assertions are re-measured against the budget the amendment was justified on.
+**Done when:** `-smp 4` is green across every existing suite — the GUI legs included, since
+§6e's untested user-space concurrency lives there and nothing else exercises it — with
+`-smp 1` still the gate (so any later failure bisects into "concurrency or not"); **more
+than one CPU is shown to have executed ring-3 code**, as a `[KTEST]` verdict, because a
+kernel whose APs never run user threads passes every suite unchanged; a real race is
+convicted by a seeded replay rather than by a sanitizer going quiet (Art. 6);
+`kernel/init/verify.c`'s Article 3 soundness premise has been re-derived rather than
+assumed; and the `guiwtest` timing-lost assertions are re-measured against the budget the
+amendment was justified on.
 
 ---
 
