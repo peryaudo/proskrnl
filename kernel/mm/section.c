@@ -729,6 +729,18 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
     return status;
 }
 
+NTSTATUS NtCreateSectionEx(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
+                           const LARGE_INTEGER *size, ULONG protect, ULONG attributes,
+                           HANDLE file, MEM_EXTENDED_PARAMETER *parameters, ULONG count)
+{
+    /* The parameter array is accepted and ignored, exactly as the pinned
+     * oracle does (wine dlls/ntdll/unix/sync.c NtCreateSectionEx: FIXME +
+     * delegate; pinned by sem_mm/alloc_ex; docs/03 "CUI-7"). */
+    (void)parameters;
+    (void)count;
+    return NtCreateSection(handle, access, attr, size, protect, attributes, file);
+}
+
 NTSTATUS NtOpenSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
     if (handle == 0)

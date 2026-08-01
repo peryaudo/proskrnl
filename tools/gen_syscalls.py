@@ -244,6 +244,8 @@ IMPLEMENTED = [
     "NtReplaceKey",
     "NtSetInformationKey",
     "NtQueryMultipleValueKey",
+    "NtAllocateVirtualMemoryEx",
+    "NtCreateSectionEx",
 ]
 
 
