@@ -45,6 +45,13 @@ void MiDeleteAddressSpace(PMI_ADDRESS_SPACE space);
  * are kernel copies; the Nt wrappers own user probing and write-back. */
 NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                  ULONG type, ULONG protect);
+
+/* The CUI-7 constrained form the classic entry delegates to (one engine):
+ * limitLow/limitHigh bound the block inclusive of its last byte, align
+ * raises the 64K placement step; zeros mean unconstrained. */
+NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
+                                   ULONG type, ULONG protect, uint64_t limitLow,
+                                   uint64_t limitHigh, uint64_t align);
 NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                              ULONG type);
 NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
@@ -64,6 +71,11 @@ void MiQueryVmCounters(PMI_ADDRESS_SPACE space, uint64_t *reservedBytesOut,
 /* Lowest free 64K-aligned region of `size` bytes (0 = address space full) /
  * emptiness check for an explicit base. */
 uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size);
+
+/* CUI-7 constrained form (NtMapViewOfSectionEx placement); zeros mean
+ * unconstrained. Same free-range authority as MiFindFreeViewBase. */
+uint64_t MiFindFreeViewBaseEx(PMI_ADDRESS_SPACE space, uint64_t size, uint64_t limitLow,
+                              uint64_t limitHigh, uint64_t align);
 BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size);
 
 /* Create + insert a mapped-view VAD (`vadType` MEM_MAPPED or MEM_IMAGE), all

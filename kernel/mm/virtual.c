@@ -129,24 +129,44 @@ static BOOLEAN MiRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t si
     return TRUE;
 }
 
-/* Lowest 64K-aligned hole of `size` bytes, bottom-up like Wine. 0 = full. */
-static uint64_t MiFindFreeRegion(PMI_ADDRESS_SPACE space, uint64_t size)
+/* Lowest aligned hole of `size` bytes, bottom-up like Wine. 0 = full. The
+ * CUI-7 placement constraints (VirtualAlloc2's MEM_ADDRESS_REQUIREMENTS)
+ * ride the same walk: limitLow/limitHigh bound the block INCLUSIVE of its
+ * last byte, align raises the 64K step (0s = unconstrained; THE one
+ * free-range authority — classic and Ex allocations both resolve here). */
+static uint64_t MiFindFreeRegion(PMI_ADDRESS_SPACE space, uint64_t size, uint64_t limitLow,
+                                 uint64_t limitHigh, uint64_t align)
 {
-    uint64_t candidate = MiRoundUp(MI_LOWEST_USER_ADDRESS, MI_ALLOCATION_GRANULARITY);
+    if (align < MI_ALLOCATION_GRANULARITY)
+    {
+        align = MI_ALLOCATION_GRANULARITY;
+    }
+    if (limitHigh == 0)
+    {
+        limitHigh = KI_USER_SPACE_LIMIT - 1;
+    }
+    uint64_t floor = MI_LOWEST_USER_ADDRESS;
+    if (limitLow > floor)
+    {
+        floor = limitLow;
+    }
+    uint64_t candidate = MiRoundUp(floor, align);
     for (PLIST_ENTRY entry = space->vadListHead.Flink; entry != &space->vadListHead;
          entry = entry->Flink)
     {
         PMI_VAD vad = CONTAINING_RECORD(entry, MI_VAD, listEntry);
         if (candidate + size <= vad->base)
         {
-            return candidate;
+            break;
         }
         if (vad->base + vad->size > candidate)
         {
-            candidate = MiRoundUp(vad->base + vad->size, MI_ALLOCATION_GRANULARITY);
+            /* candidate only ever moves up: a VAD ending below the floor
+             * never passes this test, so the floor holds. */
+            candidate = MiRoundUp(vad->base + vad->size, align);
         }
     }
-    if (candidate + size <= KI_USER_SPACE_LIMIT)
+    if (candidate + size - 1 <= limitHigh && candidate + size <= KI_USER_SPACE_LIMIT)
     {
         return candidate;
     }
@@ -280,6 +300,13 @@ void MiDeleteAddressSpace(PMI_ADDRESS_SPACE space)
 NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                  ULONG type, ULONG protect)
 {
+    return MiAllocateVirtualMemoryEx(space, baseInOut, sizeInOut, type, protect, 0, 0, 0);
+}
+
+NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
+                                   ULONG type, ULONG protect, uint64_t limitLow, uint64_t limitHigh,
+                                   uint64_t align)
+{
     uint64_t requestedBase = (uint64_t)(uintptr_t)*baseInOut;
     uint64_t size = *sizeInOut;
 
@@ -373,7 +400,7 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
     {
         if (requestedBase == 0)
         {
-            base = MiFindFreeRegion(space, size);
+            base = MiFindFreeRegion(space, size, limitLow, limitHigh, align);
             if (base == 0)
             {
                 return STATUS_NO_MEMORY;
@@ -588,7 +615,13 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
 
 uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size)
 {
-    return MiFindFreeRegion(space, MiRoundUp(size, PAGE_SIZE));
+    return MiFindFreeViewBaseEx(space, size, 0, 0, 0);
+}
+
+uint64_t MiFindFreeViewBaseEx(PMI_ADDRESS_SPACE space, uint64_t size, uint64_t limitLow,
+                              uint64_t limitHigh, uint64_t align)
+{
+    return MiFindFreeRegion(space, MiRoundUp(size, PAGE_SIZE), limitLow, limitHigh, align);
 }
 
 BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size)
@@ -839,6 +872,179 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
     PVOID base = *baseInOut;
     SIZE_T size = *sizeInOut;
     status = MiAllocateVirtualMemory(&target->addressSpace, &base, &size, type, protect);
+    if (NT_SUCCESS(status))
+    {
+        *baseInOut = base;
+        *sizeInOut = size;
+    }
+    if (referenced)
+    {
+        ObDereferenceObject(target);
+    }
+    return status;
+}
+
+/* --- the VirtualAlloc2 extended-parameter contract (CUI-7) ------------------ */
+
+typedef struct
+{
+    uint64_t limitLow;
+    uint64_t limitHigh; /* inclusive last usable byte; 0 = unconstrained */
+    uint64_t align;
+    ULONG attributes;
+    USHORT machine;
+} MIP_EXTENDED_PARAMS;
+
+/* Capture + validate a user MEM_EXTENDED_PARAMETER array, mirroring the
+ * oracle's ladder exactly (wine dlls/ntdll/unix/virtual.c
+ * get_extended_params; pinned by sem_mm/alloc_ex): unknown or duplicated
+ * types refuse; AddressRequirements validates alignment (power of two,
+ * >= the 64K granularity), a 64K-aligned Lowest below the user-space
+ * limit, and a page-end Highest above Lowest within the limit;
+ * NumaNode/PartitionHandle/UserPhysicalHandle are accepted and ignored. */
+static NTSTATUS MipCaptureExtendedParams(const MEM_EXTENDED_PARAMETER *parameters, ULONG count,
+                                         MIP_EXTENDED_PARAMS *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (count == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    if (parameters == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NTSTATUS status = KiProbeForRead(parameters, (SIZE_T)count * sizeof(*parameters),
+                                     _Alignof(MEM_EXTENDED_PARAMETER));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ULONG present = 0;
+    for (ULONG i = 0; i < count; i++)
+    {
+        ULONG parameterType = (ULONG)parameters[i].Type;
+        if (parameterType >= 32 || (present & (1u << parameterType)) != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        present |= 1u << parameterType;
+        switch (parameterType)
+        {
+        case MemExtendedParameterAddressRequirements:
+        {
+            const MEM_ADDRESS_REQUIREMENTS *requirements = parameters[i].Pointer;
+            status = KiProbeForRead(requirements, sizeof(*requirements), sizeof(uint64_t));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            uint64_t alignment = requirements->Alignment;
+            uint64_t low = (uint64_t)(uintptr_t)requirements->LowestStartingAddress;
+            uint64_t high = (uint64_t)(uintptr_t)requirements->HighestEndingAddress;
+            if (alignment != 0)
+            {
+                if ((alignment & (alignment - 1)) != 0 ||
+                    alignment - 1 < MI_ALLOCATION_GRANULARITY - 1)
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                out->align = alignment;
+            }
+            if (low != 0)
+            {
+                if (low >= KI_USER_SPACE_LIMIT || (low & (MI_ALLOCATION_GRANULARITY - 1)) != 0)
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                out->limitLow = low;
+            }
+            if (high != 0)
+            {
+                /* The (high + 1) & (page_mask - 1) test is the oracle's own
+                 * arithmetic, reproduced bit for bit (wine
+                 * dlls/ntdll/unix/virtual.c get_extended_params). */
+                if (high > KI_USER_SPACE_LIMIT || high <= out->limitLow ||
+                    ((high + 1) & ((uint64_t)PAGE_SIZE - 1 - 1)) != 0)
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                out->limitHigh = high;
+            }
+            break;
+        }
+        case MemExtendedParameterAttributeFlags:
+            out->attributes = parameters[i].ULong;
+            break;
+        case MemExtendedParameterImageMachine:
+            out->machine = (USHORT)parameters[i].ULong;
+            break;
+        case MemExtendedParameterNumaNode:
+        case MemExtendedParameterPartitionHandle:
+        case MemExtendedParameterUserPhysicalHandle:
+            break; /* accepted and ignored, as the oracle */
+        default:
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtAllocateVirtualMemoryEx(HANDLE process, PVOID *baseInOut, SIZE_T *sizeInOut, ULONG type,
+                                   ULONG protect, MEM_EXTENDED_PARAMETER *parameters, ULONG count)
+{
+    NTSTATUS status = KiProbeForWrite(baseInOut, sizeof(*baseInOut), sizeof(*baseInOut));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* The oracle's own order (pinned by sem_mm/alloc_ex): parameters first,
+     * then the Ex type mask, then base-vs-requirements, then the size. */
+    MIP_EXTENDED_PARAMS extended;
+    status = MipCaptureExtendedParams(parameters, count, &extended);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (type & ~(ULONG)(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET |
+                        MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (type & (MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
+    {
+        /* Placeholders are deliberately unbuilt: no baked consumer, and the
+         * milestone scope is the delegating *Ex forms (docs/03 "CUI-7").
+         * Loud refusal, never a fake success (Art. 12; the SEC_RESERVE
+         * precedent in section.c). */
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    if (*baseInOut != 0 &&
+        (extended.align != 0 || extended.limitLow != 0 || extended.limitHigh != 0))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (*sizeInOut == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PEPROCESS target;
+    BOOLEAN referenced;
+    status = MiReferenceProcessByHandle(process, PROCESS_VM_OPERATION, &target, &referenced);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PVOID base = *baseInOut;
+    SIZE_T size = *sizeInOut;
+    status = MiAllocateVirtualMemoryEx(&target->addressSpace, &base, &size, type, protect,
+                                       extended.limitLow, extended.limitHigh, extended.align);
     if (NT_SUCCESS(status))
     {
         *baseInOut = base;
