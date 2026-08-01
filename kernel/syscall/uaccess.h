@@ -81,7 +81,15 @@ NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t leng
  * not a supported exit — so it is a backstop for the probes, never a
  * substitute for them.
  *
- * Layout is welded into recover.S: rip, rsp, then the SysV callee-saved set. */
+ * Layout is welded into recover.S: rip, rsp, the SysV callee-saved set,
+ * then rflags — captured at arm time and restored by the unwind. The trap
+ * that starts an unwind entered through an interrupt gate (IF clear), and a
+ * jump-based unwind never executes an iretq, so without the explicit
+ * restore the unwound thread would keep running with interrupts masked —
+ * survivable for a ring-3 service (sysret reloads user RFLAGS) but
+ * permanent for a kernel-mode caller, whose masked clock the CUI-8 drain
+ * points then starve (found by tests/kmt/cui8_async.c's poll loop; pinned
+ * by the IF assertion in tests/kmt/m4_usermode.c). */
 typedef struct
 {
     uint64_t rip;
@@ -92,6 +100,7 @@ typedef struct
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+    uint64_t rflags;
 } KI_FAULT_RECOVERY, *PKI_FAULT_RECOVERY;
 
 /* 0 on the direct call; the (nonzero) status on an unwind. */

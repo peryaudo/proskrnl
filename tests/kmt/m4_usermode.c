@@ -314,6 +314,19 @@ static void test_kernel_fault_recovery(void)
     KeGetCurrentThread()->faultRecovery = 0;
     ok(recovered == 1, "unwound to the second recovery frame");
     ok(KeGetCurrentThread()->faultRecovery == 0, "recovery frame disarmed after the unwind");
+
+    /* CUI-8: the unwind restores the arm-time RFLAGS. The fault trap enters
+     * through an interrupt gate (IF clear) and the jump unwind never
+     * iretqs, so without the explicit restore this thread — a KERNEL-mode
+     * caller with no sysret to reload flags — ran everything after this
+     * test with interrupts masked; nothing noticed until the CUI-8 drain
+     * points made the clock load-bearing (cui8_async.c's poll loop starved
+     * it). Ring-3 services self-healed at sysret, which is why the M4..M9
+     * suites stayed green over the masked clock for so long. */
+    uint64_t rflagsAfter;
+    __asm__ volatile("pushfq; popq %0" : "=r"(rflagsAfter));
+    ok((rflagsAfter & 0x200) != 0, "IF restored across the unwind (rflags %#lx)",
+       (unsigned long)rflagsAfter);
 }
 
 int kmt_run_m4(void)

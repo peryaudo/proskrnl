@@ -31,6 +31,12 @@ KiSetFaultRecovery:
     movq    %r13, 40(%rdi)
     movq    %r14, 48(%rdi)
     movq    %r15, 56(%rdi)
+    /* RFLAGS too: the unwind arrives from a trap (interrupt gate, IF clear)
+     * and never iretqs, so the arm-time flags must be restored explicitly
+     * or the unwound thread keeps running with interrupts masked. */
+    pushfq
+    popq    %rax
+    movq    %rax, 64(%rdi)
     xorl    %eax, %eax
     ret
 .size KiSetFaultRecovery, . - KiSetFaultRecovery
@@ -49,7 +55,10 @@ KiJumpFaultRecovery:
     movq    48(%rdi), %r14
     movq    56(%rdi), %r15
     movq    0(%rdi), %rcx       /* resume rip, read before rsp moves */
+    movq    64(%rdi), %rdx      /* arm-time rflags, read before rsp moves */
     movq    8(%rdi), %rsp
+    pushq   %rdx                /* restore IF last: an interrupt taken after */
+    popfq                       /* the popfq already sees the resume stack */
     jmp     *%rcx
 .size KiJumpFaultRecovery, . - KiJumpFaultRecovery
 
