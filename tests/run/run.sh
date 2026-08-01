@@ -1149,6 +1149,59 @@ cui6() {
     return 1
 }
 
+# The CUI-7 acceptance (docs/02 "reg save/load round-trips and survives
+# reboot; an app on the VirtualAlloc2/write-watch path runs"): two boots of
+# one console image. Boot 1 drives regtool (seed -> RegSaveKey ->
+# RegLoadKey/verify/RegUnLoadKey -> RegNotifyChangeKeyValue) and watchapp
+# (VirtualAlloc2 placement + write-watch + kernel-write marking) under a
+# live cmd.exe, then exits cleanly. Boot 2 verifies both the seeded key and
+# the saved hive FILE survived the power cycle, then ends the machine
+# through ring-3 NtShutdownSystem(ShutdownPowerOff) - the clean QEMU exit
+# is the live shutdown arm's verdict.
+cui7() {
+    rm -f "$ROOT/build/proskrnl-console.hdd"
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/tests/cui7.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local sock="$ROOT/build/tests/cui7.sock" log="$ROOT/build/tests/cui7.log"
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI7=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== cui7: FAIL (boot 1; see $log) =="
+        return 1
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+        echo "== cui7: FAIL (boot 1 verdict; see $log) =="
+        return 1
+    fi
+
+    local sock2="$ROOT/build/tests/cui7-2.sock" log2="$ROOT/build/tests/cui7-2.log"
+    SERIAL_SOCK="$sock2" LOG="$log2" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    qemu_wrapper=$!
+    if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI7_VERIFY=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock2" "$log2"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== cui7: FAIL (boot 2 verify; see $log2) =="
+        return 1
+    fi
+    # The live NtShutdownSystem arm: QEMU must exit on its own, with the
+    # kernel's shutdown line in the log.
+    wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -q '\[KTEST\] shutdown action=2' "$log2"; then
+        echo "== cui7: FAIL (no ring-3 shutdown line; see $log2) =="
+        return 1
+    fi
+    echo "== cui7: PASS (reg save/load round-trip survived reboot; watchapp ran; ring-3 poweroff) =="
+    return 0
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -1793,6 +1846,7 @@ case "$MODE" in
     procs)    procs ;;
     files)    files ;;
     cui6)     cui6 ;;
+    cui7)     cui7 ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
