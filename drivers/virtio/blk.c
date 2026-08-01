@@ -286,19 +286,26 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
     return STATUS_SUCCESS;
 }
 
-/* Pre-park drain-spin bound. An internal latency choice, not a spec value:
- * QEMU typically serves a host-page-cache transfer within microseconds of
- * the notify MMIO exit, so a bounded spin completes the common request
- * without paying the park's context-switch round trip — the difference
- * between wineboot's thousands of single-sector hive writes costing
- * microseconds each and costing a scheduler round trip each. A transfer
- * that outlives the spin parks below, which is the CUI-8 property: the
- * machine's stall is bounded by this spin, never by the device. */
-#define VIO_BLK_AWAIT_SPINS 4096
+/* Pre-park drain-spin bound (default VIO_BLK_AWAIT_SPINS, blk.h). An
+ * internal latency choice, not a spec value: QEMU typically serves a
+ * host-page-cache transfer within microseconds of the notify MMIO exit, so
+ * a bounded spin completes the common request without paying the park's
+ * context-switch round trip — the difference between wineboot's thousands
+ * of single-sector hive writes costing microseconds each and costing a
+ * scheduler round trip each. A transfer that outlives the spin parks
+ * below, which is the CUI-8 property: the machine's stall is bounded by
+ * this spin, never by the device. The kmt suite zeroes the bound to make
+ * the park itself a deterministic state (blk.h). */
+static ULONG VioBlkAwaitSpinBound = VIO_BLK_AWAIT_SPINS;
+
+void VioBlkSetAwaitSpinBound(ULONG spins)
+{
+    VioBlkAwaitSpinBound = spins;
+}
 
 NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request)
 {
-    for (unsigned spins = 0; spins < VIO_BLK_AWAIT_SPINS && !request->completed; spins++)
+    for (ULONG spins = 0; spins < VioBlkAwaitSpinBound && !request->completed; spins++)
     {
         uint64_t flags = KiAcquireDispatcherLock();
         VioBlkDrain();
