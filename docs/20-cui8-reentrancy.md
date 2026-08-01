@@ -34,12 +34,17 @@ asserted in code where statable.
   lock — the same wake the timer-expiry loop already performs). It never allocates or
   frees pool/pages (asserted: `KiInCompletionDrain` in `mm/pool.c`/`mm/phys.c`), never
   touches user memory, never calls into a filesystem.
-- **R3 — no user memory under the gate.** A ring-0 fault on a user address unwinds to
-  the service dispatcher's recovery frame *without running cleanup*
-  (`kernel/syscall/uaccess.h`), which would leak the gate. All user copies in the data
-  path happen before the gate is taken or after it is released — `rw.c`'s probes and
-  `MiCacheRead`/`MiCacheWrite` sit outside `GetCache`/`WritebackRange` already; this
-  rule keeps it that way.
+- **R3 — no faultable user access under the gate.** A ring-0 fault on a user address
+  unwinds to the service dispatcher's recovery frame *without running cleanup*
+  (`kernel/syscall/uaccess.h`), which would leak the gate. All direct user copies in
+  the data path happen before the gate is taken or after it is released — `rw.c`'s
+  probes and `MiCacheRead`/`MiCacheWrite` sit outside `GetCache`/`WritebackRange`
+  already; inputs a gated op consumes are captured to kernel memory first (the
+  volume-label capture in `kernel/io/query.c`), and an op that fills a caller buffer
+  in place (`QueryName`) stays ungated, which its non-blocking pure-memory body
+  permits. The one legal user touch under the gate is `MiCopyToUserRangeChecked`
+  (dir-watch completion reached from `FatReportChange`): the checked walk fails
+  gracefully on a missing frame instead of faulting, so no unwind can occur.
 - **R4 — the issuer's frame owns the request.** In-flight `VIO_BLK_REQUEST`s are
   caller-embedded (stack or batch array). No path — success, device error, cancel,
   thread termination — unwinds past an outstanding submission: the exits poll-drain

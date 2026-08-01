@@ -447,10 +447,10 @@ static NTSTATUS FatResolveParent(PFAT_FCB base, const UNICODE_STRING *path, PFAT
     }
 }
 
-static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
-                             PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
-                             ULONG fileAttributes, ULONG disposition, ULONG options,
-                             ULONG_PTR *information)
+static NTSTATUS FatVfsCreateLocked(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
+                                   PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess,
+                                   ULONG shareAccess, ULONG fileAttributes, ULONG disposition,
+                                   ULONG options, ULONG_PTR *information)
 {
     PFAT_VOLUME volume = device->context;
     PFAT_FCB base = relativeTo != 0 ? FatFcbOf(relativeTo) : volume->root;
@@ -613,7 +613,7 @@ static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
     return STATUS_SUCCESS;
 }
 
-static void FatVfsCleanup(PFILE_OBJECT file)
+static void FatVfsCleanupLocked(PFILE_OBJECT file)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     ASSERT(fcb->openObjectCount > 0);
@@ -667,7 +667,7 @@ static void FatVfsCleanup(PFILE_OBJECT file)
 /* The file's last section backing is gone: apply a delete the mapped state
  * forced FatVfsCleanup to defer (see there). No handle is closing, so none
  * of Cleanup's per-open bookkeeping runs -- only the latched intent. */
-static void FatVfsSectionsReleased(PFILE_OBJECT file)
+static void FatVfsSectionsReleasedLocked(PFILE_OBJECT file)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (fcb->isRoot || fcb->openObjectCount != 0)
@@ -695,12 +695,12 @@ static void FatVfsSectionsReleased(PFILE_OBJECT file)
     fcb->cacheLoaded = FALSE;
 }
 
-static void FatVfsClose(PFILE_OBJECT file)
+static void FatVfsCloseLocked(PFILE_OBJECT file)
 {
     FatDereferenceFcb(FatFcbOf(file));
 }
 
-static NTSTATUS FatVfsGetCache(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
+static NTSTATUS FatVfsGetCacheLocked(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (fcb->isDirectory)
@@ -716,7 +716,7 @@ static NTSTATUS FatVfsGetCache(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS FatVfsWritebackRange(PFILE_OBJECT file, uint64_t offset, uint64_t length)
+static NTSTATUS FatVfsWritebackRangeLocked(PFILE_OBJECT file, uint64_t offset, uint64_t length)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     LARGE_INTEGER now = FatCurrentNtTime();
@@ -735,7 +735,7 @@ static NTSTATUS FatVfsWritebackRange(PFILE_OBJECT file, uint64_t offset, uint64_
     return status;
 }
 
-static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
+static NTSTATUS FatVfsSetEndOfFileLocked(PFILE_OBJECT file, uint64_t endOfFile)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (fcb->isDirectory)
@@ -752,7 +752,7 @@ static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
     return status;
 }
 
-static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
+static NTSTATUS FatVfsGetInfoLocked(PFILE_OBJECT file, IO_FILE_INFO *info)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     uint64_t clusterBytes = FatClusterBytes(fcb->volume);
@@ -767,7 +767,7 @@ static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *basic)
+static NTSTATUS FatVfsSetBasicLocked(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *basic)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (basic->FileAttributes != 0)
@@ -801,7 +801,7 @@ static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *
     return status;
 }
 
-static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
+static NTSTATUS FatVfsSetDispositionLocked(PFILE_OBJECT file, BOOLEAN deleteFile)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (fcb->isRoot)
@@ -838,8 +838,8 @@ static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const UNICODE_STRING *path,
-                             ULONG renameFlags)
+static NTSTATUS FatVfsRenameLocked(PFILE_OBJECT file, PFILE_OBJECT relativeTo,
+                                   const UNICODE_STRING *path, ULONG renameFlags)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     PFAT_VOLUME volume = fcb->volume;
@@ -978,7 +978,7 @@ static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const U
     return status;
 }
 
-static NTSTATUS FatVfsReadDirectory(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENTRY *entry)
+static NTSTATUS FatVfsReadDirectoryLocked(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENTRY *entry)
 {
     PFAT_FCB fcb = FatFcbOf(file);
     if (!fcb->isDirectory)
@@ -1041,6 +1041,12 @@ static NTSTATUS FatBuildFcbPath(PFAT_FCB target, WCHAR *buffer, ULONG capacity, 
     return written <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
 
+/* Deliberately UNGATED (the one exception besides the GetCache hot path):
+ * a pure in-memory FCB-chain walk with no blocking point is already atomic
+ * under the one-CPU no-preemption model (docs/20 §5's standing argument),
+ * and `buffer` may be the caller's USER buffer (FileNameInformation fills
+ * in place) — which must never be touched under the gate, because a ring-0
+ * fault on it unwinds past the release (docs/20 R3). */
 static NTSTATUS FatVfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut)
 {
     return FatBuildFcbPath(FatFcbOf(file), buffer, capacity, lengthOut);
@@ -1069,14 +1075,162 @@ static void FatReportChange(PIO_DEVICE device, PFAT_FCB parent, const UNICODE_ST
     IoReportDirectoryChange(device, &parentPath, name, filterBit, action);
 }
 
-static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
+static NTSTATUS FatVfsQueryVolumeInfoLocked(PIO_DEVICE device, IO_VOLUME_INFO *info)
 {
     return FatQueryVolumeInfo((PFAT_VOLUME)device->context, info);
 }
 
-static NTSTATUS FatVfsSetVolumeLabel(PIO_DEVICE device, const WCHAR *label, ULONG labelBytes)
+static NTSTATUS FatVfsSetVolumeLabelLocked(PIO_DEVICE device, const WCHAR *label, ULONG labelBytes)
 {
     return FatSetVolumeLabel((PFAT_VOLUME)device->context, label, labelBytes);
+}
+
+/* --- the volume-gate wrappers (CUI-8, docs/20 R1) --------------------------
+ * Every published op serializes on the volume gate; the *Locked functions
+ * above never take it themselves, so internal calls cannot recurse. Once a
+ * gate holder can park mid-operation (docs/19 §5c), a second thread entering
+ * any op parks here instead of interleaving with half-done volume state —
+ * the repair for every "BROKEN by F1" row in docs/20 §3.
+ *
+ * GetCache is the one exception shape (docs/20 R5): the cache-hot read path
+ * — every NtReadFile after the first — stays gate-free on a double-checked
+ * `cacheLoaded`, sound because the flag transitions only under the gate,
+ * flag reads/writes are atomic under the one-lock model, and a loaded cache
+ * is never unloaded while the FCB lives. */
+
+static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
+                             PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
+                             ULONG fileAttributes, ULONG disposition, ULONG options,
+                             ULONG_PTR *information)
+{
+    PFAT_VOLUME volume = device->context;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsCreateLocked(device, file, path, relativeTo, grantedAccess, shareAccess,
+                                         fileAttributes, disposition, options, information);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static void FatVfsCleanup(PFILE_OBJECT file)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    FatVfsCleanupLocked(file);
+    FatReleaseVolumeGate(volume);
+}
+
+static void FatVfsSectionsReleased(PFILE_OBJECT file)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    FatVfsSectionsReleasedLocked(file);
+    FatReleaseVolumeGate(volume);
+}
+
+static void FatVfsClose(PFILE_OBJECT file)
+{
+    /* Snapshot the volume first: the call may free the FCB. */
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    FatVfsCloseLocked(file);
+    FatReleaseVolumeGate(volume);
+}
+
+static NTSTATUS FatVfsGetCache(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (!fcb->isDirectory && fcb->cacheLoaded)
+    {
+        *cache = &fcb->cache; /* the hot path: no gate (docs/20 R5) */
+        return STATUS_SUCCESS;
+    }
+    PFAT_VOLUME volume = fcb->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsGetCacheLocked(file, cache); /* re-checks under the gate */
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsWritebackRange(PFILE_OBJECT file, uint64_t offset, uint64_t length)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsWritebackRangeLocked(file, offset, length);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsSetEndOfFileLocked(file, endOfFile);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsGetInfoLocked(file, info);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *basic)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsSetBasicLocked(file, basic);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsSetDisposition(PFILE_OBJECT file, BOOLEAN deleteFile)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsSetDispositionLocked(file, deleteFile);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const UNICODE_STRING *path,
+                             ULONG flags)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsRenameLocked(file, relativeTo, path, flags);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsReadDirectory(PFILE_OBJECT file, ULONG *cursor, IO_DIR_ENTRY *entry)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsReadDirectoryLocked(file, cursor, entry);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
+{
+    PFAT_VOLUME volume = device->context;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsQueryVolumeInfoLocked(device, info);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
+static NTSTATUS FatVfsSetVolumeLabel(PIO_DEVICE device, const WCHAR *label, ULONG labelBytes)
+{
+    PFAT_VOLUME volume = device->context;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsSetVolumeLabelLocked(device, label, labelBytes);
+    FatReleaseVolumeGate(volume);
+    return status;
 }
 
 const IO_VFS_OPS FatVfsOps = {

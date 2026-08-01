@@ -1412,9 +1412,29 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
             status = STATUS_INVALID_PARAMETER; /* no volume behind the handle */
             break;
         }
-        const WCHAR *label =
-            (const WCHAR *)((const char *)buffer + offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel));
-        status = file->device->ops->SetVolumeLabel(file->device, label, header.VolumeLabelLength);
+        /* Capture the label to kernel memory BEFORE the FS op: the op runs
+         * under the volume gate (CUI-8), where a fault on a user address
+         * would unwind past the gate's release (docs/20 R3 — no user memory
+         * under the gate). */
+        WCHAR *labelCopy = 0;
+        if (header.VolumeLabelLength != 0)
+        {
+            labelCopy = MiAllocatePool(header.VolumeLabelLength);
+            if (labelCopy == 0)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            memcpy(labelCopy,
+                   (const char *)buffer + offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel),
+                   header.VolumeLabelLength); /* probed above */
+        }
+        status =
+            file->device->ops->SetVolumeLabel(file->device, labelCopy, header.VolumeLabelLength);
+        if (labelCopy != 0)
+        {
+            MiFreePool(labelCopy);
+        }
         break;
     }
     default:
