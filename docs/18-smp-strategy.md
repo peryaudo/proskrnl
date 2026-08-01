@@ -25,7 +25,7 @@ axes:
 | other threads run during I/O | sleeps on the disk interrupt | **spins**; the machine stops (§7) |
 | devices | interrupt-driven | polled throughout (`drivers/virtio/pci.c`: "a polling driver needs none of them") |
 | FS crash consistency | write-ahead log + recovery | none; write-through, non-atomic rename (`docs/03` CUI-5) |
-| kernel preemption | yes | no; one preemption point at return to ring 3 (`kernel/ke/sched.c:216`, CUI-4) |
+| kernel preemption | yes | no; one preemption point at return to ring 3 (`kernel/ke/sched.c:222`, CUI-4) |
 
 Against the `Nt*` boundary — namespace, dispatcher objects, sections, registry, tokens,
 completion protocol, SEH dispatch — proskrnl is an order of magnitude beyond xv6. The
@@ -49,7 +49,7 @@ Two of the five rows above show that criterion leaking, and both are worth recor
 The single most important fact about adding SMP here:
 
 ```c
-/* kernel/ke/sched.c:32 */
+/* kernel/ke/sched.c:38 */
 uint64_t KiAcquireDispatcherLock(void)
 { __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory"); return flags; }
 ```
@@ -62,10 +62,10 @@ at all:
   atomic.
 - `kernel/mm/pool.c` contains **no lock of any kind**.
 - `fs/fat32/` contains none either, and says why: *"a pure memory sweep: no blocking, so
-  it is atomic **under the no-preemption model**"* (`fs/fat32/fat.c:676`).
-- `KeGetCurrentThread()` is `return KiCurrentThread;` (`kernel/ke/sched.c:72`) — a global,
+  it is atomic **under the no-preemption model**"* (`fs/fat32/fat.c:893`).
+- `KeGetCurrentThread()` is `return KiCurrentThread;` (`kernel/ke/sched.c:78`) — a global,
   not per-CPU.
-- 55 `KiAcquireDispatcherLock` call sites; 21 `KiIsDispatcherLockHeld` assertions.
+- 66 `KiAcquireDispatcherLock` call sites; 24 `KiIsDispatcherLockHeld` assertions.
 
 **Concurrency in this kernel is not a design that needs extending; it is an absence that
 is currently sound.** Its soundness rests on exactly one sentence: *only one thread is
@@ -111,11 +111,11 @@ add fine-grained locks. The giant lock forbids them.
 Everything in §2 stays correct **as written**:
 
 - `kernel/mm/pool.c` with no lock — correct.
-- `fs/fat32/fat.c:676`'s "no blocking, so it is atomic under the no-preemption model" —
+- `fs/fat32/fat.c:893`'s "no blocking, so it is atomic under the no-preemption model" —
   **the premise is preserved**. Under the giant lock, "I did not block" still implies "no
   one else ran".
 - non-atomic refcounts, the Ob handle table, the Cm hive, the page cache — correct.
-- the 55 `cli` sites become "acquire giant, then `cli`" mechanically.
+- the 66 `cli` sites become "acquire giant, then `cli`" mechanically.
 
 The 27-kloc audit of §3 largely evaporates. This is the entire value proposition.
 
@@ -144,7 +144,7 @@ that five items remain genuinely unprotected by it. Those are §6.
 ### a. Per-CPU state — and the groundwork already exists
 
 ```c
-/* arch/x86_64/gdt.h:39 — GS points here in kernel mode; trap.S:68 does the swapgs */
+/* arch/x86_64/gdt.h:39 — GS points here in kernel mode; trap.S:75 does the swapgs */
 typedef struct { uint64_t kernelRsp; uint64_t userRsp; } KIPCR;
 extern KIPCR KiPcr;
 ```
@@ -155,7 +155,7 @@ mechanical:
 
 - make `KiPcr` an array, one per CPU;
 - move `currentThread` into the PCR and delete the `KiCurrentThread` global
-  (`kernel/ke/sched.c:72` and its users in `ke/thread.c`, `ke/wait.c`, `init/panic.c`);
+  (`kernel/ke/sched.c:78` and its users in `ke/thread.c`, `ke/wait.c`, `init/panic.c`);
 - per-CPU TSS (`KiTss` is a single static, `arch/x86_64/gdt.c:57`) and GDT;
 - a per-CPU idle thread (`KiIdleThread` is likewise singleton, and `KiReadyThread`
   panics if it is ever queued);
@@ -351,7 +351,7 @@ Making kernel code preemptible is small in code — identify the non-reentrant r
 discipline. But its only benefit is **latency inside long kernel operations**, which is
 the one justification Article 3 refuses outright, and the two user-visible symptoms people
 reach for it to fix are already addressed elsewhere: user-mode time-slicing exists via the
-ring-3-return preemption point (`kernel/ke/sched.c:216`), and stalling-during-I/O is §7.
+ring-3-return preemption point (`kernel/ke/sched.c:222`), and stalling-during-I/O is §7.
 
 **Do not raise it as its own milestone.** If it is ever wanted, it is a sub-item of SMP.
 
@@ -365,7 +365,7 @@ giant lock is what moves SMP from one end toward the other.
 - **§10 (kernel preemption) has fine-grained SMP's risk with almost none of its payoff.**
   Do not let it be taken as a standalone task.
 - **§6 (SMP) is only tractable because the invariant is one enforceable sentence.** An
-  LLM's strength is mechanical breadth — converting 55 `cli` sites, array-ifying `KiPcr`,
+  LLM's strength is mechanical breadth — converting 66 `cli` sites, array-ifying `KiPcr`,
   replacing `KiCurrentThread` — and all of that is exactly what the giant lock asks for.
   Its weakness is inventing and holding a *distributed* invariant: which field is under
   which lock, what may block while holding what, lock ordering. Fine-grained locking is

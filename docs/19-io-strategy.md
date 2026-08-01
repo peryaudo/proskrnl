@@ -56,7 +56,7 @@ case (§4).
 
 **The protocol is built and pinned.** Completion ordering (§1.2), the event leg, the APC
 leg, `NtRead/WriteFile{Scatter,Gather}` answering `STATUS_PENDING` in the oracle's shape
-(`kernel/io/rw.c:593`), I/O completion ports as real Ob objects (`kernel/io/completion.c`)
+(`kernel/io/rw.c:674`), I/O completion ports as real Ob objects (`kernel/io/completion.c`)
 with `IopPostCompletionPacket` as the **single posting authority** (Art. 11 — job
 lifecycle packets already ride it), `NtCancelIoFile(Ex)` with the wineserver-pinned shape
 (thread-scoped succeeds even when nothing pends; the Ex form answers `STATUS_NOT_FOUND`;
@@ -155,12 +155,12 @@ flight while another thread enters the same object**, and a large amount of exis
 is lock-free *because that could not happen*. The archetype:
 
 ```c
-/* fs/fat32/fat.c:676 */
+/* fs/fat32/fat.c:893 */
 /* Count free clusters off the in-pool FAT (a pure memory sweep: no
  * blocking, so it is atomic under the no-preemption model). */
 ```
 
-There are 21 such "no preemption / uniprocessor" justifications across `kernel/`, `fs/`
+There are 35 such "no preemption / uniprocessor" justifications across `kernel/`, `fs/`
 and `drivers/`, and they are greppable. **Each one becomes a claim to re-check**: is it
 still true when the thread that used to hold the CPU is now parked on a pended request?
 
@@ -230,7 +230,7 @@ itself. §8.3 is what has to be built.
    direct guard on §6, and it is the test the re-entrancy enumeration is written *for* —
    each entry on that list should name the interleaving here that would catch it.
 3. **The fuzzer must learn that operations can be in flight.** Today
-   `tests/fuzz/interp.c:424` is explicit: *"Single-threaded and drained only at the explicit
+   `tests/fuzz/interp.c:440` is explicit: *"Single-threaded and drained only at the explicit
    `test_alert` op"* — so the differential instrument is blind to this entire milestone.
    The op model needs issue-now/collect-later ops (and cancel interleaved with them) so a
    divergence in pended-completion behaviour can be *minimized and pinned*. Under Article 6
@@ -258,7 +258,7 @@ would be invisible in today's list.
 ## 9. Build order
 
 1. **Pin the §7 decisions on the oracle** (Art. 5), before kernel code.
-2. **The re-entrancy enumeration** (§6) — its own artifact, from the 21 justifications,
+2. **The re-entrancy enumeration** (§6) — its own artifact, from the 35 justifications,
    each entry naming the interleaving in §8.3's concurrent stress that would catch it.
 3. **The concurrent `file_coherence`** (§8.3) — written and green *before* anything can
    re-enter, so it is a regression guard rather than a post-hoc check.
