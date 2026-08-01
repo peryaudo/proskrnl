@@ -7,11 +7,11 @@
  *
  * Scope: exactly what a polling, uniprocessor, no-MSI-X driver needs — the
  * split virtqueue, the common/notify/device config capabilities, and the
- * status/feature handshake. No interrupts: requests are submitted and the
- * used ring is polled — the simplest correct thing (Art. 3's principle),
- * which also makes every transfer complete inline. That second property is
- * a consequence of this driver, not a kernel-wide rule; docs/19 is the plan
- * for harvesting completions off the submitting path instead.
+ * status/feature handshake. No interrupts, ever (docs/19 §5b): chains are
+ * submitted without waiting (VioSubmitChain) and completions harvested off
+ * the used ring (VioHarvestUsed) from the block driver's drain points —
+ * tick, idle, or a thread-context poll — so more than one request can be
+ * in flight (CUI-8, docs/19 §5a) while the transport stays polled.
  */
 #ifndef PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
 #define PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
@@ -67,10 +67,14 @@ typedef struct
 } VIRTQ_USED_ELEM;
 _Static_assert(sizeof(VIRTQ_USED_ELEM) == 8, "used elem is 8 bytes (virtio 1.2 cs01 §2.7.8)");
 
+/* `idx` is volatile for the same reason VIRTQ_AVAIL's is, mirrored: here the
+ * DEVICE advances it and the driver polls. The old spin loop survived a
+ * plain load only by the accident of its inline-asm clobber; the CUI-8
+ * drain loops (tick/idle) have no such accident to lean on. */
 typedef struct
 {
     uint16_t flags;
-    uint16_t idx;
+    volatile uint16_t idx;
     VIRTQ_USED_ELEM ring[]; /* qsize entries */
 } VIRTQ_USED;
 
@@ -135,10 +139,16 @@ _Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, queueDevice) == 0x30,
 
 /* --- one polled split virtqueue (virtqueue.c) ------------------------------ */
 
+/* Free-list terminator. Internal to the driver, not a spec value: the spec's
+ * `next` field is meaningful only under VIRTQ_DESC_F_NEXT (§2.7.5), so the
+ * free list may reuse it with its own sentinel. */
+#define VIO_DESC_END 0xFFFF
+
 typedef struct
 {
     uint16_t queueSize;
-    uint16_t freeHead;    /* head of the free-descriptor chain */
+    uint16_t freeHead;    /* head of the free-descriptor chain (VIO_DESC_END = empty) */
+    uint16_t freeCount;   /* descriptors on the free chain */
     uint16_t lastUsedIdx; /* our private used-ring cursor (§2.7.14) */
     VIRTQ_DESC *desc;     /* descriptor area (one frame) */
     VIRTQ_AVAIL *avail;   /* driver area (one frame) */
@@ -155,9 +165,6 @@ typedef struct
  * Caps queueSize at 256 so the areas fit their frames. */
 int VioInitializeVirtqueue(VIO_VIRTQUEUE *queue, uint16_t queueIndex, uint16_t queueSize);
 
-/* Submit one 3-part chain (header / data / status per the caller's flags)
- * and poll the used ring until it completes (§2.7.13 submission barriers,
- * §2.7.14 polling). Returns 0 on poll timeout, 1 on completion. */
 typedef struct
 {
     uint64_t physical;
@@ -165,7 +172,21 @@ typedef struct
     int deviceWrites; /* VIRTQ_DESC_F_WRITE */
 } VIO_SEGMENT;
 
-int VioSubmitAndPoll(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segmentCount);
+/* Submit one descriptor chain (§2.7.13 submission barriers) WITHOUT waiting:
+ * more than one chain may be in flight (CUI-8, docs/19 §5a). Returns 1 with
+ * *headOut = the chain's head descriptor index (the id the used ring will
+ * answer with, §2.7.8), or 0 when the free list cannot seat the chain — the
+ * caller throttles and retries after a harvest; this function never blocks. */
+int VioSubmitChain(VIO_VIRTQUEUE *queue, const VIO_SEGMENT *segments, int segmentCount,
+                   uint16_t *headOut);
+
+/* Pop one used element if the device has published one (§2.7.14) and return
+ * its descriptor chain to the free list. Completions may arrive in any order
+ * relative to submission, so *idOut identifies WHICH chain finished. Returns
+ * 0 when the used ring is empty. Never blocks; safe from the CUI-8 drain
+ * (dispatcher lock held) and from thread-context polls alike — the caller
+ * serializes, this layer does not. */
+int VioHarvestUsed(VIO_VIRTQUEUE *queue, uint16_t *idOut, uint32_t *lengthOut);
 
 /* --- receive queues (device -> driver; virtqueue.c) ------------------------ */
 /* A receive queue (virtio-input's eventq, §5.8.2) inverts the request/reply
