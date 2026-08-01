@@ -457,6 +457,14 @@ static void KiTestMainThread(void *context)
     DbgPrint(m6Failures == 0 ? "[KTEST] M6 PASS\n" : "[KTEST] M6 FAIL failures=%d\n", m6Failures);
     KiVerifyKernelState();
 
+    /* The CUI-8 machine verdicts (docs/19 §8.3/§8.4): progress while a
+     * transfer is parked, the depth floor, in-flight cancellation. After
+     * M6 (the volume and the Nt* file surface it drives are up). */
+    int cui8Failures = kmt_run_cui8();
+    DbgPrint(cui8Failures == 0 ? "[KTEST] CUI8 PASS\n" : "[KTEST] CUI8 FAIL failures=%d\n",
+             cui8Failures);
+    KiVerifyKernelState();
+
     /* The standing ABI-conformance probe: ring-3 conventions asserted every
      * boot (tests/boot/abi_probe.c). Before the M7 clients, so a broken
      * convention names itself here rather than surfacing as an M7 crash. */

@@ -71,6 +71,14 @@ ULONG VioBlkInFlightCount(void);
 void VioBlkQueryDepthStats(ULONG *maxDepthOut, ULONG *meanDepthTimes100Out);
 void VioBlkResetDepthStats(void);
 
+/* Test/stress instrumentation (docs/19 §8.1's aggressiveness knob): bound
+ * the await's pre-park drain-spin. 0 forces every await to park — the kmt
+ * CUI-8 suite holds the in-flight window open with it so progress and
+ * cancellation are verdicts, not races. Restore VIO_BLK_AWAIT_SPINS after
+ * use; nothing outside tests may touch this. */
+#define VIO_BLK_AWAIT_SPINS 4096
+void VioBlkSetAwaitSpinBound(ULONG spins);
+
 /* Probe PCI bus 0, bring the device up per the virtio 1.2 cs01 §3.1.1
  * initialization sequence, and set up the request queue. Returns TRUE when
  * a disk is ready; FALSE when no virtio-blk function exists. */

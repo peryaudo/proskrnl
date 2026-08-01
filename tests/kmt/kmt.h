@@ -68,6 +68,11 @@ int kmt_run_m6(void);
  * checks in the unpartitioned GPT slack. Called from kmt_run_m6. */
 int kmt_run_m6_blk(void);
 
+/* The CUI-8 machine verdicts (tests/kmt/cui8_async.c): progress while a
+ * fill is parked, the docs/19 §8.4 depth floor, and in-flight
+ * cancellation — deterministic via the await-spin knob. */
+int kmt_run_cui8(void);
+
 /* The FAT interop battery (tests/kmt/fat_interop.c): reads/checksums the
  * mtools-baked adversarial corpus and writes the battery the host extracts
  * and verifies. Runs only when C:\fatcorpus\manifest.txt exists (the
