@@ -370,6 +370,14 @@ LONG KeReadStateEvent(PRKEVENT event);
  * I/O; see event.c). Returns TRUE when the signal was taken. */
 BOOLEAN KiTryAcquireEventGate(PRKEVENT event);
 
+/* TRUE while the device-completion drain runs (CUI-8, docs/20 R2). The
+ * drain can fire from the timer tick, which may have interrupted a thread
+ * MID-ALLOCATION — the unlocked pool/frame free lists tolerate that only
+ * because the drain never touches them: it completes requests with result
+ * stores and KeSetEvent, nothing else. The allocators assert the
+ * prohibition (kernel/mm/pool.c, kernel/mm/phys.c). Defined in sched.c. */
+extern BOOLEAN KiInCompletionDrain;
+
 void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit);
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait);
 

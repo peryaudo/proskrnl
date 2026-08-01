@@ -22,6 +22,10 @@
 
 PKTHREAD KiCurrentThread;
 
+/* CUI-8 (docs/20 R2): see ke.h — set only around IoDrainDeviceCompletions,
+ * asserted against in the allocators. */
+BOOLEAN KiInCompletionDrain;
+
 static KTHREAD KiIdleThread; /* the boot context; stack is Limine's */
 
 /* CUI-6: the clock tick asks (timer.c) so idle ticks land in idle time. */

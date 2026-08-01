@@ -11,6 +11,7 @@
 #include "kernel/mm/kasan.h"
 #include "arch/x86_64/mmu.h"
 #include "kernel/lib/string.h"
+#include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
 
 #include <stddef.h>
@@ -129,6 +130,7 @@ static int MiExpandPool(uint64_t bytesNeeded)
 
 void *MiAllocatePool(uint64_t numberOfBytes)
 {
+    ASSERT(!KiInCompletionDrain); /* docs/20 R2: no allocator traffic in the drain */
     if (numberOfBytes == 0)
     {
         KiPanic("MiAllocatePool: zero-byte allocation");
@@ -188,6 +190,7 @@ void *MiAllocatePool(uint64_t numberOfBytes)
 
 void MiFreePool(void *pointer)
 {
+    ASSERT(!KiInCompletionDrain); /* docs/20 R2: no allocator traffic in the drain */
     if (pointer == 0)
     {
         KiPanic("MiFreePool: NULL pointer");
