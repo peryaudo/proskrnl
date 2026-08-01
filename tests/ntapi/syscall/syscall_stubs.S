@@ -2384,6 +2384,50 @@ NtResetWriteWatch:
     syscall
     ret
 
+    .global NtFlushVirtualMemory
+NtFlushVirtualMemory:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x9c, %eax
+    syscall
+    ret
+
+    .global NtLockVirtualMemory
+NtLockVirtualMemory:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xad, %eax
+    syscall
+    ret
+
+    .global NtUnlockVirtualMemory
+NtUnlockVirtualMemory:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x103, %eax
+    syscall
+    ret
+
+    .global NtSetInformationVirtualMemory
+NtSetInformationVirtualMemory:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xed, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

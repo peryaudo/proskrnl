@@ -48,6 +48,10 @@ struct MI_VAD
      * MiCopyToUserRangeChecked). */
     BOOLEAN writeWatch;
     UCHAR *watchDirty; /* one byte per page; pool, zeroed */
+    /* CUI-7: the view's byte offset into its section (0 for private
+     * memory), so NtFlushVirtualMemory can address the covered FILE range
+     * (section.c used to compute and discard it). */
+    uint64_t sectionOffset;
 };
 
 /* NT never allocates the first 64K. Cross-check: third_party/wine
@@ -297,6 +301,7 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->ownsFrames = TRUE;
     vad->writeWatch = FALSE;
     vad->watchDirty = 0;
+    vad->sectionOffset = 0;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
     {
@@ -681,7 +686,7 @@ BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size)
 
 PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
                           ULONG allocationProtect, ULONG vadType, PVOID sectionBody,
-                          BOOLEAN ownsFrames)
+                          BOOLEAN ownsFrames, uint64_t sectionOffset)
 {
     ASSERT(vadType == MEM_MAPPED || vadType == MEM_IMAGE);
     /* A section-backed view pins its section body; a body-less mapped VAD is
@@ -696,6 +701,7 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
     vad->type = vadType;
     vad->sectionBody = sectionBody;
     vad->ownsFrames = ownsFrames;
+    vad->sectionOffset = sectionOffset;
     MiInsertVad(space, vad);
     return vad;
 }
@@ -1011,6 +1017,189 @@ NTSTATUS NtResetWriteWatch(HANDLE process, PVOID baseAddress, SIZE_T size)
     }
     MipRearmWatchRange(space, vad, base, length);
     return STATUS_SUCCESS;
+}
+
+/* --- flush/lock/prefetch (CUI-7) --------------------------------------------- */
+
+/* Implemented by the Io manager (kernel/io/rw.c) — the same seam direction
+ * as IopBuildSectionBacking (mm/section.c): write the file's cached byte
+ * range through to the device. */
+NTSTATUS IoWritebackSectionRange(PVOID fileObjectBody, uint64_t offset, uint64_t length);
+
+NTSTATUS NtFlushVirtualMemory(HANDLE process, LPCVOID *addressInOut, SIZE_T *sizeInOut,
+                              IO_STATUS_BLOCK *ioStatusBlock)
+{
+    /* The oracle operates on the caller's space (foreign handles go through
+     * an APC the CUI stack never issues) and accepts-but-never-writes the
+     * IOSB (its own FIXME; pinned by sem_mm/flush_lock). */
+    (void)process;
+    (void)ioStatusBlock;
+    NTSTATUS status = KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut),
+                                      sizeof(*addressInOut));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t addr = (uint64_t)(uintptr_t)*addressInOut & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t size = *sizeInOut;
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    PMI_VAD vad = MiFindVad(space, addr);
+    if (vad == 0 || (size != 0 && addr + size > vad->base + vad->size))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (size == 0)
+    {
+        size = vad->size; /* the WHOLE region, as the oracle answers */
+    }
+    *addressInOut = (LPCVOID)(uintptr_t)addr;
+    *sizeInOut = size;
+
+    /* A shared file-backed view's stores live in the file's page cache;
+     * route the covered bytes to the FS writeback (the IopFlushBuffers
+     * seam). With write-through FAT this is belt — and it retires the
+     * flush half of the docs/03 mapped-view deferred-writeback note for
+     * this path. Private/image/anonymous views have no file to flush. */
+    if (vad->type == MEM_MAPPED && !vad->ownsFrames && vad->sectionBody != 0)
+    {
+        PMI_SECTION section = vad->sectionBody;
+        if (section->fileObject != 0 && section->cache != 0)
+        {
+            uint64_t span = size;
+            if (addr + span > vad->base + vad->size)
+            {
+                span = vad->base + vad->size - addr;
+            }
+            status = IoWritebackSectionRange(section->fileObject,
+                                             vad->sectionOffset + (addr - vad->base), span);
+            if (!NT_SUCCESS(status))
+            {
+                return STATUS_NOT_MAPPED_DATA; /* the oracle's msync-failure arm */
+            }
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Lock and unlock share one walk: round + echo, then every page must be
+ * committed and accessible — the oracle's mlock/munlock cannot populate
+ * PROT_NONE (reserved-only, NOACCESS, guard), everything else is resident
+ * already so locking is a validating no-op (docs/03 "CUI-7"). */
+static NTSTATUS MipLockWalk(PVOID *addressInOut, SIZE_T *sizeInOut)
+{
+    NTSTATUS status = KiProbeForWrite((void *)addressInOut, sizeof(*addressInOut),
+                                      sizeof(*addressInOut));
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(sizeInOut, sizeof(*sizeInOut), sizeof(*sizeInOut));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t start = (uint64_t)(uintptr_t)*addressInOut;
+    uint64_t base = start & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t length = (*sizeInOut + (start - base) + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    *addressInOut = (PVOID)(uintptr_t)base;
+    *sizeInOut = length;
+    if (length == 0 || base + length < base)
+    {
+        return STATUS_ACCESS_DENIED;
+    }
+    PMI_ADDRESS_SPACE space = &KeGetCurrentThread()->process->addressSpace;
+    for (uint64_t page = base; page < base + length; page += PAGE_SIZE)
+    {
+        PMI_VAD vad = MiFindVad(space, page);
+        if (vad == 0)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        ULONG protect = vad->pageProtect[index];
+        int present, writable, executable;
+        MiProtectToPteBits(protect, &present, &writable, &executable);
+        if (protect == 0 || !present)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NtLockVirtualMemory(HANDLE process, PVOID *addressInOut, SIZE_T *sizeInOut, ULONG flags)
+{
+    (void)process; /* the caller's space, as the oracle's local arm */
+    (void)flags;   /* the oracle ignores it entirely */
+    return MipLockWalk(addressInOut, sizeInOut);
+}
+
+NTSTATUS NtUnlockVirtualMemory(HANDLE process, PVOID *addressInOut, SIZE_T *sizeInOut, ULONG flags)
+{
+    (void)process;
+    (void)flags;
+    return MipLockWalk(addressInOut, sizeInOut);
+}
+
+NTSTATUS NtSetInformationVirtualMemory(HANDLE process, VIRTUAL_MEMORY_INFORMATION_CLASS infoClass,
+                                       ULONG_PTR count, PMEMORY_RANGE_ENTRY addresses, PVOID ptr,
+                                       ULONG size)
+{
+    /* The oracle's exact ladder (wine dlls/ntdll/unix/virtual.c
+     * NtSetInformationVirtualMemory + prefetch_memory; pinned by
+     * sem_mm/flush_lock). Prefetch validates and succeeds without work:
+     * everything is resident under Art. 3 (docs/03 "CUI-7"); the addresses
+     * themselves are deliberately NOT validated, as the oracle's madvise
+     * ignores unmapped ranges. */
+    (void)process;
+    switch (infoClass)
+    {
+    case VmPrefetchInformation:
+    {
+        if (ptr == 0)
+        {
+            return STATUS_INVALID_PARAMETER_5;
+        }
+        if (size != sizeof(ULONG))
+        {
+            return STATUS_INVALID_PARAMETER_6;
+        }
+        if (count == 0)
+        {
+            return STATUS_INVALID_PARAMETER_3;
+        }
+        NTSTATUS status = KiProbeForRead(ptr, sizeof(ULONG), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONGLONG entryBytes = (ULONGLONG)count * sizeof(MEMORY_RANGE_ENTRY);
+        if (entryBytes > (64u << 20))
+        {
+            return STATUS_INVALID_PARAMETER_3;
+        }
+        status = KiProbeForRead(addresses, (SIZE_T)entryBytes, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        for (ULONG_PTR i = 0; i < count; i++)
+        {
+            if (addresses[i].NumberOfBytes == 0)
+            {
+                return STATUS_INVALID_PARAMETER_4;
+            }
+        }
+        return STATUS_SUCCESS;
+    }
+    case VmPageDirtyStateInformation:
+        return STATUS_NOT_SUPPORTED; /* the oracle's default-config answer */
+    default:
+        return STATUS_INVALID_PARAMETER_2;
+    }
 }
 
 /* --- guard pages (virtual.h; used by mm/fault.c) ---------------------------- */

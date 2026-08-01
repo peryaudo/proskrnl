@@ -100,7 +100,7 @@ BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size)
  * owner (a data view sharing the section's / page cache's frames). */
 PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
                           ULONG allocationProtect, ULONG vadType, PVOID sectionBody,
-                          BOOLEAN ownsFrames);
+                          BOOLEAN ownsFrames, uint64_t sectionOffset);
 
 /* Commit one page of a mapped VAD with an explicitly provided frame. */
 void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,

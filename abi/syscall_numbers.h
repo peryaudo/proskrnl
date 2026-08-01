@@ -202,6 +202,10 @@
 #define NTSYS_NtUnmapViewOfSectionEx 0x0104
 #define NTSYS_NtGetWriteWatch 0x00a2
 #define NTSYS_NtResetWriteWatch 0x00de
+#define NTSYS_NtFlushVirtualMemory 0x009c
+#define NTSYS_NtLockVirtualMemory 0x00ad
+#define NTSYS_NtUnlockVirtualMemory 0x0103
+#define NTSYS_NtSetInformationVirtualMemory 0x00ed
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
