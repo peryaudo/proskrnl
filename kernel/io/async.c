@@ -218,15 +218,26 @@ NTSTATUS NtCancelSynchronousIoFile(HANDLE threadHandle, PIO_STATUS_BLOCK filterI
     {
         return status;
     }
-    PVOID body;
-    status = ObReferenceObjectByHandle(threadHandle, THREAD_TERMINATE, &PspThreadType,
-                                       ExGetPreviousMode(), &body, 0);
-    if (!NT_SUCCESS(status))
+    PKTHREAD target;
+    PVOID body = 0;
+    if (threadHandle == NtCurrentThread())
     {
-        return status;
+        /* The pseudo-handle, as kernelbase's CancelSynchronousIo(self) spells
+         * it (CUI-8 pin, sem_file/cancel_data_io.c): the caller itself, which
+         * by construction is not parked in synchronous I/O right now — the
+         * sweep below answers NOT_FOUND without a table lookup. */
+        target = KeGetCurrentThread();
     }
-    PETHREAD thread = body;
-    PKTHREAD target = thread->tcb; /* freed only with the ETHREAD (thread.c) */
+    else
+    {
+        status = ObReferenceObjectByHandle(threadHandle, THREAD_TERMINATE, &PspThreadType,
+                                           ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        target = ((PETHREAD)body)->tcb; /* freed only with the ETHREAD (thread.c) */
+    }
     if (target != 0 && target->syncIoActive && !target->syncIoCancelled &&
         (filterIosb == 0 || (void *)filterIosb == target->syncIoUserIosb))
     {
@@ -240,6 +251,9 @@ NTSTATUS NtCancelSynchronousIoFile(HANDLE threadHandle, PIO_STATUS_BLOCK filterI
     }
     ioStatus->Status = status;
     ioStatus->Information = 0;
-    ObDereferenceObject(body);
+    if (body != 0)
+    {
+        ObDereferenceObject(body);
+    }
     return status;
 }

@@ -29,6 +29,17 @@ static void IopFillBasic(const IO_FILE_INFO *raw, FILE_BASIC_INFORMATION *out)
     out->FileAttributes = raw->fileAttributes;
 }
 
+/* The one authority for a handle's I/O mode word (Art. 11): the create
+ * folded FILE_SYNCHRONOUS_IO_{ALERT,NONALERT} into the single synchronousIo
+ * fact (kernel/io/file.c), so NONALERT stands for both — the distinction NT
+ * keeps (alertable waits inside the kernel) has no other observable edge
+ * here. Served directly as FileModeInformation (CUI-8, pinned
+ * sem_file/async_inline.c) and inside FileAllInformation. */
+static ULONG IopFileMode(PFILE_OBJECT file)
+{
+    return file->synchronousIo ? FILE_SYNCHRONOUS_IO_NONALERT : 0;
+}
+
 static void IopFillStandard(const IO_FILE_INFO *raw, PIO_FCB fcb, FILE_STANDARD_INFORMATION *out)
 {
     memset(out, 0, sizeof(*out));
@@ -109,6 +120,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FileNetworkOpenInformation:
         needed = sizeof(FILE_NETWORK_OPEN_INFORMATION); /* CUI-5 */
         break;
+    case FileModeInformation:
+        needed = sizeof(FILE_MODE_INFORMATION); /* CUI-8 */
+        break;
     case FileAttributeTagInformation:
         needed = sizeof(FILE_ATTRIBUTE_TAG_INFORMATION); /* CUI-5 */
         break;
@@ -135,6 +149,21 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+
+    /* CUI-8: the mode is the FILE_OBJECT's own fact — no backend query, so
+     * it answers before (and independently of) GetInfo, on every device.
+     * The value is IopFileMode's, the same authority FileAllInformation
+     * uses (docs/19 §7: FileModeInformation keeps reporting what the create
+     * established; pinned sem_file/async_inline.c). */
+    if (informationClass == FileModeInformation)
+    {
+        FILE_MODE_INFORMATION *out = buffer;
+        out->Mode = IopFileMode(file);
+        iosb->Status = STATUS_SUCCESS;
+        iosb->Information = sizeof(*out);
+        ObDereferenceObject(file);
+        return STATUS_SUCCESS;
     }
 
     /* M9: the pipe classes route to the pipe FS before any GetInfo — a
@@ -266,7 +295,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         out->InternalInformation.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
         out->PositionInformation.CurrentByteOffset = file->currentByteOffset;
         out->AccessInformation.AccessFlags = file->grantedAccess;
-        out->ModeInformation.Mode = file->synchronousIo ? FILE_SYNCHRONOUS_IO_NONALERT : 0;
+        out->ModeInformation.Mode = IopFileMode(file);
         ULONG nameOffset = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation);
         ULONG written = 0;
         status = IopFillName(file, (char *)buffer + nameOffset, length - nameOffset, &written);

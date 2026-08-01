@@ -2,11 +2,13 @@
  *
  * The async-completion protocol, with every transfer completing inline:
  * the IOSB is written before the optional event is signalled
- * (IopCompleteRequest) and the final status is the return value —
- * semantics pinned by tests/ntapi/sem_file/read_write.c on the Wine
- * oracle. Inline completion is a legal point inside the NT contract
- * (STATUS_PENDING is permitted, never required — docs/19 §1) rather than
- * an Art. 3 mandate; docs/19 is the plan for genuinely pending transfers.
+ * (IopCompleteRequest); a synchronous handle returns the final status
+ * (pinned sem_file/read_write.c) and an asynchronous one answers the
+ * pending shape over the same inline completion (IopAsyncReturnShape,
+ * pinned sem_file/async_inline.c — CUI-8 §7). Inline completion is a
+ * legal point inside the NT contract (STATUS_PENDING is permitted, never
+ * required — docs/19 §1) rather than an Art. 3 mandate; docs/19 is the
+ * plan for genuinely pending transfers.
  *
  * All data moves through the file's unified page cache, then writes go
  * straight to disk (immediate writeback), which is what makes the
@@ -55,6 +57,27 @@ static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC a
     if (apc != 0)
     {
         KiInsertQueueUserApc(KeGetCurrentThread(), apc);
+    }
+    return final;
+}
+
+/* The CUI-8 §7 pin (tests/ntapi/sem_file/async_inline.c against the pinned
+ * Wine — dlls/ntdll/unix/file.c, the NtReadFile/NtWriteFile ret_status
+ * tails): a data transfer on an ASYNCHRONOUS disk-file handle completes
+ * inline but ANSWERS the pending shape — STATUS_PENDING from the call, the
+ * IOSB already final, the event already signalled, the APC already queued.
+ * Reads convert SUCCESS and END_OF_FILE; writes convert only SUCCESS; a
+ * refusal that never wrote the IOSB stays inline. The scatter/gather tails
+ * below pinned the same shape first (CUI-5). */
+static NTSTATUS IopAsyncReturnShape(PFILE_OBJECT file, NTSTATUS final, BOOLEAN isWrite)
+{
+    if (file->synchronousIo)
+    {
+        return final;
+    }
+    if (final == STATUS_SUCCESS || (!isWrite && final == STATUS_END_OF_FILE))
+    {
+        return STATUS_PENDING;
     }
     return final;
 }
@@ -216,6 +239,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
         status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_END_OF_FILE, 0);
+        status = IopAsyncReturnShape(file, status, FALSE);
         ObDereferenceObject(file);
         return status;
     }
@@ -230,6 +254,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         file->currentByteOffset.QuadPart = (LONGLONG)offset + (LONGLONG)bytes;
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
+    status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
     return status;
 
@@ -369,6 +394,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         file->currentByteOffset.QuadPart = (LONGLONG)offset + length;
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
+    status = IopAsyncReturnShape(file, status, TRUE);
     ObDereferenceObject(file);
     return status;
 
