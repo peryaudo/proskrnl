@@ -16,6 +16,30 @@
  * protocol (always 512 bytes)"). */
 #define VIO_BLK_SECTOR_SIZE 512
 
+/* Requests that may be in flight at once (CUI-8, docs/19 §5a). An internal
+ * capacity choice, not a spec value: it sizes the control-slot frame and is
+ * comfortably under the ring's 256-descriptor budget at 3 descriptors per
+ * request. */
+#define VIO_BLK_MAX_INFLIGHT 16
+
+/* One block request, CALLER-embedded (stack or batch array — never pool
+ * owned by the driver): the issuer's frame owns the request from submit to
+ * observed completion and never unwinds past it (docs/20 R4). The caller
+ * fills the transfer description; the driver owns the bookkeeping fields
+ * from submit until `completed` reads TRUE, after which `result` is the
+ * verdict. */
+typedef struct VIO_BLK_REQUEST
+{
+    uint32_t type; /* driver-internal VIO_BLK_T_* */
+    uint64_t sectorLba;
+    uint32_t sectorCount;
+    uint64_t dataPhysical; /* one physically contiguous run */
+    volatile BOOLEAN completed;
+    NTSTATUS result;
+    uint16_t descHead;
+    uint8_t controlSlot;
+} VIO_BLK_REQUEST;
+
 /* Probe PCI bus 0, bring the device up per the virtio 1.2 cs01 §3.1.1
  * initialization sequence, and set up the request queue. Returns TRUE when
  * a disk is ready; FALSE when no virtio-blk function exists. */
