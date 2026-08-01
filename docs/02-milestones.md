@@ -264,6 +264,28 @@ impersonation attach, and **retiring Ob's always-allow create/open access check*
 a one-authority engine change (Art. 11) that must be its own commit.
 **Done when:** a handle-inheritance redirect chain round-trips; a `timeit`-style
 tool reads real process/thread times; a restricted-token launch works.
+*(Outcome: complete. All 14 ids landed test-first (`tests/run/run.sh cui6` is
+the cmd.exe acceptance — timeit/redirchain/restricted; ten new `tests/ntapi`
+suites across `sem_ob`/`sem_ps`/`sem_wait`/`sem_se`). The one piece of new
+machinery was **per-thread CPU-time accounting** — whole-tick sampling at the
+clock interrupt, discriminated by the interrupted CS — which `ProcessTimes`/
+`ThreadTimes`/`SystemProcessorPerformanceInformation` and the real job
+accounting all ride. Jobs finished with wineserver's parent/child nesting,
+create-time breakaway, and subtree accounting. Foreign `NtGet/SetContextThread`
+reads a suspended, parked target's saved trap frame + `fxArea`; a syscall-free
+spinner became visible to it by publishing the interrupted ring-3 frame across
+the off-CPU window. Se-2 added token set-info/filter, impersonation attach
+(retiring the CUI-2 "no impersonation" deviation), and the two oracle-stub ids
+(`NtAdjustGroupsToken`/`NtImpersonateAnonymousToken`) pinned `beyond_oracle`.
+The always-allow retirement (its own commit) enforces a create-time SD's DACL
+at open — no-SD objects stay permissive, as wineserver's null-SD path does.
+Deviations in `docs/03` "CUI-6 handles/identity notes": 1 ms sampling
+granularity, suspended-only foreign context, single real `SystemModule`
+entry, `beyond_oracle` handle-count/job-time values, and the retirement's
+scope. The fuzzer's CUI-6 ops convicted one ordering divergence
+(`NtQueryObject` length-before-handle), fixed. The buildable id surface is now
+173/264; `docs/16` is re-derived. The winetest manifest gained no CUI-6 pairs —
+no parked pair was blocked on this surface, and none was added unverified.)*
 
 ## CUI-7 — Cm-2 + Mm-2 + system furniture
 The largest by id count (29) and the cheapest per id — the `*Ex` forms delegate to

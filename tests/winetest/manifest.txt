@@ -37,3 +37,7 @@ ucrtbase_test.exe:string
 # ntdll/kernel32 change pairs stay parked on the single-record/no-buffering
 # watch model - causes in docs/03 "M10 winetest notes".
 cmd.exe_test.exe:directory
+# CUI-6 added no pairs: no parked pair above was blocked on the handle/
+# identity/query surface it built, and none was added unverified (a pair
+# joins only once green on BOTH runners). The object-manager/token subtests
+# are candidates for a future unpark once a winetest run confirms them.
