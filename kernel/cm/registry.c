@@ -2049,6 +2049,337 @@ NTSTATUS NtUnloadKey(OBJECT_ATTRIBUTES *attributes)
     return STATUS_SUCCESS;
 }
 
+/* KEY_SET_INFORMATION_CLASS is absent from the pinned Wine tree entirely
+ * (ntdll types the argument `const int`), so the one class the kernel
+ * serves is hand-typed from "ZwSetInformationKey function (wdm.h)" +
+ * "KEY_SET_INFORMATION_CLASS enumeration (wdm.h)", learn.microsoft.com
+ * (G8; pinned beyond_oracle by sem_reg/restore_setinfo). */
+#define CMP_KEY_WRITE_TIME_INFORMATION 0
+
+NTSTATUS NtSetInformationKey(HANDLE keyHandle, const int infoClass, PVOID information, ULONG length)
+{
+    PCM_KEY_BODY body;
+    NTSTATUS status = CmpReferenceKey(keyHandle, KEY_SET_VALUE, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (infoClass != CMP_KEY_WRITE_TIME_INFORMATION)
+    {
+        status = STATUS_INVALID_INFO_CLASS;
+    }
+    else if (length != sizeof(LARGE_INTEGER))
+    {
+        status = STATUS_INFO_LENGTH_MISMATCH;
+    }
+    else
+    {
+        status = KiProbeForRead(information, sizeof(LARGE_INTEGER), 1);
+        if (NT_SUCCESS(status))
+        {
+            LARGE_INTEGER stamp;
+            memcpy(&stamp, information, sizeof(stamp));
+            body->node->lastWriteTime = stamp;
+            if (!body->node->isVolatile)
+            {
+                CmpSaveHive();
+            }
+        }
+    }
+    ObDereferenceObject(body);
+    return status;
+}
+
+NTSTATUS NtQueryMultipleValueKey(HANDLE keyHandle, PKEY_MULTIPLE_VALUE_INFORMATION valueEntries,
+                                 ULONG entryCount, PVOID valueBuffer, ULONG bufferLength,
+                                 PULONG requiredLength)
+{
+    /* Contract from "NtQueryMultipleValueKey function (winternl.h)",
+     * learn.microsoft.com, on the pinned Wine winternl.h signature (buffer
+     * length by value, requirement out; pinned beyond_oracle). */
+    if (valueEntries == 0 || requiredLength == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    ULONGLONG entryBytes = (ULONGLONG)entryCount * sizeof(KEY_MULTIPLE_VALUE_INFORMATION);
+    if (entryBytes > (64u << 20))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NTSTATUS status = KiProbeForWrite(valueEntries, (SIZE_T)entryBytes, sizeof(uint64_t));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = KiProbeForWrite(requiredLength, sizeof(*requiredLength), sizeof(*requiredLength));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (bufferLength != 0)
+    {
+        status = KiProbeForWrite(valueBuffer, bufferLength, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    PCM_KEY_BODY body;
+    status = CmpReferenceKey(keyHandle, KEY_QUERY_VALUE, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PCMP_KEY_NODE node = body->node;
+    /* One walk: entries filled, data packed sequentially, as much as fits;
+     * a missing name aborts with nothing further written. */
+    ULONGLONG used = 0;
+    for (ULONG i = 0; i < entryCount; i++)
+    {
+        const UNICODE_STRING *userName = valueEntries[i].ValueName;
+        if (userName == 0)
+        {
+            status = STATUS_ACCESS_VIOLATION;
+            break;
+        }
+        status = CmpProbeValueName(userName);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        UNICODE_STRING lookup = *userName;
+        lookup.Length &= ~1u;
+        PCMP_VALUE value = CmpFindValue(node, &lookup);
+        if (value == 0)
+        {
+            status = STATUS_OBJECT_NAME_NOT_FOUND;
+            break;
+        }
+        valueEntries[i].Type = value->type;
+        valueEntries[i].DataLength = value->dataLength;
+        valueEntries[i].DataOffset = (ULONG)used;
+        if (used + value->dataLength <= bufferLength)
+        {
+            memcpy((UCHAR *)valueBuffer + used, value->data, value->dataLength);
+        }
+        used += value->dataLength;
+    }
+    if (NT_SUCCESS(status))
+    {
+        *requiredLength = (ULONG)used;
+        if (used > bufferLength)
+        {
+            status = STATUS_BUFFER_OVERFLOW;
+        }
+    }
+    ObDereferenceObject(body);
+    return status;
+}
+
+/* TRUE when any key STRICTLY below `node` has an open body (the caller's
+ * own handle on `node` itself does not count). */
+static BOOLEAN CmpSubtreeHasOpenBodies(const CMP_KEY_NODE *node)
+{
+    for (PLIST_ENTRY e = node->subkeyListHead.Flink; e != &node->subkeyListHead; e = e->Flink)
+    {
+        const CMP_KEY_NODE *child = CONTAINING_RECORD(e, CMP_KEY_NODE, siblingEntry);
+        if (child->bodyCount != 0 || CmpSubtreeHasOpenBodies(child))
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+NTSTATUS NtRestoreKey(HANDLE keyHandle, HANDLE fileHandle, ULONG flags)
+{
+    /* Contract from "ZwRestoreKey function (wdm.h)", learn.microsoft.com
+     * (pinned beyond_oracle): SeRestorePrivilege, then the key's values and
+     * subtree are replaced by the hive file's content. Flags stay unbuilt
+     * and refuse (docs/03 "CUI-7"); an open handle below the target
+     * refuses CANNOT_DELETE (docs/03 — the docs are silent, wineserver's
+     * unload shape is the model). */
+    PCM_KEY_BODY body;
+    NTSTATUS status = CmpReferenceKey(keyHandle, 0, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PCMP_KEY_NODE node = body->node;
+    if (!SeSinglePrivilegeCheck(CmpLuid(SE_RESTORE_PRIVILEGE), ExGetPreviousMode()))
+    {
+        status = STATUS_PRIVILEGE_NOT_HELD;
+        goto out;
+    }
+    if (flags != 0)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto out;
+    }
+    if (CmpSubtreeHasOpenBodies(node))
+    {
+        status = STATUS_CANNOT_DELETE;
+        goto out;
+    }
+
+    {
+        /* Read the whole image through the caller's handle (granted-access
+         * enforced by Ob; only the pool buffer needs KernelMode probes). */
+        PKTHREAD thread = KeGetCurrentThread();
+        KPROCESSOR_MODE saved = thread->previousMode;
+        thread->previousMode = KernelMode;
+        UCHAR *buffer = 0;
+        ULONGLONG length = 0;
+        IO_STATUS_BLOCK iosb;
+        FILE_STANDARD_INFORMATION standard;
+        status = NtQueryInformationFile(fileHandle, &iosb, &standard, sizeof(standard),
+                                        FileStandardInformation);
+        if (NT_SUCCESS(status))
+        {
+            length = (ULONGLONG)standard.EndOfFile.QuadPart;
+            if (length < 32 || length > (64u << 20))
+            {
+                status = STATUS_NOT_REGISTRY_FILE;
+            }
+        }
+        if (NT_SUCCESS(status))
+        {
+            buffer = MiAllocatePool(length);
+            if (buffer == 0)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+        }
+        if (NT_SUCCESS(status))
+        {
+            LARGE_INTEGER offset;
+            offset.QuadPart = 0;
+            status = NtReadFile(fileHandle, 0, 0, 0, &iosb, buffer, (ULONG)length, &offset, 0);
+            if (NT_SUCCESS(status) && iosb.Information != length)
+            {
+                status = STATUS_NOT_REGISTRY_FILE;
+            }
+        }
+        thread->previousMode = saved;
+
+        if (NT_SUCCESS(status))
+        {
+            /* Parse into a detached scratch first so a malformed image
+             * leaves the target untouched. The scratch borrows the
+             * target's parent pointer (unlinked!) purely so the parser's
+             * depth accounting caps the GRAFTED depth, not the scratch's
+             * own (the serializer recursion budget, CmpAllocateNode). */
+            UNICODE_STRING emptyName;
+            emptyName.Length = 0;
+            emptyName.MaximumLength = 0;
+            emptyName.Buffer = 0;
+            PCMP_KEY_NODE scratch = CmpAllocateNode(0, &emptyName);
+            if (scratch == 0)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+            else
+            {
+                scratch->parent = node->parent;
+                status = CmpParseSubtreeInto(scratch, buffer, length);
+                scratch->parent = 0;
+                if (NT_SUCCESS(status))
+                {
+                    /* Wipe the target and move the scratch's content in:
+                     * values, children (reparented; already sorted), the
+                     * restored last-write time. */
+                    while (!IsListEmpty(&node->subkeyListHead))
+                    {
+                        PCMP_KEY_NODE child = CONTAINING_RECORD(node->subkeyListHead.Flink,
+                                                                CMP_KEY_NODE, siblingEntry);
+                        RemoveEntryList(&child->siblingEntry);
+                        node->subkeyCount--;
+                        child->parent = 0;
+                        CmpDeleteNodeRecursive(child);
+                    }
+                    CmpFreeValues(node);
+                    while (!IsListEmpty(&scratch->valueListHead))
+                    {
+                        PLIST_ENTRY entry = RemoveHeadList(&scratch->valueListHead);
+                        InsertTailList(&node->valueListHead, entry);
+                    }
+                    node->valueCount = scratch->valueCount;
+                    while (!IsListEmpty(&scratch->subkeyListHead))
+                    {
+                        PLIST_ENTRY entry = RemoveHeadList(&scratch->subkeyListHead);
+                        PCMP_KEY_NODE child = CONTAINING_RECORD(entry, CMP_KEY_NODE, siblingEntry);
+                        child->parent = node;
+                        InsertTailList(&node->subkeyListHead, entry);
+                    }
+                    node->subkeyCount = scratch->subkeyCount;
+                    node->lastWriteTime = scratch->lastWriteTime;
+                    MiFreePool(scratch);
+                    if (!node->isVolatile)
+                    {
+                        CmpSaveHive();
+                    }
+                    CmpNotifyChange(node, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET);
+                }
+                else
+                {
+                    /* Content already unwound by the parser; drop the
+                     * scratch node itself. */
+                    MiFreePool(scratch);
+                }
+            }
+        }
+        if (buffer != 0)
+        {
+            MiFreePool(buffer);
+        }
+    }
+
+out:
+    ObDereferenceObject(body);
+    return status;
+}
+
+NTSTATUS NtReplaceKey(POBJECT_ATTRIBUTES newFileAttributes, HANDLE keyHandle,
+                      POBJECT_ATTRIBUTES oldFileAttributes)
+{
+    /* Contract from "ZwReplaceKey function (wdm.h)", learn.microsoft.com
+     * (pinned beyond_oracle): SeRestorePrivilege, and the target must be
+     * the root of a hive. proskrnl has no replaceable file-backed hive
+     * roots at all — the SYSTEM tree is one whole-file image and loaded
+     * grafts are volatile — so after the gate every key answers the
+     * documented not-a-hive-root refusal (docs/03 "CUI-7"). */
+    NTSTATUS status = ObProbeObjectAttributes(newFileAttributes);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = ObProbeObjectAttributes(oldFileAttributes);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (newFileAttributes == 0 || oldFileAttributes == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    PCM_KEY_BODY body;
+    status = CmpReferenceKey(keyHandle, 0, FALSE, &body);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (!SeSinglePrivilegeCheck(CmpLuid(SE_RESTORE_PRIVILEGE), ExGetPreviousMode()))
+    {
+        status = STATUS_PRIVILEGE_NOT_HELD;
+    }
+    else
+    {
+        status = STATUS_INVALID_PARAMETER;
+    }
+    ObDereferenceObject(body);
+    return status;
+}
+
 /* --- initialization --------------------------------------------------------- */
 
 /* Create a skeleton path under the root if the loaded hive lacks it —
