@@ -173,6 +173,7 @@
 #define NTSYS_NtFlushProcessWriteBuffers 0x009b
 #define NTSYS_NtGetCurrentProcessorNumber 0x009e
 #define NTSYS_NtSetThreadExecutionState 0x00f5
+#define NTSYS_NtSetInformationObject 0x005c
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

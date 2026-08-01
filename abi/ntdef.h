@@ -148,6 +148,7 @@ _Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityDescriptor) == 32, "OBJECT_AT
 _Static_assert(offsetof(OBJECT_ATTRIBUTES, SecurityQualityOfService) == 40, "OBJECT_ATTRIBUTES x64 layout");
 
 /* Object-attribute flags, extracted from wine/include/winternl.h. */
+#define OBJ_PROTECT_CLOSE 0x00000001
 #define OBJ_INHERIT 0x00000002
 #define OBJ_PERMANENT 0x00000010
 #define OBJ_EXCLUSIVE 0x00000020

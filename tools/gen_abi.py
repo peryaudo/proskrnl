@@ -267,6 +267,7 @@ def gen_ntdef(wine: Path) -> str:
         winternl,
         "winternl.h",
         [
+            "OBJ_PROTECT_CLOSE",
             "OBJ_INHERIT",
             "OBJ_PERMANENT",
             "OBJ_EXCLUSIVE",
