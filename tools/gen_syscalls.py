@@ -248,6 +248,8 @@ IMPLEMENTED = [
     "NtCreateSectionEx",
     "NtMapViewOfSectionEx",
     "NtUnmapViewOfSectionEx",
+    "NtGetWriteWatch",
+    "NtResetWriteWatch",
 ]
 
 

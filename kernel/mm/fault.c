@@ -21,7 +21,7 @@
 #include "abi/ntpsapi.h"
 #include "abi/ntstatus.h"
 
-NTSTATUS MiHandleUserFault(uint64_t faultAddress)
+NTSTATUS MiHandleUserFault(uint64_t faultAddress, BOOLEAN writeAccess)
 {
     PKTHREAD tcb = KeGetCurrentThread();
     PEPROCESS process = tcb->process;
@@ -29,6 +29,15 @@ NTSTATUS MiHandleUserFault(uint64_t faultAddress)
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
     uint64_t page = faultAddress & ~(PAGE_SIZE - 1ULL);
+
+    /* CUI-7 write-watch: a store into a present, protection-writable but
+     * clean watched page marks it and resumes. Ordered before the guard
+     * arm, which only ever sees not-present pages. */
+    if (writeAccess && MiResolveWriteWatchFault(space, page))
+    {
+        return STATUS_SUCCESS;
+    }
+
     if (!MiClearGuardPage(space, page))
     {
         return STATUS_ACCESS_VIOLATION; /* not a guard page: M4 containment */

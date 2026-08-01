@@ -13,13 +13,18 @@
 
 #include "abi/ntdef.h"
 
-/* Resolve a ring-3 page fault at `faultAddress` (CR2).
- *   STATUS_SUCCESS               resolved (stack grown / guard consumed); resume.
+/* Resolve a ring-3 page fault at `faultAddress` (CR2). `writeAccess` is the
+ * #PF error code's W bit (bit 1 — Intel SDM Vol. 3A §4.7 "Page-Fault
+ * Exceptions"): CUI-7's write-watch arm resolves a write to a present,
+ * protection-writable but clean watched page before the guard logic runs
+ * (a guard page is not-present, so the two arms cannot collide).
+ *   STATUS_SUCCESS               resolved (watch marked / stack grown /
+ *                                guard consumed); resume.
  *   STATUS_GUARD_PAGE_VIOLATION  a non-stack guard fired (guard now cleared);
  *                                no user dispatcher before M7, so the caller
  *                                terminates the process with this status.
  *   STATUS_ACCESS_VIOLATION      not ours; the M4 containment applies.
  */
-NTSTATUS MiHandleUserFault(uint64_t faultAddress);
+NTSTATUS MiHandleUserFault(uint64_t faultAddress, BOOLEAN writeAccess);
 
 #endif /* PROSKRNL_KERNEL_MM_FAULT_H */

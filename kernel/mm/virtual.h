@@ -141,6 +141,12 @@ NTSTATUS MiReferenceProcessByHandle(HANDLE processHandle, ACCESS_MASK desiredAcc
 
 /* If `pageAddress` is a committed PAGE_GUARD page: clear the guard bit (the
  * page becomes an ordinary present page) and return TRUE. Else FALSE. */
+/* CUI-7 write-watch: a write reached a present, protection-writable but
+ * CLEAN watched page — mark it dirty and open the hardware gate. FALSE =
+ * not a write-watch situation. Serves the ring-3 fault (mm/fault.c), the
+ * probe retry (syscall/uaccess.c) and the cross-process checked copy. */
+BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress);
+
 BOOLEAN MiClearGuardPage(PMI_ADDRESS_SPACE space, uint64_t pageAddress);
 
 #endif /* PROSKRNL_KERNEL_MM_VIRTUAL_H */
