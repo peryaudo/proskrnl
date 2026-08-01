@@ -174,6 +174,9 @@
 #define NTSYS_NtGetCurrentProcessorNumber 0x009e
 #define NTSYS_NtSetThreadExecutionState 0x00f5
 #define NTSYS_NtSetInformationObject 0x005c
+#define NTSYS_NtCompareObjects 0x0077
+#define NTSYS_NtMakePermanentObject 0x00ae
+#define NTSYS_NtOpenTimer 0x00bf
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108

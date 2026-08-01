@@ -63,6 +63,26 @@ void ObDereferenceObject(PVOID body)
     MiFreePool(header);
 }
 
+NTSTATUS NtMakePermanentObject(HANDLE handle)
+{
+    /* CUI-6: the inverse of NtMakeTemporaryObject, with NO access gate — the
+     * pinned server resolves the handle with access 0 for the permanent
+     * direction and only the temporary one is delete-class
+     * (server/handle.c set_object_permanence; sem_ob/compare_permanent pins
+     * it). Idempotent. The keep-alive itself is the name link: last-handle
+     * close skips ObpUnlinkObjectName while the flag is set, so the name's
+     * reference carries the object (no second reference site, G11). */
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(handle, 0, 0, KernelMode, &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ObpGetHeader(body)->permanent = TRUE;
+    ObDereferenceObject(body);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtMakeTemporaryObject(HANDLE handle)
 {
     /* Clearing the permanent flag is a delete-class operation: NT requires

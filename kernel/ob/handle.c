@@ -402,6 +402,30 @@ NTSTATUS NtSetInformationObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClas
     }
 }
 
+/* CUI-6: CompareObjectHandles' back end — body identity, both handles
+ * resolved with ZERO required access (server/handle.c compare_objects;
+ * sem_ob/compare_permanent pins it). The shared reference path also lets
+ * the magic pseudo-handles compare. */
+NTSTATUS NtCompareObjects(HANDLE first, HANDLE second)
+{
+    PVOID firstBody, secondBody;
+    NTSTATUS status = ObReferenceObjectByHandle(first, 0, 0, KernelMode, &firstBody, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    status = ObReferenceObjectByHandle(second, 0, 0, KernelMode, &secondBody, 0);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(firstBody);
+        return status;
+    }
+    status = firstBody == secondBody ? STATUS_SUCCESS : STATUS_NOT_SAME_OBJECT;
+    ObDereferenceObject(secondBody);
+    ObDereferenceObject(firstBody);
+    return status;
+}
+
 /* Resolve one end of a duplication to its process. The current-process
  * pseudo-handle is answered without a reference (the caller's own process
  * cannot go away underneath it); any other handle must GRANT
