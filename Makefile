@@ -647,6 +647,21 @@ JOBTOOL := $(BUILD)/modules/jobtool.exe
 $(JOBTOOL): tests/cui/jobtool.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+# CUI-6 acceptance: a process/thread-times reader, the handle-inheritance
+# stdio-redirect chain, and a restricted-token launcher. Same third-party
+# CUI shape (restricted imports advapi32 for the token/restricted-token API).
+TIMEIT := $(BUILD)/modules/timeit.exe
+$(TIMEIT): tests/cui/timeit.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+REDIRCHAIN := $(BUILD)/modules/redirchain.exe
+$(REDIRCHAIN): tests/cui/redirchain.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+RESTRICTED := $(BUILD)/modules/restricted.exe
+$(RESTRICTED): tests/cui/restricted.c
+	@mkdir -p $(dir $@)
+	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $< -ladvapi32
 
 # The M9 interactive-console image (tests/run/run.sh console): the standard
 # image plus m9_echo.exe, whose presence makes the boot block on console
@@ -662,6 +677,7 @@ WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
 $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
         $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) $(TASKLIST) $(TASKKILL) \
+        $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
         arch/x86_64/limine.conf
@@ -674,6 +690,9 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 	    win:$(SVCDEMO)=svcdemo.exe \
 	    win:$(LOOPER)=looper.exe \
 	    win:$(JOBTOOL)=jobtool.exe \
+	    win:$(TIMEIT)=timeit.exe \
+	    win:$(REDIRCHAIN)=redirchain.exe \
+	    win:$(RESTRICTED)=restricted.exe \
 	    win:$(TASKLIST)=windows/system32/tasklist.exe \
 	    win:$(TASKKILL)=windows/system32/taskkill.exe
 
