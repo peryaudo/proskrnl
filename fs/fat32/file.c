@@ -21,6 +21,30 @@ static uint64_t FatClusterBytes(PFAT_VOLUME volume)
 
 /* --- data <-> disk --------------------------------------------------------- */
 
+/* Longest run of whole sectors starting at byte `position` that stays
+ * inside one cluster (from `sectorInCluster`), inside one cache page (a
+ * frame is one physically contiguous DMA target), and covering no whole
+ * sector past `limitByte` — the unit of a direct-DMA transfer (CUI-8,
+ * docs/19 §5a). `position` is always sector-aligned, so a sector never
+ * straddles a page (512 divides 4096). */
+static uint32_t FatRunSectors(PFAT_VOLUME volume, ULONG sectorInCluster, uint64_t position,
+                              uint64_t limitByte)
+{
+    ASSERT(position % FAT_SECTOR_SIZE == 0 && position < limitByte);
+    uint32_t run = volume->sectorsPerCluster - sectorInCluster;
+    uint32_t pageRun = (uint32_t)((PAGE_SIZE - (position % PAGE_SIZE)) / FAT_SECTOR_SIZE);
+    if (run > pageRun)
+    {
+        run = pageRun;
+    }
+    uint64_t limitRun = (limitByte - position + FAT_SECTOR_SIZE - 1) / FAT_SECTOR_SIZE;
+    if (run > limitRun)
+    {
+        run = (uint32_t)limitRun;
+    }
+    return run;
+}
+
 NTSTATUS FatEnsureCache(PFAT_FCB fcb)
 {
     ASSERT(!fcb->isDirectory);
@@ -34,23 +58,26 @@ NTSTATUS FatEnsureCache(PFAT_FCB fcb)
         return status;
     }
 
-    /* Sector-at-a-time into the cache pages: 512 divides 4096, so a sector
-     * never straddles a page. */
+    /* Page-granularity runs straight into the cache frames: the device DMAs
+     * the frame itself, no bounce (docs/19 §5a). */
     PFAT_VOLUME volume = fcb->volume;
     ULONG cluster = fcb->firstCluster;
     uint64_t position = 0;
     while (cluster != 0 && position < fcb->fileSize)
     {
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
-        for (ULONG s = 0; s < volume->sectorsPerCluster && position < fcb->fileSize;
-             s++, position += FAT_SECTOR_SIZE)
+        ULONG s = 0;
+        while (s < volume->sectorsPerCluster && position < fcb->fileSize)
         {
-            char *page = MiPhysicalToVirtual(fcb->cache.frames[position / PAGE_SIZE]);
-            status = FatReadSector(volume, clusterSector + s, page + (position % PAGE_SIZE));
+            uint32_t run = FatRunSectors(volume, s, position, fcb->fileSize);
+            uint64_t physical = fcb->cache.frames[position / PAGE_SIZE] + (position % PAGE_SIZE);
+            status = FatReadSectorsPhysical(volume, clusterSector + s, run, physical);
             if (!NT_SUCCESS(status))
             {
                 return status;
             }
+            s += run;
+            position += (uint64_t)run * FAT_SECTOR_SIZE;
         }
         cluster = FatGetNextCluster(volume, cluster);
     }
@@ -81,16 +108,18 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
     {
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG sectorInCluster = (ULONG)((position % clusterBytes) / FAT_SECTOR_SIZE);
-        for (; sectorInCluster < volume->sectorsPerCluster && position < endByte;
-             sectorInCluster++, position += FAT_SECTOR_SIZE)
+        while (sectorInCluster < volume->sectorsPerCluster && position < endByte)
         {
-            const char *page = MiPhysicalToVirtual(fcb->cache.frames[position / PAGE_SIZE]);
-            NTSTATUS status = FatWriteSector(volume, clusterSector + sectorInCluster,
-                                             page + (position % PAGE_SIZE));
+            uint32_t run = FatRunSectors(volume, sectorInCluster, position, endByte);
+            uint64_t physical = fcb->cache.frames[position / PAGE_SIZE] + (position % PAGE_SIZE);
+            NTSTATUS status =
+                FatWriteSectorsPhysical(volume, clusterSector + sectorInCluster, run, physical);
             if (!NT_SUCCESS(status))
             {
                 return status;
             }
+            sectorInCluster += run;
+            position += (uint64_t)run * FAT_SECTOR_SIZE;
         }
         cluster = FatGetNextCluster(volume, cluster);
     }

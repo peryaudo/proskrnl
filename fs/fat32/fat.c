@@ -31,6 +31,18 @@ NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer)
     return VioBlkWriteSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
+NTSTATUS FatReadSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
+                                uint64_t physical)
+{
+    return VioBlkReadSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
+}
+
+NTSTATUS FatWriteSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
+                                 uint64_t physical)
+{
+    return VioBlkWriteSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
+}
+
 BOOLEAN FatIsDataCluster(PFAT_VOLUME volume, ULONG cluster)
 {
     /* Cluster numbering starts at 2 and the last valid one is

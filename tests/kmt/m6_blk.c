@@ -16,6 +16,7 @@
 #include "tests/kmt/kmt.h"
 #include "drivers/virtio/blk.h"
 #include "kernel/mm/pool.h"
+#include "kernel/mm/phys.h"
 #include "kernel/lib/string.h"
 
 #include "abi/ntstatus.h"
@@ -288,6 +289,45 @@ static void test_blk_unaligned_buffers(void)
     MiFreePool(pool);
 }
 
+/* The direct-DMA path (CUI-8, docs/19 §5a): a page-cache-shaped frame
+ * handed straight to the device, cross-checked against the bounced API in
+ * both directions so a direct transfer landing at the wrong address or
+ * through a stale mapping is caught by the other path's copy. */
+static void test_blk_direct_physical(void)
+{
+    if (!blk_scratch_ok)
+        return;
+    uint64_t base = KMT_BLK_SCRATCH_LBA + 512 + 300;
+    uint64_t frame = MiAllocatePage();
+    unsigned char check[8 * SECTOR];
+    ok(frame != 0, "frame");
+    if (frame == 0)
+        return;
+    unsigned char *page = MiPhysicalToVirtual(frame);
+
+    blk_fill(page, base, 8, 4);
+    ok(VioBlkWriteSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct write");
+    ok(VioBlkReadSectors(base, 8, check) == STATUS_SUCCESS, "bounced readback");
+    ok(blk_verify(check, base, 8, 4) == -1, "direct write landed at the right LBAs");
+
+    blk_fill(check, base, 8, 5);
+    ok(VioBlkWriteSectors(base, 8, check) == STATUS_SUCCESS, "bounced write");
+    memset(page, 0, 8 * SECTOR);
+    ok(VioBlkReadSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct read");
+    ok(blk_verify(page, base, 8, 5) == -1, "direct read fetched the right LBAs");
+
+    /* A sub-page run at an offset inside the frame — the FatRunSectors
+     * shape: cluster-interior sectors landing mid-page. */
+    memset(page + SECTOR, 0, 3 * SECTOR);
+    ok(VioBlkReadSectorsPhysical(base + 1, 3, frame + SECTOR) == STATUS_SUCCESS,
+       "direct offset read");
+    ok(blk_verify(page + SECTOR, base + 1, 3, 5) == -1, "offset run landed in place");
+
+    ok(VioBlkReadSectorsPhysical(VioBlkSectorCount(), 1, frame) == STATUS_IO_DEVICE_ERROR,
+       "direct read at capacity refused");
+    MiFreePage(frame);
+}
+
 int kmt_run_m6_blk(void)
 {
     int before = kmt_failures;
@@ -298,5 +338,6 @@ int kmt_run_m6_blk(void)
     KMT_RUN(test_blk_chunk_boundaries);
     KMT_RUN(test_blk_write_read_verify);
     KMT_RUN(test_blk_unaligned_buffers);
+    KMT_RUN(test_blk_direct_physical);
     return kmt_failures - before;
 }

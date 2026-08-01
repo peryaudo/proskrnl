@@ -53,4 +53,12 @@ uint64_t VioBlkSectorCount(void);
 NTSTATUS VioBlkReadSectors(uint64_t sectorLba, uint32_t sectorCount, void *buffer);
 NTSTATUS VioBlkWriteSectors(uint64_t sectorLba, uint32_t sectorCount, const void *buffer);
 
+/* Synchronous direct-DMA sector I/O: the device reads/writes the caller's
+ * physically contiguous buffer itself — no bounce, no copy (CUI-8, docs/19
+ * §5a; the page cache's frames are single 4 KiB frames, so page-granularity
+ * transfers describe them to the device directly). At most one page per
+ * call. */
+NTSTATUS VioBlkReadSectorsPhysical(uint64_t sectorLba, uint32_t sectorCount, uint64_t physical);
+NTSTATUS VioBlkWriteSectorsPhysical(uint64_t sectorLba, uint32_t sectorCount, uint64_t physical);
+
 #endif /* PROSKRNL_DRIVERS_VIRTIO_BLK_H */

@@ -286,6 +286,16 @@ static NTSTATUS VioBlkTransfer(uint32_t type, uint64_t sectorLba, uint32_t secto
     return status;
 }
 
+NTSTATUS VioBlkReadSectorsPhysical(uint64_t sectorLba, uint32_t sectorCount, uint64_t physical)
+{
+    return VioBlkSyncTransfer(VIO_BLK_T_IN, sectorLba, sectorCount, physical);
+}
+
+NTSTATUS VioBlkWriteSectorsPhysical(uint64_t sectorLba, uint32_t sectorCount, uint64_t physical)
+{
+    return VioBlkSyncTransfer(VIO_BLK_T_OUT, sectorLba, sectorCount, physical);
+}
+
 NTSTATUS VioBlkReadSectors(uint64_t sectorLba, uint32_t sectorCount, void *buffer)
 {
     char *out = buffer;
