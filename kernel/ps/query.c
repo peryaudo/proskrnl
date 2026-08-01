@@ -1107,6 +1107,128 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    case SystemHandleInformation:
+    {
+        /* CUI-6 (sem_ps/sys_handles): the machine-wide snapshot — every
+         * live process's table walked under the dispatcher lock into a pool
+         * scratch, copied out only after release (the user copy can fault).
+         * Entry facts via Ob's accessor; ObjectPointer zero-filled as the
+         * oracle leaves it (dlls/ntdll/unix/system.c). */
+        if (length < sizeof(SYSTEM_HANDLE_INFORMATION))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        uint64_t flags = KiAcquireDispatcherLock();
+        ULONG count = 0;
+        for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+             p = p->Flink)
+        {
+            count += CONTAINING_RECORD(p, EPROCESS, activeProcessLinks)->handleTable.inUse;
+        }
+        ULONG headerBytes = (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION, Handle);
+        ULONG needed = headerBytes + count * (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
+        if (length < needed)
+        {
+            KiReleaseDispatcherLock(flags);
+            if (returnLength != 0)
+            {
+                *returnLength = needed;
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        SYSTEM_HANDLE_INFORMATION *snapshot = MiAllocatePool(needed);
+        if (snapshot == 0)
+        {
+            KiReleaseDispatcherLock(flags);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memset(snapshot, 0, needed);
+        ULONG filled = 0;
+        for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+             p = p->Flink)
+        {
+            PEPROCESS owner = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+            for (ULONG index = 0; index < owner->handleTable.capacity && filled < count; index++)
+            {
+                HANDLE value;
+                PVOID body;
+                ACCESS_MASK access;
+                ULONG attributes;
+                if (!ObpHandleTableEntryAt(&owner->handleTable, index, &value, &body, &access,
+                                           &attributes))
+                {
+                    continue;
+                }
+                SYSTEM_HANDLE_ENTRY *entry = &snapshot->Handle[filled++];
+                entry->OwnerPid = (ULONG)owner->uniqueProcessId;
+                entry->ObjectType = ObpTypeIndex(ObpGetHeader(body)->type);
+                entry->HandleFlags = (BYTE)(attributes & (OBJ_INHERIT | OBJ_PROTECT_CLOSE));
+                entry->HandleValue = (USHORT)(ULONG_PTR)value;
+                entry->ObjectPointer = 0;
+                entry->AccessMask = access;
+            }
+        }
+        snapshot->Count = filled;
+        KiReleaseDispatcherLock(flags);
+        ULONG used = headerBytes + filled * (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
+        NTSTATUS handleStatus = KiProbeForWrite(buffer, used, sizeof(uint64_t));
+        if (NT_SUCCESS(handleStatus))
+        {
+            memcpy(buffer, snapshot, used);
+            if (returnLength != 0)
+            {
+                *returnLength = used;
+            }
+        }
+        MiFreePool(snapshot);
+        return handleStatus;
+    }
+    case SystemModuleInformation:
+    {
+        /* CUI-6 (sem_ps/sys_handles): ONE real module — the kernel itself,
+         * base and size from the link (arch/x86_64/linker.ld: image at
+         * -2 GiB, KiImageEnd past .bss) — never the oracle's two fabricated
+         * driver rows with fake bases (docs/03 "CUI-6 notes"). */
+        static const char kernelName[] = "\\SystemRoot\\system32\\ntoskrnl.exe";
+        extern char KiImageEnd[];                          /* linker.ld */
+        const uint64_t kernelBase = 0xffffffff80000000ULL; /* linker.ld: ". = 0xffffffff80000000" */
+        ULONG needed = (ULONG)offsetof(RTL_PROCESS_MODULES, Modules) +
+                       (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION);
+        if (length < needed)
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = needed;
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS moduleStatus = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(moduleStatus))
+        {
+            return moduleStatus;
+        }
+        RTL_PROCESS_MODULES *modules = MiAllocatePool(needed);
+        if (modules == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memset(modules, 0, needed);
+        modules->ModulesCount = 1;
+        RTL_PROCESS_MODULE_INFORMATION *entry = &modules->Modules[0];
+        entry->ImageBaseAddress = (PVOID)(uintptr_t)kernelBase;
+        entry->ImageSize = (ULONG)((uint64_t)(uintptr_t)KiImageEnd - kernelBase);
+        entry->LoadOrderIndex = 0;
+        entry->LoadCount = 1;
+        memcpy(entry->Name, kernelName, sizeof(kernelName));
+        entry->NameOffset = (WORD)(sizeof("\\SystemRoot\\system32\\") - 1);
+        memcpy(buffer, modules, needed);
+        MiFreePool(modules);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        return STATUS_SUCCESS;
+    }
     case SystemProcessorPerformanceInformation:
     {
         /* CUI-6 (sem_ps/times): one entry per CPU — one CPU here (Art. 3).

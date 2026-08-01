@@ -59,6 +59,10 @@ typedef struct OBJECT_TYPE
     ACCESS_MASK genericWrite;
     ACCESS_MASK genericExecute;
     ACCESS_MASK genericAll;
+    /* CUI-6: the small per-type id SystemHandleInformation entries carry.
+     * Types are C globals with no registry, so the id is minted lazily by
+     * ObpTypeIndex — the ONE assignment site (G11). 0 = not yet minted. */
+    UCHAR typeIndex;
 } OBJECT_TYPE, *POBJECT_TYPE;
 
 extern OBJECT_TYPE ObpDirectoryType;
@@ -176,6 +180,14 @@ NTSTATUS ObpDuplicateIntoTable(POBP_HANDLE_TABLE parent, HANDLE source, POBP_HAN
  * recount handleCount across every table without seeing the entry layout. */
 void ObpVerifyHandleTable(POBP_HANDLE_TABLE table);
 PVOID ObpHandleTableObjectAt(POBP_HANDLE_TABLE table, ULONG index);
+
+/* CUI-6: one occupied slot's facts for the SystemHandleInformation snapshot
+ * (lock held; the entry layout stays private to handle.c). FALSE = empty. */
+BOOLEAN ObpHandleTableEntryAt(POBP_HANDLE_TABLE table, ULONG index, HANDLE *handleOut,
+                              PVOID *bodyOut, ACCESS_MASK *accessOut, ULONG *attributesOut);
+
+/* CUI-6: the type's snapshot id, minted on first ask (lock held). */
+UCHAR ObpTypeIndex(POBJECT_TYPE type);
 
 /* Map a caller's desired access onto a type: generic/maximum-allowed bits
  * grant the type's full mask (Se is always-allow, docs/05); specific bits

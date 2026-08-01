@@ -188,6 +188,41 @@ PVOID ObpHandleTableObjectAt(POBP_HANDLE_TABLE table, ULONG index)
     return ((POBP_HANDLE_ENTRY)table->entries)[index].body;
 }
 
+/* CUI-6: one occupied slot's facts for the SystemHandleInformation
+ * snapshot (lock held); the handle value is index-derived exactly as
+ * ObpCreateHandle mints it. */
+BOOLEAN ObpHandleTableEntryAt(POBP_HANDLE_TABLE table, ULONG index, HANDLE *handleOut,
+                              PVOID *bodyOut, ACCESS_MASK *accessOut, ULONG *attributesOut)
+{
+    if (table->entries == 0 || index >= table->capacity)
+    {
+        return FALSE;
+    }
+    POBP_HANDLE_ENTRY entry = &((POBP_HANDLE_ENTRY)table->entries)[index];
+    if (entry->body == 0)
+    {
+        return FALSE;
+    }
+    *handleOut = ObpHandleFromIndex(index);
+    *bodyOut = entry->body;
+    *accessOut = entry->grantedAccess;
+    *attributesOut = entry->attributes;
+    return TRUE;
+}
+
+/* CUI-6: the type's snapshot id, minted lazily — THE one assignment site
+ * (G11); types are C globals with no central registry to number them at. */
+UCHAR ObpTypeIndex(POBJECT_TYPE type)
+{
+    static UCHAR ObpNextTypeIndex = 1;
+    ASSERT(KiIsDispatcherLockHeld());
+    if (type->typeIndex == 0)
+    {
+        type->typeIndex = ObpNextTypeIndex++;
+    }
+    return type->typeIndex;
+}
+
 /* One table's internal invariants: inUse agrees with the occupied slots, and
  * every occupied slot points at a live object whose bookkeeping at least
  * accounts for this handle. The cross-table handleCount recount lives in the
