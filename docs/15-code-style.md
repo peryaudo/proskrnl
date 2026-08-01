@@ -83,9 +83,16 @@ make format          # clang-format -i over all kernel C (uses the llvm keg)
 ```
 
 clang-format governs *layout*; the *naming* rules above are enforced by **`make tidy`**
-(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`) — the kernel is
-warning-clean, and CI/review should keep it so. A `PostToolUse` hook formats edited files
-automatically.
+(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`) — keep new code
+warning-clean, and read a firing check before silencing it. A `PostToolUse` hook formats
+edited files automatically.
+
+**CI gates the result, not the intent.** `.github/workflows/lint.yml` runs `make format` and
+`make tidy` on a fresh checkout and fails if either one *modifies a tracked file* — i.e. a
+commit that was made without running them is red. `make tidy` runs without `--fix`, so its
+leg asserts that every TU still parses under `.clang-tidy` and that nothing was rewritten; it
+does **not** gate on warning count (the tree is not warning-clean yet, and `WarningsAsErrors`
+is empty on purpose).
 
 **Tests are exempt.** `tests/` follows **Wine test style** (snake_case functions like `ok`,
 `START_TEST`, `ntapi_out`; distilled from `dlls/*/tests`), and forward-declares Windows API

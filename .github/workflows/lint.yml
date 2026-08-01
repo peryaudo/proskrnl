@@ -1,0 +1,85 @@
+# CI gate: the committed tree is already formatted — running the style tools
+# over a checkout must leave it byte-for-byte unchanged.
+#
+# Separate workflow from test.yml on purpose: this one needs nothing but the
+# apt clang toolchain and two header-only submodules, so it answers in a
+# minute or two instead of waiting behind the QEMU/Wine build and the boot
+# suites. Merge blocking is repo configuration, not workflow code — add this
+# workflow's `lint` check to the same branch protection rule that gates
+# `test` (Settings -> Rules -> Rulesets; the check appears in the picker
+# after this workflow has run once).
+#
+# The runner's clang-format/clang-tidy come from the SAME apt packages
+# tools/setup_linux.sh installs on Ubuntu 24.04 (clang-format 18), so a
+# contributor who ran the documented setup cannot be red here for a version
+# difference. A macOS contributor on Homebrew's llvm can be; that is what the
+# printed diff is for.
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # `make tidy` compiles each TU for real, so it needs the two header-only
+      # includes in CFLAGS (Limine's boot protocol, Flanterm's API). Nothing
+      # else from third_party is on the include path, and no kernel source
+      # includes a generated header, so there is no build and no cache here.
+      # .gitmodules pins third_party/wine by SSH URL and the runner has no SSH
+      # key, hence the HTTPS rewrite (same as test.yml).
+      - name: Fetch the header-only submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 \
+            third_party/limine-protocol third_party/flanterm
+
+      - name: Install the clang toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang clang-format clang-tidy make python3
+
+      # clang-format -i over kernel/arch/drivers/fs/user/smss (docs/15).
+      # A non-empty diff means the commit was made without `make format`.
+      - name: make format leaves the tree unchanged
+        run: |
+          make format
+          if ! git diff --exit-code; then
+            echo "::error::clang-format rewrote the tree — run 'make format' and commit the result (docs/15-code-style.md)."
+            exit 1
+          fi
+
+      # clang-tidy is invoked without --fix, so this leg is two assertions:
+      # every TU still parses under the checked-in .clang-tidy (a config or
+      # include error fails the target), and the run touched no file. It does
+      # NOT gate on warning COUNT — the tree is not warning-clean today, and
+      # WarningsAsErrors is empty in .clang-tidy on purpose.
+      - name: make tidy leaves the tree unchanged
+        run: |
+          make tidy
+          if ! git diff --exit-code; then
+            echo "::error::clang-tidy rewrote the tree — commit the result."
+            exit 1
+          fi
+
+      # Neither target may leave build droppings behind either: an untracked
+      # file here means a tool wrote outside the tracked tree.
+      - name: No untracked files left behind
+        run: |
+          untracked="$(git status --porcelain --untracked-files=normal)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo "::error::the style tools left files behind in the working tree."
+            exit 1
+          fi
