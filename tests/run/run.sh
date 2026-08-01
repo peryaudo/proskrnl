@@ -1120,6 +1120,35 @@ files() {
     return 1
 }
 
+# The CUI-6 acceptance (docs/02 "a handle-inheritance redirect chain
+# round-trips; a timeit-style tool reads real process/thread times; a
+# restricted-token launch works"): the files() shape — a virgin console
+# image driven by console_expect.py, which types the three baked tools and
+# greps their markers off the serial log.
+cui6() {
+    rm -f "$ROOT/build/proskrnl-console.hdd"
+    make -C "$ROOT" console-img >/dev/null
+    local img="$ROOT/build/tests/cui6.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local sock="$ROOT/build/tests/cui6.sock" log="$ROOT/build/tests/cui6.log"
+    SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI6=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        if grep -qE '\[KTEST\] module cmd.exe PASS' "$log"; then
+            echo "== cui6: PASS (times + handle-redirect + restricted-token under cmd.exe) =="
+            return 0
+        fi
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+    echo "== cui6: FAIL (see $log) =="
+    return 1
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -1763,6 +1792,7 @@ case "$MODE" in
     scm)      scm ;;
     procs)    procs ;;
     files)    files ;;
+    cui6)     cui6 ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;

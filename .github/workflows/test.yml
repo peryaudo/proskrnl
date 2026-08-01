@@ -163,6 +163,9 @@ jobs:
       - name: CUI-5 ren/move/replace under cmd.exe (tests/run/run.sh files)
         run: tests/run/run.sh files
 
+      - name: CUI-6 times/handle-redirect/restricted-token under cmd.exe (tests/run/run.sh cui6)
+        run: tests/run/run.sh cui6
+
       # GUI-1: the verdict is a picture. The guest paints through
       # \Device\Fb0 and reports what it painted; the pixels come back out of
       # QEMU's screendump and a QMP-injected key comes back out of
