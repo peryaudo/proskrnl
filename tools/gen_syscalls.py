@@ -224,6 +224,8 @@ IMPLEMENTED = [
     "NtMakePermanentObject",
     "NtOpenTimer",
     "NtSignalAndWaitForSingleObject",
+    "NtQueueApcThreadEx2",
+    "NtAlertResumeThread",
 ]
 
 
