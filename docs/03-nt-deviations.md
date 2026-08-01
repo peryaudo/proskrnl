@@ -764,13 +764,21 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
   terminated) — the contract a job-driving build tool cleans up with.
   `NtQueryInformationJobObject` (accounting, pid list, limit read-back),
   `NtTerminateJobObject`, `NtOpenJobObject` and `NtIsProcessInJob` are
-  served as of CUI-4 too, pinned by `sem_ps/job_query.c`. Still loud-unbuilt:
-  job nesting (re-assigning a process already in a job), the other limit
-  flags, and per-job CPU/IO accounting — the time and IO counters read back
-  **zero** rather than a fabricated number (Art. 12); the counts that are
-  real (assigned / active / terminated) are what consumers read. Exit
-  packets always say `JOB_OBJECT_MSG_EXIT_PROCESS`; the ABNORMAL_EXIT flavor
-  is unbuilt (no consumer distinguishes them).
+  served as of CUI-4 too, pinned by `sem_ps/job_query.c`. **CUI-6 finished
+  the surface** (`sem_ps/job_nest.c`): job nesting (assigning a process
+  already in one job to a fresh job makes it a child — wineserver's
+  parent/child chain, with counts and the pid list recursing the subtree and
+  `NtIsProcessInJob` recursive), create-time membership with silent/explicit
+  breakaway (`PROCESS_CREATE_FLAGS_BREAKAWAY`), and **real per-job CPU-time
+  accounting** (the subtree's exited totals plus live members' tick counters
+  — pinned `beyond_oracle`, since the oracle zero-fills the same field).
+  Still validated-and-stored-not-enforced: the working-set/time/memory limit
+  flags — the oracle reads `limit_flags` nowhere but the breakaway and
+  kill-on-close bits, so inventing enforcement would exceed the boundary
+  (Art. 1). IO counters stay **zero** — no per-process IO accounting exists
+  (Art. 12), never a fabricated number. Exit packets always say
+  `JOB_OBJECT_MSG_EXIT_PROCESS`; the ABNORMAL_EXIT flavor is unbuilt (no
+  consumer distinguishes them).
 - **`ProcessWineMakeProcessSystem` is real** (`kernel/ps/query.c`): the
   global shutdown event exists and its user-process count is maintained,
   but on-target it realistically never signals (conhost and cmd live for

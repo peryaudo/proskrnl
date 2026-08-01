@@ -197,6 +197,15 @@ void PspNotifyProcessExit(PEPROCESS process);
 /* Drop the job membership at process delete. */
 void PspUnlinkProcessFromJob(PEPROCESS process);
 
+/* CUI-6 (kernel/ps/job.c): the create-time job inheritance. The check runs
+ * BEFORE the child is built — a requested breakaway the creator's immediate
+ * job forbids fails creation (STATUS_ACCESS_DENIED); the join walks the
+ * creator's job chain and enrolls the child in the first capturing job,
+ * honouring silent/explicit breakaway. Both read the creator from the
+ * current thread's process. */
+NTSTATUS PspCheckCreatorBreakaway(BOOLEAN breakawayRequested);
+void PspJoinCreatorJob(PEPROCESS child, BOOLEAN breakawayRequested);
+
 /* CUI-3 (kernel/ps/query.c): the ProcessWineMakeProcessSystem accounting —
  * count a user process at birth; un-count at exit (called from
  * PspNotifyProcessExit) so the global shutdown event can signal when the
@@ -240,6 +249,9 @@ typedef struct PSP_CREATE_OPTIONS
     const char *commandLine;                 /* kernel launches with params == 0 only:
                                               * CommandLine for the default parameter block
                                               * (0 = the image path, the M7 shape) */
+    BOOLEAN breakawayRequested;              /* CUI-6: PROCESS_CREATE_FLAGS_BREAKAWAY — the
+                                              * child asked to break away from the creator's
+                                              * job (join honours it per the job's limits) */
 } PSP_CREATE_OPTIONS;
 
 /* The stack scans in the wedge/fault dumps keep only values that could be a

@@ -16,11 +16,15 @@
  * the shared foreign-terminate primitive, so members reap themselves at
  * their ring-3 edges (kernel/ps/process.c).
  *
- * Deliberately unbuilt (loud, docs/03): the remaining limit ENFORCEMENT
- * (flags validated and stored — services.exe only sets breakaway bits, which
- * gate behaviour proskrnl does not have), job nesting (assigning a process
- * already in another job), and the per-job CPU/IO accounting (the time and
- * IO counters read back zero rather than a fabricated number).
+ * CUI-6 finishes the surface: job NESTING (assign a process already in one
+ * job to a fresh job, making it a child — wineserver's parent/child_job
+ * chain), create-time membership with silent/explicit BREAKAWAY, and real
+ * per-job CPU-time accounting (the subtree's exited totals plus live
+ * members' tick counters). The remaining limit ENFORCEMENT (working-set,
+ * time and memory caps) stays validated-and-stored, not enforced: the
+ * oracle reads limit_flags nowhere but the breakaway/kill-on-close bits, so
+ * inventing enforcement would exceed the boundary (Art. 1, docs/03). IO
+ * counters stay zero — no per-process IO accounting exists (Art. 12).
  */
 #include "kernel/ps/ps.h"
 #include "kernel/io/io.h"
@@ -39,15 +43,32 @@ typedef struct EJOB
     ULONG_PTR completionKey;
     LIST_ENTRY processList; /* EPROCESS.jobLinks (members may be dead but
                              * undeleted; jobExitNotified marks those) */
-    LONG activeCount;       /* members that have not exited yet */
+    LONG activeCount;       /* members that have not exited yet, chain-propagated */
     LONG totalCount;        /* CUI-4: members ever assigned (accounting) */
+    /* CUI-6: nesting (wineserver's parent/child_job_list shape). A child
+     * job holds a reference to its parent (so the parent outlives it); the
+     * parent's childJobList links children without a reference. */
+    struct EJOB *parent;       /* referenced; 0 for a root job */
+    LIST_ENTRY childJobList;   /* child EJOB.parentJobEntry */
+    LIST_ENTRY parentJobEntry; /* on parent->childJobList */
+    /* CUI-6: real per-job CPU accounting — the exited members' totals,
+     * rolled up the parent chain at member exit; a query adds the live
+     * subtree members' current counters. */
+    uint64_t exitedKernelTime100ns;
+    uint64_t exitedUserTime100ns;
 } EJOB, *PEJOB;
 
 /* CUI-4: terminate every live member (shared by NtTerminateJobObject and the
- * kill-on-close path). Each target reaps itself at its ring-3 edge — nothing
+ * kill-on-close path). CUI-6: recurse into child jobs first, as wineserver
+ * terminate_job does. Each target reaps itself at its ring-3 edge — nothing
  * is torn down here (Art. 3). */
 static void PspTerminateJobMembers(PEJOB job, NTSTATUS exitStatus)
 {
+    for (PLIST_ENTRY child = job->childJobList.Flink; child != &job->childJobList;
+         child = child->Flink)
+    {
+        PspTerminateJobMembers(CONTAINING_RECORD(child, EJOB, parentJobEntry), exitStatus);
+    }
     for (PLIST_ENTRY entry = job->processList.Flink; entry != &job->processList;
          entry = entry->Flink)
     {
@@ -57,6 +78,82 @@ static void PspTerminateJobMembers(PEJOB job, NTSTATUS exitStatus)
             PspTerminateProcessThreads(member, exitStatus);
         }
     }
+}
+
+/* CUI-6: is `process` in `job`'s subtree? Recursive over child jobs, exactly
+ * the wineserver process_in_job shape. Lock-free under Art. 3. */
+static BOOLEAN PspProcessInJobTree(PEJOB job, PEPROCESS process)
+{
+    for (PLIST_ENTRY child = job->childJobList.Flink; child != &job->childJobList;
+         child = child->Flink)
+    {
+        if (PspProcessInJobTree(CONTAINING_RECORD(child, EJOB, parentJobEntry), process))
+        {
+            return TRUE;
+        }
+    }
+    return process->job == job;
+}
+
+/* CUI-6: THE add-process-to-job engine (wineserver add_job_process),
+ * shared by NtAssignProcessToJobObject and the create-time auto-join (G11).
+ * Handles nesting: a process already in job P assigned to a fresh, unused
+ * job J makes J a child of P; assigning it under an unrelated, used job is
+ * STATUS_ACCESS_DENIED. Counts propagate up to (but not through) the common
+ * parent, matching the server. */
+static NTSTATUS PspAddProcessToJob(PEJOB job, PEPROCESS process)
+{
+    if (process->job == job)
+    {
+        return STATUS_SUCCESS; /* already a member (server no-op) */
+    }
+    PEJOB commonParent = process->job;
+    if (commonParent != 0)
+    {
+        if (job->parent != 0)
+        {
+            /* job already nests somewhere: only legal if the process's job
+             * is an ancestor of `job` (re-parenting within one chain). */
+            PEJOB ancestor = job->parent;
+            while (ancestor != 0 && ancestor != commonParent)
+            {
+                ancestor = ancestor->parent;
+            }
+            if (ancestor != commonParent)
+            {
+                return STATUS_ACCESS_DENIED;
+            }
+            ObDereferenceObject(commonParent); /* the process's stale job ref */
+        }
+        else
+        {
+            if (job->totalCount != 0)
+            {
+                return STATUS_ACCESS_DENIED; /* can't make a used job a child */
+            }
+            /* Transfer the process's job reference to job->parent. */
+            job->parent = commonParent;
+            InsertTailList(&commonParent->childJobList, &job->parentJobEntry);
+        }
+        RemoveEntryList(&process->jobLinks); /* leave the old process_list */
+    }
+
+    ObfReferenceObject(job); /* the member's reference (G11: PspDeleteProcess) */
+    process->job = job;
+    process->jobExitNotified = FALSE;
+    InsertTailList(&job->processList, &process->jobLinks);
+
+    for (PEJOB j = job; j != commonParent; j = j->parent)
+    {
+        j->activeCount++;
+        j->totalCount++;
+        if (j->port != 0)
+        {
+            IopPostCompletionPacket(j->port, j->completionKey, (ULONG_PTR)process->uniqueProcessId,
+                                    STATUS_SUCCESS, JOB_OBJECT_MSG_NEW_PROCESS);
+        }
+    }
+    return STATUS_SUCCESS;
 }
 
 /* Fires on the LAST HANDLE close (kernel/ob/handle.c), in thread context and
@@ -74,9 +171,17 @@ static void PspCloseJob(PVOID body)
 static void PspDeleteJob(PVOID body)
 {
     PEJOB job = body;
-    /* Members hold a job reference each (dropped in PspDeleteProcess), so a
-     * job with members cannot reach its delete procedure. */
+    /* Members hold a job reference each (dropped in PspDeleteProcess), and a
+     * child job holds a reference to its parent, so neither a job with
+     * members nor a parent with live children can reach its delete
+     * procedure. */
     ASSERT(IsListEmpty(&job->processList));
+    ASSERT(IsListEmpty(&job->childJobList));
+    if (job->parent != 0)
+    {
+        RemoveEntryList(&job->parentJobEntry); /* leave the parent's child list */
+        ObDereferenceObject(job->parent);      /* drop the parent reference */
+    }
     if (job->port != 0)
     {
         ObDereferenceObject(job->port);
@@ -106,6 +211,7 @@ NTSTATUS NtCreateJobObject(PHANDLE handleOut, ACCESS_MASK desiredAccess,
         PEJOB job = body;
         memset(job, 0, sizeof(*job));
         InitializeListHead(&job->processList);
+        InitializeListHead(&job->childJobList);
     }
     return status;
 }
@@ -262,34 +368,8 @@ NTSTATUS NtAssignProcessToJobObject(HANDLE jobHandle, HANDLE processHandle)
         referenced = TRUE;
     }
 
-    if (process->job == job)
-    {
-        status = STATUS_SUCCESS; /* already a member (wineserver no-op) */
-    }
-    else if (process->job != 0)
-    {
-        /* Job NESTING is unbuilt: refuse loudly rather than emulate the
-         * parent-chain rules (Art. 12; no baked caller re-assigns). */
-        DbgPrint("job: process already in a job (nesting unbuilt)\n");
-        status = STATUS_NOT_IMPLEMENTED;
-    }
-    else
-    {
-        ObfReferenceObject(job); /* the member's reference (G11: dropped in
-                                  * PspDeleteProcess) */
-        process->job = job;
-        process->jobExitNotified = FALSE;
-        InsertTailList(&job->processList, &process->jobLinks);
-        job->activeCount++;
-        job->totalCount++;
-        if (job->port != 0)
-        {
-            IopPostCompletionPacket(job->port, job->completionKey,
-                                    (ULONG_PTR)process->uniqueProcessId, STATUS_SUCCESS,
-                                    JOB_OBJECT_MSG_NEW_PROCESS);
-        }
-        status = STATUS_SUCCESS;
-    }
+    /* CUI-6: nesting is built now — the shared engine (G11). */
+    status = PspAddProcessToJob(job, process);
 
     if (referenced)
     {
@@ -297,6 +377,41 @@ NTSTATUS NtAssignProcessToJobObject(HANDLE jobHandle, HANDLE processHandle)
     }
     ObDereferenceObject(job);
     return status;
+}
+
+/* CUI-6: does the creator's IMMEDIATE job forbid a requested breakaway?
+ * (wineserver DECL_HANDLER(new_process) early check.) */
+NTSTATUS PspCheckCreatorBreakaway(BOOLEAN breakawayRequested)
+{
+    PEJOB job = KeGetCurrentThread()->process->job;
+    if (job != 0 && breakawayRequested &&
+        (job->limitFlags &
+         (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)) == 0)
+    {
+        return STATUS_ACCESS_DENIED;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* CUI-6: enrol a freshly-created child in the creator's job chain
+ * (wineserver DECL_HANDLER(new_process) chain walk): the child joins the
+ * first job up the chain that neither is silent-breakaway nor was explicitly
+ * broken away from. Must run before the child is readied. */
+void PspJoinCreatorJob(PEPROCESS child, BOOLEAN breakawayRequested)
+{
+    for (PEJOB job = KeGetCurrentThread()->process->job; job != 0; job = job->parent)
+    {
+        BOOLEAN silent = (job->limitFlags & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) != 0;
+        BOOLEAN explicitBreakaway =
+            breakawayRequested && (job->limitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK) != 0;
+        if (!silent && !explicitBreakaway)
+        {
+            NTSTATUS status = PspAddProcessToJob(job, child);
+            ASSERT(NT_SUCCESS(status)); /* a fresh child is in no job: always succeeds */
+            (void)status;
+            return;
+        }
+    }
 }
 
 /* Called once from each process-exit path (PspExitCurrentProcess and the
@@ -316,16 +431,27 @@ void PspNotifyProcessExit(PEPROCESS process)
         return;
     }
     process->jobExitNotified = TRUE;
-    if (job->port != 0)
+    /* CUI-6: roll the dying member's CPU time into its immediate job's
+     * exited totals (a query sums up the subtree). By the time this runs on
+     * the last-thread exit path, every thread has retired into the process's
+     * exited totals (kernel/ps/thread.c PspRetireCurrentThread), so those
+     * carry the whole process. Then walk the parent chain posting packets and
+     * draining counts, exactly as wineserver release_job_process does. */
+    job->exitedKernelTime100ns += process->exitedKernelTime100ns;
+    job->exitedUserTime100ns += process->exitedUserTime100ns;
+    for (PEJOB j = job; j != 0; j = j->parent)
     {
-        IopPostCompletionPacket(job->port, job->completionKey, (ULONG_PTR)process->uniqueProcessId,
-                                STATUS_SUCCESS, JOB_OBJECT_MSG_EXIT_PROCESS);
-    }
-    ASSERT(job->activeCount > 0);
-    if (--job->activeCount == 0 && job->port != 0)
-    {
-        IopPostCompletionPacket(job->port, job->completionKey, 0, STATUS_SUCCESS,
-                                JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO);
+        if (j->port != 0)
+        {
+            IopPostCompletionPacket(j->port, j->completionKey, (ULONG_PTR)process->uniqueProcessId,
+                                    STATUS_SUCCESS, JOB_OBJECT_MSG_EXIT_PROCESS);
+        }
+        ASSERT(j->activeCount > 0);
+        if (--j->activeCount == 0 && j->port != 0)
+        {
+            IopPostCompletionPacket(j->port, j->completionKey, 0, STATUS_SUCCESS,
+                                    JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO);
+        }
     }
 }
 
@@ -348,6 +474,65 @@ void PspUnlinkProcessFromJob(PEPROCESS process)
     RemoveEntryList(&process->jobLinks);
     process->job = 0;
     ObDereferenceObject(job);
+}
+
+/* CUI-6: collect the subtree's live-member pids (wineserver get_job_pids —
+ * child jobs first, then this job's own list). Writes up to `capacity`; keeps
+ * counting past it so the caller learns the true assigned count. */
+static void PspCollectJobPids(PEJOB job, ULONG_PTR *out, ULONG capacity, ULONG *written,
+                              ULONG *assigned)
+{
+    for (PLIST_ENTRY child = job->childJobList.Flink; child != &job->childJobList;
+         child = child->Flink)
+    {
+        PspCollectJobPids(CONTAINING_RECORD(child, EJOB, parentJobEntry), out, capacity, written,
+                          assigned);
+    }
+    for (PLIST_ENTRY entry = job->processList.Flink; entry != &job->processList;
+         entry = entry->Flink)
+    {
+        PEPROCESS member = CONTAINING_RECORD(entry, EPROCESS, jobLinks);
+        if (member->jobExitNotified)
+        {
+            continue;
+        }
+        (*assigned)++;
+        if (*written < capacity)
+        {
+            out[(*written)++] = (ULONG_PTR)member->uniqueProcessId;
+        }
+    }
+}
+
+/* CUI-6: the subtree's total CPU time — each job's exited-member totals plus
+ * its live members' current tick counters, recursively. */
+static void PspCollectJobTime(PEJOB job, uint64_t *kernel100ns, uint64_t *user100ns)
+{
+    *kernel100ns += job->exitedKernelTime100ns;
+    *user100ns += job->exitedUserTime100ns;
+    for (PLIST_ENTRY entry = job->processList.Flink; entry != &job->processList;
+         entry = entry->Flink)
+    {
+        PEPROCESS member = CONTAINING_RECORD(entry, EPROCESS, jobLinks);
+        if (member->jobExitNotified)
+        {
+            continue;
+        }
+        *kernel100ns += member->exitedKernelTime100ns;
+        *user100ns += member->exitedUserTime100ns;
+        for (PLIST_ENTRY t = member->threadListHead.Flink; t != &member->threadListHead;
+             t = t->Flink)
+        {
+            PKTHREAD tcb = CONTAINING_RECORD(t, ETHREAD, threadListEntry)->tcb;
+            *kernel100ns += tcb->kernelTime100ns;
+            *user100ns += tcb->userTime100ns;
+        }
+    }
+    for (PLIST_ENTRY child = job->childJobList.Flink; child != &job->childJobList;
+         child = child->Flink)
+    {
+        PspCollectJobTime(CONTAINING_RECORD(child, EJOB, parentJobEntry), kernel100ns, user100ns);
+    }
 }
 
 /* --- the CUI-4 query/terminate/open/membership surface --------------------- */
@@ -407,6 +592,14 @@ NTSTATUS NtQueryInformationJobObject(HANDLE handle, JOBOBJECTINFOCLASS infoClass
         info.BasicInfo.TotalProcesses = (DWORD)job->totalCount;
         info.BasicInfo.ActiveProcesses = (DWORD)job->activeCount;
         info.BasicInfo.TotalTerminatedProcesses = (DWORD)(job->totalCount - job->activeCount);
+        /* CUI-6: real per-job CPU time — the subtree's exited totals plus
+         * live members' current counters (sem_ps/job_nest, beyond_oracle;
+         * the oracle zero-fills). IO counters stay zero: no per-process IO
+         * accounting exists (Art. 12 — a fabricated number would be worse). */
+        uint64_t kernel100ns = 0, user100ns = 0;
+        PspCollectJobTime(job, &kernel100ns, &user100ns);
+        info.BasicInfo.TotalKernelTime.QuadPart = (LONGLONG)kernel100ns;
+        info.BasicInfo.TotalUserTime.QuadPart = (LONGLONG)user100ns;
         memcpy(buffer, &info, needed);
         status = STATUS_SUCCESS;
         break;
@@ -436,20 +629,9 @@ NTSTATUS NtQueryInformationJobObject(HANDLE handle, JOBOBJECTINFOCLASS infoClass
         JOBOBJECT_BASIC_PROCESS_ID_LIST *out = buffer;
         ULONG assigned = 0;
         ULONG written = 0;
-        for (PLIST_ENTRY entry = job->processList.Flink; entry != &job->processList;
-             entry = entry->Flink)
-        {
-            PEPROCESS member = CONTAINING_RECORD(entry, EPROCESS, jobLinks);
-            if (member->jobExitNotified)
-            {
-                continue; /* already exited: not a live member */
-            }
-            assigned++;
-            if (written < capacity)
-            {
-                out->ProcessIdList[written++] = (ULONG_PTR)member->uniqueProcessId;
-            }
-        }
+        /* CUI-6: recurse the subtree — a nested child's members are in the
+         * parent's list too (wineserver get_job_pids). */
+        PspCollectJobPids(job, out->ProcessIdList, capacity, &written, &assigned);
         out->NumberOfAssignedProcesses = assigned;
         out->NumberOfProcessIdsInList = written;
         if (returnLength != 0)
@@ -558,8 +740,8 @@ NTSTATUS NtIsProcessInJob(HANDLE processHandle, HANDLE jobHandle)
                                            ExGetPreviousMode(), &jobBody, 0);
         if (NT_SUCCESS(status))
         {
-            status =
-                (PVOID)process->job == jobBody ? STATUS_PROCESS_IN_JOB : STATUS_PROCESS_NOT_IN_JOB;
+            status = PspProcessInJobTree(jobBody, process) ? STATUS_PROCESS_IN_JOB
+                                                           : STATUS_PROCESS_NOT_IN_JOB;
             ObDereferenceObject(jobBody);
         }
     }
