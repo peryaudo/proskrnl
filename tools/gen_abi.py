@@ -2377,6 +2377,7 @@ def gen_ntseapi(wine: Path) -> str:
             "SECURITY_WORLD_RID",
             "SECURITY_LOCAL_RID",
             "SECURITY_INTERACTIVE_RID",
+            "SECURITY_ANONYMOUS_LOGON_RID",
             "SECURITY_LOGON_IDS_RID",
             "SECURITY_AUTHENTICATED_USER_RID",
             "SECURITY_LOCAL_SYSTEM_RID",

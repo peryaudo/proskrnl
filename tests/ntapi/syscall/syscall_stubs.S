@@ -2108,6 +2108,30 @@ NtFilterToken:
     add $0x78, %rsp
     ret
 
+    .global NtAdjustGroupsToken
+NtAdjustGroupsToken:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x63, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtImpersonateAnonymousToken
+NtImpersonateAnonymousToken:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xa3, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif

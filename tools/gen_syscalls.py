@@ -228,6 +228,8 @@ IMPLEMENTED = [
     "NtAlertResumeThread",
     "NtSetInformationToken",
     "NtFilterToken",
+    "NtAdjustGroupsToken",
+    "NtImpersonateAnonymousToken",
 ]
 
 
