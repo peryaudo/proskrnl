@@ -34,6 +34,11 @@ void FatReleaseVolumeGate(PFAT_VOLUME volume)
 {
     ASSERT(KeReadStateEvent(&volume->ioGate) == 0); /* held: release must pair */
     KeSetEvent(&volume->ioGate, 0, FALSE);
+    /* Now OUTSIDE the gate: drop the object references dir-watch
+     * completions retired while it was held (docs/20 R7 — a last-reference
+     * teardown here may re-enter a gated wrapper, which is legal now: this
+     * thread queues like any other acquirer). */
+    IoReapRetiredDirWatches();
 }
 
 /* --- sector I/O ------------------------------------------------------------ */

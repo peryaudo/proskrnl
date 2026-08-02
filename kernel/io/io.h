@@ -254,6 +254,15 @@ NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
  * span (a section-create cache fill is not cancellable I/O). */
 BOOLEAN IoSyncIoCancelled(void);
 
+/* CUI-8 (docs/20 R7; PR #95 review round 2, F3): release the object
+ * references of dir watches whose completion ran under the volume gate.
+ * IopCompleteDirWatch retires them instead of dereferencing inline — a
+ * last reference dropped under the gate runs a teardown that re-enters a
+ * gated wrapper and self-deadlocks (docs/20 §10.5.1). Called from the
+ * gate's release path (FatReleaseVolumeGate) and the non-gated sweeps;
+ * must NEVER be called with the volume gate held. */
+void IoReapRetiredDirWatches(void);
+
 /* CUI-5 NtNotifyChangeDirectoryFile (kernel/io/notify.c): the FS mutation
  * sites report changes here (cheap when no watch is armed); the cancel and
  * close paths sweep the kernel-owned watch list. */
