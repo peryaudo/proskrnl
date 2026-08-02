@@ -101,6 +101,17 @@ static NTSTATUS FatBatchTransfer(FAT_IO_BATCH *batch, BOOLEAN isWrite, PFAT_VOLU
 NTSTATUS FatEnsureCache(PFAT_FCB fcb)
 {
     ASSERT(!fcb->isDirectory);
+    if (fcb->entryDeleted)
+    {
+        /* Delete-on-close teardown ran (FatVfsCleanupLocked) — reachable
+         * only by a syscall that was parked between its gated steps when
+         * the last handle closed. The chain is freed and the slot is
+         * reusable, so a reload would read freed clusters and a later
+         * metadata flush would resurrect the entry (or clobber the slot's
+         * new owner). NT's answer for I/O after cleanup is
+         * STATUS_FILE_CLOSED (fastfat's IrpContext check). */
+        return STATUS_FILE_CLOSED;
+    }
     if (fcb->cacheLoaded)
     {
         return STATUS_SUCCESS;
@@ -806,6 +817,14 @@ static NTSTATUS FatVfsGetCacheLocked(PFILE_OBJECT file, PMI_PAGE_CACHE *cache)
 static NTSTATUS FatVfsWritebackRangeLocked(PFILE_OBJECT file, uint64_t offset, uint64_t length)
 {
     PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->entryDeleted)
+    {
+        /* Teardown ran while the caller was parked between its gated steps:
+         * the cache is gone (FatWritebackRange would trip its cacheLoaded
+         * ASSERT — a ring-3-reachable panic) and there is no entry left to
+         * persist to. */
+        return STATUS_FILE_CLOSED;
+    }
     LARGE_INTEGER now = FatCurrentNtTime();
     FatNtTimeToFatTime(now, &fcb->writeDate, &fcb->writeTime);
     NTSTATUS status = FatWritebackRange(fcb, offset, length);
@@ -828,6 +847,10 @@ static NTSTATUS FatVfsSetEndOfFileLocked(PFILE_OBJECT file, uint64_t endOfFile)
     if (fcb->isDirectory)
     {
         return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (fcb->entryDeleted)
+    {
+        return STATUS_FILE_CLOSED; /* teardown ran mid-syscall; see above */
     }
     NTSTATUS status = FatSetFileSize(fcb, endOfFile);
     if (NT_SUCCESS(status))
@@ -1182,8 +1205,12 @@ static NTSTATUS FatVfsSetVolumeLabelLocked(PIO_DEVICE device, const WCHAR *label
  * GetCache is the one exception shape (docs/20 R5): the cache-hot read path
  * — every NtReadFile after the first — stays gate-free on a double-checked
  * `cacheLoaded`, sound because the flag transitions only under the gate,
- * flag reads/writes are atomic under the one-lock model, and a loaded cache
- * is never unloaded while the FCB lives. */
+ * flag reads/writes are atomic under the one-lock model, and the one
+ * unloader while the FCB lives — delete-on-close teardown — clears the flag
+ * under the gate, so a stale TRUE is impossible: the pointer a hot reader
+ * takes is consumed before its next park (rw.c parks only inside gated
+ * ops), and a reader arriving after teardown falls to the gated path, whose
+ * entryDeleted guard answers STATUS_FILE_CLOSED. */
 
 static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
                              PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
