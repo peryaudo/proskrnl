@@ -6,7 +6,10 @@
 #
 #   run.sh oracle     Run every test .exe under the pinned Wine. This is the
 #                     SPEC gate: it must be all-green before you may implement
-#                     the corresponding kernel code.
+#                     the corresponding kernel code. The cases are fanned out
+#                     over $ORACLE_JOBS workers, one disposable wineprefix
+#                     each; the log is replayed in source order afterwards, so
+#                     a parallel run reads exactly like a sequential one.
 #
 #   run.sh proskrnl   Bake the SAME .exes (plus the Wine PE userland) into a
 #                     disk image under C:\ntapi and boot it: the kernel's
@@ -110,6 +113,14 @@ export WINEPREFIX
 # override makes setupapi's registration warn-and-continue instead.
 : "${WINEDLLOVERRIDES:=mscoree,mshtml=}"
 export WINEDLLOVERRIDES
+
+# Fan-out width of the oracle leg (see oracle() for what each worker gets).
+# One worker per core: the work is one short-lived process per case, so it
+# scales until the cores run out. ORACLE_JOBS=1 is the strictly sequential
+# run — the fallback where nproc is absent, and what to set when a case is
+# under suspicion of depending on its neighbours.
+: "${ORACLE_JOBS:=$(nproc 2>/dev/null || echo 1)}"
+ORACLE_OUT="$BUILD/ntapi/out"   # per-case captured output; oracle() owns it
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # The pinned Wine import libraries the test .exes link against (built by
@@ -286,22 +297,114 @@ oracle_fontdiff() {
     return 0
 }
 
+# One oracle case, start to finish: build it, run it, and leave EVERYTHING it
+# printed in $ORACLE_OUT/<name>. Nothing is echoed here — the log is replayed
+# in source order after the workers finish (below), so a parallel run reads
+# byte-for-byte like a sequential one. A build failure leaves no output file,
+# which is how the grading loop tells "never built" from "ran and failed";
+# build_test has already named the source on stderr by then.
+oracle_one() {   # $1 = .c path
+    local src="$1" name exe
+    name="$(basename "${src%.c}")"
+    exe="$(build_test "$src")" || return 1
+    "$WINE" "$exe" >"$ORACLE_OUT/$name" 2>&1 || true
+}
+
+# Worker $1 of $2: every ($2)th case, starting at $1. Round-robin rather than
+# contiguous blocks because the cases are not equal-cost and their order is
+# alphabetical by bucket — a block split would hand one worker all of sem_ps.
+oracle_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
+    local i="$1" stride="$2"; shift 2
+    local srcs=("$@") rc=0
+    while (( i < ${#srcs[@]} )); do
+        oracle_one "${srcs[$i]}" || rc=1
+        i=$(( i + stride ))
+    done
+    return "$rc"
+}
+
 # The oracle leg. The three checks above are not tests/ntapi cases, so a
 # filtered run only reaches one when it is named: `run.sh oracle fontdiff`.
+#
+# The ntapi cases are FANNED OUT across $ORACLE_JOBS workers: each is an
+# independent PE process whose only shared state is the prefix, and the leg
+# was the longest in CI at 8.5 minutes of almost pure process startup. Each
+# worker gets its OWN wineprefix — cloned from the base one, which is created
+# first and alone — so a parallel run is not merely faster but semantically
+# identical to a sequential one: the cases address absolute paths under C:\
+# and keys under \Registry\Machine\Software, wineserver's namespace is
+# per-prefix, and NtQuerySystemInformation's process list is what the
+# neighbours would otherwise pollute. Isolation is the whole reason this is a
+# clone and not a shared prefix; ORACLE_JOBS=1 restores the strictly
+# sequential run (and uses the base prefix alone, as before).
 oracle() {
     check_subtests cmd-standalone fontsmoke fontdiff
     mkdir -p "$BUILD/ntapi"
     build_helper_dll >/dev/null
-    local fails=0
-    while read -r src; do
-        local name exe out
+
+    local srcs=() src
+    while read -r src; do srcs+=("$src"); done < <(all_tests)
+    local total=${#srcs[@]} jobs="$ORACLE_JOBS" w clone pids=() pid prefixes=()
+    local fails=0 buildfail=0 name
+    (( total == 0 )) && { echo "run.sh: the oracle leg selected no test" >&2; exit 2; }
+    (( jobs > total )) && jobs=$total
+    (( jobs < 1 )) && jobs=1
+
+    rm -rf "$ORACLE_OUT"
+    mkdir -p "$ORACLE_OUT"
+
+    # The FIRST case runs alone, in the base prefix, whatever the fan-out
+    # width: a prefix is created by the first wine process to want one, and
+    # two of those racing through wine.inf is the one way this leg can eat
+    # its own tail. It also gives the clones below something worth cloning —
+    # after it, prefix creation has happened exactly once.
+    oracle_one "${srcs[0]}" || buildfail=1
+
+    if (( buildfail == 0 && jobs > 1 && total > 1 )); then
+        prefixes=("$WINEPREFIX")
+        for (( w = 1; w < jobs; w++ )); do
+            clone="$WINEPREFIX-$w"
+            # Kept between runs: a clone is cheap next to creating a prefix
+            # but it is not free (~800 MB), and each is as disposable as the
+            # base prefix it came from.
+            [[ -d "$clone" ]] || cp -a "$WINEPREFIX" "$clone"
+            prefixes+=("$clone")
+        done
+
+        for (( w = 0; w < jobs; w++ )); do
+            # Starts run w+1, so case 0 — already run above — is not repeated
+            # and every later index belongs to exactly one worker.
+            WINEPREFIX="${prefixes[$w]}" oracle_worker "$(( w + 1 ))" "$jobs" "${srcs[@]}" &
+            pids+=("$!")
+        done
+        for pid in "${pids[@]}"; do wait "$pid" || buildfail=1; done
+    elif (( buildfail == 0 )); then
+        for (( w = 1; w < total; w++ )); do
+            oracle_one "${srcs[$w]}" || { buildfail=1; break; }
+        done
+    fi
+
+    # A worker fails only when a case failed to BUILD (a test's own verdict is
+    # graded below), and that is fatal to the whole run: without the check, a
+    # run that compiled nothing would replay the previous build's output and
+    # read as green — the fabrication build_test exists to prevent.
+    if (( buildfail )); then
+        echo "run.sh: a test failed to build — no oracle verdict" >&2
+        exit 1
+    fi
+
+    # Replay in source order, and grade. Missing output means the case never
+    # ran at all, which is a failure of the harness, not a FAIL verdict.
+    for src in "${srcs[@]}"; do
         name="$(basename "${src%.c}")"
-        exe="$(build_test "$src")" || exit 1
-        out="$("$WINE" "$exe" 2>&1 || true)"
-        echo "$out"
+        if [[ ! -f "$ORACLE_OUT/$name" ]]; then
+            echo "run.sh: no output for '$name' — the oracle leg did not run it" >&2
+            exit 1
+        fi
+        cat "$ORACLE_OUT/$name"
         # tr -d '\r': tolerate CRLF if a console handle translates.
-        echo "$out" | tr -d '\r' | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
-    done < <(all_tests)
+        tr -d '\r' < "$ORACLE_OUT/$name" | grep -qE "^\[KTEST\] $name PASS$" || fails=$((fails+1))
+    done
 
     selected cmd-standalone && { oracle_cmd_standalone || fails=$((fails+1)); }
     selected fontsmoke     && { oracle_fontsmoke     || fails=$((fails+1)); }
