@@ -659,6 +659,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     }
 
     ULONG segmentCount = (ULONG)(((uint64_t)length + PAGE_SIZE - 1) / PAGE_SIZE);
+    FILE_SEGMENT_ELEMENT *segmentCopy = 0;
     if (segmentCount != 0)
     {
         status =
@@ -668,6 +669,20 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             ObDereferenceObject(file);
             return status;
         }
+        /* Capture the segment ARRAY to kernel memory: GetCache and
+         * PrepareWrite below park, so reading segments[i] from the caller's
+         * memory after them would ride the stale entry probe — a sibling's
+         * unmap turns that read into a ring-0 fault whose unwind skips the
+         * file dereference (the rw.c re-probe rule; PR #95 review round 2,
+         * F1). The per-page BUFFERS the elements name are re-probed fresh
+         * at each use below. No park separates this probe from the copy. */
+        segmentCopy = MiAllocatePool(segmentCount * sizeof(FILE_SEGMENT_ELEMENT));
+        if (segmentCopy == 0)
+        {
+            ObDereferenceObject(file);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memcpy(segmentCopy, segments, segmentCount * sizeof(FILE_SEGMENT_ELEMENT));
     }
 
     /* The cache is resolved BEFORE the offset, because the
@@ -676,8 +691,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
     {
-        ObDereferenceObject(file);
-        return status;
+        goto out;
     }
 
     uint64_t offset = (uint64_t)file->currentByteOffset.QuadPart;
@@ -688,8 +702,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         status = KiProbeForRead(byteOffset, sizeof(*byteOffset), sizeof(uint64_t));
         if (!NT_SUCCESS(status))
         {
-            ObDereferenceObject(file);
-            return status;
+            goto out;
         }
         memcpy(&stackOffset, byteOffset, sizeof(stackOffset));
         if (stackOffset.QuadPart >= 0)
@@ -712,8 +725,8 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             /* Every other negative offset is refused rather than folded to
              * 0 -- including the -2 FILE_USE_FILE_POINTER_POSITION sentinel,
              * which NtReadFile/NtWriteFile also refuse. */
-            ObDereferenceObject(file);
-            return STATUS_INVALID_PARAMETER;
+            status = STATUS_INVALID_PARAMETER;
+            goto out;
         }
     }
 
@@ -731,8 +744,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             status = file->device->ops->PrepareWrite(file, &offset, length, writeToEnd);
             if (!NT_SUCCESS(status))
             {
-                ObDereferenceObject(file);
-                return status;
+                goto out;
             }
         }
         else
@@ -745,18 +757,17 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
              * sem_file/zero_length_write.c rule). */
             if (length != 0 && offset + length > cache->fileSize)
             {
-                ObDereferenceObject(file);
-                return STATUS_INVALID_DEVICE_REQUEST;
+                status = STATUS_INVALID_DEVICE_REQUEST;
+                goto out;
             }
         }
         for (ULONG i = 0; i < segmentCount; i++)
         {
-            const void *page = (const void *)segments[i].Buffer;
+            const void *page = (const void *)segmentCopy[i].Buffer;
             status = KiProbeForRead((void *)(uintptr_t)page, PAGE_SIZE, 1);
             if (!NT_SUCCESS(status))
             {
-                ObDereferenceObject(file);
-                return status;
+                goto out;
             }
             MiCacheWrite(cache, offset + (uint64_t)i * PAGE_SIZE, page, PAGE_SIZE);
         }
@@ -765,13 +776,11 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             status = file->device->ops->WritebackRange(file, offset, length);
             if (!NT_SUCCESS(status))
             {
-                ObDereferenceObject(file);
-                return status;
+                goto out;
             }
         }
         status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, length);
-        ObDereferenceObject(file);
-        return status; /* gather returns the final status (oracle shape) */
+        goto out; /* gather returns the final status (oracle shape) */
     }
 
     /* Scatter: short reads across EOF; nothing at all is END_OF_FILE. */
@@ -795,12 +804,11 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             {
                 chunk = avail - position;
             }
-            void *page = (void *)segments[position / PAGE_SIZE].Buffer;
+            void *page = (void *)segmentCopy[position / PAGE_SIZE].Buffer;
             status = KiProbeForWrite(page, (SIZE_T)chunk, 1);
             if (!NT_SUCCESS(status))
             {
-                ObDereferenceObject(file);
-                return status;
+                goto out;
             }
             MiCacheRead(cache, offset + position, page, chunk);
             position += chunk;
@@ -808,8 +816,15 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         total = avail;
     }
     IopCompleteRequest(iosb, event, finalStatus, (ULONG_PTR)total);
+    status = STATUS_PENDING; /* scatter always answers PENDING (oracle shape) */
+
+out:
+    if (segmentCopy != 0)
+    {
+        MiFreePool(segmentCopy);
+    }
     ObDereferenceObject(file);
-    return STATUS_PENDING; /* scatter always answers PENDING (oracle shape) */
+    return status;
 }
 
 NTSTATUS NtReadFileScatter(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcContext,
