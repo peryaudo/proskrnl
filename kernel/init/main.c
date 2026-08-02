@@ -491,6 +491,15 @@ static void KiTestMainThread(void *context)
              preventiveFailures);
     KiVerifyKernelState();
 
+    /* The issue #96 D interleaving search: two-thread compositions replayed
+     * under enumerated schedules, judged by linearizability. After
+     * PREVENTIVE, because it leans on everything above it (the volume gate,
+     * the drain, the ledgers) already being sound. */
+    int schedFailures = kmt_run_sched_explore();
+    DbgPrint(schedFailures == 0 ? "[KTEST] SCHED PASS\n" : "[KTEST] SCHED FAIL failures=%d\n",
+             schedFailures);
+    KiVerifyKernelState();
+
     /* The standing ABI-conformance probe: ring-3 conventions asserted every
      * boot (tests/boot/abi_probe.c). Before the M7 clients, so a broken
      * convention names itself here rather than surfacing as an M7 crash. */

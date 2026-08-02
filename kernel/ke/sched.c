@@ -183,12 +183,108 @@ void KiReadyThread(PKTHREAD thread)
     KiReadySummary |= 1U << thread->priority;
 }
 
+/* --- deterministic schedule strings (issue #96 D; contract in ke.h) -------- */
+
+static const UCHAR *KiScheduleString; /* 0 == off, the default for every run */
+static ULONG KiScheduleLength;
+static KI_SCHEDULE_TRACE KiScheduleTrace;
+
+void KiArmSchedule(const UCHAR *bytes, ULONG length)
+{
+    ASSERT(KiScheduleString == 0); /* not nestable */
+    memset(&KiScheduleTrace, 0, sizeof(KiScheduleTrace));
+    KiScheduleLength = length;
+    KiScheduleString = bytes;
+}
+
+void KiDisarmSchedule(PKI_SCHEDULE_TRACE traceOut)
+{
+    KiScheduleString = 0;
+    KiScheduleLength = 0;
+    if (traceOut != 0)
+    {
+        *traceOut = KiScheduleTrace;
+    }
+}
+
+/* Take the `index`-th ready thread in priority order (0 == what the default
+ * policy would pick). Unlinks it wherever it sits and repairs the summary. */
+static PKTHREAD KiTakeReadyThread(ULONG index)
+{
+    for (int level = KI_PRIORITY_LEVELS - 1; level >= 0; level--)
+    {
+        for (PLIST_ENTRY entry = KiReadyQueues[level].Flink; entry != &KiReadyQueues[level];
+             entry = entry->Flink)
+        {
+            if (index-- != 0)
+            {
+                continue;
+            }
+            PKTHREAD thread = CONTAINING_RECORD(entry, KTHREAD, readyListEntry);
+            RemoveEntryList(entry);
+            if (IsListEmpty(&KiReadyQueues[level]))
+            {
+                KiReadySummary &= ~(1U << level);
+            }
+            return thread;
+        }
+    }
+    KiPanic("KiTakeReadyThread: index past the end of the ready set");
+}
+
+/* How many threads are ready right now — the branching factor of this
+ * scheduling decision. Only walked while a schedule is armed. */
+static ULONG KiCountReadyThreads(void)
+{
+    ULONG count = 0;
+    for (int level = 0; level < KI_PRIORITY_LEVELS; level++)
+    {
+        for (PLIST_ENTRY entry = KiReadyQueues[level].Flink; entry != &KiReadyQueues[level];
+             entry = entry->Flink)
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
 /* Dequeue the highest-priority ready thread, or 0 when all queues are empty. */
 static PKTHREAD KiSelectNextThread(void)
 {
     if (KiReadySummary == 0)
     {
         return 0;
+    }
+    /* The one predicate the default path pays for the exploration harness. */
+    if (KiScheduleString != 0)
+    {
+        ULONG options = KiCountReadyThreads();
+        ULONG index = 0;
+        if (options > 1)
+        {
+            ULONG choice = KiScheduleTrace.choiceCount;
+            if (choice < KI_SCHEDULE_MAX_CHOICES)
+            {
+                if (choice < KiScheduleLength)
+                {
+                    index = KiScheduleString[choice] % options;
+                    KiScheduleTrace.consumed++;
+                }
+                KiScheduleTrace.options[choice] = (UCHAR)options;
+                KiScheduleTrace.chosen[choice] = (UCHAR)index;
+                KiScheduleTrace.choiceCount++;
+                KiScheduleTrace.preemptions += index != 0 ? 1 : 0;
+            }
+            else
+            {
+                /* Past the trace's capacity the run still completes, on the
+                 * default policy — but say so, because a truncated trace
+                 * means the harness's enumeration was not exhaustive and a
+                 * silent cap reads as "explored everything" (Art. 12). */
+                KiScheduleTrace.overflowed = TRUE;
+            }
+        }
+        return KiTakeReadyThread(index);
     }
     int level = 31 - __builtin_clz(KiReadySummary);
     PKTHREAD thread =
