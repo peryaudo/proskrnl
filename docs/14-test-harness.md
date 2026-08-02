@@ -145,15 +145,25 @@ The oracle leg is one short-lived process per case and nothing else, so it runs
 `ORACLE_JOBS` (default: `nproc`) of them at a time. Two properties make that a speedup
 rather than a new source of flakes:
 
-- **Each worker gets its own wineprefix.** The first case runs alone in the base prefix —
-  creating a prefix is what one wine process does when it finds none, and two racing
-  through `wine.inf` is the one way this leg could eat its own tail — and the workers get
-  `cp -a` clones of it (`build/tests/wineprefix-<n>`, kept between runs, as disposable as
-  the base). The cases address absolute paths under `C:\` and keys under
-  `\Registry\Machine\Software`, wineserver's namespace is per-prefix, and
+- **Each worker gets its own wineprefix, created — never copied.** Worker *n* uses
+  `build/tests/wineprefix-<n>`, worker 0 the base prefix, and wine creates each one the
+  way it creates the sequential leg's. The cases address absolute paths under `C:\` and
+  keys under `\Registry\Machine\Software`, wineserver's namespace is per-prefix, and
   `NtQuerySystemInformation`'s process list is exactly what a neighbour would pollute; a
-  clone makes a parallel run *semantically* identical to a sequential one, not merely
-  faster.
+  private prefix makes a parallel run *semantically* identical to a sequential one, not
+  merely faster. Cloning a finished prefix with `cp -a` looks equivalent and is not — in a
+  copy, `sem_file/ea_volume`'s `\??\C:` open fails `STATUS_OBJECT_NAME_NOT_FOUND`
+  deterministically, while a *created* prefix at the same path passes. Creation costs ~8 s
+  and the workers pay it concurrently, so the copy bought nothing anyway. Concurrent
+  creation is safe because each worker owns its prefix; the race worth avoiding is two
+  processes creating the *same* one.
+- **Cases that measure the machine run alone** (`$ORACLE_SERIAL_CASES`, currently
+  `times`). `sem_ps/times.c` asserts the processor idle counter grew across a 60 ms sleep;
+  the oracle's Wine answers that out of the host's `/proc/stat`, so on a runner whose every
+  core is busy running the rest of this leg it does not. A private prefix cannot isolate a
+  host-global quantity — the neighbours *are* the load — so those cases are held back and
+  run one at a time once the workers are done. A name belongs on that list only if it can
+  say which host-global quantity it measures.
 - **The log is replayed in source order.** Each case's whole output is captured to
   `build/tests/ntapi/out/<name>` and `cat` back in the order `all_tests` produced, so the
   transcript and the `[KTEST]` grading are byte-for-byte what a sequential run printed.
