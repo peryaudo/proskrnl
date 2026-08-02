@@ -330,12 +330,12 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     }
 
     PMI_PAGE_CACHE cache;
-    /* CUI-8 (docs/19 §9.9): every disk-touching leg of the write — the
-     * fill, the extension's zero-fill, the writeback — parks; one marked
-     * span makes them cancellable (STATUS_CANCELLED, IOSB untouched, the
-     * cancel_data_io.c boundary). MiCacheWrite sits inside the span only
-     * because splitting it costs more than the benign self-healing
-     * IopEnterSyncIo already performs on a recovery-unwound span. */
+    /* CUI-8 (docs/19 §9.9): the disk-touching legs before the cache
+     * mutates — the fill, the append/extend placement with its zero-fill —
+     * park inside one marked span and are cancellable (STATUS_CANCELLED,
+     * IOSB untouched, the cancel_data_io.c boundary). The cache write and
+     * its writeback are one durability unit: once the cache is modified
+     * the operation is too late to cancel (fs/fat32 FatWritebackRange). */
     IopEnterSyncIo(iosb);
     status = file->device->ops->GetCache(file, &cache);
     if (!NT_SUCCESS(status))
@@ -343,31 +343,49 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         goto abandonSyncIo;
     }
 
-    if (writeToEnd)
-    {
-        offset = cache->fileSize; /* append semantics: EOF at write time */
-    }
-
     /* A write past EOF extends the file; the gap reads as zeroes (the
      * cache's new pages are zero-filled, and the FS zeroed the clusters).
-     * A cache device with no SetEndOfFile cannot be resized -- FbOps is one
-     * (the scanout is a fixed mode), and its Create ignores grantedAccess
-     * too, so this was the same NULL dispatch one write past EOF away. */
-    if (offset + length > cache->fileSize)
+     * PrepareWrite decides the placement — the append offset and the
+     * grow-only extension — in ONE serialization hold, against the size as
+     * it is NOW: this thread may have parked since GetCache's snapshot,
+     * and a stale extend decision pushed through SetEndOfFile silently
+     * truncated a concurrent writer's extension (data loss). */
+    if (file->device->ops->PrepareWrite != 0)
     {
-        if (file->device->ops->SetEndOfFile == 0)
-        {
-            status = STATUS_INVALID_DEVICE_REQUEST;
-            goto abandonSyncIo;
-        }
-        status = file->device->ops->SetEndOfFile(file, offset + length);
+        status = file->device->ops->PrepareWrite(file, &offset, length, writeToEnd);
         if (!NT_SUCCESS(status))
         {
             goto abandonSyncIo;
         }
     }
+    else
+    {
+        /* No PrepareWrite: the device has no blocking points, so the
+         * snapshot cannot go stale — and no way to grow either. FbOps is
+         * exactly that shape (the scanout is a fixed mode), and its Create
+         * ignores grantedAccess, so a write one byte past EOF lands here. */
+        if (writeToEnd)
+        {
+            offset = cache->fileSize;
+        }
+        if (offset + length > cache->fileSize)
+        {
+            status = STATUS_INVALID_DEVICE_REQUEST;
+            goto abandonSyncIo;
+        }
+    }
     if (length != 0)
     {
+        /* The cancel point: a cancel that lands in any park after this
+         * check is too late — skipping the writeback with the cache
+         * already modified left readers seeing bytes the caller was told
+         * were NOT written, and a remount losing them (no dirty tracking
+         * exists to reconcile the divergence later). */
+        if (IoSyncIoCancelled())
+        {
+            status = STATUS_CANCELLED;
+            goto abandonSyncIo;
+        }
         MiCacheWrite(cache, offset, buffer, length);
         status = file->device->ops->WritebackRange(file, offset, length);
         if (!NT_SUCCESS(status))
@@ -573,6 +591,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     }
 
     uint64_t offset = (uint64_t)file->currentByteOffset.QuadPart;
+    BOOLEAN writeToEnd = FALSE;
     if (byteOffset != 0)
     {
         LARGE_INTEGER stackOffset;
@@ -593,8 +612,10 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
              * honours (third_party/wine dlls/ntdll/unix/unix_private.h).
              * Silently keeping offset 0 for a negative value meant
              * NtWriteFileGather with this sentinel overwrote the START of
-             * the file instead of appending (docs/review-2026-07 §9). */
-            offset = cache->fileSize;
+             * the file instead of appending (docs/review-2026-07 §9).
+             * Resolved by PrepareWrite below, under the FS serialization —
+             * a snapshot taken here goes stale across its parks. */
+            writeToEnd = TRUE;
         }
         else
         {
@@ -608,22 +629,32 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
 
     if (isWrite)
     {
-        if (offset + length > cache->fileSize)
+        /* Placement under the FS serialization, exactly as NtWriteFile:
+         * the append offset and the grow-only extension come from
+         * PrepareWrite's own re-read of the size, never from the cache
+         * snapshot above. A device without PrepareWrite cannot be resized
+         * (the unresizable-cache-device case: FILE_NO_INTERMEDIATE_BUFFERING
+         * + NtWriteFileGather used to reach SetEndOfFile's NULL pointer by
+         * this route). */
+        if (file->device->ops->PrepareWrite != 0)
         {
-            /* Same unresizable-cache-device case as NtWriteFile: the gate at
-             * the top of this function checks GetCache but not SetEndOfFile,
-             * so FILE_NO_INTERMEDIATE_BUFFERING + NtWriteFileGather reached
-             * the NULL pointer by this route instead. */
-            if (file->device->ops->SetEndOfFile == 0)
-            {
-                ObDereferenceObject(file);
-                return STATUS_INVALID_DEVICE_REQUEST;
-            }
-            status = file->device->ops->SetEndOfFile(file, offset + length);
+            status = file->device->ops->PrepareWrite(file, &offset, length, writeToEnd);
             if (!NT_SUCCESS(status))
             {
                 ObDereferenceObject(file);
                 return status;
+            }
+        }
+        else
+        {
+            if (writeToEnd)
+            {
+                offset = cache->fileSize;
+            }
+            if (offset + length > cache->fileSize)
+            {
+                ObDereferenceObject(file);
+                return STATUS_INVALID_DEVICE_REQUEST;
             }
         }
         for (ULONG i = 0; i < segmentCount; i++)

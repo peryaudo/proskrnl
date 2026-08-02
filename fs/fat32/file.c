@@ -192,17 +192,19 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length)
     FAT_IO_BATCH batch;
     batch.count = 0;
     NTSTATUS status = STATUS_SUCCESS;
+    /* Deliberately NOT cancel-polled (unlike FatEnsureCache's fill): a
+     * writeback runs only after its caller has already mutated the cache,
+     * and there is no dirty tracking to reconcile a half-written range
+     * later — a landed cancel that stopped the issuing here left readers
+     * and mapped views seeing bytes the caller was told were NOT written,
+     * and a remount losing them (PR #95 review, bug 3). Once the cache is
+     * modified the operation is too late to cancel: the whole range goes
+     * out (NT's too-late-to-cancel writeback semantics), which also
+     * guarantees a torn frame a concurrent in-flight DMA read raced is
+     * repaired by this writer's own pass. The write path's cancel point is
+     * BEFORE its cache mutation (kernel/io/rw.c). */
     for (uint64_t position = firstByte; position < endByte && cluster != 0 && NT_SUCCESS(status);)
     {
-        /* CUI-8 (docs/19 §9.9): as in FatEnsureCache — stop issuing on a
-         * landed cancel; sectors already written stay written (NT's
-         * too-late-to-cancel writeback semantics), and the flush below
-         * still awaits them (docs/20 R4). */
-        if (IoSyncIoCancelled())
-        {
-            status = STATUS_CANCELLED;
-            break;
-        }
         uint64_t clusterSector = FatClusterToSector(volume, cluster);
         ULONG sectorInCluster = (ULONG)((position % clusterBytes) / FAT_SECTOR_SIZE);
         while (sectorInCluster < volume->sectorsPerCluster && position < endByte)
@@ -253,8 +255,23 @@ NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize)
         memset(zero, 0, sizeof(zero));
         for (ULONG i = haveClusters; i < wantClusters; i++)
         {
-            ULONG fresh;
-            status = FatAllocateCluster(volume, last, &fresh);
+            ULONG fresh = 0;
+            /* CUI-8 (docs/19 §9.9): the extension's zero-fill is the write
+             * path's longest issuing loop (a seek-to-4GB write zero-fills
+             * every gap cluster) — poll the landed-cancel mark between
+             * clusters so it is not the whole cancel latency. The unwind
+             * below takes back the partial extension, so a cancel leaves
+             * the volume exactly as it was. Inert outside a marked span
+             * (IoSyncIoCancelled is FALSE there): a create's truncate or a
+             * set-EOF from NtSetInformationFile never sees it. */
+            if (IoSyncIoCancelled())
+            {
+                status = STATUS_CANCELLED;
+            }
+            else
+            {
+                status = FatAllocateCluster(volume, last, &fresh);
+            }
             if (NT_SUCCESS(status))
             {
                 if (firstFresh == 0)
@@ -862,6 +879,39 @@ static NTSTATUS FatVfsSetEndOfFileLocked(PFILE_OBJECT file, uint64_t endOfFile)
     return status;
 }
 
+static NTSTATUS FatVfsPrepareWriteLocked(PFILE_OBJECT file, uint64_t *offsetInOut, ULONG length,
+                                         BOOLEAN writeToEnd)
+{
+    PFAT_FCB fcb = FatFcbOf(file);
+    if (fcb->isDirectory)
+    {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (fcb->entryDeleted)
+    {
+        return STATUS_FILE_CLOSED; /* teardown ran mid-syscall; see FatEnsureCache */
+    }
+    NTSTATUS status = FatEnsureCache(fcb);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t offset = writeToEnd ? fcb->fileSize : *offsetInOut;
+    if (offset + length > fcb->fileSize)
+    {
+        /* Grow-only by construction: the target is past the size read
+         * under this same gate hold, so a stale pre-park snapshot can
+         * never truncate a concurrent writer's extension. */
+        status = FatSetFileSize(fcb, offset + length);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    *offsetInOut = offset;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS FatVfsGetInfoLocked(PFILE_OBJECT file, IO_FILE_INFO *info)
 {
     PFAT_FCB fcb = FatFcbOf(file);
@@ -1283,6 +1333,16 @@ static NTSTATUS FatVfsSetEndOfFile(PFILE_OBJECT file, uint64_t endOfFile)
     return status;
 }
 
+static NTSTATUS FatVfsPrepareWrite(PFILE_OBJECT file, uint64_t *offsetInOut, ULONG length,
+                                   BOOLEAN writeToEnd)
+{
+    PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAcquireVolumeGate(volume);
+    NTSTATUS status = FatVfsPrepareWriteLocked(file, offsetInOut, length, writeToEnd);
+    FatReleaseVolumeGate(volume);
+    return status;
+}
+
 static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
 {
     PFAT_VOLUME volume = FatFcbOf(file)->volume;
@@ -1355,6 +1415,7 @@ const IO_VFS_OPS FatVfsOps = {
     .GetCache = FatVfsGetCache,
     .WritebackRange = FatVfsWritebackRange,
     .SetEndOfFile = FatVfsSetEndOfFile,
+    .PrepareWrite = FatVfsPrepareWrite,
     .GetInfo = FatVfsGetInfo,
     .SetBasic = FatVfsSetBasic,
     .SetDisposition = FatVfsSetDisposition,
