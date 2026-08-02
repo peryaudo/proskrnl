@@ -996,6 +996,13 @@ NTSTATUS FatFlushFcbMetadata(PFAT_FCB fcb)
     {
         return STATUS_SUCCESS; /* the root has no entry (spec §6.6) */
     }
+    if (fcb->entryDeleted)
+    {
+        /* The entry is gone and its slot is reusable (FatDeleteEntry):
+         * rewriting it would resurrect the deleted entry or clobber
+         * whatever new file claimed the slot. Nothing to persist. */
+        return STATUS_SUCCESS;
+    }
     unsigned char entry[32];
     NTSTATUS status = FatReadDirSlot(fcb->parent, fcb->dirEntryIndex, entry);
     if (!NT_SUCCESS(status))
