@@ -81,7 +81,17 @@ void KeClearEvent(PRKEVENT event)
  * non-queuing retry loop can be starved against indefinitely. A queued
  * wait has neither problem, and the park is bounded: the holder's own
  * device waits complete by DEVICE action harvested at the tick/idle
- * drains, so every gate hold ends. */
+ * drains, so every gate hold ends.
+ *
+ * KNOWN LIMIT — priority inversion (docs/20 §11.2): "every gate hold ends"
+ * assumes the holder RUNS once its device wait completes. Under the strict
+ * highest-first scheduler with no boost (the drain's KeSetEvent passes
+ * increment 0), a compute-bound thread above the holder's priority keeps a
+ * readied holder off the CPU indefinitely, and every waiter of any
+ * priority hangs behind it — a shape the pre-CUI-8 spin-synchronous FS
+ * could not produce. Tolerated while every baked workload is
+ * single-priority; the exit is a boost at the drain's wake (NT's
+ * IO_DISK_INCREMENT shape), taken when a workload convicts it. */
 void KiAcquireEventGate(PRKEVENT event)
 {
     ASSERT(event->header.type == KI_OBJECT_SYNCHRONIZATION_EVENT);

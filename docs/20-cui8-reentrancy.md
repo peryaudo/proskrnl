@@ -300,3 +300,67 @@ three survivors) is where the value was. Second, §1–§8 were written by the s
 as the implementation, and the sweep that convicted them was blind to them by
 construction. That blindness is the active ingredient: a reviewer who has read the
 census re-derives the census. Any future amendment should be produced the same way.
+
+## 11. The second review (PR #95, round 2)
+
+A third independent pass over the finished branch, run after §10's repairs landed.
+Method per §10.6: the fifth question ("what spans more than one gated operation?")
+asked of every path that touches a caller pointer or drops a reference.
+
+### 11.1 CONFIRMED → repaired (the commit series following this section)
+
+- **F1 — the scatter/gather segment ARRAY rode the stale entry probe.**
+  `IopSegmentedTransfer` re-probed each per-page buffer after the parks (the §9 rule,
+  applied) but kept reading `segments[i]` from the CALLER'S array — GetCache and
+  PrepareWrite park in between, a sibling's unmap turns the read into a ring-0 fault,
+  and the unwind skips the file dereference: a permanent FILE_OBJECT/FCB leak,
+  ring-3 triggerable. **Repaired:** the array is captured to pool at its probe (the
+  `fsPathCopy` precedent), one cleanup exit frees it.
+- **F2 — the probe-goes-stale rule was applied to the data path and missed the query
+  direction.** Every fill of a caller buffer after a now-gated op —
+  `NtQueryInformationFile` after `GetInfo`, `NtQueryDirectoryFile`'s per-entry fills
+  and back-patches, `NtQueryVolumeInformationFile`, `IopCreateFile`'s IOSB stores,
+  `IopFlushBuffers`' final IOSB — wrote through the entry probe. Same fault → unwind →
+  reference leak. **Repaired:** `IopCompleteRequest` re-validates the IOSB itself (one
+  authority — a vanished IOSB skips the store, the status still returns); the query
+  paths re-probe after their last park, with no park between probe and store.
+- **F3 — §10.5.1 driven to ground: R7 was stated but not applied at the site that
+  motivated it.** `IopCompleteDirWatch` dropped event/issuer/owner references under
+  the volume gate; a last reference there runs a teardown that re-enters a gated
+  wrapper and self-deadlocks. **Repaired:** completions retire the watch to a list;
+  `IoReapRetiredDirWatches` drops the references outside the gate
+  (`FatReleaseVolumeGate` and the non-gated sweeps), pop-first so a recursive reap is
+  safe.
+- **F5 — a zero-length write extended the file.** The extend decision
+  `offset + length > fileSize` was length-blind, so a 0-byte write at a far offset
+  allocated and zero-filled every gap cluster where NT leaves the file untouched.
+  **Repaired:** `length != 0` guards the three extend sites; pinned by
+  `sem_file/zero_length_write.c` (green on the oracle before the kernel change, G5).
+
+### 11.2 CONFIRMED → recorded as a standing limitation (not repaired)
+
+- **Priority inversion on the gates.** New with CUI-8: a gate holder parks
+  mid-operation. Under strict highest-first scheduling with no wake boost (the drain's
+  `KeSetEvent` passes increment 0), a compute-bound middle-priority thread keeps a
+  readied lower-priority holder off the CPU forever, and every gate waiter of any
+  priority hangs behind it. §5's liveness rows (and `event.c`'s gate comment) argued
+  the dying-thread and equal-priority cases only; this one is real and untested
+  because every baked workload runs single-priority. The exit is a priority boost at
+  the drain's wake (NT's `IO_DISK_INCREMENT` shape) — its own commit with its own
+  measurement, taken when a multi-priority workload convicts it. Until then this row
+  is the record that the gap is known, not missed.
+
+### 11.3 Scoping recorded elsewhere
+
+- **The stream path takes no `syncIoLock`** — NT's `IopLockFileObject` serializes
+  synchronous-handle I/O for pipes too; here only the seekable data leg is
+  serialized. Deliberate, now recorded in `docs/03` "CUI-8 async notes".
+
+### 11.4 Leads for the next sweep (raised, not driven to ground)
+
+- The F2 class was closed for the sites round 2 enumerated plus the ones adjacent to
+  them (`IopCreateFile`, `IopFlushBuffers`). A full census of every post-park store
+  through an entry probe — ioctl paths, Set-direction info classes, the EA pair —
+  has not been run; `IopCompleteRequest`'s self-validation covers any of them that
+  funnel through it, and the recovery frame still backstops the rest (as a leak, not
+  a hang). The next blocking-point milestone should run the census.
