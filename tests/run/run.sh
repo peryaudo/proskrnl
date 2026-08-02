@@ -1407,11 +1407,24 @@ cui8() {
     fi
 
     # (c) determinism (docs/19 §8.1): identical boots, identical verdicts.
-    # Three [KTEST] lines carry timing-dependent MEASUREMENTS, not verdicts,
+    # Some [KTEST] lines carry timing-dependent MEASUREMENTS, not verdicts,
     # and are excluded: the blk depth line (its mean varies with harvest
-    # timing), the timer line (prints the live tick count), and the sweep
-    # line (prints how many idle sweeps happened to run).
-    local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob'
+    # timing), the timer line (prints the live tick count), the sweep line
+    # (prints how many idle sweeps happened to run), and the `sched <name>
+    # runs=N maxchoices=M` lines — the linearizability search reports how much
+    # of the schedule space it walked, and the stress boot in (d) below walks
+    # MORE of it by construction: zeroing the await spin makes every await a
+    # parking point, and a parking point is a choice point. Measured:
+    #
+    #   normal  [KTEST] sched append runs=6 maxchoices=2 bound=2
+    #   stress  [KTEST] sched append runs=7 maxchoices=3 bound=2
+    #
+    # with `test_linearizable_append_race PASS` and `SCHED PASS` identical on
+    # both sides. The VERDICT is what must match; a wider search reaching the
+    # same verdict is the knob working, not a determinism violation. (The
+    # sched lines arrived after this filter was written and CI had not reached
+    # this leg since, so the mismatch showed up the first time it ran.)
+    local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob|^\[KTEST\] sched '
     local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
     rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
