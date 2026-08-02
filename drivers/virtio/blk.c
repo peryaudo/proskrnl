@@ -88,6 +88,14 @@ static uint64_t VioBlkDepthSamples;
 static uint64_t VioBlkDataBouncePhysical;
 static char *VioBlkDataBounce;
 
+/* The bounce page's exclusivity is enforced by a DISTANT module: every
+ * production caller reaches the sector API under the fat32 volume gate
+ * (docs/20 R1), and nothing local said so until a second entrant — arriving
+ * while the first is parked in VioBlkAwait — would have silently swapped
+ * payloads. Assert the discipline where the buffer lives (docs/20 §10.2):
+ * loud beats wrong (Art. 12). */
+static BOOLEAN VioBlkBounceOwned;
+
 BOOLEAN VioBlkInitialize(void)
 {
     /* §3.1.1 steps 1-4: blk is transitional 0x1001 or modern 0x1040+2
@@ -400,6 +408,8 @@ static NTSTATUS VioBlkTransfer(uint32_t type, uint64_t sectorLba, uint32_t secto
                                void *buffer)
 {
     ASSERT((uint64_t)sectorCount * VIO_BLK_SECTOR_SIZE <= PAGE_SIZE);
+    ASSERT(!VioBlkBounceOwned); /* a second entrant would swap payloads */
+    VioBlkBounceOwned = TRUE;
     if (type == VIO_BLK_T_OUT)
     {
         memcpy(VioBlkDataBounce, buffer, (uint64_t)sectorCount * VIO_BLK_SECTOR_SIZE);
@@ -409,6 +419,7 @@ static NTSTATUS VioBlkTransfer(uint32_t type, uint64_t sectorLba, uint32_t secto
     {
         memcpy(buffer, VioBlkDataBounce, (uint64_t)sectorCount * VIO_BLK_SECTOR_SIZE);
     }
+    VioBlkBounceOwned = FALSE;
     return status;
 }
 
