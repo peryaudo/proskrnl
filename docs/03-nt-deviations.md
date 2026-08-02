@@ -1120,6 +1120,17 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   while the other thread overlaps as computation or parks. Machine-internal (latency
   only, no boundary edge); escalation is `docs/18`'s locking split, whose first
   consumer would be a second volume or Net-1's independent device.
+- **The synchronous-handle file-object lock covers the seekable data leg only**
+  (`kernel/io/rw.c` `syncIoLock`): NT's `IopLockFileObject` serializes ALL I/O on a
+  synchronous handle, pipes and devices included; here the stream-device path
+  (npfs/condrv/serial, the `ops->Read`/`ops->Write` branch) takes no lock, so two
+  threads' blocking reads on one synchronous pipe handle can interleave where NT
+  would run them one at a time. Deliberate scoping (PR #95 review round 2, F6): the
+  lock exists for the observable offset races `sem_file/shared_handle_offset.c`
+  pins, streams have no offset, and no baked caller multi-threads one synchronous
+  pipe handle. Escalation: widen the lock to the stream branch when a consumer (or
+  an oracle pin on pipe-read atomicity) convicts the interleaving.
+
 - **The differential fuzzer convicts the contract, not the in-flight window**
   (docs/19 §8.3.3, recorded honestly): proskrnl's internal in-flight state has no
   oracle counterpart under the inline pin, so the traces cannot see it — the kmt
