@@ -434,6 +434,12 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     KeInitializeEvent(&file->syncIoLock, SynchronizationEvent, TRUE);
     file->deleteOnClose = (options & FILE_DELETE_ON_CLOSE) != 0;
     file->nonBuffered = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
+    /* The FileModeInformation word: exactly the bits the pinned Wine's
+     * server masks in (third_party/wine server/fd.c
+     * default_fd_get_file_info; pinned sem_file/async_inline.c). */
+    file->modeFlags =
+        options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | FILE_NO_INTERMEDIATE_BUFFERING |
+                   FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
     file->grantedAccess = granted;
     file->shareAccess = shareAccess;
 

@@ -29,15 +29,16 @@ static void IopFillBasic(const IO_FILE_INFO *raw, FILE_BASIC_INFORMATION *out)
     out->FileAttributes = raw->fileAttributes;
 }
 
-/* The one authority for a handle's I/O mode word (Art. 11): the create
- * folded FILE_SYNCHRONOUS_IO_{ALERT,NONALERT} into the single synchronousIo
- * fact (kernel/io/file.c), so NONALERT stands for both — the distinction NT
- * keeps (alertable waits inside the kernel) has no other observable edge
- * here. Served directly as FileModeInformation (CUI-8, pinned
- * sem_file/async_inline.c) and inside FileAllInformation. */
+/* The one authority for a handle's I/O mode word (Art. 11): the masked
+ * create options captured at create (io.h modeFlags), exactly what the
+ * pinned Wine's server reports — serving only the synchronous flag
+ * under-reported FILE_NO_INTERMEDIATE_BUFFERING/FILE_WRITE_THROUGH, and
+ * folded ALERT into NONALERT, which the oracle does not. Served directly
+ * as FileModeInformation (CUI-8, pinned sem_file/async_inline.c) and
+ * inside FileAllInformation. */
 static ULONG IopFileMode(PFILE_OBJECT file)
 {
-    return file->synchronousIo ? FILE_SYNCHRONOUS_IO_NONALERT : 0;
+    return file->modeFlags;
 }
 
 static void IopFillStandard(const IO_FILE_INFO *raw, PIO_FCB fcb, FILE_STANDARD_INFORMATION *out)

@@ -63,6 +63,10 @@ typedef struct FILE_OBJECT
     BOOLEAN deleteOnClose; /* FILE_DELETE_ON_CLOSE at create */
     BOOLEAN nonBuffered;   /* FILE_NO_INTERMEDIATE_BUFFERING at create
                             * (CUI-5: the scatter/gather qualifier) */
+    ULONG modeFlags;       /* the FileModeInformation word: the create
+                            * options masked exactly as the pinned Wine's
+                            * server serves them (third_party/wine
+                            * server/fd.c default_fd_get_file_info) */
     BOOLEAN shareCounted;  /* this open holds share-access slots */
     ACCESS_MASK grantedAccess;
     ULONG shareAccess; /* this open's FILE_SHARE_* */
