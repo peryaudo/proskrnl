@@ -290,9 +290,16 @@ ULONG IoDrainDeviceCompletions(void)
     {
         return 0;
     }
+    /* Two prohibitions, deliberately separate: KiInCompletionDrain forbids
+     * ALLOCATION (docs/20 R2, asserted in mm), the no-block region forbids
+     * PARKING (issue #96 A, asserted at every blocking primitive). The drain
+     * is reached from the tick, from idle, and from thread-context awaiters,
+     * so the region must nest — it counts. */
+    KiEnterNoBlockRegion("completion drain");
     KiInCompletionDrain = TRUE;
     VioBlkDrain();
     KiInCompletionDrain = FALSE;
+    KiLeaveNoBlockRegion();
     return VioBlkInFlightCount();
 }
 

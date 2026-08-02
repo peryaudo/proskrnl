@@ -15,6 +15,7 @@
 #include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/init/verify.h"
 #include "kernel/lib/string.h"
 #include "arch/x86_64/gdt.h"
@@ -25,6 +26,35 @@ PKTHREAD KiCurrentThread;
 /* CUI-8 (docs/20 R2): see ke.h — set only around IoDrainDeviceCompletions,
  * asserted against in the allocators. */
 BOOLEAN KiInCompletionDrain;
+
+/* Non-blocking regions (issue #96 A; contract in ke.h). */
+ULONG KiNoBlockDepth;
+const char *KiNoBlockReason = "";
+
+void KiEnterNoBlockRegion(const char *reason)
+{
+    KiNoBlockDepth++;
+    KiNoBlockReason = reason;
+}
+
+void KiLeaveNoBlockRegion(void)
+{
+    ASSERT(KiNoBlockDepth != 0);
+    KiNoBlockDepth--;
+}
+
+void KiAssertMayBlock(const char *primitive)
+{
+    if (KiNoBlockDepth != 0)
+    {
+        /* Name both halves before dying: which primitive was reached, and
+         * which region promised it would not be (the panic dump is the
+         * debugger — Art. 9). */
+        DbgPrint("[PANIC] %s reached from the non-blocking region '%s'\n", primitive,
+                 KiNoBlockReason);
+        KiPanic("KI_MAY_BLOCK: a park was reached from a non-blocking region");
+    }
+}
 
 static KTHREAD KiIdleThread; /* the boot context; stack is Limine's */
 
@@ -213,6 +243,7 @@ void KiSwapToNext(void)
 
 void KiYield(void)
 {
+    KI_MAY_BLOCK();
     uint64_t flags = KiAcquireDispatcherLock();
     PKTHREAD current = KiCurrentThread;
     if (current == &KiIdleThread)

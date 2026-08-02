@@ -383,6 +383,36 @@ LONG KeReadStateEvent(PRKEVENT event);
  * (docs/15). */
 void KiAcquireEventGate(PRKEVENT event);
 
+/* --- non-blocking regions (issue #96 A, the runtime half) ----------------
+ *
+ * "Which contexts may block?" was prose (docs/20 R2 says the drain must not,
+ * §1 F2 says the tick is a third execution context) and prose does not fire.
+ * This is the Linux might_sleep() pattern, which fits here because asserts
+ * are always compiled in: a region declares itself non-blocking, and every
+ * park asserts it is not inside one. The static mirror is
+ * tools/blocking_frontier.py --check, whose MUST_NOT_BLOCK list names the
+ * same regions — one catches drift at review time, this catches it under any
+ * test that reaches the path.
+ *
+ * A COUNT, and a global rather than a KTHREAD field, because the regions
+ * belong to the CPU and nest: the timer tick raises one on whatever thread it
+ * interrupted, and the drain it calls raises another. On the uniprocessor
+ * (Art. 3) "the CPU" and "the current thread" are the same place, and a
+ * global also works before the first thread exists.
+ *
+ * KiInCompletionDrain stays a separate flag: it forbids ALLOCATION, which is
+ * a different prohibition on a subset of the same region. */
+extern ULONG KiNoBlockDepth;
+extern const char *KiNoBlockReason; /* innermost region, for the panic line */
+
+void KiEnterNoBlockRegion(const char *reason);
+void KiLeaveNoBlockRegion(void);
+
+/* Every blocking primitive calls this. Fatal, naming the region that must not
+ * have reached a park (Art. 12: an unbuilt guarantee refuses loudly). */
+void KiAssertMayBlock(const char *primitive);
+#define KI_MAY_BLOCK() KiAssertMayBlock(__func__)
+
 /* TRUE while the device-completion drain runs (CUI-8, docs/20 R2). The
  * drain can fire from the timer tick, which may have interrupted a thread
  * MID-ALLOCATION — the unlocked pool/frame free lists tolerate that only
