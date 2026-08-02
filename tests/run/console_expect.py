@@ -48,8 +48,10 @@ def main() -> int:
     log = open(log_path, "wb")
     buffered = bytearray()
 
-    def pump_until(predicate, what: str) -> bool:
-        while time.monotonic() < deadline:
+    def pump_until(predicate, what: str, until: float | None = None,
+                   quiet: bool = False) -> bool:
+        stop = deadline if until is None else min(deadline, until)
+        while time.monotonic() < stop:
             if predicate(buffered):
                 return True
             try:
@@ -64,7 +66,7 @@ def main() -> int:
             log.write(data)
             log.flush()
         ok = predicate(buffered)
-        if not ok:
+        if not ok and not quiet:
             print(f"console_expect: never saw {what}", file=sys.stderr)
         return ok
 
@@ -110,6 +112,31 @@ def main() -> int:
         sock.sendall(cmdline + b"\r")
         return expect_after(mark, expect, what)
 
+    def command_poll(cmdline: bytes, expect: bytes, what: str) -> bool:
+        # For state that CONVERGES rather than prints once: retype the
+        # command until its output matches. NT's start contract makes the
+        # single-shot form a race — StartServiceW may return while the
+        # service is still START_PENDING (services.c
+        # service_wait_for_startup accepts it), and sc.exe queries exactly
+        # once — so the old expect only passed when the service body beat
+        # sc's two \pipe\svcctl round-trips (it lost once the CUI-8 await
+        # park let sc run during the service's disk append). A real client
+        # polls; so does this.
+        rx = tolerant(expect)
+        while time.monotonic() < deadline:
+            mark = len(buffered)
+            sock.sendall(cmdline + b"\r")
+            if pump_until(lambda b: rx.search(b[mark:]) is not None, what,
+                          until=time.monotonic() + 5.0, quiet=True):
+                # Settle: a retyped attempt may still be executing when a
+                # late previous answer matched; absorb its tail so the next
+                # command's mark starts clean.
+                pump_until(lambda b: False, what,
+                           until=time.monotonic() + 1.0, quiet=True)
+                return True
+        print(f"console_expect: never saw {what}", file=sys.stderr)
+        return False
+
     # The transform can only come through the anonymous pipe + upcase.exe:
     # the typed line is all-lowercase.
     if not command(b"echo data>C:\\t.txt", b"C:\\", "the prompt after redirection"):
@@ -136,8 +163,8 @@ def main() -> int:
     # a real service installs, starts, and survives reboot") ----------------
     # EXPECT_SCM=1 drives boot 1 (query RpcSs over \pipe\svcctl, start it,
     # install + start the demo service); EXPECT_SCM=2 is the post-reboot
-    # boot: the SCM must have AUTO-started SvcDemo from the persisted
-    # registry before cmd prompted, and the proof file carries a second
+    # boot: the SCM must AUTO-start SvcDemo from the persisted registry
+    # with no start typed here, and the proof file carries a second
     # line (asserted via cmd's %~zf size expansion: 22 -> 44 bytes; the
     # digits cannot come from the typed command).
     scm = os.environ.get("EXPECT_SCM", "")
@@ -149,17 +176,26 @@ def main() -> int:
             return 1
         # Starting it spawns a real service process (control pipe,
         # MakeProcessSystem, status handshake); sc prints the post-start
-        # query block.
-        if not command(b"C:\\windows\\system32\\sc.exe start RpcSs", b"RUNNING",
-                       "RpcSs running"):
+        # query block (WAIT_HINT closes it in every state — the typed line
+        # cannot supply the underscore), then a query poll convicts
+        # RUNNING: sc's one-shot post-start query may legally see
+        # START_PENDING (command_poll above).
+        if not command(b"C:\\windows\\system32\\sc.exe start RpcSs", b"WAIT_HINT",
+                       "the RpcSs start status block"):
+            return 1
+        if not command_poll(b"C:\\windows\\system32\\sc.exe query RpcSs", b"RUNNING",
+                            "RpcSs running"):
             return 1
         if not command(b"C:\\windows\\system32\\sc.exe create SvcDemo binpath= "
                        b"C:\\svcdemo.exe start= auto", b"C:\\", "the create prompt"):
             return 1
         if not command(b"echo rc=%errorlevel%", b"rc=0", "the create errorlevel"):
             return 1
-        if not command(b"C:\\windows\\system32\\sc.exe start SvcDemo", b"RUNNING",
-                       "SvcDemo running"):
+        if not command(b"C:\\windows\\system32\\sc.exe start SvcDemo", b"WAIT_HINT",
+                       "the SvcDemo start status block"):
+            return 1
+        if not command_poll(b"C:\\windows\\system32\\sc.exe query SvcDemo", b"RUNNING",
+                            "SvcDemo running"):
             return 1
         # The size is zz-wrapped so the digits cannot be satisfied by prompt
         # text ("system32" supplies stray 2s and 3s to a bare tolerant
@@ -168,8 +204,12 @@ def main() -> int:
                        "the first proof line"):
             return 1
     elif scm == "2":
-        if not command(b"C:\\windows\\system32\\sc.exe query SvcDemo", b"RUNNING",
-                       "SvcDemo auto-started after reboot"):
+        # The autostart runs concurrently with the console session's own
+        # startup — nothing serializes it before cmd's prompt, so poll.
+        # Only the SCM can move SvcDemo to RUNNING (nothing here types a
+        # start), so the poll still convicts the registry-driven autostart.
+        if not command_poll(b"C:\\windows\\system32\\sc.exe query SvcDemo", b"RUNNING",
+                            "SvcDemo auto-started after reboot"):
             return 1
         if not command(b"for %f in (C:\\svcdemo.log) do @echo zz%~zfzz", b"zz44zz",
                        "the second proof line"):
