@@ -52,6 +52,18 @@ typedef struct IOP_DIR_WATCH
 static LIST_ENTRY IopDirWatchListHead = {&IopDirWatchListHead, &IopDirWatchListHead};
 static LONG IopDirWatchCount;
 
+/* Watches whose completion ran but whose object releases are still owed
+ * (docs/20 R7; PR #95 review round 2, F3): IopCompleteDirWatch runs UNDER
+ * the fat32 volume gate when the producer is a gated FS mutation
+ * (FatReportChange), and an ObDereferenceObject there can be a LAST
+ * reference — whose teardown re-enters a gated wrapper
+ * (PspDeleteProcess -> handle sweep -> FatVfsCleanup, or
+ * FatVfsSectionsReleased) and self-deadlocks on the gate the caller holds
+ * (docs/20 §10.5.1). Completed watches are parked here instead;
+ * IoReapRetiredDirWatches drops the references OUTSIDE the gate — from the
+ * gate's own release path and from the non-gated sweeps. */
+static LIST_ENTRY IopRetiredWatchListHead = {&IopRetiredWatchListHead, &IopRetiredWatchListHead};
+
 BOOLEAN IoDirectoryWatchesActive(void)
 {
     return IopDirWatchCount != 0;
@@ -102,7 +114,6 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
     if (watch->event != 0)
     {
         KeSetEvent(watch->event, 0, FALSE);
-        ObDereferenceObject(watch->event);
     }
     if (!isError)
     {
@@ -114,13 +125,38 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
     {
         MiFreePool(watch->apcBlock); /* error completion: the APC never fires */
     }
-    if (watch->issuerObject != 0)
+    watch->apcBlock = 0; /* consumed either way; the reaper never touches it */
+
+    /* NO object release here (docs/20 R7): this may run under the volume
+     * gate, where a last-reference teardown re-enters a gated wrapper and
+     * self-deadlocks. Everything context-dependent is done above; the
+     * references (event, issuerObject, owner) and the frees retire to the
+     * list the gate's release path reaps (IoReapRetiredDirWatches). */
+    InsertTailList(&IopRetiredWatchListHead, &watch->listEntry);
+}
+
+void IoReapRetiredDirWatches(void)
+{
+    /* Pop-first: a release below can run a whole teardown that re-enters
+     * the FS, releases the gate again and reaps recursively — the popped
+     * node is already off the list when that happens. Never call this with
+     * the volume gate held. */
+    while (!IsListEmpty(&IopRetiredWatchListHead))
     {
-        ObDereferenceObject(watch->issuerObject);
+        PLIST_ENTRY entry = RemoveHeadList(&IopRetiredWatchListHead);
+        PIOP_DIR_WATCH watch = CONTAINING_RECORD(entry, IOP_DIR_WATCH, listEntry);
+        if (watch->event != 0)
+        {
+            ObDereferenceObject(watch->event);
+        }
+        if (watch->issuerObject != 0)
+        {
+            ObDereferenceObject(watch->issuerObject);
+        }
+        ObDereferenceObject(watch->owner);
+        MiFreePool(watch->dirPath.Buffer);
+        MiFreePool(watch);
     }
-    ObDereferenceObject(watch->owner);
-    MiFreePool(watch->dirPath.Buffer);
-    MiFreePool(watch);
 }
 
 NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_ROUTINE apcRoutine,
@@ -367,5 +403,8 @@ ULONG IopCancelDirectoryWatches(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_B
         IopCompleteDirWatch(watch, STATUS_CANCELLED, 0, 0, 0);
         cancelled++;
     }
+    /* The sweep's callers (the cancel verbs, IopCloseFileObject) never hold
+     * the volume gate, so the retired releases can run right here. */
+    IoReapRetiredDirWatches();
     return cancelled;
 }
