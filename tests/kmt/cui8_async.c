@@ -81,6 +81,22 @@ static int cui8_build_cold_file(const WCHAR *path)
     return status == STATUS_SUCCESS;
 }
 
+
+/* Give the working file's clusters back to the volume. The kmt suites share
+ * one FAT volume with everything that boots after them — on the fatstress
+ * nearfull leg that is a churn whose early mkdirs are entitled to the ~150
+ * KiB the image was ballasted to keep free, and a leftover cold file (or
+ * its DISK_FULL-truncated wreck, which is what a failed build leaves) was
+ * exactly enough to starve them (PR #98 CI). Every test deletes its file on
+ * every exit, success or not. */
+static void cui8_delete_file(const WCHAR *path)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    init_attr(&attr, &name, path);
+    NtDeleteFile(&attr);
+}
+
 /* Whole-file read on a fresh handle — the cold fill under test. */
 static NTSTATUS cui8_cold_read(const WCHAR *path, ULONG_PTR *bytesOut)
 {
@@ -123,7 +139,10 @@ static void cui8_counter_thread(void *context)
 static void test_cui8_progress_during_io(void)
 {
     if (!cui8_build_cold_file(WSTR("\\??\\C:\\cui8prog.bin")))
+    {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8prog.bin"));
         return;
+    }
 
     cui8_counter_stop = 0;
     cui8_counter = 0;
@@ -131,6 +150,7 @@ static void test_cui8_progress_during_io(void)
     ok(counter != 0, "counter thread");
     if (counter == 0)
     {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8prog.bin"));
         return; /* the FAIL is recorded; don't turn it into a NULL deref */
     }
 
@@ -155,6 +175,7 @@ static void test_cui8_progress_during_io(void)
     NTSTATUS join = KeWaitForSingleObject(counter, Executive, 0, FALSE, 0);
     ok(join == STATUS_SUCCESS, "join %#x", (unsigned)join);
     KiDeleteThread(counter);
+    cui8_delete_file(WSTR("\\??\\C:\\cui8prog.bin"));
 }
 
 /* --- the depth verdict (docs/19 §8.4) -------------------------------------- */
@@ -162,7 +183,10 @@ static void test_cui8_progress_during_io(void)
 static void test_cui8_depth(void)
 {
     if (!cui8_build_cold_file(WSTR("\\??\\C:\\cui8dpth.bin")))
+    {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8dpth.bin"));
         return;
+    }
 
     VioBlkResetDepthStats();
     ULONG_PTR bytes = 0;
@@ -178,6 +202,7 @@ static void test_cui8_depth(void)
              CUI8_DEPTH_FLOOR);
     ok(maxDepth >= CUI8_DEPTH_FLOOR, "in-flight depth %lu under the committed floor %d",
        (unsigned long)maxDepth, CUI8_DEPTH_FLOOR);
+    cui8_delete_file(WSTR("\\??\\C:\\cui8dpth.bin"));
 }
 
 /* --- cancellation of a parked fill (docs/19 §9.9) -------------------------- */
@@ -193,7 +218,10 @@ static void cui8_cancel_reader(void *context)
 static void test_cui8_cancel_in_flight(void)
 {
     if (!cui8_build_cold_file(WSTR("\\??\\C:\\cui8cxl.bin")))
+    {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8cxl.bin"));
         return;
+    }
 
     cui8_cancel_status = STATUS_PENDING;
     /* The reader's fill parks on every batch; the configured bound comes
@@ -204,6 +232,7 @@ static void test_cui8_cancel_in_flight(void)
     if (reader == 0)
     {
         VioBlkSetAwaitSpinBound(savedSpins);
+        cui8_delete_file(WSTR("\\??\\C:\\cui8cxl.bin"));
         return; /* the FAIL is recorded; don't turn it into a NULL deref */
     }
 
@@ -241,6 +270,7 @@ static void test_cui8_cancel_in_flight(void)
     NTSTATUS status = cui8_cold_read(WSTR("\\??\\C:\\cui8cxl.bin"), &bytes);
     ok(status == STATUS_SUCCESS && bytes == CUI8_FILE_BYTES, "re-read after cancel %#x/%lu",
        (unsigned)status, (unsigned long)bytes);
+    cui8_delete_file(WSTR("\\??\\C:\\cui8cxl.bin"));
 }
 
 int kmt_run_cui8(void)
