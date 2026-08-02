@@ -226,6 +226,16 @@ else
     DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio,$DRIVE_CACHE")
 fi
 
+# CUI-8 (tests/run/run.sh cui8): DRIVE_THROTTLE=<bytes/s> caps the disk's
+# read rate through QEMU's block-layer throttle (pinned third_party/qemu
+# blockdev.c: -drive throttling.bps-read -> ThrottleLimits), making device
+# latency physically real so the boundary progress test must observe a
+# park rather than racing a host-page-cache disk. Never combined with
+# WRITE_LOG (no leg needs both).
+if [[ -n "${DRIVE_THROTTLE:-}" && -z "${WRITE_LOG:-}" ]]; then
+    DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio,$DRIVE_CACHE,throttling.bps-read=${DRIVE_THROTTLE}")
+fi
+
 "$QEMU" \
     -M q35 \
     "${ACCEL_ARGS[@]}" \

@@ -168,6 +168,17 @@ if [[ "${PANIC_NOTIMPL:-1}" != 0 ]]; then
     copy "$NOTIMPL_FLAG" ::/panic_not_implemented.flag
     rm -f "$NOTIMPL_FLAG"
 fi
+# CUI-8 stress (docs/19 §8.1, OFF by default): CUI8_STRESS=1 bakes the
+# marker that zeroes the kernel's await drain-spin (kernel/init/main.c), so
+# every device await parks — the maximally different legal interleaving.
+# Only tests/run/run.sh cui8's stress boot sets it; a default image never
+# carries the marker, keeping the default runs' behaviour untouched.
+if [[ "${CUI8_STRESS:-0}" != 0 ]]; then
+    STRESS_FLAG="$(mktemp)"
+    echo "CUI-8 stress marker: park on every await (kernel/init/main.c)" > "$STRESS_FLAG"
+    copy "$STRESS_FLAG" ::/cui8_stress.flag
+    rm -f "$STRESS_FLAG"
+fi
 # M10: the TEMP/TMP directory the default environment points at.
 mkdirp /windows
 mkdirp /windows/temp

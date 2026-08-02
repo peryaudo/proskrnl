@@ -33,6 +33,7 @@
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
+#include "drivers/virtio/blk.h"
 #include "kernel/init/bootvid.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/initrd.h"
@@ -302,6 +303,20 @@ static void KiConfigurePanicOnNotImplemented(void)
     }
 }
 
+/* CUI-8 stress (docs/19 §8.1): C:\cui8_stress.flag zeroes the await
+ * drain-spin, so every device await parks — the maximally different legal
+ * interleaving, with which every verdict must still agree (the cui8 leg
+ * compares). Never baked into a default image (tools/mkimage.sh
+ * CUI8_STRESS=1); same image-decides pattern as the panic flag. */
+static void KiConfigureCui8Stress(void)
+{
+    if (KiBootFileExists(WSTR("\\??\\C:\\cui8_stress.flag")))
+    {
+        VioBlkSetAwaitSpinBound(0);
+        DbgPrint("[KTEST] cui8 stress knob armed (C:\\cui8_stress.flag)\n");
+    }
+}
+
 /* Launch the session manager (user/smss): the ONE user image the kernel
  * starts. Everything user-mode past this point — wineserver-lite, conhost,
  * firstboot, the interactive console, the acceptance flows, the ntapi and
@@ -401,6 +416,7 @@ static void KiTestMainThread(void *context)
      * ring-3 code — smss below is a Wine process (needs only the boot
      * volume, mounted above). */
     KiConfigurePanicOnNotImplemented();
+    KiConfigureCui8Stress();
 
     /* The interactive boot (make run) skips the kernel test suites: the
      * serial console belongs to a human — the session manager runs

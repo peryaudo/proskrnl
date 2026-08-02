@@ -169,6 +169,9 @@ jobs:
       - name: CUI-7 reg save/load reboot round-trip + write-watch app (tests/run/run.sh cui7)
         run: tests/run/run.sh cui7
 
+      - name: CUI-8 overlap verdicts, throttled progress, determinism + stress (tests/run/run.sh cui8)
+        run: tests/run/run.sh cui8
+
       # GUI-1: the verdict is a picture. The guest paints through
       # \Device\Fb0 and reports what it painted; the pixels come back out of
       # QEMU's screendump and a QMP-injected key comes back out of
