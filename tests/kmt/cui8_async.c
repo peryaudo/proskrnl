@@ -105,8 +105,6 @@ static NTSTATUS cui8_cold_read(const WCHAR *path, ULONG_PTR *bytesOut)
     return status;
 }
 
-
-
 /* --- progress during I/O (docs/19 §8.3.1) ---------------------------------- */
 
 static volatile LONG cui8_counter_stop;
@@ -133,13 +131,16 @@ static void test_cui8_progress_during_io(void)
     ok(counter != 0, "counter thread");
 
     /* Every await parks: the machine is provably NOT single-threaded while
-     * the disk is busy, or the counter stays frozen and this fails. */
-    VioBlkSetAwaitSpinBound(0);
+     * the disk is busy, or the counter stays frozen and this fails. The
+     * CONFIGURED bound is restored, not the compile-time default — on a
+     * stress boot the configured bound is already 0, and restoring the
+     * default here de-stressed every test after this one (blk.h). */
+    ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
     uint64_t before = cui8_counter;
     ULONG_PTR bytes = 0;
     NTSTATUS status = cui8_cold_read(WSTR("\\??\\C:\\cui8prog.bin"), &bytes);
     uint64_t after = cui8_counter;
-    VioBlkSetAwaitSpinBound(VIO_BLK_AWAIT_SPINS);
+    VioBlkSetAwaitSpinBound(savedSpins);
 
     ok(status == STATUS_SUCCESS && bytes == CUI8_FILE_BYTES, "cold read %#x/%lu", (unsigned)status,
        (unsigned long)bytes);
@@ -191,7 +192,9 @@ static void test_cui8_cancel_in_flight(void)
         return;
 
     cui8_cancel_status = STATUS_PENDING;
-    VioBlkSetAwaitSpinBound(0); /* the reader's fill parks on every batch */
+    /* The reader's fill parks on every batch; the configured bound comes
+     * back afterwards (blk.h — never the compile-time default). */
+    ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
     PKTHREAD reader = KiCreateThread(8, cui8_cancel_reader, 0);
     ok(reader != 0, "reader thread");
 
@@ -215,7 +218,7 @@ static void test_cui8_cancel_in_flight(void)
         reader->syncIoCancelled = TRUE;
         KeSetEvent(&reader->syncIoCancelEvent, 0, FALSE);
     }
-    VioBlkSetAwaitSpinBound(VIO_BLK_AWAIT_SPINS);
+    VioBlkSetAwaitSpinBound(savedSpins);
 
     NTSTATUS join = KeWaitForSingleObject(reader, Executive, 0, FALSE, 0);
     ok(join == STATUS_SUCCESS, "join %#x", (unsigned)join);
