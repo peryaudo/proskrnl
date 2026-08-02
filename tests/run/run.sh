@@ -1257,7 +1257,15 @@ cui8() {
     # per page), so the counter thread advances by real margins inside the
     # read syscall. The default-config conviction stays the kmt suite plus
     # the unthrottled tolerant run of this same test.
+    # Every child boot below reuses $sublog, and the child truncates it only
+    # once it actually reaches qemu — a child that dies earlier (make/mkimage
+    # failure, a mingw compile error in a subset test) leaves the PREVIOUS
+    # stage's log in place, which the greps and the det comparison would
+    # accept as this stage's output (two copies of the same stale file
+    # compare identical). Remove it up front so an early death yields a
+    # missing log, which every check below treats as FAIL.
     local sublog="$BUILD/proskrnl-subset-serial.log"
+    rm -f "$sublog"
     CUI8_STRESS=1 DRIVE_THROTTLE=$((4 * 1024 * 1024)) TIMEOUT=1200 \
         "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-throttled-serial.log" 2>/dev/null || true
@@ -1276,12 +1284,14 @@ cui8() {
     # line (prints how many idle sweeps happened to run).
     local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob'
     local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
+    rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-1-serial.log" 2>/dev/null || true
-    grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-1.txt" || true
+    grep -E '^\[KTEST\] ' "$sublog" 2>/dev/null | grep -vE "$detFilter" > "$BUILD/cui8-det-1.txt" || true
+    rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-2-serial.log" 2>/dev/null || true
-    grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-2.txt" || true
+    grep -E '^\[KTEST\] ' "$sublog" 2>/dev/null | grep -vE "$detFilter" > "$BUILD/cui8-det-2.txt" || true
     if [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
         echo "[KTEST] cui8-determinism PASS ($(wc -l < "$BUILD/cui8-det-1.txt") verdict lines)"
     else
@@ -1291,9 +1301,10 @@ cui8() {
 
     # (d) the stress boot: CUI8_STRESS=1 bakes the marker that zeroes the
     # await spin, so EVERY await parks — same verdicts required.
+    rm -f "$sublog"
     CUI8_STRESS=1 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-stress-serial.log" 2>/dev/null || true
-    if ! grep -q 'cui8 stress knob armed' "$sublog"; then
+    if ! grep -q 'cui8 stress knob armed' "$sublog" 2>/dev/null; then
         echo "[KTEST] cui8-stress FAIL (knob never armed; see $BUILD/cui8-stress-serial.log)"
         fails=$((fails + 1))
     else
