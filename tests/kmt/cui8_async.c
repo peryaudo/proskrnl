@@ -129,6 +129,10 @@ static void test_cui8_progress_during_io(void)
     cui8_counter = 0;
     PKTHREAD counter = KiCreateThread(8, cui8_counter_thread, 0);
     ok(counter != 0, "counter thread");
+    if (counter == 0)
+    {
+        return; /* the FAIL is recorded; don't turn it into a NULL deref */
+    }
 
     /* Every await parks: the machine is provably NOT single-threaded while
      * the disk is busy, or the counter stays frozen and this fails. The
@@ -197,6 +201,11 @@ static void test_cui8_cancel_in_flight(void)
     ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
     PKTHREAD reader = KiCreateThread(8, cui8_cancel_reader, 0);
     ok(reader != 0, "reader thread");
+    if (reader == 0)
+    {
+        VioBlkSetAwaitSpinBound(savedSpins);
+        return; /* the FAIL is recorded; don't turn it into a NULL deref */
+    }
 
     /* Wait for the reader to be provably inside its marked I/O span (set
      * by rw.c before the fill can park), then land the cancel — the same

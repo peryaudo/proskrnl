@@ -119,15 +119,32 @@ START_TEST(progress_during_io)
         skip("no scheduling point landed inside the window on this backend/leg "
              "(the kmt CUI-8 suite is the deterministic conviction)");
 
+    /* Liveness across the whole episode: the counter keeps moving after the
+     * window. WAIT for it (bounded) instead of sampling once at stop time —
+     * on uniprocessor proskrnl nothing need have yielded between the
+     * post-window sample and the stop flags, so an instantaneous check is a
+     * preemption-point lottery that bites hardest on exactly the throttled
+     * and stress legs. */
+    {
+        int moved = 0;
+        for (int i = 0; i < 15000; i++)
+        {
+            if (prog_counter > after)
+            {
+                moved = 1;
+                break;
+            }
+            Sleep(1);
+        }
+        ok(moved, "counter advanced after the window too");
+    }
+
     prog_create_stop = 1;
     prog_stop = 1;
     ok(WaitForSingleObject(storm, 15000) == WAIT_OBJECT_0, "storm thread returned");
     ok(WaitForSingleObject(counter, 15000) == WAIT_OBJECT_0, "counter thread returned");
     CloseHandle(storm);
     CloseHandle(counter);
-
-    /* Liveness across the whole episode, cheaply: the counter kept moving. */
-    ok(prog_counter > after, "counter advanced after the window too");
 
     NtClose(h);
     scrub_file(dir, W("large.bin"));

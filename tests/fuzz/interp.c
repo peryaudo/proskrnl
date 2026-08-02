@@ -1320,7 +1320,12 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
          * wait= flips, ios= goes stale — which is what makes a
          * pended-completion divergence minimizable (docs/19 §8.3.3). */
         static char io_buffer[8192];
-        IO_STATUS_BLOCK iosb;
+        /* static, like FZ_OP_READ_FILE_APC's: the op collects at the call
+         * under the §7 pin, but if a genuinely-pending handle type ever
+         * enters the slot universe a stack IOSB would be a dangling write
+         * at completion time — the divergence should be the trace line
+         * flipping, never corrupted interp state. */
+        static IO_STATUS_BLOCK iosb;
         LARGE_INTEGER off, zero;
         if (fz_async_event == NULL)
             NtCreateEvent(&fz_async_event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
