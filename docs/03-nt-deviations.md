@@ -1860,6 +1860,20 @@ fixed, pinned, or convicted by a green leg:
    every later thread inherited it, child windows whose parent lived on the real desktop
    were refused `ACCESS_DENIED`, and a thread-wide winevent hook landed on the wrong hook
    table. The fixture now restores the default it displaced. −10 failures.
+7. *A third state the console's terminate unwind did not have.* The leg stopped answering
+   at all — no failure count, a panic 90 s in: `[ASSERT] kernel/lib/list.h:56` (a
+   double-remove) under `CondrvForward`, in `test_WaitForInputIdle`, whose parent
+   `TerminateProcess`es each of its ~21 children while the child's console read is in
+   flight. A parked client verb lives on the client's kernel stack, so the CUI-4 unwind
+   has to disown it — and it knew two states, `current` or still-linked. There is a third:
+   `KiAbortThreadWait` readies the client *without touching the console queues* and on the
+   uniprocessor the client does not run until conhost parks, so conhost can fetch **and
+   complete** the request in that window, leaving it neither `current` nor linked. The
+   unwind now recognizes a completed request (`done` signalled) and unlinks nothing;
+   `tests/kmt/condrv_unwind.c` drives all three states deterministically over the real
+   server transport, which the cooperative scheduler makes reachable by construction
+   rather than by luck. **This one was ours, not Wine's**, and it is why the leg's ratchet
+   is a ceiling on a *count*: a crash has no count, and `run.sh guiwtest` fails it by name.
 
 **What is left, and why** (the budget is a ceiling — `msg-budget.txt` explains the
 difference from the measured count):

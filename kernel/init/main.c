@@ -481,6 +481,14 @@ static void KiTestMainThread(void *context)
              cui8Failures);
     KiVerifyKernelState();
 
+    /* The console driver's terminate-unwind states (tests/kmt/condrv_unwind.c):
+     * it drives conhost's side of \Device\ConDrv\Server itself, so it must run
+     * BEFORE smss starts the real conhost — there is one server slot. */
+    int condrvFailures = kmt_run_condrv();
+    DbgPrint(condrvFailures == 0 ? "[KTEST] CONDRV PASS\n" : "[KTEST] CONDRV FAIL failures=%d\n",
+             condrvFailures);
+    KiVerifyKernelState();
+
     /* The issue #96 preventive-mechanism guards: the no-block depth and the
      * obligation ledger are balanced across the gated FS verbs. After CUI8,
      * so a region or a hold leaked by ANY earlier suite is attributed here

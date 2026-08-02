@@ -304,12 +304,31 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
     if (waitStatus != STATUS_SUCCESS)
     {
         /* CUI-4: the client thread is being terminated. Our `request` lives on
-         * this (now-unwinding) kernel stack and is still linked on a console
-         * queue or is `current`; unlink it so conhost's later fetch/reply
-         * never touches freed stack. A vanished read completes on conhost's
-         * side as STATUS_INVALID_HANDLE, which it already tolerates. */
+         * this (now-unwinding) kernel stack, so nothing conhost still owns may
+         * point at it. THREE states are reachable here, not two: the abort
+         * (KiAbortThreadWait) readies this thread without touching the console
+         * queues, and on the uniprocessor this thread does not run again until
+         * conhost parks — so conhost can fetch the request AND complete it in
+         * that window.
+         *
+         *   completed  `done` is signalled. CondrvCompleteRequest is its only
+         *              setter and always runs after the request has left both
+         *              queues and `current`, so there is nothing to unlink —
+         *              unlinking anyway is a double-remove, which is the list
+         *              assert the GUI-5 msg run tripped in
+         *              test_WaitForInputIdle (docs/03 "GUI-5 winetest notes").
+         *   delivered  a fetched non-read verb conhost has yet to answer:
+         *              `current`, already off both queues.
+         *   queued     still on requestQueue, or parked/deferred on readQueue.
+         *
+         * A vanished read completes on conhost's side as STATUS_INVALID_HANDLE,
+         * which it already tolerates. */
         uint64_t f = KiAcquireDispatcherLock();
-        if (CondrvConsole.current == &request)
+        if (KeReadStateEvent(&request.done) != 0)
+        {
+            /* completed: unlinked and unowned already */
+        }
+        else if (CondrvConsole.current == &request)
         {
             CondrvConsole.current = 0;
         }
