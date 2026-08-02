@@ -205,9 +205,23 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
                             ULONG_PTR information)
 {
     /* The contract order (docs/08): the IOSB is visible BEFORE any
-     * completion signal fires. */
-    iosb->Status = status;
-    iosb->Information = information;
+     * completion signal fires.
+     *
+     * Re-validated here, at the one authority every completion funnels
+     * through (Art. 11): completions run AFTER the operation's parks, so
+     * the caller's entry probe is stale — a sibling may have unmapped the
+     * IOSB, and a raw store would ring-0-fault and unwind past the
+     * caller's cleanup (the rw.c re-probe rule; PR #95 review round 2,
+     * F2). A vanished IOSB skips the store only: the transfer HAS
+     * happened, so the operation's own status still returns and the event
+     * still fires — NT's I/O manager writes the requestor's IOSB under the
+     * same swallow-the-fault guard. No park separates probe and store;
+     * no-op success for a KernelMode caller's kernel IOSB (uaccess.h). */
+    if (NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+    {
+        iosb->Status = status;
+        iosb->Information = information;
+    }
     if (eventHandle != 0)
     {
         PVOID eventBody;
@@ -336,6 +350,20 @@ void IoMountBootVolume(void)
 }
 
 /* --- NtCreateFile / NtOpenFile ---------------------------------------------- */
+
+/* The create-path IOSB store, re-probed at each use: every store runs after
+ * the gated Create (and, on the handle-mint failure leg, after a parking
+ * cleanup), so the entry probe is stale — the IopCompleteRequest convention
+ * (PR #95 review round 2, F2): a vanished IOSB skips the store only, never
+ * unwinds the create. No park separates probe and store. */
+static void IopWriteCreateIosb(PIO_STATUS_BLOCK iosb, NTSTATUS status, ULONG_PTR information)
+{
+    if (NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+    {
+        iosb->Status = status;
+        iosb->Information = information;
+    }
+}
 
 static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
                               POBJECT_ATTRIBUTES attributes, PIO_STATUS_BLOCK iosb,
@@ -474,8 +502,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
         ObDereferenceObject(file);
         /* NtCreateFile writes the IOSB on FS-level failure too (pinned
          * Wine: iosb.Status carries the failing status). */
-        iosb->Status = status;
-        iosb->Information = 0;
+        IopWriteCreateIosb(iosb, status, 0);
         goto out;
     }
 
@@ -493,15 +520,13 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
          * the cleanup half explicitly. */
         IopCloseFileObject(file);
         ObDereferenceObject(file);
-        iosb->Status = status;
-        iosb->Information = 0;
+        IopWriteCreateIosb(iosb, status, 0);
         goto out;
     }
     /* One handle now exists but closeProcedure fires only when handleCount
      * returns to zero; drop the creator's reference. */
     ObDereferenceObject(file);
-    iosb->Status = STATUS_SUCCESS;
-    iosb->Information = information;
+    IopWriteCreateIosb(iosb, STATUS_SUCCESS, information);
     status = STATUS_SUCCESS;
 
 out:
