@@ -182,7 +182,21 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         IopLeaveSyncIo();
         if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && transferred != 0)
         {
-            memcpy(buffer, bounce, transferred); /* probed above */
+            /* Re-validated, not "probed above": the op parked, so the entry
+             * probe is stale — a sibling may have unmapped the buffer, and
+             * a ring-0 fault here unwinds past this frame without cleanup
+             * (uaccess.h), leaking the APC block and the FILE_OBJECT
+             * reference. No park separates this probe from the copy, which
+             * is what makes the probe carry the contract again. */
+            NTSTATUS probe = KiProbeForWrite(buffer, transferred, 1);
+            if (NT_SUCCESS(probe))
+            {
+                memcpy(buffer, bounce, transferred);
+            }
+            else
+            {
+                status = probe;
+            }
         }
         if (bounce != 0)
         {
@@ -248,6 +262,16 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     if (bytes > cache->fileSize - offset)
     {
         bytes = cache->fileSize - offset; /* the short read across EOF */
+    }
+    /* Re-validate the buffer: the fill above parked, so the entry probe is
+     * stale — a sibling may have unmapped it, and a fault inside
+     * MiCacheRead would unwind past the cleanup below (leaking the APC
+     * block and the FILE_OBJECT reference — permanently, since the FCB and
+     * its cache pages go with it). No park separates probe and copy. */
+    status = KiProbeForWrite(buffer, bytes, 1);
+    if (!NT_SUCCESS(status))
+    {
+        goto abandon;
     }
     MiCacheRead(cache, offset, buffer, bytes);
     if (file->synchronousIo)
@@ -430,6 +454,14 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         if (IoSyncIoCancelled())
         {
             status = STATUS_CANCELLED;
+            goto abandonSyncIo;
+        }
+        /* Re-validate the buffer after the parks above (the NtReadFile
+         * reasoning): a fault inside MiCacheWrite would skip every
+         * cleanup below. No park separates probe and copy. */
+        status = KiProbeForRead(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
             goto abandonSyncIo;
         }
         MiCacheWrite(cache, offset, buffer, length);
