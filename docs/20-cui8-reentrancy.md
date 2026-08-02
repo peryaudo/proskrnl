@@ -167,3 +167,132 @@ narrowly to the milestone's *own new code*; each repair extends an existing rule
 - **The gate's terminating-thread fallback must queue.** A try/yield retry loop
   starves against the holder under strict priority scheduling; the rundown park
   (`rundownWait`) makes every acquirer a queued waiter.
+
+## 10. The independent re-sweep
+
+§1–§8 were written alongside the implementation, so their premises are the
+implementation's own. This section records a second sweep of `kernel/`, `fs/`,
+`drivers/` and `arch/`, run against the branch at `33d024f` by readers who were not
+permitted to read §1–§8 — so its rows are derived from the code rather than from this
+doc's framing. It is kept separate from §9 because §9 records what the PR *review*
+convicted; this records what a blind re-derivation convicted, and the two overlap in a
+way worth preserving (§10.6).
+
+**The sweep's base has moved.** Between `33d024f` and this commit, §9's repairs closed
+four rows the sweep raised independently: the write-placement composition
+(`eef8d5d`), `currentByteOffset` serialization (`d045fba`), the idle loop's stale
+`inFlight` (`eb1612d`), and the gate's starving try/yield fallback (`43c7e14`). Those
+rows are deliberately **not** restated below — a census that lists repaired defects as
+live is worse than no census. What follows is only what was re-verified as still
+standing at this commit.
+
+### 10.1 One correction to §1 that §9 does not cover
+
+**The blocking frontier is wider than F1 says.** F1 names the park inside a data
+transfer. It omits that *closing a handle* parks: `IoFileObjectType.closeProcedure =
+IopCloseFileObject` (`kernel/io/file.c:74`) → `ops->Cleanup` → `FatVfsCleanup` →
+`FatAcquireVolumeGate`, and likewise `deleteProcedure` → `FatVfsClose`. Therefore
+`NtClose`, `ObDereferenceObject` on any last reference, `ObpCloseAllHandles`, and
+process exit are all blocking points.
+
+This is why §3–§6 contain no Ob rows and no `NtClose` row: the frontier was drawn at
+`fs/`, and Ob was never asked the question. It should have been — Ob is what invokes
+the FS on teardown, so Ob is where the frontier actually is.
+
+(§9's first bullet — R1 covering each op rather than decisions spanning ops — was
+reached independently by this sweep as well. It is not restated; §9 states it, and
+`PrepareWrite` repairs it.)
+
+### 10.2 CONFIRMED and still live at this commit
+
+| Site | The claim | Verdict → repair | Convicting interleaving | Test leg |
+|---|---|---|---|---|
+| `kernel/io/file.c:398` `IopCreateFile` → `FatVfsCreate` | R3 itself: *"All direct user copies in the data path happen before the gate is taken or after it is released"* | **BROKEN → R3a.** R3 enumerated `rw.c`'s probes, `MiCacheRead`/`MiCacheWrite`, the label capture and `QueryName`, and missed the create path — the most-used FS entry in the kernel. `e9a4436` repaired the *data* path and the label capture; `IopCreateFile` is untouched, so this row survives §9. | `fsPath = *attributes->ObjectName` takes the caller's ring-3 buffer for a `RootDirectory`-relative open, and `ObpLookupParseObject`'s contract (`kernel/ob/namespace.c:262-264`) says the remaining name points into the caller's buffer. That pointer is dereferenced by `FatResolveParent`/`FatLookup` **under the gate**, across a sector-read park. Thread B unmaps the page; A resumes, faults in ring 0 on a user address; `KiCallServiceGuarded` (armed for the whole service, `kernel/syscall/table.c:107`) unwinds without cleanup (`uaccess.h:78-82`). `FatReleaseVolumeGate` never runs. The gate has no owner, so **every later file op on the volume parks forever**. Ring-3 triggerable; unreachable pre-CUI-8. | Needed: kmt leg, spin bound 0 — one thread looping `NtCreateFile`, one unmapping the path page; the verdict is that a *subsequent* open on the volume still completes. |
+| `kernel/ps/query.c:585-601` `PspMakeProcessSystem` | (commented) *"this handle value lands on the kernel stack first and only its VALUE is copied out through the probed caller buffer"* | **BROKEN → R7.** A §10.1 consequence. Repair is one line: move the deref after the store; the mint uses the current process's table and needs no reference. | `ObDereferenceObject(process)` (:587) can be the last reference → `PspDeleteProcess` → `ObpDeleteHandleTable` → a file close → **park**. B unmaps `buffer`; A resumes, mints the handle (:595), faults at the store (:601), unwinds. The side effects are already permanent: the process is system-marked, `PspLiveUserProcessCount` is decremented (possibly signalling global shutdown), and a `SYNCHRONIZE` handle to the shutdown event sits in A's table that A never learns of and never closes. | `sem_ps` leg where the target handle is the last reference to a dead process holding an open file, with a sibling unmapping the out-pointer. |
+| `drivers/virtio/blk.c:88,405,407` `VioBlkDataBounce` | (uncommented) the one driver-global bounce page is exclusively held for the duration of a transfer | **BROKEN as an invariant, not yet as a defect → assert it.** | Every *production* caller reaches it through `FatReadSector`/`FatWriteSector` under R1, so the page is genuinely serialized today. What is broken is that a driver-global buffer's exclusivity is enforced entirely by a distant module with no local assert, and `tests/kmt/m6_blk.c` already calls the sector API with no gate at all. R1 is load-bearing for `drivers/` and neither file says so. | `ASSERT(VioBlkBounceOwner == 0)` at `VioBlkTransfer` entry — a second entrant panics loudly (Art. 12) instead of silently swapping payloads. |
+
+### 10.3 Rules added
+
+- **R3a — the gate may not see a user pointer, including the path.** R3's data-path
+  clause extends to every argument reachable under the gate. `IopCreateFile` must
+  capture `fsPath` into kernel memory before `ops->Create`, as
+  `IopSetRenameInformation` and the volume-label capture (`kernel/io/query.c`) already
+  do — the precedent existed and was not applied here. The FS entry points should
+  assert no user address is reachable from their arguments.
+- **R7 — no object dereference under the gate, and none before a user store.** A
+  dereference can now run a whole FS teardown (§10.1). Under the gate it can re-enter
+  a gated wrapper and self-deadlock on a binary semaphore; before a user store it
+  leaves a probed pointer stale. Both are prohibitions with a stated assert, not
+  locks.
+
+### 10.4 What the re-sweep confirmed sound
+
+Recorded because a census's negative results carry the same weight as its rows, and
+because these were the properties most likely to be wrong:
+
+- **R1's coverage is complete.** All 13 `IO_VFS_OPS` entries that touch disk, FAT, or
+  FCB/directory metadata have gated wrappers. The two ungated shapes are deliberate
+  and correct: `FatVfsQueryName` (non-blocking pure-memory walk) and the `GetCache`
+  hot path (R5's double check).
+- **R1 cannot recurse from within.** Every `FatVfs*Locked` is static with exactly one
+  caller — its wrapper — and no fat32 code calls a gated wrapper. The only re-entry
+  risk is outward, through an Io/Ob/Ps callback (§10.5).
+- **R2 is airtight.** The drain's entire reach was re-traced: `VioHarvestUsed`, result
+  stores, `KeSetEvent` → `KiWaitTest` → `KiUnwaitThread` → `KiRemoveTimer`/
+  `KiReadyThread`. Nothing allocates, and the bracket cannot nest or leak because
+  every drain caller runs with interrupts off.
+- **R4 is intact.** `FatBatchFlush`/`FatBatchTransfer` were re-checked against every
+  early return, error path and cancel break: no path returns past a non-empty batch,
+  `count` increments only on a successful submit, and `VioBlkAwait` polls the request
+  home when a dying thread's park is refused.
+- **npfs survives F1/F2 whole.** No park between any condition test and its
+  `KeClearEvent`; no npfs state reachable from the drain; listen-queue entries are
+  unlinked before completion; cross-space IOSB writes use the checked copier.
+
+### 10.5 Raised but NOT confirmed — leads, not findings
+
+None of these was driven to ground, and none is addressed by §9. Listed so the next
+reader starts here instead of re-deriving them.
+
+1. **`FatReportChange` under the gate → self-deadlock.** `IopCompleteDirWatch`
+   (`kernel/io/notify.c`) dereferences the watch's owner EPROCESS while the gate is
+   held. If that is a last reference, `PspDeleteProcess` → `MiDeleteAddressSpace` →
+   `MipDeleteSection` → `IopSectionBackingReleased` → `FatVfsSectionsReleased`
+   re-acquires the gate the caller holds. R7 closes the shape regardless; what is
+   unproven is whether the last-reference case is reachable in a shipped
+   configuration. Needs an audit of EPROCESS reference holders.
+2. **Directory enumeration is gated per entry, not per buffer**
+   (`FatVfsReadDirectory`). A rename into a slot behind the cursor can drop a file
+   from a listing or list it twice. Needs an oracle experiment first — NT's true
+   enumeration-atomicity contract is not obvious, and this may be a `docs/03` entry
+   rather than a bug.
+3. **`CmpSaveHive` discards its mutex wait status**, and the hive write is now
+   abortable mid-`NtWriteFile`. Both depend on whether an aborted wait can reach
+   `KeReleaseMutex` unowned. Needs `kernel/ke/mutex.c` read against the abort path.
+4. **The idle sweep vs. mid-FS parks.** §5 already flags `verify.c` as newly
+   load-bearing. The sweep sharpened it to a state nobody has tested:
+   `ObpUnlinkObjectName` runs *after* the parking `closeProcedure`, so a named object
+   sits with `handleCount == 0` and `parentDirectory != 0` for the duration of an FS
+   park. Whether `ObpVerifyNamespace` asserts on that combination is unknown — and a
+   spurious sweep assert is a panic.
+
+### 10.6 The methodological correction — amends §8.4
+
+§8.4 makes §5's STILL-TRUE tables the checklist for the next milestone that adds a
+blocking point. Necessary, not sufficient. Almost every row this sweep and §9's review
+convicted is a **composition** — a value sampled before a park and used after, two
+gated ops in sequence, a gate held across a callback into another department, a user
+pointer carried into a gated region. None is a false claim at a single line, so a
+site-by-site census walks past all of them however honestly it is done.
+
+The checklist therefore gains a fifth question, asked alongside §1's two facts:
+
+> **What spans more than one gated operation, and who guarantees that span?**
+
+Two procedural notes. First, §9 and §10 were produced independently and convicted four
+of the same rows — that agreement is the strongest evidence available that the method
+finds real defects rather than plausible ones, and the disagreement (this section's
+three survivors) is where the value was. Second, §1–§8 were written by the same hands
+as the implementation, and the sweep that convicted them was blind to them by
+construction. That blindness is the active ingredient: a reviewer who has read the
+census re-derives the census. Any future amendment should be produced the same way.
