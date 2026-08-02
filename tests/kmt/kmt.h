@@ -97,4 +97,10 @@ int kmt_run_preventive(void);
  * oracle-pinned sequential semantics. Returns failures. */
 int kmt_run_sched_explore(void);
 
+/* The console terminate-unwind states (tests/kmt/condrv_unwind.c): a client
+ * verb parked in condrv, aborted for termination while it is queued, while
+ * conhost owns it, and after conhost has already completed it. Returns
+ * failures. */
+int kmt_run_condrv(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */

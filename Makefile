@@ -145,6 +145,7 @@ CSRC := kernel/init/main.c \
         tests/kmt/m6_io.c \
         tests/kmt/m6_blk.c \
         tests/kmt/cui8_async.c \
+        tests/kmt/condrv_unwind.c \
         tests/kmt/preventive.c \
         tests/kmt/sched_explore.c \
         tests/kmt/fat_interop.c \
