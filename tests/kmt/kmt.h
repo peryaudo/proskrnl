@@ -91,4 +91,10 @@ int kmt_run_fat_churn(void);
  * Returns failures. */
 int kmt_run_preventive(void);
 
+/* The bounded-exhaustive interleaving search (tests/kmt/sched_explore.c,
+ * issue #96 D): two-thread scenarios replayed under enumerated schedule
+ * strings, each concurrent history checked for linearizability against the
+ * oracle-pinned sequential semantics. Returns failures. */
+int kmt_run_sched_explore(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */

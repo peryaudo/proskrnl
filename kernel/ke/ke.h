@@ -348,6 +348,47 @@ void KiVerifyTimerList(void);                     /* ordering + inserted flags *
 void KiVerifyWaitList(PDISPATCHER_HEADER object); /* each waiter armed this wait */
 void KiVerifyThreadWaitState(PKTHREAD thread);    /* state <-> queues/waits agree */
 
+/* --- deterministic schedule strings (issue #96 D) -------------------------
+ *
+ * Test instrumentation, in the same class as VioBlkSetAwaitSpinBound and for
+ * the same reason: the interesting states are reachable but rare, so a test
+ * has to be able to steer the machine into them rather than hope.
+ *
+ * Because this kernel is cooperative (Art. 3: switches happen only at
+ * enumerable yield points), the set of interleavings for K threads is a
+ * finite, controllable search space — not the hardware lottery it is on
+ * preemptive SMP. When a schedule is armed, each scheduling decision that has
+ * more than one candidate consumes one byte of the schedule and picks that
+ * candidate instead of the highest-priority one; past the end of the string
+ * the default policy resumes, so every run terminates. The trace records the
+ * branching factor and the index taken at each choice, which is what lets a
+ * harness enumerate schedules depth-first with a preemption bound (the CHESS
+ * insight: nearly all real concurrency bugs surface within 2-3 deviations).
+ *
+ * Index 0 is always the thread the default policy would have picked, so
+ * "deviations" == "nonzero indexes" == the preemption count.
+ *
+ * OFF BY DEFAULT, and its absence is a single predicate on the hot path: the
+ * default runs' single deterministic interleaving — the property docs/19 §8.1
+ * commits to and the differential fuzzer's minimization depends on — is
+ * untouched. A failing schedule is a byte string, so it replays exactly. */
+#define KI_SCHEDULE_MAX_CHOICES 96
+
+typedef struct
+{
+    ULONG choiceCount;                      /* choice points reached */
+    ULONG preemptions;                      /* choices that took a non-default thread */
+    ULONG consumed;                         /* choices steered by the string */
+    UCHAR options[KI_SCHEDULE_MAX_CHOICES]; /* candidates at each choice */
+    UCHAR chosen[KI_SCHEDULE_MAX_CHOICES];  /* index taken */
+    BOOLEAN overflowed;                     /* ran past MAX_CHOICES; trace truncated */
+} KI_SCHEDULE_TRACE, *PKI_SCHEDULE_TRACE;
+
+/* Arm/disarm a schedule around one exploration run. `bytes` is borrowed and
+ * must outlive the run. Not nestable. */
+void KiArmSchedule(const UCHAR *bytes, ULONG length);
+void KiDisarmSchedule(PKI_SCHEDULE_TRACE traceOut);
+
 void KiYield(void);
 /* CUI-4: round-robin at the timer interrupt's return to ring 3 (the one
  * preemption point; kernel/init/panic.c). */
