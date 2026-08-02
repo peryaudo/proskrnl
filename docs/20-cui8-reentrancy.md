@@ -301,6 +301,43 @@ as the implementation, and the sweep that convicted them was blind to them by
 construction. That blindness is the active ingredient: a reviewer who has read the
 census re-derives the census. Any future amendment should be produced the same way.
 
+## 10.7 Mechanization (issue #96 — built)
+
+The methodological corrections above are now machinery, not advice; each maps to the
+sweep rows it would have caught (the table in issue #96):
+
+- **The blocking frontier is computed, not judged** (`tools/blocking_frontier.py`,
+  gate G14): transitive-callers-of-a-park as a call-graph query, indirect calls
+  resolved by member name so it sees through `IO_VFS_OPS` and Ob's close/delete
+  procedures. It prints §10.1's `NtClose → IopCloseFileObject → … FatAcquireVolumeGate`
+  chain on demand, and the entry-point baseline (`tools/blocking_frontier.txt`) makes
+  widening the frontier a stated commit-body line that re-opens §8.4's checklist. The
+  runtime half is `KiEnterNoBlockRegion`/`KI_MAY_BLOCK()` (kernel/ke): R2's
+  `KiInCompletionDrain` idea generalized — the drain, the tick, and the idle sweep
+  declare themselves, and every blocking primitive asserts.
+- **Release obligations are a ledger** (`KiPushObligation`, kernel/ke/sched.c):
+  gates (via the new one-authority pair `KiAcquireEventGate`/`KiReleaseEventGate`),
+  sync-I/O spans, and transient handles are asserted zero at the service return, at
+  the fault-recovery unwind (§10.2's create-path wedge becomes a panic naming the
+  gate), and at thread exit.
+- **Probe staleness is a generation stamp** (`KI_PROBE_TOKEN`,
+  kernel/syscall/uaccess.h): `parkGeneration` advances at the one context-switch
+  site; the guarded copies (`MiCacheRead/Write`, the IOSB completion authorities,
+  `PspMakeProcessSystem`'s store) assert the token's stamp, so "probed, then blocked,
+  then copied" is fatal at the copy site. §11.4's remaining census is still owed;
+  unconverted sites keep the recovery frame as backstop.
+- **Interleavings are searched, not sampled** (`KiArmSchedule` +
+  tests/kmt/sched_explore.c): schedule-string-steered scheduling, depth-first with a
+  preemption bound of 2, judged by linearizability against the oracle-pinned
+  sequential semantics — the §10.6 composition class probed by construction. The
+  verdict line reports its own coverage; today's honest answer is that the volume
+  gate keeps the space small, and the search widens automatically with any future
+  loosening.
+
+What none of it catches is unchanged from the issue: the machine checks invariants
+that have been STATED; deciding what the invariant is (what an operation spans, what
+NT's enumeration atomicity promises) remains review's half.
+
 ## 11. The second review (PR #95, round 2)
 
 A third independent pass over the finished branch, run after §10's repairs landed.
