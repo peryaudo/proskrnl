@@ -139,6 +139,28 @@ A subset run is for **iteration, never for a verdict** — it says so on stdout,
 gates in `docs/CONTRIBUTING.md` are the unfiltered runs. A pattern matching nothing is an
 error listing the known names, so a typo can never read as "everything passed".
 
+### The oracle leg is fanned out (`ORACLE_JOBS`)
+
+The oracle leg is one short-lived process per case and nothing else, so it runs
+`ORACLE_JOBS` (default: `nproc`) of them at a time. Two properties make that a speedup
+rather than a new source of flakes:
+
+- **Each worker gets its own wineprefix.** The first case runs alone in the base prefix —
+  creating a prefix is what one wine process does when it finds none, and two racing
+  through `wine.inf` is the one way this leg could eat its own tail — and the workers get
+  `cp -a` clones of it (`build/tests/wineprefix-<n>`, kept between runs, as disposable as
+  the base). The cases address absolute paths under `C:\` and keys under
+  `\Registry\Machine\Software`, wineserver's namespace is per-prefix, and
+  `NtQuerySystemInformation`'s process list is exactly what a neighbour would pollute; a
+  clone makes a parallel run *semantically* identical to a sequential one, not merely
+  faster.
+- **The log is replayed in source order.** Each case's whole output is captured to
+  `build/tests/ntapi/out/<name>` and `cat` back in the order `all_tests` produced, so the
+  transcript and the `[KTEST]` grading are byte-for-byte what a sequential run printed.
+
+`ORACLE_JOBS=1` is the strictly sequential run: the fallback where `nproc` is missing, and
+what to set when a case is suspected of depending on its neighbours.
+
 ---
 
 ## Directory layout
