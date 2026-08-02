@@ -133,6 +133,25 @@ stated as hard gates.
   behaviour change with unrelated refactoring reach the PR — reorder and squash locally
   first. (Art. 13)
 
+- **G14 — The blocking frontier is declared.** Which code can reach a park is a
+  machine-computable property (`tools/blocking_frontier.py`, issue #96), and the CUI-8
+  post-mortem showed what happens when it is left to judgement: the census drew the
+  frontier at `fs/`, never asked Ob, and missed that `NtClose` parks (`docs/20` §10.1).
+  The check (`make frontier-check`, run by `make tidy` and CI) enforces two facts:
+  1. **No must-not-block region has a path to a park** — the completion drain, the
+     interrupt/tick path, the idle consistency sweep, and the panic path (the same set
+     the runtime `KiEnterNoBlockRegion`/`KI_MAY_BLOCK()` brackets declare — the static
+     and runtime halves must name the same regions).
+  2. **The entry-point frontier matches `tools/blocking_frontier.txt`.** A diff that
+     makes a service newly able to park regenerates the baseline
+     (`--write-baseline`) **in the same commit and says so in its body** — widening the
+     frontier is a stated design decision, and it re-opens `docs/20`'s STILL-TRUE
+     tables per §8.4 (a new blocking point invalidates every "nothing can run here"
+     claim that survives on the old frontier). A baseline row appearing without a
+     commit-body sentence acknowledging it FAILS, even when the widening itself is
+     correct — silent widening is how the C1 defect shipped. (Art. 6's spirit: the
+     machine names the fact; the human owns the decision.)
+
 ## Provenance rules (see docs/11)
 
 - **No GPL-source translation** into drivers or kernel. Drivers are written from **public

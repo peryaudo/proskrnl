@@ -126,6 +126,14 @@ jobs:
       # firstboot INF pass ("minutes under TCG" — see run.sh persist), which
       # qemu.sh's 30s default kill would cut short; the timeout is only a
       # backstop — a green boot exits via isa-debug-exit as soon as it's done.
+      # G14: the blocking frontier (issue #96 A). Pure-python call-graph
+      # check — no toolchain, so it runs first and fails fast: a service
+      # newly able to park must be written into tools/blocking_frontier.txt
+      # deliberately, and the must-not-block regions (drain/tick/idle-sweep/
+      # panic) must have no path to a park.
+      - name: blocking frontier (G14, tools/blocking_frontier.py --check)
+        run: python3 tools/blocking_frontier.py --check
+
       - name: make test (QEMU boot, [KTEST] verdict on serial)
         run: make test
         env:
