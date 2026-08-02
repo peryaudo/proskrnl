@@ -898,7 +898,11 @@ static NTSTATUS FatVfsPrepareWriteLocked(PFILE_OBJECT file, uint64_t *offsetInOu
         return status;
     }
     uint64_t offset = writeToEnd ? fcb->fileSize : *offsetInOut;
-    if (offset + length > fcb->fileSize)
+    /* length != 0: a zero-length write never extends, whatever its offset —
+     * NT leaves the file untouched (pinned sem_file/zero_length_write.c;
+     * the length-blind form grew and zero-filled every gap cluster on a
+     * 0-byte write at a far offset — PR #95 review round 2, F5). */
+    if (length != 0 && offset + length > fcb->fileSize)
     {
         /* Grow-only by construction: the target is past the size read
          * under this same gate hold, so a stale pre-park snapshot can
