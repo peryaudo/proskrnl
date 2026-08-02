@@ -211,6 +211,37 @@ START_TEST(async_inline)
     }
     NtClose(h);
 
+    /* --- the mode word is the FULL masked create-option set. ----------------
+     * The oracle serves options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY
+     * | FILE_NO_INTERMEDIATE_BUFFERING | FILE_SYNCHRONOUS_IO_ALERT |
+     * FILE_SYNCHRONOUS_IO_NONALERT) — server/fd.c default_fd_get_file_info —
+     * so a create carrying non-synchronous mode bits must see them again,
+     * exactly, and nothing else. The sync-bit checks above cannot convict a
+     * kernel that serves only the synchronous flag. */
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        const ULONG wantMode =
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NO_INTERMEDIATE_BUFFERING | FILE_WRITE_THROUGH;
+        init_ustr(&name, W("async.bin"));
+        init_attr(&attr, dir, &name, OBJ_CASE_INSENSITIVE);
+        h = NULL;
+        status = NtCreateFile(&h, FILE_GENERIC_READ, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
+                              FILE_NON_DIRECTORY_FILE | wantMode, NULL, 0);
+        ok(status == STATUS_SUCCESS, "mode-bits reopen -> %08lx", (unsigned long)status);
+        if (status == STATUS_SUCCESS)
+        {
+            FILE_MODE_INFORMATION mode;
+            poison_iosb(&iosb);
+            status = NtQueryInformationFile(h, &iosb, &mode, sizeof(mode), FileModeInformation);
+            ok(status == STATUS_SUCCESS, "query mode (full word) -> %08lx", (unsigned long)status);
+            ok(mode.Mode == wantMode, "mode word is the masked create options (%08lx vs %08lx)",
+               (unsigned long)mode.Mode, (unsigned long)wantMode);
+            NtClose(h);
+        }
+    }
+
     scrub_file(dir, W("async.bin"));
     NtClose(dir);
 }
