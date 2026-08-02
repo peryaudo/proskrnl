@@ -438,7 +438,9 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         {
             offset = cache->fileSize;
         }
-        if (offset + length > cache->fileSize)
+        /* length != 0: a zero-length write extends nothing, so it needs no
+         * resize either (pinned sem_file/zero_length_write.c). */
+        if (length != 0 && offset + length > cache->fileSize)
         {
             status = STATUS_INVALID_DEVICE_REQUEST;
             goto abandonSyncIo;
@@ -739,7 +741,9 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             {
                 offset = cache->fileSize;
             }
-            if (offset + length > cache->fileSize)
+            /* length != 0: a zero-length gather extends nothing (the
+             * sem_file/zero_length_write.c rule). */
+            if (length != 0 && offset + length > cache->fileSize)
             {
                 ObDereferenceObject(file);
                 return STATUS_INVALID_DEVICE_REQUEST;
