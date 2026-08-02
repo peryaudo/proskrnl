@@ -388,6 +388,38 @@ suspected (Art. 6; `tests/fuzz/interp.c` is single-threaded today); a pended fil
 cancels; and the existing run legs' verdicts are byte-identical, with the drain-stress knob
 off by default.
 
+*(Outcome: complete. The §7 pin run surprised the plan before a line of kernel code:
+the oracle answers the PENDING SHAPE for asynchronous disk handles — `STATUS_PENDING`
+from the call with the IOSB already final, the event already set, the APC queued
+(wine `dlls/ntdll/unix/file.c` ret_status tails; reads convert `SUCCESS`+`END_OF_FILE`,
+writes only `SUCCESS`) — so `IopAsyncReturnShape` extended the scatter/gather precedent
+to `NtRead/WriteFile`, and a direct `FileModeInformation` query plus the
+`NtCancelSynchronousIoFile` pseudo-handle came along as pin fallout. The machine work
+landed as `docs/19` §9 ordered: out-of-order virtqueue free list + per-request control
+slots behind the one harvest authority `VioBlkDrain`; direct page-frame DMA (no bounce
+on the data path); the fat32 volume gate with the gate-free cache-hot read; the
+allocator-in-drain prohibition; drains at the tick and idle (idle polls instead of
+hlt while transfers fly); batched fills/writebacks that reach depth 16; the §5d
+ownership convention stated once in `io.h` with the completion-APC leg folded into one
+authority; and cancellation widened to the data park (stop issuing, await what is out,
+`STATUS_CANCELLED`). Every Done-when clause has a machine verdict: the kmt `CUI8`
+suite (progress while parked — deterministic via the await-spin knob at zero — the
+`[KTEST] blk depth max=16` line against the committed floor 8, and an in-flight
+cancel), `sem_mm/file_coherence_mt`, and the `tests/run/run.sh cui8` leg (throttled
+boundary progress with the skip leg forbidden, two-boot verdict-line determinism, and
+the stress boot — every await parking — required to produce identical verdicts). The
+milestone's acceptance test also convicted a latent M4 bug: the fault-recovery unwind
+never restored RFLAGS, so the kmt thread had run everything since
+`test_kernel_fault_recovery` with interrupts masked — invisible until the drains made
+the clock load-bearing; fixed and pinned by an IF assertion in that test. The docs/20
+re-entrancy enumeration preceded the code per §9.2. The fuzzer gained
+`create_file_async`/`read_file_async` (collect-at-call under the inline pin — a
+regression to genuine ring-3 pending diverges on the issuing line) and
+`cancel_sync_self`, with the CUI-3 cancel ops' determinism argument re-derived from
+the pin instead of the machine. Deviations and residuals in `docs/03` "CUI-8 async
+notes"; the winetest manifest gained no pairs, and the §8.5 re-check found no pair
+parked on overlapped-file behaviour — recorded in the manifest.)*
+
 ## CUI-9 — COW: shared image masters
 Spec: **`docs/17-cow-strategy.md`**. Needs an **Article 3 amendment**, and the amendment
 needs its measurement first (`docs/09` "Lifting a mandate"): today every process gets a
