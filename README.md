@@ -435,24 +435,57 @@ latch" a sound verdict; and `tools/unscreen.py`, which replays a test's
 own text back out of the console's 80-column screen diff, so a non-zero
 budget is a list of names instead of a number.
 
-Next: **GUI-6** — the Wine desktop; or **Net-1** — sockets
-(virtio-net, `\Device\Afd`; the former CUI-5, now its own path), whose
-prerequisite is no longer CUI-1's clock alone but **CUI-8**, since an AFD
-`accept` that never completes cannot be served by the polled-synchronous
-transfer model every device uses today.
+**CUI-8 complete**: the machine is no longer single-threaded while the
+disk is busy. A block transfer parks its issuer on a per-request event
+instead of spinning the whole machine; completions are harvested — never
+by interrupt — at the timer tick and the idle loop, which polls instead
+of `hlt` while transfers fly; the page cache's frames DMA directly (the
+bounce survives only for pool-backed metadata sectors); and the fat32
+fill/writeback batch up to 16 requests in flight, which is the measured
+`[KTEST] blk depth max=16` verdict against the committed floor of 8. The
+§7 pin run reversed the plan's guess before any kernel code: the oracle
+answers the *pending shape* for asynchronous disk handles —
+`STATUS_PENDING` from the call with the IOSB already final and the event
+already set — now matched and pinned hot and cold
+(`sem_file/async_inline.c`). Re-entrancy — the milestone's actual work —
+landed as the `docs/20` enumeration first, then its rules: one volume
+gate (the cache-hot read stays gate-free), a hard allocator prohibition
+in drain context, the department-wide pended-request ownership
+convention with the completion-APC leg folded into one authority, and
+`NtCancelSynchronousIoFile` widened to the data park (stop issuing,
+await what is out, `STATUS_CANCELLED`). The acceptance leg
+(`tests/run/run.sh cui8`) holds four verdicts: the kmt progress/depth/
+cancel suite (deterministic — the await-spin knob at zero makes "parked
+with a transfer in flight" a controlled state), the boundary progress
+test under a physically throttled disk with its fast-disk skip
+forbidden, two-boot verdict-line determinism (`docs/19` §8.1), and a
+park-on-every-await stress boot required to produce identical verdicts.
+The milestone also convicted a latent M4 bug its own acceptance test
+starved on: the fault-recovery unwind never restored RFLAGS, so every
+kernel-mode caller past a recovered fault ran with interrupts masked —
+harmless until the drains made the clock load-bearing; fixed and pinned.
+**Not yet:** flush and section-writeback spans stay uncancellable (no
+consumer); `FileModeInformation` folds ALERT into NONALERT; cross-thread
+device overlap on the one volume serializes at the FS gate — the depth
+comes from batching, and the escalation is `docs/18`'s locking split
+(`docs/03` "CUI-8 async notes").
 
-The CUI path then ends with three milestones of a different kind — they add
-no `Nt*` at all and leave `docs/16`'s count untouched, closing gaps in the
-machine rather than at the boundary: **CUI-8** overlapping I/O
-(`docs/19-io-strategy.md`), **CUI-9** copy-on-write
-(`docs/17-cow-strategy.md`), **CUI-10** SMP behind a giant lock
-(`docs/18-smp-strategy.md`). Only CUI-8 needs no constitutional amendment —
-Article 3's mandate list is closed and synchronous I/O was never on it. The
-other two each retire a mandate, and each retirement is gated on a
-measurement that is deliberately not a speed argument: for COW, eager
-per-process image copies turning RAM into a ceiling ring 3 observes as
-`STATUS_NO_MEMORY`; for SMP, slowness having already stopped a suite from
-reaching a verdict.
+Next: **GUI-6** — the Wine desktop; or **Net-1** — sockets
+(virtio-net, `\Device\Afd`; the former CUI-5, now its own path) — its
+machine prerequisite, **CUI-8**, now stands complete: an AFD `accept`
+that never completes on its own has a pending engine and a drain seam to
+land on.
+
+The CUI path then ends with two remaining milestones of the machine kind
+— no `Nt*`, `docs/16`'s count untouched: **CUI-9** copy-on-write
+(`docs/17-cow-strategy.md`) and **CUI-10** SMP behind a giant lock
+(`docs/18-smp-strategy.md`); CUI-8 (`docs/19-io-strategy.md`), the only
+one needing no constitutional amendment, is done. The remaining two each
+retire a mandate, and each retirement is gated on a measurement that is
+deliberately not a speed argument: for COW, eager per-process image
+copies turning RAM into a ceiling ring 3 observes as `STATUS_NO_MEMORY`;
+for SMP, slowness having already stopped a suite from reaching a
+verdict.
 
 Either way, growing the winetest manifest as its parked blockers land
 (`docs/03` "M10 winetest notes"). Debug objects are ruled out of scope

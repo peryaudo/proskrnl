@@ -48,3 +48,10 @@ cmd.exe_test.exe:directory
 # (docs/03 "CUI-7"; no baked consumer) - and under the armed
 # panic-on-NOT_IMPLEMENTED boot that refusal is fatal by design, so the
 # pairs cannot run to a verdict until placeholders are built.
+# CUI-8 added no pairs, as docs/19 par.8.5 predicted for a milestone that
+# adds no Nt* - and the par.8.5 re-check for the invisible case (a pair
+# parked on overlapped-I/O BEHAVIOUR rather than on a missing id) found
+# none: every parked pair above names a missing surface (placeholders, the
+# watch-buffering model, oracle-side races), not an async-file-data
+# behaviour. The ring-3 answers CUI-8 pinned (the async-handle pending
+# shape) were already the oracle's, so no pair's verdict could have moved.

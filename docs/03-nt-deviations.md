@@ -1089,6 +1089,47 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   convention and the 8042 reset pulse; the refusal arms are the ntapi pins, the live
   arms the `tests/run/run.sh cui7` leg.
 
+## CUI-8 async notes
+
+- **Asynchronous disk handles answer the pending shape over an inline completion**
+  (`kernel/io/rw.c` `IopAsyncReturnShape`) — a pin, not a deviation, recorded here
+  because the §7 decision run reversed the plan's guess: the oracle returns
+  `STATUS_PENDING` with the IOSB already final, the event already set and the APC
+  queued (wine `dlls/ntdll/unix/file.c`; reads convert `SUCCESS` and `END_OF_FILE`,
+  writes only `SUCCESS`; refusals that never wrote the IOSB stay inline). Pinned by
+  `sem_file/async_inline.c` hot and cold, and continuously by the fuzzer's
+  `read_file_async` collect-at-call op, whose trace diverges on the issuing line if
+  either side ever genuinely pends.
+- **`FileModeInformation` folds `FILE_SYNCHRONOUS_IO_ALERT` into `_NONALERT`**
+  (`kernel/io/query.c` `IopFileMode`): the create collapses both options into the
+  single `synchronousIo` fact, so a handle opened ALERT reports NONALERT. The
+  alertable-wait distinction the two encode has no other observable edge in this
+  kernel (kernel-internal waits are non-alertable). Escalation: keep the create
+  options verbatim on the FILE_OBJECT the day a caller distinguishes them.
+- **Cancellation scope after the §9.9 widening** (`kernel/io/async.c`,
+  `fs/fat32/file.c`): `NtCancelSynchronousIoFile` now reaches the fat32 data park —
+  the fill/writeback loops stop issuing on a landed cancel, await what is out
+  (docs/20 R4), and answer `STATUS_CANCELLED` with the IOSB untouched; already-written
+  sectors stay written (NT's too-late-to-cancel writeback). Still outside the verb:
+  `NtFlushBuffersFile` and the section-writeback path (`IoWritebackSectionRange`) run
+  unmarked — no baked caller cancels a flush — and condrv/serial/`\Device\Input*`
+  keep their CUI-5 uncancellable waits. Escalation: mark the flush spans when a
+  consumer convicts them.
+- **Cross-thread device overlap on the one volume serializes at the FS** (the
+  `FAT_VOLUME` gate, docs/20 R1): two threads' file operations never interleave
+  inside the volume's structures — the depth the `[KTEST]` verdict measures comes
+  from one gated operation's batched pages (up to `VIO_BLK_MAX_INFLIGHT` in flight),
+  while the other thread overlaps as computation or parks. Machine-internal (latency
+  only, no boundary edge); escalation is `docs/18`'s locking split, whose first
+  consumer would be a second volume or Net-1's independent device.
+- **The differential fuzzer convicts the contract, not the in-flight window**
+  (docs/19 §8.3.3, recorded honestly): proskrnl's internal in-flight state has no
+  oracle counterpart under the inline pin, so the traces cannot see it — the kmt
+  `CUI8` suite (deterministic via the await-spin knob), `file_coherence_mt`, and the
+  `cui8` leg's park-on-every-await stress boot are its conviction instead. The
+  npfs async listen remains the one surface where issue-now/collect-later pends on
+  both runners, and `sem_pipe/async_listen.c` guards it.
+
 ## Debug objects are out of scope (permanent; ADR 0011)
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,
