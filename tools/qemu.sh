@@ -12,7 +12,7 @@
 # emulating every guest instruction in software.
 set -uo pipefail
 
-IMG="${1:?usage: qemu.sh <hdd>}"
+IMG="${1:?usage: qemu.sh <hdd> | qemu.sh --print-accel}"
 LOG="${LOG:-build/serial.log}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -61,6 +61,18 @@ find_accel() {
     echo tcg
 }
 ACCEL="${ACCEL:-$(find_accel)}"
+
+# `qemu.sh --print-accel` runs the probe above and prints nothing else, so a
+# log can RECORD which accelerator a host actually got. The fallback to TCG
+# is silent by design (it must be: an accelerator is not guest-observable —
+# the verdict still comes off the same serial log), but silent is also how a
+# CI runner that quietly lost /dev/kvm looks exactly like a CI runner that
+# got slower for no reason. Every leg here redirects qemu.sh's stderr to
+# /dev/null, so the answer has to be askable on its own.
+if [[ "$IMG" == "--print-accel" ]]; then
+    echo "$ACCEL"
+    exit 0
+fi
 case "$ACCEL" in
 kvm)
     ACCEL_ARGS=(-accel kvm -cpu host)
