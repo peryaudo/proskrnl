@@ -300,7 +300,7 @@ wait "$KPID" 2>/dev/null || true
 # whether or not it reads our stdout (most of tests/run/run.sh redirects it to
 # /dev/null, and a red run's uploaded artifacts were raw hex before this).
 # "<name>.log" -> "<name>.sym.log" keeps the sidecar under the CI upload's
-# *.log glob (.github/workflows/test.yml).
+# *.log glob (.github/actions/serial-logs).
 if [[ "$LOG" == *.log ]]; then
     SYMLOG="${LOG%.log}.sym.log"
 else

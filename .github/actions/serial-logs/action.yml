@@ -1,0 +1,29 @@
+# The panic dump is the debugger (Art. 9): a red run must ship its serial
+# logs. One composite action because every shard in
+# .github/workflows/test.yml uploads the same set — and because artifact
+# names must be unique within a run, so each shard tags its own.
+name: upload serial logs
+description: Upload the serial logs and screendumps a red leg left behind.
+
+inputs:
+  shard:
+    description: Name of the shard uploading — becomes the artifact's suffix.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@v4
+      with:
+        name: serial-logs-${{ inputs.shard }}
+        # No recursive glob over build/tests: the oracle wineprefix's
+        # dosdevices/z: symlinks to /, and walking it EACCESes the upload.
+        path: |
+          build/serial.log
+          build/serial.sym.log
+          build/tests/*.log
+          build/tests/*.ppm
+          build/tests/wtests/*.log
+          build/tests/fatcheck/*.log
+          build/tests/fuzz/repro/**
+        if-no-files-found: ignore

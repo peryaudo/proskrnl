@@ -1,17 +1,40 @@
 # CI gate: build the image and run the test suites on every PR and on main.
 #
-# Merge blocking itself is repo configuration, not workflow code: a branch
+# SHAPE. The suite is a long list of independent QEMU boots, and it used to
+# run as one serial job: ~33 minutes of wall clock on a warm cache, and the
+# first red leg cancelled every leg after it, so one flaky verdict cost a
+# whole re-run to learn anything about the rest. It is now a fan-out:
+#
+#   setup ──┬── boot / oracle / ntapi / cui-a / cui-b / gui / msg ──┬── all-green
+#           └── (each shard restores the same pinned third_party)   ┘
+#
+# `setup` exists to own the third_party cache. Every shard needs those trees,
+# and if each shard could miss the cache on its own, the first run after a
+# submodule pin bump would build QEMU and Wine from source once PER SHARD.
+# Ordering one job in front of the fan-out makes that cost payable exactly
+# once; on a warm cache the hop is the same few minutes every shard pays.
+#
+# Inside a shard, every leg carries `if: ${{ !cancelled() }}` so a red leg
+# does not hide the legs behind it — the job still ends red, but the run
+# reports every verdict it was able to reach.
+#
+# Merge blocking is repo configuration, not workflow code: a branch
 # protection rule (or ruleset) on `main` with "Require status checks to pass
-# before merging" pointing at this workflow's `test` check. Settings ->
-# Branches (or Settings -> Rules -> Rulesets); the check appears in the
-# picker after this workflow has run once.
+# before merging" pointing at the `all-green` check below — the ONE check to
+# require, since it aggregates every shard (Settings -> Branches, or Settings
+# -> Rules -> Rulesets; the check appears in the picker after this workflow
+# has run once). Requiring the individual shards instead would work, but then
+# adding a shard silently stops being blocking until someone edits the rule.
+# NOTE for whoever flips that setting: the old required check was named
+# `test`, and no job here is called that any more.
 #
 # The pinned third_party QEMU and Wine are real source builds (hours on a
 # hosted runner), so the finished builds are cached keyed on the submodule
 # pins: the first run after a pin bump rebuilds, every other run restores
 # and tools/setup_linux.sh skips straight through (it is idempotent by
 # design). Keying on the pins means CI can never version-drift from the
-# tree abi/ is generated from.
+# tree abi/ is generated from. All of that lives in the composite action
+# .github/actions/third-party, which every job below uses.
 name: test
 
 on:
@@ -24,161 +47,201 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  # G14: the blocking frontier (issue #96 A). Pure-python call-graph check —
+  # no toolchain and no third_party, so it needs neither `setup` nor a cache
+  # restore and answers in seconds: a service newly able to park must be
+  # written into tools/blocking_frontier.txt deliberately, and the
+  # must-not-block regions (drain/tick/idle-sweep/panic) must have no path to
+  # a park.
+  frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: blocking frontier (G14, tools/blocking_frontier.py --check)
+        run: python3 tools/blocking_frontier.py --check
+
+  # The cache owner. Nothing runs here but the prep itself: on a warm cache
+  # it is a restore, on a cold one it is the QEMU + Wine source build every
+  # shard below would otherwise duplicate.
+  setup:
     runs-on: ubuntu-24.04
     timeout-minutes: 350   # first uncached run builds QEMU + Wine
-    # contents:write is for the release-cache publish step below (main pushes
-    # only); PRs from forks get a read-only token regardless.
+    # contents:write is for the release-cache publish step inside the
+    # composite action (main pushes only); PRs from forks get a read-only
+    # token regardless.
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      # .gitmodules pins third_party/wine by SSH URL; the runner has no SSH
-      # key, so route github.com submodule fetches over HTTPS. Init the
-      # submodules HERE, before the cache restore below overlays the build
-      # outputs into the same trees (git refuses to clone into a non-empty
-      # directory, so the order matters).
-      - name: Fetch pinned submodules over HTTPS
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 \
-            third_party/limine third_party/limine-protocol third_party/qemu third_party/wine \
-            third_party/freetype third_party/flanterm
-
-      # The submodule pins ARE the cache key (git ls-tree reads them from the
-      # superproject tree, no submodule checkout needed). Only the submodules
-      # whose builds this cache holds are named — flanterm has no build of its
-      # own (the kernel Makefile compiles its two C files), so its pin must not
-      # invalidate them. Must match tools/fetch_third_party.sh exactly.
-      - name: Compute third_party cache key
-        id: pins
-        run: echo "key=$(git ls-tree HEAD third_party/limine third_party/limine-protocol third_party/qemu third_party/wine third_party/freetype | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-
-      # v2: v1 entries were poisoned by a cancelled run saving a sources-only
-      # snapshot (no builds) under the pins key; the version bump orphans them
-      # (unused entries age out on their own).
-      #
-      # v3: the key is computed from the submodule PINS alone, so it does not
-      # move when the way a pinned tree is CONFIGURED changes — and it just
-      # did. QEMU is now configured --enable-gtk so `make rungui` gets a host
-      # window deterministically, but every v2 entry holds a GTK-less
-      # qemu-system-x86_64, and setup_linux.sh's "already built — skipping"
-      # guard would serve it forever. The bump is what forces the rebuild;
-      # freetype's new path rides along. Expect the first run on this key to
-      # pay the full QEMU + Wine source build.
-      #
-      # v4: the same failure mode, one tree over. GUI-3 reconfigures the
-      # pinned Wine --with-freetype --without-fontconfig against the pinned
-      # FreeType (built native by tools/build_freetype.sh) so it is the
-      # font-METRICS oracle, not just the ntapi one (docs/03 "the font
-      # oracle"). Every v3 entry holds a --without-freetype wine; the pins
-      # did not move, so only this prefix can force the rebuild.
-      # setup_linux.sh detects a stale tree on its own (SONAME_LIBFREETYPE in
-      # the generated config.h) and would rebuild it from source, but that
-      # costs hours on every run until the key moves — which is the point of
-      # moving it. freetype's new x86_64-linux output joins the paths below.
-      # v5: the same failure mode again, one build set over. GUI-5 adds
-      # dlls/user32/tests to what setup_linux.sh builds in the pinned tree
-      # (the msg-gate binary, user32_test.exe). The pins did not move, so
-      # every v4 entry — a tree without that exe — would satisfy the skip
-      # guard forever; the prefix bump is what forces the one incremental
-      # build. Expect the first run on this key to pay it (minutes, not the
-      # hours of a full rebuild: the tree itself is already built).
-      #
-      # Kept in lockstep with the tp-v5 release assets: if only one door
-      # moved, the stale oracle would come back in through the other.
-      - name: Restore third_party builds
-        id: tp-cache
-        uses: actions/cache/restore@v4
+      - uses: ./.github/actions/third-party
         with:
-          path: |
-            third_party/limine
-            third_party/qemu/build
-            third_party/wine
-            third_party/freetype/x86_64-windows
-            third_party/freetype/x86_64-linux
-          key: third-party-v5-${{ steps.pins.outputs.key }}
+          maintain-cache: "true"
 
-      # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
-      # repo budget) far more eagerly than the release-cache assets the
-      # publish step below maintains, so on a miss pull the same trees from
-      # the release before resigning to the hours-long source build.
-      # Fail-soft: a miss (pins bumped and not yet republished) just falls
-      # through to setup_linux.sh building from source, exactly as before.
-      - name: Restore third_party builds from the release cache (fallback)
-        if: steps.tp-cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: tools/fetch_third_party.sh || echo "no release cache for this key — building from source"
-
-      # The hosted runner's root disk is tight; the wine + qemu builds want
-      # the space these unused preinstalled toolchains occupy.
-      - name: Free runner disk space
-        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
-
-      - name: Toolchain + pinned third_party builds (tools/setup_linux.sh)
-        id: setup
-        run: tools/setup_linux.sh
+  # The kernel's own boot verdict plus the host-oracle FAT32 battery: the
+  # legs with no Wine userland in them.
+  boot:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
 
       # CI boots a VIRGIN image every time, so the boot runs the full CUI-1
       # firstboot INF pass ("minutes under TCG" — see run.sh persist), which
       # qemu.sh's 30s default kill would cut short; the timeout is only a
       # backstop — a green boot exits via isa-debug-exit as soon as it's done.
-      # G14: the blocking frontier (issue #96 A). Pure-python call-graph
-      # check — no toolchain, so it runs first and fails fast: a service
-      # newly able to park must be written into tools/blocking_frontier.txt
-      # deliberately, and the must-not-block regions (drain/tick/idle-sweep/
-      # panic) must have no path to a park.
-      - name: blocking frontier (G14, tools/blocking_frontier.py --check)
-        run: python3 tools/blocking_frontier.py --check
-
       - name: make test (QEMU boot, [KTEST] verdict on serial)
+        if: ${{ !cancelled() }}
         run: make test
         env:
           TIMEOUT: "600"
 
-      - name: ntapi oracle — the spec gate (tests/run/run.sh oracle)
-        run: tests/run/run.sh oracle
-
-      - name: ntapi on proskrnl — the regression gate (tests/run/run.sh proskrnl)
-        run: tests/run/run.sh proskrnl
-
       # One deterministic batch (seed 1, 64 programs, anon-name policy — the
       # documented clean green gate): random Nt* sequences, oracle vs kernel.
       - name: differential fuzzer (tests/run/run.sh fuzz)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh fuzz
 
-      - name: registry persistence across reboot (tests/run/run.sh persist)
-        run: tests/run/run.sh persist
+      # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
+      # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
+      # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.
+      - name: FAT32 host<->kernel interop (tests/run/run.sh fatinterop)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh fatinterop
 
-      - name: serial console echo + interactive cmd (tests/run/run.sh console)
-        run: tests/run/run.sh console
+      - name: FAT32 churn stress across geometries (tests/run/run.sh fatstress)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh fatstress
+
+      - name: FAT32 torn-write prefix replay (tests/run/run.sh tornwrite)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh tornwrite
+
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: boot
+
+  # The spec gate (G5/Art. 5): every tests/ntapi case under the pinned Wine.
+  # It runs no proskrnl code at all, which is exactly why it gets its own
+  # shard rather than sitting in front of the legs that do — it was the
+  # longest single leg here and it blocked all of them. It stays a REQUIRED
+  # check: a red oracle means the spec the proskrnl leg is judged against is
+  # wrong, so a green proskrnl leg under a red oracle is a false green.
+  oracle:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
+      - name: ntapi oracle — the spec gate (tests/run/run.sh oracle)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh oracle
+
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: oracle
+
+  # The same .exes on the kernel, plus the suites that boot a Wine userland
+  # to a serial verdict.
+  ntapi:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
+      - name: ntapi on proskrnl — the regression gate (tests/run/run.sh proskrnl)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh proskrnl
 
       - name: curated winetest subset, oracle + proskrnl (tests/run/run.sh winetest)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh winetest
 
+      - name: registry persistence across reboot (tests/run/run.sh persist)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh persist
+
       - name: CUI-1 firstboot registry differential (tests/run/run.sh firstboot)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh firstboot
 
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: ntapi
+
+  # The interactive-console acceptances, first half. Split from cui-b purely
+  # by cost: each leg is a full boot driven from console_expect.py, and two
+  # ~5-minute shards beat one ~10-minute one.
+  cui-a:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
+      - name: serial console echo + interactive cmd (tests/run/run.sh console)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh console
+
       - name: CUI-3 SCM round-trip + reboot survival (tests/run/run.sh scm)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh scm
 
       - name: CUI-4 Ctrl+C, tasklist/taskkill, job tool (tests/run/run.sh procs)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh procs
 
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: cui-a
+
+  cui-b:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
       - name: CUI-5 ren/move/replace under cmd.exe (tests/run/run.sh files)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh files
 
       - name: CUI-6 times/handle-redirect/restricted-token under cmd.exe (tests/run/run.sh cui6)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh cui6
 
       - name: CUI-7 reg save/load reboot round-trip + write-watch app (tests/run/run.sh cui7)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh cui7
 
       - name: CUI-8 overlap verdicts, throttled progress, determinism + stress (tests/run/run.sh cui8)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh cui8
+
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: cui-b
+
+  gui:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
 
       # GUI-1: the verdict is a picture. The guest paints through
       # \Device\Fb0 and reports what it painted; the pixels come back out of
@@ -186,6 +249,7 @@ jobs:
       # \Device\Input0 (docs/03 "GUI-1 notes" for why this stands in for an
       # oracle leg).
       - name: GUI-1 framebuffer screendump + key input (tests/run/run.sh gui)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh gui
 
       # GUI-2: winemine.exe on the scanout — unmodified user32/gdi32/comctl32
@@ -194,141 +258,61 @@ jobs:
       # rect it painted; QEMU's device model returns the pixels). The whole
       # GUI userland boots under TCG here, so the deadlines are generous.
       - name: GUI-2 winemine on screen (tests/run/run.sh gui2)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh gui2
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
 
-      # GUI-5's trophy: Wine's own user32:msg — 21.5 kloc, ~85 test functions
-      # — over the full GUI stack, with the failure count ratcheted against
-      # tests/winetest/msg-budget.txt (docs/03 "GUI-5 winetest notes" has the
-      # policy and the named divergences behind the current number). It was
-      # out of CI while the module could not reach a verdict at all; it can
-      # now, so the ratchet is a gate like any other and a regression above
-      # the budget — or any crash exit, whatever the budget says — fails the
-      # job. One whole run is the single longest leg here (the manifest's
-      # per-pair timeout is 3000 s under TCG), hence the outer bound.
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: gui
+
+  # GUI-5's trophy: Wine's own user32:msg — 21.5 kloc, ~85 test functions —
+  # over the full GUI stack, with the failure count ratcheted against
+  # tests/winetest/msg-budget.txt (docs/03 "GUI-5 winetest notes" has the
+  # policy and the named divergences behind the current number).
+  # It gets a shard to itself because it is the second-longest leg and its
+  # verdict is a ratchet: whatever policy that ratchet ends up under, it must
+  # not be reached through six other legs' worth of wall clock.
+  msg:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
+      # One whole run is the single longest leg here (the manifest's per-pair
+      # timeout is 3000 s under TCG), hence the outer bound.
       - name: GUI-5 trophy — user32:msg, budget-ratcheted (tests/run/run.sh guiwtest)
+        if: ${{ !cancelled() }}
         run: tests/run/run.sh guiwtest
         env:
           TIMEOUT: "3600"
 
-      # The FAT32 integration suite (PR #38, docs/08): boot-and-churn legs
-      # convicted by INDEPENDENT host oracles (fsck.fat/mtools/fatsweep) after
-      # QEMU exits. mtools + dosfstools come from tools/setup_linux.sh.
-      - name: FAT32 host<->kernel interop (tests/run/run.sh fatinterop)
-        run: tests/run/run.sh fatinterop
-
-      - name: FAT32 churn stress across geometries (tests/run/run.sh fatstress)
-        run: tests/run/run.sh fatstress
-
-      - name: FAT32 torn-write prefix replay (tests/run/run.sh tornwrite)
-        run: tests/run/run.sh tornwrite
-
-      # actions/cache's built-in post step only saves on job success; the
-      # split restore/save keeps the long first build even when a test leg
-      # goes red, so the retry costs minutes, not hours. Gated on the SETUP
-      # step's own outcome, not the job's: a red test leg still saves, but a
-      # cancellation or failure mid-build can never freeze a half-built (or
-      # sources-only) tree under the key — saved entries are immutable, so a
-      # bad save poisons the key until the pins move.
-      - name: Save third_party builds
-        if: always() && steps.setup.outcome == 'success' && steps.tp-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            third_party/limine
-            third_party/qemu/build
-            third_party/wine
-            third_party/freetype/x86_64-windows
-            third_party/freetype/x86_64-linux
-          key: third-party-v5-${{ steps.pins.outputs.key }}
-
-      # Mirror the finished builds to the rolling `third-party-cache`
-      # prerelease so ephemeral containers outside Actions (Claude Code on
-      # the web — tools/fetch_third_party.sh) can restore them: the Actions
-      # cache above is not downloadable without Actions auth, release assets
-      # are. Same gating rationale as the save step: a red test leg still
-      # publishes finished builds, a failed/cancelled setup never publishes
-      # a half-built tree. Main pushes only — branch pins without published
-      # assets just mean fetch_third_party.sh reports a miss.
-      - name: Publish third_party builds to the release cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEY: ${{ steps.pins.outputs.key }}
-        run: |
-          tag=third-party-cache
-          gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$tag" -R "$GITHUB_REPOSITORY" --prerelease \
-              --title "third_party build cache" \
-              --notes "CI build cache for tools/fetch_third_party.sh — not a software release. Assets are zstd tarballs of the pinned third_party builds, keyed on the submodule pins."
-          # distro.txt is uploaded LAST, so its presence is the "this key's
-          # asset set is complete" sentinel — both for this skip-guard and
-          # for fetch_third_party.sh (a partial upload just reruns here).
-          #
-          # v3: freetype joined the component set, and the tp-v2 assets carry
-          # the pre---enable-gtk qemu besides. The sentinel above makes a
-          # published key immutable, so republishing under the same name would
-          # never happen — the fetch side would demand a freetype asset this
-          # step permanently skips creating, and keep handing out a GTK-less
-          # QEMU. The prefix bump forces the republish; the prune below then
-          # drops the tp-v2 assets. Kept in lockstep with the Actions cache
-          # key above: if only one of the two moved, the stale one would just
-          # feed the same GTK-less build back in through the other door.
-          #
-          # v4: the wine configure gained the font backend (GUI-3 — the
-          # font-metrics oracle); the immutable-sentinel argument above
-          # applies unchanged, and the same lockstep rule holds.
-          existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          if grep -qx "tp-v5-$KEY-distro.txt" <<<"$existing"; then
-            echo "assets for key $KEY already published — skipping"
-            exit 0
-          fi
-          pack="$RUNNER_TEMP/tp-pack"
-          mkdir -p "$pack"
-          # The tarballs hold binaries linked against this runner's glibc;
-          # fetch_third_party.sh refuses to restore onto a different distro
-          # release, so record which one built them.
-          (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v5-$KEY-distro.txt"
-          # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
-          # side concatenates partNN in order.
-          # freetype packs BOTH build outputs (PE static library + the native
-          # shared library the oracle wine is configured against) and neither
-          # the sources nor anything else in the submodule.
-          for spec in limine:third_party/limine qemu-build:third_party/qemu/build \
-                      wine:third_party/wine \
-                      "freetype:third_party/freetype/x86_64-windows third_party/freetype/x86_64-linux"; do
-            name="${spec%%:*}"; paths="${spec#*:}"
-            tar -C "$GITHUB_WORKSPACE" --zstd -cf - $paths \
-              | split -b 1900m -d -a 2 - "$pack/tp-v5-$KEY-$name.tar.zst.part"
-          done
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v5-"$KEY"-*.part* --clobber
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v5-$KEY-distro.txt" --clobber
-          # Prune stale keys only after the new key uploaded whole, so a
-          # failed upload never leaves the release empty.
-          for a in $existing; do
-            case "$a" in
-              tp-v5-"$KEY"-*) ;;
-              *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
-            esac
-          done
-
-      # The panic dump is the debugger (Art. 9): a red run must ship its
-      # serial logs.
-      - name: Upload serial logs
+      - uses: ./.github/actions/serial-logs
         if: failure()
-        uses: actions/upload-artifact@v4
         with:
-          name: serial-logs
-          # No recursive glob over build/tests: the oracle wineprefix's
-          # dosdevices/z: symlinks to /, and walking it EACCESes the upload.
-          path: |
-            build/serial.log
-            build/serial.sym.log
-            build/tests/*.log
-            build/tests/*.ppm
-            build/tests/wtests/*.log
-            build/tests/fatcheck/*.log
-            build/tests/fuzz/repro/**
-          if-no-files-found: ignore
+          shard: msg
+
+  # The one check to require in branch protection: red unless every shard is
+  # green. A shard that was SKIPPED or CANCELLED is not green either — a
+  # verdict nobody reached must never read as a verdict that passed.
+  all-green:
+    needs: [frontier, setup, boot, oracle, ntapi, cui-a, cui-b, gui, msg]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: verdict
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          fail=0
+          while read -r job result; do
+            echo "$job: $result"
+            [[ "$result" == success ]] || fail=1
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$RESULTS")
+          exit "$fail"

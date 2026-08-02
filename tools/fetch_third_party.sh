@@ -2,7 +2,8 @@
 # fetch_third_party.sh — restore the pinned third_party builds from the
 # GitHub release cache instead of building them (hours) from source.
 #
-# CI (.github/workflows/test.yml) publishes the finished build trees
+# CI (.github/actions/third-party, the prep every job in
+# .github/workflows/test.yml shares) publishes the finished build trees
 #
 #   third_party/limine        third_party/qemu/build        third_party/wine
 #   third_party/freetype/{x86_64-windows,x86_64-linux}
