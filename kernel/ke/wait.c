@@ -121,6 +121,13 @@ void KiAbortThreadWait(PKTHREAD thread)
 {
     ASSERT(KiIsDispatcherLockHeld());
     ASSERT(thread->threadObject != 0);
+    if (thread->rundownWait)
+    {
+        /* A rundown gate park (KiAcquireEventGate): bounded by the gate
+         * discipline, and the thread is already on its way out — aborting
+         * it would just re-enter the same acquire. */
+        return;
+    }
     if (thread->state == KI_THREAD_STATE_WAITING)
     {
         KiUnwaitThread(thread, STATUS_THREAD_IS_TERMINATING);
@@ -133,7 +140,7 @@ void KiAbortThreadWait(PKTHREAD thread)
  * cannot trap a dying thread short of its reaping edge. */
 static BOOLEAN KiWaitAbortedForTermination(PKTHREAD thread)
 {
-    return thread->terminating && thread->threadObject != 0;
+    return thread->terminating && thread->threadObject != 0 && !thread->rundownWait;
 }
 
 /* Are all objects of a wait-all thread simultaneously satisfiable? The
