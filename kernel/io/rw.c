@@ -267,13 +267,16 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
      * stale — a sibling may have unmapped it, and a fault inside
      * MiCacheRead would unwind past the cleanup below (leaking the APC
      * block and the FILE_OBJECT reference — permanently, since the FCB and
-     * its cache pages go with it). No park separates probe and copy. */
-    status = KiProbeForWrite(buffer, bytes, 1);
+     * its cache pages go with it). The token carries that freshness INTO
+     * MiCacheRead (issue #96 C), so a park reintroduced between these two
+     * lines is a panic here rather than a leak found by a later sweep. */
+    KI_PROBE_TOKEN bufferToken;
+    status = KiProbeForWriteToken(buffer, bytes, 1, &bufferToken);
     if (!NT_SUCCESS(status))
     {
         goto abandon;
     }
-    MiCacheRead(cache, offset, buffer, bytes);
+    MiCacheRead(cache, offset, &bufferToken, buffer, bytes);
     if (file->synchronousIo)
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + (LONGLONG)bytes;
@@ -461,12 +464,13 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         /* Re-validate the buffer after the parks above (the NtReadFile
          * reasoning): a fault inside MiCacheWrite would skip every
          * cleanup below. No park separates probe and copy. */
-        status = KiProbeForRead(buffer, length, 1);
+        KI_PROBE_TOKEN bufferToken;
+        status = KiProbeForReadToken(buffer, length, 1, &bufferToken);
         if (!NT_SUCCESS(status))
         {
             goto abandonSyncIo;
         }
-        MiCacheWrite(cache, offset, buffer, length);
+        MiCacheWrite(cache, offset, &bufferToken, buffer, length);
         status = file->device->ops->WritebackRange(file, offset, length);
         if (!NT_SUCCESS(status))
         {
@@ -766,12 +770,13 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         for (ULONG i = 0; i < segmentCount; i++)
         {
             const void *page = (const void *)segmentCopy[i].Buffer;
-            status = KiProbeForRead((void *)(uintptr_t)page, PAGE_SIZE, 1);
+            KI_PROBE_TOKEN pageToken;
+            status = KiProbeForReadToken((void *)(uintptr_t)page, PAGE_SIZE, 1, &pageToken);
             if (!NT_SUCCESS(status))
             {
                 goto out;
             }
-            MiCacheWrite(cache, offset + (uint64_t)i * PAGE_SIZE, page, PAGE_SIZE);
+            MiCacheWrite(cache, offset + (uint64_t)i * PAGE_SIZE, &pageToken, page, PAGE_SIZE);
         }
         if (length != 0)
         {
@@ -807,12 +812,13 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
                 chunk = avail - position;
             }
             void *page = (void *)segmentCopy[position / PAGE_SIZE].Buffer;
-            status = KiProbeForWrite(page, (SIZE_T)chunk, 1);
+            KI_PROBE_TOKEN pageToken;
+            status = KiProbeForWriteToken(page, (SIZE_T)chunk, 1, &pageToken);
             if (!NT_SUCCESS(status))
             {
                 goto out;
             }
-            MiCacheRead(cache, offset + position, page, chunk);
+            MiCacheRead(cache, offset + position, &pageToken, page, chunk);
             position += chunk;
         }
         total = avail;

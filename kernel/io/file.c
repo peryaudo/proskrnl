@@ -217,10 +217,16 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
      * still fires — NT's I/O manager writes the requestor's IOSB under the
      * same swallow-the-fault guard. No park separates probe and store;
      * no-op success for a KernelMode caller's kernel IOSB (uaccess.h). */
-    if (NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+    KI_PROBE_TOKEN iosbToken;
+    if (NT_SUCCESS(KiProbeForWriteToken(iosb, sizeof(*iosb), sizeof(void *), &iosbToken)))
     {
-        iosb->Status = status;
-        iosb->Information = information;
+        IO_STATUS_BLOCK final;
+        final.Status = status;
+        final.Information = information;
+        /* Through the token, so a park reintroduced between this probe and
+         * this store is fatal here rather than a ring-0 fault unwinding past
+         * every caller's cleanup (issue #96 C). */
+        KiWriteUser(&iosbToken, iosb, &final, sizeof(final));
     }
     if (eventHandle != 0)
     {
@@ -365,10 +371,16 @@ void IoMountBootVolume(void)
  * unwinds the create. No park separates probe and store. */
 static void IopWriteCreateIosb(PIO_STATUS_BLOCK iosb, NTSTATUS status, ULONG_PTR information)
 {
-    if (NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+    KI_PROBE_TOKEN iosbToken;
+    if (NT_SUCCESS(KiProbeForWriteToken(iosb, sizeof(*iosb), sizeof(void *), &iosbToken)))
     {
-        iosb->Status = status;
-        iosb->Information = information;
+        IO_STATUS_BLOCK final;
+        final.Status = status;
+        final.Information = information;
+        /* Through the token, so a park reintroduced between this probe and
+         * this store is fatal here rather than a ring-0 fault unwinding past
+         * every caller's cleanup (issue #96 C). */
+        KiWriteUser(&iosbToken, iosb, &final, sizeof(final));
     }
 }
 
@@ -875,7 +887,8 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
             ObDereferenceObject(file);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        MiCacheRead(cache, 0, raw, cache->fileSize);
+        KI_PROBE_TOKEN token = KiKernelToken(raw, cache->fileSize);
+        MiCacheRead(cache, 0, &token, raw, cache->fileSize);
         backing->rawData = raw;
         backing->rawSize = cache->fileSize;
         backing->ownsRawData = TRUE;

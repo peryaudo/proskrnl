@@ -20,6 +20,7 @@
 #include "kernel/io/io.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
+#include "kernel/syscall/uaccess.h"
 
 #include "abi/ntstatus.h"
 #include "abi/ntioapi.h"
@@ -168,11 +169,48 @@ static void test_obligations_balanced_across_fs_ops(void)
     ok(self->obligationCount == 0, "delete missing left %lu", (unsigned long)self->obligationCount);
 }
 
+/* --- probe tokens (issue #96 C) -------------------------------------------- */
+
+/* The mechanism convicts by panicking, so what is testable is its PREDICATE:
+ * that a park really does move the generation a token is compared against.
+ * If it did not, KiAssertProbeToken would pass on stale tokens and the whole
+ * mechanism would be decorative — the failure mode docs/17 §8 and docs/19
+ * §8.4 both warn about (correct but inert). */
+static void test_probe_token_generation(void)
+{
+    PKTHREAD self = KeGetCurrentThread();
+    static char scratch[64];
+
+    KI_PROBE_TOKEN token = KiKernelToken(scratch, sizeof(scratch));
+    ok(token.generation == self->parkGeneration, "fresh token %lu vs thread %lu",
+       (unsigned long)token.generation, (unsigned long)self->parkGeneration);
+
+    /* A fresh token accepts the copy it was minted for, and a sub-range of
+     * it — the containment half of the check. */
+    KiAssertProbeToken(&token, scratch, sizeof(scratch));
+    KiAssertProbeToken(&token, scratch + 16, 8);
+
+    /* A real park: a timed delay yields the CPU to the idle thread, which is
+     * a genuine switch. */
+    uint64_t before = self->parkGeneration;
+    LARGE_INTEGER interval;
+    interval.QuadPart = -20000; /* 2 ms, relative (100 ns units) */
+    KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    ok(self->parkGeneration > before, "park did not advance the generation: %lu -> %lu",
+       (unsigned long)before, (unsigned long)self->parkGeneration);
+
+    /* Which is exactly the condition KiAssertProbeToken would die on — the
+     * old token is now detectably stale. Asserted as a comparison rather
+     * than by calling it, because calling it is the panic. */
+    ok(token.generation != self->parkGeneration, "the pre-park token still looks fresh");
+}
+
 int kmt_run_preventive(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_no_block_regions);
     KMT_RUN(test_obligation_ledger);
     KMT_RUN(test_obligations_balanced_across_fs_ops);
+    KMT_RUN(test_probe_token_generation);
     return kmt_failures - before;
 }

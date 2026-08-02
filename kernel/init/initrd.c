@@ -78,7 +78,11 @@ NTSTATUS KiEnsureRamdiskCache(PKI_RAMDISK_FILE file)
     {
         return status;
     }
-    MiCacheWrite(&file->cache, 0, file->data, file->size);
+    {
+        /* The RAM disk's own image: kernel memory, never the caller's. */
+        KI_PROBE_TOKEN token = KiKernelToken((void *)(uintptr_t)file->data, file->size);
+        MiCacheWrite(&file->cache, 0, &token, file->data, file->size);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -99,7 +103,8 @@ NTSTATUS KiReadRamdiskFile(const KI_RAMDISK_FILE *file, uint64_t offset, void *b
     {
         /* Through the page cache, so a read always sees exactly what a
          * mapped view sees. */
-        MiCacheRead(&file->cache, offset, buffer, length);
+        KI_PROBE_TOKEN token = KiKernelToken(buffer, length);
+        MiCacheRead(&file->cache, offset, &token, buffer, length);
     }
     else
     {

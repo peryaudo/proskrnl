@@ -64,6 +64,62 @@ NTSTATUS KiProbeForWrite(void *address, uint64_t length, uint64_t alignment);
  * syscall arguments, structure captures). KernelMode callers just copy. */
 NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t length);
 
+/* --- probe tokens (issue #96 C) -------------------------------------------
+ *
+ * Every stale-probe defect the CUI-8 sweeps convicted — the create path, the
+ * scatter/gather segment array, the query-direction fills, PspMakeProcessSystem
+ * — is one bug wearing four hats: A PROBE RESULT USED ACROSS A PARK. The rule
+ * was stated in prose in docs/20 R3 and §9, applied by hand, and missed by
+ * hand each time, because nothing in a `memcpy(userBuffer, ...)` says which
+ * probe is supposed to be backing it.
+ *
+ * A token says so. The probe mints one stamped with the thread's park
+ * generation; the copy takes the token and asserts the stamp still matches.
+ * "Probed, then blocked, then copied" is then a fatal assert AT THE COPY SITE
+ * on any execution that reaches it, with no reviewer in the loop — and the
+ * token in the signature documents the rule to the next writer, which is the
+ * half review kept failing at.
+ *
+ * The generation advances in KiSwapToNext, the kernel's single context-switch
+ * site, and only when a switch really happens: a wait satisfied without
+ * yielding the CPU gave no sibling a chance to unmap anything, and must not
+ * cost a re-probe.
+ *
+ * A token is a stack value with the lifetime of the copy it guards. It is not
+ * a capability and it is not stored: nothing outlives the frame that probed. */
+typedef struct
+{
+    void *base;
+    uint64_t length;
+    uint64_t generation;
+} KI_PROBE_TOKEN, *PKI_PROBE_TOKEN;
+
+/* The probes, minting a token. Same statuses as the untokened forms; the
+ * token is only meaningful on STATUS_SUCCESS. */
+NTSTATUS KiProbeForReadToken(const void *address, uint64_t length, uint64_t alignment,
+                             PKI_PROBE_TOKEN token);
+NTSTATUS KiProbeForWriteToken(void *address, uint64_t length, uint64_t alignment,
+                              PKI_PROBE_TOKEN token);
+
+/* A token over memory that cannot go stale because it is not the caller's:
+ * kernel buffers, and the page-cache paths' internal fills. Named rather than
+ * implicit so `git grep KiKernelToken` enumerates every copy that opted out. */
+KI_PROBE_TOKEN KiKernelToken(void *base, uint64_t length);
+
+/* Assert the token still backs [address, address+length): same generation (no
+ * park since the probe) and inside the probed range. Fatal — a stale token is
+ * a latent ring-0 fault on a user address, i.e. a leak or a wedge, and Art. 12
+ * says an unbuilt guarantee refuses loudly rather than proceeding. */
+void KiAssertProbeToken(const KI_PROBE_TOKEN *token, const void *address, uint64_t length);
+
+/* The guarded copies. Direction is named from the KERNEL's point of view, as
+ * everywhere else: KiWriteUser fills the caller's buffer, KiReadUser consumes
+ * it. Both assert the token first, then copy. */
+void KiWriteUser(const KI_PROBE_TOKEN *token, void *destination, const void *source,
+                 uint64_t length);
+void KiReadUser(const KI_PROBE_TOKEN *token, void *destination, const void *source,
+                uint64_t length);
+
 /* --- the ring-0 fault recovery frame (kernel/syscall/recover.S) ----------
  *
  * The probes above are the FIRST line: they turn a bad user pointer into

@@ -300,6 +300,13 @@ struct KTHREAD
     KI_OBLIGATION obligations[KI_MAX_OBLIGATIONS];
     ULONG obligationCount;
 
+    /* Park generation (issue #96 C): advanced by KiSwapToNext — the kernel's
+     * single context-switch site — each time this thread actually yields the
+     * CPU. A probe token stamped with an older generation is stale by
+     * construction: a sibling had the chance to unmap the range in between.
+     * See KI_PROBE_TOKEN in kernel/syscall/uaccess.h. */
+    uint64_t parkGeneration;
+
     /* CUI-6: per-thread CPU time, whole-tick sampling at the clock interrupt
      * (KiUpdateClock charges KI_100NS_PER_TICK to the interrupted thread,
      * kernel or user by the interrupted CS — exactly NT's clock-interrupt

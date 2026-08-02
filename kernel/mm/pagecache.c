@@ -94,9 +94,13 @@ NTSTATUS MiResizePageCache(PMI_PAGE_CACHE cache, uint64_t newFileSize)
     return STATUS_SUCCESS;
 }
 
-void MiCacheRead(const MI_PAGE_CACHE *cache, uint64_t offset, void *buffer, uint64_t length)
+void MiCacheRead(const MI_PAGE_CACHE *cache, uint64_t offset, const KI_PROBE_TOKEN *token,
+                 void *buffer, uint64_t length)
 {
     ASSERT(offset + length <= (uint64_t)cache->pageCount * PAGE_SIZE);
+    /* The data path's guarded copy (issue #96 C): `buffer` is the caller's,
+     * and the fill that brought these frames in parked. */
+    KiAssertProbeToken(token, buffer, length);
     uint64_t copied = 0;
     while (copied < length)
     {
@@ -113,9 +117,11 @@ void MiCacheRead(const MI_PAGE_CACHE *cache, uint64_t offset, void *buffer, uint
     }
 }
 
-void MiCacheWrite(PMI_PAGE_CACHE cache, uint64_t offset, const void *buffer, uint64_t length)
+void MiCacheWrite(PMI_PAGE_CACHE cache, uint64_t offset, const KI_PROBE_TOKEN *token,
+                  const void *buffer, uint64_t length)
 {
     ASSERT(offset + length <= (uint64_t)cache->pageCount * PAGE_SIZE);
+    KiAssertProbeToken(token, buffer, length);
     uint64_t copied = 0;
     while (copied < length)
     {
