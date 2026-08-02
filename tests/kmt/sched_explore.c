@@ -538,6 +538,7 @@ static void explore_scenario(const char *label, void (*worker)(void *), BOOLEAN 
     ULONG maxChoices = 0;
     BOOLEAN truncated = FALSE;
     BOOLEAN traceOverflowed = FALSE;
+    BOOLEAN skipped = FALSE;
     KI_SCHEDULE_TRACE trace;
 
     /* Force every device await to park: without this the interesting yield
@@ -551,6 +552,23 @@ static void explore_scenario(const char *label, void (*worker)(void *), BOOLEAN 
     {
         BOOLEAN linearizable = explore_run(worker, sharedHandle, schedule, length, &trace);
         runs++;
+        /* A volume too full to hold the scenario's few hundred bytes cannot
+         * be searched: a DISK_FULL op would surface as "not linearizable"
+         * only because the model has no pinned DISK_FULL timing to check
+         * against. Skip LOUDLY (Art. 12) instead of failing on the wrong
+         * claim or passing on an empty history. */
+        BOOLEAN diskFull = FALSE;
+        for (ULONG i = 0; i < lin_op_count; i++)
+        {
+            diskFull = diskFull || lin_ops[i].status == STATUS_DISK_FULL;
+        }
+        if (diskFull)
+        {
+            DbgPrint("[KTEST] sched %s SKIP (STATUS_DISK_FULL: volume too full to search)\n",
+                     label);
+            skipped = TRUE;
+            break;
+        }
         maxChoices = trace.choiceCount > maxChoices ? trace.choiceCount : maxChoices;
         traceOverflowed = traceOverflowed || trace.overflowed;
         if (runs == 1)
@@ -606,6 +624,19 @@ static void explore_scenario(const char *label, void (*worker)(void *), BOOLEAN 
 
     VioBlkSetAwaitSpinBound(savedSpins);
 
+    /* Give the working file's clusters back. The nearfull churn leg runs
+     * AFTER this suite on the same volume with only a handful of free
+     * clusters, and leaving linearz.tmp behind was exactly enough to push
+     * its first directory create into STATUS_DISK_FULL (CI, PR #98): a
+     * test that consumes shared state it does not return is itself the
+     * composition class this file exists to catch. */
+    {
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        init_attr(&attr, &name, EXPLORE_PATH);
+        NtDeleteFile(&attr);
+    }
+
     /* The coverage IS part of the verdict: a search that explored one
      * interleaving and passed is not evidence of anything, and neither is a
      * truncated one that reads as exhaustive (Art. 12, docs/19 §8.4's
@@ -614,11 +645,15 @@ static void explore_scenario(const char *label, void (*worker)(void *), BOOLEAN 
              (unsigned long)maxChoices, EXPLORE_PREEMPTION_BOUND,
              truncated ? " TRUNCATED(run cap)" : "",
              traceOverflowed ? " TRUNCATED(trace cap)" : "");
-    ok(runs > 1, "%s: only %lu run — the schedule steered nothing", label, (unsigned long)runs);
-    ok(!truncated, "%s: hit the %d-run cap; the search was not exhaustive", label,
-       EXPLORE_MAX_RUNS);
-    ok(!traceOverflowed, "%s: more than %d choice points; the trace was truncated", label,
-       KI_SCHEDULE_MAX_CHOICES);
+    if (!skipped)
+    {
+        ok(runs > 1, "%s: only %lu run — the schedule steered nothing", label,
+           (unsigned long)runs);
+        ok(!truncated, "%s: hit the %d-run cap; the search was not exhaustive", label,
+           EXPLORE_MAX_RUNS);
+        ok(!traceOverflowed, "%s: more than %d choice points; the trace was truncated", label,
+           KI_SCHEDULE_MAX_CHOICES);
+    }
 }
 
 static void test_linearizable_append_race(void)
