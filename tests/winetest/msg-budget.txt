@@ -3,6 +3,13 @@
 # the same commit as the fix that earned it (G13); the leg fails on any
 # count above it, and on any CRASH exit regardless of the number.
 #
+# Because the count's volatile part tracks machine speed (below), CI treats
+# this leg as ADVISORY on pull requests and BLOCKING on main — the `msg`
+# shard and the `all-green` job in .github/workflows/test.yml, reasoned out
+# in docs/03 "GUI-5 winetest notes". The number below is unaffected: it is
+# still a ceiling, still only ever ratcheted down, and a crash exit still
+# fails the leg wherever it runs.
+#
 # The 9999 sentinel is retired: the whole module runs to its own verdict
 # (winetest's failure count arrives as the NT exit status). The named
 # divergences behind the current number are listed in docs/03 "GUI-5

@@ -273,9 +273,21 @@ jobs:
   # over the full GUI stack, with the failure count ratcheted against
   # tests/winetest/msg-budget.txt (docs/03 "GUI-5 winetest notes" has the
   # policy and the named divergences behind the current number).
-  # It gets a shard to itself because it is the second-longest leg and its
-  # verdict is a ratchet: whatever policy that ratchet ends up under, it must
-  # not be reached through six other legs' worth of wall clock.
+  #
+  # ADVISORY ON PULL REQUESTS, BLOCKING ON MAIN — the all-green job below is
+  # where that is decided; docs/03 "GUI-5 winetest notes" carries the whole
+  # reasoning. Up to twelve of the counted assertions are settled by
+  # emulated-machine speed rather than by semantics (msg-budget.txt names
+  # them: an unkilled 100 ms timer in test_PeekMessage3, a one-second
+  # FindWindow poll in test_WM_COPYDATA), and the budget is a ceiling sized
+  # for that band on the slowest machine that still runs the suite. A hosted
+  # runner is not a fixed machine — legs on this suite have run ~2x apart
+  # between runs — so a run that overshoots the band is reporting the runner,
+  # not a regression, and that must not block a merge. It must still be
+  # VISIBLE: the shard goes honestly red rather than being wrapped in
+  # continue-on-error, so nothing is suppressed, only de-blocked, and only on
+  # PRs. On main the same red blocks the branch: a real regression has to stop
+  # it, and main's history is where the ratchet's numbers live.
   msg:
     needs: setup
     runs-on: ubuntu-24.04
@@ -297,9 +309,11 @@ jobs:
         with:
           shard: msg
 
-  # The one check to require in branch protection: red unless every shard is
-  # green. A shard that was SKIPPED or CANCELLED is not green either — a
-  # verdict nobody reached must never read as a verdict that passed.
+  # The one check to require in branch protection: red unless every BLOCKING
+  # shard is green. A shard that was SKIPPED or CANCELLED is not green either —
+  # a verdict nobody reached must never read as a verdict that passed. Every
+  # shard reports its own result on the PR regardless; this job only decides
+  # which of them stop a merge.
   all-green:
     needs: [frontier, setup, boot, oracle, ntapi, cui-a, cui-b, gui, msg]
     if: always()
@@ -309,9 +323,22 @@ jobs:
       - name: verdict
         env:
           RESULTS: ${{ toJSON(needs) }}
+          # The advisory set, by event. EMPTY on main — everything blocks
+          # there. See the msg job for why user32:msg is in it on PRs.
+          ADVISORY: ${{ github.event_name == 'pull_request' && 'msg' || '' }}
         run: |
           fail=0
           while read -r job result; do
+            case " $ADVISORY " in
+            *" $job "*)
+              if [[ "$result" == success ]]; then
+                echo "$job: $result"
+              else
+                echo "::warning::$job: $result — advisory on pull requests, not blocking"
+              fi
+              continue
+              ;;
+            esac
             echo "$job: $result"
             [[ "$result" == success ]] || fail=1
           done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$RESULTS")

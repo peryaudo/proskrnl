@@ -1805,6 +1805,18 @@ the manifest's new optional per-pair timeout field).
   commit as the fix that earned it (G13: the number is that commit's test expectation). An
   exit outside a sane count range is a CRASH and fails the leg by name regardless of budget.
   The end state is 0 — msg.c green with only its own `todo_wine` marks.
+- **In CI the leg is advisory on pull requests and blocking on main**
+  (`.github/workflows/test.yml`: the `msg` shard, and the `all-green` job that decides which
+  shards stop a merge). The budget is a ceiling over a machine-speed-dependent band — up to
+  twelve of the counted assertions are settled by how much guest time passes inside a block,
+  not by semantics (below) — and a hosted runner's speed is not a constant: legs on the same
+  suite have run ~2× apart between two runs of the same commit. A run that overshoots the
+  band is reporting the runner, and that must not block a merge. It must still be *visible*,
+  so the shard goes honestly red rather than being wrapped in `continue-on-error`; nothing is
+  suppressed, only de-blocked, and only on PRs. On main the same red blocks the branch: a
+  real regression has to stop it, and main's history is where the ratchet's numbers live.
+  This is a CI-policy carve-out, not a budget change — the leg's verdict rule is unchanged,
+  and a crash exit fails it under either policy.
 - **The per-assertion text is recovered, not read by eye** (`tools/unscreen.py`, run by the
   leg into `build/tests/guiwtest-msg.log`). HACK-004's console is a screen, so a test's
   output reaches serial as a diff: cursor moves, erases and changed cells. Replaying `CSI n
