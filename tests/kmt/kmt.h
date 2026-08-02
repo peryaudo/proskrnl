@@ -85,4 +85,10 @@ int kmt_run_fat_interop(void);
  * images); silently absent everywhere else. */
 int kmt_run_fat_churn(void);
 
+/* The issue #96 preventive-mechanism guards (tests/kmt/preventive.c): the
+ * non-blocking-region depth and the release-obligation ledger are balanced
+ * across every representative gated FS verb, including its error paths.
+ * Returns failures. */
+int kmt_run_preventive(void);
+
 #endif /* PROSKRNL_TESTS_KMT_KMT_H */

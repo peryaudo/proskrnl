@@ -481,6 +481,16 @@ static void KiTestMainThread(void *context)
              cui8Failures);
     KiVerifyKernelState();
 
+    /* The issue #96 preventive-mechanism guards: the no-block depth and the
+     * obligation ledger are balanced across the gated FS verbs. After CUI8,
+     * so a region or a hold leaked by ANY earlier suite is attributed here
+     * rather than to whichever later park it would otherwise kill. */
+    int preventiveFailures = kmt_run_preventive();
+    DbgPrint(preventiveFailures == 0 ? "[KTEST] PREVENTIVE PASS\n"
+                                     : "[KTEST] PREVENTIVE FAIL failures=%d\n",
+             preventiveFailures);
+    KiVerifyKernelState();
+
     /* The standing ABI-conformance probe: ring-3 conventions asserted every
      * boot (tests/boot/abi_probe.c). Before the M7 clients, so a broken
      * convention names itself here rather than surfacing as an M7 crash. */
