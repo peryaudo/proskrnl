@@ -101,6 +101,7 @@ void KiAcquireEventGate(PRKEVENT event)
         NTSTATUS status = KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
         if (status == STATUS_SUCCESS)
         {
+            KiPushObligation(KI_OBLIGATION_GATE, event);
             return;
         }
         ASSERT(status == STATUS_THREAD_IS_TERMINATING);
@@ -110,9 +111,24 @@ void KiAcquireEventGate(PRKEVENT event)
         thread->rundownWait = FALSE;
         if (status == STATUS_SUCCESS)
         {
+            KiPushObligation(KI_OBLIGATION_GATE, event);
             return;
         }
     }
+}
+
+/* The release half, and the reason it exists as a function at all (Art. 11:
+ * one authority): a gate was released by an open-coded KeSetEvent, which is
+ * indistinguishable from signalling any other event, so nothing could tell a
+ * released gate from a leaked one. Pairing it here makes the obligation
+ * ledger (issue #96 B) exact, and the ledger is what turns a ring-0 fault
+ * under a gate from a permanent silent wedge into a panic. */
+void KiReleaseEventGate(PRKEVENT event)
+{
+    ASSERT(event->header.type == KI_OBJECT_SYNCHRONIZATION_EVENT);
+    ASSERT(KeReadStateEvent(event) == 0); /* held: release must pair */
+    KiPopObligation(KI_OBLIGATION_GATE, event);
+    KeSetEvent(event, 0, FALSE);
 }
 
 LONG KeReadStateEvent(PRKEVENT event)

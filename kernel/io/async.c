@@ -217,11 +217,16 @@ void IopEnterSyncIo(void *userIosb)
     self->syncIoCancelled = FALSE;
     KeClearEvent(&self->syncIoCancelEvent);
     self->syncIoActive = TRUE;
+    /* An unclosed span leaves the thread advertising a cancellable request
+     * that no longer exists, so a later NtCancelSynchronousIoFile matches it
+     * and reports success against nothing (issue #96 B). */
+    KiPushObligation(KI_OBLIGATION_SYNC_IO, userIosb);
 }
 
 void IopLeaveSyncIo(void)
 {
     PKTHREAD self = KeGetCurrentThread();
+    KiPopObligation(KI_OBLIGATION_SYNC_IO, self->syncIoUserIosb);
     self->syncIoActive = FALSE;
     self->syncIoUserIosb = 0;
 }

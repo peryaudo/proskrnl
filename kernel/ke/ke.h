@@ -154,6 +154,30 @@ typedef struct KAPC
  * https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities). */
 #define KI_PRIORITY_LEVELS 32
 
+/* --- release obligations (issue #96 B) -----------------------------------
+ *
+ * docs/20 §10.2's worst row was a gate leaked by a ring-0 fault: the create
+ * path carried a user pointer under the volume gate, the fault-recovery
+ * unwind ran no cleanup (kernel/syscall/uaccess.h says so in prose), and the
+ * volume wedged permanently and silently. A leaked gate is not a subtle
+ * property — it is a counter that must be zero at the kernel's exits.
+ *
+ * So every thread carries a small stack of what it owes. It is asserted at
+ * the normal syscall return AND — the part that matters — on the unwind path
+ * in KiCallServiceGuarded, which turns that permanent silent wedge into a
+ * panic naming the gate, at the first fault any test injects across it.
+ *
+ * Depth 8 is not a resource limit: obligations nest at most two deep today
+ * (a sync-I/O span inside a file-object lock), and overflowing is itself a
+ * bug worth panicking on. */
+#define KI_MAX_OBLIGATIONS 8
+
+typedef struct
+{
+    const char *name; /* "volume gate", "sync-io span", "transient handle" */
+    void *object;     /* the gate/handle it was taken on, for the panic line */
+} KI_OBLIGATION;
+
 /* Internal layout is entirely ours (docs/03); only two shapes are pinned:
  * the DISPATCHER_HEADER must come first (threads are waitable, signalled at
  * termination like a notification object) and kernelStack's offset is welded
@@ -269,6 +293,13 @@ struct KTHREAD
     void (*startRoutine)(void *startContext);
     void *startContext;
 
+    /* Release obligations (issue #96 B): things this thread has taken and
+     * MUST give back before it leaves the kernel — gates held, sync-I/O
+     * spans, transient handles. A stack, so the panic line can name WHICH
+     * one leaked and what it was taken on. See KiPushObligation. */
+    KI_OBLIGATION obligations[KI_MAX_OBLIGATIONS];
+    ULONG obligationCount;
+
     /* CUI-6: per-thread CPU time, whole-tick sampling at the clock interrupt
      * (KiUpdateClock charges KI_100NS_PER_TICK to the interrupted thread,
      * kernel or user by the interrupted CS — exactly NT's clock-interrupt
@@ -382,6 +413,15 @@ LONG KeReadStateEvent(PRKEVENT event);
  * whatever the priorities. Internal Ki name: NT has no such export
  * (docs/15). */
 void KiAcquireEventGate(PRKEVENT event);
+/* The pairing release — see event.c. Every gate release goes through this,
+ * never a bare KeSetEvent, so the obligation ledger stays exact. */
+void KiReleaseEventGate(PRKEVENT event);
+
+/* Obligation names. String literals compared by pointer for the panic line
+ * only; keeping them here means every taker spells the kind the same way. */
+#define KI_OBLIGATION_GATE      "gate"
+#define KI_OBLIGATION_SYNC_IO   "sync-io span"
+#define KI_OBLIGATION_TRANSIENT "transient handle"
 
 /* --- non-blocking regions (issue #96 A, the runtime half) ----------------
  *
@@ -412,6 +452,20 @@ void KiLeaveNoBlockRegion(void);
  * have reached a park (Art. 12: an unbuilt guarantee refuses loudly). */
 void KiAssertMayBlock(const char *primitive);
 #define KI_MAY_BLOCK() KiAssertMayBlock(__func__)
+
+/* --- release obligations (issue #96 B; the ledger's shape is above) ------ */
+
+/* Take/give back an obligation. `name` is a string literal (compared by
+ * pointer only for the panic line, never for logic); `object` identifies
+ * which gate/handle, so two holds of the same kind are distinguishable. The
+ * pop asserts it matches the top of the stack — an out-of-order release is a
+ * pairing bug and is caught here rather than becoming a leak later. */
+void KiPushObligation(const char *name, void *object);
+void KiPopObligation(const char *name, void *object);
+
+/* Fatal unless the ledger is empty; `where` names the exit (syscall return,
+ * fault-recovery unwind, thread exit). Dumps every outstanding entry first. */
+void KiAssertNoObligations(const char *where);
 
 /* TRUE while the device-completion drain runs (CUI-8, docs/20 R2). The
  * drain can fire from the timer tick, which may have interrupted a thread

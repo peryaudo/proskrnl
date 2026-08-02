@@ -101,6 +101,14 @@ KiCallServiceGuarded(const KI_SERVICE_DESCRIPTOR *descriptor, const uint64_t *ar
     if (unwound != 0)
     {
         KeGetCurrentThread()->faultRecovery = 0;
+        /* THE assertion this ledger exists for (issue #96 B). The comment in
+         * uaccess.h has always said an unwind runs no cleanup; that made a
+         * ring-0 fault under the volume gate a permanent, silent, machine-wide
+         * wedge (docs/20 §10.2's highest-severity row — every later file op on
+         * the volume parks forever, with nothing on serial). Here it is a
+         * panic with a stack trace naming the gate, the first time any
+         * execution faults across a held obligation. */
+        KiAssertNoObligations("fault-recovery unwind");
         return (NTSTATUS)unwound;
     }
 
@@ -110,6 +118,9 @@ KiCallServiceGuarded(const KI_SERVICE_DESCRIPTOR *descriptor, const uint64_t *ar
                             arguments[5], arguments[6], arguments[7], arguments[8], arguments[9],
                             arguments[10], arguments[11], arguments[12], arguments[13]);
     KeGetCurrentThread()->faultRecovery = 0;
+    /* The ordinary exit: a service that returns holding a gate is the same
+     * defect reached the boring way. */
+    KiAssertNoObligations("service return");
     return status;
 }
 

@@ -579,6 +579,46 @@ NTSTATUS NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
                          options);
 }
 
+/* --- transient kernel-internal handles ------------------------------------
+ *
+ * Several services compose their answer out of an internal open, one
+ * operation, and a close (NtDeleteFile, IopProbeTargetPath, the
+ * attribute-only queries). The handle lives in the CALLER's table, so an exit
+ * between the two halves leaks a handle the caller never asked for and cannot
+ * name — and since CUI-8 the operation in the middle parks under the volume
+ * gate, so a ring-0 fault there really can unwind past the close
+ * (kernel/syscall/uaccess.h: an unwind runs no cleanup).
+ *
+ * One pair of helpers so that the previousMode dance and the obligation
+ * ledger (issue #96 B) are stated once instead of at four call sites. */
+static NTSTATUS IopOpenTransientFile(PHANDLE handle, ACCESS_MASK access,
+                                     POBJECT_ATTRIBUTES attributes, PIO_STATUS_BLOCK iosb,
+                                     ULONG fileAttributes, ULONG sharing, ULONG disposition,
+                                     ULONG options)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* the handle is kernel-internal */
+    NTSTATUS status = IopCreateFile(handle, access, attributes, iosb, fileAttributes, sharing,
+                                    disposition, options);
+    thread->previousMode = saved;
+    if (NT_SUCCESS(status))
+    {
+        KiPushObligation(KI_OBLIGATION_TRANSIENT, *handle);
+    }
+    return status;
+}
+
+static void IopCloseTransientFile(HANDLE handle)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode;
+    KiPopObligation(KI_OBLIGATION_TRANSIENT, handle);
+    NtClose(handle);
+    thread->previousMode = saved;
+}
+
 /* CUI-5: the by-name delete. The pinned Wine implements it as exactly this
  * open (GENERIC_READ|GENERIC_WRITE|DELETE, full sharing, FILE_OPEN,
  * FILE_DELETE_ON_CLOSE) followed by a close (dlls/ntdll/unix/file.c
@@ -588,17 +628,13 @@ NTSTATUS NtDeleteFile(POBJECT_ATTRIBUTES attributes)
 {
     HANDLE handle;
     IO_STATUS_BLOCK iosb;
-    PKTHREAD thread = KeGetCurrentThread();
-    KPROCESSOR_MODE saved = thread->previousMode;
-    thread->previousMode = KernelMode; /* the handle is kernel-internal */
-    NTSTATUS status = IopCreateFile(
+    NTSTATUS status = IopOpenTransientFile(
         &handle, GENERIC_READ | GENERIC_WRITE | DELETE, attributes, &iosb, 0,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_DELETE_ON_CLOSE);
     if (NT_SUCCESS(status))
     {
-        NtClose(handle);
+        IopCloseTransientFile(handle);
     }
-    thread->previousMode = saved;
     return status;
 }
 
@@ -613,17 +649,13 @@ NTSTATUS IopProbeTargetPath(POBJECT_ATTRIBUTES attributes)
 {
     HANDLE handle;
     IO_STATUS_BLOCK iosb;
-    PKTHREAD thread = KeGetCurrentThread();
-    KPROCESSOR_MODE saved = thread->previousMode;
-    thread->previousMode = KernelMode; /* the handle is kernel-internal */
     NTSTATUS status =
-        IopCreateFile(&handle, FILE_READ_ATTRIBUTES, attributes, &iosb, 0,
-                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
+        IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, attributes, &iosb, 0,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (NT_SUCCESS(status))
     {
-        NtClose(handle);
+        IopCloseTransientFile(handle);
     }
-    thread->previousMode = saved;
     return status == STATUS_OBJECT_NAME_NOT_FOUND ? STATUS_SUCCESS : status;
 }
 
@@ -643,11 +675,10 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
     IO_STATUS_BLOCK iosb;
     PKTHREAD thread = KeGetCurrentThread();
     KPROCESSOR_MODE saved = thread->previousMode;
-    thread->previousMode = KernelMode; /* the handle is kernel-internal */
-    status = IopCreateFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
-                           &iosb, FILE_ATTRIBUTE_NORMAL,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
-    thread->previousMode = saved;
+    status =
+        IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
+                             &iosb, FILE_ATTRIBUTE_NORMAL,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -665,9 +696,7 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
     thread->previousMode = saved;
     if (!NT_SUCCESS(refStatus))
     {
-        thread->previousMode = KernelMode;
-        NtClose(handle);
-        thread->previousMode = saved;
+        IopCloseTransientFile(handle);
         return refStatus;
     }
     IO_FILE_INFO raw;
@@ -684,9 +713,7 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
         memcpy(info, &out, sizeof(out));
     }
     ObDereferenceObject(file);
-    thread->previousMode = KernelMode;
-    NtClose(handle);
-    thread->previousMode = saved;
+    IopCloseTransientFile(handle);
     return status;
 }
 
@@ -710,11 +737,10 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
     IO_STATUS_BLOCK iosb;
     PKTHREAD thread = KeGetCurrentThread();
     KPROCESSOR_MODE saved = thread->previousMode;
-    thread->previousMode = KernelMode; /* the handle is kernel-internal */
-    status = IopCreateFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
-                           &iosb, FILE_ATTRIBUTE_NORMAL,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
-    thread->previousMode = saved;
+    status =
+        IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
+                             &iosb, FILE_ATTRIBUTE_NORMAL,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -732,9 +758,7 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
     thread->previousMode = saved;
     if (!NT_SUCCESS(refStatus))
     {
-        thread->previousMode = KernelMode;
-        NtClose(handle);
-        thread->previousMode = saved;
+        IopCloseTransientFile(handle);
         return refStatus;
     }
     IO_FILE_INFO raw;
@@ -753,9 +777,7 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
         memcpy(info, &out, sizeof(out));
     }
     ObDereferenceObject(file);
-    thread->previousMode = KernelMode;
-    NtClose(handle);
-    thread->previousMode = saved;
+    IopCloseTransientFile(handle);
     return status;
 }
 
