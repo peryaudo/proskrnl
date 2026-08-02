@@ -121,6 +121,32 @@ export WINEDLLOVERRIDES
 # under suspicion of depending on its neighbours.
 : "${ORACLE_JOBS:=$(nproc 2>/dev/null || echo 1)}"
 ORACLE_OUT="$BUILD/ntapi/out"   # per-case captured output; oracle() owns it
+
+# Cases that must run ALONE — every worker idle — because what they measure is
+# the MACHINE rather than the boundary. A per-worker prefix cannot isolate
+# this: the quantity is host-global, and the neighbours are the load.
+#
+#   times   sem_ps/times.c asserts SystemProcessorPerformanceInformation's
+#           idle counter GREW across a 60 ms sleep. The oracle's Wine answers
+#           that class out of the host's /proc/stat, so on a runner whose every
+#           core is busy running the rest of this leg the counter does not move
+#           and the case fails — as it did on the first sharded CI run, having
+#           passed sequentially forever. The assertion is right and the test
+#           stays unchanged (fixing the oracle to suit the harness is backwards
+#           — Art. 6): a busy machine is simply a different machine, so we stop
+#           making it busy.
+#
+# Add a name here only with that shape of reason, and say which quantity is
+# host-global. A case that merely LOOKS timing-ish belongs in the fan-out.
+ORACLE_SERIAL_CASES="times"
+
+oracle_is_serial() {   # $1 = test base name
+    local name
+    for name in $ORACLE_SERIAL_CASES; do
+        [[ "$1" == "$name" ]] && return 0
+    done
+    return 1
+}
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # The pinned Wine import libraries the test .exes link against (built by
@@ -351,12 +377,15 @@ oracle() {
     mkdir -p "$BUILD/ntapi"
     build_helper_dll >/dev/null
 
-    local srcs=() src
-    while read -r src; do srcs+=("$src"); done < <(all_tests)
+    local srcs=() par=() ser=() src
+    while read -r src; do
+        srcs+=("$src")
+        if oracle_is_serial "$(basename "${src%.c}")"; then ser+=("$src"); else par+=("$src"); fi
+    done < <(all_tests)
     local total=${#srcs[@]} jobs="$ORACLE_JOBS" w pids=() pid prefix
     local fails=0 buildfail=0 name
     (( total == 0 )) && { echo "run.sh: the oracle leg selected no test" >&2; exit 2; }
-    (( jobs > total )) && jobs=$total
+    (( jobs > ${#par[@]} )) && jobs=${#par[@]}
     (( jobs < 1 )) && jobs=1
 
     rm -rf "$ORACLE_OUT"
@@ -365,12 +394,20 @@ oracle() {
     if (( jobs > 1 )); then
         for (( w = 0; w < jobs; w++ )); do
             (( w == 0 )) && prefix="$WINEPREFIX" || prefix="$WINEPREFIX-$w"
-            WINEPREFIX="$prefix" oracle_worker "$w" "$jobs" "${srcs[@]}" &
+            WINEPREFIX="$prefix" oracle_worker "$w" "$jobs" "${par[@]}" &
             pids+=("$!")
         done
         for pid in "${pids[@]}"; do wait "$pid" || buildfail=1; done
     else
-        oracle_worker 0 1 "${srcs[@]}" || buildfail=1
+        oracle_worker 0 1 "${par[@]}" || buildfail=1
+    fi
+
+    # The serial cases, alone, once every worker is done (see
+    # $ORACLE_SERIAL_CASES). The base prefix, because nothing else is running.
+    if (( buildfail == 0 )); then
+        for src in ${ser[@]+"${ser[@]}"}; do
+            oracle_one "$src" || { buildfail=1; break; }
+        done
     fi
 
     # A worker fails only when a case failed to BUILD (a test's own verdict is
