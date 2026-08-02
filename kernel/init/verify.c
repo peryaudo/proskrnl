@@ -451,6 +451,12 @@ static void KiVerifyGlobalHandleCounts(void)
 void KiVerifyKernelState(void)
 {
     uint64_t flags = KiAcquireDispatcherLock();
+    /* The sweep's premise is that it sees an atomic snapshot (the file header
+     * above). Parking mid-sweep would destroy it, and CUI-8 put a park behind
+     * enough verbs that a future sweep could grow one by accident (docs/20 §5
+     * records this file as "newly load-bearing"). Declared, so it is checked
+     * (issue #96 A). */
+    KiEnterNoBlockRegion("kernel-state consistency sweep");
 
     KiVerifyScheduler();
     KiVerifyTimerList();
@@ -465,6 +471,7 @@ void KiVerifyKernelState(void)
     ObpVerifyNamespace();
 
     KiSweepCount++;
+    KiLeaveNoBlockRegion();
     KiReleaseDispatcherLock(flags);
 }
 

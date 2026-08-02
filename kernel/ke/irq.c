@@ -12,10 +12,19 @@
 
 void KiDispatchInterrupt(uint64_t vector, BOOLEAN interruptedUser)
 {
+    /* Interrupt context is the archetypal non-blocking region (issue #96 A;
+     * docs/20 §1 F2 calls it "a third execution context"): it interrupted an
+     * arbitrary thread mid-anything, so a park here would resume that thread
+     * only via a wake nobody will perform. The header's "never
+     * context-switches" claim is now checked rather than stated. Returning to
+     * ring 3 DOES switch (KiPreemptAtUserReturn), but that runs after this
+     * returns, outside the region. */
+    KiEnterNoBlockRegion("interrupt dispatch");
     if (vector == TIMER_VECTOR)
     {
         KiUpdateClock(interruptedUser);
         KiEndOfInterrupt();
+        KiLeaveNoBlockRegion();
         return;
     }
     KiPanic("KiDispatchInterrupt: unexpected interrupt vector");

@@ -362,6 +362,7 @@ LONG KiReleaseMutant(PKMUTANT mutant, BOOLEAN abandoned)
  * KiUnwaitThread has stored the outcome in waitStatus. Lock held. */
 static NTSTATUS KiCommitWait(PKTHREAD thread)
 {
+    KI_MAY_BLOCK(); /* the park itself, so no future caller can route around it */
     thread->state = KI_THREAD_STATE_WAITING;
     KiSwapToNext();
     return thread->waitStatus;
@@ -386,6 +387,11 @@ NTSTATUS KeWaitForMultipleObjects(ULONG count, void *objects[], WAIT_TYPE waitTy
                                   PKWAIT_BLOCK waitBlockArray)
 {
     PKTHREAD thread = KiCurrentThread;
+
+    /* Asserted at the CALL, not at the park: a wait that happens to be
+     * satisfiable right now is still a blocking call, and letting it through
+     * from a non-blocking region is exactly the drift this catches (ke.h). */
+    KI_MAY_BLOCK();
 
     if (count == 0 || count > MAXIMUM_WAIT_OBJECTS)
     {
@@ -545,6 +551,7 @@ NTSTATUS KeWaitForSingleObject(void *object, KWAIT_REASON waitReason, KPROCESSOR
 NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
                                 PLARGE_INTEGER interval)
 {
+    KI_MAY_BLOCK();
     if (interval == 0)
     {
         KiPanic("KeDelayExecutionThread: NULL interval");
