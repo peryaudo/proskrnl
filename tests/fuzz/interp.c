@@ -33,6 +33,8 @@ NTSYSAPI NTSTATUS NTAPI NtGetNlsSectionPtr(ULONG, ULONG, void *, void **, SIZE_T
 /* CUI-3 ops. */
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE, PIO_STATUS_BLOCK);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
+/* CUI-8 ops. */
+NTSYSAPI NTSTATUS NTAPI NtCancelSynchronousIoFile(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
 NTSYSAPI NTSTATUS NTAPI NtCreateJobObject(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, PVOID, ULONG);
 /* CUI-4 */
@@ -295,6 +297,13 @@ enum
 /* ---- interpreter state -------------------------------------------------- */
 
 static HANDLE fz_slots[FZ_SLOT_COUNT];
+
+/* CUI-8: the shared completion event read_file_async issues with — lazily
+ * created, reused across calls and programs, never traced (handles must not
+ * leak into the trace). Its state is a deterministic function of the op
+ * history on both runners: a data-path submit resets it, an inline
+ * completion sets it. */
+static HANDLE fz_async_event;
 
 static void fz_bzero(void *p, unsigned long n)
 {
@@ -1276,6 +1285,79 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
+    case FZ_OP_CREATE_FILE_ASYNC:
+    {
+        /* The CUI-8 asynchronous handle: same shape as create_file MINUS
+         * the FILE_SYNCHRONOUS_IO_* option, so the §7-pinned pending-shape
+         * answers become reachable from the op stream. */
+        OBJECT_ATTRIBUTES attr;
+        UNICODE_STRING ustr;
+        IO_STATUS_BLOCK iosb;
+        HANDLE handle = NULL;
+        init_ustr(&ustr, fz_fnames[a[2]]);
+        init_attr(&attr, NULL, &ustr, OBJ_CASE_INSENSITIVE);
+        iosb.Information = 0;
+        st = NtCreateFile(&handle, (ACCESS_MASK)a[1], &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                          (ULONG)a[3], (ULONG)a[4], FILE_NON_DIRECTORY_FILE, NULL, 0);
+        if (fz_ok(st))
+        {
+            fz_slots[a[0]] = handle;
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x info=%u slot=%u\n", prog, call, nt,
+                         (unsigned)st, (unsigned)iosb.Information, (unsigned)a[0]);
+        }
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_READ_FILE_ASYNC:
+    {
+        /* Issue with an event and COLLECT AT THE CALL with a zero-timeout
+         * wait. Deterministic on both runners precisely because both
+         * complete data transfers inline under the CUI-8 §7 pin
+         * (sem_file/async_inline.c): the call answers the pending shape
+         * with the IOSB already final and the event already set. A kernel
+         * that regresses to genuine ring-3 pending diverges RIGHT HERE —
+         * wait= flips, ios= goes stale — which is what makes a
+         * pended-completion divergence minimizable (docs/19 §8.3.3). */
+        static char io_buffer[8192];
+        IO_STATUS_BLOCK iosb;
+        LARGE_INTEGER off, zero;
+        if (fz_async_event == NULL)
+            NtCreateEvent(&fz_async_event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+        ULONG len = fz_iolen((unsigned)a[1]);
+        if (len > sizeof(io_buffer))
+            len = sizeof(io_buffer);
+        off.QuadPart = (LONGLONG)fz_iooff((unsigned)a[2]);
+        fz_bzero(io_buffer, sizeof(io_buffer));
+        iosb.Status = (NTSTATUS)0x0BADF00D; /* poison: did the call write it? */
+        iosb.Information = 0;
+        st = NtReadFile(fz_slots[a[0]], fz_async_event, NULL, NULL, &iosb, io_buffer, len, &off,
+                        NULL);
+        zero.QuadPart = 0;
+        NTSTATUS waitSt = fz_async_event != NULL
+                              ? NtWaitForSingleObject(fz_async_event, FALSE, &zero)
+                              : (NTSTATUS)0xEEEEEEEE;
+        unsigned sum = 0;
+        for (ULONG i = 0; i < (ULONG)iosb.Information && i < sizeof(io_buffer); i++)
+            sum = (sum + (unsigned char)io_buffer[i]) & 0xFFFF;
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x wait=%08x ios=%08x n=%u sum=%u\n", prog, call, nt,
+                     (unsigned)st, (unsigned)waitSt, (unsigned)iosb.Status,
+                     (unsigned)iosb.Information, sum);
+        break;
+    }
+    case FZ_OP_CANCEL_SYNC_SELF:
+    {
+        /* The interp is never inside synchronous I/O when it runs an op, so
+         * NOT_FOUND with the result IOSB written {status, 0} — continuously
+         * pinning the CUI-8-widened verb's idle answer on both sides. */
+        IO_STATUS_BLOCK iosb;
+        iosb.Status = (NTSTATUS)0x0BADF00D;
+        iosb.Information = 0x77;
+        st = NtCancelSynchronousIoFile(NtCurrentThread(), NULL, &iosb);
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x ios=%08x info=%u\n", prog, call, nt, (unsigned)st,
+                     (unsigned)iosb.Status, (unsigned)iosb.Information);
+        break;
+    }
     case FZ_OP_CREATE_JOB:
     {
         HANDLE handle = NULL;
@@ -1691,8 +1773,8 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
          * refusal, and the non-watch refusal. */
         PVOID region = NULL;
         SIZE_T regionSize = 2 * 0x1000;
-        ULONG type = a[0] == 3 ? (MEM_RESERVE | MEM_COMMIT)
-                               : (MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH);
+        ULONG type =
+            a[0] == 3 ? (MEM_RESERVE | MEM_COMMIT) : (MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH);
         if (!fz_ok(NtAllocateVirtualMemory(NtCurrentProcess(), &region, 0, &regionSize, type,
                                            PAGE_READWRITE)))
         {
@@ -1707,11 +1789,10 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ULONG_PTR count = 2;
             ULONG granularity = 0;
             ULONG flags = a[0] == 2 ? 4 : 0; /* FZ_WW_BAD_FLAGS */
-            st = NtGetWriteWatch(NtCurrentProcess(), flags, region, regionSize, addresses,
-                                 &count, &granularity);
+            st = NtGetWriteWatch(NtCurrentProcess(), flags, region, regionSize, addresses, &count,
+                                 &granularity);
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x n=%u g=%u\n", prog, call, nt, (unsigned)st,
-                         fz_ok(st) ? (unsigned)count : 0,
-                         fz_ok(st) ? (unsigned)granularity : 0);
+                         fz_ok(st) ? (unsigned)count : 0, fz_ok(st) ? (unsigned)granularity : 0);
         }
         else
         {
@@ -1758,8 +1839,8 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
             ranges[1].number_of_bytes = 0;
             break;
         }
-        st = NtSetInformationVirtualMemory(NtCurrentProcess(), 0 /* VmPrefetchInformation */,
-                                           count, ranges, flagsPtr, flagsSize);
+        st = NtSetInformationVirtualMemory(NtCurrentProcess(), 0 /* VmPrefetchInformation */, count,
+                                           ranges, flagsPtr, flagsSize);
         ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }

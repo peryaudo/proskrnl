@@ -711,10 +711,14 @@ FUZZ_OPS = [
     ("enumerate_key", "NtEnumerateKey", ["slot_in", "ch_ulong", "ch_key_info", "ch_len"]),
     ("query_key", "NtQueryKey", ["slot_in", "ch_key_info", "ch_len"]),
     ("flush_key", "NtFlushKey", ["slot_in"]),
-    # CUI-3 SCM surface. Cancel is deterministic on any slot: the
-    # single-threaded interp never has an operation pending, so the
-    # thread-scoped verb succeeds and the Ex form answers NOT_FOUND on any
-    # resolvable handle (wineserver's cancel_async takes ANY object).
+    # CUI-3 SCM surface. Cancel is deterministic on any slot — since CUI-8
+    # the reason is the §7 pin rather than an accident of the machine: a
+    # data transfer answers the PENDING SHAPE with the IOSB already final
+    # (sem_file/async_inline.c), so nothing is ever cancellably pending at
+    # ring 3 here — the thread-scoped verb succeeds and the Ex form answers
+    # NOT_FOUND on any resolvable handle (wineserver's cancel_async takes
+    # ANY object). The interp's own in-flight window has no oracle
+    # counterpart; the kmt CUI-8 suite and the cui8 stress leg convict it.
     # Jobs stay anonymous and are only argument-gated (limits are validated
     # + stored, never enforced — docs/03 "CUI-3 SCM notes"), so every
     # scenario's status is deterministic on both sides. Assignment stays
@@ -722,6 +726,19 @@ FUZZ_OPS = [
     # re-assignment answers differ (nesting is unbuilt, docs/03).
     ("cancel_io", "NtCancelIoFile", ["slot_in"]),
     ("cancel_io_ex", "NtCancelIoFileEx", ["slot_in"]),
+    # CUI-8 (docs/19 §8.3.3): the asynchronous-handle surface the §7 pins
+    # fixed. create_file_async opens without FILE_SYNCHRONOUS_IO_*;
+    # read_file_async issues with an event and collects AT THE CALL with a
+    # zero-timeout wait — legal and deterministic on both runners precisely
+    # because both complete data transfers inline under the pin (the call
+    # answers STATUS_PENDING with the IOSB final and the event set), so a
+    # kernel that regresses to genuine ring-3 pending diverges on the very
+    # line that issued. cancel_sync_self pins the idle-thread NOT_FOUND
+    # continuously.
+    ("create_file_async", "NtCreateFile",
+     ["slot_out", "ch_access_file", "fname", "ch_share_file", "ch_disposition_file"]),
+    ("read_file_async", "NtReadFile", ["slot_in", "ch_iolen", "ch_iooff"]),
+    ("cancel_sync_self", "NtCancelSynchronousIoFile", []),
     ("create_job", "NtCreateJobObject", ["slot_out", "ch_access_job"]),
     ("set_job_limits", "NtSetInformationJobObject", ["slot_in", "ch_job_scenario"]),
     # CUI-4 process-ecosystem ops. Only the DETERMINISTIC slice: opening a
