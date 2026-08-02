@@ -74,10 +74,14 @@ void VioBlkResetDepthStats(void);
 /* Test/stress instrumentation (docs/19 §8.1's aggressiveness knob): bound
  * the await's pre-park drain-spin. 0 forces every await to park — the kmt
  * CUI-8 suite holds the in-flight window open with it so progress and
- * cancellation are verdicts, not races. Restore VIO_BLK_AWAIT_SPINS after
- * use; nothing outside tests may touch this. */
+ * cancellation are verdicts, not races. Returns the PREVIOUS bound: a
+ * test must restore THAT, never the compile-time VIO_BLK_AWAIT_SPINS — a
+ * stress boot (kernel/init/main.c cui8_stress.flag) configures 0 at boot,
+ * and a test restoring the default silently de-stressed every later test
+ * on the image built to park on every await. Nothing outside tests and
+ * the boot-time stress arm may touch this. */
 #define VIO_BLK_AWAIT_SPINS 4096
-void VioBlkSetAwaitSpinBound(ULONG spins);
+ULONG VioBlkSetAwaitSpinBound(ULONG spins);
 
 /* Probe PCI bus 0, bring the device up per the virtio 1.2 cs01 §3.1.1
  * initialization sequence, and set up the request queue. Returns TRUE when

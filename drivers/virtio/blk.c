@@ -298,9 +298,11 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
  * the park itself a deterministic state (blk.h). */
 static ULONG VioBlkAwaitSpinBound = VIO_BLK_AWAIT_SPINS;
 
-void VioBlkSetAwaitSpinBound(ULONG spins)
+ULONG VioBlkSetAwaitSpinBound(ULONG spins)
 {
+    ULONG previous = VioBlkAwaitSpinBound;
     VioBlkAwaitSpinBound = spins;
+    return previous;
 }
 
 NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request)
