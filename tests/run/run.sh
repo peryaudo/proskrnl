@@ -1216,19 +1216,29 @@ cui8() {
     local fails=0
     make -C "$ROOT" >/dev/null || exit 1
 
-    # (a) the standard test-image boot carries the kmt CUI-8 suite.
+    # (a) the standard test-image boot carries the kmt CUI-8 suite. An
+    # EMPTY serial log means QEMU never launched the guest — an infra
+    # flake, not a verdict — so that one case retries once, with the
+    # launcher's own output kept for the post-mortem.
     local kmtlog="$BUILD/cui8-kmt-serial.log"
-    LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" \
-        "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" >/dev/null 2>&1 || true
+    local attempt
+    for attempt in 1 2; do
+        LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" \
+            "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" \
+            >"$BUILD/cui8-kmt-qemu.log" 2>&1 || true
+        [[ -s "$kmtlog" ]] && break
+        echo "cui8: empty serial log from the kmt boot (attempt $attempt);" \
+             "see $BUILD/cui8-kmt-qemu.log" >&2
+    done
     # Kernel serial lines end CRLF (DbgPrint), so no trailing anchor.
     if grep -q '\[KTEST\] CUI8 PASS' "$kmtlog"; then
         echo "[KTEST] cui8-kmt PASS"
     else
-        echo "[KTEST] cui8-kmt FAIL (see $kmtlog)"
+        echo "[KTEST] cui8-kmt FAIL (see $kmtlog and $BUILD/cui8-kmt-qemu.log)"
         fails=$((fails + 1))
     fi
     local depthLine maxDepth
-    depthLine="$(grep -E '^\[KTEST\] blk depth ' "$kmtlog" | head -1)"
+    depthLine="$(grep -E '^\[KTEST\] blk depth ' "$kmtlog" | head -1 || true)"
     maxDepth="$(sed -nE 's/^\[KTEST\] blk depth max=([0-9]+).*/\1/p' <<<"$depthLine")"
     if [[ -n "$maxDepth" && "$maxDepth" -ge 8 ]]; then
         echo "[KTEST] cui8-depth PASS ($depthLine)"
@@ -1237,17 +1247,25 @@ cui8() {
         fails=$((fails + 1))
     fi
 
-    # (b) throttled boundary run: at 16 MiB/s a 4 KiB page costs ~250 us —
-    # far past the await spin — so the 4 MiB cold fill must park and the
-    # counter thread must advance INSIDE the read syscall; the test's
-    # explicit skip (its fast-disk escape) fails this leg.
+    # (b) throttled boundary run, with the skip leg forbidden. Two knobs
+    # together, each carrying half the guarantee: CUI8_STRESS zeroes the
+    # await spin so EVERY await parks BY CONSTRUCTION — the spin's wall
+    # time scales with host speed while a throttle is absolute, so on a
+    # slower runner the spin can absorb the whole throttled latency and no
+    # park ever happens (exactly how this stage first failed in CI) — and
+    # the 4 MiB/s throttle makes each park a physically wide window (≥1 ms
+    # per page), so the counter thread advances by real margins inside the
+    # read syscall. The default-config conviction stays the kmt suite plus
+    # the unthrottled tolerant run of this same test.
     local sublog="$BUILD/proskrnl-subset-serial.log"
-    DRIVE_THROTTLE=$((16 * 1024 * 1024)) "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
+    CUI8_STRESS=1 DRIVE_THROTTLE=$((4 * 1024 * 1024)) TIMEOUT=1200 \
+        "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
+    cp -f "$sublog" "$BUILD/cui8-throttled-serial.log" 2>/dev/null || true
     if grep -q '\[KTEST\] progress_during_io PASS' "$sublog" &&
         ! grep -q 'progress_during_io.c.*no scheduling point' "$sublog"; then
         echo "[KTEST] cui8-throttled-progress PASS"
     else
-        echo "[KTEST] cui8-throttled-progress FAIL (see $sublog)"
+        echo "[KTEST] cui8-throttled-progress FAIL (see $BUILD/cui8-throttled-serial.log)"
         fails=$((fails + 1))
     fi
 
@@ -1259,8 +1277,10 @@ cui8() {
     local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob'
     local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    cp -f "$sublog" "$BUILD/cui8-det-1-serial.log" 2>/dev/null || true
     grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-1.txt" || true
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    cp -f "$sublog" "$BUILD/cui8-det-2-serial.log" 2>/dev/null || true
     grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-2.txt" || true
     if [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
         echo "[KTEST] cui8-determinism PASS ($(wc -l < "$BUILD/cui8-det-1.txt") verdict lines)"
@@ -1272,8 +1292,9 @@ cui8() {
     # (d) the stress boot: CUI8_STRESS=1 bakes the marker that zeroes the
     # await spin, so EVERY await parks — same verdicts required.
     CUI8_STRESS=1 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    cp -f "$sublog" "$BUILD/cui8-stress-serial.log" 2>/dev/null || true
     if ! grep -q 'cui8 stress knob armed' "$sublog"; then
-        echo "[KTEST] cui8-stress FAIL (knob never armed; see $sublog)"
+        echo "[KTEST] cui8-stress FAIL (knob never armed; see $BUILD/cui8-stress-serial.log)"
         fails=$((fails + 1))
     else
         grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-stress.txt" || true
