@@ -430,6 +430,8 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     device = 0;
     file->synchronousIo =
         (options & (FILE_SYNCHRONOUS_IO_NONALERT | FILE_SYNCHRONOUS_IO_ALERT)) != 0;
+    /* Born signalled: free until its first synchronous-I/O holder. */
+    KeInitializeEvent(&file->syncIoLock, SynchronizationEvent, TRUE);
     file->deleteOnClose = (options & FILE_DELETE_ON_CLOSE) != 0;
     file->nonBuffered = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
     file->grantedAccess = granted;
