@@ -1100,17 +1100,15 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   `sem_file/async_inline.c` hot and cold, and continuously by the fuzzer's
   `read_file_async` collect-at-call op, whose trace diverges on the issuing line if
   either side ever genuinely pends.
-- **`FileModeInformation` folds `FILE_SYNCHRONOUS_IO_ALERT` into `_NONALERT`**
-  (`kernel/io/query.c` `IopFileMode`): the create collapses both options into the
-  single `synchronousIo` fact, so a handle opened ALERT reports NONALERT. The
-  alertable-wait distinction the two encode has no other observable edge in this
-  kernel (kernel-internal waits are non-alertable). Escalation: keep the create
-  options verbatim on the FILE_OBJECT the day a caller distinguishes them.
 - **Cancellation scope after the §9.9 widening** (`kernel/io/async.c`,
-  `fs/fat32/file.c`): `NtCancelSynchronousIoFile` now reaches the fat32 data park —
-  the fill/writeback loops stop issuing on a landed cancel, await what is out
-  (docs/20 R4), and answer `STATUS_CANCELLED` with the IOSB untouched; already-written
-  sectors stay written (NT's too-late-to-cancel writeback). Still outside the verb:
+  `fs/fat32/file.c`, `kernel/io/rw.c`): `NtCancelSynchronousIoFile` now reaches the
+  fat32 data park — the fill and the extension's zero-fill stop issuing on a landed
+  cancel, await what is out (docs/20 R4), and answer `STATUS_CANCELLED` with the
+  IOSB untouched (a cancelled extension is unwound, so the volume is exactly as it
+  was). A write's cancel point is BEFORE its cache mutation: from `MiCacheWrite` on,
+  the cache write and its writeback are one too-late-to-cancel durability unit —
+  honoring a cancel there left the cache and the disk permanently disagreeing, with
+  no dirty tracking to reconcile them (PR #95 review). Still outside the verb:
   `NtFlushBuffersFile` and the section-writeback path (`IoWritebackSectionRange`) run
   unmarked — no baked caller cancels a flush — and condrv/serial/`\Device\Input*`
   keep their CUI-5 uncancellable waits. Escalation: mark the flush spans when a

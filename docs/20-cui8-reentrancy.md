@@ -137,3 +137,33 @@ legs and `file_coherence_mt` hold the former, which is the only observable half.
 4. Any future blocking point added to a path in §5's STILL-TRUE tables re-opens that
    row — the table is the checklist for the next milestone that adds one (Net-1's AFD
    is expected to; SMP re-opens every row, which is `docs/18`'s own §6).
+
+## 9. Post-review addenda (PR #95)
+
+The milestone PR's review convicted places where the rules above were applied too
+narrowly to the milestone's *own new code*; each repair extends an existing rule:
+
+- **R1 covered each FS op, not decisions spanning ops.** `NtWriteFile`'s
+  append/extend placement was decided from a pre-park size snapshot and pushed
+  through `SetEndOfFile` (which shrinks) — two concurrent writers truncated each
+  other. Repair: `PrepareWrite` (`kernel/io/vfs.h`) resolves placement grow-only in
+  one gate hold.
+- **Teardown can land between one syscall's gated steps.** Delete-on-close cleanup
+  runs when the last handle closes — including while another thread's write is
+  parked between its ops on that file. Every re-enterable gated step now refuses
+  `STATUS_FILE_CLOSED` off `entryDeleted` instead of asserting or resurrecting the
+  freed slot.
+- **Io-layer state sat outside the enumeration.** `FILE_OBJECT.currentByteOffset`
+  is also mutated across parks: NT's file-object lock (`syncIoLock`,
+  `KiAcquireEventGate`) now serializes synchronous-handle I/O — pinned by
+  `sem_file/shared_handle_offset.c`.
+- **R3's probes go stale across the data path's own parks.** Post-park copies
+  re-probe with no park between probe and copy, so a sibling's unmap surfaces as
+  `STATUS_ACCESS_VIOLATION` through the cleanup path; the recovery frame is a
+  backstop again, never the only line.
+- **Cancel vs. the §7 write-through invariant.** A landed cancel is honored only
+  before the cache mutates; from `MiCacheWrite` on, the range goes out regardless
+  (there is no dirty tracking to reconcile a cache/disk divergence later).
+- **The gate's terminating-thread fallback must queue.** A try/yield retry loop
+  starves against the holder under strict priority scheduling; the rundown park
+  (`rundownWait`) makes every acquirer a queued waiter.
