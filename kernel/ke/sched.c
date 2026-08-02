@@ -285,6 +285,12 @@ void KiSwapToNext(void)
         old->state = KI_THREAD_STATE_RUNNING;
         return;
     }
+    /* Issue #96 C: the outgoing thread is about to let others run, so every
+     * probe it took before this point is now stale. Advanced HERE, at the one
+     * switch site, and only when a switch really happens — a wait satisfied
+     * without yielding the CPU gave nobody a chance to unmap anything and
+     * must not cost a re-probe. */
+    old->parkGeneration++;
     next->state = KI_THREAD_STATE_RUNNING;
     KiCurrentThread = next;
     KiTraceEvent(KiTraceSwap, (uint64_t)(uintptr_t)old, (uint64_t)(uintptr_t)next, 0);

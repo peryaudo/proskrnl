@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "abi/ntdef.h"
+#include "kernel/syscall/uaccess.h"
 
 typedef struct MI_PAGE_CACHE
 {
@@ -40,7 +41,13 @@ NTSTATUS MiResizePageCache(PMI_PAGE_CACHE cache, uint64_t newFileSize);
 
 /* Copy in/out of the cached pages. The caller bounds-checks against
  * fileSize; offset+length must lie within the covered pages. */
-void MiCacheRead(const MI_PAGE_CACHE *cache, uint64_t offset, void *buffer, uint64_t length);
-void MiCacheWrite(PMI_PAGE_CACHE cache, uint64_t offset, const void *buffer, uint64_t length);
+/* The bulk data path in and out of the cache. `token` is the probe backing
+ * `buffer` (issue #96 C): these run after the fill/placement parks, so the
+ * entry probe is stale and the token is what proves a fresh one was taken.
+ * A kernel-owned buffer passes KiKernelToken, which names the opt-out. */
+void MiCacheRead(const MI_PAGE_CACHE *cache, uint64_t offset, const KI_PROBE_TOKEN *token,
+                 void *buffer, uint64_t length);
+void MiCacheWrite(PMI_PAGE_CACHE cache, uint64_t offset, const KI_PROBE_TOKEN *token,
+                  const void *buffer, uint64_t length);
 
 #endif /* PROSKRNL_KERNEL_MM_PAGECACHE_H */

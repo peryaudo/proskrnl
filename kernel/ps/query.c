@@ -535,7 +535,8 @@ static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG l
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
-    NTSTATUS status = KiProbeForWrite(buffer, sizeof(HANDLE), sizeof(HANDLE));
+    KI_PROBE_TOKEN handleToken;
+    NTSTATUS status = KiProbeForWriteToken(buffer, sizeof(HANDLE), sizeof(HANDLE), &handleToken);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -598,7 +599,10 @@ static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG l
         }
         return status;
     }
-    *(HANDLE *)buffer = handle; /* probed above; no park since the probe */
+    /* Through the token: "no park since the probe" was a claim a reader had
+     * to re-derive over the whole body above, and docs/20 §10.2 convicted
+     * exactly that claim here once (issue #96 C). */
+    KiWriteUser(&handleToken, buffer, &handle, sizeof(handle));
     /* The dereference LAST (docs/20 R7): dropping a last reference runs a
      * whole process teardown, whose handle-table sweep closes files and
      * parks on the volume gate (docs/20 §10.1) — parked, a sibling can

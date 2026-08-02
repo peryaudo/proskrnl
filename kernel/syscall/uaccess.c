@@ -113,6 +113,75 @@ void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector)
     KiJumpFaultRecovery(frame, (ULONG)STATUS_ACCESS_VIOLATION);
 }
 
+/* --- probe tokens (issue #96 C; the contract is in uaccess.h) ------------- */
+
+static KI_PROBE_TOKEN KiMintToken(void *base, uint64_t length)
+{
+    KI_PROBE_TOKEN token;
+    token.base = base;
+    token.length = length;
+    PKTHREAD thread = KeGetCurrentThread();
+    token.generation = thread != 0 ? thread->parkGeneration : 0;
+    return token;
+}
+
+NTSTATUS KiProbeForReadToken(const void *address, uint64_t length, uint64_t alignment,
+                             PKI_PROBE_TOKEN token)
+{
+    NTSTATUS status = KiProbeForRead(address, length, alignment);
+    *token = KiMintToken((void *)(uintptr_t)address, NT_SUCCESS(status) ? length : 0);
+    return status;
+}
+
+NTSTATUS KiProbeForWriteToken(void *address, uint64_t length, uint64_t alignment,
+                              PKI_PROBE_TOKEN token)
+{
+    NTSTATUS status = KiProbeForWrite(address, length, alignment);
+    *token = KiMintToken(address, NT_SUCCESS(status) ? length : 0);
+    return status;
+}
+
+KI_PROBE_TOKEN KiKernelToken(void *base, uint64_t length)
+{
+    return KiMintToken(base, length);
+}
+
+void KiAssertProbeToken(const KI_PROBE_TOKEN *token, const void *address, uint64_t length)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    uint64_t generation = thread != 0 ? thread->parkGeneration : 0;
+    if (token->generation != generation)
+    {
+        DbgPrint("[PANIC] stale probe: token generation %lu, thread now at %lu (%lu parks since "
+                 "the probe)\n",
+                 (unsigned long)token->generation, (unsigned long)generation,
+                 (unsigned long)(generation - token->generation));
+        KiPanic("KiAssertProbeToken: a probe result was used across a park");
+    }
+    uint64_t start = (uint64_t)(uintptr_t)address;
+    uint64_t base = (uint64_t)(uintptr_t)token->base;
+    if (start < base || length > token->length || start - base > token->length - length)
+    {
+        DbgPrint("[PANIC] copy [%#lx,+%#lx) outside the probed [%#lx,+%#lx)\n",
+                 (unsigned long)start, (unsigned long)length, (unsigned long)base,
+                 (unsigned long)token->length);
+        KiPanic("KiAssertProbeToken: the copy is not inside the probed range");
+    }
+}
+
+void KiWriteUser(const KI_PROBE_TOKEN *token, void *destination, const void *source,
+                 uint64_t length)
+{
+    KiAssertProbeToken(token, destination, length);
+    memcpy(destination, source, length);
+}
+
+void KiReadUser(const KI_PROBE_TOKEN *token, void *destination, const void *source, uint64_t length)
+{
+    KiAssertProbeToken(token, source, length);
+    memcpy(destination, source, length);
+}
+
 NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t length)
 {
     NTSTATUS status = KiProbeForRead(userSource, length, 1);
