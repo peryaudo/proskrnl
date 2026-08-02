@@ -1202,6 +1202,93 @@ cui7() {
     return 0
 }
 
+# The CUI-8 acceptance leg (docs/19 §8, docs/02 "Done when"): (a) the kmt
+# machine verdicts off the standard boot — progress while a fill is parked,
+# the committed depth floor, in-flight cancellation; (b) the boundary
+# progress case under a physically THROTTLED disk, where a park is
+# guaranteed and the test's tolerant skip leg is forbidden; (c) the docs/19
+# §8.1 determinism check — two identical boots must produce identical
+# [KTEST] verdict lines; (d) the stress boot — every await parks (the
+# aggressiveness knob, off on every default image) and the verdicts must
+# still MATCH the default run's, or the drain knob leaked into observable
+# behaviour and took the project's most valuable property with it.
+cui8() {
+    local fails=0
+    make -C "$ROOT" >/dev/null || exit 1
+
+    # (a) the standard test-image boot carries the kmt CUI-8 suite.
+    local kmtlog="$BUILD/cui8-kmt-serial.log"
+    LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" >/dev/null 2>&1 || true
+    # Kernel serial lines end CRLF (DbgPrint), so no trailing anchor.
+    if grep -q '\[KTEST\] CUI8 PASS' "$kmtlog"; then
+        echo "[KTEST] cui8-kmt PASS"
+    else
+        echo "[KTEST] cui8-kmt FAIL (see $kmtlog)"
+        fails=$((fails + 1))
+    fi
+    local depthLine maxDepth
+    depthLine="$(grep -E '^\[KTEST\] blk depth ' "$kmtlog" | head -1)"
+    maxDepth="$(sed -nE 's/^\[KTEST\] blk depth max=([0-9]+).*/\1/p' <<<"$depthLine")"
+    if [[ -n "$maxDepth" && "$maxDepth" -ge 8 ]]; then
+        echo "[KTEST] cui8-depth PASS ($depthLine)"
+    else
+        echo "[KTEST] cui8-depth FAIL (line: '$depthLine')"
+        fails=$((fails + 1))
+    fi
+
+    # (b) throttled boundary run: at 16 MiB/s a 4 KiB page costs ~250 us —
+    # far past the await spin — so the 4 MiB cold fill must park and the
+    # counter thread must advance INSIDE the read syscall; the test's
+    # explicit skip (its fast-disk escape) fails this leg.
+    local sublog="$BUILD/proskrnl-subset-serial.log"
+    DRIVE_THROTTLE=$((16 * 1024 * 1024)) "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
+    if grep -q '\[KTEST\] progress_during_io PASS' "$sublog" &&
+        ! grep -q 'progress_during_io.c.*no scheduling point' "$sublog"; then
+        echo "[KTEST] cui8-throttled-progress PASS"
+    else
+        echo "[KTEST] cui8-throttled-progress FAIL (see $sublog)"
+        fails=$((fails + 1))
+    fi
+
+    # (c) determinism (docs/19 §8.1): identical boots, identical verdicts.
+    # Three [KTEST] lines carry timing-dependent MEASUREMENTS, not verdicts,
+    # and are excluded: the blk depth line (its mean varies with harvest
+    # timing), the timer line (prints the live tick count), and the sweep
+    # line (prints how many idle sweeps happened to run).
+    local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob'
+    local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
+    "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-1.txt" || true
+    "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-2.txt" || true
+    if [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
+        echo "[KTEST] cui8-determinism PASS ($(wc -l < "$BUILD/cui8-det-1.txt") verdict lines)"
+    else
+        echo "[KTEST] cui8-determinism FAIL (diff $BUILD/cui8-det-1.txt $BUILD/cui8-det-2.txt)"
+        fails=$((fails + 1))
+    fi
+
+    # (d) the stress boot: CUI8_STRESS=1 bakes the marker that zeroes the
+    # await spin, so EVERY await parks — same verdicts required.
+    CUI8_STRESS=1 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    if ! grep -q 'cui8 stress knob armed' "$sublog"; then
+        echo "[KTEST] cui8-stress FAIL (knob never armed; see $sublog)"
+        fails=$((fails + 1))
+    else
+        grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-stress.txt" || true
+        if cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-stress.txt"; then
+            echo "[KTEST] cui8-stress PASS (park-on-every-await verdicts identical)"
+        else
+            echo "[KTEST] cui8-stress FAIL (diff $BUILD/cui8-det-1.txt $BUILD/cui8-det-stress.txt)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    echo "== cui8: $fails failing =="
+    return $((fails > 0 ? 1 : 0))
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -1847,6 +1934,7 @@ case "$MODE" in
     files)    files ;;
     cui6)     cui6 ;;
     cui7)     cui7 ;;
+    cui8)     cui8 ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
@@ -1857,7 +1945,7 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
        exit 2 ;;
