@@ -1405,11 +1405,22 @@ format:
 # smss is a user-mode PE, so its TUs are checked under the same mingw target
 # they are built for, not the kernel's freestanding-ELF flags.
 SMSS_TIDY_FLAGS := -std=c11 --target=x86_64-windows-gnu -ffreestanding -I.
-tidy:
+tidy: frontier-check
 	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
 	$(CLANG_TIDY) $(wildcard user/smss/*.c) -- $(SMSS_TIDY_FLAGS)
 
-.PHONY: all test run clean format tidy gen-abi
+# The blocking frontier (issue #96 A, the static half): which code can park is
+# a call-graph query, so ask the machine rather than a reviewer. `frontier`
+# prints it; `frontier-check` (in `tidy`, so every gate run takes it) fails on
+# a service that newly parks without being written into the baseline, and on a
+# must-not-block region that grew a path to one.
+frontier:
+	python3 tools/blocking_frontier.py --report
+
+frontier-check:
+	python3 tools/blocking_frontier.py --check
+
+.PHONY: all test run clean format tidy gen-abi frontier frontier-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)
