@@ -582,10 +582,6 @@ static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG l
         }
         process->isSystemProcess = TRUE;
     }
-    if (referenced)
-    {
-        ObDereferenceObject(process);
-    }
 
     /* The kernel-internal creation path: ObpCreateHandle probes its
      * out-pointer as USER memory (the create/open choke point), but this
@@ -596,9 +592,25 @@ static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG l
                                     PspShutdownEventBody, SYNCHRONIZE, 0, &handle);
     if (!NT_SUCCESS(status))
     {
+        if (referenced)
+        {
+            ObDereferenceObject(process);
+        }
         return status;
     }
-    *(HANDLE *)buffer = handle; /* probed above */
+    *(HANDLE *)buffer = handle; /* probed above; no park since the probe */
+    /* The dereference LAST (docs/20 R7): dropping a last reference runs a
+     * whole process teardown, whose handle-table sweep closes files and
+     * parks on the volume gate (docs/20 §10.1) — parked, a sibling can
+     * unmap `buffer`, and a store after the deref would fault and unwind
+     * with the system-mark, the shutdown accounting, and the minted handle
+     * already permanent. After the store, there is nothing left to lose;
+     * the mint above used the CURRENT process's table and never needed the
+     * target reference. */
+    if (referenced)
+    {
+        ObDereferenceObject(process);
+    }
     return STATUS_SUCCESS;
 }
 
