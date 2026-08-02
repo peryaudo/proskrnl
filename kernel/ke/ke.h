@@ -193,6 +193,15 @@ struct KTHREAD
      * from another context — Art. 3). */
     BOOLEAN terminating;
     NTSTATUS terminateStatus;
+    /* CUI-8 (docs/20 R1 fallout): TRUE only while this thread is parked in
+     * KiAcquireEventGate's rundown leg — a terminating thread's rundown I/O
+     * still needs the volume gate, and a real queued wait is the only
+     * acquire the scheduler can guarantee liveness for (a try/yield loop
+     * starves against a lower-priority holder). Exempts the wait from the
+     * CUI-4 termination refusal and from KiAbortThreadWait; sound because a
+     * gate hold is bounded (the holder's device waits complete by device
+     * action), so the park cannot trap the dying thread indefinitely. */
+    BOOLEAN rundownWait;
 
     /* M4: the owning process (never 0 once Ps is up — kernel threads belong
      * to PsInitialSystemProcess), the ring-crossing state the context switch
@@ -365,10 +374,14 @@ LONG KeResetEvent(PRKEVENT event);
 void KeClearEvent(PRKEVENT event);
 LONG KeReadStateEvent(PRKEVENT event);
 
-/* Consume a synchronization event's signal without ever waiting — the gate
- * acquire for callers whose waits refuse (a terminating thread's rundown
- * I/O; see event.c). Returns TRUE when the signal was taken. */
-BOOLEAN KiTryAcquireEventGate(PRKEVENT event);
+/* Acquire a synchronization event used as a binary-semaphore gate (CUI-8:
+ * the fat32 volume gate, docs/20 R1; the file-object I/O lock): an ordinary
+ * queued wait, falling back to the rundownWait-exempt park when the wait
+ * refuses for a terminating thread — every acquirer is a queued waiter, so
+ * the release's hand-off discipline (KiWaitTest, FIFO) guarantees liveness
+ * whatever the priorities. Internal Ki name: NT has no such export
+ * (docs/15). */
+void KiAcquireEventGate(PRKEVENT event);
 
 /* TRUE while the device-completion drain runs (CUI-8, docs/20 R2). The
  * drain can fire from the timer tick, which may have interrupted a thread

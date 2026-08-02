@@ -93,6 +93,7 @@ PKTHREAD KiCreateThreadSuspended(KPRIORITY priority, void (*startRoutine)(void *
     KeInitializeEvent(&thread->suspendGate, NotificationEvent, TRUE);
     thread->terminating = FALSE;
     thread->terminateStatus = STATUS_SUCCESS;
+    thread->rundownWait = FALSE;
     thread->stackBase = stack;
     thread->stackTop = (uint64_t)(uintptr_t)stack + KI_KERNEL_STACK_SIZE;
     thread->process = process != 0 ? process : PsInitialSystemProcess;

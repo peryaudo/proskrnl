@@ -23,26 +23,11 @@
 
 void FatAcquireVolumeGate(PFAT_VOLUME volume)
 {
-    for (;;)
-    {
-        NTSTATUS status = KeWaitForSingleObject(&volume->ioGate, Executive, KernelMode, FALSE, 0);
-        if (status == STATUS_SUCCESS)
-        {
-            return;
-        }
-        /* Only a dying thread's wait refuses (CUI-4: a foreign-terminated
-         * thread never parks) — and its rundown still does real I/O
-         * (delete-on-close, cleanup writeback), so it acquires without
-         * waiting: try, then yield so the holder can run to its release.
-         * The holder always progresses — its own device waits complete by
-         * DEVICE action harvested at the tick, never by this thread. */
-        ASSERT(status == STATUS_THREAD_IS_TERMINATING);
-        if (KiTryAcquireEventGate(&volume->ioGate))
-        {
-            return;
-        }
-        KiYield();
-    }
+    /* A dying thread's rundown still does real I/O (delete-on-close,
+     * cleanup writeback); KiAcquireEventGate parks it as a QUEUED waiter
+     * under the rundownWait exemption rather than spinning a try/yield
+     * loop against the holder (which starves — see event.c). */
+    KiAcquireEventGate(&volume->ioGate);
 }
 
 void FatReleaseVolumeGate(PFAT_VOLUME volume)

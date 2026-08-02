@@ -66,6 +66,7 @@ void KiInitializeScheduler(void)
     KeInitializeEvent(&KiIdleThread.suspendGate, NotificationEvent, TRUE);
     KiIdleThread.terminating = FALSE;
     KiIdleThread.terminateStatus = STATUS_SUCCESS;
+    KiIdleThread.rundownWait = FALSE;
     /* The boot context: a system thread on Limine's stack. stackTop stays 0
      * (the idle thread never leads to a ring crossing). */
     KiIdleThread.process = PsInitialSystemProcess;

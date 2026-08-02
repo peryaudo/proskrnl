@@ -6,6 +6,7 @@
  * Signatures per Wine's ntoskrnl exports (dlls/ntoskrnl.exe/sync.c).
  */
 #include "kernel/ke/ke.h"
+#include "kernel/ob/ob.h" /* KPROCESSOR_MODE enum for the gate acquire's wait */
 #include "kernel/init/panic.h"
 
 /* Wrong-object bugs (a semaphore passed as an event, a stale pointer) show up
@@ -67,21 +68,41 @@ void KeClearEvent(PRKEVENT event)
     KeResetEvent(event);
 }
 
-/* Non-waiting acquire of a synchronization event used as a binary-semaphore
- * gate (CUI-8: the fat32 volume gate, docs/20 R1): consume the signal if it
- * is up. Exists for the one caller class a wait refuses outright — a
- * terminating thread's rundown I/O (KiWaitAbortedForTermination) — whose
- * acquire loop is try / drain / KiYield instead of a park. Internal Ki name:
- * NT has no such export (docs/15). */
-BOOLEAN KiTryAcquireEventGate(PRKEVENT event)
+/* Acquire a synchronization event used as a binary-semaphore gate (CUI-8:
+ * the fat32 volume gate, docs/20 R1; the file-object I/O lock). The common
+ * case is an ordinary wait; the one caller class whose wait refuses — a
+ * terminating thread's rundown I/O (KiWaitAbortedForTermination) — parks
+ * anyway under the rundownWait exemption. It must PARK, not try/yield:
+ * KiYield re-readies the caller at the tail of ITS OWN priority level and
+ * the scheduler is strict highest-first, so a dying thread above the
+ * holder's priority would re-select itself forever and the holder could
+ * never reach its release — a permanent FS-wide hang; and even at equal
+ * priority a release hands the signal to a QUEUED waiter, which a
+ * non-queuing retry loop can be starved against indefinitely. A queued
+ * wait has neither problem, and the park is bounded: the holder's own
+ * device waits complete by DEVICE action harvested at the tick/idle
+ * drains, so every gate hold ends. */
+void KiAcquireEventGate(PRKEVENT event)
 {
-    uint64_t flags = KiAcquireDispatcherLock();
-    KiAssertIsEvent(event);
     ASSERT(event->header.type == KI_OBJECT_SYNCHRONIZATION_EVENT);
-    BOOLEAN acquired = event->header.signalState != 0;
-    event->header.signalState = 0;
-    KiReleaseDispatcherLock(flags);
-    return acquired;
+    PKTHREAD thread = KeGetCurrentThread();
+    for (;;)
+    {
+        NTSTATUS status = KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
+        if (status == STATUS_SUCCESS)
+        {
+            return;
+        }
+        ASSERT(status == STATUS_THREAD_IS_TERMINATING);
+        ASSERT(!thread->rundownWait); /* gates never nest */
+        thread->rundownWait = TRUE;
+        status = KeWaitForSingleObject(event, Executive, KernelMode, FALSE, 0);
+        thread->rundownWait = FALSE;
+        if (status == STATUS_SUCCESS)
+        {
+            return;
+        }
+    }
 }
 
 LONG KeReadStateEvent(PRKEVENT event)
