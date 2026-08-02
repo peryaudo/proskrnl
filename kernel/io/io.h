@@ -68,6 +68,19 @@ typedef struct FILE_OBJECT
     ULONG shareAccess; /* this open's FILE_SHARE_* */
     LARGE_INTEGER currentByteOffset;
 
+    /* CUI-8: the NT file-object lock (IopLockFileObject's role), scoped to
+     * what it observably protects here: NT serializes all I/O on a
+     * synchronous handle, and once the data path can park, two threads
+     * sharing one sync handle both captured currentByteOffset == 0 across
+     * a park, transferred the same range, and stored the same advance.
+     * A synchronization event born signalled (the same binary-semaphore
+     * shape as the fat32 volume gate, acquired via KiAcquireEventGate);
+     * taken only for synchronousIo handles around the seekable data leg —
+     * offset capture, transfer, offset advance — and released before the
+     * completion touches user memory (a ring-0 fault there unwinds without
+     * cleanup and would leak the lock; docs/20 R3's rule for gates). */
+    KEVENT syncIoLock;
+
     /* Directory enumeration state: the mask binds to the handle (pinned
      * Wine: a NULL mask on a later call reuses the previous one). */
     ULONG dirCursor;

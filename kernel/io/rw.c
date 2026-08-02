@@ -152,6 +152,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     PFILE_OBJECT file;
     uint64_t offset;
     PKAPC apcBlock = 0;
+    BOOLEAN syncLocked = FALSE;
     NTSTATUS status = IopStartTransfer(handle, event, FILE_READ_DATA, apc, apcContext, iosb,
                                        byteOffset, &file, &offset, &apcBlock, 0);
     if (!NT_SUCCESS(status))
@@ -199,6 +200,22 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         return status;
     }
 
+    /* NT serializes I/O on a synchronous handle with the file-object lock
+     * (io.h syncIoLock): once the fill below can park, two threads sharing
+     * one sync handle otherwise both capture the same position and both
+     * store the same advance — the pinned Wine gets this atomicity from
+     * the unix fd. The position is re-read UNDER the lock; the value from
+     * IopStartTransfer may predate another holder's advance. */
+    if (file->synchronousIo)
+    {
+        KiAcquireEventGate(&file->syncIoLock);
+        syncLocked = TRUE;
+        if (byteOffset == 0)
+        {
+            offset = (uint64_t)file->currentByteOffset.QuadPart;
+        }
+    }
+
     PMI_PAGE_CACHE cache;
     /* CUI-8 (docs/19 §9.9): the cold cache fill parks; mark the span so
      * NtCancelSynchronousIoFile finds it. A landed cancel surfaces as
@@ -215,6 +232,11 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
 
     if (offset >= cache->fileSize)
     {
+        if (syncLocked)
+        {
+            KeSetEvent(&file->syncIoLock, 0, FALSE);
+            syncLocked = FALSE;
+        }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
         status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_END_OF_FILE, 0);
@@ -232,6 +254,12 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + (LONGLONG)bytes;
     }
+    if (syncLocked)
+    {
+        /* Released before the completion writes user memory (io.h). */
+        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        syncLocked = FALSE;
+    }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
     status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
@@ -239,6 +267,10 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
 
 abandon:
     /* The request never completed (no IOSB write): the APC must not fire. */
+    if (syncLocked)
+    {
+        KeSetEvent(&file->syncIoLock, 0, FALSE);
+    }
     if (apcBlock != 0)
     {
         MiFreePool(apcBlock);
@@ -256,6 +288,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     uint64_t offset;
     PKAPC apcBlock = 0;
     BOOLEAN writeToEnd = FALSE;
+    BOOLEAN syncLocked = FALSE;
     /* The access gate is NOT plain FILE_WRITE_DATA: an APPEND-ONLY handle
      * (FILE_APPEND_DATA without WRITE_DATA — kernelbase's append-mode
      * loggers) writes too, forced to EOF below (pinned sem_file/append.c). */
@@ -329,6 +362,19 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         goto abandon;
     }
 
+    /* The synchronous-handle file-object lock, exactly as NtReadFile: the
+     * position capture, the transfer, and the advance are one serialized
+     * unit per handle. */
+    if (file->synchronousIo)
+    {
+        KiAcquireEventGate(&file->syncIoLock);
+        syncLocked = TRUE;
+        if (byteOffset == 0)
+        {
+            offset = (uint64_t)file->currentByteOffset.QuadPart;
+        }
+    }
+
     PMI_PAGE_CACHE cache;
     /* CUI-8 (docs/19 §9.9): the disk-touching legs before the cache
      * mutates — the fill, the append/extend placement with its zero-fill —
@@ -398,6 +444,12 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     {
         file->currentByteOffset.QuadPart = (LONGLONG)offset + length;
     }
+    if (syncLocked)
+    {
+        /* Released before the completion writes user memory (io.h). */
+        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        syncLocked = FALSE;
+    }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
     status = IopAsyncReturnShape(file, status, TRUE);
     ObDereferenceObject(file);
@@ -407,6 +459,10 @@ abandonSyncIo:
     IopLeaveSyncIo();
 abandon:
     /* The request never completed (no IOSB write): the APC must not fire. */
+    if (syncLocked)
+    {
+        KeSetEvent(&file->syncIoLock, 0, FALSE);
+    }
     if (apcBlock != 0)
     {
         MiFreePool(apcBlock);
