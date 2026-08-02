@@ -1425,9 +1425,17 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 break;
             }
-            memcpy(labelCopy,
-                   (const char *)buffer + offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel),
-                   header.VolumeLabelLength); /* probed above */
+            /* Probe-then-copy rather than a bare memcpy: a fault on the
+             * user label would unwind past this frame without cleanup
+             * (uaccess.h), leaking the pool block just allocated. */
+            status = KiCopyFromUser(
+                labelCopy, (const char *)buffer + offsetof(IOP_FS_LABEL_INFORMATION, VolumeLabel),
+                header.VolumeLabelLength);
+            if (!NT_SUCCESS(status))
+            {
+                MiFreePool(labelCopy);
+                break;
+            }
         }
         status =
             file->device->ops->SetVolumeLabel(file->device, labelCopy, header.VolumeLabelLength);
