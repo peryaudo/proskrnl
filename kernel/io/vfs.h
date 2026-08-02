@@ -135,6 +135,20 @@ typedef struct IO_VFS_OPS
     /* Grow/shrink the file (cluster allocation, directory entry, cache). */
     NTSTATUS (*SetEndOfFile)(struct FILE_OBJECT *file, uint64_t endOfFile);
 
+    /* CUI-8: resolve and commit a data write's placement in ONE
+     * serialization hold. Once a writer can park mid-syscall, an
+     * append/extend decision made from a fileSize snapshot goes stale
+     * across the park — two writers each "extending" truncated each
+     * other's clusters through SetEndOfFile. This op re-reads the size
+     * under the volume gate, resolves writeToEnd (append) to the CURRENT
+     * end of file, and grows the file — never shrinks — when
+     * offset+length runs past it. *offsetInOut carries the caller's
+     * offset in and the resolved one out. NULL = the device's size facts
+     * cannot change across a park (no blocking points anywhere in its
+     * ops), so the caller may decide from GetCache's snapshot. */
+    NTSTATUS(*PrepareWrite)
+    (struct FILE_OBJECT *file, uint64_t *offsetInOut, ULONG length, BOOLEAN writeToEnd);
+
     NTSTATUS (*GetInfo)(struct FILE_OBJECT *file, IO_FILE_INFO *info);
     NTSTATUS (*SetBasic)(struct FILE_OBJECT *file, const FILE_BASIC_INFORMATION *basic);
 
