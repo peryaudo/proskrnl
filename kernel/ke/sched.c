@@ -264,6 +264,13 @@ __attribute__((noreturn)) void KiIdleLoop(void)
         {
             KiIdleThread.state = KI_THREAD_STATE_READY;
             KiSwapToNext();
+            /* Back from running other threads: the pre-swap inFlight is
+             * stale — the thread that just ran may have submitted a batch
+             * and parked, and falling through to its == 0 answer would hlt
+             * with transfers in flight (up to a full tick of added latency,
+             * on EVERY await in the stress configuration). Re-drain and
+             * re-sample instead. */
+            continue;
         }
         /* Idle is the one context guaranteed to see every other thread at a
          * blocking point: sweep the executive's cross-references here
