@@ -135,7 +135,8 @@ prefer the in-tree builds when they exist and fall back to PATH, and `QEMU=`,
 Building QEMU + Wine from source in a throwaway container wastes hours, so CI
 publishes the finished build trees to the rolling `third-party-cache` GitHub
 prerelease (zstd tarballs, keyed on the submodule pins — the publish step in
-`.github/workflows/test.yml`). `tools/fetch_third_party.sh` restores them in
+`.github/actions/third-party`, the prep every CI job shares).
+`tools/fetch_third_party.sh` restores them in
 minutes and then `tools/setup_linux.sh`'s skip-logic only installs the apt
 toolchain:
 
