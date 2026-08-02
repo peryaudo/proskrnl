@@ -327,16 +327,25 @@ oracle_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
 # filtered run only reaches one when it is named: `run.sh oracle fontdiff`.
 #
 # The ntapi cases are FANNED OUT across $ORACLE_JOBS workers: each is an
-# independent PE process whose only shared state is the prefix, and the leg
-# was the longest in CI at 8.5 minutes of almost pure process startup. Each
-# worker gets its OWN wineprefix — cloned from the base one, which is created
-# first and alone — so a parallel run is not merely faster but semantically
-# identical to a sequential one: the cases address absolute paths under C:\
-# and keys under \Registry\Machine\Software, wineserver's namespace is
-# per-prefix, and NtQuerySystemInformation's process list is what the
-# neighbours would otherwise pollute. Isolation is the whole reason this is a
-# clone and not a shared prefix; ORACLE_JOBS=1 restores the strictly
-# sequential run (and uses the base prefix alone, as before).
+# independent PE process, and the leg was the longest in CI at 8.5 minutes of
+# almost pure process startup. Each worker gets its OWN wineprefix, CREATED by
+# wine the way the sequential leg's is (worker n uses $WINEPREFIX-n; worker 0
+# uses the base prefix). That is what makes a parallel run semantically
+# identical to a sequential one rather than merely faster: the cases address
+# absolute paths under C:\ and keys under \Registry\Machine\Software,
+# wineserver's namespace is per-prefix, and NtQuerySystemInformation's process
+# list is exactly what a neighbour would pollute.
+#
+# A prefix is CREATED, never copied. `cp -a` of a finished prefix looks
+# equivalent and is not: in a copy, opening the volume root `\??\C:` fails
+# STATUS_OBJECT_NAME_NOT_FOUND (sem_file/ea_volume), deterministically, while
+# the same test passes in a created prefix at the same path. Creation costs
+# ~8 s and the workers pay it concurrently, so the copy bought nothing anyway.
+# Concurrent creation is safe because each worker owns its prefix — the race
+# worth avoiding was ever only two processes creating the SAME one.
+#
+# ORACLE_JOBS=1 restores the strictly sequential run, in the base prefix
+# alone, exactly as before.
 oracle() {
     check_subtests cmd-standalone fontsmoke fontdiff
     mkdir -p "$BUILD/ntapi"
@@ -344,7 +353,7 @@ oracle() {
 
     local srcs=() src
     while read -r src; do srcs+=("$src"); done < <(all_tests)
-    local total=${#srcs[@]} jobs="$ORACLE_JOBS" w clone pids=() pid prefixes=()
+    local total=${#srcs[@]} jobs="$ORACLE_JOBS" w pids=() pid prefix
     local fails=0 buildfail=0 name
     (( total == 0 )) && { echo "run.sh: the oracle leg selected no test" >&2; exit 2; }
     (( jobs > total )) && jobs=$total
@@ -353,35 +362,15 @@ oracle() {
     rm -rf "$ORACLE_OUT"
     mkdir -p "$ORACLE_OUT"
 
-    # The FIRST case runs alone, in the base prefix, whatever the fan-out
-    # width: a prefix is created by the first wine process to want one, and
-    # two of those racing through wine.inf is the one way this leg can eat
-    # its own tail. It also gives the clones below something worth cloning —
-    # after it, prefix creation has happened exactly once.
-    oracle_one "${srcs[0]}" || buildfail=1
-
-    if (( buildfail == 0 && jobs > 1 && total > 1 )); then
-        prefixes=("$WINEPREFIX")
-        for (( w = 1; w < jobs; w++ )); do
-            clone="$WINEPREFIX-$w"
-            # Kept between runs: a clone is cheap next to creating a prefix
-            # but it is not free (~800 MB), and each is as disposable as the
-            # base prefix it came from.
-            [[ -d "$clone" ]] || cp -a "$WINEPREFIX" "$clone"
-            prefixes+=("$clone")
-        done
-
+    if (( jobs > 1 )); then
         for (( w = 0; w < jobs; w++ )); do
-            # Starts run w+1, so case 0 — already run above — is not repeated
-            # and every later index belongs to exactly one worker.
-            WINEPREFIX="${prefixes[$w]}" oracle_worker "$(( w + 1 ))" "$jobs" "${srcs[@]}" &
+            (( w == 0 )) && prefix="$WINEPREFIX" || prefix="$WINEPREFIX-$w"
+            WINEPREFIX="$prefix" oracle_worker "$w" "$jobs" "${srcs[@]}" &
             pids+=("$!")
         done
         for pid in "${pids[@]}"; do wait "$pid" || buildfail=1; done
-    elif (( buildfail == 0 )); then
-        for (( w = 1; w < total; w++ )); do
-            oracle_one "${srcs[$w]}" || { buildfail=1; break; }
-        done
+    else
+        oracle_worker 0 1 "${srcs[@]}" || buildfail=1
     fi
 
     # A worker fails only when a case failed to BUILD (a test's own verdict is
