@@ -11,6 +11,7 @@
 #include "kernel/io/io.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h"
+#include "kernel/syscall/uaccess.h" /* KiIsUserRange (the R3a asserts) */
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "abi/ntstatus.h"
@@ -1262,12 +1263,25 @@ static NTSTATUS FatVfsSetVolumeLabelLocked(PIO_DEVICE device, const WCHAR *label
  * ops), and a reader arriving after teardown falls to the gated path, whose
  * entryDeleted guard answers STATUS_FILE_CLOSED. */
 
+/* docs/20 R3a: no user address may be reachable from a gated op's
+ * arguments. A ring-0 fault under the gate unwinds to the service
+ * dispatcher's recovery frame WITHOUT running cleanup, so the release is
+ * skipped and every later op on the volume parks forever. The Io layer
+ * captures caller buffers to kernel memory before calling in; each
+ * pointer-carrying entry point asserts that discipline here, at the
+ * boundary it protects. */
+static void FatAssertKernelBuffer(const void *buffer, uint64_t bytes)
+{
+    ASSERT(bytes == 0 || !KiIsUserRange((uint64_t)(uintptr_t)buffer, bytes));
+}
+
 static NTSTATUS FatVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
                              PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
                              ULONG fileAttributes, ULONG disposition, ULONG options,
                              ULONG_PTR *information)
 {
     PFAT_VOLUME volume = device->context;
+    FatAssertKernelBuffer(path->Buffer, path->Length);
     FatAcquireVolumeGate(volume);
     NTSTATUS status = FatVfsCreateLocked(device, file, path, relativeTo, grantedAccess, shareAccess,
                                          fileAttributes, disposition, options, information);
@@ -1355,6 +1369,7 @@ static NTSTATUS FatVfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
 static NTSTATUS FatVfsSetBasic(PFILE_OBJECT file, const FILE_BASIC_INFORMATION *basic)
 {
     PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAssertKernelBuffer(basic, sizeof(*basic));
     FatAcquireVolumeGate(volume);
     NTSTATUS status = FatVfsSetBasicLocked(file, basic);
     FatReleaseVolumeGate(volume);
@@ -1374,6 +1389,7 @@ static NTSTATUS FatVfsRename(PFILE_OBJECT file, PFILE_OBJECT relativeTo, const U
                              ULONG flags)
 {
     PFAT_VOLUME volume = FatFcbOf(file)->volume;
+    FatAssertKernelBuffer(path->Buffer, path->Length);
     FatAcquireVolumeGate(volume);
     NTSTATUS status = FatVfsRenameLocked(file, relativeTo, path, flags);
     FatReleaseVolumeGate(volume);
@@ -1401,6 +1417,7 @@ static NTSTATUS FatVfsQueryVolumeInfo(PIO_DEVICE device, IO_VOLUME_INFO *info)
 static NTSTATUS FatVfsSetVolumeLabel(PIO_DEVICE device, const WCHAR *label, ULONG labelBytes)
 {
     PFAT_VOLUME volume = device->context;
+    FatAssertKernelBuffer(label, labelBytes);
     FatAcquireVolumeGate(volume);
     NTSTATUS status = FatVfsSetVolumeLabelLocked(device, label, labelBytes);
     FatReleaseVolumeGate(volume);

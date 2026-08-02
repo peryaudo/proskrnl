@@ -385,6 +385,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     PFILE_OBJECT relativeTo = 0;
     UNICODE_STRING fsPath;
     PWSTR reparseBuffer = 0;
+    PWSTR fsPathCopy = 0;
 
     if (attributes->RootDirectory != 0)
     {
@@ -415,6 +416,27 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
             return status;
         }
         device = deviceBody;
+    }
+
+    /* Both resolutions can leave fsPath pointing into the CALLER'S buffer
+     * (the relative form aliases attributes->ObjectName outright; the parse
+     * walk's remaining-name contract says so, kernel/ob/namespace.c). The FS
+     * walks it under the volume gate, across parks — where a sibling's unmap
+     * would turn the walk into a ring-0 fault whose unwind skips
+     * FatReleaseVolumeGate and orphans the gate for good (docs/20 R3a). So
+     * capture it to kernel memory HERE, where a fault still has nothing to
+     * leak — the IopSetRenameInformation / volume-label precedent. */
+    if (fsPath.Length != 0)
+    {
+        fsPathCopy = MiAllocatePool(fsPath.Length);
+        if (fsPathCopy == 0)
+        {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto out_device;
+        }
+        memcpy(fsPathCopy, fsPath.Buffer, fsPath.Length);
+        fsPath.Buffer = fsPathCopy;
+        fsPath.MaximumLength = fsPath.Length;
     }
 
     /* Build the File object and hand the rest to the FS. */
@@ -490,6 +512,10 @@ out:
     if (reparseBuffer != 0)
     {
         MiFreePool(reparseBuffer);
+    }
+    if (fsPathCopy != 0)
+    {
+        MiFreePool(fsPathCopy);
     }
     return status;
 
