@@ -230,8 +230,13 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
      * progress comes from the device, not from another thread. */
     uint64_t flags = KiAcquireDispatcherLock();
 
+    /* The submit-side retry loops are bounded like VioBlkAwait's poll: a
+     * wedged device that never completes anything would otherwise freeze
+     * the machine SILENTLY in an interrupts-off spin — the await's 10 s
+     * panic exists precisely so a dead disk is loud. Same order of
+     * magnitude as the await's 1e9-pause bound. */
     uint8_t slotIndex;
-    for (;;)
+    for (uint64_t spins = 0;; spins++)
     {
         for (slotIndex = 0; slotIndex < VIO_BLK_MAX_INFLIGHT; slotIndex++)
         {
@@ -243,6 +248,10 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
         if (slotIndex < VIO_BLK_MAX_INFLIGHT)
         {
             break;
+        }
+        if (spins >= 1000000000ULL)
+        {
+            KiPanic("virtio-blk: submit stalled (no control slot freed)");
         }
         VioBlkDrain(); /* all slots in flight: harvest and retry */
         __asm__ volatile("pause");
@@ -264,8 +273,12 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
         {slotPhysical + offsetof(VIO_BLK_CONTROL_SLOT, status), 1, 1},
     };
     uint16_t head;
-    while (!VioSubmitChain(&VioBlkQueue, segments, 3, &head))
+    for (uint64_t spins = 0; !VioSubmitChain(&VioBlkQueue, segments, 3, &head); spins++)
     {
+        if (spins >= 1000000000ULL)
+        {
+            KiPanic("virtio-blk: submit stalled (ring full)");
+        }
         VioBlkDrain(); /* ring full: harvest and retry */
         __asm__ volatile("pause");
     }
