@@ -555,8 +555,10 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
     {
         status = STATUS_SUCCESS;
     }
-    if (NT_SUCCESS(status))
+    if (NT_SUCCESS(status) && NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
     {
+        /* IOSB re-probed after the gated writeback's parks — the
+         * IopCompleteRequest convention (PR #95 review round 2, F2). */
         iosb->Status = STATUS_SUCCESS;
         iosb->Information = 0;
     }

@@ -198,6 +198,22 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         ObDereferenceObject(file);
         return status;
     }
+    /* Re-validate the caller's buffer and IOSB: GetInfo goes through the
+     * volume gate since CUI-8, so it can park — and the fills below write
+     * user memory directly on the strength of the entry probes, which a
+     * sibling's unmap while parked makes stale (a fault here unwinds past
+     * the file dereference — the rw.c re-probe rule; PR #95 review round
+     * 2, F2). No park separates these probes from the fills. */
+    status = KiProbeForWrite(buffer, length, 1);
+    if (NT_SUCCESS(status))
+    {
+        status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    }
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(file);
+        return status;
+    }
 
     ULONG_PTR information = needed;
     switch (informationClass)
@@ -1033,6 +1049,20 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
             continue;
         }
 
+        /* Re-validate the whole output buffer each round: ReadDirectory
+         * above goes through the volume gate (CUI-8) and can park, so the
+         * probe that last covered the buffer — entry or a previous
+         * iteration — is stale. The fill below and the NextEntryOffset
+         * back-patch into an earlier record both write inside this range,
+         * with no park between probe and store (PR #95 review round 2,
+         * F2). */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+
         /* Entries are 8-byte aligned (the LARGE_INTEGER members). */
         ULONG start = (written + 7) & ~7u;
         ULONG nameBytes = entry.nameLength;
@@ -1175,6 +1205,14 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
+        /* Re-probed: the gated query above parked, so the entry probe is
+         * stale; no park separates this probe from the fill (PR #95 review
+         * round 2, F2). */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
         FILE_FS_VOLUME_INFORMATION *out = buffer;
         ULONG room = length - (ULONG)offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel);
         ULONG labelBytes = facts.labelLength < room ? facts.labelLength : room;
@@ -1201,6 +1239,14 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         }
         IO_VOLUME_INFO facts;
         status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        /* Re-probed: the gated query above parked, so the entry probe is
+         * stale; no park separates this probe from the fill (PR #95 review
+         * round 2, F2). */
+        status = KiProbeForWrite(buffer, length, 1);
         if (!NT_SUCCESS(status))
         {
             break;
@@ -1237,6 +1283,14 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
+        /* Re-probed: the gated query above parked, so the entry probe is
+         * stale; no park separates this probe from the fill (PR #95 review
+         * round 2, F2). */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
         FILE_FS_FULL_SIZE_INFORMATION *out = buffer;
         out->TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
         out->CallerAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
@@ -1265,6 +1319,14 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
+        /* Re-probed: the gated query above parked, so the entry probe is
+         * stale; no park separates this probe from the fill (PR #95 review
+         * round 2, F2). */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
         FILE_FS_ATTRIBUTE_INFORMATION *out = buffer;
         ULONG room = length - (ULONG)offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName);
         ULONG nameBytes = facts.fsNameLength < room ? facts.fsNameLength : room;
@@ -1282,8 +1344,12 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     }
 
     ObDereferenceObject(file);
-    if (NT_SUCCESS(status))
+    if (NT_SUCCESS(status) &&
+        NT_SUCCESS(KiProbeForWrite(ioStatusBlock, sizeof(*ioStatusBlock), sizeof(void *))))
     {
+        /* IOSB re-probed after the gated queries' parks, the
+         * IopCompleteRequest convention: a vanished IOSB skips the store
+         * only — the query itself happened, so its status still returns. */
         ioStatusBlock->Status = status;
         ioStatusBlock->Information = information;
     }
