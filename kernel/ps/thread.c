@@ -251,6 +251,11 @@ void PspRetireCurrentThread(NTSTATUS exitStatus)
  * already unlinked it). */
 __attribute__((noreturn)) void PspParkCurrentThreadAndTerminate(void)
 {
+    /* The last exit before the thread stops running: everything it took
+     * during its own rundown (the delete-on-close writeback's volume gate, a
+     * transient handle) has been given back by now, and anything still held
+     * is held forever — nobody else can release it (issue #96 B). */
+    KiAssertNoObligations("thread exit");
     PETHREAD thread = KeGetCurrentThread()->threadObject;
     if (thread != 0)
     {

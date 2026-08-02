@@ -248,7 +248,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     {
         if (syncLocked)
         {
-            KeSetEvent(&file->syncIoLock, 0, FALSE);
+            KiReleaseEventGate(&file->syncIoLock);
             syncLocked = FALSE;
         }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
@@ -281,7 +281,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     if (syncLocked)
     {
         /* Released before the completion writes user memory (io.h). */
-        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE;
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
@@ -293,7 +293,7 @@ abandon:
     /* The request never completed (no IOSB write): the APC must not fire. */
     if (syncLocked)
     {
-        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        KiReleaseEventGate(&file->syncIoLock);
     }
     if (apcBlock != 0)
     {
@@ -481,7 +481,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     if (syncLocked)
     {
         /* Released before the completion writes user memory (io.h). */
-        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE;
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
@@ -495,7 +495,7 @@ abandon:
     /* The request never completed (no IOSB write): the APC must not fire. */
     if (syncLocked)
     {
-        KeSetEvent(&file->syncIoLock, 0, FALSE);
+        KiReleaseEventGate(&file->syncIoLock);
     }
     if (apcBlock != 0)
     {

@@ -56,6 +56,58 @@ void KiAssertMayBlock(const char *primitive)
     }
 }
 
+/* --- release obligations (issue #96 B; contract in ke.h) ------------------ */
+
+void KiPushObligation(const char *name, void *object)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    if (thread->obligationCount >= KI_MAX_OBLIGATIONS)
+    {
+        DbgPrint("[PANIC] obligation stack full taking '%s' on %p\n", name, object);
+        KiPanic("KiPushObligation: obligation stack overflow");
+    }
+    thread->obligations[thread->obligationCount].name = name;
+    thread->obligations[thread->obligationCount].object = object;
+    thread->obligationCount++;
+}
+
+void KiPopObligation(const char *name, void *object)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    if (thread->obligationCount == 0)
+    {
+        DbgPrint("[PANIC] releasing '%s' on %p with nothing outstanding\n", name, object);
+        KiPanic("KiPopObligation: release without a matching take");
+    }
+    KI_OBLIGATION *top = &thread->obligations[thread->obligationCount - 1];
+    if (top->name != name || top->object != object)
+    {
+        /* Out of order: the release does not pair with the innermost take.
+         * Caught here, where the stack trace still names both, rather than as
+         * an unexplained leftover at the syscall exit. */
+        DbgPrint("[PANIC] releasing '%s' on %p, but the innermost hold is '%s' on %p\n", name,
+                 object, top->name, top->object);
+        KiPanic("KiPopObligation: obligations released out of order");
+    }
+    thread->obligationCount--;
+}
+
+void KiAssertNoObligations(const char *where)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    if (thread == 0 || thread->obligationCount == 0)
+    {
+        return;
+    }
+    for (ULONG i = 0; i < thread->obligationCount; i++)
+    {
+        DbgPrint("[PANIC] leaked obligation %lu/%lu at %s: '%s' on %p\n", (unsigned long)(i + 1),
+                 (unsigned long)thread->obligationCount, where, thread->obligations[i].name,
+                 thread->obligations[i].object);
+    }
+    KiPanic("KiAssertNoObligations: the kernel was left holding something");
+}
+
 static KTHREAD KiIdleThread; /* the boot context; stack is Limine's */
 
 /* CUI-6: the clock tick asks (timer.c) so idle ticks land in idle time. */

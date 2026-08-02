@@ -32,8 +32,7 @@ void FatAcquireVolumeGate(PFAT_VOLUME volume)
 
 void FatReleaseVolumeGate(PFAT_VOLUME volume)
 {
-    ASSERT(KeReadStateEvent(&volume->ioGate) == 0); /* held: release must pair */
-    KeSetEvent(&volume->ioGate, 0, FALSE);
+    KiReleaseEventGate(&volume->ioGate);
     /* Now OUTSIDE the gate: drop the object references dir-watch
      * completions retired while it was held (docs/20 R7 — a last-reference
      * teardown here may re-enter a gated wrapper, which is legal now: this
