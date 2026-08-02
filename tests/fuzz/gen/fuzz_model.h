@@ -119,6 +119,9 @@ typedef enum {
     FZ_OP_FLUSH_KEY,
     FZ_OP_CANCEL_IO,
     FZ_OP_CANCEL_IO_EX,
+    FZ_OP_CREATE_FILE_ASYNC,
+    FZ_OP_READ_FILE_ASYNC,
+    FZ_OP_CANCEL_SYNC_SELF,
     FZ_OP_CREATE_JOB,
     FZ_OP_SET_JOB_LIMITS,
     FZ_OP_OPEN_PROCESS,
@@ -198,6 +201,9 @@ static const FzOperandKind fz_kinds_query_key[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_
 static const FzOperandKind fz_kinds_flush_key[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_cancel_io[] = { FZ_OPND_SLOT_IN };
 static const FzOperandKind fz_kinds_cancel_io_ex[] = { FZ_OPND_SLOT_IN };
+static const FzOperandKind fz_kinds_create_file_async[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_FILE, FZ_OPND_FNAME, FZ_OPND_CH_SHARE_FILE, FZ_OPND_CH_DISPOSITION_FILE };
+static const FzOperandKind fz_kinds_read_file_async[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_IOLEN, FZ_OPND_CH_IOOFF };
+static const FzOperandKind fz_kinds_cancel_sync_self[1];
 static const FzOperandKind fz_kinds_create_job[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_JOB };
 static const FzOperandKind fz_kinds_set_job_limits[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_SCENARIO };
 static const FzOperandKind fz_kinds_open_process[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_PROCESS_CID };
@@ -274,6 +280,9 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_FLUSH_KEY] = { fz_kinds_flush_key, 1, "NtFlushKey" },
     [FZ_OP_CANCEL_IO] = { fz_kinds_cancel_io, 1, "NtCancelIoFile" },
     [FZ_OP_CANCEL_IO_EX] = { fz_kinds_cancel_io_ex, 1, "NtCancelIoFileEx" },
+    [FZ_OP_CREATE_FILE_ASYNC] = { fz_kinds_create_file_async, 5, "NtCreateFile" },
+    [FZ_OP_READ_FILE_ASYNC] = { fz_kinds_read_file_async, 3, "NtReadFile" },
+    [FZ_OP_CANCEL_SYNC_SELF] = { fz_kinds_cancel_sync_self, 0, "NtCancelSynchronousIoFile" },
     [FZ_OP_CREATE_JOB] = { fz_kinds_create_job, 2, "NtCreateJobObject" },
     [FZ_OP_SET_JOB_LIMITS] = { fz_kinds_set_job_limits, 2, "NtSetInformationJobObject" },
     [FZ_OP_OPEN_PROCESS] = { fz_kinds_open_process, 2, "NtOpenProcess" },
