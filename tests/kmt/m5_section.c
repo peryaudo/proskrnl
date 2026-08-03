@@ -208,7 +208,8 @@ static uint64_t first_dir64_reloc(PKI_RAMDISK_FILE file, const MI_IMAGE_INFO *im
         while (cursor + sizeof(IMAGE_BASE_RELOCATION) <= end)
         {
             IMAGE_BASE_RELOCATION block;
-            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+             */
             memcpy(&block, cursor, sizeof(block));
             if (block.SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) ||
                 cursor + block.SizeOfBlock > end)
@@ -267,8 +268,11 @@ static void test_image_section(void)
         ok(mapped_byte(&space, base1) == 'M' && mapped_byte(&space, base1 + 1) == 'Z',
            "mapped header is not MZ");
 
-        /* Per-PE-section protection: text executable and read-only, data
-         * writable; the copied bytes match the file's raw data. */
+        /* Per-PE-section protection: every page starts on the shared master
+         * frame, hardware-READ-ONLY — writable (writecopy) segments too;
+         * their first store resolves through the CUI-9 COW arm
+         * (MiResolveWriteFault: tests/kmt/cui9_cow.c owns that half). The
+         * copied bytes match the file's raw data. */
         for (ULONG i = 0; i < image->segmentCount; i++)
         {
             const MI_IMAGE_SEGMENT *seg = &image->segments[i];
@@ -276,11 +280,8 @@ static void test_image_section(void)
             uint64_t frame = MiTranslateUserPage(space.pml4Physical, base1 + seg->virtualAddress,
                                                  &writable, &present);
             ok(frame != 0 && present, "segment %lu not mapped", (unsigned long)i);
-            int wants_write =
-                seg->protect == PAGE_WRITECOPY || seg->protect == PAGE_EXECUTE_WRITECOPY ||
-                seg->protect == PAGE_READWRITE || seg->protect == PAGE_EXECUTE_READWRITE;
-            ok(writable == wants_write, "segment %lu writability %d, protect %lx", (unsigned long)i,
-               writable, (unsigned long)seg->protect);
+            ok(!writable, "segment %lu hardware-writable while shared (protect %lx)",
+               (unsigned long)i, (unsigned long)seg->protect);
             if (seg->rawSize != 0 && frame != 0)
             {
                 uint64_t chunk = seg->rawSize < PAGE_SIZE ? seg->rawSize : PAGE_SIZE;

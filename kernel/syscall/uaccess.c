@@ -62,13 +62,21 @@ static NTSTATUS KiProbeRange(const void *address, uint64_t length, uint64_t alig
         }
         if (forWrite && !writable)
         {
-            /* CUI-7 write-watch: the probe IS the kernel's write intent, and
-             * it is the single chokepoint every service that writes a user
-             * buffer passes (Art. 11) — a clean watched page marks here,
-             * exactly as the ring-3 store's fault would mark it. */
-            if (!MiResolveWriteWatchFault(space, page))
+            /* CUI-7 write-watch + CUI-9 COW: the probe IS the kernel's
+             * write intent, and it is the single chokepoint every service
+             * that writes a user buffer passes (Art. 11) — a clean watched
+             * page marks here and a shared master page copies here,
+             * exactly as the ring-3 store's fault would resolve. A claimed
+             * copy that got no frame surfaces its own status
+             * (STATUS_IN_PAGE_ERROR), never a silent master write. */
+            NTSTATUS resolved;
+            if (!MiResolveWriteFault(space, page, &resolved))
             {
                 return STATUS_ACCESS_VIOLATION;
+            }
+            if (!NT_SUCCESS(resolved))
+            {
+                return resolved;
             }
         }
     }

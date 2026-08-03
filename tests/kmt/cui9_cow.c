@@ -101,15 +101,17 @@ static void test_shared_master(void)
     ok(hits == hits1 + 1, "second map did not hit the master");
     ok(live == live1, "second map changed the live count");
 
-    /* The sharing metric: the second view pays only its writable pages plus
-     * page-table overhead — a whole-image cost means sharing is inert
-     * (docs/17 §8's "correct-but-inert" failure mode). */
+    /* The sharing metric: with the COW arm every page — writable included —
+     * shares until written, so the second view pays only page-table
+     * overhead. A whole-image cost means sharing is inert (docs/17 §8's
+     * "correct-but-inert" failure mode); writablePages is printed for the
+     * post-mortem's sense of scale. */
     uint64_t secondCost = free_after_first - MiGetFreePageCount();
-    ok(secondCost <= (uint64_t)writablePages + 8,
-       "second view cost %lu pages (writable %lu, image %lu)", (unsigned long)secondCost,
-       (unsigned long)writablePages, (unsigned long)imagePages);
+    ok(secondCost <= 8, "second view cost %lu pages (writable %lu, image %lu)",
+       (unsigned long)secondCost, (unsigned long)writablePages, (unsigned long)imagePages);
 
-    /* Shared pages map the SAME frame; writable pages map different ones. */
+    /* EVERY committed page of both views maps the same master frame; the
+     * writable ones are hardware-read-only until the COW arm opens them. */
     {
         uint64_t sharedFrame1 = MiTranslateUserPage(space1.pml4Physical, base1, 0, 0);
         uint64_t sharedFrame2 = MiTranslateUserPage(space2.pml4Physical, base2, 0, 0);
@@ -120,19 +122,11 @@ static void test_shared_master(void)
             const MI_IMAGE_SEGMENT *seg = &image->segments[i];
             uint64_t va1 = base1 + seg->virtualAddress;
             uint64_t va2 = base2 + seg->virtualAddress;
-            uint64_t f1 = MiTranslateUserPage(space1.pml4Physical, va1, 0, 0);
-            uint64_t f2 = MiTranslateUserPage(space2.pml4Physical, va2, 0, 0);
-            BOOLEAN writable =
-                seg->protect == PAGE_WRITECOPY || seg->protect == PAGE_EXECUTE_WRITECOPY ||
-                seg->protect == PAGE_READWRITE || seg->protect == PAGE_EXECUTE_READWRITE;
-            if (writable)
-            {
-                ok(f1 != f2, "segment %lu writable page shared", (unsigned long)i);
-            }
-            else
-            {
-                ok(f1 == f2, "segment %lu read-only page not shared", (unsigned long)i);
-            }
+            int w1 = 0, w2 = 0;
+            uint64_t f1 = MiTranslateUserPage(space1.pml4Physical, va1, &w1, 0);
+            uint64_t f2 = MiTranslateUserPage(space2.pml4Physical, va2, &w2, 0);
+            ok(f1 == f2, "segment %lu page not shared", (unsigned long)i);
+            ok(!w1 && !w2, "segment %lu shared page hardware-writable", (unsigned long)i);
         }
     }
 
@@ -249,10 +243,123 @@ static void test_master_base_key(void)
     ok(MiGetFreePageCount() == free0, "frames leaked");
 }
 
+/* The COW arm itself (docs/17 §10 step 5), driven through the ONE
+ * authority the ring-3 fault, the checked copy and the probe all consult:
+ * a writable image page starts hardware-read-only on the shared master
+ * frame; MiResolveWriteFault copies, repoints and opens; a read-only page
+ * is declined (hazard B); the injected out-of-frames failure resolves to
+ * STATUS_IN_PAGE_ERROR with ZERO state touched (hazard E); NX survives
+ * the copy (hazard C); the invlpg count moves (hazard H). */
+static void test_cow_arm(void)
+{
+    PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe_smoke.exe");
+    if (file == 0)
+    {
+        return;
+    }
+
+    uint64_t free0 = MiGetFreePageCount();
+    MI_ADDRESS_SPACE space;
+    ok(MiCreateAddressSpace(&space) == STATUS_SUCCESS, "create space");
+    PMI_SECTION section = 0;
+    ok(MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section) == STATUS_SUCCESS,
+       "create section");
+    if (section == 0)
+    {
+        return;
+    }
+    const MI_IMAGE_INFO *image = section->image;
+    uint64_t base = 0, size = 0;
+    NTSTATUS status = MiMapViewOfSection(section, &space, &base, 0, &size, PAGE_EXECUTE);
+    ok(status == STATUS_SUCCESS, "map -> %08lx", (unsigned long)status);
+
+    /* Find one writable and one read-only page. */
+    uint64_t writableVa = 0, readonlyVa = 0;
+    for (ULONG i = 0; i < image->segmentCount; i++)
+    {
+        const MI_IMAGE_SEGMENT *seg = &image->segments[i];
+        BOOLEAN w = seg->protect == PAGE_WRITECOPY || seg->protect == PAGE_EXECUTE_WRITECOPY ||
+                    seg->protect == PAGE_READWRITE || seg->protect == PAGE_EXECUTE_READWRITE;
+        if (w && writableVa == 0)
+        {
+            writableVa = base + seg->virtualAddress;
+        }
+        if (!w && readonlyVa == 0 && seg->protect != 0)
+        {
+            readonlyVa = base + seg->virtualAddress;
+        }
+    }
+    ok(writableVa != 0 && readonlyVa != 0, "test PE lacks a writable/read-only pair");
+    if (writableVa == 0 || readonlyVa == 0)
+    {
+        return;
+    }
+
+    /* Step 5's map shape: the writable page is hardware-READ-ONLY on the
+     * shared master frame until written. */
+    int writable = 0, present = 0;
+    uint64_t before = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(before != 0 && present && !writable, "writable page not read-only-shared (w=%d)", writable);
+    unsigned char masterByte = *(unsigned char *)MiPhysicalToVirtual(before);
+
+    /* Declines: a genuinely read-only page (hazard B), and an unmapped one. */
+    NTSTATUS resolved;
+    ok(!MiResolveWriteFault(&space, readonlyVa, &resolved), "resolver claimed a read-only page");
+    ok(!MiResolveWriteFault(&space, base + image->sizeOfImage, &resolved),
+       "resolver claimed an unmapped page");
+
+    /* Hazard E first, on the SAME page the real copy will use: the injected
+     * allocation failure is claimed, answers STATUS_IN_PAGE_ERROR, and
+     * leaves no trace — still the master frame, still read-only. */
+    MiCowFailNextAllocation = TRUE;
+    ok(MiResolveWriteFault(&space, writableVa, &resolved) && resolved == STATUS_IN_PAGE_ERROR,
+       "injected OOM -> claimed=%d status=%08lx", 1, (unsigned long)resolved);
+    ok(MiCowFailNextAllocation == FALSE, "knob did not self-clear");
+    uint64_t after = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(after == before && !writable, "failed copy left state behind (frame %lx->%lx w=%d)",
+       (unsigned long)before, (unsigned long)after, writable);
+    MiAssertNoWritableMasterPte(&space);
+
+    /* The copy: claimed, SUCCESS, private frame, gate open, master intact,
+     * recorded protection untouched (the pinned no-transition shape), and
+     * the TLB flushed — the invlpg count moves (hazard H: a green boot
+     * under QEMU is NOT evidence the flush exists; this counter is). */
+    ULONG copies0 = MiGetCowCopyCount();
+    uint64_t invlpg0 = MiInvlpgCount;
+    ok(MiResolveWriteFault(&space, writableVa, &resolved) && resolved == STATUS_SUCCESS,
+       "resolve -> %08lx", (unsigned long)resolved);
+    ok(MiGetCowCopyCount() == copies0 + 1, "copy counter did not move");
+    ok(MiInvlpgCount >= invlpg0 + 2, "invlpg count moved %lu (unmap+map is 2)",
+       (unsigned long)(MiInvlpgCount - invlpg0));
+    after = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(after != 0 && after != before && writable && present,
+       "copy did not repoint/open (frame %lx->%lx w=%d)", (unsigned long)before,
+       (unsigned long)after, writable);
+    ok(*(unsigned char *)MiPhysicalToVirtual(after) == masterByte, "copy differs from master");
+
+    /* Corrupt-the-copy check: write the private frame, the master byte must
+     * not move (the write-watch tests' kernel-write shape, hazard A). */
+    *(unsigned char *)MiPhysicalToVirtual(after) ^= 0xFF;
+    ok(*(unsigned char *)MiPhysicalToVirtual(before) == masterByte, "the MASTER took the write");
+
+    /* A second resolve on the now-private page declines (already open). */
+    ok(!MiResolveWriteFault(&space, writableVa, &resolved), "resolver reclaimed a private page");
+    MiAssertNoWritableMasterPte(&space);
+
+    ok(MiUnmapView(&space, base) == STATUS_SUCCESS, "unmap");
+    ObDereferenceObject(section);
+    MiDeleteAddressSpace(&space);
+    ok(MiGetFreePageCount() == free0, "frames leaked");
+
+    DbgPrint("[KTEST] cui9 cow copies=%lu invlpg=%lu\n", (unsigned long)MiGetCowCopyCount(),
+             (unsigned long)MiInvlpgCount);
+}
+
 int kmt_run_cui9(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_shared_master);
     KMT_RUN(test_master_base_key);
+    KMT_RUN(test_cow_arm);
     return kmt_failures - before;
 }

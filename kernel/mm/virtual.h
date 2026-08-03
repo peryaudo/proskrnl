@@ -154,14 +154,25 @@ NTSTATUS MiReferenceProcessByHandle(HANDLE processHandle, ACCESS_MASK desiredAcc
 
 /* --- guard pages (mm/fault.c, M5) ------------------------------------------ */
 
+/* The ONE write-fault authority (Art. 11): a write reached a present,
+ * non-hardware-writable page whose recorded protection allows writing —
+ * either a clean watched page (CUI-7: mark + open) or a still-shared image
+ * master page (CUI-9: copy + repoint + open). TRUE = claimed, with
+ * *statusOut STATUS_SUCCESS (retry the access) or STATUS_IN_PAGE_ERROR
+ * (the copy got no frame; NO state changed — hazard E). FALSE = a real
+ * protection violation / uncommitted / guard. Serves the ring-3 fault
+ * (mm/fault.c), the probe retry (syscall/uaccess.c) and the cross-process
+ * checked copy. */
+BOOLEAN MiResolveWriteFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress, NTSTATUS *statusOut);
+
+/* CUI-9 hazard-E fault injection: fail the NEXT COW frame allocation
+ * (kmt-set; docs/17 §8 — the atomicity path must be executed, not assumed). */
+extern BOOLEAN MiCowFailNextAllocation;
+/* Lazy COW copies resolved so far (the sharing metric's counterpart). */
+ULONG MiGetCowCopyCount(void);
+
 /* If `pageAddress` is a committed PAGE_GUARD page: clear the guard bit (the
  * page becomes an ordinary present page) and return TRUE. Else FALSE. */
-/* CUI-7 write-watch: a write reached a present, protection-writable but
- * CLEAN watched page — mark it dirty and open the hardware gate. FALSE =
- * not a write-watch situation. Serves the ring-3 fault (mm/fault.c), the
- * probe retry (syscall/uaccess.c) and the cross-process checked copy. */
-BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress);
-
 BOOLEAN MiClearGuardPage(PMI_ADDRESS_SPACE space, uint64_t pageAddress);
 
 #endif /* PROSKRNL_KERNEL_MM_VIRTUAL_H */

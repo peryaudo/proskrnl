@@ -270,16 +270,6 @@ static ULONG MipMasterHits;      /* views bound to an existing master */
 static ULONG MipMasterLive;      /* masters currently alive */
 static uint64_t MipMasterFrames; /* frames currently owned by masters */
 
-/* Is a PE-section protection one the loader may write through? (The
- * WRITECOPY flavours are what MipSegmentProtect yields for writable
- * segments; READWRITE appears only via NtProtectVirtualMemory later.) */
-static BOOLEAN MipProtectIsWritable(ULONG protect)
-{
-    ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
-    return bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE || bits == PAGE_WRITECOPY ||
-           bits == PAGE_EXECUTE_WRITECOPY;
-}
-
 /* Byte-accurate write into a master's frames — reloc fixups may straddle a
  * page boundary. */
 static void MipMasterAddDelta(PMI_IMAGE_MASTER master, uint64_t rva, int width, int64_t delta)
@@ -637,35 +627,22 @@ void MiGetImageMasterStats(ULONG *builds, ULONG *hits, ULONG *live, uint64_t *ma
     *masterFrames = MipMasterFrames;
 }
 
-/* Commit one RVA range of an image view from its master: pages whose
- * recorded protection cannot be written map the master's frame outright;
- * protection-writable pages (the WRITECOPY flavours) get an eager private
- * copy of the ALREADY-RELOCATED master frame — docs/17 §10 step 4; step 5
- * replaces the eager copy with the COW arm. */
-static NTSTATUS MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_MASTER master,
-                                   uint64_t viewBase, ULONG rvaStart, ULONG pageCount,
-                                   ULONG protect)
+/* Commit one RVA range of an image view from its master: EVERY page maps
+ * the master's already-relocated frame — writable (writecopy) pages
+ * hardware-read-only, so the first store resolves through the COW arm
+ * (MiResolveWriteFault: copy, repoint, open; docs/17 §10 step 5). Nothing
+ * here can fail: the frames all exist in the master. */
+static void MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_MASTER master,
+                               uint64_t viewBase, ULONG rvaStart, ULONG pageCount, ULONG protect)
 {
     ULONG first = rvaStart / PAGE_SIZE;
-    BOOLEAN privateFrame = MipProtectIsWritable(protect);
     for (ULONG i = 0; i < pageCount; i++)
     {
         uint64_t frame = master->frames[first + i];
         ASSERT(frame != 0);
-        if (privateFrame)
-        {
-            uint64_t copy = MiAllocatePage();
-            if (copy == 0)
-            {
-                return STATUS_NO_MEMORY;
-            }
-            memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
-            frame = copy;
-        }
         MiCommitFrameInVad(space, vad, viewBase + rvaStart + (uint64_t)i * PAGE_SIZE, frame,
-                           protect, privateFrame);
+                           protect, FALSE /* the master's frame */);
     }
-    return STATUS_SUCCESS;
 }
 
 /* Map an image view over the shared (identity, base) master: read-only
@@ -752,18 +729,12 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         headerBytes = (ULONG)section->rawSize;
     }
     ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    status = MipCommitViewRange(space, vad, master, base, 0, headerPages, PAGE_READONLY);
-    for (ULONG i = 0; NT_SUCCESS(status) && i < image->segmentCount; i++)
+    MipCommitViewRange(space, vad, master, base, 0, headerPages, PAGE_READONLY);
+    for (ULONG i = 0; i < image->segmentCount; i++)
     {
         const MI_IMAGE_SEGMENT *seg = &image->segments[i];
         ULONG pages = (seg->virtualSize + PAGE_SIZE - 1) / PAGE_SIZE;
-        status =
-            MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect);
-    }
-    if (!NT_SUCCESS(status))
-    {
-        MiDeleteMappedVad(space, vad); /* drops the section pin AND the master ref */
-        return status;
+        MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect);
     }
 
     MiAssertNoWritableMasterPte(space); /* docs/17 §8's highest-value check */
