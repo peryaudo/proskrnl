@@ -626,6 +626,16 @@ FUZZ_CHOICES = {
         ("FZ_PF_ZERO_COUNT", False),
         ("FZ_PF_EMPTY_RANGE", False),
     ]),
+    # CUI-9: which page of the mapped SEC_IMAGE view an op targets — the
+    # header (read-only), the first read-only data segment, and two distinct
+    # pages of the first writable (writecopy) segment, so the
+    # not-yet-copied vs copied state distinction is drivable per page.
+    "image_page": (None, [
+        ("FZ_IMG_HEADER", False),
+        ("FZ_IMG_RODATA", False),
+        ("FZ_IMG_WRITECOPY", False),
+        ("FZ_IMG_WRITECOPY2", False),
+    ]),
 }
 
 # Operand kinds: slot_in / slot_out / name / ch_<table>. The encoded program
@@ -749,6 +759,20 @@ FUZZ_OPS = [
     # memory. Foreign-process ops stay out: another process's liveness is not
     # reproducible across the two sides. Suspend/terminate of self are
     # irreversible, so they stay out too (the cancel_io precedent).
+    # CUI-9: the writecopy page-state machine (docs/17 §8 "the fuzzer" — a
+    # mapped image view has a state the op model could not express:
+    # not-yet-copied vs copied). One SEC_IMAGE view of the pinned
+    # C:\windows\system32\ntdll.dll — identical bytes on both sides, so
+    # segment geometry and every status/protection answer are contract;
+    # the base is ASLR and never traced. write_image drives the copy
+    # through NtWriteVirtualMemory (the hazard-A kernel-write shape);
+    # query_image_protect observes Protect/RegionSize, pinned to the
+    # oracle's no-transition shape (docs/03 "CUI-9 COW notes"); the
+    # interp's per-program scrub unmaps so state never leaks.
+    ("map_image_view", "NtMapViewOfSection", []),
+    ("write_image", "NtWriteVirtualMemory", ["ch_image_page"]),
+    ("query_image_protect", "NtQueryVirtualMemory", ["ch_image_page"]),
+    ("unmap_image_view", "NtUnmapViewOfSection", []),
     ("open_process", "NtOpenProcess", ["slot_out", "ch_process_cid"]),
     ("query_system_processes", "NtQuerySystemInformation", ["ch_len"]),
     ("read_own_memory", "NtReadVirtualMemory", ["ch_vm_scenario"]),
