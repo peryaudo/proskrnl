@@ -39,6 +39,16 @@ Companion documents: `docs/18-smp-strategy.md` — the two interact in exactly o
   module bytes directly and need no cache."* This single fact is what makes a scoped COW
   tractable — see §4.
 
+**Measured (CUI-9 step 1 — the §2 deliverable).** At the `cui9` leg's pinned `MEM=512M`
+console boot (`tests/run/run.sh cui9`, driving `tests/cui/mmceiling.c`), one minimal-CRT
+resident process costs **≈ 5.9 MB** of physical memory — the mapped private image copies
+of its DLL set *plus* each section's raw-byte pool snapshot (`IopBuildSectionBacking`
+re-reads the whole file per `NtCreateSection`, a second per-process copy this document
+had not counted) — and the machine **refuses at 70 resident processes** (available
+memory 411 MB → 9 MB). The refusal ring 3 observes is the spawned child dying mid-load
+with `STATUS_DLL_NOT_FOUND` (0xC0000135): the loader's dressing of the underlying
+image-map `STATUS_NO_MEMORY`. That is the functional ceiling §2 predicts, measured.
+
 ## 2. The only justification Article 3 accepts
 
 Article 3 forbids deviations justified by performance. `docs/03-nt-deviations.md`
