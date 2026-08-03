@@ -30,12 +30,21 @@ NTSTATUS MiHandleUserFault(uint64_t faultAddress, BOOLEAN writeAccess)
 
     uint64_t page = faultAddress & ~(PAGE_SIZE - 1ULL);
 
-    /* CUI-7 write-watch: a store into a present, protection-writable but
-     * clean watched page marks it and resumes. Ordered before the guard
-     * arm, which only ever sees not-present pages. */
-    if (writeAccess && MiResolveWriteWatchFault(space, page))
+    /* CUI-7 write-watch + CUI-9 COW: a store into a present page whose
+     * recorded protection is writable but whose PTE is not — a clean
+     * watched page marks and resumes, a still-shared master page copies,
+     * repoints and resumes. Ordered before the guard arm, which only ever
+     * sees not-present pages (the resolver itself declines guard pages, so
+     * a guarded writecopy page consumes its guard FIRST and the next store
+     * copies — hazard G). A claimed fault that could not get a frame is
+     * STATUS_IN_PAGE_ERROR, delivered like any fault status (hazard E). */
+    if (writeAccess)
     {
-        return STATUS_SUCCESS;
+        NTSTATUS resolved;
+        if (MiResolveWriteFault(space, page, &resolved))
+        {
+            return resolved;
+        }
     }
 
     if (!MiClearGuardPage(space, page))

@@ -163,14 +163,8 @@ START_TEST(writecopy_query)
         protSize = PAGE_BYTES;
         status = NtProtectVirtualMemory(NtCurrentProcess(), &protBase, &protSize, PAGE_WRITECOPY,
                                         &oldProtect);
-        /* todo: proskrnl's MiProtectVirtualMemory refuses WRITECOPY as a
-         * NEW protection today (STATUS_INVALID_PAGE_PROTECTION); the CUI-9
-         * kernel commit accepts it on mapped views, as the oracle does. */
-        todo_proskrnl ok(status == STATUS_SUCCESS && oldProtect == PAGE_READONLY,
-                         "re-arm writecopy -> %08lx old %lx", (unsigned long)status,
-                         (unsigned long)oldProtect);
-        /* (Nothing below touches this page again, so the refused side's
-         * leftover READONLY protection is harmless.) */
+        ok(status == STATUS_SUCCESS && oldProtect == PAGE_READONLY,
+           "re-arm writecopy -> %08lx old %lx", (unsigned long)status, (unsigned long)oldProtect);
 
         /* Written page: the old protection is STILL writecopy (the pinned
          * no-transition shape). */
@@ -190,13 +184,10 @@ START_TEST(writecopy_query)
         /* On an image view PAGE_READWRITE canonicalizes to writecopy (the
          * oracle's get_vprot_flags with image=TRUE: READWRITE ->
          * VPROT_READ|VPROT_WRITECOPY), so the query answers WRITECOPY. */
-        todo_proskrnl
-        {
-            status = query(run + PAGE_BYTES, &info);
-            ok(status == STATUS_SUCCESS && info.Protect == PAGE_WRITECOPY,
-               "queried after rw restore -> %08lx Protect %lx", (unsigned long)status,
-               (unsigned long)info.Protect);
-        }
+        status = query(run + PAGE_BYTES, &info);
+        ok(status == STATUS_SUCCESS && info.Protect == PAGE_WRITECOPY,
+           "queried after rw restore -> %08lx Protect %lx", (unsigned long)status,
+           (unsigned long)info.Protect);
     }
 
     status = NtUnmapViewOfSection(NtCurrentProcess(), view);

@@ -161,6 +161,7 @@ void MiUnmapPage(uint64_t virtualAddress)
         KiPanic("MiUnmapPage: address not mapped as a 4 KiB page");
     }
     *entry = 0;
+    MiInvlpgCount++;
     __asm__ volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
 }
 
@@ -291,6 +292,14 @@ void MiDeleteUserPml4(uint64_t pml4Physical)
     MiFreePage(pml4Physical);
 }
 
+/* CUI-9 hazard H (docs/17 §6H): every PTE rewrite below already ends in a
+ * local invlpg (uniprocessor — no shootdown), and because "the code looks
+ * done once the PTE is rewritten" is exactly how the flush gets dropped,
+ * the count is exported and kmt asserts it moves across a COW resolve.
+ * QEMU's softmmu can forgive a missing flush that real hardware will not,
+ * so the counter — not a green boot — is the evidence. */
+uint64_t MiInvlpgCount;
+
 void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t physicalAddress,
                    int present, int writable, int executable)
 {
@@ -327,6 +336,7 @@ void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t phys
         entry |= PTE_NX;
     }
     *pte = entry;
+    MiInvlpgCount++;
     __asm__ volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
 }
 
@@ -359,6 +369,7 @@ void MiUnmapUserPage(uint64_t pml4Physical, uint64_t virtualAddress)
         KiPanic("MiUnmapUserPage: user address not mapped");
     }
     *pte = 0;
+    MiInvlpgCount++;
     __asm__ volatile("invlpg (%0)" : : "r"(virtualAddress) : "memory");
 }
 

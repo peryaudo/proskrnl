@@ -44,7 +44,7 @@ struct MI_VAD
      * record). A committed protection-writable page is mapped read-only
      * while clean; the write fault marks it and remaps (fault.c). Kernel
      * writes bypass PTEs, so every kernel path that writes user memory
-     * marks through MiResolveWriteWatchFault (uaccess probe retry,
+     * marks through MiResolveWriteFault (uaccess probe retry,
      * MiCopyToUserRangeChecked). */
     BOOLEAN writeWatch;
     UCHAR *watchDirty; /* one byte per page; pool, zeroed */
@@ -225,6 +225,15 @@ static int MipVadPageHwWritable(PMI_VAD vad, ULONG index, int protectionWritable
         return 0;
     }
     if (vad->writeWatch && vad->watchDirty != 0 && !vad->watchDirty[index])
+    {
+        return 0;
+    }
+    /* CUI-9: a still-shared master page maps read-only whatever the
+     * protection says — the first store resolves through the COW arm
+     * (MiResolveWriteFault), which copies, repoints and opens this gate by
+     * flipping pagePrivate. Never satisfy writecopy by just setting the
+     * writable bit: that is the shared master, for everyone (docs/17 §6B). */
+    if (vad->master != 0 && vad->pagePrivate != 0 && !vad->pagePrivate[index])
     {
         return 0;
     }
@@ -748,8 +757,11 @@ void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAd
     }
     int present, writable, executable;
     MiProtectToPteBits(protect, &present, &writable, &executable);
-    MiMapUserPage(space->pml4Physical, virtualAddress, frame, present, writable, executable);
     vad->pageProtect[index] = protect;
+    /* Through the one hardware-writability rule: a shared master page maps
+     * read-only however writable its recorded protection is (CUI-9). */
+    MiMapUserPage(space->pml4Physical, virtualAddress, frame, present,
+                  MipVadPageHwWritable(vad, index, writable), executable);
 }
 
 /* CUI-9: bind an image view's VAD to its (identity, base) master. On
@@ -917,11 +929,18 @@ uint64_t MiCopyToUserRangeChecked(PMI_ADDRESS_SPACE space, uint64_t userBase, co
         int writable = 0;
         uint64_t frame =
             MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
-        if (frame != 0 && present && !writable && MiResolveWriteWatchFault(space, va - pageOffset))
+        if (frame != 0 && present && !writable)
         {
-            /* A clean watched page: the kernel-side write marks it exactly
-             * as a ring-3 store would (CUI-7). */
-            frame = MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
+            /* A clean watched page marks, a shared master page copies —
+             * the kernel-side write resolves exactly as a ring-3 store
+             * would (CUI-7/CUI-9, the one authority). A claimed-but-failed
+             * copy stops the loop: a short write, never a master write. */
+            NTSTATUS resolve;
+            if (MiResolveWriteFault(space, va - pageOffset, &resolve) && NT_SUCCESS(resolve))
+            {
+                frame =
+                    MiTranslateUserPage(space->pml4Physical, va - pageOffset, &writable, &present);
+            }
         }
         if (frame == 0 || !present || !writable)
         {
@@ -954,16 +973,39 @@ static void MipRemapWatchPage(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t pag
                   MipVadPageHwWritable(vad, index, writable), executable);
 }
 
-/* A write hit a present, protection-writable but CLEAN watched page: record
- * the write and open the hardware gate. FALSE = not a write-watch fault.
- * Space-parameterized so the kernel's own user-memory writers (probe retry,
- * the cross-process checked copy) resolve through the SAME arm the ring-3
- * fault takes (Art. 11). */
-BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
+/* CUI-9 fault-injection knob (hazard E): fail the NEXT COW frame
+ * allocation, so the never-leaves-half-state guarantee is an executed
+ * path, not an assertion nobody reached (docs/17 §8 "which tests gate
+ * which commit"). kmt-set; always FALSE on a real fault. */
+BOOLEAN MiCowFailNextAllocation;
+static ULONG MipCowCopies; /* lazy copies resolved (the sharing metric's pair) */
+
+ULONG MiGetCowCopyCount(void)
+{
+    return MipCowCopies;
+}
+
+/* A write hit a present, non-hardware-writable page whose RECORDED
+ * protection allows writing — the two lies the kernel tells the MMU: a
+ * CLEAN WATCHED page (mark it, open the gate) or a STILL-SHARED MASTER
+ * page (copy it, repoint, open the gate). Returns TRUE when the fault was
+ * claimed, with *statusOut the resolution: STATUS_SUCCESS = retry the
+ * access, STATUS_IN_PAGE_ERROR = the copy could not get a frame and NO
+ * state changed (hazard E — the master was never made writable). FALSE =
+ * not ours: a real protection violation, uncommitted, or a guard page
+ * (the guard arm consumes those first and the NEXT write copies —
+ * hazard G's ordering).
+ *
+ * Space-parameterized so the kernel's own user-memory writers (probe
+ * retry, the cross-process checked copy, KiMaterializeUserRange via
+ * MiHandleUserFault) resolve through the SAME arms the ring-3 fault takes
+ * (Art. 11 — hazard A is closed here, once, for every caller). */
+BOOLEAN MiResolveWriteFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress, NTSTATUS *statusOut)
 {
     ASSERT((pageAddress & (PAGE_SIZE - 1)) == 0);
+    *statusOut = STATUS_SUCCESS;
     PMI_VAD vad = MiFindVad(space, pageAddress);
-    if (vad == 0 || !vad->writeWatch)
+    if (vad == 0)
     {
         return FALSE;
     }
@@ -975,13 +1017,62 @@ BOOLEAN MiResolveWriteWatchFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
     }
     int present, writable, executable;
     MiProtectToPteBits(protect, &present, &writable, &executable);
-    if (!writable || vad->watchDirty[index])
+    if (!writable)
     {
-        return FALSE; /* a real protection violation, or already open */
+        return FALSE; /* a real protection violation (hazard B's boundary case) */
     }
-    vad->watchDirty[index] = 1;
-    MipRemapWatchPage(space, vad, pageAddress, index);
-    return TRUE;
+
+    /* The write-watch arm (CUI-7): mark and open. A watched VAD is never
+     * master-bound (MEM_WRITE_WATCH is MEM_PRIVATE-only; asserted at bind). */
+    if (vad->writeWatch)
+    {
+        if (vad->watchDirty[index])
+        {
+            return FALSE; /* already open: not ours */
+        }
+        vad->watchDirty[index] = 1;
+        MipRemapWatchPage(space, vad, pageAddress, index);
+        return TRUE;
+    }
+
+    /* The COW arm (CUI-9): copy the shared master page and repoint. The
+     * recorded protection is deliberately NOT touched — the pinned oracle
+     * never transitions Protect on a writecopy store (docs/03 hazard D);
+     * the private/shared state lives in pagePrivate alone. */
+    if (vad->master != 0 && !vad->pagePrivate[index])
+    {
+        uint64_t copy = 0;
+        if (MiCowFailNextAllocation)
+        {
+            MiCowFailNextAllocation = FALSE;
+        }
+        else
+        {
+            copy = MiAllocatePage();
+        }
+        if (copy == 0)
+        {
+            /* Hazard E, atomically: nothing was touched — the PTE still
+             * points read-only at the master. NT's status for a paging
+             * failure on an access is STATUS_IN_PAGE_ERROR. */
+            *statusOut = STATUS_IN_PAGE_ERROR;
+            return TRUE;
+        }
+        uint64_t masterFrame = MiTranslateUserPage(space->pml4Physical, pageAddress, 0, 0);
+        ASSERT(masterFrame != 0 && masterFrame == MiImageMasterFrame(vad->master, index));
+        memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(masterFrame), PAGE_SIZE);
+        vad->pagePrivate[index] = 1; /* opens MipVadPageHwWritable's gate */
+        MiUnmapUserPage(space->pml4Physical, pageAddress);
+        /* NX/X from the SAME recorded protection (hazard C): the remap
+         * changes the frame and the writable bit, nothing else. Both map
+         * calls invlpg (hazard H — counted, kmt-asserted). */
+        MiMapUserPage(space->pml4Physical, pageAddress, copy, present,
+                      MipVadPageHwWritable(vad, index, writable), executable);
+        MipCowCopies++;
+        return TRUE;
+    }
+
+    return FALSE; /* stale hardware state; nothing for the resolver */
 }
 
 /* The get/reset engines (wine dlls/ntdll/unix/virtual.c NtGetWriteWatch /
@@ -1644,10 +1735,20 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
 NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtectOut)
 {
-    NTSTATUS status = MiCheckPageProtect(newProtect);
-    if (!NT_SUCCESS(status))
+    /* The WRITECOPY flavours are valid protections on MAPPED views only —
+     * the oracle's set_protection rule (wine dlls/ntdll/unix/virtual.c:
+     * is_view_valloc -> STATUS_INVALID_PAGE_PROTECTION; pinned by
+     * sem_mm/writecopy_query). Everything else goes through the ordinary
+     * anonymous-protection switch. */
+    ULONG bits = newProtect & ~(PAGE_GUARD | PAGE_NOCACHE);
+    BOOLEAN writeCopyFlavour = bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
+    if (!writeCopyFlavour)
     {
-        return status;
+        NTSTATUS status = MiCheckPageProtect(newProtect);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
     }
     uint64_t base = MiRoundDown(*baseInOut, PAGE_SIZE);
     uint64_t end = MiRoundUp(*baseInOut + *sizeInOut, PAGE_SIZE);
@@ -1659,6 +1760,25 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     if (vad == 0 || end > vad->base + vad->size)
     {
         return STATUS_INVALID_ADDRESS; /* not a single committed region */
+    }
+    if (writeCopyFlavour && vad->type == MEM_PRIVATE)
+    {
+        return STATUS_INVALID_PAGE_PROTECTION;
+    }
+    /* On an image view the plain-writable protections canonicalize to
+     * writecopy (the oracle's get_vprot_flags with image=TRUE: READWRITE ->
+     * VPROT_READ|VPROT_WRITECOPY), which is also what a later query
+     * reports — pinned by sem_mm/writecopy_query. */
+    if (vad->type == MEM_IMAGE)
+    {
+        if (bits == PAGE_READWRITE)
+        {
+            newProtect = (newProtect & (PAGE_GUARD | PAGE_NOCACHE)) | PAGE_WRITECOPY;
+        }
+        else if (bits == PAGE_EXECUTE_READWRITE)
+        {
+            newProtect = (newProtect & (PAGE_GUARD | PAGE_NOCACHE)) | PAGE_EXECUTE_WRITECOPY;
+        }
     }
 
     /* Check the WHOLE range before touching any of it. NT requires every
@@ -1678,39 +1798,6 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
 
     int present, writable, executable;
     MiProtectToPteBits(newProtect, &present, &writable, &executable);
-
-    /* CUI-9 masters: transitioning a still-shared master page to a
-     * protection-writable value privatizes it FIRST — neither the loader's
-     * import-fixup flips (the path this function exists for) nor any
-     * kernel-side write may ever see a writable PTE over a master frame
-     * (docs/17 §6A; the §8 sweep would halt on one). A pre-pass, so an
-     * out-of-frames failure leaves protections untouched: privatization
-     * alone is invisible (same bytes, same PTE rules). */
-    if (vad->master != 0 && writable)
-    {
-        for (uint64_t page = base; page < end; page += PAGE_SIZE)
-        {
-            ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
-            if (vad->pagePrivate[index])
-            {
-                continue;
-            }
-            uint64_t copy = MiAllocatePage();
-            if (copy == 0)
-            {
-                return STATUS_NO_MEMORY;
-            }
-            uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
-            ASSERT(frame != 0);
-            memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
-            int oldPresent, oldWritable, oldExecutable;
-            MiProtectToPteBits(vad->pageProtect[index], &oldPresent, &oldWritable, &oldExecutable);
-            MiUnmapUserPage(space->pml4Physical, page);
-            MiMapUserPage(space->pml4Physical, page, copy, oldPresent,
-                          MipVadPageHwWritable(vad, index, oldWritable), oldExecutable);
-            vad->pagePrivate[index] = 1;
-        }
-    }
 
     ULONG oldProtect = 0;
     for (uint64_t page = base; page < end; page += PAGE_SIZE)

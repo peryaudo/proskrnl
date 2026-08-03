@@ -59,6 +59,12 @@ void MiDeleteUserPml4(uint64_t pml4Physical);
 void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t physicalAddress,
                    int present, int writable, int executable);
 void MiUnmapUserPage(uint64_t pml4Physical, uint64_t virtualAddress);
+
+/* Total TLB flushes issued (every PTE rewrite ends in a local invlpg —
+ * uniprocessor, no shootdown). Exported for CUI-9's hazard-H conviction:
+ * kmt asserts the count MOVES across a COW resolve, because a dropped
+ * flush passes under QEMU's softmmu and fails on hardware (docs/17 §6H). */
+extern uint64_t MiInvlpgCount;
 uint64_t MiTranslateUserPage(uint64_t pml4Physical, uint64_t virtualAddress, int *writable,
                              int *present);
 
