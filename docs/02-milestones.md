@@ -426,10 +426,11 @@ needs its measurement first (`docs/09` "Lifting a mandate"): today every process
 full private copy of every DLL it maps, relocations applied into the copy, so the first
 deliverable is *how many MB per process and at what process count the machine refuses* —
 the justification is that ceiling surfacing as `STATUS_NO_MEMORY`, never memory efficiency.
-**Scope: image sections only.** File-backed `PAGE_WRITECOPY` stays refusing loudly (G12)
-because data sections map the file's cache, where the one genuinely hard Mm problem —
-mapped-view/`ReadFile` coherence — lives; image sections bypass the cache entirely, which
-is what makes this tractable at all.
+**Scope: image sections only.** File-backed data `PAGE_WRITECOPY` keeps its pinned
+eager-private-copy form (`sem_mm/section_protect`; `docs/17` §5 — lazy copy there, not
+the class itself, is what stays unbuilt) because data sections map the file's cache,
+where the one genuinely hard Mm problem — mapped-view/`ReadFile` coherence — lives;
+image sections bypass the cache entirely, which is what makes this tractable at all.
 The work is mostly **not COW**: because relocations land in the private copy, sharing
 requires an already-relocated master keyed on `(FCB, base)`. That half touches no fault
 path, carries the large majority of the win (`.text`/`.rdata` are the bulk of a DLL; the
