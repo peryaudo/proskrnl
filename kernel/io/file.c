@@ -107,6 +107,13 @@ NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FC
     {
         return STATUS_SUCCESS; /* attribute-only open */
     }
+    /* A live SEC_IMAGE section (or any view of one) holds the file
+     * non-write-shared, whatever handles exist: the NT running-image rule,
+     * matching the pinned oracle (sem_mm/image_deny_write). */
+    if (writes && fcb->imageSectionCount != 0)
+    {
+        return STATUS_SHARING_VIOLATION;
+    }
     IO_SHARE_ACCESS *share = &fcb->shareAccess;
     BOOLEAN sharesRead = (shareAccess & FILE_SHARE_READ) != 0;
     BOOLEAN sharesWrite = (shareAccess & FILE_SHARE_WRITE) != 0;
@@ -895,14 +902,23 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
     }
 
     file->fcb->sectionCount++;
+    if (sectionAttributes & SEC_IMAGE)
+    {
+        file->fcb->imageSectionCount++;
+    }
     return STATUS_SUCCESS;
 }
 
-void IopSectionBackingReleased(PVOID fileObjectBody)
+void IopSectionBackingReleased(PVOID fileObjectBody, BOOLEAN image)
 {
     PFILE_OBJECT file = fileObjectBody;
     ASSERT(file->fcb->sectionCount > 0);
     file->fcb->sectionCount--;
+    if (image)
+    {
+        ASSERT(file->fcb->imageSectionCount > 0);
+        file->fcb->imageSectionCount--;
+    }
     /* The last section is gone: give the FS its chance to apply a
      * delete-on-close it had to defer while the file was mapped. Nothing
      * else re-enters the FS at this moment, so without this the deferred
@@ -950,7 +966,7 @@ static NTSTATUS IopOpenFileSection(const WCHAR *ntPath, ULONG sectionAttributes,
                 MiCreateBackedSection(0, pageProtection, sectionAttributes, &backing, sectionOut);
             if (!NT_SUCCESS(status))
             {
-                IopSectionBackingReleased(backing.fileObject);
+                IopSectionBackingReleased(backing.fileObject, (sectionAttributes & SEC_IMAGE) != 0);
             }
             ObDereferenceObject(backing.fileObject); /* the section holds its own */
         }

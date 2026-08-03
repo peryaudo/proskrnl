@@ -11,10 +11,10 @@
  * running .exe). The write-open succeeds again once section and view are
  * both gone.
  *
- * Today proskrnl accepts the write-open (each mapping re-reads the file's
- * bytes, so staleness is invisible); with CUI-9's shared masters a
- * file mutating under a live master would be cross-process corruption, so
- * the gate lands with them (todo_proskrnl until then).
+ * The kernel side is the imageSectionCount gate in IoCheckShareAccess
+ * (kernel/io/file.c) — landed ahead of CUI-9's shared masters, because a
+ * file mutating under a live relocated master would be cross-process
+ * corruption (docs/17 §6F; docs/03 "CUI-9 COW notes").
  */
 #include "../sem_file/util.h"
 
@@ -104,16 +104,13 @@ START_TEST(image_deny_write)
        (unsigned long)status);
 
     /* --- the pin: a write-open under a live image mapping refuses ----------- */
-    todo_proskrnl
-    {
-        writer = NULL;
-        status = open_file(&writer, dir, W("idw.dll"), FILE_GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
-        ok(status == STATUS_SHARING_VIOLATION, "write-open under image map -> %08lx",
-           (unsigned long)status);
-        if (NT_SUCCESS(status))
-            NtClose(writer); /* keep the rest of the test honest if it opened */
-    }
+    writer = NULL;
+    status = open_file(&writer, dir, W("idw.dll"), FILE_GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+    ok(status == STATUS_SHARING_VIOLATION, "write-open under image map -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+        NtClose(writer); /* keep the rest of the test honest if it opened */
 
     /* --- and succeeds again once section and view are gone ------------------ */
     status = NtUnmapViewOfSection(NtCurrentProcess(), view);
