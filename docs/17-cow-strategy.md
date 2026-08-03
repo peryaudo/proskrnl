@@ -51,6 +51,13 @@ memory 411 MB → 9 MB). The refusal ring 3 observes is the spawned child dying 
 with `STATUS_DLL_NOT_FOUND` (0xC0000135): the loader's dressing of the underlying
 image-map `STATUS_NO_MEMORY`. That is the functional ceiling §2 predicts, measured.
 
+**Re-measured at each CUI-9 instalment (same leg, same 512M — the §8 acceptance):**
+masters alone moved the ceiling to **143** (2985 KB/process), releasing the snapshot to
+**302** (1575 KB), the lazy COW arm to **319** (1500 KB) — 4.6× the baseline, with the
+refusal now surfacing as plain `ERROR_NOT_ENOUGH_MEMORY` from process creation. The
+`cui9` leg ratchets a committed floor of 250 processes (`tests/cui/mmceiling_floor.txt`),
+so a sharing regression fails as a machine verdict, not a semantic test.
+
 ## 2. The only justification Article 3 accepts
 
 Article 3 forbids deviations justified by performance. `docs/03-nt-deviations.md`
