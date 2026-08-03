@@ -49,6 +49,14 @@ typedef struct IO_FCB
     LIST_ENTRY lockList;   /* IO_FILE_LOCK, kernel/io/lock.c */
     BOOLEAN deletePending; /* FileDispositionInformation state */
     LONG sectionCount;     /* live sections backed by this file */
+    /* Live SEC_IMAGE sections (a subset of sectionCount). While nonzero, an
+     * open asking write access answers STATUS_SHARING_VIOLATION — the NT
+     * running-image rule, and what the pinned oracle's image-mapping fd
+     * enforces (wine server/fd.c sharing checks; pinned by
+     * sem_mm/image_deny_write). CUI-9's shared masters depend on it: a file
+     * mutating under a live relocated master would be cross-process
+     * corruption (docs/17 §6F; docs/03 "CUI-9 COW notes"). */
+    LONG imageSectionCount;
 } IO_FCB, *PIO_FCB;
 
 /* What GetInfo reports (the FS's raw facts; info-class shaping happens in
