@@ -471,21 +471,55 @@ device overlap on the one volume serializes at the FS gate — the depth
 comes from batching, and the escalation is `docs/18`'s locking split
 (`docs/03` "CUI-8 async notes").
 
+**CUI-9 complete**: shared, already-relocated image masters plus
+copy-on-write — the machine no longer pays a full private copy of every
+DLL per process. The Article 3 "no COW" mandate was lifted the way
+`docs/09` demands: measurement first (`tests/run/run.sh cui9`, the
+pinned 512M boot — ≈5.9 MB per resident process, the machine refusing at
+**70** processes), the amendment as its own commit (`docs/03` "CUI-9 COW
+notes"), the oracle pins before any kernel code. One `MI_IMAGE_MASTER`
+per `(file, base)` — the `IO_FCB` is the identity, the base is in the
+key because its fixups differ — holds relocated frames built once;
+views map them outright, hardware-read-only even where the recorded
+protection is writecopy, and the first store resolves through the ONE
+write-fault authority (the CUI-7 write-watch resolver, extended to
+`MiResolveWriteFault`, consulted identically by the ring-3 fault,
+`NtWriteVirtualMemory` and the syscall-buffer probe): copy the master
+frame, repoint, open the per-page gate. The pins reversed the plan's
+NT-derived guess before any kernel code, as pins do: the pinned oracle
+never transitions a written writecopy page's `Protect` and never splits
+the region (wine realizes writecopy silently via `MAP_PRIVATE`), so
+proskrnl pins the no-transition shape and keeps the private/shared
+state out of the reported protection entirely. Hazard F closed on the
+share-mode side (a write-open under a live image mapping refuses,
+`sem_mm/image_deny_write`); the per-section raw-byte snapshot — half
+the measured cost, unaccounted in the plan — is released at first bind
+and re-sourced from the resident cache through one authority. **The
+ceiling moved**: 70 → **319** resident processes (per-process cost
+5965 → 1500 KB), the refusal now surfacing as
+`ERROR_NOT_ENOUGH_MEMORY`, and the `cui9` leg ratchets a committed
+floor of 250 so the win stays a machine verdict alongside the kmt
+sharing metrics (master hit/build counters, exact free-frame
+round-trips, the no-writable-master-PTE sweep, the counted `invlpg`).
+**Not yet:** a pre-existing writable handle can still write an
+image-mapped file (real NT refuses via `MmFlushImageSection`, the
+oracle permits it, no baked consumer does it — recorded residual);
+file-backed data writecopy keeps its pinned eager-copy form (lazy COW
+there lands on mapped-view coherence, deliberately unspent).
+
 Next: **GUI-6** — the Wine desktop; or **Net-1** — sockets
 (virtio-net, `\Device\Afd`; the former CUI-5, now its own path) — its
 machine prerequisite, **CUI-8**, now stands complete: an AFD `accept`
 that never completes on its own has a pending engine and a drain seam to
 land on.
 
-The CUI path then ends with two remaining milestones of the machine kind
-— no `Nt*`, `docs/16`'s count untouched: **CUI-9** copy-on-write
-(`docs/17-cow-strategy.md`) and **CUI-10** SMP behind a giant lock
-(`docs/18-smp-strategy.md`); CUI-8 (`docs/19-io-strategy.md`), the only
-one needing no constitutional amendment, is done. The remaining two each
-retire a mandate, and each retirement is gated on a measurement that is
-deliberately not a speed argument: for COW, eager per-process image
-copies turning RAM into a ceiling ring 3 observes as `STATUS_NO_MEMORY`;
-for SMP, slowness having already stopped a suite from reaching a
+The CUI path then ends with one remaining milestone of the machine kind
+— no `Nt*`, `docs/16`'s count untouched: **CUI-10** SMP behind a giant
+lock (`docs/18-smp-strategy.md`). CUI-8 (`docs/19-io-strategy.md`) and
+CUI-9 (`docs/17-cow-strategy.md`) are done; CUI-9's write-protect sites
+join CUI-10's shootdown enumeration (`docs/17` §11). The last mandate
+retirement stays gated on its measurement, deliberately not a speed
+argument: slowness having already stopped a suite from reaching a
 verdict.
 
 Either way, growing the winetest manifest as its parked blockers land

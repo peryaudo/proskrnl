@@ -1155,6 +1155,12 @@ performance concern — the only justification Article 3 accepts. Process-creati
 latency (a full memcpy + relocation pass of every DLL per spawn) is the secondary
 effect, deliberately not the argument.
 
+**Landed, and the ceiling moved** (docs/02's "done when": the §2 measurement re-run):
+70 → 143 with the masters alone, → 302 with the raw-snapshot release, → **319** with the
+lazy COW arm (per-process cost 5965 → 1500 KB), the refusal now the plain
+`ERROR_NOT_ENOUGH_MEMORY` dressing of `STATUS_NO_MEMORY`. The `cui9` leg ratchets a
+committed floor of 250 (`tests/cui/mmceiling_floor.txt`).
+
 What the amendment admits, in docs/17 §4's two instalments:
 
 1. **A shared, already-relocated master per `(file, base)`** — `MI_IMAGE_MASTER` in
