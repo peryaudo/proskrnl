@@ -41,7 +41,44 @@ typedef struct
     PVOID fileObject;    /* Ob File body the section pins (may be 0);
                           * referenced on success */
     BOOLEAN writable;    /* the backing handle granted FILE_WRITE_DATA */
+    PVOID fcb;           /* CUI-9: the on-disk-file identity image masters
+                          * key on (IO_FCB — one per file however many
+                          * opens/sections; the ramdisk path passes the
+                          * KI_RAMDISK_FILE instead) */
 } MI_SECTION_BACKING;
+
+/* CUI-9 (docs/17 §4, docs/03 "CUI-9 COW notes"): ONE shared,
+ * already-relocated image master per (identity, base) — the frames every
+ * matching SEC_IMAGE view maps. `identity` is the IO_FCB for file-backed
+ * images (pointer equality — the IoIsSameUnderlyingFile precedent) or the
+ * PKI_RAMDISK_FILE for boot modules; `base` is in the key because a
+ * different base means different relocation fixups (docs/17 §6F).
+ *
+ * Ownership (the G11 audit): every bound VAD holds one refCount, taken in
+ * MipMapImageView, released by MiUnlinkAndFreeVad through
+ * MiDereferenceImageMaster; the LAST release unlinks the master and frees
+ * its frames. There is no idle cache — master lifetime is contained in the
+ * union of its views' lifetimes — so `identity` can never dangle: a live
+ * view pins its section, the section pins its File object, and the File
+ * pins the FCB (ramdisk files are immortal). The fault path never parks
+ * (no kernel preemption, no blocking allocation), so a process dying at
+ * the earliest legal moment still runs the ordinary VAD teardown. */
+typedef struct MI_IMAGE_MASTER
+{
+    LIST_ENTRY listEntry; /* MipImageMasterList (section.c) */
+    PVOID identity;
+    uint64_t base;
+    ULONG pageCount;
+    uint64_t *frames; /* owned, one per page; 0 = never committed */
+    LONG refCount;    /* one per bound VAD */
+} MI_IMAGE_MASTER, *PMI_IMAGE_MASTER;
+
+/* The VAD-teardown seam (virtual.c calls these; bodies in section.c). */
+void MiDereferenceImageMaster(PVOID master);
+uint64_t MiImageMasterFrame(PVOID master, ULONG index);
+/* The sharing metric (docs/17 §8: "a non-sharing implementation passes
+ * every semantic test", so the win is pinned as a machine verdict). */
+void MiGetImageMasterStats(ULONG *builds, ULONG *hits, ULONG *live, uint64_t *masterFrames);
 
 typedef struct MI_SECTION
 {
@@ -65,6 +102,8 @@ typedef struct MI_SECTION
      * (verified against the pinned Wine; sem_mm/section_protect). */
     BOOLEAN backingWritable;
     MI_IMAGE_INFO *image; /* SEC_IMAGE: parsed PE metadata (pool) */
+    PVOID masterIdentity; /* SEC_IMAGE: the (identity, base) key half the
+                           * image masters use — the backing's fcb */
 } MI_SECTION, *PMI_SECTION;
 
 extern OBJECT_TYPE MiSectionType;

@@ -102,9 +102,24 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
                           ULONG allocationProtect, ULONG vadType, PVOID sectionBody,
                           BOOLEAN ownsFrames, uint64_t sectionOffset);
 
-/* Commit one page of a mapped VAD with an explicitly provided frame. */
+/* Commit one page of a mapped VAD with an explicitly provided frame.
+ * `ownedFrame` says decommit frees it (a private copy) or leaves it to its
+ * owner (a shared master / section / page-cache / kernel frame); on a
+ * master-bound VAD it lands in the per-page ownership record, elsewhere it
+ * must agree with the VAD-wide ownsFrames. */
 void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,
-                        uint64_t frame, ULONG protect);
+                        uint64_t frame, ULONG protect, BOOLEAN ownedFrame);
+
+/* CUI-9 image masters: bind a MEM_IMAGE VAD to its (identity, base) master
+ * (kernel/mm/section.c owns the master object; the VAD owns one reference
+ * on success). The per-page private/shared record this allocates is the
+ * frame-ownership authority MiDecommitPages and the §8 sweep consult. */
+NTSTATUS MiBindVadImageMaster(PMI_VAD vad, PVOID master);
+
+/* Debug sweep (docs/17 §8): ASSERT that no writable PTE points at a frame
+ * a shared image master owns, and that shared PTEs point exactly at their
+ * master frame. Called after image map and image re-protect, and by kmt. */
+void MiAssertNoWritableMasterPte(PMI_ADDRESS_SPACE space);
 
 /* Unwind a partially built view: decommit (honouring ownsFrames), unlink,
  * free. Does NOT release the section reference — the caller owns that. */

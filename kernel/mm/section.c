@@ -92,6 +92,7 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         scratch->rawData = backing->rawData;
         scratch->rawSize = backing->rawSize;
         scratch->ownsRawData = backing->ownsRawData;
+        scratch->masterIdentity = backing->fcb;
         scratch->image = MiAllocatePool(sizeof(MI_IMAGE_INFO));
         if (scratch->image == 0)
         {
@@ -242,6 +243,7 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
         }
         backing.rawData = file->data; /* borrowed: the module outlives everything */
         backing.rawSize = file->size;
+        backing.fcb = file; /* the ramdisk file IS the on-disk identity here */
     }
     if (file == 0 && (attributes & SEC_IMAGE) != 0)
     {
@@ -251,20 +253,40 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
                                  sectionOut);
 }
 
-/* --- mapping ----------------------------------------------------------------- */
+/* --- mapping: the shared image masters (CUI-9) ------------------------------- */
 
-/* Byte-accurate write into a mapped (committed) range of `space` — reloc
- * fixups may straddle a page boundary. */
-static void MipAddDelta(PMI_ADDRESS_SPACE space, uint64_t va, int width, int64_t delta)
+/* The one master list, keyed on (identity, base) by pointer equality. No
+ * lock: nothing on the build/lookup/teardown path parks (pool and frame
+ * allocation never block), so under the uniprocessor no-preemption mandate
+ * every traversal runs to completion (docs/18 inherits these as shootdown
+ * sites the day SMP lands — docs/17 §11). */
+static LIST_ENTRY MipImageMasterList = {&MipImageMasterList, &MipImageMasterList};
+static ULONG MipMasterBuilds;    /* masters ever built */
+static ULONG MipMasterHits;      /* views bound to an existing master */
+static ULONG MipMasterLive;      /* masters currently alive */
+static uint64_t MipMasterFrames; /* frames currently owned by masters */
+
+/* Is a PE-section protection one the loader may write through? (The
+ * WRITECOPY flavours are what MipSegmentProtect yields for writable
+ * segments; READWRITE appears only via NtProtectVirtualMemory later.) */
+static BOOLEAN MipProtectIsWritable(ULONG protect)
+{
+    ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
+    return bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE || bits == PAGE_WRITECOPY ||
+           bits == PAGE_EXECUTE_WRITECOPY;
+}
+
+/* Byte-accurate write into a master's frames — reloc fixups may straddle a
+ * page boundary. */
+static void MipMasterAddDelta(PMI_IMAGE_MASTER master, uint64_t rva, int width, int64_t delta)
 {
     unsigned char raw[8] = {0};
     ASSERT(width == 4 || width == 8);
     for (int i = 0; i < width; i++)
     {
-        uint64_t frame =
-            MiTranslateUserPage(space->pml4Physical, (va + i) & ~(PAGE_SIZE - 1ULL), 0, 0);
+        uint64_t frame = master->frames[(rva + i) / PAGE_SIZE];
         ASSERT(frame != 0);
-        raw[i] = ((unsigned char *)MiPhysicalToVirtual(frame))[(va + i) & (PAGE_SIZE - 1)];
+        raw[i] = ((unsigned char *)MiPhysicalToVirtual(frame))[(rva + i) & (PAGE_SIZE - 1)];
     }
     if (width == 4)
     {
@@ -282,9 +304,8 @@ static void MipAddDelta(PMI_ADDRESS_SPACE space, uint64_t va, int width, int64_t
     }
     for (int i = 0; i < width; i++)
     {
-        uint64_t frame =
-            MiTranslateUserPage(space->pml4Physical, (va + i) & ~(PAGE_SIZE - 1ULL), 0, 0);
-        ((unsigned char *)MiPhysicalToVirtual(frame))[(va + i) & (PAGE_SIZE - 1)] = raw[i];
+        uint64_t frame = master->frames[(rva + i) / PAGE_SIZE];
+        ((unsigned char *)MiPhysicalToVirtual(frame))[(rva + i) & (PAGE_SIZE - 1)] = raw[i];
     }
 }
 
@@ -302,12 +323,13 @@ static int64_t MipRvaToFileOffset(const MI_IMAGE_INFO *image, ULONG rva, ULONG l
     return -1;
 }
 
-/* Apply the .reloc directory to the freshly copied image at `base` (which
- * sits `delta` bytes from the preferred base). Blocks are read from the FILE
- * bytes (linear); fixups are applied to the mapped copy. Shape as
- * LdrProcessRelocationBlock (Wine's reimplementation is the reference). */
-static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, uint64_t base,
-                                 int64_t delta)
+/* Apply the .reloc directory to a freshly built master whose base sits
+ * `delta` bytes from the preferred base. Blocks are read from the FILE
+ * bytes (linear); fixups are applied to the master's frames — ONCE per
+ * (identity, base), which closes docs/17 §6F's non-idempotence hazard by
+ * construction: a view never relocates. Shape as LdrProcessRelocationBlock
+ * (Wine's reimplementation is the reference). */
+static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, int64_t delta)
 {
     const MI_IMAGE_INFO *image = section->image;
     if (image->relocRva == 0 || image->relocSize == 0)
@@ -341,11 +363,12 @@ static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, u
             ULONG offset = entry & 0xFFF;
             /* block.VirtualAddress comes straight out of a user-supplied
              * PE's .reloc and was never bounded. Out of the image it is
-             * either an unmapped page -- MipAddDelta's ASSERT(frame != 0),
-             * i.e. any process halting the kernel by mapping a crafted image
-             * -- or a mapped one, i.e. silent corruption of unrelated memory
-             * in that process (docs/review-2026-07 §2). A fixup outside the
-             * image is a malformed image, and NT says so. */
+             * either an uncommitted page -- MipMasterAddDelta's
+             * ASSERT(frame != 0), i.e. any process halting the kernel by
+             * mapping a crafted image -- or a committed one, i.e. silent
+             * corruption elsewhere in the master (docs/review-2026-07 §2).
+             * A fixup outside the image is a malformed image, and NT says
+             * so. */
             uint64_t rva = (uint64_t)block.VirtualAddress + offset;
             int width;
             switch (entry >> 12)
@@ -365,38 +388,223 @@ static NTSTATUS MipRelocateImage(PMI_ADDRESS_SPACE space, PMI_SECTION section, u
             {
                 return STATUS_INVALID_IMAGE_FORMAT;
             }
-            MipAddDelta(space, base + rva, width, delta);
+            MipMasterAddDelta(master, rva, width, delta);
         }
         cursor += block.SizeOfBlock;
     }
     return STATUS_SUCCESS;
 }
 
-/* Commit `pageCount` fresh zeroed frames into a view VAD at `va`, then copy
+/* Commit `pageCount` fresh zeroed master frames for the RVA range, then copy
  * `rawSize` initialized bytes from the file at `rawOffset`. */
-static NTSTATUS MipCommitImageRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_SECTION section,
-                                    uint64_t va, ULONG pageCount, ULONG rawOffset, ULONG rawSize,
-                                    ULONG protect)
+static NTSTATUS MipMasterCommitRange(PMI_IMAGE_MASTER master, PMI_SECTION section, ULONG rvaStart,
+                                     ULONG pageCount, ULONG rawOffset, ULONG rawSize)
 {
+    ASSERT((rvaStart & (PAGE_SIZE - 1)) == 0);
+    ULONG first = rvaStart / PAGE_SIZE;
     for (ULONG i = 0; i < pageCount; i++)
     {
+        ASSERT(first + i < master->pageCount && master->frames[first + i] == 0);
         uint64_t frame = MiAllocatePage();
         if (frame == 0)
         {
             return STATUS_NO_MEMORY;
         }
         memset(MiPhysicalToVirtual(frame), 0, PAGE_SIZE);
-        MiCommitFrameInVad(space, vad, va + (uint64_t)i * PAGE_SIZE, frame, protect);
+        master->frames[first + i] = frame;
+        MipMasterFrames++;
     }
-    if (rawSize != 0)
+    const char *from = (const char *)section->rawData + rawOffset;
+    for (ULONG copied = 0; copied < rawSize;)
     {
-        MiCopyToUserRange(space, va, (const char *)section->rawData + rawOffset, rawSize);
+        ULONG chunk = PAGE_SIZE;
+        if (chunk > rawSize - copied)
+        {
+            chunk = rawSize - copied;
+        }
+        memcpy(MiPhysicalToVirtual(master->frames[first + copied / PAGE_SIZE]), from + copied,
+               chunk);
+        copied += chunk;
     }
     return STATUS_SUCCESS;
 }
 
-/* Map an image view: a full private copy of the PE, relocated if the
- * preferred base is unavailable, per-PE-section protection (docs/02). */
+static void MipFreeImageMaster(PMI_IMAGE_MASTER master)
+{
+    for (ULONG i = 0; i < master->pageCount; i++)
+    {
+        if (master->frames[i] != 0)
+        {
+            MiFreePage(master->frames[i]);
+            ASSERT(MipMasterFrames > 0);
+            MipMasterFrames--;
+        }
+    }
+    MiFreePool(master->frames);
+    MiFreePool(master);
+}
+
+/* Build the (identity, base) master: fresh frames, raw bytes copied in, the
+ * whole relocation pass applied ONCE, the header's ImageBase stamped with
+ * the actual base. Failure unwinds completely — no half-built master is
+ * ever linked. */
+static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAGE_MASTER *out)
+{
+    const MI_IMAGE_INFO *image = section->image;
+    PMI_IMAGE_MASTER master = MiAllocatePool(sizeof(MI_IMAGE_MASTER));
+    if (master == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    master->identity = section->masterIdentity;
+    master->base = base;
+    master->pageCount = (ULONG)(image->sizeOfImage / PAGE_SIZE);
+    master->refCount = 0;
+    master->frames = MiAllocatePool((uint64_t)master->pageCount * sizeof(uint64_t)); /* zeroed */
+    if (master->frames == 0)
+    {
+        MiFreePool(master);
+        return STATUS_NO_MEMORY;
+    }
+
+    /* Headers first, then each PE section — the same ranges the view
+     * commits, so every view page has a master frame behind it. */
+    ULONG headerBytes = image->sizeOfHeaders;
+    if (headerBytes > section->rawSize)
+    {
+        headerBytes = (ULONG)section->rawSize;
+    }
+    ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
+    NTSTATUS status = MipMasterCommitRange(master, section, 0, headerPages, 0, headerBytes);
+    for (ULONG i = 0; NT_SUCCESS(status) && i < image->segmentCount; i++)
+    {
+        const MI_IMAGE_SEGMENT *seg = &image->segments[i];
+        ULONG pages = (seg->virtualSize + PAGE_SIZE - 1) / PAGE_SIZE;
+        status = MipMasterCommitRange(master, section, seg->virtualAddress, pages, seg->rawOffset,
+                                      seg->rawSize);
+    }
+    if (NT_SUCCESS(status) && base != image->preferredBase)
+    {
+        int64_t delta = (int64_t)(base - image->preferredBase);
+        status = MipRelocateImage(master, section, delta);
+        if (NT_SUCCESS(status))
+        {
+            /* The header now claims the ACTUAL base — exactly what Wine's
+             * own mapper does after relocating (dlls/ntdll/unix/virtual.c
+             * map_image_into_view: OptionalHeader.ImageBase = map_addr).
+             * ntdll's PE-side loader keys its own perform_relocations off
+             * this field (loader.c: module == base → nothing to do), so
+             * leaving the preferred base here would relocate the image a
+             * SECOND time. Adding the delta to the stored preferred base
+             * lands on `base`. */
+            MipMasterAddDelta(master,
+                              (uint64_t)image->ntHeaderOffset +
+                                  offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase),
+                              8, delta);
+        }
+    }
+    if (!NT_SUCCESS(status))
+    {
+        MipFreeImageMaster(master);
+        return status;
+    }
+    InsertTailList(&MipImageMasterList, &master->listEntry);
+    MipMasterBuilds++;
+    MipMasterLive++;
+    *out = master;
+    return STATUS_SUCCESS;
+}
+
+/* Resolve the (identity, base) master, building it on first use. The
+ * returned reference belongs to the caller (the view's VAD will own it). */
+static NTSTATUS MipFindOrCreateImageMaster(PMI_SECTION section, uint64_t base,
+                                           PMI_IMAGE_MASTER *out)
+{
+    ASSERT(section->masterIdentity != 0); /* every image backing carries one */
+    for (PLIST_ENTRY entry = MipImageMasterList.Flink; entry != &MipImageMasterList;
+         entry = entry->Flink)
+    {
+        PMI_IMAGE_MASTER master = CONTAINING_RECORD(entry, MI_IMAGE_MASTER, listEntry);
+        if (master->identity == section->masterIdentity && master->base == base)
+        {
+            master->refCount++;
+            MipMasterHits++;
+            *out = master;
+            return STATUS_SUCCESS;
+        }
+    }
+    NTSTATUS status = MipBuildImageMaster(section, base, out);
+    if (NT_SUCCESS(status))
+    {
+        (*out)->refCount = 1;
+    }
+    return status;
+}
+
+void MiDereferenceImageMaster(PVOID body)
+{
+    PMI_IMAGE_MASTER master = body;
+    ASSERT(master->refCount > 0);
+    master->refCount--;
+    if (master->refCount == 0)
+    {
+        RemoveEntryList(&master->listEntry);
+        ASSERT(MipMasterLive > 0);
+        MipMasterLive--;
+        MipFreeImageMaster(master);
+    }
+}
+
+uint64_t MiImageMasterFrame(PVOID body, ULONG index)
+{
+    PMI_IMAGE_MASTER master = body;
+    ASSERT(index < master->pageCount);
+    return master->frames[index];
+}
+
+void MiGetImageMasterStats(ULONG *builds, ULONG *hits, ULONG *live, uint64_t *masterFrames)
+{
+    *builds = MipMasterBuilds;
+    *hits = MipMasterHits;
+    *live = MipMasterLive;
+    *masterFrames = MipMasterFrames;
+}
+
+/* Commit one RVA range of an image view from its master: pages whose
+ * recorded protection cannot be written map the master's frame outright;
+ * protection-writable pages (the WRITECOPY flavours) get an eager private
+ * copy of the ALREADY-RELOCATED master frame — docs/17 §10 step 4; step 5
+ * replaces the eager copy with the COW arm. */
+static NTSTATUS MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_MASTER master,
+                                   uint64_t viewBase, ULONG rvaStart, ULONG pageCount,
+                                   ULONG protect)
+{
+    ULONG first = rvaStart / PAGE_SIZE;
+    BOOLEAN privateFrame = MipProtectIsWritable(protect);
+    for (ULONG i = 0; i < pageCount; i++)
+    {
+        uint64_t frame = master->frames[first + i];
+        ASSERT(frame != 0);
+        if (privateFrame)
+        {
+            uint64_t copy = MiAllocatePage();
+            if (copy == 0)
+            {
+                return STATUS_NO_MEMORY;
+            }
+            memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
+            frame = copy;
+        }
+        MiCommitFrameInVad(space, vad, viewBase + rvaStart + (uint64_t)i * PAGE_SIZE, frame,
+                           protect, privateFrame);
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Map an image view over the shared (identity, base) master: read-only
+ * pages (headers, .text, .rdata — the bulk of a DLL) map the master's
+ * relocated frames outright; writable pages are private copies of them,
+ * per-PE-section protection throughout (docs/02, docs/17 §4). */
 static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                                 uint64_t *viewSizeInOut)
 {
@@ -430,57 +638,55 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         return STATUS_CONFLICTING_ADDRESSES; /* nailed-down image, base taken */
     }
 
+    PMI_IMAGE_MASTER master;
+    NTSTATUS status = MipFindOrCreateImageMaster(section, base, &master);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
     PMI_VAD vad = MiCreateMappedVad(space, base, size, PAGE_EXECUTE_WRITECOPY, MEM_IMAGE, section,
-                                    TRUE /* a private full copy */, 0);
+                                    FALSE /* frames are the master's, or per-page private */, 0);
     if (vad == 0)
     {
         ObDereferenceObject(section);
+        MiDereferenceImageMaster(master);
         return STATUS_NO_MEMORY;
+    }
+    status = MiBindVadImageMaster(vad, master); /* on success the VAD owns the ref */
+    if (!NT_SUCCESS(status))
+    {
+        MiDeleteMappedVad(space, vad); /* drops the section pin; no master bound yet */
+        MiDereferenceImageMaster(master);
+        return status;
     }
 
     /* Headers first (read-only), then each PE section with its own
-     * protection; everything is copied — no COW, no demand paging. */
+     * protection — every page backed by a frame before user mode can touch
+     * it (no demand paging; sharing is invisible to the commit model,
+     * docs/17 §7). */
     ULONG headerBytes = image->sizeOfHeaders;
     if (headerBytes > section->rawSize)
     {
         headerBytes = (ULONG)section->rawSize;
     }
     ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    NTSTATUS status =
-        MipCommitImageRange(space, vad, section, base, headerPages, 0, headerBytes, PAGE_READONLY);
+    status = MipCommitViewRange(space, vad, master, base, 0, headerPages, PAGE_READONLY);
     for (ULONG i = 0; NT_SUCCESS(status) && i < image->segmentCount; i++)
     {
         const MI_IMAGE_SEGMENT *seg = &image->segments[i];
         ULONG pages = (seg->virtualSize + PAGE_SIZE - 1) / PAGE_SIZE;
-        status = MipCommitImageRange(space, vad, section, base + seg->virtualAddress, pages,
-                                     seg->rawOffset, seg->rawSize, seg->protect);
-    }
-    if (NT_SUCCESS(status) && !atBase)
-    {
-        int64_t delta = (int64_t)(base - image->preferredBase);
-        status = MipRelocateImage(space, section, base, delta);
-        if (NT_SUCCESS(status))
-        {
-            /* The mapped header now claims the ACTUAL base — exactly what
-             * Wine's own mapper does after relocating (dlls/ntdll/unix/
-             * virtual.c map_image_into_view: OptionalHeader.ImageBase =
-             * map_addr). ntdll's PE-side loader keys its own
-             * perform_relocations off this field (loader.c: module == base
-             * → nothing to do), so leaving the preferred base here would
-             * relocate the copy a SECOND time. Adding the delta to the
-             * stored preferred base lands on `base`. */
-            MipAddDelta(space,
-                        base + image->ntHeaderOffset +
-                            offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase),
-                        8, delta);
-        }
+        status =
+            MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect);
     }
     if (!NT_SUCCESS(status))
     {
-        MiDeleteMappedVad(space, vad); /* also drops the view's section pin */
+        MiDeleteMappedVad(space, vad); /* drops the section pin AND the master ref */
         return status;
     }
+
+    MiAssertNoWritableMasterPte(space); /* docs/17 §8's highest-value check */
 
     *baseInOut = base;
     *viewSizeInOut = size;
@@ -593,7 +799,7 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
             memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
             frame = copy;
         }
-        MiCommitFrameInVad(space, vad, base + (uint64_t)i * PAGE_SIZE, frame, protect);
+        MiCommitFrameInVad(space, vad, base + (uint64_t)i * PAGE_SIZE, frame, protect, privateCopy);
     }
 
     *baseInOut = base;
