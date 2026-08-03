@@ -48,3 +48,18 @@ NtWaitForMultipleObjects oracle=c0000008 proskrnl=c0000024   # waitable-anything
 # CUI-6 APC work (NtQueueApcThreadEx2 / NtAlertResumeThread), where the
 # delivery contract gets its own pins.
 NtTestAlert oracle=00000000 proskrnl=00000000   # APC delivery count/order at the alertable edge; CUI-6
+
+# CUI-9 op-model reshuffle exposure (the 256-program soak that validated the
+# new image-view ops; neither program contains an image op — these are latent
+# OLD-surface divergences the reshuffled stream reached). Minimized repro for
+# the first (build/tests/fuzz/repro/fuzz_100074.txt, 2 calls): NtCreateFile of
+# a fresh fuzz file, then a zero-length NtReadFile at a nonzero offset — the
+# oracle answers SUCCESS with 0 bytes, proskrnl STATUS_END_OF_FILE (the
+# offset-vs-EOF check fires before the zero-length short-circuit). The second
+# (p237 at --programs 256): an NtWaitForMultipleObjects the oracle accepts and
+# proskrnl refuses INVALID_PARAMETER — the handle-array validation ladder
+# differs on some slot mix. Both belong to their own surfaces' pin+fix pairs
+# (sem_file / sem_wait), scheduled after CUI-9; neither is reachable by the
+# committed 64-program gate today.
+NtReadFile oracle=00000000 proskrnl=c0000011   # zero-length read at offset past EOF; sem_file pin+fix pending
+NtWaitForMultipleObjects oracle=00000000 proskrnl=c000000d   # wait-array validation ladder; sem_wait pin+fix pending

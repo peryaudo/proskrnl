@@ -445,6 +445,58 @@ static void fz_setup_protect(void)
                             MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 }
 
+/* --- CUI-9: the mapped SEC_IMAGE view (map/write/query/unmap_image) -------
+ * One view of the pinned C:\windows\system32\ntdll.dll — the same bytes on
+ * both sides, so segment geometry, statuses and protections are contract;
+ * the base is ASLR and never traced. The writecopy state (not-yet-copied
+ * vs copied per page) is what the ops drive; docs/17 §8 "the fuzzer". */
+NTSYSAPI NTSTATUS NTAPI NtCreateSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
+                                        const LARGE_INTEGER *, ULONG, ULONG, HANDLE);
+NTSYSAPI NTSTATUS NTAPI NtMapViewOfSection(HANDLE, HANDLE, PVOID *, ULONG_PTR, SIZE_T,
+                                           const LARGE_INTEGER *, SIZE_T *, ULONG, ULONG, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE, PVOID);
+NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE, LPCVOID, ULONG, PVOID, SIZE_T, SIZE_T *);
+#ifndef FZ_VIEW_SHARE
+#define FZ_VIEW_SHARE 1 /* SECTION_INHERIT ViewShare, as wine/include/winternl.h */
+#endif
+
+static char *fz_image_view;
+
+/* The op's target page: the header, the first read-only data segment, or
+ * the first/second page of the first writable segment — a deterministic
+ * walk of the mapped PE's own section table. NULL = kind unavailable. */
+static char *fz_image_page(unsigned kind)
+{
+    if (fz_image_view == NULL)
+        return NULL;
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)fz_image_view;
+    const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)(fz_image_view + dos->e_lfanew);
+    const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt64);
+    if (kind == 0) /* FZ_IMG_HEADER */
+        return fz_image_view;
+    for (ULONG i = 0; i < nt64->FileHeader.NumberOfSections; i++)
+    {
+        ULONG ch = sec[i].Characteristics;
+        int writable = (ch & IMAGE_SCN_MEM_WRITE) != 0;
+        int executable = (ch & IMAGE_SCN_MEM_EXECUTE) != 0;
+        if (kind == 1 && !writable && !executable && (ch & IMAGE_SCN_CNT_INITIALIZED_DATA))
+            return fz_image_view + sec[i].VirtualAddress; /* FZ_IMG_RODATA */
+        if (kind >= 2 && writable && !executable &&
+            sec[i].Misc.VirtualSize >= 2 * 0x1000) /* the writecopy pair */
+            return fz_image_view + sec[i].VirtualAddress + (kind == 2 ? 0 : 0x1000);
+    }
+    return NULL;
+}
+
+static void fz_reset_image(void)
+{
+    if (fz_image_view != NULL)
+    {
+        NtUnmapViewOfSection(NtCurrentProcess(), fz_image_view);
+        fz_image_view = NULL;
+    }
+}
+
 /* --- M7 user-APC delivery (queue_apc / read_file_apc / test_alert) --------
  * Single-threaded and drained only at the explicit test_alert op, so
  * delivery is deterministic FIFO on both sides. The routines fold what they
@@ -1123,6 +1175,102 @@ static void fz_exec(unsigned prog, unsigned call, int op, const unsigned long lo
                          (unsigned)oldProtect);
         else
             ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    /* ---- CUI-9 writecopy image-view ops ----------------------------------- */
+    case FZ_OP_MAP_IMAGE_VIEW:
+    {
+        if (fz_image_view != NULL)
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s skip\n", prog, call, nt);
+            break;
+        }
+        UNICODE_STRING path;
+        OBJECT_ATTRIBUTES attr;
+        IO_STATUS_BLOCK iosb;
+        HANDLE file = NULL, section = NULL;
+        init_ustr(&path, W("\\??\\C:\\windows\\system32\\ntdll.dll"));
+        init_attr(&attr, NULL, &path, OBJ_CASE_INSENSITIVE);
+        st = NtCreateFile(&file, FILE_GENERIC_READ, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                          FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+        if (NT_SUCCESS(st))
+        {
+            st = NtCreateSection(&section, SECTION_MAP_READ | SECTION_MAP_EXECUTE | SECTION_QUERY,
+                                 NULL, NULL, PAGE_READONLY, SEC_IMAGE, file);
+            if (NT_SUCCESS(st))
+            {
+                PVOID base = NULL;
+                SIZE_T viewSize = 0;
+                LARGE_INTEGER offset;
+                offset.QuadPart = 0;
+                st = NtMapViewOfSection(section, NtCurrentProcess(), &base, 0, 0, &offset,
+                                        &viewSize, FZ_VIEW_SHARE, 0, PAGE_READONLY);
+                if (NT_SUCCESS(st))
+                    fz_image_view = base;
+                NtClose(section); /* the view holds its own pin */
+            }
+            NtClose(file);
+        }
+        /* IMAGE_NOT_AT_BASE vs SUCCESS depends on where the host loader put
+         * its own ntdll — fold both to the mapped fact; failures trace raw. */
+        if (NT_SUCCESS(st))
+            ntapi_printf("[FUZZ] p%u c%u %s mapped=1\n", prog, call, nt);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_WRITE_IMAGE:
+    {
+        static const unsigned char payload[4] = {0xC9, 0xC9, 0xC9, 0xC9};
+        char *target = fz_image_page((unsigned)a[0]);
+        if (target == NULL)
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s skip\n", prog, call, nt);
+            break;
+        }
+        SIZE_T written = 0;
+        st = NtWriteVirtualMemory(NtCurrentProcess(), target, payload, sizeof(payload), &written);
+        /* The hazard-A kernel-write shape: a writecopy page copies and
+         * completes, a read-only page refuses with nothing written. */
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x written=%u\n", prog, call, nt, (unsigned)st,
+                     (unsigned)written);
+        break;
+    }
+    case FZ_OP_QUERY_IMAGE_PROTECT:
+    {
+        char *target = fz_image_page((unsigned)a[0]);
+        if (target == NULL)
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s skip\n", prog, call, nt);
+            break;
+        }
+        MEMORY_BASIC_INFORMATION info;
+        SIZE_T retLen = 0;
+        fz_bzero(&info, sizeof(info));
+        st = NtQueryVirtualMemory(NtCurrentProcess(), target, 0 /* MemoryBasicInformation */, &info,
+                                  sizeof(info), &retLen);
+        /* State/Protect/Type and the run length are contract (identical PE
+         * geometry both sides; the oracle's no-transition writecopy shape,
+         * docs/03 "CUI-9 COW notes"); every address is ASLR and untraced. */
+        if (fz_ok(st))
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x state=%08x prot=%08x type=%08x rsz=%x\n", prog,
+                         call, nt, (unsigned)st, (unsigned)info.State, (unsigned)info.Protect,
+                         (unsigned)info.Type, (unsigned)info.RegionSize);
+        else
+            ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
+        break;
+    }
+    case FZ_OP_UNMAP_IMAGE_VIEW:
+    {
+        if (fz_image_view == NULL)
+        {
+            ntapi_printf("[FUZZ] p%u c%u %s skip\n", prog, call, nt);
+            break;
+        }
+        st = NtUnmapViewOfSection(NtCurrentProcess(), fz_image_view);
+        fz_image_view = NULL;
+        ntapi_printf("[FUZZ] p%u c%u %s st=%08x\n", prog, call, nt, (unsigned)st);
         break;
     }
     case FZ_OP_INIT_NLS:
@@ -1900,6 +2048,7 @@ START_TEST(fuzz_interp)
         fz_reset_keys();
         fz_reset_protect();
         fz_reset_apc();
+        fz_reset_image();
         ntapi_printf("[FUZZ] p%u begin id=%u calls=%u\n", pi, id, callCount);
 
         for (unsigned ci = 0; ci < callCount; ci++)

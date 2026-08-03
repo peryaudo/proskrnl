@@ -53,6 +53,7 @@ typedef enum {
     FZ_OPND_CH_KEY_INFO,
     FZ_OPND_CH_ACCESS_JOB,
     FZ_OPND_CH_JOB_SCENARIO,
+    FZ_OPND_CH_IMAGE_PAGE,
     FZ_OPND_CH_PROCESS_CID,
     FZ_OPND_CH_VM_SCENARIO,
     FZ_OPND_CH_JOB_QUERY,
@@ -124,6 +125,10 @@ typedef enum {
     FZ_OP_CANCEL_SYNC_SELF,
     FZ_OP_CREATE_JOB,
     FZ_OP_SET_JOB_LIMITS,
+    FZ_OP_MAP_IMAGE_VIEW,
+    FZ_OP_WRITE_IMAGE,
+    FZ_OP_QUERY_IMAGE_PROTECT,
+    FZ_OP_UNMAP_IMAGE_VIEW,
     FZ_OP_OPEN_PROCESS,
     FZ_OP_QUERY_SYSTEM_PROCESSES,
     FZ_OP_READ_OWN_MEMORY,
@@ -206,6 +211,10 @@ static const FzOperandKind fz_kinds_read_file_async[] = { FZ_OPND_SLOT_IN, FZ_OP
 static const FzOperandKind fz_kinds_cancel_sync_self[1];
 static const FzOperandKind fz_kinds_create_job[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_ACCESS_JOB };
 static const FzOperandKind fz_kinds_set_job_limits[] = { FZ_OPND_SLOT_IN, FZ_OPND_CH_JOB_SCENARIO };
+static const FzOperandKind fz_kinds_map_image_view[1];
+static const FzOperandKind fz_kinds_write_image[] = { FZ_OPND_CH_IMAGE_PAGE };
+static const FzOperandKind fz_kinds_query_image_protect[] = { FZ_OPND_CH_IMAGE_PAGE };
+static const FzOperandKind fz_kinds_unmap_image_view[1];
 static const FzOperandKind fz_kinds_open_process[] = { FZ_OPND_SLOT_OUT, FZ_OPND_CH_PROCESS_CID };
 static const FzOperandKind fz_kinds_query_system_processes[] = { FZ_OPND_CH_LEN };
 static const FzOperandKind fz_kinds_read_own_memory[] = { FZ_OPND_CH_VM_SCENARIO };
@@ -285,6 +294,10 @@ static const FzOpDesc fz_ops[FZ_OP_COUNT] = {
     [FZ_OP_CANCEL_SYNC_SELF] = { fz_kinds_cancel_sync_self, 0, "NtCancelSynchronousIoFile" },
     [FZ_OP_CREATE_JOB] = { fz_kinds_create_job, 2, "NtCreateJobObject" },
     [FZ_OP_SET_JOB_LIMITS] = { fz_kinds_set_job_limits, 2, "NtSetInformationJobObject" },
+    [FZ_OP_MAP_IMAGE_VIEW] = { fz_kinds_map_image_view, 0, "NtMapViewOfSection" },
+    [FZ_OP_WRITE_IMAGE] = { fz_kinds_write_image, 1, "NtWriteVirtualMemory" },
+    [FZ_OP_QUERY_IMAGE_PROTECT] = { fz_kinds_query_image_protect, 1, "NtQueryVirtualMemory" },
+    [FZ_OP_UNMAP_IMAGE_VIEW] = { fz_kinds_unmap_image_view, 0, "NtUnmapViewOfSection" },
     [FZ_OP_OPEN_PROCESS] = { fz_kinds_open_process, 2, "NtOpenProcess" },
     [FZ_OP_QUERY_SYSTEM_PROCESSES] = { fz_kinds_query_system_processes, 1, "NtQuerySystemInformation" },
     [FZ_OP_READ_OWN_MEMORY] = { fz_kinds_read_own_memory, 1, "NtReadVirtualMemory" },
@@ -367,5 +380,6 @@ static const ACCESS_MASK fz_ch_access_job[] = { (ACCESS_MASK)(JOB_OBJECT_ALL_ACC
 #define FZ_CH_FLUSH_SCENARIO_COUNT 3
 #define FZ_CH_WATCH_SCENARIO_COUNT 4
 #define FZ_CH_PREFETCH_SCENARIO_COUNT 5
+#define FZ_CH_IMAGE_PAGE_COUNT 4
 
 #endif /* PROSKRNL_FUZZ_MODEL_H */
