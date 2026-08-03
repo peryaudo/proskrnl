@@ -120,6 +120,14 @@ NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProte
                                ULONG attributes, const MI_SECTION_BACKING *backing,
                                PMI_SECTION *sectionOut);
 
+/* Borrow an image section's raw file bytes (the create-time snapshot, or a
+ * transient resident-cache re-read after the first master bind released
+ * it). *tempOut non-0 means the caller frees via MiReleaseImageRawBytes.
+ * The one re-source authority — the master build and Ps's export lookups
+ * both resolve here. */
+NTSTATUS MiAcquireImageRawBytes(PMI_SECTION section, const void **rawOut, void **tempOut);
+void MiReleaseImageRawBytes(void *temp);
+
 /* Map a view (data or image) into `space`. *baseInOut = 0 picks an address
  * (an image prefers its header base; taken -> relocated + the success status
  * STATUS_IMAGE_NOT_AT_BASE). `offset`/`viewSize` follow NtMapViewOfSection

@@ -264,31 +264,37 @@ static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64
  * an image without the dispatchers: exceptions then kill the process). */
 static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, uint64_t base)
 {
-    if (section->image == 0 || section->rawData == 0)
+    if (section->image == 0)
     {
         return;
     }
+    /* CUI-9: the create-time snapshot is released once a master is bound
+     * (which the map that produced `base` just did), so borrow the bytes
+     * through the one re-source authority (mm/section.c). */
+    const void *rawData;
+    void *tempRaw;
+    if (!NT_SUCCESS(MiAcquireImageRawBytes(section, &rawData, &tempRaw)))
+    {
+        return; /* dispatchers stay 0: the flat-binary shape, process dies on use */
+    }
     uint32_t rva;
-    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
-                              "KiUserExceptionDispatcher");
+    rva =
+        MiLookupImageExport(rawData, section->rawSize, section->image, "KiUserExceptionDispatcher");
     if (rva != 0)
     {
         process->userExceptionDispatcher = base + rva;
     }
-    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
-                              "KiUserApcDispatcher");
+    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "KiUserApcDispatcher");
     if (rva != 0)
     {
         process->userApcDispatcher = base + rva;
     }
-    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
-                              "LdrInitializeThunk");
+    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "LdrInitializeThunk");
     if (rva != 0)
     {
         process->ldrInitializeThunk = base + rva;
     }
-    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
-                              "RtlUserThreadStart");
+    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "RtlUserThreadStart");
     if (rva != 0)
     {
         process->rtlUserThreadStart = base + rva;
@@ -297,12 +303,12 @@ static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, ui
      * ntdll.spec, loader.c __wine_ctrl_routine) precisely so the OS can start
      * a thread there to deliver CTRL_C/CTRL_BREAK; it forwards to
      * kernelbase's CtrlRoutine, which runs the process's handler list. */
-    rva = MiLookupImageExport(section->rawData, section->rawSize, section->image,
-                              "__wine_ctrl_routine");
+    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "__wine_ctrl_routine");
     if (rva != 0)
     {
         process->ctrlRoutine = base + rva;
     }
+    MiReleaseImageRawBytes(tempRaw);
 }
 
 /* The main image's SECTION_IMAGE_INFORMATION from the PE parse (abi shape;

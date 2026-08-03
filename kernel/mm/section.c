@@ -93,6 +93,10 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         scratch->rawSize = backing->rawSize;
         scratch->ownsRawData = backing->ownsRawData;
         scratch->masterIdentity = backing->fcb;
+        /* Keep the file's cache reachable so the snapshot can be released
+         * after the first master bind and re-read for a later
+         * different-base build (image VIEWS never map it — data views do). */
+        scratch->cache = backing->cache;
         scratch->image = MiAllocatePool(sizeof(MI_IMAGE_INFO));
         if (scratch->image == 0)
         {
@@ -329,7 +333,8 @@ static int64_t MipRvaToFileOffset(const MI_IMAGE_INFO *image, ULONG rva, ULONG l
  * (identity, base), which closes docs/17 §6F's non-idempotence hazard by
  * construction: a view never relocates. Shape as LdrProcessRelocationBlock
  * (Wine's reimplementation is the reference). */
-static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, int64_t delta)
+static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, const void *rawData,
+                                 int64_t delta)
 {
     const MI_IMAGE_INFO *image = section->image;
     if (image->relocRva == 0 || image->relocSize == 0)
@@ -341,7 +346,7 @@ static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, i
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
-    const char *cursor = (const char *)section->rawData + fileOffset;
+    const char *cursor = (const char *)rawData + fileOffset;
     const char *end = cursor + image->relocSize;
 
     while (cursor + sizeof(IMAGE_BASE_RELOCATION) <= end)
@@ -397,7 +402,7 @@ static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, i
 
 /* Commit `pageCount` fresh zeroed master frames for the RVA range, then copy
  * `rawSize` initialized bytes from the file at `rawOffset`. */
-static NTSTATUS MipMasterCommitRange(PMI_IMAGE_MASTER master, PMI_SECTION section, ULONG rvaStart,
+static NTSTATUS MipMasterCommitRange(PMI_IMAGE_MASTER master, const void *rawData, ULONG rvaStart,
                                      ULONG pageCount, ULONG rawOffset, ULONG rawSize)
 {
     ASSERT((rvaStart & (PAGE_SIZE - 1)) == 0);
@@ -414,7 +419,7 @@ static NTSTATUS MipMasterCommitRange(PMI_IMAGE_MASTER master, PMI_SECTION sectio
         master->frames[first + i] = frame;
         MipMasterFrames++;
     }
-    const char *from = (const char *)section->rawData + rawOffset;
+    const char *from = (const char *)rawData + rawOffset;
     for (ULONG copied = 0; copied < rawSize;)
     {
         ULONG chunk = PAGE_SIZE;
@@ -448,12 +453,66 @@ static void MipFreeImageMaster(PMI_IMAGE_MASTER master)
  * whole relocation pass applied ONCE, the header's ImageBase stamped with
  * the actual base. Failure unwinds completely — no half-built master is
  * ever linked. */
+/* Borrow an image section's raw file bytes: the create-time snapshot while
+ * the section still holds one, else a transient page-cache re-read — the
+ * cache is fully resident (Art. 3, no eviction), so this is memcpy, never
+ * I/O, and the deny-write share gate keeps the bytes the ones the section
+ * was created over. THE one re-source authority (Art. 11): the master
+ * build and Ps's dispatcher-export resolution both come here. *tempOut is
+ * the caller's to free (MiReleaseImageRawBytes) when non-0. */
+NTSTATUS MiAcquireImageRawBytes(PMI_SECTION section, const void **rawOut, void **tempOut)
+{
+    *tempOut = 0;
+    if (section->rawData != 0)
+    {
+        *rawOut = section->rawData;
+        return STATUS_SUCCESS;
+    }
+    PMI_PAGE_CACHE cache = section->cache;
+    ASSERT(cache != 0); /* only the released-snapshot path clears rawData */
+    if (cache->fileSize < section->rawSize)
+    {
+        return STATUS_INVALID_IMAGE_FORMAT; /* truncated under the section */
+    }
+    void *temp = MiAllocatePool(section->rawSize);
+    if (temp == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    KI_PROBE_TOKEN token = KiKernelToken(temp, section->rawSize);
+    MiCacheRead(cache, 0, &token, temp, section->rawSize);
+    *rawOut = temp;
+    *tempOut = temp;
+    return STATUS_SUCCESS;
+}
+
+void MiReleaseImageRawBytes(void *temp)
+{
+    if (temp != 0)
+    {
+        MiFreePool(temp);
+    }
+}
+
 static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAGE_MASTER *out)
 {
     const MI_IMAGE_INFO *image = section->image;
+
+    const void *rawData;
+    void *tempRaw;
+    NTSTATUS acquire = MiAcquireImageRawBytes(section, &rawData, &tempRaw);
+    if (!NT_SUCCESS(acquire))
+    {
+        return acquire;
+    }
+
     PMI_IMAGE_MASTER master = MiAllocatePool(sizeof(MI_IMAGE_MASTER));
     if (master == 0)
     {
+        if (tempRaw != 0)
+        {
+            MiFreePool(tempRaw);
+        }
         return STATUS_NO_MEMORY;
     }
     master->identity = section->masterIdentity;
@@ -464,6 +523,10 @@ static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAG
     if (master->frames == 0)
     {
         MiFreePool(master);
+        if (tempRaw != 0)
+        {
+            MiFreePool(tempRaw);
+        }
         return STATUS_NO_MEMORY;
     }
 
@@ -475,18 +538,18 @@ static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAG
         headerBytes = (ULONG)section->rawSize;
     }
     ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    NTSTATUS status = MipMasterCommitRange(master, section, 0, headerPages, 0, headerBytes);
+    NTSTATUS status = MipMasterCommitRange(master, rawData, 0, headerPages, 0, headerBytes);
     for (ULONG i = 0; NT_SUCCESS(status) && i < image->segmentCount; i++)
     {
         const MI_IMAGE_SEGMENT *seg = &image->segments[i];
         ULONG pages = (seg->virtualSize + PAGE_SIZE - 1) / PAGE_SIZE;
-        status = MipMasterCommitRange(master, section, seg->virtualAddress, pages, seg->rawOffset,
+        status = MipMasterCommitRange(master, rawData, seg->virtualAddress, pages, seg->rawOffset,
                                       seg->rawSize);
     }
     if (NT_SUCCESS(status) && base != image->preferredBase)
     {
         int64_t delta = (int64_t)(base - image->preferredBase);
-        status = MipRelocateImage(master, section, delta);
+        status = MipRelocateImage(master, section, rawData, delta);
         if (NT_SUCCESS(status))
         {
             /* The header now claims the ACTUAL base — exactly what Wine's
@@ -502,6 +565,10 @@ static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAG
                                   offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase),
                               8, delta);
         }
+    }
+    if (tempRaw != 0)
+    {
+        MiFreePool(tempRaw);
     }
     if (!NT_SUCCESS(status))
     {
@@ -643,6 +710,19 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+
+    /* The section's raw-byte snapshot has served its purpose (parse at
+     * create, first master build): release it — it is a WHOLE second copy
+     * of the file per section, i.e. per process, and half the measured
+     * per-process cost (docs/17 §1). A later different-base build re-reads
+     * through the file's resident cache (MipBuildImageMaster); the ramdisk
+     * path borrows immortal bytes and keeps them. */
+    if (section->ownsRawData && section->rawData != 0 && section->cache != 0)
+    {
+        MiFreePool((void *)(uintptr_t)section->rawData);
+        section->rawData = 0;
+        section->ownsRawData = FALSE;
     }
 
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
