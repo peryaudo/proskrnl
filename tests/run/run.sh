@@ -1463,6 +1463,60 @@ cui8() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# The CUI-9 measurement leg (docs/17 §2, docs/02 CUI-9): boot the console
+# image at a FIXED memory size and drive mmceiling.exe, which spawns
+# resident copies of itself until process creation refuses. Its verdict
+# lines arrive over NtDisplayString (unmangled by conhost's renderer):
+#   [KTEST] cui9 ceiling procs=<N> err=<code> availmb0=<a> availmb=<b>
+#   [KTEST] cui9 perproc kb=<n>
+# MEM is pinned here because the ceiling is only comparable at one memory
+# size — docs/17 §1 records the numbers at this size. Once the milestone
+# commits a floor (tests/cui/mmceiling_floor.txt), a sharing regression
+# fails HERE, as a machine verdict, not in a semantic test (docs/17 §8
+# "the one failure mode no semantic test catches").
+cui9() {
+    rm -f "$ROOT/build/proskrnl-console.hdd"
+    make -C "$ROOT" console-img >/dev/null || exit 1
+    local img="$ROOT/build/tests/cui9.hdd"
+    mkdir -p "$ROOT/build/tests"
+    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+
+    local sock="$ROOT/build/tests/cui9.sock" log="$ROOT/build/tests/cui9.log"
+    SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1200}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-900}" EXPECT_CUI9=1 \
+        python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== cui9: FAIL (see $log) =="
+        return 1
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    local ceilingLine procs
+    ceilingLine="$(grep -E '^\[KTEST\] cui9 ceiling ' "$log" | head -1 | tr -d '\r' || true)"
+    procs="$(sed -nE 's/.*procs=([0-9]+).*/\1/p' <<<"$ceilingLine")"
+    if [[ -z "$procs" ]]; then
+        echo "== cui9: FAIL (no ceiling verdict line; see $log) =="
+        return 1
+    fi
+    echo "$ceilingLine"
+    grep -E '^\[KTEST\] cui9 perproc ' "$log" | head -1 | tr -d '\r' || true
+
+    local floorFile="$ROOT/tests/cui/mmceiling_floor.txt"
+    if [[ -f "$floorFile" ]]; then
+        local floor
+        floor="$(tr -dc 0-9 < "$floorFile")"
+        if [[ -z "$floor" || "$procs" -lt "$floor" ]]; then
+            echo "== cui9: FAIL (ceiling procs=$procs below the committed floor '$floor') =="
+            return 1
+        fi
+        echo "[KTEST] cui9 floor ok procs=$procs floor=$floor"
+    fi
+    echo "== cui9: PASS (ceiling procs=$procs) =="
+    return 0
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -2109,6 +2163,7 @@ case "$MODE" in
     cui6)     cui6 ;;
     cui7)     cui7 ;;
     cui8)     cui8 ;;
+    cui9)     cui9 ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
@@ -2119,7 +2174,7 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
        exit 2 ;;

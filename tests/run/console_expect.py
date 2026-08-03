@@ -384,6 +384,19 @@ def main() -> int:
         if not expect_after(mark, b"watchapp-done", "the watchapp completion"):
             return 1
 
+    if os.environ.get("EXPECT_CUI9", ""):
+        # The CUI-9 step-1 measurement (docs/17 §2): mmceiling spawns
+        # resident copies of itself until process creation refuses, prints
+        # the ceiling and the per-process cost, terminates its children and
+        # says done. The refusal loop is the long pole (one full private
+        # image-copy set per spawn), so this uses the whole deadline.
+        mark = len(buffered)
+        sock.sendall(b"C:\\mmceiling.exe\r")
+        if not expect_after(mark, b"mmceiling-refused", "the creation refusal"):
+            return 1
+        if not expect_after(mark, b"mmceiling-done", "the measurement completion"):
+            return 1
+
     if os.environ.get("EXPECT_CUI7_VERIFY", ""):
         # Boot 2: the seeded key and the saved hive file both survived the
         # power cycle; then the machine ends itself through ring-3
