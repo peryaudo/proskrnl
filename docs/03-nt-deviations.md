@@ -1139,6 +1139,81 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   npfs async listen remains the one surface where issue-now/collect-later pends on
   both runners, and `sem_pipe/async_listen.c` guards it.
 
+## CUI-9 COW notes (shared image masters)
+
+### The Article 3 amendment: "no COW", lifted for SEC_IMAGE only
+
+Article 3's "no copy-on-write" mandate is lifted for **image sections only**, on the
+measurement docs/09 "Lifting a mandate" requires (docs/17 §2; numbers recorded in
+docs/17 §1): at the pinned `MEM=512M` `cui9` boot, eager per-process image copies cost
+**≈ 5.9 MB per resident process** — the mapped private copies *plus* each section's
+raw-byte pool snapshot — and the machine **refuses at 70 resident processes**. The
+refusal ring 3 observes is the spawned child dying mid-load with
+`STATUS_DLL_NOT_FOUND` (0xC0000135), the loader's dressing of the image-map
+`STATUS_NO_MEMORY`. A ceiling a user program can observe is a semantic, not a
+performance concern — the only justification Article 3 accepts. Process-creation
+latency (a full memcpy + relocation pass of every DLL per spawn) is the secondary
+effect, deliberately not the argument.
+
+What the amendment admits, in docs/17 §4's two instalments:
+
+1. **A shared, already-relocated master per `(file, base)`** — `MI_IMAGE_MASTER` in
+   `kernel/mm/section.c`, keyed on the `IO_FCB` (boot modules: the ramdisk file) and
+   the mapped base, holding relocated frames that every matching view maps. The
+   read-only bulk of a DLL (`.text`, `.rdata`, headers) shares outright; relocation
+   happens once per `(file, base)`, into the master.
+2. **The COW arm** on the one write-fault authority (`MiResolveWriteFault` — the CUI-7
+   write-watch resolver, extended, never forked): writable PE sections map the
+   master's frames hardware-read-only, and the first store — a ring-3 fault,
+   `NtWriteVirtualMemory`, or a syscall out-buffer probe — allocates a private frame,
+   copies, and repoints that page.
+
+**Scope.** Lazy COW is image-only. File-backed data `PAGE_WRITECOPY` views keep their
+M5 shape — an eager private full copy at map time, pinned oracle-green by
+`sem_mm/section_protect` — because data sections map the file's cache, where
+mapped-view/`ReadFile` coherence lives (docs/17 §5; that section's earlier "refuses
+loudly" wording described a world the tree never shipped — the eager copy is a legal,
+pinned implementation of writecopy's observable contract, not a stub). Anonymous
+sections need no COW: there is no fork, so no second mapper to diverge from. Either
+implementation — eager copy or master + COW — satisfies the same observable contract,
+pinned by `sem_mm/writecopy_image` and `sem_mm/writecopy_query`.
+
+### Hazard D, decided: there is no observable transition
+
+Real NT reports a written writecopy page as `PAGE_(EXECUTE_)READWRITE` afterwards and
+splits the region around it. **The pinned oracle does not**: Wine realizes writecopy
+silently through `MAP_PRIVATE` + `PROT_WRITE` (`dlls/ntdll/unix/virtual.c`), so the
+store never reaches it and `NtQueryVirtualMemory` / `NtProtectVirtualMemory` keep
+answering the WRITECOPY flavour. Diverging toward NT would turn a green pair red
+(Art. 6), so proskrnl pins the oracle's no-transition shape
+(`sem_mm/writecopy_query`): the kernel's COW copy leaves the recorded per-page
+protection untouched — the shared/private state lives in the VAD's per-page frame
+ownership record, never in the reported protection. Two adjacent shapes pinned with
+it: `NtProtectVirtualMemory` accepts the WRITECOPY flavours on mapped views and
+refuses them on private memory (the oracle's `set_protection` rule), and on an image
+view `PAGE_READWRITE` canonicalizes to `PAGE_WRITECOPY` (the oracle's
+`get_vprot_flags` with image=TRUE), which a following query reports.
+
+### Hazard F, decided: the share-mode gate, and its recorded residual
+
+The file changing under a live master is closed on the share-mode side, as docs/17
+§6F prescribes: while any image section or view of a file is alive, an open asking
+write access answers `STATUS_SHARING_VIOLATION` (pinned oracle-green by
+`sem_mm/image_deny_write`; the oracle's mapping fd enforces the same). Residual,
+recorded honestly: a *pre-existing* writable handle can still `NtWriteFile` the file
+while a master lives — real NT refuses that write through `MmFlushImageSection`, the
+oracle permits it, and no baked consumer does it. The same staleness already exists
+per-section today: the raw-byte snapshot is taken at `NtCreateSection`, so a write
+between create and map is invisible to the view. Masters widen the window across
+sections without changing its class; the gate closes the only path a real caller
+takes.
+
+### Hazard I (KASAN): vacuous by scope
+
+The tree's KASAN is pool-only (`kernel/mm/kasan.h`); COW's fresh frames are whole
+pages written through the HHDM, outside the shadow. Recorded so docs/17 §6's
+checklist item is visibly discharged rather than silently dropped.
+
 ## Debug objects are out of scope (permanent; ADR 0011)
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,
@@ -1262,10 +1337,10 @@ four-string walk — never the text.
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
 
-- **No COW initially** — private/image mappings copy fully on map. Costs RAM; unobservable
-  *at one process*. Past some process count the cost becomes a ceiling ring 3 observes as
-  `STATUS_NO_MEMORY`, which is the amendment argument `docs/17-cow-strategy.md` §2 builds —
-  measurement first.
+- **COW: image sections only (amended at CUI-9)** — the "no COW" mandate was lifted for
+  `SEC_IMAGE` on the measured ceiling (see "CUI-9 COW notes": ≈5.9 MB/process, refusal at
+  70 processes at the pinned 512M boot). Private memory and data-section `PAGE_WRITECOPY`
+  mappings still copy fully on map; anonymous sections still share their frames outright.
 - **No eviction, immediate writeback** — makes mapped-view/`ReadFile` consistency trivial.
 - **One dispatcher lock, uniprocessor** — turns every race into a plain state machine.
   Retiring "uniprocessor" is designed in `docs/18-smp-strategy.md` (giant lock, four entry

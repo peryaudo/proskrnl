@@ -63,7 +63,7 @@ conditions**, and those conditions are part of this article:
 
 | Mandate | Status | Entry conditions |
 |---|---|---|
-| No COW | unbuilt; image-section scope designed | `docs/17` §10 — measurement first, then the amendment, then the oracle pins |
+| No COW | **amended at CUI-9**: image-section masters + COW built; private/data mappings still copy eagerly | met — measurement (`docs/17` §1: 70-process ceiling at 512M), amendment (`docs/03` "CUI-9 COW notes"), oracle pins (`sem_mm/writecopy_*`, `image_deny_write`) |
 | Uniprocessor | unbuilt; giant-lock form designed | `docs/18` §13 — four gates, including that `docs/19` lands first and that a seeded schedule replay exists so Article 6 stays reachable |
 | No eviction / one pool | unbuilt; no consumer, no design | none written |
 

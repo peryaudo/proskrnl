@@ -1,10 +1,12 @@
 # 17 — Copy-on-Write Strategy
 
-**Nothing in this document is built.** Copy-on-write is *forbidden* by Article 3 ("no
+**Status: built at CUI-9.** Copy-on-write was *forbidden* by Article 3 ("no
 copy-on-write" is a mandate, not a default — `docs/09-constitution.md`, T4 in
-`docs/01-tradeoffs.md`). This document exists so that if we ever amend that mandate we
-do it on measured grounds, with the hazards enumerated up front rather than discovered
-on serial.
+`docs/01-tradeoffs.md`) until the CUI-9 amendment (`docs/03` "CUI-9 COW notes"), taken
+on the §2 measurement recorded in §1 — exactly the path this document existed to force:
+amend on measured grounds, with the hazards enumerated up front rather than discovered
+on serial. The document remains the spec and the record; §6's hazard D and F entries
+carry their decisions.
 
 It records: what the kernel does today, the only justification for COW that Article 3
 accepts, why COW is *safer here than in an ordinary kernel*, why the real work is not
@@ -126,11 +128,15 @@ read-only pages share. Risk is bought in two instalments instead of one.
 
 **In scope:** `SEC_IMAGE` sections — the read-only-shared master plus COW on write.
 
-**Out of scope for the first implementation:** `PAGE_WRITECOPY` on *file-backed data*
-sections. Data sections map the file's cache (`section.c:234`), so writecopy there lands
-squarely on mapped-view/`ReadFile` coherence — the one thing T4 bought outright and the
-one thing we must not spend. Until a baked consumer convicts it, the class **refuses
-loudly** per G12: no plausible no-op, no silent promotion to `PAGE_READWRITE`.
+**Out of scope for lazy COW:** `PAGE_WRITECOPY` on *file-backed data* sections. Data
+sections map the file's cache (`section.c:234`), so a lazy copy there lands squarely on
+mapped-view/`ReadFile` coherence — the one thing T4 bought outright and the one thing we
+must not spend. Those views keep their M5 implementation instead: an **eager private
+full copy at map time** (`section.c`, pinned oracle-green by `sem_mm/section_protect`
+and `sem_mm/writecopy_query`) — a legal implementation of writecopy's observable
+contract, never a silent promotion to shared `PAGE_READWRITE`. (An earlier revision of
+this section said the class "refuses loudly"; the tree never shipped that — the eager
+copy predates this document and is pinned.)
 
 Anonymous (pagefile-backed) sections need no COW: there is no fork in NT, so there is no
 second mapper to diverge from.
@@ -209,6 +215,14 @@ look at this shape.
 This must be a decision recorded in `docs/03`, pinned on the oracle if implemented and
 documented as a deviation if not. Discovering it later means a winetest pair convicts us
 after the fact.
+
+**Decided at CUI-9 (docs/03 "CUI-9 COW notes"): pin the oracle, which has NO
+transition.** The pinned Wine realizes writecopy silently through `MAP_PRIVATE` +
+`PROT_WRITE`, so a store never reaches it and it keeps reporting the WRITECOPY flavour;
+region splits never happen there. Diverging toward real NT's transition would turn a
+green pair red (Art. 6). `sem_mm/writecopy_query` pins the shape; the kernel keeps the
+recorded protection untouched across a COW copy — the shared/private state lives in the
+VAD's per-page frame-ownership record.
 
 ### E. Failure atomicity
 
