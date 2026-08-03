@@ -48,6 +48,16 @@ struct MI_VAD
      * MiCopyToUserRangeChecked). */
     BOOLEAN writeWatch;
     UCHAR *watchDirty; /* one byte per page; pool, zeroed */
+    /* CUI-9 image masters (docs/17 §4, docs/03 "CUI-9 COW notes"): a bound
+     * MEM_IMAGE view maps the shared already-relocated master's frames.
+     * `pagePrivate` (allocated only when `master` is set) is the per-page
+     * FRAME-OWNERSHIP record: 1 = this VAD owns a private copy (freed at
+     * decommit), 0 = the PTE points at a master frame (left alone). It is
+     * deliberately not the reported protection — the pinned oracle never
+     * transitions Protect on a writecopy store (docs/03 hazard D), so the
+     * shared/private state must live outside pageProtect. */
+    PVOID master;       /* MI_IMAGE_MASTER (opaque here); one ref, VAD-owned */
+    UCHAR *pagePrivate; /* one byte per page; pool, zeroed */
     /* CUI-7: the view's byte offset into its section (0 for private
      * memory), so NtFlushVirtualMemory can address the covered FILE range
      * (section.c used to compute and discard it). */
@@ -262,7 +272,11 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
             uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
             ASSERT(frame != 0);
             MiUnmapUserPage(space->pml4Physical, page);
-            if (vad->ownsFrames)
+            /* Frame ownership: per page for a master-bound view (private
+             * copies are the VAD's, master frames are the master's — the
+             * master deref in MiUnlinkAndFreeVad settles those), per VAD
+             * for everything else. */
+            if (vad->pagePrivate != 0 ? vad->pagePrivate[index] != 0 : vad->ownsFrames)
             {
                 MiFreePage(frame);
             }
@@ -274,6 +288,10 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
 static void MiUnlinkAndFreeVad(PMI_VAD vad)
 {
     RemoveEntryList(&vad->listEntry);
+    if (vad->master != 0)
+    {
+        MiDereferenceImageMaster(vad->master); /* the view's pin on the master */
+    }
     if (vad->sectionBody != 0)
     {
         ObDereferenceObject(vad->sectionBody); /* the view's pin on the section */
@@ -281,6 +299,10 @@ static void MiUnlinkAndFreeVad(PMI_VAD vad)
     if (vad->watchDirty != 0)
     {
         MiFreePool(vad->watchDirty);
+    }
+    if (vad->pagePrivate != 0)
+    {
+        MiFreePool(vad->pagePrivate);
     }
     MiFreePool(vad->pageProtect);
     MiFreePool(vad);
@@ -301,6 +323,8 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->ownsFrames = TRUE;
     vad->writeWatch = FALSE;
     vad->watchDirty = 0;
+    vad->master = 0;
+    vad->pagePrivate = 0;
     vad->sectionOffset = 0;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
@@ -707,15 +731,81 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
 }
 
 void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,
-                        uint64_t frame, ULONG protect)
+                        uint64_t frame, ULONG protect, BOOLEAN ownedFrame)
 {
     ULONG index = (ULONG)((virtualAddress - vad->base) / PAGE_SIZE);
     ASSERT(virtualAddress >= vad->base && index < MiVadPageCount(vad));
     ASSERT(vad->pageProtect[index] == 0); /* views commit each page exactly once */
+    if (vad->pagePrivate != 0)
+    {
+        vad->pagePrivate[index] = ownedFrame ? 1 : 0;
+    }
+    else
+    {
+        /* Without a per-page record, ownership is the VAD-wide flag; the
+         * caller's claim must agree with it. */
+        ASSERT(ownedFrame == vad->ownsFrames);
+    }
     int present, writable, executable;
     MiProtectToPteBits(protect, &present, &writable, &executable);
     MiMapUserPage(space->pml4Physical, virtualAddress, frame, present, writable, executable);
     vad->pageProtect[index] = protect;
+}
+
+/* CUI-9: bind an image view's VAD to its (identity, base) master. On
+ * success the VAD owns the caller's master reference (released by
+ * MiUnlinkAndFreeVad); on failure the caller keeps it. */
+NTSTATUS MiBindVadImageMaster(PMI_VAD vad, PVOID master)
+{
+    ASSERT(vad->type == MEM_IMAGE && vad->master == 0);
+    ASSERT(!vad->writeWatch); /* watch exists only on MEM_PRIVATE VADs */
+    vad->pagePrivate = MiAllocatePool(MiVadPageCount(vad)); /* pool zeroes */
+    if (vad->pagePrivate == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    vad->master = master;
+    return STATUS_SUCCESS;
+}
+
+/* docs/17 §8, "the highest-value single check": no writable PTE anywhere may
+ * point at a frame a shared master owns — one sweep catches a kernel write
+ * that skipped the resolver (hazard A), a writecopy satisfied by flipping
+ * the bit (B), a base-keying mistake (F), and a flush-eliding path (H).
+ * ASSERT is always compiled in; the walk is a few dozen pages per image
+ * view, on map/protect paths only. */
+void MiAssertNoWritableMasterPte(PMI_ADDRESS_SPACE space)
+{
+    for (PLIST_ENTRY entry = space->vadListHead.Flink; entry != &space->vadListHead;
+         entry = entry->Flink)
+    {
+        PMI_VAD vad = CONTAINING_RECORD(entry, MI_VAD, listEntry);
+        if (vad->master == 0)
+        {
+            continue;
+        }
+        for (ULONG index = 0; index < MiVadPageCount(vad); index++)
+        {
+            if (vad->pageProtect[index] == 0)
+            {
+                continue;
+            }
+            int writable = 0;
+            int present = 0;
+            uint64_t frame = MiTranslateUserPage(
+                space->pml4Physical, vad->base + (uint64_t)index * PAGE_SIZE, &writable, &present);
+            ASSERT(frame != 0);
+            if (vad->pagePrivate[index])
+            {
+                ASSERT(frame != MiImageMasterFrame(vad->master, index));
+            }
+            else
+            {
+                ASSERT(frame == MiImageMasterFrame(vad->master, index));
+                ASSERT(!writable);
+            }
+        }
+    }
 }
 
 void MiDeleteMappedVad(PMI_ADDRESS_SPACE space, PMI_VAD vad)
@@ -1588,6 +1678,40 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
 
     int present, writable, executable;
     MiProtectToPteBits(newProtect, &present, &writable, &executable);
+
+    /* CUI-9 masters: transitioning a still-shared master page to a
+     * protection-writable value privatizes it FIRST — neither the loader's
+     * import-fixup flips (the path this function exists for) nor any
+     * kernel-side write may ever see a writable PTE over a master frame
+     * (docs/17 §6A; the §8 sweep would halt on one). A pre-pass, so an
+     * out-of-frames failure leaves protections untouched: privatization
+     * alone is invisible (same bytes, same PTE rules). */
+    if (vad->master != 0 && writable)
+    {
+        for (uint64_t page = base; page < end; page += PAGE_SIZE)
+        {
+            ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+            if (vad->pagePrivate[index])
+            {
+                continue;
+            }
+            uint64_t copy = MiAllocatePage();
+            if (copy == 0)
+            {
+                return STATUS_NO_MEMORY;
+            }
+            uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
+            ASSERT(frame != 0);
+            memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
+            int oldPresent, oldWritable, oldExecutable;
+            MiProtectToPteBits(vad->pageProtect[index], &oldPresent, &oldWritable, &oldExecutable);
+            MiUnmapUserPage(space->pml4Physical, page);
+            MiMapUserPage(space->pml4Physical, page, copy, oldPresent,
+                          MipVadPageHwWritable(vad, index, oldWritable), oldExecutable);
+            vad->pagePrivate[index] = 1;
+        }
+    }
+
     ULONG oldProtect = 0;
     for (uint64_t page = base; page < end; page += PAGE_SIZE)
     {
@@ -1605,6 +1729,10 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
         MiMapUserPage(space->pml4Physical, page, frame, present,
                       MipVadPageHwWritable(vad, index, writable), executable);
         vad->pageProtect[index] = newProtect;
+    }
+    if (vad->master != 0)
+    {
+        MiAssertNoWritableMasterPte(space); /* docs/17 §8 */
     }
     *baseInOut = base;
     *sizeInOut = end - base;

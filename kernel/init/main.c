@@ -481,6 +481,13 @@ static void KiTestMainThread(void *context)
              cui8Failures);
     KiVerifyKernelState();
 
+    /* The CUI-9 shared-master verdicts (docs/17 §8): the sharing metric and
+     * the master lifecycle, in kernel mode over scratch address spaces. */
+    int cui9Failures = kmt_run_cui9();
+    DbgPrint(cui9Failures == 0 ? "[KTEST] CUI9 PASS\n" : "[KTEST] CUI9 FAIL failures=%d\n",
+             cui9Failures);
+    KiVerifyKernelState();
+
     /* The console driver's terminate-unwind states (tests/kmt/condrv_unwind.c):
      * it drives conhost's side of \Device\ConDrv\Server itself, so it must run
      * BEFORE smss starts the real conhost — there is one server slot. */

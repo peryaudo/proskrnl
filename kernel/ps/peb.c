@@ -93,7 +93,8 @@ NTSTATUS PspMapSharedUserData(PEPROCESS process)
     {
         return STATUS_NO_MEMORY;
     }
-    MiCommitFrameInVad(space, vad, PSP_SHARED_USER_DATA_VA, PspSharedUserDataFrame, PAGE_READONLY);
+    MiCommitFrameInVad(space, vad, PSP_SHARED_USER_DATA_VA, PspSharedUserDataFrame, PAGE_READONLY,
+                       FALSE /* the shared kernel-owned frame */);
     return STATUS_SUCCESS;
 }
 

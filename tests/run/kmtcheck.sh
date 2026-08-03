@@ -44,7 +44,7 @@ LOG="${1:-$ROOT/build/serial.log}"
 # not here — run.sh fatinterop/fatstress grep their own verdicts.
 SUITES=(
     M1 LIB M2 M3 M4 M5 M6
-    CUI8 CONDRV PREVENTIVE SCHED
+    CUI8 CUI9 CONDRV PREVENTIVE SCHED
     ABI M7 M8 M9
     sweep
 )
