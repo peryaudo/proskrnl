@@ -555,8 +555,16 @@ static void KiTestMainThread(void *context)
      * (Art. 9: eyeball the debugger's output without breaking the verdict). */
     __asm__ volatile("int3");
 
-    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
-                fatInteropFailures + m7Failures + sessionFailures;
+    /* EVERY suite this run reached, including the four that used to be left
+     * out — cui8/condrv/preventive/sched all report after M6, and a boot's
+     * verdict is one PASS_RE grep (tools/qemu.sh), so omitting them here left
+     * their counts with no reader at all. The log stays the authority for the
+     * verdict (tests/run/kmtcheck.sh reads these same lines, which is what
+     * `make test` gates on); this status is the second, in-kernel statement of
+     * the same total. abiFailures reaches it through KiRunSessionManager. */
+    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + cui8Failures +
+                condrvFailures + preventiveFailures + schedFailures + fatInteropFailures +
+                m7Failures + sessionFailures;
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

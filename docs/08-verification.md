@@ -261,6 +261,14 @@ echo "exit: $?"
   with an exit code and a log. (Hangs are routine early; this is the safety net.)
 - **structured log prefixes** — `[KTEST] name PASS` / `[PANIC] …` / `[ASSERT] file:line`.
   Keep machine-verdict output separate from human free-text. `tests/run/` greps these.
+  A boot's verdict is one `PASS_RE` grep, and one grep names **one line** — so a suite that
+  reports *after* the line `PASS_RE` names is reporting into the void. That is not
+  hypothetical: `CUI8`, `CONDRV`, `PREVENTIVE` and `SCHED` all print after `M9 PASS`, and
+  every `ok()` failure in them short of a panic turned no leg red. `tests/run/kmtcheck.sh`
+  (in `make test`) closes it by reading *every* suite's verdict line — each must be present
+  **and** PASS, so a suite that silently stopped running fails too, per the same rule the
+  `all-green` job states: a verdict nobody reached must never read as one that passed. A new
+  kmt suite is listed there in the commit that adds it, or it is ungated.
 - **the boot console** (`kernel/init/bootvid.c`) — the same log, mirrored onto the Limine
   framebuffer from the second line of boot until `FbInitialize` hands the scanout to the
   GUI. Serial stays the machine channel and is written first, always: the mirror is for a

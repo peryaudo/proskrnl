@@ -1329,13 +1329,15 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 .PHONY: wtests
 
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
-# verdict grepped off the serial log by tools/qemu.sh, then symcheck (the
-# symbolizer still resolves this boot's dumps — Art. 9) and the external FAT
-# oracle (fsck.fat + fatsweep + mtools byte-compares) on the mutated image —
-# make stops on a failed boot, so both only judge runs whose primary verdict
-# passed.
+# verdict grepped off the serial log by tools/qemu.sh, then kmtcheck (that
+# grep names ONE line, so every suite reporting after it needs its verdict
+# read too), symcheck (the symbolizer still resolves this boot's dumps —
+# Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
+# byte-compares) on the mutated image — make stops on a failed boot, so all
+# three only judge runs whose primary verdict passed.
 test: $(IMG)
 	tools/qemu.sh $(IMG)
+	tests/run/kmtcheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
 	tests/run/fatcheck.sh verify test $(IMG)
 
