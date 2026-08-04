@@ -1,13 +1,21 @@
 # 16 — Syscall status (the boundary, measured)
 
-A snapshot of the `Nt*` surface after **CUI-7**: the buildable surface is **complete**
-— every id either has a kernel service or is missing by decision, not debt. The one
-remaining build plan on the boundary is `docs/02` Net-1 (sockets, a new subsystem).
+A snapshot of the `Nt*` surface, id counts re-derived at **CUI-9**: the buildable
+surface is **complete** — every id either has a kernel service or is missing by
+decision, not debt. The one remaining build plan on the boundary is `docs/02` Net-1
+(sockets, a new subsystem).
+
+The id tally has not moved since CUI-7 (CUI-8 and CUI-9 changed *how* built ids
+behave — async parking, COW image masters — not *which* ids exist). What does move
+between milestones is the partial-service list at the bottom, which is the part of
+this document worth re-deriving most often.
 
 **How to re-derive this (never trust the prose over the table):** the id space is the
 pinned Wine tree's own 64-bit syscall table, generated into `kernel/syscall/table.inc`
-by `tools/gen_syscalls.py` (Art. 4 — extracted, never retyped). Count `KI_SYSCALL(`
-vs. `KI_SYSCALL_MISSING(` rows there; find live callers by grepping the missing names
+by `tools/gen_syscalls.py` (Art. 4 — extracted, never retyped). Count `^KI_SYSCALL(0x`
+vs. `^KI_SYSCALL_MISSING(0x` rows there — anchor the pattern and include the `0x`, or
+the file's own header comment (which spells both macro names) inflates each count by
+one. Find live callers by grepping the missing names
 across `third_party/wine/dlls/*.c` and `programs/*.c`, excluding `ntdll/unix/` (the
 unixlib we replaced), `signal_arm64ec.c` / `wow64/` (not x64 CUI paths), `.spec`
 thunk tables, and `*/tests/`. Kernelbase/kernel32 `.spec` forwards count as callers
@@ -68,25 +76,114 @@ consumer) and G12 (they refuse loudly forever, they don't fake success):
 An id in this table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out of
 scope" means we never *implement* it, not that it ever fakes success.
 
-## Partial services (implemented ids that refuse the class real apps ask for)
+## Partial services (implemented ids that refuse the case real apps ask for)
 
 These read as "implemented" in any id tally and are what an off-the-shelf CUI app
 trips over *first*. Each refusal is loud (the dispatcher's `syscall PARTIAL` line,
-`kernel/syscall/table.c`). Ranked roughly by blast radius:
+`kernel/syscall/table.c`), and under the default-on
+`KiPanicOnNotImplemented` arming (`docs/03` "Panic-on-STATUS_NOT_IMPLEMENTED
+boot") a ring-3 caller reaching one panics rather than limps — so this list is
+also the list of ways a new consumer can take the machine down loudly.
 
-*(CUI-7 closed the `SystemTimeAdjustmentInformation` set/query pair and the
-`NtQueryVirtualMemory`-adjacent `*Ex` surface; CUI-6 closed the
-process/thread/handle query gaps: `NtQueryObject`'s
-`ObjectHandleFlagInformation`; `NtQueryInformationProcess`'s `ProcessTimes`/
-`ProcessPriorityClass`/`ProcessHandleCount`/`ProcessImageFileName`;
-`NtQueryInformationThread`'s `ThreadTimes`/`ThreadQuerySetWin32StartAddress`;
-`NtQuerySystemInformation`'s `SystemHandleInformation`/`SystemModuleInformation`/
-`SystemProcessorPerformanceInformation`; jobs finished with nesting + real
-accounting; foreign `NtGet/SetContextThread` and `NtOpenThread` by CLIENT_ID.
-See docs/03 "CUI-6 handles/identity notes".)*
+**How to re-derive this section:** a partial service is an implemented id that can
+still return `STATUS_NOT_IMPLEMENTED` from some arm. Grep
+`STATUS_NOT_IMPLEMENTED` across `kernel/`, `drivers/`, and `fs/`, drop the
+dispatcher/arming machinery in `kernel/syscall/` and `kernel/init/main.c` and the
+prose in comments, and map each remaining site to its enclosing service. Do not
+grep for the id list instead — a partial id is `KI_SYSCALL`, indistinguishable
+from a complete one in `table.inc`. **The table below is that derivation, run at
+CUI-9; it goes stale the same way the id counts do.** Grouped by shape, not
+ranked — blast radius depends on which consumer is baked next.
 
-- **Async I/O is two verbs wide** — `FSCTL_PIPE_LISTEN` (`docs/03` "CUI-3
-  SCM notes") and CUI-5's directory watches pend; data transfers stay
-  synchronous, and no consumer has convicted a wider surface
-  (`FileCompletionInformation` port association stays unbuilt — `docs/03`
-  "CUI-5 Io-completion notes").
+### Info-class switches with a refusing `default:`
+
+The bulk of the partial surface: the class arms a baked consumer asks for are
+built, the rest refuse.
+
+| service | built arms | refusal site |
+|---|---|---|
+| `NtQuerySystemInformation` | 14: `SystemProcessInformation`, `SystemBasicInformation`, `SystemHandleInformation`, `SystemModuleInformation`, `SystemProcessorPerformanceInformation`, `SystemCpuInformation`, `SystemTimeAdjustmentInformation`, `SystemTimeOfDayInformation`, `SystemCurrentTimeZoneInformation`, `SystemDynamicTimeZoneInformation`, `SystemPerformanceInformation`, `SystemInterruptInformation`, `SystemFirmwareTableInformation`, `SystemWineVersionInformation` | `kernel/ps/query.c:1540` |
+| `NtQuerySystemInformationEx` | 1: `SystemSupportedProcessorArchitectures` | `kernel/ps/query.c:1620` |
+| `NtQueryInformationProcess` | 12 | `kernel/ps/query.c:484` |
+| `NtQueryInformationThread` | — | `kernel/ps/thread.c:1416` |
+| `NtSetInformationThread` | — | `kernel/ps/thread.c:1536` |
+| `NtQueryInformationToken` | — | `kernel/se/token.c:1126` |
+| `NtSetInformationToken` | — | `kernel/se/token.c:1575` |
+| `NtQueryInformationJobObject` | — | `kernel/ps/job.c:675` |
+| `NtSetInformationJobObject` | — | `kernel/ps/job.c:320` |
+| `NtSetInformationObject` | 1: `ObjectHandleFlagInformation` | `kernel/ob/handle.c:452` |
+| `NtQuerySection` | 2: `SectionBasicInformation`, `SectionImageInformation` | `kernel/mm/section.c:1283` |
+| `NtPowerInformation` | 1: `ProcessorInformation` | `kernel/ps/query.c:1949` |
+| `NtQueryInformationFile` | — | `kernel/io/query.c:141` |
+| `NtSetInformationFile` | — | `kernel/io/query.c:596` |
+| `NtQueryVolumeInformationFile` | — | `kernel/io/query.c:1342` |
+
+Two narrower gaps sit *inside* an arm that counts as built:
+`SystemFirmwareTableInformation` serves only the `RSMB` provider and one action,
+and refuses outright when firmware published no SMBIOS (`kernel/ps/query.c:962`,
+`:980`, `:986` — `docs/03` "`SystemFirmwareTableInformation` (76)");
+`NtQueryInformationFile`'s `FileInternalInformation` refuses on a backing with no
+file identity rather than inventing one (`kernel/io/query.c:248`).
+`NtQueryVolumeInformationFile` additionally refuses per-class on handles with no
+volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
+`:1272`, `:1308`).
+
+### Argument-shape gaps (the verb is built, one calling form is not)
+
+- **User APCs on I/O.** No baked caller passes one (kernelbase sends NULL and uses
+  the event/key legs), so the APC form refuses across `NtReadFile`/`NtWriteFile`
+  (`kernel/io/rw.c:651`), `NtDeviceIoControlFile`/`NtFsControlFile`
+  (`kernel/io/ioctl.c:38`), and `NtQueryDirectoryFile` (`kernel/io/query.c:963`).
+  Note this survived CUI-8: async I/O is now real (a transfer parks its issuer and
+  answers the pending shape — `docs/03` "CUI-8 async notes"), but the *completion
+  APC* calling form is a separate question and stays unbuilt.
+- `NtLockFile` — a non-NULL apc, iosb, or key (`kernel/io/lock.c:158`);
+  `NtUnlockFile` — the keyed form (`kernel/io/lock.c:227`).
+- `NtSetTimer` — a timer APC routine; nothing on the CUI path arms one
+  (`kernel/ob/sync.c:569`).
+- `NtQueueApcThreadEx2` — a non-NULL reserve handle (`kernel/ps/thread.c:790`).
+- `NtOpenProcess` — a named open, i.e. anything but the toolhelp path
+  (`kernel/ps/process.c:1221`).
+- `NtCreateUserProcess` — any process flag beyond inherit-handles / suspended /
+  breakaway (`kernel/ps/process.c:1506`).
+- `NtGetContextThread` / `NtSetContextThread` — a target with no ring-3 trap frame
+  (`kernel/ps/usermode.c:751`).
+
+### Mm flag gaps
+
+The CUI-7 placeholder decisions, unchanged by CUI-9's COW work: `SEC_RESERVE` in
+`NtCreateSection`/`NtCreateSectionEx` (`kernel/mm/section.c:122`),
+`MEM_RESERVE_PLACEHOLDER`/`MEM_REPLACE_PLACEHOLDER` in `NtAllocateVirtualMemoryEx`
+(`kernel/mm/virtual.c:1632`), `MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`
+(`kernel/mm/section.c:1186`), `MEM_PRESERVE_PLACEHOLDER` in
+`NtUnmapViewOfSectionEx` (`kernel/mm/section.c:1264`).
+
+### Refusing in full, by design
+
+`NtCallbackReturn` (`kernel/ps/query.c:2194`) is an implemented id that refuses
+every call. `PEB->KernelCallbackTable` is null, so it is unreachable; the refusal
+exists so that if the unreachability argument ever breaks, the panic net says so
+instead of a hardwired plausible status hiding it.
+
+### Below the syscall line
+
+Reachable through `NtDeviceIoControlFile`, and partial in the same sense: the
+framebuffer's ioctl default (`drivers/fb.c:167`) and the HID pointer's
+(`drivers/hid.c:194`). `PsPropagateConsoleCtrlEvent` serves only `CTRL_C_EVENT`
+and `CTRL_BREAK_EVENT` (`kernel/ps/process.c:1128`), matching the delivery
+wineserver's `propagate_console_signal` implements.
+
+### The one inverted case — worth knowing about
+
+`NtSetInformationProcess` (`kernel/ps/query.c:621`) is the opposite shape. After
+three explicit classes (`ProcessWineMakeProcessSystem`,
+`ProcessDefaultHardErrorMode`, `ProcessPriorityClass`) its default **accepts as a
+no-op** and returns `STATUS_SUCCESS`, naming the class on serial. That is
+deliberate — the classes ntdll sets at startup have no observable effect here —
+but it means this service never trips the `syscall PARTIAL` line or the armed
+panic, so it reads as complete in any tally while being the one place a class
+whose effect *does* matter could pass silently. The serial line is the entire
+safety net; it is what caught `ProcessWineMakeProcessSystem` and the hard-error
+mode, both of which then became real implementations. Treat an unexplained
+`ps: NtSetInformationProcess class N accepted as a no-op` in a boot log as a
+suspect, not noise.
