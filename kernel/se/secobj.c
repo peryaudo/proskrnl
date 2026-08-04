@@ -132,7 +132,10 @@ NTSTATUS NtQuerySecurityObject(HANDLE handle, SECURITY_INFORMATION securityInfor
         {
             header->Dacl = offset;
             memcpy(reply + offset, parts, daclLength);
-            offset += daclLength;
+            /* Advanced past the last part too: the four blocks are one
+             * pattern, and dropping the tail step is how the next one
+             * inserted after it starts overwriting. */
+            offset += daclLength; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
         }
     }
     ObDereferenceObject(body);

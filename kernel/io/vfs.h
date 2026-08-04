@@ -102,6 +102,10 @@ typedef struct
     BOOLEAN supportsObjects; /* Wine: TRUE exactly for NTFS */
 } IO_VOLUME_INFO;
 
+/* NOLINTBEGIN(readability-identifier-naming) — the dispatch slots below are
+ * names of code, not runtime values, so they take the PascalCase of docs/15's
+ * function row (and of the IRP_MJ_* operations they stand for), not the
+ * camelCase of a data member. */
 typedef struct IO_VFS_OPS
 {
     /* Resolve `path` (relative to the volume root, or to relativeTo when
@@ -242,5 +246,6 @@ typedef struct IO_VFS_OPS
      ULONG_PTR *infoOut);
     NTSTATUS (*SetPipeInfo)(struct FILE_OBJECT *file, const FILE_PIPE_INFORMATION *info);
 } IO_VFS_OPS;
+/* NOLINTEND(readability-identifier-naming) */
 
 #endif /* PROSKRNL_KERNEL_IO_VFS_H */
