@@ -256,59 +256,88 @@ static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64
     return STATUS_SUCCESS;
 }
 
-/* Resolve the ring-3 return-protocol entry points from a mapped image's export
- * table (kernel/mm/pecoff.c), reading the raw file bytes. NT keeps these in
+/* The ring-3 return-protocol entry points, as export RVAs. NT keeps these in
  * ntoskrnl's KeUser* globals, initialized from ntdll's exports; here they are
  * per-process, resolved from ntdll — or, for a native single-image client,
  * from the image itself. Missing exports leave the field 0 (a flat binary or
- * an image without the dispatchers: exceptions then kill the process). */
-static void PspResolveUserDispatchers(PEPROCESS process, PMI_SECTION section, uint64_t base)
+ * an image without the dispatchers: exceptions then kill the process).
+ *
+ * Two phases around the map on purpose (CUI-9): the lookup runs BEFORE the
+ * section is mapped, while its create-time raw-byte snapshot still exists —
+ * the map's first master bind releases the snapshot, and re-sourcing it
+ * afterwards re-read the ENTIRE file into pool on every spawn (a multi-MB
+ * allocation on exactly the memory-pressure path the milestone measures),
+ * with a silent all-zeros fallback when that allocation failed. The RVAs
+ * need no base; the apply phase adds the mapped base afterwards. */
+typedef struct PSP_USER_DISPATCHER_RVAS
 {
+    uint32_t exceptionDispatcher;
+    uint32_t apcDispatcher;
+    uint32_t ldrInitializeThunk;
+    uint32_t rtlUserThreadStart;
+    uint32_t ctrlRoutine;
+} PSP_USER_DISPATCHER_RVAS;
+
+static void PspLookupUserDispatcherRvas(PMI_SECTION section, PSP_USER_DISPATCHER_RVAS *rvas)
+{
+    memset(rvas, 0, sizeof(*rvas));
     if (section->image == 0)
     {
         return;
     }
-    /* CUI-9: the create-time snapshot is released once a master is bound
-     * (which the map that produced `base` just did), so borrow the bytes
-     * through the one re-source authority (mm/section.c). */
+    /* Pre-map the snapshot is still attached, so this borrows it without
+     * allocating; the re-read arm stays as the one re-source authority's
+     * fallback (mm/section.c) and now refuses LOUDLY instead of leaving the
+     * dispatchers 0 for the process to die on later (G12's shape). */
     const void *rawData;
     void *tempRaw;
-    if (!NT_SUCCESS(MiAcquireImageRawBytes(section, &rawData, &tempRaw)))
+    NTSTATUS status = MiAcquireImageRawBytes(section, &rawData, &tempRaw);
+    if (!NT_SUCCESS(status))
     {
-        return; /* dispatchers stay 0: the flat-binary shape, process dies on use */
+        DbgPrint("[PS] dispatcher export resolution failed (%#x): dispatchers unset\n",
+                 (unsigned)status);
+        return;
     }
-    uint32_t rva;
-    rva =
+    rvas->exceptionDispatcher =
         MiLookupImageExport(rawData, section->rawSize, section->image, "KiUserExceptionDispatcher");
-    if (rva != 0)
-    {
-        process->userExceptionDispatcher = base + rva;
-    }
-    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "KiUserApcDispatcher");
-    if (rva != 0)
-    {
-        process->userApcDispatcher = base + rva;
-    }
-    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "LdrInitializeThunk");
-    if (rva != 0)
-    {
-        process->ldrInitializeThunk = base + rva;
-    }
-    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "RtlUserThreadStart");
-    if (rva != 0)
-    {
-        process->rtlUserThreadStart = base + rva;
-    }
+    rvas->apcDispatcher =
+        MiLookupImageExport(rawData, section->rawSize, section->image, "KiUserApcDispatcher");
+    rvas->ldrInitializeThunk =
+        MiLookupImageExport(rawData, section->rawSize, section->image, "LdrInitializeThunk");
+    rvas->rtlUserThreadStart =
+        MiLookupImageExport(rawData, section->rawSize, section->image, "RtlUserThreadStart");
     /* CUI-4: the console-control entry. ntdll exports it (dlls/ntdll/
      * ntdll.spec, loader.c __wine_ctrl_routine) precisely so the OS can start
      * a thread there to deliver CTRL_C/CTRL_BREAK; it forwards to
      * kernelbase's CtrlRoutine, which runs the process's handler list. */
-    rva = MiLookupImageExport(rawData, section->rawSize, section->image, "__wine_ctrl_routine");
-    if (rva != 0)
-    {
-        process->ctrlRoutine = base + rva;
-    }
+    rvas->ctrlRoutine =
+        MiLookupImageExport(rawData, section->rawSize, section->image, "__wine_ctrl_routine");
     MiReleaseImageRawBytes(tempRaw);
+}
+
+static void PspApplyUserDispatchers(PEPROCESS process, const PSP_USER_DISPATCHER_RVAS *rvas,
+                                    uint64_t base)
+{
+    if (rvas->exceptionDispatcher != 0)
+    {
+        process->userExceptionDispatcher = base + rvas->exceptionDispatcher;
+    }
+    if (rvas->apcDispatcher != 0)
+    {
+        process->userApcDispatcher = base + rvas->apcDispatcher;
+    }
+    if (rvas->ldrInitializeThunk != 0)
+    {
+        process->ldrInitializeThunk = base + rvas->ldrInitializeThunk;
+    }
+    if (rvas->rtlUserThreadStart != 0)
+    {
+        process->rtlUserThreadStart = base + rvas->rtlUserThreadStart;
+    }
+    if (rvas->ctrlRoutine != 0)
+    {
+        process->ctrlRoutine = base + rvas->ctrlRoutine;
+    }
 }
 
 /* The main image's SECTION_IMAGE_INFORMATION from the PE parse (abi shape;
@@ -372,11 +401,14 @@ static NTSTATUS PspMapImage(PEPROCESS process, PKI_RAMDISK_FILE file, uint64_t *
     {
         return status;
     }
+    /* RVAs before the map — the map's master bind releases the snapshot. */
+    PSP_USER_DISPATCHER_RVAS dispatcherRvas;
+    PspLookupUserDispatcherRvas(section, &dispatcherRvas);
     status =
         PspMapImageSection(process, section, entryOut, baseOut, stackReserveOut, stackCommitOut);
     if (NT_SUCCESS(status))
     {
-        PspResolveUserDispatchers(process, section, *baseOut);
+        PspApplyUserDispatchers(process, &dispatcherRvas, *baseOut);
     }
     ObDereferenceObject(section); /* the view holds its own pin */
     return status;
@@ -691,11 +723,17 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
         }
     }
 
-    /* The executable first (it prefers its header base), then ntdll. */
+    /* The executable first (it prefers its header base), then ntdll. The
+     * return-protocol entry points come from ntdll, exactly as NT resolves
+     * its KeUser* globals from the system DLL's exports — RVAs looked up
+     * before the map (which releases the section's snapshot), applied to
+     * the mapped base after. */
     uint64_t entry = 0;
     uint64_t imageBase = 0;
     uint64_t stackReserve = PSP_STACK_RESERVE;
     uint64_t stackCommit = PSP_STACK_COMMIT;
+    PSP_USER_DISPATCHER_RVAS dispatcherRvas;
+    PspLookupUserDispatcherRvas(ntdllSection, &dispatcherRvas);
     status =
         PspMapImageSection(process, exeSection, &entry, &imageBase, &stackReserve, &stackCommit);
     uint64_t ntdllEntry = 0;
@@ -706,9 +744,7 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     }
     if (NT_SUCCESS(status))
     {
-        /* The return-protocol entry points come from ntdll, exactly as NT
-         * resolves its KeUser* globals from the system DLL's exports. */
-        PspResolveUserDispatchers(process, ntdllSection, ntdllBase);
+        PspApplyUserDispatchers(process, &dispatcherRvas, ntdllBase);
         process->ntdllBase = ntdllBase;
         if (process->ldrInitializeThunk == 0 || process->rtlUserThreadStart == 0)
         {
