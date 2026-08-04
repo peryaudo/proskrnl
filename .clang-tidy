@@ -1,9 +1,16 @@
 # proskrnl — clang-tidy for freestanding kernel C.
 #
 # Enforces the Win32/NT casing of docs/15 via readability-identifier-naming
-# (run `make tidy`), plus a starter set of correctness checks. Tests use Wine
-# test style (snake_case) and have their own tests/.clang-tidy that turns the
-# naming check off. Third-party headers are excluded via HeaderFilterRegex.
+# (run `make tidy`, which applies every fix clang-tidy can make and fails on
+# what is left), plus a set of correctness checks the tree is clean under.
+# tests/ and user/wine/ inherit this file and turn the naming check off
+# (Wine style); third-party headers are excluded via HeaderFilterRegex.
+#
+# The rule for this file: a check stays enabled only if the tree is clean
+# under it, so a warning always means "you introduced something". A check
+# that fires on the NT idioms docs/15 mandates is disabled here with a
+# reason; a one-off deliberate exception is a NOLINT at the site with a
+# reason. Neither is ever left as standing noise.
 Checks: >
   clang-analyzer-*,
   bugprone-*,
@@ -15,13 +22,38 @@ Checks: >
   -misc-use-internal-linkage,
   -misc-include-cleaner,
   -misc-unused-parameters,
-  -clang-analyzer-security.insecureAPI.*
+  -clang-analyzer-security.insecureAPI.*,
+  -clang-analyzer-optin.performance.*,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-narrowing-conversions,
+  -bugprone-misplaced-widening-cast,
+  -bugprone-too-small-loop-variable,
+  -misc-redundant-expression
 # Disabled and why: branch-clone false-positives on type-varying va_arg dispatch;
 # use-internal-linkage can't see asm/linker (ENTRY) references, so it wrongly
 # flags KiSystemStartup/KiDispatchTrap; include-cleaner is noisy IWYU for
 # freestanding code; easily-swappable-parameters/no-recursion are style noise;
 # unused-parameters is unavoidable under docs/15 (NT signatures fix the
-# parameter lists — increment/wait/waitMode are meaningless under Art. 3).
+# parameter lists — increment/wait/waitMode are meaningless under Art. 3);
+# optin.performance.Padding wants NT-shaped structs (KTHREAD, EPROCESS)
+# reordered for cache lines, which is exactly the optimization Art. 3 forbids.
+# The four conversion checks and the pointer one fire on the NT surface itself,
+# not on anything a caller could get wrong here:
+#   multi-level-implicit-pointer-conversion — `PHANDLE`/`PVOID *` arguments
+#     passed to a `PVOID` parameter (KiProbeForWrite, memcpy) is the shape of
+#     every Nt* out-parameter;
+#   assignment-in-if-condition — `if (!NT_SUCCESS(status = Foo(...)))` is the
+#     capture idiom the Se/Io paths are written in;
+#   implicit-widening-of-multiplication-result — `4 * PAGE_SIZE`, `n *
+#     sizeof(WCHAR)`: int-typed constant arithmetic assigned to SIZE_T;
+#   narrowing-conversions / misplaced-widening-cast / too-small-loop-variable —
+#     C's promotions make every store into NT's CHAR/USHORT fields (and every
+#     `(unsigned long)` cast a DbgPrint conversion specifier needs) a narrowing
+#     or a "misplaced" widening.
+# redundant-expression sees the shared bits of two ABI masks (FILE_GENERIC_READ
+# | FILE_GENERIC_WRITE both carry SYNCHRONIZE) as a repeated operand.
 WarningsAsErrors: ''
 HeaderFilterRegex: '(kernel|arch|drivers|fs|user/smss)/'
 FormatStyle: file
@@ -33,8 +65,14 @@ CheckOptions:
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
+  # NT enumerators are PascalCase (KernelMode, Executive,
+  # ProcessBasicInformation); an enum used as a plain constant table
+  # (PSP_PARAM_IMAGE_PATH) is UPPER_SNAKE like any other constant. Both are
+  # docs/15, so the case rule names one and the regexp lets the other through.
   - key: readability-identifier-naming.EnumConstantCase
-    value: UPPER_CASE
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '[A-Z][A-Z0-9]*(_[A-Z0-9]+)+'
   # Runtime values -> camelCase.
   - key: readability-identifier-naming.ParameterCase
     value: camelBack
@@ -46,10 +84,21 @@ CheckOptions:
     value: camelBack
   - key: readability-identifier-naming.MemberCase
     value: camelBack
+  # clang-tidy's Static* kinds are the FUNCTION-LOCAL statics (a file-scope
+  # static is a GlobalVariable/GlobalConstant here). A mutable one is module
+  # state that happens to be declared inside its only user, so it keeps the
+  # prefixed PascalCase of a global (ObpNextTypeIndex); a `const` one is just
+  # a local constant with a longer life (systemRoot), so it stays camelCase.
+  - key: readability-identifier-naming.StaticVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantCase
+    value: camelBack
   # Module globals (incl. file-scope static) -> PascalCase, prefixed.
   - key: readability-identifier-naming.GlobalVariableCase
     value: CamelCase
   - key: readability-identifier-naming.GlobalConstantCase
     value: CamelCase
-  - key: readability-identifier-naming.StaticVariableCase
+  - key: readability-identifier-naming.GlobalPointerCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPointerCase
     value: CamelCase

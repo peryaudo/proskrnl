@@ -2,9 +2,13 @@
 # kernel casing of docs/15 — so the identifier-naming check is off here. Test
 # files also forward-declare Windows API names (NtCreateEvent, …) that must keep
 # their PascalCase, which a naming rule would wrongly flag.
+#
+# Everything else comes from the root .clang-tidy: inheriting it (rather than
+# re-listing the check set) is what keeps the two from drifting — the root's
+# "disabled and why" list applied to the kernel only, so tests carried a few
+# hundred warnings of insecureAPI/padding noise nobody could act on.
+InheritParentConfig: true
 Checks: >
-  clang-analyzer-*,
-  bugprone-*,
   -readability-identifier-naming
 WarningsAsErrors: ''
 HeaderFilterRegex: 'tests/'

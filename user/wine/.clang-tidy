@@ -3,9 +3,8 @@
 # Wine's layout), so the NT identifier-naming rule does not apply. The
 # neighbouring .clang-format DisableFormat keeps the layout out of scope the
 # same way. user/smss, which is our own code, follows the kernel rules.
+InheritParentConfig: true
 Checks: >
-  clang-analyzer-*,
-  bugprone-*,
   -readability-identifier-naming
 WarningsAsErrors: ''
 HeaderFilterRegex: 'user/wine/'
