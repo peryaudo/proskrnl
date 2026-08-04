@@ -1,57 +1,113 @@
-# The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
-# own test suite"): every <test_exe>:<subtest> pair here must exit 0 (zero
-# winetest failures) under the pinned Wine oracle AND on proskrnl
-# (tests/run/run.sh winetest). Curated: a pair joins only once it is green on
-# BOTH runners; pairs blocked on unimplemented surface or oracle-side
-# failures stay out with their causes recorded in docs/03 "M10 winetest
-# notes".
+# The winetest gate's manifest (tests/run/run.sh winetest): the FULL non-GUI
+# sweep of Wine's own test suite — every subtest of ntdll, kernel32,
+# programs/cmd, msvcrt and ucrtbase, run under the pinned Wine oracle AND on
+# proskrnl from ONE binary per module (Makefile `wtests`, the pinned tree's
+# own unmodified test objects linked standalone).
+#
+# advapi32 is deliberately out: its subject is the security/registry service
+# surface, covered by the CUI-2/CUI-3 legs (tests/run/run.sh console, scm) and
+# by tests/ntapi, not by this gate. user32 is out too — the GUI trophy has its
+# own manifest (manifest-gui.txt, tests/run/run.sh guiwtest).
+#
+# COVERAGE, NOT CURATION. This file used to list only the pairs already green
+# on both runners; it now lists every pair the five modules have, so the leg
+# measures the whole non-GUI frontier instead of the part already crossed. A
+# red pair here is a finding to work through, not a merge blocker to route
+# around — the parked-pair causes that used to live in these comments are in
+# docs/03 "M10 winetest notes".
+#
+# <exe>:<subtest>[:<timeout_s>] — the third field is the per-pair timeout
+# (user/smss/session.c SessionParseWtestManifest); absent means 300 s.
+
+# --- ntdll (third_party/wine/dlls/ntdll/tests) ------------------------------
+ntdll_test.exe:alpc
 ntdll_test.exe:atom
+ntdll_test.exe:change
+ntdll_test.exe:directory
 ntdll_test.exe:env
 ntdll_test.exe:error
+ntdll_test.exe:exception
+ntdll_test.exe:file
+ntdll_test.exe:generated
+ntdll_test.exe:info
 ntdll_test.exe:large_int
+ntdll_test.exe:om
+ntdll_test.exe:path
+ntdll_test.exe:pipe
+ntdll_test.exe:port
+ntdll_test.exe:reg
+ntdll_test.exe:rtl
 ntdll_test.exe:rtlbitmap
 ntdll_test.exe:rtlstr
 ntdll_test.exe:string
-# ntdll_test.exe:time is out: oracle-side USD/NtQuerySystemTime race on
-# shared CI runners (docs/03 "M10 winetest notes")
+ntdll_test.exe:sync
+ntdll_test.exe:thread
+ntdll_test.exe:threadpool
+ntdll_test.exe:time
+ntdll_test.exe:unwind
+ntdll_test.exe:virtual
+ntdll_test.exe:wow64
+
+# --- kernel32 (third_party/wine/dlls/kernel32/tests) ------------------------
+kernel32_test.exe:actctx
 kernel32_test.exe:atom
+kernel32_test.exe:change
 kernel32_test.exe:codepage
+kernel32_test.exe:comm
+kernel32_test.exe:console
+kernel32_test.exe:debugger
 kernel32_test.exe:directory
+kernel32_test.exe:drive
 kernel32_test.exe:environ
+kernel32_test.exe:fiber
+kernel32_test.exe:file
 kernel32_test.exe:format_msg
+kernel32_test.exe:generated
 kernel32_test.exe:heap
+kernel32_test.exe:loader
+kernel32_test.exe:locale
+kernel32_test.exe:mailslot
+kernel32_test.exe:module
+kernel32_test.exe:path
+kernel32_test.exe:pipe
+kernel32_test.exe:power
+kernel32_test.exe:process
+kernel32_test.exe:profile
+kernel32_test.exe:resource
+kernel32_test.exe:sync
+kernel32_test.exe:thread
+kernel32_test.exe:time
+kernel32_test.exe:timer
+kernel32_test.exe:toolhelp
+kernel32_test.exe:version
+kernel32_test.exe:virtual
+kernel32_test.exe:volume
+
+# --- msvcrt (third_party/wine/dlls/msvcrt/tests) ----------------------------
+msvcrt_test.exe:cpp
 msvcrt_test.exe:data
 msvcrt_test.exe:dir
 msvcrt_test.exe:environ
+msvcrt_test.exe:file
 msvcrt_test.exe:heap
+msvcrt_test.exe:locale
+msvcrt_test.exe:misc
 msvcrt_test.exe:printf
 msvcrt_test.exe:scanf
 msvcrt_test.exe:signal
 msvcrt_test.exe:string
+msvcrt_test.exe:time
+
+# --- ucrtbase (third_party/wine/dlls/ucrtbase/tests) ------------------------
+ucrtbase_test.exe:cpp
 ucrtbase_test.exe:environ
+ucrtbase_test.exe:file
+ucrtbase_test.exe:misc
 ucrtbase_test.exe:printf
 ucrtbase_test.exe:scanf
 ucrtbase_test.exe:string
-# CUI-5 unpark: cmd's directory subtests joined once rename landed (its
-# 6 proskrnl-only failures were all the missing MoveFile path). The
-# ntdll/kernel32 change pairs stay parked on the single-record/no-buffering
-# watch model - causes in docs/03 "M10 winetest notes".
+ucrtbase_test.exe:thread
+
+# --- cmd (third_party/wine/programs/cmd/tests) ------------------------------
+cmd.exe_test.exe:batch
 cmd.exe_test.exe:directory
-# CUI-6 added no pairs: no parked pair above was blocked on the handle/
-# identity/query surface it built, and none was added unverified (a pair
-# joins only once green on BOTH runners). The object-manager/token subtests
-# are candidates for a future unpark once a winetest run confirms them.
-# CUI-7 added no pairs either: the natural candidates (ntdll:virtual,
-# kernel32:virtual - parked since M10 on the missing Mm surface) both
-# exercise placeholder allocation (test_NtAllocateVirtualMemoryEx and the
-# VirtualAlloc2 blocks), which proskrnl deliberately refuses loudly
-# (docs/03 "CUI-7"; no baked consumer) - and under the armed
-# panic-on-NOT_IMPLEMENTED boot that refusal is fatal by design, so the
-# pairs cannot run to a verdict until placeholders are built.
-# CUI-8 added no pairs, as docs/19 par.8.5 predicted for a milestone that
-# adds no Nt* - and the par.8.5 re-check for the invisible case (a pair
-# parked on overlapped-I/O BEHAVIOUR rather than on a missing id) found
-# none: every parked pair above names a missing surface (placeholders, the
-# watch-buffering model, oracle-side races), not an async-file-data
-# behaviour. The ring-3 answers CUI-8 pinned (the async-handle pending
-# shape) were already the oracle's, so no pair's verdict could have moved.

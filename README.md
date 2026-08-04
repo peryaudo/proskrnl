@@ -233,7 +233,7 @@ tests/run/run.sh proskrnl query_dir   # ...or one test / a glob, while iterating
 tests/run/run.sh fuzz       # the differential fuzzer: random Nt* sequences, oracle vs kernel
 tests/run/run.sh persist    # tests that registry values survive a reboot (boot twice)
 tests/run/run.sh console    # tests that typing into the serial console is working
-tests/run/run.sh winetest   # runs the curated subset of winetest
+tests/run/run.sh winetest   # runs the full non-GUI sweep of winetest
 tests/run/run.sh firstboot  # CUI-1: diff the firstboot registry against the oracle's prefix
 tests/run/run.sh scm        # CUI-3: sc install/start round-trip, then reboot-survival autostart
 tests/run/run.sh procs      # CUI-4: Ctrl+C interrupts a loop, tasklist/taskkill, a job tool

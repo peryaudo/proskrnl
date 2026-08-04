@@ -456,7 +456,7 @@ first (Art. 5). Wrinkles worth remembering:
 ## M10 winetest notes (the CUI subset of Wine's own test suite)
 
 The M10 stretch line (docs/02 "Ideal regression") is live as **the winetest
-gate**: `tests/run/run.sh winetest` runs a curated manifest of
+gate**: `tests/run/run.sh winetest` runs a manifest of
 `<test_exe>:<subtest>` pairs (`tests/winetest/manifest.txt`) that must exit 0
 — winetest's own failure count — under the pinned oracle AND on proskrnl.
 The binaries are standalone links of the pinned tree's own unmodified test
@@ -465,6 +465,24 @@ implib's own `mainCRTStartup`, winegcc's choice, with the `.CRT$X??`
 boundary symbols winebuild would have emitted supplied by
 `tests/winetest/glue/crt_sections.c`). Decisions and wrinkles:
 
+- **The manifest is COVERAGE, not curation — amended.** It listed only
+  pairs already green on both runners, which made the leg report the part
+  of the surface already crossed and kept the rest invisible. It now lists
+  **every** subtest of ntdll, kernel32, msvcrt, ucrtbase and programs/cmd —
+  the whole non-GUI sweep, 83 pairs — so the leg's failure count IS the
+  distance to the frontier. Two modules stay out, each because another leg
+  owns it: **advapi32** (the security/registry service surface — CUI-2's
+  `console` leg, CUI-3's `scm` leg, and `tests/ntapi`) and **user32** (the
+  GUI trophy, its own `manifest-gui.txt` + `guiwtest` leg). The bullets
+  below that say a pair "stays off the manifest" record its CAUSE, not its
+  absence: the pair is now listed and red until the cause is fixed.
+- **The helper-DLL subtests are reachable now.** `ntdll:thread`,
+  `kernel32:actctx` and `ucrtbase:thread` do not IMPORT their helper module
+  (`testdll`/`dummy`/`threaddll`); they `extract_resource()` it out of the
+  test exe's own `TESTDLL` resource into `%TEMP%` and load it from there.
+  The pinned tree's makedep already builds that resource as
+  `<name>.dll.res`; the Makefile links it in, which is the whole of what
+  those subtests need from the `.spec` SOURCES the exe still excludes.
 - **One binary, two runners (docs/14) — so user32 is stood in at link
   time.** The ntdll/kernel32 test objects declare `IMPORTS = user32`;
   user32 is the GUI-2 path, off the image per Art. 7.

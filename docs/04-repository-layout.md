@@ -177,7 +177,7 @@ proskrnl/
 │   │   ├── sem_mm/                  # reserve/commit, guard pages, (later) COW
 │   │   └── sem_wait/                # wait-all/any, alertable, APC interruption
 │   ├── fuzz/                        # differential fuzzer: random Nt* sequences vs. Windows
-│   ├── winetest/                    # the curated winetest gate: manifests + glue/ (the
+│   ├── winetest/                    # the winetest gate: manifests + glue/ (the
 │   │                                #   .CRT$X?? boundary symbols and user32 stand-ins)
 │   ├── gui/
 │   │   ├── screenshot.c             # FB hash / PPM dump

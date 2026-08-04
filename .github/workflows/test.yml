@@ -161,7 +161,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/run/run.sh proskrnl
 
-      - name: curated winetest subset, oracle + proskrnl (tests/run/run.sh winetest)
+      - name: winetest non-GUI sweep, oracle + proskrnl (tests/run/run.sh winetest)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh winetest
 

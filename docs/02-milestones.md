@@ -132,9 +132,9 @@ kernelbase/kernel32, msvcrt, advapi32, rpcrt4, services.exe, Wine's cmd.exe; ful
 `CreateProcess` paths (env/handle inheritance, cwd), completion ports, DLL search order.
 **Done when:** cmd.exe prompts; pipes/redirection work; an off-the-shelf MSVC-built CUI
 app runs unmodified. Ideal regression: the CUI subset of Wine's own test suite —
-**live since the M10 stretch work**: `tests/run/run.sh winetest` gates a curated manifest
-of Wine's-own-suite subtests (ntdll/kernel32/msvcrt/ucrtbase modules) green on the oracle
-AND on proskrnl (`docs/03` "M10 winetest notes").
+**live since the M10 stretch work**: `tests/run/run.sh winetest` gates a manifest
+of Wine's-own-suite subtests — every non-GUI one (ntdll, kernel32, msvcrt, ucrtbase,
+programs/cmd) — green on the oracle AND on proskrnl (`docs/03` "M10 winetest notes").
 
 ---
 

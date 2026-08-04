@@ -17,7 +17,7 @@ The project's lifeline (Article 5, `docs/08`). Layout and conventions are specif
   (ntdll-only + a hand-written SEH frame) and `m9_{smoke,echo}.c` (kernel32/kernelbase).
 - `cui/` — the M10 third-party-CUI stand-ins, built with the plain mingw toolchain and its
   full CRT (`hello_crt.c`, `upcase.c`, `svcdemo.c`, `looper.c`, `jobtool.c`).
-- `winetest/` — the curated winetest gate: the manifests, plus `glue/` (the `.CRT$X??`
+- `winetest/` — the winetest gate: the manifests, plus `glue/` (the `.CRT$X??`
   boundary symbols and the user32 stand-ins the standalone links need).
 - `fuzz/` — the differential fuzzer; its interpreter is one more single-binary client.
 - `run/run.sh` — the runner: `oracle` (spec gate), `proskrnl` (regression gate), plus

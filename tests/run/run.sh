@@ -29,9 +29,10 @@
 #   that matches nothing is an error (with the list of names), so a typo can
 #   never masquerade as "everything passed".
 #
-#   run.sh winetest   The M10 stretch gate: run the curated manifest of
-#                     Wine's-own-test-suite pairs (tests/winetest/) under the
-#                     oracle AND on proskrnl. Same one-binary discipline.
+#   run.sh winetest   The M10 stretch gate: run the manifest of
+#                     Wine's-own-test-suite pairs (tests/winetest/) — the full
+#                     non-GUI sweep — under the oracle AND on proskrnl. Same
+#                     one-binary discipline.
 #
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
@@ -528,9 +529,13 @@ proskrnl() {
 }
 
 # The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
-# own test suite"): the curated manifest of <test_exe>:<subtest> pairs
+# own test suite"): the manifest of <test_exe>:<subtest> pairs
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
-# proskrnl. The binaries are the pinned tree's own test objects linked
+# proskrnl. The manifest is the FULL non-GUI sweep — every subtest of ntdll,
+# kernel32, msvcrt, ucrtbase and programs/cmd (advapi32 and user32 excluded;
+# user32:msg has its own leg, guiwtest) — so the leg reports the whole
+# frontier rather than the part already crossed.
+# The binaries are the pinned tree's own test objects linked
 # standalone (Makefile `wtests`) — ONE binary, two runners, like everything
 # else here. On proskrnl the session manager's sweep (user/smss/
 # session.c) reads the baked manifest, runs each pair on the console

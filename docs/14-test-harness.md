@@ -103,7 +103,7 @@ One entry point, the same shape from M1 to the desktop (`docs/08`):
 ```
 tests/run/run.sh oracle     # run every test .exe under the pinned Wine (the SPEC gate)
 tests/run/run.sh proskrnl   # bake the same .exes into a disk image, boot QEMU (the REGRESSION gate)
-tests/run/run.sh winetest   # the M10 stretch gate: the curated CUI subset of Wine's OWN
+tests/run/run.sh winetest   # the M10 stretch gate: the full non-GUI sweep of Wine's OWN
                             # test suite (tests/winetest/manifest.txt), oracle + proskrnl
 tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firstboot
                             # SYSTEM hive against a fresh oracle prefix (regdump/regdiff)
@@ -192,14 +192,16 @@ tests/
     run.sh               # oracle [subtest...] | proskrnl [subtest...] | winetest
                          #   | fuzz | persist | console | ...
   winetest/
-    manifest.txt         # the winetest gate's curated <test_exe>:<subtest> pairs
+    manifest.txt         # the winetest gate's <test_exe>:<subtest> pairs (all non-GUI)
   fuzz/                  # the differential fuzzer (same single-binary shape)
 ```
 
 The winetest gate's binaries are NOT ntapi tests — they are Wine's own `dlls/*/tests`
 objects linked standalone (Makefile `wtests`, glue in `tests/winetest/glue/`), swept by the
-session manager (`user/smss/session.c`) from `C:\wtests\manifest.txt` with a console. The manifest is curated:
-a pair joins only when it exits 0 on BOTH runners (`docs/03` "M10 winetest notes").
+session manager (`user/smss/session.c`) from `C:\wtests\manifest.txt` with a console. The manifest
+lists every subtest of ntdll, kernel32, msvcrt, ucrtbase and programs/cmd — the whole non-GUI
+surface — so the leg measures the frontier rather than the part already crossed; advapi32 and
+user32 are out (`docs/03` "M10 winetest notes").
 
 (`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
 for the M4/M5-era flat boot modules under `tests/boot/`.)
