@@ -230,6 +230,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/run/run.sh cui8
 
+      - name: CUI-9 image-master sharing + COW resident-process ceiling (tests/run/run.sh cui9)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh cui9
+
       - uses: ./.github/actions/serial-logs
         if: failure()
         with:
@@ -260,6 +264,44 @@ jobs:
       - name: GUI-2 winemine on screen (tests/run/run.sh gui2)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh gui2
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # GUI-3: two GUI processes over wineserver-lite, screendump-differential
+      # graded the same way as GUI-1/GUI-2.
+      - name: GUI-3 two GUI processes over wineserver-lite (tests/run/run.sh gui3)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh gui3
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # GUI-4: overlapping windows, compositing, click routing and a dragged
+      # window, driven through QEMU's injected tablet/keyboard.
+      - name: GUI-4 overlap composited, click routed, window dragged (tests/run/run.sh gui4)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh gui4
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # GUI-5: clipboard, WH_KEYBOARD_LL hooks, AttachThreadInput and the
+      # font-metrics differential, cross-process over the unmodified server.
+      - name: GUI-5 clipboard, hooks, AttachThreadInput, font diff (tests/run/run.sh gui5)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh gui5
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # GUI-5, the windowed conhost: an interactive cmd.exe session driven
+      # entirely through the real console window, with the file half of the
+      # verdict read back out of the image (mtools) and the pixel half from
+      # the scanout.
+      - name: "GUI-5 conhost dual-mode: windowed cmd.exe (tests/run/run.sh gui5con)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh gui5con
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
