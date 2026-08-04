@@ -50,6 +50,11 @@
 #                     never be mistaken for the gate's), and a pattern that
 #                     matches no pair is an error.
 #
+#                     WTEST_NO_ORACLE=1 skips the oracle half while iterating
+#                     on the kernel side of a pair whose oracle verdict you
+#                     already have. It is REFUSED without a filter — the gate
+#                     is both legs, always.
+#
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
 #     [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
@@ -644,18 +649,32 @@ winetest() {
     fi
 
     # --- oracle leg (the SPEC gate: green here before the kernel side) ---
+    # $WTEST_NO_ORACLE skips it while iterating on the KERNEL side of a pair
+    # whose oracle verdict you already have — the leg's slowest half, re-run
+    # unchanged on every kernel rebuild. It is refused without a filter: the
+    # gate is both legs, always, and a knob that could quietly drop the spec
+    # half from an unfiltered run would be a way to report a green that was
+    # never differential.
     local fails=0
-    for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
-        local exe="${wtestExes[i]}" sub="${wtestSubs[i]}"
-        local olog="$BUILD/wtests/${exe}.${sub}.oracle.log"
-        # scratch cwd: the cmd tests write test.cmd/test.out where they run
-        if (cd "$BUILD/wtests" && "$WINE" "$ROOT/build/wtests/$exe" "$sub") >"$olog" 2>&1; then
-            echo "[KTEST] wtest-oracle ${wtestKeys[i]} PASS"
-        else
-            echo "[KTEST] wtest-oracle ${wtestKeys[i]} FAIL (see $olog)"
-            fails=$((fails+1))
-        fi
-    done
+    if [[ -n "${WTEST_NO_ORACLE:-}" ]] && (( ${#SUBTESTS[@]} == 0 )); then
+        echo "run.sh: WTEST_NO_ORACLE needs a subset — the unfiltered leg is both legs" >&2
+        exit 2
+    fi
+    if [[ -z "${WTEST_NO_ORACLE:-}" ]]; then
+        for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+            local exe="${wtestExes[i]}" sub="${wtestSubs[i]}"
+            local olog="$BUILD/wtests/${exe}.${sub}.oracle.log"
+            # scratch cwd: the cmd tests write test.cmd/test.out where they run
+            if (cd "$BUILD/wtests" && "$WINE" "$ROOT/build/wtests/$exe" "$sub") >"$olog" 2>&1; then
+                echo "[KTEST] wtest-oracle ${wtestKeys[i]} PASS"
+            else
+                echo "[KTEST] wtest-oracle ${wtestKeys[i]} FAIL (see $olog)"
+                fails=$((fails+1))
+            fi
+        done
+    else
+        echo "== winetest: oracle leg skipped (WTEST_NO_ORACLE) — kernel side only =="
+    fi
 
     # --- proskrnl leg (the REGRESSION gate) ---
     # A subset boots its OWN image (the proskrnl leg's rule): the gate's
