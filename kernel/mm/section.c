@@ -383,6 +383,17 @@ static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, c
             {
                 return STATUS_INVALID_IMAGE_FORMAT;
             }
+            /* Inside sizeOfImage is not enough: a crafted .reloc can land
+             * in a GAP between segments (or past the last one), where the
+             * master committed no frame — MipMasterAddDelta's
+             * ASSERT(frame != 0) then halts the kernel on a ring-3-supplied
+             * image. A fixup into uncommitted image space is the same
+             * malformed image the bounds check refuses. */
+            if (master->frames[rva / PAGE_SIZE] == 0 ||
+                master->frames[(rva + (uint64_t)width - 1) / PAGE_SIZE] == 0)
+            {
+                return STATUS_INVALID_IMAGE_FORMAT;
+            }
             MipMasterAddDelta(master, rva, width, delta);
         }
         cursor += block.SizeOfBlock;
