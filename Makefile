@@ -1339,13 +1339,16 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
 # verdict grepped off the serial log by tools/qemu.sh, then kmtcheck (that
 # grep names ONE line, so every suite reporting after it needs its verdict
-# read too), symcheck (the symbolizer still resolves this boot's dumps —
+# read too), uacheck (a ring-0 fault on a user address is a defect the
+# recovery frame would otherwise turn into a plain STATUS_ACCESS_VIOLATION —
+# issue #32 A3), symcheck (the symbolizer still resolves this boot's dumps —
 # Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
 # byte-compares) on the mutated image — make stops on a failed boot, so all
-# three only judge runs whose primary verdict passed.
+# four only judge runs whose primary verdict passed.
 test: $(IMG)
 	tools/qemu.sh $(IMG)
 	tests/run/kmtcheck.sh $(BUILD)/serial.log
+	tests/run/uacheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
 	tests/run/fatcheck.sh verify test $(IMG)
 

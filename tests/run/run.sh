@@ -981,7 +981,10 @@ tornwrite() {
 # The differential fuzzer (docs/08, tests/fuzz/): random Nt* sequences run on
 # both the oracle and proskrnl, divergence == bug. Delegates to fuzz.py, which
 # reuses the exact build recipes above. All args after `fuzz` are forwarded.
-fuzz() { exec "$ROOT/tests/fuzz/fuzz.py" "$@"; }
+# No exec: the dispatcher's uacheck sweep has to outlive the leg, and the
+# fuzzer is the leg most likely to reach a missing probe — it is the one that
+# feeds hostile arguments on purpose.
+fuzz() { "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 
 # The M8 persistence acceptance (docs/02 "a value written by a user program
 # survives reboot"): boot the SAME disk image twice. The m8_persist boot
@@ -2155,6 +2158,32 @@ gui5con() {
     echo "== gui5con: PASS (windowed conhost: typed, ^C-interrupted, files proven) =="
     return 0
 }
+
+# Every leg's serial logs are swept for unclaimed ring-0 faults on user
+# addresses before the leg reports (tests/run/uacheck.sh, issue #32 A3): the
+# recovery frame turns a missing probe into an ordinary-looking
+# STATUS_ACCESS_VIOLATION, so nothing but this sweep distinguishes a leg that
+# passed from a leg that passed while swallowing kernel faults. Done here, at
+# the ONE dispatcher, rather than in each of the twenty legs — the marker
+# scopes the sweep to logs THIS run wrote, so a stale log from an earlier run
+# can neither excuse a leg nor condemn one.
+UACHECK_MARKER="$BUILD/.uacheck-start"
+mkdir -p "$BUILD"
+: > "$UACHECK_MARKER"
+
+# An EXIT trap rather than a wrapper function around the dispatch below: a
+# `run_mode || status=$?` wrapper would put every leg inside a `||` list,
+# where bash suspends errexit for the whole call tree — the legs are written
+# under `set -e` and a leg that stopped failing early would be a false green,
+# which is the one thing a verification tool may never introduce.
+uacheck_sweep() {
+    local status=$?
+    # Swept even on a red leg: a leg that failed for its own reason may also
+    # have swallowed a kernel fault, and that is the finding worth keeping.
+    "$ROOT/tests/run/uacheck.sh" --since "$UACHECK_MARKER" "$ROOT/build" || status=1
+    exit "$status"
+}
+trap uacheck_sweep EXIT
 
 case "$MODE" in
     oracle)   oracle ;;
