@@ -597,6 +597,43 @@ boundary symbols winebuild would have emitted supplied by
     watch list grows a per-handle backlog; `sem_file/notify_change.c`
     covers the one-change-per-watch contract meanwhile.
 
+## The set-basic access check (`FileBasicInformation`, set direction)
+
+`NtSetInformationFile(FileBasicInformation)` requires **no access** on
+proskrnl. Documented NT wants `FILE_WRITE_ATTRIBUTES`, and the kernel asked
+for it until the winetest sweep convicted it — because the caller that
+matters does not hold it:
+
+```c
+/* dlls/kernelbase/file.c SetFileAttributesW */
+status = NtOpenFile( &handle, SYNCHRONIZE, &attr, &io, 0,
+                     FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT );
+...
+status = NtSetInformationFile( handle, &io, &info, sizeof(info), FileBasicInformation );
+```
+
+`SYNCHRONIZE` and nothing else. Every `SetFileAttributes` in the Wine
+userland goes through that one handle, so a kernel that enforces the
+documented bit refuses all of them — silently, since the CRT layers above
+discard the status. It surfaced as `msvcrt:file`: `test__creat` leaves a
+read-only `_creat.tst`, clears the bit, deletes it and recreates it, and
+with the clear refused the read-only file outlived its own cleanup and
+failed the three blocks after it (file.c:2921, 2934, 2952) with errors that
+named `_creat` and `_lseek` rather than the attribute set that actually
+broke.
+
+The pinned oracle grants it, so the boundary's answer is "granted" (Art. 1:
+the `Nt*` semantics Wine uses, not the documented ones it does not).
+Pinned by `tests/ntapi/sem_file/readonly_attr.c` step 5 — a
+`SYNCHRONIZE`-only handle clearing `FILE_ATTRIBUTE_READONLY` — on both
+runners, so a re-tightening cannot land silently.
+
+The read-only rules the same test pins around it were already right and are
+unchanged: creation reports the bit, a delete of a read-only file is
+`STATUS_CANNOT_DELETE`, and once set the file refuses `FILE_OVERWRITE_IF`,
+an open for write data and an open for `DELETE` with `STATUS_ACCESS_DENIED`
+while still granting an open for read.
+
 ## CUI-1 firstboot notes (wineboot + the machine-state registry)
 
 First boot runs `wineboot --init` (a session-manager stage: `user/smss/firstboot.c`),

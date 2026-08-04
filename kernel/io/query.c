@@ -569,7 +569,17 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     {
     case FileBasicInformation:
         needed = sizeof(FILE_BASIC_INFORMATION);
-        requiredAccess = FILE_WRITE_ATTRIBUTES;
+        /* NO access requirement, and deliberately so — docs/03 "the set-basic
+         * access check". Documented NT wants FILE_WRITE_ATTRIBUTES, but the
+         * caller that matters opens without it: kernelbase's
+         * SetFileAttributesW (dlls/kernelbase/file.c) does NtOpenFile with
+         * SYNCHRONIZE and nothing else, then sets this class through that
+         * handle. Requiring the bit refused every SetFileAttributes call in
+         * the userland above — which is how msvcrt:file's read-only
+         * "_creat.tst" outlived its own cleanup and took the three blocks
+         * after it down with it. The pinned oracle grants it; pinned by
+         * tests/ntapi/sem_file/readonly_attr.c step 5. */
+        requiredAccess = 0;
         break;
     case FilePositionInformation:
         needed = sizeof(FILE_POSITION_INFORMATION);

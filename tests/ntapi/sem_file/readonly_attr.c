@@ -189,5 +189,42 @@ START_TEST(readonly_attr)
         NtClose(handle);
     }
 
+    /* --- 5. the access SetFileAttributes actually holds -------------------
+     * kernelbase's SetFileAttributesW (dlls/kernelbase/file.c) opens with
+     * SYNCHRONIZE and NOTHING ELSE, then sets FileBasicInformation through
+     * that handle. So the class cannot require FILE_WRITE_ATTRIBUTES: a
+     * kernel that demands it refuses every SetFileAttributes call in the
+     * userland above it, which is how msvcrt:file's read-only "_creat.tst"
+     * survived its own cleanup and broke the three blocks after it. */
+    scrub_file(dir, W("sync.txt"));
+    status = create_with_attributes(&handle, dir, W("sync.txt"), FILE_ATTRIBUTE_READONLY,
+                                    FILE_OVERWRITE_IF, &iosb);
+    ok(status == STATUS_SUCCESS, "create sync.txt -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        HANDLE plain;
+
+        status = create_access(&plain, dir, W("sync.txt"), SYNCHRONIZE, 0, FILE_OPEN, &iosb);
+        ok(status == STATUS_SUCCESS, "open SYNCHRONIZE-only -> %08lx", (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            /* SetFileAttributesW's own call, verbatim: attributes are always
+             * OR'd with FILE_ATTRIBUTE_NORMAL there ("make sure it's not
+             * zero"), and every other field is left at 0. */
+            status = set_attributes(plain, FILE_ATTRIBUTE_NORMAL);
+            ok(status == STATUS_SUCCESS, "set attributes through SYNCHRONIZE handle -> %08lx",
+               (unsigned long)status);
+            NtClose(plain);
+        }
+        attributes = query_attributes(handle);
+        ok((attributes & FILE_ATTRIBUTE_READONLY) == 0,
+           "SYNCHRONIZE-handle clear left read-only set, attributes %08lx",
+           (unsigned long)attributes);
+
+        (void)set_attributes(handle, FILE_ATTRIBUTE_NORMAL);
+        (void)set_disposition(handle, TRUE);
+        NtClose(handle);
+    }
+
     NtClose(dir);
 }
