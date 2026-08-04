@@ -138,6 +138,60 @@ export WINEPREFIX
 : "${WINEDLLOVERRIDES:=mscoree,mshtml=}"
 export WINEDLLOVERRIDES
 
+# The oracle's HOST locale must be UTF-8, and the runner pins it rather than
+# inheriting whatever the shell has. Wine derives its UNIX CODEPAGE from the
+# host locale (dlls/ntdll/unix/locale.c init_locale -> setlocale/nl_langinfo);
+# under C/POSIX that codepage cannot represent the non-ASCII names several
+# subtests create, so the oracle answers for a spec it corrupted on the way
+# out: `ntdll:directory` failed 82 checks and `ucrtbase:file` died outright
+# (file.c:206, "failed to create t\xc3\xa4...txt with locale German.utf8"),
+# and BOTH go green — 0 failures — with nothing changed but this. proskrnl
+# has no host to inherit from, so an untouched-encoding oracle is also the
+# only one the kernel leg can be differential against.
+#
+# C.UTF-8 rather than a language locale: the encoding is what Wine reads
+# here, and C.UTF-8 is the one UTF-8 locale glibc always carries (no
+# locale-gen, no distro variance). A caller-supplied $LC_ALL wins — pairing
+# the oracle with another locale is a legitimate experiment.
+: "${LC_ALL:=C.UTF-8}"
+export LC_ALL
+
+# The oracle must not run as ROOT, and this refuses rather than warns. Wine
+# maps NT's access checks onto the host's unix permission bits, and root
+# bypasses those bits — so every subtest that asserts a REFUSAL gets a
+# success instead, and the oracle answers a spec that is wrong in the one
+# direction nothing downstream can detect. Measured on the pinned tree, root
+# vs. an ordinary user, nothing else changed: ntdll:file 6 failures -> 0,
+# kernel32:profile 4 -> 0, kernel32:version 36 -> 0. All three read as
+# proskrnl-side divergences until the runner was moved off root.
+#
+# ORACLE_ALLOW_ROOT=1 is the escape hatch for a container that has no other
+# user (it prints what it is buying). CI runs unprivileged, so the gate path
+# never takes it.
+# `winetest` with WTEST_NO_ORACLE runs no oracle at all, so root is harmless
+# there — the guard asks what this invocation will actually run, not what the
+# mode usually runs.
+RUNS_ORACLE=0
+case "$MODE" in
+    oracle|fuzz) RUNS_ORACLE=1 ;;
+    winetest)    [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_ORACLE=1 ;;
+esac
+if [[ "$(id -u)" -eq 0 && -z "${ORACLE_ALLOW_ROOT:-}" ]]; then
+    case "$RUNS_ORACLE" in
+        1)
+            echo "run.sh: refusing to run the oracle as root — wine maps NT access checks" >&2
+            echo "        onto unix permission bits, which root bypasses, so every subtest" >&2
+            echo "        asserting a REFUSAL silently passes (measured: ntdll:file 6->0," >&2
+            echo "        kernel32:profile 4->0, kernel32:version 36->0). Run as an" >&2
+            echo "        ordinary user, or set ORACLE_ALLOW_ROOT=1 to accept false greens." >&2
+            exit 2 ;;
+    esac
+fi
+if [[ "$(id -u)" -eq 0 && -n "${ORACLE_ALLOW_ROOT:-}" && "$RUNS_ORACLE" -eq 1 ]]; then
+    echo "== run.sh: ORACLE_ALLOW_ROOT — oracle runs as root; every access-denied" \
+         "assertion is a false green ==" >&2
+fi
+
 # Fan-out width of the oracle leg (see oracle() for what each worker gets).
 # One worker per core: the work is one short-lived process per case, so it
 # scales until the cores run out. ORACLE_JOBS=1 is the strictly sequential
