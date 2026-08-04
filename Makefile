@@ -1420,10 +1420,23 @@ format:
 # Enforce the docs/15 naming rules (and correctness lints) via clang-tidy.
 # smss is a user-mode PE, so its TUs are checked under the same mingw target
 # they are built for, not the kernel's freestanding-ELF flags.
+#
+# `tidy` REWRITES source, like `format`: every fix clang-tidy can make (the
+# identifier renames above all) is applied in place and re-laid-out through
+# .clang-format. It still fails the run — a warning it just fixed is a warning
+# you introduced, and the failure is what makes it a gate; re-run to see the
+# tree green and `git diff` for what it did. `tidy-check` is the same pass
+# without the writes, for CI and for reviewing someone else's tree.
+#
+# The per-file "N warnings generated" lines are progress, not findings: they
+# count the diagnostics HeaderFilterRegex and the NOLINTs then drop. A finding
+# is an `error:` line, and it fails the run.
 SMSS_TIDY_FLAGS := -std=c11 --target=x86_64-windows-gnu -ffreestanding -I.
-tidy: frontier-check
-	$(CLANG_TIDY) $(CSRC) -- $(CFLAGS)
-	$(CLANG_TIDY) $(wildcard user/smss/*.c) -- $(SMSS_TIDY_FLAGS)
+TIDY_FLAGS      := --quiet --warnings-as-errors='*'
+tidy: TIDY_FLAGS += --fix --fix-notes --format-style=file
+tidy tidy-check: frontier-check
+	$(CLANG_TIDY) $(TIDY_FLAGS) $(CSRC) -- $(CFLAGS)
+	$(CLANG_TIDY) $(TIDY_FLAGS) $(wildcard user/smss/*.c) -- $(SMSS_TIDY_FLAGS)
 
 # The blocking frontier (issue #96 A, the static half): which code can park is
 # a call-graph query, so ask the machine rather than a reviewer. `frontier`
@@ -1436,7 +1449,7 @@ frontier:
 frontier-check:
 	python3 tools/blocking_frontier.py --check
 
-.PHONY: all test run clean format tidy gen-abi frontier frontier-check
+.PHONY: all test run clean format tidy tidy-check gen-abi frontier frontier-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)

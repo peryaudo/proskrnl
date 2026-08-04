@@ -44,6 +44,7 @@ A name that *is* a real export keeps it and matches the signature: `DbgPrint` st
 | **Struct members** | `camelCase` | `frame->errorCode`, `entry->offsetLow` |
 | **Globals** (incl. file-scope `static`) | `PascalCase` with subsystem prefix | `KeTickCount`, `KiLastSystemCall`, `MiFreeListHead` |
 | **Macros / constants / hardware regs** | `UPPER_SNAKE` | `PAGE_SIZE`, `TIMER_VECTOR`, `IA32_APIC_BASE` |
+| **Enumerators** | `PascalCase` as in NT; `UPPER_SNAKE` when the enum is a constant table | `KernelMode`, `KiTraceSyscall`; `PSP_PARAM_IMAGE_PATH` |
 | **Files** | lowercase, terse (as in NT) | `idt.c`, `lapic.c`, `phys.c` |
 
 **Subsystem prefixes** (the department names of `docs/04`): `Ke` kernel, `Mm` memory, `Ob`
@@ -70,6 +71,12 @@ later built, the serial/`DbgPrint` transport can migrate from `Ki` to `Kd`.)
 > (`KeTickCount`, `MiFreeListHead`). This departs from classic NT, which PascalCases locals
 > and members too — a deliberate project choice for readability.
 
+A **function-local `static`** splits along the same line: a mutable one is module state that
+happens to be declared inside its only user, so it is a global — `ObpNextTypeIndex`,
+`KiLastIdleSweepTick`; a `const` one is a local constant with a longer life, so it is a local
+— `systemRoot`, `kernelName`. Write the `const` (`static const char *const name = …`), and
+`make tidy` tells the two apart on its own.
+
 - Numeric ABI constants are **generated**, never named by hand (Article 4, `docs/09`).
 
 ## Formatting
@@ -80,12 +87,33 @@ right-aligned pointers, no include reordering. Run it:
 
 ```sh
 make format          # clang-format -i over all kernel C (uses the llvm keg)
+make tidy            # clang-tidy --fix: applies the naming rules, in place
+make tidy-check      # the same pass without the writes (CI, someone else's tree)
 ```
 
 clang-format governs *layout*; the *naming* rules above are enforced by **`make tidy`**
-(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`) — the kernel is
-warning-clean, and CI/review should keep it so. A `PostToolUse` hook formats edited files
-automatically.
+(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`). **`make tidy`
+rewrites source, exactly like `make format`** — a mis-cased function, parameter, local or
+member is renamed at every use in the translation unit and the result re-laid-out through
+`.clang-format`; `git diff` afterwards is the review. It still **fails** the run: a warning
+it just fixed is a warning you introduced, and that failure is what makes it a gate. Re-run
+to see the tree green. A `PostToolUse` hook formats edited files automatically.
+
+The tree is clean under every check `.clang-tidy` enables, and that is the property to keep:
+a warning always means "you introduced something". Two ways out, never a third:
+
+- A check that fires on the NT idioms this guide *mandates* (NT out-parameter pointer
+  shapes, `if (!NT_SUCCESS(status = …))`, `n * PAGE_SIZE` widening, struct padding) is
+  disabled in `.clang-tidy` with its reason in the "disabled and why" block.
+- A one-off deliberate exception is a `NOLINT`/`NOLINTBEGIN` **at the site, with a reason**.
+  The standing naming exceptions are: a struct transcribed from an external contract keeps
+  the contract's member names (`PSP_RAW_SMBIOS_DATA`, the `PRIVILEGE_SET` prefix), NT
+  enumerators keep NT casing (`KWAIT_REASON`), compiler-mandated names keep theirs
+  (`memcpy`), and a dispatch table's slots are names of *code*, so they are PascalCase like
+  any function (`IO_VFS_OPS`).
+
+Leaving the warning as standing noise is not one of them — noise nobody can act on is how
+the naming gate stopped being read at all.
 
 **Tests are exempt.** `tests/` follows **Wine test style** (snake_case functions like `ok`,
 `START_TEST`, `ntapi_out`; distilled from `dlls/*/tests`), and forward-declares Windows API
