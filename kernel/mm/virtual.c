@@ -1773,6 +1773,37 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     {
         return STATUS_INVALID_PAGE_PROTECTION;
     }
+    /* A SHARED data view's PTEs point straight at the section's (or the
+     * file cache's) frames, and there is no per-page copy engine behind a
+     * MEM_MAPPED VAD — so a writable protection here is a write to every
+     * other view and (with immediate writeback, Art. 3) to the file itself.
+     * Two gates, both at the one reprotect authority:
+     *  - the WRITECOPY flavours refuse: satisfying "writecopy" by making
+     *    the shared frame hardware-writable is the docs/17 §6B violation
+     *    wearing the wrong name (copy-on-write views exist only as map-time
+     *    private copies or master-bound image views, both of which own or
+     *    per-page-track their frames);
+     *  - the plain-writable flavours re-check the backing handle's write
+     *    access, the same STATUS_ACCESS_DENIED gate MiMapViewOfSectionEx
+     *    applies at map time (docs/review-2026-07 §11) — without it a
+     *    read-only-handle view mapped PAGE_READONLY became writable one
+     *    NtProtectVirtualMemory later. A body-less shared VAD (the
+     *    KUSER_SHARED_DATA page) has no writable arm at all. */
+    if (vad->type == MEM_MAPPED && !vad->ownsFrames)
+    {
+        if (writeCopyFlavour)
+        {
+            return STATUS_INVALID_PAGE_PROTECTION;
+        }
+        if (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE)
+        {
+            PMI_SECTION section = vad->sectionBody;
+            if (section == 0 || !section->backingWritable)
+            {
+                return STATUS_ACCESS_DENIED;
+            }
+        }
+    }
     /* On an image view the plain-writable protections canonicalize to
      * writecopy (the oracle's get_vprot_flags with image=TRUE: READWRITE ->
      * VPROT_READ|VPROT_WRITECOPY), which is also what a later query

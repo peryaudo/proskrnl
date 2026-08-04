@@ -1198,7 +1198,18 @@ ownership record, never in the reported protection. Two adjacent shapes pinned w
 it: `NtProtectVirtualMemory` accepts the WRITECOPY flavours on mapped views and
 refuses them on private memory (the oracle's `set_protection` rule), and on an image
 view `PAGE_READWRITE` canonicalizes to `PAGE_WRITECOPY` (the oracle's
-`get_vprot_flags` with image=TRUE), which a following query reports.
+`get_vprot_flags` with image=TRUE), which a following query reports. One refinement
+outside the pins: on a *shared* data view (`ownsFrames` FALSE — PTEs aimed straight
+at the section's / file cache's frames, no master and no per-page copy record) the
+WRITECOPY flavours refuse with `STATUS_INVALID_PAGE_PROTECTION`, because the only way
+to "grant" them there is a hardware-writable PTE on the shared frame — a write to
+every other view and, under immediate writeback, to the file: writecopy in name only
+(the PR-108 review's finding 2). The same protect path re-applies the map-time
+`backingWritable` gate (`STATUS_ACCESS_DENIED`) to the plain-writable flavours, so a
+read-only-handle view can no longer be made writable one `NtProtectVirtualMemory`
+after mapping. The pinned cases are untouched: they protect writecopy only on image
+views and on views *mapped* `PAGE_WRITECOPY` (eager private copies), both of which
+keep accepting it.
 
 ### Hazard F, decided: the share-mode gate, and its recorded residual
 
