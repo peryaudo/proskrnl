@@ -118,7 +118,11 @@ NTSTATUS MiBindVadImageMaster(PMI_VAD vad, PVOID master);
 
 /* Debug sweep (docs/17 §8): ASSERT that no writable PTE points at a frame
  * a shared image master owns, and that shared PTEs point exactly at their
- * master frame. Called after image map and image re-protect, and by kmt. */
+ * master frame. The range form is the hot-path check, scoped to the pages
+ * a map/re-protect just touched (a no-op on a masterless VAD); the
+ * whole-space form sweeps every image VAD and is the kmt suite's. */
+void MiAssertVadNoWritableMasterPteRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
+                                         uint64_t size);
 void MiAssertNoWritableMasterPte(PMI_ADDRESS_SPACE space);
 
 /* Unwind a partially built view: decommit (honouring ownsFrames), unlink,

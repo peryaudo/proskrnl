@@ -737,7 +737,10 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect);
     }
 
-    MiAssertNoWritableMasterPte(space); /* docs/17 §8's highest-value check */
+    /* docs/17 §8's highest-value check, scoped to the view just built —
+     * the full-space sweep here walked every earlier image VAD per map,
+     * quadratic in module count on the loader path. */
+    MiAssertVadNoWritableMasterPteRange(space, vad, base, size);
 
     *baseInOut = base;
     *viewSizeInOut = size;
