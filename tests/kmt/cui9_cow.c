@@ -355,11 +355,122 @@ static void test_cow_arm(void)
              (unsigned long)MiInvlpgCount);
 }
 
+/* The guard-clear PTE-writing site goes through the ONE hardware-writability
+ * rule like every other map site: clearing PAGE_GUARD on a still-shared
+ * writecopy page must NOT hand out a writable PTE onto the master frame
+ * (ring 3 reaches this with NtProtectVirtualMemory(WRITECOPY|GUARD) + a
+ * touch — the docs/17 §6B cross-process corruption if the raw bit wins),
+ * and clearing it on a clean watched page must not open the gate without a
+ * dirty mark (a page silently lost from NtGetWriteWatch). In both shapes
+ * the retried store then resolves through MiResolveWriteFault — hazard G's
+ * ordering, now convicted rather than asserted in a comment. */
+static void test_guard_clear_authority(void)
+{
+    PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe_smoke.exe");
+    if (file == 0)
+    {
+        return;
+    }
+
+    uint64_t free0 = MiGetFreePageCount();
+    MI_ADDRESS_SPACE space;
+    ok(MiCreateAddressSpace(&space) == STATUS_SUCCESS, "create space");
+    PMI_SECTION section = 0;
+    ok(MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section) == STATUS_SUCCESS,
+       "create section");
+    if (section == 0)
+    {
+        MiDeleteAddressSpace(&space);
+        return;
+    }
+    const MI_IMAGE_INFO *image = section->image;
+    uint64_t base = 0, size = 0;
+    NTSTATUS status = MiMapViewOfSection(section, &space, &base, 0, &size, PAGE_EXECUTE);
+    ok(status == STATUS_SUCCESS, "map -> %08lx", (unsigned long)status);
+
+    uint64_t writableVa = 0;
+    for (ULONG i = 0; i < image->segmentCount && writableVa == 0; i++)
+    {
+        const MI_IMAGE_SEGMENT *seg = &image->segments[i];
+        if (seg->protect == PAGE_WRITECOPY || seg->protect == PAGE_EXECUTE_WRITECOPY ||
+            seg->protect == PAGE_READWRITE || seg->protect == PAGE_EXECUTE_READWRITE)
+        {
+            writableVa = base + seg->virtualAddress;
+        }
+    }
+    ok(writableVa != 0, "test PE lacks a writable segment");
+    if (writableVa == 0)
+    {
+        MiUnmapView(&space, base);
+        ObDereferenceObject(section);
+        MiDeleteAddressSpace(&space);
+        return;
+    }
+    uint64_t masterFrame = MiTranslateUserPage(space.pml4Physical, writableVa, 0, 0);
+
+    /* Ring 3's sequence: guard the still-shared writecopy page... */
+    uint64_t protBase = writableVa;
+    uint64_t protSize = PAGE_SIZE;
+    ULONG oldProtect = 0;
+    status = MiProtectVirtualMemory(&space, &protBase, &protSize, PAGE_WRITECOPY | PAGE_GUARD,
+                                    &oldProtect);
+    ok(status == STATUS_SUCCESS, "guard the writecopy page -> %08lx", (unsigned long)status);
+    int writable = 0, present = 0;
+    MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(!present, "guarded page still present");
+
+    /* ...consume the guard: the page comes back PRESENT but READ-ONLY on
+     * the SAME master frame — the shared-master gate outranks the raw
+     * protection bit at this site too. */
+    ok(MiClearGuardPage(&space, writableVa), "guard did not clear");
+    uint64_t after = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(after == masterFrame && present && !writable,
+       "guard clear leaked a writable master PTE (frame %lx->%lx w=%d p=%d)",
+       (unsigned long)masterFrame, (unsigned long)after, writable, present);
+    MiAssertNoWritableMasterPte(&space);
+
+    /* The retried store resolves through the COW arm: copy, repoint, open. */
+    NTSTATUS resolved;
+    ok(MiResolveWriteFault(&space, writableVa, &resolved) && resolved == STATUS_SUCCESS,
+       "post-guard store did not copy -> %08lx", (unsigned long)resolved);
+    after = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
+    ok(after != 0 && after != masterFrame && writable, "copy did not repoint/open");
+    MiAssertNoWritableMasterPte(&space);
+
+    ok(MiUnmapView(&space, base) == STATUS_SUCCESS, "unmap");
+    ObDereferenceObject(section);
+
+    /* The watch shape: a guarded CLEAN watched page clears to read-only —
+     * the mark stays the write's job, taken by the resolver on the retry. */
+    PVOID watchBase = 0;
+    SIZE_T watchSize = PAGE_SIZE;
+    status = MiAllocateVirtualMemory(&space, &watchBase, &watchSize,
+                                     MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "watch alloc -> %08lx", (unsigned long)status);
+    uint64_t watchVa = (uint64_t)(uintptr_t)watchBase;
+    protBase = watchVa;
+    protSize = PAGE_SIZE;
+    status = MiProtectVirtualMemory(&space, &protBase, &protSize, PAGE_READWRITE | PAGE_GUARD,
+                                    &oldProtect);
+    ok(status == STATUS_SUCCESS, "guard the watched page -> %08lx", (unsigned long)status);
+    ok(MiClearGuardPage(&space, watchVa), "watch guard did not clear");
+    MiTranslateUserPage(space.pml4Physical, watchVa, &writable, &present);
+    ok(present && !writable, "guard clear opened a clean watched page (w=%d)", writable);
+    ok(MiResolveWriteFault(&space, watchVa, &resolved) && resolved == STATUS_SUCCESS,
+       "watch retry did not mark -> %08lx", (unsigned long)resolved);
+    MiTranslateUserPage(space.pml4Physical, watchVa, &writable, &present);
+    ok(writable, "marked watched page still closed");
+
+    MiDeleteAddressSpace(&space);
+    ok(MiGetFreePageCount() == free0, "frames leaked");
+}
+
 int kmt_run_cui9(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_shared_master);
     KMT_RUN(test_master_base_key);
     KMT_RUN(test_cow_arm);
+    KMT_RUN(test_guard_clear_authority);
     return kmt_failures - before;
 }
