@@ -546,6 +546,9 @@ tests/run/run.sh gui        # GUI-1: framebuffer screendump + an injected key
 tests/run/run.sh gui2       # GUI-2: winemine on screen (screendump differential)
 tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite
 tests/run/run.sh gui4       # GUI-4: overlap composited, click routed, window dragged
+tests/run/run.sh gui5       # GUI-5: clipboard, low-level hooks, AttachThreadInput, font diff
+tests/run/run.sh gui5con    # GUI-5: conhost dual-mode — real user32/gdi32 command prompt
+tests/run/run.sh guiwtest   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
 ```
 
 ## License
