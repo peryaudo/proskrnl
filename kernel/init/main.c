@@ -390,6 +390,11 @@ static void KiTestMainThread(void *context)
      * this point, including the ring-3 boot modules, can open \??\C:. */
     IoMountBootVolume();
 
+    /* \Device\Null + \??\NUL — the bit bucket ntdll's DOS-path resolution
+     * turns the reserved name "nul" into. Same no-disk dependency as npfs
+     * below. Consumer: ucrtbase:file's fopen("nul"). */
+    IoInitializeNullDevice();
+
     /* M9: the named-pipe FS (\Device\NamedPipe + \??\pipe). No disk
      * dependency — only the namespace and this thread's handle table. */
     NpfsInitialize();

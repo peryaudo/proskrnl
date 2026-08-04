@@ -104,6 +104,10 @@ typedef struct FILE_OBJECT
 void IoInitializeTransport(void);
 void IoMountBootVolume(void);
 
+/* \Device\Null + \??\NUL (kernel/io/null.c). Namespace only — no disk,
+ * no transport — so it may be published as early as a thread exists. */
+void IoInitializeNullDevice(void);
+
 /* Create a permanent \Device\... object over `ops` and return its body (the
  * namespace owns it; the transient handle is closed here). The one device
  * publication path — every driver and filesystem in the tree mints its

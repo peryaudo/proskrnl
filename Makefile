@@ -106,6 +106,7 @@ CSRC := kernel/init/main.c \
         kernel/se/access.c \
         kernel/se/secobj.c \
         kernel/io/file.c \
+        kernel/io/null.c \
         kernel/io/rw.c \
         kernel/io/async.c \
         kernel/io/notify.c \
