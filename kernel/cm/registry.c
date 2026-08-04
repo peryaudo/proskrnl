@@ -2430,6 +2430,18 @@ static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
     CmpSetValue(node, &nameString, REG_SZ, data, bytes);
 }
 
+/* The REG_BINARY twin of CmpSeedStringValue, same never-stomp rule. */
+static void CmpSeedBinaryValue(PCMP_KEY_NODE node, PCWSTR name, const void *data, ULONG bytes)
+{
+    UNICODE_STRING nameString;
+    RtlInitUnicodeString(&nameString, name);
+    if (CmpFindValue(node, &nameString) != 0)
+    {
+        return;
+    }
+    CmpSetValue(node, &nameString, REG_BINARY, data, bytes);
+}
+
 void CmInitialize(void)
 {
     CmpInitializeHiveLock();
@@ -2493,6 +2505,31 @@ void CmInitialize(void)
      * when it is absent. Full HKCU population stays deferred (docs/03
      * "CUI-1 firstboot notes"); this is only the root the open needs. */
     CmpEnsureSkeletonKey(WSTR("User\\S-1-5-21-0-0-0-1000"));
+
+    /* The one time-zone table entry kernelbase REQUIRES. Ring 3 asks the
+     * kernel for the zone (kernel/ps/query.c answers
+     * SystemDynamicTimeZoneInformation with TimeZoneKeyName L"UTC"), and
+     * GetDynamicTimeZoneInformation (dlls/kernelbase/locale.c) then OPENS
+     * HKLM\Software\Microsoft\Windows NT\CurrentVersion\Time Zones\<that
+     * name> for the display strings — a missing subkey is a hard
+     * TIME_ZONE_ID_INVALID return, and every CRT conversion that reads the
+     * zone fails behind it (msvcrt:time's GetTimeZoneInformation check and
+     * the whole mktime/localtime block under it). Wine's table is installed
+     * prefix-side, so proskrnl — which has no prefix — seeds it here, the
+     * Session Manager precedent above. Names, spellings and the all-zero
+     * 44-byte REG_TZI_FORMAT (zero bias, no DST rules) are the pinned
+     * oracle prefix's own UTC entry, and the zero bias is the same answer
+     * kernel/ps/query.c already gives — one zone, stated once. */
+    seeded = CmpEnsureSkeletonKey(
+        WSTR("Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\UTC"));
+    CmpSeedStringValue(seeded, WSTR("Display"), WSTR("(UTC) Coordinated Universal Time"));
+    CmpSeedStringValue(seeded, WSTR("Dlt"), WSTR("Coordinated Universal Time"));
+    CmpSeedStringValue(seeded, WSTR("Std"), WSTR("Coordinated Universal Time"));
+    CmpSeedStringValue(seeded, WSTR("MUI_Display"), WSTR("@tzres.dll,-22002"));
+    CmpSeedStringValue(seeded, WSTR("MUI_Dlt"), WSTR("@tzres.dll,-22001"));
+    CmpSeedStringValue(seeded, WSTR("MUI_Std"), WSTR("@tzres.dll,-22000"));
+    static const UCHAR utcTzi[44] = {0};
+    CmpSeedBinaryValue(seeded, WSTR("TZI"), utcTzi, sizeof(utcTzi));
 
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",
