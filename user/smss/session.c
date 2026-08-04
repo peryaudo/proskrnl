@@ -131,7 +131,7 @@ static int SessionFlowM9(int abiFailures)
  * C:\ntapi (the `make test` image) is silent. Tests run WITHOUT a console
  * on purpose: no std handles is the harness's "running on proskrnl"
  * discriminator (tests/ntapi/ntapi.c). */
-#define NTAPI_MAX_TESTS  128
+#define NTAPI_MAX_TESTS  256
 #define NTAPI_NAME_CHARS 64
 
 typedef struct
