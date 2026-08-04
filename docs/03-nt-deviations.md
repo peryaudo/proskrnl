@@ -1219,7 +1219,12 @@ write access answers `STATUS_SHARING_VIOLATION` (pinned oracle-green by
 `sem_mm/image_deny_write`; the oracle's mapping fd enforces the same). Residual,
 recorded honestly: a *pre-existing* writable handle can still `NtWriteFile` the file
 while a master lives — real NT refuses that write through `MmFlushImageSection`, the
-oracle permits it, and no baked consumer does it. The same staleness already exists
+oracle permits it, and no baked consumer does it. The gate's scope is the write bits
+(`FILE_WRITE_DATA | FILE_APPEND_DATA`) only: a `DELETE`-access open (and so a
+delete/supersede) of a live image still passes, where real NT refuses that too via
+the same `MmFlushImageSection` reference — the identical residual class as the
+writable handle (the oracle permits it, no baked consumer does it), recorded here so
+the delete side is a visible gap rather than an unstated one. The same staleness already exists
 per-section today: the raw-byte snapshot is taken at `NtCreateSection`, so a write
 between create and map is invisible to the view. Masters widen the window across
 sections without changing its class; the gate closes the only path a real caller

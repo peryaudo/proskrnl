@@ -154,10 +154,18 @@ int main(int argc, char **argv)
         fflush(stdout);
     }
 
+    /* err=0 means the loop ended because the children[] array filled, NOT
+     * because creation refused — the ceiling is then a lower bound, not a
+     * measurement. Say so distinctly (the same "refused" console token so
+     * the expect flow completes either way); tests/run/run.sh cui9 fails
+     * the leg on err=0 so a future past-the-cap improvement raises the cap
+     * instead of shipping a fabricated ceiling. */
+    int capped = resident >= MAX_CHILDREN && refuseError == 0;
     char line[256];
     snprintf(line, sizeof(line),
-             "[KTEST] cui9 ceiling procs=%d err=%lu availmb0=%llu availmb=%llu\n", resident,
-             (unsigned long)refuseError, (unsigned long long)first, (unsigned long long)last);
+             "[KTEST] cui9 ceiling procs=%d err=%lu capped=%d availmb0=%llu availmb=%llu\n",
+             resident, (unsigned long)refuseError, capped, (unsigned long long)first,
+             (unsigned long long)last);
     serial_out(line);
     if (resident > 1 && first > last)
     {
@@ -165,7 +173,8 @@ int main(int argc, char **argv)
                  (unsigned long long)((first - last) * 1024 / (ULONGLONG)(resident - 1)));
         serial_out(line);
     }
-    printf("mmceiling-refused procs=%d err=%lu\n", resident, (unsigned long)refuseError);
+    printf("mmceiling-refused procs=%d err=%lu capped=%d\n", resident, (unsigned long)refuseError,
+           capped);
     fflush(stdout);
 
     for (int i = 0; i < resident; i++)

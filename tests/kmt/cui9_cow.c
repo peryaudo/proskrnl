@@ -65,6 +65,16 @@ static void test_shared_master(void)
        "create section2");
     if (section1 == 0 || section2 == 0)
     {
+        if (section1 != 0)
+        {
+            ObDereferenceObject(section1);
+        }
+        if (section2 != 0)
+        {
+            ObDereferenceObject(section2);
+        }
+        MiDeleteAddressSpace(&space1);
+        MiDeleteAddressSpace(&space2);
         return;
     }
     const MI_IMAGE_INFO *image = section1->image;
@@ -105,9 +115,12 @@ static void test_shared_master(void)
      * shares until written, so the second view pays only page-table
      * overhead. A whole-image cost means sharing is inert (docs/17 §8's
      * "correct-but-inert" failure mode); writablePages is printed for the
-     * post-mortem's sense of scale. */
+     * post-mortem's sense of scale. The bound SCALES with the image (one PT
+     * page per 512 mapped pages + a fixed directory/pool allowance) so a
+     * grown fixture tightens nothing and loosens nothing — a fixed "8" was
+     * pe_smoke geometry in disguise. */
     uint64_t secondCost = free_after_first - MiGetFreePageCount();
-    ok(secondCost <= 8, "second view cost %lu pages (writable %lu, image %lu)",
+    ok(secondCost <= imagePages / 512 + 8, "second view cost %lu pages (writable %lu, image %lu)",
        (unsigned long)secondCost, (unsigned long)writablePages, (unsigned long)imagePages);
 
     /* EVERY committed page of both views maps the same master frame; the
@@ -184,6 +197,7 @@ static void test_master_base_key(void)
        "create section");
     if (section == 0)
     {
+        MiDeleteAddressSpace(&space);
         return;
     }
     const MI_IMAGE_INFO *image = section->image;
@@ -266,6 +280,7 @@ static void test_cow_arm(void)
        "create section");
     if (section == 0)
     {
+        MiDeleteAddressSpace(&space);
         return;
     }
     const MI_IMAGE_INFO *image = section->image;
@@ -292,6 +307,9 @@ static void test_cow_arm(void)
     ok(writableVa != 0 && readonlyVa != 0, "test PE lacks a writable/read-only pair");
     if (writableVa == 0 || readonlyVa == 0)
     {
+        MiUnmapView(&space, base);
+        ObDereferenceObject(section);
+        MiDeleteAddressSpace(&space);
         return;
     }
 
@@ -312,8 +330,9 @@ static void test_cow_arm(void)
      * allocation failure is claimed, answers STATUS_IN_PAGE_ERROR, and
      * leaves no trace — still the master frame, still read-only. */
     MiCowFailNextAllocation = TRUE;
-    ok(MiResolveWriteFault(&space, writableVa, &resolved) && resolved == STATUS_IN_PAGE_ERROR,
-       "injected OOM -> claimed=%d status=%08lx", 1, (unsigned long)resolved);
+    BOOLEAN claimed = MiResolveWriteFault(&space, writableVa, &resolved);
+    ok(claimed && resolved == STATUS_IN_PAGE_ERROR, "injected OOM -> claimed=%d status=%08lx",
+       (int)claimed, (unsigned long)resolved);
     ok(MiCowFailNextAllocation == FALSE, "knob did not self-clear");
     uint64_t after = MiTranslateUserPage(space.pml4Physical, writableVa, &writable, &present);
     ok(after == before && !writable, "failed copy left state behind (frame %lx->%lx w=%d)",
@@ -472,5 +491,9 @@ int kmt_run_cui9(void)
     KMT_RUN(test_master_base_key);
     KMT_RUN(test_cow_arm);
     KMT_RUN(test_guard_clear_authority);
+    /* The hazard-E knob must not outlive the suite: left armed (a case that
+     * set it but never reached the COW arm), the next REAL resolve would
+     * answer STATUS_IN_PAGE_ERROR (the review's sticky-global hazard). */
+    MiCowFailNextAllocation = FALSE;
     return kmt_failures - before;
 }

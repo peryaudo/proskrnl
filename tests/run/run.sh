@@ -1493,7 +1493,7 @@ cui9() {
     fi
     wait "$qemu_wrapper" 2>/dev/null || true
 
-    local ceilingLine procs
+    local ceilingLine procs err
     ceilingLine="$(grep -E '^\[KTEST\] cui9 ceiling ' "$log" | head -1 | tr -d '\r' || true)"
     procs="$(sed -nE 's/.*procs=([0-9]+).*/\1/p' <<<"$ceilingLine")"
     if [[ -z "$procs" ]]; then
@@ -1501,6 +1501,13 @@ cui9() {
         return 1
     fi
     echo "$ceilingLine"
+    # err=0 means mmceiling filled its MAX_CHILDREN array without a refusal:
+    # the reported procs is the harness cap, not the machine's ceiling.
+    err="$(sed -nE 's/.*err=([0-9]+).*/\1/p' <<<"$ceilingLine")"
+    if [[ -z "$err" || "$err" -eq 0 ]]; then
+        echo "== cui9: FAIL (no refusal: hit mmceiling's MAX_CHILDREN cap at procs=$procs; raise the cap) =="
+        return 1
+    fi
     grep -E '^\[KTEST\] cui9 perproc ' "$log" | head -1 | tr -d '\r' || true
 
     local floorFile="$ROOT/tests/cui/mmceiling_floor.txt"
