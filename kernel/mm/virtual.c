@@ -1400,14 +1400,22 @@ BOOLEAN MiClearGuardPage(PMI_ADDRESS_SPACE space, uint64_t pageAddress)
         return FALSE;
     }
     /* One-shot: drop the guard bit and make the (already committed) frame
-     * an ordinary present page. */
+     * an ordinary present page — through the one hardware-writability rule,
+     * like every other PTE-writing site. The raw protection bit here made a
+     * guarded writecopy page's SHARED MASTER frame hardware-writable (the
+     * docs/17 §6B violation: writable, for everyone), and a guarded clean
+     * WATCHED page writable without a dirty mark (a page silently lost from
+     * NtGetWriteWatch). The clear itself consumes nothing: the retried
+     * store faults again and resolves through MiResolveWriteFault — copy or
+     * mark, the same arm every write takes (hazard G's ordering). */
     uint64_t frame = MiTranslateUserPage(space->pml4Physical, pageAddress, 0, 0);
     ASSERT(frame != 0);
     ULONG newProtect = protect & ~(ULONG)PAGE_GUARD;
     int present, writable, executable;
     MiProtectToPteBits(newProtect, &present, &writable, &executable);
     MiUnmapUserPage(space->pml4Physical, pageAddress);
-    MiMapUserPage(space->pml4Physical, pageAddress, frame, present, writable, executable);
+    MiMapUserPage(space->pml4Physical, pageAddress, frame, present,
+                  MipVadPageHwWritable(vad, index, writable), executable);
     vad->pageProtect[index] = newProtect;
     return TRUE;
 }
