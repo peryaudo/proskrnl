@@ -243,6 +243,16 @@ struct KTHREAD
      * rather than halting the machine. 0 whenever no service is running. */
     void *faultRecovery;
 
+    /* Who armed the frame, and whether an unwind through it is a deliberate
+     * provocation rather than a defect report (issue #32 A3). The recovery
+     * frame is a BACKSTOP for a missing or stale probe, so every unwind is a
+     * bug until a test says otherwise — the name is what the [UACCESS] line
+     * blames, and `expected` is the only thing that keeps a leg green. Set
+     * and cleared by KiArmFaultRecovery/KiDisarmFaultRecovery, which are the
+     * one authority for arming (uaccess.h). */
+    const char *faultRecoveryName;
+    BOOLEAN faultRecoveryExpected;
+
     /* wait machinery */
     NTSTATUS waitStatus;
     PKWAIT_BLOCK waitBlockList; /* chain via nextWaitBlock; 0 = pure delay */
