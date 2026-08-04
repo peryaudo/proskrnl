@@ -163,10 +163,51 @@ typedef struct
 ULONG KiSetFaultRecovery(PKI_FAULT_RECOVERY frame);
 __attribute__((noreturn)) void KiJumpFaultRecovery(PKI_FAULT_RECOVERY frame, ULONG value);
 
+/* Arm/disarm the calling thread's frame. Call AFTER KiSetFaultRecovery has
+ * returned 0 — the capture must be live before the frame is reachable.
+ * `name` names the blamed service (the dispatcher passes the descriptor's);
+ * `expected` is TRUE only where an unwind is the thing under test, which is
+ * what tells the [UACCESS] accounting below that this one is not a defect.
+ * One authority for the arming (Art. 11): nothing else writes the KTHREAD
+ * fields, so `git grep KiArmFaultRecovery` is the complete list of arming
+ * sites and of who claims an unwind is expected.
+ *
+ * `name` is BORROWED and must outlive the frame — every caller passes a
+ * string literal or the service table's own static name, and an unwind reads
+ * it after every non-callee-saved local is already indeterminate. */
+void KiArmFaultRecovery(PKI_FAULT_RECOVERY frame, const char *name, BOOLEAN expected);
+void KiDisarmFaultRecovery(void);
+
+/* --- the unwind ledger (issue #32 A3) -------------------------------------
+ *
+ * COUNTING the unwinds, not just surviving them. The recovery frame above is
+ * correct and load-bearing, and it also destroyed the signal for the class it
+ * backstops: before it existed, a missing probe was a [PANIC] with a stack
+ * trace — impossible to miss. After it, the same missing probe is a silent
+ * STATUS_ACCESS_VIOLATION that reads exactly like a caller passing a bad
+ * pointer, i.e. like ordinary operation. A backstop that is also camouflage
+ * costs more than it saves.
+ *
+ * So every unwind names itself on serial:
+ *
+ *     [UACCESS] <name> va=<addr> rip=<addr> count=<n>
+ *     [UACCESS] expected <name> va=<addr> rip=<addr> count=<n>
+ *
+ * and tests/run/uacheck.sh fails any leg carrying an untagged line (wired
+ * into `make test` and into every tests/run/run.sh leg). The rip is what
+ * names the missing probe; tools/symbolize.py resolves it in the .sym.log
+ * sidecar every leg already writes.
+ *
+ * The counters are here for the panic dump and for in-kernel assertions
+ * (tests/kmt/m4_usermode.c convicts the counting itself). */
+extern uint64_t KiUserFaultRecoveryCount;      /* unwinds, all of them */
+extern uint64_t KiUserFaultRecoveryUnexpected; /* the ones nobody claimed */
+
 /* Called from KiDispatchTrap for a ring-0 fault. Unwinds to the current
  * thread's armed recovery frame and never returns, IF one is armed and the
  * faulting address is a user address. Returns (so the caller panics) for a
- * genuine kernel-address fault, which is a kernel bug and must stay loud. */
-void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector);
+ * genuine kernel-address fault, which is a kernel bug and must stay loud.
+ * `rip` is the faulting instruction, reported but never interpreted. */
+void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector, uint64_t rip);
 
 #endif /* PROSKRNL_KERNEL_SYSCALL_UACCESS_H */

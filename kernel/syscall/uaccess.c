@@ -93,7 +93,31 @@ NTSTATUS KiProbeForWrite(void *address, uint64_t length, uint64_t alignment)
     return KiProbeRange(address, length, alignment, 1);
 }
 
-void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector)
+uint64_t KiUserFaultRecoveryCount = 0;
+uint64_t KiUserFaultRecoveryUnexpected = 0;
+
+void KiArmFaultRecovery(PKI_FAULT_RECOVERY frame, const char *name, BOOLEAN expected)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    /* Frames never nest: a service is the outermost thing a ring-3 entry
+     * runs (syscalls do not nest — table.c asserts that too), and the kmt
+     * arms are sequential. A second arm would silently orphan the first,
+     * which is a wedge, so it is fatal here rather than surprising later. */
+    ASSERT(thread->faultRecovery == 0);
+    thread->faultRecoveryName = name;
+    thread->faultRecoveryExpected = expected;
+    thread->faultRecovery = frame;
+}
+
+void KiDisarmFaultRecovery(void)
+{
+    PKTHREAD thread = KeGetCurrentThread();
+    thread->faultRecovery = 0;
+    thread->faultRecoveryName = 0;
+    thread->faultRecoveryExpected = FALSE;
+}
+
+void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector, uint64_t rip)
 {
     PKTHREAD thread = KeGetCurrentThread();
     if (thread == 0 || thread->faultRecovery == 0)
@@ -115,9 +139,21 @@ void KiRecoverFromKernelFault(uint64_t faultAddress, uint64_t vector)
     }
 
     PKI_FAULT_RECOVERY frame = (PKI_FAULT_RECOVERY)thread->faultRecovery;
-    thread->faultRecovery = 0;
-    DbgPrint("[KTEST] uaccess RECOVER va=%#018lx (unwinding the service)\n",
-             (unsigned long)faultAddress);
+    const char *name = thread->faultRecoveryName != 0 ? thread->faultRecoveryName : "?";
+    BOOLEAN expected = thread->faultRecoveryExpected;
+    KiDisarmFaultRecovery();
+
+    /* The ledger (uaccess.h): an unwind is a bug report unless the arming
+     * site claimed it, so it is counted and named before the jump — a jump
+     * runs no cleanup, so anything owed has to be paid here. */
+    KiUserFaultRecoveryCount++;
+    if (!expected)
+    {
+        KiUserFaultRecoveryUnexpected++;
+    }
+    DbgPrint("[UACCESS]%s %s va=%#018lx rip=%#018lx count=%lu\n", expected ? " expected" : "", name,
+             (unsigned long)faultAddress, (unsigned long)rip,
+             (unsigned long)KiUserFaultRecoveryCount);
     KiJumpFaultRecovery(frame, (ULONG)STATUS_ACCESS_VIOLATION);
 }
 

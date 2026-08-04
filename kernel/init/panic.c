@@ -163,6 +163,14 @@ static void KiDumpSystemState(void)
         DbgPrint("  last_syscall=%#lx (%s)\n", KiLastSystemCall,
                  KiSystemCallName(KiLastSystemCall));
     }
+    /* The unwind ledger (issue #32 A3): a boot that already swallowed ring-0
+     * faults on user addresses is a boot whose earlier [UACCESS] lines are
+     * part of this dump's story, so the dump says how many to go look for. */
+    if (KiUserFaultRecoveryCount != 0)
+    {
+        DbgPrint("  uaccess_unwinds=%lu (unexpected=%lu)\n", KiUserFaultRecoveryCount,
+                 KiUserFaultRecoveryUnexpected);
+    }
     KiDumpTraceRing();
 }
 
@@ -356,7 +364,7 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     {
         uint64_t faultAddress = 0;
         __asm__ volatile("mov %%cr2, %0" : "=r"(faultAddress));
-        KiRecoverFromKernelFault(faultAddress, trapFrame->vector);
+        KiRecoverFromKernelFault(faultAddress, trapFrame->vector, trapFrame->rip);
     }
 
     KiPanicLatch();

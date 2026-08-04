@@ -100,7 +100,9 @@ KiCallServiceGuarded(const KI_SERVICE_DESCRIPTOR *descriptor, const uint64_t *ar
     ULONG unwound = KiSetFaultRecovery(&recovery);
     if (unwound != 0)
     {
-        KeGetCurrentThread()->faultRecovery = 0;
+        /* KiRecoverFromKernelFault disarmed before jumping; this is the
+         * belt-and-braces disarm for a hypothetical unwind from elsewhere. */
+        KiDisarmFaultRecovery();
         /* THE assertion this ledger exists for (issue #96 B). The comment in
          * uaccess.h has always said an unwind runs no cleanup; that made a
          * ring-0 fault under the volume gate a permanent, silent, machine-wide
@@ -112,12 +114,16 @@ KiCallServiceGuarded(const KI_SERVICE_DESCRIPTOR *descriptor, const uint64_t *ar
         return (NTSTATUS)unwound;
     }
 
-    KeGetCurrentThread()->faultRecovery = &recovery;
+    /* The service's own name is what an [UACCESS] line blames (issue #32 A3):
+     * an unwind here means this service reached a user address without a live
+     * probe behind it, and the name plus the reported rip is the whole
+     * suspect. Never `expected` — no service is allowed to fault by design. */
+    KiArmFaultRecovery(&recovery, descriptor->name, FALSE);
     NTSTATUS status =
         descriptor->service(arguments[0], arguments[1], arguments[2], arguments[3], arguments[4],
                             arguments[5], arguments[6], arguments[7], arguments[8], arguments[9],
                             arguments[10], arguments[11], arguments[12], arguments[13]);
-    KeGetCurrentThread()->faultRecovery = 0;
+    KiDisarmFaultRecovery();
     /* The ordinary exit: a service that returns holding a gate is the same
      * defect reached the boring way. */
     KiAssertNoObligations("service return");

@@ -273,11 +273,19 @@ static void test_kernel_fault_recovery(void)
     PKTHREAD thread = KeGetCurrentThread();
     ok(thread->faultRecovery == 0, "no recovery frame armed on entry");
 
+    /* The unwind ledger (issue #32 A3). This is the ONE place in the tree
+     * that unwinds on purpose, so it is the one place that arms `expected`
+     * — every other [UACCESS] line on any leg is a missing or stale probe,
+     * and tests/run/uacheck.sh turns that leg red. `volatile` for the same
+     * reason as the two above: read after an unwind. */
+    volatile uint64_t countBefore = KiUserFaultRecoveryCount;
+    volatile uint64_t unexpectedBefore = KiUserFaultRecoveryUnexpected;
+
     KI_FAULT_RECOVERY recovery;
     ULONG unwound = KiSetFaultRecovery(&recovery);
     if (unwound == 0)
     {
-        thread->faultRecovery = &recovery;
+        KiArmFaultRecovery(&recovery, "kmt/test_kernel_fault_recovery", TRUE);
         /* A ring-0 read of an unmapped user address: #PF with CPL 0. */
         volatile const unsigned char *victim =
             (volatile const unsigned char *)(uintptr_t)KMT_UNMAPPED_USER_VA;
@@ -290,7 +298,7 @@ static void test_kernel_fault_recovery(void)
         recovered = 1;
         status = unwound;
     }
-    KeGetCurrentThread()->faultRecovery = 0;
+    KiDisarmFaultRecovery();
 
     ok(recovered == 1, "unwound to the recovery frame");
     ok(status == (ULONG)STATUS_ACCESS_VIOLATION,
@@ -301,7 +309,7 @@ static void test_kernel_fault_recovery(void)
     KI_FAULT_RECOVERY second;
     if (KiSetFaultRecovery(&second) == 0)
     {
-        KeGetCurrentThread()->faultRecovery = &second;
+        KiArmFaultRecovery(&second, "kmt/test_kernel_fault_recovery", TRUE);
         volatile unsigned char *victim =
             (volatile unsigned char *)(uintptr_t)(KMT_UNMAPPED_USER_VA + 0x1000);
         *victim = 1;
@@ -311,9 +319,19 @@ static void test_kernel_fault_recovery(void)
     {
         recovered = 1;
     }
-    KeGetCurrentThread()->faultRecovery = 0;
+    KiDisarmFaultRecovery();
     ok(recovered == 1, "unwound to the second recovery frame");
     ok(KeGetCurrentThread()->faultRecovery == 0, "recovery frame disarmed after the unwind");
+
+    /* Both unwinds were counted, and both were claimed. A recovery frame
+     * that unwinds without counting is the §1b camouflage the ledger exists
+     * to remove, so the count is convicted here rather than assumed: this
+     * test is what proves a silent unwind cannot happen anywhere else. */
+    ok(KiUserFaultRecoveryCount == countBefore + 2, "both unwinds counted (%lu -> %lu)",
+       (unsigned long)countBefore, (unsigned long)KiUserFaultRecoveryCount);
+    ok(KiUserFaultRecoveryUnexpected == unexpectedBefore,
+       "a claimed unwind is not counted as unexpected (%lu -> %lu)",
+       (unsigned long)unexpectedBefore, (unsigned long)KiUserFaultRecoveryUnexpected);
 
     /* CUI-8: the unwind restores the arm-time RFLAGS. The fault trap enters
      * through an interrupt gate (IF clear) and the jump unwind never
