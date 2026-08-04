@@ -105,6 +105,7 @@ tests/run/run.sh oracle     # run every test .exe under the pinned Wine (the SPE
 tests/run/run.sh proskrnl   # bake the same .exes into a disk image, boot QEMU (the REGRESSION gate)
 tests/run/run.sh winetest   # the M10 stretch gate: the full non-GUI sweep of Wine's OWN
                             # test suite (tests/winetest/manifest.txt), oracle + proskrnl
+                            # (takes a <module>[:<subtest>] filter — see "Iterating")
 tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firstboot
                             # SYSTEM hive against a fresh oracle prefix (regdump/regdiff)
 ```
@@ -138,6 +139,26 @@ hold when only some tests ran).
 A subset run is for **iteration, never for a verdict** — it says so on stdout, and the
 gates in `docs/CONTRIBUTING.md` are the unfiltered runs. A pattern matching nothing is an
 error listing the known names, so a typo can never read as "everything passed".
+
+The winetest leg takes the same filter, over manifest **pairs**. A pair's name is
+`<module>:<subtest>`, the module being the exe without its `_test.exe` tail (`ntdll`,
+`kernel32`, `msvcrt`, `ucrtbase`, `cmd`); a bare word with no `:` matches either half:
+
+```
+tests/run/run.sh winetest ntdll:env      # one pair
+tests/run/run.sh winetest ntdll          # a whole module
+tests/run/run.sh winetest printf         # that subtest wherever it exists (msvcrt+ucrtbase)
+tests/run/run.sh winetest 'rtl*' cmd     # globs and several patterns are fine
+```
+
+Here the filter is a **generated manifest**: the selected lines are written to
+`build/tests/wtests/manifest-subset.txt` and that is what the image bakes as
+`C:\wtests\manifest.txt`, so the kernel-side sweep runs exactly the subset — the same
+"the image decides what runs" property the ntapi leg has. Its own image and log
+(`build/tests/wtest-subset.hdd`, `wtest-subset-serial.log`) keep it clear of the gate's,
+and the same typo rule applies (the error lists all 83 known pairs). This is the way to
+work a red pair without paying for the whole sweep: the manifest lists the entire non-GUI
+surface, so an unfiltered run is long by design.
 
 ### The oracle leg is fanned out (`ORACLE_JOBS`)
 

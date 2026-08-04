@@ -34,6 +34,22 @@
 #                     non-GUI sweep — under the oracle AND on proskrnl. Same
 #                     one-binary discipline.
 #
+#                     It takes the same optional filter, over manifest PAIRS.
+#                     A pair's name is <module>:<subtest> (the module being
+#                     the exe without its _test.exe tail: ntdll, kernel32,
+#                     msvcrt, ucrtbase, cmd); a bare word with no ':' matches
+#                     either half, so:
+#
+#                         run.sh winetest ntdll:env       # one pair
+#                         run.sh winetest ntdll           # a whole module
+#                         run.sh winetest printf          # msvcrt + ucrtbase
+#                         run.sh winetest 'rtl*' cmd      # globs and lists
+#
+#                     Same rules as above: iteration only (the subset boots
+#                     its own image, build/tests/wtest-subset.hdd, so it can
+#                     never be mistaken for the gate's), and a pattern that
+#                     matches no pair is an error.
+#
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
 #     [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
@@ -49,11 +65,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NTAPI="$ROOT/tests/ntapi"
 BUILD="$ROOT/build/tests"
 MODE="${1:-}"
-# The optional subtest filter (see the header). Only the two ntapi legs take
-# one — every other mode's arguments mean something else (`fuzz` forwards its
-# own), so the filter stays empty for them and they behave exactly as before.
+# The optional subtest filter (see the header). Only the two ntapi legs and
+# the winetest leg take one — every other mode's arguments mean something
+# else (`fuzz` forwards its own), so the filter stays empty for them and they
+# behave exactly as before. The ntapi legs filter tests/ntapi base names; the
+# winetest leg filters manifest pairs (wtest_matches below).
 SUBTESTS=()
-case "$MODE" in oracle|proskrnl) SUBTESTS=("${@:2}") ;; esac
+case "$MODE" in oracle|proskrnl|winetest) SUBTESTS=("${@:2}") ;; esac
 
 : "${CC_ORACLE:=x86_64-w64-mingw32-gcc}"   # override for a different mingw
 
@@ -528,6 +546,30 @@ proskrnl() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# A manifest exe's short module name: the tail the winetest binaries all
+# share, dropped. ntdll_test.exe -> ntdll; cmd.exe_test.exe -> cmd.
+wtest_module() {   # $1 = manifest exe
+    local mod="${1%_test.exe}"
+    echo "${mod%.exe}"
+}
+
+# Does $1 (a $SUBTESTS pattern) select the pair $2:$3? Matched against the
+# canonical <module>:<subtest>, against the raw <exe>:<subtest> the manifest
+# spells, and — only for a pattern carrying no ':' — against each half alone,
+# so `ntdll` takes a module, `printf` takes that subtest wherever it exists,
+# and `ntdll:env` takes the one pair. Globs work in every position.
+wtest_matches() {   # $1 = pattern, $2 = exe, $3 = subtest
+    local mod
+    mod="$(wtest_module "$2")"
+    # shellcheck disable=SC2053  -- $1 is a glob on purpose
+    [[ "$mod:$3" == $1 || "$2:$3" == $1 ]] && return 0
+    if [[ "$1" != *:* ]]; then
+        # shellcheck disable=SC2053
+        [[ "$mod" == $1 || "$3" == $1 ]] && return 0
+    fi
+    return 1
+}
+
 # The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
 # own test suite"): the manifest of <test_exe>:<subtest> pairs
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
@@ -546,35 +588,92 @@ winetest() {
     make -C "$ROOT" wtests >/dev/null
     mkdir -p "$BUILD/wtests"
 
-    local pairs=()
+    # Parse into PARALLEL arrays rather than carrying raw lines around: a
+    # manifest line may carry the optional third field (the per-pair timeout,
+    # user/smss/session.c), and both the oracle argv and the kernel's verdict
+    # line are <exe>:<subtest> only — splitting once here is what keeps the
+    # timeout out of them. wtestLines keeps the line verbatim for the baked
+    # subset manifest, so the timeout survives to the runner that honors it.
+    local wtestExes=() wtestSubs=() wtestKeys=() wtestLines=()
+    local line
     while IFS= read -r line; do
         line="${line%$'\r'}"
         [[ -z "$line" || "$line" == \#* ]] && continue
-        pairs+=("$line")
+        local exe="${line%%:*}" rest="${line#*:}"
+        local sub="${rest%%:*}"
+        wtestExes+=("$exe"); wtestSubs+=("$sub")
+        wtestKeys+=("$exe:$sub"); wtestLines+=("$line")
     done < "$manifest"
-    if [[ ${#pairs[@]} -eq 0 ]]; then
+    if [[ ${#wtestKeys[@]} -eq 0 ]]; then
         echo "== winetest: manifest empty ==" >&2
         return 2
     fi
 
+    # The $SUBTESTS filter (see the header). A pattern that matches no pair is
+    # a TYPO, not an empty run — the ntapi legs' rule (check_subtests) and the
+    # same reason: a silently empty sweep prints "0 failing" and reads green.
+    local i pat hit
+    if (( ${#SUBTESTS[@]} )); then
+        for pat in "${SUBTESTS[@]}"; do
+            hit=0
+            for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+                wtest_matches "$pat" "${wtestExes[i]}" "${wtestSubs[i]}" && { hit=1; break; }
+            done
+            if (( ! hit )); then
+                echo "run.sh: no winetest pair matches '$pat'. Known pairs:" >&2
+                for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+                    echo "  $(wtest_module "${wtestExes[i]}"):${wtestSubs[i]}"
+                done >&2
+                exit 2
+            fi
+        done
+        local selExes=() selSubs=() selKeys=() selLines=()
+        for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+            for pat in "${SUBTESTS[@]}"; do
+                if wtest_matches "$pat" "${wtestExes[i]}" "${wtestSubs[i]}"; then
+                    selExes+=("${wtestExes[i]}"); selSubs+=("${wtestSubs[i]}")
+                    selKeys+=("${wtestKeys[i]}"); selLines+=("${wtestLines[i]}")
+                    break
+                fi
+            done
+        done
+        wtestExes=("${selExes[@]}"); wtestSubs=("${selSubs[@]}")
+        wtestKeys=("${selKeys[@]}"); wtestLines=("${selLines[@]}")
+        echo "== winetest: subset run (${SUBTESTS[*]}, ${#wtestKeys[@]} pairs)" \
+             "— NOT the gate; run unfiltered for a verdict =="
+    fi
+
     # --- oracle leg (the SPEC gate: green here before the kernel side) ---
     local fails=0
-    for pair in "${pairs[@]}"; do
-        local exe="${pair%%:*}" sub="${pair#*:}"
+    for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+        local exe="${wtestExes[i]}" sub="${wtestSubs[i]}"
         local olog="$BUILD/wtests/${exe}.${sub}.oracle.log"
         # scratch cwd: the cmd tests write test.cmd/test.out where they run
         if (cd "$BUILD/wtests" && "$WINE" "$ROOT/build/wtests/$exe" "$sub") >"$olog" 2>&1; then
-            echo "[KTEST] wtest-oracle $pair PASS"
+            echo "[KTEST] wtest-oracle ${wtestKeys[i]} PASS"
         else
-            echo "[KTEST] wtest-oracle $pair FAIL (see $olog)"
+            echo "[KTEST] wtest-oracle ${wtestKeys[i]} FAIL (see $olog)"
             fails=$((fails+1))
         fi
     done
 
     # --- proskrnl leg (the REGRESSION gate) ---
-    local kernel img
+    # A subset boots its OWN image (the proskrnl leg's rule): the gate's
+    # wtest.hdd must never be left holding a partial manifest, where a later
+    # run — or a human reading the file — would take it for the full sweep.
+    local kernel img baked
     kernel="$ROOT/build/proskrnl"
     img="$ROOT/build/tests/wtest.hdd"
+    baked="$manifest"
+    if (( ${#SUBTESTS[@]} )); then
+        img="$ROOT/build/tests/wtest-subset.hdd"
+        baked="$BUILD/wtests/manifest-subset.txt"
+        {
+            echo "# GENERATED by tests/run/run.sh winetest ${SUBTESTS[*]} — a SUBSET of"
+            echo "# tests/winetest/manifest.txt, baked for iteration. Never a verdict."
+            printf '%s\n' "${wtestLines[@]}"
+        } > "$baked"
+    fi
     make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
     make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe \
         build/modules/smss.exe >/dev/null
@@ -601,11 +700,18 @@ winetest() {
     specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-    for exe in ntdll_test.exe kernel32_test.exe msvcrt_test.exe ucrtbase_test.exe \
-               cmd.exe_test.exe; do
+    # Only the exes the (possibly filtered) manifest names — an unfiltered run
+    # bakes all five, a subset bakes just what it will run, which is the ntapi
+    # leg's property too: a subset's image is as short as the subset.
+    local bakedExes=" "
+    for ((i = 0; i < ${#wtestExes[@]}; i++)); do
+        [[ "$bakedExes" == *" ${wtestExes[i]} "* ]] || bakedExes+="${wtestExes[i]} "
+    done
+    # shellcheck disable=SC2086  -- deliberate split on a list we just built
+    for exe in $bakedExes; do
         specs+=("win:$ROOT/build/wtests/$exe=wtests/$exe")
     done
-    specs+=("win:$manifest=wtests/manifest.txt")
+    specs+=("win:$baked=wtests/manifest.txt")
 
     # MB-scale test binaries: a bigger volume than the 64 MB default. And
     # 1 GiB of guest RAM: no eviction (Art. 3) means the page cache holds
@@ -614,16 +720,17 @@ winetest() {
     SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/wtest-serial.log"
+    if (( ${#SUBTESTS[@]} )); then log="$ROOT/build/tests/wtest-subset-serial.log"; fi
     LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # No ^ anchor: conhost cursor escapes may share the verdict's line (the
     # run.sh console precedent).
-    for pair in "${pairs[@]}"; do
-        if grep -qF "[KTEST] wtest $pair PASS" "$log" 2>/dev/null; then
-            echo "[KTEST] wtest $pair PASS"
+    for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
+        if grep -qF "[KTEST] wtest ${wtestKeys[i]} PASS" "$log" 2>/dev/null; then
+            echo "[KTEST] wtest ${wtestKeys[i]} PASS"
         else
-            echo "[KTEST] wtest $pair FAIL"
+            echo "[KTEST] wtest ${wtestKeys[i]} FAIL"
             fails=$((fails + 1))
         fi
     done
@@ -2193,7 +2300,7 @@ trap uacheck_sweep EXIT
 case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
-    winetest) winetest ;;
+    winetest) winetest ;;   # SUBTESTS filters manifest pairs (see the header)
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
     firstboot) firstboot ;;
@@ -2215,8 +2322,9 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
+       echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
        exit 2 ;;
 esac
