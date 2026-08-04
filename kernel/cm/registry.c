@@ -1030,12 +1030,26 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
             return probeStatus;
         }
     }
-    if (attributes == 0 || attributes->Length != sizeof(OBJECT_ATTRIBUTES))
+    /* NULL attributes is an ACCESS VIOLATION, not an invalid parameter — the
+     * boundary DEREFERENCES what proskrnl used to null-check. Wine's
+     * NtCreateKey (dlls/ntdll/unix/registry.c:74) reads `attr->Length` and
+     * then `attr->ObjectName->Length` with no guard at all, so both a NULL
+     * `attributes` and a NULL `ObjectName` fault, and the caller sees
+     * STATUS_ACCESS_VIOLATION. Pinned by tests/ntapi/sem_reg/null_args.c;
+     * ntdll:reg (reg.c:239, 390, 399) is the winetest consumer. */
+    if (attributes == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (attributes->Length != sizeof(OBJECT_ATTRIBUTES))
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (attributes->ObjectName == 0 ||
-        (attributes->ObjectName->Length == 0 && attributes->RootDirectory == 0))
+    if (attributes->ObjectName == 0)
+    {
+        return STATUS_ACCESS_VIOLATION; /* the second deref, same rule */
+    }
+    if (attributes->ObjectName->Length == 0 && attributes->RootDirectory == 0)
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;
     }
@@ -1156,7 +1170,12 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
             return probeStatus;
         }
     }
-    if (attributes == 0 || attributes->Length != sizeof(OBJECT_ATTRIBUTES))
+    /* Same deref-not-check rule as NtCreateKey above. */
+    if (attributes == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if (attributes->Length != sizeof(OBJECT_ATTRIBUTES))
     {
         return STATUS_INVALID_PARAMETER;
     }

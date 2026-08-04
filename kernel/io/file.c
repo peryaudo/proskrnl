@@ -208,6 +208,35 @@ NTSTATUS IopValidateEventHandle(HANDLE eventHandle)
     return status;
 }
 
+/* The failure twin of IopCompleteRequest's event half: the caller's event is
+ * RESET, and the IOSB is left untouched. That is the oracle's shape for a
+ * request that fails after its handle resolved — dlls/ntdll/unix/file.c
+ * NtWriteFile ends with
+ *
+ *     if (status == STATUS_SUCCESS) { set_sync_iosb(...); if (event) NtSetEvent(event, NULL); }
+ *     else if (status != STATUS_PENDING && event) NtResetEvent(event, NULL);
+ *
+ * so a caller that pre-signalled its event sees it go DOWN on failure, with
+ * no IOSB write to tell it apart. Callers couple the two (ntdll:file's
+ * "event is not signaled" check reads the event and the IOSB together), so
+ * leaving a pre-signalled event alone is observably wrong even when the
+ * returned status is right. Signalling goes through the same
+ * IopReferenceCompletionEvent authority (Art. 11), and a failure to reset
+ * is discarded for the same reason it is at completion. */
+void IopAbandonRequest(HANDLE eventHandle)
+{
+    if (eventHandle == 0)
+    {
+        return;
+    }
+    PVOID eventBody;
+    if (NT_SUCCESS(IopReferenceCompletionEvent(eventHandle, &eventBody)))
+    {
+        KeResetEvent(eventBody);
+        ObDereferenceObject(eventBody);
+    }
+}
+
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information)
 {

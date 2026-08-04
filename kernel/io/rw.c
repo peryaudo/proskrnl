@@ -59,10 +59,14 @@ static NTSTATUS IopAsyncReturnShape(PFILE_OBJECT file, NTSTATUS final, BOOLEAN i
  * QuadPart == -1, the value the pinned tree fixes
  * (third_party/wine/dlls/ntdll/unix/unix_private.h
  * FILE_WRITE_TO_END_OF_FILE) and sem_file/append.c pins at the boundary.
- * Every other negative offset is refused, including the -2
- * FILE_USE_FILE_POINTER_POSITION sentinel (same header) — unpinned, no
- * baked caller; a consumer would get a distinguishable
- * STATUS_INVALID_PARAMETER, never a fabricated position (docs/03). */
+ * The -2 FILE_USE_FILE_POINTER_POSITION sentinel (same header) means "use
+ * the handle's current position" — exactly what a NULL ByteOffset means —
+ * on BOTH directions. It was refused as unpinned/no-baked-caller until
+ * ntdll:file produced the caller (file.c:5183 writes "DCBA" at -2 after a
+ * SetFilePointer and expects STATUS_SUCCESS); pinned by
+ * sem_file/file_pointer_offset.c. Every OTHER negative offset is still
+ * refused with STATUS_INVALID_PARAMETER, which is the same file.c loop's
+ * expectation for -3 and below. */
 static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed,
                                  PIO_APC_ROUTINE apc, PVOID apcContext, PIO_STATUS_BLOCK iosb,
                                  PLARGE_INTEGER byteOffset, PFILE_OBJECT *fileOut,
@@ -120,6 +124,19 @@ static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed
                 /* FILE_WRITE_TO_END_OF_FILE: the write lands at EOF. */
                 *writeToEndOut = TRUE;
                 offset = 0;
+            }
+            else if (captured.QuadPart == -2)
+            {
+                /* FILE_USE_FILE_POINTER_POSITION: the NULL-ByteOffset rule
+                 * above, spelled as a value. Same admissibility test, so an
+                 * asynchronous disk handle refuses it exactly as it refuses
+                 * NULL — one rule, one place. */
+                if (!file->synchronousIo && file->device->ops->Read == 0)
+                {
+                    ObDereferenceObject(file);
+                    return STATUS_INVALID_PARAMETER;
+                }
+                offset = file->synchronousIo ? (uint64_t)file->currentByteOffset.QuadPart : 0;
             }
             else
             {
@@ -343,9 +360,18 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     {
         writeToEnd = TRUE; /* append-only: every write lands at EOF */
     }
+    /* An unreadable write buffer is STATUS_INVALID_USER_BUFFER, NOT the
+     * probe's own STATUS_ACCESS_VIOLATION — and the read direction above
+     * really does differ. The pinned Wine states both in one line each
+     * (dlls/ntdll/unix/file.c): NtReadFile returns STATUS_ACCESS_VIOLATION
+     * for an unwritable buffer (file.c:6064), NtWriteFile sets
+     * STATUS_INVALID_USER_BUFFER for an unreadable one (file.c:6354).
+     * Pinned by tests/ntapi/sem_file/bad_buffer.c; ntdll:file (file.c:5077,
+     * 5085) is the winetest consumer. */
     status = KiProbeForRead(buffer, length, 1);
     if (!NT_SUCCESS(status))
     {
+        status = STATUS_INVALID_USER_BUFFER;
         goto abandon;
     }
 
@@ -505,7 +531,12 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
 abandonSyncIo:
     IopLeaveSyncIo();
 abandon:
-    /* The request never completed (no IOSB write): the APC must not fire. */
+    /* The request never completed (no IOSB write): the APC must not fire.
+     * The caller's event is RESET, though — the oracle's NtWriteFile does
+     * that for every non-pending failure past the handle resolution
+     * (dlls/ntdll/unix/file.c err:), and a caller that pre-signalled it
+     * reads the event and the IOSB together. */
+    IopAbandonRequest(event);
     if (syncLocked)
     {
         KiReleaseEventGate(&file->syncIoLock);

@@ -169,6 +169,10 @@ NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
  * IopCompleteRequest). A 0 handle (no event) succeeds. */
 NTSTATUS IopValidateEventHandle(HANDLE eventHandle);
 
+/* Failure path twin: reset the caller's event, leave the IOSB alone.
+ * See kernel/io/file.c for why the two move together. */
+void IopAbandonRequest(HANDLE eventHandle);
+
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information);
 
