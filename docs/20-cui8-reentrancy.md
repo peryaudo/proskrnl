@@ -401,3 +401,13 @@ asked of every path that touches a caller pointer or drops a reference.
   has not been run; `IopCompleteRequest`'s self-validation covers any of them that
   funnel through it, and the recovery frame still backstops the rest (as a leak, not
   a hang). The next blocking-point milestone should run the census.
+
+  **Update (issue #32 A3): that leak is now counted.** "The recovery frame backstops
+  the rest" was the sentence that made the census postponable — a leak nobody counts is
+  a leak nobody finds, and the frame had turned the whole §1a class from a `[PANIC]`
+  into an ordinary-looking `STATUS_ACCESS_VIOLATION`. Every unwind now names itself
+  `[UACCESS] <service> va=… rip=…` on serial and `tests/run/uacheck.sh` fails any leg
+  carrying an unclaimed one (`docs/08`). So the census no longer has to be run
+  speculatively: an uncensused site that a real execution reaches turns its leg red and
+  names the rip. What stays owed is the sites no execution reaches yet — the census
+  finds those, and this finds the rest the day they matter.

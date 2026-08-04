@@ -269,6 +269,21 @@ echo "exit: $?"
   **and** PASS, so a suite that silently stopped running fails too, per the same rule the
   `all-green` job states: a verdict nobody reached must never read as one that passed. A new
   kmt suite is listed there in the commit that adds it, or it is ungated.
+- **`[UACCESS]` — the unwind ledger** (issue #32 A3). The system service dispatcher's
+  ring-0 fault recovery frame (`kernel/syscall/uaccess.h`) is a backstop for a missing or
+  stale user-pointer probe, and it is also *camouflage*: before it existed a missing probe
+  was a `[PANIC]` with a stack trace, impossible to miss; after it, the same missing probe
+  is a silent `STATUS_ACCESS_VIOLATION` indistinguishable from a caller passing a bad
+  pointer on purpose — i.e. from ordinary operation. So the kernel **counts** the unwinds
+  it recovers from instead of only surviving them, naming each on serial with the service
+  and the faulting rip (`tools/symbolize.py` resolves that rip in the `.sym.log` sidecar
+  every leg writes). `tests/run/uacheck.sh` fails any leg carrying an unclaimed line; the
+  one deliberate provoker tags its own (`KiArmFaultRecovery(..., TRUE)` in
+  `tests/kmt/m4_usermode.c`, which also convicts the counting), and
+  `git grep 'KiArmFaultRecovery(.*TRUE'` is the complete list of claims. Wired into
+  `make test` and into every `tests/run/run.sh` leg at the dispatcher, so a new leg is
+  swept without being enrolled. The fix for a red line is a probe at the named rip, never
+  a wider recovery frame.
 - **the boot console** (`kernel/init/bootvid.c`) — the same log, mirrored onto the Limine
   framebuffer from the second line of boot until `FbInitialize` hands the scanout to the
   GUI. Serial stays the machine channel and is written first, always: the mirror is for a
