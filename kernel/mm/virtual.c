@@ -781,42 +781,52 @@ NTSTATUS MiBindVadImageMaster(PMI_VAD vad, PVOID master)
 }
 
 /* docs/17 §8, "the highest-value single check": no writable PTE anywhere may
- * point at a frame a shared master owns — one sweep catches a kernel write
- * that skipped the resolver (hazard A), a writecopy satisfied by flipping
- * the bit (B), a base-keying mistake (F), and a flush-eliding path (H).
- * ASSERT is always compiled in; the walk is a few dozen pages per image
- * view, on map/protect paths only. */
+ * point at a frame a shared master owns — it catches a kernel write that
+ * skipped the resolver (hazard A), a writecopy satisfied by flipping the
+ * bit (B), a base-keying mistake (F), and a flush-eliding path (H).
+ * ASSERT is always compiled in, so the hot paths run the check SCOPED to
+ * the pages they touched: the map path sweeps its one new VAD, the
+ * reprotect path only its protected range — the loader protects each DLL
+ * many times, and the full every-image-VAD sweep there was quadratic in
+ * module count. The whole-space form remains for the kmt suite. */
+void MiAssertVadNoWritableMasterPteRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
+                                         uint64_t size)
+{
+    if (vad->master == 0)
+    {
+        return;
+    }
+    ASSERT(base >= vad->base && base + size <= vad->base + vad->size);
+    for (uint64_t page = base; page < base + size; page += PAGE_SIZE)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->pageProtect[index] == 0)
+        {
+            continue;
+        }
+        int writable = 0;
+        int present = 0;
+        uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, &writable, &present);
+        ASSERT(frame != 0);
+        if (vad->pagePrivate[index])
+        {
+            ASSERT(frame != MiImageMasterFrame(vad->master, index));
+        }
+        else
+        {
+            ASSERT(frame == MiImageMasterFrame(vad->master, index));
+            ASSERT(!writable);
+        }
+    }
+}
+
 void MiAssertNoWritableMasterPte(PMI_ADDRESS_SPACE space)
 {
     for (PLIST_ENTRY entry = space->vadListHead.Flink; entry != &space->vadListHead;
          entry = entry->Flink)
     {
         PMI_VAD vad = CONTAINING_RECORD(entry, MI_VAD, listEntry);
-        if (vad->master == 0)
-        {
-            continue;
-        }
-        for (ULONG index = 0; index < MiVadPageCount(vad); index++)
-        {
-            if (vad->pageProtect[index] == 0)
-            {
-                continue;
-            }
-            int writable = 0;
-            int present = 0;
-            uint64_t frame = MiTranslateUserPage(
-                space->pml4Physical, vad->base + (uint64_t)index * PAGE_SIZE, &writable, &present);
-            ASSERT(frame != 0);
-            if (vad->pagePrivate[index])
-            {
-                ASSERT(frame != MiImageMasterFrame(vad->master, index));
-            }
-            else
-            {
-                ASSERT(frame == MiImageMasterFrame(vad->master, index));
-                ASSERT(!writable);
-            }
-        }
+        MiAssertVadNoWritableMasterPteRange(space, vad, vad->base, vad->size);
     }
 }
 
@@ -1858,7 +1868,7 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     }
     if (vad->master != 0)
     {
-        MiAssertNoWritableMasterPte(space); /* docs/17 §8 */
+        MiAssertVadNoWritableMasterPteRange(space, vad, base, end - base); /* docs/17 §8 */
     }
     *baseInOut = base;
     *sizeInOut = end - base;
