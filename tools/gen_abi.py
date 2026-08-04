@@ -1060,6 +1060,9 @@ def gen_ntioapi(wine: Path) -> str:
             "FILE_DEVICE_MOUSE",
             "FILE_DEVICE_SERIAL_PORT",
             "FILE_DEVICE_VIDEO",
+            # \Device\Null (kernel/io/null.c): FileFsDeviceInformation's
+            # answer for the bit bucket, and what GetFileType switches on.
+            "FILE_DEVICE_NULL",
         ],
     )
     # FileFsAttributeInformation.FileSystemAttributes bits: the kernel's FAT32
