@@ -1198,18 +1198,30 @@ ownership record, never in the reported protection. Two adjacent shapes pinned w
 it: `NtProtectVirtualMemory` accepts the WRITECOPY flavours on mapped views and
 refuses them on private memory (the oracle's `set_protection` rule), and on an image
 view `PAGE_READWRITE` canonicalizes to `PAGE_WRITECOPY` (the oracle's
-`get_vprot_flags` with image=TRUE), which a following query reports. One refinement
-outside the pins: on a *shared* data view (`ownsFrames` FALSE — PTEs aimed straight
-at the section's / file cache's frames, no master and no per-page copy record) the
-WRITECOPY flavours refuse with `STATUS_INVALID_PAGE_PROTECTION`, because the only way
-to "grant" them there is a hardware-writable PTE on the shared frame — a write to
-every other view and, under immediate writeback, to the file: writecopy in name only
-(the PR-108 review's finding 2). The same protect path re-applies the map-time
-`backingWritable` gate (`STATUS_ACCESS_DENIED`) to the plain-writable flavours, so a
-read-only-handle view can no longer be made writable one `NtProtectVirtualMemory`
-after mapping. The pinned cases are untouched: they protect writecopy only on image
-views and on views *mapped* `PAGE_WRITECOPY` (eager private copies), both of which
-keep accepting it.
+`get_vprot_flags` with image=TRUE), which a following query reports. A third shape, pinned by `sem_mm/protect_shared_view`
+(written after the PR-108 review raised it, and it reversed the intended fix): on a
+*shared* view — `ownsFrames` FALSE, PTEs aimed straight at the section's / file
+cache's frames, no master and no per-page copy record — the oracle **grants** the
+WRITECOPY flavours and realizes them as a plain writable shared mapping. It
+`mprotect`s the existing `MAP_SHARED` region rather than remapping it `MAP_PRIVATE`,
+so no copy ever happens: the store is visible through every other view of the section
+and reaches the backing **file**. Real NT would privatize the page. proskrnl pins the
+oracle's shape for the same Art. 6 reason hazard D is pinned — and it is the answer
+this kernel already gives, since a shared view's stores land in the file's page cache
+under immediate writeback. Refusing writecopy there (the review's suggested fix, and
+this PR's first attempt at it) is a divergence from the spec wearing a fix's clothes.
+
+What the oracle *does* refuse on that same view is the **plain-writable** flavours
+when the backing handle lacks write access, with `STATUS_INVALID_PAGE_PROTECTION` —
+so `MiProtectVirtualMemory` applies the map-time `backingWritable` gate at protect
+time too. That closes the one genuine hole in the report: map `PAGE_READONLY` over a
+read-only handle, protect `PAGE_READWRITE`, and you wrote a file you could not open
+for writing. The asymmetry (writecopy granted on that same read-only-handle view,
+read-write refused) is the oracle's own, pinned as case D. One unpinned addition,
+recorded here: a body-less shared VAD — the kernel-owned `KUSER_SHARED_DATA` frame —
+refuses the writable protections too, since the oracle has no equivalent object and
+ring 3 making a kernel-shared frame writable is not a boundary behavior worth
+reproducing.
 
 ### Hazard F, decided: the share-mode gate, and its recorded residual
 

@@ -1783,35 +1783,34 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     {
         return STATUS_INVALID_PAGE_PROTECTION;
     }
-    /* A SHARED data view's PTEs point straight at the section's (or the
-     * file cache's) frames, and there is no per-page copy engine behind a
-     * MEM_MAPPED VAD — so a writable protection here is a write to every
-     * other view and (with immediate writeback, Art. 3) to the file itself.
-     * Two gates, both at the one reprotect authority:
-     *  - the WRITECOPY flavours refuse: satisfying "writecopy" by making
-     *    the shared frame hardware-writable is the docs/17 §6B violation
-     *    wearing the wrong name (copy-on-write views exist only as map-time
-     *    private copies or master-bound image views, both of which own or
-     *    per-page-track their frames);
-     *  - the plain-writable flavours re-check the backing handle's write
-     *    access, the same STATUS_ACCESS_DENIED gate MiMapViewOfSectionEx
-     *    applies at map time (docs/review-2026-07 §11) — without it a
-     *    read-only-handle view mapped PAGE_READONLY became writable one
-     *    NtProtectVirtualMemory later. A body-less shared VAD (the
-     *    KUSER_SHARED_DATA page) has no writable arm at all. */
-    if (vad->type == MEM_MAPPED && !vad->ownsFrames)
+    /* A SHARED view's PTEs point straight at the section's (or the file
+     * cache's) frames, so a PLAIN-WRITABLE protection here writes every
+     * other view and — with immediate writeback (Art. 3) — the file. The
+     * backing handle's write access gates that, at protect time exactly as
+     * MiMapViewOfSectionEx gates it at map time: without it, mapping
+     * PAGE_READONLY over a read-only handle and then protecting
+     * PAGE_READWRITE writes a file the caller could not open for writing
+     * (docs/review-2026-07 §11's protect-time half).
+     *
+     * The status and the SCOPE are the pinned oracle's, not a guess:
+     * sem_mm/protect_shared_view runs exactly this ladder on Wine and
+     * answers STATUS_INVALID_PAGE_PROTECTION for the plain-writable case —
+     * and SUCCESS for the WRITECOPY flavours on every shared view,
+     * including this same read-only-handle one. So writecopy is deliberately
+     * NOT refused here: the oracle grants it and realizes it as a writable
+     * shared mapping (the store reaches the file and the other views), which
+     * is what this kernel already does. Refusing it would be a divergence
+     * from the spec dressed up as a fix (docs/03 "CUI-9 COW notes"). */
+    if (vad->type == MEM_MAPPED && !vad->ownsFrames &&
+        (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE))
     {
-        if (writeCopyFlavour)
+        PMI_SECTION section = vad->sectionBody;
+        /* A body-less shared VAD is the kernel-owned KUSER_SHARED_DATA
+         * frame (MiCreateMappedVad's one sectionBody == 0 case): ring 3
+         * never gets it writable. */
+        if (section == 0 || !section->backingWritable)
         {
             return STATUS_INVALID_PAGE_PROTECTION;
-        }
-        if (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE)
-        {
-            PMI_SECTION section = vad->sectionBody;
-            if (section == 0 || !section->backingWritable)
-            {
-                return STATUS_ACCESS_DENIED;
-            }
         }
     }
     /* On an image view the plain-writable protections canonicalize to
