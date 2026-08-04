@@ -415,6 +415,9 @@ static BOOLEAN explore_run(void (*worker)(void *), BOOLEAN sharedHandle, const U
 
     lin_op_count = 0;
     lin_sequence = 0;
+    /* Cleared before the first early return: the caller reads the trace on
+     * every run, including the ones that give up before the schedule runs. */
+    memset(trace, 0, sizeof(*trace));
     if (!explore_reset_file())
     {
         return FALSE;

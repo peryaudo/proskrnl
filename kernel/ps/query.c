@@ -32,6 +32,11 @@
 #include "abi/ntioapi.h"
 #include "abi/ntregapi.h"
 
+/* End of the kernel image, past .bss (arch/x86_64/linker.ld). A linker symbol
+ * is a module global, so it is declared at file scope: the same declaration
+ * inside a function would read as a local and take a local's casing. */
+extern char KiImageEnd[];
+
 /* --- process information -------------------------------------------------- */
 
 NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClass, PVOID buffer,
@@ -923,6 +928,8 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
  * the raw structure table (MS docs "GetSystemFirmwareTable"; the same five
  * fields the pinned Wine calls struct smbios_prologue,
  * dlls/ntdll/unix/system.c). */
+/* NOLINTBEGIN(readability-identifier-naming) — a struct transcribed from an
+ * external contract keeps the contract's member names (docs/15). */
 typedef struct
 {
     UCHAR Used20CallingMethod;
@@ -931,6 +938,7 @@ typedef struct
     UCHAR DmiRevision;
     ULONG Length;
 } PSP_RAW_SMBIOS_DATA;
+/* NOLINTEND(readability-identifier-naming) */
 
 static NTSTATUS PspQueryFirmwareTable(PVOID buffer, ULONG length, PULONG returnLength)
 {
@@ -1222,7 +1230,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * -2 GiB, KiImageEnd past .bss) — never the oracle's two fabricated
          * driver rows with fake bases (docs/03 "CUI-6 notes"). */
         static const char kernelName[] = "\\SystemRoot\\system32\\ntoskrnl.exe";
-        extern char KiImageEnd[];                          /* linker.ld */
         const uint64_t kernelBase = 0xffffffff80000000ULL; /* linker.ld: ". = 0xffffffff80000000" */
         ULONG needed = (ULONG)offsetof(RTL_PROCESS_MODULES, Modules) +
                        (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION);
@@ -1409,9 +1416,9 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * class 102 the full dynamic struct — `size >= len` accepted, as
          * Wine's handlers do (dlls/ntdll/unix/system.c). Consumer:
          * ntdll:time RtlQueryTimeZoneInformation tests. */
-        static const char *standardName = "@tzres.dll,-22000";
-        static const char *daylightName = "@tzres.dll,-22001";
-        static const char *keyName = "UTC";
+        static const char *const standardName = "@tzres.dll,-22000";
+        static const char *const daylightName = "@tzres.dll,-22001";
+        static const char *const keyName = "UTC";
         RTL_DYNAMIC_TIME_ZONE_INFORMATION zone;
         memset(&zone, 0, sizeof(zone));
         for (int i = 0; standardName[i] != '\0'; i++)

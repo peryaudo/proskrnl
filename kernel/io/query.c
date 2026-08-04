@@ -1415,11 +1415,14 @@ NTSTATUS NtSetEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG l
  * layout is hand-typed against the official Microsoft documentation
  * ("FILE_FS_LABEL_INFORMATION structure", ntifs.h): the label byte count
  * followed by the label characters (G8). */
+/* NOLINTBEGIN(readability-identifier-naming) — a struct transcribed from an
+ * external contract keeps the contract's member names (docs/15). */
 typedef struct
 {
     ULONG VolumeLabelLength;
     WCHAR VolumeLabel[1];
 } IOP_FS_LABEL_INFORMATION;
+/* NOLINTEND(readability-identifier-naming) */
 
 NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer,
                                     ULONG length, FS_INFORMATION_CLASS infoClass)

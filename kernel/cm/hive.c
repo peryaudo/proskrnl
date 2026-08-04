@@ -233,7 +233,9 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         UNICODE_STRING name;
         name.Length = (USHORT)(nameChars * sizeof(WCHAR));
         name.MaximumLength = name.Length;
-        name.Buffer = (PWSTR)(void *)nameBytes;
+        /* The hive image stores names as raw bytes; reinterpreting them
+         * as WCHARs is the point (the writer wrote WCHARs). */
+        name.Buffer = (PWSTR)(void *)nameBytes; /* NOLINT(bugprone-casting-through-void) */
         if (!NT_SUCCESS(CmpSetValue(node, &name, type, dataStart, dataBytes)))
         {
             return FALSE;
@@ -271,7 +273,9 @@ static BOOLEAN CmpParseKeyBody(CMP_HIVE_READER *reader, PCMP_KEY_NODE node, ULON
         UNICODE_STRING name;
         name.Length = (USHORT)(nameChars * sizeof(WCHAR));
         name.MaximumLength = name.Length;
-        name.Buffer = (PWSTR)(void *)nameBytes;
+        /* The hive image stores names as raw bytes; reinterpreting them
+         * as WCHARs is the point (the writer wrote WCHARs). */
+        name.Buffer = (PWSTR)(void *)nameBytes; /* NOLINT(bugprone-casting-through-void) */
         PCMP_KEY_NODE child = CmpAllocateNode(node, &name);
         if (child == 0)
         {

@@ -247,7 +247,7 @@ NTSTATUS FatWritebackRange(PFAT_FCB fcb, uint64_t offset, uint64_t length);
 NTSTATUS FatSetFileSize(PFAT_FCB fcb, uint64_t newSize);
 
 /* The geometry FatValidateBpb derives from a boot sector. */
-typedef struct _FAT_BPB_GEOMETRY
+typedef struct
 {
     ULONG bytesPerSector;
     ULONG sectorsPerCluster;

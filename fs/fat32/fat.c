@@ -859,6 +859,9 @@ NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBy
     }
     if (units == 0)
     {
+        /* The BPB label is 11 space-padded OEM bytes with no terminator
+         * (FAT spec). */
+        /* NOLINTNEXTLINE(bugprone-not-null-terminated-result) */
         memcpy(oem, "NO NAME    ", 11);
     }
 

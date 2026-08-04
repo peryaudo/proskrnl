@@ -81,6 +81,10 @@ static void DbgpEmitUnsigned(uint64_t value, unsigned base, int upper, int width
     }
 }
 
+/* The analyzer walks this function on its own, without the DbgPrint caller
+ * that ran va_start, so every va_arg below reads as "uninitialized va_list"
+ * (the same false positive user/smss/smss.c carries). */
+/* NOLINTBEGIN(clang-analyzer-valist.Uninitialized) */
 static void DbgpPrintV(const char *format, va_list args)
 {
     for (; *format != '\0'; format++)
@@ -210,6 +214,7 @@ static void DbgpPrintV(const char *format, va_list args)
         }
     }
 }
+/* NOLINTEND(clang-analyzer-valist.Uninitialized) */
 
 int DbgPrint(const char *format, ...)
 {

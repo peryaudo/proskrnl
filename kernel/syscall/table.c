@@ -52,7 +52,7 @@ typedef struct
 /* NOLINTBEGIN(bugprone-casting-through-void) — the uniform uint64 signature
  * is the SSDT idiom; each Nt* consumes only its declared arguments and the
  * x86-64 SysV ABI passes all seven in the same slots either way. */
-#define KI_SYSCALL(id, name, argc)         [id] = {(KI_SERVICE_ROUTINE)(void (*)(void))name, argc, #name},
+#define KI_SYSCALL(id, name, argc)         [id] = {(KI_SERVICE_ROUTINE)(void (*)(void))(name), argc, #name},
 #define KI_SYSCALL_MISSING(id, name, argc) [id] = {0, argc, #name},
 static const KI_SERVICE_DESCRIPTOR KiServiceTable[NTSYS_SYSCALL_LIMIT] = {
 #include "kernel/syscall/table.inc"

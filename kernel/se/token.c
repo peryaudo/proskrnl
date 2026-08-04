@@ -1330,11 +1330,14 @@ NTSTATUS NtAdjustPrivilegesToken(HANDLE tokenHandle, BOOLEAN disableAll, TOKEN_P
 NTSTATUS NtPrivilegeCheck(HANDLE tokenHandle, PRIVILEGE_SET *requiredPrivileges, BOOLEAN *result)
 {
     NTSTATUS status;
+    /* NOLINTBEGIN(readability-identifier-naming) — the PRIVILEGE_SET prefix,
+     * member names included, as Wine's winnt.h declares it (docs/15). */
     struct
     {
         DWORD PrivilegeCount;
         DWORD Control;
     } header;
+    /* NOLINTEND(readability-identifier-naming) */
 
     status = KiCopyFromUser(&header, requiredPrivileges, sizeof(header));
     if (!NT_SUCCESS(status))

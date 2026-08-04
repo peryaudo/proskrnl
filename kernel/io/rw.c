@@ -152,6 +152,9 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     PFILE_OBJECT file;
     uint64_t offset;
     PKAPC apcBlock = 0;
+    /* Every release of the gate below is a whole unit — test, release,
+     * clear — so the clear stays even where nothing reads the flag
+     * again (the NOLINTs mark those). */
     BOOLEAN syncLocked = FALSE;
     NTSTATUS status = IopStartTransfer(handle, event, FILE_READ_DATA, apc, apcContext, iosb,
                                        byteOffset, &file, &offset, &apcBlock, 0);
@@ -191,6 +194,9 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
             NTSTATUS probe = KiProbeForWrite(buffer, transferred, 1);
             if (NT_SUCCESS(probe))
             {
+                /* bounce is non-0 whenever length is, and a device never
+                 * reports more transferred than it was given. */
+                /* NOLINTNEXTLINE(clang-analyzer-unix.cstring.NullArg) */
                 memcpy(buffer, bounce, transferred);
             }
             else
@@ -249,7 +255,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         if (syncLocked)
         {
             KiReleaseEventGate(&file->syncIoLock);
-            syncLocked = FALSE;
+            syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
         }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
@@ -285,7 +291,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
     {
         /* Released before the completion writes user memory (io.h). */
         KiReleaseEventGate(&file->syncIoLock);
-        syncLocked = FALSE;
+        syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
     status = IopAsyncReturnShape(file, status, FALSE);
@@ -315,6 +321,9 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     uint64_t offset;
     PKAPC apcBlock = 0;
     BOOLEAN writeToEnd = FALSE;
+    /* Every release of the gate below is a whole unit — test, release,
+     * clear — so the clear stays even where nothing reads the flag
+     * again (the NOLINTs mark those). */
     BOOLEAN syncLocked = FALSE;
     /* The access gate is NOT plain FILE_WRITE_DATA: an APPEND-ONLY handle
      * (FILE_APPEND_DATA without WRITE_DATA — kernelbase's append-mode
@@ -486,7 +495,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
     {
         /* Released before the completion writes user memory (io.h). */
         KiReleaseEventGate(&file->syncIoLock);
-        syncLocked = FALSE;
+        syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
     status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
     status = IopAsyncReturnShape(file, status, TRUE);

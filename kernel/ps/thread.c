@@ -1009,6 +1009,9 @@ void PspSuspendTcb(PKTHREAD tcb)
 void PspResumeTcb(PKTHREAD tcb)
 {
     ASSERT(KiIsDispatcherLockHeld());
+    /* && sequences the guard before the decrement, so the drop happens
+     * exactly on a held count. */
+    /* NOLINTNEXTLINE(bugprone-inc-dec-in-conditions) */
     if (tcb->suspendCount > 0 && --tcb->suspendCount == 0)
     {
         tcb->suspendGate.header.signalState = 1;

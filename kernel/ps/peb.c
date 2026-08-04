@@ -75,7 +75,7 @@ void PspInitializeSharedUserData(void)
 
     /* NtSystemRoot = "C:\\windows" (UTF-16). ntdll composes DLL search paths
      * from it when ProcessParameters carries no DllPath. */
-    static const char *systemRoot = "C:\\windows";
+    static const char *const systemRoot = "C:\\windows";
     for (int i = 0; systemRoot[i] != '\0'; i++)
     {
         kusd->NtSystemRoot[i] = (WCHAR)(unsigned char)systemRoot[i];
