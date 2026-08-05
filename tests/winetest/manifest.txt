@@ -31,8 +31,8 @@
 # A commented-out pair is one this gate CANNOT JUDGE — never one that is
 # merely red. Being unimplemented is not a reason: an unbuilt syscall makes
 # the pair FAIL, which is exactly the signal the sweep exists to produce, and
-# most red pairs below are precisely that. Only two things disqualify a pair,
-# and each exclusion names its measurement so it can be re-checked:
+# most red pairs below are precisely that. Only three things disqualify a
+# pair, and each exclusion names its measurement so it can be re-checked:
 #
 #   (a) proskrnl will never implement the surface, by a decision already
 #       recorded elsewhere (docs/03, an ADR). The pair cannot go green
@@ -44,6 +44,15 @@
 #       link rather than about the boundary. A pair that is red with zero
 #       proskrnl involvement cannot convict the kernel (Art. 6), so it
 #       cannot sit in a differential gate.
+#
+#   (c) the pair's subject is only reachable on the GUI image — it needs a
+#       DLL whose imports pull in user32/gdi32, so running it here would
+#       mean putting the GUI stack on the CUI volume (G7). This is the same
+#       reason user32 is out of this file; such a pair belongs in
+#       manifest-gui.txt when that image can carry it, not here. The
+#       exclusion must name the specific dependency and show that the
+#       failures downstream of it convict nothing — a pair that ALSO fails
+#       for a kernel reason stays in and stays red.
 #
 # Every oracle-side measurement below was taken as an ORDINARY USER under a
 # UTF-8 locale, which the runner now enforces (tests/run/run.sh): before that
@@ -153,7 +162,23 @@ kernel32_test.exe:sync
 kernel32_test.exe:thread
 kernel32_test.exe:time
 kernel32_test.exe:timer
-kernel32_test.exe:toolhelp
+# (c) toolhelp belongs to the GUI image, not this one, and it is a whole-pair
+#     dependency rather than a few assertions. Every one of its snapshot
+#     tests is taken against a SUB-PROCESS it launches, and that
+#     sub-process's init() does
+#       `if (!LoadLibraryA("shell32.dll")) ExitProcess(WAIT_ABANDONED);`
+#     (third_party/wine dlls/kernel32/tests/toolhelp.c) before it signals
+#     the parent. shell32's import table names user32.dll and gdi32.dll, so
+#     honouring it means putting the whole GUI stack on the CUI volume —
+#     which is the boundary G7 exists to keep. Measured on proskrnl: the
+#     child dies there, the parent's wait times out at toolhelp.c:649, and
+#     the remaining 134 failures are all "couldn't find sub-process ..."
+#     downstream of that one line. Nothing in the run convicts a kernel
+#     surface: the process and thread enumeration the pair is nominally
+#     about answers correctly for the three processes that DO exist.
+#     Re-check by staging shell32 + user32 + gdi32 + shlwapi; if the pair
+#     runs, it moves to manifest-gui.txt rather than back here.
+# kernel32_test.exe:toolhelp
 kernel32_test.exe:version
 kernel32_test.exe:virtual
 kernel32_test.exe:volume
