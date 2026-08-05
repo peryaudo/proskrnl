@@ -421,11 +421,35 @@ because it is the exact trap this section warns about elsewhere: the
 loudest-looking failure in a cluster is usually the consequence. Read the
 test's helper before believing the assertion text.)*
 
-So the question to answer first is: **does `NtSuspendThread` on the
-CURRENT thread park it before returning?** Everything else in the cluster
-follows from that one behaviour, and it is a `ke/` question — `docs/12`'s
-"subtly wrong yet still runs" zone — so design it rather than patching
-until the assertion moves.
+**DIAGNOSED, not yet fixed.** The parking machinery is fine — a closed
+suspend gate is honoured on the syscall return path
+(`kernel/syscall/table.c:231` calls `KiProcessPendingUserSignals` whenever
+the frame is returning to ring 3, and that parks on the gate). The bug is
+one step earlier: `NtSuspendThread` resolves its handle with a plain
+`ObReferenceObjectByHandle`, and **Ob does not resolve the
+`NtCurrentThread` pseudo-handle**. `ObReferenceObjectByHandle`
+(`kernel/ob/handle.c:270`) special-cases only the TOKEN pseudo-handles
+`~3`/`~4`/`~5`; `-1` (current process) and `-2` (current thread) fall
+through to the table lookup and come back `STATUS_INVALID_HANDLE`. So
+`threadFunc3`'s `SuspendThread(GetCurrentThread())` fails outright, the
+child never parks, and the whole cluster follows.
+
+Two ways to fix it, and the choice is a real one:
+
+1. *Per-site*, as every other class in `kernel/ps/thread.c` already does
+   (`if (threadHandle != 0 && threadHandle != NtCurrentThread())`). Small
+   and consistent with what is there — but it is the eighth copy of that
+   idiom, and G10's objection to parallel paths applies even while they
+   agree.
+2. *In Ob*, beside the token pseudo-handles it already resolves, which is
+   where NT puts it and where Art. 11 points. Broader blast radius: every
+   caller of `ObReferenceObjectByHandle` starts accepting `-1`/`-2`, which
+   is correct but wants a sweep of the sites that currently reject them on
+   purpose.
+
+Option 2 is the right answer and should be taken deliberately, with the
+per-site copies retired in the same commit. Do not do option 1 "for now" —
+that is how the seven existing copies happened.
 
 **W2a is DONE for `NtQueryInformationThread`/`NtSetInformationThread`.**
 `kernel32:thread` no longer panics anywhere in the class sweep — every
