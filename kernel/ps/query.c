@@ -485,6 +485,41 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessPriorityBoost:
+    {
+        /* The process twin of ThreadPriorityBoost: stored and returned,
+         * because proskrnl boosts nothing but the pair must agree with
+         * itself. Note the asymmetry the oracle carries and an
+         * implementation written from the docs would flatten — the QUERY
+         * rejects a wrong size with STATUS_INFO_LENGTH_MISMATCH and a NULL
+         * buffer with STATUS_ACCESS_VIOLATION, while the SET rejects a
+         * wrong size with STATUS_INVALID_PARAMETER
+         * (dlls/ntdll/unix/process.c). Pinned by
+         * tests/ntapi/sem_ps/process_priority_boost.c. */
+        if (length != sizeof(ULONG))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        if (buffer == 0)
+        {
+            status = STATUS_ACCESS_VIOLATION;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        ULONG disableBoost = (process != 0 && process->priorityBoostDisabled) ? 1 : 0;
+        memcpy(buffer, &disableBoost, sizeof(disableBoost));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
     default:
         /* The refusal split (Art. 12, docs/21 W1): out of the enum is
          * INVALID and implemented; inside it and unbuilt stays fatal. The
@@ -647,6 +682,41 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * the old blanket success handed them a NULL handle (the Art. 12
          * planted-bug shape this rewrite retires). */
         return PspMakeProcessSystem(processHandle, buffer, length);
+    }
+    if (infoClass == ProcessPriorityBoost)
+    {
+        /* Stored, so the query can see it. A wrong size is
+         * STATUS_INVALID_PARAMETER on this side — not the
+         * INFO_LENGTH_MISMATCH the query gives (dlls/ntdll/unix/process.c
+         * states both, and they differ). */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS probe = KiProbeForRead(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        ULONG disableBoost;
+        memcpy(&disableBoost, buffer, sizeof(disableBoost));
+        /* The pseudo-handle means the caller, as every other class in this
+         * file resolves it — one idiom, one place. */
+        if (processHandle == NtCurrentProcess())
+        {
+            KeGetCurrentThread()->process->priorityBoostDisabled = disableBoost != 0;
+            return STATUS_SUCCESS;
+        }
+        PVOID body;
+        NTSTATUS status = ObReferenceObjectByHandle(processHandle, PROCESS_SET_INFORMATION,
+                                                    &PspProcessType, ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ((PEPROCESS)body)->priorityBoostDisabled = disableBoost != 0;
+        ObDereferenceObject(body);
+        return STATUS_SUCCESS;
     }
     if (infoClass == ProcessDefaultHardErrorMode)
     {

@@ -149,6 +149,10 @@ typedef struct EPROCESS
     uint64_t wedgeSig;
     int wedgeSweeps;
     BOOLEAN wedgeReported;
+    /* ProcessPriorityBoost's disable flag — the process twin of ETHREAD's,
+     * and stored for the same reason: proskrnl boosts nothing, but a query
+     * that ignored the set would make the class disagree with itself. */
+    BOOLEAN priorityBoostDisabled;
 } EPROCESS, *PEPROCESS;
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
