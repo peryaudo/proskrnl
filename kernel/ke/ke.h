@@ -466,7 +466,11 @@ LONG KiPulseEvent(PRKEVENT event); /* release current waiters, end unsignalled *
  * TRUE here, not approximations. When the mandate is lifted (docs/18 §13
  * names the four gates), every consumer follows this symbol instead of
  * being hunted down individually. */
-#define KeNumberProcessors 1
+/* Spelled in macro case rather than NT's own `KeNumberProcessors` (a CCHAR
+ * variable in the real kernel) because this IS a macro here and `make tidy`
+ * rewrites it otherwise — it did, silently, breaking the build, which is
+ * the only reason the name diverges. */
+#define KE_NUMBER_PROCESSORS 1
 
 LONG KeResetEvent(PRKEVENT event);
 void KeClearEvent(PRKEVENT event);
