@@ -1866,6 +1866,13 @@ def gen_ntpsapi(wine: Path) -> str:
             "THREAD_SET_LIMITED_INFORMATION",
             "THREAD_QUERY_LIMITED_INFORMATION",
             "THREAD_ALL_ACCESS",
+            # SetThreadPriority's accepted range (kernel/ps/thread.c
+            # ThreadBasePriority): MIN..MAX, plus IDLE and LOWRT which are
+            # always legal however far outside that range they sit.
+            "THREAD_BASE_PRIORITY_MIN",
+            "THREAD_BASE_PRIORITY_MAX",
+            "THREAD_BASE_PRIORITY_IDLE",
+            "THREAD_BASE_PRIORITY_LOWRT",
         ],
     )
 

@@ -331,6 +331,25 @@ START_TEST(thread_info_sweep)
             ok(basic.BasePriority == want, "base priority %ld came back %ld", (long)want,
                (long)basic.BasePriority);
         }
+        /* Out of range is REFUSED — the check the Win32 pair depends on
+         * for its failure path. IDLE and TIME_CRITICAL are legal however
+         * far outside the band they sit (the oracle's own carve-out). */
+        LONG bad = -3;
+        status = NtSetInformationThread(self, ThreadBasePriority, &bad, sizeof(bad));
+        ok(status == STATUS_INVALID_PARAMETER, "base priority -3 -> %08lx",
+           (unsigned long)status);
+        bad = 3;
+        status = NtSetInformationThread(self, ThreadBasePriority, &bad, sizeof(bad));
+        ok(status == STATUS_INVALID_PARAMETER, "base priority 3 -> %08lx",
+           (unsigned long)status);
+        LONG special = -15; /* THREAD_PRIORITY_IDLE */
+        status = NtSetInformationThread(self, ThreadBasePriority, &special, sizeof(special));
+        ok(status == STATUS_SUCCESS, "base priority IDLE -> %08lx", (unsigned long)status);
+        special = 15; /* THREAD_PRIORITY_TIME_CRITICAL */
+        status = NtSetInformationThread(self, ThreadBasePriority, &special, sizeof(special));
+        ok(status == STATUS_SUCCESS, "base priority TIME_CRITICAL -> %08lx",
+           (unsigned long)status);
+
         /* Put it back where every thread starts. */
         LONG normal = 0;
         (void)NtSetInformationThread(self, ThreadBasePriority, &normal, sizeof(normal));

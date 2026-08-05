@@ -1945,6 +1945,24 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         LONG priority;
         memcpy(&priority, buffer, sizeof(priority));
+        /* The oracle's range check, verbatim (server/thread.c
+         * set_thread_base_priority): IDLE and TIME_CRITICAL are always
+         * legal however far outside the band they sit, and everything else
+         * must land in MIN..MAX. Without it SetThreadPriority SUCCEEDED on
+         * a bad argument and never set an error at all — kernel32:thread
+         * caught that by reading back its own 0xDEADBEEF poison from
+         * GetLastError (thread.c:738-739).
+         *
+         * The realtime widening the oracle also has is deliberately not
+         * reproduced: it keys off a process priority CLASS proskrnl does
+         * not have, so there is no state here that could ever select it,
+         * and inventing one would be a boundary entity NT-shaped for no
+         * caller (Art. 2). */
+        if (priority != THREAD_BASE_PRIORITY_IDLE && priority != THREAD_BASE_PRIORITY_LOWRT &&
+            (priority < THREAD_BASE_PRIORITY_MIN || priority > THREAD_BASE_PRIORITY_MAX))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
         PETHREAD target = KeGetCurrentThread()->threadObject;
         PVOID body = 0;
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
