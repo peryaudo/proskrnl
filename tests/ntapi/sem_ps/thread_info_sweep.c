@@ -379,6 +379,54 @@ START_TEST(thread_info_sweep)
         ok(group.Mask != 0, "group affinity mask is empty");
     }
 
+    /* --- setting ThreadGroupInformation VALIDATES ------------------------
+     * The mask that survives the checks is the only one this machine has,
+     * so nothing is stored — but the validation IS the observable
+     * behaviour, and each refusal is a different status. An "accept and
+     * move on" setter passes no part of this. */
+    {
+        struct
+        {
+            ULONG_PTR Mask;
+            USHORT Group;
+            USHORT Reserved[3];
+        } set;
+
+        memset(&set, 0, sizeof(set));
+        set.Mask = 1;
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
+        ok(status == STATUS_SUCCESS, "set group affinity -> %08lx", (unsigned long)status);
+
+        /* Wrong length is INVALID_PARAMETER here, not INFO_LENGTH_MISMATCH. */
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set) - 1);
+        ok(status == STATUS_INVALID_PARAMETER, "short set -> %08lx", (unsigned long)status);
+
+        status = NtSetInformationThread(self, ThreadGroupInformation, NULL, sizeof(set));
+        ok(status == STATUS_ACCESS_VIOLATION, "NULL set -> %08lx", (unsigned long)status);
+
+        memset(&set, 0, sizeof(set));
+        set.Mask = 1;
+        set.Reserved[1] = 1;
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
+        ok(status == STATUS_INVALID_PARAMETER, "reserved set -> %08lx", (unsigned long)status);
+
+        memset(&set, 0, sizeof(set));
+        set.Mask = 1;
+        set.Group = 1;
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
+        ok(status == STATUS_INVALID_PARAMETER, "group 1 -> %08lx", (unsigned long)status);
+
+        memset(&set, 0, sizeof(set));
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
+        ok(status == STATUS_INVALID_PARAMETER, "empty mask -> %08lx", (unsigned long)status);
+
+        memset(&set, 0, sizeof(set));
+        set.Mask = ~(ULONG_PTR)0;
+        status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
+        ok(status == STATUS_INVALID_PARAMETER, "mask beyond the machine -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- two classes the ORACLE ITSELF calls invalid ---------------------
      * ThreadIdealProcessor and ThreadEnableAlignmentFaultFixup share an
      * explicit `return STATUS_INVALID_INFO_CLASS;` arm in the oracle,

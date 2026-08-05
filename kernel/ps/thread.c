@@ -1884,6 +1884,52 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         return STATUS_SUCCESS;
     }
+    case ThreadGroupInformation:
+    {
+        /* A validating setter, and every one of its refusals is the
+         * oracle's (dlls/ntdll/unix/thread.c): a wrong length is
+         * STATUS_INVALID_PARAMETER rather than INFO_LENGTH_MISMATCH, a
+         * NULL buffer is STATUS_ACCESS_VIOLATION, any RESERVED field set
+         * is INVALID_PARAMETER ("On Windows the request fails if the
+         * reserved fields are set", per its own comment), a non-zero
+         * Group is INVALID_PARAMETER, and so is a mask carrying bits
+         * outside the system mask or no bits at all.
+         *
+         * The mask that survives all of that is the only one this machine
+         * has, so nothing is stored — but the VALIDATION is the observable
+         * behaviour here, and skipping it to "accept and move on" is the
+         * silent-plausible stub G12 forbids. */
+        if (length != sizeof(GROUP_AFFINITY))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (buffer == 0)
+        {
+            return STATUS_ACCESS_VIOLATION;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(GROUP_AFFINITY), sizeof(ULONG_PTR));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        GROUP_AFFINITY requested;
+        memcpy(&requested, buffer, sizeof(requested));
+        if (requested.Reserved[0] != 0 || requested.Reserved[1] != 0 ||
+            requested.Reserved[2] != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (requested.Group != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        KAFFINITY systemMask = ((KAFFINITY)1 << KeNumberProcessors) - 1;
+        if (requested.Mask == 0 || (requested.Mask & ~systemMask) != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return PspCheckThreadAccess(threadHandle, THREAD_SET_INFORMATION);
+    }
     case ThreadHideFromDebugger:
     {
         /* Zero length, no buffer (dlls/ntdll/unix/thread.c: `if (length)
