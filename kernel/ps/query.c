@@ -1544,6 +1544,30 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     case SystemWineVersionInformation:
         return PspQueryWineVersion(buffer, length, returnLength);
     default:
+        /* TWO refusals, and the difference is the whole point (Art. 12,
+         * docs/21 W1). A class NUMBER outside the enum the pinned header
+         * defines is INVALID — the caller asked for nothing that exists,
+         * and STATUS_INVALID_INFO_CLASS is an IMPLEMENTED answer, pinned by
+         * tests/ntapi/sem_ps/info_class_range.c. A class that IS in the
+         * enum and merely unbuilt keeps STATUS_NOT_IMPLEMENTED, which the
+         * armed boot turns into a panic; collapsing the two would make
+         * every unbuilt class answer plausibly instead of stopping, which
+         * is the defect G12 exists to prevent.
+         *
+         * Wine cannot make this distinction and says so in its own default
+         * arm (dlls/ntdll/unix/system.c): "in 95% of the cases it's
+         * STATUS_INVALID_INFO_CLASS, so use this as the default". It
+         * answers INVALID_INFO_CLASS for both, so the oracle agrees with us
+         * on the invalid half and is simply quieter on the other.
+         *
+         * The bound is abi/'s, never typed (Art. 4):
+         * SystemHandleCountInformation is the last enumerator the pinned
+         * winternl.h defines, and SystemWineVersionInformation (1000) — the
+         * fork's own extension above it — has its own case above. */
+        if ((LONG)infoClass < 0 || (ULONG)infoClass > (ULONG)SystemHandleCountInformation)
+        {
+            return STATUS_INVALID_INFO_CLASS;
+        }
         DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
         return STATUS_NOT_IMPLEMENTED;
     }
