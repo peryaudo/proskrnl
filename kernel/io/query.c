@@ -603,7 +603,14 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         requiredAccess = 0;
         break;
     default:
-        return STATUS_NOT_IMPLEMENTED; /* unbuilt class, as in query above */
+        /* Names itself, as the query direction above does and for the same
+         * reason: the dispatcher's armed-panic line gives the syscall but not
+         * its arguments, and "which class" is the whole content of this
+         * refusal. Four winetest pairs stopped here at once (kernel32:file,
+         * kernel32:pipe, kernel32:sync, ntdll:threadpool) and the logs could
+         * not tell them apart. */
+        DbgPrint("NtSetInformationFile: unbuilt info class %d\n", (int)informationClass);
+        return STATUS_NOT_IMPLEMENTED;
     }
     if (length < needed)
     {

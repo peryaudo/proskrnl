@@ -1544,6 +1544,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     case SystemWineVersionInformation:
         return PspQueryWineVersion(buffer, length, returnLength);
     default:
+        DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
         return STATUS_NOT_IMPLEMENTED;
     }
 }
@@ -1624,6 +1625,7 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         return STATUS_SUCCESS;
     }
     default:
+        DbgPrint("NtQuerySystemInformationEx: unbuilt info class %d\n", (int)infoClass);
         return STATUS_NOT_IMPLEMENTED;
     }
 }
@@ -1953,7 +1955,10 @@ NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG in
         return STATUS_SUCCESS;
     }
     default:
-        return STATUS_NOT_IMPLEMENTED; /* other levels: unbuilt, loud (Art. 12) */
+        /* other levels: unbuilt, loud (Art. 12) — and named, so the log says
+         * WHICH level rather than only which syscall */
+        DbgPrint("NtPowerInformation: unbuilt level %d\n", (int)level);
+        return STATUS_NOT_IMPLEMENTED;
     }
 }
 

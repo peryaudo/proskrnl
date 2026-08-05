@@ -14,6 +14,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/ps/ps.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/lib/dbgprint.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/mmu.h"
@@ -1280,6 +1281,7 @@ NTSTATUS NtQuerySection(HANDLE handle, SECTION_INFORMATION_CLASS informationClas
         needed = sizeof(SECTION_IMAGE_INFORMATION);
         break;
     default:
+        DbgPrint("NtQuerySection: unbuilt info class %d\n", (int)informationClass);
         return STATUS_NOT_IMPLEMENTED;
     }
     if (length < needed)
