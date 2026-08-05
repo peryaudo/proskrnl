@@ -576,7 +576,7 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
     peb->ImageBaseAddress = (HMODULE)(uintptr_t)imageBase;
     peb->NtGlobalFlag = globalFlag;
     peb->ProcessParameters = (RTL_USER_PROCESS_PARAMETERS *)(uintptr_t)paramsVa;
-    peb->NumberOfProcessors = 1; /* uniprocessor (Art. 3) */
+    peb->NumberOfProcessors = KeNumberProcessors; /* uniprocessor (Art. 3) */
     peb->OSMajorVersion = 10;
     peb->OSMinorVersion = 0;
     peb->OSBuildNumber = 19045;

@@ -459,6 +459,15 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
 void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state);
 LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait);
 LONG KiPulseEvent(PRKEVENT event); /* release current waiters, end unsignalled */
+/* The processor count, and the ONE place it is stated (Art. 11). Art. 3
+ * mandates uniprocessor, so this is 1 — a fact about the machine, not a
+ * placeholder: an affinity mask of one bit, a PEB NumberOfProcessors of 1
+ * and a one-entry SystemProcessorPerformanceInformation array are all
+ * TRUE here, not approximations. When the mandate is lifted (docs/18 §13
+ * names the four gates), every consumer follows this symbol instead of
+ * being hunted down individually. */
+#define KeNumberProcessors 1
+
 LONG KeResetEvent(PRKEVENT event);
 void KeClearEvent(PRKEVENT event);
 LONG KeReadStateEvent(PRKEVENT event);

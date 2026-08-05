@@ -1414,6 +1414,32 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadAffinityMask:
+    {
+        /* One CPU, so one bit — and Art. 3's uniprocessor mandate is what
+         * makes that the TRUTH here rather than a placeholder for a richer
+         * answer. KeNumberProcessors is the one authority for the count
+         * (Art. 11); when the mandate is lifted (docs/18 §13) this follows
+         * it without being rewritten.
+         *
+         * Truncates rather than refusing a short buffer, as the oracle does
+         * (`min(length, sizeof(affinity))`, no length gate —
+         * dlls/ntdll/unix/thread.c). Pinned by
+         * tests/ntapi/sem_ps/thread_info_sweep.c. */
+        ULONG_PTR affinity = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        ULONG copy = length < sizeof(affinity) ? length : (ULONG)sizeof(affinity);
+        NTSTATUS status = KiProbeForWrite(buffer, copy, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, &affinity, copy);
+        if (returnLength != 0)
+        {
+            *returnLength = copy;
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadHideFromDebugger:
     {
         /* PspProbeReturnLength above already ran, which is exactly the

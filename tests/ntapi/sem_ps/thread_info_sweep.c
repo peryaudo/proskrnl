@@ -55,6 +55,18 @@
 #define ThreadHideFromDebugger    ((THREADINFOCLASS)17)
 #endif
 
+/* KERNEL_USER_TIMES with LARGE_INTEGER members, as the pinned tree spells
+ * it (third_party/wine/include/winternl.h) — mingw's winternl.h declares
+ * the same four fields as FILETIME, which is the same 32 bytes with a less
+ * convenient shape. Local so both builds agree. */
+typedef struct
+{
+    LARGE_INTEGER CreateTime;
+    LARGE_INTEGER ExitTime;
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+} NTAPI_KERNEL_USER_TIMES;
+
 /* The set-only / obsolete group: queried, never queryable. */
 static const struct
 {
@@ -109,6 +121,55 @@ START_TEST(thread_info_sweep)
     /* A non-zero length on the SET side is a length complaint. */
     status = NtSetInformationThread(self, ThreadHideFromDebugger, &hidden, sizeof(hidden));
     ok(status == STATUS_INFO_LENGTH_MISMATCH, "set with length -> %08lx", (unsigned long)status);
+
+    /* --- ThreadTimes TRUNCATES; it does not reject a short buffer -------
+     * The oracle copies `min(length, sizeof(kusrt))` and reports that same
+     * min as the returned length (dlls/ntdll/unix/thread.c), with no
+     * INFO_LENGTH_MISMATCH arm at all — so a 8-byte buffer is a SUCCESS
+     * carrying only CreateTime. That is unusual enough among the info
+     * classes to be worth pinning explicitly. */
+    {
+        NTAPI_KERNEL_USER_TIMES times;
+        memset(&times, 0xcc, sizeof(times));
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadTimes, &times, sizeof(times),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "ThreadTimes -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(times), "ThreadTimes returned %lu bytes",
+           (unsigned long)returnLength);
+        ok(times.CreateTime.QuadPart != 0, "CreateTime is zero");
+        ok(times.ExitTime.QuadPart == 0, "a live thread has an ExitTime");
+        ok(times.KernelTime.QuadPart >= 0 && times.UserTime.QuadPart >= 0,
+           "negative kernel/user time");
+
+        /* Short buffer: truncated, not refused. */
+        LARGE_INTEGER firstOnly;
+        firstOnly.QuadPart = 0;
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadTimes, &firstOnly, sizeof(firstOnly),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "ThreadTimes short -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(firstOnly), "ThreadTimes short returned %lu bytes",
+           (unsigned long)returnLength);
+        ok(firstOnly.QuadPart == times.CreateTime.QuadPart, "short copy is not CreateTime");
+    }
+
+    /* --- ThreadAffinityMask: one CPU, so one bit ------------------------
+     * Art. 3's uniprocessor mandate makes this answer trivially true rather
+     * than approximate — a single-processor machine's affinity mask IS 1,
+     * and that is a fact about the machine, not a stub standing in for
+     * something richer. The oracle truncates rather than refusing a short
+     * buffer here too (`min(length, sizeof(affinity))`, no length gate). */
+    {
+        ULONG_PTR affinity = 0;
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadAffinityMask, &affinity, sizeof(affinity),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "ThreadAffinityMask -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(affinity), "affinity returned %lu bytes",
+           (unsigned long)returnLength);
+        ok(affinity != 0, "affinity mask is empty");
+    }
 
     /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
     beyond_oracle

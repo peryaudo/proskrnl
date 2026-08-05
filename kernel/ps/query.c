@@ -1149,7 +1149,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         memset(&info, 0, sizeof(info));
         info.PageSize = PAGE_SIZE;
         info.MmNumberOfPhysicalPages = (ULONG)MiGetTotalPageCount();
-        info.NumberOfProcessors = 1; /* uniprocessor (Art. 3) */
+        info.NumberOfProcessors = KeNumberProcessors; /* uniprocessor (Art. 3) */
         info.ActiveProcessorsAffinityMask = 1;
         info.LowestUserAddress = (void *)0x10000;
         info.HighestUserAddress = (void *)(KI_USER_SPACE_LIMIT - 1);
