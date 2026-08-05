@@ -1088,6 +1088,23 @@ NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousCount)
     PKTHREAD tcb = thread->tcb;
 
     uint64_t flags = KiAcquireDispatcherLock();
+    /* A TERMINATED thread cannot be suspended, and the status is
+     * STATUS_ACCESS_DENIED rather than anything about the thread's state —
+     * the oracle's server says so in one line (third_party/wine
+     * server/thread.c suspend_thread handler: `if (thread->state ==
+     * TERMINATED) set_error( STATUS_ACCESS_DENIED );`). kernel32:thread
+     * depends on it: after joining a thread it asserts SuspendThread
+     * returns -1, and proskrnl was handing back a live count for a thread
+     * that had already exited. Checked under the dispatcher lock with the
+     * count read, because "has exited" and "what the count is" must be one
+     * observation — the signal state IS the exit fact here, as
+     * ThreadBasicInformation already reads it. */
+    if (thread->header.signalState != 0)
+    {
+        KiReleaseDispatcherLock(flags);
+        ObDereferenceObject(thread);
+        return STATUS_ACCESS_DENIED;
+    }
     ULONG previous = (ULONG)tcb->suspendCount;
     PspSuspendTcb(tcb);
     KiReleaseDispatcherLock(flags);
