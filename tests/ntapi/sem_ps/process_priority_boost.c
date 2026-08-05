@@ -20,6 +20,9 @@
  */
 #include "../ntapi.h"
 
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationThread(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationThread(HANDLE, THREADINFOCLASS, PVOID, ULONG);
+
 START_TEST(process_priority_boost)
 {
     NTSTATUS status;
@@ -60,6 +63,56 @@ START_TEST(process_priority_boost)
         NtQueryInformationProcess(self, ProcessPriorityBoost, NULL, sizeof(ULONG), &returnLength);
     ok(status == STATUS_ACCESS_VIOLATION, "NULL query buffer -> %08lx", (unsigned long)status);
 
+    /* --- the process flag is COPIED INTO the threads, not consulted by
+     * them -----------------------------------------------------------------
+     * This is the distinction, and it is the one an implementation reaches
+     * for the wrong answer on. Both readings agree that a process-wide
+     * disable shows up on the thread; they disagree about what a
+     * thread-level set does AFTERWARDS. The oracle's server settles it
+     * (third_party/wine server/process.c set_process_disable_boost): the
+     * process value is ASSIGNED to every thread on its thread_list, so a
+     * later thread set overrides it and the process keeps its own value. A
+     * query-time OR of the two flags could never report that state, and
+     * kernel32:thread thread.c:806-812 asserts precisely it. */
+    {
+        ULONG threadDisabled;
+        ULONG on = 1, off = 0;
+        HANDLE selfThread = (HANDLE)(LONG_PTR)-2;
+
+        status = NtSetInformationProcess(self, ProcessPriorityBoost, &on, sizeof(on));
+        ok(status == STATUS_SUCCESS, "disable boost process-wide -> %08lx", (unsigned long)status);
+
+        threadDisabled = 0xdead;
+        status = NtQueryInformationThread(selfThread, ThreadPriorityBoost, &threadDisabled,
+                                          sizeof(threadDisabled), &returnLength);
+        ok(status == STATUS_SUCCESS, "thread boost query -> %08lx", (unsigned long)status);
+        ok(threadDisabled == 1, "process disable did not reach the thread (%lu)",
+           (unsigned long)threadDisabled);
+
+        /* Now the half that separates copy from lookup. */
+        status = NtSetInformationThread(selfThread, ThreadPriorityBoost, &off, sizeof(off));
+        ok(status == STATUS_SUCCESS, "re-enable boost on the thread -> %08lx",
+           (unsigned long)status);
+
+        threadDisabled = 0xdead;
+        status = NtQueryInformationThread(selfThread, ThreadPriorityBoost, &threadDisabled,
+                                          sizeof(threadDisabled), &returnLength);
+        ok(status == STATUS_SUCCESS, "thread boost re-query -> %08lx", (unsigned long)status);
+        ok(threadDisabled == 0, "the thread set did not override the process (%lu)",
+           (unsigned long)threadDisabled);
+
+        /* ...while the PROCESS still reads what the process set. */
+        disableBoost = 0xdead;
+        status = NtQueryInformationProcess(self, ProcessPriorityBoost, &disableBoost,
+                                           sizeof(disableBoost), &returnLength);
+        ok(status == STATUS_SUCCESS, "process boost re-query -> %08lx", (unsigned long)status);
+        ok(disableBoost == 1, "the thread set leaked back into the process (%lu)",
+           (unsigned long)disableBoost);
+
+        status = NtSetInformationProcess(self, ProcessPriorityBoost, &off, sizeof(off));
+        ok(status == STATUS_SUCCESS, "re-enable boost -> %08lx", (unsigned long)status);
+    }
+
     /* --- ProcessAffinityMask: one CPU, one bit ---------------------------
      * The same fact ThreadAffinityMask reports, and true rather than
      * approximate because Art. 3 mandates uniprocessor. Exact length here,
@@ -74,10 +127,8 @@ START_TEST(process_priority_boost)
         ok(returnLength == sizeof(affinity), "affinity returned %lu bytes",
            (unsigned long)returnLength);
 
-        status = NtQueryInformationProcess(self, ProcessAffinityMask, &affinity, 1,
-                                           &returnLength);
-        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short affinity -> %08lx",
-           (unsigned long)status);
+        status = NtQueryInformationProcess(self, ProcessAffinityMask, &affinity, 1, &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short affinity -> %08lx", (unsigned long)status);
     }
 
     /* Put it back, so a rerun starts where this one did. */
