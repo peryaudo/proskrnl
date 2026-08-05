@@ -605,10 +605,33 @@ the struct (the oracle's shape — see `dlls/ntdll/unix/thread.c`, and note
 it answers `STATUS_BUFFER_TOO_SMALL` for a NULL `info` rather than an access
 violation). That is an ownership question, so design it before writing it.
 
-**Next**, in order: `ThreadNameInformation` (above), then the remaining
-`NtQueryInformationThread` and `NtQueryInformationProcess` classes
-(`ThreadGroupInformation`) and the remaining `NtQueryInformationProcess`
-classes `kernel32:thread` reaches; then W2b (`SystemProcessInformation`,
+### `kernel32:thread` is green (915 tests, 43 todo, 0 failures)
+
+The pair closed on its last defect, and the defect is worth recording
+because it was one I had *already fixed once, wrongly*. `thread.c:800`
+wanted a process-wide boost-disable to show through the thread's query;
+I made the thread query read `thread->flag || process->flag` and the
+assertion went green. Nine lines further on, `thread.c:809` clears the
+THREAD's flag while the process's stays set and requires the thread to
+read 0 — which an OR can never report.
+
+The oracle had said so plainly the whole time (`server/process.c`
+`set_process_disable_boost`): the process value is *assigned into* every
+thread on the process's thread list, and a new thread copies it at
+creation. Propagation and lookup agree on the case I tested and disagree
+on the case I had not yet reached, which is the general shape of a wrong
+fix that passes: **the assertion I aimed at was satisfiable by two
+different models, and I picked the one I could write without reading the
+server.** The habit that catches it is the one this file keeps
+re-learning — read the oracle's implementation, not just the assertion
+that is currently red.
+
+Also landed alongside: `KeNumberProcessors` → `KE_NUMBER_PROCESSORS`.
+`make tidy` does not report a macro-case violation, it *rewrites the
+definition*, leaving every call site pointing at a name that no longer
+exists. Worth knowing before the next NT-spelled macro goes in.
+
+**Next**, in order: W2b (`SystemProcessInformation`,
 which also carries `kernel32:toolhelp`'s 135 failures) and W2c; then W3.
 
 *The `abi/` header trap, now resolved and worth remembering.*
