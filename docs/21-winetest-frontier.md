@@ -387,6 +387,39 @@ Two findings from W2a worth carrying forward:
   that answers without validating answers a caller that was never entitled
   to ask, and only a test opening a deliberately weak handle can see it.
 
+**Suspend/resume on an exited thread: FIXED.** `thread.c:551`/`:554` are
+green. The rule is asymmetric and the asymmetry is the point — a
+TERMINATED thread refuses `NtSuspendThread` with `STATUS_ACCESS_DENIED`
+(the oracle's server says exactly that status, not one about the thread's
+state), while `NtResumeThread` has no such guard at all and succeeds with a
+count of 0. Pinned by `tests/ntapi/sem_ps/suspend_exited.c`.
+
+**Next on `kernel32:thread`, and it is one bug, not four.** The remaining
+failures cluster:
+
+```
+thread.c:585  SuspendThread did not work
+thread.c:590  OpenThread returned an invalid handle   <-- START HERE
+thread.c:598  Thread did not really suspend
+thread.c:601  Resume thread returned an invalid value
+thread.c:697  GetThreadPriority Failed
+```
+
+`:590` is the cause and the rest are downstream of it. The call is
+
+```c
+#define THREAD_ALL_ACCESS_NT4 (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3ff)
+access_thread = pOpenThread( THREAD_ALL_ACCESS_NT4 & ~THREAD_SUSPEND_RESUME, 0, threadId );
+```
+
+— an NT4-era access mask, deliberately missing one bit, and proskrnl hands
+back a failure. Suspect `PspThreadType.validAccess` (`THREAD_ALL_ACCESS` on
+a modern header is wider than the NT4 constant, but the REQUESTED mask here
+is a subset of neither if the low bits differ) or `NtOpenThread`'s
+by-ClientId lookup. Check what the request actually masks down to before
+assuming it is the access check — `:697`'s `GetThreadPriority` failure may
+be the same handle, in which case all five go together.
+
 **W2a is DONE for `NtQueryInformationThread`/`NtSetInformationThread`.**
 `kernel32:thread` no longer panics anywhere in the class sweep — every
 class it touches now answers either its value or a specific NT failure.
