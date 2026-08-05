@@ -493,8 +493,10 @@ boundary symbols winebuild would have emitted supplied by
   IDENTICALLY on both runners and stays off the manifest (`ntdll:om` is
   the canonical casualty: its `\Sessions\...\WindowStations` half needs
   real winstation objects).
-- **`ntdll:time` is off the manifest — an oracle-HOST flake, not a
-  proskrnl divergence.** Its `test_user_shared_data_time` check (`USD
+- **`ntdll:time` was off the manifest as an oracle-HOST flake, not a
+  proskrnl divergence — it is listed again now that the manifest is
+  coverage rather than curation, and a host flake is a finding to re-measure
+  like any other.** Its `test_user_shared_data_time` check (`USD
   SystemTime / NtQuerySystemTime are out of order`, time.c:460 in the
   pinned tree) races Wine's own user-shared-data updater thread against
   the syscall's direct clock read; on shared CI runners (GitHub Actions
@@ -552,50 +554,60 @@ boundary symbols winebuild would have emitted supplied by
   collisions (ids now come from the shared CID-shaped source), the missing
   keyed-event rendezvous, and a divide-by-zero feeding
   `GlobalMemoryStatusEx` zeros into `kernel32:heap`'s own arithmetic.
-- **Left off the manifest with cause** (candidates re-join as their
-  blockers land):
-  - oracle-side failures (upstream suite-vs-Wine drift, not proskrnl's):
-    `kernel32:file` (7), `cmd.exe_test:batch` (3); `ucrtbase:file` needs a
-    host UTF-8 locale the oracle environment lacks.
-  - user32-load-bearing: `ntdll:om` (its `\Sessions\...\WindowStations`
-    half needs real winstation objects).
-  - path-syntax breadth: `ntdll:path` / `kernel32:path` pin the full NT
-    open-path table (trailing/doubled slashes, dot components,
-    RootDirectory-relative opens) — the Io/FAT walker diverges on ~22
-    cases.
-  - missing Mm surface: `ntdll:virtual` / `kernel32:virtual` (zero_bits,
-    `NtAllocateVirtualMemoryEx`); `ntdll:info` (processor-feature and
-    breadth classes, then hangs).
-  - process-exit protocol: `ntdll:sync` and `kernel32:sync` complete their
-    checks (sync: zero failures) but park at exit — the tests deliberately
-    LEAK threads blocked on a closed completion port, which real NT's
-    terminate-all-threads kills. **Re-triaged at CUI-4** (which built the
-    foreign-terminate story this note used to wait on): both pairs are
-    oracle-green, and on proskrnl the run now reaches its own summary line
-    — `sync: 0 tests executed (… 0 failures)` on serial — and *then* still
-    fails the per-pair budget as `FAIL (timeout)`. So terminating the
-    siblings at `ExitProcess` (`PspExitCurrentProcess`) was necessary but
-    NOT sufficient: something else keeps the process alive after the last
-    check. They stay off the manifest with that sharper cause; the next
-    attempt should start from which thread is still counted in
-    `activeThreadCount` at that point, not from the wait paths (those now
-    abort). Adding them meanwhile is actively harmful: pairs share one
-    console, so a wedged pair fails every pair after it (the re-triage run
-    showed five otherwise-green `kernel32` pairs cascade).
-  - breadth not yet triaged: `kernel32:{thread,time,pipe}` (107/43/slow),
-    `msvcrt:{misc,file,time}`, `ucrtbase:misc`. *(CUI-5 retired the
-    `cmd.exe_test:directory` entry that used to sit here — its 6
-    proskrnl-only failures were all the missing rename; the pair is on the
-    manifest now.)*
-  - `ntdll:change` / `kernel32:change` (evaluated at CUI-5, both
-    oracle-green): 9 and ~10 failures on proskrnl, all shapes of the
-    single-record / no-between-watch-buffering watch model (docs/03
-    "CUI-5 Io-completion notes") — multi-record buffers ("information
-    wrong"), notifications the suites expect the queued window to
-    suppress or deliver ("should timeout", "Got notification"), and
-    `ov.Internal` carried by a buffered completion. They join when the
-    watch list grows a per-handle backlog; `sem_file/notify_change.c`
-    covers the one-change-per-watch contract meanwhile.
+- **Commented out of the manifest, with cause** (`tests/winetest/
+  manifest.txt` carries each reason inline). The bar is deliberately high:
+  being UNIMPLEMENTED is not a reason — an unbuilt syscall makes the pair
+  FAIL, which is the signal the sweep exists to produce. Only two things
+  disqualify a pair:
+  - *(a) proskrnl will never implement the surface*, by a decision recorded
+    elsewhere. `ntdll:alpc` (the LPC/ALPC surface stays unbuilt because the
+    local-RPC transport is npfs — "CUI-3 SCM notes" above) and
+    `kernel32:debugger` (debug objects, ADR 0011). Both are GREEN on the
+    oracle and both panic on proskrnl's first missing syscall, which is the
+    armed-panic contract working rather than a defect to chase. Leaving
+    them in would make the gate permanently red on purpose.
+    `ntdll:wow64` joins them as the milestone case: WOW64 is planned but
+    later (docs/02), and the oracle is red on it anyway (4 failures).
+  - *(b) the ORACLE cannot serve as the spec.* `ntdll:om` (the oracle
+    CRASHES — om.c:1893 wants `\Sessions\1\Windows\WindowStations\WinSta0`,
+    the user32 half of the namespace that Art. 7 keeps off this image);
+    `kernel32:console` (1) and `kernel32:process` (48), which need a real
+    console the redirected oracle has not got — a pty does hand wine one,
+    measured, but it then dies on "Unable to open HKCU\Console, error 2";
+    `kernel32:loader` (dies on the oracle too, driving 32-bit children
+    through the debug loop); `kernel32:module` (asserts the TEST BINARY'S
+    OWN import list, which the standalone link deliberately changes — it
+    measures the harness, not the boundary); and `cmd.exe_test:batch` (one
+    residual oracle failure, batch.c:390, the pinned cmd.exe against the
+    pinned expected file with proskrnl nowhere in it).
+
+- **Eight pairs were parked on the HOST, not on proskrnl — corrected.**
+  This section used to record `kernel32:file` (7 failures) and
+  `cmd.exe_test:batch` (3) as "upstream suite-vs-Wine drift" and
+  `ucrtbase:file` as needing a locale "the oracle environment lacks". All
+  three were the runner's own environment, and so were five more. Measured
+  on the pinned tree, changing nothing but the host:
+  - a UTF-8 locale (`LC_ALL`, now pinned by tests/run/run.sh) takes
+    `ntdll:directory` from 82 failures to 0, `ucrtbase:file` from an
+    outright death to 0, and `ntdll:change` from 1 to 0;
+  - running as an ORDINARY USER instead of root (now refused by
+    tests/run/run.sh) takes `ntdll:file` from 6 to 0, `kernel32:profile`
+    from 4 to 0, `kernel32:version` from 36 to 0, `kernel32:comm` from 3
+    to 0 and `kernel32:file` from 7 to 0.
+  Wine maps NT's access checks onto unix permission bits and derives its
+  unix codepage from the host locale, so root and C/POSIX each corrupt the
+  spec in the one direction nothing downstream can detect. The lesson is
+  procedural and worth more than the eight pairs: **do not park a pair on
+  an oracle failure without re-measuring it unprivileged under UTF-8.**
+
+- **Still red, and genuinely proskrnl's** (the sweep's actual backlog, one
+  boot per pair so no wedge can hide another): most are unbuilt surface
+  reached under the armed panic — `ntdll:{directory,info,pipe,thread,
+  threadpool,virtual}` and `kernel32:{file,mailslot,pipe,power,process,
+  sync,thread,time,virtual}` all stop at a `STATUS_NOT_IMPLEMENTED`. Two
+  are memory-safety defects the sweep surfaced and nothing else had:
+  `kernel32:timer` panics `KASAN: use after free`, and `ntdll:reg` takes a
+  `#UD invalid opcode`. Those two are bugs, not gaps.
 
 ## The set-basic access check (`FileBasicInformation`, set direction)
 

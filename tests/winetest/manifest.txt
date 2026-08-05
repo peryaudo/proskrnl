@@ -4,6 +4,16 @@
 # proskrnl from ONE binary per module (Makefile `wtests`, the pinned tree's
 # own unmodified test objects linked standalone).
 #
+# Syntax: `<exe>:<subtest>[:<timeout_s>]`, one per line. A line whose first
+# character is '#' is a COMMENT, and so are blank lines — both readers agree
+# (tests/run/run.sh winetest, and user/smss/session.c
+# SessionParseWtestManifest, which is what the kernel-side sweep parses off
+# the baked image). Comments are whole-line only: there is no trailing-#
+# form, because a '#' is a legal character in neither field and adding one
+# would make a typo'd pair name parse as a shorter pair rather than fail
+# loudly. The optional third field is the per-pair timeout in seconds
+# (default 300).
+#
 # advapi32 is deliberately out: its subject is the security/registry service
 # surface, covered by the CUI-2/CUI-3 legs (tests/run/run.sh console, scm) and
 # by tests/ntapi, not by this gate. user32 is out too — the GUI trophy has its
@@ -13,14 +23,46 @@
 # on both runners; it now lists every pair the five modules have, so the leg
 # measures the whole non-GUI frontier instead of the part already crossed. A
 # red pair here is a finding to work through, not a merge blocker to route
-# around — the parked-pair causes that used to live in these comments are in
-# docs/03 "M10 winetest notes".
+# around.
 #
-# <exe>:<subtest>[:<timeout_s>] — the third field is the per-pair timeout
-# (user/smss/session.c SessionParseWtestManifest); absent means 300 s.
+# ---------------------------------------------------------------------------
+# WHY A PAIR IS COMMENTED OUT
+#
+# A commented-out pair is one this gate CANNOT JUDGE — never one that is
+# merely red. Being unimplemented is not a reason: an unbuilt syscall makes
+# the pair FAIL, which is exactly the signal the sweep exists to produce, and
+# most red pairs below are precisely that. Only two things disqualify a pair,
+# and each exclusion names its measurement so it can be re-checked:
+#
+#   (a) proskrnl will never implement the surface, by a decision already
+#       recorded elsewhere (docs/03, an ADR). The pair cannot go green
+#       without reversing that decision, so leaving it in would make the
+#       gate permanently red on purpose.
+#
+#   (b) the ORACLE cannot serve as the spec for it — it fails or dies on the
+#       pinned Wine itself, or it asserts something about the standalone
+#       link rather than about the boundary. A pair that is red with zero
+#       proskrnl involvement cannot convict the kernel (Art. 6), so it
+#       cannot sit in a differential gate.
+#
+# Every oracle-side measurement below was taken as an ORDINARY USER under a
+# UTF-8 locale, which the runner now enforces (tests/run/run.sh): before that
+# it ran as root under C/POSIX, and eight pairs looked oracle-red that were
+# not — ntdll:directory (82 failures), ntdll:file (6), ntdll:change (1),
+# kernel32:profile (4), kernel32:version (36), kernel32:comm (3),
+# kernel32:file (7) and ucrtbase:file (a crash) are all 0-failure green once
+# the host stopped leaking into the answer. docs/03 "M10 winetest notes" has
+# the whole story; do not re-park a pair on an oracle failure without
+# re-measuring it that way first.
+# ---------------------------------------------------------------------------
 
 # --- ntdll (third_party/wine/dlls/ntdll/tests) ------------------------------
-ntdll_test.exe:alpc
+# (a) ALPC is permanently unimplemented: proskrnl's local-RPC transport is
+#     npfs, so the whole LPC/ALPC syscall surface stays unbuilt on purpose
+#     (docs/03 "CUI-3 SCM notes"). Green on the oracle, and proskrnl panics
+#     on the first NtAlpcCreatePort — which is the armed-panic contract
+#     working, not a defect to chase.
+# ntdll_test.exe:alpc
 ntdll_test.exe:atom
 ntdll_test.exe:change
 ntdll_test.exe:directory
@@ -31,7 +73,12 @@ ntdll_test.exe:file
 ntdll_test.exe:generated
 ntdll_test.exe:info
 ntdll_test.exe:large_int
-ntdll_test.exe:om
+# (b) The oracle CRASHES here (exit 5, no summary line): om.c:1893 wants
+#     \Sessions\1\Windows\WindowStations\WinSta0 and NtQueryObject answers
+#     c0000008, because the winstation half of the object namespace is the
+#     user32/GUI path that is off this image by Art. 7. Fails without
+#     proskrnl involvement, so it cannot convict the kernel.
+# ntdll_test.exe:om
 ntdll_test.exe:path
 ntdll_test.exe:pipe
 ntdll_test.exe:port
@@ -46,7 +93,10 @@ ntdll_test.exe:threadpool
 ntdll_test.exe:time
 ntdll_test.exe:unwind
 ntdll_test.exe:virtual
-ntdll_test.exe:wow64
+# (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
+#     this exercises is unbuilt by plan rather than by omission — and the
+#     oracle is red on it anyway (4 failures, 1 skipped).
+# ntdll_test.exe:wow64
 
 # --- kernel32 (third_party/wine/dlls/kernel32/tests) ------------------------
 kernel32_test.exe:actctx
@@ -54,8 +104,19 @@ kernel32_test.exe:atom
 kernel32_test.exe:change
 kernel32_test.exe:codepage
 kernel32_test.exe:comm
-kernel32_test.exe:console
-kernel32_test.exe:debugger
+# (b) Needs a REAL console, which the oracle cannot give it: the runner
+#     redirects stdout to a log, so console.c:5920 fails "Getting sb info"
+#     on the pinned Wine (1 failure). proskrnl runs the pair WITH conhost,
+#     so the two legs are not comparing the same thing. Attaching a pty
+#     (script -qec) does hand wine a console but it then dies on
+#     "Unable to open HKCU\Console, error 2" and fills the log with cursor
+#     escapes — measured, not assumed.
+# kernel32_test.exe:console
+# (a) Debug objects are out of scope permanently (ADR 0011, docs/03 "Debug
+#     objects are out of scope"): proskrnl panics on the first
+#     NtCreateDebugObject. Green on the oracle; unreachable here by
+#     decision, not by backlog.
+# kernel32_test.exe:debugger
 kernel32_test.exe:directory
 kernel32_test.exe:drive
 kernel32_test.exe:environ
@@ -64,14 +125,28 @@ kernel32_test.exe:file
 kernel32_test.exe:format_msg
 kernel32_test.exe:generated
 kernel32_test.exe:heap
-kernel32_test.exe:loader
+# (b) The oracle dies on it too (exit 5, no summary): the subtest builds and
+#     spawns 32-bit child images and drives them through the debug loop
+#     ("Platform: x86_64 (guest: i386)" in its own banner), and the run ends
+#     in its child-hang process dump rather than a verdict.
+# kernel32_test.exe:loader
 kernel32_test.exe:locale
 kernel32_test.exe:mailslot
-kernel32_test.exe:module
+# (b) Asserts the TEST BINARY'S OWN import list, which the standalone link
+#     deliberately changes: module.c:1774 walks the dependencies and wants
+#     user32.dll where our link has advapi32, because user32 is stood in at
+#     link time by tests/winetest/glue/user32_stubs.c (docs/03 "One binary,
+#     two runners"). 2 failures on the oracle, identical on proskrnl — it
+#     measures the harness, not the boundary.
+# kernel32_test.exe:module
 kernel32_test.exe:path
 kernel32_test.exe:pipe
 kernel32_test.exe:power
-kernel32_test.exe:process
+# (b) The console dependency again, and the largest instance of it: 48
+#     failures on the oracle, starting at process.c:1650 "Getting sb info" /
+#     "Getting console in mode" — the STARTUPINFO console-handle block needs
+#     a console the redirected oracle has not got.
+# kernel32_test.exe:process
 kernel32_test.exe:profile
 kernel32_test.exe:resource
 kernel32_test.exe:sync
@@ -109,5 +184,10 @@ ucrtbase_test.exe:string
 ucrtbase_test.exe:thread
 
 # --- cmd (third_party/wine/programs/cmd/tests) ------------------------------
-cmd.exe_test.exe:batch
+# (b) One residual oracle failure after the host fixes above took it from 3
+#     to 1: batch.c:390 reads 'Failure' where the expected output says
+#     'Success' at line 2301 of the suite's own transcript — the pinned
+#     Wine's cmd.exe against the pinned Wine's expected file, with proskrnl
+#     nowhere in it.
+# cmd.exe_test.exe:batch
 cmd.exe_test.exe:directory
