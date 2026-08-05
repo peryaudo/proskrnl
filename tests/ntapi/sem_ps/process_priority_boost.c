@@ -60,6 +60,26 @@ START_TEST(process_priority_boost)
         NtQueryInformationProcess(self, ProcessPriorityBoost, NULL, sizeof(ULONG), &returnLength);
     ok(status == STATUS_ACCESS_VIOLATION, "NULL query buffer -> %08lx", (unsigned long)status);
 
+    /* --- ProcessAffinityMask: one CPU, one bit ---------------------------
+     * The same fact ThreadAffinityMask reports, and true rather than
+     * approximate because Art. 3 mandates uniprocessor. Exact length here,
+     * unlike the thread class, which truncates. */
+    {
+        ULONG_PTR affinity = 0;
+        returnLength = 0;
+        status = NtQueryInformationProcess(self, ProcessAffinityMask, &affinity, sizeof(affinity),
+                                           &returnLength);
+        ok(status == STATUS_SUCCESS, "ProcessAffinityMask -> %08lx", (unsigned long)status);
+        ok(affinity != 0, "process affinity mask is empty");
+        ok(returnLength == sizeof(affinity), "affinity returned %lu bytes",
+           (unsigned long)returnLength);
+
+        status = NtQueryInformationProcess(self, ProcessAffinityMask, &affinity, 1,
+                                           &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short affinity -> %08lx",
+           (unsigned long)status);
+    }
+
     /* Put it back, so a rerun starts where this one did. */
     disableBoost = 0;
     (void)NtSetInformationProcess(self, ProcessPriorityBoost, &disableBoost, sizeof(disableBoost));

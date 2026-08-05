@@ -485,6 +485,32 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         status = STATUS_SUCCESS;
         break;
     }
+    case ProcessAffinityMask:
+    {
+        /* One CPU, so one bit — the same fact ThreadAffinityMask reports,
+         * from the same KeNumberProcessors authority (Art. 11), and true
+         * rather than approximate because Art. 3 mandates uniprocessor.
+         * Exact length or STATUS_INFO_LENGTH_MISMATCH, as the oracle
+         * (dlls/ntdll/unix/process.c). */
+        if (length != sizeof(ULONG_PTR))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(ULONG_PTR), sizeof(ULONG_PTR));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        ULONG_PTR affinity = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        memcpy(buffer, &affinity, sizeof(affinity));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG_PTR);
+        }
+        status = STATUS_SUCCESS;
+        break;
+    }
     case ProcessPriorityBoost:
     {
         /* The process twin of ThreadPriorityBoost: stored and returned,
