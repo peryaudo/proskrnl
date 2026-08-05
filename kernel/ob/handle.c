@@ -51,7 +51,23 @@ void ObpDeleteHandleTable(POBP_HANDLE_TABLE table)
     }
 }
 
+static ACCESS_MASK ObpMapDesiredAccessRaw(POBJECT_TYPE type, ACCESS_MASK desiredAccess);
+
+/* The generic mapping, then the type's own implications. Split so every
+ * return path below funnels through the second step (Art. 11) — an
+ * implication applied at only some of them is the parallel-path drift G10
+ * rejects. */
+static ACCESS_MASK ObpApplyAccessImplications(POBJECT_TYPE type, ACCESS_MASK granted)
+{
+    return type->mapAccess != 0 ? type->mapAccess(granted) : granted;
+}
+
 ACCESS_MASK ObpMapDesiredAccess(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
+{
+    return ObpApplyAccessImplications(type, ObpMapDesiredAccessRaw(type, desiredAccess));
+}
+
+static ACCESS_MASK ObpMapDesiredAccessRaw(POBJECT_TYPE type, ACCESS_MASK desiredAccess)
 {
     if (desiredAccess &
         (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED))

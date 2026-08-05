@@ -71,6 +71,22 @@ typedef struct
  * (third_party/wine/include/winternl.h) — mingw's winternl.h omits it.
  * Only Selector is read here; the LDT_ENTRY tail is padding for the length
  * the class requires. */
+/* THREAD_BASIC_INFORMATION, as the pinned tree spells it; mingw's omits
+ * it from winternl.h. Only ClientId and the size are used here. */
+typedef struct
+{
+    NTSTATUS ExitStatus;
+    PVOID TebBaseAddress;
+    struct
+    {
+        HANDLE UniqueProcess;
+        HANDLE UniqueThread;
+    } ClientId;
+    ULONG_PTR AffinityMask;
+    LONG Priority;
+    LONG BasePriority;
+} NTAPI_THREAD_BASIC_INFORMATION;
+
 typedef struct
 {
     DWORD Selector;
@@ -92,12 +108,58 @@ static const struct
     {ThreadSetTlsArrayAddress, "ThreadSetTlsArrayAddress"},
 };
 
+NTSYSAPI NTSTATUS NTAPI NtOpenThread(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *,
+                                     const CLIENT_ID *);
+
 START_TEST(thread_info_sweep)
 {
     NTSTATUS status;
     ULONG returnLength;
     BOOLEAN hidden;
     HANDLE self = (HANDLE)(LONG_PTR)-2; /* NtCurrentThread */
+
+    /* --- a LIMITED-access handle can still query -------------------------
+     * kernel32:thread opens with OpenThread(THREAD_QUERY_LIMITED_INFORMATION)
+     * and then sweeps every class through it. NT's thread type grants the
+     * limited right to anyone holding the full one and vice-versa for the
+     * classes that only need the limited one — the oracle spells the
+     * implication out in server/thread.c thread_map_access, and its
+     * get_thread_info handler DEFAULTS to the limited right when the caller
+     * names none. A kernel that demands the full right refuses the whole
+     * sweep with STATUS_ACCESS_DENIED. */
+    {
+        HANDLE limited = NULL;
+        OBJECT_ATTRIBUTES attr;
+        CLIENT_ID id;
+        memset(&attr, 0, sizeof(attr));
+        attr.Length = sizeof(attr);
+        NTAPI_THREAD_BASIC_INFORMATION selfBasic;
+        memset(&selfBasic, 0, sizeof(selfBasic));
+        status = NtQueryInformationThread(self, ThreadBasicInformation, &selfBasic,
+                                          sizeof(selfBasic), &returnLength);
+        ok(status == STATUS_SUCCESS, "self basic info -> %08lx", (unsigned long)status);
+        id.UniqueProcess = NULL;
+        id.UniqueThread = selfBasic.ClientId.UniqueThread;
+        status = NtOpenThread(&limited, THREAD_QUERY_LIMITED_INFORMATION, &attr, &id);
+        ok(status == STATUS_SUCCESS, "open limited thread handle -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            NTAPI_KERNEL_USER_TIMES times;
+            returnLength = 0;
+            status = NtQueryInformationThread(limited, ThreadTimes, &times, sizeof(times),
+                                              &returnLength);
+            ok(status == STATUS_SUCCESS, "ThreadTimes via limited handle -> %08lx",
+               (unsigned long)status);
+
+            NTAPI_THREAD_BASIC_INFORMATION basic;
+            status = NtQueryInformationThread(limited, ThreadBasicInformation, &basic,
+                                              sizeof(basic), &returnLength);
+            ok(status == STATUS_SUCCESS, "ThreadBasicInformation via limited handle -> %08lx",
+               (unsigned long)status);
+            NtClose(limited);
+        }
+    }
 
     /* --- ThreadHideFromDebugger: a real flag, and it starts clear -------- */
     returnLength = 0;

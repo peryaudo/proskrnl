@@ -79,11 +79,32 @@ PVOID PsCurrentThreadImpersonationToken(void)
     return ((PETHREAD)tcb->threadObject)->impersonationToken;
 }
 
+/* NT's thread access implications, verbatim from the oracle's own
+ * thread_map_access (third_party/wine server/thread.c): the full query and
+ * set rights each imply their LIMITED counterpart. Without this a handle
+ * opened THREAD_QUERY_INFORMATION is refused by every class that asks for
+ * the limited right — and kernel32:thread opens exactly the other way
+ * round, with OpenThread(THREAD_QUERY_LIMITED_INFORMATION), which is how
+ * the gap surfaced. */
+static ACCESS_MASK PspMapThreadAccess(ACCESS_MASK granted)
+{
+    if (granted & THREAD_QUERY_INFORMATION)
+    {
+        granted |= THREAD_QUERY_LIMITED_INFORMATION;
+    }
+    if (granted & THREAD_SET_INFORMATION)
+    {
+        granted |= THREAD_SET_LIMITED_INFORMATION;
+    }
+    return granted;
+}
+
 OBJECT_TYPE PspThreadType = {
     .name = "Thread",
     .validAccess = THREAD_ALL_ACCESS,
     .waitable = TRUE,
     .deleteProcedure = PspDeleteThread,
+    .mapAccess = PspMapThreadAccess,
 };
 
 /* First code of a user thread on its kernel stack: descend to ring 3 at the
@@ -1258,7 +1279,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
@@ -1306,7 +1327,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
@@ -1360,7 +1381,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
@@ -1500,7 +1521,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
@@ -1544,7 +1565,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {

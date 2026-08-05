@@ -59,6 +59,17 @@ typedef struct OBJECT_TYPE
     ACCESS_MASK genericWrite;
     ACCESS_MASK genericExecute;
     ACCESS_MASK genericAll;
+    /* Optional per-type access IMPLICATIONS, applied after the generic
+     * mapping (Wine's *_map_access hooks; server/thread.c
+     * thread_map_access is the one this exists for). NT's thread and
+     * process types grant the LIMITED right to anyone holding the full
+     * one — a handle opened THREAD_QUERY_INFORMATION can do everything a
+     * THREAD_QUERY_LIMITED_INFORMATION handle can — and a caller opening
+     * only the limited right must still reach the classes that need it.
+     * Applied in ObpMapDesiredAccess, the one grant site (Art. 11), so no
+     * type grows a private access path. NULL = no implications. */
+    ACCESS_MASK (*mapAccess)(ACCESS_MASK granted);
+
     /* CUI-6: the small per-type id SystemHandleInformation entries carry.
      * Types are C globals with no registry, so the id is minted lazily by
      * ObpTypeIndex — the ONE assignment site (G11). 0 = not yet minted. */
