@@ -309,6 +309,33 @@ START_TEST(thread_info_sweep)
            (unsigned long)status);
     }
 
+    /* --- SetThreadPriority/GetThreadPriority round-trip -------------------
+     * kernelbase's GetThreadPriority is literally
+     * `NtQueryInformationThread(ThreadBasicInformation).BasePriority` and
+     * SetThreadPriority is `NtSetInformationThread(ThreadBasePriority)`
+     * (dlls/kernelbase/thread.c), so the Win32 pair is a round-trip through
+     * these two classes and nothing else. proskrnl runs one priority band
+     * that matters, so the value steers nothing — but it must come back, or
+     * the pair disagrees with itself. */
+    {
+        NTAPI_THREAD_BASIC_INFORMATION basic;
+        for (LONG want = -2; want <= 2; want++)
+        {
+            status = NtSetInformationThread(self, ThreadBasePriority, &want, sizeof(want));
+            ok(status == STATUS_SUCCESS, "set base priority %ld -> %08lx", (long)want,
+               (unsigned long)status);
+            memset(&basic, 0, sizeof(basic));
+            status = NtQueryInformationThread(self, ThreadBasicInformation, &basic,
+                                              sizeof(basic), &returnLength);
+            ok(status == STATUS_SUCCESS, "basic info -> %08lx", (unsigned long)status);
+            ok(basic.BasePriority == want, "base priority %ld came back %ld", (long)want,
+               (long)basic.BasePriority);
+        }
+        /* Put it back where every thread starts. */
+        LONG normal = 0;
+        (void)NtSetInformationThread(self, ThreadBasePriority, &normal, sizeof(normal));
+    }
+
     /* --- ThreadPriorityBoost round-trips ---------------------------------
      * proskrnl does no priority boosting, so nothing acts on this flag —
      * but the query must return what the set stored, or the pair disagrees

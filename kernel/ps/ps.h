@@ -212,6 +212,15 @@ typedef struct ETHREAD
      * as long as the QUERY side was unreachable: a set the query cannot see
      * is the silent-plausible stub G12 forbids. Buffer 0 = never named. */
     UNICODE_STRING threadName;
+    /* SetThreadPriority's value, verbatim. kernelbase's GetThreadPriority
+     * is `NtQueryInformationThread(ThreadBasicInformation).BasePriority`
+     * and SetThreadPriority is `NtSetInformationThread(ThreadBasePriority)`
+     * (dlls/kernelbase/thread.c), so the pair is a round-trip through this
+     * field and nothing else. proskrnl runs one priority band that matters
+     * (docs/03 "Deliberate simplifications") — so the value STEERS nothing,
+     * but it must still be returned, or the pair disagrees with itself.
+     * 0 is THREAD_PRIORITY_NORMAL, which is where every thread starts. */
+    LONG basePriority;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

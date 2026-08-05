@@ -1343,7 +1343,12 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
                                             : caller->process->uniqueProcessId);
         info.ClientId.UniqueThread = (HANDLE)(uintptr_t)(target != 0 ? target->uniqueThreadId : 0);
         info.Priority = targetTcb != 0 ? targetTcb->priority : caller->priority;
-        info.BasePriority = info.Priority;
+        /* BasePriority is SetThreadPriority's value read back — kernelbase's
+         * GetThreadPriority returns exactly this field. It is NOT the
+         * scheduler's priority, and conflating the two made every
+         * Set/Get round-trip fail (kernel32:thread thread.c:697, :717,
+         * :719). */
+        info.BasePriority = target != 0 ? target->basePriority : 0;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
@@ -1921,10 +1926,50 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     switch (infoClass)
     {
     case ThreadZeroTlsCell:
+    case ThreadBasePriority:
+    {
+        /* STORED, not dropped — the seventh accept-and-drop stub this work
+         * item has found. proskrnl runs one priority band that matters
+         * (docs/03 "Deliberate simplifications"), so the value steers
+         * nothing; but GetThreadPriority reads it straight back out of
+         * ThreadBasicInformation.BasePriority, so dropping it made the
+         * Set/Get pair disagree with itself. */
+        if (length != sizeof(LONG))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(LONG), sizeof(LONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        LONG priority;
+        memcpy(&priority, buffer, sizeof(priority));
+        PETHREAD target = KeGetCurrentThread()->threadObject;
+        PVOID body = 0;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+        }
+        if (target != 0)
+        {
+            target->basePriority = priority;
+        }
+        if (body != 0)
+        {
+            ObDereferenceObject(body);
+        }
+        return STATUS_SUCCESS;
+    }
     /* Priority and affinity: one CPU, one priority band that matters
      * (docs/03 "Deliberate simplifications"). */
     case ThreadPriority:
-    case ThreadBasePriority:
     case ThreadAffinityMask:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
