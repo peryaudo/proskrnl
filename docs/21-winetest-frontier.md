@@ -387,10 +387,23 @@ Two findings from W2a worth carrying forward:
   that answers without validating answers a caller that was never entitled
   to ask, and only a test opening a deliberately weak handle can see it.
 
-**Next**, in order: `NtQueryInformationThread` class 30 and the remaining
-`NtQueryInformationProcess` classes `kernel32:thread` reaches; then W2b
-(`SystemProcessInformation`, which also carries `kernel32:toolhelp`'s 135
-failures) and W2c; then W3.
+**Next**, in order: `NtQueryInformationThread` class 30
+(`ThreadGroupInformation`) and the remaining `NtQueryInformationProcess`
+classes `kernel32:thread` reaches; then W2b (`SystemProcessInformation`,
+which also carries `kernel32:toolhelp`'s 135 failures) and W2c; then W3.
+
+*A trap waiting on the very next class.* `ThreadGroupInformation` returns a
+`GROUP_AFFINITY`, whose `Mask` field is a `KAFFINITY` — and `KAFFINITY` is
+typedef'd in `abi/ntpebteb.h` while the struct would be generated into
+`abi/ntpsapi.h`, which does not include it. Adding the struct to
+`gen_abi.py`'s ntpsapi list therefore breaks the kernel build. Resolve the
+header dependency first (either move the typedef to `abi/ntdef.h`, which
+both already include, or have the generator emit the include — check for a
+cycle before choosing); do NOT hand-write the layout to route around it,
+which is what Art. 4 forbids. The value itself is trivial once the type is
+available: group 0 always, `Mask` from `KeNumberProcessors`, truncating on a
+short buffer, and the full `THREAD_QUERY_INFORMATION` right — the limited
+one does not reach this class.
 
 ## 6. Sequencing and effort
 
