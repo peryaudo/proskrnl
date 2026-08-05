@@ -1251,6 +1251,12 @@ typedef struct {
 } LDT_ENTRY, *PLDT_ENTRY, WOW64_LDT_ENTRY, *PWOW64_LDT_ENTRY;
 
 typedef struct {
+    KAFFINITY Mask;
+    WORD Group;
+    WORD Reserved[3];
+} GROUP_AFFINITY, *PGROUP_AFFINITY;
+
+typedef struct {
     DWORD       Selector;
     LDT_ENTRY   Entry;
 } THREAD_DESCRIPTOR_INFORMATION, *PTHREAD_DESCRIPTOR_INFORMATION;

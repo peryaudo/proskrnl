@@ -36,6 +36,12 @@ typedef ULONG DWORD;
 typedef PVOID LPVOID;
 typedef const void *LPCVOID;
 typedef ULONG_PTR SIZE_T, *PSIZE_T;
+/* KAFFINITY lives here rather than in the ntpebteb scaffold because BOTH
+ * ntpebteb.h (TEB/PEB affinity fields) and ntpsapi.h (GROUP_AFFINITY, for
+ * NtQueryInformationThread's ThreadGroupInformation) need it, and
+ * ntpebteb.h already includes ntpsapi.h — so the reverse include would
+ * cycle. ntdef.h is the header both of them already include. */
+typedef ULONG_PTR KAFFINITY;
 
 /* Win32 base names used verbatim inside extracted structs (winnt.h). */
 typedef unsigned short WORD;

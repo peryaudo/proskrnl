@@ -18,7 +18,6 @@
  * pointer identity matters for layout; the pointees are not part of the M7
  * boundary (nothing dereferences them across it). */
 typedef PVOID HMODULE;
-typedef ULONG_PTR KAFFINITY;
 typedef struct _RTL_CRITICAL_SECTION *PRTL_CRITICAL_SECTION;
 typedef struct _ACTIVATION_CONTEXT ACTIVATION_CONTEXT;
 typedef struct _TEB_ACTIVE_FRAME TEB_ACTIVE_FRAME;

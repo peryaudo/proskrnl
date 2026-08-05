@@ -381,6 +381,12 @@ typedef ULONG DWORD;
 typedef PVOID LPVOID;
 typedef const void *LPCVOID;
 typedef ULONG_PTR SIZE_T, *PSIZE_T;
+/* KAFFINITY lives here rather than in the ntpebteb scaffold because BOTH
+ * ntpebteb.h (TEB/PEB affinity fields) and ntpsapi.h (GROUP_AFFINITY, for
+ * NtQueryInformationThread's ThreadGroupInformation) need it, and
+ * ntpebteb.h already includes ntpsapi.h — so the reverse include would
+ * cycle. ntdef.h is the header both of them already include. */
+typedef ULONG_PTR KAFFINITY;
 
 /* Win32 base names used verbatim inside extracted structs (winnt.h). */
 typedef unsigned short WORD;
@@ -1545,7 +1551,6 @@ def gen_ntpebteb(wine: Path) -> str:
  * pointer identity matters for layout; the pointees are not part of the M7
  * boundary (nothing dereferences them across it). */
 typedef PVOID HMODULE;
-typedef ULONG_PTR KAFFINITY;
 typedef struct _RTL_CRITICAL_SECTION *PRTL_CRITICAL_SECTION;
 typedef struct _ACTIVATION_CONTEXT ACTIVATION_CONTEXT;
 typedef struct _TEB_ACTIVE_FRAME TEB_ACTIVE_FRAME;
@@ -2005,6 +2010,9 @@ def gen_ntpsapi(wine: Path) -> str:
             # descriptor embeds it, and the kernel needs the SIZE even
             # though it never fills one in (there is no LDT here).
             extract_struct(winnt, "_LDT_ENTRY", "LDT_ENTRY"),
+            # NtQueryInformationThread(ThreadGroupInformation): the
+            # processor-group form of an affinity mask (kernel/ps/thread.c).
+            extract_struct(winnt, "_GROUP_AFFINITY", "GROUP_AFFINITY"),
             extract_struct(winternl, "_THREAD_DESCRIPTOR_INFORMATION",
                            "THREAD_DESCRIPTOR_INFORMATION"),
             extract_struct(winternl, "_PROCESS_PRIORITY_CLASS", "PROCESS_PRIORITY_CLASS"),

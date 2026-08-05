@@ -1495,6 +1495,38 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
                  (unsigned long)descriptor.Selector);
         return STATUS_NOT_IMPLEMENTED;
     }
+    case ThreadGroupInformation:
+    {
+        /* The processor-GROUP form of the affinity mask. Group 0 always,
+         * because a group holds at most 64 processors and this machine has
+         * one (Art. 3) — the oracle hardcodes group 0 for the same reason
+         * ("Wine only supports max 64 processors",
+         * dlls/ntdll/unix/thread.c). Same KeNumberProcessors authority as
+         * ThreadAffinityMask below, truncating on a short buffer as that
+         * class does, and the same access rule: the limited right does not
+         * reach here. */
+        NTSTATUS access = PspCheckThreadAccess(threadHandle, THREAD_QUERY_INFORMATION);
+        if (!NT_SUCCESS(access))
+        {
+            return access;
+        }
+        GROUP_AFFINITY affinity;
+        memset(&affinity, 0, sizeof(affinity));
+        affinity.Group = 0;
+        affinity.Mask = ((KAFFINITY)1 << KeNumberProcessors) - 1;
+        ULONG copy = length < sizeof(affinity) ? length : (ULONG)sizeof(affinity);
+        NTSTATUS status = KiProbeForWrite(buffer, copy, 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, &affinity, copy);
+        if (returnLength != 0)
+        {
+            *returnLength = copy;
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadAffinityMask:
     {
         /* One CPU, so one bit — and Art. 3's uniprocessor mandate is what

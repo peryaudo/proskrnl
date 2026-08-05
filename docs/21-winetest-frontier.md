@@ -392,18 +392,17 @@ Two findings from W2a worth carrying forward:
 classes `kernel32:thread` reaches; then W2b (`SystemProcessInformation`,
 which also carries `kernel32:toolhelp`'s 135 failures) and W2c; then W3.
 
-*A trap waiting on the very next class.* `ThreadGroupInformation` returns a
-`GROUP_AFFINITY`, whose `Mask` field is a `KAFFINITY` — and `KAFFINITY` is
-typedef'd in `abi/ntpebteb.h` while the struct would be generated into
-`abi/ntpsapi.h`, which does not include it. Adding the struct to
-`gen_abi.py`'s ntpsapi list therefore breaks the kernel build. Resolve the
-header dependency first (either move the typedef to `abi/ntdef.h`, which
-both already include, or have the generator emit the include — check for a
-cycle before choosing); do NOT hand-write the layout to route around it,
-which is what Art. 4 forbids. The value itself is trivial once the type is
-available: group 0 always, `Mask` from `KeNumberProcessors`, truncating on a
-short buffer, and the full `THREAD_QUERY_INFORMATION` right — the limited
-one does not reach this class.
+*The `abi/` header trap, now resolved and worth remembering.*
+`ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
+`KAFFINITY`, and that typedef sat in `abi/ntpebteb.h` while the struct
+generates into `abi/ntpsapi.h` — which does not include it, and cannot,
+because `ntpebteb.h` already includes `ntpsapi.h` and the reverse would
+cycle. The fix was to move the typedef down to `abi/ntdef.h`, the header
+both already include, in `gen_abi.py` rather than by hand. The rule this
+illustrates for the classes still to come: when a generated struct needs a
+type from a sibling `abi/` header, move the type — do not hand-write the
+layout to route around it (Art. 4), and do not add an include without
+checking the direction first.
 
 ## 6. Sequencing and effort
 
