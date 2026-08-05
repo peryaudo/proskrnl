@@ -196,6 +196,11 @@ typedef struct ETHREAD
      * the value the caller reads, which is the whole of the observable
      * contract here. Consumers: ntdll:thread, kernel32:thread. */
     BOOLEAN hideFromDebugger;
+    /* ThreadPriorityBoost's disable flag, same shape and same reasoning:
+     * proskrnl does not boost priorities at all (docs/03 "Deliberate
+     * simplifications"), so nothing acts on it — but the query must return
+     * what the set stored, or the pair disagrees with itself. */
+    BOOLEAN priorityBoostDisabled;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

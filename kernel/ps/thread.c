@@ -1521,6 +1521,58 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadPriorityBoost:
+    {
+        /* The disable flag, stored and returned. proskrnl does no priority
+         * boosting at all (docs/03 "Deliberate simplifications"), so
+         * nothing acts on the value — but a query that ignored the set
+         * would make the pair disagree with itself, which is the
+         * silent-plausible answer G12 forbids. The oracle's shape: a
+         * ULONG, exact length or STATUS_INFO_LENGTH_MISMATCH
+         * (dlls/ntdll/unix/thread.c). */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        ULONG disableBoost = (target != 0 && target->priorityBoostDisabled) ? 1 : 0;
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        memcpy(buffer, &disableBoost, sizeof(disableBoost));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(ULONG);
+        }
+        return STATUS_SUCCESS;
+    }
+    case ThreadIdealProcessor:
+    case ThreadEnableAlignmentFaultFixup:
+        /* The ORACLE calls these invalid itself, in an explicit
+         * `return STATUS_INVALID_INFO_CLASS;` arm kept separate from its
+         * FIXME/NOT_IMPLEMENTED group (dlls/ntdll/unix/thread.c) — so the
+         * split this kernel draws is the boundary's own, not ours, and
+         * these are pinned normally rather than beyond_oracle. */
+        return STATUS_INVALID_INFO_CLASS;
     case ThreadPriority:
     case ThreadBasePriority:
     case ThreadImpersonationToken:
@@ -1671,11 +1723,44 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     case ThreadAffinityMask:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
-    case ThreadPriorityBoost:
     /* The thread name is stored by ntdll in the TEB; nothing in the kernel
      * observes it. */
     case ThreadNameInformation:
         return STATUS_SUCCESS;
+    case ThreadPriorityBoost:
+    {
+        /* Stored, not dropped — the query above must be able to see it. */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONG disableBoost;
+        memcpy(&disableBoost, buffer, sizeof(disableBoost));
+        PETHREAD target = KeGetCurrentThread()->threadObject;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            ((PETHREAD)body)->priorityBoostDisabled = disableBoost != 0;
+            ObDereferenceObject(body);
+            return STATUS_SUCCESS;
+        }
+        if (target != 0)
+        {
+            target->priorityBoostDisabled = disableBoost != 0;
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadHideFromDebugger:
     {
         /* Zero length, no buffer (dlls/ntdll/unix/thread.c: `if (length)

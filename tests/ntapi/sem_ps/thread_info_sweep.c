@@ -217,6 +217,55 @@ START_TEST(thread_info_sweep)
            (unsigned long)status);
     }
 
+    /* --- ThreadPriorityBoost round-trips ---------------------------------
+     * proskrnl does no priority boosting, so nothing acts on this flag —
+     * but the query must return what the set stored, or the pair disagrees
+     * with itself, which is the silent-plausible answer a stub gives. */
+    {
+        ULONG disableBoost = 0xdead;
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost,
+                                          sizeof(disableBoost), &returnLength);
+        ok(status == STATUS_SUCCESS, "query boost -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(ULONG), "boost returned %lu bytes",
+           (unsigned long)returnLength);
+        ok(disableBoost == 0, "boost starts disabled (%lu)", (unsigned long)disableBoost);
+
+        ULONG disable = 1;
+        status = NtSetInformationThread(self, ThreadPriorityBoost, &disable, sizeof(disable));
+        ok(status == STATUS_SUCCESS, "set boost -> %08lx", (unsigned long)status);
+        disableBoost = 0xdead;
+        status = NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost,
+                                          sizeof(disableBoost), &returnLength);
+        ok(status == STATUS_SUCCESS, "re-query boost -> %08lx", (unsigned long)status);
+        ok(disableBoost == 1, "boost flag did not stick (%lu)", (unsigned long)disableBoost);
+
+        status = NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost, 1,
+                                          &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short boost -> %08lx", (unsigned long)status);
+    }
+
+    /* --- two classes the ORACLE ITSELF calls invalid ---------------------
+     * ThreadIdealProcessor and ThreadEnableAlignmentFaultFixup share an
+     * explicit `return STATUS_INVALID_INFO_CLASS;` arm in the oracle,
+     * separate from its FIXME/NOT_IMPLEMENTED group
+     * (dlls/ntdll/unix/thread.c). Wine draws the same distinction this
+     * kernel draws, so these are pinned NORMALLY — no beyond_oracle needed,
+     * and they are the evidence that the split is the boundary's own idea
+     * and not ours. */
+    {
+        ULONG value = 0;
+        status = NtQueryInformationThread(self, ThreadIdealProcessor, &value, sizeof(value),
+                                          &returnLength);
+        ok(status == STATUS_INVALID_INFO_CLASS, "ThreadIdealProcessor -> %08lx",
+           (unsigned long)status);
+        BOOLEAN flag = FALSE;
+        status = NtQueryInformationThread(self, ThreadEnableAlignmentFaultFixup, &flag,
+                                          sizeof(flag), &returnLength);
+        ok(status == STATUS_INVALID_INFO_CLASS, "ThreadEnableAlignmentFaultFixup -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
     beyond_oracle
     {
