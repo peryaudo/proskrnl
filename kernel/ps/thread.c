@@ -1926,6 +1926,43 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     switch (infoClass)
     {
     case ThreadZeroTlsCell:
+    case ThreadAffinityMask:
+    {
+        /* NARROWED to the system mask, not validated against it — that
+         * distinction is the whole class. `SetThreadAffinityMask(t, -1)`
+         * means "every processor", and the oracle implements it by ANDing
+         * the request with the system mask and refusing only if nothing
+         * survives (dlls/ntdll/unix/thread.c:
+         * `req_aff = *(const ULONG_PTR *)data & affinity_mask;`
+         * `if (!req_aff) return STATUS_INVALID_PARAMETER;`). A kernel that
+         * rejected out-of-range bits instead would refuse the single most
+         * common call, and one that accepted them unnarrowed would hand
+         * back -1 as the previous mask — kernel32:thread sees that as
+         * "Unexpected return value 4294967295" (thread.c:937).
+         *
+         * On one CPU the surviving mask is always 1, so nothing is stored;
+         * the NARROWING and the refusal are the observable behaviour.
+         * Length is STATUS_INVALID_PARAMETER here, not
+         * INFO_LENGTH_MISMATCH — the oracle's choice, and different from
+         * the query side's. */
+        if (length != sizeof(ULONG_PTR))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(ULONG_PTR), sizeof(ULONG_PTR));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONG_PTR requested;
+        memcpy(&requested, buffer, sizeof(requested));
+        ULONG_PTR systemMask = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        if ((requested & systemMask) == 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return PspCheckThreadAccess(threadHandle, THREAD_SET_INFORMATION);
+    }
     case ThreadBasePriority:
     {
         /* STORED, not dropped — the seventh accept-and-drop stub this work
@@ -1988,7 +2025,6 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     /* Priority and affinity: one CPU, one priority band that matters
      * (docs/03 "Deliberate simplifications"). */
     case ThreadPriority:
-    case ThreadAffinityMask:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
     case ThreadWineNativeThreadName:

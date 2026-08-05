@@ -406,6 +406,38 @@ START_TEST(thread_info_sweep)
         ok(status == STATUS_INFO_LENGTH_MISMATCH, "short -> %08lx", (unsigned long)status);
     }
 
+    /* --- setting ThreadAffinityMask NARROWS, it does not validate --------
+     * SetThreadAffinityMask(t, -1) means "every processor", and the oracle
+     * implements that by ANDing the request with the system mask and
+     * refusing only if nothing survives. A kernel that rejected
+     * out-of-range bits would refuse the commonest call of all. */
+    {
+        ULONG_PTR wanted = ~(ULONG_PTR)0; /* every processor */
+        status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, sizeof(wanted));
+        ok(status == STATUS_SUCCESS, "set affinity -1 -> %08lx", (unsigned long)status);
+
+        wanted = 1;
+        status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, sizeof(wanted));
+        ok(status == STATUS_SUCCESS, "set affinity 1 -> %08lx", (unsigned long)status);
+
+        /* Nothing surviving the narrowing IS refused. */
+        wanted = (ULONG_PTR)1 << 40;
+        status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, sizeof(wanted));
+        ok(status == STATUS_INVALID_PARAMETER, "set affinity off-machine -> %08lx",
+           (unsigned long)status);
+
+        wanted = 0;
+        status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, sizeof(wanted));
+        ok(status == STATUS_INVALID_PARAMETER, "set affinity 0 -> %08lx",
+           (unsigned long)status);
+
+        /* Length is INVALID_PARAMETER here, not INFO_LENGTH_MISMATCH. */
+        wanted = 1;
+        status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, 1);
+        ok(status == STATUS_INVALID_PARAMETER, "short affinity set -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- ThreadGroupInformation: the group form of the same one bit -----
      * Group 0 always — a processor group holds at most 64 processors and
      * this machine has one, which is why the oracle hardcodes the group
