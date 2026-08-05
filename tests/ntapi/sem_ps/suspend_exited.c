@@ -69,5 +69,22 @@ START_TEST(suspend_exited)
     ok(status == STATUS_SUCCESS, "resume exited thread -> %08lx", (unsigned long)status);
     ok(previous == 0, "resume of an exited thread reported count %lu", (unsigned long)previous);
 
+    /* Self-suspension is deliberately NOT pinned here, and the reason is a
+     * real divergence rather than a limitation of the test. On the ORACLE,
+     * SuspendThread(GetCurrentThread()) parks the caller INSIDE the call —
+     * a test that did it would hang, and one did while this was written.
+     * On proskrnl the gate is honoured on the way back to ring 3
+     * (kernel/syscall/table.c), so the syscall returns and the thread parks
+     * at the edge. Both reach the same observable state for a caller that
+     * has another thread to resume it, which is the only arrangement in
+     * which self-suspension is useful and exactly what kernel32:thread's
+     * threadFunc3 does.
+     *
+     * What this test covers is the PREREQUISITE that was actually broken:
+     * the NtCurrentThread pseudo-handle now resolves (kernel/ob/handle.c),
+     * so a self-suspend reaches the gate at all instead of failing
+     * STATUS_INVALID_HANDLE. The winetest pair is the differential for the
+     * parking itself. */
+
     NtClose(thread);
 }
