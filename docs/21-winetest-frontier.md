@@ -394,7 +394,42 @@ TERMINATED thread refuses `NtSuspendThread` with `STATUS_ACCESS_DENIED`
 state), while `NtResumeThread` has no such guard at all and succeeds with a
 count of 0. Pinned by `tests/ntapi/sem_ps/suspend_exited.c`.
 
-**Next on `kernel32:thread`, and it is one bug, not four.** The remaining
+**The suspend cluster: FIXED, and the root cause was in Ob.**
+`ObReferenceObjectByHandle` resolved only the TOKEN pseudo-handles; `-1`
+and `-2` fell through to the table and returned `STATUS_INVALID_HANDLE`.
+`threadFunc3`'s `SuspendThread(GetCurrentThread())` therefore failed
+silently and the child never parked. Resolved in Ob beside the token
+handles (bypassing the ACCESS check, keeping the TYPE check), which
+cleared `thread.c:585`, `:590`, `:598` and `:601` at once. **Seven
+per-site `handle != NtCurrentThread()` dances in `kernel/ps/` are now
+redundant** — left in place deliberately, to be retired as their classes
+are next touched rather than in a drive-by (G13).
+
+**Thread priority: partly fixed.** `SetThreadPriority`/`GetThreadPriority`
+are a round-trip through `ThreadBasePriority` and
+`ThreadBasicInformation.BasePriority` and nothing else
+(`dlls/kernelbase/thread.c`); the set was dropped and the query returned
+the SCHEDULER's priority, so `:717`/`:719` failed for every value. Now
+stored. Three assertions remain on that pair:
+
+```
+thread.c:697  GetThreadPriority Failed                    (expects THREAD_PRIORITY_NORMAL == 0)
+thread.c:738  SetThreadPriority passed with a bad argument
+thread.c:739  SetThreadPriority error -559038737, expected ERROR_INVALID_PARAMETER
+thread.c:743  GetThreadPriority didn't return min_priority
+```
+
+`:738`/`:739` are one thing: `NtSetInformationThread(ThreadBasePriority)`
+accepts any LONG and must instead REJECT out-of-range values so
+`SetThreadPriority` fails and `GetLastError` reports
+`ERROR_INVALID_PARAMETER` — note `-559038737` is `0xDEADBEEF`, i.e. the
+test's poison, meaning the call succeeded and never set an error at all.
+Find the accepted range from `dlls/kernelbase/thread.c`'s
+`SetThreadPriority` and the server's `set_thread_info` before choosing
+one. `:697` and `:743` want checking after that lands — they may be
+consequences of the same missing validation.
+
+**The earlier note, now superseded:** `kernel32:thread` is one bug, not four. The remaining
 failures cluster:
 
 ```
