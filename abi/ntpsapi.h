@@ -1226,6 +1226,36 @@ typedef struct {
 } KERNEL_USER_TIMES, *PKERNEL_USER_TIMES;
 
 typedef struct {
+    WORD	LimitLow;
+    WORD	BaseLow;
+    union {
+        struct {
+            BYTE    BaseMid;
+            BYTE    Flags1;
+            BYTE    Flags2;
+            BYTE    BaseHi;
+        } Bytes;
+        struct {
+            unsigned    BaseMid: 8;
+            unsigned    Type : 5;
+            unsigned    Dpl : 2;
+            unsigned    Pres : 1;
+            unsigned    LimitHi : 4;
+            unsigned    Sys : 1;
+            unsigned    Reserved_0 : 1;
+            unsigned    Default_Big : 1;
+            unsigned    Granularity : 1;
+            unsigned    BaseHi : 8;
+        } Bits;
+    } HighWord;
+} LDT_ENTRY, *PLDT_ENTRY, WOW64_LDT_ENTRY, *PWOW64_LDT_ENTRY;
+
+typedef struct {
+    DWORD       Selector;
+    LDT_ENTRY   Entry;
+} THREAD_DESCRIPTOR_INFORMATION, *PTHREAD_DESCRIPTOR_INFORMATION;
+
+typedef struct {
     BOOLEAN     Foreground;
     UCHAR       PriorityClass;
 } PROCESS_PRIORITY_CLASS, *PPROCESS_PRIORITY_CLASS;

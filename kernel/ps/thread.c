@@ -1414,6 +1414,42 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadDescriptorTableEntry:
+    {
+        /* The sweep asks with a ZEROED descriptor, and the oracle rejects
+         * that before ever reaching an LDT (dlls/ntdll/unix/signal_x86_64.c
+         * get_thread_ldt_entry): a selector above 16 bits is
+         * STATUS_UNSUCCESSFUL, and so is one naming the GDT —
+         * `is_gdt_sel(sel)` is `!(sel & 4)`, the table-indicator bit
+         * (unix_private.h; Intel SDM Vol. 3 §3.4.2 segment selector). A
+         * zero selector names the GDT, so the reachable answer is
+         * STATUS_UNSUCCESSFUL. Pinned by
+         * tests/ntapi/sem_ps/thread_info_sweep.c.
+         *
+         * An LDT selector keeps the loud refusal: the LDT is a 32-bit
+         * concept, WOW64 is a later milestone (docs/02), and proskrnl has
+         * no LDT to answer from — inventing an entry is exactly the
+         * fabrication Art. 12 forbids. */
+        if (length != sizeof(THREAD_DESCRIPTOR_INFORMATION))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(THREAD_DESCRIPTOR_INFORMATION),
+                                         sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        THREAD_DESCRIPTOR_INFORMATION descriptor;
+        memcpy(&descriptor, buffer, sizeof(descriptor));
+        if ((descriptor.Selector >> 16) != 0 || (descriptor.Selector & 4) == 0)
+        {
+            return STATUS_UNSUCCESSFUL;
+        }
+        DbgPrint("NtQueryInformationThread: no LDT (selector %#lx)\n",
+                 (unsigned long)descriptor.Selector);
+        return STATUS_NOT_IMPLEMENTED;
+    }
     case ThreadAffinityMask:
     {
         /* One CPU, so one bit — and Art. 3's uniprocessor mandate is what

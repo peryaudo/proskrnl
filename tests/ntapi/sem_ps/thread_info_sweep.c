@@ -67,6 +67,16 @@ typedef struct
     LARGE_INTEGER UserTime;
 } NTAPI_KERNEL_USER_TIMES;
 
+/* THREAD_DESCRIPTOR_INFORMATION, as the pinned tree spells it
+ * (third_party/wine/include/winternl.h) — mingw's winternl.h omits it.
+ * Only Selector is read here; the LDT_ENTRY tail is padding for the length
+ * the class requires. */
+typedef struct
+{
+    DWORD Selector;
+    UCHAR Entry[8]; /* sizeof(LDT_ENTRY) */
+} NTAPI_THREAD_DESCRIPTOR_INFORMATION;
+
 /* The set-only / obsolete group: queried, never queryable. */
 static const struct
 {
@@ -169,6 +179,42 @@ START_TEST(thread_info_sweep)
         ok(returnLength == sizeof(affinity), "affinity returned %lu bytes",
            (unsigned long)returnLength);
         ok(affinity != 0, "affinity mask is empty");
+    }
+
+    /* --- ThreadDescriptorTableEntry: a GDT selector has no LDT entry ----
+     * The sweep passes a ZEROED THREAD_DESCRIPTOR_INFORMATION, so Selector
+     * is 0 — and the oracle rejects it before ever touching an LDT:
+     * `if (info->Selector >> 16) return STATUS_UNSUCCESSFUL;` then
+     * `if (is_gdt_sel( info->Selector )) return STATUS_UNSUCCESSFUL;`,
+     * where is_gdt_sel is `!(sel & 4)` (unix_private.h). Selector 0 has the
+     * table-indicator bit clear, so it names the GDT, and asking for a GDT
+     * selector's LDT entry is STATUS_UNSUCCESSFUL — which the sweep accepts
+     * by name.
+     *
+     * Only that half is pinned. An LDT selector is a 32-bit concept and
+     * WOW64 is a later milestone (docs/02), so proskrnl has no LDT to
+     * answer from and keeps the loud refusal there rather than inventing an
+     * entry (Art. 12). */
+    {
+        NTAPI_THREAD_DESCRIPTOR_INFORMATION descriptor;
+        memset(&descriptor, 0, sizeof(descriptor));
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadDescriptorTableEntry, &descriptor,
+                                          sizeof(descriptor), &returnLength);
+        ok(status == STATUS_UNSUCCESSFUL, "GDT selector 0 -> %08lx", (unsigned long)status);
+
+        /* A selector above 16 bits is refused first, and the same way. */
+        memset(&descriptor, 0, sizeof(descriptor));
+        descriptor.Selector = 0x10000;
+        status = NtQueryInformationThread(self, ThreadDescriptorTableEntry, &descriptor,
+                                          sizeof(descriptor), &returnLength);
+        ok(status == STATUS_UNSUCCESSFUL, "oversized selector -> %08lx", (unsigned long)status);
+
+        /* ...and a wrong length beats both. */
+        status = NtQueryInformationThread(self, ThreadDescriptorTableEntry, &descriptor,
+                                          sizeof(descriptor) - 1, &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short descriptor -> %08lx",
+           (unsigned long)status);
     }
 
     /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */

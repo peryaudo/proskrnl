@@ -1999,6 +1999,14 @@ def gen_ntpsapi(wine: Path) -> str:
             # ThreadTimes, Get/SetPriorityClass, SystemHandleInformation,
             # SystemModuleInformation, SystemProcessorPerformanceInformation).
             extract_struct(winternl, "_KERNEL_USER_TIMES", "KERNEL_USER_TIMES"),
+            # NtQueryInformationThread(ThreadDescriptorTableEntry): the
+            # selector the caller asks about plus the LDT_ENTRY it wants
+            # back (kernel/ps/thread.c). LDT_ENTRY comes first — the
+            # descriptor embeds it, and the kernel needs the SIZE even
+            # though it never fills one in (there is no LDT here).
+            extract_struct(winnt, "_LDT_ENTRY", "LDT_ENTRY"),
+            extract_struct(winternl, "_THREAD_DESCRIPTOR_INFORMATION",
+                           "THREAD_DESCRIPTOR_INFORMATION"),
             extract_struct(winternl, "_PROCESS_PRIORITY_CLASS", "PROCESS_PRIORITY_CLASS"),
             extract_struct(
                 winternl,
