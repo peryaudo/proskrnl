@@ -398,27 +398,34 @@ count of 0. Pinned by `tests/ntapi/sem_ps/suspend_exited.c`.
 failures cluster:
 
 ```
-thread.c:585  SuspendThread did not work
-thread.c:590  OpenThread returned an invalid handle   <-- START HERE
+thread.c:585  SuspendThread did not work        <-- START HERE
+thread.c:590  OpenThread returned an invalid handle
 thread.c:598  Thread did not really suspend
 thread.c:601  Resume thread returned an invalid value
 thread.c:697  GetThreadPriority Failed
 ```
 
-`:590` is the cause and the rest are downstream of it. The call is
+**SELF-SUSPENSION is the cause.** `threadFunc3` (thread.c:253) is four
+lines and its whole body is `SuspendThread( GetCurrentThread() )`. The
+parent then polls `SuspendThread(child)` waiting to observe a previous
+count of **1** — i.e. it is waiting for the child to have parked ITSELF.
+If a thread that suspends itself does not actually stop, the child runs to
+completion instead, the poll never sees 1, and everything after is
+downstream: `:590`'s `OpenThread(threadId)` then fails because the thread
+is *gone*, not because of its NT4-era access mask, and `:598`/`:601` are
+asking about a thread that already exited.
 
-```c
-#define THREAD_ALL_ACCESS_NT4 (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3ff)
-access_thread = pOpenThread( THREAD_ALL_ACCESS_NT4 & ~THREAD_SUSPEND_RESUME, 0, threadId );
-```
+*(An earlier revision of this note named `:590` as the cause on the
+strength of its access mask. That was wrong, and it is left recorded
+because it is the exact trap this section warns about elsewhere: the
+loudest-looking failure in a cluster is usually the consequence. Read the
+test's helper before believing the assertion text.)*
 
-— an NT4-era access mask, deliberately missing one bit, and proskrnl hands
-back a failure. Suspect `PspThreadType.validAccess` (`THREAD_ALL_ACCESS` on
-a modern header is wider than the NT4 constant, but the REQUESTED mask here
-is a subset of neither if the low bits differ) or `NtOpenThread`'s
-by-ClientId lookup. Check what the request actually masks down to before
-assuming it is the access check — `:697`'s `GetThreadPriority` failure may
-be the same handle, in which case all five go together.
+So the question to answer first is: **does `NtSuspendThread` on the
+CURRENT thread park it before returning?** Everything else in the cluster
+follows from that one behaviour, and it is a `ke/` question — `docs/12`'s
+"subtly wrong yet still runs" zone — so design it rather than patching
+until the assertion moves.
 
 **W2a is DONE for `NtQueryInformationThread`/`NtSetInformationThread`.**
 `kernel32:thread` no longer panics anywhere in the class sweep — every
