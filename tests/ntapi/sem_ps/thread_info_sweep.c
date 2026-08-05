@@ -595,6 +595,21 @@ START_TEST(thread_info_sweep)
     /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
     beyond_oracle
     {
+        /* The neighbours of the refusing class below, pinned SO THAT the
+         * refusal cannot leak into them. ThreadPriority,
+         * ThreadIdealProcessor and ThreadIdealProcessorEx are accepted
+         * (one CPU, one priority band; nothing reads them back, so there
+         * is no pair to disagree with itself) — and when
+         * ThreadWineNativeThreadName's refusal was first added it fell into
+         * the SAME case group and silently turned all three into refusals.
+         * kernel32:thread caught it as SetThreadIdealProcessor returning
+         * ~0u; this pin catches it here instead. */
+        ULONG accepted = 0;
+        status = NtSetInformationThread(self, ThreadIdealProcessor, &accepted, sizeof(accepted));
+        ok(status == STATUS_SUCCESS, "set ideal processor -> %08lx", (unsigned long)status);
+        status = NtSetInformationThread(self, ThreadPriority, &accepted, sizeof(accepted));
+        ok(status == STATUS_SUCCESS, "set thread priority -> %08lx", (unsigned long)status);
+
         /* The fork's own class names a HOST thread identity that does not
          * exist here — the NT thread is the native thread, and its name is
          * set by ThreadNameInformation in the same breath (RtlSetThreadName

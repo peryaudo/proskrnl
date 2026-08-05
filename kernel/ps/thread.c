@@ -2028,11 +2028,18 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         return STATUS_SUCCESS;
     }
-    /* Priority and affinity: one CPU, one priority band that matters
-     * (docs/03 "Deliberate simplifications"). */
+    /* Priority and ideal processor: one CPU, one priority band that
+     * matters (docs/03 "Deliberate simplifications"). Accepted and not
+     * stored, and unlike the classes above nothing reads them back — the
+     * SET is the whole of their observable surface, so there is no pair to
+     * disagree with itself. Kept as its OWN group: folding the refusing
+     * class below into this list silently turned these three into
+     * refusals, and kernel32:thread caught it as SetThreadIdealProcessor
+     * returning ~0u (thread.c:937). */
     case ThreadPriority:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
+        return STATUS_SUCCESS;
     case ThreadWineNativeThreadName:
         /* The fork's private class, and it names a thing this boundary does
          * not have. On the oracle it sets the underlying UNIX thread's name
