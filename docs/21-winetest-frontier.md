@@ -405,7 +405,33 @@ per-site `handle != NtCurrentThread()` dances in `kernel/ps/` are now
 redundant** — left in place deliberately, to be retired as their classes
 are next touched rather than in a drive-by (G13).
 
-**Thread priority: partly fixed.** `SetThreadPriority`/`GetThreadPriority`
+**Thread priority: DONE.** The Set/Get round-trip goes through
+`ThreadBasePriority` and `ThreadBasicInformation.BasePriority` and nothing
+else; the set was dropped and the query returned the SCHEDULER's priority.
+Both halves fixed, plus the range check
+(`THREAD_BASE_PRIORITY_MIN..MAX`, with `IDLE`/`TIME_CRITICAL` always legal)
+whose absence made `SetThreadPriority` succeed on a bad argument and never
+set an error — the test caught that by reading its own `0xDEADBEEF` poison
+back out of `GetLastError`, which is worth remembering as a detection
+technique. `thread.c:697`, `:717`, `:719`, `:738`, `:739`, `:743` all pass.
+
+**Where `kernel32:thread` is now:**
+
+```
+thread.c:800  rc=1 error=5 disabled=0            (priority boost)
+thread.c:909  SetThreadAffinityMask failed
+thread.c:915  SetThreadAffinityMask(thread,-1) failed to request all
+thread.c:937  Unexpected return value 4294967295
+```
+
+`:909`-`:937` are one item: `NtSetInformationThread(ThreadAffinityMask)`.
+The QUERY side is done (one CPU, one bit); the set is unbuilt. `-1` means
+"all processors" and must be accepted and narrowed to the system mask —
+the return is the PREVIOUS mask, and `4294967295` at `:937` is a `-1`
+leaking through unnarrowed. `:800` is `SetThreadPriorityBoost`, adjacent
+to the flag already stored.
+
+**Superseded note:** `SetThreadPriority`/`GetThreadPriority`
 are a round-trip through `ThreadBasePriority` and
 `ThreadBasicInformation.BasePriority` and nothing else
 (`dlls/kernelbase/thread.c`); the set was dropped and the query returned
