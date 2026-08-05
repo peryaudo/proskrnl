@@ -1349,6 +1349,12 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * Set/Get round-trip fail (kernel32:thread thread.c:697, :717,
          * :719). */
         info.BasePriority = target != 0 ? target->basePriority : 0;
+        /* kernel32's SetThreadAffinityMask RETURNS this field as the
+         * previous mask (dlls/kernel32/thread.c), so leaving it zero made
+         * every call read as a failure — thread.c:909 "SetThreadAffinityMask
+         * failed" with nothing else wrong. One CPU, one bit, from the
+         * KeNumberProcessors authority. */
+        info.AffinityMask = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {

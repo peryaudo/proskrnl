@@ -163,6 +163,10 @@ START_TEST(thread_info_sweep)
                                               sizeof(basic), &returnLength);
             ok(status == STATUS_SUCCESS, "ThreadBasicInformation via limited handle -> %08lx",
                (unsigned long)status);
+            /* kernel32's SetThreadAffinityMask returns this field as the
+             * PREVIOUS mask, so a zero here reads to every caller as a
+             * failed call (kernel32:thread thread.c:909). */
+            ok(basic.AffinityMask != 0, "ThreadBasicInformation.AffinityMask is zero");
 
             /* ...but the limited right is NOT a skeleton key. kernel32:thread
              * expects everything outside the small limited-queryable set to
