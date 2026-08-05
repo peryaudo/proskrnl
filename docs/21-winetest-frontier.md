@@ -387,7 +387,30 @@ Two findings from W2a worth carrying forward:
   that answers without validating answers a caller that was never entitled
   to ask, and only a test opening a deliberately weak handle can see it.
 
-**Where the sweep stands right now:** `kernel32:thread` blocks on
+**Where the sweep stands right now (updated):** `kernel32:thread` has
+cleared the whole `NtQueryInformationThread` range and now blocks on
+`NtSetInformationThread` class **1000**, `ThreadWineNativeThreadName` — the
+fork's own private class, which `RtlSetThreadName` calls unconditionally
+(`third_party/wine dlls/ntdll/thread.c`) and whose result it discards.
+
+*This one needs a decision, not an implementation, and it should not be
+guessed at.* On the oracle the class names the underlying UNIX thread; on
+proskrnl the NT thread IS the native thread, and its name is now stored by
+`ThreadNameInformation` (see below). So there are three defensible answers
+and they are not interchangeable: accept-and-store-nothing (a drop, and
+therefore G12-forbidden unless something observes it),
+`STATUS_INVALID_INFO_CLASS` pinned `beyond_oracle` on the grounds that there
+is no second name to set here, or a real second stored string. Pick by
+asking what a caller could observe, and pin whichever is chosen — the one
+thing that must not happen is a bare `return STATUS_SUCCESS`, which is the
+shape five classes in this item have already had to be rescued from.
+
+Also visible now that the class sweep runs to completion: `kernel32:thread`
+has real assertion failures beyond the info classes — `thread.c:551`/`:554`
+(`SuspendThread`/`ResumeThread` counts), `:585` and `:590` (`OpenThread`
+returning an invalid handle). Those are separate work from W2a.
+
+**The earlier blocker, now closed:** `kernel32:thread` blocks on
 `NtQueryInformationThread` class 38, `ThreadNameInformation`. Its SET side
 currently returns `STATUS_SUCCESS` without storing anything — the comment
 there says ntdll keeps the name in the TEB and the kernel does not observe
