@@ -343,6 +343,55 @@ Specifically:
 
 ---
 
+## 5a. Execution log (update this as items land)
+
+**W1 — DONE.** The refusal split is in `NtQuerySystemInformation`,
+`NtQueryInformationThread`, `NtSetInformationThread` and
+`NtQueryInformationProcess`: a class number outside the enum answers
+`STATUS_INVALID_INFO_CLASS` (an implementation, pinned by
+`tests/ntapi/sem_ps/info_class_range.c`); a class inside it that is unbuilt
+keeps `STATUS_NOT_IMPLEMENTED`, names itself on serial and stays fatal.
+Bounds come from each enum's own `Max*InfoClass` sentinel in `abi/`. The
+fork's private classes (1000-and-up) sit ABOVE those sentinels and are real,
+so they are excluded from the range test by name — `gen_abi.py` had to stop
+dropping `THREADINFOCLASS`'s `__WINESRC__` branch for the kernel to be able
+to name them.
+
+**W2a — IN PROGRESS.** The `NtQueryInformationThread` sweep now runs to
+completion. Landed: `ThreadHideFromDebugger` and `ThreadPriorityBoost` (both
+were accept-and-drop stubs — set succeeded, query could never see it),
+`ThreadAffinityMask`, `ThreadDescriptorTableEntry` (the reachable GDT half;
+LDT selectors stay loudly unbuilt), `ThreadIsIoPending` (matching the
+oracle's own declared stub), and `ThreadIdealProcessor` /
+`ThreadEnableAlignmentFaultFixup` as `INVALID_INFO_CLASS` — which the oracle
+calls invalid too, and is the evidence that W1's split is the boundary's
+distinction rather than ours. On the process side: `ProcessPriorityBoost`
+and `ProcessAffinityMask`.
+
+Two findings from W2a worth carrying forward:
+
+- **`KeNumberProcessors` is now the one statement of the processor count**
+  (`kernel/ke/ke.h`). It was spelled `1` in the PEB stamp and in
+  `SystemBasicInformation` already; the affinity classes would have been a
+  third. Under Art. 3's uniprocessor mandate a one-bit mask is the TRUTH,
+  not a placeholder — which is what separates it from the fabricated
+  answers G12 forbids.
+- **`OBJECT_TYPE` grew an optional `mapAccess` hook**, applied inside
+  `ObpMapDesiredAccess` (the one grant site). The thread type carries NT's
+  implications verbatim from `server/thread.c thread_map_access`. But the
+  limited right is NOT a skeleton key: only `ThreadBasicInformation`,
+  `ThreadTimes`, `ThreadAmILastThread` and `ThreadPriorityBoost` are
+  readable through a `THREAD_QUERY_LIMITED_INFORMATION` handle, and
+  everything else must be `STATUS_ACCESS_DENIED`. Classes whose VALUE needs
+  no thread state still owe the check (`PspCheckThreadAccess`) — a class
+  that answers without validating answers a caller that was never entitled
+  to ask, and only a test opening a deliberately weak handle can see it.
+
+**Next**, in order: `NtQueryInformationThread` class 30 and the remaining
+`NtQueryInformationProcess` classes `kernel32:thread` reaches; then W2b
+(`SystemProcessInformation`, which also carries `kernel32:toolhelp`'s 135
+failures) and W2c; then W3.
+
 ## 6. Sequencing and effort
 
 | # | Item | Pairs unblocked | Series | Rough effort | Depends on |
