@@ -893,8 +893,16 @@ static NTSTATUS CmpFillKeyInfo(const CMP_KEY_NODE *node, KEY_INFORMATION_CLASS i
          * broke RegOpenKeyEx with KEY_WOW64_32KEY
          * (docs/review-2026-07 §5). */
         ULONG fixed = offsetof(KEY_NAME_INFORMATION, Name);
-        WCHAR *nameOut = (WCHAR *)(out + fixed);
+        /* The capacity FIRST, and the pointer only when there is room. The
+         * other order — `(WCHAR *)(out + fixed)` before looking at length —
+         * is undefined behaviour on the sizing call every registry caller
+         * makes first (`NtQueryKey(key, cls, NULL, 0, &needed)`): arithmetic
+         * on a null pointer is UB even when the result is never
+         * dereferenced, and this kernel traps UBSan, so ntdll:reg died on a
+         * #UD with the buffer register zero. Pinned by
+         * tests/ntapi/sem_reg/query_key_sizing.c. */
         ULONG capacity = length > fixed ? (length - fixed) / sizeof(WCHAR) : 0;
+        WCHAR *nameOut = capacity != 0 ? (WCHAR *)(out + fixed) : 0;
         ULONG nameBytes = CmpBuildFullPath(node, nameOut, capacity);
         KEY_NAME_INFORMATION info;
         info.NameLength = nameBytes;
