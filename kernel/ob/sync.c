@@ -513,10 +513,29 @@ NTSTATUS NtQuerySemaphore(HANDLE handle, SEMAPHORE_INFORMATION_CLASS information
  * synchronization signalling mirrors events, carried by the M2 KTIMER
  * machinery unchanged. */
 
+/* An armed timer can die with its last handle, and the KTIMER is the pool
+ * block the dispatcher's due-time list is threaded through — so a timer
+ * freed while still inserted leaves KiTimerListHead pointing into freed
+ * pool, and the very next clock tick walks it (KiUpdateClock). This is the
+ * ObpDeleteMutant case exactly: an object whose lifetime the handle owns,
+ * but whose LINKAGE something else walks. Convicted by kernel32:timer,
+ * which panicked `KASAN: use after free` in KiUpdateClock with NtClose as
+ * the last syscall; pinned by tests/ntapi/sem_port/timer_close_armed.c.
+ *
+ * KeCancelTimer takes the dispatcher lock and is a no-op on a timer that is
+ * not inserted, so the expired and never-armed cases cost nothing and the
+ * periodic case (which the expiry path re-inserts) is covered by the same
+ * one call. */
+static void ObpDeleteTimer(PVOID body)
+{
+    KeCancelTimer((PKTIMER)body);
+}
+
 OBJECT_TYPE ObpTimerType = {
     .name = "Timer",
     .validAccess = TIMER_ALL_ACCESS,
     .waitable = TRUE,
+    .deleteProcedure = ObpDeleteTimer,
     /* CUI-6: wineserver timer_type (server/timer.c). */
     .genericRead = STANDARD_RIGHTS_READ | TIMER_QUERY_STATE,
     .genericWrite = STANDARD_RIGHTS_WRITE | TIMER_MODIFY_STATE,
