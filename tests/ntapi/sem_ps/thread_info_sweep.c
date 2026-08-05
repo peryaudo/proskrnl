@@ -157,6 +157,30 @@ START_TEST(thread_info_sweep)
                                               sizeof(basic), &returnLength);
             ok(status == STATUS_SUCCESS, "ThreadBasicInformation via limited handle -> %08lx",
                (unsigned long)status);
+
+            /* ...but the limited right is NOT a skeleton key. kernel32:thread
+             * expects everything outside the small limited-queryable set to
+             * be REFUSED through this handle (thread.c's `default:` arm), so
+             * a class that answers without checking answers a caller that
+             * was never entitled to ask — including the classes whose value
+             * needs no thread state at all. */
+            ULONG_PTR affinity = 0;
+            status = NtQueryInformationThread(limited, ThreadAffinityMask, &affinity,
+                                              sizeof(affinity), &returnLength);
+            ok(status == STATUS_ACCESS_DENIED, "ThreadAffinityMask via limited handle -> %08lx",
+               (unsigned long)status);
+
+            BOOLEAN hiddenLimited = FALSE;
+            status = NtQueryInformationThread(limited, ThreadHideFromDebugger, &hiddenLimited,
+                                              sizeof(hiddenLimited), &returnLength);
+            ok(status == STATUS_ACCESS_DENIED,
+               "ThreadHideFromDebugger via limited handle -> %08lx", (unsigned long)status);
+
+            ULONG boostLimited = 0;
+            status = NtQueryInformationThread(limited, ThreadPriorityBoost, &boostLimited,
+                                              sizeof(boostLimited), &returnLength);
+            ok(status == STATUS_SUCCESS, "ThreadPriorityBoost via limited handle -> %08lx",
+               (unsigned long)status);
             NtClose(limited);
         }
     }

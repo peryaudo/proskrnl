@@ -1244,6 +1244,25 @@ NTSTATUS NtGetNextThread(HANDLE processHandle, HANDLE threadHandle, ACCESS_MASK 
 
 /* --- queries -------------------------------------------------------------- */
 
+/* The access check a class owes even when it needs no thread STATE. The
+ * pseudo-handle is the caller's own thread and always passes, as every
+ * resolution in this file treats it. */
+static NTSTATUS PspCheckThreadAccess(HANDLE threadHandle, ACCESS_MASK access)
+{
+    if (threadHandle == 0 || threadHandle == NtCurrentThread())
+    {
+        return STATUS_SUCCESS;
+    }
+    PVOID body;
+    NTSTATUS status = ObReferenceObjectByHandle(threadHandle, access, &PspThreadType,
+                                                ExGetPreviousMode(), &body, 0);
+    if (NT_SUCCESS(status))
+    {
+        ObDereferenceObject(body);
+    }
+    return status;
+}
+
 NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, PVOID buffer,
                                   ULONG length, PULONG returnLength)
 {
@@ -1381,7 +1400,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
@@ -1461,6 +1480,11 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             return status;
         }
+        NTSTATUS access = PspCheckThreadAccess(threadHandle, THREAD_QUERY_INFORMATION);
+        if (!NT_SUCCESS(access))
+        {
+            return access;
+        }
         THREAD_DESCRIPTOR_INFORMATION descriptor;
         memcpy(&descriptor, buffer, sizeof(descriptor));
         if ((descriptor.Selector >> 16) != 0 || (descriptor.Selector & 4) == 0)
@@ -1483,6 +1507,16 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * (`min(length, sizeof(affinity))`, no length gate —
          * dlls/ntdll/unix/thread.c). Pinned by
          * tests/ntapi/sem_ps/thread_info_sweep.c. */
+        /* The value needs no thread, but the ACCESS CHECK is still owed:
+         * kernel32:thread queries through a
+         * THREAD_QUERY_LIMITED_INFORMATION handle and expects this class
+         * to be REFUSED, so a class that answers without validating the
+         * handle answers a caller that was never entitled to ask. */
+        NTSTATUS access = PspCheckThreadAccess(threadHandle, THREAD_QUERY_INFORMATION);
+        if (!NT_SUCCESS(access))
+        {
+            return access;
+        }
         ULONG_PTR affinity = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
         ULONG copy = length < sizeof(affinity) ? length : (ULONG)sizeof(affinity);
         NTSTATUS status = KiProbeForWrite(buffer, copy, 1);
@@ -1521,7 +1555,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
                                                &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
