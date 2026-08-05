@@ -154,6 +154,12 @@ NTSTATUS PspCreateThreadObject(PEPROCESS process, PKTHREAD tcb, uint64_t tebBase
      * 0 for main threads built before their entry is known, answered from
      * the process entry at query time. */
     thread->win32StartAddress = tcb->userStartArg1;
+    /* A new thread INHERITS its process's boost-disable, exactly as the
+     * oracle's server does it (third_party/wine server/thread.c
+     * create_thread: `thread->disable_boost = process->disable_boost;`).
+     * After that the two are independent — see PspSetProcessPriorityBoost
+     * in kernel/ps/query.c for why this is a copy and not a lookup. */
+    thread->priorityBoostDisabled = process->priorityBoostDisabled;
 
     ObfReferenceObject(process); /* the thread pins its process */
     ObfReferenceObject(thread);  /* the RUNNING PIN: a live thread pins its own
@@ -1353,8 +1359,8 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * previous mask (dlls/kernel32/thread.c), so leaving it zero made
          * every call read as a failure — thread.c:909 "SetThreadAffinityMask
          * failed" with nothing else wrong. One CPU, one bit, from the
-         * KeNumberProcessors authority. */
-        info.AffinityMask = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+         * KE_NUMBER_PROCESSORS authority. */
+        info.AffinityMask = ((ULONG_PTR)1 << KE_NUMBER_PROCESSORS) - 1;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
@@ -1507,8 +1513,8 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             return STATUS_INFO_LENGTH_MISMATCH;
         }
-        NTSTATUS status = KiProbeForRead(buffer, sizeof(THREAD_DESCRIPTOR_INFORMATION),
-                                         sizeof(ULONG));
+        NTSTATUS status =
+            KiProbeForRead(buffer, sizeof(THREAD_DESCRIPTOR_INFORMATION), sizeof(ULONG));
         if (!NT_SUCCESS(status))
         {
             return status;
@@ -1542,10 +1548,9 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            NTSTATUS refStatus = ObReferenceObjectByHandle(threadHandle,
-                                                           THREAD_QUERY_LIMITED_INFORMATION,
-                                                           &PspThreadType, ExGetPreviousMode(),
-                                                           &body, 0);
+            NTSTATUS refStatus =
+                ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_LIMITED_INFORMATION,
+                                          &PspThreadType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(refStatus))
             {
                 return refStatus;
@@ -1581,8 +1586,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             ObDereferenceObject(target);
         }
-        if (returnLength != 0 &&
-            (status == STATUS_SUCCESS || status == STATUS_BUFFER_TOO_SMALL))
+        if (returnLength != 0 && (status == STATUS_SUCCESS || status == STATUS_BUFFER_TOO_SMALL))
         {
             *returnLength = needed;
         }
@@ -1594,7 +1598,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * because a group holds at most 64 processors and this machine has
          * one (Art. 3) — the oracle hardcodes group 0 for the same reason
          * ("Wine only supports max 64 processors",
-         * dlls/ntdll/unix/thread.c). Same KeNumberProcessors authority as
+         * dlls/ntdll/unix/thread.c). Same KE_NUMBER_PROCESSORS authority as
          * ThreadAffinityMask below, truncating on a short buffer as that
          * class does, and the same access rule: the limited right does not
          * reach here. */
@@ -1606,7 +1610,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         GROUP_AFFINITY affinity;
         memset(&affinity, 0, sizeof(affinity));
         affinity.Group = 0;
-        affinity.Mask = ((KAFFINITY)1 << KeNumberProcessors) - 1;
+        affinity.Mask = ((KAFFINITY)1 << KE_NUMBER_PROCESSORS) - 1;
         ULONG copy = length < sizeof(affinity) ? length : (ULONG)sizeof(affinity);
         NTSTATUS status = KiProbeForWrite(buffer, copy, 1);
         if (!NT_SUCCESS(status))
@@ -1624,7 +1628,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
     {
         /* One CPU, so one bit — and Art. 3's uniprocessor mandate is what
          * makes that the TRUTH here rather than a placeholder for a richer
-         * answer. KeNumberProcessors is the one authority for the count
+         * answer. KE_NUMBER_PROCESSORS is the one authority for the count
          * (Art. 11); when the mandate is lifted (docs/18 §13) this follows
          * it without being rewritten.
          *
@@ -1642,7 +1646,7 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             return access;
         }
-        ULONG_PTR affinity = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        ULONG_PTR affinity = ((ULONG_PTR)1 << KE_NUMBER_PROCESSORS) - 1;
         ULONG copy = length < sizeof(affinity) ? length : (ULONG)sizeof(affinity);
         NTSTATUS status = KiProbeForWrite(buffer, copy, 1);
         if (!NT_SUCCESS(status))
@@ -1733,6 +1737,13 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
             target = body;
             referenced = TRUE;
         }
+        /* The THREAD's own flag, and only that. The process flag reaches a
+         * thread by being COPIED into it when the process class is set and
+         * when a thread is created (kernel/ps/query.c, PspCreateThread) —
+         * so a later thread-level set overrides it and the process keeps
+         * its own value. Reading the two together with an OR instead would
+         * make the override impossible; that is exactly what
+         * kernel32:thread thread.c:806-809 checks. */
         ULONG disableBoost = (target != 0 && target->priorityBoostDisabled) ? 1 : 0;
         if (referenced)
         {
@@ -1962,7 +1973,7 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         ULONG_PTR requested;
         memcpy(&requested, buffer, sizeof(requested));
-        ULONG_PTR systemMask = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        ULONG_PTR systemMask = ((ULONG_PTR)1 << KE_NUMBER_PROCESSORS) - 1;
         if ((requested & systemMask) == 0)
         {
             return STATUS_INVALID_PARAMETER;
@@ -2010,8 +2021,8 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         PVOID body = 0;
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
-                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION, &PspThreadType,
+                                               ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
                 return status;
@@ -2121,8 +2132,7 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         PWSTR copy = 0;
         if (info.ThreadName.Length != 0)
         {
-            status = KiProbeForRead(info.ThreadName.Buffer, info.ThreadName.Length,
-                                    sizeof(WCHAR));
+            status = KiProbeForRead(info.ThreadName.Buffer, info.ThreadName.Length, sizeof(WCHAR));
             if (!NT_SUCCESS(status))
             {
                 return status;
@@ -2191,8 +2201,8 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
-                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION, &PspThreadType,
+                                               ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
                 return status;
@@ -2237,8 +2247,7 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         GROUP_AFFINITY requested;
         memcpy(&requested, buffer, sizeof(requested));
-        if (requested.Reserved[0] != 0 || requested.Reserved[1] != 0 ||
-            requested.Reserved[2] != 0)
+        if (requested.Reserved[0] != 0 || requested.Reserved[1] != 0 || requested.Reserved[2] != 0)
         {
             return STATUS_INVALID_PARAMETER;
         }
@@ -2246,7 +2255,7 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         {
             return STATUS_INVALID_PARAMETER;
         }
-        KAFFINITY systemMask = ((KAFFINITY)1 << KeNumberProcessors) - 1;
+        KAFFINITY systemMask = ((KAFFINITY)1 << KE_NUMBER_PROCESSORS) - 1;
         if (requested.Mask == 0 || (requested.Mask & ~systemMask) != 0)
         {
             return STATUS_INVALID_PARAMETER;
@@ -2269,9 +2278,9 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         if (threadHandle != 0 && threadHandle != NtCurrentThread())
         {
             PVOID body;
-            NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
-                                                        &PspThreadType, ExGetPreviousMode(), &body,
-                                                        0);
+            NTSTATUS status =
+                ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION, &PspThreadType,
+                                          ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(status))
             {
                 return status;

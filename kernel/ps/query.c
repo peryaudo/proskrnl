@@ -488,7 +488,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
     case ProcessAffinityMask:
     {
         /* One CPU, so one bit — the same fact ThreadAffinityMask reports,
-         * from the same KeNumberProcessors authority (Art. 11), and true
+         * from the same KE_NUMBER_PROCESSORS authority (Art. 11), and true
          * rather than approximate because Art. 3 mandates uniprocessor.
          * Exact length or STATUS_INFO_LENGTH_MISMATCH, as the oracle
          * (dlls/ntdll/unix/process.c). */
@@ -502,7 +502,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         {
             break;
         }
-        ULONG_PTR affinity = ((ULONG_PTR)1 << KeNumberProcessors) - 1;
+        ULONG_PTR affinity = ((ULONG_PTR)1 << KE_NUMBER_PROCESSORS) - 1;
         memcpy(buffer, &affinity, sizeof(affinity));
         if (returnLength != 0)
         {
@@ -553,8 +553,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
          * The fork's own extensions (ProcessWineMakeProcessSystem 1000,
          * ProcessWineGrantAdminToken 1002) sit ABOVE that sentinel and are
          * real classes, so they stay unbuilt-and-loud rather than invalid. */
-        if (infoClass != ProcessWineMakeProcessSystem &&
-            infoClass != ProcessWineGrantAdminToken &&
+        if (infoClass != ProcessWineMakeProcessSystem && infoClass != ProcessWineGrantAdminToken &&
             ((LONG)infoClass < 0 || (ULONG)infoClass >= (ULONG)MaxProcessInfoClass))
         {
             status = STATUS_INVALID_INFO_CLASS;
@@ -698,6 +697,27 @@ static NTSTATUS PspMakeProcessSystem(HANDLE processHandle, PVOID buffer, ULONG l
     return STATUS_SUCCESS;
 }
 
+/* ProcessPriorityBoost's disable flag reaches a thread by being COPIED into
+ * every thread the process currently has, not by being consulted at query
+ * time — the oracle's server states it that way in one function
+ * (third_party/wine server/process.c, set_process_disable_boost: assign
+ * process->disable_boost, then set_thread_disable_boost on each thread of
+ * thread_list; a new thread takes the process value at creation,
+ * server/thread.c create_thread). The distinction is observable and
+ * kernel32:thread checks it: after a process-wide disable, a
+ * SetThreadPriorityBoost(thread, 0) must make the THREAD read 0 while the
+ * PROCESS still reads 1 (thread.c:806-812). A query-time OR could not
+ * produce that. */
+static void PspSetProcessPriorityBoost(PEPROCESS process, BOOLEAN disable)
+{
+    process->priorityBoostDisabled = disable;
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->priorityBoostDisabled = disable;
+    }
+}
+
 NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClass, PVOID buffer,
                                  ULONG length)
 {
@@ -730,7 +750,7 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * file resolves it — one idiom, one place. */
         if (processHandle == NtCurrentProcess())
         {
-            KeGetCurrentThread()->process->priorityBoostDisabled = disableBoost != 0;
+            PspSetProcessPriorityBoost(KeGetCurrentThread()->process, disableBoost != 0);
             return STATUS_SUCCESS;
         }
         PVOID body;
@@ -740,7 +760,7 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
         {
             return status;
         }
-        ((PEPROCESS)body)->priorityBoostDisabled = disableBoost != 0;
+        PspSetProcessPriorityBoost((PEPROCESS)body, disableBoost != 0);
         ObDereferenceObject(body);
         return STATUS_SUCCESS;
     }
@@ -1245,7 +1265,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         memset(&info, 0, sizeof(info));
         info.PageSize = PAGE_SIZE;
         info.MmNumberOfPhysicalPages = (ULONG)MiGetTotalPageCount();
-        info.NumberOfProcessors = KeNumberProcessors; /* uniprocessor (Art. 3) */
+        info.NumberOfProcessors = KE_NUMBER_PROCESSORS; /* uniprocessor (Art. 3) */
         info.ActiveProcessorsAffinityMask = 1;
         info.LowestUserAddress = (void *)0x10000;
         info.HighestUserAddress = (void *)(KI_USER_SPACE_LIMIT - 1);
