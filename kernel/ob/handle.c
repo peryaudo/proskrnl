@@ -321,6 +321,47 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
         return STATUS_SUCCESS;
     }
 
+
+    /* The CURRENT-process (-1) and CURRENT-thread (-2) pseudo-handles,
+     * resolved here beside the token ones rather than at each call site.
+     * NT treats them as real handles to the caller's own objects. The
+     * boundary consequence of leaving them unresolved is unmistakable, and
+     * kernel32:thread produced it: threadFunc3 is a four-line thread whose
+     * whole body is SuspendThread(GetCurrentThread()), and with -2
+     * unresolved NtSuspendThread answered STATUS_INVALID_HANDLE — so the
+     * thread never parked and five assertions failed behind it.
+     *
+     * Like the token pseudo-handles above they bypass the ACCESS check (a
+     * caller always has full rights to itself) and keep the TYPE check, so
+     * asking for a thread with -1 is still an honest mismatch.
+     *
+     * kernel/ps/ carries per-site `handle != NtCurrentThread()` dances
+     * predating this; they are now redundant rather than wrong — they
+     * short-circuit to the same object — and should be retired as their
+     * classes are next touched rather than in a drive-by (G13). */
+    if (value == (ULONG_PTR)-1 || value == (ULONG_PTR)-2)
+    {
+        PKTHREAD current = KeGetCurrentThread();
+        PVOID self = (value == (ULONG_PTR)-1) ? (PVOID)current->process
+                                              : (PVOID)current->threadObject;
+        if (self == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        if (type != 0 && ObpGetHeader(self)->type != type)
+        {
+            return STATUS_OBJECT_TYPE_MISMATCH;
+        }
+        ObfReferenceObject(self);
+        *body = self;
+        if (handleInformation != 0)
+        {
+            handleInformation->HandleAttributes = 0;
+            handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
+        }
+        return STATUS_SUCCESS;
+    }
+
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
     if (entry == 0)
     {
