@@ -2013,6 +2013,10 @@ def gen_ntpsapi(wine: Path) -> str:
             # NtQueryInformationThread(ThreadGroupInformation): the
             # processor-group form of an affinity mask (kernel/ps/thread.c).
             extract_struct(winnt, "_GROUP_AFFINITY", "GROUP_AFFINITY"),
+            # NtQueryInformationThread/NtSetInformationThread
+            # (ThreadNameInformation): the thread's description string.
+            extract_struct(winternl, "_THREAD_NAME_INFORMATION",
+                           "THREAD_NAME_INFORMATION"),
             extract_struct(winternl, "_THREAD_DESCRIPTOR_INFORMATION",
                            "THREAD_DESCRIPTOR_INFORMATION"),
             extract_struct(winternl, "_PROCESS_PRIORITY_CLASS", "PROCESS_PRIORITY_CLASS"),

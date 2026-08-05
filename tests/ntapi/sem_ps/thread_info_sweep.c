@@ -51,6 +51,9 @@
 #ifndef ThreadSetTlsArrayAddress
 #define ThreadSetTlsArrayAddress  ((THREADINFOCLASS)15)
 #endif
+#ifndef ThreadNameInformation
+#define ThreadNameInformation     ((THREADINFOCLASS)38)
+#endif
 #ifndef ThreadGroupInformation
 #define ThreadGroupInformation    ((THREADINFOCLASS)30)
 #endif
@@ -424,6 +427,65 @@ START_TEST(thread_info_sweep)
         set.Mask = ~(ULONG_PTR)0;
         status = NtSetInformationThread(self, ThreadGroupInformation, &set, sizeof(set));
         ok(status == STATUS_INVALID_PARAMETER, "mask beyond the machine -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- ThreadNameInformation round-trips -------------------------------
+     * The struct is followed IN THE CALLER'S BUFFER by the characters, and
+     * ThreadName.Buffer points just past the struct. *ret_len is the whole
+     * thing on success AND on the short-buffer path, so a caller can size
+     * its second call — and a NULL info is STATUS_BUFFER_TOO_SMALL here,
+     * not an access violation. */
+    {
+        struct
+        {
+            UNICODE_STRING ThreadName;
+            WCHAR chars[16];
+        } named;
+        static const WCHAR wanted[] = {'p', 'r', 's', 'k', 'r', 'n', 'l'};
+
+        memset(&named, 0, sizeof(named));
+        named.ThreadName.Length = sizeof(wanted);
+        named.ThreadName.MaximumLength = sizeof(wanted);
+        named.ThreadName.Buffer = (PWSTR)(void *)wanted;
+        status = NtSetInformationThread(self, ThreadNameInformation, &named,
+                                        sizeof(UNICODE_STRING));
+        ok(status == STATUS_SUCCESS, "set thread name -> %08lx", (unsigned long)status);
+
+        memset(&named, 0xcc, sizeof(named));
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadNameInformation, &named, sizeof(named),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "query thread name -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(UNICODE_STRING) + sizeof(wanted), "name query returned %lu",
+           (unsigned long)returnLength);
+        ok(named.ThreadName.Length == sizeof(wanted), "name length %u",
+           (unsigned)named.ThreadName.Length);
+        ok(named.ThreadName.Buffer == named.chars, "Buffer does not point past the struct");
+        ok(memcmp(named.chars, wanted, sizeof(wanted)) == 0, "name did not round-trip");
+
+        /* Sizing call: NULL info is BUFFER_TOO_SMALL and still sets ret_len. */
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadNameInformation, NULL, 0, &returnLength);
+        ok(status == STATUS_BUFFER_TOO_SMALL, "name sizing -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(UNICODE_STRING) + sizeof(wanted), "sizing returned %lu",
+           (unsigned long)returnLength);
+
+        /* Set refusals, each distinct. */
+        status = NtSetInformationThread(self, ThreadNameInformation, &named,
+                                        sizeof(UNICODE_STRING) - 1);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short name set -> %08lx",
+           (unsigned long)status);
+        status = NtSetInformationThread(self, ThreadNameInformation, NULL,
+                                        sizeof(UNICODE_STRING));
+        ok(status == STATUS_ACCESS_VIOLATION, "NULL name set -> %08lx", (unsigned long)status);
+
+        memset(&named, 0, sizeof(named));
+        named.ThreadName.Length = 4;
+        named.ThreadName.Buffer = NULL;
+        status = NtSetInformationThread(self, ThreadNameInformation, &named,
+                                        sizeof(UNICODE_STRING));
+        ok(status == STATUS_ACCESS_VIOLATION, "named NULL buffer -> %08lx",
            (unsigned long)status);
     }
 

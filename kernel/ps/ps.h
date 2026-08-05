@@ -205,6 +205,13 @@ typedef struct ETHREAD
      * simplifications"), so nothing acts on it — but the query must return
      * what the set stored, or the pair disagrees with itself. */
     BOOLEAN priorityBoostDisabled;
+    /* ThreadNameInformation: the thread's description, OWNED here — a pool
+     * copy of the caller's string, replaced on each set and freed at thread
+     * delete (PspDeleteThread). It used to be accepted and dropped on the
+     * grounds that ntdll keeps the name in the TEB, which was true only for
+     * as long as the QUERY side was unreachable: a set the query cannot see
+     * is the silent-plausible stub G12 forbids. Buffer 0 = never named. */
+    UNICODE_STRING threadName;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

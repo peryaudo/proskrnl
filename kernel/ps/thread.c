@@ -53,6 +53,11 @@ static BOOLEAN PspIdWasAllocated(uint64_t id)
 static void PspDeleteThread(PVOID body)
 {
     PETHREAD thread = body;
+    if (thread->threadName.Buffer != 0)
+    {
+        MiFreePool(thread->threadName.Buffer);
+        thread->threadName.Buffer = 0;
+    }
     if (thread->impersonationToken != 0)
     {
         ObDereferenceObject(thread->impersonationToken); /* CUI-6: the one token ref */
@@ -1495,6 +1500,66 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
                  (unsigned long)descriptor.Selector);
         return STATUS_NOT_IMPLEMENTED;
     }
+    case ThreadNameInformation:
+    {
+        /* The oracle's shape (dlls/ntdll/unix/thread.c): the struct is
+         * followed IN THE CALLER'S BUFFER by the characters, and
+         * ThreadName.Buffer points just past the struct. *ret_len is the
+         * whole thing — struct plus name bytes — on success AND on the
+         * short-buffer path, so a caller can size its second call. A NULL
+         * info is STATUS_BUFFER_TOO_SMALL here, not an access violation.
+         * Pinned by tests/ntapi/sem_ps/thread_info_sweep.c. */
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            NTSTATUS refStatus = ObReferenceObjectByHandle(threadHandle,
+                                                           THREAD_QUERY_LIMITED_INFORMATION,
+                                                           &PspThreadType, ExGetPreviousMode(),
+                                                           &body, 0);
+            if (!NT_SUCCESS(refStatus))
+            {
+                return refStatus;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        USHORT nameBytes = target != 0 ? target->threadName.Length : 0;
+        ULONG needed = (ULONG)sizeof(THREAD_NAME_INFORMATION) + nameBytes;
+        NTSTATUS status = STATUS_SUCCESS;
+        if (buffer == 0 || length < needed)
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else
+        {
+            status = KiProbeForWrite(buffer, needed, sizeof(void *));
+            if (NT_SUCCESS(status))
+            {
+                THREAD_NAME_INFORMATION info;
+                WCHAR *namePtr = (WCHAR *)((UCHAR *)buffer + sizeof(THREAD_NAME_INFORMATION));
+                info.ThreadName.Length = nameBytes;
+                info.ThreadName.MaximumLength = nameBytes;
+                info.ThreadName.Buffer = namePtr;
+                memcpy(buffer, &info, sizeof(info));
+                if (nameBytes != 0)
+                {
+                    memcpy(namePtr, target->threadName.Buffer, nameBytes);
+                }
+            }
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        if (returnLength != 0 &&
+            (status == STATUS_SUCCESS || status == STATUS_BUFFER_TOO_SMALL))
+        {
+            *returnLength = needed;
+        }
+        return status;
+    }
     case ThreadGroupInformation:
     {
         /* The processor-GROUP form of the affinity mask. Group 0 always,
@@ -1846,10 +1911,92 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     case ThreadAffinityMask:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
-    /* The thread name is stored by ntdll in the TEB; nothing in the kernel
-     * observes it. */
     case ThreadNameInformation:
+    {
+        /* STORED, not dropped. This returned a bare success on the grounds
+         * that ntdll keeps the name in the TEB — true only while the QUERY
+         * side was unreachable; a set the query cannot see is the
+         * silent-plausible stub G12 forbids.
+         *
+         * The oracle's refusals, each distinct
+         * (dlls/ntdll/unix/thread.c): a wrong length is
+         * STATUS_INFO_LENGTH_MISMATCH, a NULL info is
+         * STATUS_ACCESS_VIOLATION, and so is a non-zero Length with a NULL
+         * Buffer. */
+        if (length != sizeof(THREAD_NAME_INFORMATION))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        if (buffer == 0)
+        {
+            return STATUS_ACCESS_VIOLATION;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(THREAD_NAME_INFORMATION), sizeof(void *));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        THREAD_NAME_INFORMATION info;
+        memcpy(&info, buffer, sizeof(info));
+        if (info.ThreadName.Length != 0 && info.ThreadName.Buffer == 0)
+        {
+            return STATUS_ACCESS_VIOLATION;
+        }
+        PWSTR copy = 0;
+        if (info.ThreadName.Length != 0)
+        {
+            status = KiProbeForRead(info.ThreadName.Buffer, info.ThreadName.Length,
+                                    sizeof(WCHAR));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            copy = MiAllocatePool(info.ThreadName.Length);
+            if (copy == 0)
+            {
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
+            memcpy(copy, info.ThreadName.Buffer, info.ThreadName.Length);
+        }
+        PETHREAD target = KeGetCurrentThread()->threadObject;
+        PVOID body = 0;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_LIMITED_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                if (copy != 0)
+                {
+                    MiFreePool(copy);
+                }
+                return status;
+            }
+            target = body;
+        }
+        if (target != 0)
+        {
+            /* Replace: the previous name's pool block is this thread's to
+             * free, and PspDeleteThread frees whatever is left. */
+            if (target->threadName.Buffer != 0)
+            {
+                MiFreePool(target->threadName.Buffer);
+            }
+            target->threadName.Buffer = copy;
+            target->threadName.Length = info.ThreadName.Length;
+            target->threadName.MaximumLength = info.ThreadName.Length;
+            copy = 0;
+        }
+        if (body != 0)
+        {
+            ObDereferenceObject(body);
+        }
+        if (copy != 0)
+        {
+            MiFreePool(copy);
+        }
         return STATUS_SUCCESS;
+    }
     case ThreadPriorityBoost:
     {
         /* Stored, not dropped — the query above must be able to see it. */
