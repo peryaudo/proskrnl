@@ -387,7 +387,38 @@ Two findings from W2a worth carrying forward:
   that answers without validating answers a caller that was never entitled
   to ask, and only a test opening a deliberately weak handle can see it.
 
-**Where the sweep stands right now (updated):** `kernel32:thread` has
+**W2a is DONE for `NtQueryInformationThread`/`NtSetInformationThread`.**
+`kernel32:thread` no longer panics anywhere in the class sweep — every
+class it touches now answers either its value or a specific NT failure.
+The private `ThreadWineNativeThreadName` was resolved as
+`STATUS_INVALID_INFO_CLASS` (beyond_oracle): it names a HOST thread
+identity proskrnl does not have, since here the NT thread is the native
+thread and its name is already stored by `ThreadNameInformation` one line
+earlier in the same caller.
+
+**What `kernel32:thread` fails on now** — real assertions, no longer
+missing surface. All eight are the SUSPEND/RESUME counter and the handle
+it is driven through:
+
+```
+thread.c:551  SuspendThread returned 0, expected -1
+thread.c:554  ResumeThread returned 1, expected 0
+thread.c:585  SuspendThread did not work
+thread.c:590  OpenThread returned an invalid handle
+thread.c:598  Thread did not really suspend
+thread.c:601  Resume thread returned an invalid value
+thread.c:609  wrong return code: 0
+thread.c:610  unexpected error code: 87
+```
+
+The first pair is the giveaway: `SuspendThread` on an ALREADY-TERMINATED
+thread must return -1 and `ResumeThread` 0, and proskrnl returns a live
+count instead — so the suspend counter is not being retired at thread
+exit. `:590`'s invalid handle from `OpenThread` is likely the same
+lifetime question seen from the other end. Start there rather than at
+`:585`, which is a consequence.
+
+**The earlier state, for reference:** `kernel32:thread` has
 cleared the whole `NtQueryInformationThread` range and now blocks on
 `NtSetInformationThread` class **1000**, `ThreadWineNativeThreadName` — the
 fork's own private class, which `RtlSetThreadName` calls unconditionally
