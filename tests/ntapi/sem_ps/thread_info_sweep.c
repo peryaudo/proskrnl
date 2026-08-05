@@ -51,6 +51,9 @@
 #ifndef ThreadSetTlsArrayAddress
 #define ThreadSetTlsArrayAddress  ((THREADINFOCLASS)15)
 #endif
+#ifndef ThreadGroupInformation
+#define ThreadGroupInformation    ((THREADINFOCLASS)30)
+#endif
 #ifndef ThreadHideFromDebugger
 #define ThreadHideFromDebugger    ((THREADINFOCLASS)17)
 #endif
@@ -352,6 +355,28 @@ START_TEST(thread_info_sweep)
 
         status = NtQueryInformationThread(self, ThreadIsIoPending, &pending, 1, &returnLength);
         ok(status == STATUS_INFO_LENGTH_MISMATCH, "short -> %08lx", (unsigned long)status);
+    }
+
+    /* --- ThreadGroupInformation: the group form of the same one bit -----
+     * Group 0 always — a processor group holds at most 64 processors and
+     * this machine has one, which is why the oracle hardcodes the group
+     * too. Truncates on a short buffer, like ThreadAffinityMask. */
+    {
+        struct
+        {
+            ULONG_PTR Mask;
+            USHORT Group;
+            USHORT Reserved[3];
+        } group;
+        memset(&group, 0xcc, sizeof(group));
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadGroupInformation, &group, sizeof(group),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "ThreadGroupInformation -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(group), "group returned %lu bytes",
+           (unsigned long)returnLength);
+        ok(group.Group == 0, "group %u, expected 0", (unsigned)group.Group);
+        ok(group.Mask != 0, "group affinity mask is empty");
     }
 
     /* --- two classes the ORACLE ITSELF calls invalid ---------------------
