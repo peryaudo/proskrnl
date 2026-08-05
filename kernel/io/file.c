@@ -32,6 +32,14 @@ static void IopDeleteFileObject(PVOID body)
     {
         MiFreePool(file->dirMask.Buffer);
     }
+    if (file->completionPort != 0)
+    {
+        /* The bind's reference, released with the file object rather than
+         * with its last handle: a port must outlive every file that names
+         * it, or a completion posted during teardown would post into freed
+         * pool. */
+        ObDereferenceObject(file->completionPort);
+    }
     if (file->device != 0)
     {
         ObDereferenceObject(file->device);

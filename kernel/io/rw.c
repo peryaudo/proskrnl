@@ -21,14 +21,34 @@
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h" /* CUI-5: PAGE_SIZE for the scatter/gather segments */
 
-/* Write the IOSB / signal the event (IopCompleteRequest), then queue the
+/* Write the IOSB / signal the event (IopCompleteRequest), then post the
+ * completion PACKET if the handle is bound to a port, then queue the
  * completion APC through the engine authority (io.h) — the IOSB is in
  * place before the routine can run, and the issuer here is the completing
- * thread itself (inline completion). Pinned by sem_file/apc_completion.c. */
-static NTSTATUS IopCompleteTransfer(PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc, NTSTATUS status,
+ * thread itself (inline completion). Pinned by sem_file/apc_completion.c
+ * and sem_port/file_completion.c.
+ *
+ * The packet's VALUE is the caller's ApcContext, and only when there is no
+ * ApcRoutine: the pinned oracle computes it as
+ * `cvalue = apc ? 0 : (ULONG_PTR)apc_user` and posts nothing when it is
+ * zero (dlls/ntdll/unix/file.c:6053, :6215). So an APC-driven completion
+ * and a port-driven one are alternatives, never both, and a caller that
+ * asked for neither gets neither. Win32 never hits the quiet case — the
+ * OVERLAPPED pointer is always the context. */
+static NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event,
+                                    PKAPC apc, PVOID apcContext, NTSTATUS status,
                                     ULONG_PTR information)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
+    ULONG_PTR completionValue = apc != 0 ? 0 : (ULONG_PTR)apcContext;
+    if (file->completionPort != 0 && completionValue != 0)
+    {
+        /* Through the one packet-posting engine (G10), never a second
+         * queue. A failure to post is discarded for the same reason a
+         * failed event signal is: the transfer HAS happened. */
+        (void)IopPostCompletionPacket(file->completionPort, file->completionKey, completionValue,
+                                      status, information);
+    }
     IopQueueCompletionApc(KeGetCurrentThread(), apc);
     return final;
 }
@@ -227,7 +247,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
         {
-            status = IopCompleteTransfer(iosb, event, apcBlock, status, transferred);
+            status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
         }
         else
         {
@@ -276,7 +296,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
-        status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_END_OF_FILE, 0);
+        status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0);
         status = IopAsyncReturnShape(file, status, FALSE);
         ObDereferenceObject(file);
         return status;
@@ -310,7 +330,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, (ULONG_PTR)bytes);
+    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, (ULONG_PTR)bytes);
     status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
     return status;
@@ -400,7 +420,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         }
         if (NT_SUCCESS(status))
         {
-            status = IopCompleteTransfer(iosb, event, apcBlock, status, transferred);
+            status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
         }
         else
         {
@@ -523,7 +543,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status = IopCompleteTransfer(iosb, event, apcBlock, STATUS_SUCCESS, length);
+    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, length);
     status = IopAsyncReturnShape(file, status, TRUE);
     ObDereferenceObject(file);
     return status;

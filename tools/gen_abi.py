@@ -1164,6 +1164,9 @@ def gen_ntioapi(wine: Path) -> str:
             ("_FILE_DISPOSITION_INFORMATION", "FILE_DISPOSITION_INFORMATION"),
             ("_FILE_POSITION_INFORMATION", "FILE_POSITION_INFORMATION"),
             ("_FILE_MODE_INFORMATION", "FILE_MODE_INFORMATION"),
+            # NtSetInformationFile(FileCompletionInformation): the port+key a
+            # file handle is bound to (kernel/io/query.c).
+            ("_FILE_COMPLETION_INFORMATION", "FILE_COMPLETION_INFORMATION"),
             ("_FILE_ALIGNMENT_INFORMATION", "FILE_ALIGNMENT_INFORMATION"),
             ("_FILE_ALLOCATION_INFORMATION", "FILE_ALLOCATION_INFORMATION"),
             ("_FILE_END_OF_FILE_INFORMATION", "FILE_END_OF_FILE_INFORMATION"),

@@ -598,6 +598,20 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         needed = sizeof(FILE_DISPOSITION_INFORMATION);
         requiredAccess = DELETE;
         break;
+    case FileCompletionInformation:
+        /* Binding a handle to an I/O completion port —
+         * CreateIoCompletionPort(file, port, key, 0) and
+         * BindIoCompletionCallback. A short buffer here is
+         * STATUS_INVALID_PARAMETER_3, NOT the INFO_LENGTH_MISMATCH every
+         * other class answers: the pinned oracle checks the length in ntdll
+         * (dlls/ntdll/unix/file.c:5302) and the server never sees the call,
+         * so the two mistakes carry different statuses. With the unixlib
+         * seam replaced by a syscall on proskrnl, this kernel owns both.
+         * Handled below rather than through `needed`, which drives the
+         * shared INFO_LENGTH_MISMATCH path. */
+        needed = 0;
+        requiredAccess = 0;
+        break;
     case FilePipeInformation:
         needed = sizeof(FILE_PIPE_INFORMATION); /* M9: read/completion mode */
         requiredAccess = 0;
@@ -626,6 +640,39 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
 
     switch (informationClass)
     {
+    case FileCompletionInformation:
+    {
+        /* The oracle's rules are its server's, in four lines
+         * (third_party/wine server/fd.c set_completion_info): an
+         * OVERLAPPED fd that is not already bound takes the port and key;
+         * anything else is a flat STATUS_INVALID_PARAMETER. So a
+         * synchronous handle and a second bind are refused identically, and
+         * neither is distinguishable from the other by status alone.
+         * Pinned by tests/ntapi/sem_port/file_completion.c. */
+        if (length < sizeof(FILE_COMPLETION_INFORMATION))
+        {
+            status = STATUS_INVALID_PARAMETER_3;
+            break;
+        }
+        if (file->synchronousIo || file->completionPort != 0)
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        FILE_COMPLETION_INFORMATION completion;
+        memcpy(&completion, buffer, sizeof(completion));
+        PVOID portBody;
+        status = ObReferenceObjectByHandle(completion.CompletionPort, IO_COMPLETION_MODIFY_STATE,
+                                           &IoCompletionType, ExGetPreviousMode(), &portBody, 0);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        file->completionPort = portBody; /* reference kept by the file object */
+        file->completionKey = completion.CompletionKey;
+        status = STATUS_SUCCESS;
+        break;
+    }
     case FileBasicInformation:
     {
         FILE_BASIC_INFORMATION basic;

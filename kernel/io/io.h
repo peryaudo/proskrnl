@@ -52,6 +52,10 @@ extern OBJECT_TYPE IoFileObjectType;
  * completing inline today (docs/19 §2) the object is simply born signaled
  * and stays so, which is also what the pinned Wine reports for disk
  * files (fuzzer-pinned). */
+/* The completion-port object (kernel/io/completion.c); a file handle may be
+ * bound to one. */
+typedef struct IO_COMPLETION IO_COMPLETION, *PIO_COMPLETION;
+
 typedef struct FILE_OBJECT
 {
     DISPATCHER_HEADER header; /* notification-event shape, always signaled */
@@ -84,6 +88,18 @@ typedef struct FILE_OBJECT
      * completion touches user memory (a ring-0 fault there unwinds without
      * cleanup and would leak the lock; docs/20 R3's rule for gates). */
     KEVENT syncIoLock;
+
+    /* CUI: the completion port this handle is BOUND to
+     * (NtSetInformationFile, FileCompletionInformation — what
+     * CreateIoCompletionPort(file, port, key, 0) is). NULL = unbound, which
+     * is every handle until something binds it. The reference is the file
+     * object's and is dropped in IopDeleteFileObject, so a port whose own
+     * handles all close stays alive exactly as long as a file still names
+     * it — the ownership answer for "what if every handle closes at the
+     * earliest legal moment" (Art. 11). Binding is once-only and
+     * asynchronous-only; kernel/io/query.c holds the rules. */
+    PIO_COMPLETION completionPort;
+    ULONG_PTR completionKey;
 
     /* Directory enumeration state: the mask binds to the handle (pinned
      * Wine: a NULL mask on a later call reuses the previous one). */
@@ -180,7 +196,6 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
 
 /* Opaque port body (an Ob object of IoCompletionType); layout private to
  * completion.c. */
-typedef struct IO_COMPLETION IO_COMPLETION, *PIO_COMPLETION;
 extern OBJECT_TYPE IoCompletionType;
 
 /* Queue one packet on a REFERENCED port body — the engine NtSetIoCompletion

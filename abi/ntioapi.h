@@ -268,6 +268,11 @@ typedef struct {
 } FILE_MODE_INFORMATION, *PFILE_MODE_INFORMATION;
 
 typedef struct {
+    HANDLE CompletionPort;
+    ULONG_PTR CompletionKey;
+} FILE_COMPLETION_INFORMATION, *PFILE_COMPLETION_INFORMATION;
+
+typedef struct {
     ULONG AlignmentRequirement;
 } FILE_ALIGNMENT_INFORMATION, *PFILE_ALIGNMENT_INFORMATION;
 
