@@ -2036,8 +2036,35 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
      * class below into this list silently turned these three into
      * refusals, and kernel32:thread caught it as SetThreadIdealProcessor
      * returning ~0u (thread.c:937). */
-    case ThreadPriority:
     case ThreadIdealProcessor:
+    {
+        /* Accepted but RANGE-CHECKED, which is the whole of its observable
+         * surface: nothing reads the value back, so the refusal is the only
+         * thing a caller can detect — and kernel32:thread detects exactly
+         * that (thread.c:955, SetThreadIdealProcessor(MAXIMUM_PROCESSORS+1)
+         * must return ~0u with ERROR_INVALID_PARAMETER). The oracle is a
+         * declared stub for the VALUE and still performs the check
+         * (dlls/ntdll/unix/thread.c: `if (*number > MAXIMUM_PROCESSORS)
+         * return STATUS_INVALID_PARAMETER;` then `FIXME(...)` then
+         * success), so the bound is its bound, generated into abi/. */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONG number;
+        memcpy(&number, buffer, sizeof(number));
+        if (number > MAXIMUM_PROCESSORS)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return STATUS_SUCCESS;
+    }
+    case ThreadPriority:
     case ThreadIdealProcessorEx:
         return STATUS_SUCCESS;
     case ThreadWineNativeThreadName:

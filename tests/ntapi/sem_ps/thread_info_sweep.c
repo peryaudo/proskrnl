@@ -51,6 +51,9 @@
 #ifndef ThreadSetTlsArrayAddress
 #define ThreadSetTlsArrayAddress  ((THREADINFOCLASS)15)
 #endif
+#ifndef MAXIMUM_PROCESSORS
+#define MAXIMUM_PROCESSORS 64 /* wine/include/winnt.h MAXIMUM_PROC_PER_GROUP (x64) */
+#endif
 #ifndef ThreadNameInformation
 #define ThreadNameInformation     ((THREADINFOCLASS)38)
 #endif
@@ -609,6 +612,13 @@ START_TEST(thread_info_sweep)
         ok(status == STATUS_SUCCESS, "set ideal processor -> %08lx", (unsigned long)status);
         status = NtSetInformationThread(self, ThreadPriority, &accepted, sizeof(accepted));
         ok(status == STATUS_SUCCESS, "set thread priority -> %08lx", (unsigned long)status);
+
+        /* ThreadIdealProcessor's value goes nowhere, so its RANGE CHECK is
+         * the only thing a caller can observe about it. */
+        ULONG tooMany = MAXIMUM_PROCESSORS + 1;
+        status = NtSetInformationThread(self, ThreadIdealProcessor, &tooMany, sizeof(tooMany));
+        ok(status == STATUS_INVALID_PARAMETER, "ideal processor out of range -> %08lx",
+           (unsigned long)status);
 
         /* The fork's own class names a HOST thread identity that does not
          * exist here — the NT thread is the native thread, and its name is

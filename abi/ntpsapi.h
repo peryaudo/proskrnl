@@ -51,6 +51,8 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS,
 #define THREAD_BASE_PRIORITY_MAX 2
 #define THREAD_BASE_PRIORITY_IDLE -15
 #define THREAD_BASE_PRIORITY_LOWRT 15
+#define MAXIMUM_PROC_PER_GROUP 64
+#define MAXIMUM_PROCESSORS MAXIMUM_PROC_PER_GROUP
 
 /* The TEB begins with an NT_TIB. Extracted verbatim from
  * wine/include/winnt.h; asserts pin the x64 layout. */

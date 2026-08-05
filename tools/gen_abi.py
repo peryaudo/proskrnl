@@ -1873,6 +1873,9 @@ def gen_ntpsapi(wine: Path) -> str:
             "THREAD_BASE_PRIORITY_MAX",
             "THREAD_BASE_PRIORITY_IDLE",
             "THREAD_BASE_PRIORITY_LOWRT",
+            # NtSetInformationThread(ThreadIdealProcessor)'s bound.
+            "MAXIMUM_PROC_PER_GROUP",
+            "MAXIMUM_PROCESSORS",
         ],
     )
 
