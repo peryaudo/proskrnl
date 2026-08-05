@@ -387,7 +387,21 @@ Two findings from W2a worth carrying forward:
   that answers without validating answers a caller that was never entitled
   to ask, and only a test opening a deliberately weak handle can see it.
 
-**Next**, in order: `NtQueryInformationThread` class 30
+**Where the sweep stands right now:** `kernel32:thread` blocks on
+`NtQueryInformationThread` class 38, `ThreadNameInformation`. Its SET side
+currently returns `STATUS_SUCCESS` without storing anything — the comment
+there says ntdll keeps the name in the TEB and the kernel does not observe
+it, which was true until the QUERY side became reachable. It is now the
+fourth accept-and-drop stub this item has found, and closing it means the
+kernel must actually own the string: a pool-allocated per-thread name, set
+under the `THREAD_SET_LIMITED_INFORMATION` rules, freed at thread delete,
+and returned as a `THREAD_NAME_INFORMATION` whose `Buffer` points just past
+the struct (the oracle's shape — see `dlls/ntdll/unix/thread.c`, and note
+it answers `STATUS_BUFFER_TOO_SMALL` for a NULL `info` rather than an access
+violation). That is an ownership question, so design it before writing it.
+
+**Next**, in order: `ThreadNameInformation` (above), then the remaining
+`NtQueryInformationThread` and `NtQueryInformationProcess` classes
 (`ThreadGroupInformation`) and the remaining `NtQueryInformationProcess`
 classes `kernel32:thread` reaches; then W2b (`SystemProcessInformation`,
 which also carries `kernel32:toolhelp`'s 135 failures) and W2c; then W3.
