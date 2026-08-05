@@ -188,6 +188,14 @@ typedef struct ETHREAD
      * replacement and at thread delete (G11: the ONE thread-token
      * reference). SeCurrentToken and the ~4/~5 magic handles prefer it. */
     PVOID impersonationToken;
+    /* ThreadHideFromDebugger: a plain per-thread flag, set once and never
+     * cleared (NT has no un-hide), read back by the query. proskrnl has no
+     * debugger to hide FROM — debug objects are permanently out of scope
+     * (ADR 0011) — so the flag is STORED and OBSERVED and nothing else acts
+     * on it. That is not a fabricated answer: the value the caller set is
+     * the value the caller reads, which is the whole of the observable
+     * contract here. Consumers: ntdll:thread, kernel32:thread. */
+    BOOLEAN hideFromDebugger;
 } ETHREAD, *PETHREAD;
 
 extern OBJECT_TYPE PspThreadType;

@@ -1414,6 +1414,67 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadHideFromDebugger:
+    {
+        /* PspProbeReturnLength above already ran, which is exactly the
+         * ordering the oracle documents for this class: "TP Shell Service
+         * depends on ThreadHideFromDebugger returning
+         * STATUS_ACCESS_VIOLATION if *ret_len is not writable, before any
+         * other checks" (dlls/ntdll/unix/thread.c). An unwritable ret_len
+         * therefore beats a wrong length here, and the pin asserts that. */
+        if (length != sizeof(BOOLEAN))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(BOOLEAN), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        /* The pseudo-handle (or an unwired 0) means the caller, exactly as
+         * ThreadBasicInformation above resolves it — one idiom, one place. */
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        BOOLEAN hidden = target != 0 ? target->hideFromDebugger : FALSE;
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        memcpy(buffer, &hidden, sizeof(hidden));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(BOOLEAN);
+        }
+        return STATUS_SUCCESS;
+    }
+    case ThreadPriority:
+    case ThreadBasePriority:
+    case ThreadImpersonationToken:
+    case ThreadEventPair_Reusable:
+    case ThreadZeroTlsCell:
+    case ThreadPerformanceCount:
+    case ThreadSetTlsArrayAddress:
+        /* Set-only and obsolete classes: queried, never queryable. The
+         * oracle groups them into its `FIXME(...) return
+         * STATUS_NOT_IMPLEMENTED` arm, and an oracle answering that is
+         * unbuilt rather than authoritative (G12) — so this is a
+         * beyond_oracle answer, pinned by
+         * tests/ntapi/sem_ps/thread_info_sweep.c. INVALID_INFO_CLASS is
+         * what a non-queryable class is, and kernel32:thread's sweep
+         * accepts it by name. */
+        return STATUS_INVALID_INFO_CLASS;
     default:
         (void)threadHandle;
         /* The refusal split (Art. 12, docs/21 W1): a class NUMBER outside
@@ -1541,7 +1602,6 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     switch (infoClass)
     {
     case ThreadZeroTlsCell:
-    case ThreadHideFromDebugger:
     /* Priority and affinity: one CPU, one priority band that matters
      * (docs/03 "Deliberate simplifications"). */
     case ThreadPriority:
@@ -1554,6 +1614,39 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
      * observes it. */
     case ThreadNameInformation:
         return STATUS_SUCCESS;
+    case ThreadHideFromDebugger:
+    {
+        /* Zero length, no buffer (dlls/ntdll/unix/thread.c: `if (length)
+         * return STATUS_INFO_LENGTH_MISMATCH;`). Set-only: NT has no
+         * un-hide, so there is no value to carry. It used to sit in the
+         * accept-and-drop group above, which is the silent-plausible stub
+         * G12 forbids — the caller set a flag and the query could never see
+         * it. Now it is stored. */
+        if (length != 0)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        PETHREAD target = KeGetCurrentThread()->threadObject;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            NTSTATUS status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_INFORMATION,
+                                                        &PspThreadType, ExGetPreviousMode(), &body,
+                                                        0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            ((PETHREAD)body)->hideFromDebugger = TRUE;
+            ObDereferenceObject(body);
+            return STATUS_SUCCESS;
+        }
+        if (target != 0)
+        {
+            target->hideFromDebugger = TRUE;
+        }
+        return STATUS_SUCCESS;
+    }
     default:
         /* The refusal split (Art. 12, docs/21 W1): a class NUMBER outside
          * the enum abi/ generates is INVALID and answers
