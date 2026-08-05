@@ -415,7 +415,33 @@ set an error — the test caught that by reading its own `0xDEADBEEF` poison
 back out of `GetLastError`, which is worth remembering as a detection
 technique. `thread.c:697`, `:717`, `:719`, `:738`, `:739`, `:743` all pass.
 
-**Where `kernel32:thread` is now:**
+**Affinity: DONE.** The set NARROWS to the system mask rather than
+validating against it (that is what makes `SetThreadAffinityMask(t, -1)`
+mean "every processor"), and `ThreadBasicInformation.AffinityMask` is
+filled — kernel32 RETURNS that field as the previous mask, so leaving it
+at its memset zero made every call read as a failure with nothing wrong on
+the set path at all. `:909` and `:915` clear.
+
+**Two left on `kernel32:thread`:**
+
+```
+thread.c:800  rc=1 error=5 disabled=0                (SetThreadPriorityBoost)
+thread.c:937  Unexpected return value 4294967295     (SetThreadIdealProcessor)
+thread.c:960  Unexpected return value 4294967295     (same, WOW64 arm)
+```
+
+`:937` is worth a careful look rather than a guess. kernelbase's
+`SetThreadIdealProcessor` returns `~0u` ONLY when
+`NtSetInformationThread(ThreadIdealProcessor)` fails, and that class is
+still in this kernel's accept-and-drop group on the SET side, so it should
+be returning STATUS_SUCCESS. Either it is not reaching that arm or the
+length/probe path in front of it is refusing — confirm which before
+changing anything, because the obvious reading (that the class is unbuilt)
+is contradicted by the code. Note also that the QUERY side of the same
+class answers STATUS_INVALID_INFO_CLASS by design (the oracle does too);
+do not "fix" the set by making the pair symmetric.
+
+**Previously here:**
 
 ```
 thread.c:800  rc=1 error=5 disabled=0            (priority boost)
