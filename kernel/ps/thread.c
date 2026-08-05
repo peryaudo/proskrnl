@@ -1911,6 +1911,26 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     case ThreadAffinityMask:
     case ThreadIdealProcessor:
     case ThreadIdealProcessorEx:
+    case ThreadWineNativeThreadName:
+        /* The fork's private class, and it names a thing this boundary does
+         * not have. On the oracle it sets the underlying UNIX thread's name
+         * (a second identity beside the NT one); on proskrnl the NT thread
+         * IS the native thread, and its name was stored by the
+         * ThreadNameInformation case below one line earlier in the very
+         * same caller — RtlSetThreadName (third_party/wine
+         * dlls/ntdll/thread.c) issues both back to back and discards this
+         * one's status.
+         *
+         * So there is no second name to set, and STATUS_INVALID_INFO_CLASS
+         * says exactly that. The alternative that must NOT be taken is a
+         * bare STATUS_SUCCESS: nothing would observe the difference, which
+         * is precisely what makes it the silent-plausible stub G12 forbids
+         * — five classes in this file have already had to be rescued from
+         * that shape. beyond_oracle, pinned by
+         * tests/ntapi/sem_ps/thread_info_sweep.c: the oracle implements the
+         * class for a host proskrnl does not have, so it cannot answer for
+         * us here. */
+        return STATUS_INVALID_INFO_CLASS;
     case ThreadNameInformation:
     {
         /* STORED, not dropped. This returned a bare success on the grounds

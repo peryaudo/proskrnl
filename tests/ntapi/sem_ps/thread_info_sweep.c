@@ -513,6 +513,20 @@ START_TEST(thread_info_sweep)
     /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
     beyond_oracle
     {
+        /* The fork's own class names a HOST thread identity that does not
+         * exist here — the NT thread is the native thread, and its name is
+         * set by ThreadNameInformation in the same breath (RtlSetThreadName
+         * issues both and discards this one's status). Refused, not
+         * silently accepted. */
+        struct
+        {
+            UNICODE_STRING ThreadName;
+        } native;
+        memset(&native, 0, sizeof(native));
+        status = NtSetInformationThread(self, (THREADINFOCLASS)1000, &native, sizeof(native));
+        ok(status == STATUS_INVALID_INFO_CLASS, "ThreadWineNativeThreadName -> %08lx",
+           (unsigned long)status);
+
         for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++)
         {
             UCHAR buffer[32];
