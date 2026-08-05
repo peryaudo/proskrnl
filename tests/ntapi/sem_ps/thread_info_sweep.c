@@ -245,6 +245,29 @@ START_TEST(thread_info_sweep)
         ok(status == STATUS_INFO_LENGTH_MISMATCH, "short boost -> %08lx", (unsigned long)status);
     }
 
+    /* --- ThreadIsIoPending: the oracle's own fixed FALSE ------------------
+     * The oracle is a declared stub here (FIXME + hardwired FALSE), which
+     * is the one case Art. 12 lets a fixed answer stand: it is pinned
+     * ORACLE behaviour, so reproducing it is reproducing the boundary. The
+     * NULL-buffer status is the detail worth pinning — ACCESS_DENIED, not
+     * the ACCESS_VIOLATION most classes give. */
+    {
+        BOOL pending = TRUE;
+        returnLength = 0;
+        status = NtQueryInformationThread(self, ThreadIsIoPending, &pending, sizeof(pending),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "ThreadIsIoPending -> %08lx", (unsigned long)status);
+        ok(pending == FALSE, "ThreadIsIoPending reported pending I/O");
+        ok(returnLength == sizeof(BOOL), "returned %lu bytes", (unsigned long)returnLength);
+
+        status = NtQueryInformationThread(self, ThreadIsIoPending, NULL, sizeof(pending),
+                                          &returnLength);
+        ok(status == STATUS_ACCESS_DENIED, "NULL buffer -> %08lx", (unsigned long)status);
+
+        status = NtQueryInformationThread(self, ThreadIsIoPending, &pending, 1, &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short -> %08lx", (unsigned long)status);
+    }
+
     /* --- two classes the ORACLE ITSELF calls invalid ---------------------
      * ThreadIdealProcessor and ThreadEnableAlignmentFaultFixup share an
      * explicit `return STATUS_INVALID_INFO_CLASS;` arm in the oracle,

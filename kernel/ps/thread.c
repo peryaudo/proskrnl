@@ -1565,6 +1565,42 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadIsIoPending:
+    {
+        /* FALSE, always — and that fixed answer is legitimate here for the
+         * one reason Art. 12 allows: it is the PINNED ORACLE'S answer, not
+         * a plausible value invented to get past a caller. The oracle is
+         * itself a declared stub (dlls/ntdll/unix/thread.c: `FIXME(
+         * "ThreadIsIoPending info class not supported yet" ); ... *(BOOL*)
+         * data = FALSE;`), so matching it is reproducing the boundary
+         * rather than fabricating one, and it is pinned like any other
+         * implementation (tests/ntapi/sem_ps/thread_info_sweep.c).
+         *
+         * Note the shape: a NULL buffer is STATUS_ACCESS_DENIED here, not
+         * the ACCESS_VIOLATION most classes give. That is the oracle's,
+         * too, and it is exactly the sort of detail an implementation
+         * written from the documentation would get wrong. */
+        if (length != sizeof(BOOL))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        if (buffer == 0)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(BOOL), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        BOOL pending = FALSE;
+        memcpy(buffer, &pending, sizeof(pending));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(BOOL);
+        }
+        return STATUS_SUCCESS;
+    }
     case ThreadIdealProcessor:
     case ThreadEnableAlignmentFaultFixup:
         /* The ORACLE calls these invalid itself, in an explicit
