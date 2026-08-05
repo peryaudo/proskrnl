@@ -303,9 +303,7 @@ typedef enum {
     ThreadTebInformationAtomic = 58,
     ThreadIndexInformation = 59,
     MaxThreadInfoClass,
-#ifdef __WINESRC__
     ThreadWineNativeThreadName = 1000,
-#endif
 } THREADINFOCLASS;
 
 typedef enum {

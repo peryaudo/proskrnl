@@ -486,6 +486,20 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         break;
     }
     default:
+        /* The refusal split (Art. 12, docs/21 W1): out of the enum is
+         * INVALID and implemented; inside it and unbuilt stays fatal. The
+         * bound is the header's own MaxProcessInfoClass, never typed.
+         * The fork's own extensions (ProcessWineMakeProcessSystem 1000,
+         * ProcessWineGrantAdminToken 1002) sit ABOVE that sentinel and are
+         * real classes, so they stay unbuilt-and-loud rather than invalid. */
+        if (infoClass != ProcessWineMakeProcessSystem &&
+            infoClass != ProcessWineGrantAdminToken &&
+            ((LONG)infoClass < 0 || (ULONG)infoClass >= (ULONG)MaxProcessInfoClass))
+        {
+            status = STATUS_INVALID_INFO_CLASS;
+            break;
+        }
+        DbgPrint("NtQueryInformationProcess: unbuilt info class %d\n", (int)infoClass);
         status = STATUS_NOT_IMPLEMENTED;
         break;
     }

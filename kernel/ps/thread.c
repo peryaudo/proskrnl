@@ -1416,6 +1416,25 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
     }
     default:
         (void)threadHandle;
+        /* The refusal split (Art. 12, docs/21 W1): a class NUMBER outside
+         * the enum abi/ generates is INVALID and answers
+         * STATUS_INVALID_INFO_CLASS — an implemented answer. A class inside
+         * it that is merely unbuilt keeps STATUS_NOT_IMPLEMENTED, named on
+         * serial and fatal under the armed boot, because collapsing the two
+         * would let every unbuilt class answer plausibly. The bound is the
+         * header's own MaxThreadInfoClass sentinel, never typed (Art. 4).
+         *
+         * ThreadWineNativeThreadName (1000) sits ABOVE that sentinel and is
+         * still a real class — the fork's own extension, which its ntdll
+         * calls (third_party/wine dlls/ntdll/thread.c). It is unbuilt, not
+         * invalid, so it must keep the loud refusal; treating "above the
+         * sentinel" as "does not exist" would silently accept it. */
+        if (infoClass != ThreadWineNativeThreadName &&
+            ((LONG)infoClass < 0 || (ULONG)infoClass >= (ULONG)MaxThreadInfoClass))
+        {
+            return STATUS_INVALID_INFO_CLASS;
+        }
+        DbgPrint("NtQueryInformationThread: unbuilt info class %d\n", (int)infoClass);
         return STATUS_NOT_IMPLEMENTED;
     }
 }
@@ -1536,6 +1555,25 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     case ThreadNameInformation:
         return STATUS_SUCCESS;
     default:
+        /* The refusal split (Art. 12, docs/21 W1): a class NUMBER outside
+         * the enum abi/ generates is INVALID and answers
+         * STATUS_INVALID_INFO_CLASS — an implemented answer. A class inside
+         * it that is merely unbuilt keeps STATUS_NOT_IMPLEMENTED, named on
+         * serial and fatal under the armed boot, because collapsing the two
+         * would let every unbuilt class answer plausibly. The bound is the
+         * header's own MaxThreadInfoClass sentinel, never typed (Art. 4).
+         *
+         * ThreadWineNativeThreadName (1000) sits ABOVE that sentinel and is
+         * still a real class — the fork's own extension, which its ntdll
+         * calls (third_party/wine dlls/ntdll/thread.c). It is unbuilt, not
+         * invalid, so it must keep the loud refusal; treating "above the
+         * sentinel" as "does not exist" would silently accept it. */
+        if (infoClass != ThreadWineNativeThreadName &&
+            ((LONG)infoClass < 0 || (ULONG)infoClass >= (ULONG)MaxThreadInfoClass))
+        {
+            return STATUS_INVALID_INFO_CLASS;
+        }
+        DbgPrint("NtSetInformationThread: unbuilt info class %d\n", (int)infoClass);
         return STATUS_NOT_IMPLEMENTED;
     }
 }

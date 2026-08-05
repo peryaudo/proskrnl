@@ -1872,13 +1872,19 @@ def gen_ntpsapi(wine: Path) -> str:
     # startup, the NtCreateUserProcess attribute machinery, and the user-APC
     # / thread-entry function-pointer types.
     info_enums = "\n\n".join(
-        # PROCESSINFOCLASS / SYSTEM_INFORMATION_CLASS: keep the __WINESRC__
-        # branch — the Wine-private classes (ProcessWineMakeProcessSystem =
+        # PROCESSINFOCLASS / THREADINFOCLASS / SYSTEM_INFORMATION_CLASS:
+        # keep the __WINESRC__ branch — the Wine-private classes
+        # (ProcessWineMakeProcessSystem = 1000, ThreadWineNativeThreadName =
         # 1000, SystemWineVersionInformation = 1000) ARE the boundary
         # contract the PE side issues (services.exe/sechost at CUI-3;
-        # ntdll's version_init at every process start).
+        # ntdll's version_init at every process start; RtlSetThreadName ->
+        # dlls/ntdll/thread.c). The kernel must be able to NAME them: they
+        # sit above each enum's Max* sentinel, so a refusal split that reads
+        # "above the sentinel" as "does not exist" would answer
+        # STATUS_INVALID_INFO_CLASS to a class that really is issued.
         (resolve_ifdef(extract_enum(winternl, tag, typedef), "__WINESRC__", True)
-         if typedef in ("PROCESSINFOCLASS", "SYSTEM_INFORMATION_CLASS")
+         if typedef in ("PROCESSINFOCLASS", "THREADINFOCLASS",
+                        "SYSTEM_INFORMATION_CLASS")
          else extract_enum(winternl, tag, typedef))
         for tag, typedef in [
             ("_PROCESSINFOCLASS", "PROCESSINFOCLASS"),
