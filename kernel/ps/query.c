@@ -2259,6 +2259,21 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemCpuSetInformation:
+    {
+        /* The class IS implemented — but only through
+         * NtQuerySystemInformationEx, whose arm needs a process handle in
+         * the query blob. The oracle's PLAIN arm forwards with a NULL query
+         * and length 0, which that arm rejects, so the plain form's answer
+         * is always STATUS_INVALID_PARAMETER.
+         *
+         * Not INVALID_INFO_CLASS (what a refusal-by-default would give) and
+         * not success (what "the class exists" would suggest). Measured on
+         * the oracle and pinned by tests/ntapi/sem_ps/info_class_range.c —
+         * the Ex arm is separate work. */
+        return STATUS_INVALID_PARAMETER;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2351,7 +2366,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 1 now.
+         * as the classes get built. It was 16 when this list was written; the plain path now owes NONE.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2366,7 +2381,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * Ex arms are separate work with their own refusal domain. */
         switch (infoClass)
         {
-        case SystemCpuSetInformation:
             DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
             return STATUS_NOT_IMPLEMENTED;
         default:

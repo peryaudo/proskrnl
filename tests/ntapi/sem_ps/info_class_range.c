@@ -96,6 +96,27 @@ START_TEST(info_class_range)
            (unsigned long)status);
     }
 
+    /* --- a class whose PLAIN form is a refusal because of how it forwards
+     * SystemCpuSetInformation (175) is implemented — but only through
+     * NtQuerySystemInformationEx, whose arm requires a process HANDLE in
+     * the query blob. The plain form forwards with a NULL query and a
+     * length of 0, so it always lands on that arm's
+     * `if (!query || query_len < sizeof(HANDLE)) return
+     * STATUS_INVALID_PARAMETER` (dlls/ntdll/unix/system.c).
+     *
+     * So the plain entry point's answer for 175 is INVALID_PARAMETER — not
+     * INVALID_INFO_CLASS, which is what a refusal-by-default would give,
+     * and not success, which is what "the class is implemented" would
+     * suggest. It is measured here rather than reasoned from the class
+     * being present somewhere. */
+    {
+        ULONG cpuSetLength = 0;
+        status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)175, buffer, sizeof(buffer),
+                                          &cpuSetLength);
+        ok(status == STATUS_INVALID_PARAMETER, "SystemCpuSetInformation (plain) -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- SystemNativeBasicInformation (114) is the SAME class on x64 ------
      * "Native" means "the kernel's own word size rather than the caller's",
      * so on a 64-bit kernel answering a 64-bit caller it is
