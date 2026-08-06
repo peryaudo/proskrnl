@@ -113,14 +113,22 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
                                      (uint64_t)(uintptr_t)watch->userIosb, &result, sizeof(result));
         }
     }
-    /* The request is over, so the file object is idle again — the other
-     * half of the arm-time clear. It fires for EVERY completion, cancel and
-     * error included: what the object reports is "nothing outstanding", not
-     * "something succeeded". */
-    KeSetEvent(&watch->file->header, 0, FALSE);
+    /* The request is over. NT signals the caller's EVENT if it supplied
+     * one and the FILE OBJECT otherwise — not both, which is the half an
+     * implementation gets wrong: ntdll:change completes an event-carrying
+     * watch and then requires the wait on the DIRECTORY to keep timing out
+     * (change.c:112) while the wait on the event succeeds (:115).
+     *
+     * Either way it fires for EVERY outcome, cancel and error included:
+     * what is being reported is "nothing outstanding", not "something
+     * succeeded". */
     if (watch->event != 0)
     {
         KeSetEvent(watch->event, 0, FALSE);
+    }
+    else
+    {
+        KeSetEvent(&watch->file->header, 0, FALSE);
     }
     if (!isError)
     {

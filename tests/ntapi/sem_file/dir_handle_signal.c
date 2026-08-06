@@ -22,7 +22,9 @@
  * The sequence:
  *   1. a fresh directory handle waits SIGNALLED (nothing outstanding),
  *   2. arming a watch clears it — the wait times out,
- *   3. the change that completes the watch signals it again.
+ *   3. the change that completes the watch signals it again,
+ *   4. unless the caller supplied an EVENT, which the completion signals
+ *      instead of the file object.
  *
  * Step 3 is what makes step 2 a real contract rather than "the handle is
  * never signalled": an implementation that simply stopped signalling file
@@ -100,6 +102,52 @@ START_TEST(dir_handle_signal)
      * completion. */
     status = wait_ms(dir, 0);
     ok(status == STATUS_SUCCESS, "handle stays signalled -> %08lx", (unsigned long)status);
+
+    /* --- 4. an explicit event REPLACES the file object -----------------------
+     * The rule is not "the completion signals everything". When the caller
+     * supplies an event, that event is what gets signalled and the file
+     * object is left alone — so it stays busy-looking for the rest of the
+     * handle's life. ntdll:change asserts exactly this: after the change
+     * that completes an event-carrying watch, the wait on the DIRECTORY
+     * still times out while the wait on the event succeeds
+     * (change.c:112 vs :115). An implementation that signalled both would
+     * pass every assertion above and fail that one. */
+    {
+        HANDLE event = NULL;
+        status = NtCreateEvent(&event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+        ok(status == STATUS_SUCCESS, "create the completion event -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+        {
+            iosb.Status = (NTSTATUS)0x01234567;
+            iosb.Information = 0;
+            status = NtNotifyChangeDirectoryFile(dir, event, NULL, NULL, &iosb, notifyBuffer,
+                                                 sizeof(notifyBuffer),
+                                                 FILE_NOTIFY_CHANGE_FILE_NAME, FALSE);
+            ok(status == STATUS_PENDING, "arm with an event -> %08lx", (unsigned long)status);
+
+            status = wait_ms(dir, 100);
+            ok(status == STATUS_TIMEOUT, "armed with an event, handle -> %08lx",
+               (unsigned long)status);
+
+            status = open_file(&scratch, aux, W("trigger2.tmp"), FILE_GENERIC_WRITE | SYNCHRONIZE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE, 0, &iosb);
+            ok(status == STATUS_SUCCESS, "create the second trigger -> %08lx",
+               (unsigned long)status);
+            if (NT_SUCCESS(status))
+                NtClose(scratch);
+
+            status = wait_ms(event, 2000);
+            ok(status == STATUS_SUCCESS, "the event fired -> %08lx", (unsigned long)status);
+
+            status = wait_ms(dir, 100);
+            ok(status == STATUS_TIMEOUT, "the file object was NOT signalled too -> %08lx",
+               (unsigned long)status);
+
+            NtClose(event);
+        }
+        scrub_file(aux, W("trigger2.tmp"));
+    }
 
     scrub_file(aux, W("trigger.tmp"));
     NtClose(aux);
