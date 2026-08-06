@@ -1,4 +1,4 @@
-# M10-W — closing the winetest frontier
+# CUI winetest sweep, part 1 — closing the winetest frontier
 
 > Status: **plan**, written after the first full per-pair sweep of the
 > non-GUI manifest. Every measurement cited here comes from
