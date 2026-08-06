@@ -40,28 +40,28 @@
  * TIMER_TYPE. In proskrnl mode abi/ntpsapi.h already defines them, so these
  * only fill the oracle build's gap. */
 #ifndef ThreadEventPair_Reusable
-#define ThreadEventPair_Reusable  ((THREADINFOCLASS)8)
+#define ThreadEventPair_Reusable ((THREADINFOCLASS)8)
 #endif
 #ifndef ThreadZeroTlsCell
-#define ThreadZeroTlsCell         ((THREADINFOCLASS)10)
+#define ThreadZeroTlsCell ((THREADINFOCLASS)10)
 #endif
 #ifndef ThreadPerformanceCount
-#define ThreadPerformanceCount    ((THREADINFOCLASS)11)
+#define ThreadPerformanceCount ((THREADINFOCLASS)11)
 #endif
 #ifndef ThreadSetTlsArrayAddress
-#define ThreadSetTlsArrayAddress  ((THREADINFOCLASS)15)
+#define ThreadSetTlsArrayAddress ((THREADINFOCLASS)15)
 #endif
 #ifndef MAXIMUM_PROCESSORS
 #define MAXIMUM_PROCESSORS 64 /* wine/include/winnt.h MAXIMUM_PROC_PER_GROUP (x64) */
 #endif
 #ifndef ThreadNameInformation
-#define ThreadNameInformation     ((THREADINFOCLASS)38)
+#define ThreadNameInformation ((THREADINFOCLASS)38)
 #endif
 #ifndef ThreadGroupInformation
-#define ThreadGroupInformation    ((THREADINFOCLASS)30)
+#define ThreadGroupInformation ((THREADINFOCLASS)30)
 #endif
 #ifndef ThreadHideFromDebugger
-#define ThreadHideFromDebugger    ((THREADINFOCLASS)17)
+#define ThreadHideFromDebugger ((THREADINFOCLASS)17)
 #endif
 
 /* KERNEL_USER_TIMES with LARGE_INTEGER members, as the pinned tree spells
@@ -150,8 +150,7 @@ START_TEST(thread_info_sweep)
         id.UniqueProcess = NULL;
         id.UniqueThread = selfBasic.ClientId.UniqueThread;
         status = NtOpenThread(&limited, THREAD_QUERY_LIMITED_INFORMATION, &attr, &id);
-        ok(status == STATUS_SUCCESS, "open limited thread handle -> %08lx",
-           (unsigned long)status);
+        ok(status == STATUS_SUCCESS, "open limited thread handle -> %08lx", (unsigned long)status);
         if (NT_SUCCESS(status))
         {
             NTAPI_KERNEL_USER_TIMES times;
@@ -186,8 +185,8 @@ START_TEST(thread_info_sweep)
             BOOLEAN hiddenLimited = FALSE;
             status = NtQueryInformationThread(limited, ThreadHideFromDebugger, &hiddenLimited,
                                               sizeof(hiddenLimited), &returnLength);
-            ok(status == STATUS_ACCESS_DENIED,
-               "ThreadHideFromDebugger via limited handle -> %08lx", (unsigned long)status);
+            ok(status == STATUS_ACCESS_DENIED, "ThreadHideFromDebugger via limited handle -> %08lx",
+               (unsigned long)status);
 
             ULONG boostLimited = 0;
             status = NtQueryInformationThread(limited, ThreadPriorityBoost, &boostLimited,
@@ -241,8 +240,7 @@ START_TEST(thread_info_sweep)
         NTAPI_KERNEL_USER_TIMES times;
         memset(&times, 0xcc, sizeof(times));
         returnLength = 0;
-        status = NtQueryInformationThread(self, ThreadTimes, &times, sizeof(times),
-                                          &returnLength);
+        status = NtQueryInformationThread(self, ThreadTimes, &times, sizeof(times), &returnLength);
         ok(status == STATUS_SUCCESS, "ThreadTimes -> %08lx", (unsigned long)status);
         ok(returnLength == sizeof(times), "ThreadTimes returned %lu bytes",
            (unsigned long)returnLength);
@@ -332,8 +330,8 @@ START_TEST(thread_info_sweep)
             ok(status == STATUS_SUCCESS, "set base priority %ld -> %08lx", (long)want,
                (unsigned long)status);
             memset(&basic, 0, sizeof(basic));
-            status = NtQueryInformationThread(self, ThreadBasicInformation, &basic,
-                                              sizeof(basic), &returnLength);
+            status = NtQueryInformationThread(self, ThreadBasicInformation, &basic, sizeof(basic),
+                                              &returnLength);
             ok(status == STATUS_SUCCESS, "basic info -> %08lx", (unsigned long)status);
             ok(basic.BasePriority == want, "base priority %ld came back %ld", (long)want,
                (long)basic.BasePriority);
@@ -343,19 +341,16 @@ START_TEST(thread_info_sweep)
          * far outside the band they sit (the oracle's own carve-out). */
         LONG bad = -3;
         status = NtSetInformationThread(self, ThreadBasePriority, &bad, sizeof(bad));
-        ok(status == STATUS_INVALID_PARAMETER, "base priority -3 -> %08lx",
-           (unsigned long)status);
+        ok(status == STATUS_INVALID_PARAMETER, "base priority -3 -> %08lx", (unsigned long)status);
         bad = 3;
         status = NtSetInformationThread(self, ThreadBasePriority, &bad, sizeof(bad));
-        ok(status == STATUS_INVALID_PARAMETER, "base priority 3 -> %08lx",
-           (unsigned long)status);
+        ok(status == STATUS_INVALID_PARAMETER, "base priority 3 -> %08lx", (unsigned long)status);
         LONG special = -15; /* THREAD_PRIORITY_IDLE */
         status = NtSetInformationThread(self, ThreadBasePriority, &special, sizeof(special));
         ok(status == STATUS_SUCCESS, "base priority IDLE -> %08lx", (unsigned long)status);
         special = 15; /* THREAD_PRIORITY_TIME_CRITICAL */
         status = NtSetInformationThread(self, ThreadBasePriority, &special, sizeof(special));
-        ok(status == STATUS_SUCCESS, "base priority TIME_CRITICAL -> %08lx",
-           (unsigned long)status);
+        ok(status == STATUS_SUCCESS, "base priority TIME_CRITICAL -> %08lx", (unsigned long)status);
 
         /* Put it back where every thread starts. */
         LONG normal = 0;
@@ -372,8 +367,7 @@ START_TEST(thread_info_sweep)
         status = NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost,
                                           sizeof(disableBoost), &returnLength);
         ok(status == STATUS_SUCCESS, "query boost -> %08lx", (unsigned long)status);
-        ok(returnLength == sizeof(ULONG), "boost returned %lu bytes",
-           (unsigned long)returnLength);
+        ok(returnLength == sizeof(ULONG), "boost returned %lu bytes", (unsigned long)returnLength);
         ok(disableBoost == 0, "boost starts disabled (%lu)", (unsigned long)disableBoost);
 
         ULONG disable = 1;
@@ -385,8 +379,8 @@ START_TEST(thread_info_sweep)
         ok(status == STATUS_SUCCESS, "re-query boost -> %08lx", (unsigned long)status);
         ok(disableBoost == 1, "boost flag did not stick (%lu)", (unsigned long)disableBoost);
 
-        status = NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost, 1,
-                                          &returnLength);
+        status =
+            NtQueryInformationThread(self, ThreadPriorityBoost, &disableBoost, 1, &returnLength);
         ok(status == STATUS_INFO_LENGTH_MISMATCH, "short boost -> %08lx", (unsigned long)status);
     }
 
@@ -405,8 +399,8 @@ START_TEST(thread_info_sweep)
         ok(pending == FALSE, "ThreadIsIoPending reported pending I/O");
         ok(returnLength == sizeof(BOOL), "returned %lu bytes", (unsigned long)returnLength);
 
-        status = NtQueryInformationThread(self, ThreadIsIoPending, NULL, sizeof(pending),
-                                          &returnLength);
+        status =
+            NtQueryInformationThread(self, ThreadIsIoPending, NULL, sizeof(pending), &returnLength);
         ok(status == STATUS_ACCESS_DENIED, "NULL buffer -> %08lx", (unsigned long)status);
 
         status = NtQueryInformationThread(self, ThreadIsIoPending, &pending, 1, &returnLength);
@@ -435,8 +429,7 @@ START_TEST(thread_info_sweep)
 
         wanted = 0;
         status = NtSetInformationThread(self, ThreadAffinityMask, &wanted, sizeof(wanted));
-        ok(status == STATUS_INVALID_PARAMETER, "set affinity 0 -> %08lx",
-           (unsigned long)status);
+        ok(status == STATUS_INVALID_PARAMETER, "set affinity 0 -> %08lx", (unsigned long)status);
 
         /* Length is INVALID_PARAMETER here, not INFO_LENGTH_MISMATCH. */
         wanted = 1;
@@ -461,8 +454,7 @@ START_TEST(thread_info_sweep)
         status = NtQueryInformationThread(self, ThreadGroupInformation, &group, sizeof(group),
                                           &returnLength);
         ok(status == STATUS_SUCCESS, "ThreadGroupInformation -> %08lx", (unsigned long)status);
-        ok(returnLength == sizeof(group), "group returned %lu bytes",
-           (unsigned long)returnLength);
+        ok(returnLength == sizeof(group), "group returned %lu bytes", (unsigned long)returnLength);
         ok(group.Group == 0, "group %u, expected 0", (unsigned)group.Group);
         ok(group.Mask != 0, "group affinity mask is empty");
     }
@@ -533,8 +525,8 @@ START_TEST(thread_info_sweep)
         named.ThreadName.Length = sizeof(wanted);
         named.ThreadName.MaximumLength = sizeof(wanted);
         named.ThreadName.Buffer = (PWSTR)(void *)wanted;
-        status = NtSetInformationThread(self, ThreadNameInformation, &named,
-                                        sizeof(UNICODE_STRING));
+        status =
+            NtSetInformationThread(self, ThreadNameInformation, &named, sizeof(UNICODE_STRING));
         ok(status == STATUS_SUCCESS, "set thread name -> %08lx", (unsigned long)status);
 
         memset(&named, 0xcc, sizeof(named));
@@ -557,21 +549,18 @@ START_TEST(thread_info_sweep)
            (unsigned long)returnLength);
 
         /* Set refusals, each distinct. */
-        status = NtSetInformationThread(self, ThreadNameInformation, &named,
-                                        sizeof(UNICODE_STRING) - 1);
-        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short name set -> %08lx",
-           (unsigned long)status);
-        status = NtSetInformationThread(self, ThreadNameInformation, NULL,
-                                        sizeof(UNICODE_STRING));
+        status =
+            NtSetInformationThread(self, ThreadNameInformation, &named, sizeof(UNICODE_STRING) - 1);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short name set -> %08lx", (unsigned long)status);
+        status = NtSetInformationThread(self, ThreadNameInformation, NULL, sizeof(UNICODE_STRING));
         ok(status == STATUS_ACCESS_VIOLATION, "NULL name set -> %08lx", (unsigned long)status);
 
         memset(&named, 0, sizeof(named));
         named.ThreadName.Length = 4;
         named.ThreadName.Buffer = NULL;
-        status = NtSetInformationThread(self, ThreadNameInformation, &named,
-                                        sizeof(UNICODE_STRING));
-        ok(status == STATUS_ACCESS_VIOLATION, "named NULL buffer -> %08lx",
-           (unsigned long)status);
+        status =
+            NtSetInformationThread(self, ThreadNameInformation, &named, sizeof(UNICODE_STRING));
+        ok(status == STATUS_ACCESS_VIOLATION, "named NULL buffer -> %08lx", (unsigned long)status);
     }
 
     /* --- two classes the ORACLE ITSELF calls invalid ---------------------
@@ -595,31 +584,78 @@ START_TEST(thread_info_sweep)
            (unsigned long)status);
     }
 
-    /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
-    beyond_oracle
+    /* --- the two accepted set classes, which the ORACLE also implements ---
+     * These used to sit inside the beyond_oracle block below, and that was
+     * wrong twice over. The oracle serves both — ThreadIdealProcessor at
+     * third_party/wine dlls/ntdll/unix/thread.c (the MAXIMUM_PROCESSORS
+     * range check asserted here is its own), ThreadPriority a few cases
+     * later — so tagging them beyond_oracle SKIPPED them on the one runner
+     * that could have judged them (G5/G6: that tag is for cases Wine cannot
+     * answer, and using it where Wine does answer fixes the test instead of
+     * the kernel). It also hid a divergence: proskrnl's ThreadPriority arm
+     * was a bare `return STATUS_SUCCESS` with no length check at all, which
+     * the length assertion below now convicts.
+     *
+     * They are pinned here SO THAT a neighbouring refusal cannot leak into
+     * them. When ThreadWineNativeThreadName's refusal was first added it
+     * fell into the SAME case group and silently turned both into refusals;
+     * kernel32:thread caught that as SetThreadIdealProcessor returning ~0u. */
     {
-        /* The neighbours of the refusing class below, pinned SO THAT the
-         * refusal cannot leak into them. ThreadPriority,
-         * ThreadIdealProcessor and ThreadIdealProcessorEx are accepted
-         * (one CPU, one priority band; nothing reads them back, so there
-         * is no pair to disagree with itself) — and when
-         * ThreadWineNativeThreadName's refusal was first added it fell into
-         * the SAME case group and silently turned all three into refusals.
-         * kernel32:thread caught it as SetThreadIdealProcessor returning
-         * ~0u; this pin catches it here instead. */
-        ULONG accepted = 0;
-        status = NtSetInformationThread(self, ThreadIdealProcessor, &accepted, sizeof(accepted));
-        ok(status == STATUS_SUCCESS, "set ideal processor -> %08lx", (unsigned long)status);
-        status = NtSetInformationThread(self, ThreadPriority, &accepted, sizeof(accepted));
-        ok(status == STATUS_SUCCESS, "set thread priority -> %08lx", (unsigned long)status);
+        ULONG value = 0;
+        ULONG_PTR wide = 0;
 
-        /* ThreadIdealProcessor's value goes nowhere, so its RANGE CHECK is
-         * the only thing a caller can observe about it. */
+        /* ThreadIdealProcessor: accepted, with a RANGE CHECK that is the
+         * only thing a caller can observe about it (the value goes
+         * nowhere — the oracle's arm is a FIXME stub that validates and
+         * returns). Its wrong-length status is INFO_LENGTH_MISMATCH. */
+        status = NtSetInformationThread(self, ThreadIdealProcessor, &value, sizeof(value));
+        ok(status == STATUS_SUCCESS, "set ideal processor -> %08lx", (unsigned long)status);
         ULONG tooMany = MAXIMUM_PROCESSORS + 1;
         status = NtSetInformationThread(self, ThreadIdealProcessor, &tooMany, sizeof(tooMany));
         ok(status == STATUS_INVALID_PARAMETER, "ideal processor out of range -> %08lx",
            (unsigned long)status);
+        status = NtSetInformationThread(self, ThreadIdealProcessor, &wide, sizeof(wide));
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "an 8-byte ThreadIdealProcessor -> %08lx",
+           (unsigned long)status);
 
+        /* ThreadPriority takes an ABSOLUTE NT priority LEVEL, not one of
+         * the THREAD_PRIORITY_* deltas Win32 callers pass to
+         * SetThreadPriority — which is why 0 (THREAD_PRIORITY_NORMAL, and
+         * the value this block used to "verify" while it was skipped on
+         * the oracle) is REFUSED rather than accepted. The band is
+         * 1..HIGH_PRIORITY, and the realtime half of it needs a privilege
+         * this process does not hold, so a level >= LOW_REALTIME_PRIORITY
+         * is STATUS_PRIVILEGE_NOT_HELD and not a second INVALID_PARAMETER
+         * — three distinct answers off one argument. (The bounds are the
+         * ddk's own: third_party/wine include/ddk/wdm.h LOW_PRIORITY 0,
+         * LOW_REALTIME_PRIORITY 16, HIGH_PRIORITY 31; the comparisons are
+         * server/thread.c set_thread_priority.)
+         *
+         * Its wrong-length status differs from ThreadIdealProcessor's one
+         * case label above: INVALID_PARAMETER, not INFO_LENGTH_MISMATCH.
+         * That asymmetry between neighbours is exactly what a shared case
+         * body destroys. */
+        value = 0;
+        status = NtSetInformationThread(self, ThreadPriority, &value, sizeof(value));
+        ok(status == STATUS_INVALID_PARAMETER, "priority level 0 -> %08lx", (unsigned long)status);
+        value = 8; /* the normal class's own base level */
+        status = NtSetInformationThread(self, ThreadPriority, &value, sizeof(value));
+        ok(status == STATUS_SUCCESS, "priority level 8 -> %08lx", (unsigned long)status);
+        value = 16; /* LOW_REALTIME_PRIORITY */
+        status = NtSetInformationThread(self, ThreadPriority, &value, sizeof(value));
+        ok(status == STATUS_PRIVILEGE_NOT_HELD, "a realtime priority level -> %08lx",
+           (unsigned long)status);
+        value = 32; /* past HIGH_PRIORITY */
+        status = NtSetInformationThread(self, ThreadPriority, &value, sizeof(value));
+        ok(status == STATUS_INVALID_PARAMETER, "priority level 32 -> %08lx", (unsigned long)status);
+        status = NtSetInformationThread(self, ThreadPriority, &wide, sizeof(wide));
+        ok(status == STATUS_INVALID_PARAMETER, "an 8-byte ThreadPriority -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- the set-only group refuses, and NOT with NOT_IMPLEMENTED -------- */
+    beyond_oracle
+    {
         /* The fork's own class names a HOST thread identity that does not
          * exist here — the NT thread is the native thread, and its name is
          * set by ThreadNameInformation in the same breath (RtlSetThreadName
