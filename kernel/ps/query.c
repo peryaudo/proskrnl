@@ -2401,6 +2401,176 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
     }
     switch (infoClass)
     {
+    case SystemLogicalProcessorInformationEx:
+    {
+        /* The relationship-filtered topology. One record per relationship
+         * the caller asks for, each carrying its own Size so the caller can
+         * walk a heterogeneous list.
+         *
+         * The machine is one core, one package, one NUMA node, one group,
+         * and one cache level — all of which follow from Art. 3's
+         * uniprocessor mandate plus CPUID, not from invention. The cache
+         * record is the one that needs hardware: level, line size,
+         * associativity and size come from CPUID leaf 4 (Intel SDM Vol. 2A,
+         * "Deterministic Cache Parameters"), so it describes this CPU
+         * rather than a plausible one. A CPU without leaf 4 reports no
+         * cache record at all rather than a made-up one.
+         *
+         * RelationAll returns every record; a specific relationship returns
+         * just its own. ntdll:info asks for each in turn and requires a
+         * non-empty answer for every one (info.c:1300-1330), then requires
+         * the union of the filtered lengths to equal the RelationAll
+         * length. */
+        ULONG relationship;
+        if (query == 0 || queryLength < sizeof(relationship))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS probe = KiProbeForRead(query, sizeof(relationship), sizeof(relationship));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        memcpy(&relationship, query, sizeof(relationship));
+
+        /* Per-record sizes: each is its fixed part plus the one group
+         * affinity / group info the single group needs. */
+        ULONG headerBytes = (ULONG)offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+        ULONG processorBytes =
+            headerBytes + (ULONG)offsetof(PROCESSOR_RELATIONSHIP, GroupMask) +
+            (ULONG)sizeof(GROUP_AFFINITY);
+        ULONG numaBytes = headerBytes + (ULONG)offsetof(NUMA_NODE_RELATIONSHIP, GroupMask) +
+                          (ULONG)sizeof(GROUP_AFFINITY);
+        ULONG cacheBytes = headerBytes + (ULONG)offsetof(CACHE_RELATIONSHIP, GroupMask) +
+                           (ULONG)sizeof(GROUP_AFFINITY);
+        ULONG groupBytes = headerBytes + (ULONG)offsetof(GROUP_RELATIONSHIP, GroupInfo) +
+                           (ULONG)sizeof(PROCESSOR_GROUP_INFO);
+
+        uint32_t cacheRegs[4];
+        KiCpuid(4, 0, cacheRegs);
+        BOOLEAN haveCache = (cacheRegs[0] & 0x1f) != 0;
+
+        BOOLEAN wantCore = relationship == RelationAll || relationship == RelationProcessorCore;
+        BOOLEAN wantNuma = relationship == RelationAll || relationship == RelationNumaNode;
+        BOOLEAN wantCache =
+            haveCache && (relationship == RelationAll || relationship == RelationCache);
+        BOOLEAN wantPackage =
+            relationship == RelationAll || relationship == RelationProcessorPackage;
+        BOOLEAN wantGroup = relationship == RelationAll || relationship == RelationGroup;
+
+        ULONG needed = 0;
+        needed += wantCore ? processorBytes : 0;
+        needed += wantNuma ? numaBytes : 0;
+        needed += wantCache ? cacheBytes : 0;
+        needed += wantPackage ? processorBytes : 0;
+        needed += wantGroup ? groupBytes : 0;
+        if (needed == 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        if (length < needed)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        BYTE *scratch = MiAllocatePool(needed);
+        if (scratch == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memset(scratch, 0, needed);
+        ULONG offset = 0;
+        const KAFFINITY allProcessors = ((KAFFINITY)1 << KE_NUMBER_PROCESSORS) - 1;
+
+        if (wantCore || wantPackage)
+        {
+            for (int pass = 0; pass < 2; pass++)
+            {
+                BOOLEAN emit = pass == 0 ? wantCore : wantPackage;
+                if (!emit)
+                {
+                    continue;
+                }
+                SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *record =
+                    (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(scratch + offset);
+                record->Relationship =
+                    pass == 0 ? RelationProcessorCore : RelationProcessorPackage;
+                record->Size = processorBytes;
+                record->Processor.GroupCount = 1;
+                record->Processor.GroupMask[0].Mask = allProcessors;
+                offset += processorBytes;
+            }
+        }
+        if (wantNuma)
+        {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *record =
+                (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(scratch + offset);
+            record->Relationship = RelationNumaNode;
+            record->Size = numaBytes;
+            record->NumaNode.NodeNumber = 0;
+            record->NumaNode.GroupCount = 1;
+            record->NumaNode.GroupMask.Mask = allProcessors;
+            offset += numaBytes;
+        }
+        if (wantCache)
+        {
+            /* CPUID.4:EAX bits 7:5 = level, bits 4:0 = type (1 data,
+             * 2 instruction, 3 unified); EBX packs associativity, line
+             * partitions and line size; ECX is the set count. */
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *record =
+                (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(scratch + offset);
+            ULONG ways = ((cacheRegs[1] >> 22) & 0x3ff) + 1;
+            ULONG partitions = ((cacheRegs[1] >> 12) & 0x3ff) + 1;
+            ULONG lineSize = (cacheRegs[1] & 0xfff) + 1;
+            ULONG sets = cacheRegs[2] + 1;
+            record->Relationship = RelationCache;
+            record->Size = cacheBytes;
+            record->Cache.Level = (BYTE)((cacheRegs[0] >> 5) & 0x7);
+            record->Cache.Associativity = (BYTE)(ways > 255 ? 255 : ways);
+            record->Cache.LineSize = (WORD)lineSize;
+            record->Cache.CacheSize = ways * partitions * lineSize * sets;
+            switch (cacheRegs[0] & 0x1f)
+            {
+            case 1:
+                record->Cache.Type = CacheData;
+                break;
+            case 2:
+                record->Cache.Type = CacheInstruction;
+                break;
+            default:
+                record->Cache.Type = CacheUnified;
+                break;
+            }
+            record->Cache.GroupCount = 1;
+            record->Cache.GroupMask.Mask = allProcessors;
+            offset += cacheBytes;
+        }
+        if (wantGroup)
+        {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *record =
+                (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(scratch + offset);
+            record->Relationship = RelationGroup;
+            record->Size = groupBytes;
+            record->Group.MaximumGroupCount = 1;
+            record->Group.ActiveGroupCount = 1;
+            record->Group.GroupInfo[0].MaximumProcessorCount = KE_NUMBER_PROCESSORS;
+            record->Group.GroupInfo[0].ActiveProcessorCount = KE_NUMBER_PROCESSORS;
+            record->Group.GroupInfo[0].ActiveProcessorMask = allProcessors;
+            offset += groupBytes;
+        }
+        memcpy(buffer, scratch, needed);
+        MiFreePool(scratch);
+        return STATUS_SUCCESS;
+    }
+
     case SystemProcessorIdleCycleTimeInformation:
     {
         /* The same answer the plain form gives, and the plain form is
@@ -2514,7 +2684,6 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         case SystemBatteryState:
         case SystemCpuSetInformation:
         case SystemExecutionState:
-        case SystemLogicalProcessorInformationEx:
         case SystemPowerCapabilities:
             DbgPrint("NtQuerySystemInformationEx: unbuilt info class %d\n", (int)infoClass);
             return STATUS_NOT_IMPLEMENTED;

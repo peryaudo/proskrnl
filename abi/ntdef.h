@@ -7,6 +7,8 @@
 
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
+#define ANYSIZE_ARRAY 1 /* winnt.h */
+
 typedef char CHAR;
 typedef char *PCHAR;
 typedef signed char CCHAR;

@@ -358,6 +358,8 @@ def gen_ntdef(wine: Path) -> str:
     scaffold = """\
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
+#define ANYSIZE_ARRAY 1 /* winnt.h */
+
 typedef char CHAR;
 typedef char *PCHAR;
 typedef signed char CCHAR;
@@ -2117,6 +2119,19 @@ def gen_ntpsapi(wine: Path) -> str:
             # NtQueryInformationThread(ThreadGroupInformation): the
             # processor-group form of an affinity mask (kernel/ps/thread.c).
             extract_struct(winnt, "_GROUP_AFFINITY", "GROUP_AFFINITY"),
+            # SystemLogicalProcessorInformationEx (107): the four
+            # relationship payloads and the record that unions them.
+            extract_struct(winnt, "_PROCESSOR_RELATIONSHIP", "PROCESSOR_RELATIONSHIP"),
+            extract_struct(winnt, "_NUMA_NODE_RELATIONSHIP", "NUMA_NODE_RELATIONSHIP"),
+            extract_struct(winnt, "_CACHE_RELATIONSHIP", "CACHE_RELATIONSHIP"),
+            extract_struct(winnt, "_PROCESSOR_GROUP_INFO", "PROCESSOR_GROUP_INFO"),
+            extract_struct(winnt, "_GROUP_RELATIONSHIP", "GROUP_RELATIONSHIP"),
+            extract_struct(
+                winnt,
+                "_SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX",
+                "SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX",
+            ),
+
             # NtQueryInformationThread/NtSetInformationThread
             # (ThreadNameInformation): the thread's description string.
             extract_struct(winternl, "_THREAD_NAME_INFORMATION",
