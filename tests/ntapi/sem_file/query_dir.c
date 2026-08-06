@@ -3,8 +3,14 @@
  * main directory info classes, the "." / ".." entries, single-entry mode,
  * restart-scan, name masks, and STATUS_NO_MORE_FILES.
  *
- * All membership checks are order-agnostic: NTFS returns sorted entries, FAT
- * returns disk order — the contract worth pinning is the set, not the order.
+ * All membership checks here are order-agnostic, and that is now a property
+ * of THIS test rather than a claim about the contract. The header used to
+ * say "NTFS returns sorted entries, FAT returns disk order — the contract
+ * worth pinning is the set, not the order". That was wrong: the sort
+ * belongs to NtQueryDirectoryFile, not to the filesystem under it, and
+ * sem_file/dir_sort.c pins it. The checks below stay set-based because that
+ * is what they are about; nothing here should be read as saying order is
+ * free.
  */
 #include "util.h"
 
