@@ -921,9 +921,35 @@ warning:
   `[^{}]*?`. The generator now handles the form; the trap is that its
   failures do not look like failures where you make them.
 
-`kernel32:fiber` also dies rather than fails, with no unbuilt syscall or
-class named — so it is a wedge or a fault rather than a hole, and needs the
-serial log read rather than a class implemented. Untriaged.
+### `kernel32:fiber` triaged: a fault on the fiber's own stack
+
+Not a hole — the process is KILLED by a user-mode page fault, so no class
+or syscall is missing. The evidence, from the serial log:
+
+    [USERFAULT] vector=14 (#PF page fault) err=0x7
+      RIP=0x1740844a0  RSP=0x4498a0  CR2=0x4498c0
+    [USERFAULT] entry=0x140052dd0 stack=[0x10000,0x210000)
+
+Two things in that dump identify it. **`RSP` is outside the stack range the
+kernel has recorded for the thread** (`0x4498a0` vs `[0x10000,0x210000)`) —
+which is exactly what a fiber is: `CreateFiber` allocates its own stack and
+switches `RSP` to it. And **`CR2` is 0x20 ABOVE `RSP`**, i.e. the faulting
+access is a normal push into memory that should be there.
+
+So the kernel is refusing, or failing to commit, an access on a stack it
+does not consider to be the thread's. The suspect is the fault handler's
+stack-growth/guard-page path being keyed to the TEB's recorded stack bounds
+rather than to the VAD the access actually lands in. `err=0x7` is
+user/write/present-protection, which fits a guard page that was never
+cleared.
+
+That is `mm/` work, which `docs/12` flags as the area where an LLM is most
+dangerous, and it should be approached with a `tests/ntapi` pin that
+allocates a stack and touches it from a switched `RSP` — NOT by adjusting
+the fault handler until the winetest stops crashing. The failure at
+`fiber.c:203` ("wrong data") is downstream noise from the same run.
+
+**This one is worth a plan before code.**
 
 ### The highest-value single item left is MountPointManager, and it is now measured
 
