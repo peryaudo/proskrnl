@@ -895,43 +895,35 @@ needs a volume GUID path (`\\?\Volume{...}\`), and the
 MountPointManager half of W7 — a device plus a GUID namespace — and it is
 real kernel work, not a floor.
 
-### Two more pairs measured, and a generator trap found
+### `kernel32:power` is green; `kernel32:fiber` still dies
 
-`kernel32:power` and `kernel32:fiber` both die rather than fail.
-`kernel32:power` panics on `NtPowerInformation` level 5
-(`SystemPowerCapabilities`) — a fixed-shape block of named constants, the
-same easy shape as the system-info batches, and the next cheap win here.
+`kernel32:power` went dead → green. Two power levels (4
+`SystemPowerCapabilities`, 5 `SystemBatteryState`) plus one field: an
+all-zero battery block left `AcOnLine` clear, and kernelbase derives
+`ACLineStatus` from it, so the kernel was describing a machine running on
+battery power while having no battery. **"No battery" and "not on mains"
+are different facts, and only one of them was ours** — the zero was the
+plausible answer, not the true one, which is exactly the distinction every
+fixed-shape class in this sweep turns on.
 
-**A trap to know about before taking it, and it is not the one I first
-wrote here.** My initial diagnosis — that `extract_struct` silently emits
-nothing for these types — was WRONG, and worth recording as such because
-the wrong version is the more comfortable story.
+Two mistakes on the way, both caught only by checking, both worth the
+warning:
 
-What actually happens: `SYSTEM_POWER_CAPABILITIES` and
-`SYSTEM_BATTERY_STATE` are declared in `winnt.h` as **anonymous** structs —
+- **The level numbers were assumed, not counted.** `SystemPowerCapabilities`
+  is 4, not 5; the panic named 5, which is `SystemBatteryState`. Counting
+  the enum takes seconds and the assumption cost a whole build-and-boot.
+- **The anonymous-struct extraction swallowed half a header.** `winnt.h`
+  declares these structs with no `_TAG`, so `extract_struct` needed an
+  empty-tag form — and with `.*?` under `re.S` the lazy match walked from
+  the FIRST anonymous struct in the file to the target's closing brace,
+  folding every struct in between into one typedef. It surfaced as
+  `unknown type name 'PSID'` somewhere unrelated. An untagged body must be
+  `[^{}]*?`. The generator now handles the form; the trap is that its
+  failures do not look like failures where you make them.
 
-    typedef struct {
-        BOOLEAN PowerButtonPresent;
-        ...
-    } SYSTEM_POWER_CAPABILITIES,
-    *PSYSTEM_POWER_CAPABILITIES;
-
-— with no `_TAG`, so `extract_struct(winnt, "_SYSTEM_POWER_CAPABILITIES",
-...)` finds nothing and `sys.exit`s. It does NOT fail silently.
-
-**The masking is what makes it dangerous, and it is a property of the
-workflow, not of the generator.** `gen_abi`'s failure message is
-`gen_abi: struct X not found` — it contains no the word "error", so a
-`python3 tools/gen_abi.py 2>&1 | grep -i error` check reports nothing
-wrong. And because the previously generated `abi/*.h` are still on disk,
-the build then succeeds *against stale headers*. A failed regeneration is
-indistinguishable from a successful one unless you look at the exit status
-or the generated file.
-
-So: **check `gen_abi`'s exit status, or grep the generated header for the
-type you asked for.** Never conclude it worked because the build did.
-Handling anonymous structs is a small `extract_struct` change and belongs
-in whichever commit needs these types.
+`kernel32:fiber` also dies rather than fails, with no unbuilt syscall or
+class named — so it is a wedge or a fault rather than a hole, and needs the
+serial log read rather than a class implemented. Untriaged.
 
 ### The highest-value single item left is MountPointManager, and it is now measured
 
