@@ -726,12 +726,53 @@ measured as zero**, because the 9 cells were invisible behind the
 dummy-mask truncation. When several defects stack on one assertion, fix
 the one that hides the others first, or the useful work looks worthless.
 
-**Next**, in order: W3a (short names — the plan is in this session's
-history: `RtlIsNameLegalDOS8Dot3` as the one legality authority,
-`IO_DIR_ENTRY` carrying FAT's stored SFN, `ShortName` suppressed when the
-long name is already 8.3-legal, and the mask matched against the short name
-as a second leg); then `directory.c:324` (the case-insensitive sort, 14);
-then W2b (`SystemProcessInformation`) and W2c.
+### W3a landed: short names. `directory.c:620` is at ZERO, `kernel32:path` is green
+
+`RtlIsNameLegalDOS8Dot3` is the one legality authority; `IO_DIR_ENTRY`
+carries the SFN FAT already had in hand; `IopFillShortName` decides once,
+for both Both-shaped classes, whether the boundary shows it; and
+`IopEntryMatchesMask` gives the mask its second leg.
+
+**`ntdll:directory` 46 → 36**, with all 1386 truth-table cells and `:654`
+passing. **`kernel32:path` 11 → 0** — 202,636 tests green. That pair was
+listed in §5 as a trap to "schedule separately or not at all"; it was the
+largest beneficiary and it cost nothing extra.
+
+Three things worth keeping:
+
+- **The predicate is not the storage rule, and `lower.txt` proves it.** The
+  oracle reports NO short name for `lower.txt`, so 8.3-legality is
+  case-insensitive — while FAT stores a short entry for it precisely
+  *because* a bare 8.3 entry cannot hold lower case. Two questions, two
+  functions; merging them makes one answer wrong. "Report whatever the
+  volume stored" passes every other assertion in the pin and fails that one.
+
+- **A first attempt made the pair WORSE** (`:620` 9 → 10) because FAT's
+  generated names had the wrong shape: `.a` became `_~1.A`, and a short
+  name carrying a dot cannot be reached by DOS_STAR. Stripping leading dots
+  and spaces before choosing the extension fixed it, per Microsoft's
+  8.3-generation rules.
+
+- **One constant was fitted, and then measured instead.** Three cells need
+  a generated name at least four characters wide (a three-DOS_QM mask must
+  match nothing). Padding the base to two characters satisfies them and
+  produces `A~~1`, which no real FAT driver emits — fitting to a table
+  through a mechanism that might not be Windows'. Measuring the oracle
+  first gave the actual property: its hashed names are ≥ 8 characters, so a
+  short DOS_QM run can never match one *there*. Reproducing the WIDTH via a
+  zero-padded numeric tail (`A~01`) is the same property, readable, and
+  licensed by the FAT specification §7.4. The pin asserts ≥ 4, the widest
+  bound both runners can satisfy.
+
+The offline harness earned its keep twice more: it reproduced the measured
+10 exactly before any fix, and scored six candidate name-generation rules
+in a second.
+
+**Next**, in order: `directory.c:324` (the case-insensitive enumeration
+sort, 14 — `ntdll:directory`'s largest remaining site); then `:389`/`:421`
+and friends (the per-class refusal split and buffer-overflow accounting, W1
+applied to `NtQueryDirectoryFile`); then W2b (`SystemProcessInformation`)
+and W2c.
 
 *The `abi/` header trap, now resolved and worth remembering.*
 `ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
