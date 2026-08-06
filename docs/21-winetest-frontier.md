@@ -344,7 +344,30 @@ false for one call, and the honest move is to say so here rather than to
 quietly widen the exemption or to leave the pair failing without an
 explanation.
 
-**This is a decision for the project, not for a sweep.** Nothing in this
+**DECIDED: the second. `ntdll:info` is bounded; G12 is not amended.**
+The project took the second option, and the reasoning is the asymmetry of
+the two costs. The exemption would buy one pair. What it would spend is the
+one property that makes G12 work at all — that it has no door. An article
+with a narrow exemption is an article every future stub author can argue
+their way into, and the bug history says that argument gets made. One
+unreachable pair is a bounded, visible loss; a widened G12 is an unbounded,
+invisible one.
+
+So `KiPinnedNotImplemented` is NOT to be added, and this section is not an
+open question any more. The pair stays commented out in
+`tests/winetest/manifest.txt` with its cause, alongside the FAT-floor and
+GUI-floor pairs, and carries no `# TODO: Implement` because there is no
+kernel work that would clear it. Anyone reaching this collision again
+should read it as settled rather than re-litigate it — and note what is NOT
+settled by it: this decision covers `SystemFirmwareTableInformation` with
+provider zero and nothing else. A second call that turns out to pin
+NOT_IMPLEMENTED as Windows behaviour is new evidence, and two of them would
+be a real argument for revisiting; one is not.
+
+The paragraph below is kept as the record of how the question stood before
+the decision.
+
+**This was a decision for the project, not for a sweep.** Nothing in this
 document should be read as having made it.
 
 Otherwise:

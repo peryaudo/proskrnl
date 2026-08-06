@@ -127,7 +127,7 @@ ntdll_test.exe:error
 # TODO: Implement
 # ntdll_test.exe:file
 ntdll_test.exe:generated
-# BLOCKED ON A CONSTITUTIONAL DECISION — NOT FIXABLE BY KERNEL WORK.
+# BOUNDED BY A DECISION ALREADY TAKEN — NOT FIXABLE BY KERNEL WORK.
 #     Fifteen system-information classes were built this session and both
 #     entry points now owe nothing the oracle serves. The pair still panics,
 #     at SystemFirmwareTableInformation (76), which IS implemented: it
@@ -140,9 +140,12 @@ ntdll_test.exe:generated
 #     behaviour, and G12's premise ("nobody depends on this status") is false
 #     for this one call.
 #     Implementing ACPI/FIRM does not reach it: the assertion is about
-#     provider ZERO. Resolving this needs either a KiPinnedNotImplemented
-#     (which G12 forbids by name) or a decision that this pair is bounded.
-#     Written up in docs/21 §4 with both options and neither taken.
+#     provider ZERO, which is not a provider.
+#     DECIDED (docs/21 §4): this pair is BOUNDED and G12 is NOT amended.
+#     The KiPinnedNotImplemented escape hatch would buy one pair and spend
+#     the one property that makes G12 work — that it has no door. Do not
+#     re-open this on the strength of this call alone; a SECOND call found
+#     to pin NOT_IMPLEMENTED as Windows behaviour would be new evidence.
 # ntdll_test.exe:info
 ntdll_test.exe:large_int
 # (b) The oracle CRASHES here (exit 5, no summary line): om.c:1893 wants
