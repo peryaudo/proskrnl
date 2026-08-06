@@ -895,6 +895,29 @@ needs a volume GUID path (`\\?\Volume{...}\`), and the
 MountPointManager half of W7 — a device plus a GUID namespace — and it is
 real kernel work, not a floor.
 
+### Two more pairs measured, and a generator trap found
+
+`kernel32:power` and `kernel32:fiber` both die rather than fail.
+`kernel32:power` panics on `NtPowerInformation` level 5
+(`SystemPowerCapabilities`) — a fixed-shape block of named constants, the
+same easy shape as the system-info batches, and the next cheap win here.
+
+**A trap to know about before taking it.** `SYSTEM_POWER_CAPABILITIES`,
+`SYSTEM_POWER_STATE` and `BATTERY_REPORTING_SCALE` live in `winnt.h` and are
+spelled with the typedef name and its pointer alias on SEPARATE lines:
+
+    } SYSTEM_POWER_CAPABILITIES,
+    *PSYSTEM_POWER_CAPABILITIES;
+
+`tools/gen_abi.py`'s `extract_struct` does not match that form. It does not
+error — it emits NOTHING, the build still succeeds, and the missing type
+only shows up as a compile failure at the use site (or, worse, not at all
+if nothing uses it yet). Adding the extraction and checking the generator
+"worked" because it exited cleanly is how a silent gap gets in. **Verify a
+new `abi/` entry by grepping the generated header, not by the generator's
+exit status** — and fix `extract_struct` to handle the split form as part
+of whichever commit needs these types.
+
 ### The highest-value single item left is MountPointManager, and it is now measured
 
 `kernel32:volume` is at **53** failures and `kernel32:drive` at **4**, and
