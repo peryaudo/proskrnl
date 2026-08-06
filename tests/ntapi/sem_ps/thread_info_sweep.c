@@ -352,6 +352,19 @@ START_TEST(thread_info_sweep)
         status = NtSetInformationThread(self, ThreadBasePriority, &special, sizeof(special));
         ok(status == STATUS_SUCCESS, "base priority TIME_CRITICAL -> %08lx", (unsigned long)status);
 
+        /* A wrong LENGTH is STATUS_INVALID_PARAMETER, not the
+         * STATUS_INFO_LENGTH_MISMATCH the query side of this same class
+         * gives. Both statuses are already in this file for other classes,
+         * which is exactly why the set/query asymmetry has to be pinned per
+         * class rather than assumed: `if (length != sizeof(DWORD)) return
+         * STATUS_INVALID_PARAMETER;` is the oracle's own line
+         * (third_party/wine dlls/ntdll/unix/thread.c, the ThreadBasePriority
+         * set arm). */
+        LONG_PTR wideBase = 0;
+        status = NtSetInformationThread(self, ThreadBasePriority, &wideBase, sizeof(wideBase));
+        ok(status == STATUS_INVALID_PARAMETER, "an 8-byte ThreadBasePriority -> %08lx",
+           (unsigned long)status);
+
         /* Put it back where every thread starts. */
         LONG normal = 0;
         (void)NtSetInformationThread(self, ThreadBasePriority, &normal, sizeof(normal));
