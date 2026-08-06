@@ -1944,6 +1944,53 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemLogicalProcessorInformation:
+    {
+        /* One record: one processor core, mask bit 0. That is not a
+         * simplification of a richer truth — Art. 3 mandates uniprocessor,
+         * so one core with one logical processor IS the machine, and
+         * KE_NUMBER_PROCESSORS is the one authority that says so.
+         *
+         * ntdll:info sums the ProcessorMask bits of every
+         * RelationProcessorCore record and requires the total to equal
+         * GetSystemInfo's dwNumberOfProcessors (info.c:1259-1273), so this
+         * answer is checked against the same count the rest of the kernel
+         * reports rather than standing alone.
+         *
+         * Cache and NUMA records are deliberately absent: proskrnl models
+         * neither, and inventing a cache hierarchy would be describing
+         * hardware the kernel does not know it has. The test tolerates
+         * their absence; a caller that needs them gets a short list, not a
+         * wrong one. */
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION records[KE_NUMBER_PROCESSORS];
+        ULONG needed = (ULONG)sizeof(records);
+        if (length < needed)
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = needed;
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(records, 0, sizeof(records));
+        for (ULONG i = 0; i < KE_NUMBER_PROCESSORS; i++)
+        {
+            records[i].ProcessorMask = (ULONG_PTR)1 << i;
+            records[i].Relationship = RelationProcessorCore;
+        }
+        memcpy(buffer, records, needed);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2036,7 +2083,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 9 now.
+         * as the classes get built. It was 16 when this list was written; 8 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2044,7 +2091,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemLogicalProcessorInformation:
         case SystemModuleInformationEx:
         case SystemProcessorIdleCycleTimeInformation:
         case SystemProcessIdInformation:

@@ -1022,6 +1022,51 @@ typedef struct {
     ULONG Flags;
 } SYSTEM_CACHE_INFORMATION, *PSYSTEM_CACHE_INFORMATION;
 
+typedef enum {
+    RelationProcessorCore    = 0,
+    RelationNumaNode         = 1,
+    RelationCache            = 2,
+    RelationProcessorPackage = 3,
+    RelationGroup            = 4,
+    RelationProcessorDie     = 5,
+    RelationNumaNodeEx       = 6,
+    RelationProcessorModule  = 7,
+    RelationAll              = 0xffff
+} LOGICAL_PROCESSOR_RELATIONSHIP;
+
+typedef enum {
+    CacheUnified,
+    CacheInstruction,
+    CacheData,
+    CacheTrace
+} PROCESSOR_CACHE_TYPE;
+
+typedef struct {
+    BYTE Level;
+    BYTE Associativity;
+    WORD LineSize;
+    DWORD Size;
+    PROCESSOR_CACHE_TYPE Type;
+} CACHE_DESCRIPTOR, *PCACHE_DESCRIPTOR;
+
+typedef struct {
+    ULONG_PTR ProcessorMask;
+    LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
+    union
+    {
+        struct
+        {
+            BYTE Flags;
+        } ProcessorCore;
+        struct
+        {
+            DWORD NodeNumber;
+        } NumaNode;
+        CACHE_DESCRIPTOR Cache;
+        ULONGLONG Reserved[2];
+    } DUMMYUNIONNAME;
+} SYSTEM_LOGICAL_PROCESSOR_INFORMATION, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION;
+
 typedef struct {
     void *Object;
     ULONG_PTR UniqueProcessId;
