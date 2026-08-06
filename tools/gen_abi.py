@@ -2025,6 +2025,16 @@ def gen_ntpsapi(wine: Path) -> str:
                 "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
             ),
             extract_struct(winternl, "_SYSTEM_CACHE_INFORMATION", "SYSTEM_CACHE_INFORMATION"),
+            # SystemExtendedHandleInformation (64): the wider handle record
+            # and its header (kernel/ps/query.c).
+            extract_struct(
+                winternl,
+                "_SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX",
+                "SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX",
+            ),
+            extract_struct(
+                winternl, "_SYSTEM_HANDLE_INFORMATION_EX", "SYSTEM_HANDLE_INFORMATION_EX"
+            ),
             extract_struct(
                 winternl,
                 "_SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX",

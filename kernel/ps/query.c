@@ -1314,13 +1314,28 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
     case SystemHandleInformation:
+    case SystemExtendedHandleInformation:
     {
         /* CUI-6 (sem_ps/sys_handles): the machine-wide snapshot — every
          * live process's table walked under the dispatcher lock into a pool
          * scratch, copied out only after release (the user copy can fault).
-         * Entry facts via Ob's accessor; ObjectPointer zero-filled as the
-         * oracle leaves it (dlls/ntdll/unix/system.c). */
-        if (length < sizeof(SYSTEM_HANDLE_INFORMATION))
+         * Entry facts via Ob's accessor; the object pointer is zero-filled
+         * as the oracle leaves it (dlls/ntdll/unix/system.c says "FIXME:
+         * Fill out Object" on its own extended path).
+         *
+         * The two classes are ONE walk with two serializations, not two
+         * enumerations (Art. 11) — the extended form differs in its header
+         * (a ULONG_PTR count plus a reserved word, rather than a ULONG) and
+         * in its per-entry record, but it lists exactly the same handles.
+         * The header and entry sizes are chosen once, here, and everything
+         * below is written through them. */
+        BOOLEAN extended = infoClass == SystemExtendedHandleInformation;
+        ULONG headerBytes =
+            extended ? (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION_EX, Handles)
+                     : (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION, Handle);
+        ULONG entryBytes = extended ? (ULONG)sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
+                                    : (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
+        if (length < headerBytes + entryBytes)
         {
             return STATUS_INFO_LENGTH_MISMATCH;
         }
@@ -1331,8 +1346,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         {
             count += CONTAINING_RECORD(p, EPROCESS, activeProcessLinks)->handleTable.inUse;
         }
-        ULONG headerBytes = (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION, Handle);
-        ULONG needed = headerBytes + count * (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
+        ULONG needed = headerBytes + count * entryBytes;
         if (length < needed)
         {
             KiReleaseDispatcherLock(flags);
@@ -1342,7 +1356,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
             }
             return STATUS_INFO_LENGTH_MISMATCH;
         }
-        SYSTEM_HANDLE_INFORMATION *snapshot = MiAllocatePool(needed);
+        BYTE *snapshot = MiAllocatePool(needed);
         if (snapshot == 0)
         {
             KiReleaseDispatcherLock(flags);
@@ -1365,18 +1379,42 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
                 {
                     continue;
                 }
-                SYSTEM_HANDLE_ENTRY *entry = &snapshot->Handle[filled++];
-                entry->OwnerPid = (ULONG)owner->uniqueProcessId;
-                entry->ObjectType = ObpTypeIndex(ObpGetHeader(body)->type);
-                entry->HandleFlags = (BYTE)(attributes & (OBJ_INHERIT | OBJ_PROTECT_CLOSE));
-                entry->HandleValue = (USHORT)(ULONG_PTR)value;
-                entry->ObjectPointer = 0;
-                entry->AccessMask = access;
+                BYTE *slot = snapshot + headerBytes + (SIZE_T)filled * entryBytes;
+                filled++;
+                USHORT typeIndex = ObpTypeIndex(ObpGetHeader(body)->type);
+                if (extended)
+                {
+                    SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *entry =
+                        (SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX *)slot;
+                    entry->Object = 0;
+                    entry->UniqueProcessId = (ULONG_PTR)owner->uniqueProcessId;
+                    entry->HandleValue = (ULONG_PTR)value;
+                    entry->GrantedAccess = access;
+                    entry->ObjectTypeIndex = typeIndex;
+                    entry->HandleAttributes = attributes & (OBJ_INHERIT | OBJ_PROTECT_CLOSE);
+                }
+                else
+                {
+                    SYSTEM_HANDLE_ENTRY *entry = (SYSTEM_HANDLE_ENTRY *)slot;
+                    entry->OwnerPid = (ULONG)owner->uniqueProcessId;
+                    entry->ObjectType = typeIndex;
+                    entry->HandleFlags = (BYTE)(attributes & (OBJ_INHERIT | OBJ_PROTECT_CLOSE));
+                    entry->HandleValue = (USHORT)(ULONG_PTR)value;
+                    entry->ObjectPointer = 0;
+                    entry->AccessMask = access;
+                }
             }
         }
-        snapshot->Count = filled;
+        if (extended)
+        {
+            ((SYSTEM_HANDLE_INFORMATION_EX *)snapshot)->NumberOfHandles = filled;
+        }
+        else
+        {
+            ((SYSTEM_HANDLE_INFORMATION *)snapshot)->Count = filled;
+        }
         KiReleaseDispatcherLock(flags);
-        ULONG used = headerBytes + filled * (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
+        ULONG used = headerBytes + filled * entryBytes;
         NTSTATUS handleStatus = KiProbeForWrite(buffer, used, sizeof(uint64_t));
         if (NT_SUCCESS(handleStatus))
         {
@@ -1998,7 +2036,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 10 now.
+         * as the classes get built. It was 16 when this list was written; 9 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2006,7 +2044,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemExtendedHandleInformation:
         case SystemLogicalProcessorInformation:
         case SystemModuleInformationEx:
         case SystemProcessorIdleCycleTimeInformation:
