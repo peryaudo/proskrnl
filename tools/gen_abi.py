@@ -2025,6 +2025,13 @@ def gen_ntpsapi(wine: Path) -> str:
                 "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
             ),
             extract_struct(winternl, "_SYSTEM_CACHE_INFORMATION", "SYSTEM_CACHE_INFORMATION"),
+            # SystemCodeIntegrityInformation (103), with its options flag.
+            extract_struct(
+                winternl,
+                "_SYSTEM_CODEINTEGRITY_INFORMATION",
+                "SYSTEM_CODEINTEGRITY_INFORMATION",
+            ),
+            extract_defines(winternl, "winternl.h", ["CODEINTEGRITY_OPTION_ENABLED"]),
             # SystemProcessIdInformation (88): pid in, image name out.
             extract_struct(
                 winternl, "_SYSTEM_PROCESS_ID_INFORMATION", "SYSTEM_PROCESS_ID_INFORMATION"

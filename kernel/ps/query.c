@@ -2177,6 +2177,36 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemCodeIntegrityInformation:
+    {
+        /* CODEINTEGRITY_OPTION_ENABLED, which is what the oracle reports.
+         * proskrnl enforces no code-integrity policy, and saying so by
+         * reporting the flag CLEAR would be the more literal answer — but
+         * the oracle is the spec (Art. 6) and callers branch on this to
+         * decide whether to attempt an unsigned load, where "disabled" is
+         * the answer that changes behaviour. Pinned rather than reasoned:
+         * this is the oracle's value. */
+        SYSTEM_CODEINTEGRITY_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        info.Length = (ULONG)sizeof(info);
+        info.CodeIntegrityOptions = CODEINTEGRITY_OPTION_ENABLED;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = (ULONG)sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2269,7 +2299,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 5 now.
+         * as the classes get built. It was 16 when this list was written; 4 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2277,7 +2307,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemCodeIntegrityInformation:
         case SystemProcessorBrandString:
         case SystemLogicalProcessorInformationEx:
         case SystemCpuSetInformation:
