@@ -836,11 +836,58 @@ static PVOID ObpCreatePermanentDirectory(PVOID parentBody, PCWSTR name)
     return body;
 }
 
+/* A boot-time symbolic link, alongside ObpCreatePermanentDirectory: same
+ * never-dies ownership (the creator's reference is kept), same one-authority
+ * creation path — the body is built by the shared allocator and its target
+ * copied into pool exactly as NtCreateSymbolicLinkObject does. */
+static void ObpCreatePermanentSymbolicLink(PVOID parent, PCWSTR name, PCWSTR targetPath)
+{
+    UNICODE_STRING nameString, targetString;
+    RtlInitUnicodeString(&nameString, name);
+    RtlInitUnicodeString(&targetString, targetPath);
+
+    PWSTR copy = MiAllocatePool(targetString.Length);
+    if (copy == 0)
+    {
+        KiPanic("ObpInitializeObjectManager: out of pool");
+    }
+    memcpy(copy, targetString.Buffer, targetString.Length);
+
+    PVOID body;
+    NTSTATUS status = ObpAllocateObject(&ObpSymbolicLinkType, sizeof(OBP_SYMBOLIC_LINK), &body);
+    if (!NT_SUCCESS(status))
+    {
+        KiPanic("ObpInitializeObjectManager: out of pool");
+    }
+    POBP_SYMBOLIC_LINK link = body;
+    link->target.Buffer = copy;
+    link->target.Length = targetString.Length;
+    link->target.MaximumLength = targetString.Length;
+    ObpGetHeader(body)->permanent = TRUE;
+    if (!NT_SUCCESS(ObpLinkObjectName(parent, ObpGetHeader(body), &nameString)))
+    {
+        KiPanic("ObpInitializeObjectManager: cannot name a boot symbolic link");
+    }
+}
+
 void ObpInitializeObjectManager(void)
 {
     ObpRootDirectory = ObpCreatePermanentDirectory(0, 0);
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("Device"));
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("??"));
+    /* NT's older name for the same DOS-device directory, and a symbolic
+     * LINK rather than a second directory — which is the part that matters.
+     * Two directories would drift: a drive letter defined through one would
+     * be invisible through the other, and every path resolution in the
+     * system would then disagree with the enumeration below.
+     *
+     * kernelbase's GetLogicalDrives opens `\DosDevices` as a DIRECTORY and
+     * lists its two-character `X:` names (dlls/kernelbase/volume.c). With
+     * the name absent the open failed, the bitmask came back 0, and
+     * kernel32:drive lost twelve assertions behind it — including every
+     * DRIVE_NO_ROOT_DIR check, which reads "this letter does not exist" off
+     * that same zero. Pinned by tests/ntapi/sem_ob/dosdevices.c. */
+    ObpCreatePermanentSymbolicLink(ObpRootDirectory, WSTR("DosDevices"), WSTR("\\??"));
     ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("BaseNamedObjects"));
     /* NT's home for kernel-owned named objects, and the directory Wine's
      * win32u opens `__wine_session` in (dlls/win32u/winstation.c). Permanent
