@@ -105,6 +105,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FileInternalInformation:
         needed = sizeof(FILE_INTERNAL_INFORMATION);
         break;
+    case FileIdInformation:
+        needed = sizeof(FILE_ID_INFORMATION);
+        break;
     case FileEndOfFileInformation:
         needed = sizeof(FILE_END_OF_FILE_INFORMATION);
         break;
@@ -249,6 +252,57 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         }
         FILE_INTERNAL_INFORMATION *out = buffer;
         out->IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        break;
+    }
+    case FileIdInformation:
+    {
+        /* The join of the two identities the two classes above and
+         * FileFsVolumeInformation already serve — never a third source for
+         * either (Art. 11): the id is raw.fileId, exactly as
+         * FileInternalInformation reports it, and the serial comes from the
+         * device's own QueryVolumeInfo, exactly as FileFsVolumeInformation
+         * reports it. The pinned Wine builds it the same way
+         * (dlls/ntdll/unix/file.c FileIdInformation: st_ino for the id,
+         * the mount manager's serial).
+         *
+         * A backing with no per-file identity refuses here for the same
+         * reason FileInternalInformation does, and loudly. */
+        if (raw.fileId == 0 || file->device->ops->QueryVolumeInfo == 0)
+        {
+            DbgPrint("NtQueryInformationFile: FileIdInformation on a backing with no "
+                     "file identity or no volume\n");
+            ObDereferenceObject(file);
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+        /* QueryVolumeInfo goes through the volume gate, so it can park —
+         * re-probe before writing, the same rule the entry probes follow. */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (NT_SUCCESS(status))
+        {
+            status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+        }
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+        FILE_ID_INFORMATION *out = buffer;
+        out->VolumeSerialNumber = facts.serialNumber;
+        /* Zero FIRST, then the low half: the upper eight bytes of the
+         * 128-bit id carry nothing on a volume whose ids are 64 bits, and
+         * they must be WRITTEN rather than left as the caller's bytes —
+         * ntdll:file's test_file_id_information poisons the buffer with
+         * 0x11 and checks the poison is gone. */
+        memset(&out->FileId, 0, sizeof(out->FileId));
+        uint64_t low = raw.fileId;
+        memcpy(&out->FileId, &low, sizeof(low));
         break;
     }
     case FileEndOfFileInformation:
