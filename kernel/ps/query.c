@@ -2207,6 +2207,58 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemProcessorBrandString:
+    {
+        /* The 48-character CPUID brand string plus its NUL, exactly 49
+         * bytes — the size the oracle reports (`static char cpu_name[49]`).
+         * Read from CPUID leaves 0x80000002..0x80000004 (Intel SDM Vol. 2A,
+         * CPUID: "Processor Brand String"), so it is this machine's real
+         * name and not a label.
+         *
+         * The misalignment refusal is part of the contract and comes BEFORE
+         * the length check: a buffer that is not 4-byte aligned is
+         * STATUS_DATATYPE_MISALIGNMENT whatever its size. A CPU without the
+         * extended leaves has no brand string at all, which is
+         * STATUS_NOT_SUPPORTED rather than an empty one. */
+        uint32_t regs[4];
+        KiCpuid(0x80000000, 0, regs);
+        if (regs[0] < 0x80000004)
+        {
+            return STATUS_NOT_SUPPORTED;
+        }
+        if (((uintptr_t)buffer & 3) != 0)
+        {
+            return STATUS_DATATYPE_MISALIGNMENT;
+        }
+        char brand[49];
+        memset(brand, 0, sizeof(brand));
+        for (uint32_t leaf = 0; leaf < 3; leaf++)
+        {
+            KiCpuid(0x80000002 + leaf, 0, regs);
+            memcpy(brand + leaf * 16, regs, 16);
+        }
+        brand[48] = 0;
+        if (length < sizeof(brand))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = (ULONG)sizeof(brand);
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(brand), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, brand, sizeof(brand));
+        if (returnLength != 0)
+        {
+            *returnLength = (ULONG)sizeof(brand);
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2299,7 +2351,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 4 now.
+         * as the classes get built. It was 16 when this list was written; 3 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2307,7 +2359,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemProcessorBrandString:
         case SystemLogicalProcessorInformationEx:
         case SystemCpuSetInformation:
         case SystemSupportedProcessorArchitectures2:
