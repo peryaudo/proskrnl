@@ -32,6 +32,16 @@ static void IopDeleteFileObject(PVOID body)
     {
         MiFreePool(file->dirMask.Buffer);
     }
+    /* The enumeration snapshot, freed here rather than at cleanup — io.h
+     * says why (a parked snapshot build outlives the last handle close). */
+    if (file->dirSnapshot != 0)
+    {
+        MiFreePool(file->dirSnapshot);
+    }
+    if (file->dirOrder != 0)
+    {
+        MiFreePool(file->dirOrder);
+    }
     if (file->completionPort != 0)
     {
         /* The bind's reference, released with the file object rather than

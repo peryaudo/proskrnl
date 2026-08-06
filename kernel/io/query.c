@@ -1042,6 +1042,200 @@ static BOOLEAN IopEntryMatchesMask(const IO_DIR_ENTRY *entry, const UNICODE_STRI
                              maskUnits);
 }
 
+/* Order the snapshot the way NT returns it: "." first, ".." second, then
+ * case-insensitive ascending.
+ *
+ * The comparator is RtlCompareUnicodeString(..., TRUE) — the SAME authority
+ * Ob name resolution, FAT lookup and Cm's subkey enumeration order already
+ * fold through (Art. 11), and structurally the same fold ntdll's own
+ * RtlCompareUnicodeString applies in the test that checks this
+ * (ntdll:directory directory.c:322). Fold direction matters and is not
+ * symmetric: upcasing puts `_x` AFTER `Bx` while lowercasing puts it
+ * before, and `_`-prefixed names are common. RtlUpcaseUnicodeChar upcases.
+ *
+ * A case-insensitive tie falls back to a case-SENSITIVE compare so the
+ * order is total (the oracle's own tiebreak). Two byte-identical names can
+ * only come from a corrupt volume; both are emitted, in snapshot order.
+ * Dropping one would lose a directory entry silently, which is worse than
+ * reporting an unsorted pair — and no assert here, because a corrupt volume
+ * read from ring 3 must not halt the machine.
+ *
+ * The dot entries are skipped POSITIONALLY, not searched for: FAT stores
+ * them as a subdirectory's first two entries and the oracle likewise
+ * prepends them, so if they are present they are already at 0 and 1. They
+ * are mask-filtered like any other entry on both runners, so under a mask
+ * that excludes them the skip simply does not fire — and the FAT root has
+ * none at all.
+ *
+ * Insertion sort over the permutation, not the records: comparisons are
+ * string compares but moves are 4 bytes, where sorting 600-byte entries in
+ * place would shuffle megabytes for nothing. n is a directory's entry
+ * count, so the quadratic term is not worth avoiding (Art. 3). */
+static int IopCompareEntries(const IO_DIR_ENTRY *a, const IO_DIR_ENTRY *b)
+{
+    UNICODE_STRING left, right;
+    left.Buffer = (PWSTR)(uintptr_t)a->name;
+    left.Length = a->nameLength;
+    left.MaximumLength = a->nameLength;
+    right.Buffer = (PWSTR)(uintptr_t)b->name;
+    right.Length = b->nameLength;
+    right.MaximumLength = b->nameLength;
+    LONG order = RtlCompareUnicodeString(&left, &right, TRUE);
+    if (order != 0)
+    {
+        return order < 0 ? -1 : 1;
+    }
+    order = RtlCompareUnicodeString(&left, &right, FALSE);
+    return order < 0 ? -1 : (order > 0 ? 1 : 0);
+}
+
+static BOOLEAN IopEntryIsDots(const IO_DIR_ENTRY *entry, ULONG units)
+{
+    if (entry->nameLength != units * sizeof(WCHAR))
+    {
+        return FALSE;
+    }
+    for (ULONG i = 0; i < units; i++)
+    {
+        if (entry->name[i] != '.')
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static void IopSortDirSnapshot(IO_DIR_ENTRY *entries, ULONG *order, ULONG count)
+{
+    ULONG first = 0;
+    if (first < count && IopEntryIsDots(&entries[order[first]], 1))
+    {
+        first++;
+    }
+    if (first < count && IopEntryIsDots(&entries[order[first]], 2))
+    {
+        first++;
+    }
+    for (ULONG i = first + 1; i < count; i++)
+    {
+        ULONG value = order[i];
+        ULONG j = i;
+        while (j > first && IopCompareEntries(&entries[order[j - 1]], &entries[value]) > 0)
+        {
+            order[j] = order[j - 1];
+            j--;
+        }
+        order[j] = value;
+    }
+}
+
+/* Build the handle's enumeration snapshot: every entry the directory has
+ * right now that the bound mask accepts, sorted the way NT returns them.
+ *
+ * This is the model the oracle uses (dlls/ntdll/unix/file.c
+ * init_cached_dir_data) and the one the rest of this file already assumes —
+ * the mask binds at scan start precisely because the snapshot is built
+ * then. Until now the "snapshot" was conceptual and entries were read live;
+ * making it literal is what allows a sort at all, since sorting needs the
+ * whole set before the first entry can be emitted.
+ *
+ * Grown by doubling in ONE pass rather than counted first and then filled.
+ * A count pass is separated from the fill pass by parks (the FAT volume
+ * gate is taken and released per entry), so the two can disagree, and the
+ * only ways out of that are to truncate — which is the silent-plausible
+ * answer G12 forbids, since a caller cannot tell a truncated listing from a
+ * short directory — or to reallocate anyway. There is deliberately NO CAP:
+ * running out of pool is STATUS_INSUFFICIENT_RESOURCES, a status a caller
+ * can act on.
+ *
+ * Pinned by tests/ntapi/sem_file/dir_sort.c. */
+static NTSTATUS IopBuildDirSnapshot(PFILE_OBJECT file)
+{
+    IO_DIR_ENTRY *entries = 0;
+    ULONG capacity = 0, count = 0;
+    ULONG cursor = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    for (;;)
+    {
+        IO_DIR_ENTRY entry;
+        entry.shortNameLength = 0;
+        status = file->device->ops->ReadDirectory(file, &cursor, &entry);
+        if (status == STATUS_NO_MORE_FILES)
+        {
+            status = STATUS_SUCCESS;
+            break;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        if (file->dirMask.Buffer != 0 && !IopEntryMatchesMask(&entry, &file->dirMask))
+        {
+            continue;
+        }
+        if (count == capacity)
+        {
+            ULONG grown = capacity == 0 ? 64 : capacity * 2;
+            IO_DIR_ENTRY *bigger = MiAllocatePool(grown * sizeof(IO_DIR_ENTRY));
+            if (bigger == 0)
+            {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            if (entries != 0)
+            {
+                memcpy(bigger, entries, count * sizeof(IO_DIR_ENTRY));
+                MiFreePool(entries);
+            }
+            entries = bigger;
+            capacity = grown;
+        }
+        entries[count++] = entry;
+    }
+    if (!NT_SUCCESS(status))
+    {
+        if (entries != 0)
+        {
+            MiFreePool(entries);
+        }
+        return status;
+    }
+
+    ULONG *order = 0;
+    if (count != 0)
+    {
+        order = MiAllocatePool(count * sizeof(ULONG));
+        if (order == 0)
+        {
+            MiFreePool(entries);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        for (ULONG i = 0; i < count; i++)
+        {
+            order[i] = i;
+        }
+        IopSortDirSnapshot(entries, order, count);
+    }
+
+    /* Allocated everything before releasing anything: a failed rebuild
+     * leaves the handle's existing snapshot intact, the same order the mask
+     * copy above follows. */
+    if (file->dirSnapshot != 0)
+    {
+        MiFreePool(file->dirSnapshot);
+    }
+    if (file->dirOrder != 0)
+    {
+        MiFreePool(file->dirOrder);
+    }
+    file->dirSnapshot = entries;
+    file->dirOrder = order;
+    file->dirSnapshotCount = count;
+    file->dirPosition = 0;
+    return STATUS_SUCCESS;
+}
+
 /* Per-class fixed sizes (offset of the trailing FileName array). */
 static ULONG IopDirEntryFixedSize(FILE_INFORMATION_CLASS informationClass)
 {
@@ -1250,43 +1444,43 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
         file->dirMask.Length = mask->Length;
         file->dirMask.MaximumLength = mask->Length;
     }
-    if (restartScan)
-    {
-        file->dirCursor = 0;
-    }
     BOOLEAN firstScan = !file->dirScanStarted;
+    if (scanBegins)
+    {
+        /* Take the snapshot. A failure here leaves dirScanStarted alone: a
+         * call that could not begin a scan must not have begun one. */
+        NTSTATUS build = IopBuildDirSnapshot(file);
+        if (!NT_SUCCESS(build))
+        {
+            ObDereferenceObject(file);
+            return build;
+        }
+    }
+    else if (restartScan)
+    {
+        file->dirPosition = 0;
+    }
     file->dirScanStarted = TRUE;
 
     ULONG written = 0;
     ULONG *previousNextOffset = 0;
     ULONG emitted = 0;
+    status = STATUS_SUCCESS;
     for (;;)
     {
-        IO_DIR_ENTRY entry;
-        ULONG cursor = file->dirCursor;
-        status = file->device->ops->ReadDirectory(file, &cursor, &entry);
-        if (status == STATUS_NO_MORE_FILES)
+        if (file->dirPosition >= file->dirSnapshotCount)
         {
+            status = STATUS_NO_MORE_FILES;
             break;
         }
-        if (!NT_SUCCESS(status))
-        {
-            break;
-        }
+        IO_DIR_ENTRY entry = file->dirSnapshot[file->dirOrder[file->dirPosition]];
+        ULONG cursor = file->dirPosition + 1;
 
-        if (file->dirMask.Buffer != 0 && !IopEntryMatchesMask(&entry, &file->dirMask))
-        {
-            file->dirCursor = cursor; /* consumed, filtered out */
-            continue;
-        }
-
-        /* Re-validate the whole output buffer each round: ReadDirectory
-         * above goes through the volume gate (CUI-8) and can park, so the
-         * probe that last covered the buffer — entry or a previous
-         * iteration — is stale. The fill below and the NextEntryOffset
-         * back-patch into an earlier record both write inside this range,
-         * with no park between probe and store (PR #95 review round 2,
-         * F2). */
+        /* The mask was applied when the snapshot was built; nothing is
+         * filtered here. The buffer probe stays per-round even though the
+         * loop no longer parks — every ReadDirectory now happens during the
+         * build, before a byte of user memory is touched — because it is
+         * cheap and keeps the store paths uniform. */
         status = KiProbeForWrite(buffer, length, 1);
         if (!NT_SUCCESS(status))
         {
@@ -1322,7 +1516,7 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
         previousNextOffset = (ULONG *)((char *)buffer + start); /* NextEntryOffset is first */
         written = start + fixedSize + nameBytes;
         emitted++;
-        file->dirCursor = cursor;
+        file->dirPosition = cursor;
         if (status == STATUS_BUFFER_OVERFLOW || returnSingleEntry)
         {
             break;

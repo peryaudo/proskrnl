@@ -114,7 +114,31 @@ typedef struct FILE_OBJECT
 
     /* Directory enumeration state: the mask binds to the handle (pinned
      * Wine: a NULL mask on a later call reuses the previous one). */
-    ULONG dirCursor;
+    /* Directory enumeration is served from a SNAPSHOT taken when the scan
+     * begins, not read live from the filesystem per call — which is what
+     * lets the entries come back sorted, and is what the oracle does
+     * (dlls/ntdll/unix/file.c init_cached_dir_data). `dirPosition` indexes
+     * dirOrder, which is a permutation of dirSnapshot; both are pool,
+     * allocated only in NtQueryDirectoryFile and freed only in
+     * IopDeleteFileObject beside dirMask.
+     *
+     * The free belongs to DELETE and not to cleanup, and not for symmetry:
+     * an enumerator holds an object reference for the whole call, which
+     * excludes delete but NOT cleanup — the last handle can close while a
+     * snapshot build is parked between two gated ReadDirectory calls
+     * (docs/20 §9). Freeing at cleanup would hand that build a dangling
+     * array. Putting it in delete makes the hazard structurally impossible
+     * instead of argued away.
+     *
+     * Consequence, accepted: a FILE_OBJECT can outlive its last handle
+     * while a section references it, so the snapshot can sit in pool past
+     * the last NtClose — the same window dirMask and completionPort
+     * already live in. NOT an obligation-ledger entry: its owner is the
+     * object, not the calling frame. */
+    IO_DIR_ENTRY *dirSnapshot;
+    ULONG *dirOrder;
+    ULONG dirSnapshotCount;
+    ULONG dirPosition;
     BOOLEAN dirScanStarted; /* first-query state: empty result is
                              * NO_SUCH_FILE only on the first scan */
     UNICODE_STRING dirMask; /* pool copy; Buffer 0 = no mask yet */
