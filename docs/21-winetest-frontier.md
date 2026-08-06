@@ -951,6 +951,39 @@ the fault handler until the winetest stops crashing. The failure at
 
 **This one is worth a plan before code.**
 
+### Three more §2 pairs measured; `kernel32:sync` diagnosed
+
+None of these had a current number; §2's were taken before this session.
+
+- **`kernel32:mailslot`** panics on `NtQueryInformationFile` class 26
+  (`FileMailslotQueryInformation`). That is W8 (mailslots) and the panic
+  confirms the pair is gated on the whole device, not on a detail.
+
+- **`kernel32:sync` HANGS**, and the cause is one assertion. The pair
+  reaches `sync.c:1489` — `WaitForMultipleObjects` on a PSEUDO-HANDLE,
+  which must fail immediately with `WAIT_FAILED` /
+  `ERROR_INVALID_HANDLE` — and proskrnl instead *waits*, returning 258
+  (`WAIT_TIMEOUT`) with the caller's `0xdeadbeef` error untouched. The test
+  then proceeds into a wait that never completes and the pair burns the
+  full 300-second timeout (`sweep PASS (316 sweeps)` in the log is the
+  wedge detector counting while it does).
+
+  The contract is stated in the test's own comment: *"in contrast to
+  WaitForSingleObject, all pseudo-handles are not allowed in
+  WaitForMultipleObjects"*. So this is a narrow, well-specified fix in the
+  wait path — pseudo-handles resolve for the single-object form and must be
+  REJECTED for the multiple-object one — and it is worth doing early
+  because a hanging pair costs five minutes of every full sweep.
+
+  Note the shape: this is the third time in this document that a pseudo-
+  handle rule has been the defect (`ObReferenceObjectByHandle` not
+  resolving -1/-2 was the first, self-suspension the second). They are
+  worth auditing together rather than one pair at a time.
+
+- **`kernel32:resource`** also ends without a summary and names no unbuilt
+  class and no user fault. Untriaged; read its serial log first, as
+  `kernel32:fiber` needed.
+
 ### The highest-value single item left is MountPointManager, and it is now measured
 
 `kernel32:volume` is at **53** failures and `kernel32:drive` at **4**, and
