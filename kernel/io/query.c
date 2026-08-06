@@ -1223,9 +1223,31 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
             status = STATUS_NO_SUCH_FILE;
         }
         ObDereferenceObject(file);
-        if (status == STATUS_NO_MORE_FILES || status == STATUS_NO_SUCH_FILE)
+        /* This class writes the caller's IOSB on FAILURE too — every failure
+         * but one. The oracle states it in a line (dlls/ntdll/unix/file.c,
+         * the tail of NtQueryDirectoryFile):
+         *
+         *     if (status != STATUS_NO_SUCH_FILE) io->Status = status;
+         *
+         * so it is NOT the wineserver's write-only-on-success convention the
+         * rest of io/ follows (docs/03) — this call is served by ntdll's own
+         * unix path on the oracle, and ntdll:directory depends on the
+         * difference: it poisons the block and asserts `io.Status == status`
+         * after every continuation query (directory.c:243, 117 failures
+         * before this). STATUS_NO_SUCH_FILE alone leaves the bytes alone.
+         * Pinned by tests/ntapi/sem_file/dir_iosb.c. */
+        if (status != STATUS_NO_SUCH_FILE)
         {
-            return status;
+            /* Through the one completion authority (Art. 11) rather than a
+             * raw store: the enumeration above parks in the volume gate, so
+             * the caller's entry probe is stale and a bare write would
+             * ring-0-fault and unwind past this function's cleanup.
+             *
+             * eventHandle 0 deliberately: whether an empty scan signals the
+             * caller's event is NOT pinned — the oracle's path never touches
+             * the event in this call at all — so this keeps the event
+             * behaviour exactly as it was rather than inventing one. */
+            (void)IopCompleteRequest(iosb, 0, status, 0);
         }
         return status;
     }
