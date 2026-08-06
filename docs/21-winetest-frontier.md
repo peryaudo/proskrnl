@@ -874,6 +874,20 @@ edit in the commit that builds it.
 serves. The list began at 16 on the plain path and 7 on the Ex path; both
 are empty. Fifteen classes were built.
 
+### `ntdll:rtl` has a CUI-image floor of 26, and it is one dependency
+
+All 26 failures are `test_LdrAddRefDll` (`rtl.c:2314`-`:2348`), and every
+one of them follows from `LoadLibraryA("comctl32.dll")` returning NULL.
+comctl32 imports user32 and gdi32, so it cannot be on the CUI volume — the
+same category as `kernel32:toolhelp`'s shell32.
+
+It is NOT handled the same way, and the difference matters: toolhelp's
+*entire* subject is behind its GUI dependency, so the pair convicts nothing
+and is excluded. Here the rest of the pair passes, so excluding it would
+throw away real coverage to hide 26 assertions. The pair stays in, stays
+red at 26, and the reason is written down. **A red pair with a written
+reason is more useful than a missing one.**
+
 ### And `ntdll:info` still cannot complete, for a reason worth writing down
 
 With every class built, the pair still panics — at
