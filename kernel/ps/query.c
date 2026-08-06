@@ -900,8 +900,8 @@ static ULONG PspProcessEntryLength(PEPROCESS process, ULONG threadInfoSize)
 {
     ULONG threadCount = (ULONG)process->activeThreadCount;
     ULONG nameChars = PspImageBaseNameChars(process->imageName);
-    ULONG length = (ULONG)sizeof(SYSTEM_PROCESS_INFORMATION) +
-                   threadCount * threadInfoSize + (nameChars + 1) * (ULONG)sizeof(WCHAR);
+    ULONG length = (ULONG)sizeof(SYSTEM_PROCESS_INFORMATION) + threadCount * threadInfoSize +
+                   (nameChars + 1) * (ULONG)sizeof(WCHAR);
     return (length + 7) & ~7u;
 }
 
@@ -1264,8 +1264,8 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return PspQuerySystemProcessInformation(buffer, length, returnLength,
                                                 (ULONG)sizeof(SYSTEM_THREAD_INFORMATION));
     case SystemExtendedProcessInformation:
-        return PspQuerySystemProcessInformation(
-            buffer, length, returnLength, (ULONG)sizeof(SYSTEM_EXTENDED_THREAD_INFORMATION));
+        return PspQuerySystemProcessInformation(buffer, length, returnLength,
+                                                (ULONG)sizeof(SYSTEM_EXTENDED_THREAD_INFORMATION));
     /* "Native" means the KERNEL's word size, not the caller's, so on an
      * x86_64-only kernel (ADR 0006) answering a 64-bit caller it is the
      * same class. The oracle spells it as this same fallthrough behind an
@@ -1330,9 +1330,8 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * The header and entry sizes are chosen once, here, and everything
          * below is written through them. */
         BOOLEAN extended = infoClass == SystemExtendedHandleInformation;
-        ULONG headerBytes =
-            extended ? (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION_EX, Handles)
-                     : (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION, Handle);
+        ULONG headerBytes = extended ? (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION_EX, Handles)
+                                     : (ULONG)offsetof(SYSTEM_HANDLE_INFORMATION, Handle);
         ULONG entryBytes = extended ? (ULONG)sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
                                     : (ULONG)sizeof(SYSTEM_HANDLE_ENTRY);
         if (length < headerBytes + entryBytes)
@@ -1444,8 +1443,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * easy mistake here. */
         static const char kernelName[] = "\\SystemRoot\\system32\\ntoskrnl.exe";
         const uint64_t kernelBase = 0xffffffff80000000ULL; /* linker.ld */
-        ULONG needed =
-            (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION_EX) + (ULONG)sizeof(ULONG);
+        ULONG needed = (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION_EX) + (ULONG)sizeof(ULONG);
         if (length < needed)
         {
             if (returnLength != 0)
@@ -2366,7 +2364,16 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; the plain path now owes NONE.
+         * as the classes get built. It was 16 when this list was written and
+         * is now EMPTY: the plain entry point owes nothing.
+         *
+         * An empty list is spelled as no `switch` at all, not as a `switch`
+         * whose only arm is `default`. The intermediate state — case labels
+         * deleted while the `DbgPrint`/`STATUS_NOT_IMPLEMENTED` pair was
+         * left stranded above the first label — compiles silently and reads
+         * as though the loud refusal were still reachable when it is dead
+         * code. Re-opening the list means writing the arm back with its
+         * classes, in the commit that adds them.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2379,14 +2386,8 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * SystemSupportedProcessorArchitectures2 (230), so on this path
          * they are ordinary refusals and belong in the 225, not here. Their
          * Ex arms are separate work with their own refusal domain. */
-        switch (infoClass)
-        {
-            DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
-            return STATUS_NOT_IMPLEMENTED;
-        default:
-            /* In the enum, and the oracle refuses it too. */
-            return STATUS_INVALID_INFO_CLASS;
-        }
+        /* In the enum, and the oracle refuses it too. */
+        return STATUS_INVALID_INFO_CLASS;
     }
 }
 
@@ -2436,9 +2437,8 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         /* Per-record sizes: each is its fixed part plus the one group
          * affinity / group info the single group needs. */
         ULONG headerBytes = (ULONG)offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
-        ULONG processorBytes =
-            headerBytes + (ULONG)offsetof(PROCESSOR_RELATIONSHIP, GroupMask) +
-            (ULONG)sizeof(GROUP_AFFINITY);
+        ULONG processorBytes = headerBytes + (ULONG)offsetof(PROCESSOR_RELATIONSHIP, GroupMask) +
+                               (ULONG)sizeof(GROUP_AFFINITY);
         ULONG numaBytes = headerBytes + (ULONG)offsetof(NUMA_NODE_RELATIONSHIP, GroupMask) +
                           (ULONG)sizeof(GROUP_AFFINITY);
         ULONG cacheBytes = headerBytes + (ULONG)offsetof(CACHE_RELATIONSHIP, GroupMask) +
@@ -2501,8 +2501,7 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
                 }
                 SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *record =
                     (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(scratch + offset);
-                record->Relationship =
-                    pass == 0 ? RelationProcessorCore : RelationProcessorPackage;
+                record->Relationship = pass == 0 ? RelationProcessorCore : RelationProcessorPackage;
                 record->Size = processorBytes;
                 record->Processor.GroupCount = 1;
                 record->Processor.GroupMask[0].Mask = allProcessors;
@@ -2566,6 +2565,13 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
             record->Group.GroupInfo[0].ActiveProcessorMask = allProcessors;
             offset += groupBytes;
         }
+        /* The emitted bytes and the sized bytes are computed by two separate
+         * passes over the same five `want*` decisions, so they can disagree
+         * — and a disagreement would copy out either a truncated list or the
+         * uninitialized tail of the scratch block. Stated as an invariant
+         * rather than trusted, which also gives the last `offset +=` above a
+         * reader (it is otherwise a dead store `make tidy` rejects). */
+        ASSERT(offset == needed);
         memcpy(buffer, scratch, needed);
         MiFreePool(scratch);
         return STATUS_SUCCESS;
@@ -2601,9 +2607,9 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
              * oracle validates it with a ProcessBasicInformation query and
              * returns whatever that says. */
             PVOID body;
-            NTSTATUS refStatus = ObReferenceObjectByHandle(
-                target, PROCESS_QUERY_LIMITED_INFORMATION, &PspProcessType, ExGetPreviousMode(),
-                &body, 0);
+            NTSTATUS refStatus =
+                ObReferenceObjectByHandle(target, PROCESS_QUERY_LIMITED_INFORMATION,
+                                          &PspProcessType, ExGetPreviousMode(), &body, 0);
             if (!NT_SUCCESS(refStatus))
             {
                 return refStatus;

@@ -892,8 +892,7 @@ static BOOLEAN IopMatchMask(const WCHAR *name, ULONG nameUnits, const WCHAR *mas
                     {
                         /* The tail past the final dot: one resume point,
                          * at its start. */
-                        return restUnits != 0 &&
-                               IopMatchMask(name, nameUnits, rest, restUnits);
+                        return restUnits != 0 && IopMatchMask(name, nameUnits, rest, restUnits);
                     }
                 }
                 else
@@ -998,8 +997,7 @@ static BOOLEAN IopMatchEntryName(const WCHAR *name, ULONG nameUnits, const WCHAR
  * (kernel/lib/rtl.c says why it is not fs/fat32's FatBuildExact83).
  *
  * Pinned by tests/ntapi/sem_file/short_names.c. */
-static void IopFillShortName(const IO_DIR_ENTRY *entry, WCHAR *shortName,
-                             CHAR *shortNameLength)
+static void IopFillShortName(const IO_DIR_ENTRY *entry, WCHAR *shortName, CHAR *shortNameLength)
 {
     UNICODE_STRING longName;
     longName.Buffer = (PWSTR)(uintptr_t)entry->name;
@@ -1530,7 +1528,11 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     ULONG written = 0;
     ULONG *previousNextOffset = 0;
     ULONG emitted = 0;
-    status = STATUS_SUCCESS;
+    /* No pre-loop seed for `status`: the first thing every iteration does is
+     * assign it (the position check or the buffer probe), so a seed here is a
+     * store no path can read — which `make tidy`'s dead-store analysis
+     * rejects, and rightly: a seed that can never be observed hides which
+     * assignment actually produced the answer. */
     for (;;)
     {
         if (file->dirPosition >= file->dirSnapshotCount)

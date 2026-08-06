@@ -168,7 +168,7 @@ BOOLEAN RtlIsNameLegalDOS8Dot3(const UNICODE_STRING *name, POEM_STRING oemName,
     static const char illegal[] = "\"*+,/:;<=>?[\\]|";
     ULONG units = name != 0 ? name->Length / sizeof(WCHAR) : 0;
     ULONG base = 0, ext = 0;
-    BOOLEAN sawDot = FALSE, spaces = FALSE;
+    BOOLEAN sawDot = FALSE;
 
     if (oemName != 0 || spacesFound != 0)
     {
@@ -205,7 +205,11 @@ BOOLEAN RtlIsNameLegalDOS8Dot3(const UNICODE_STRING *name, POEM_STRING oemName,
         }
         if (c == ' ')
         {
-            spaces = TRUE;
+            /* A space makes the name illegal outright. NT's signature also
+             * REPORTS one through `spacesFound`, but that out-param is
+             * unbuilt here (asserted NULL above), so there is nothing to
+             * record it in — a local flag written and never read would be
+             * that unbuilt half pretending to exist. */
             return FALSE;
         }
         for (const char *p = illegal; *p != 0; p++)
@@ -224,7 +228,6 @@ BOOLEAN RtlIsNameLegalDOS8Dot3(const UNICODE_STRING *name, POEM_STRING oemName,
             base++;
         }
     }
-    (void)spaces;
     if (base == 0 || base > 8 || ext > 3)
     {
         return FALSE;
