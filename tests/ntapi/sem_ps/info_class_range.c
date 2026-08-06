@@ -66,4 +66,33 @@ START_TEST(info_class_range)
         NtQuerySystemInformation(SystemBasicInformation, buffer, sizeof(buffer), &returnLength);
     ok(status == STATUS_SUCCESS, "SystemBasicInformation -> %08lx", (unsigned long)status);
     ok(returnLength != 0, "SystemBasicInformation returned %lu bytes", (unsigned long)returnLength);
+
+    /* --- SystemNativeBasicInformation (114) is the SAME class on x64 ------
+     * "Native" means "the kernel's own word size rather than the caller's",
+     * so on a 64-bit kernel answering a 64-bit caller it is
+     * SystemBasicInformation and nothing else — the oracle spells that as a
+     * fallthrough guarded by `if (!is_win64) return
+     * STATUS_INVALID_INFO_CLASS` (dlls/ntdll/unix/system.c). proskrnl is
+     * x86_64-only (ADR 0006), so the guard is always false here and the two
+     * classes must agree byte for byte.
+     *
+     * ntdll:info reaches it at info.c:218 and compares the two answers
+     * field by field; proskrnl had it unbuilt, which the armed boot turns
+     * into a panic — so this one class was ending the pair. */
+    {
+        UCHAR nativeBuffer[64];
+        ULONG nativeLength = 0;
+        NTSTATUS nativeStatus = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)114,
+                                                         nativeBuffer, sizeof(nativeBuffer),
+                                                         &nativeLength);
+        ok(nativeStatus == STATUS_SUCCESS, "SystemNativeBasicInformation -> %08lx",
+           (unsigned long)nativeStatus);
+        ok(nativeLength == returnLength, "native returned %lu bytes, basic returned %lu",
+           (unsigned long)nativeLength, (unsigned long)returnLength);
+        /* Compared up to and including NumberOfProcessors, which is the
+         * span ntdll:info itself compares (info.c:224) — the fields past it
+         * are pointers into the caller's own address space. */
+        ok(memcmp(nativeBuffer, buffer, returnLength) == 0,
+           "the two classes disagree about the same facts");
+    }
 }
