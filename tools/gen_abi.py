@@ -2017,6 +2017,12 @@ def gen_ntpsapi(wine: Path) -> str:
                 "_SYSTEM_PROCESSOR_FEATURES_INFORMATION",
                 "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
             ),
+            extract_struct(winternl, "_SYSTEM_CACHE_INFORMATION", "SYSTEM_CACHE_INFORMATION"),
+            extract_struct(
+                winternl,
+                "_SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX",
+                "SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX",
+            ),
             # SystemFirmwareTableInformation (76): the request/reply blob
             # kernelbase's GetSystemFirmwareTable wraps, and the two actions
             # it selects between. TableBuffer is the trailing variable array,
@@ -2234,7 +2240,9 @@ def gen_ntpsapi(wine: Path) -> str:
         ],
     )
     # CUI-1: SYSTEM_CPU_INFORMATION.ProcessorArchitecture answer (winnt.h).
-    arch_defines = extract_defines(winnt, "winnt.h", ["PROCESSOR_ARCHITECTURE_AMD64"])
+    arch_defines = extract_defines(
+        winnt, "winnt.h", ["PROCESSOR_ARCHITECTURE_INTEL", "PROCESSOR_ARCHITECTURE_AMD64"]
+    )
     # CUI-7: the shutdown action enum and the time-adjustment shapes
     # (winternl.h), plus the LCID→LANGID projection macro (winnt.h) the
     # install-UI-language answer is defined by.

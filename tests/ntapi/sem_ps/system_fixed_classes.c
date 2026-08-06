@@ -43,6 +43,12 @@
 #define SystemEmulationBasicInformation_    ((SYSTEM_INFORMATION_CLASS)62)
 #define SystemProcessorFeaturesInformation_ ((SYSTEM_INFORMATION_CLASS)154)
 #define SystemLeapSecondInformation_        ((SYSTEM_INFORMATION_CLASS)206)
+#define SystemCpuInformation_               ((SYSTEM_INFORMATION_CLASS)1)
+#define SystemFileCacheInformation_         ((SYSTEM_INFORMATION_CLASS)21)
+#define SystemRecommendedSharedDataAlignment_ ((SYSTEM_INFORMATION_CLASS)58)
+#define SystemEmulationProcessorInformation_ ((SYSTEM_INFORMATION_CLASS)63)
+#define SystemKernelDebuggerInformationEx_  ((SYSTEM_INFORMATION_CLASS)149)
+#define SystemProcessorFeaturesBitMapInformation_ ((SYSTEM_INFORMATION_CLASS)250)
 
 START_TEST(system_fixed_classes)
 {
@@ -150,6 +156,104 @@ START_TEST(system_fixed_classes)
 
         status = NtQuerySystemInformation(SystemLeapSecondInformation_, leap, 4, &returnLength);
         ok(status == STATUS_INFO_LENGTH_MISMATCH, "LeapSecond short -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- 21: the file cache, all zeroes ---------------------------------- */
+    {
+        UCHAR cache[128];
+        returnLength = 0;
+        memset(cache, 0xcc, sizeof(cache));
+        status = NtQuerySystemInformation(SystemFileCacheInformation_, cache, sizeof(cache),
+                                          &returnLength);
+        ok(status == STATUS_SUCCESS, "FileCache -> %08lx", (unsigned long)status);
+        ok(returnLength != 0, "FileCache returned %lu bytes", (unsigned long)returnLength);
+        {
+            int nonzero = 0;
+            for (ULONG i = 0; i < returnLength; i++)
+            {
+                if (cache[i] != 0)
+                    nonzero = 1;
+            }
+            ok(!nonzero, "the file-cache block is not all zero");
+        }
+        status = NtQuerySystemInformation(SystemFileCacheInformation_, cache, 4, &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "FileCache short -> %08lx",
+           (unsigned long)status);
+    }
+
+    /* --- 58: the shared-data alignment ------------------------------------
+     * A CACHE LINE, and on x86_64 that is 64. Architectural, not measured. */
+    {
+        ULONG alignment = 0;
+        returnLength = 0;
+        status = NtQuerySystemInformation(SystemRecommendedSharedDataAlignment_, &alignment,
+                                          sizeof(alignment), &returnLength);
+        ok(status == STATUS_SUCCESS, "SharedDataAlignment -> %08lx", (unsigned long)status);
+        ok(alignment == 64, "SharedDataAlignment is %lu", (unsigned long)alignment);
+        ok(returnLength == sizeof(alignment), "SharedDataAlignment returned %lu",
+           (unsigned long)returnLength);
+    }
+
+    /* --- 63: the emulated CPU view is the 32-bit one ----------------------
+     * Unlike the emulated BASIC view (62), this one is NOT the native
+     * answer: the architecture field reports the 32-bit machine a WOW64
+     * caller would see, so AMD64 becomes INTEL. Everything else is the same
+     * CPU. That asymmetry between 62 and 63 is the whole reason both are
+     * pinned. */
+    {
+        UCHAR nativeCpu[64], emulatedCpu[64];
+        ULONG nativeLength = 0, emulatedLength = 0;
+        NTSTATUS nativeStatus = NtQuerySystemInformation(SystemCpuInformation_, nativeCpu,
+                                                         sizeof(nativeCpu), &nativeLength);
+        ok(nativeStatus == STATUS_SUCCESS, "SystemCpuInformation -> %08lx",
+           (unsigned long)nativeStatus);
+        status = NtQuerySystemInformation(SystemEmulationProcessorInformation_, emulatedCpu,
+                                          sizeof(emulatedCpu), &emulatedLength);
+        ok(status == STATUS_SUCCESS, "EmulationProcessor -> %08lx", (unsigned long)status);
+        ok(emulatedLength == nativeLength, "EmulationProcessor returned %lu, native %lu",
+           (unsigned long)emulatedLength, (unsigned long)nativeLength);
+        {
+            USHORT nativeArch, emulatedArch;
+            memcpy(&nativeArch, nativeCpu, sizeof(nativeArch));
+            memcpy(&emulatedArch, emulatedCpu, sizeof(emulatedArch));
+            ok(nativeArch == 9, "native architecture is %u, expected AMD64", (unsigned)nativeArch);
+            ok(emulatedArch == 0, "emulated architecture is %u, expected INTEL",
+               (unsigned)emulatedArch);
+            /* Past the architecture the two agree. */
+            ok(memcmp(nativeCpu + sizeof(USHORT), emulatedCpu + sizeof(USHORT),
+                      nativeLength - sizeof(USHORT)) == 0,
+               "the emulated CPU view differs beyond its architecture");
+        }
+    }
+
+    /* --- 149: the extended debugger view, all FALSE ---------------------- */
+    {
+        UCHAR debuggerEx[8];
+        returnLength = 0;
+        memset(debuggerEx, 0xcc, sizeof(debuggerEx));
+        status = NtQuerySystemInformation(SystemKernelDebuggerInformationEx_, debuggerEx,
+                                          sizeof(debuggerEx), &returnLength);
+        ok(status == STATUS_SUCCESS, "KernelDebuggerEx -> %08lx", (unsigned long)status);
+        ok(returnLength == 3, "KernelDebuggerEx returned %lu", (unsigned long)returnLength);
+        ok(debuggerEx[0] == 0 && debuggerEx[1] == 0 && debuggerEx[2] == 0,
+           "KernelDebuggerEx is not all FALSE (%u %u %u)", (unsigned)debuggerEx[0],
+           (unsigned)debuggerEx[1], (unsigned)debuggerEx[2]);
+    }
+
+    /* --- 250: the feature bitmap, EXACT length --------------------------- */
+    {
+        ULONGLONG bitmap[2];
+        returnLength = 0;
+        status = NtQuerySystemInformation(SystemProcessorFeaturesBitMapInformation_, bitmap,
+                                          sizeof(bitmap), &returnLength);
+        ok(status == STATUS_SUCCESS, "FeaturesBitMap -> %08lx", (unsigned long)status);
+        ok(returnLength == sizeof(bitmap), "FeaturesBitMap returned %lu",
+           (unsigned long)returnLength);
+        /* Exact, not `>=`: an oversized buffer is refused. */
+        status = NtQuerySystemInformation(SystemProcessorFeaturesBitMapInformation_, buffer,
+                                          sizeof(bitmap) + 8, &returnLength);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "FeaturesBitMap oversized -> %08lx",
            (unsigned long)status);
     }
 }

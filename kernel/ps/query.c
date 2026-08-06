@@ -1444,6 +1444,13 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    /* 63 is the same CPU seen as a 32-bit machine: the architecture field
+     * reports what a WOW64 caller would get (AMD64 -> INTEL) and every
+     * other field is unchanged. Note the asymmetry with class 62, which is
+     * NOT adjusted — the emulated BASIC view is identical to the native
+     * one, the emulated CPU view is not. Both are pinned
+     * (tests/ntapi/sem_ps/system_fixed_classes.c). */
+    case SystemEmulationProcessorInformation:
     case SystemCpuInformation:
     {
         /* An OVERSIZED buffer is fine here (`size >= len` — Wine
@@ -1471,7 +1478,9 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         memset(&info, 0, sizeof(info));
         uint32_t regs[4];
         KiCpuid(1, 0, regs);
-        info.ProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
+        info.ProcessorArchitecture = infoClass == SystemEmulationProcessorInformation
+                                         ? PROCESSOR_ARCHITECTURE_INTEL
+                                         : PROCESSOR_ARCHITECTURE_AMD64;
         info.ProcessorLevel = (USHORT)(((regs[0] >> 8) & 0xf) + ((regs[0] >> 20) & 0xff));
         info.ProcessorRevision = (USHORT)((((regs[0] >> 16) & 0xf) << 12) |
                                           (((regs[0] >> 4) & 0xf) << 8) | (regs[0] & 0xf));
@@ -1777,6 +1786,101 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemFileCacheInformation:
+    {
+        /* All zero, which is what the oracle reports and is honest here:
+         * proskrnl's page cache never evicts (Art. 3), so there are no
+         * working-set numbers to report. */
+        SYSTEM_CACHE_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemRecommendedSharedDataAlignment:
+    {
+        /* A cache line. 64 on x86_64 — an architectural fact (Intel SDM
+         * Vol. 3A, cache organisation), not a measurement, and the same
+         * number the oracle reports for this machine. */
+        ULONG alignment = 64;
+        if (length < sizeof(alignment))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(alignment), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, &alignment, sizeof(alignment));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(alignment);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemKernelDebuggerInformationEx:
+    {
+        SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        info.DebuggerAllowed = FALSE;
+        info.DebuggerEnabled = FALSE;
+        info.DebuggerPresent = FALSE;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemProcessorFeaturesBitMapInformation:
+    {
+        /* The PF_* flag bitmap, two words. EXACT length, unlike its
+         * KF_* sibling at 154 which takes `size >= len`. proskrnl sets no
+         * PF_* flags — it maintains no ProcessorFeatures array — so the
+         * bitmap is empty, which is what the oracle reports for a machine
+         * whose flags it has not probed. */
+        ULONGLONG bitmap[2] = {0, 0};
+        if (length != sizeof(bitmap))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(bitmap), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(buffer, bitmap, sizeof(bitmap));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(bitmap);
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -1869,7 +1973,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written.
+         * as the classes get built. It was 16 when this list was written; 11 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -1877,10 +1981,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemFileCacheInformation:
         case SystemExtendedProcessInformation:
-        case SystemRecommendedSharedDataAlignment:
-        case SystemEmulationProcessorInformation:
         case SystemExtendedHandleInformation:
         case SystemLogicalProcessorInformation:
         case SystemModuleInformationEx:
@@ -1889,10 +1990,8 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         case SystemCodeIntegrityInformation:
         case SystemProcessorBrandString:
         case SystemLogicalProcessorInformationEx:
-        case SystemKernelDebuggerInformationEx:
         case SystemCpuSetInformation:
         case SystemSupportedProcessorArchitectures2:
-        case SystemProcessorFeaturesBitMapInformation:
             DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
             return STATUS_NOT_IMPLEMENTED;
         default:

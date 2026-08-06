@@ -651,6 +651,7 @@ typedef enum {
 #define PROCESS_PARAMS_FLAG_NORMALIZED 0x00000001
 #define PROCESS_PARAMS_IMAGE_KEY_MISSING 0x00004000
 
+#define PROCESSOR_ARCHITECTURE_INTEL 0
 #define PROCESSOR_ARCHITECTURE_AMD64 9
 
 /* CUI-7: shutdown actions + time adjustment, extracted verbatim from
@@ -1008,6 +1009,24 @@ typedef struct {
     ULONGLONG ProcessorFeatureBits;
     ULONGLONG Reserved[3];
 } SYSTEM_PROCESSOR_FEATURES_INFORMATION, *PSYSTEM_PROCESSOR_FEATURES_INFORMATION;
+
+typedef struct {
+    SIZE_T CurrentSize;
+    SIZE_T PeakSize;
+    ULONG PageFaultCount;
+    SIZE_T MinimumWorkingSet;
+    SIZE_T MaximumWorkingSet;
+    SIZE_T CurrentSizeIncludingTransitionInPages;
+    SIZE_T PeakSizeIncludingTransitionInPages;
+    ULONG TransitionRePurposeCount;
+    ULONG Flags;
+} SYSTEM_CACHE_INFORMATION, *PSYSTEM_CACHE_INFORMATION;
+
+typedef struct {
+    BOOLEAN  DebuggerAllowed;
+    BOOLEAN  DebuggerEnabled;
+    BOOLEAN  DebuggerPresent;
+} SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION_EX;
 
 typedef enum {
     SystemFirmwareTable_Enumerate = 0,
