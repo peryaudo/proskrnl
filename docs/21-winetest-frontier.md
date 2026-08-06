@@ -304,9 +304,50 @@ Commit shape for every item, per G13: **(1)** the `tests/ntapi` pin (oracle-gree
 
 ## 4. What needs a constitutional amendment
 
-**Nothing in this backlog does.** That is a real finding and it should be stated in the milestone entry so nobody re-opens the question.
+**One thing now does, and it was found by measurement rather than by
+argument.** The rest of the section below still holds.
 
-Specifically:
+### G12's no-exemptions rule collides with a Windows-verified assertion
+
+`ntdll:info` asks `NtQuerySystemInformation(SystemFirmwareTableInformation)`
+with `ProviderSignature = 0` and `Action = 0`, and asserts:
+
+    ok(status == STATUS_NOT_IMPLEMENTED, ...);   /* info.c:1623 */
+    ok(len1 == 0, ...);
+
+with **no `broken()` guard**. So `STATUS_NOT_IMPLEMENTED` is not a Wine gap
+here — it is measured Windows behaviour, and this call's contract for an
+unknown provider.
+
+G12 says the opposite, twice: *"`STATUS_NOT_IMPLEMENTED` … is never pinned"*
+and *"Every `STATUS_NOT_IMPLEMENTED` a ring-3 syscall answers is a kernel
+panic (no exemptions — there is no `KiPinnedNotImplemented`)."* Its
+justification is that an oracle answering it is unbuilt rather than
+authoritative — which is true of Wine's `enum_firmware_info` default arm,
+and **not** true of Windows here.
+
+**So `ntdll:info` cannot pass under the armed boot, and no amount of kernel
+work changes that.** Implementing the ACPI/FIRM providers does not help:
+the assertion is about provider *zero*, which is not a provider at all.
+Either:
+
+- the armed boot gains a way to say "this exact call, with these exact
+  arguments, answers NOT_IMPLEMENTED as pinned Windows behaviour" — the
+  `KiPinnedNotImplemented` that G12 currently forbids by name; or
+- the winetest leg accepts that this one pair is bounded, and the manifest
+  records it the way `kernel32:toolhelp` is recorded.
+
+The first is a real amendment and should not be made casually — G12's rule
+is why every silent-plausible stub in the bug history got caught. But the
+premise it rests on ("nobody depends on this status") is now measurably
+false for one call, and the honest move is to say so here rather than to
+quietly widen the exemption or to leave the pair failing without an
+explanation.
+
+**This is a decision for the project, not for a sweep.** Nothing in this
+document should be read as having made it.
+
+Otherwise:
 
 - **No COW is needed.** `docs/17` §10's entry conditions are not touched by anything above. `docs/09`'s table already records COW as **amended at CUI-9** for image-section masters; nothing here asks for more.
 - **No SMP is needed.** `docs/18` §13's four gates are not touched. Nothing in the backlog is a throughput problem. The nearest thing is `kernel32:virtual`'s 285-second runtime, and slowness only becomes a constitutional argument when it stops a suite from reaching a verdict (`docs/09` Art. 3's uniprocessor row) — it has not.
