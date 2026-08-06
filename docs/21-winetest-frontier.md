@@ -829,17 +829,26 @@ rather than deriving the 225 is deliberate — the list is the honest
 inventory of what the call still owes, and a class leaving it is a visible
 edit in the commit that builds it.
 
-**The inventory, 16 at the time of writing** (number is the class):
+**The inventory is in the code** (`kernel/ps/query.c`, the default arm) and
+shrinks by one entry per commit that builds a class. It began at 16; ten
+remain:
 
-    SystemFileCacheInformation(21)        SystemExtendedProcessInformation(57)
-    SystemRecommendedSharedDataAlignment(58)  SystemEmulationProcessorInformation(63)
     SystemExtendedHandleInformation(64)   SystemLogicalProcessorInformation(73)
     SystemModuleInformationEx(77)         SystemProcessorIdleCycleTimeInformation(83)
     SystemProcessIdInformation(88)        SystemCodeIntegrityInformation(103)
     SystemProcessorBrandString(105)       SystemLogicalProcessorInformationEx(107)
-    SystemKernelDebuggerInformationEx(149)    SystemCpuSetInformation(175)
-    SystemSupportedProcessorArchitectures2(230)
-    SystemProcessorFeaturesBitMapInformation(250)
+    SystemCpuSetInformation(175)          SystemSupportedProcessorArchitectures2(230)
+
+Six landed in two batches (35, 37, 62, 154, 206, then 21, 58, 63, 149, 250)
+plus `SystemExtendedProcessInformation` (57). That last one is the shape the
+remaining extended classes will follow: **57 is class 5 with a wider
+per-thread record, not a second enumeration.** The record size is threaded
+through the sizing pass, the fill and the name offset, and the per-thread
+slot is addressed by stride rather than array index — which is how the
+oracle does it too (`get_system_process_info` takes the class and picks
+`thread_info_size`). Class 64 is the same relationship to class 16 and
+should be built the same way; writing a parallel walk for it would be the
+Art. 11 defect this file keeps re-learning.
 
 Five landed alongside it (35, 37, 62, 154, 206) as one batch, and their pin
 records the thing that makes such a batch safe: these classes answer with
