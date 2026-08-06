@@ -1116,9 +1116,24 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
         return STATUS_INVALID_DEVICE_REQUEST;
     }
 
-    /* The mask binds to the handle; a fresh non-empty mask replaces it
-     * (pinned Wine: NULL reuses the stored one). */
-    if (mask != 0 && mask->Length != 0 && mask->Buffer != 0)
+    /* The mask binds to the handle, and it binds only at the START of a
+     * scan: on a handle that has never enumerated, or on a call that also
+     * asks to restart. A CONTINUATION call's mask is ignored outright — not
+     * merged, not intersected, ignored (the oracle's rule, dlls/ntdll/unix/
+     * file.c get_cached_dir_data: the snapshot is discarded and rebuilt only
+     * `if (cached && restart_scan && mask && mask differs)`).
+     *
+     * Rebinding on every call is the same bug from the caller's side: an
+     * enumeration is a cursor over a snapshot chosen when the scan began,
+     * and callers that pass their mask on every call — kernelbase's
+     * FindNextFile, and ntdll:directory's own continuation loop, which
+     * passes a matches-nothing `dummy_mask` (directory.c:241) — would lose
+     * the rest of the directory. It did: this was worth ~150 of the 203
+     * failures at directory.c:620 and all 34 at :265.
+     *
+     * Pinned by tests/ntapi/sem_file/dir_mask_binding.c. */
+    BOOLEAN scanBegins = !file->dirScanStarted || restartScan;
+    if (scanBegins && mask != 0 && mask->Length != 0 && mask->Buffer != 0)
     {
         PWSTR copy = MiAllocatePool(mask->Length);
         if (copy == 0)
