@@ -47,18 +47,29 @@ extern OBJECT_TYPE IoFileObjectType;
 /* --- File objects ---------------------------------------------------------- */
 
 /* Body of an Ob "File" object: one open of one file. NT's FILE_OBJECT
- * concept; internal layout ours (docs/03). File handles are waitable —
- * NT signals the file object at I/O completion; with every operation
- * completing inline today (docs/19 §2) the object is simply born signaled
- * and stays so, which is also what the pinned Wine reports for disk
- * files (fuzzer-pinned). */
+ * concept; internal layout ours (docs/03). File handles are waitable — NT
+ * signals the file object at I/O completion and leaves it UNSIGNALLED while
+ * a request is outstanding. Almost everything here completes inline
+ * (docs/19 §2), so the object is born signalled and never observably
+ * clears; the one service that genuinely pends is
+ * NtNotifyChangeDirectoryFile, and for the interval it is armed the object
+ * really is busy and callers really do look (ntdll:change waits on the
+ * DIRECTORY HANDLE and requires a timeout, change.c:106/:112/:143).
+ * kernel/io/notify.c clears it at arm and signals it at completion; pinned
+ * by tests/ntapi/sem_file/dir_handle_signal.c.
+ *
+ * Spelled KEVENT rather than a bare DISPATCHER_HEADER so the clear and the
+ * signal go through the Ke event engine that already owns those two
+ * transitions (Art. 11) instead of a second open-coded dispatcher-lock
+ * dance. The layout is identical — KEVENT is exactly one DISPATCHER_HEADER
+ * — so nothing that reads the header at offset 0 changes. */
 /* The completion-port object (kernel/io/completion.c); a file handle may be
  * bound to one. */
 typedef struct IO_COMPLETION IO_COMPLETION, *PIO_COMPLETION;
 
 typedef struct FILE_OBJECT
 {
-    DISPATCHER_HEADER header; /* notification-event shape, always signaled */
+    KEVENT header;     /* notification-shaped: signalled == no request outstanding */
     PIO_DEVICE device;        /* referenced via the Ob device body */
     PIO_FCB fcb;              /* the FS's per-file node (fs/fat32 FAT_FCB) */
     PVOID fsContext;          /* == fcb, typed for the FS's convenience */

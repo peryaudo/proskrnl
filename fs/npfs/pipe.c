@@ -1162,7 +1162,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         goto out_undo_instance;
     }
     PFILE_OBJECT file = body;
-    KiInitializeDispatcherHeader(&file->header, KI_OBJECT_NOTIFICATION_EVENT, 1);
+    KeInitializeEvent(&file->header, NotificationEvent, TRUE);
     file->device = device; /* the lookup reference moves into the object */
     device = 0;
     file->fsContext = end;

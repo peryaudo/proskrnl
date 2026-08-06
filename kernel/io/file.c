@@ -538,7 +538,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
         goto out_device;
     }
     PFILE_OBJECT file = body;
-    KiInitializeDispatcherHeader(&file->header, KI_OBJECT_NOTIFICATION_EVENT, 1);
+    KeInitializeEvent(&file->header, NotificationEvent, TRUE);
     file->device = device; /* the allocation's device reference moves in */
     device = 0;
     file->synchronousIo =

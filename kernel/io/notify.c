@@ -34,8 +34,10 @@ typedef struct IOP_DIR_WATCH
     PEPROCESS owner;    /* referenced: the IOSB/buffer live in its space */
     void *issuerObject; /* referenced ETHREAD body: keeps `issuer` alive */
     PKTHREAD issuer;    /* cancel scoping + the APC target */
-    PFILE_OBJECT file;  /* identity only (the close sweep removes us
-                         * before the object can die) — never derefed */
+    PFILE_OBJECT file;  /* REFERENCED: the completion signals this object's
+                         * event, so the pointer must stay live even though
+                         * the close sweep normally removes us first. The
+                         * release retires with the others (docs/20 R7). */
     PIO_DEVICE device;
     IO_STATUS_BLOCK *userIosb;
     void *userBuffer;
@@ -111,6 +113,11 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
                                      (uint64_t)(uintptr_t)watch->userIosb, &result, sizeof(result));
         }
     }
+    /* The request is over, so the file object is idle again — the other
+     * half of the arm-time clear. It fires for EVERY completion, cancel and
+     * error included: what the object reports is "nothing outstanding", not
+     * "something succeeded". */
+    KeSetEvent(&watch->file->header, 0, FALSE);
     if (watch->event != 0)
     {
         KeSetEvent(watch->event, 0, FALSE);
@@ -153,6 +160,7 @@ void IoReapRetiredDirWatches(void)
         {
             ObDereferenceObject(watch->issuerObject);
         }
+        ObDereferenceObject(watch->file);
         ObDereferenceObject(watch->owner);
         MiFreePool(watch->dirPath.Buffer);
         MiFreePool(watch);
@@ -275,6 +283,10 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
         ObfReferenceObject(watch->issuerObject);
     }
     watch->file = file;
+    /* The watch outlives this call, and its completion SIGNALS this object
+     * (below), so it owns a reference rather than a bare pointer. Released
+     * on the retire path, never here (docs/20 R7). */
+    ObfReferenceObject(file);
     watch->device = file->device;
     watch->userIosb = iosb;
     watch->userBuffer = buffer;
@@ -285,6 +297,12 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
 
     InsertTailList(&IopDirWatchListHead, &watch->listEntry);
     IopDirWatchCount++;
+    /* A request is now outstanding on this handle, so the file object is
+     * BUSY: NT leaves it unsignalled until the request completes, and
+     * ntdll:change waits on the directory handle expecting a timeout
+     * (change.c:106). Every other service here completes inline, so this is
+     * the only place the transition is observable. */
+    KeClearEvent(&file->header);
     ObDereferenceObject(file);
     return STATUS_PENDING;
 }
