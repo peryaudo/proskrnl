@@ -3140,6 +3140,12 @@ NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG in
             return probe;
         }
         memset(&battery, 0, sizeof(battery));
+        /* No battery means running on mains, and that is not a detail:
+         * kernelbase derives GetSystemPowerStatus's ACLineStatus from this
+         * field, and kernel32:power asserts AC_LINE_ONLINE on exactly the
+         * "no battery detected" branch (power.c:69). An all-zero block
+         * would report a machine on battery power with no battery. */
+        battery.AcOnLine = TRUE;
         memcpy(output, &battery, sizeof(battery));
         return STATUS_SUCCESS;
     }
