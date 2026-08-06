@@ -902,21 +902,36 @@ real kernel work, not a floor.
 (`SystemPowerCapabilities`) — a fixed-shape block of named constants, the
 same easy shape as the system-info batches, and the next cheap win here.
 
-**A trap to know about before taking it.** `SYSTEM_POWER_CAPABILITIES`,
-`SYSTEM_POWER_STATE` and `BATTERY_REPORTING_SCALE` live in `winnt.h` and are
-spelled with the typedef name and its pointer alias on SEPARATE lines:
+**A trap to know about before taking it, and it is not the one I first
+wrote here.** My initial diagnosis — that `extract_struct` silently emits
+nothing for these types — was WRONG, and worth recording as such because
+the wrong version is the more comfortable story.
 
+What actually happens: `SYSTEM_POWER_CAPABILITIES` and
+`SYSTEM_BATTERY_STATE` are declared in `winnt.h` as **anonymous** structs —
+
+    typedef struct {
+        BOOLEAN PowerButtonPresent;
+        ...
     } SYSTEM_POWER_CAPABILITIES,
     *PSYSTEM_POWER_CAPABILITIES;
 
-`tools/gen_abi.py`'s `extract_struct` does not match that form. It does not
-error — it emits NOTHING, the build still succeeds, and the missing type
-only shows up as a compile failure at the use site (or, worse, not at all
-if nothing uses it yet). Adding the extraction and checking the generator
-"worked" because it exited cleanly is how a silent gap gets in. **Verify a
-new `abi/` entry by grepping the generated header, not by the generator's
-exit status** — and fix `extract_struct` to handle the split form as part
-of whichever commit needs these types.
+— with no `_TAG`, so `extract_struct(winnt, "_SYSTEM_POWER_CAPABILITIES",
+...)` finds nothing and `sys.exit`s. It does NOT fail silently.
+
+**The masking is what makes it dangerous, and it is a property of the
+workflow, not of the generator.** `gen_abi`'s failure message is
+`gen_abi: struct X not found` — it contains no the word "error", so a
+`python3 tools/gen_abi.py 2>&1 | grep -i error` check reports nothing
+wrong. And because the previously generated `abi/*.h` are still on disk,
+the build then succeeds *against stale headers*. A failed regeneration is
+indistinguishable from a successful one unless you look at the exit status
+or the generated file.
+
+So: **check `gen_abi`'s exit status, or grep the generated header for the
+type you asked for.** Never conclude it worked because the build did.
+Handling anonymous structs is a small `extract_struct` change and belongs
+in whichever commit needs these types.
 
 ### The highest-value single item left is MountPointManager, and it is now measured
 
