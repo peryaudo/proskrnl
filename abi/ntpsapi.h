@@ -54,6 +54,12 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS,
 #define MAXIMUM_PROC_PER_GROUP 64
 #define MAXIMUM_PROCESSORS MAXIMUM_PROC_PER_GROUP
 
+/* NtSetInformationThread(ThreadPriority)'s band, extracted from
+ * wine/include/ddk/wdm.h. */
+#define LOW_PRIORITY 0
+#define LOW_REALTIME_PRIORITY 16
+#define HIGH_PRIORITY 31
+
 /* The TEB begins with an NT_TIB. Extracted verbatim from
  * wine/include/winnt.h; asserts pin the x64 layout. */
 struct _EXCEPTION_REGISTRATION_RECORD;

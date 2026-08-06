@@ -1870,6 +1870,7 @@ def gen_ntpsapi(wine: Path) -> str:
     # CUI-6: QUEUE_USER_APC_FLAGS (NtQueueApcThreadEx2) lives in the
     # processthreadsapi.h split-out, not winternl.h.
     processthreadsapi = (wine / "include/processthreadsapi.h").read_text()
+    wdm = (wine / "include/ddk/wdm.h").read_text()
 
     process_rights = extract_defines(
         winnt,
@@ -1914,6 +1915,21 @@ def gen_ntpsapi(wine: Path) -> str:
             # NtSetInformationThread(ThreadIdealProcessor)'s bound.
             "MAXIMUM_PROC_PER_GROUP",
             "MAXIMUM_PROCESSORS",
+        ],
+    )
+
+    # NtSetInformationThread(ThreadPriority)'s band. Unlike ThreadBasePriority
+    # above, this class takes an ABSOLUTE priority level, and the three bounds
+    # that split its answer into SUCCESS / INVALID_PARAMETER /
+    # PRIVILEGE_NOT_HELD live in the ddk rather than in winnt.h (the
+    # comparisons are wine server/thread.c set_thread_priority).
+    priority_levels = extract_defines(
+        wdm,
+        "ddk/wdm.h",
+        [
+            "LOW_PRIORITY",
+            "LOW_REALTIME_PRIORITY",
+            "HIGH_PRIORITY",
         ],
     )
 
@@ -2394,6 +2410,9 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + "    *PRTL_USER_PROCESS_PARAMETERS;\n\n"
         + "/* Process/thread access rights, extracted from wine/include/winnt.h. */\n"
         + process_rights
+        + "\n\n/* NtSetInformationThread(ThreadPriority)'s band, extracted from\n"
+        + " * wine/include/ddk/wdm.h. */\n"
+        + priority_levels
         + "\n\n/* The TEB begins with an NT_TIB. Extracted verbatim from\n"
         + " * wine/include/winnt.h; asserts pin the x64 layout. */\n"
         + "struct _EXCEPTION_REGISTRATION_RECORD;\n"
