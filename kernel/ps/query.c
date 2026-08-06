@@ -1241,6 +1241,13 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     {
     case SystemProcessInformation:
         return PspQuerySystemProcessInformation(buffer, length, returnLength);
+    /* "Native" means the KERNEL's word size, not the caller's, so on an
+     * x86_64-only kernel (ADR 0006) answering a 64-bit caller it is the
+     * same class. The oracle spells it as this same fallthrough behind an
+     * `if (!is_win64) return STATUS_INVALID_INFO_CLASS` guard that is
+     * always false here (dlls/ntdll/unix/system.c). Pinned by
+     * tests/ntapi/sem_ps/info_class_range.c. */
+    case SystemNativeBasicInformation:
     case SystemBasicInformation:
     {
         /* SystemBasicInformation wants an EXACT length — both under- and
