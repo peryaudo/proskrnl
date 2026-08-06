@@ -2063,9 +2063,16 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         {
             *returnLength = needed;
         }
+        /* STATUS_BUFFER_TOO_SMALL, not the INFO_LENGTH_MISMATCH most of
+         * this switch gives. The status is not uniform across the classes
+         * and a caller sizing a buffer in a loop tests for one of them: the
+         * two classes that answer through the Ex form (this one and
+         * SystemCpuSetInformation) say BUFFER_TOO_SMALL, and the rest say
+         * INFO_LENGTH_MISMATCH. This arm said the wrong one until
+         * tests/ntapi/sem_ps/system_variable_classes.c covered it. */
         if (length < needed)
         {
-            return STATUS_INFO_LENGTH_MISMATCH;
+            return STATUS_BUFFER_TOO_SMALL;
         }
         NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
         if (!NT_SUCCESS(status))
