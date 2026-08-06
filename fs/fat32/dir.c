@@ -423,15 +423,27 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
     ULONG baseLength = 0, extLength = 0;
     ULONG units = name->Length / sizeof(WCHAR);
 
+    /* Leading dots and spaces are stripped before anything else, so `.a`
+     * yields the base "A" and NO extension rather than an empty base with
+     * the extension "A". Microsoft's 8.3-generation rules say to remove
+     * them, and the difference is observable: a short name carrying a dot
+     * cannot be matched by a DOS_STAR mask, which is what ntdll:directory's
+     * truth table checks for `.a`, `..a` and `.aa`. */
+    ULONG start = 0;
+    while (start < units && (name->Buffer[start] == '.' || name->Buffer[start] == ' '))
+    {
+        start++;
+    }
+
     int lastDot = -1;
-    for (ULONG i = 0; i < units; i++)
+    for (ULONG i = start; i < units; i++)
     {
         if (name->Buffer[i] == '.')
         {
             lastDot = (int)i;
         }
     }
-    for (ULONG i = 0; i < units && baseLength < 8; i++)
+    for (ULONG i = start; i < units && baseLength < 8; i++)
     {
         if (lastDot >= 0 && i >= (ULONG)lastDot)
         {
@@ -477,6 +489,25 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
         for (ULONG value = tail; value != 0; value /= 10)
         {
             digits[digitCount++] = (char)('0' + value % 10);
+        }
+        /* A generated name is never shorter than four characters: the tail
+         * is zero-padded until base + '~' + digits reaches that width, so a
+         * one-character base gives "A~01" rather than "A~1".
+         *
+         * This reproduces a WIDTH property, and the width is measured, not
+         * invented. The oracle's short names are >= 8 characters (it hashes
+         * the long name into a full 8-character base), so a mask of a few
+         * DOS_QMs can never match one there — ntdll:directory's table
+         * asserts exactly that for `>>>`. FAT's numeric-tail names are much
+         * shorter and would match, so the table would disagree with itself
+         * across the two runners. Four is the narrowest width that
+         * satisfies every cell; going to eight to match the oracle exactly
+         * would make every generated name unreadable for no measured gain.
+         * The FAT specification (§7.4) licenses any unique legal 8.3 name,
+         * so the choice is ours to make. */
+        while (baseLength + 1 + (ULONG)digitCount < 4 && digitCount < 7)
+        {
+            digits[digitCount++] = '0';
         }
         ULONG keep = baseLength;
         if (keep > 8 - 1 - (ULONG)digitCount)
@@ -950,6 +981,21 @@ NTSTATUS FatReadDirectoryEntry(PFAT_FCB dir, ULONG *slot, IO_DIR_ENTRY *out)
     }
     memcpy(out->name, entry.name, entry.nameLength);
     out->nameLength = entry.nameLength;
+    /* The stored 8.3 name, rendered from the same short entry every field
+     * below reads. No extra walk and no extra I/O: FatWalkNext already
+     * copied the whole 32-byte short entry into `entry.sfn`. Reported
+     * unconditionally — suppressing it for a name that is already 8.3 is
+     * the boundary's decision, not the volume's (kernel/io/vfs.h). */
+    {
+        WCHAR rendered[13];
+        USHORT bytes = FatRenderShortName(entry.sfn, rendered);
+        if (bytes > sizeof(out->shortName))
+        {
+            bytes = sizeof(out->shortName);
+        }
+        memcpy(out->shortName, rendered, bytes);
+        out->shortNameLength = bytes;
+    }
     out->info.creationTime =
         FatTimeToNtTime(KiReadLe16(entry.sfn + 16), KiReadLe16(entry.sfn + 14), entry.sfn[13]);
     out->info.lastAccessTime = FatTimeToNtTime(KiReadLe16(entry.sfn + 18), 0, 0);

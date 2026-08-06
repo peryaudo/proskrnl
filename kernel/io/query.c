@@ -983,6 +983,65 @@ static BOOLEAN IopMatchEntryName(const WCHAR *name, ULONG nameUnits, const WCHAR
     return IopMatchMask(name, nameUnits, mask, maskUnits);
 }
 
+/* The ShortName the Both-shaped classes report, and the ONE place that
+ * decides whether to report one at all (Art. 11 — both classes call this,
+ * so they cannot disagree about an entry).
+ *
+ * The rule is not "whatever the volume stored". A short name is reported
+ * only when the entry's LONG name is not already a legal 8.3 name, which is
+ * how the oracle behaves (measured: it reports nothing for `lower.txt`) and
+ * is a different question from whether the FS chose to store a short entry.
+ * FAT stores one for every name it cannot hold verbatim — `lower.txt`
+ * included, since a bare 8.3 entry cannot carry lower case — so a backend's
+ * having a short name says nothing about whether the boundary shows it.
+ * RtlIsNameLegalDOS8Dot3 is the single authority for the question
+ * (kernel/lib/rtl.c says why it is not fs/fat32's FatBuildExact83).
+ *
+ * Pinned by tests/ntapi/sem_file/short_names.c. */
+static void IopFillShortName(const IO_DIR_ENTRY *entry, WCHAR *shortName,
+                             CHAR *shortNameLength)
+{
+    UNICODE_STRING longName;
+    longName.Buffer = (PWSTR)(uintptr_t)entry->name;
+    longName.Length = entry->nameLength;
+    longName.MaximumLength = entry->nameLength;
+    if (entry->shortNameLength == 0 || RtlIsNameLegalDOS8Dot3(&longName, 0, 0))
+    {
+        *shortNameLength = 0;
+        return;
+    }
+    memcpy(shortName, entry->shortName, entry->shortNameLength);
+    *shortNameLength = (CHAR)entry->shortNameLength;
+}
+
+/* Does this entry match the mask? The LONG name decides first, and the 8.3
+ * SHORT name is a second chance — NT matches both, which is why
+ * ntdll:directory's truth table has cells no long-name matcher can satisfy
+ * (masks `<`, `<"`, `<""` against `.a`, `..a`, `.aa`: the short name of a
+ * dot-leading name carries no dot, so DOS_STAR reaches it).
+ *
+ * A short-name hit still returns the entry under its LONG name — the fill
+ * path never consults the mask, so this is automatic, and it is what
+ * GetShortPathName's caller depends on.
+ *
+ * The short name used here is the one the FS stored, NOT the one the
+ * boundary reports: IopFillShortName suppresses the report for a name that
+ * is already 8.3-legal, and such an entry matches by its long name anyway,
+ * so the two rules never disagree about membership.
+ *
+ * Pinned by tests/ntapi/sem_file/short_names.c. */
+static BOOLEAN IopEntryMatchesMask(const IO_DIR_ENTRY *entry, const UNICODE_STRING *mask)
+{
+    ULONG maskUnits = mask->Length / sizeof(WCHAR);
+    if (IopMatchEntryName(entry->name, entry->nameLength / sizeof(WCHAR), mask->Buffer, maskUnits))
+    {
+        return TRUE;
+    }
+    return entry->shortNameLength != 0 &&
+           IopMatchEntryName(entry->shortName, entry->shortNameLength / sizeof(WCHAR), mask->Buffer,
+                             maskUnits);
+}
+
 /* Per-class fixed sizes (offset of the trailing FileName array). */
 static ULONG IopDirEntryFixedSize(FILE_INFORMATION_CLASS informationClass)
 {
@@ -1051,8 +1110,7 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->AllocationSize.QuadPart = (LONGLONG)entry->info.allocationSize;
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
-        /* ShortName: Wine leaves it empty on unix filesystems; the tests do
-         * not pin it — keep it empty for both backends. */
+        IopFillShortName(entry, d->ShortName, &d->ShortNameLength);
         memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
@@ -1068,8 +1126,9 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
     {
         /* CUI-5: the Both shape + the listed entry's file id (the same
          * identity FileInternalInformation serves — fat.h FatFileId).
-         * EaSize stays 0 (no EAs on FAT) and ShortName stays empty like
-         * the Both class above. */
+         * EaSize stays 0 (no EAs on FAT); ShortName is filled through the
+         * same one authority as the Both class, so the two classes cannot
+         * disagree about an entry. */
         FILE_ID_BOTH_DIRECTORY_INFORMATION *d = out;
         memset(d, 0, offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
@@ -1081,6 +1140,7 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
         d->FileId.QuadPart = (LONGLONG)entry->info.fileId;
+        IopFillShortName(entry, d->ShortName, &d->ShortNameLength);
         memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
@@ -1214,9 +1274,7 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
             break;
         }
 
-        if (file->dirMask.Buffer != 0 &&
-            !IopMatchEntryName(entry.name, entry.nameLength / sizeof(WCHAR), file->dirMask.Buffer,
-                               file->dirMask.Length / sizeof(WCHAR)))
+        if (file->dirMask.Buffer != 0 && !IopEntryMatchesMask(&entry, &file->dirMask))
         {
             file->dirCursor = cursor; /* consumed, filtered out */
             continue;

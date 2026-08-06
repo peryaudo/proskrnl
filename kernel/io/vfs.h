@@ -80,6 +80,13 @@ typedef struct
 {
     WCHAR name[256];
     USHORT nameLength; /* bytes */
+    /* The entry's 8.3 short name as the FS stores it, and its length in
+     * bytes; 0 when the backend has none. Transport only — whether the
+     * BOUNDARY reports it is decided once, in kernel/io/query.c, on whether
+     * the long name is already an 8.3 name. A backend must not second-guess
+     * that: it reports what it has and lets the one authority suppress. */
+    WCHAR shortName[12];
+    USHORT shortNameLength;
     IO_FILE_INFO info;
 } IO_DIR_ENTRY;
 
