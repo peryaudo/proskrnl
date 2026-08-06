@@ -830,16 +830,13 @@ inventory of what the call still owes, and a class leaving it is a visible
 edit in the commit that builds it.
 
 **The inventory is in the code** (`kernel/ps/query.c`, the default arm) and
-shrinks by one entry per commit that builds a class. It began at 16; ten
-remain:
+shrinks by one entry per commit that builds a class. It began at 16; **three
+remain**:
 
-    SystemExtendedHandleInformation(64)   SystemLogicalProcessorInformation(73)
-    SystemModuleInformationEx(77)         SystemProcessorIdleCycleTimeInformation(83)
-    SystemProcessIdInformation(88)        SystemCodeIntegrityInformation(103)
-    SystemProcessorBrandString(105)       SystemLogicalProcessorInformationEx(107)
-    SystemCpuSetInformation(175)          SystemSupportedProcessorArchitectures2(230)
+    SystemLogicalProcessorInformationEx(107)   SystemCpuSetInformation(175)
+    SystemSupportedProcessorArchitectures2(230)
 
-Six landed in two batches (35, 37, 62, 154, 206, then 21, 58, 63, 149, 250)
+Thirteen landed. Six landed in two batches (35, 37, 62, 154, 206, then 21, 58, 63, 149, 250)
 plus `SystemExtendedProcessInformation` (57). That last one is the shape the
 remaining extended classes will follow: **57 is class 5 with a wider
 per-thread record, not a second enumeration.** The record size is threaded
