@@ -829,14 +829,38 @@ rather than deriving the 225 is deliberate — the list is the honest
 inventory of what the call still owes, and a class leaving it is a visible
 edit in the commit that builds it.
 
-**The inventory is in the code** (`kernel/ps/query.c`, the default arm) and
-shrinks by one entry per commit that builds a class. It began at 16; **three
-remain**:
+**The plain and Ex entry points now owe NOTHING** of what the oracle
+serves. The list began at 16 on the plain path and 7 on the Ex path; both
+are empty. Fifteen classes were built.
 
-    SystemLogicalProcessorInformationEx(107)   SystemCpuSetInformation(175)
-    SystemSupportedProcessorArchitectures2(230)
+### And `ntdll:info` still cannot complete, for a reason worth writing down
 
-Thirteen landed. Six landed in two batches (35, 37, 62, 154, 206, then 21, 58, 63, 149, 250)
+With every class built, the pair still panics — at
+`SystemFirmwareTableInformation` (76), which proskrnl *does* implement. It
+refuses `STATUS_NOT_IMPLEMENTED` for a firmware provider other than RSMB,
+and the armed boot turns that into a panic.
+
+**The oracle refuses it the same way.** Its `enum_firmware_info` has a
+`default:` arm returning `STATUS_NOT_IMPLEMENTED` for any non-RSMB
+provider. That does NOT make the refusal pinnable: G12 is explicit that
+`STATUS_NOT_IMPLEMENTED` is never a fixed answer and never pinned, because
+an oracle answering it is unbuilt too, not authoritative. So this is not a
+case where "match the oracle" resolves anything — both are unbuilt, and
+proskrnl is the one that says so out loud.
+
+**Consequence: `ntdll:info` cannot complete until the ACPI and FIRM
+firmware-table providers are implemented.** That is real kernel work and it
+is tractable — the bootloader hands over an RSDP — but it is a milestone of
+its own, not a class fill. It is also the first case in this whole sweep
+where the loud refusal points at something the ORACLE has not built either,
+which is exactly the situation `docs/09`'s "a Wine gap is a gap in the
+oracle, not a ceiling" anticipates.
+
+Everything else in the pair is now visible: 25 assertion failures across
+`info.c:722`, `:741`, `:1086` and a dozen singletons — the first honest
+failure list this pair has ever produced.
+
+Six landed in two batches (35, 37, 62, 154, 206, then 21, 58, 63, 149, 250)
 plus `SystemExtendedProcessInformation` (57). That last one is the shape the
 remaining extended classes will follow: **57 is class 5 with a wider
 per-thread record, not a second enumeration.** The record size is threaded
