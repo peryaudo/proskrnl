@@ -2083,6 +2083,100 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemProcessIdInformation:
+    {
+        /* IN-OUT: the caller supplies the pid and its own buffer through
+         * ImageName.MaximumLength; the class fills in the image path.
+         *
+         * The refusal order is the whole contract and it is not the obvious
+         * one (dlls/ntdll/unix/system.c): the LENGTH check comes first, and
+         * returnLength is written BEFORE any of them — a caller that passes
+         * a short buffer still learns the structure size. Then a non-zero
+         * ImageName.Length is STATUS_INVALID_PARAMETER (the field is an
+         * out-parameter and must arrive empty), and only then is a zero pid
+         * STATUS_INVALID_CID — not INVALID_PARAMETER, which is the status
+         * an implementation reaches for.
+         *
+         * A buffer too small for the name is STATUS_INFO_LENGTH_MISMATCH
+         * with MaximumLength set to what is needed, so the caller can size
+         * and retry. */
+        ULONG needed = (ULONG)sizeof(SYSTEM_PROCESS_ID_INFORMATION);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        if (length < needed)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        SYSTEM_PROCESS_ID_INFORMATION request;
+        memcpy(&request, buffer, sizeof(request));
+        if (request.ImageName.Length != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (request.ProcessId == 0)
+        {
+            return STATUS_INVALID_CID;
+        }
+
+        uint64_t flags = KiAcquireDispatcherLock();
+        PEPROCESS found = 0;
+        for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+             p = p->Flink)
+        {
+            PEPROCESS candidate = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+            if (PspProcessIsLive(candidate) &&
+                candidate->uniqueProcessId == (uint64_t)(uintptr_t)request.ProcessId)
+            {
+                found = candidate;
+                break;
+            }
+        }
+        WCHAR name[260];
+        USHORT nameBytes = 0;
+        if (found != 0 && found->imageName != 0)
+        {
+            const char *source = found->imageName;
+            USHORT units = 0;
+            while (source[units] != 0 && units < 259)
+            {
+                name[units] = (WCHAR)(unsigned char)source[units];
+                units++;
+            }
+            nameBytes = (USHORT)(units * sizeof(WCHAR));
+        }
+        KiReleaseDispatcherLock(flags);
+        if (found == 0)
+        {
+            return STATUS_INVALID_CID;
+        }
+
+        if ((ULONG)nameBytes + sizeof(WCHAR) > request.ImageName.MaximumLength)
+        {
+            request.ImageName.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+            memcpy(buffer, &request, sizeof(request));
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        status = KiProbeForWrite(request.ImageName.Buffer, (SIZE_T)nameBytes + sizeof(WCHAR),
+                                 sizeof(WCHAR));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memcpy(request.ImageName.Buffer, name, nameBytes);
+        request.ImageName.Buffer[nameBytes / sizeof(WCHAR)] = 0;
+        request.ImageName.Length = nameBytes;
+        request.ImageName.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        memcpy(buffer, &request, sizeof(request));
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2175,7 +2269,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 6 now.
+         * as the classes get built. It was 16 when this list was written; 5 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2183,7 +2277,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemProcessIdInformation:
         case SystemCodeIntegrityInformation:
         case SystemProcessorBrandString:
         case SystemLogicalProcessorInformationEx:

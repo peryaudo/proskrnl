@@ -1022,6 +1022,11 @@ typedef struct {
     ULONG Flags;
 } SYSTEM_CACHE_INFORMATION, *PSYSTEM_CACHE_INFORMATION;
 
+typedef struct {
+    ULONG_PTR ProcessId;
+    UNICODE_STRING ImageName;
+} SYSTEM_PROCESS_ID_INFORMATION, *PSYSTEM_PROCESS_ID_INFORMATION;
+
 typedef enum {
     RelationProcessorCore    = 0,
     RelationNumaNode         = 1,

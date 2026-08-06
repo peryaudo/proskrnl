@@ -2025,6 +2025,10 @@ def gen_ntpsapi(wine: Path) -> str:
                 "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
             ),
             extract_struct(winternl, "_SYSTEM_CACHE_INFORMATION", "SYSTEM_CACHE_INFORMATION"),
+            # SystemProcessIdInformation (88): pid in, image name out.
+            extract_struct(
+                winternl, "_SYSTEM_PROCESS_ID_INFORMATION", "SYSTEM_PROCESS_ID_INFORMATION"
+            ),
             # SystemLogicalProcessorInformation (73): the relationship enum,
             # the cache descriptor its union carries, and the record itself.
             # winnt.h, not winternl.h (kernel/ps/query.c).
