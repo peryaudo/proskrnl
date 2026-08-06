@@ -631,8 +631,64 @@ Also landed alongside: `KeNumberProcessors` → `KE_NUMBER_PROCESSORS`.
 definition*, leaving every call site pointing at a name that no longer
 exists. Worth knowing before the next NT-spelled macro goes in.
 
-**Next**, in order: W2b (`SystemProcessInformation`,
-which also carries `kernel32:toolhelp`'s 135 failures) and W2c; then W3.
+### The backlog map was re-measured, and two of its entries were wrong
+
+The map in §2 was taken before roughly twenty kernel fixes, and one boot
+per pair now says something different. Of the 73 manifest pairs, **43 pass
+and 30 fail**; all of `msvcrt` (10/10) and `ucrtbase` (8/8) are green.
+
+Two corrections matter more than the counts, because both were *inferences
+recorded as measurements*:
+
+- **`kernel32:toolhelp` does not carry `SystemProcessInformation` work, and
+  never did.** §2 attributed its 135 failures to class 5 on the strength of
+  the message text ("couldn't find self and/or sub-process in process
+  list"). The actual cause is one line in the pair's *sub-process*:
+  `if (!LoadLibraryA("shell32.dll")) ExitProcess(WAIT_ABANDONED);`. shell32
+  imports user32 and gdi32, so the child cannot start on a CUI volume, the
+  parent's wait times out at `toolhelp.c:649`, and all 134 remaining
+  failures are downstream of that. The enumeration the pair is nominally
+  about answers *correctly* for the three processes that do exist. The pair
+  is now excluded from the manifest as category (c), needs-the-GUI-image,
+  with that measurement written down. **The lesson is the cheap one: a
+  failure message names the assertion, not the cause.**
+
+- **`FileIdInformation` was a PANIC, not a set of failures.** `ntdll:directory`
+  was recorded as ~86 failures. It was in fact dying: class 59 is unbuilt,
+  the armed boot turns `STATUS_NOT_IMPLEMENTED` into a panic by design, and
+  everything after `directory.c:1461` never ran. Implementing the class
+  (a join of `FileInternalInformation`'s id and `FileFsVolumeInformation`'s
+  serial — no third source, Art. 11) took the pair from *dead* to 5199
+  tests executed with 407 failures. Which is to say the "failure count" of a
+  pair that panics is not a measurement of anything.
+
+Then `NtQueryDirectoryFile`'s IOSB rule took it 407 → **285**. That rule is
+worth restating because neither obvious implementation is right: the class
+writes the caller's IOSB on failure too, with exactly one exemption
+(`if (status != STATUS_NO_SUCH_FILE) io->Status = status;`).
+
+### W3a — 8.3 short names (the next item, and the biggest single lever)
+
+203 of `ntdll:directory`'s remaining 285 failures are one assertion,
+`directory.c:620` — the wildcard truth table of ~77 masks against 18 files.
+It is tempting to read that as "the wildcard matcher is wrong", and a
+scratch harness that replays the table against the current matcher does
+show 49 disagreements, all involving DOS_STAR `<`. But the matcher is not
+the root cause: the oracle matches the mask against the long name **and,
+on failure, against the 8.3 short name**, and proskrnl has no short names
+at all. `ShortName` in `FILE_BOTH_DIRECTORY_INFORMATION` is likewise left
+empty, on a comment claiming the oracle leaves it empty too — a claim the
+oracle disproves by passing `directory.c:654`.
+
+FAT32 *stores* real short names on disk; they simply are not carried out
+through `IO_DIR_ENTRY`. The differential wrinkle to design around is that
+the short name FAT stores and the one Wine synthesizes are different
+strings, so the pins can assert the *property* (non-empty, 8.3-shaped, also
+matched by the mask) but not the value.
+
+**Next**, in order: W3a (short names, above), then the `directory.c:265`
+and `:324` residue once W3a says which of it was short-name work; then W2b
+(`SystemProcessInformation`) and W2c.
 
 *The `abi/` header trap, now resolved and worth remembering.*
 `ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
