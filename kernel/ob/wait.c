@@ -132,6 +132,28 @@ NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE 
     ULONG referenced = 0;
     for (; referenced < count; referenced++)
     {
+        /* Pseudo-handles are legal in the SINGLE-object wait and illegal
+         * here. That asymmetry is the contract, not an oversight —
+         * kernel32:sync states it in its own comment (sync.c:1483: "in
+         * contrast to WaitForSingleObject, all pseudo-handles are not
+         * allowed in WaitForMultipleObjects and NtWaitForMultipleObjects")
+         * and asserts STATUS_INVALID_HANDLE for each of them.
+         *
+         * proskrnl reached this only recently: teaching
+         * ObReferenceObjectByHandle to resolve -1 and -2 (the fix that
+         * unblocked kernel32:thread) made them resolve HERE too, so the
+         * call waited on a process or thread object instead of refusing —
+         * and kernel32:sync then entered a wait it never left, burning the
+         * pair's whole 300-second timeout. A capability added in one place
+         * changed behaviour in another; this is the second half of that
+         * change, and tests/ntapi/sem_wait/pseudo_handle_multi.c pins both
+         * halves together so they cannot drift apart again. */
+        if (handles[referenced] == NtCurrentProcess() ||
+            handles[referenced] == NtCurrentThread())
+        {
+            status = STATUS_INVALID_HANDLE;
+            break;
+        }
         status = ObpReferenceWaitObject(handles[referenced], &objects[referenced]);
         if (!NT_SUCCESS(status))
         {
