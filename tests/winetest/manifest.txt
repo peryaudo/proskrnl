@@ -212,7 +212,27 @@ ntdll_test.exe:string
 #     the timer/wait/APC surface it is built on. Read the serial log first.
 # TODO: Implement
 # ntdll_test.exe:threadpool
-ntdll_test.exe:time
+# ORACLE-FLAKY, NOT A KERNEL GAP — and the only entry here whose PROSKRNL
+#     leg is green. `wtest ntdll_test.exe:time PASS`; the ORACLE leg fails,
+#     and only on a loaded shared runner (it is 0-failing on a quiet host).
+#
+#     The cause is in the test, not in either runner. time.c:457 reads the
+#     KUSER_SHARED_DATA SystemTime and NtQuerySystemTime back to back and
+#     guards the ordering assertion with
+#
+#         todo_wine_if(t1 > t2 && t1 - t2 < 50 * TICKSPERMSEC)
+#
+#     — a todo whose CONDITION is itself the race. Under load the skew
+#     between the two reads exceeds 50 ms, the todo stops applying, and the
+#     ok() underneath becomes a hard failure. Nothing proskrnl does can
+#     change that: it is Wine's own USD-vs-syscall clock skew on the host.
+#
+#     Commented out rather than left active because a gate that goes red on
+#     host scheduling teaches the next person to ignore it. Re-activating it
+#     needs a decision about the oracle leg (tolerate a named flaky subtest,
+#     or retry it), not a kernel change — which is why there is no
+#     `TODO: Implement` line.
+# ntdll_test.exe:time
 # UNTRIAGED, FIXABLE — part of the exception/context cluster (docs/21 W6,
 #     triage-first). Dies rather than finishing and names nothing in the log.
 #     Unwinding is PE-side, so a kernel failure under it points at the
