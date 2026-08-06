@@ -913,6 +913,28 @@ and not a constitutional question.
 It is also the direct continuation of the `\DosDevices` fix above: same
 plan item, same subsystem, and the cheap half is already done.
 
+**The interface, so the next pass does not re-derive it.**
+`GetVolumeNameForVolumeMountPointW` does not read the namespace — it opens
+`MOUNTMGR_DOS_DEVICE_NAME` (`\\.\MountPointManager`) with `CreateFileW`
+and issues `IOCTL_MOUNTMGR_QUERY_POINTS`, passing a `MOUNTMGR_MOUNT_POINT`
+and reading back `MOUNTMGR_MOUNT_POINTS`
+(`dlls/kernelbase/volume.c:235-269`). So the minimum is:
+
+1. `\Device\MountPointManager` plus a `\??\MountPointManager` symlink —
+   the `\DosDevices` helper just added is the pattern for the second half.
+2. `IOCTL_MOUNTMGR_QUERY_POINTS`, answering with one mount point for the
+   one volume: its DOS name (`\DosDevices\C:`), its device name, and a
+   `\??\Volume{...}` GUID name.
+3. The `\??\Volume{...}` symlink itself, so the GUID path the IOCTL hands
+   back actually resolves — otherwise `GetDiskFreeSpace` on it still fails
+   and only half the assertions move.
+
+The GUID is ours to choose (nothing pins its value; the pins can only
+assert that the same GUID comes back consistently and that the path
+resolves to the same volume as `C:`), but it must be STABLE across the
+three places above or they will disagree — which is the same one-authority
+trap `\DosDevices` avoided by being a link rather than a directory.
+
 ### `ntdll:rtl` has a CUI-image floor of 26, and it is one dependency
 
 All 26 failures are `test_LdrAddRefDll` (`rtl.c:2314`-`:2348`), and every
