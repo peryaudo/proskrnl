@@ -349,6 +349,15 @@ typedef struct {
     WCHAR               FileName[ANYSIZE_ARRAY];
 } FILE_ID_BOTH_DIRECTORY_INFORMATION, *PFILE_ID_BOTH_DIRECTORY_INFORMATION;
 
+typedef struct {
+    UCHAR Identifier[16];
+} FILE_ID_128, *PFILE_ID_128;
+
+typedef struct {
+    ULONGLONG VolumeSerialNumber;
+    FILE_ID_128 FileId;
+} FILE_ID_INFORMATION, *PFILE_ID_INFORMATION;
+
 /* Volume information (M7: RtlSetCurrentDirectory_U queries it at
  * ntdll startup); enum from wine/include/winternl.h, structs and
  * device types from wine/include/winioctl.h. */

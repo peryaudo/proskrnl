@@ -1187,6 +1187,11 @@ def gen_ntioapi(wine: Path) -> str:
                 "_FILE_ID_BOTH_DIRECTORY_INFORMATION",
                 "FILE_ID_BOTH_DIRECTORY_INFORMATION",
             ),
+            # NtQueryInformationFile(FileIdInformation): the volume serial
+            # plus the 128-bit file id. FILE_ID_128 must precede it — it is
+            # the member type (kernel/io/query.c).
+            ("_FILE_ID_128", "FILE_ID_128"),
+            ("_FILE_ID_INFORMATION", "FILE_ID_INFORMATION"),
         ]
     )
 
