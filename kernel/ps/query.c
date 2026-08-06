@@ -2571,6 +2571,72 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         return STATUS_SUCCESS;
     }
 
+    case SystemCpuSetInformation:
+    {
+        /* One record per logical processor. The query blob is a process
+         * HANDLE — it may be NULL, but it must be PRESENT and at least
+         * pointer-sized, which is what makes the plain entry point's
+         * forward (a NULL query of length 0) an INVALID_PARAMETER rather
+         * than an answer.
+         *
+         * Ids start at 0x100, which is the oracle's numbering and is
+         * observable: callers pass these back to
+         * SetProcessDefaultCpuSets. CoreIndex, NumaNodeIndex and
+         * LastLevelCacheIndex are all 0 because there is one of each
+         * (Art. 3), not because they are unfilled. */
+        if (query == 0 || queryLength < sizeof(HANDLE))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS probe = KiProbeForRead(query, sizeof(HANDLE), sizeof(HANDLE));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        HANDLE target;
+        memcpy(&target, query, sizeof(target));
+        if (target != 0)
+        {
+            /* A handle that is present must be a real process handle; the
+             * oracle validates it with a ProcessBasicInformation query and
+             * returns whatever that says. */
+            PVOID body;
+            NTSTATUS refStatus = ObReferenceObjectByHandle(
+                target, PROCESS_QUERY_LIMITED_INFORMATION, &PspProcessType, ExGetPreviousMode(),
+                &body, 0);
+            if (!NT_SUCCESS(refStatus))
+            {
+                return refStatus;
+            }
+            ObDereferenceObject(body);
+        }
+        ULONG needed = KE_NUMBER_PROCESSORS * (ULONG)sizeof(SYSTEM_CPU_SET_INFORMATION);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        if (length < needed)
+        {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        SYSTEM_CPU_SET_INFORMATION sets[KE_NUMBER_PROCESSORS];
+        memset(sets, 0, sizeof(sets));
+        for (ULONG i = 0; i < KE_NUMBER_PROCESSORS; i++)
+        {
+            sets[i].Size = (ULONG)sizeof(SYSTEM_CPU_SET_INFORMATION);
+            sets[i].Type = CpuSetInformation;
+            sets[i].CpuSet.Id = 0x100 + i;
+            sets[i].CpuSet.LogicalProcessorIndex = (BYTE)i;
+        }
+        memcpy(buffer, sets, needed);
+        return STATUS_SUCCESS;
+    }
+
     case SystemProcessorIdleCycleTimeInformation:
     {
         /* The same answer the plain form gives, and the plain form is
@@ -2682,7 +2748,6 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         switch (infoClass)
         {
         case SystemBatteryState:
-        case SystemCpuSetInformation:
         case SystemExecutionState:
         case SystemPowerCapabilities:
             DbgPrint("NtQuerySystemInformationEx: unbuilt info class %d\n", (int)infoClass);

@@ -2119,6 +2119,9 @@ def gen_ntpsapi(wine: Path) -> str:
             # NtQueryInformationThread(ThreadGroupInformation): the
             # processor-group form of an affinity mask (kernel/ps/thread.c).
             extract_struct(winnt, "_GROUP_AFFINITY", "GROUP_AFFINITY"),
+            # SystemCpuSetInformation (175).
+            extract_enum(winnt, "_CPU_SET_INFORMATION_TYPE", "CPU_SET_INFORMATION_TYPE"),
+            extract_struct(winnt, "_SYSTEM_CPU_SET_INFORMATION", "SYSTEM_CPU_SET_INFORMATION"),
             # SystemLogicalProcessorInformationEx (107): the four
             # relationship payloads and the record that unions them.
             extract_struct(winnt, "_PROCESSOR_RELATIONSHIP", "PROCESSOR_RELATIONSHIP"),
