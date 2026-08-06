@@ -895,6 +895,24 @@ needs a volume GUID path (`\\?\Volume{...}\`), and the
 MountPointManager half of W7 — a device plus a GUID namespace — and it is
 real kernel work, not a floor.
 
+### The highest-value single item left is MountPointManager, and it is now measured
+
+`kernel32:volume` is at **53** failures and `kernel32:drive` at **4**, and
+they are the *same defect*: there is no volume GUID namespace.
+`GetVolumeNameForVolumeMountPoint("C:\\")` cannot produce a
+`\\?\Volume{...}\` path, `FindFirstVolume` has nothing to enumerate, and
+everything downstream — `GetDiskFreeSpace` on a GUID path, the mount-point
+round trips — fails behind them.
+
+That makes the MountPointManager half of W7 worth **~57 assertions across
+two pairs**, which is the largest single number on the board now that
+`ntdll:directory` and `ntdll:info` are at their limits. It is real kernel
+work (a device, a GUID namespace, and the enumeration IOCTLs), not a floor
+and not a constitutional question.
+
+It is also the direct continuation of the `\DosDevices` fix above: same
+plan item, same subsystem, and the cheap half is already done.
+
 ### `ntdll:rtl` has a CUI-image floor of 26, and it is one dependency
 
 All 26 failures are `test_LdrAddRefDll` (`rtl.c:2314`-`:2348`), and every
