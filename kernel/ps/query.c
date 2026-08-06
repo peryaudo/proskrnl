@@ -1427,6 +1427,61 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         MiFreePool(snapshot);
         return handleStatus;
     }
+    case SystemModuleInformationEx:
+    {
+        /* The chained form of the class below, and the SAME one real
+         * module: proskrnl reports the kernel and nothing else, never the
+         * oracle's fabricated hal.dll/mountmgr.sys rows (docs/03 "CUI-6
+         * notes" — the oracle's own comment there reads "return some fake
+         * info for now", and reproducing invented drivers would be
+         * reproducing a fiction rather than a behaviour).
+         *
+         * The shape is a chain terminated by a zero NextOffset word, and
+         * the terminator is part of the reported length: ntdll:info walks
+         * until NextOffset is 0 and then requires
+         * `(walked - buffer) + sizeof(NextOffset) == size`
+         * (info.c:866-878). Getting the terminator out of the length is the
+         * easy mistake here. */
+        static const char kernelName[] = "\\SystemRoot\\system32\\ntoskrnl.exe";
+        const uint64_t kernelBase = 0xffffffff80000000ULL; /* linker.ld */
+        ULONG needed =
+            (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION_EX) + (ULONG)sizeof(ULONG);
+        if (length < needed)
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = needed;
+            }
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS moduleStatus = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(moduleStatus))
+        {
+            return moduleStatus;
+        }
+        BYTE *scratch = MiAllocatePool(needed);
+        if (scratch == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memset(scratch, 0, needed);
+        RTL_PROCESS_MODULE_INFORMATION_EX *entry = (RTL_PROCESS_MODULE_INFORMATION_EX *)scratch;
+        entry->NextOffset = (ULONG)sizeof(RTL_PROCESS_MODULE_INFORMATION_EX);
+        entry->BaseInfo.ImageBaseAddress = (PVOID)(uintptr_t)kernelBase;
+        entry->BaseInfo.ImageSize = (ULONG)((uint64_t)(uintptr_t)KiImageEnd - kernelBase);
+        entry->BaseInfo.LoadOrderIndex = 0;
+        entry->BaseInfo.LoadCount = 1;
+        memcpy(entry->BaseInfo.Name, kernelName, sizeof(kernelName));
+        entry->BaseInfo.NameOffset = (WORD)(sizeof("\\SystemRoot\\system32\\") - 1);
+        /* The trailing zero NextOffset is already there from the memset. */
+        memcpy(buffer, scratch, needed);
+        MiFreePool(scratch);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        return STATUS_SUCCESS;
+    }
     case SystemModuleInformation:
     {
         /* CUI-6 (sem_ps/sys_handles): ONE real module — the kernel itself,
@@ -2083,7 +2138,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 8 now.
+         * as the classes get built. It was 16 when this list was written; 7 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2091,7 +2146,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemModuleInformationEx:
         case SystemProcessorIdleCycleTimeInformation:
         case SystemProcessIdInformation:
         case SystemCodeIntegrityInformation:

@@ -2124,6 +2124,13 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_defines(winternl, "winternl.h", ["MAXIMUM_FILENAME_LENGTH"]),
             process_module_info,
             extract_struct(winternl, "_RTL_PROCESS_MODULES", "RTL_PROCESS_MODULES"),
+            # SystemModuleInformationEx (77): the chained record. Embeds
+            # RTL_PROCESS_MODULE_INFORMATION, so it must follow it.
+            extract_struct(
+                winternl,
+                "_RTL_PROCESS_MODULE_INFORMATION_EX",
+                "RTL_PROCESS_MODULE_INFORMATION_EX",
+            ),
         ]
     )
     ps_attribute_defines = extract_defines(

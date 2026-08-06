@@ -1431,6 +1431,14 @@ typedef struct {
     RTL_PROCESS_MODULE_INFORMATION Modules[1]; /* FIXME: should be Modules[0] */
 } RTL_PROCESS_MODULES, *PRTL_PROCESS_MODULES;
 
+typedef struct {
+    USHORT NextOffset;
+    RTL_PROCESS_MODULE_INFORMATION BaseInfo;
+    ULONG ImageCheckSum;
+    ULONG TimeDateStamp;
+    void *DefaultBase;
+} RTL_PROCESS_MODULE_INFORMATION_EX;
+
 /* Layout pins, generated from the offset comments in the SAME Wine
  * header the structs were extracted from (Art. 4). */
 _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, KernelTime) == 0x00, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
