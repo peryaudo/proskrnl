@@ -854,27 +854,67 @@ static BOOLEAN IopMatchMask(const WCHAR *name, ULONG nameUnits, const WCHAR *mas
         }
         if (m == '<')
         {
-            /* Remainder may start at or before the final '.', anywhere if
-             * the name has none — plus consume-all when the name ends with
-             * one ("." itself: DOS_STAR alone matches it). */
-            ULONG limit = nameUnits;
-            BOOLEAN endsWithDot = nameUnits != 0 && name[nameUnits - 1] == '.';
-            for (ULONG i = nameUnits; i-- > 0;)
+            /* DOS_STAR. Microsoft's FsRtlIsNameInExpression documentation:
+             * "matches zero or more characters until encountering and
+             * matching the final . in the name". Both halves of that
+             * sentence are load-bearing, and the winetest truth table
+             * (ntdll:directory mask_tests) decides between the readings:
+             *
+             *   "until ... the final ." — the rest of the mask may resume
+             *   at the start of ANY dot-delimited segment, not only at or
+             *   before the last dot. This is what lets `<tmp` match
+             *   `n.tmp` and `ea.tmp.tmp`; the old code stopped at the final
+             *   dot and matched neither.
+             *
+             *   "and matching" — once the final dot is passed DOS_STAR is
+             *   SPENT, so the mask resumes at that last segment's start and
+             *   never partway inside it: `<a` matches `ea` but must not
+             *   match `.aa`.
+             *
+             * Derived from that table (third-party Windows-verified spec,
+             * docs/08) and the MS documentation above — not translated from
+             * the oracle's matcher, which is off-limits as kernel reference
+             * material (docs/11). Pinned by
+             * tests/ntapi/sem_file/dir_mask_dosstar.c. */
+            const WCHAR *rest = mask + 1;
+            ULONG restUnits = maskUnits - 1;
+            BOOLEAN sawDot = FALSE;
+            while (nameUnits != 0)
             {
-                if (name[i] == '.')
+                ULONG segment = 0;
+                while (segment < nameUnits && name[segment] != '.')
                 {
-                    limit = i;
-                    break;
+                    segment++;
                 }
-            }
-            for (ULONG skip = 0; skip <= limit; skip++)
-            {
-                if (IopMatchMask(name + skip, nameUnits - skip, mask + 1, maskUnits - 1))
+                if (segment == nameUnits)
                 {
-                    return TRUE;
+                    if (sawDot)
+                    {
+                        /* The tail past the final dot: one resume point,
+                         * at its start. */
+                        return restUnits != 0 &&
+                               IopMatchMask(name, nameUnits, rest, restUnits);
+                    }
                 }
+                else
+                {
+                    sawDot = TRUE;
+                    segment++; /* the dot belongs to the segment it ends */
+                }
+                for (ULONG skip = 0; skip < segment; skip++)
+                {
+                    if (restUnits != 0 &&
+                        IopMatchMask(name + skip, nameUnits - skip, rest, restUnits))
+                    {
+                        return TRUE;
+                    }
+                }
+                name += segment;
+                nameUnits -= segment;
             }
-            return endsWithDot && IopMatchMask(name + nameUnits, 0, mask + 1, maskUnits - 1);
+            mask = rest;
+            maskUnits = restUnits;
+            continue;
         }
         if (nameUnits == 0)
         {
