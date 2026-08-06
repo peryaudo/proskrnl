@@ -806,10 +806,61 @@ Two other things this stretch settled:
   NAME in Ob, FAT lookup and Cm alike. **A deviation note is a debt, not a
   dismissal.**
 
-**Next**: the pairs the re-measured map still shows red — `ntdll:file`,
-`ntdll:info`, `ntdll:om`, `ntdll:virtual`, `kernel32:file`, `kernel32:sync`
-and the rest of §2's list — re-measured first, since several were recorded
-while they were still dying rather than failing.
+### W2b in progress: `ntdll:info`, and the refusal split that was too coarse
+
+`ntdll:info` was recorded as a wedge. It is not — it **panics**, on the
+first `NtQuerySystemInformation` class it reaches that proskrnl has not
+built, and then the pair ends. Clearing it is a walk: build one class, the
+pair advances to the next. 114, then 62, then 4, then 21 so far.
+
+Class 4 exposed a real defect in the refusal split rather than a missing
+class. The rule was "outside the enum is INVALID, inside it and unbuilt is
+NOT_IMPLEMENTED and panics". But of `SYSTEM_INFORMATION_CLASS`'s **262
+enumerators the oracle serves 37** — the other 225 reach its default arm
+and get `STATUS_INVALID_INFO_CLASS`. For those, INVALID_INFO_CLASS is not a
+guess, it is *the answer*, and giving it is an implementation rather than
+the plausible-stub Art. 12 forbids. Being in the enum was never the right
+test; being served by the oracle is.
+
+So `kernel/ps/query.c` now carries the narrower set **as a list**: the
+classes the ORACLE implements and proskrnl does not. Those keep the loud
+refusal, because there a quiet one really would hide a hole. Listing them
+rather than deriving the 225 is deliberate — the list is the honest
+inventory of what the call still owes, and a class leaving it is a visible
+edit in the commit that builds it.
+
+**The inventory, 16 at the time of writing** (number is the class):
+
+    SystemFileCacheInformation(21)        SystemExtendedProcessInformation(57)
+    SystemRecommendedSharedDataAlignment(58)  SystemEmulationProcessorInformation(63)
+    SystemExtendedHandleInformation(64)   SystemLogicalProcessorInformation(73)
+    SystemModuleInformationEx(77)         SystemProcessorIdleCycleTimeInformation(83)
+    SystemProcessIdInformation(88)        SystemCodeIntegrityInformation(103)
+    SystemProcessorBrandString(105)       SystemLogicalProcessorInformationEx(107)
+    SystemKernelDebuggerInformationEx(149)    SystemCpuSetInformation(175)
+    SystemSupportedProcessorArchitectures2(230)
+    SystemProcessorFeaturesBitMapInformation(250)
+
+Five landed alongside it (35, 37, 62, 154, 206) as one batch, and their pin
+records the thing that makes such a batch safe: these classes answer with
+*shape plus a constant*, which is simultaneously the correct implementation
+and the classic silent stub. What separates them is only that every value
+was read off the oracle and pinned. Two are values the oracle itself calls
+a stub — reproducing a stub's OUTPUT is not stubbing, since Art. 6 makes
+the oracle the spec and no caller can tell.
+
+`SystemProcessorFeaturesInformation` is the one that is not a constant, and
+it is worth the extra care it got: the base word is architecturally
+guaranteed on any x86_64, but the optional bits (SSE3, CMPXCHG16B, XSAVE,
+RDRAND, vendor) are read from CPUID rather than assumed, because a caller
+told it has `cx16` on a machine without it takes a fault. That is the
+failure mode a fabricated answer actually produces.
+
+**Next**: continue the `ntdll:info` walk through the 16 above; then
+`ntdll:file`, which panics for the same reason on a different surface
+(`NtCreateMailslotFile`, W8); then the rest of §2's red list, re-measured —
+several of those numbers were recorded while the pair was still dying
+rather than failing, and a dying pair's failure count measures nothing.
 
 *The `abi/` header trap, now resolved and worth remembering.*
 `ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
