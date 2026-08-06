@@ -768,11 +768,48 @@ The offline harness earned its keep twice more: it reproduced the measured
 10 exactly before any fix, and scored six candidate name-generation rules
 in a second.
 
-**Next**, in order: `directory.c:324` (the case-insensitive enumeration
-sort, 14 — `ntdll:directory`'s largest remaining site); then `:389`/`:421`
-and friends (the per-class refusal split and buffer-overflow accounting, W1
-applied to `NtQueryDirectoryFile`); then W2b (`SystemProcessInformation`)
-and W2c.
+### `ntdll:directory` is at its FAT floor: 5 failures, one cause
+
+The pair went **dead → 6393 tests, 5 failures** across this series. The
+last five are not five defects; they are one, and it is not fixable on this
+backend:
+
+`directory.c:1446` fails `FSCTL_SET_REPARSE_POINT` with
+`STATUS_INVALID_DEVICE_REQUEST`, so the file never becomes a reparse point
+— and the four `EaSize` assertions at `:1568`–`:1593` are checking the
+reparse TAG, because `EaSize` aliases `ReparsePointTag` in the directory
+classes for a file that has one. Fix the first and the other four follow;
+without it they cannot pass.
+
+Reparse points are an NTFS construct. FAT32 has nowhere to put one, and
+inventing an on-disk extension would be writing a filesystem the public
+spec does not describe. So **5 is this pair's floor** while the backend is
+FAT, and those assertions convict nothing.
+
+Two other things this stretch settled:
+
+- **`:389` and `:421`–`:464` were one contract, not two.** The threshold
+  below which a class complains about LENGTH is
+  `align8(offsetof(FileName[1]))`, not `offsetof(FileName)` — a buffer
+  holding just the fixed part is still too small. And three classes
+  (`FileObjectIdInformation`, `FileQuotaInformation`,
+  `FileReparsePointInformation`) size-check BEFORE refusing, so
+  "supported?" is answered after "big enough?" — which is what separates
+  known-but-unsupported from unknown.
+
+- **A recorded deviation came due.** `docs/03`'s "Name case folding" row
+  said ASCII-only upcasing was "unobservable until user mode invents
+  non-ASCII object names". Three fixes later the enumeration sort reached a
+  directory holding U+00E9 and U+00C9 and the row was wrong. The fold now
+  covers Latin-1 — as a switch, not `c - 0x20`, because U+00FF maps to
+  U+0178 and a bare subtract would make y-diaeresis and sharp-s the same
+  NAME in Ob, FAT lookup and Cm alike. **A deviation note is a debt, not a
+  dismissal.**
+
+**Next**: the pairs the re-measured map still shows red — `ntdll:file`,
+`ntdll:info`, `ntdll:om`, `ntdll:virtual`, `kernel32:file`, `kernel32:sync`
+and the rest of §2's list — re-measured first, since several were recorded
+while they were still dying rather than failing.
 
 *The `abi/` header trap, now resolved and worth remembering.*
 `ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
