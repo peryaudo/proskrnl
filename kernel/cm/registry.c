@@ -2414,7 +2414,7 @@ NTSTATUS NtReplaceKey(POBJECT_ATTRIBUTES newFileAttributes, HANDLE keyHandle,
  * seeds the keys real NT guarantees exist (Session Manager: created by NT
  * itself, probed by kernel32:heap test_child_heap and read by the kernel's
  * own GlobalFlag stamp, kernel/ps/peb.c). */
-static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
+static PCMP_KEY_NODE CmpWalkPath(PCWSTR path, BOOLEAN create)
 {
     PCMP_KEY_NODE node = CmpRootNode;
     while (*path != 0)
@@ -2431,6 +2431,10 @@ static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
         PCMP_KEY_NODE child = CmpFindSubkey(node, &segment);
         if (child == 0)
         {
+            if (!create)
+            {
+                return 0;
+            }
             child = CmpAllocateNode(node, &segment);
             if (child == 0)
             {
@@ -2441,6 +2445,11 @@ static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
         path = (*end != 0) ? end + 1 : end;
     }
     return node;
+}
+
+static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
+{
+    return CmpWalkPath(path, TRUE);
 }
 
 /* Seed a REG_SZ value if absent — furniture only; a persisted hive's own
@@ -2558,7 +2567,96 @@ void CmInitialize(void)
     static const UCHAR utcTzi[44] = {0};
     CmpSeedBinaryValue(seeded, WSTR("TZI"), utcTzi, sizeof(utcTzi));
 
+    /* The license values NtQueryLicenseValue answers from
+     * (kernel/cm/registry.c, the syscall below). On the oracle these live
+     * in the prefix, installed by loader/wine.inf.in:1212; proskrnl has no
+     * prefix, so they are seeded here for the same reason the time-zone
+     * entry above is. `EMPTY` is the literal five-letter value, not an
+     * empty string — ntdll:reg asserts it with no broken() guard, which
+     * makes it spec rather than a prefix default (docs/08). Pinned by
+     * tests/ntapi/sem_reg/license_value.c. */
+    seeded = CmpEnsureSkeletonKey(WSTR("Machine\\Software\\Wine\\LicenseInformation"));
+    CmpSeedStringValue(seeded, WSTR("Kernel-MUI-Language-Allowed"), WSTR("EMPTY"));
+
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",
              CmpRootNode->subkeyCount > 2 ? "loaded" : "empty");
+}
+
+/* NtQueryLicenseValue — a named lookup in the license key.
+ *
+ * The whole contract is the ORDER of its refusals and what each one leaves
+ * alone: the argument checks run BEFORE the lookup, and every failing path
+ * leaves the caller's `type` and `retlen` exactly as it found them.
+ * ntdll:reg checks that after each refusal (it poisons them with 0xdead /
+ * 0xbeef), so an implementation that zeroed its out-params on the way in
+ * would return every right status and still fail a dozen assertions. Only
+ * BUFFER_TOO_SMALL and SUCCESS write anything.
+ *
+ * `type` is optional throughout, `retlen` never is — the asymmetry the
+ * oracle states in one line (dlls/ntdll/unix/registry.c: `if (!name ||
+ * !name->Buffer || !name->Length || !retlen) return
+ * STATUS_INVALID_PARAMETER;`).
+ *
+ * The values live in a seeded key (CmInitialize above) and are read through
+ * the same CmpFindValue every other value lookup uses (Art. 11); the path
+ * walk is CmpWalkPath, shared with the seeding side, so the writer and the
+ * reader cannot disagree about where the key is. Pinned by
+ * tests/ntapi/sem_reg/license_value.c. */
+NTSTATUS NtQueryLicenseValue(const UNICODE_STRING *name, ULONG *type, void *buffer, ULONG length,
+                             ULONG *returnLength)
+{
+    if (name == 0 || returnLength == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    NTSTATUS status = CmpProbeValueName(name);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (name->Buffer == 0 || name->Length == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KiProbeForWrite(returnLength, sizeof(*returnLength), sizeof(*returnLength));
+    if (NT_SUCCESS(status) && type != 0)
+    {
+        status = KiProbeForWrite(type, sizeof(*type), sizeof(*type));
+    }
+    if (NT_SUCCESS(status) && length != 0)
+    {
+        status = KiProbeForWrite(buffer, length, 1);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    PCMP_KEY_NODE node = CmpWalkPath(WSTR("Machine\\Software\\Wine\\LicenseInformation"), FALSE);
+    if (node == 0)
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    UNICODE_STRING lookup = *name;
+    lookup.Length &= ~1u; /* whole WCHARs, as NtQueryValueKey rounds */
+    PCMP_VALUE value = CmpFindValue(node, &lookup);
+    if (value == 0)
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    /* Past here the answer exists, so the out-params are written even on
+     * the short-buffer refusal — the caller sizes its buffer from them. */
+    if (type != 0)
+    {
+        *type = value->type;
+    }
+    *returnLength = value->dataLength;
+    if (value->dataLength > length)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    memcpy(buffer, value->data, value->dataLength);
+    return STATUS_SUCCESS;
 }

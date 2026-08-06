@@ -2362,6 +2362,8 @@ NTREGAPI_FUNCTIONS = [
     "NtDeleteValueKey",
     "NtSetValueKey",
     "NtQueryValueKey",
+    # The license-value lookup ntdll:reg reaches (kernel/cm/registry.c).
+    "NtQueryLicenseValue",
     "NtEnumerateKey",
     "NtEnumerateValueKey",
     "NtQueryKey",
