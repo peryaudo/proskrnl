@@ -1022,6 +1022,72 @@ typedef struct {
     ULONG Flags;
 } SYSTEM_CACHE_INFORMATION, *PSYSTEM_CACHE_INFORMATION;
 
+typedef enum {
+	PowerSystemUnspecified = 0,
+	PowerSystemWorking = 1,
+	PowerSystemSleeping1 = 2,
+	PowerSystemSleeping2 = 3,
+	PowerSystemSleeping3 = 4,
+	PowerSystemHibernate = 5,
+	PowerSystemShutdown = 6,
+	PowerSystemMaximum = 7
+} SYSTEM_POWER_STATE,
+*PSYSTEM_POWER_STATE;
+
+typedef struct {
+	ULONG Granularity;
+	ULONG Capacity;
+} BATTERY_REPORTING_SCALE,
+*PBATTERY_REPORTING_SCALE;
+
+typedef struct {
+	BOOLEAN PowerButtonPresent;
+	BOOLEAN SleepButtonPresent;
+	BOOLEAN LidPresent;
+	BOOLEAN SystemS1;
+	BOOLEAN SystemS2;
+	BOOLEAN SystemS3;
+	BOOLEAN SystemS4;
+	BOOLEAN SystemS5;
+	BOOLEAN HiberFilePresent;
+	BOOLEAN FullWake;
+	BOOLEAN VideoDimPresent;
+	BOOLEAN ApmPresent;
+	BOOLEAN UpsPresent;
+	BOOLEAN ThermalControl;
+	BOOLEAN ProcessorThrottle;
+	UCHAR ProcessorMinThrottle;
+	UCHAR ProcessorMaxThrottle;
+	UCHAR spare2[4];
+	BOOLEAN DiskSpinDown;
+	UCHAR spare3[8];
+	BOOLEAN SystemBatteriesPresent;
+	BOOLEAN BatteriesAreShortTerm;
+	BATTERY_REPORTING_SCALE BatteryScale[3];
+	SYSTEM_POWER_STATE AcOnLineWake;
+	SYSTEM_POWER_STATE SoftLidWake;
+	SYSTEM_POWER_STATE RtcWake;
+	SYSTEM_POWER_STATE MinDeviceWakeState;
+	SYSTEM_POWER_STATE DefaultLowLatencyWake;
+} SYSTEM_POWER_CAPABILITIES,
+*PSYSTEM_POWER_CAPABILITIES;
+
+typedef struct {
+	BOOLEAN AcOnLine;
+	BOOLEAN BatteryPresent;
+	BOOLEAN Charging;
+	BOOLEAN Discharging;
+	BOOLEAN Spare1[3];
+	BYTE Tag;
+	ULONG MaxCapacity;
+	ULONG RemainingCapacity;
+	ULONG Rate;
+	ULONG EstimatedTime;
+	ULONG DefaultAlert1;
+	ULONG DefaultAlert2;
+} SYSTEM_BATTERY_STATE,
+*PSYSTEM_BATTERY_STATE;
+
 typedef struct {
     ULONG Length;
     ULONG CodeIntegrityOptions;

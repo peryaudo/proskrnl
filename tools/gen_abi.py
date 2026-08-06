@@ -74,8 +74,18 @@ def extract_struct(src: str, tag: str, typedef: str, keep_tag: bool = False) -> 
     The reserved `_TAG` tag is dropped by default; members are kept
     byte-for-byte. keep_tag preserves the tag so another header can carry a
     forward declaration (`typedef struct _TAG NAME;`) of the same type."""
+    # An empty tag means the header declares it ANONYMOUSLY
+    # (`typedef struct { ... } NAME, *PNAME;`), which winnt.h does for the
+    # power structures among others. Without this the search fails and the
+    # generator exits — loudly, but with a message containing no "error",
+    # which is easy to miss while stale abi/ headers keep the build green
+    # (docs/21).
     match = re.search(
-        r"typedef struct " + tag + r"\s*\{(.*?)\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
+        r"typedef struct " + (tag + r"\s*" if tag else "") +
+        # With no tag the body must not cross a brace, or the lazy match
+        # walks from the FIRST anonymous struct in the header to the
+        # target's closing brace and swallows every struct in between.
+        r"\{(" + (r".*?" if tag else r"[^{}]*?") + r")\}\s*([^;{}]*" + typedef + r"[^;{}]*)\s*;",
         src,
         re.S,
     )
@@ -2027,6 +2037,12 @@ def gen_ntpsapi(wine: Path) -> str:
                 "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
             ),
             extract_struct(winternl, "_SYSTEM_CACHE_INFORMATION", "SYSTEM_CACHE_INFORMATION"),
+            # NtPowerInformation(SystemPowerCapabilities): winnt.h declares
+            # these anonymously, hence the empty tag.
+            extract_enum(winnt, "_SYSTEM_POWER_STATE", "SYSTEM_POWER_STATE"),
+            extract_struct(winnt, "", "BATTERY_REPORTING_SCALE"),
+            extract_struct(winnt, "", "SYSTEM_POWER_CAPABILITIES"),
+            extract_struct(winnt, "", "SYSTEM_BATTERY_STATE"),
             # SystemCodeIntegrityInformation (103), with its options flag.
             extract_struct(
                 winternl,

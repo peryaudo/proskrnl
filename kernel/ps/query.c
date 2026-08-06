@@ -3082,6 +3082,67 @@ NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG in
         memcpy(output, &info, sizeof(info));
         return STATUS_SUCCESS;
     }
+    case SystemPowerCapabilities:
+    {
+        /* A fixed capability block. Every value is the oracle's
+         * (dlls/ntdll/unix/system.c), including the ones its own comment
+         * calls "based off a native XP desktop" — reproducing a stub's
+         * OUTPUT is not stubbing, because Art. 6 makes the oracle the spec
+         * and no caller can tell the difference. proskrnl has no ACPI, so
+         * it has nothing truer to say.
+         *
+         * A short buffer is STATUS_BUFFER_TOO_SMALL, not
+         * INFO_LENGTH_MISMATCH: this call follows the power-management
+         * convention rather than the info-class one. */
+        SYSTEM_POWER_CAPABILITIES caps;
+        if (outputLength < sizeof(caps))
+        {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        NTSTATUS probe = KiProbeForWrite(output, sizeof(caps), 1);
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        memset(&caps, 0, sizeof(caps));
+        caps.PowerButtonPresent = TRUE;
+        caps.SystemS1 = TRUE;
+        caps.SystemS4 = TRUE;
+        caps.SystemS5 = TRUE;
+        caps.HiberFilePresent = TRUE;
+        caps.FullWake = TRUE;
+        caps.ProcessorMinThrottle = 100;
+        caps.ProcessorMaxThrottle = 100;
+        caps.DiskSpinDown = TRUE;
+        caps.AcOnLineWake = PowerSystemUnspecified;
+        caps.SoftLidWake = PowerSystemUnspecified;
+        caps.RtcWake = PowerSystemSleeping1;
+        caps.MinDeviceWakeState = PowerSystemUnspecified;
+        caps.DefaultLowLatencyWake = PowerSystemUnspecified;
+        memcpy(output, &caps, sizeof(caps));
+        return STATUS_SUCCESS;
+    }
+    case SystemBatteryState:
+    {
+        /* All zero: no battery. That is the truth on this machine, not a
+         * placeholder — the oracle memsets the block and then fills it from
+         * the host's power supply, which under QEMU reports none either, so
+         * both runners answer the same way for the same reason. A caller
+         * reads BatteryPresent 0 and stops. */
+        SYSTEM_BATTERY_STATE battery;
+        if (outputLength < sizeof(battery))
+        {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        NTSTATUS probe = KiProbeForWrite(output, sizeof(battery), 1);
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        memset(&battery, 0, sizeof(battery));
+        memcpy(output, &battery, sizeof(battery));
+        return STATUS_SUCCESS;
+    }
     default:
         /* other levels: unbuilt, loud (Art. 12) — and named, so the log says
          * WHICH level rather than only which syscall */
