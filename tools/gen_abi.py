@@ -280,6 +280,12 @@ def gen_ntdef(wine: Path) -> str:
     ob_structs = "\n\n".join(
         [
             extract_struct(winternl, "_UNICODE_STRING", "UNICODE_STRING"),
+            # The counted BYTE string. Carried for the sake of
+            # RtlIsNameLegalDOS8Dot3's OEM_STRING out-param (kernel/lib/rtl.c),
+            # which NT's signature names even though nothing passes it.
+            extract_struct(winternl, "_STRING", "STRING")
+            + "\n\n/* winternl.h's own aliases for the same struct. */\n"
+            + "typedef STRING OEM_STRING;\ntypedef PSTRING POEM_STRING;",
             extract_struct(winternl, "_OBJECT_ATTRIBUTES", "OBJECT_ATTRIBUTES"),
         ]
     )
@@ -353,9 +359,11 @@ def gen_ntdef(wine: Path) -> str:
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
 typedef char CHAR;
+typedef char *PCHAR;
 typedef signed char CCHAR;
 typedef unsigned char UCHAR;
 typedef unsigned char BOOLEAN;
+typedef BOOLEAN *PBOOLEAN;
 typedef short CSHORT;
 typedef unsigned short USHORT;
 typedef int LONG;

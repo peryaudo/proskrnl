@@ -8,9 +8,11 @@
 /* Base NT types (LLP64). The typedef shapes are fixed scaffold; the sizes are
  * pinned by the static_asserts below, so this cannot drift silently. */
 typedef char CHAR;
+typedef char *PCHAR;
 typedef signed char CCHAR;
 typedef unsigned char UCHAR;
 typedef unsigned char BOOLEAN;
+typedef BOOLEAN *PBOOLEAN;
 typedef short CSHORT;
 typedef unsigned short USHORT;
 typedef int LONG;
@@ -132,6 +134,16 @@ typedef struct {
   USHORT MaximumLength; /* bytes */
   PWSTR  Buffer;
 } UNICODE_STRING, *PUNICODE_STRING;
+
+typedef struct {
+  USHORT Length;
+  USHORT MaximumLength;
+  PCHAR Buffer;
+} STRING, *PSTRING;
+
+/* winternl.h's own aliases for the same struct. */
+typedef STRING OEM_STRING;
+typedef PSTRING POEM_STRING;
 
 typedef struct {
   ULONG Length;
