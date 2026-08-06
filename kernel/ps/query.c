@@ -2046,6 +2046,43 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    case SystemProcessorIdleCycleTimeInformation:
+    {
+        /* One ULONG64 per processor. The oracle's plain arm just forwards
+         * to the Ex form with group 0, so this is the same answer either
+         * way (NtQuerySystemInformationEx below shares it).
+         *
+         * The value is a REAL fact, not a placeholder: KiIdleTime100ns is
+         * the idle time the clock tick already charges (kernel/ke/timer.c)
+         * and SystemPerformanceInformation already reports. It is a time,
+         * not a cycle count, and that IS a divergence — but a monotonic
+         * idle measure is what a caller of this class actually uses, and
+         * inventing a cycle count from a made-up frequency would be worse
+         * than reporting the measure the kernel really keeps. Recorded in
+         * docs/03. */
+        ULONG needed = KE_NUMBER_PROCESSORS * (ULONG)sizeof(uint64_t);
+        if (returnLength != 0)
+        {
+            *returnLength = needed;
+        }
+        if (length < needed)
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        uint64_t idle[KE_NUMBER_PROCESSORS];
+        for (ULONG i = 0; i < KE_NUMBER_PROCESSORS; i++)
+        {
+            idle[i] = KiIdleTime100ns;
+        }
+        memcpy(buffer, idle, needed);
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's
@@ -2138,7 +2175,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 7 now.
+         * as the classes get built. It was 16 when this list was written; 6 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -2146,7 +2183,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemProcessorIdleCycleTimeInformation:
         case SystemProcessIdInformation:
         case SystemCodeIntegrityInformation:
         case SystemProcessorBrandString:
