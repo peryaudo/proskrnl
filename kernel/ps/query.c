@@ -2351,17 +2351,22 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 3 now.
+         * as the classes get built. It was 16 when this list was written; 1 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
          * leaving the list is a visible edit in the same commit that builds
-         * it. */
+         * it.
+         *
+         * Note the list is about THIS entry point. Some classes are served
+         * only by NtQuerySystemInformationEx — the oracle's plain switch
+         * has no arm for SystemLogicalProcessorInformationEx (107) or
+         * SystemSupportedProcessorArchitectures2 (230), so on this path
+         * they are ordinary refusals and belong in the 225, not here. Their
+         * Ex arms are separate work with their own refusal domain. */
         switch (infoClass)
         {
-        case SystemLogicalProcessorInformationEx:
         case SystemCpuSetInformation:
-        case SystemSupportedProcessorArchitectures2:
             DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
             return STATUS_NOT_IMPLEMENTED;
         default:
