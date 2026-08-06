@@ -2401,6 +2401,37 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
     }
     switch (infoClass)
     {
+    case SystemProcessorIdleCycleTimeInformation:
+    {
+        /* The same answer the plain form gives, and the plain form is
+         * literally this one on the oracle (it forwards with group 0). What
+         * the Ex form adds is the group check, and it is strict: the query
+         * must be present, at least a USHORT, and that USHORT must be ZERO
+         * — group 0 is the only group on a machine with one processor
+         * group, and asking for any other is STATUS_INVALID_PARAMETER
+         * rather than an empty answer. */
+        USHORT group;
+        if (query == 0 || queryLength < sizeof(group))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS probe = KiProbeForRead(query, sizeof(group), sizeof(group));
+        if (!NT_SUCCESS(probe))
+        {
+            return probe;
+        }
+        memcpy(&group, query, sizeof(group));
+        if (group != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        return NtQuerySystemInformation(SystemProcessorIdleCycleTimeInformation, buffer, length,
+                                        returnLength);
+    }
+
+    /* 224 and 230 are the same answer; the oracle serves them from one arm
+     * and so does this one. */
+    case SystemSupportedProcessorArchitectures2:
     case SystemSupportedProcessorArchitectures:
     {
         /* The query blob is the target process HANDLE (Wine
@@ -2465,9 +2496,31 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         }
         return STATUS_SUCCESS;
     }
+    /* 230 is 224 with a wider row — the oracle serves both from one arm,
+     * and so does the case above. */
     default:
-        DbgPrint("NtQuerySystemInformationEx: unbuilt info class %d\n", (int)infoClass);
-        return STATUS_NOT_IMPLEMENTED;
+        /* The same split the plain entry point makes, applied to this one
+         * (see NtQuerySystemInformation's default arm for the reasoning):
+         * a class the ORACLE does not serve HERE is an ordinary refusal,
+         * because INVALID_INFO_CLASS is the answer its default gives. Only
+         * a class the oracle serves through THIS entry point and proskrnl
+         * does not is a hole worth panicking over.
+         *
+         * The oracle's Ex switch serves eight classes. This is the list of
+         * those proskrnl still owes, and it shrinks by one per commit that
+         * builds one. */
+        switch (infoClass)
+        {
+        case SystemBatteryState:
+        case SystemCpuSetInformation:
+        case SystemExecutionState:
+        case SystemLogicalProcessorInformationEx:
+        case SystemPowerCapabilities:
+            DbgPrint("NtQuerySystemInformationEx: unbuilt info class %d\n", (int)infoClass);
+            return STATUS_NOT_IMPLEMENTED;
+        default:
+            return STATUS_INVALID_INFO_CLASS;
+        }
     }
 }
 
