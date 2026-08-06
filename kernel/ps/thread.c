@@ -1291,6 +1291,74 @@ static NTSTATUS PspCheckThreadAccess(HANDLE threadHandle, ACCESS_MASK access)
     return status;
 }
 
+/* NtSetInformationThread(ThreadZeroTlsCell): clear one TLS slot in EVERY
+ * thread of `process`. A caller frees a TLS index once (TlsFree) and none of
+ * its threads may keep a stale value behind it — the per-thread sweep is the
+ * whole content of the class, and the reason it cannot be an accept-and-drop
+ * stub.
+ *
+ * The two bounds come from the layouts themselves rather than from typed
+ * numbers: the direct slots are the TEB's own TlsSlots[] and the expansion
+ * range is as wide as the PEB's TlsExpansionBitmap has bits, which is how
+ * the oracle expresses the same check (dlls/ntdll/unix/virtual.c
+ * virtual_clear_tls_index: `index < TLS_MINIMUM_AVAILABLE` then
+ * `index >= 8 * sizeof(peb->TlsExpansionBitmapBits)`).
+ *
+ * The TEBs are reached through the address space rather than dereferenced,
+ * for the same reason PspBuildTeb writes them that way: a sibling thread's
+ * TEB is a user VA, and a caller that has unmapped one must not fault the
+ * kernel. The checked copies simply skip such a thread. */
+static NTSTATUS PspZeroTlsCell(PEPROCESS process, ULONG index)
+{
+    const ULONG directSlots = (ULONG)(sizeof(((TEB *)0)->TlsSlots) / sizeof(PVOID));
+    const ULONG expansionSlots = (ULONG)(8 * sizeof(((PEB *)0)->TlsExpansionBitmapBits));
+    ULONG expansionIndex = 0;
+    BOOLEAN expansion = FALSE;
+
+    if (index >= directSlots)
+    {
+        expansionIndex = index - directSlots;
+        if (expansionIndex >= expansionSlots)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        expansion = TRUE;
+    }
+
+    PVOID zero = 0;
+    PMI_ADDRESS_SPACE space = &process->addressSpace;
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PETHREAD thread = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        if (thread->tebBase == 0)
+        {
+            continue;
+        }
+        if (!expansion)
+        {
+            MiCopyToUserRangeChecked(
+                space, thread->tebBase + offsetof(TEB, TlsSlots) + (uint64_t)index * sizeof(PVOID),
+                &zero, sizeof(zero));
+            continue;
+        }
+        /* The expansion table is a separate user allocation the TEB points
+         * at, and a thread that has never grown past the direct slots does
+         * not have one. */
+        PVOID *table = 0;
+        if (MiCopyFromUserRange(space, &table, thread->tebBase + offsetof(TEB, TlsExpansionSlots),
+                                sizeof(table)) != sizeof(table) ||
+            table == 0)
+        {
+            continue;
+        }
+        MiCopyToUserRangeChecked(
+            space, (uint64_t)(uintptr_t)table + (uint64_t)expansionIndex * sizeof(PVOID), &zero,
+            sizeof(zero));
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, PVOID buffer,
                                   ULONG length, PULONG returnLength)
 {
@@ -1943,6 +2011,43 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
     switch (infoClass)
     {
     case ThreadZeroTlsCell:
+    {
+        /* This class used to share ThreadAffinityMask's body one line
+         * below, and nothing in that body is about TLS: it applied an
+         * 8-byte length rule and a processor-mask narrowing to a TLS INDEX.
+         * The grouping was accidental and the result was a plausible status
+         * computed from the wrong contract (Art. 12). It is not a dead
+         * path — TlsFree issues this class on every call, with a DWORD
+         * (third_party/wine dlls/kernelbase/thread.c), so the 8-byte rule
+         * refused every real caller.
+         *
+         * The contract is the oracle's (dlls/ntdll/unix/thread.c, the first
+         * case of NtSetInformationThread, and virtual_clear_tls_index in
+         * dlls/ntdll/unix/virtual.c): the CURRENT thread only, a wrong
+         * length is STATUS_INVALID_PARAMETER, and the slot is zeroed in
+         * EVERY thread of the process — a caller frees a TLS index once and
+         * expects no thread to keep a stale value behind it. Pinned by
+         * tests/ntapi/sem_ps/zero_tls_cell.c. */
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            /* Unbuilt on the oracle too, so there is nothing to copy and
+             * no pin that could hold it: it refuses loudly (G12). */
+            DbgPrint("NtSetInformationThread: ThreadZeroTlsCell on another thread\n");
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONG index;
+        memcpy(&index, buffer, sizeof(index));
+        return PspZeroTlsCell(KeGetCurrentThread()->process, index);
+    }
     case ThreadAffinityMask:
     {
         /* NARROWED to the system mask, not validated against it — that
@@ -1987,10 +2092,17 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
          * (docs/03 "Deliberate simplifications"), so the value steers
          * nothing; but GetThreadPriority reads it straight back out of
          * ThreadBasicInformation.BasePriority, so dropping it made the
-         * Set/Get pair disagree with itself. */
+         * Set/Get pair disagree with itself.
+         *
+         * A wrong length is STATUS_INVALID_PARAMETER, not the
+         * INFO_LENGTH_MISMATCH the QUERY side of this same class gives —
+         * `if (length != sizeof(DWORD)) return STATUS_INVALID_PARAMETER;`
+         * is the oracle's own line for this arm (dlls/ntdll/unix/thread.c).
+         * It read INFO_LENGTH_MISMATCH here until the pin covered the case.
+         */
         if (length != sizeof(LONG))
         {
-            return STATUS_INFO_LENGTH_MISMATCH;
+            return STATUS_INVALID_PARAMETER;
         }
         NTSTATUS status = KiProbeForRead(buffer, sizeof(LONG), sizeof(LONG));
         if (!NT_SUCCESS(status))
@@ -2076,8 +2188,53 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         return STATUS_SUCCESS;
     }
     case ThreadPriority:
-    case ThreadIdealProcessorEx:
-        return STATUS_SUCCESS;
+    {
+        /* An ABSOLUTE priority LEVEL, not one of the THREAD_PRIORITY_*
+         * deltas SetThreadPriority takes — the neighbouring
+         * ThreadBasePriority class is the relative one. This arm used to be
+         * a bare `return STATUS_SUCCESS` sharing a case label with
+         * ThreadIdealProcessorEx: no length rule, no probe, no access
+         * check, and success for a level NT refuses. It was never convicted
+         * because its pin sat inside a beyond_oracle block that skipped it
+         * on the one runner that implements it.
+         *
+         * The level goes nowhere — proskrnl runs one priority band that
+         * matters (docs/03 "Deliberate simplifications") and the QUERY side
+         * of this class is unbuilt on the oracle too, so there is no pair
+         * to disagree with itself. The VALIDATION is therefore the whole
+         * observable behaviour, and it has three distinct answers:
+         *
+         *   outside 1..HIGH_PRIORITY   STATUS_INVALID_PARAMETER
+         *   >= LOW_REALTIME_PRIORITY   STATUS_PRIVILEGE_NOT_HELD
+         *   otherwise                  STATUS_SUCCESS
+         *
+         * (wine server/thread.c set_thread_priority does exactly these two
+         * comparisons in this order; the realtime one is a privilege
+         * refusal because the process is not in the realtime class, and
+         * proskrnl has no realtime class at all.) A wrong length is
+         * STATUS_INVALID_PARAMETER here and STATUS_INFO_LENGTH_MISMATCH one
+         * case label above — the asymmetry a shared body destroys. */
+        if (length != sizeof(ULONG))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(ULONG), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ULONG level;
+        memcpy(&level, buffer, sizeof(level));
+        if (level < LOW_PRIORITY + 1 || level > HIGH_PRIORITY)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (level >= LOW_REALTIME_PRIORITY)
+        {
+            return STATUS_PRIVILEGE_NOT_HELD;
+        }
+        return PspCheckThreadAccess(threadHandle, THREAD_SET_INFORMATION);
+    }
     case ThreadWineNativeThreadName:
         /* The fork's private class, and it names a thing this boundary does
          * not have. On the oracle it sets the underlying UNIX thread's name
