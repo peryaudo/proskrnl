@@ -24,6 +24,37 @@ WCHAR RtlUpcaseUnicodeChar(WCHAR c)
     {
         return (WCHAR)(c - 'a' + 'A');
     }
+    /* The Latin-1 Supplement, because user mode reached it: ntdll:directory
+     * creates U+00E9 and U+00C9 in one directory and requires the
+     * enumeration to sort them as one letter (directory.c:324). docs/03
+     * called this deviation "unobservable until user mode invents non-ASCII
+     * object names"; it is observable now.
+     *
+     * The mapping is Unicode's, and its three irregularities are the reason
+     * this is a switch and not `c - 0x20` over the range — a bare subtract
+     * turns U+00FF into U+00DF, silently making y-diaeresis and sharp-s the
+     * same NAME everywhere this fold is used. Cross-check against the
+     * Unicode character database (UnicodeData.txt, the simple uppercase
+     * mapping field) rather than memory:
+     *
+     *   U+00DF LATIN SMALL LETTER SHARP S     -> itself (uppercase is "SS",
+     *                                           which no single-character
+     *                                           fold can express)
+     *   U+00F7 DIVISION SIGN                  -> itself (not a letter)
+     *   U+00FF LATIN SMALL LETTER Y DIAERESIS -> U+0178
+     *   everything else in U+00E0..U+00FE     -> minus 0x20
+     *
+     * Beyond Latin-1 the fold still does nothing, and that remains a
+     * recorded deviation (docs/03): NT carries a 64 KiB table and proskrnl
+     * carries a rule. Pinned by tests/ntapi/sem_file/name_case_fold.c. */
+    if (c == 0x00FF)
+    {
+        return 0x0178;
+    }
+    if (c >= 0x00E0 && c <= 0x00FE && c != 0x00F7)
+    {
+        return (WCHAR)(c - 0x20);
+    }
     return c;
 }
 
