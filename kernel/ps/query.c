@@ -896,13 +896,12 @@ static const char *PspImageBaseName(const char *imageName)
 
 /* One process's entry length: header + its threads + its base name + NUL,
  * rounded up to 8 (Wine's proc_len). */
-static ULONG PspProcessEntryLength(PEPROCESS process)
+static ULONG PspProcessEntryLength(PEPROCESS process, ULONG threadInfoSize)
 {
     ULONG threadCount = (ULONG)process->activeThreadCount;
     ULONG nameChars = PspImageBaseNameChars(process->imageName);
     ULONG length = (ULONG)sizeof(SYSTEM_PROCESS_INFORMATION) +
-                   threadCount * (ULONG)sizeof(SYSTEM_THREAD_INFORMATION) +
-                   (nameChars + 1) * (ULONG)sizeof(WCHAR);
+                   threadCount * threadInfoSize + (nameChars + 1) * (ULONG)sizeof(WCHAR);
     return (length + 7) & ~7u;
 }
 
@@ -910,7 +909,8 @@ static ULONG PspProcessEntryLength(PEPROCESS process)
  * Buffer points at `userEntry` (the entry's final user VA) so the copied-out
  * chain resolves. Lock held. */
 static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *entry,
-                                uint64_t userEntry, ULONG entryLength, BOOLEAN isLast)
+                                uint64_t userEntry, ULONG entryLength, BOOLEAN isLast,
+                                ULONG threadInfoSize)
 {
     ULONG threadCount = (ULONG)process->activeThreadCount;
     ULONG nameChars = PspImageBaseNameChars(process->imageName);
@@ -930,18 +930,32 @@ static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *e
          p != &process->threadListHead && threadIndex < threadCount; p = p->Flink)
     {
         PETHREAD ethread = CONTAINING_RECORD(p, ETHREAD, threadListEntry);
-        SYSTEM_THREAD_INFORMATION *ti = &entry->ti[threadIndex++];
+        /* The per-thread record is EITHER shape, so it is addressed by
+         * stride rather than by array index — the extended class (57) is
+         * the same walk with a wider record, not a second enumeration
+         * (Art. 11). */
+        BYTE *slot = (BYTE *)&entry->ti[0] + (SIZE_T)threadIndex * threadInfoSize;
+        SYSTEM_THREAD_INFORMATION *ti = (SYSTEM_THREAD_INFORMATION *)slot;
+        threadIndex++;
         ti->ClientId.UniqueProcess = (HANDLE)(uintptr_t)process->uniqueProcessId;
         ti->ClientId.UniqueThread = (HANDLE)(uintptr_t)ethread->uniqueThreadId;
         LONG priority = ethread->tcb != 0 ? ethread->tcb->priority : 8;
         ti->dwCurrentPriority = (DWORD)priority;
         ti->dwBasePriority = (DWORD)priority;
+        if (threadInfoSize == (ULONG)sizeof(SYSTEM_EXTENDED_THREAD_INFORMATION))
+        {
+            SYSTEM_EXTENDED_THREAD_INFORMATION *ex = (SYSTEM_EXTENDED_THREAD_INFORMATION *)slot;
+            ex->StackBase = (void *)(uintptr_t)ethread->stackBase;
+            ex->StackLimit = (void *)(uintptr_t)ethread->stackAllocationBase;
+            ex->Win32StartAddress = (void *)(uintptr_t)ethread->win32StartAddress;
+            ex->TebBase = (void *)(uintptr_t)ethread->tebBase;
+        }
     }
 
     /* The name sits just past the thread array; its Buffer is the FINAL user
      * address so the caller can chase it in the copied-out block. */
     ULONG nameOffset =
-        (ULONG)offsetof(SYSTEM_PROCESS_INFORMATION, ti) + threadCount * (ULONG)sizeof(*entry->ti);
+        (ULONG)offsetof(SYSTEM_PROCESS_INFORMATION, ti) + threadCount * threadInfoSize;
     WCHAR *nameScratch = (WCHAR *)((BYTE *)entry + nameOffset);
     for (ULONG i = 0; i < nameChars; i++)
     {
@@ -965,7 +979,13 @@ static BOOLEAN PspProcessIsLive(PEPROCESS process)
     return process->header.signalState == 0 && process->activeThreadCount > 0;
 }
 
-static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PULONG returnLength)
+/* SystemProcessInformation (5) and SystemExtendedProcessInformation (57)
+ * are ONE enumeration with two per-thread record widths — which is how the
+ * oracle serves them too (dlls/ntdll/unix/system.c get_system_process_info
+ * takes the class and picks `thread_info_size`). A second walk would be the
+ * parallel-path shape Art. 11 forbids. */
+static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PULONG returnLength,
+                                                 ULONG threadInfoSize)
 {
     /* Pass 1: total size, list stable under the lock. */
     uint64_t flags = KiAcquireDispatcherLock();
@@ -976,7 +996,7 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
         PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
         if (PspProcessIsLive(process))
         {
-            total += PspProcessEntryLength(process);
+            total += PspProcessEntryLength(process, threadInfoSize);
         }
     }
     KiReleaseDispatcherLock(flags);
@@ -1015,13 +1035,14 @@ static NTSTATUS PspQuerySystemProcessInformation(PVOID buffer, ULONG length, PUL
         {
             continue;
         }
-        ULONG entryLength = PspProcessEntryLength(process);
+        ULONG entryLength = PspProcessEntryLength(process, threadInfoSize);
         if (offset + entryLength > total)
         {
             break; /* list grew between passes (cannot happen: no preemption) */
         }
         PspFillProcessEntry(process, (SYSTEM_PROCESS_INFORMATION *)(scratch + offset),
-                            (uint64_t)(uintptr_t)buffer + offset, entryLength, FALSE);
+                            (uint64_t)(uintptr_t)buffer + offset, entryLength, FALSE,
+                            threadInfoSize);
         lastOffset = offset;
         wroteAny = TRUE;
         offset += entryLength;
@@ -1240,7 +1261,11 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
     switch (infoClass)
     {
     case SystemProcessInformation:
-        return PspQuerySystemProcessInformation(buffer, length, returnLength);
+        return PspQuerySystemProcessInformation(buffer, length, returnLength,
+                                                (ULONG)sizeof(SYSTEM_THREAD_INFORMATION));
+    case SystemExtendedProcessInformation:
+        return PspQuerySystemProcessInformation(
+            buffer, length, returnLength, (ULONG)sizeof(SYSTEM_EXTENDED_THREAD_INFORMATION));
     /* "Native" means the KERNEL's word size, not the caller's, so on an
      * x86_64-only kernel (ADR 0006) answering a 64-bit caller it is the
      * same class. The oracle spells it as this same fallthrough behind an
@@ -1973,7 +1998,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * would be hiding a hole a caller depends on. That set is listed
          * below rather than derived, because it is the honest inventory of
          * what this call still owes — and it shrinks, one entry per commit,
-         * as the classes get built. It was 16 when this list was written; 11 now.
+         * as the classes get built. It was 16 when this list was written; 10 now.
          *
          * Deriving the list the other way round (225 refusals) would need
          * the same information and would rot silently; this way a class
@@ -1981,7 +2006,6 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * it. */
         switch (infoClass)
         {
-        case SystemExtendedProcessInformation:
         case SystemExtendedHandleInformation:
         case SystemLogicalProcessorInformation:
         case SystemModuleInformationEx:

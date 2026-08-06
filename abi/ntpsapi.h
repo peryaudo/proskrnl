@@ -1162,6 +1162,17 @@ typedef struct {                                    /* win32/win64 */
 } SYSTEM_THREAD_INFORMATION, *PSYSTEM_THREAD_INFORMATION;
 
 typedef struct {
+    SYSTEM_THREAD_INFORMATION ThreadInfo;          /* 00/00 */
+    void                     *StackBase;           /* 40/50 */
+    void                     *StackLimit;          /* 44/58 */
+    void                     *Win32StartAddress;   /* 48/60 */
+    void                     *TebBase;             /* 4c/68 */
+    ULONG_PTR                 Reserved2;           /* 50/70 */
+    ULONG_PTR                 Reserved3;           /* 54/78 */
+    ULONG_PTR                 Reserved4;           /* 58/80 */
+} SYSTEM_EXTENDED_THREAD_INFORMATION, *PSYSTEM_EXTENDED_THREAD_INFORMATION;
+
+typedef struct {
     ULONG NextEntryOffset;             /* 00/00 */
     DWORD dwThreadCount;               /* 04/04 */
     LARGE_INTEGER WorkingSetPrivateSize; /* 08/08 */
@@ -1371,7 +1382,14 @@ _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwBasePriority) == 0x3c, "SYS
 _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwContextSwitches) == 0x40, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwThreadState) == 0x44, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwWaitReason) == 0x48, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
-_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwUnknown) == 0x4c, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_THREAD_INFORMATION, dwUnknown) == 0x4c, "SYSTEM_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, ThreadInfo) == 0x00, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, StackBase) == 0x50, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, StackLimit) == 0x58, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, Win32StartAddress) == 0x60, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, TebBase) == 0x68, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, Reserved2) == 0x70, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, Reserved3) == 0x78, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
+_Static_assert(offsetof(SYSTEM_EXTENDED_THREAD_INFORMATION, Reserved4) == 0x80, "SYSTEM_EXTENDED_THREAD_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset) == 0x00, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, dwThreadCount) == 0x04, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
 _Static_assert(offsetof(SYSTEM_PROCESS_INFORMATION, WorkingSetPrivateSize) == 0x08, "SYSTEM_PROCESS_INFORMATION x64 layout (offset comment in the Wine header)");
