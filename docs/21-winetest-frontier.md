@@ -874,6 +874,27 @@ edit in the commit that builds it.
 serves. The list began at 16 on the plain path and 7 on the Ex path; both
 are empty. Fifteen classes were built.
 
+### W7 opened: `\DosDevices` cost one symlink and was worth 8 assertions
+
+`kernel32:drive` **12 → 4**. `GetLogicalDrives` opens `\DosDevices` as a
+directory and enumerates its `X:` names; proskrnl had no such name, the
+bitmask came back 0, and eight further assertions read "this drive letter
+does not exist" off that zero. One permanent symbolic link fixed all of
+them — and it is a LINK, not a second directory, because two directories
+would drift and make the DOS-device namespace disagree with itself.
+
+Worth noting how cheap that was relative to its position in the plan: W7
+was scheduled as "Ob/volume furniture" alongside MountPointManager and
+open-by-file-id, and the `\DosDevices` half of it is a dozen lines.
+**Splitting a plan item by cost rather than by subject would have found it
+sooner.**
+
+The 4 that remain are one cause: `GetVolumeNameForVolumeMountPointA("C:\\")`
+needs a volume GUID path (`\\?\Volume{...}\`), and the
+`GetDiskFreeSpace` call after it just reuses that path. That is the
+MountPointManager half of W7 — a device plus a GUID namespace — and it is
+real kernel work, not a floor.
+
 ### `ntdll:rtl` has a CUI-image floor of 26, and it is one dependency
 
 All 26 failures are `test_LdrAddRefDll` (`rtl.c:2314`-`:2348`), and every
