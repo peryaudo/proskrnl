@@ -1855,8 +1855,50 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         {
             return STATUS_INVALID_INFO_CLASS;
         }
-        DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
-        return STATUS_NOT_IMPLEMENTED;
+        /* Being IN the enum is not enough to make a class a hole, and the
+         * paragraph above was too coarse about it. Of the 262 enumerators,
+         * the oracle serves 37; the other 225 reach its default arm and get
+         * STATUS_INVALID_INFO_CLASS. For those, INVALID_INFO_CLASS is not a
+         * guess we are making, it is the ANSWER — pinned behaviour of the
+         * spec (tests/ntapi/sem_ps/info_class_range.c covers two), so
+         * giving it is an implementation and not the plausible-stub Art. 12
+         * forbids.
+         *
+         * What must stay loud is the genuinely narrower set: a class the
+         * ORACLE implements and proskrnl does not. There the refusal really
+         * would be hiding a hole a caller depends on. That set is listed
+         * below rather than derived, because it is the honest inventory of
+         * what this call still owes — and it shrinks, one entry per commit,
+         * as the classes get built. It was 16 when this list was written.
+         *
+         * Deriving the list the other way round (225 refusals) would need
+         * the same information and would rot silently; this way a class
+         * leaving the list is a visible edit in the same commit that builds
+         * it. */
+        switch (infoClass)
+        {
+        case SystemFileCacheInformation:
+        case SystemExtendedProcessInformation:
+        case SystemRecommendedSharedDataAlignment:
+        case SystemEmulationProcessorInformation:
+        case SystemExtendedHandleInformation:
+        case SystemLogicalProcessorInformation:
+        case SystemModuleInformationEx:
+        case SystemProcessorIdleCycleTimeInformation:
+        case SystemProcessIdInformation:
+        case SystemCodeIntegrityInformation:
+        case SystemProcessorBrandString:
+        case SystemLogicalProcessorInformationEx:
+        case SystemKernelDebuggerInformationEx:
+        case SystemCpuSetInformation:
+        case SystemSupportedProcessorArchitectures2:
+        case SystemProcessorFeaturesBitMapInformation:
+            DbgPrint("NtQuerySystemInformation: unbuilt info class %d\n", (int)infoClass);
+            return STATUS_NOT_IMPLEMENTED;
+        default:
+            /* In the enum, and the oracle refuses it too. */
+            return STATUS_INVALID_INFO_CLASS;
+        }
     }
 }
 

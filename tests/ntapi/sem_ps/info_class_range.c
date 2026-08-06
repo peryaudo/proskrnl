@@ -67,6 +67,35 @@ START_TEST(info_class_range)
     ok(status == STATUS_SUCCESS, "SystemBasicInformation -> %08lx", (unsigned long)status);
     ok(returnLength != 0, "SystemBasicInformation returned %lu bytes", (unsigned long)returnLength);
 
+    /* --- a class that IS in the enum but that NOBODY implements ----------
+     * SystemPathInformation (4) and SystemFlagsInformation (9) are real
+     * enumerators that neither the oracle nor proskrnl serves. The oracle
+     * answers STATUS_INVALID_INFO_CLASS — its default arm, whose comment
+     * explains that Windows itself splits between two statuses here and
+     * that INVALID_INFO_CLASS is the 95% case.
+     *
+     * That makes INVALID_INFO_CLASS the PINNED answer for these, which is
+     * what lets proskrnl give it without violating Art. 12: it is an
+     * implemented refusal, not a stub. The distinction that matters is the
+     * one this file's header draws — a class the oracle IMPLEMENTS and
+     * proskrnl does not must still answer STATUS_NOT_IMPLEMENTED and must
+     * still panic, because there the refusal would be hiding a real hole.
+     * Those cannot be pinned here, by construction: the pin would be a boot
+     * that dies. */
+    {
+        ULONG refusedLength = 0; /* separate: the comparison below still
+                                  * needs `returnLength` from the basic
+                                  * query above */
+        status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)4, buffer, sizeof(buffer),
+                                          &refusedLength);
+        ok(status == STATUS_INVALID_INFO_CLASS, "SystemPathInformation -> %08lx",
+           (unsigned long)status);
+        status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)9, buffer, sizeof(buffer),
+                                          &refusedLength);
+        ok(status == STATUS_INVALID_INFO_CLASS, "SystemFlagsInformation -> %08lx",
+           (unsigned long)status);
+    }
+
     /* --- SystemNativeBasicInformation (114) is the SAME class on x64 ------
      * "Native" means "the kernel's own word size rather than the caller's",
      * so on a 64-bit kernel answering a 64-bit caller it is
