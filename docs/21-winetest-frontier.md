@@ -686,9 +686,52 @@ the short name FAT stores and the one Wine synthesizes are different
 strings, so the pins can assert the *property* (non-empty, 8.3-shaped, also
 matched by the mask) but not the value.
 
-**Next**, in order: W3a (short names, above), then the `directory.c:265`
-and `:324` residue once W3a says which of it was short-name work; then W2b
-(`SystemProcessInformation`) and W2c.
+### W3 landed: `ntdll:directory` 285 → 46, and the framing above was wrong
+
+A planning pass computed the truth table offline — all 77 masks x 18 files
+— instead of trusting the reading in the section above, and the answer
+reordered the work. The short-name leg is worth **9** of the 203 failures
+at `directory.c:620`, not most of them. What the rest were:
+
+1. **The mask binds at scan start, not on every call** (~150 of the 203,
+   and all 34 at `:265`). `NtQueryDirectoryFile` rebound the handle's mask
+   whenever a non-empty one arrived; the oracle rebuilds the filtered
+   snapshot only `if (cached && restart_scan && mask && mask differs)`
+   (`get_cached_dir_data`). `ntdll:directory` passes a matches-nothing
+   `dummy_mask` on every continuation call (`directory.c:241`), so proskrnl
+   rebound to it and lost the rest of every directory. One `if`.
+   **285 → 94.**
+
+2. **DOS_STAR** (~40). `<` could only stop at or before the final dot, so
+   `<tmp` matched nothing ending in `.tmp`. It walks dot-segments now, and
+   is *spent* past the final dot — the constraint that keeps `<a` from
+   matching `.aa`. **94 → 46**, with `:620` at exactly 9.
+
+3. **8.3 short names** (the 9, plus `:654`, plus `kernel32:path`'s 11
+   `GetShortPathName` failures — the largest external beneficiary and the
+   real reason to do the item).
+
+**The method is the lesson, not the ordering.** The offline harness
+replayed the table against a candidate matcher in a second, so four wrong
+algorithms were discarded before one reached a boot; the surviving one
+predicted "48 → 9, and here are the 9" before the kernel was touched, and
+the measurement matched exactly. A truth table in a third-party suite is a
+*specification you can execute*, and executing it beats reasoning about it
+— the first two hypotheses this session's author formed by reading the
+oracle's code were both wrong, and both were disproved in seconds by the
+harness rather than in twenty minutes by a boot.
+
+Sequencing consequence worth keeping: **short names first would have
+measured as zero**, because the 9 cells were invisible behind the
+dummy-mask truncation. When several defects stack on one assertion, fix
+the one that hides the others first, or the useful work looks worthless.
+
+**Next**, in order: W3a (short names — the plan is in this session's
+history: `RtlIsNameLegalDOS8Dot3` as the one legality authority,
+`IO_DIR_ENTRY` carrying FAT's stored SFN, `ShortName` suppressed when the
+long name is already 8.3-legal, and the mask matched against the short name
+as a second leg); then `directory.c:324` (the case-insensitive sort, 14);
+then W2b (`SystemProcessInformation`) and W2c.
 
 *The `abi/` header trap, now resolved and worth remembering.*
 `ThreadGroupInformation` returns a `GROUP_AFFINITY` whose `Mask` is a
