@@ -1195,6 +1195,18 @@ def gen_ntioapi(wine: Path) -> str:
                 "_FILE_ID_BOTH_DIRECTORY_INFORMATION",
                 "FILE_ID_BOTH_DIRECTORY_INFORMATION",
             ),
+            # The remaining enumeration class, plus the three classes
+            # NtQueryDirectoryFile length-checks before refusing
+            # (kernel/io/query.c IopDirEntryMinimumLength).
+            (
+                "_FILE_ID_FULL_DIRECTORY_INFORMATION",
+                "FILE_ID_FULL_DIRECTORY_INFORMATION",
+            ),
+            ("_FILE_OBJECTID_INFORMATION", "FILE_OBJECTID_INFORMATION"),
+            ("_FILE_REPARSE_POINT_INFORMATION", "FILE_REPARSE_POINT_INFORMATION"),
+            # Carries a SID, which lives in abi/ntseapi.h — included by
+            # ntioapi.h for this one struct.
+            ("_FILE_QUOTA_INFORMATION", "FILE_QUOTA_INFORMATION"),
             # NtQueryInformationFile(FileIdInformation): the volume serial
             # plus the 128-bit file id. FILE_ID_128 must precede it — it is
             # the member type (kernel/io/query.c).
@@ -1293,7 +1305,8 @@ _Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_I
         )
         + "#ifndef PROSKRNL_ABI_NTIOAPI_H\n"
         + "#define PROSKRNL_ABI_NTIOAPI_H\n\n"
-        + '#include "abi/ntdef.h"\n\n'
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntseapi.h" /* SID, in FILE_QUOTA_INFORMATION */\n\n'
         + "/* File access rights, share modes, and attributes, extracted from\n"
         + " * wine/include/winnt.h. */\n"
         + access_rights

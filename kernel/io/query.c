@@ -1251,6 +1251,47 @@ static ULONG IopDirEntryFixedSize(FILE_INFORMATION_CLASS informationClass)
         return (ULONG)offsetof(FILE_NAMES_INFORMATION, FileName);
     case FileIdBothDirectoryInformation: /* CUI-5 */
         return (ULONG)offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName);
+    case FileIdFullDirectoryInformation:
+        return (ULONG)offsetof(FILE_ID_FULL_DIRECTORY_INFORMATION, FileName);
+    default:
+        return 0;
+    }
+}
+
+/* The smallest buffer this class will accept before it complains about the
+ * LENGTH rather than about itself — and the two rules here are both a step
+ * away from the obvious implementation, so both are pinned
+ * (tests/ntapi/sem_file/dir_class_sizing.c).
+ *
+ * For an ENUMERATION class it is the fixed part plus ONE name character,
+ * rounded up to the 8-byte entry alignment — not the fixed part alone. A
+ * buffer that holds only the fixed part is still too small, and an
+ * implementation that checks `length < fixedSize` reports
+ * STATUS_BUFFER_OVERFLOW eight bytes early.
+ *
+ * Three classes are NOT enumeration classes and refuse with
+ * STATUS_INVALID_INFO_CLASS — but only once the buffer is at least their
+ * struct's size; below that they answer the LENGTH complaint like anyone
+ * else. So "is this class supported" is decided AFTER "is this buffer big
+ * enough", which is the reverse of how a refusal is normally written, and
+ * it is what distinguishes a KNOWN-but-unsupported class from an unknown
+ * one — an unknown class refuses immediately, at any size (the `0` below,
+ * which the caller reads as "no length rule, refuse now"). */
+static ULONG IopDirEntryMinimumLength(FILE_INFORMATION_CLASS informationClass)
+{
+    ULONG fixed = IopDirEntryFixedSize(informationClass);
+    if (fixed != 0)
+    {
+        return (fixed + (ULONG)sizeof(WCHAR) + 7u) & ~7u;
+    }
+    switch (informationClass)
+    {
+    case FileObjectIdInformation:
+        return (ULONG)sizeof(FILE_OBJECTID_INFORMATION);
+    case FileQuotaInformation:
+        return (ULONG)sizeof(FILE_QUOTA_INFORMATION);
+    case FileReparsePointInformation:
+        return (ULONG)sizeof(FILE_REPARSE_POINT_INFORMATION);
     default:
         return 0;
     }
@@ -1313,6 +1354,24 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         FILE_NAMES_INFORMATION *d = out;
         memset(d, 0, offsetof(FILE_NAMES_INFORMATION, FileName));
         d->FileNameLength = entry->nameLength;
+        memcpy(d->FileName, entry->name, nameBytes);
+        break;
+    }
+    case FileIdFullDirectoryInformation:
+    {
+        /* The Full shape + the file id — same fields as IdBoth without the
+         * short name, which is the only difference between the two. */
+        FILE_ID_FULL_DIRECTORY_INFORMATION *d = out;
+        memset(d, 0, offsetof(FILE_ID_FULL_DIRECTORY_INFORMATION, FileName));
+        d->CreationTime = entry->info.creationTime;
+        d->LastAccessTime = entry->info.lastAccessTime;
+        d->LastWriteTime = entry->info.lastWriteTime;
+        d->ChangeTime = entry->info.lastWriteTime;
+        d->EndOfFile.QuadPart = (LONGLONG)entry->info.endOfFile;
+        d->AllocationSize.QuadPart = (LONGLONG)entry->info.allocationSize;
+        d->FileAttributes = entry->info.fileAttributes;
+        d->FileNameLength = entry->nameLength;
+        d->FileId.QuadPart = (LONGLONG)entry->info.fileId;
         memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
@@ -1382,13 +1441,19 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
         return status;
     }
     ULONG fixedSize = IopDirEntryFixedSize(informationClass);
-    if (fixedSize == 0)
+    ULONG minimumLength = IopDirEntryMinimumLength(informationClass);
+    if (minimumLength == 0)
     {
-        return STATUS_INVALID_INFO_CLASS;
+        return STATUS_INVALID_INFO_CLASS; /* not a class this call knows */
     }
-    if (length < fixedSize)
+    if (length < minimumLength)
     {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if (fixedSize == 0)
+    {
+        /* Known, big enough, and still not an enumeration class. */
+        return STATUS_INVALID_INFO_CLASS;
     }
 
     PFILE_OBJECT file;
