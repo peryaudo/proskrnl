@@ -988,6 +988,27 @@ typedef struct {
     ULONG ApcBypassCount;
 } SYSTEM_INTERRUPT_INFORMATION, *PSYSTEM_INTERRUPT_INFORMATION;
 
+typedef struct {
+	BOOLEAN  DebuggerEnabled;
+	BOOLEAN  DebuggerNotPresent;
+} SYSTEM_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION;
+
+typedef struct {
+    ULONG RegistryQuotaAllowed;
+    ULONG RegistryQuotaUsed;
+    PVOID Reserved1;
+} SYSTEM_REGISTRY_QUOTA_INFORMATION, *PSYSTEM_REGISTRY_QUOTA_INFORMATION;
+
+typedef struct {
+    BOOLEAN Enabled;
+    ULONG   Flags;
+} SYSTEM_LEAP_SECOND_INFORMATION, *PSYSTEM_LEAP_SECOND_INFORMATION;
+
+typedef struct {
+    ULONGLONG ProcessorFeatureBits;
+    ULONGLONG Reserved[3];
+} SYSTEM_PROCESSOR_FEATURES_INFORMATION, *PSYSTEM_PROCESSOR_FEATURES_INFORMATION;
+
 typedef enum {
     SystemFirmwareTable_Enumerate = 0,
     SystemFirmwareTable_Get = 1

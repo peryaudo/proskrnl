@@ -1248,6 +1248,10 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
      * always false here (dlls/ntdll/unix/system.c). Pinned by
      * tests/ntapi/sem_ps/info_class_range.c. */
     case SystemNativeBasicInformation:
+    /* "Emulation" is the 32-bit view a WOW64 caller would get; proskrnl has
+     * no WOW64, so the emulated view IS the native one — the oracle reaches
+     * the same place via `virtual_get_system_info(&sbi, is_wow64())`. */
+    case SystemEmulationBasicInformation:
     case SystemBasicInformation:
     {
         /* SystemBasicInformation wants an EXACT length — both under- and
@@ -1627,6 +1631,152 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         }
         return STATUS_SUCCESS;
     }
+    /* --- the fixed-shape classes ntdll:info sweeps -----------------------
+     * Each of these was unbuilt, so the armed boot panicked and the pair
+     * died on whichever it reached first. The values are constants, which
+     * is exactly the shape G12 warns about — the difference between an
+     * implementation and a silent stub here is only that every one of them
+     * is read off the oracle and pinned
+     * (tests/ntapi/sem_ps/system_fixed_classes.c). Two are values the
+     * oracle itself calls a stub; reproducing a stub's OUTPUT is not
+     * stubbing, because Art. 6 makes the oracle the spec and no caller can
+     * tell the difference. */
+    case SystemKernelDebuggerInformation:
+    {
+        SYSTEM_KERNEL_DEBUGGER_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        info.DebuggerEnabled = FALSE;
+        info.DebuggerNotPresent = TRUE;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemRegistryQuotaInformation:
+    {
+        /* The oracle fakes a 32 MB registry because it has no limit to
+         * report; proskrnl has no limit either, so it reports the same
+         * numbers rather than inventing its own (dlls/ntdll/unix/system.c
+         * says "almost certainly wrong" — but it is what callers see). */
+        SYSTEM_REGISTRY_QUOTA_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        info.RegistryQuotaAllowed = 0x2000000;
+        info.RegistryQuotaUsed = 0x200000;
+        info.Reserved1 = (PVOID)(uintptr_t)0x200000;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemLeapSecondInformation:
+    {
+        SYSTEM_LEAP_SECOND_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        info.Enabled = TRUE;
+        info.Flags = 0;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case SystemProcessorFeaturesInformation:
+    {
+        /* The KF_* feature bitmap. The base word is the set every x86_64
+         * implementation is architecturally required to have — tsc, vme,
+         * cmov, pge, pse, mtrr, cx8, mmx, pat, fxsr, sep, sse, sse2, nx —
+         * so it is a fact about the architecture, not a guess about this
+         * CPU. The optional bits are read from CPUID rather than assumed,
+         * because a caller that tests for cx16 or rdrand and is told yes on
+         * a machine without them gets a fault, which is the failure mode a
+         * fabricated answer produces (Art. 12).
+         *
+         * Bit values cross-checked against the oracle's own derivation
+         * (dlls/ntdll/unix/system.c get_cpu_features, which cites the KF_*
+         * flags and Geoff Chappell's documentation); CPUID leaf/bit numbers
+         * against the Intel SDM Vol. 2A, CPUID instruction. */
+        SYSTEM_PROCESSOR_FEATURES_INFORMATION info;
+        if (length < sizeof(info))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(info), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        memset(&info, 0, sizeof(info));
+        ULONGLONG features = 0x20013dfe;
+        uint32_t regs[4];
+        KiCpuid(1, 0, regs);
+        if (regs[2] & (1u << 0)) /* CPUID.1:ECX.SSE3 */
+        {
+            features |= 0x00080000;
+        }
+        if (regs[2] & (1u << 13)) /* CPUID.1:ECX.CMPXCHG16B */
+        {
+            features |= 0x00100000;
+        }
+        if (regs[2] & (1u << 26)) /* CPUID.1:ECX.XSAVE */
+        {
+            features |= 0x00800000;
+        }
+        if (regs[2] & (1u << 30)) /* CPUID.1:ECX.RDRAND */
+        {
+            features |= 0x100000000ull;
+        }
+        KiCpuid(0, 0, regs);
+        /* The vendor string is EBX:EDX:ECX of leaf 0. */
+        if (regs[1] == 0x68747541 && regs[3] == 0x69746E65 && regs[2] == 0x444D4163)
+        {
+            features |= 0x00200000; /* "AuthenticAMD" */
+        }
+        else if (regs[1] == 0x756E6547 && regs[3] == 0x49656E69 && regs[2] == 0x6C65746E)
+        {
+            features |= 0x01000000; /* "GenuineIntel" */
+        }
+        info.ProcessorFeatureBits = features;
+        memcpy(buffer, &info, sizeof(info));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(info);
+        }
+        return STATUS_SUCCESS;
+    }
+
     case SystemInterruptInformation:
     {
         /* The RtlGenRandom entropy source (CUI-3): cryptbase's

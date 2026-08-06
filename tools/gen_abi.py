@@ -1997,6 +1997,26 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(
                 winternl, "_SYSTEM_INTERRUPT_INFORMATION", "SYSTEM_INTERRUPT_INFORMATION"
             ),
+            # The fixed-shape system classes ntdll:info sweeps (35, 37, 154,
+            # 206) — kernel/ps/query.c.
+            extract_struct(
+                winternl,
+                "_SYSTEM_KERNEL_DEBUGGER_INFORMATION",
+                "SYSTEM_KERNEL_DEBUGGER_INFORMATION",
+            ),
+            extract_struct(
+                winternl,
+                "_SYSTEM_REGISTRY_QUOTA_INFORMATION",
+                "SYSTEM_REGISTRY_QUOTA_INFORMATION",
+            ),
+            extract_struct(
+                winternl, "_SYSTEM_LEAP_SECOND_INFORMATION", "SYSTEM_LEAP_SECOND_INFORMATION"
+            ),
+            extract_struct(
+                winternl,
+                "_SYSTEM_PROCESSOR_FEATURES_INFORMATION",
+                "SYSTEM_PROCESSOR_FEATURES_INFORMATION",
+            ),
             # SystemFirmwareTableInformation (76): the request/reply blob
             # kernelbase's GetSystemFirmwareTable wraps, and the two actions
             # it selects between. TableBuffer is the trailing variable array,
