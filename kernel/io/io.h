@@ -70,9 +70,9 @@ typedef struct IO_COMPLETION IO_COMPLETION, *PIO_COMPLETION;
 typedef struct FILE_OBJECT
 {
     KEVENT header;     /* notification-shaped: signalled == no request outstanding */
-    PIO_DEVICE device;        /* referenced via the Ob device body */
-    PIO_FCB fcb;              /* the FS's per-file node (fs/fat32 FAT_FCB) */
-    PVOID fsContext;          /* == fcb, typed for the FS's convenience */
+    PIO_DEVICE device; /* referenced via the Ob device body */
+    PIO_FCB fcb;       /* the FS's per-file node (fs/fat32 FAT_FCB) */
+    PVOID fsContext;   /* == fcb, typed for the FS's convenience */
     BOOLEAN isDirectory;
     BOOLEAN synchronousIo; /* FILE_SYNCHRONOUS_IO_* at create */
     BOOLEAN deleteOnClose; /* FILE_DELETE_ON_CLOSE at create */
@@ -158,6 +158,12 @@ void IoMountBootVolume(void);
 /* \Device\Null + \??\NUL (kernel/io/null.c). Namespace only — no disk,
  * no transport — so it may be published as early as a thread exists. */
 void IoInitializeNullDevice(void);
+
+/* \Device\MountPointManager + \??\MountPointManager + the boot volume's
+ * \??\Volume{...} name (kernel/io/mountmgr.c). Called from
+ * IoMountBootVolume, after the volume device and \??\C: exist — the volume
+ * GUID link targets that device. */
+void IoInitializeMountManager(void);
 
 /* Create a permanent \Device\... object over `ops` and return its body (the
  * namespace owns it; the transient handle is closed here). The one device
