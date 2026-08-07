@@ -37,8 +37,9 @@
  * WHAT IS DELIBERATELY ABSENT. Nine cells of that table — masks `<`, `<"`,
  * `<""` against names `.a`, `..a`, `.aa` — cannot be satisfied by any
  * long-name matcher. They match through the entry's 8.3 SHORT name, which
- * proskrnl does not yet report; that is separate work (docs/21 W3a), and
- * the cases are excluded here rather than pinned wrong. Their absence is
+ * this pin does not exercise; the short-name surface has its own file
+ * (sem_file/short_names.c), and the cases are excluded here rather than
+ * pinned wrong. Their absence is
  * the reason this pin uses `.a`-shaped names only where the long-name
  * answer is unambiguous.
  *

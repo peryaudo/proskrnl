@@ -136,7 +136,7 @@ ntdll_test.exe:generated
 #     for this one call.
 #     Implementing ACPI/FIRM does not reach it: the assertion is about
 #     provider ZERO, which is not a provider.
-#     DECIDED (docs/21 §4): this pair is BOUNDED and G12 is NOT amended.
+#     DECIDED (docs/21 §3): this pair is BOUNDED and G12 is NOT amended.
 #     The KiPinnedNotImplemented escape hatch would buy one pair and spend
 #     the one property that makes G12 work — that it has no door. Do not
 #     re-open this on the strength of this call alone; a SECOND call found
