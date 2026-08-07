@@ -95,7 +95,7 @@ ntdll_test.exe:atom
 #     not complete; a hypothesis that such a watch stops filtering was tested
 #     on the oracle and FALSIFIED, so it needs fresh triage.
 # TODO: Implement
-# ntdll_test.exe:change
+ntdll_test.exe:change
 # AT ITS FAT FLOOR — NOT FIXABLE WHILE THE BACKEND IS FAT32.
 #     5 failures out of 6393 tests, from dead at the start of this session.
 #     All five are ONE cause: directory.c:1446 fails
@@ -116,7 +116,7 @@ ntdll_test.exe:error
 #     (exception address/rip not where expected). Debug registers and
 #     single-stepping are arch/ work.
 # TODO: Implement
-# ntdll_test.exe:exception
+ntdll_test.exe:exception
 # GATED ON A WHOLE SUBSYSTEM, FIXABLE. Panics on the missing syscall
 #     NtCreateMailslotFile, so like kernel32:mailslot it is blocked on
 #     mailslots (docs/21 W8) rather than on the file surface it is named for.
@@ -125,7 +125,7 @@ ntdll_test.exe:error
 #     STATUS_END_OF_FILE, where success was expected) and :467, :4979-:4983 —
 #     which cannot be counted until the pair runs to the end.
 # TODO: Implement
-# ntdll_test.exe:file
+ntdll_test.exe:file
 ntdll_test.exe:generated
 # BOUNDED BY A DECISION ALREADY TAKEN — NOT FIXABLE BY KERNEL WORK.
 #     Fifteen system-information classes were built this session and both
@@ -154,13 +154,7 @@ ntdll_test.exe:large_int
 #     user32/GUI path that is off this image by Art. 7. Fails without
 #     proskrnl involvement, so it cannot convict the kernel.
 # ntdll_test.exe:om
-# UNTRIAGED, FIXABLE. 16 failures at path.c:736, all of the form
-#     "got c0000033 / 0" or "c000003a / c0000033" for inputs like
-#     L"\\??\\C:\\\\windows" — i.e. NT path parsing of doubled separators and
-#     of trailing components. STATUS_OBJECT_NAME_INVALID vs
-#     STATUS_OBJECT_PATH_NOT_FOUND vs success, in the Ob/Io name path.
-# TODO: Implement
-# ntdll_test.exe:path
+ntdll_test.exe:path
 # UNTRIAGED, FIXABLE. Dies rather than finishing. The visible cluster is
 #     pipe.c:344 ("expected STATUS_ILLEGAL_FUNCTION, got c000000d") twelve
 #     times, plus :281/:291/:296 (NtCreateNamedPipeFile and
@@ -168,7 +162,7 @@ ntdll_test.exe:large_int
 #     (CreateFile succeeding for a sharing/access combination that must
 #     fail). fs/npfs territory, same as kernel32:pipe.
 # TODO: Implement
-# ntdll_test.exe:pipe
+ntdll_test.exe:pipe
 ntdll_test.exe:port
 # PARTLY FIXED, FIXABLE. 192 failures across 1050 tests — and that count
 #     is the pair's FIRST honest measurement: it used to panic at reg.c:880
@@ -178,7 +172,7 @@ ntdll_test.exe:port
 #     reg.c:1361 (NtQueryValueKey -> 0xc0000008 INVALID_HANDLE behind it),
 #     and a subkey-enumeration group at :2363/:2380.
 # TODO: Implement
-# ntdll_test.exe:reg
+ntdll_test.exe:reg
 # AT ITS CUI-IMAGE FLOOR — NOT FIXABLE ON THIS IMAGE.
 #     All 26 failures are test_LdrAddRefDll (rtl.c:2314-:2348) and every one
 #     follows from LoadLibraryA("comctl32.dll") returning NULL. comctl32
@@ -200,7 +194,7 @@ ntdll_test.exe:string
 #     assertion (pseudo-handles in NtWaitForMultipleObjects); this one may be
 #     similarly cheap.
 # TODO: Implement
-# ntdll_test.exe:sync
+ntdll_test.exe:sync
 # UNTRIAGED, FIXABLE. Dies rather than finishing. Two failures visible
 #     before it stops: thread.c:122 ("Got unexpected dbg_hidden 0") and :153
 #     ("Got unexpected status 0") — the ThreadHideFromDebugger round trip and
@@ -208,13 +202,13 @@ ntdll_test.exe:string
 #     (kernel/ps/thread.c), so this is likely the access mask or the
 #     query-after-set path rather than a missing class.
 # TODO: Implement
-# ntdll_test.exe:thread
+ntdll_test.exe:thread
 # UNTRIAGED, FIXABLE. Dies rather than finishing and names nothing in the
 #     log — no unbuilt class, no missing syscall, no user fault. The
 #     threadpool is PE-side in ntdll, so what fails underneath is most likely
 #     the timer/wait/APC surface it is built on. Read the serial log first.
 # TODO: Implement
-# ntdll_test.exe:threadpool
+ntdll_test.exe:threadpool
 # ORACLE-FLAKY, NOT A KERNEL GAP — and the only entry here whose PROSKRNL
 #     leg is green. `wtest ntdll_test.exe:time PASS`; the ORACLE leg fails,
 #     and only on a loaded shared runner (it is 0-failing on a quiet host).
@@ -241,14 +235,14 @@ ntdll_test.exe:string
 #     Unwinding is PE-side, so a kernel failure under it points at the
 #     exception dispatch or context capture path in arch/.
 # TODO: Implement
-# ntdll_test.exe:unwind
+ntdll_test.exe:unwind
 # UNTRIAGED, FIXABLE. Dies rather than finishing. The visible cluster is
 #     virtual.c:170 — NtAllocateVirtualMemory with 9, 10, 11 ... zero_bits
 #     returning an address that does not satisfy the constraint. zero_bits is
 #     a documented allocation constraint (the returned address must have that
 #     many leading zero bits) and mm/ does not honour it.
 # TODO: Implement
-# ntdll_test.exe:virtual
+ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
 #     this exercises is unbuilt by plan rather than by omission — and the
 #     oracle is red on it anyway (4 failures, 1 skipped).
@@ -262,7 +256,7 @@ ntdll_test.exe:string
 #     rather than an Nt* class — but that is a guess, and the serial log has
 #     not been read.
 # TODO: Implement
-# kernel32_test.exe:actctx
+kernel32_test.exe:actctx
 kernel32_test.exe:atom
 # UNTRIAGED, FIXABLE. 33 failures in three groups: a rename must emit TWO
 #     chained records (FILE_ACTION_RENAMED_OLD_NAME then NEW_NAME, linked by
@@ -271,7 +265,7 @@ kernel32_test.exe:atom
 #     fields are left unwritten. The first two are kernel/io/notify.c
 #     producers; the third is the completion path.
 # TODO: Implement
-# kernel32_test.exe:change
+kernel32_test.exe:change
 kernel32_test.exe:codepage
 kernel32_test.exe:comm
 # (b) Needs a REAL console, which the oracle cannot give it: the runner
@@ -299,7 +293,7 @@ kernel32_test.exe:directory
 #     Shares this cause with kernel32:volume; ~57 assertions between them,
 #     the largest single item on the board (docs/21 W7).
 # TODO: Implement
-# kernel32_test.exe:drive
+kernel32_test.exe:drive
 kernel32_test.exe:environ
 # DIAGNOSED, FIXABLE — but mm/ work, approach with care. The process is
 #     KILLED by a user-mode page fault, so nothing is missing. From the
@@ -316,14 +310,14 @@ kernel32_test.exe:environ
 #     RSP — do NOT adjust the fault handler until the winetest stops
 #     crashing (Art. 6).
 # TODO: Implement
-# kernel32_test.exe:fiber
+kernel32_test.exe:fiber
 # UNTRIAGED, FIXABLE. Dies rather than finishing. The dominant cluster is
 #     file.c:2663/2672 — ~100 assertions of the form "open succeeded for
 #     modes map PAGE_READWRITE / GENERIC_..." — i.e. the compatibility matrix
 #     between a section's page protection and the access a view is opened
 #     with. Same subject as kernel32:virtual below and likely the same fix.
 # TODO: Implement
-# kernel32_test.exe:file
+kernel32_test.exe:file
 kernel32_test.exe:format_msg
 kernel32_test.exe:generated
 kernel32_test.exe:heap
@@ -339,14 +333,14 @@ kernel32_test.exe:heap
 #     that maps it. Worth confirming that the NLS file maps identically on
 #     both runners before assuming a kernel defect.
 # TODO: Implement
-# kernel32_test.exe:locale
+kernel32_test.exe:locale
 # GATED ON A WHOLE SUBSYSTEM, FIXABLE. Panics on
 #     NtQueryInformationFile class 26 (FileMailslotQueryInformation), so the
 #     pair is blocked on mailslots as a device rather than on a detail.
 #     That is docs/21 W8: NtCreateMailslotFile plus the mailslot device.
 #     ntdll:file is blocked by the same thing.
 # TODO: Implement
-# kernel32_test.exe:mailslot
+kernel32_test.exe:mailslot
 # (b) Asserts the TEST BINARY'S OWN import list, which the standalone link
 #     deliberately changes: module.c:1774 walks the dependencies and wants
 #     user32.dll where our link has advapi32, because user32 is stood in at
@@ -360,7 +354,7 @@ kernel32_test.exe:path
 #     "content check") repeated ~24 times, plus a couple at :1396/:1401-1402
 #     on the client open and write. fs/npfs territory.
 # TODO: Implement
-# kernel32_test.exe:pipe
+kernel32_test.exe:pipe
 kernel32_test.exe:power
 # (b) The console dependency again, and the largest instance of it: 48
 #     failures on the oracle, starting at process.c:1650 "Getting sb info" /
@@ -373,7 +367,7 @@ kernel32_test.exe:power
 #     file left open or undeleted by the preceding writes rather than a
 #     directory bug.
 # TODO: Implement
-# kernel32_test.exe:profile
+kernel32_test.exe:profile
 # UNTRIAGED, FIXABLE. Dies rather than finishing. Earlier failures were
 #     resource.c:442 (MajorVersion wrong), :447 (NumberOfIdEntries 0 vs 1),
 #     :385 (FindResource -> 1813 ERROR_RESOURCE_TYPE_NOT_FOUND) and :428/:450
@@ -381,15 +375,8 @@ kernel32_test.exe:power
 #     Begin/Update/EndUpdateResource path rewriting a PE on disk. Read the
 #     serial log first, as kernel32:fiber needed.
 # TODO: Implement
-# kernel32_test.exe:resource
-# PARTLY FIXED, FIXABLE. 15 failures, and it no longer HANGS — it now
-#     executes 1,588,645 tests. The hang was NtWaitForMultipleObjects
-#     accepting pseudo-handles, which NT forbids there while allowing them in
-#     the single-object form (fixed this session, kernel/ob/wait.c). The 15
-#     that remain are ordinary failures around sync.c:3040-3064 (QueueUserAPC
-#     and SleepEx) and :1491, and have not been triaged individually.
-# TODO: Implement
-# kernel32_test.exe:sync
+kernel32_test.exe:resource
+kernel32_test.exe:sync
 kernel32_test.exe:thread
 # DIAGNOSED, FIXABLE (data, not logic). Dies on
 #     GetTimeZoneInformationForYear returning error 2 (FILE_NOT_FOUND) for
@@ -399,7 +386,7 @@ kernel32_test.exe:thread
 #     table. Seeding it is mechanical but it is a large data set, and it
 #     should come from the pinned prefix rather than from memory (G8).
 # TODO: Implement
-# kernel32_test.exe:time
+kernel32_test.exe:time
 kernel32_test.exe:timer
 # (c) toolhelp belongs to the GUI image, not this one, and it is a whole-pair
 #     dependency rather than a few assertions. Every one of its snapshot
@@ -428,14 +415,14 @@ kernel32_test.exe:version
 #     subject as kernel32:file above.
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
 # TODO: Implement
-# kernel32_test.exe:virtual
+kernel32_test.exe:virtual
 # DIAGNOSED, FIXABLE. 53 failures, and the same cause as kernel32:drive:
 #     no volume GUID namespace, so GetVolumeNameForVolumeMountPoint produces
 #     nothing and FindFirstVolume has nothing to enumerate. Everything
 #     downstream (mount-point round trips, GetDiskFreeSpace on a GUID path)
 #     fails behind them. See kernel32:drive above for the interface.
 # TODO: Implement
-# kernel32_test.exe:volume
+kernel32_test.exe:volume
 
 # --- msvcrt (third_party/wine/dlls/msvcrt/tests) ----------------------------
 msvcrt_test.exe:cpp
