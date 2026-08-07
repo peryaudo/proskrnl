@@ -1083,6 +1083,11 @@ def gen_ntioapi(wine: Path) -> str:
             # half of HACK-002, answers FILE_DEVICE_MOUSE (also the CTL_CODE
             # device field of its abs-info ioctl, drivers/hidproto.h).
             "FILE_DEVICE_KEYBOARD",
+            # M10: \Device\MountPointManager. The oracle's mountmgr.sys
+            # creates it with a device type of 0 (IoCreateDevice's
+            # DeviceType argument, dlls/mountmgr.sys/mountmgr.c), which is
+            # this name.
+            "FILE_DEVICE_UNKNOWN",
             "FILE_DEVICE_MOUSE",
             "FILE_DEVICE_SERIAL_PORT",
             "FILE_DEVICE_VIDEO",
@@ -1387,6 +1392,84 @@ _Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_I
 # authoritative source (conhost and kernelbase both compile against it, so
 # it IS the observable boundary). COORD/SMALL_RECT come from wincontypes.h,
 # the CONSOLE_HANDLE_* sentinels' LongToHandle from basetsd.h.
+def gen_ntmountmgr(wine: Path) -> str:
+    """The mount-point manager's ioctl surface.
+
+    Small on purpose. kernelbase reaches \\Device\\MountPointManager for one
+    question — "which volume GUID names this device?" — through
+    IOCTL_MOUNTMGR_QUERY_POINTS (dlls/kernelbase/volume.c,
+    GetVolumeNameForVolumeMountPointW and FindFirstVolumeW), and everything
+    else on the device is unbuilt and refuses loudly. The other verbs are
+    extracted anyway so the kernel can NAME the one it was asked for when it
+    refuses; a serial line saying "ioctl 6d0034" is not a diagnosis.
+    """
+    mountmgr = (wine / "include/ddk/mountmgr.h").read_text()
+
+    ioctls = extract_defines(
+        mountmgr,
+        "ddk/mountmgr.h",
+        [
+            "MOUNTMGRCONTROLTYPE",
+            "IOCTL_MOUNTMGR_CREATE_POINT",
+            "IOCTL_MOUNTMGR_DELETE_POINTS",
+            "IOCTL_MOUNTMGR_QUERY_POINTS",
+            "IOCTL_MOUNTMGR_DELETE_POINTS_DBONLY",
+            "IOCTL_MOUNTMGR_NEXT_DRIVE_LETTER",
+            "IOCTL_MOUNTMGR_AUTO_DL_ASSIGNMENTS",
+            "IOCTL_MOUNTMGR_VOLUME_MOUNT_POINT_CREATED",
+            "IOCTL_MOUNTMGR_VOLUME_MOUNT_POINT_DELETED",
+            "IOCTL_MOUNTMGR_CHANGE_NOTIFY",
+            "IOCTL_MOUNTMGR_KEEP_LINKS_WHEN_OFFLINE",
+            "IOCTL_MOUNTMGR_CHECK_UNPROCESSED_VOLUMES",
+            "IOCTL_MOUNTMGR_VOLUME_ARRIVAL_NOTIFICATION",
+        ],
+    )
+
+    structs = "\n\n".join(
+        [
+            extract_struct(mountmgr, "_MOUNTMGR_MOUNT_POINT", "MOUNTMGR_MOUNT_POINT"),
+            extract_struct(mountmgr, "_MOUNTMGR_MOUNT_POINTS", "MOUNTMGR_MOUNT_POINTS"),
+        ]
+    )
+
+    asserts = """\
+#include <stddef.h>
+/* 24, not 20: each USHORT is followed by two bytes of padding, because the
+ * header carries no #pragma pack and every ULONG must stay 4-aligned. The
+ * offsets a caller reads out of this struct index the SAME buffer the
+ * struct sits in, so getting its size wrong shifts every name in the
+ * reply. */
+_Static_assert(sizeof(MOUNTMGR_MOUNT_POINT) == 24, "MOUNTMGR_MOUNT_POINT layout");
+_Static_assert(offsetof(MOUNTMGR_MOUNT_POINT, UniqueIdOffset) == 8,
+               "MOUNTMGR_MOUNT_POINT layout");
+_Static_assert(offsetof(MOUNTMGR_MOUNT_POINT, DeviceNameOffset) == 16,
+               "MOUNTMGR_MOUNT_POINT layout");
+_Static_assert(offsetof(MOUNTMGR_MOUNT_POINTS, MountPoints) == 8,
+               "MOUNTMGR_MOUNT_POINTS layout");
+"""
+
+    return (
+        BANNER.format(name="abi/ntmountmgr.h", source="wine/include/ddk/mountmgr.h")
+        + "#ifndef PROSKRNL_ABI_NTMOUNTMGR_H\n"
+        + "#define PROSKRNL_ABI_NTMOUNTMGR_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* CTL_CODE, METHOD_BUFFERED, FILE_*_ACCESS */\n\n'
+        + "/* The mount-manager ioctl codes, extracted from\n"
+        + " * wine/include/ddk/mountmgr.h. */\n"
+        + ioctls
+        + "\n\n/* The QUERY_POINTS request and reply shapes. Both are\n"
+        + " * variable-length: every name is an (offset, length) pair into the\n"
+        + " * SAME buffer the fixed part sits at the head of, and the lengths\n"
+        + " * are in BYTES and the strings are NOT NUL-terminated -- which\n"
+        + " * dlls/kernelbase/volume.c relies on, copying SymbolicLinkNameLength\n"
+        + " * bytes and terminating the result itself. */\n"
+        + structs
+        + "\n\n"
+        + asserts
+        + "\n#endif /* PROSKRNL_ABI_NTMOUNTMGR_H */\n"
+    )
+
+
 def gen_ntcondrv(wine: Path) -> str:
     condrv = (wine / "include/wine/condrv.h").read_text()
     wincontypes = (wine / "include/wincontypes.h").read_text()
@@ -3039,6 +3122,7 @@ def main() -> None:
         ("ntimage.h", gen_ntimage(args.wine)),
         ("ntioapi.h", gen_ntioapi(args.wine)),
         ("ntcondrv.h", gen_ntcondrv(args.wine)),
+        ("ntmountmgr.h", gen_ntmountmgr(args.wine)),
         ("ntcontext.h", gen_ntcontext(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
         ("ntpebteb.h", gen_ntpebteb(args.wine)),
