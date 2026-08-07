@@ -1065,8 +1065,9 @@ first version emitted only the GUID entry, which served
 `GetVolumePathNamesForVolumeName` (volume.c:1086). Worth stating because it
 is invisible from the API that fails.
 
-**`kernel32:volume` went 53 failures -> 7**, so this item was worth ~46
-assertions on its own and the `~57` estimate above was close to right.
+**`kernel32:volume` went 53 failures -> 3** once the query filter and the
+argument checks both landed, so this item was worth ~50 assertions on its
+own and the `~57` estimate above was close to right.
 
 An earlier revision of this section revised that estimate DOWN, on the
 strength of a first measurement taken before the query filter was
@@ -1094,9 +1095,19 @@ the IOSB and the output buffer left untouched in every case. Check which
 HANDLE a failing call was issued on before filing it under another
 component.
 
-That leaves genuinely separate: `\\.\PhysicalDrive0` (no such device),
-`FILE_SUPPORTS_OPEN_BY_FILE_ID` clear, and the unbuilt
-`NtQueryVolumeInformationFile` class behind the remaining armed-boot panic.
+That leaves THREE failures, and they are genuinely separate items:
+
+* `volume.c:632` — opening `c:` fails with error 5 (access denied);
+* `volume.c:675` — `\\.\PhysicalDrive0` does not exist. proskrnl publishes
+  `\Device\HarddiskVolume1`, a mounted VOLUME; a raw physical-disk device is
+  a different object with its own ioctl surface. Check whether anything on
+  the CUI boundary actually opens one before building it — a device added
+  because a test asks for it, with no consumer, is the wrong shape of fix;
+* `volume.c:2022` — `FILE_SUPPORTS_OPEN_BY_FILE_ID` is clear.
+
+The pair also still PANICS on an unbuilt `NtQueryVolumeInformationFile`
+class, so it does not run to the end. That one is worth more than its single
+assertion: a panic truncates the pair, so whatever follows it is unmeasured.
 
 **A pin that accepts three answers pins none of them.** The argument-check
 status above was covered by an assertion reading `BUFFER_OVERFLOW ||
