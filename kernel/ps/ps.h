@@ -430,6 +430,13 @@ typedef struct PSP_THREAD_OPTIONS
     ULONG handleAttributes; /* OBJ_INHERIT etc., from OBJECT_ATTRIBUTES */
     uint64_t stackReserve;  /* 0 = the default 1 MiB */
     uint64_t stackCommit;   /* 0 = the default 64 KiB */
+    /* THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER at create time. The same flag
+     * NtSetInformationThread(ThreadHideFromDebugger) sets later, so it is
+     * born set rather than set by a second path — the server does exactly
+     * this (`thread->dbg_hidden = !!(req->flags & ...)` in server/thread.c
+     * create_thread) and ntdll:thread reads it straight back out through
+     * the query class (thread.c:120-:122). */
+    BOOLEAN hideFromDebugger;
 } PSP_THREAD_OPTIONS;
 
 /* Create and ready an additional user thread in `process`: its own guard-page

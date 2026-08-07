@@ -1505,6 +1505,18 @@ NTSTATUS NtCreateUserProcess(HANDLE *processHandle, HANDLE *threadHandle, ACCESS
                  (unsigned long)processFlags);
         return STATUS_NOT_IMPLEMENTED;
     }
+    /* THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER is legal on NtCreateThreadEx
+     * and INVALID here — a refusal, not an unbuilt hole, so it is the
+     * specific NT failure rather than STATUS_NOT_IMPLEMENTED (G12). The
+     * oracle refuses it in so many words before touching anything else
+     * (dlls/ntdll/unix/process.c: `WARN( "Invalid thread flags %#x.\n" );
+     * return STATUS_INVALID_PARAMETER;`), and ntdll:thread asserts it at
+     * thread.c:153 immediately before making the same call without the flag
+     * and requiring success. */
+    if ((threadFlags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
     BOOLEAN inheritHandles = (processFlags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES) != 0;
     BOOLEAN createSuspended = (threadFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0 ||
                               (processFlags & PROCESS_CREATE_FLAGS_SUSPENDED) != 0;
