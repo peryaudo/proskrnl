@@ -1823,6 +1823,70 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         break;
     }
 
+    case FileFsFullSizeInformationEx:
+    {
+        /* Class 14, the extended form of the arm above. kernel32:volume
+         * reaches it where the plain class stops, and it PANICKED here under
+         * the armed boot until now — a panic truncates the pair, so
+         * everything after it was unmeasured rather than passing.
+         *
+         * The extra fields are quota and storage-reserve accounting, which
+         * FAT does not have. They are not invented: with no quotas the
+         * caller's view IS the actual view, so the Caller* triple mirrors
+         * the Actual* one, and the reserve/committed counters are genuinely
+         * zero rather than unknown — a volume with no reserve has none.
+         * UsedAllocationUnits is the one real derivation (total - free).
+         * Pool-unavailable is zero for the same reason: FAT reserves no
+         * pool. This is an implementation of a volume without quotas, not a
+         * stub with plausible numbers (Art. 12) — every field is either
+         * measured or structurally zero.
+         *
+         * AvailableCommittedAllocationUnits is ZERO, and that is measured,
+         * not reasoned. The first version of this arm set it to the free
+         * count on the argument that everything free is available to
+         * commit; kernel32:volume convicted it immediately
+         * (volume.c:2209/:2213/:2217, "expected zero"). Committed storage is
+         * a storage-reserve concept a volume without reserves does not
+         * have, so the honest answer is none — the same rule the rest of
+         * this arm follows, applied to a field where the plausible-sounding
+         * derivation was wrong. */
+        if (file->device->ops->QueryVolumeInfo == 0)
+        {
+            DbgPrint("[KTEST] volinfo: no volume behind class %u\n", (unsigned)infoClass);
+            status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
+            break;
+        }
+        if (length < sizeof(FILE_FS_FULL_SIZE_INFORMATION_EX))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        IO_VOLUME_INFO facts;
+        status = file->device->ops->QueryVolumeInfo(file->device, &facts);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        /* Re-probed after the gated query parked, as the arm above. */
+        status = KiProbeForWrite(buffer, length, 1);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        FILE_FS_FULL_SIZE_INFORMATION_EX *out = buffer;
+        memset(out, 0, sizeof(*out));
+        out->ActualTotalAllocationUnits = facts.totalUnits;
+        out->ActualAvailableAllocationUnits = facts.freeUnits;
+        out->CallerTotalAllocationUnits = facts.totalUnits;
+        out->CallerAvailableAllocationUnits = facts.freeUnits;
+        out->UsedAllocationUnits =
+            facts.totalUnits >= facts.freeUnits ? facts.totalUnits - facts.freeUnits : 0;
+        out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
+        out->BytesPerSector = facts.bytesPerSector;
+        information = sizeof(FILE_FS_FULL_SIZE_INFORMATION_EX);
+        break;
+    }
+
     case FileFsAttributeInformation:
     {
         if (file->device->ops->QueryVolumeInfo == 0)
