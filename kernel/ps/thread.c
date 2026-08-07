@@ -556,6 +556,9 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
         KiDeleteThread(tcb);
         return status;
     }
+    /* Set before the thread is readied, so nothing can observe it clear on a
+     * thread that was created hidden. */
+    thread->hideFromDebugger = options->hideFromDebugger;
 
     /* Write the handle straight into the caller's (user) PHANDLE — ObpCreateHandle
      * is the choke point that probes it under the current previous mode. A
@@ -649,6 +652,13 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
     }
 
     BOOLEAN suspended = (createFlags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) != 0;
+    /* HIDE_FROM_DEBUGGER is legal HERE and illegal on the process-creating
+     * entry point — see NtCreateUserProcess, which refuses it. The
+     * asymmetry is the oracle's (dlls/ntdll/unix/thread.c lists it in
+     * NtCreateThreadEx's supported_flags; dlls/ntdll/unix/process.c returns
+     * STATUS_INVALID_PARAMETER for it) and ntdll:thread asserts both halves
+     * ten lines apart (thread.c:122 and :153). */
+    options.hideFromDebugger = (createFlags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER) != 0;
     uint64_t threadId = 0, tebBase = 0;
     NTSTATUS status = PspCreateUserThread(process, (uint64_t)(uintptr_t)startRoutine,
                                           (uint64_t)(uintptr_t)argument, suspended, &options,
