@@ -499,11 +499,24 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
             device = relativeTo->device;
             ObfReferenceObject(device);
             fsPath = *attributes->ObjectName;
+            /* An ABSOLUTE name under a RootDirectory handle is
+             * STATUS_INVALID_PARAMETER, not a syntax error. The two are easy
+             * to conflate — both mean "this name is wrong" — but NT keeps
+             * them apart by which argument is at fault, and the oracle says
+             * so in one line at the top of its with-root path:
+             *
+             *   if (name_len && name[0] == '\\') return STATUS_INVALID_PARAMETER;
+             *   (third_party/wine dlls/ntdll/unix/file.c)
+             *
+             * STATUS_OBJECT_PATH_SYNTAX_BAD is the answer for the OPPOSITE
+             * mistake — a relative name with NO root — which
+             * ObpLookupName still gives. ntdll:path asserts both (entry 59
+             * for the syntax error, entry 53 for this one). */
             if (fsPath.Length >= sizeof(WCHAR) && fsPath.Buffer[0] == '\\')
             {
                 ObDereferenceObject(relativeTo);
                 ObDereferenceObject(device);
-                return STATUS_OBJECT_PATH_SYNTAX_BAD;
+                return STATUS_INVALID_PARAMETER;
             }
         }
     }

@@ -478,15 +478,100 @@ static ULONG FatAttributesToNt(UCHAR fatAttributes)
     return attributes != 0 ? attributes : FILE_ATTRIBUTE_NORMAL;
 }
 
-/* Walk `path` (no leading backslash; empty = root) from `base` down to the
- * final component. Returns the referenced parent and the leaf name; a path
- * naming the root returns *parentOut = 0 and the referenced root in
- * *foundOut. */
+/* NT path-component syntax, checked ONCE over the whole path before the walk
+ * begins — which is where the oracle checks it too (third_party/wine
+ * dlls/ntdll/unix/file.c, the "check syntax of individual components" loop at
+ * the head of lookup_unix_name). Doing it up front is not a style choice: a
+ * per-component check inside the walk cannot see an empty component, because
+ * by then the walk has already decided whether an empty tail means "open the
+ * directory" or "malformed".
+ *
+ * The loop is a transcription. Its outer iteration always begins at a
+ * component's FIRST character, and the inner one runs to the next separator:
+ *
+ *   - a component starting with '\' is EMPTY            -> OBJECT_NAME_INVALID
+ *   - a component that is exactly "." or ".."           -> OBJECT_NAME_INVALID
+ *   - a reserved character anywhere in a component      -> OBJECT_NAME_INVALID
+ *
+ * NT does not resolve "." and ".." at this boundary — it REFUSES them. That
+ * is the single largest thing ntdll:path was testing and proskrnl was
+ * missing: eleven of its sixteen failures were a dot component being walked
+ * as an ordinary name and coming back "not found" (c0000034) or "path not
+ * found" (c000003a) instead.
+ *
+ * A trailing separator needs no special case and does not get one: the outer
+ * loop simply reaches the end without starting another component, which is
+ * why "dir\" is legal and "dir\\" is not.
+ *
+ * The character set is Wine's INVALID_NT_CHARS plus '/', plus ':' — the
+ * extra one is this FAT backend's existing rule, kept because nothing has
+ * measured what the oracle does with a stream-style name here and a
+ * drive-by widening is not the business of this change. */
+static NTSTATUS FatValidateNtPath(const UNICODE_STRING *path)
+{
+    const WCHAR *name = path->Buffer;
+    const WCHAR *end = name + path->Length / sizeof(WCHAR);
+    for (const WCHAR *ptr = name; ptr < end; ptr++)
+    {
+        if (*ptr == L'\\')
+        {
+            return STATUS_OBJECT_NAME_INVALID; /* empty component */
+        }
+        if (*ptr == L'.')
+        {
+            if (ptr + 1 == end || ptr[1] == L'\\')
+            {
+                return STATUS_OBJECT_NAME_INVALID; /* "." element */
+            }
+            if (ptr[1] == L'.' && (ptr + 2 == end || ptr[2] == L'\\'))
+            {
+                return STATUS_OBJECT_NAME_INVALID; /* ".." element */
+            }
+        }
+        for (; ptr < end && *ptr != L'\\'; ptr++)
+        {
+            WCHAR c = *ptr;
+            if (c < 0x20 || c == L'"' || c == L'*' || c == L'/' || c == L':' || c == L'<' ||
+                c == L'>' || c == L'?' || c == L'|')
+            {
+                return STATUS_OBJECT_NAME_INVALID;
+            }
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Walk `path` from `base` down to the final component. Returns the
+ * referenced parent and the leaf name; a path naming the root returns
+ * *parentOut = 0 and the referenced root in *foundOut. */
 static NTSTATUS FatResolveParent(PFAT_FCB base, const UNICODE_STRING *path, PFAT_FCB *parentOut,
                                  UNICODE_STRING *leafOut, BOOLEAN *trailingSlashOut)
 {
     UNICODE_STRING remaining = *path;
     *trailingSlashOut = FALSE;
+
+    /* ONE optional leading separator, and it is a real NT rule rather than
+     * defensive tidying: "\??\C:\\windows" opens \windows, and the oracle
+     * says so in two lines of nt_to_unix_file_name_no_root
+     * (dlls/ntdll/unix/file.c) — it advances past the initial backslash,
+     * then advances again if the next character is one too, under the
+     * comment "allow a second backslash".
+     *
+     * Exactly one extra, so "\??\C:\\\windows" is still malformed and
+     * falls to the empty-component rule below. proskrnl's device resolution
+     * hands that second separator through as a leading one, so this is where
+     * it lands. ntdll:path entry 1. */
+    if (remaining.Length >= sizeof(WCHAR) && remaining.Buffer[0] == L'\\')
+    {
+        remaining.Buffer++;
+        remaining.Length -= sizeof(WCHAR);
+    }
+
+    NTSTATUS syntax = FatValidateNtPath(&remaining);
+    if (!NT_SUCCESS(syntax))
+    {
+        return syntax;
+    }
 
     /* Strip one trailing backslash ("dir\" opens the directory). */
     if (remaining.Length >= sizeof(WCHAR) &&
@@ -514,29 +599,14 @@ static NTSTATUS FatResolveParent(PFAT_FCB base, const UNICODE_STRING *path, PFAT
         for (i = 0; i < units && remaining.Buffer[i] != '\\'; i++)
         {
         }
-        if (i == 0)
-        {
-            FatDereferenceFcb(current);
-            return STATUS_OBJECT_NAME_INVALID; /* empty component ("a\\\\b") */
-        }
+        /* No emptiness or character test here: FatValidateNtPath ran over
+         * this whole path before the walk started and is the one authority
+         * for its syntax. A second copy inside the loop is how the two came
+         * to disagree about a trailing separator. */
         UNICODE_STRING component;
         component.Buffer = remaining.Buffer;
         component.Length = (USHORT)(i * sizeof(WCHAR));
         component.MaximumLength = component.Length;
-        /* NT filename character rules (MS "Naming Files, Paths": the
-         * reserved set " * / : < > ? \ | and controls) — a wildcard or
-         * reserved character in any component is STATUS_OBJECT_NAME_INVALID
-         * on the oracle (kernel32:directory pins the wildcard half). */
-        for (ULONG k = 0; k < i; k++)
-        {
-            WCHAR c = component.Buffer[k];
-            if (c < 0x20 || c == L'"' || c == L'*' || c == L'/' || c == L':' || c == L'<' ||
-                c == L'>' || c == L'?' || c == L'|')
-            {
-                FatDereferenceFcb(current);
-                return STATUS_OBJECT_NAME_INVALID;
-            }
-        }
         BOOLEAN isFinal = i == units;
         if (isFinal)
         {

@@ -389,17 +389,16 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             *parseRemaining = remaining;
             return STATUS_SUCCESS;
         }
-        if (trailingEmpty && !(child != 0 && ObpGetHeader(child)->type == &ObpSymbolicLinkType))
-        {
-            /* Trailing '\' on a non-parse path: invalid — except through a
-             * symbolic link ("\??\C:\" must reach the volume root exactly as
-             * the pinned oracle resolves it; sem_pipe/device_type.c), which
-             * the reparse below re-walks with the slash preserved. */
-            ObDereferenceObject(current);
-            return STATUS_OBJECT_NAME_INVALID;
-        }
         if (child == 0)
         {
+            /* EXISTENCE OUTRANKS SHAPE. A component that is not there is a
+             * missing path however the name after it is punctuated, so this
+             * test comes before the trailing-'\' refusal below — otherwise
+             * "\??/C:\" (whose first component is the literal "??/C:",
+             * because '/' is not an NT separator) reports
+             * STATUS_OBJECT_NAME_INVALID while "\??/C:\windows\x" reports
+             * STATUS_OBJECT_PATH_NOT_FOUND, and the two names are wrong for
+             * exactly the same reason. ntdll:path entry 34 vs entry 17. */
             if (!isFinal || reparsedFinal)
             {
                 /* A missing intermediate, or a missing target reached by
@@ -411,6 +410,17 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             *parentBody = current;
             *leafName = component;
             return STATUS_SUCCESS;
+        }
+
+        if (trailingEmpty && ObpGetHeader(child)->type != &ObpSymbolicLinkType)
+        {
+            /* Trailing '\' on a non-parse path that DOES exist: invalid —
+             * except through a symbolic link ("\??\C:\" must reach the volume
+             * root exactly as the pinned oracle resolves it;
+             * sem_pipe/device_type.c), which the reparse below re-walks with
+             * the slash preserved. */
+            ObDereferenceObject(current);
+            return STATUS_OBJECT_NAME_INVALID;
         }
 
         if (ObpGetHeader(child)->type == &ObpSymbolicLinkType && (!isFinal || followFinalLink))
