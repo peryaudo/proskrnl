@@ -101,6 +101,119 @@ static NTSTATUS MiCheckPageProtect(ULONG protect)
     }
 }
 
+/* --- the view-protection compatibility rule ------------------------------
+ *
+ * NT will not let a view be re-protected — or committed over — to an access
+ * the VIEW was not mapped with. `VirtualProtect(view, PAGE_READWRITE)` on a
+ * view mapped PAGE_READONLY is not a privilege check that happens to pass
+ * for a lucky caller; it is refused, always, and the refusal is what stops a
+ * read-only view from becoming a writable window onto shared frames.
+ *
+ * The rule is the oracle's set_protection (third_party/wine
+ * dlls/ntdll/unix/virtual.c) and it is three lines:
+ *
+ *     if (is_view_valloc( view ))                 // private memory
+ *         if (vprot & VPROT_WRITECOPY) return STATUS_INVALID_PAGE_PROTECTION;
+ *     else {                                      // any section view
+ *         BYTE access = vprot & (VPROT_READ | VPROT_WRITE | VPROT_EXEC);
+ *         if ((view->protect & access) != access) return STATUS_INVALID_PAGE_PROTECTION;
+ *     }
+ *
+ * Two things about it are easy to get wrong and both are load-bearing:
+ *
+ *  - the comparison is a SUBSET test on READ/WRITE/EXEC, not equality, so a
+ *    view mapped PAGE_EXECUTE_READWRITE may be narrowed to anything;
+ *  - VPROT_WRITECOPY is NOT one of the compared bits, so PAGE_WRITECOPY
+ *    needs only READ. That is why a PAGE_READONLY view can be protected
+ *    write-copy and a PAGE_READWRITE one can be too.
+ *
+ * kernel32:virtual sweeps this whole matrix — every section protection
+ * crossed with every view protection crossed with every requested
+ * protection — and ~2100 of its ~4100 failures were this rule missing
+ * (virtual.c:4250/:4251).
+ */
+
+/* The READ/WRITE/EXEC access a Win32 page protection implies, as
+ * get_vprot_flags computes it. `image` selects the arm where a plain
+ * writable protection means WRITECOPY instead of WRITE — which, since
+ * WRITECOPY is not an access bit, makes PAGE_READWRITE on an image view
+ * demand only READ. Returns the bits; MiVprotFlags validates. */
+#define MI_ACCESS_READ  0x1u
+#define MI_ACCESS_WRITE 0x2u
+#define MI_ACCESS_EXEC  0x4u
+
+static NTSTATUS MiVprotAccess(ULONG protect, BOOLEAN image, ULONG *accessOut)
+{
+    switch (protect & 0xff)
+    {
+    case PAGE_NOACCESS:
+        *accessOut = 0;
+        return STATUS_SUCCESS;
+    case PAGE_READONLY:
+        *accessOut = MI_ACCESS_READ;
+        return STATUS_SUCCESS;
+    case PAGE_WRITECOPY:
+        *accessOut = MI_ACCESS_READ; /* WRITECOPY is not an access bit */
+        return STATUS_SUCCESS;
+    case PAGE_READWRITE:
+        *accessOut = image ? MI_ACCESS_READ : (MI_ACCESS_READ | MI_ACCESS_WRITE);
+        return STATUS_SUCCESS;
+    case PAGE_EXECUTE:
+        *accessOut = MI_ACCESS_EXEC; /* no READ — the oracle's own asymmetry */
+        return STATUS_SUCCESS;
+    case PAGE_EXECUTE_READ:
+        *accessOut = MI_ACCESS_EXEC | MI_ACCESS_READ;
+        return STATUS_SUCCESS;
+    case PAGE_EXECUTE_WRITECOPY:
+        *accessOut = MI_ACCESS_EXEC | MI_ACCESS_READ;
+        return STATUS_SUCCESS;
+    case PAGE_EXECUTE_READWRITE:
+        *accessOut = image ? (MI_ACCESS_EXEC | MI_ACCESS_READ)
+                           : (MI_ACCESS_EXEC | MI_ACCESS_READ | MI_ACCESS_WRITE);
+        return STATUS_SUCCESS;
+    default:
+        return STATUS_INVALID_PAGE_PROTECTION;
+    }
+}
+
+/* THE set_protection gate, for both of its callers: NtProtectVirtualMemory
+ * and the MEM_COMMIT-over-an-existing-view path. One authority, because the
+ * two used to disagree — protect enforced part of the rule and commit
+ * enforced none of it. */
+static NTSTATUS MiCheckViewProtection(PMI_VAD vad, ULONG protect)
+{
+    BOOLEAN image = vad->type == MEM_IMAGE;
+    ULONG wanted;
+    NTSTATUS status = MiVprotAccess(protect, image, &wanted);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (vad->type == MEM_PRIVATE)
+    {
+        ULONG bits = protect & 0xff;
+        if (bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY)
+        {
+            return STATUS_INVALID_PAGE_PROTECTION;
+        }
+        return STATUS_SUCCESS;
+    }
+    ULONG granted;
+    /* The view's OWN protection is the ceiling, not the section's: a
+     * PAGE_READWRITE section mapped PAGE_READONLY yields a read-only
+     * ceiling. vad->allocationProtect is that map protection. */
+    status = MiVprotAccess(vad->allocationProtect, image, &granted);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if ((granted & wanted) != wanted)
+    {
+        return STATUS_INVALID_PAGE_PROTECTION;
+    }
+    return STATUS_SUCCESS;
+}
+
 static void MiProtectToPteBits(ULONG protect, int *present, int *writable, int *executable)
 {
     ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
@@ -490,11 +603,16 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
     {
         return STATUS_INVALID_PARAMETER;
     }
-    NTSTATUS status = MiCheckPageProtect(protect);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
+    /* NO protection validation here. The oracle validates per BRANCH, not up
+     * front (dlls/ntdll/unix/virtual.c allocate_virtual_memory): the reserve
+     * branch calls get_vprot_flags, the commit branch calls set_protection —
+     * and the commit branch's file-backed arm returns STATUS_ALREADY_COMMITTED
+     * BEFORE either. Validating early inverts that: a PAGE_WRITECOPY commit
+     * over a file view answered STATUS_INVALID_PAGE_PROTECTION (error 87)
+     * where NT answers STATUS_ALREADY_COMMITTED (error 5), and kernel32:virtual
+     * counted 464 of them at virtual.c:4291. MEM_RESET validates nothing at
+     * all, for the same reason: the oracle's reset arm never asks. */
+    NTSTATUS status;
 
     uint64_t base;
     if (requestedBase != 0)
@@ -542,6 +660,13 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
 
     if ((type & MEM_RESERVE) || requestedBase == 0)
     {
+        /* The reserve branch's own validation, where the oracle's
+         * get_vprot_flags call sits. */
+        status = MiCheckPageProtect(protect);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
         if (requestedBase == 0)
         {
             base = MiFindFreeRegion(space, size, limitLow, limitHigh, align);
@@ -592,14 +717,53 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         {
             return STATUS_NOT_MAPPED_VIEW;
         }
+        /* The oracle's commit branch, in its order:
+         *
+         *   else if (view->protect & SEC_FILE) status = STATUS_ALREADY_COMMITTED;
+         *   else ... set_protection( view, base, size, protect );
+         *
+         * A FILE-backed view — data or image — is already committed by its
+         * file, and the refusal comes before any look at the protection.
+         * kernelbase turns STATUS_ALREADY_COMMITTED into ERROR_ACCESS_DENIED,
+         * which is what kernel32:virtual asserts (virtual.c:4291).
+         *
+         * An ANONYMOUS section view (pagefile-backed, no SEC_FILE) is a
+         * different answer entirely: the commit is allowed, gated only by
+         * the same view-protection rule NtProtectVirtualMemory uses, and it
+         * really does re-protect the pages. That is virtual.c:4264/:4273,
+         * which wanted success for a compatible protection and
+         * ERROR_INVALID_PARAMETER for an incompatible one — and got
+         * ERROR_ACCESS_DENIED for both, because every non-private view took
+         * the file-backed answer. */
         if (vad->type != MEM_PRIVATE)
         {
-            /* SEC_COMMIT views are fully committed at map time; committing
-             * over them is a no-op NT reports as such (SEC_RESERVE commit
-             * arrives with a real pagefile, post-M5). */
-            return STATUS_ALREADY_COMMITTED;
+            PMI_SECTION section = vad->sectionBody;
+            if (section == 0 || (section->attributes & SEC_FILE) != 0)
+            {
+                return STATUS_ALREADY_COMMITTED;
+            }
         }
-        status = MiCommitPages(space, vad, base, size, protect);
+        status = MiCheckViewProtection(vad, protect);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (vad->type != MEM_PRIVATE)
+        {
+            /* Already committed by the map; what is left is the protection
+             * change, applied through the one engine that owns it. The
+             * base/size it reports back are its own rounding of the same
+             * range, which this caller has already computed — so they go to
+             * scratch and the caller's values below stand. */
+            uint64_t protectBase = base;
+            uint64_t protectSize = size;
+            ULONG previous = 0;
+            status = MiProtectVirtualMemory(space, &protectBase, &protectSize, protect, &previous);
+        }
+        else
+        {
+            status = MiCommitPages(space, vad, base, size, protect);
+        }
         if (!NT_SUCCESS(status))
         {
             return status;
@@ -1872,6 +2036,15 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     if (writeCopyFlavour && vad->type == MEM_PRIVATE)
     {
         return STATUS_INVALID_PAGE_PROTECTION;
+    }
+    /* THE view-protection gate (MiCheckViewProtection's comment has the rule
+     * and its citation). It subsumes the private-writecopy refusal just
+     * above — kept because sem_mm/writecopy_query pins it by name and a
+     * redundant check that agrees is not a second authority. */
+    NTSTATUS compatible = MiCheckViewProtection(vad, newProtect);
+    if (!NT_SUCCESS(compatible))
+    {
+        return compatible;
     }
     /* A SHARED view's PTEs point straight at the section's (or the file
      * cache's) frames, so a PLAIN-WRITABLE protection here writes every
