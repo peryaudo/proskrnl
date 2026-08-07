@@ -108,53 +108,90 @@ static NTSTATUS IopMountMgrQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG cap
     return full <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
 
-/* Does the caller's MOUNTMGR_MOUNT_POINT name the boot volume's device?
+/* One (offset, length) field of the caller's spec against one of this
+ * volume's names, case-insensitively.
  *
- * A zero-length DeviceName means "every mount point", which is what
- * FindFirstVolume sends. Anything else is compared case-insensitively
- * against \Device\HarddiskVolume1, and anything that is not that device
- * matches nothing — this machine has one volume, and answering for a device
- * that does not exist would be worse than answering nothing.
+ * Compared through const WCHAR pointers rather than through a
+ * UNICODE_STRING: the caller's buffer is const here, UNICODE_STRING's
+ * Buffer is not, and casting the constness away to reach
+ * RtlEqualUnicodeString buys nothing this loop does not do in four lines.
  *
- * The offsets are the CALLER's and are validated before use: they index the
- * caller's own buffer, whose length the Io layer has already bounced into
- * kernel memory, but nothing has checked that offset + length lands inside
- * it. */
-static BOOLEAN IopMountMgrMatchesBootVolume(const void *input, ULONG inputLength)
+ * The offsets are the CALLER's. QueryPoints has already bounded every one
+ * of them against inputLength, so the read below is inside the buffer the
+ * Io layer bounced into kernel memory. */
+static BOOLEAN IopMountMgrNameEquals(const void *input, ULONG offset, USHORT byteLength,
+                                     const WCHAR *name)
 {
-    if (inputLength < sizeof(MOUNTMGR_MOUNT_POINT))
+    if ((byteLength % sizeof(WCHAR)) != 0)
     {
         return FALSE;
     }
-    const MOUNTMGR_MOUNT_POINT *point = input;
-    if (point->DeviceNameLength == 0)
-    {
-        return TRUE; /* "every mount point" */
-    }
-    if ((point->DeviceNameLength % sizeof(WCHAR)) != 0 || point->DeviceNameOffset > inputLength ||
-        point->DeviceNameLength > inputLength - point->DeviceNameOffset)
+    ULONG units = byteLength / (ULONG)sizeof(WCHAR);
+    if (units != (ULONG)KiWideStringLength(name))
     {
         return FALSE;
     }
-    /* Compared through const WCHAR pointers rather than through a
-     * UNICODE_STRING: the caller's buffer is const here, UNICODE_STRING's
-     * Buffer is not, and casting the constness away to reach
-     * RtlEqualUnicodeString buys nothing this loop does not do in four
-     * lines. */
     const UCHAR *base = input;
-    const WCHAR *wanted = (const WCHAR *)(base + point->DeviceNameOffset);
-    ULONG units = point->DeviceNameLength / (ULONG)sizeof(WCHAR);
-    static const WCHAR device[] = IOP_BOOT_VOLUME_DEVICE;
-    if (units != (ULONG)KiWideStringLength(device))
-    {
-        return FALSE;
-    }
+    const WCHAR *wanted = (const WCHAR *)(base + offset);
     for (ULONG i = 0; i < units; i++)
     {
-        if (RtlUpcaseUnicodeChar(wanted[i]) != RtlUpcaseUnicodeChar(device[i]))
+        if (RtlUpcaseUnicodeChar(wanted[i]) != RtlUpcaseUnicodeChar(name[i]))
         {
             return FALSE;
         }
+    }
+    return TRUE;
+}
+
+/* Does the caller's MOUNTMGR_MOUNT_POINT select the mount point whose
+ * symbolic link is `link`?
+ *
+ * The spec is a FILTER with three independent fields, and each one applies
+ * only if its OFFSET is non-zero — that is the oracle's rule verbatim
+ * (third_party/wine dlls/mountmgr.sys/mountmgr.c, matching_mount_point:
+ * three `if (spec->...Offset)` blocks, each comparing length then
+ * characters). A spec with every offset zero selects everything, which is
+ * what FindFirstVolume sends.
+ *
+ * Keying on the OFFSET and not on the length is the part worth stating,
+ * because it is the difference between a filter and a fabrication. This
+ * device used to consider `DeviceName` alone and treat a zero LENGTH as
+ * "match everything" — so a spec naming only a SymbolicLinkName or a
+ * UniqueId fell into that branch and was told the boot volume matched.
+ * Those are not hypothetical callers: GetVolumePathNamesForVolumeNameW
+ * sends exactly those two shapes (dlls/kernelbase/volume.c), so an
+ * arbitrary non-existent \??\Volume{...} was being told it is mounted at
+ * C:. A wrong answer no caller can distinguish from a right one is the
+ * shape G12 exists to forbid, and it was reachable.
+ *
+ * All three fields are checked against THIS mount point: the two entries
+ * this device reports share a device name and a unique id and differ only
+ * in their link, so a device-name-only match must still produce both and a
+ * link match must produce one. */
+static BOOLEAN IopMountMgrMatchesPoint(const void *input, const WCHAR *link)
+{
+    const MOUNTMGR_MOUNT_POINT *spec = input;
+    if (spec->SymbolicLinkNameOffset != 0 &&
+        !IopMountMgrNameEquals(input, spec->SymbolicLinkNameOffset, spec->SymbolicLinkNameLength,
+                               link))
+    {
+        return FALSE;
+    }
+    if (spec->DeviceNameOffset != 0 &&
+        !IopMountMgrNameEquals(input, spec->DeviceNameOffset, spec->DeviceNameLength,
+                               IOP_BOOT_VOLUME_DEVICE))
+    {
+        return FALSE;
+    }
+    /* The unique id is a byte blob to NT (the oracle memcmp's it), and this
+     * device's is the device NAME — so it compares like the others, and a
+     * caller that echoes back what a previous reply gave it still
+     * matches. */
+    if (spec->UniqueIdOffset != 0 &&
+        !IopMountMgrNameEquals(input, spec->UniqueIdOffset, spec->UniqueIdLength,
+                               IOP_BOOT_VOLUME_DEVICE))
+    {
+        return FALSE;
     }
     return TRUE;
 }
@@ -229,13 +266,28 @@ static NTSTATUS IopMountMgrQueryPoints(const void *input, ULONG inputLength, voi
         }
     }
 
-    BOOLEAN matches = IopMountMgrMatchesBootVolume(input, inputLength);
-    ULONG entries = matches ? count : 0;
+    /* PER MOUNT POINT, not once for the whole reply: the spec is a FILTER
+     * and the two entries differ in their link, so one can match while the
+     * other does not. */
+    BOOLEAN selected[sizeof(names) / sizeof(names[0])];
+    ULONG entries = 0;
+    for (ULONG i = 0; i < count; i++)
+    {
+        selected[i] = IopMountMgrMatchesPoint(input, names[i]);
+        if (selected[i])
+        {
+            entries++;
+        }
+    }
 
     ULONG needed = (ULONG)offsetof(MOUNTMGR_MOUNT_POINTS, MountPoints) +
                    entries * (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
-    for (ULONG i = 0; i < entries; i++)
+    for (ULONG i = 0; i < count; i++)
     {
+        if (!selected[i])
+        {
+            continue;
+        }
         /* The unique id is the device name: this kernel has no persistent
          * per-volume signature to offer, and the device name IS a unique id
          * for a machine with one volume. Reported rather than left empty
@@ -266,9 +318,14 @@ static NTSTATUS IopMountMgrQueryPoints(const void *input, ULONG inputLength, voi
     reply->NumberOfMountPoints = entries;
     ULONG cursor = (ULONG)offsetof(MOUNTMGR_MOUNT_POINTS, MountPoints) +
                    entries * (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
-    for (ULONG i = 0; i < entries; i++)
+    ULONG written = 0;
+    for (ULONG i = 0; i < count; i++)
     {
-        MOUNTMGR_MOUNT_POINT *point = &reply->MountPoints[i];
+        if (!selected[i])
+        {
+            continue;
+        }
+        MOUNTMGR_MOUNT_POINT *point = &reply->MountPoints[written++];
         IopMountMgrAddName(output, &cursor, names[i], &point->SymbolicLinkNameOffset,
                            &point->SymbolicLinkNameLength);
         IopMountMgrAddName(output, &cursor, IOP_BOOT_VOLUME_DEVICE, &point->UniqueIdOffset,
@@ -276,6 +333,7 @@ static NTSTATUS IopMountMgrQueryPoints(const void *input, ULONG inputLength, voi
         IopMountMgrAddName(output, &cursor, IOP_BOOT_VOLUME_DEVICE, &point->DeviceNameOffset,
                            &point->DeviceNameLength);
     }
+    ASSERT(written == entries);
     ASSERT(cursor == needed);
     *infoOut = needed;
     return STATUS_SUCCESS;
@@ -336,7 +394,14 @@ static void IopMountMgrLink(const WCHAR *linkName, const WCHAR *target)
 void IoInitializeMountManager(void)
 {
     IopInitializeFcb(&IopMountMgrFcb);
-    IoPublishDevice(WSTR("\\Device\\MountPointManager"), &IopMountMgrOps, 0, FILE_DEVICE_UNKNOWN);
+    /* Device type 0, which is what the oracle passes: `IoCreateDevice(
+     * driver, 0, &device_mount_point_manager, 0, 0, FALSE, &device )`
+     * (third_party/wine dlls/mountmgr.sys/mountmgr.c) — the second 0 is
+     * DeviceType. NOT FILE_DEVICE_UNKNOWN, which is 0x22 and would make
+     * FileFsDeviceInformation on this handle answer something the oracle
+     * does not. Nothing reads it today; it is 0 because 0 is what the
+     * boundary says, not because nothing looks. */
+    IoPublishDevice(WSTR("\\Device\\MountPointManager"), &IopMountMgrOps, 0, 0);
     IopMountMgrLink(WSTR("\\??\\MountPointManager"), WSTR("\\Device\\MountPointManager"));
     /* The volume's second name. FindFirstVolume enumerates \?? looking for
      * exactly this prefix, and GetVolumeNameForVolumeMountPoint returns a

@@ -192,5 +192,50 @@ START_TEST(mountmgr)
         }
     }
 
+    /* --- the spec is a FILTER, and it filters by OFFSET ------------------
+     * Three independent fields, each applying only if its OFFSET is
+     * non-zero (third_party/wine dlls/mountmgr.sys/mountmgr.c,
+     * matching_mount_point). Keying on the offset rather than on the length
+     * is the whole rule, and getting it wrong does not fail loudly: a
+     * device that considers DeviceName alone, and reads a zero LENGTH as
+     * "match everything", answers a SymbolicLinkName query for a volume
+     * that does not exist with the details of one that does.
+     *
+     * That is not a hypothetical caller — GetVolumePathNamesForVolumeNameW
+     * sends exactly this shape (dlls/kernelbase/volume.c) — and it is the
+     * assertion this block exists for: a made-up volume GUID must select
+     * NOTHING. */
+    {
+        static const WCHAR bogus[] = L"\\??\\Volume{ffffffff-ffff-ffff-ffff-ffffffffffff}";
+        UCHAR specBuffer[256];
+        PRS_MOUNTMGR_MOUNT_POINT *spec = (PRS_MOUNTMGR_MOUNT_POINT *)specBuffer;
+        ULONG nameBytes = (ULONG)(sizeof(bogus) - sizeof(WCHAR));
+
+        memset(specBuffer, 0, sizeof(specBuffer));
+        spec->SymbolicLinkNameOffset = sizeof(*spec);
+        spec->SymbolicLinkNameLength = (USHORT)nameBytes;
+        memcpy(specBuffer + sizeof(*spec), bogus, nameBytes);
+
+        memset(outputBuffer, 0xcc, sizeof(outputBuffer));
+        iosb.Status = (NTSTATUS)0xdeadf00d;
+        status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb,
+                                       PRS_IOCTL_MOUNTMGR_QUERY_POINTS, spec,
+                                       sizeof(*spec) + nameBytes, output, sizeof(outputBuffer));
+        /* NT reports "no such mount point" as a successful query with zero
+         * results, not as an error — the caller asked a question and got a
+         * complete answer. What must NOT happen is a match. */
+        if (NT_SUCCESS(status))
+        {
+            ok(output->NumberOfMountPoints == 0,
+               "a non-existent volume GUID selected %lu mount points",
+               (unsigned long)output->NumberOfMountPoints);
+        }
+        else
+        {
+            ok(status == STATUS_NO_MORE_ENTRIES || status == STATUS_OBJECT_NAME_NOT_FOUND,
+               "a non-existent volume GUID -> %08lx", (unsigned long)status);
+        }
+    }
+
     CloseHandle(mgr);
 }
