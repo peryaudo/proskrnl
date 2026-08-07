@@ -138,6 +138,11 @@ static NTSTATUS MiCheckPageProtect(ULONG protect)
  * writable protection means WRITECOPY instead of WRITE — which, since
  * WRITECOPY is not an access bit, makes PAGE_READWRITE on an image view
  * demand only READ. Returns the bits; MiVprotFlags validates. */
+/* Wine's VPROT_READ / VPROT_WRITE / VPROT_EXEC, same values (third_party/
+ * wine dlls/ntdll/unix/virtual.c). They never cross this kernel's ABI —
+ * MiCheckViewProtection's subset test is the only thing that reads them —
+ * but keeping the oracle's numbering means that test can be read straight
+ * against set_protection without a translation step. */
 #define MI_ACCESS_READ  0x1u
 #define MI_ACCESS_WRITE 0x2u
 #define MI_ACCESS_EXEC  0x4u
@@ -191,6 +196,9 @@ static NTSTATUS MiCheckViewProtection(PMI_VAD vad, ULONG protect)
     }
     if (vad->type == MEM_PRIVATE)
     {
+        /* 0xff: the oracle's own mask — get_vprot_flags switches on
+         * `protect & 0xff`, so PAGE_GUARD and PAGE_NOCACHE (which live
+         * above that byte) do not change which protection this is. */
         ULONG bits = protect & 0xff;
         if (bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY)
         {
@@ -610,8 +618,15 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
      * BEFORE either. Validating early inverts that: a PAGE_WRITECOPY commit
      * over a file view answered STATUS_INVALID_PAGE_PROTECTION (error 87)
      * where NT answers STATUS_ALREADY_COMMITTED (error 5), and kernel32:virtual
-     * counted 464 of them at virtual.c:4291. MEM_RESET validates nothing at
-     * all, for the same reason: the oracle's reset arm never asks. */
+     * counted 464 of them at virtual.c:4291.
+     *
+     * A PURE MEM_RESET validates nothing at all, for the same reason: the
+     * oracle's reset arm never asks. Note the qualifier — the oracle tests
+     * MEM_RESERVE FIRST, so MEM_RESERVE|MEM_RESET routes to its RESERVE arm
+     * and is validated there, while this function tests MEM_RESET first and
+     * sends that combination to the reset arm unvalidated. The ordering
+     * predates this change and nothing measures the combination; it is
+     * written down here rather than "fixed" on a guess (Art. 6). */
     NTSTATUS status;
 
     uint64_t base;
