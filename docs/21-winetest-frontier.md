@@ -1084,11 +1084,27 @@ name and then AGAIN by `DeviceName` for every point it got back
 emits each drive letter once per entry. It presents as `expected 5 got9`
 (volume.c:1121), which reads like a length bug and is a missing filter.
 
-**The 7 that remain are not MountPointManager's**: `\\.\PhysicalDrive0`
-(no such device), `FILE_SUPPORTS_OPEN_BY_FILE_ID` clear, and four
-`STATUS_BUFFER_TOO_SMALL` volume-info classes behind an unbuilt
-`NtQueryVolumeInformationFile` class, which still panics under the armed
-boot. Score those as their own entries.
+**Of the 7 that remained, FOUR were still MountPointManager's** — an
+attribution this section got wrong once. They read as
+`STATUS_BUFFER_TOO_SMALL` and were assumed to be volume-info classes; they
+are `IOCTL_MOUNTMGR_QUERY_POINTS` calls issued on the *mountmgr* handle
+(volume.c:2062-2096), asserting `STATUS_INVALID_PARAMETER` for a missing or
+short input, a missing output, and an output below the fixed header — with
+the IOSB and the output buffer left untouched in every case. Check which
+HANDLE a failing call was issued on before filing it under another
+component.
+
+That leaves genuinely separate: `\\.\PhysicalDrive0` (no such device),
+`FILE_SUPPORTS_OPEN_BY_FILE_ID` clear, and the unbuilt
+`NtQueryVolumeInformationFile` class behind the remaining armed-boot panic.
+
+**A pin that accepts three answers pins none of them.** The argument-check
+status above was covered by an assertion reading `BUFFER_OVERFLOW ||
+BUFFER_TOO_SMALL || INVALID_PARAMETER` — a disjunction no implementation
+could fail. It ran green on both runners while they disagreed, and only
+`kernel32:volume` asserting the single correct answer convicted it. When a
+pin's expected value is a SET rather than a value, that is a signal the
+contract was never established.
 
 **One unpinned divergence, deliberately taken.** An unrecognised mountmgr
 verb answers `STATUS_INVALID_DEVICE_REQUEST` rather than
