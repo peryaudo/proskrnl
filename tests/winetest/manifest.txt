@@ -76,6 +76,17 @@
 # the host stopped leaking into the answer. docs/03 "M10 winetest notes" has
 # the whole story; do not re-park a pair on an oracle failure without
 # re-measuring it that way first.
+#
+# ONE OF THOSE EIGHT GOES RED ON SOME DEVELOPER HOSTS, AND IT IS NOT THE
+# KERNEL. kernel32:version fails the ORACLE leg on at least one KVM
+# developer box with exactly the 36 failures the root/C-POSIX era produced
+# — all of them one site, version.c:1087, where the subtest writes a
+# temporary EXE and manifest and then CreateProcessA's it, and the spawn
+# fails ERROR_FILE_NOT_FOUND. The runner's non-root + UTF-8 fixes are
+# applied and do not clear it. Verified pre-existing there by checking out
+# an earlier commit and re-running the same binary under the same prefix:
+# identical 36. It is GREEN on CI, on both legs, so the residue is
+# host-local and the pair stays active.
 # ---------------------------------------------------------------------------
 
 # --- ntdll (third_party/wine/dlls/ntdll/tests) ------------------------------
@@ -397,7 +408,38 @@ kernel32_test.exe:power
 #     kernel32:actctx; triage the two together.
 # TODO: Implement
 # kernel32_test.exe:resource
-kernel32_test.exe:sync
+# PROSKRNL-FLAKY BY A RACE IN THE TEST, NOT A KERNEL GAP — and its real
+#     failures are FIXED. The 15 it used to have are gone: the
+#     pseudo-handle range in NtWaitForMultipleObjects (10 of them) and
+#     NtQueueApcThread's dead-target and NULL-routine rules (5). Both are
+#     pinned in tests/ntapi (sem_wait/pseudo_handle_multi.c,
+#     sem_ps/apc_dead_target.c), so they are held by the regression gate
+#     whatever this pair does.
+#
+#     What blocks it is one assertion, sync.c:1067:
+#
+#         todo_wine
+#         ok(n0 == 1 || broken(ret0 && n0 == 0), "Timer callback 0 ...", n0);
+#
+#     n0 counts a timer-queue callback for a timer created with a due time
+#     of 0 and then IMMEDIATELY deleted asynchronously (:1010-:1013, the
+#     delete returning ERROR_IO_PENDING). Whether the callback runs once
+#     before the delete lands is a race, and the todo_wine is calibrated to
+#     Wine LOSING it. proskrnl wins it on some hosts and loses it on others
+#     — measured: it loses on a KVM developer box and WINS on CI — and a
+#     todo_wine that passes is a failure ("Test succeeded inside todo
+#     block"), so the pair's verdict flips with scheduling.
+#
+#     Winning the race is the WINDOWS answer (that is why the ok() expects
+#     1 and why the todo is on it at all), so there is nothing to fix here:
+#     the kernel cannot make the race deterministic, and making it lose on
+#     purpose would be tuning to an oracle annotation instead of to a
+#     contract.
+#
+#     No `TODO: Implement` for the same reason ntdll:time has none:
+#     re-activating this needs a decision about a named flaky assertion,
+#     not kernel work.
+# kernel32_test.exe:sync
 kernel32_test.exe:thread
 # DIAGNOSED, FIXABLE (data, not logic). 19 failures, 13 of them one
 #     line: time.c:1046, GetTimeZoneInformationForYear failing with error 2
