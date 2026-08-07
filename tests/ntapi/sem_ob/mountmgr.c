@@ -261,5 +261,46 @@ START_TEST(mountmgr)
         }
     }
 
+    /* --- an UNRECOGNISED verb is refused, not answered ------------------
+     * beyond_oracle, and the reason is unusual enough to spell out: the
+     * oracle SERVES the verb below, so matching it would be wrong.
+     *
+     * IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE is function 33, which the pinned tree
+     * files under "Wine extensions" in include/ddk/mountmgr.h alongside
+     * DEFINE_UNIX_DRIVE and the shell-folder verbs. NT has no such ioctl, so
+     * a conforming mountmgr refuses it — and the refusal is the specific NT
+     * failure for an ioctl a device does not implement,
+     * STATUS_INVALID_DEVICE_REQUEST, never STATUS_NOT_IMPLEMENTED (G12: that
+     * status means UNBUILT, and proskrnl does not owe an implementation of a
+     * verb NT never had; under the armed boot it is also a panic).
+     *
+     * So this is a gap in the ORACLE as a spec, not a ceiling: Wine answers
+     * a question NT would decline. Pinned against NT's contract, which is
+     * what beyond_oracle is for.
+     *
+     * Serving it would be reproducing Wine rather than NT (Art. 1) — there
+     * is no unix drive on this boundary to describe. */
+    beyond_oracle
+    {
+        ULONG unixDrive = CTL_CODE(PRS_MOUNTMGRCONTROLTYPE, 33, METHOD_BUFFERED, FILE_READ_ACCESS);
+        UCHAR small[64];
+        memset(&iosb, 0, sizeof(iosb));
+        status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, unixDrive, small,
+                                       (ULONG)sizeof(small), small, (ULONG)sizeof(small));
+        ok(status == STATUS_INVALID_DEVICE_REQUEST,
+           "a Wine-extension ioctl -> %08lx, expected INVALID_DEVICE_REQUEST",
+           (unsigned long)status);
+
+        /* A function number in no mountmgr header at all takes the same
+         * answer — the rule is about the device not implementing the verb,
+         * not about that one extension. */
+        ULONG nonsense = CTL_CODE(PRS_MOUNTMGRCONTROLTYPE, 0xabc, METHOD_BUFFERED, FILE_ANY_ACCESS);
+        memset(&iosb, 0, sizeof(iosb));
+        status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, nonsense, small,
+                                       (ULONG)sizeof(small), small, (ULONG)sizeof(small));
+        ok(status == STATUS_INVALID_DEVICE_REQUEST, "an unknown mountmgr verb -> %08lx",
+           (unsigned long)status);
+    }
+
     NtClose(mgr);
 }
