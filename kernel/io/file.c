@@ -378,6 +378,33 @@ void IoInitializeTransport(void)
     }
 }
 
+/* The one site that publishes a permanent \?? name for a device. Three
+ * copies of this eight-line dance had accumulated (the boot volume below,
+ * \??\NUL in null.c, \DosDevices in ob/namespace.c) and a fourth was about
+ * to arrive with MountPointManager; parallel paths drift even while they
+ * are currently equivalent (Art. 11). A failure here is a boot-time defect
+ * in the namespace, never a runtime condition, so it panics with the name
+ * that could not be created rather than returning a status nobody checks. */
+void IoCreatePermanentDosLink(const WCHAR *linkPath, const WCHAR *targetPath)
+{
+    HANDLE handle;
+    OBJECT_ATTRIBUTES attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.Length = sizeof(attributes);
+    attributes.Attributes = OBJ_PERMANENT;
+    UNICODE_STRING linkName, target;
+    RtlInitUnicodeString(&linkName, linkPath);
+    RtlInitUnicodeString(&target, targetPath);
+    attributes.ObjectName = &linkName;
+    NTSTATUS status =
+        NtCreateSymbolicLinkObject(&handle, SYMBOLIC_LINK_ALL_ACCESS, &attributes, &target);
+    if (!NT_SUCCESS(status))
+    {
+        KiPanic("IoCreatePermanentDosLink: cannot create the link");
+    }
+    NtClose(handle);
+}
+
 void IoMountBootVolume(void)
 {
     if (!VioBlkIsPresent())
@@ -399,21 +426,7 @@ void IoMountBootVolume(void)
     IopBootVolumeDevice = IoPublishDevice(WSTR("\\Device\\HarddiskVolume1"), &FatVfsOps, volume,
                                           FILE_DEVICE_DISK_FILE_SYSTEM);
 
-    HANDLE handle;
-    OBJECT_ATTRIBUTES attributes;
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.Attributes = OBJ_PERMANENT;
-    UNICODE_STRING linkName, target;
-    RtlInitUnicodeString(&linkName, WSTR("\\??\\C:"));
-    RtlInitUnicodeString(&target, WSTR("\\Device\\HarddiskVolume1"));
-    attributes.ObjectName = &linkName;
-    status = NtCreateSymbolicLinkObject(&handle, SYMBOLIC_LINK_ALL_ACCESS, &attributes, &target);
-    if (!NT_SUCCESS(status))
-    {
-        KiPanic("IoInitialize: cannot create \\??\\C:");
-    }
-    NtClose(handle);
+    IoCreatePermanentDosLink(WSTR("\\??\\C:"), WSTR("\\Device\\HarddiskVolume1"));
 }
 
 /* --- NtCreateFile / NtOpenFile ---------------------------------------------- */

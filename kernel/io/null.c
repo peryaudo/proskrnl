@@ -124,20 +124,5 @@ void IoInitializeNullDevice(void)
      * FILE_TYPE_CHAR). */
     IoPublishDevice(WSTR("\\Device\\Null"), &IopNullOps, 0, FILE_DEVICE_NULL);
 
-    HANDLE handle;
-    OBJECT_ATTRIBUTES attributes;
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.Attributes = OBJ_PERMANENT;
-    UNICODE_STRING linkName, target;
-    RtlInitUnicodeString(&linkName, WSTR("\\??\\NUL"));
-    RtlInitUnicodeString(&target, WSTR("\\Device\\Null"));
-    attributes.ObjectName = &linkName;
-    NTSTATUS status =
-        NtCreateSymbolicLinkObject(&handle, SYMBOLIC_LINK_ALL_ACCESS, &attributes, &target);
-    if (!NT_SUCCESS(status))
-    {
-        KiPanic("IoInitializeNullDevice: cannot create \\??\\NUL");
-    }
-    NtClose(handle);
+    IoCreatePermanentDosLink(WSTR("\\??\\NUL"), WSTR("\\Device\\Null"));
 }

@@ -394,6 +394,7 @@ static void KiTestMainThread(void *context)
      * turns the reserved name "nul" into. Same no-disk dependency as npfs
      * below. Consumer: ucrtbase:file's fopen("nul"). */
     IoInitializeNullDevice();
+    IoInitializeMountPointManager();
 
     /* M9: the named-pipe FS (\Device\NamedPipe + \??\pipe). No disk
      * dependency — only the namespace and this thread's handle table. */

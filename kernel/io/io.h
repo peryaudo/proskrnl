@@ -158,6 +158,7 @@ void IoMountBootVolume(void);
 /* \Device\Null + \??\NUL (kernel/io/null.c). Namespace only — no disk,
  * no transport — so it may be published as early as a thread exists. */
 void IoInitializeNullDevice(void);
+void IoInitializeMountPointManager(void);
 
 /* Create a permanent \Device\... object over `ops` and return its body (the
  * namespace owns it; the transient handle is closed here). The one device
@@ -165,6 +166,10 @@ void IoInitializeNullDevice(void);
  * device object through this call (G10/Art. 11). Publication needs a handle
  * table, so callers run on a thread with a process context. Failure is a
  * boot-time panic: the namespace is fresh and a collision is a bug. */
+/* Publish a permanent \?? name for a device (kernel/io/file.c). The one
+ * site that does this; boot-time only, panics on failure. */
+void IoCreatePermanentDosLink(const WCHAR *linkPath, const WCHAR *targetPath);
+
 PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID context,
                            ULONG deviceType);
 
