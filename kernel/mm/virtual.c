@@ -153,6 +153,78 @@ static BOOLEAN MiRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t si
     return TRUE;
 }
 
+/* The highest address a `zeroBits` allocation may occupy, INCLUSIVE — the
+ * same "last byte fits under this" convention MiFindFreeRegion's limitHigh
+ * uses, which is why it is spelled here and passed straight through. 0 =
+ * unconstrained.
+ *
+ * zero_bits carries TWO meanings in one argument, and NT picks between them
+ * by magnitude. Transcribed from the oracle's get_zero_bits_limit
+ * (third_party/wine dlls/ntdll/unix/unix_private.h), which is the single
+ * definition both NtAllocateVirtualMemory and NtMapViewOfSection call:
+ *
+ *   0            no constraint at all.
+ *   1 .. 31      a COUNT of leading zero bits, measured in a 32-bit window:
+ *                the limit is (~0ull >> (32 + zeroBits)), i.e. the address
+ *                must be below 2^(32 - zeroBits). ntdll:virtual asserts
+ *                exactly this shape — `(UINT_PTR)addr >> (32 - zero_bits)`
+ *                must be 0 (virtual.c:170).
+ *   >= 32        a MASK of the address bits the caller will accept: the
+ *                limit is every bit up to and including its highest set one.
+ *
+ * The callers reject the gaps (`zeroBits > 21 && zeroBits < 32`, and
+ * `> 32 && < granularity_mask`) before reaching here, so this function is
+ * never asked about a value NT calls invalid. It still answers something
+ * sane for one, because a placement ceiling that silently became 0 —
+ * "unconstrained" — is the failure mode being fixed. */
+static uint64_t MiZeroBitsLimit(uint64_t zeroBits)
+{
+    if (zeroBits == 0)
+    {
+        return 0;
+    }
+    unsigned int shift;
+    if (zeroBits < 32)
+    {
+        shift = 32 + (unsigned int)zeroBits;
+    }
+    else
+    {
+        /* Highest set bit, found the way the oracle finds it. */
+        shift = 63;
+        if (zeroBits >> 32)
+        {
+            shift -= 32;
+            zeroBits >>= 32;
+        }
+        if (zeroBits >> 16)
+        {
+            shift -= 16;
+            zeroBits >>= 16;
+        }
+        if (zeroBits >> 8)
+        {
+            shift -= 8;
+            zeroBits >>= 8;
+        }
+        if (zeroBits >> 4)
+        {
+            shift -= 4;
+            zeroBits >>= 4;
+        }
+        if (zeroBits >> 2)
+        {
+            shift -= 2;
+            zeroBits >>= 2;
+        }
+        if (zeroBits >> 1)
+        {
+            shift -= 1;
+        }
+    }
+    return (~(uint64_t)0) >> shift;
+}
+
 /* Lowest aligned hole of `size` bytes, bottom-up like Wine. 0 = full. The
  * CUI-7 placement constraints (VirtualAlloc2's MEM_ADDRESS_REQUIREMENTS)
  * ride the same walk: limitLow/limitHigh bound the block INCLUSIVE of its
@@ -1459,8 +1531,9 @@ NTSTATUS MiReferenceProcessByHandle(HANDLE processHandle, ACCESS_MASK desiredAcc
 NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zeroBits,
                                  SIZE_T *sizeInOut, ULONG type, ULONG protect)
 {
-    /* Wine's zero_bits validation shape; a nonzero value only constrains
-     * placement, which the bottom-up allocator already satisfies. */
+    /* Wine's zero_bits validation shape (dlls/ntdll/unix/virtual.c,
+     * NtAllocateVirtualMemory). The x86-64 arm only: the `zero_bits >= 32`
+     * refusal below it is inside `#ifndef _WIN64`. */
     if ((zeroBits > 21 && zeroBits < 32) ||
         (zeroBits > 32 && zeroBits < MI_ALLOCATION_GRANULARITY - 1))
     {
@@ -1487,7 +1560,24 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
 
     PVOID base = *baseInOut;
     SIZE_T size = *sizeInOut;
-    status = MiAllocateVirtualMemory(&target->addressSpace, &base, &size, type, protect);
+    /* zero_bits is a PLACEMENT CONSTRAINT and it is honoured, through the
+     * same limitHigh the MEM_ADDRESS_REQUIREMENTS path already uses — one
+     * bounded-placement mechanism, not two (Art. 11).
+     *
+     * It applies only when the caller named no base, exactly as the oracle
+     * applies it (`if (!*ret) limit = get_zero_bits_limit( zero_bits ); else
+     * limit = 0;`). A caller that supplies BOTH an address and zero_bits is
+     * telling the allocator where to put it, and the constraint is dropped
+     * rather than checked.
+     *
+     * This used to be dropped on the floor, with a comment claiming the
+     * bottom-up allocator satisfied it anyway. It does not, and could not:
+     * ntdll:virtual sweeps zero_bits 2..20 and requires the result under
+     * 2^(32-zero_bits) — at zero_bits 20 that is a 4 KiB ceiling, which no
+     * general allocator hits by luck. Twelve of its thirteen failures were
+     * this one line (virtual.c:170). */
+    status = MiAllocateVirtualMemoryEx(&target->addressSpace, &base, &size, type, protect, 0,
+                                       base == 0 ? MiZeroBitsLimit(zeroBits) : 0, 0);
     if (NT_SUCCESS(status))
     {
         *baseInOut = base;
