@@ -1105,6 +1105,21 @@ That leaves THREE failures, and they are genuinely separate items:
   because a test asks for it, with no consumer, is the wrong shape of fix;
 * `volume.c:2022` — `FILE_SUPPORTS_OPEN_BY_FILE_ID` is clear.
 
+**A trap sits in the next block, and it is not a kernel gap.**
+`volume.c:2098-2110` calls `QUERY_POINTS` with an output buffer of exactly
+`sizeof(MOUNTMGR_MOUNT_POINTS)` and asserts `STATUS_BUFFER_OVERFLOW`, which
+proskrnl already answers. But two of its assertions are `todo_wine`:
+`io.Information == offsetof(MOUNTMGR_MOUNT_POINTS, MountPoints[0])` and
+`NumberOfMountPoints` being non-zero in the overflow reply. `todo_wine`
+means NT sets them and Wine does not — so a proskrnl that matched **NT**
+would turn both into "succeeded inside a todo block", which winetest counts
+as FAILURES, and the pair would get worse. Matching the **oracle** keeps
+them green.
+
+Do not "fix" those two by reasoning from NT's contract. Decide the Art. 6
+question first — the oracle is the spec here, and this is one of the few
+places where that rule has a visible cost.
+
 The pair also still PANICS on an unbuilt `NtQueryVolumeInformationFile`
 class, so it does not run to the end. That one is worth more than its single
 assertion: a panic truncates the pair, so whatever follows it is unmeasured.
