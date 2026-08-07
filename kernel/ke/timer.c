@@ -14,6 +14,8 @@
  */
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
+#include "kernel/ps/ps.h"        /* TEMPORARY: wedge watchdog */
+#include "kernel/lib/dbgprint.h" /* TEMPORARY: wedge watchdog */
 
 #include "abi/ntkeapi.h"
 
@@ -179,6 +181,10 @@ volatile uint64_t KiIdleTime100ns;
 volatile uint64_t KiTotalKernelTime100ns;
 volatile uint64_t KiTotalUserTime100ns;
 
+/* TEMPORARY — not for commit: bumped by the syscall dispatcher so the
+ * watchdog below can tell "wedged" from "merely slow". */
+volatile uint64_t KiWatchdogSyscallCount;
+
 void KiUpdateClock(BOOLEAN interruptedUser)
 {
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
@@ -208,6 +214,64 @@ void KiUpdateClock(BOOLEAN interruptedUser)
     ASSERT(KiIdleTime100ns + KiTotalKernelTime100ns + KiTotalUserTime100ns == KiInterruptTime);
 
     KiUpdateUserSharedDataTime();
+
+    /* TEMPORARY WEDGE WATCHDOG — not for commit. cui9 stops issuing syscalls
+     * entirely on this branch while the same boot completes on the base, so
+     * the question is no longer "what is slow" but "who is parked and on
+     * what". When no syscall has completed for ~20s, dump every thread's
+     * state and the obligations it still owes (the volume gate shows up here
+     * by name), once. */
+    {
+        static uint64_t lastSeen;
+        static uint64_t lastChange;
+        static int fired;
+        if (KiWatchdogSyscallCount != lastSeen)
+        {
+            lastSeen = KiWatchdogSyscallCount;
+            lastChange = KeTickCount;
+        }
+        else if (lastChange != 0 && KeTickCount - lastChange > 6000 && fired < 6)
+        {
+            fired++;
+            DbgPrint("[WEDGE] #%d no syscall for %lu ticks; syscalls=%lu\n", fired,
+                     (unsigned long)(KeTickCount - lastChange),
+                     (unsigned long)KiWatchdogSyscallCount);
+            lastChange = KeTickCount; /* re-arm: the LAST dump is the wedge */
+            for (PLIST_ENTRY p = PspActiveProcessListHead.Flink; p != &PspActiveProcessListHead;
+                 p = p->Flink)
+            {
+                PEPROCESS process = CONTAINING_RECORD(p, EPROCESS, activeProcessLinks);
+                for (PLIST_ENTRY t = process->threadListHead.Flink; t != &process->threadListHead;
+                     t = t->Flink)
+                {
+                    PETHREAD entry = CONTAINING_RECORD(t, ETHREAD, threadListEntry);
+                    PKTHREAD thread = entry->tcb;
+                    DbgPrint("[WEDGE] pid=%lu tid=%lu state=%d owes=%lu timer=%d\n",
+                             (unsigned long)process->uniqueProcessId,
+                             (unsigned long)entry->uniqueThreadId, thread->state,
+                             (unsigned long)thread->obligationCount, (int)thread->timerArmed);
+                    for (ULONG o = 0; o < thread->obligationCount && o < KI_MAX_OBLIGATIONS; o++)
+                    {
+                        DbgPrint("[WEDGE]   owes '%s' on %p\n", thread->obligations[o].name,
+                                 thread->obligations[o].object);
+                    }
+                    /* What it is parked on, and whether that object is ALREADY
+                     * signalled — a signalled object with a waiter still on it
+                     * is a lost wakeup, which is the shape this branch's event
+                     * changes could produce. */
+                    for (PKWAIT_BLOCK block = thread->waitBlockList; block != 0;
+                         block = block->nextWaitBlock)
+                    {
+                        DISPATCHER_HEADER *header = (DISPATCHER_HEADER *)block->object;
+                        DbgPrint("[WEDGE]   waits %p type=%d signal=%ld key=%u\n", block->object,
+                                 header != 0 ? (int)header->type : -1,
+                                 header != 0 ? (long)header->signalState : -1L,
+                                 (unsigned)block->waitKey);
+                    }
+                }
+            }
+        }
+    }
 
     while (!IsListEmpty(&KiTimerListHead))
     {

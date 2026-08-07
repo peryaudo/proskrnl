@@ -180,7 +180,69 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
         }
         if (NT_SUCCESS(status))
         {
-            status = KiCallServiceGuarded(descriptor, arguments);
+            /* TEMPORARY PROFILER — not for commit. Per-syscall cumulative
+             * cycles + call counts, dumped as a top-12 table every 200k
+             * calls. The cui9 spawn loop is ~150x slower on this branch than
+             * on its base and three guessed mechanisms were each wrong, so
+             * this measures instead. */
+            {
+                extern volatile uint64_t KiWatchdogSyscallCount;
+                KiWatchdogSyscallCount++;
+                static uint64_t profileCycles[NTSYS_SYSCALL_LIMIT];
+                static uint64_t profileCalls[NTSYS_SYSCALL_LIMIT];
+                static uint64_t profileTotal;
+                static uint64_t profileWindowStart;
+                static uint64_t profileInsideWindow;
+                uint64_t started = __builtin_ia32_rdtsc();
+                status = KiCallServiceGuarded(descriptor, arguments);
+                uint64_t ended = __builtin_ia32_rdtsc();
+                profileCycles[number] += ended - started;
+                profileInsideWindow += ended - started;
+                profileCalls[number]++;
+                if (profileWindowStart == 0)
+                {
+                    profileWindowStart = started;
+                }
+                /* Dump on a WALL-CLOCK window, not a call count: the whole
+                 * question is whether the missing time is inside syscalls at
+                 * all, and a call-count trigger cannot fire if the machine is
+                 * slow while making few calls. 5e9 cycles is a couple of
+                 * seconds. `inside` vs `wall` partitions the time. */
+                ++profileTotal;
+                if (ended - profileWindowStart >= 5000000000ULL)
+                {
+                    uint64_t wall = ended - profileWindowStart;
+                    DbgPrint("[PROF] window wall=%luM inside=%luM (%lu%%) calls=%lu\n",
+                             (unsigned long)(wall / 1000000),
+                             (unsigned long)(profileInsideWindow / 1000000),
+                             (unsigned long)(profileInsideWindow * 100 / wall),
+                             (unsigned long)profileTotal);
+                    profileWindowStart = ended;
+                    profileInsideWindow = 0;
+                    for (int rank = 0; rank < 12; rank++)
+                    {
+                        uint64_t best = 0;
+                        int bestIndex = -1;
+                        for (int i = 0; i < NTSYS_SYSCALL_LIMIT; i++)
+                        {
+                            if (profileCycles[i] > best)
+                            {
+                                best = profileCycles[i];
+                                bestIndex = i;
+                            }
+                        }
+                        if (bestIndex < 0)
+                        {
+                            break;
+                        }
+                        DbgPrint("[PROF] %s calls=%lu Mcycles=%lu\n",
+                                 KiServiceTable[bestIndex].name,
+                                 (unsigned long)profileCalls[bestIndex],
+                                 (unsigned long)(profileCycles[bestIndex] / 1000000));
+                        profileCycles[bestIndex] = 0; /* consumed for this dump */
+                    }
+                }
+            }
         }
 
         /* A partial service's unbuilt case (an info class, an ioctl verb, a
