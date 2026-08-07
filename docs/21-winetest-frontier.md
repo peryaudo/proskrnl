@@ -1047,6 +1047,49 @@ resolves to the same volume as `C:`), but it must be STABLE across the
 three places above or they will disagree — which is the same one-authority
 trap `\DosDevices` avoided by being a link rather than a directory.
 
+### MountPointManager is BUILT, and the ~57 estimate above was optimistic
+
+**Built and measured** (`kernel/io/mountmgr.c`, pinned by
+`tests/ntapi/sem_ob/mountmgr.c`): `\Device\MountPointManager` with its
+`\??\MountPointManager` link, `IOCTL_MOUNTMGR_QUERY_POINTS`, and the
+`\??\Volume{...}` symlink, all reading one GUID definition.
+`GetVolumeNameForVolumeMountPoint("C:\")` now returns a real
+`\\?\Volume{...}\` path (`kernel32:volume` volume.c:1057) and the reverse
+mapping no longer comes back empty.
+
+**The reply carries TWO mount points, not one.** NT lists every symbolic
+link naming the volume as its own entry — the GUID name and the drive
+letter — because both directions of the mapping read the same reply. The
+first version emitted only the GUID entry, which served
+`GetVolumeNameForVolumeMountPoint` and silently returned an empty list from
+`GetVolumePathNamesForVolumeName` (volume.c:1086). Worth stating because it
+is invisible from the API that fails.
+
+**`kernel32:volume` is improved but NOT green, and the ~57 figure above
+bundled three independent defects under one name.** Only the first is
+MountPointManager's:
+
+1. the volume GUID namespace — **done**;
+2. the path-name list is the wrong length (`expected 5 got9`) — the reply
+   hands kernelbase more than NT's does;
+3. `NtQueryVolumeInformationFile` panics on an unbuilt info class, and
+   `FILE_SUPPORTS_OPEN_BY_FILE_ID` is clear — **separate work items**, not
+   this one.
+
+Treat the remaining two as their own entries when scoring what is left.
+
+**One unpinned divergence, deliberately taken.** An unrecognised mountmgr
+verb answers `STATUS_INVALID_DEVICE_REQUEST` rather than
+`STATUS_NOT_IMPLEMENTED`. The caller that forced it is
+`IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE` (function 33), which the pinned tree files
+under *"Wine extensions"* in `include/ddk/mountmgr.h`: NT has no such ioctl,
+so a conforming mountmgr refuses it, and `NOT_IMPLEMENTED` would claim an
+implementation debt proskrnl does not owe (G12 names this case). **The
+oracle cannot be the spec here — Wine SERVES that verb** — so this needs a
+`beyond_oracle` case against NT's contract for an unrecognised ioctl, and
+until that lands it is an unpinned divergence. It is the next thing to do on
+this item.
+
 ### `ntdll:rtl` has a CUI-image floor of 26, and it is one dependency
 
 All 26 failures are `test_LdrAddRefDll` (`rtl.c:2314`-`:2348`), and every
