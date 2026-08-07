@@ -23,9 +23,12 @@
  * inventing the thing the list is for.
  *
  * Every other verb refuses with STATUS_INVALID_DEVICE_REQUEST and NAMES
- * ITSELF on serial. That is the specific NT failure for a verb a device
- * does not implement, not STATUS_NOT_IMPLEMENTED — the difference matters
- * because a caller can act on the first (Art. 12 / G12's last paragraph).
+ * ITSELF on serial. What matters for G12 is that it is a specific NT
+ * failure rather than STATUS_NOT_IMPLEMENTED — a caller can act on the
+ * first. Which specific one is NOT measured: the oracle's default arm
+ * answers STATUS_NOT_SUPPORTED (dlls/mountmgr.sys/mountmgr.c), no test
+ * pins either, and no baked caller sends a verb that reaches here. If one
+ * ever does, take the oracle's.
  */
 #include "kernel/io/io.h"
 #include "kernel/io/vfs.h"
