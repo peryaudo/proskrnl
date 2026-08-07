@@ -1705,6 +1705,12 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
+            /* Name the refused case on serial (G12's KI_SYSCALL_MISSING
+             * pattern): the dispatcher's PARTIAL line prints arg1/arg2, and
+             * for this service the info class rides in arg5, so without this
+             * a panic here says only "NtQueryVolumeInformationFile" and the
+             * class stays unknown. */
+            DbgPrint("[KTEST] volinfo: no volume behind class %u\n", (unsigned)infoClass);
             status = STATUS_NOT_IMPLEMENTED; /* pipes/console: no volume, unbuilt */
             break;
         }
@@ -1743,6 +1749,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
+            DbgPrint("[KTEST] volinfo: no volume behind class %u\n", (unsigned)infoClass);
             status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
             break;
         }
@@ -1783,6 +1790,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
          * (pinned Wine dlls/ntdll/unix/file.c). */
         if (file->device->ops->QueryVolumeInfo == 0)
         {
+            DbgPrint("[KTEST] volinfo: no volume behind class %u\n", (unsigned)infoClass);
             status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
             break;
         }
@@ -1819,6 +1827,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         if (file->device->ops->QueryVolumeInfo == 0)
         {
+            DbgPrint("[KTEST] volinfo: no volume behind class %u\n", (unsigned)infoClass);
             status = STATUS_NOT_IMPLEMENTED; /* no volume behind it, as above */
             break;
         }
@@ -1853,6 +1862,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     }
 
     default:
+        DbgPrint("[KTEST] volinfo: unbuilt class %u\n", (unsigned)infoClass);
         status = STATUS_NOT_IMPLEMENTED; /* the other classes stay off the path */
         break;
     }

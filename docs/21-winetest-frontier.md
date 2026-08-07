@@ -1121,7 +1121,14 @@ question first — the oracle is the spec here, and this is one of the few
 places where that rule has a visible cost.
 
 The pair also still PANICS on an unbuilt `NtQueryVolumeInformationFile`
-class, so it does not run to the end. That one is worth more than its single
+class, so it does not run to the end. **The class is 14,
+`FileFsFullSizeInformationEx`** — identified, not inferred: the refusal arms
+now name their class on serial (`[KTEST] volinfo: unbuilt class 14`),
+because the dispatcher's PARTIAL line prints arg1/arg2 and this service
+carries the info class in arg5. It is ordinary work — the extended form of
+`FileFsFullSizeInformation`, which is already implemented — and it outranks
+its single assertion because a panic truncates the pair, leaving everything
+after it unmeasured rather than passing. That one is worth more than its single
 assertion: a panic truncates the pair, so whatever follows it is unmeasured.
 
 **A pin that accepts three answers pins none of them.** The argument-check
