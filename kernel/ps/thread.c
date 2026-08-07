@@ -776,26 +776,44 @@ static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULON
         target = threadObject->tcb;
     }
 
-    PKAPC apc = MiAllocatePool(sizeof(KAPC));
-    if (apc == 0)
+    /* A NULL routine is the server's APC_NONE, not an error: the pinned
+     * tree omits the call data entirely when `func` is NULL
+     * (dlls/ntdll/unix/thread.c NtQueueApcThreadEx2), and the server then
+     * takes the request, finds no queue for that type, and returns success
+     * having stored nothing (server/thread.c queue_apc + get_apc_queue).
+     * Passing 0 through to Ke keeps the ONE acceptance rule — the
+     * terminated-target test — in the one place that owns it, instead of
+     * spelling it a second time here. */
+    PKAPC apc = 0;
+    if (apcRoutine != 0)
     {
-        if (threadObject != 0)
+        apc = MiAllocatePool(sizeof(KAPC));
+        if (apc == 0)
         {
-            ObDereferenceObject(threadObject);
+            if (threadObject != 0)
+            {
+                ObDereferenceObject(threadObject);
+            }
+            return STATUS_NO_MEMORY;
         }
-        return STATUS_NO_MEMORY;
+        apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
+        apc->normalContext = apcArgument1;
+        apc->systemArgument1 = apcArgument2;
+        apc->systemArgument2 = apcArgument3;
     }
-    apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
-    apc->normalContext = apcArgument1;
-    apc->systemArgument1 = apcArgument2;
-    apc->systemArgument2 = apcArgument3;
-    KiInsertQueueUserApc(target, apc);
+
+    /* A terminated target refuses. The server says so — queue_apc returns 0
+     * and DECL_HANDLER(queue_apc) turns that into STATUS_UNSUCCESSFUL — and
+     * kernel32:sync reads it back through both entry points
+     * (sync.c:3040/:3042 on the status, :3048/:3049 on the
+     * ERROR_GEN_FAILURE kernelbase maps it to). */
+    BOOLEAN queued = KiInsertQueueUserApc(target, apc);
 
     if (threadObject != 0)
     {
         ObDereferenceObject(threadObject);
     }
-    return STATUS_SUCCESS;
+    return queued ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
 NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,

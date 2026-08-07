@@ -16,7 +16,7 @@
 #include "kernel/init/panic.h"
 #include "kernel/mm/pool.h"
 
-void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
+BOOLEAN KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
 {
     uint64_t flags = KiAcquireDispatcherLock();
     if (thread->state == KI_THREAD_STATE_TERMINATED)
@@ -26,10 +26,35 @@ void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
          * unbounded, so looping NtQueueApcThread at an exited thread leaked
          * pool without limit (docs/review-2026-07 §7). Dropping it here is
          * observably identical (it was never going to run) and costs
-         * nothing. */
+         * nothing.
+         *
+         * It is not, however, SILENT. The pinned server refuses the queue
+         * outright for a terminated target — `if (thread->state ==
+         * TERMINATED) return 0;` in server/thread.c queue_apc, whose caller
+         * turns the 0 into STATUS_UNSUCCESSFUL — and kernel32:sync asserts
+         * exactly that after TerminateThread (sync.c:3040/:3042), plus the
+         * ERROR_GEN_FAILURE kernelbase maps it to (:3048/:3049). Answering
+         * STATUS_SUCCESS for an APC that was thrown away is the plausible
+         * lie G12 exists to forbid, so the drop is reported. */
         KiReleaseDispatcherLock(flags);
-        MiFreePool(apc);
-        return;
+        if (apc != 0)
+        {
+            MiFreePool(apc);
+        }
+        return FALSE;
+    }
+    if (apc == 0)
+    {
+        /* The server's APC_NONE: a queue request carrying no routine is
+         * ACCEPTED and then discarded, because get_apc_queue() has no queue
+         * for that type and queue_apc returns 1 before reaching the list
+         * (server/thread.c). Nothing is stored and nothing is woken — which
+         * is why kernel32:sync's SleepEx(100, TRUE) after one of these
+         * sleeps its full 100 ms and returns WAIT_OBJECT_0 rather than
+         * WAIT_IO_COMPLETION (sync.c:3062-:3064). The terminated check
+         * above still applies to it, and in that order. */
+        KiReleaseDispatcherLock(flags);
+        return TRUE;
     }
     InsertTailList(&thread->userApcListHead, &apc->apcListEntry);
     thread->userApcPending = TRUE;
@@ -45,6 +70,7 @@ void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
         KiUnwaitThreadWithStatus(thread, STATUS_USER_APC);
     }
     KiReleaseDispatcherLock(flags);
+    return TRUE;
 }
 
 BOOLEAN KiUserApcPending(PKTHREAD thread)

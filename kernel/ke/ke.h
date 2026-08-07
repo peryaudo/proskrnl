@@ -616,8 +616,14 @@ BOOLEAN KiThreadIsIdle(PKTHREAD thread);
 /* --- apc.c (M7) ---------------------------------------------------------- */
 
 /* Queue a user APC to `thread` (takes the dispatcher lock). The APC block is
- * pool-owned; delivery/teardown frees it. Wakes an alertable wait. */
-void KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc);
+ * pool-owned; delivery/teardown frees it. Wakes an alertable wait.
+ *
+ * FALSE means the target is TERMINATED and could not accept it — the block
+ * is freed here, and the caller owes its own boundary that refusal
+ * (NtQueueApcThread answers STATUS_UNSUCCESSFUL). `apc == 0` requests the
+ * server's APC_NONE: the same acceptance test, nothing queued, nothing
+ * woken. Both rules are the pinned server's queue_apc, cited in apc.c. */
+BOOLEAN KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc);
 
 /* Free every user APC still queued to an exiting thread (dispatcher lock
  * held). The queue owns those pool blocks and nothing else can release
