@@ -414,6 +414,12 @@ void IoMountBootVolume(void)
         KiPanic("IoInitialize: cannot create \\??\\C:");
     }
     NtClose(handle);
+
+    /* The volume's OTHER name, and the device that says the two are the
+     * same volume. Strictly after \??\C: and the device object above: the
+     * mount manager's \??\Volume{...} link targets that device, and its
+     * QUERY_POINTS reply describes that drive letter. */
+    IoInitializeMountManager();
 }
 
 /* --- NtCreateFile / NtOpenFile ---------------------------------------------- */
