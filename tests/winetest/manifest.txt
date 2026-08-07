@@ -282,17 +282,6 @@ kernel32_test.exe:comm
 #     decision, not by backlog.
 # kernel32_test.exe:debugger
 kernel32_test.exe:directory
-# DIAGNOSED, FIXABLE. 4 failures, down from 12 (the \DosDevices symlink
-#     landed this session). All four are one cause:
-#     GetVolumeNameForVolumeMountPointA("C:\\") needs a volume GUID path,
-#     and GetDiskFreeSpaceA is then called on what it returns.
-#     GetVolumeNameForVolumeMountPointW does not read the namespace — it
-#     opens \\.\MountPointManager and issues IOCTL_MOUNTMGR_QUERY_POINTS
-#     (dlls/kernelbase/volume.c:235-269). Needs the device, the IOCTL, and a
-#     \??\Volume{...} symlink whose GUID is stable across all three.
-#     Shares this cause with kernel32:volume; ~57 assertions between them,
-#     the largest single item on the board (docs/21 W7).
-# TODO: Implement
 kernel32_test.exe:drive
 kernel32_test.exe:environ
 # DIAGNOSED, FIXABLE — but mm/ work, approach with care. The process is
@@ -416,11 +405,17 @@ kernel32_test.exe:version
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
 # TODO: Implement
 kernel32_test.exe:virtual
-# DIAGNOSED, FIXABLE. 53 failures, and the same cause as kernel32:drive:
-#     no volume GUID namespace, so GetVolumeNameForVolumeMountPoint produces
-#     nothing and FindFirstVolume has nothing to enumerate. Everything
-#     downstream (mount-point round trips, GetDiskFreeSpace on a GUID path)
-#     fails behind them. See kernel32:drive above for the interface.
+# PARTLY FIXED, FIXABLE. 10 failures, down from 53. \Device\MountPointManager
+#     and the boot volume's \??\Volume{...} name landed this session, which
+#     took kernel32:drive to green and cleared everything here that was
+#     downstream of "there is no volume GUID". What is left is three
+#     unrelated items, none of them the mount manager:
+#       - volume.c:1087-:1203, GetVolumePathNamesForVolumeNameW — the
+#         double-NUL-terminated multi-string form, not implemented;
+#       - volume.c:632/:675, opening \\.\c: and \\.\PhysicalDrive0 as RAW
+#         devices, which needs a disk device object under the volume;
+#       - volume.c:2022, FILE_SUPPORTS_OPEN_BY_FILE_ID and the
+#         FILE_OPEN_BY_FILE_ID open behind it (docs/21 W7's larger half).
 # TODO: Implement
 kernel32_test.exe:volume
 
