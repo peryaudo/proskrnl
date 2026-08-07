@@ -1065,18 +1065,30 @@ first version emitted only the GUID entry, which served
 `GetVolumePathNamesForVolumeName` (volume.c:1086). Worth stating because it
 is invisible from the API that fails.
 
-**`kernel32:volume` is improved but NOT green, and the ~57 figure above
-bundled three independent defects under one name.** Only the first is
-MountPointManager's:
+**`kernel32:volume` went 53 failures -> 7**, so this item was worth ~46
+assertions on its own and the `~57` estimate above was close to right.
 
-1. the volume GUID namespace — **done**;
-2. the path-name list is the wrong length (`expected 5 got9`) — the reply
-   hands kernelbase more than NT's does;
-3. `NtQueryVolumeInformationFile` panics on an unbuilt info class, and
-   `FILE_SUPPORTS_OPEN_BY_FILE_ID` is clear — **separate work items**, not
-   this one.
+An earlier revision of this section revised that estimate DOWN, on the
+strength of a first measurement taken before the query filter was
+implemented; that revision was itself an overcorrection made on partial
+data, and is withdrawn. The lesson is the ordinary one — a partial
+implementation's failure list understates what the finished one is worth,
+because the defects it leaves behind mask each other.
 
-Treat the remaining two as their own entries when scoring what is left.
+**The filter was the whole second half.** `IOCTL_MOUNTMGR_QUERY_POINTS`
+takes its input `MOUNTMGR_MOUNT_POINT` as a FILTER, and a handler that
+ignores it looks correct until
+`GetVolumePathNamesForVolumeNameW` — which queries once by symbolic-link
+name and then AGAIN by `DeviceName` for every point it got back
+(`dlls/kernelbase/volume.c`) — re-matches everything on the second pass and
+emits each drive letter once per entry. It presents as `expected 5 got9`
+(volume.c:1121), which reads like a length bug and is a missing filter.
+
+**The 7 that remain are not MountPointManager's**: `\\.\PhysicalDrive0`
+(no such device), `FILE_SUPPORTS_OPEN_BY_FILE_ID` clear, and four
+`STATUS_BUFFER_TOO_SMALL` volume-info classes behind an unbuilt
+`NtQueryVolumeInformationFile` class, which still panics under the armed
+boot. Score those as their own entries.
 
 **One unpinned divergence, deliberately taken.** An unrecognised mountmgr
 verb answers `STATUS_INVALID_DEVICE_REQUEST` rather than

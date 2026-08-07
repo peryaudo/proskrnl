@@ -113,24 +113,108 @@ static void IopMountmgrAppendName(UCHAR *output, ULONG *cursor, const WCHAR *nam
     *cursor += bytes;
 }
 
-static NTSTATUS IopMountmgrQueryPoints(void *output, ULONG outputLength, ULONG_PTR *infoOut)
+/* The volume's mount points: every symbolic link that names it. NT lists
+ * each as its own entry, and both directions of the volume/path mapping are
+ * built on that (a one-entry reply serves
+ * GetVolumeNameForVolumeMountPoint and returns an empty list from
+ * GetVolumePathNamesForVolumeName). */
+static const struct
 {
-    /* The three names this one mount point carries. UniqueId stays empty:
-     * it is a device-identity blob NT fills from the disk, and no caller
-     * this boundary serves reads it — a fabricated one would be a
-     * plausible-looking invention (Art. 12). */
-    /* TWO mount points, not one. NT lists every symbolic link that names the
-     * volume as its own entry — the \??\Volume{...} name AND the drive
-     * letter — because the reply is what both directions of the mapping are
-     * built on: GetVolumeNameForVolumeMountPoint reads the GUID entry, and
-     * GetVolumePathNamesForVolumeName scans for entries whose device matches
-     * and returns their DOS names. A one-entry reply serves the first and
-     * silently returns an empty list from the second (kernel32:volume
-     * volume.c:1086 "expected \\C: got """). */
-    ULONG needed = (ULONG)sizeof(MOUNTMGR_MOUNT_POINTS) + (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
-    needed += (ULONG)KiWideStringLength(MountmgrVolumeGuidName) * sizeof(WCHAR);
-    needed += (ULONG)KiWideStringLength(MountmgrDosName) * sizeof(WCHAR);
-    needed += 2 * (ULONG)KiWideStringLength(MountmgrDeviceName) * sizeof(WCHAR);
+    const WCHAR *symbolicLink;
+    const WCHAR *device;
+} IopMountmgrPoints[] = {
+    {MountmgrVolumeGuidName, MountmgrDeviceName},
+    {MountmgrDosName, MountmgrDeviceName},
+};
+
+/* Does `candidate` equal the `length`-byte name at `input + offset`? */
+static BOOLEAN IopMountmgrNameMatches(const UCHAR *input, ULONG inputLength, ULONG offset,
+                                      USHORT length, const WCHAR *candidate)
+{
+    if ((ULONGLONG)offset + length > inputLength)
+    {
+        return FALSE;
+    }
+    ULONG bytes = (ULONG)KiWideStringLength(candidate) * sizeof(WCHAR);
+    if (bytes != length)
+    {
+        return FALSE;
+    }
+    return memcmp(input + offset, candidate, bytes) == 0;
+}
+
+static NTSTATUS IopMountmgrQueryPoints(const void *input, ULONG inputLength, void *output,
+                                       ULONG outputLength, ULONG_PTR *infoOut)
+{
+    /* The input MOUNTMGR_MOUNT_POINT is a FILTER, not a placeholder, and
+     * ignoring it is not a harmless simplification.
+     * GetVolumePathNamesForVolumeNameW queries once by symbolic-link name
+     * and then AGAIN by DeviceName for each point it got back
+     * (dlls/kernelbase/volume.c) — so a handler that always returns every
+     * point makes the second pass re-match everything and emit each drive
+     * letter once per entry. kernel32:volume sees the doubled list as
+     * "expected 5 got9" (volume.c:1121), which reads like a length bug and
+     * is really a missing filter.
+     *
+     * All-zero means "every mount point", which is the query kernelbase
+     * opens with. */
+    BOOLEAN matched[sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0])];
+    ULONG matchCount = 0;
+    const MOUNTMGR_MOUNT_POINT *filter = (const MOUNTMGR_MOUNT_POINT *)input;
+    BOOLEAN filtered = filter != 0 && inputLength >= sizeof(*filter) &&
+                       (filter->SymbolicLinkNameLength != 0 || filter->DeviceNameLength != 0 ||
+                        filter->UniqueIdLength != 0);
+
+    for (ULONG i = 0; i < sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0]); i++)
+    {
+        BOOLEAN take = TRUE;
+        if (filtered)
+        {
+            /* Each supplied field must match; an entry carrying none of
+             * them cannot be selected by it. UniqueId is never matched
+             * because this device reports none (see below), so a query by
+             * UniqueId alone selects nothing rather than everything. */
+            take = FALSE;
+            if (filter->SymbolicLinkNameLength != 0 &&
+                IopMountmgrNameMatches((const UCHAR *)input, inputLength,
+                                       filter->SymbolicLinkNameOffset,
+                                       filter->SymbolicLinkNameLength,
+                                       IopMountmgrPoints[i].symbolicLink))
+            {
+                take = TRUE;
+            }
+            if (filter->DeviceNameLength != 0 &&
+                IopMountmgrNameMatches((const UCHAR *)input, inputLength,
+                                       filter->DeviceNameOffset, filter->DeviceNameLength,
+                                       IopMountmgrPoints[i].device))
+            {
+                take = TRUE;
+            }
+        }
+        matched[i] = take;
+        if (take)
+        {
+            matchCount++;
+        }
+    }
+
+    /* Sizing: the header carries one entry slot, so only the entries beyond
+     * the first need their own. UniqueId stays empty — it is a disk-identity
+     * blob no caller here reads, and a fabricated one is the
+     * plausible-looking invention Art. 12 forbids. */
+    ULONG needed = (ULONG)sizeof(MOUNTMGR_MOUNT_POINTS);
+    if (matchCount > 1)
+    {
+        needed += (matchCount - 1) * (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
+    }
+    for (ULONG i = 0; i < sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0]); i++)
+    {
+        if (matched[i])
+        {
+            needed += (ULONG)KiWideStringLength(IopMountmgrPoints[i].symbolicLink) * sizeof(WCHAR);
+            needed += (ULONG)KiWideStringLength(IopMountmgrPoints[i].device) * sizeof(WCHAR);
+        }
+    }
 
     /* Below the fixed header the caller cannot even learn the size, so the
      * two-call pattern needs the refusal rather than a truncated answer. */
@@ -144,9 +228,8 @@ static NTSTATUS IopMountmgrQueryPoints(void *output, ULONG outputLength, ULONG_P
     if (outputLength < needed)
     {
         /* Enough for the header: report the full size so the caller can
-         * allocate, and say the buffer was short. STATUS_BUFFER_OVERFLOW is
-         * the "here is the size" answer; BUFFER_TOO_SMALL above is the "I
-         * could not even tell you" one. */
+         * allocate. BUFFER_OVERFLOW is the "here is the size" answer;
+         * BUFFER_TOO_SMALL above is the "I could not even tell you" one. */
         memset(points, 0, sizeof(*points));
         points->Size = needed;
         points->NumberOfMountPoints = 0;
@@ -156,24 +239,30 @@ static NTSTATUS IopMountmgrQueryPoints(void *output, ULONG outputLength, ULONG_P
 
     memset(output, 0, needed);
     points->Size = needed;
-    points->NumberOfMountPoints = 2;
+    points->NumberOfMountPoints = matchCount;
 
-    /* The names start after BOTH entry slots — MountPoints[] is declared
-     * [1], so the second slot's bytes are the ones reserved above. */
-    ULONG cursor = (ULONG)sizeof(MOUNTMGR_MOUNT_POINTS) + (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
-    IopMountmgrAppendName((UCHAR *)output, &cursor, MountmgrVolumeGuidName,
-                          &points->MountPoints[0].SymbolicLinkNameOffset,
-                          &points->MountPoints[0].SymbolicLinkNameLength);
-    IopMountmgrAppendName((UCHAR *)output, &cursor, MountmgrDeviceName,
-                          &points->MountPoints[0].DeviceNameOffset,
-                          &points->MountPoints[0].DeviceNameLength);
-    IopMountmgrAppendName((UCHAR *)output, &cursor, MountmgrDosName,
-                          &points->MountPoints[1].SymbolicLinkNameOffset,
-                          &points->MountPoints[1].SymbolicLinkNameLength);
-    IopMountmgrAppendName((UCHAR *)output, &cursor, MountmgrDeviceName,
-                          &points->MountPoints[1].DeviceNameOffset,
-                          &points->MountPoints[1].DeviceNameLength);
+    ULONG cursor = (ULONG)sizeof(MOUNTMGR_MOUNT_POINTS);
+    if (matchCount > 1)
+    {
+        cursor += (matchCount - 1) * (ULONG)sizeof(MOUNTMGR_MOUNT_POINT);
+    }
+    ULONG slot = 0;
+    for (ULONG i = 0; i < sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0]); i++)
+    {
+        if (!matched[i])
+        {
+            continue;
+        }
+        IopMountmgrAppendName((UCHAR *)output, &cursor, IopMountmgrPoints[i].symbolicLink,
+                              &points->MountPoints[slot].SymbolicLinkNameOffset,
+                              &points->MountPoints[slot].SymbolicLinkNameLength);
+        IopMountmgrAppendName((UCHAR *)output, &cursor, IopMountmgrPoints[i].device,
+                              &points->MountPoints[slot].DeviceNameOffset,
+                              &points->MountPoints[slot].DeviceNameLength);
+        slot++;
+    }
     ASSERT(cursor == needed);
+    ASSERT(slot == matchCount);
 
     *infoOut = needed;
     return STATUS_SUCCESS;
@@ -190,7 +279,7 @@ static NTSTATUS IopMountmgrDeviceControl(PFILE_OBJECT file, ULONG code, const vo
 
     if (code == IOCTL_MOUNTMGR_QUERY_POINTS)
     {
-        return IopMountmgrQueryPoints(output, outputLength, infoOut);
+        return IopMountmgrQueryPoints(input, inputLength, output, outputLength, infoOut);
     }
 
     /* Everything else is REFUSED, and the status is the refusal NT gives a
