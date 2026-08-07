@@ -86,15 +86,6 @@
 #     working, not a defect to chase.
 # ntdll_test.exe:alpc
 ntdll_test.exe:atom
-# PARTLY FIXED, FIXABLE. 8 failures, down from 9. The file object now
-#     clears while a change-notify is armed and signals at completion, and an
-#     explicit event correctly REPLACES the file object (fixed this session).
-#     Two of the remaining eight (:149, :152) are newly honest rather than
-#     new — they passed before only because the file object was permanently
-#     signalled. The open question is a zero-length-buffer watch that does
-#     not complete; a hypothesis that such a watch stops filtering was tested
-#     on the oracle and FALSIFIED, so it needs fresh triage.
-# TODO: Implement
 ntdll_test.exe:change
 # AT ITS FAT FLOOR — NOT FIXABLE WHILE THE BACKEND IS FAT32.
 #     5 failures out of 6393 tests, from dead at the start of this session.
