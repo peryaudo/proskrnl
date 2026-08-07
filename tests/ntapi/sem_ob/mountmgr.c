@@ -109,9 +109,27 @@ START_TEST(mountmgr)
     status =
         NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, PRS_IOCTL_MOUNTMGR_QUERY_POINTS, &input,
                               sizeof(input), out, (ULONG)(sizeof(PRS_MOUNTMGR_MOUNT_POINTS) - 1));
-    ok(status == STATUS_BUFFER_OVERFLOW || status == STATUS_BUFFER_TOO_SMALL ||
-           status == STATUS_INVALID_PARAMETER,
-       "a header-sized-minus-one query -> %08lx", (unsigned long)status);
+    ok(status == STATUS_INVALID_PARAMETER, "a header-sized-minus-one query -> %08lx",
+       (unsigned long)status);
+
+    /* A missing input, a short input and a missing output take the same
+     * answer. This block replaced a three-way disjunction
+     * (BUFFER_OVERFLOW || BUFFER_TOO_SMALL || INVALID_PARAMETER) that no
+     * implementation could fail — proskrnl answered BUFFER_TOO_SMALL and
+     * the pin said nothing, until kernel32:volume (volume.c:2062-2096)
+     * convicted it. A pin that accepts three answers pins none. */
+    memset(&iosb, 0, sizeof(iosb));
+    status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, PRS_IOCTL_MOUNTMGR_QUERY_POINTS,
+                                   NULL, 0, out, (ULONG)sizeof(out));
+    ok(status == STATUS_INVALID_PARAMETER, "a NULL input -> %08lx", (unsigned long)status);
+    memset(&iosb, 0, sizeof(iosb));
+    status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, PRS_IOCTL_MOUNTMGR_QUERY_POINTS,
+                                   &input, (ULONG)(sizeof(input) - 1), out, (ULONG)sizeof(out));
+    ok(status == STATUS_INVALID_PARAMETER, "a short input -> %08lx", (unsigned long)status);
+    memset(&iosb, 0, sizeof(iosb));
+    status = NtDeviceIoControlFile(mgr, NULL, NULL, NULL, &iosb, PRS_IOCTL_MOUNTMGR_QUERY_POINTS,
+                                   &input, (ULONG)sizeof(input), NULL, 0);
+    ok(status == STATUS_INVALID_PARAMETER, "a NULL output -> %08lx", (unsigned long)status);
 
     memset(&iosb, 0, sizeof(iosb));
     memset(out, 0, sizeof(out));

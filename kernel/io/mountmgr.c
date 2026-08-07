@@ -158,12 +158,37 @@ static NTSTATUS IopMountmgrQueryPoints(const void *input, ULONG inputLength, voi
      *
      * All-zero means "every mount point", which is the query kernelbase
      * opens with. */
+    /* The argument checks, and their status is STATUS_INVALID_PARAMETER —
+     * NOT a buffer status. kernel32:volume states the contract directly
+     * (volume.c:2062-2096): a missing or short INPUT, a missing OUTPUT, and
+     * an output below the fixed header all take INVALID_PARAMETER, and in
+     * every case the IOSB is left untouched (the test seeds it with
+     * 0xdeadf00d and asserts it survives) and the output buffer is not
+     * written (it seeds 0xcc and asserts output->Size still reads
+     * 0xcccccccc).
+     *
+     * This arm returned STATUS_BUFFER_TOO_SMALL until that pair convicted
+     * it. The mistake was not the code but the PIN: sem_ob/mountmgr.c
+     * asserted `BUFFER_OVERFLOW || BUFFER_TOO_SMALL || INVALID_PARAMETER`,
+     * a disjunction wide enough that no implementation could fail it. A
+     * pin that accepts three answers pins none of them. */
+    if (input == 0 || inputLength < sizeof(MOUNTMGR_MOUNT_POINT))
+    {
+        *infoOut = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (output == 0 || outputLength < sizeof(MOUNTMGR_MOUNT_POINTS))
+    {
+        *infoOut = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+
     BOOLEAN matched[sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0])];
     ULONG matchCount = 0;
     const MOUNTMGR_MOUNT_POINT *filter = (const MOUNTMGR_MOUNT_POINT *)input;
-    BOOLEAN filtered = filter != 0 && inputLength >= sizeof(*filter) &&
-                       (filter->SymbolicLinkNameLength != 0 || filter->DeviceNameLength != 0 ||
-                        filter->UniqueIdLength != 0);
+    BOOLEAN filtered = filter->SymbolicLinkNameLength != 0 || filter->DeviceNameLength != 0 ||
+                       filter->UniqueIdLength != 0;
 
     for (ULONG i = 0; i < sizeof(IopMountmgrPoints) / sizeof(IopMountmgrPoints[0]); i++)
     {
@@ -214,14 +239,6 @@ static NTSTATUS IopMountmgrQueryPoints(const void *input, ULONG inputLength, voi
             needed += (ULONG)KiWideStringLength(IopMountmgrPoints[i].symbolicLink) * sizeof(WCHAR);
             needed += (ULONG)KiWideStringLength(IopMountmgrPoints[i].device) * sizeof(WCHAR);
         }
-    }
-
-    /* Below the fixed header the caller cannot even learn the size, so the
-     * two-call pattern needs the refusal rather than a truncated answer. */
-    if (outputLength < sizeof(MOUNTMGR_MOUNT_POINTS))
-    {
-        *infoOut = 0;
-        return STATUS_BUFFER_TOO_SMALL;
     }
 
     MOUNTMGR_MOUNT_POINTS *points = (MOUNTMGR_MOUNT_POINTS *)output;
