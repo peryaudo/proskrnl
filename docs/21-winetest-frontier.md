@@ -1120,9 +1120,23 @@ Do not "fix" those two by reasoning from NT's contract. Decide the Art. 6
 question first — the oracle is the spec here, and this is one of the few
 places where that rule has a visible cost.
 
-The pair also still PANICS on an unbuilt `NtQueryVolumeInformationFile`
-class, so it does not run to the end. **The class is 14,
-`FileFsFullSizeInformationEx`** — identified, not inferred: the refusal arms
+**`SectorsPerAllocationUnit` (4 sites) is NOT a kernel defect.**
+`check_disk_space_information_` (volume.c:2176-2177) HARDCODES the runner's
+volume geometry: `BytesPerSector == 512` and `SectorsPerAllocationUnit == 8`,
+i.e. it assumes a 4 KB-cluster volume. proskrnl's CUI image is formatted
+with 4 sectors per cluster and reports that truthfully; answering 8 would be
+a lie about the disk, and `fs/fat32/fat.c` reads the value straight off the
+volume. The knob is `CLUSTER_SECTORS` in `tools/mkimage.sh` (already
+plumbed, `mformat -c`), so the honest fix is to format the winetest image
+with 8 — but that is a TEST-IMAGE decision, not a kernel one, and the same
+default feeds fatcheck/fatstress/tornwrite, so it is not a free flip. Do not
+"fix" this in the volume-info classes.
+
+The pair no longer panics: class 14, `FileFsFullSizeInformationEx`, is
+built, and kernel32:volume runs to completion for the first time (3
+failures + a truncating panic -> 7 failures, no panic; the count ROSE
+because eight assertions that could never execute now run and four pass).
+**The class was 14, `FileFsFullSizeInformationEx`** — identified, not inferred: the refusal arms
 now name their class on serial (`[KTEST] volinfo: unbuilt class 14`),
 because the dispatcher's PARTIAL line prints arg1/arg2 and this service
 carries the info class in arg5. It is ordinary work — the extended form of
