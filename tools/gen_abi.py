@@ -1067,6 +1067,9 @@ def gen_ntioapi(wine: Path) -> str:
             ("_FILE_FS_ATTRIBUTE_INFORMATION", "FILE_FS_ATTRIBUTE_INFORMATION"),
             # CUI-5: FileFsFullSizeInformation
             ("_FILE_FS_FULL_SIZE_INFORMATION", "FILE_FS_FULL_SIZE_INFORMATION"),
+            # FileFsFullSizeInformationEx (class 14): the extended form
+            # kernel32:volume reaches, where the plain one stops.
+            ("_FILE_FS_FULL_SIZE_INFORMATION_EX", "FILE_FS_FULL_SIZE_INFORMATION_EX"),
         ]
     )
     device_types = extract_defines(
