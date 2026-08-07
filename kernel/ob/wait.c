@@ -147,9 +147,17 @@ NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE 
          * pair's whole 300-second timeout. A capability added in one place
          * changed behaviour in another; this is the second half of that
          * change, and tests/ntapi/sem_wait/pseudo_handle_multi.c pins both
-         * halves together so they cannot drift apart again. */
-        if (handles[referenced] == NtCurrentProcess() ||
-            handles[referenced] == NtCurrentThread())
+         * halves together so they cannot drift apart again.
+         *
+         * The refusal is by RANGE, not by naming -1 and -2. Naming them was
+         * the first half of the same defect: the three TOKEN pseudo-handles
+         * resolve through ObReferenceObjectByHandle too, and a wait that
+         * lets them through finds a non-waitable object and answers
+         * STATUS_OBJECT_TYPE_MISMATCH — a status that reads like a real
+         * type error and is not one. kernel32:sync asserts the whole range
+         * at sync.c:1496/:1511/:1513/:1530/:1532 and two of its six values
+         * failed at each. */
+        if (ObpIsPseudoHandle(handles[referenced]))
         {
             status = STATUS_INVALID_HANDLE;
             break;

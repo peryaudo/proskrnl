@@ -136,6 +136,26 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
                                    KPROCESSOR_MODE accessMode, PVOID *body,
                                    POBJECT_HANDLE_INFORMATION handleInformation);
 
+/* TRUE for a value in the magic pseudo-handle range — the SIX values
+ * ObReferenceObjectByHandle resolves without consulting a handle table
+ * (-1 process, -2 thread, -4/-5/-6 the tokens), plus the unassigned -3 that
+ * sits between them.
+ *
+ * It exists because a caller sometimes needs to know a handle is magic
+ * BEFORE resolving it: NtWaitForMultipleObjects must refuse the whole range
+ * (kernel/ob/wait.c), and "refuse the ones I remember" is how -4 and -6 came
+ * to answer STATUS_OBJECT_TYPE_MISMATCH there. One predicate beside the one
+ * resolver, so a value added to either is added to both (Art. 11).
+ *
+ * The bound is the oracle's own, and it compares the LOW 32 BITS: Wine's
+ * is_pseudo_handle (third_party/wine dlls/ntdll/unix/sync.c) is
+ * `(ULONG)(ULONG_PTR)handle >= 0xfffffffa`. That is not the same test as
+ * `(ULONG_PTR)handle >= (ULONG_PTR)-6` on a 64-bit build — 0x00000000fffffffa
+ * is a pseudo-handle by the oracle's rule and not by the 64-bit one — and
+ * NT agrees with the oracle, because a handle value's meaningful part is 32
+ * bits wide. */
+BOOLEAN ObpIsPseudoHandle(HANDLE handle);
+
 /* --- handle.c ------------------------------------------------------------- */
 
 /* One handle table (M4: per process, embedded in EPROCESS; handle values

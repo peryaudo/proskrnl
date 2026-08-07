@@ -268,6 +268,14 @@ void ObpVerifyHandleTable(POBP_HANDLE_TABLE table)
     ASSERT(occupied == table->inUse);
 }
 
+/* The magic range, stated once (ob.h has the contract and the citation).
+ * Kept immediately above the resolver that implements it so the two cannot
+ * be edited apart. */
+BOOLEAN ObpIsPseudoHandle(HANDLE handle)
+{
+    return (ULONG)(ULONG_PTR)handle >= 0xfffffffaU;
+}
+
 NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POBJECT_TYPE type,
                                    KPROCESSOR_MODE accessMode, PVOID *body,
                                    POBJECT_HANDLE_INFORMATION handleInformation)
@@ -321,7 +329,6 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
         return STATUS_SUCCESS;
     }
 
-
     /* The CURRENT-process (-1) and CURRENT-thread (-2) pseudo-handles,
      * resolved here beside the token ones rather than at each call site.
      * NT treats them as real handles to the caller's own objects. The
@@ -342,8 +349,8 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
     if (value == (ULONG_PTR)-1 || value == (ULONG_PTR)-2)
     {
         PKTHREAD current = KeGetCurrentThread();
-        PVOID self = (value == (ULONG_PTR)-1) ? (PVOID)current->process
-                                              : (PVOID)current->threadObject;
+        PVOID self =
+            (value == (ULONG_PTR)-1) ? (PVOID)current->process : (PVOID)current->threadObject;
         if (self == 0)
         {
             return STATUS_INVALID_HANDLE;
