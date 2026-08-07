@@ -1083,11 +1083,6 @@ def gen_ntioapi(wine: Path) -> str:
             # half of HACK-002, answers FILE_DEVICE_MOUSE (also the CTL_CODE
             # device field of its abs-info ioctl, drivers/hidproto.h).
             "FILE_DEVICE_KEYBOARD",
-            # M10: \Device\MountPointManager. The oracle's mountmgr.sys
-            # creates it with a device type of 0 (IoCreateDevice's
-            # DeviceType argument, dlls/mountmgr.sys/mountmgr.c), which is
-            # this name.
-            "FILE_DEVICE_UNKNOWN",
             "FILE_DEVICE_MOUSE",
             "FILE_DEVICE_SERIAL_PORT",
             "FILE_DEVICE_VIDEO",

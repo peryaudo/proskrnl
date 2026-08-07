@@ -485,13 +485,15 @@ kernel32_test.exe:version
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
 # TODO: Implement
 # kernel32_test.exe:virtual
-# PARTLY FIXED, FIXABLE. 10 failures, down from 53.
+# PARTLY FIXED, FIXABLE. 3 failures, down from 53.
 #     \Device\MountPointManager and the boot volume's \??\Volume{...} name
 #     landed this session, which took kernel32:drive to green and cleared
-#     everything here that was downstream of "there is no volume GUID". What
-#     is left is three unrelated items, none of them the mount manager:
-#       - volume.c:1087-:1203, GetVolumePathNamesForVolumeNameW — the
-#         double-NUL-terminated multi-string form, not implemented;
+#     everything downstream of "there is no volume GUID".
+#     GetVolumePathNamesForVolumeNameW (volume.c:1087-:1203, 7 of them) came
+#     with the mount-manager's spec FILTER being made correct — it matches
+#     on each field whose OFFSET is non-zero, so a volume GUID that does not
+#     exist now selects nothing instead of being told it is mounted at C:.
+#     What is left is two items, neither of them the mount manager:
 #       - volume.c:632/:675, opening \\.\c: and \\.\PhysicalDrive0 as RAW
 #         devices, which needs a disk device object under the volume;
 #       - volume.c:2022, FILE_SUPPORTS_OPEN_BY_FILE_ID and the

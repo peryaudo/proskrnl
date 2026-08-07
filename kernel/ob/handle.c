@@ -287,86 +287,101 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
      * token). Magic handles bypass the access check (get_handle_obj grabs
      * without checking; get_handle_access reports all rights) but keep the
      * type check. */
-    ULONG_PTR value = (ULONG_PTR)handle;
-    if (value >= (ULONG_PTR)-6 && value <= (ULONG_PTR)-4)
+    /* ONE range test, ObpIsPseudoHandle's, entered here so the predicate and
+     * the resolver cannot drift (Art. 11 — ob.h states the contract). The
+     * comparisons below are on the LOW 32 BITS for the same reason the
+     * predicate is: a handle value's meaningful part is 32 bits wide, and
+     * mixing a 32-bit predicate with 64-bit arms is how the two came to
+     * disagree about 0x00000000fffffffa. */
+    ULONG value = (ULONG)(ULONG_PTR)handle;
+    if (ObpIsPseudoHandle(handle))
     {
-        /* CUI-6: -4 = process token, -5 = thread (impersonation) token,
-         * -6 = effective token (thread's if impersonating, else process's).
-         * The thread token is 0 unless SetThreadToken attached one, which is
-         * STATUS_INVALID_HANDLE for -5 and the fallback for -6. */
-        PVOID token = 0;
-        if (value == (ULONG_PTR)-4)
+        if (value >= (ULONG)-6 && value <= (ULONG)-4)
         {
-            token = KeGetCurrentThread()->process->token;
-        }
-        else if (value == (ULONG_PTR)-5)
-        {
-            token = PsCurrentThreadImpersonationToken();
-        }
-        else /* -6: effective */
-        {
-            token = PsCurrentThreadImpersonationToken();
-            if (token == 0)
+            /* CUI-6: -4 = process token, -5 = thread (impersonation) token,
+             * -6 = effective token (thread's if impersonating, else process's).
+             * The thread token is 0 unless SetThreadToken attached one, which is
+             * STATUS_INVALID_HANDLE for -5 and the fallback for -6. */
+            PVOID token = 0;
+            if (value == (ULONG)-4)
             {
                 token = KeGetCurrentThread()->process->token;
             }
+            else if (value == (ULONG)-5)
+            {
+                token = PsCurrentThreadImpersonationToken();
+            }
+            else /* -6: effective */
+            {
+                token = PsCurrentThreadImpersonationToken();
+                if (token == 0)
+                {
+                    token = KeGetCurrentThread()->process->token;
+                }
+            }
+            if (token == 0)
+            {
+                return STATUS_INVALID_HANDLE;
+            }
+            if (type != 0 && ObpGetHeader(token)->type != type)
+            {
+                return STATUS_OBJECT_TYPE_MISMATCH;
+            }
+            ObfReferenceObject(token);
+            *body = token;
+            if (handleInformation != 0)
+            {
+                handleInformation->HandleAttributes = 0;
+                handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
+            }
+            return STATUS_SUCCESS;
         }
-        if (token == 0)
-        {
-            return STATUS_INVALID_HANDLE;
-        }
-        if (type != 0 && ObpGetHeader(token)->type != type)
-        {
-            return STATUS_OBJECT_TYPE_MISMATCH;
-        }
-        ObfReferenceObject(token);
-        *body = token;
-        if (handleInformation != 0)
-        {
-            handleInformation->HandleAttributes = 0;
-            handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
-        }
-        return STATUS_SUCCESS;
-    }
 
-    /* The CURRENT-process (-1) and CURRENT-thread (-2) pseudo-handles,
-     * resolved here beside the token ones rather than at each call site.
-     * NT treats them as real handles to the caller's own objects. The
-     * boundary consequence of leaving them unresolved is unmistakable, and
-     * kernel32:thread produced it: threadFunc3 is a four-line thread whose
-     * whole body is SuspendThread(GetCurrentThread()), and with -2
-     * unresolved NtSuspendThread answered STATUS_INVALID_HANDLE — so the
-     * thread never parked and five assertions failed behind it.
-     *
-     * Like the token pseudo-handles above they bypass the ACCESS check (a
-     * caller always has full rights to itself) and keep the TYPE check, so
-     * asking for a thread with -1 is still an honest mismatch.
-     *
-     * kernel/ps/ carries per-site `handle != NtCurrentThread()` dances
-     * predating this; they are now redundant rather than wrong — they
-     * short-circuit to the same object — and should be retired as their
-     * classes are next touched rather than in a drive-by (G13). */
-    if (value == (ULONG_PTR)-1 || value == (ULONG_PTR)-2)
-    {
-        PKTHREAD current = KeGetCurrentThread();
-        PVOID self =
-            (value == (ULONG_PTR)-1) ? (PVOID)current->process : (PVOID)current->threadObject;
-        if (self == 0)
+        /* The CURRENT-process (-1) and CURRENT-thread (-2) pseudo-handles,
+         * resolved here beside the token ones rather than at each call site.
+         * NT treats them as real handles to the caller's own objects. The
+         * boundary consequence of leaving them unresolved is unmistakable, and
+         * kernel32:thread produced it: threadFunc3 is a four-line thread whose
+         * whole body is SuspendThread(GetCurrentThread()), and with -2
+         * unresolved NtSuspendThread answered STATUS_INVALID_HANDLE — so the
+         * thread never parked and five assertions failed behind it.
+         *
+         * Like the token pseudo-handles above they bypass the ACCESS check (a
+         * caller always has full rights to itself) and keep the TYPE check, so
+         * asking for a thread with -1 is still an honest mismatch.
+         *
+         * kernel/ps/ carries per-site `handle != NtCurrentThread()` dances
+         * predating this; they are now redundant rather than wrong — they
+         * short-circuit to the same object — and should be retired as their
+         * classes are next touched rather than in a drive-by (G13). */
+        if (value == (ULONG)-1 || value == (ULONG)-2)
         {
-            return STATUS_INVALID_HANDLE;
+            PKTHREAD current = KeGetCurrentThread();
+            PVOID self =
+                (value == (ULONG)-1) ? (PVOID)current->process : (PVOID)current->threadObject;
+            if (self == 0)
+            {
+                return STATUS_INVALID_HANDLE;
+            }
+            if (type != 0 && ObpGetHeader(self)->type != type)
+            {
+                return STATUS_OBJECT_TYPE_MISMATCH;
+            }
+            ObfReferenceObject(self);
+            *body = self;
+            if (handleInformation != 0)
+            {
+                handleInformation->HandleAttributes = 0;
+                handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
+            }
+            return STATUS_SUCCESS;
         }
-        if (type != 0 && ObpGetHeader(self)->type != type)
-        {
-            return STATUS_OBJECT_TYPE_MISMATCH;
-        }
-        ObfReferenceObject(self);
-        *body = self;
-        if (handleInformation != 0)
-        {
-            handleInformation->HandleAttributes = 0;
-            handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
-        }
-        return STATUS_SUCCESS;
+        /* -3: inside the range and naming nothing. Nothing ever hands one out,
+         * so it is an invalid handle — said here rather than left to fall
+         * through to a table lookup that would reach the same answer by
+         * accident. kernel32:sync passes it to NtWaitForMultipleObjects among
+         * the six (sync.c's pseudohandles[2] = ~(ULONG_PTR)2). */
+        return STATUS_INVALID_HANDLE;
     }
 
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
