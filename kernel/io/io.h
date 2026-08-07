@@ -87,6 +87,31 @@ typedef struct FILE_OBJECT
     ULONG shareAccess; /* this open's FILE_SHARE_* */
     LARGE_INTEGER currentByteOffset;
 
+    /* M10 change-notify: the completion FILTER is established by the FIRST
+     * NtNotifyChangeDirectoryFile on this file object and is STICKY — every
+     * later arm on the same handle reuses it and its own filter argument is
+     * ignored.
+     *
+     * That is not a shortcut, it is the contract. The pinned server says so
+     * in a comment (`/ * assign it once * /`, third_party/wine
+     * server/change.c DECL_HANDLER(read_directory_changes): the filter,
+     * subtree and want_data are stored only `if (!dir->filter)`), NT does
+     * the same by reusing the existing notify entry for a repeated
+     * FsContext, and ntdll:change measures it — it arms a watch for
+     * everything, then re-arms the same handle for FILE_NOTIFY_CHANGE_SIZE
+     * alone and requires a DIRECTORY REMOVAL to complete it
+     * (change.c:132-:155). A kernel that honours the second filter leaves
+     * that watch parked forever.
+     *
+     * notifyArmed says whether the filter has been set yet; a watch that
+     * completes does not clear it, because the association is with the
+     * HANDLE and lasts as long as the handle does.
+     *
+     * The SUBTREE flag is deliberately not sticky here even though the
+     * server stores it in the same block — kernel/io/notify.c says why. */
+    BOOLEAN notifyArmed;
+    ULONG notifyFilter;
+
     /* CUI-8: the NT file-object lock (IopLockFileObject's role), scoped to
      * what it observably protects here: NT serializes all I/O on a
      * synchronous handle, and once the data path can park, two threads

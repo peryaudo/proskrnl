@@ -78,12 +78,37 @@ BOOLEAN IoDirectoryWatchesActive(void)
      FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_LAST_ACCESS |    \
      FILE_NOTIFY_CHANGE_CREATION | FILE_NOTIFY_CHANGE_SECURITY)
 
-/* Completion, in the docs/08 order: payload, IOSB, event, APC. An NT_ERROR
- * status skips the IOSB (and the APC) — the pinned server convention. */
+/* Completion, in the docs/08 order: payload, IOSB, event, APC.
+ *
+ * AN ERROR COMPLETION WRITES THE IOSB ONLY IF THE WATCH HAS NO EVENT, and
+ * that clause was measured rather than reasoned. Two tests park a watch,
+ * cancel it and then look at the IOSB, and they differ in exactly one
+ * argument:
+ *
+ *   sem_file/notify_sticky.c   no event  -> IOSB reads STATUS_CANCELLED
+ *   sem_file/notify_change.c   an event  -> IOSB untouched
+ *
+ * Both are green on the pinned oracle, so both are the boundary, and the
+ * event is the only thing between them. It makes sense of the pair: with an
+ * event the completion has somewhere else to report to, and with none the
+ * IOSB is the caller's only channel — ntdll:change's watches carry no event
+ * for precisely that reason and it requires STATUS_CANCELLED with
+ * Information 0 in both of theirs (change.c:304-:309).
+ *
+ * What was here before was "an NT_ERROR status skips the IOSB", full stop,
+ * cited to the pinned server's error-completion convention. That rule is
+ * about a request that never STARTED — the caller still holds the status
+ * the syscall returned — and it was applied to requests that had already
+ * returned STATUS_PENDING, where there is no such status to hold.
+ *
+ * `isError` still gates the APC, unchanged: no test in either suite queues
+ * an APC on a watch and then cancels it, so that leg has not been measured
+ * and is not being changed on a guess (Art. 6). */
 static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const void *record,
                                 ULONG recordBytes, ULONG_PTR information)
 {
     BOOLEAN isError = ((ULONG)status >> 30) == 3;
+    BOOLEAN writeIosb = !isError || watch->event == 0;
     if (record != 0 && recordBytes != 0)
     {
         if (watch->kernelIosb)
@@ -98,7 +123,7 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
                                      (uint64_t)(uintptr_t)watch->userBuffer, record, recordBytes);
         }
     }
-    if (!isError)
+    if (writeIosb)
     {
         IO_STATUS_BLOCK result;
         result.Status = status;
@@ -299,7 +324,25 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     watch->userIosb = iosb;
     watch->userBuffer = buffer;
     watch->bufferLength = length;
-    watch->filter = filter;
+    /* The filter is the HANDLE's, not this call's (kernel/io/io.h has the
+     * rule and its citation): the first arm on a file object fixes it, and
+     * every later one reuses it. The caller's `filter` has still been
+     * validated above — an unarmed handle stores it, and an armed one must
+     * still refuse a malformed value rather than quietly substituting the
+     * stored one. */
+    if (!file->notifyArmed)
+    {
+        file->notifyArmed = TRUE;
+        file->notifyFilter = filter;
+    }
+    watch->filter = file->notifyFilter;
+    /* The subtree flag is NOT made sticky with it. The server stores the two
+     * in the same "assign it once" block, so the symmetry is tempting — but
+     * nothing on either side measures a re-arm that changes it, and
+     * sem_file/notify_change.c's subtree case is a beyond_oracle block
+     * whose handle has already been armed non-subtree, so making it sticky
+     * would break a pinned behaviour to satisfy a rule no test states.
+     * Only a differential test convicts (Art. 6); this half has none. */
     watch->watchTree = watchTree;
     watch->kernelIosb = ExGetPreviousMode() == KernelMode;
 
