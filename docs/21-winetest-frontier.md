@@ -1120,6 +1120,16 @@ Do not "fix" those two by reasoning from NT's contract. Decide the Art. 6
 question first — the oracle is the spec here, and this is one of the few
 places where that rule has a visible cost.
 
+**`FILE_SUPPORTS_OPEN_BY_FILE_ID` is a FEATURE, not a flag.** Neither
+`FILE_OPEN_BY_FILE_ID` nor `FILE_SUPPORTS_OPEN_BY_FILE_ID` appears anywhere
+in `kernel/` or `fs/`. Setting the attribute bit is a one-line change and
+would be a G12 LIE: it advertises a capability the kernel does not have, and
+volume.c opens by ID immediately after checking the bit — so the flip turns
+one honest failure into several dishonest ones. The real item is
+`FILE_OPEN_BY_FILE_ID` in the create path plus a FAT reverse lookup from the
+id `FileIdInformation` reports back to a directory entry. Scope it as a
+feature; do not scope it as a flag.
+
 **`SectorsPerAllocationUnit` (4 sites) is NOT a kernel defect.**
 `check_disk_space_information_` (volume.c:2176-2177) HARDCODES the runner's
 volume geometry: `BytesPerSector == 512` and `SectorsPerAllocationUnit == 8`,
