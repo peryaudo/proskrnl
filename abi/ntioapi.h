@@ -492,6 +492,29 @@ typedef struct {
 #define FSCTL_PIPE_TRANSCEIVE CTL_CODE(FILE_DEVICE_NAMED_PIPE, 5, METHOD_NEITHER,  FILE_READ_DATA | FILE_WRITE_DATA)
 #define FSCTL_PIPE_WAIT CTL_CODE(FILE_DEVICE_NAMED_PIPE, 6, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+/* MountPointManager: the ioctl codes and the two shapes
+ * IOCTL_MOUNTMGR_QUERY_POINTS carries, extracted from
+ * wine/include/ddk/mountmgr.h. */
+#define MOUNTMGRCONTROLTYPE ((ULONG)'m')
+#define IOCTL_MOUNTMGR_QUERY_POINTS CTL_CODE(MOUNTMGRCONTROLTYPE, 2, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_MOUNTMGR_CREATE_POINT CTL_CODE(MOUNTMGRCONTROLTYPE, 0, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#define IOCTL_MOUNTMGR_DELETE_POINTS CTL_CODE(MOUNTMGRCONTROLTYPE, 1, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+typedef struct {
+    ULONG  SymbolicLinkNameOffset;
+    USHORT SymbolicLinkNameLength;
+    ULONG  UniqueIdOffset;
+    USHORT UniqueIdLength;
+    ULONG  DeviceNameOffset;
+    USHORT DeviceNameLength;
+} MOUNTMGR_MOUNT_POINT, *PMOUNTMGR_MOUNT_POINT;
+
+typedef struct {
+    ULONG                Size;
+    ULONG                NumberOfMountPoints;
+    MOUNTMGR_MOUNT_POINT MountPoints[1];
+} MOUNTMGR_MOUNT_POINTS, *PMOUNTMGR_MOUNT_POINTS;
+
 /* NtCreateNamedPipeFile options + pipe info shapes (M9), extracted
  * from wine/include/{winternl.h,winioctl.h}. */
 #define FILE_PIPE_DISCONNECTED_STATE 0x00000001

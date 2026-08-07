@@ -1120,6 +1120,32 @@ def gen_ntioapi(wine: Path) -> str:
             "FSCTL_PIPE_WAIT",
         ],
     )
+    # CUI winetest sweep: the MountPointManager surface. GetVolumeName-
+    # ForVolumeMountPointW does not read the object namespace — it opens
+    # \\.\MountPointManager and issues IOCTL_MOUNTMGR_QUERY_POINTS
+    # (wine/dlls/kernelbase/volume.c), so the ioctl code and the two
+    # variable-length shapes it carries are the whole contract. The code is a
+    # CTL_CODE expression over MOUNTMGRCONTROLTYPE, which is why the control
+    # type comes across too rather than being folded into a typed number.
+    mountmgr = (wine / "include/ddk/mountmgr.h").read_text()
+    mountmgr_defines = extract_defines(
+        mountmgr,
+        "ddk/mountmgr.h",
+        [
+            "MOUNTMGRCONTROLTYPE",
+            "IOCTL_MOUNTMGR_QUERY_POINTS",
+            "IOCTL_MOUNTMGR_CREATE_POINT",
+            "IOCTL_MOUNTMGR_DELETE_POINTS",
+        ],
+    )
+    mountmgr_structs = "\n\n".join(
+        extract_struct(mountmgr, tag, typedef)
+        for tag, typedef in (
+            ("_MOUNTMGR_MOUNT_POINT", "MOUNTMGR_MOUNT_POINT"),
+            ("_MOUNTMGR_MOUNT_POINTS", "MOUNTMGR_MOUNT_POINTS"),
+        )
+    )
+
     # M10: completion-port surface (ntdll threadpool / CreateIoCompletionPort).
     completion_defines = extract_defines(
         winternl,
@@ -1350,6 +1376,12 @@ _Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_I
         + "\n\n/* Ioctl/fsctl encoding + the named-pipe FSCTL verbs (M9), extracted\n"
         + " * from wine/include/winioctl.h. */\n"
         + ioctl_defines
+        + "\n\n/* MountPointManager: the ioctl codes and the two shapes\n"
+        + " * IOCTL_MOUNTMGR_QUERY_POINTS carries, extracted from\n"
+        + " * wine/include/ddk/mountmgr.h. */\n"
+        + mountmgr_defines
+        + "\n\n"
+        + mountmgr_structs
         + "\n\n/* NtCreateNamedPipeFile options + pipe info shapes (M9), extracted\n"
         + " * from wine/include/{winternl.h,winioctl.h}. */\n"
         + pipe_defines
