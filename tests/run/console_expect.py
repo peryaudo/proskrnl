@@ -93,12 +93,45 @@ def main() -> int:
     # conhost renders via screen diffs, so expected text is matched with
     # escape-tolerant regexes (like echo_re above). Every asserted string is
     # chosen so the TYPED command cannot satisfy it (transforms/expansions).
-    def tolerant(text: bytes):
+    class Tolerant:
         # Escape sequences and screen-diff redraws interleave freely between
         # the payload characters; every asserted string is chosen so the
         # TYPED command line cannot supply the characters in order.
-        pattern = b".*?".join(re.escape(text[i : i + 1]) for i in range(len(text)))
-        return re.compile(pattern, re.DOTALL)
+        #
+        # "The characters appear in order, anything in between" is a
+        # SUBSEQUENCE test, and it must be computed by this greedy linear
+        # scan, not by the b".*?".join(...) regex it used to be. A
+        # SUCCEEDING search of that regex is cheap, but a FAILING one
+        # backtracks combinatorially over every near-miss, and cui9's
+        # mmceiling spawn lines are nothing but near-misses of
+        # "mmceiling-refused": measured ~3.5x per extra spawn line in the
+        # slice, 238 s at 3.3 KB of buffer. The trap stayed hidden while
+        # every child's loader printed Wine's "err:module:alloc_tls_slot
+        # NtQueryInformationThread failed." to serial — those words supply
+        # the f/u/s/d that "refused" needs, so the search always succeeded
+        # (spuriously) within a couple of spawns and the exponential
+        # failing path never ran. The kernel commit that made the loader's
+        # ThreadBasicInformation query succeed deleted that err line, the
+        # first failing search met a dozen spawn lines, and this reader
+        # stalled mid-search: the serial socket backpressured and the
+        # guest hung in its UART transmit-ready spin until the leg's
+        # deadline. The greedy scan computes the same predicate (if any
+        # interleaving matches, the earliest-match one does) in O(buffer),
+        # succeed or fail.
+        def __init__(self, text: bytes):
+            self.text = text
+
+        def search(self, hay: bytes):
+            i = 0
+            for j in range(len(self.text)):
+                i = hay.find(self.text[j : j + 1], i)
+                if i < 0:
+                    return None
+                i += 1
+            return True
+
+    def tolerant(text: bytes):
+        return Tolerant(text)
 
     def expect_after(mark: int, text: bytes, what: str) -> bool:
         rx = tolerant(text)
