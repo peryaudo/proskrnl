@@ -1249,11 +1249,19 @@ NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
     return status;
 }
 
-/* CUI-4: suspend/resume every thread of a target process (server/process.c
- * suspend_process / resume_process). A thread blocked in a kernel wait is NOT
- * pulled out — the suspend takes effect at its next return to user mode
- * (PspSuspendTcb closes its gate, KiProcessPendingUserSignals parks it there),
- * which is exactly NT's "suspend applies on the way back to user mode". */
+/* CUI-4: suspend/resume every thread of a target process (server/process.c,
+ * DECL_HANDLER(suspend_process) / DECL_HANDLER(resume_process)). A thread
+ * blocked in a kernel wait is NOT pulled out — the suspend takes effect at its
+ * next return to user mode (PspSuspendTcb closes its gate,
+ * KiProcessPendingUserSignals parks it there), which is exactly NT's "suspend
+ * applies on the way back to user mode".
+ *
+ * "Every thread" has one exception, and it is symmetric: a thread born with
+ * THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE is skipped by BOTH arms, exactly
+ * as the server's two `if (!thread->bypass_proc_suspend)` guards do. Skipping
+ * it on resume as well is not an optimization — it is what keeps the counts
+ * honest: the freeze never charged it a hold, so a resume that dropped one
+ * would cancel an unrelated NtSuspendThread. */
 static NTSTATUS PspSuspendResumeProcess(HANDLE processHandle, BOOLEAN suspend)
 {
     PVOID body;
@@ -1269,7 +1277,12 @@ static NTSTATUS PspSuspendResumeProcess(HANDLE processHandle, BOOLEAN suspend)
     for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
          entry = entry->Flink)
     {
-        PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+        PETHREAD thread = CONTAINING_RECORD(entry, ETHREAD, threadListEntry);
+        if (thread->bypassProcessFreeze)
+        {
+            continue;
+        }
+        PKTHREAD tcb = thread->tcb;
         if (suspend)
         {
             PspSuspendTcb(tcb);
