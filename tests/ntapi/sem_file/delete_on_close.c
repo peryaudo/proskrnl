@@ -6,7 +6,6 @@
  */
 #include "util.h"
 
-
 /* A read-only file cannot be deleted through FILE_DELETE_ON_CLOSE either.
  * The FS refused it through NtSetInformationFile(FileDispositionInformation)
  * but not through the create option -- the same deletion arriving by a
@@ -45,17 +44,9 @@ static void test_readonly_delete_on_close(HANDLE dir)
     if (NT_SUCCESS(status))
         NtClose(h);
 
-    /* Clear the bit so the scrub can remove it. */
-    status = open_file(&h, dir, W("ro_doc.bin"), FILE_GENERIC_WRITE | FILE_WRITE_ATTRIBUTES,
-                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0,
-                       &iosb);
-    if (NT_SUCCESS(status))
-    {
-        memset(&basic, 0, sizeof(basic));
-        basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
-        NtSetInformationFile(h, &iosb, &basic, sizeof(basic), FileBasicInformation);
-        NtClose(h);
-    }
+    /* The scrub clears the attribute itself (util.h); this open never could —
+     * it asked for FILE_GENERIC_WRITE, which a read-only file refuses, so the
+     * body was skipped, the bit stayed set, and the file outlived the prefix. */
     scrub_file(dir, W("ro_doc.bin"));
 }
 
