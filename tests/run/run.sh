@@ -200,6 +200,21 @@ fi
 : "${ORACLE_JOBS:=$(nproc 2>/dev/null || echo 1)}"
 ORACLE_OUT="$BUILD/ntapi/out"   # per-case captured output; oracle() owns it
 
+# Per-case wall-clock cap on the oracle leg. A wedged case must fail THAT case,
+# by name, instead of consuming the job: the workers' logs are replayed only
+# after every worker has finished (see oracle_worker), so one process that
+# never returns emits nothing at all — the whole leg's output is lost, not just
+# the hung case's, and the CI job dies at its 60-minute timeout-minutes cap
+# with the runner's orphan list as the only surviving evidence. That is
+# precisely how sem_file/io_teardown cost two 60-minute jobs (issue #118).
+# The winetest leg has had per-pair timeouts since it was written (the
+# manifest's optional third field); the ntapi legs had none. The proskrnl leg
+# needs none — its cases run inside a boot qemu.sh already bounds with $TIMEOUT.
+#
+# 180 s is a BACKSTOP, not a budget: the whole leg, every case over every
+# worker, runs in about four minutes, so no honest case comes near it.
+: "${ORACLE_CASE_TIMEOUT:=180}"
+
 # Cases that must run ALONE — every worker idle — because what they measure is
 # the MACHINE rather than the boundary. A per-worker prefix cannot isolate
 # this: the quantity is host-global, and the neighbours are the load.
@@ -408,10 +423,20 @@ oracle_fontdiff() {
 # which is how the grading loop tells "never built" from "ran and failed";
 # build_test has already named the source on stderr by then.
 oracle_one() {   # $1 = .c path
-    local src="$1" name exe
+    local src="$1" name exe rc=0
     name="$(basename "${src%.c}")"
     exe="$(build_test "$src")" || return 1
-    "$WINE" "$exe" >"$ORACLE_OUT/$name" 2>&1 || true
+    timeout -s KILL "$ORACLE_CASE_TIMEOUT" "$WINE" "$exe" >"$ORACLE_OUT/$name" 2>&1 || rc=$?
+    # 137 = SIGKILL from timeout(1) (124 if it ever gets a softer signal): the
+    # case never returned. Grading already counts it as failing — there is no
+    # PASS line — but SILENTLY, and a hang that reads like an ordinary FAIL is
+    # what made this expensive, so the reason goes in the case's own log where
+    # the replay prints it, and on stderr now for whoever is watching.
+    if (( rc == 137 || rc == 124 )); then
+        echo "[KTEST] $name FAIL (no verdict: killed after ${ORACLE_CASE_TIMEOUT}s — hung)" \
+            >>"$ORACLE_OUT/$name"
+        echo "run.sh: '$name' hung; killed after ${ORACLE_CASE_TIMEOUT}s" >&2
+    fi
 }
 
 # Worker $1 of $2: every ($2)th case, starting at $1. Round-robin rather than
