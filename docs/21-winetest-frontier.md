@@ -156,15 +156,43 @@ Those are `kernel/io/notify.c` producers plus the completion path.
 The `docs/03` CUI-5 deviation (changes are not buffered between watches)
 is still open and still the right next question for this item.
 
-### W5 — Mm: `SEC_RESERVE` sections and placeholder reservations
+### W5 — Mm: placeholder reservations (**DONE**) and `SEC_RESERVE` sections
 
-**Now the only thing standing between `ntdll:virtual` and green.** That
-pair has zero failed assertions and stops on a PANIC:
-`NtAllocateVirtualMemoryEx` refuses `MEM_RESERVE_PLACEHOLDER` /
-`MEM_REPLACE_PLACEHOLDER` by name. `kernel32:virtual` wants `SEC_RESERVE`
-sections (`kernel/mm/section.c`).
+The placeholder half is built: `MEM_RESERVE_PLACEHOLDER` /
+`MEM_REPLACE_PLACEHOLDER` on `NtAllocateVirtualMemoryEx` and
+`MEM_PRESERVE_PLACEHOLDER` / `MEM_COALESCE_PLACEHOLDERS` on
+`NtFreeVirtualMemory`, pinned by `tests/ntapi/sem_mm/placeholder.c`. A VAD
+carries the oracle's own two bits (`MI_VAD_PLACEHOLDER`,
+`MI_VAD_FREE_PLACEHOLDER`), and the pair is not redundant: the FREE bit says
+the range is an empty placeholder *now*, the other says it is a real
+allocation that *came from* one, and only the second can be released back
+into a placeholder. Nothing else can tell them apart — a placeholder and a
+`PAGE_NOACCESS` reservation report identically through
+`MEMORY_BASIC_INFORMATION`.
 
-**This is the item to be most careful with.** `docs/12` names
+**The claim this item used to make was wrong, and the way it was wrong is
+the lesson.** It said placeholders were "the only thing standing between
+`ntdll:virtual` and green", on the strength of the pair showing zero failed
+assertions before its panic. That zero was an artefact of the panic itself:
+the process stopped on page one, so nothing behind it had ever been counted.
+With the panic gone the pair reaches its end and reports **1199** failures,
+1102 of them the thread-STACK contract (`docs/21` has no item for it yet; the
+manifest block has the triage). **A crash count is not a failure count**, and
+this document should not treat "zero assertions before the stop" as evidence
+about anything past the stop again — the same reasoning applies to every
+other panicking pair listed here.
+
+What is left under this heading:
+
+- **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
+  wants. Untouched by the above.
+- **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
+  `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in
+  `NtUnmapViewOfSectionEx` still refuse loudly. Mapping a section *into* a
+  placeholder is a larger contract than replacing one with private memory,
+  and no baked consumer reaches it.
+
+**This is still the item to be most careful with.** `docs/12` names
 `mm/{section,fault,pagecache}.c` the top danger zone: plausible code, unit
 tests pass, then it corrupts silently under Wine's real load. Design before
 writing.
@@ -176,8 +204,9 @@ writing.
   reflex will try to enter. `docs/17` §10 is the only door for COW and it
   is a commit of its own.
 - **G12.** Partial placeholder support that silently succeeds where it
-  should split is `1d6dafd` (`NtResumeThread` as a no-op success). Refuse
-  loudly until the split/coalesce rules are complete.
+  should split is `1d6dafd` (`NtResumeThread` as a no-op success). The
+  built half refuses `STATUS_CONFLICTING_ADDRESSES` for every extent it
+  cannot serve exactly, which is the specific NT failure and not a stub.
 
 ### W6 — The exception/context cluster (**triage-first, not build-first**)
 
@@ -362,25 +391,34 @@ Pairs and framings that will consume effort and unblock nothing.
    the pair is oracle-green under the same NLS set before spending an hour
    on it.**
 
-2. **A crash is usually a cascade, not the bug.** `kernel32:volume` and
+2. **A pair that STOPS has not been measured.** W5 paid for this one: a
+   panicking pair reports the assertions it reached, and reading that as its
+   failure count says "nearly green" about a pair with four figures of work
+   behind the stop. `ntdll:virtual` went from an apparent 0 to a measured
+   1199 the moment its panic was removed, and nothing about it changed for
+   the worse. Every pair here that ends in a PANIC or a kill —
+   `ntdll:{info,file}`, `kernel32:{mailslot,fiber}` — carries the same
+   unknown, and their counts are lower bounds.
+
+3. **A crash is usually a cascade, not the bug.** `kernel32:volume` and
    `kernel32:resource` both `0xc0000005` *after* a run of `ok()` failures
    where an API had already returned NULL. Chasing the crash rather than
    the first failing `ok()` wastes the day. The two crashers where the
    crash IS the finding are `ntdll:unwind` (zero failed assertions before
    it) and `ntdll:exception` (whose crash has a named syscall behind it).
 
-3. **The loudest failure in a cluster is usually the consequence.** This
+4. **The loudest failure in a cluster is usually the consequence.** This
    trap has been paid for twice. An earlier revision of this document named
    `kernel32:thread`'s `OpenThread` assertion as a cause on the strength of
    its access mask; the actual cause was a self-suspend four assertions
    earlier. Read the test's helper before believing the assertion text.
 
-4. **Hardware debug registers (DR0–7) and `EFLAGS.TF` are the lowest-value
+5. **Hardware debug registers (DR0–7) and `EFLAGS.TF` are the lowest-value
    item in the plan.** They unblock only `ntdll:exception`, and only
    *after* W6's `NtSetContextThread` fix — which may unblock it alone. Do
    W6's triage, then re-ask.
 
-5. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
+6. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
    `ntdll:om`, `kernel32:{console,process,loader,module,debugger,toolhelp}`,
    `ntdll:{alpc,wow64}` and `cmd.exe_test:batch` fail identically on both
    runners, or depend on the standalone link rather than the boundary, or

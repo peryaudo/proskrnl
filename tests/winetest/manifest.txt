@@ -250,15 +250,41 @@ ntdll_test.exe:string
 #     should follow its NtSetContextThread triage.
 # TODO: Implement
 # ntdll_test.exe:unwind
-# PARTLY FIXED, FIXABLE. Zero failed assertions — the thirteen it had
-#     were all zero_bits, now honoured (kernel/mm/virtual.c,
-#     tests/ntapi/sem_mm/zero_bits.c). What stops it is a PANIC:
-#     NtAllocateVirtualMemoryEx answers STATUS_NOT_IMPLEMENTED for
-#     MEM_RESERVE_PLACEHOLDER / MEM_REPLACE_PLACEHOLDER (kernel/mm/virtual.c
-#     refuses them by name), and the armed boot turns that into a stop.
-#     Placeholders are the VirtualAlloc2 split/coalesce surface; refusing
-#     loudly until the rules are complete is deliberate, and finishing them
-#     is the work item.
+# RE-MEASURED, FIXABLE — and the count went UP because the pair now RUNS.
+#     Placeholders landed this session (kernel/mm/virtual.c,
+#     tests/ntapi/sem_mm/placeholder.c, docs/21 W5): the panic at
+#     NtAllocateVirtualMemoryEx's MEM_RESERVE_PLACEHOLDER is gone and the
+#     whole placeholder block — reserve, replace, preserve, coalesce, split
+#     in two and in three — passes. The pair reaches its end for the first
+#     time, and the honest number is 1199 failures, not the zero this block
+#     used to claim. That zero was an ARTEFACT: the panic stopped the
+#     process on page one, so nothing behind it had ever been counted.
+#
+#     1102 of the 1199 are ONE subject, the thread-STACK contract:
+#     test_stack_size (:1338-:1352, :1403-:1431) sweeps 61 reserve/commit
+#     /zero_bits combinations through RtlCreateUserStack and
+#     RtlCreateUserThread, and test_stack_size_thread (:1050-:1102) checks
+#     what the new thread's TEB and MEMORY_BASIC_INFORMATION then say. On
+#     NT a stack is ONE reservation whose committed part grows behind a
+#     moving guard band, so DeallocationStack/StackLimit/StackBase and every
+#     MBI field about the stack follow from that one shape. proskrnl commits
+#     what it reserves and has no guard band: the requested reserve is
+#     ignored (0xad0000 where 0x200 was asked), the region below the stack
+#     reports MEM_FREE where MEM_RESERVE was wanted, and the guard-page
+#     group at :1084/:1131 has nothing to find. It is mm+ps work and it is
+#     the whole item — the other 97 are a long tail behind it.
+#
+#     The tail, for whoever gets past the stack: 70 are
+#     MemoryRegionInformation answering STATUS_INVALID_INFO_CLASS (:634-:652
+#     and :2844-:3062 — one unbuilt class, and :3095 win_skips
+#     MemoryImageInformation the same way); 11 are zero_bits on
+#     NtMapViewOfSection (:1517, the constraint sem_mm/zero_bits.c pinned for
+#     NtAllocateVirtualMemory, not yet honoured on the mapping path); 6 are a
+#     cross-process map-then-ReadProcessMemory (:1728-:1752); 4 are
+#     KUSER_SHARED_DATA fields (NumberOfPhysicalPages, ActiveProcessorCount,
+#     ActiveGroupCount); and 6 are singletons, of which :743 is the closest
+#     to this session's work — MEM_EXTENDED_PARAMETER_EC_CODE is captured and
+#     ignored where a non-ARM64 host must refuse it.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
