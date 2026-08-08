@@ -2,7 +2,6 @@
 name: fix-cui-winetest
 description: Take ONE `# TODO: Implement` work item from the CUI winetest manifest (tests/winetest/manifest.txt, planned in docs/21), pin it against the oracle, implement it, re-measure, un-park the pair if it is green, then gate-check, open a PR, wait for CI and rebase-merge. Refuses when no unparkable item is left. Invoke manually with /fix-cui-winetest; never triggered automatically.
 argument-hint: [pair-or-W-item]
-disable-model-invocation: true
 context: fork
 agent: general-purpose
 background: false
