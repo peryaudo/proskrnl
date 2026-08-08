@@ -18,34 +18,58 @@
 static HANDLE teardown_dir;
 static volatile LONG victim_rounds;
 
-/* Stream reads forever (cold reopen every round); the main thread terminates
- * this mid-flight. No cleanup on purpose: the leaked handle is the point —
- * handle sweep at process rundown must cope. */
+/* Stream reads forever; the main thread terminates this mid-flight. No cleanup
+ * on purpose: the leaked handle is the point — handle sweep at process rundown
+ * must cope.
+ *
+ * The handle is opened ONCE, outside the loop, and that is load-bearing rather
+ * than tidiness. This loop used to reopen the file cold every round, and that
+ * wedged the ORACLE outright. Two wine paths hold the process-wide
+ * fd_cache_mutex across an entire wineserver round trip:
+ * server_get_unix_fd (dlls/ntdll/unix/server.c:1171, around get_handle_fd) and
+ * NtClose (:1957, around close_handle). A thread killed inside either leaves
+ * the mutex locked forever — it exits through wine_server_call's own
+ * abort_thread(0) ("the server closed the connection", :264), which unlocks
+ * nothing, and the mutex is a plain private pthread mutex (:106) with no
+ * owner-died recovery. Every later NtClose, on any thread, then parks in
+ * __lll_lock_wait_private and never returns. A cold reopen per round put two
+ * such round trips in every pass; measured on two cores, ~25% of runs hung,
+ * always at this case's CloseHandle(thread), always with wine's
+ * server_block_set masked in the wedged thread — the hang that took two CI
+ * oracle jobs to their 60-minute cap (issue #118).
+ *
+ * One handle leaves exactly one of those windows, the cache-filling first
+ * read, and the main thread waits that out before it kills (see the round
+ * handshake below) — get_cached_fd short-circuits ahead of the section
+ * (:1168), so every read after the first takes no lock at all and the loop is
+ * pread and nothing else.
+ *
+ * What the case is FOR is unchanged: a thread terminated with a read in
+ * flight, its handle leaked. What is lost is the kill landing inside an open
+ * or a close, which wine cannot survive at all — so no version of this case
+ * can keep that schedule on the oracle. */
 static DWORD WINAPI teardown_victim(void *param)
 {
     IO_STATUS_BLOCK iosb;
     LARGE_INTEGER offset;
     static char chunk[4096];
+    NTSTATUS status;
+    HANDLE h;
     (void)param;
 
+    status = open_file(&h, teardown_dir, W("victim.bin"), FILE_GENERIC_READ,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
+    if (!NT_SUCCESS(status))
+        return 0;
     for (;;)
     {
-        HANDLE h;
-        NTSTATUS status = open_file(&h, teardown_dir, W("victim.bin"), FILE_GENERIC_READ,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, &iosb);
-        if (!NT_SUCCESS(status))
-            return 0;
         for (offset.QuadPart = 0; offset.QuadPart < TEARDOWN_FILE_BYTES;
              offset.QuadPart += sizeof(chunk))
         {
             status = NtReadFile(h, NULL, NULL, NULL, &iosb, chunk, sizeof(chunk), &offset, NULL);
             if (!NT_SUCCESS(status))
-            {
-                NtClose(h);
-                return 0;
-            }
+                return 0; /* h leaked on purpose, as above */
         }
-        NtClose(h);
         victim_rounds++;
     }
     return 0;
@@ -86,7 +110,16 @@ START_TEST(io_teardown)
     victim_rounds = 0;
     thread = CreateThread(NULL, 0, teardown_victim, NULL, 0, NULL);
     ok(thread != NULL, "CreateThread victim");
-    Sleep(50); /* let it get properly into the streaming loop */
+    /* Wait for a completed streaming pass instead of sleeping a guessed 50 ms:
+     * a round proves the victim opened the file AND filled wine's fd cache, so
+     * the kill cannot land in the one lock-holding round trip a single handle
+     * still costs (see teardown_victim). Asserted, because it is also the only
+     * thing standing between a victim that never started and a case that
+     * terminates an already-dead thread and reports every aftermath check
+     * green. */
+    for (int i = 0; i < 1000 && victim_rounds == 0; i++)
+        Sleep(10);
+    ok(victim_rounds > 0, "victim reached the streaming loop (rounds=%ld)", (long)victim_rounds);
 
     ok(TerminateThread(thread, 0), "TerminateThread");
     ok(WaitForSingleObject(thread, 15000) == WAIT_OBJECT_0,
