@@ -360,6 +360,14 @@ kernel32_test.exe:environ
 #     :3208 (FindFirstFile with the "*." pattern, a FAT short-name
 #     question), 3 at :2695/:2696, and a handful around CopyFile of a mapped
 #     or self-named file (:702, :847, :1006, :1174).
+#     AND 152 IS A LOWER BOUND: re-measured while checking that the win.ini
+#     bake (kernel32:profile's block) did not perturb this pair, the run
+#     PANICS at file.c:3338's CreateMailslotW and never reaches its summary
+#     line — so, like ntdll:file, this pair is also gated on mailslots
+#     (docs/21 W8) and nothing past :3338 has ever been counted (docs/21 §4
+#     trap 2). The clusters above are unchanged and none of them is near
+#     file.c:3389, this pair's only win.ini reader, which sits BEHIND the
+#     panic and is therefore not reached at all.
 # TODO: Implement
 # kernel32_test.exe:file
 kernel32_test.exe:format_msg
@@ -416,13 +424,48 @@ kernel32_test.exe:power
 #     "Getting console in mode" — the STARTUPINFO console-handle block needs
 #     a console the redirected oracle has not got.
 # kernel32_test.exe:process
-# UNTRIAGED, FIXABLE — and the smallest item on the board. 6 failures:
-#     profile.c:95 and :101 are .ini value round-trips returning the wrong
-#     string, and :559-:568 end with RemoveDirectoryA failing 145
-#     (ERROR_DIR_NOT_EMPTY), which suggests a file left open or undeleted by
-#     the writes before it rather than a directory bug. Both halves are
-#     WritePrivateProfileString on the FAT backend.
-# TODO: Implement
+# TRIAGED TO ITS FLOOR — NOT FIXABLE WHILE THE BACKEND IS FAT32.
+#     4 failures, down from a re-measured SEVEN. The block this replaces
+#     claimed 6 and guessed at the cause of both halves; it was wrong about
+#     the count and about both causes. (The seventh is profile.c:229, which
+#     it never listed: it is a todo_wine that PASSES on proskrnl, and
+#     winetest counts a succeeded todo as a failure — easy to miss when
+#     scanning a log for "Test failed".)
+#
+#     The first half is GONE and was never a .ini round trip. profile.c:95
+#     and :101 are test<00> of test_profile_int, which is
+#     GetPrivateProfileIntA(NULL, NULL, 70, NULL) — every argument NULL, so
+#     kernel32 resolves the file to %windir%\win.ini and the section to "the
+#     section NAMES in it" (dlls/kernel32/profile.c GetPrivateProfileStringW,
+#     the !section arm). With win.ini present that returns "mail", which
+#     parses as 0; with it absent the call returns 0 and the API hands back
+#     the default 70. The wtest image had no win.ini because it carries no
+#     wineboot.exe, so smss skips firstboot and the `wineboot --init` pass
+#     that writes it (wine.inf [SystemIni], UpdateInis) never ran — while the
+#     oracle leg runs in a wineprefix where it did. The image now bakes
+#     win.ini + system.ini generated from that same [SystemIni] payload
+#     (tools/gen_sysini.py, byte-identical to a prefix's own copies), which
+#     also cleared :229, where proskrnl's ERROR_FILE_NOT_FOUND was passing a
+#     todo_wine that the oracle fails.
+#
+#     What is left is ONE cause and it is the FAT floor.
+#     test_profile_directory_readonly (:536) creates a directory whose DACL
+#     grants Everyone read+execute only, then requires the three
+#     WritePrivateProfileString* calls into it to FAIL (:559/:562/:565) and
+#     RemoveDirectoryA to then succeed (:568 — it fails 145 on the file the
+#     writes left). That needs a volume that STORES and ENFORCES ACLs.
+#     Security descriptors are an NTFS construct; FAT32 has nowhere to put
+#     one, and proskrnl's volume says so — fs/fat32/fat.c reports
+#     FILE_CASE_PRESERVED_NAMES and not FILE_PERSISTENT_ACLS, the documented
+#     flag for "preserves and enforces ACLs" (GetVolumeInformation). NT on a
+#     FAT volume answers this test the same way proskrnl does. The oracle
+#     passes only because Wine maps the DACL onto unix permission bits —
+#     which is why the same 4 went "from 4 to 0" when the oracle stopped
+#     running as root (docs/03 "M10 winetest notes"; that run logged the
+#     count and not the lines, so the two sets being identical is an
+#     inference from count plus mechanism). Same floor as
+#     ntdll:directory's reparse points; re-open only if the backend changes.
+#     No TODO for that reason: this is category (2), not a work item.
 # kernel32_test.exe:profile
 # UNTRIAGED, FIXABLE. 62 failures, then an unhandled 0xc0000005 — but
 #     the crash is a cascade and the entry point is earlier: resource.c:680
