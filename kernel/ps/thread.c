@@ -559,6 +559,7 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     /* Set before the thread is readied, so nothing can observe it clear on a
      * thread that was created hidden. */
     thread->hideFromDebugger = options->hideFromDebugger;
+    thread->bypassProcessFreeze = options->bypassProcessFreeze;
 
     /* Write the handle straight into the caller's (user) PHANDLE — ObpCreateHandle
      * is the choke point that probes it under the current previous mode. A
@@ -659,6 +660,12 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
      * STATUS_INVALID_PARAMETER for it) and ntdll:thread asserts both halves
      * ten lines apart (thread.c:122 and :153). */
     options.hideFromDebugger = (createFlags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER) != 0;
+    /* BYPASS_PROCESS_FREEZE is a create-time property of the THREAD, read by
+     * the process-level suspend/resume fanout (PspSuspendResumeProcess).
+     * Wine lists it in NtCreateThreadEx's supported_flags
+     * (dlls/ntdll/unix/thread.c) and its own PsCreateSystemThread passes
+     * nothing else — a frozen process must still be able to answer. */
+    options.bypassProcessFreeze = (createFlags & THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE) != 0;
     uint64_t threadId = 0, tebBase = 0;
     NTSTATUS status = PspCreateUserThread(process, (uint64_t)(uintptr_t)startRoutine,
                                           (uint64_t)(uintptr_t)argument, suspended, &options,

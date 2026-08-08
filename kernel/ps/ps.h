@@ -200,6 +200,17 @@ typedef struct ETHREAD
      * the value the caller reads, which is the whole of the observable
      * contract here. Consumers: ntdll:thread, kernel32:thread. */
     BOOLEAN hideFromDebugger;
+    /* THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE at create time: this thread
+     * is exempt from the PROCESS-level freeze, and symmetrically from the
+     * process-level resume — NtSuspendProcess/NtResumeProcess skip it, while
+     * the per-THREAD NtSuspendThread/NtResumeThread still reach it. The
+     * server stores and reads exactly that (`thread->bypass_proc_suspend =
+     * !!(req->flags & THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE)` in
+     * third_party/wine server/thread.c create_thread; the two
+     * `if (!thread->bypass_proc_suspend)` arms in server/process.c's
+     * suspend_process/resume_process handlers). Set once at birth; NT has no
+     * entry point that changes it afterwards. */
+    BOOLEAN bypassProcessFreeze;
     /* ThreadPriorityBoost's disable flag, same shape and same reasoning:
      * proskrnl does not boost priorities at all (docs/03 "Deliberate
      * simplifications"), so nothing acts on it — but the query must return
@@ -437,6 +448,9 @@ typedef struct PSP_THREAD_OPTIONS
      * create_thread) and ntdll:thread reads it straight back out through
      * the query class (thread.c:120-:122). */
     BOOLEAN hideFromDebugger;
+    /* THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE: this thread is exempt from
+     * its process's freeze, in BOTH directions — see ETHREAD's field. */
+    BOOLEAN bypassProcessFreeze;
 } PSP_THREAD_OPTIONS;
 
 /* Create and ready an additional user thread in `process`: its own guard-page
