@@ -2,9 +2,6 @@
 name: fix-cui-winetest
 description: Take ONE `# TODO: Implement` work item from the CUI winetest manifest (tests/winetest/manifest.txt, planned in docs/21), pin it against the oracle, implement it, re-measure, un-park the pair if it is green, then gate-check, open a PR, wait for CI and rebase-merge. Refuses when no unparkable item is left. Invoke manually with /fix-cui-winetest; never triggered automatically.
 argument-hint: [pair-or-W-item]
-context: fork
-agent: general-purpose
-background: false
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, TaskCreate, TaskUpdate, TaskList
 ---
 
@@ -13,19 +10,19 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, TaskCreate,
 Close **one** entry on the CUI winetest frontier, end to end: pick it, pin it,
 build it, prove it, land it.
 
-You are running in a forked subagent with the full tool set. `$ARGUMENTS`, if
-present, names the pair (`ntdll:virtual`) or the docs/21 item (`W8`) to work;
-otherwise you choose. Work **one** item. Finishing one item properly beats
-starting three.
+You run this yourself, in the main conversation — do **not** hand it to a
+subagent. `$ARGUMENTS`, if present, names the pair (`ntdll:virtual`) or the
+docs/21 item (`W8`) to work; otherwise you choose. Work **one** item.
+Finishing one item properly beats starting three.
 
-> **You have full access, on purpose, and every frontmatter field is part of
-> that.** `agent: general-purpose` is the agent type with the complete tool
-> set. `background: false` keeps it: a *backgrounded* fork is restricted to
-> the narrower background-subagent tools, which would cost you Write and
-> Edit. `allowed-tools` pre-approves the lot so the run does not stall on a
-> permission prompt half an hour in. The cost of `background: false` is that
-> this blocks the invoking turn, including the CI wait — that is the intended
-> trade; do not "fix" it by backgrounding the fork.
+> **Run it in your own context, on purpose.** The work below is a long
+> single-threaded loop — pin, build, measure, land — where each step reads the
+> last step's output, and the user watches it happen and can steer mid-run. A
+> subagent would hide all of that behind one summary at the end. `allowed-tools`
+> pre-approves the tool set so the run does not stall on a permission prompt
+> half an hour in. The cost is that this occupies the session for the whole
+> run, including the CI wait — that is the intended trade; do not "fix" it by
+> delegating or backgrounding the work.
 >
 > Full access means you can push to a remote and merge to `main` with nobody
 > watching. The steps below are what keeps that safe — the unfiltered gate
@@ -178,13 +175,13 @@ adversarial with your own work: G11's ownership audit and G12's loud-refusal
 hunt are the two that most often catch a real defect. If a fix falls out of
 it, re-run the affected legs from Step 4.
 
-`gate-check` is itself a forked skill, and you are already a fork — nesting
-may not be available here. So: try invoking it, and **if that fails, read
-`.claude/skills/gate-check/SKILL.md` and apply it yourself**. The gates are
-what matter; which mechanism ran them does not. Reviewing your own diff is
-weaker than a fresh reviewer doing it, so lean harder on the evidence: for
-every finding, cite `file:line` and state the concrete failure, not the
-category.
+Invoke `gate-check` — running in the main conversation, you get its fork for
+free, and a reviewer that has not seen you write the diff catches more than
+you reviewing yourself. **If the invocation fails, read
+`.claude/skills/gate-check/SKILL.md` and apply it yourself**; the gates are
+what matter, not which mechanism ran them. Self-review is the weaker path, so
+lean harder on the evidence there: for every finding, cite `file:line` and
+state the concrete failure, not the category.
 
 ## Step 7 — Commit as meaningful units (G13)
 
