@@ -322,6 +322,37 @@ than logic. `kernel/cm/registry.c` seeds exactly ONE time-zone key (UTC),
 because that is the one kernelbase requires to boot. Mechanical, but a
 large data set, and it must come from the pinned prefix rather than from
 memory (G8).
+### W14 — `kernel32:profile` (**DONE — and it closes, without going green**)
+
+Never a numbered item here; it sat in the manifest as "the smallest item on
+the board, 6 failures". It measured **7**, and worked to its floor it was
+**two** subjects, neither of them the one the block guessed at. (The
+uncounted seventh, profile.c:229, is a `todo_wine` that PASSES on proskrnl;
+winetest scores a succeeded todo as a failure, and a log scanned for "Test
+failed" does not show it. §4's trap 2 has a sibling here: a count is only
+worth what the way it was read is worth.)
+
+- **Three of the seven were the IMAGE, not the kernel.** profile.c:95/:101
+  and :229 all read `%windir%\win.ini`, which the wtest image did not have:
+  it carries no `wineboot.exe`, so smss skips firstboot and the `wineboot
+  --init` pass that writes `win.ini`/`system.ini` (wine.inf `[SystemIni]`)
+  never ran — while the oracle leg runs in a wineprefix where it did. The
+  image now bakes both, generated from that same `[SystemIni]` payload
+  (`tools/gen_sysini.py`, `--check` proves it byte-identical to a prefix).
+- **The remaining four are the FAT floor** and the pair is now category (2),
+  with no `TODO`. `test_profile_directory_readonly` needs a volume that
+  stores and enforces a directory DACL; FAT32 has nowhere to put one, and
+  `fs/fat32/fat.c` says so by reporting no `FILE_PERSISTENT_ACLS`. NT on FAT
+  answers this test the way proskrnl does. `docs/03` M6 has the note.
+
+The confirming measurement was already in the tree and nobody had connected
+it: `docs/03` "M10 winetest notes" records that running the ORACLE as an
+ordinary user instead of root took `kernel32:profile` "from 4 to 0". Same
+count, same mechanism (unix permission bits standing in for the DACL) —
+which is what makes "the volume must enforce ACLs" a measurement rather
+than a hypothesis. That run logged the count and not the line numbers, so
+the two sets being the SAME four is an inference from count plus mechanism;
+they are the whole of this subtest's failing assertions either way.
 
 ---
 
@@ -418,7 +449,20 @@ Pairs and framings that will consume effort and unblock nothing.
    *after* W6's `NtSetContextThread` fix — which may unblock it alone. Do
    W6's triage, then re-ask.
 
-6. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
+6. **The wtest image is NOT a wineboot-initialised prefix, and the
+   difference reads as a kernel divergence.** The oracle leg runs in a
+   wineprefix that `wineboot --init` populated; the proskrnl image is baked
+   by hand and carries no `wineboot.exe`, so everything wine.inf would have
+   written is absent unless something bakes it. That is why the full NLS set
+   is baked (`run.sh` says a missing `c_932.nls` reads as a mass divergence)
+   and why `win.ini`/`system.ini` now are (W14 — three of
+   `kernel32:profile`'s failures were nothing but that file's absence).
+   **Before diagnosing a pair that reads a file out of `%windir%` or the
+   registry, check the oracle's prefix for it.** `kernel32:time`'s time-zone
+   keys (W13) are the same shape one layer down, in the hive rather than on
+   the volume.
+
+7. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
    `ntdll:om`, `kernel32:{console,process,loader,module,debugger,toolhelp}`,
    `ntdll:{alpc,wow64}` and `cmd.exe_test:batch` fail identically on both
    runners, or depend on the standalone link rather than the boundary, or

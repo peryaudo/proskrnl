@@ -117,6 +117,39 @@ would change if the oracle ever started enforcing (a foreign handle reading
 and writing across an exclusive lock, both of which succeed). Building
 enforcement means changing that test first.
 
+### A create-time security descriptor on a file or directory is ignored — the volume says so
+
+`OBJECT_ATTRIBUTES.SecurityDescriptor` is captured and enforced for **Ob**
+objects ("CUI-2 Se notes"), but the file path drops it: `IopCreateFile`
+(`kernel/io/file.c`) never reads it, and the FAT32 backend neither stores one
+nor checks one at open. That is NT's own answer on a FAT volume rather than a
+gap — a security descriptor is an NTFS construct, FASTFAT has nowhere on disk
+to put one, and MS documents the boundary at both ends: `CreateDirectory`'s
+`lpSecurityAttributes` ACLs apply on NTFS, and `GetVolumeInformation`'s
+`FILE_PERSISTENT_ACLS` is defined as "the volume preserves and enforces ACLs
+— NTFS does, FAT does not".
+
+It is not a silent fabrication either (G12), because the volume ANSWERS the
+question: `fs/fat32/fat.c`'s `FileFsAttributeInformation` reports
+`FILE_CASE_PRESERVED_NAMES` alone and **not** `FILE_PERSISTENT_ACLS`. A
+caller that asks gets told, and the create then behaves the way the answer
+promises.
+
+The observable consequence, measured: `kernel32:profile`'s
+`test_profile_directory_readonly` (profile.c:536) creates a directory whose
+DACL grants Everyone read+execute only and requires the three
+`WritePrivateProfileString*` calls into it to FAIL (profile.c:559/:562/:565).
+On proskrnl they succeed, and `RemoveDirectoryA` then fails 145
+(`ERROR_DIR_NOT_EMPTY`, :568) on the file they left. The ORACLE passes only
+because Wine maps the DACL onto unix permission bits — which is why the same
+FOUR failures disappeared when the oracle stopped running as root ("M10
+winetest notes", the eight host-parked pairs: `kernel32:profile` "from 4 to
+0"). That earlier run recorded the count and not the line numbers, so the
+identity of the two sets is an inference from count plus mechanism rather
+than a second measurement; it is the whole of this subtest's failing
+assertions either way. This cluster is about a volume that enforces ACLs, and
+re-opens only if the backend changes.
+
 ## M7 process/return-protocol notes (Ps + the user boundary)
 
 The M7 boundary is the byte-exact PEB/TEB/`RTL_USER_PROCESS_PARAMETERS`/KUSER_SHARED_DATA
