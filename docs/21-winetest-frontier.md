@@ -283,14 +283,65 @@ pairs.
 **I am explicitly unsure of this.** It is a pattern across three logs, not
 a diagnosis. Do not schedule the fix; schedule the triage.
 
-### W10 — The three wedges
+### W10 — The three wedges (**one of the three is DONE — and they are NOT one bug**)
 
-`ntdll:sync`, `ntdll:thread` and `ntdll:threadpool` now all hang with
-nothing named on serial. `ntdll:thread` is the newest arrival: its two
-assertion failures were fixed this session and what remains is only the
-hang, so the three are probably one bug and should be triaged together.
+`ntdll:sync`, `ntdll:thread` and `ntdll:threadpool` all hung to their
+per-pair timeout. This item used to say "they are probably one bug and
+should be triaged together". **They were measured separately and that guess
+is refuted**: `ntdll:thread`'s wedge is fixed, and the other two are
+unchanged by the fix.
 
-They are disproportionately expensive — each costs its full per-pair
+**`ntdll:thread`'s wedge — DONE.** It was
+`THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE` (0x40), and the shape is worth
+carrying forward. The flag exempts one THREAD from its process's freeze, in
+both directions — the server reads `!thread->bypass_proc_suspend` in each
+of the two fanouts (`third_party/wine` `server/process.c`,
+`DECL_HANDLER(suspend_process)` / `DECL_HANDLER(resume_process)`) and stores
+the bit at birth (`server/thread.c` `create_thread`). proskrnl accepted the
+flag in `NtCreateThreadEx`'s word and dropped it. So in
+`test_thread_bypass_process_freeze` (`dlls/ntdll/tests/thread.c`) the
+created thread — which calls `NtSuspendProcess` on its own process and is
+then the ONLY thread able to call `NtResumeProcess` — froze itself, and the
+main thread's join never returned. Fixed in `kernel/ps/thread.c` +
+`kernel/ps/process.c`, pinned by
+`tests/ntapi/sem_ps/bypass_process_freeze.c`.
+
+**Two lessons, both about *shape* rather than about this flag:**
+
+1. **A dropped flag does not fail an assertion — it deadlocks.** G12's
+   rule is about a stub fabricating an answer; this was the same defect one
+   layer down, an accepted *input* silently dropped. There was nothing on
+   serial for 300 s because a wedge names nothing. The other silently
+   accepted create flags (`SKIP_THREAD_ATTACH`, `LOADER_WORKER`,
+   `SKIP_LOADER_INIT`, `INITIAL_THREAD`) are the same class of risk and none
+   of them is pinned.
+2. **The pin must not be able to hang.** `test_thread_bypass_process_freeze`
+   suspends its OWN process, so a wrong kernel wedges it. The `tests/ntapi`
+   pin freezes a CHILD instead and measures each thread's progress by a file
+   length, so a wrong kernel FAILS AN ASSERTION rather than costing the leg
+   its timeout — the same technique `sem_ps/suspend_process.c` already used
+   for the unexempted half.
+
+**What `ntdll:thread` is now.** Not green: the pair runs on and panics at
+the missing `NtQueueApcThreadEx` (`test_NtQueueApcThreadEx`), with
+`NtAllocateReserveObject` and the `MemoryReserveObjectType*` reserve objects
+behind it. Both sit in `docs/16`'s "Superseded / legacy forms — no consumer
+in the baked stack" row, which the winetest gate now contradicts **exactly
+the way it does for mailslots (W8)** — so this pair inherits W8's judgement
+call rather than needing a new one. Everything past that panic is unmeasured
+(§4 trap 2).
+
+**The other two are still open, and each is now its own item.** Both were
+re-measured after the fix and neither moved:
+
+- `ntdll:sync` prints its own summary — "0 tests executed … 0 failures" —
+  and only THEN hangs. The subtest body finishes; the PROCESS does not. That
+  is a much narrower question than "it wedges".
+- `ntdll:threadpool`'s old block ("a HANG with no output at all, not one
+  assertion runs") was **stale**: it reaches `threadpool.c:1622` with two
+  todo markers behind it before hanging.
+
+They remain disproportionately expensive — each costs its full per-pair
 timeout on every sweep — and `docs/03` records that the sweep ABORTS on
 timeout rather than running more pairs against a wedged console.
 
@@ -476,8 +527,12 @@ Pairs and framings that will consume effort and unblock nothing.
 ## 5. Where I am explicitly unsure
 
 - **W9's shared cause** is a pattern across three logs, not a diagnosis.
-- **The three wedges being one bug** (W10) is a guess from their shape.
-  They may be three.
+- ~~**The three wedges being one bug** (W10) is a guess from their shape.
+  They may be three.~~ **Measured and refuted.** `ntdll:thread`'s wedge was
+  `THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE`; fixing it left `ntdll:sync`
+  and `ntdll:threadpool` bit-for-bit where they were. Three shapes that all
+  end in a timeout are not evidence of one cause — the timeout is the
+  harness, not the bug.
 - **The change-notify IOSB rule** (W4b) is measured on both sides but not
   explained: two oracle-green tests park a watch, cancel it and read the
   IOSB, and differ only in whether an event was supplied — one sees
