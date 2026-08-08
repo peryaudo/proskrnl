@@ -1,11 +1,20 @@
 ---
 name: gate-check
 description: Review the current diff against proskrnl's constitution (docs/09-constitution.md) and the G1-G14 PR gates (docs/CONTRIBUTING.md), flagging boundary violations before commit. Use before committing kernel/abi/driver changes, or when the user asks to "check the gates" / "is this constitutional".
+context: fork
+agent: general-purpose
+background: false
 ---
 
 # gate-check
 
 Review the working-tree diff for violations of proskrnl's hard gates. LLM contributors violate these by default, so be adversarial — assume a violation is present and try to find it.
+
+You run in a **forked subagent**: you have none of the conversation that produced this diff, which is the point — the diff has to defend itself on what is in the tree, not on what its author meant. Gather everything from disk. Where you cannot tell intent from the diff alone, say so and name what evidence would settle it, rather than assuming the benign reading.
+
+**Report only — change nothing.** No edits, no commits, no `git add`, no "while I was here" fixes, no running the test legs (they bake disk images from the live working tree, and a leg started here would corrupt one running elsewhere). Read-only commands only: `git diff`/`git log`/`git show`, `grep`, `python3 tools/blocking_frontier.py --check`, and the `tools/hack_meter.sh` check G9 asks for. The caller resolves what you find.
+
+`background: false` is deliberate: the verdict is wanted in the turn that asked for it, before a commit happens.
 
 ## Steps
 
