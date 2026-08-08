@@ -194,31 +194,56 @@ ntdll_test.exe:port
 ntdll_test.exe:rtlbitmap
 ntdll_test.exe:rtlstr
 ntdll_test.exe:string
-# UNTRIAGED, FIXABLE — and it WEDGES, which makes it expensive. The pair
-#     reports "0 tests executed" and then hangs to the per-pair timeout, so
-#     it costs five minutes of every full sweep while producing no verdict at
-#     all. Nothing is named in the log: no unbuilt class, no missing syscall,
-#     no user fault. Read the serial log first.
-#     Note kernel32:sync had a hang with exactly this shape and it was one
-#     assertion (pseudo-handles in NtWaitForMultipleObjects); this one may be
-#     similarly cheap.
+# RE-MEASURED, FIXABLE — and it WEDGES *after* reaching its own summary,
+#     which narrows it a long way. The pair prints
+#     "sync: 0 tests executed (0 marked as todo, 0 as flaky, 0 failures), 0
+#     skipped" — with one todo marker at sync.c:856 above it — and only THEN
+#     hangs to the per-pair timeout. So the subtest body runs to completion
+#     and nothing it asserts fails; what never finishes is the PROCESS, i.e.
+#     something is still parked at exit. Read the serial log first, then the
+#     thread list.
+#     NOT the same bug as ntdll:thread's wedge, which was measured and fixed
+#     this session (THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE); this pair is
+#     unchanged by that fix, so docs/21 §5's "the three wedges are probably
+#     one bug" is refuted for this pair.
 # TODO: Implement
 # ntdll_test.exe:sync
-# PARTLY FIXED, FIXABLE — and now a HANG, which is the whole remaining
-#     item. Zero failed assertions: the two it used to have (thread.c:122's
-#     THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER at create, :153's
-#     NtCreateUserProcess refusing the same flag) both landed this session.
-#     The pair now runs on and never finishes, timing out at 300 s with
-#     nothing named on serial. Same shape as ntdll:sync and ntdll:threadpool,
-#     and worth triaging with them rather than alone.
+# PARTLY FIXED, FIXABLE — the WEDGE IS GONE and the pair now stops on an
+#     unbuilt syscall instead, which is progress with a new frontier.
+#     What wedged it was test_thread_bypass_process_freeze
+#     (dlls/ntdll/tests/thread.c): a thread created with
+#     THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE calls NtSuspendProcess on its
+#     OWN process and is then the only thread able to call NtResumeProcess.
+#     proskrnl accepted the flag and froze that thread too, so the process
+#     could never be resumed and the main thread's join never returned — a
+#     silent 300 s deadlock with nothing on serial, because a wedge names
+#     nothing. Fixed in kernel/ps/{thread,process}.c and pinned by
+#     tests/ntapi/sem_ps/bypass_process_freeze.c (docs/21 W10).
+#     The pair now runs on to test_NtQueueApcThreadEx and PANICS at the
+#     missing NtQueueApcThreadEx (syscall 0xd3) at ~1.4 s. Zero failed
+#     assertions before it. Behind that syscall sits NtAllocateReserveObject
+#     and the reserve-object type the subtest asks for
+#     (MemoryReserveObjectTypeUserApc / IoCompletion) — both filed under
+#     docs/16 "Superseded / legacy forms — no consumer in the baked stack",
+#     a row the winetest gate now contradicts exactly the way it does for
+#     mailslots (docs/21 W8). That decision is the next thing this pair
+#     needs, not more triage.
+#     And per docs/21 §4 trap 2: everything past that panic — the rest of
+#     test_NtQueueApcThreadEx and all of test_skip_thread_attach — has never
+#     been measured. The zero above is a lower bound.
 # TODO: Implement
 # ntdll_test.exe:thread
-# UNTRIAGED, FIXABLE — a HANG with no output at all. Not one assertion
-#     runs before the timeout, and nothing is named on serial: no unbuilt
-#     class, no missing syscall, no user fault. The threadpool is PE-side in
-#     ntdll, so what fails underneath is most likely the timer/wait/APC
-#     surface it is built on. One of three pairs that now wedge
-#     (ntdll:sync, ntdll:thread); they are probably one bug.
+# RE-MEASURED, FIXABLE — the old block ("a HANG with no output at all, not
+#     one assertion runs") is STALE and was wrong about the shape. The pair
+#     runs a long way: two ntdll threadpool fixmes (tp_object_initialize:
+#     persistent threads, environment version 9999), then todo markers at
+#     threadpool.c:652 (TpSimpleTryPost) and :1622 ("expected that timers are
+#     merged"), and only then hangs to the per-pair timeout. No failed
+#     assertion, no unbuilt class, no user fault is named.
+#     Measured again after ntdll:thread's wedge was fixed this session and
+#     unchanged by it, so this is its own bug — the threadpool is PE-side in
+#     ntdll, and what fails underneath is still most likely the timer/wait/APC
+#     surface it is built on. Start at what runs after :1622.
 # TODO: Implement
 # ntdll_test.exe:threadpool
 # ORACLE-FLAKY, NOT A KERNEL GAP — and the only entry here whose PROSKRNL
