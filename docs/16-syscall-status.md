@@ -48,9 +48,11 @@ bump; re-run the count then.
 12 (`docs/02`; deviations in `docs/03` "CUI-7 Cm-2/Mm-2/system notes").
 
 Sub-surface refusals that remain are decisions, recorded where they live:
-placeholder allocation (`MEM_RESERVE/REPLACE/PRESERVE_PLACEHOLDER`) refuses
-loudly inside the implemented `*Ex` ids (no baked consumer; `docs/03`), and
-`NtSetSystemInformation` serves exactly the one class the baked stack issues.
+placeholder MAPPING (`MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`,
+`MEM_PRESERVE_PLACEHOLDER` in `NtUnmapViewOfSectionEx`) refuses loudly inside
+the implemented `*Ex` ids (no baked consumer; `docs/03`) — placeholder
+ALLOCATION is built (`docs/21` W5) — and `NtSetSystemInformation` serves
+exactly the one class the baked stack issues.
 
 ## The 62 missing syscalls by area
 
@@ -151,12 +153,14 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
 
 ### Mm flag gaps
 
-The CUI-7 placeholder decisions, unchanged by CUI-9's COW work: `SEC_RESERVE` in
-`NtCreateSection`/`NtCreateSectionEx` (`kernel/mm/section.c:122`),
-`MEM_RESERVE_PLACEHOLDER`/`MEM_REPLACE_PLACEHOLDER` in `NtAllocateVirtualMemoryEx`
-(`kernel/mm/virtual.c:1632`), `MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`
-(`kernel/mm/section.c:1186`), `MEM_PRESERVE_PLACEHOLDER` in
-`NtUnmapViewOfSectionEx` (`kernel/mm/section.c:1264`).
+What is left of the CUI-7 placeholder decisions after `docs/21` W5 built the
+allocation half: `SEC_RESERVE` in `NtCreateSection`/`NtCreateSectionEx`
+(`kernel/mm/section.c`), `MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`
+(`kernel/mm/section.c`), `MEM_PRESERVE_PLACEHOLDER` in
+`NtUnmapViewOfSectionEx` (`kernel/mm/section.c`). Mapping a section into a
+placeholder is a larger contract than replacing one with private memory, and
+no baked consumer reaches it; `NtAllocateVirtualMemoryEx`'s and
+`NtFreeVirtualMemory`'s placeholder flags are no longer on this list.
 
 ### Refusing in full, by design
 

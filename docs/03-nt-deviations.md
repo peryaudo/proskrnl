@@ -1119,11 +1119,25 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   grafts). `KEY_SET_INFORMATION_CLASS` is hand-typed in `kernel/cm/registry.c` with its
   wdm.h citation (the pinned Wine tree has no trace of it); only
   `KeyWriteTimeInformation` is served.
-- **Placeholders stay unbuilt** (`MEM_RESERVE/REPLACE/PRESERVE_PLACEHOLDER`): recognized
-  and refused loudly with `STATUS_NOT_IMPLEMENTED` (Art. 12; the `SEC_RESERVE`
-  precedent) — no baked consumer, and the milestone's `*Ex` scope is the delegating
-  forms. `NtCreateSectionEx`'s parameter array is accepted-and-ignored (the pinned
-  oracle FIXME shape).
+- **Placeholders are built on the ALLOCATION surface and still unbuilt on the SECTION
+  one.** `NtAllocateVirtualMemoryEx`'s `MEM_RESERVE_PLACEHOLDER`/`MEM_REPLACE_PLACEHOLDER`
+  and `NtFreeVirtualMemory`'s `MEM_PRESERVE_PLACEHOLDER`/`MEM_COALESCE_PLACEHOLDERS`
+  are implemented and pinned (`tests/ntapi/sem_mm/placeholder.c`; `docs/21` W5). A VAD
+  carries the oracle's own two bits — `MI_VAD_PLACEHOLDER` says the range is in the
+  protocol, `MI_VAD_FREE_PLACEHOLDER` says it is an empty placeholder right now — and
+  nothing else can tell a placeholder from a `PAGE_NOACCESS` reservation, because they
+  report identically through `MEMORY_BASIC_INFORMATION`. `MEM_REPLACE_PLACEHOLDER` in
+  `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in `NtUnmapViewOfSectionEx`
+  still refuse loudly with `STATUS_NOT_IMPLEMENTED` (Art. 12; the `SEC_RESERVE`
+  precedent): mapping a section INTO a placeholder is a second, larger contract and no
+  baked consumer reaches it. `NtCreateSectionEx`'s parameter array is
+  accepted-and-ignored (the pinned oracle FIXME shape).
+- **Splitting a VAD carries its write-watch record.** One split serves both
+  `MEM_RELEASE` and `MEM_PRESERVE_PLACEHOLDER` (`MiCarveVad`, Art. 11). The release
+  path's own earlier copy of it rebuilt the surviving pieces without `watchDirty`, so a
+  `MEM_WRITE_WATCH` reservation that was partially released stopped being watched —
+  unobserved by any suite, and fixed rather than reproduced when the second caller made
+  the duplication visible.
 - **Write-watch is fault-driven with the dirty array authoritative**
   (`kernel/mm/virtual.c` `MI_VAD.watchDirty`; the PTE writable bit is only the trap —
   `docs/17` §6.B's rule applied). Kernel writes mark through the same
