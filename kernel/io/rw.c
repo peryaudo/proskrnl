@@ -247,7 +247,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
         {
-            status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
+            status =
+                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
         }
         else
         {
@@ -296,7 +297,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
-        status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0);
+        status =
+            IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0);
         status = IopAsyncReturnShape(file, status, FALSE);
         ObDereferenceObject(file);
         return status;
@@ -330,7 +332,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, (ULONG_PTR)bytes);
+    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS,
+                                 (ULONG_PTR)bytes);
     status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
     return status;
@@ -420,7 +423,8 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         }
         if (NT_SUCCESS(status))
         {
-            status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
+            status =
+                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
         }
         else
         {
