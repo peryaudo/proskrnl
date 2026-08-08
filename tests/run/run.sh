@@ -770,6 +770,27 @@ winetest() {
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
         specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
     done
+    # %windir%\{win,system}.ini, for the same reason the nls set goes in.
+    # This image carries no wineboot.exe, so smss skips firstboot
+    # (user/smss/smss.c) and the `wineboot --init` pass that writes them
+    # never runs — while the ORACLE leg runs in a wineprefix where it did.
+    # Measured: without win.ini, kernel32:profile's NULL-filename cases
+    # (profile.c:95/:101, which read win.ini through GetPrivateProfileIntA,
+    # and :229's todo_wine on GetLastError) diverge on the file's absence
+    # rather than on anything the kernel does. Generated from the pinned
+    # wine.inf's own [SystemIni] payload, never hand-typed
+    # (tools/gen_sysini.py; --check proves it byte-identical to a prefix).
+    python3 "$ROOT/tools/gen_sysini.py" "$BUILD/wtests/sysini" >/dev/null
+    # And self-checked whenever the oracle leg has already materialised the
+    # prefix: byte-identical to what wineboot wrote there, so a wine pin that
+    # edits [SystemIni] cannot drift the two legs apart unnoticed.
+    if [[ -f "$WINEPREFIX/drive_c/windows/win.ini" ]]; then
+        python3 "$ROOT/tools/gen_sysini.py" --check "$WINEPREFIX" >/dev/null
+    fi
+    local inifile
+    for inifile in "$BUILD/wtests/sysini"/*.ini; do
+        specs+=("win:$inifile=windows/$(basename "$inifile")")
+    done
     specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
