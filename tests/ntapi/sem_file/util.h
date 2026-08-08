@@ -131,13 +131,43 @@ static inline NTSTATUS open_file(HANDLE *handle, HANDLE root, const void *wide_n
 }
 
 /* Delete a leftover file by name so reruns start clean (oracle runs reuse
- * the prefix; proskrnl runs get a fresh image, where this is a no-op). */
+ * the prefix; proskrnl runs get a fresh image, where this is a no-op).
+ *
+ * A READ-ONLY leftover is cleared first, or it never goes: FILE_DELETE_ON_CLOSE
+ * against one is STATUS_CANNOT_DELETE — what delete_on_close.c pins — so
+ * without this a case that marks a file read-only strands it, and every later
+ * run in that prefix fails on the leftover instead of on the boundary.
+ *
+ * The clearing open asks for SYNCHRONIZE and NOTHING ELSE, which is
+ * SetFileAttributesW's own mask and the one readonly_attr.c §5 pins as working
+ * on a read-only file. A wider mask is what fails: the oracle maps
+ * FILE_ATTRIBUTE_READONLY onto unix mode 0444 (server/file.c:254) and the SD it
+ * generates from that mode grants the owner no FILE_GENERIC_WRITE
+ * (mode_to_sd, server/file.c:362), so even a FILE_WRITE_ATTRIBUTES-only open is
+ * refused — measured c0000022. FileBasicInformation itself checks nothing
+ * (dlls/ntdll/unix/file.c:5211 fetches the fd with access mask 0). */
 static inline void scrub_file(HANDLE root, const void *wide_name)
 {
     IO_STATUS_BLOCK iosb;
     HANDLE handle;
     NTSTATUS status = open_file(&handle, root, wide_name, DELETE | SYNCHRONIZE, 0, FILE_OPEN,
                                 FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE, &iosb);
+    if (status == STATUS_CANNOT_DELETE)
+    {
+        FILE_BASIC_INFORMATION basic;
+
+        status = open_file(&handle, root, wide_name, SYNCHRONIZE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+                           FILE_NON_DIRECTORY_FILE, &iosb);
+        if (!NT_SUCCESS(status))
+            return;
+        memset(&basic, 0, sizeof(basic));
+        basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        NtSetInformationFile(handle, &iosb, &basic, sizeof(basic), FileBasicInformation);
+        NtClose(handle);
+        status = open_file(&handle, root, wide_name, DELETE | SYNCHRONIZE, 0, FILE_OPEN,
+                           FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE, &iosb);
+    }
     if (NT_SUCCESS(status))
         NtClose(handle);
 }
