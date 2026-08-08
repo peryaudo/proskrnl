@@ -62,7 +62,26 @@ struct MI_VAD
      * memory), so NtFlushVirtualMemory can address the covered FILE range
      * (section.c used to compute and discard it). */
     uint64_t sectionOffset;
+    /* Placeholders (docs/21 W5): MI_VAD_PLACEHOLDER / MI_VAD_FREE_PLACEHOLDER.
+     * The oracle draws the same two-bit DISTINCTION in its view protection
+     * (VPROT_PLACEHOLDER / VPROT_FREE_PLACEHOLDER, third_party/wine
+     * dlls/ntdll/unix/virtual.c — different values, same meaning; these
+     * never cross the ABI, so they are ours to number). The pair is not
+     * redundant: FREE says
+     * the range is an EMPTY placeholder right now, PLACEHOLDER alone says
+     * it is a real allocation that CAME from one. Only the second can be
+     * released back into a placeholder, which is the difference between
+     * a MEM_PRESERVE_PLACEHOLDER free that works and one that answers
+     * STATUS_CONFLICTING_ADDRESSES — and no other field can tell the two
+     * apart, because a placeholder and a PAGE_NOACCESS reservation report
+     * identically through MEMORY_BASIC_INFORMATION. */
+    UCHAR placeholder;
 };
+
+/* This VAD participates in the placeholder protocol at all. */
+#define MI_VAD_PLACEHOLDER 0x01
+/* ...and is one right now: reserved, empty, waiting to be replaced. */
+#define MI_VAD_FREE_PLACEHOLDER 0x02
 
 /* NT never allocates the first 64K. Cross-check: third_party/wine
  * dlls/ntdll/unix/virtual.c, `address_space_start = (void *)0x10000`. */
@@ -528,6 +547,7 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->master = 0;
     vad->pagePrivate = 0;
     vad->sectionOffset = 0;
+    vad->placeholder = 0;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
     {
@@ -535,6 +555,121 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
         return 0;
     }
     return vad;
+}
+
+/* A private VAD over [base, size) -- a strict sub-range of `vad` -- carrying
+ * everything the original recorded about those pages: allocation
+ * protection, placeholder state, per-page protection, and the write-watch
+ * record if there is one. Nothing is committed and no frame moves; this is
+ * bookkeeping for a split, and the caller decides what happens to the
+ * pages. */
+static PMI_VAD MiCloneVadRange(PMI_VAD vad, uint64_t base, uint64_t size)
+{
+    ASSERT(base >= vad->base && base + size <= vad->base + vad->size);
+    PMI_VAD piece = MiCreateVad(base, size, vad->allocationProtect);
+    if (piece == 0)
+    {
+        return 0;
+    }
+    ULONG firstPage = (ULONG)((base - vad->base) / PAGE_SIZE);
+    ULONG pages = (ULONG)(size / PAGE_SIZE);
+    piece->placeholder = vad->placeholder;
+    memcpy(piece->pageProtect, vad->pageProtect + firstPage, pages * sizeof(ULONG));
+    if (vad->watchDirty != 0)
+    {
+        piece->watchDirty = MiAllocatePool(pages);
+        if (piece->watchDirty == 0)
+        {
+            MiFreePool(piece->pageProtect);
+            MiFreePool(piece);
+            return 0;
+        }
+        memcpy(piece->watchDirty, vad->watchDirty + firstPage, pages);
+    }
+    piece->writeWatch = vad->writeWatch;
+    return piece;
+}
+
+/* Replace `vad` with whatever of it lies OUTSIDE [base, size), plus -- when
+ * `carvedOut` is non-null -- a fresh VAD over the carved range itself, which
+ * is the caller's to re-stamp. Every piece inherits the original's record
+ * through MiCloneVadRange; `vad` is unlinked and freed either way, so a
+ * carve of the whole VAD with no `carvedOut` is simply a release.
+ *
+ * Frames are the CALLER's business: no page table is touched and no frame
+ * is freed here, so committed pages stay mapped across the carve and each
+ * piece's copied per-page record keeps describing its own range. A caller
+ * that wants a piece emptied decommits it, before or after — MEM_RELEASE
+ * does it before (on the original VAD) and MEM_PRESERVE_PLACEHOLDER after
+ * (on the carved one), and both are correct for that reason.
+ *
+ * Every allocation happens before anything is unlinked. The VAD list is the
+ * only record of what a process owns, so a half-applied split is
+ * unrecoverable — out of memory has to leave the address space exactly as
+ * it was.
+ *
+ * ONE split for both consumers (Art. 11): MEM_RELEASE drops the carved range
+ * and MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER keeps it as the new placeholder.
+ * They are the same operation, and the release path's own copy of it used to
+ * lose the write-watch record — invisible until a watched range was split. */
+static NTSTATUS MiCarveVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base, uint64_t size,
+                           PMI_VAD *carvedOut)
+{
+    ASSERT(vad->type == MEM_PRIVATE);
+    ASSERT(base >= vad->base && base + size <= vad->base + vad->size);
+
+    PMI_VAD head = 0;
+    PMI_VAD tail = 0;
+    PMI_VAD carved = 0;
+    BOOLEAN wantHead = base > vad->base;
+    BOOLEAN wantTail = base + size < vad->base + vad->size;
+
+    if (wantHead)
+    {
+        head = MiCloneVadRange(vad, vad->base, base - vad->base);
+    }
+    if (wantTail && (!wantHead || head != 0))
+    {
+        tail = MiCloneVadRange(vad, base + size, vad->base + vad->size - (base + size));
+    }
+    if (carvedOut != 0 && (!wantHead || head != 0) && (!wantTail || tail != 0))
+    {
+        carved = MiCloneVadRange(vad, base, size);
+    }
+    if ((wantHead && head == 0) || (wantTail && tail == 0) || (carvedOut != 0 && carved == 0))
+    {
+        /* Not linked yet, so the pieces are freed by hand. */
+        PMI_VAD pieces[3] = {head, tail, carved};
+        for (int i = 0; i < 3; i++)
+        {
+            if (pieces[i] != 0)
+            {
+                if (pieces[i]->watchDirty != 0)
+                {
+                    MiFreePool(pieces[i]->watchDirty);
+                }
+                MiFreePool(pieces[i]->pageProtect);
+                MiFreePool(pieces[i]);
+            }
+        }
+        return STATUS_NO_MEMORY;
+    }
+
+    MiUnlinkAndFreeVad(vad);
+    if (head != 0)
+    {
+        MiInsertVad(space, head);
+    }
+    if (tail != 0)
+    {
+        MiInsertVad(space, tail);
+    }
+    if (carved != 0)
+    {
+        MiInsertVad(space, carved);
+        *carvedOut = carved;
+    }
+    return STATUS_SUCCESS;
 }
 
 /* --- the engines (virtual.h) ----------------------------------------------- */
@@ -562,6 +697,96 @@ void MiDeleteAddressSpace(PMI_ADDRESS_SPACE space)
     space->pml4Physical = 0;
 }
 
+/* MEM_REPLACE_PLACEHOLDER: turn a placeholder into ordinary private memory
+ * IN PLACE, keeping its VAD and therefore its address range. The range must
+ * be a placeholder and the request must name all of it — a replacement that
+ * covered part of one would have to split it, and splitting is
+ * MEM_PRESERVE_PLACEHOLDER's job (which the caller must do first).
+ *
+ * The two refusals are different on purpose and the oracle keeps them apart
+ * (its map_view placeholder arm): naming a range nobody reserved, or a
+ * reserved range that never was a placeholder, is a bad ARGUMENT
+ * (STATUS_INVALID_PARAMETER); naming a real placeholder but the wrong extent
+ * of it is a range CONFLICT. */
+static NTSTATUS MiReplacePlaceholder(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
+                                     ULONG type, ULONG protect)
+{
+    PMI_VAD vad = MiFindVad(space, base);
+    if (vad == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (vad->base != base || vad->size != size)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+    if ((vad->placeholder & MI_VAD_FREE_PLACEHOLDER) == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    ASSERT(vad->type == MEM_PRIVATE);
+
+    UCHAR *watchDirty = 0;
+    if (type & MEM_WRITE_WATCH)
+    {
+        watchDirty = MiAllocatePool(size / PAGE_SIZE); /* pool zeroes */
+        if (watchDirty == 0)
+        {
+            return STATUS_NO_MEMORY;
+        }
+    }
+
+    ULONG wasProtect = vad->allocationProtect;
+    UCHAR wasPlaceholder = vad->placeholder;
+    /* The replacement's watch state is what THIS call asked for, not what
+     * the placeholder happened to carry: MEM_WRITE_WATCH is legal on the
+     * reserve that created the placeholder and means nothing there, because
+     * a placeholder has no page to watch. The old record is released only
+     * once the replacement is certain, so a failed commit can hand back the
+     * range exactly as it was found. */
+    UCHAR *wasWatchDirty = vad->watchDirty;
+    BOOLEAN wasWriteWatch = vad->writeWatch;
+    vad->watchDirty = watchDirty;
+    vad->writeWatch = watchDirty != 0;
+    vad->allocationProtect = protect;
+    /* A replacement stays IN the protocol (MI_VAD_PLACEHOLDER) and stops
+     * being an empty one — that is what lets the eventual
+     * MEM_PRESERVE_PLACEHOLDER free give the range back rather than refuse.
+     * A request that asks for both bits at once reserves a placeholder over
+     * a placeholder and stays free, as the oracle's `vprot |
+     * VPROT_PLACEHOLDER` leaves it. */
+    vad->placeholder = MI_VAD_PLACEHOLDER;
+    if (type & MEM_RESERVE_PLACEHOLDER)
+    {
+        vad->placeholder |= MI_VAD_FREE_PLACEHOLDER;
+    }
+    if (type & MEM_COMMIT)
+    {
+        NTSTATUS status = MiCommitPages(space, vad, base, size, protect);
+        if (!NT_SUCCESS(status))
+        {
+            /* Put the placeholder back exactly as it was: the caller is
+             * being told the request failed, and a half-replaced
+             * placeholder is a range nobody can name again. */
+            MiDecommitPages(space, vad, base, size);
+            if (watchDirty != 0)
+            {
+                MiFreePool(watchDirty);
+            }
+            vad->watchDirty = wasWatchDirty;
+            vad->writeWatch = wasWriteWatch;
+            vad->allocationProtect = wasProtect;
+            vad->placeholder = wasPlaceholder;
+            return status;
+        }
+    }
+    if (wasWatchDirty != 0)
+    {
+        MiFreePool(wasWatchDirty);
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                  ULONG type, ULONG protect)
 {
@@ -579,7 +804,13 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (type & ~(ULONG)(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET))
+    /* The UNION of both entry points' masks. Which bits a CALLER may pass is
+     * the entry point's question, not the engine's: NtAllocateVirtualMemoryEx
+     * accepts the two placeholder bits and NtAllocateVirtualMemory does not,
+     * and each states its own mask the way the oracle does (its
+     * `static const ULONG type_mask` per Nt*, dlls/ntdll/unix/virtual.c). */
+    if (type & ~(ULONG)(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET |
+                        MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -607,7 +838,19 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
     {
         return STATUS_WORKING_SET_LIMIT_RANGE;
     }
-    if ((type & (MEM_COMMIT | MEM_RESERVE | MEM_RESET)) == 0)
+    /* Both placeholder bits are MODIFIERS on a reserve, never a request of
+     * their own: MEM_REPLACE_PLACEHOLDER without MEM_RESERVE is a parameter
+     * error even when the range it names is a perfectly good placeholder
+     * (the oracle's `type & MEM_REPLACE_PLACEHOLDER && !(type & MEM_RESERVE)`
+     * arm, folded into the same test). MEM_RESERVE_PLACEHOLDER falls out of
+     * the mask below instead, because a placeholder carries no access and
+     * PAGE_NOACCESS is the only protection it may be created with. */
+    if ((type & (MEM_COMMIT | MEM_RESERVE | MEM_RESET)) == 0 ||
+        ((type & MEM_REPLACE_PLACEHOLDER) != 0 && (type & MEM_RESERVE) == 0))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if ((type & MEM_RESERVE_PLACEHOLDER) != 0 && protect != PAGE_NOACCESS)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -633,9 +876,16 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
     if (requestedBase != 0)
     {
         /* Explicit base: reserve rounds down to the 64K granularity,
-         * commit-into-reservation to the page (Wine's exact rule). */
-        base = MiRoundDown(requestedBase,
-                           (type & MEM_RESERVE) ? MI_ALLOCATION_GRANULARITY : (uint64_t)PAGE_SIZE);
+         * commit-into-reservation to the page (Wine's exact rule). A
+         * placeholder REPLACEMENT rounds to the page too, because the
+         * placeholder it must match exactly may itself be a page-aligned
+         * piece of a split — 64K rounding would walk the base off the front
+         * of it and answer STATUS_CONFLICTING_ADDRESSES for a request that
+         * named its range correctly. */
+        base =
+            MiRoundDown(requestedBase, (type & MEM_RESERVE) && (type & MEM_REPLACE_PLACEHOLDER) == 0
+                                           ? MI_ALLOCATION_GRANULARITY
+                                           : (uint64_t)PAGE_SIZE);
         size = MiRoundUp(requestedBase + size, PAGE_SIZE) - base;
         if (base < MI_LOWEST_USER_ADDRESS || base + size < base ||
             base + size > KI_USER_SPACE_LIMIT)
@@ -682,6 +932,17 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         {
             return status;
         }
+        if (type & MEM_REPLACE_PLACEHOLDER)
+        {
+            status = MiReplacePlaceholder(space, base, size, type, protect);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            *baseInOut = (PVOID)(uintptr_t)base;
+            *sizeInOut = size;
+            return STATUS_SUCCESS;
+        }
         if (requestedBase == 0)
         {
             base = MiFindFreeRegion(space, size, limitLow, limitHigh, align);
@@ -710,6 +971,10 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
                 return STATUS_NO_MEMORY;
             }
             vad->writeWatch = TRUE;
+        }
+        if (type & MEM_RESERVE_PLACEHOLDER)
+        {
+            vad->placeholder = MI_VAD_PLACEHOLDER | MI_VAD_FREE_PLACEHOLDER;
         }
         MiInsertVad(space, vad);
         if (type & MEM_COMMIT)
@@ -758,6 +1023,15 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
                 return STATUS_ALREADY_COMMITTED;
             }
         }
+        /* A placeholder IS reserved, so a commit that does not know about
+         * them lands here and quietly succeeds — turning the hole somebody
+         * is holding open into ordinary committed memory. NT refuses: the
+         * only way into a placeholder is to replace it. Same position as the
+         * oracle's own test, one line under the SEC_FILE arm above. */
+        if (vad->placeholder & MI_VAD_FREE_PLACEHOLDER)
+        {
+            return STATUS_CONFLICTING_ADDRESSES;
+        }
         status = MiCheckViewProtection(vad, protect);
         if (!NT_SUCCESS(status))
         {
@@ -787,6 +1061,178 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
 
     *baseInOut = (PVOID)(uintptr_t)base;
     *sizeInOut = size;
+    return STATUS_SUCCESS;
+}
+
+/* MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER: give the range back AS a
+ * placeholder rather than to the free pool. Two different callers reach
+ * this with the same three arguments:
+ *
+ *   - all of a replacement, undoing MEM_REPLACE_PLACEHOLDER. The memory
+ *     goes away and the placeholder that was there before comes back.
+ *   - PART of a placeholder, which is how a placeholder is SPLIT — the
+ *     named piece becomes a placeholder of its own and the remainder stays
+ *     one, so the caller can then replace them independently.
+ *
+ * All of a placeholder is neither, and NT refuses it rather than succeeding
+ * vacuously. That refusal is what makes the FREE bit worth keeping
+ * separately from the PLACEHOLDER bit. */
+static NTSTATUS MiPreservePlaceholder(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
+                                      uint64_t size)
+{
+    if (size == 0)
+    {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+    if ((vad->placeholder & MI_VAD_PLACEHOLDER) == 0)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+    if ((vad->placeholder & MI_VAD_FREE_PLACEHOLDER) != 0 && size == vad->size)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+    ASSERT(vad->type == MEM_PRIVATE);
+
+    if (size < vad->size)
+    {
+        /* Carve first, then empty only the carved piece: the head and tail
+         * of a partially-preserved REPLACEMENT keep their committed pages,
+         * so decommitting the whole VAD up front would take memory the
+         * caller never asked to give back. */
+        PMI_VAD carved = 0;
+        NTSTATUS status = MiCarveVad(space, vad, base, size, &carved);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        vad = carved;
+    }
+    MiDecommitPages(space, vad, vad->base, vad->size);
+    vad->allocationProtect = PAGE_NOACCESS;
+    vad->placeholder = MI_VAD_PLACEHOLDER | MI_VAD_FREE_PLACEHOLDER;
+    if (vad->watchDirty != 0)
+    {
+        /* A placeholder has no pages, so it has nothing to watch. The state
+         * belonged to the allocation that just went away, and carrying it
+         * into the placeholder would hand the NEXT replacement a watch it
+         * never asked for. */
+        MiFreePool(vad->watchDirty);
+        vad->watchDirty = 0;
+    }
+    vad->writeWatch = FALSE;
+    return STATUS_SUCCESS;
+}
+
+/* MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS: merge a run of adjacent
+ * placeholders back into one. The range must start at a placeholder's base,
+ * end at a placeholder's end, and cover more than one of them — anything
+ * else is STATUS_CONFLICTING_ADDRESSES rather than a partial merge, because
+ * a caller that got the extent wrong is describing a layout it does not
+ * have. */
+static NTSTATUS MiCoalescePlaceholders(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
+                                       uint64_t size)
+{
+    if (size == 0)
+    {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+    if (base != vad->base)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+
+    /* Walk forward over free placeholders that TOUCH: a gap in the middle
+     * of the run, or a replacement, or an ordinary allocation, all stop the
+     * walk and leave `covered` short of the request. */
+    uint64_t covered = 0;
+    ULONG count = 0;
+    for (PMI_VAD curr = vad; (curr->placeholder & MI_VAD_FREE_PLACEHOLDER) != 0;)
+    {
+        ASSERT(curr->type == MEM_PRIVATE);
+        count++;
+        covered += curr->size;
+        if (covered >= size)
+        {
+            break;
+        }
+        PLIST_ENTRY next = curr->listEntry.Flink;
+        if (next == &space->vadListHead)
+        {
+            break;
+        }
+        PMI_VAD nextVad = CONTAINING_RECORD(next, MI_VAD, listEntry);
+        if (curr->base + curr->size != nextVad->base)
+        {
+            break;
+        }
+        curr = nextVad;
+    }
+    if (count < 2 || covered != size)
+    {
+        return STATUS_CONFLICTING_ADDRESSES;
+    }
+
+    /* A merge CARRIES the pages, it does not empty them. That is easy to
+     * get wrong here and impossible to get wrong in the oracle, because the
+     * oracle's per-page protection is one global array indexed by address —
+     * merging its views moves no records at all — while ours lives in the
+     * VAD and has to be rebuilt at the new length. A free placeholder is
+     * normally uncommitted and this is all zeros, but it is not GUARANTEED
+     * to be: MEM_COMMIT is legal on the reserve that creates a placeholder
+     * (PAGE_NOACCESS commits present-less pages), and the pinned oracle
+     * leaves those pages committed across both the split and the merge.
+     * Dropping the records instead would leak every frame in the run, with
+     * a live user PTE still pointing at each one.
+     *
+     * Write-watch is a per-VAD attribute here, so the merged range takes
+     * the FIRST piece's — which is also what the oracle does, its merged
+     * view keeping the first view's `protect` word. */
+    ULONG pages = (ULONG)(size / PAGE_SIZE);
+    PULONG mergedProtect = MiAllocatePool(pages * sizeof(ULONG));
+    UCHAR *mergedWatch = 0;
+    if (mergedProtect == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    if (vad->writeWatch)
+    {
+        mergedWatch = MiAllocatePool(pages); /* pool zeroes */
+        if (mergedWatch == 0)
+        {
+            MiFreePool(mergedProtect);
+            return STATUS_NO_MEMORY;
+        }
+    }
+
+    ULONG filled = MiVadPageCount(vad);
+    memcpy(mergedProtect, vad->pageProtect, filled * sizeof(ULONG));
+    if (mergedWatch != 0)
+    {
+        memcpy(mergedWatch, vad->watchDirty, filled);
+    }
+    for (ULONG i = 1; i < count; i++)
+    {
+        PMI_VAD victim = CONTAINING_RECORD(vad->listEntry.Flink, MI_VAD, listEntry);
+        ULONG victimPages = MiVadPageCount(victim);
+        memcpy(mergedProtect + filled, victim->pageProtect, victimPages * sizeof(ULONG));
+        if (mergedWatch != 0 && victim->watchDirty != 0)
+        {
+            memcpy(mergedWatch + filled, victim->watchDirty, victimPages);
+        }
+        filled += victimPages;
+        MiUnlinkAndFreeVad(victim);
+    }
+    ASSERT(filled == pages);
+
+    MiFreePool(vad->pageProtect);
+    vad->pageProtect = mergedProtect;
+    if (vad->watchDirty != 0)
+    {
+        MiFreePool(vad->watchDirty);
+    }
+    vad->watchDirty = mergedWatch;
+    vad->size = size;
     return STATUS_SUCCESS;
 }
 
@@ -820,73 +1266,61 @@ NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *
     {
         return STATUS_FREE_VM_NOT_AT_BASE;
     }
-    if (vad->base + vad->size - base < size)
+    /* A coalesce is the one verb whose range is MEANT to run past the VAD it
+     * starts in — merging one placeholder with itself is not a merge. It
+     * does its own extent check against the run of placeholders it finds
+     * (the oracle carries the same exemption on this test). */
+    if (vad->base + vad->size - base < size && (type & MEM_COALESCE_PLACEHOLDERS) == 0)
     {
         return STATUS_UNABLE_TO_FREE_VM;
     }
 
-    if (type == MEM_DECOMMIT)
+    NTSTATUS status;
+    switch (type)
     {
+    case MEM_DECOMMIT:
         /* size 0 = the whole VAD, and the reported size stays 0 (the shape
          * Wine's own test pins for modern Windows). */
         MiDecommitPages(space, vad, base, size != 0 ? size : vad->base + vad->size - base);
-    }
-    else if (type == MEM_RELEASE)
-    {
+        break;
+
+    case MEM_RELEASE:
         if (size == 0)
         {
             size = vad->size;
         }
         MiDecommitPages(space, vad, base, size);
-        if (base == vad->base && size == vad->size)
+        status = MiCarveVad(space, vad, base, size, 0);
+        if (!NT_SUCCESS(status))
         {
-            MiUnlinkAndFreeVad(vad);
+            return status;
         }
-        else if (base == vad->base || base + size == vad->base + vad->size)
+        break;
+
+    case MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER:
+        status = MiPreservePlaceholder(space, vad, base, size);
+        if (!NT_SUCCESS(status))
         {
-            /* Shrink from the start or the end. */
-            uint64_t newBase = (base == vad->base) ? base + size : vad->base;
-            uint64_t newSize = vad->size - size;
-            PMI_VAD shrunk = MiCreateVad(newBase, newSize, vad->allocationProtect);
-            if (shrunk == 0)
-            {
-                return STATUS_NO_MEMORY;
-            }
-            memcpy(shrunk->pageProtect, vad->pageProtect + (newBase - vad->base) / PAGE_SIZE,
-                   (newSize / PAGE_SIZE) * sizeof(ULONG));
-            MiUnlinkAndFreeVad(vad);
-            MiInsertVad(space, shrunk);
+            return status;
         }
-        else
+        break;
+
+    case MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS:
+        status = MiCoalescePlaceholders(space, vad, base, size);
+        if (!NT_SUCCESS(status))
         {
-            /* Split: keep [vadBase, base) and [base+size, vadEnd). */
-            PMI_VAD head = MiCreateVad(vad->base, base - vad->base, vad->allocationProtect);
-            PMI_VAD tail = MiCreateVad(base + size, vad->base + vad->size - (base + size),
-                                       vad->allocationProtect);
-            if (head == 0 || tail == 0)
-            {
-                if (head != 0)
-                {
-                    MiFreePool(head->pageProtect);
-                    MiFreePool(head);
-                }
-                if (tail != 0)
-                {
-                    MiFreePool(tail->pageProtect);
-                    MiFreePool(tail);
-                }
-                return STATUS_NO_MEMORY;
-            }
-            memcpy(head->pageProtect, vad->pageProtect, MiVadPageCount(head) * sizeof(ULONG));
-            memcpy(tail->pageProtect, vad->pageProtect + (tail->base - vad->base) / PAGE_SIZE,
-                   MiVadPageCount(tail) * sizeof(ULONG));
-            MiUnlinkAndFreeVad(vad);
-            MiInsertVad(space, head);
-            MiInsertVad(space, tail);
+            return status;
         }
-    }
-    else
-    {
+        break;
+
+    case MEM_COALESCE_PLACEHOLDERS:
+        /* Both placeholder verbs are modifiers on MEM_RELEASE, and the
+         * oracle names WHICH argument was wrong rather than answering a
+         * bare STATUS_INVALID_PARAMETER for this one. MEM_PRESERVE_
+         * PLACEHOLDER alone is not singled out and falls to the default. */
+        return STATUS_INVALID_PARAMETER_4;
+
+    default:
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -1718,6 +2152,15 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
     {
         return STATUS_INVALID_PARAMETER_3;
     }
+    /* This entry point's own type mask, narrower than the engine's by
+     * exactly the two placeholder bits. VirtualAlloc2 (NtAllocateVirtualMemoryEx)
+     * is the only documented way into a placeholder, so a caller reaching for
+     * the classic form is passing a flag that does not exist here — a bad
+     * ARGUMENT, not a range that is busy or a service that is missing. */
+    if (type & (MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
 
     NTSTATUS status = KiProbeForWrite(baseInOut, sizeof(*baseInOut), sizeof(*baseInOut));
     if (NT_SUCCESS(status))
@@ -1891,14 +2334,6 @@ NTSTATUS NtAllocateVirtualMemoryEx(HANDLE process, PVOID *baseInOut, SIZE_T *siz
                         MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
     {
         return STATUS_INVALID_PARAMETER;
-    }
-    if (type & (MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER))
-    {
-        /* Placeholders are deliberately unbuilt: no baked consumer, and the
-         * milestone scope is the delegating *Ex forms (docs/03 "CUI-7").
-         * Loud refusal, never a fake success (Art. 12; the SEC_RESERVE
-         * precedent in section.c). */
-        return STATUS_NOT_IMPLEMENTED;
     }
     if (*baseInOut != 0 &&
         (extended.align != 0 || extended.limitLow != 0 || extended.limitHigh != 0))
