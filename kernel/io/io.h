@@ -391,14 +391,42 @@ typedef struct IOP_PENDING_REQUEST
      * function, so the block is queued or freed exactly once whichever ends
      * it (G11). 0 when the caller passed no ApcRoutine. */
     PKAPC apcBlock;
+
+    /* The handle the request was issued on, REFERENCED — a request that
+     * pends always owes a completion PACKET when the handle is bound to a
+     * port, and the port is reachable only through the file object.
+     *
+     * Read at COMPLETION time rather than captured at issue, because the
+     * oracle re-reads: `create_async` takes the fd's port up front, and
+     * `add_async_completion` looks again for a request that was issued while
+     * the fd was still unbound (third_party/wine server/async.c). Measured —
+     * binding a port AFTER an async listen has pended still posts its packet
+     * (tests/ntapi/sem_pipe/pending_packet.c). Since a bind is once-only,
+     * reading late is the whole rule and capturing early is a subset of it.
+     *
+     * The reference is what makes that read safe, and it also makes "a
+     * parked request cannot outlive its file object" structural instead of a
+     * per-filesystem convention: with it held, the object cannot reach a
+     * refcount of zero while a request is queued, so the delete path can
+     * never find one. The handle's own reference outlives the cleanup hook
+     * (ObpCloseHandleEntryIn drops it after closeProcedure), so releasing
+     * this one from inside a cleanup-driven completion is never the last. */
+    PFILE_OBJECT file;
+
+    /* The caller's ApcContext — the packet's VALUE when there is no
+     * ApcRoutine (kernel/io/rw.c IopPostRequestPacket states the rule). */
+    PVOID apcContext;
+
     LIST_ENTRY queueEntry; /* for a device that queues several pending
                             * requests of one kind (npfs's listen
                             * queue); unused when a device holds one */
 } IOP_PENDING_REQUEST, *PIOP_PENDING_REQUEST;
 
-/* Build a pending request in the ISSUER's context (references the event and
- * the current process). The caller's IOSB must already be probed. */
-NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDING_REQUEST *out);
+/* Build a pending request in the ISSUER's context (references the event, the
+ * current process, the issuing thread and `file`). The caller's IOSB must
+ * already be probed. */
+NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request,
+                                  PIOP_PENDING_REQUEST *out);
 
 /* The completion-APC leg, one authority (Art. 11; the rw.c and notify.c
  * copies drifted apart on allocation timing before this): allocate the KAPC
@@ -421,6 +449,15 @@ NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDIN
 NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
                              PVOID apcContext, NTSTATUS status, ULONG_PTR information,
                              BOOLEAN reportsPending);
+
+/* Just the completion-PACKET leg of that tail, for the pended path, which
+ * writes the IOSB and signals the event by itself (kernel/io/async.c). Both
+ * halves of the rule live here: the handle's bound port, and the value
+ * (`apc ? 0 : apcContext`, posted only when non-zero). `suppressed` is the
+ * FILE_SKIP_COMPLETION_PORT_ON_SUCCESS verdict — FALSE for anything that
+ * pended, since pendedness is the flag's axis. */
+void IopPostRequestPacket(PFILE_OBJECT file, PKAPC apc, PVOID apcContext, BOOLEAN suppressed,
+                          NTSTATUS status, ULONG_PTR information);
 
 NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, PKAPC *apcOut);

@@ -1279,6 +1279,34 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   pipe handle. Escalation: widen the lock to the stream branch when a consumer (or
   an oracle pin on pipe-read atomicity) convicts the interleaving.
 
+- **A pended IOCTL/FSCTL posts its completion packet, unconditionally**
+  (`kernel/io/async.c` `IopCompletePendingRequest` through `kernel/io/rw.c`
+  `IopPostRequestPacket`) — a pin, not a deviation, recorded because the rule
+  reads backwards from the flag's name. The oracle's guards are
+  `req->async || !(comp_flags & SKIP…)` (wine `server/fd.c` `add_fd_completion`)
+  and `async->pending || !NT_ERROR(status)` (`server/async.c`
+  `async_set_result`), so pendedness alone satisfies both: neither
+  `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` nor a failing status withholds the
+  packet, and a CANCELLED listen posts its cancel. A caller holding
+  `ERROR_IO_PENDING` has nothing else to wait on, so either omission hangs
+  `GetQueuedCompletionStatus` forever. Pinned by
+  `sem_pipe/pending_packet.c`; the inline half is `sem_pipe/completion_packet.c`.
+  The port is read off the FILE_OBJECT at completion rather than captured at
+  issue, because the oracle re-reads (`add_async_completion`'s
+  `if (async->fd && !async->completion)`) — measured: binding a port AFTER an
+  async listen has pended still posts. That is why `IOP_PENDING_REQUEST` holds a
+  REFERENCED file object, which also makes "a parked request cannot outlive its
+  file object" structural rather than a per-filesystem convention.
+  **Scoped to that tail, deliberately:** the OTHER thing that pends here,
+  `NtNotifyChangeDirectoryFile`, still posts no packet — `IopCompleteDirWatch`
+  (`kernel/io/notify.c`) writes the buffer and IOSB, signals, queues the APC
+  and stops, and `IOP_DIR_WATCH` carries no `ApcContext` to post as a value.
+  So `ReadDirectoryChangesW` on a port-bound directory handle hangs
+  `GetQueuedCompletionStatus` for exactly the reason above. Neither
+  `ntdll:change` nor `kernel32:change` convicts it (both green), so it is an
+  unpinned gap rather than a measured divergence — issue #135, and the fix is
+  the same one-line route through `IopPostRequestPacket` once a pin has
+  measured what an ERROR or CANCELLED watch completion owes.
 - **The differential fuzzer convicts the contract, not the in-flight window**
   (docs/19 §8.3.3, recorded honestly): proskrnl's internal in-flight state has no
   oracle counterpart under the inline pin, so the traces cannot see it — the kmt

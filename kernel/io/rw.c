@@ -35,12 +35,35 @@
  * and a port-driven one are alternatives, never both, and a caller that
  * asked for neither gets neither. Win32 never hits the quiet case — the
  * OVERLAPPED pointer is always the context. */
+/* The packet leg on its own, because the PENDED tail (kernel/io/async.c
+ * IopCompletePendingRequest) owes exactly this and cannot reuse the rest of
+ * IopCompleteTransfer: it writes the IOSB into another process's address
+ * space and signals a referenced event body, not a handle. One statement of
+ * both halves of the rule (Art. 11) — which handle's port, and what VALUE —
+ * so the two tails cannot drift.
+ *
+ * `suppressed` is FILE_SKIP_COMPLETION_PORT_ON_SUCCESS's verdict, which only
+ * the caller can reach (see IopCompleteTransfer below). It is always FALSE
+ * for a pended request: the flag's whole axis is pendedness. */
+void IopPostRequestPacket(PFILE_OBJECT file, PKAPC apc, PVOID apcContext, BOOLEAN suppressed,
+                          NTSTATUS status, ULONG_PTR information)
+{
+    ULONG_PTR completionValue = (apc != 0 || suppressed) ? 0 : (ULONG_PTR)apcContext;
+    if (file->completionPort != 0 && completionValue != 0)
+    {
+        /* Through the one packet-posting engine (G10), never a second
+         * queue. A failure to post is discarded for the same reason a
+         * failed event signal is: the operation HAS happened. */
+        (void)IopPostCompletionPacket(file->completionPort, file->completionKey, completionValue,
+                                      status, information);
+    }
+}
+
 NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
                              PVOID apcContext, NTSTATUS status, ULONG_PTR information,
                              BOOLEAN reportsPending)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
-    ULONG_PTR completionValue = apc != 0 ? 0 : (ULONG_PTR)apcContext;
     /* FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, and its axis is the one thing
      * about it worth reading twice: the packet is skipped only when the call
      * did NOT report STATUS_PENDING to its caller. A request that pends
@@ -62,18 +85,9 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
      * through IopAsyncReturnShape afterwards. It comes from
      * IopWillReportPending, which IS that shape's predicate — one statement
      * of the rule, not two that can drift. */
-    if ((file->completionFlags & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) != 0 && !reportsPending)
-    {
-        completionValue = 0;
-    }
-    if (file->completionPort != 0 && completionValue != 0)
-    {
-        /* Through the one packet-posting engine (G10), never a second
-         * queue. A failure to post is discarded for the same reason a
-         * failed event signal is: the transfer HAS happened. */
-        (void)IopPostCompletionPacket(file->completionPort, file->completionKey, completionValue,
-                                      status, information);
-    }
+    BOOLEAN suppressed =
+        (file->completionFlags & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) != 0 && !reportsPending;
+    IopPostRequestPacket(file, apc, apcContext, suppressed, status, information);
     IopQueueCompletionApc(KeGetCurrentThread(), apc);
     return final;
 }

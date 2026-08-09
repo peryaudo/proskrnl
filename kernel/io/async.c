@@ -26,7 +26,8 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
-NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDING_REQUEST *out)
+NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request,
+                                  PIOP_PENDING_REQUEST *out)
 {
     PIOP_PENDING_REQUEST pending = MiAllocatePool(sizeof(*pending));
     if (pending == 0)
@@ -79,6 +80,13 @@ NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDIN
      * return STATUS_PENDING; anything else would leave ioctl.c's failure
      * branch freeing a block this request also owns. */
     pending->apcBlock = request->apcBlock;
+    pending->apcContext = request->apcContext;
+    /* The completion PACKET leg: the port is read off the file object at
+     * completion (io.h says why it is late rather than captured), so the
+     * request holds the handle open for exactly as long as it can complete —
+     * the same statement issuerObject makes about the issuing thread. */
+    pending->file = file;
+    ObfReferenceObject(file);
     *out = pending;
     return STATUS_SUCCESS;
 }
@@ -110,6 +118,28 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
         KeSetEvent(request->event, 0, FALSE);
         ObDereferenceObject(request->event);
     }
+    /* The completion PACKET, in the same position the inline tail puts it
+     * (kernel/io/rw.c): after the IOSB and the event, before the APC.
+     *
+     * A request that PENDED always posts, and that is the whole point rather
+     * than a detail: the oracle's guards read `req->async ||
+     * !(comp_flags & SKIP…)` (server/fd.c add_fd_completion) and
+     * `async->pending || !NT_ERROR(status)` (server/async.c async_set_result),
+     * so neither FILE_SKIP_COMPLETION_PORT_ON_SUCCESS nor a failing status
+     * withholds it — hence `suppressed` FALSE here, and hence a CANCELLED
+     * listen posting its cancel. A caller holding ERROR_IO_PENDING has
+     * nothing else to wait on, so a kernel that skips either case hangs
+     * GetQueuedCompletionStatus forever. Pinned by
+     * tests/ntapi/sem_pipe/pending_packet.c.
+     *
+     * The oracle posts BEFORE it signals (server/async.c async_set_result),
+     * and the order here is the inline tail's instead. Not observable while
+     * Art. 3's uniprocessor/no-preemption mandate holds — nothing runs
+     * between these two statements — so it is written for consistency with
+     * rw.c rather than against the oracle. Worth revisiting if docs/18's SMP
+     * exit is ever taken. */
+    IopPostRequestPacket(request->file, request->apcBlock, request->apcContext,
+                         /* suppressed */ FALSE, status, information);
     /* W4a: the APC last, AFTER the IOSB is written and the event signalled —
      * the routine's only argument is a pointer to that IOSB, so it must be
      * final before the routine can run. Queued to the ISSUER, not to
@@ -122,6 +152,12 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     {
         ObDereferenceObject(request->issuerObject);
     }
+    /* Never the last reference, and that is structural rather than lucky:
+     * the completing paths are a peer's syscall, a cancel, or the cleanup
+     * hook — and the handle's own reference is dropped only AFTER
+     * closeProcedure returns (kernel/ob/handle.c ObpCloseHandleEntryIn), so
+     * even the cleanup case still has one outstanding. */
+    ObDereferenceObject(request->file);
     ObDereferenceObject(request->owner);
     MiFreePool(request);
 }

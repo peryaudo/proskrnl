@@ -37,6 +37,13 @@ typedef struct IO_CONTROL_CONTEXT
      * never touches it again; a device that completes inline leaves it
      * alone and the Io layer queues it. */
     struct KAPC *apcBlock;
+
+    /* The caller's ApcContext, carried for the COMPLETION-PACKET rule rather
+     * than for the APC (which already holds its own copy): the packet's value
+     * is this word, and only when there is no ApcRoutine. A pended request
+     * needs it at completion time, in a context that no longer has the
+     * syscall's arguments. */
+    PVOID apcContext;
 } IO_CONTROL_CONTEXT;
 
 /* NT share-mode accounting state (the SHARE_ACCESS concept, kept internal).

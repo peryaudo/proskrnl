@@ -106,7 +106,8 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
         return status;
     }
 
-    IO_CONTROL_CONTEXT request = {.eventHandle = event, .userIosb = iosb, .apcBlock = apcBlock};
+    IO_CONTROL_CONTEXT request = {
+        .eventHandle = event, .userIosb = iosb, .apcBlock = apcBlock, .apcContext = apcContext};
     ULONG_PTR information = 0;
     IopEnterSyncIo(iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
