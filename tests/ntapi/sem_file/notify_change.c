@@ -87,19 +87,6 @@ START_TEST(notify_change)
     scrub_file(aux_dir, W("born.txt"));
     scrub_file(aux_dir, W("attr.txt"));
     scrub_file(aux_dir, W("apcfile.txt"));
-    scrub_file(aux_dir, W("sub\\deep.txt"));
-    /* The subtree case creates "sub" AFTER arming (the pinned Wine's
-     * recursive watch tracks subdirectories it sees appear, not ones that
-     * predate the watch — server/change.c inotify handling); reruns must
-     * not leave it behind. */
-    {
-        IO_STATUS_BLOCK scrub_iosb;
-        HANDLE stale;
-        status = open_file(&stale, aux_dir, W("sub"), DELETE | SYNCHRONIZE, 0, FILE_OPEN,
-                           FILE_DELETE_ON_CLOSE | FILE_DIRECTORY_FILE, &scrub_iosb);
-        if (NT_SUCCESS(status))
-            NtClose(stale);
-    }
 
     /* The watch handle, opened the way FindFirstChangeNotificationW opens
      * it (FILE_LIST_DIRECTORY | SYNCHRONIZE, synchronous). */
@@ -179,56 +166,14 @@ START_TEST(notify_change)
     ok(watch_iosb.Information == 0, "tiny-buffer Information %lu",
        (unsigned long)watch_iosb.Information);
 
-    /* --- the subtree flag sees a nested change with a relative path --------- */
-    /* Armed FIRST, then the subdirectory is created: the pinned Wine's
-     * recursive watch learns subdirectories as they appear (a pre-existing
-     * one is never watched — server/change.c). The dir creation itself is a
-     * DIR_NAME event, filtered out by the FILE_NAME-only filter; the pause
-     * lets the oracle's watcher register the new subdirectory before the
-     * nested file lands. */
-    NtClearEvent(event);
-    poison_iosb(&watch_iosb);
-    memset(buffer, 0, sizeof(buffer));
-    status = NtNotifyChangeDirectoryFile(watch_dir, event, NULL, NULL, &watch_iosb, buffer,
-                                         sizeof(buffer), FILE_NOTIFY_CHANGE_FILE_NAME, TRUE);
-    ok(status == STATUS_PENDING, "subtree arm -> %08lx", (unsigned long)status);
-    {
-        UNICODE_STRING name;
-        OBJECT_ATTRIBUTES attr;
-        HANDLE sub = NULL;
-        init_ustr(&name, W("sub"));
-        init_attr(&attr, aux_dir, &name, OBJ_CASE_INSENSITIVE);
-        status = NtCreateFile(&sub, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &iosb, NULL,
-                              FILE_ATTRIBUTE_NORMAL,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF,
-                              FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
-        ok(status == STATUS_SUCCESS, "create sub -> %08lx", (unsigned long)status);
-        if (NT_SUCCESS(status))
-            NtClose(sub);
-    }
-    Sleep(300);
-    ok(wait_ms(event, 0) == STATUS_TIMEOUT, "dir creation filtered out");
-    make_file(W("sub\\deep.txt"));
-    status = wait_ms(event, 5000);
-    /* The pinned Wine's recursive inotify watch never delivers in the
-     * oracle environment (server/change.c: the subtree machinery resolves
-     * paths through /proc and did not fire under the test prefix), so the
-     * oracle cannot answer for the subtree contract; NT's own is
-     * documented (MS "ReadDirectoryChangesW": bWatchSubtree reports
-     * changes anywhere in the subtree, FILE_NOTIFY_INFORMATION.FileName
-     * as a path relative to the watched directory) and proskrnl is held
-     * to it. */
-    beyond_oracle
-    {
-        ok(status == STATUS_SUCCESS, "event after subtree change -> %08lx", (unsigned long)status);
-        check_record(buffer, (ULONG)watch_iosb.Information, FILE_ACTION_ADDED, W("sub\\deep.txt"));
-    }
-    /* On the oracle the subtree watch is still parked: clear it so it
-     * cannot swallow the next case's change (thread-scoped cancel answers
-     * SUCCESS whether or not anything was parked). */
-    status = NtCancelIoFile(watch_dir, &iosb);
-    ok(status == STATUS_SUCCESS, "post-subtree cancel -> %08lx", (unsigned long)status);
-    scrub_file(aux_dir, W("sub\\deep.txt"));
+    /* The SUBTREE case is not here, and the reason is worth recording: this
+     * handle was armed non-recursive above, and the subtree flag is fixed by
+     * the FIRST arm exactly as the filter is. An earlier revision arranged
+     * the recursive case on this same handle, measured that the oracle never
+     * delivered, and concluded the oracle's recursive watcher does not work
+     * under the test prefix — it works fine; the handle had simply already
+     * been fixed non-recursive. sem_file/notify_queue.c pins the rule on a
+     * fresh handle, and is oracle-green. */
 
     /* --- the APC completion shape ------------------------------------------- */
     apc_ran = 0;
@@ -253,20 +198,19 @@ START_TEST(notify_change)
     scrub_file(aux_dir, W("apcfile.txt"));
 
     /* --- NtCancelIoFile completes a parked watch ---------------------------- */
-    /* The pinned Wine accumulates changes on the directory handle between
-     * watches (the scrubs above are queued and complete the next arm
-     * immediately), so arm until one stays parked; that parked watch is
-     * the cancel target. proskrnl does not buffer between watches
-     * (docs/03 "CUI-5 notes") and parks on the first arm. */
+    /* Changes accumulate on the directory handle between watches, so the
+     * scrubs above are queued and complete the next arm immediately: arm
+     * until one stays PARKED, and that one is the cancel target
+     * (sem_file/notify_queue.c pins the queueing itself). */
     {
         int drained = 0;
         for (int i = 0; i < 8; i++)
         {
             NtClearEvent(event);
             poison_iosb(&watch_iosb);
-            status = NtNotifyChangeDirectoryFile(watch_dir, event, NULL, NULL, &watch_iosb,
-                                                 buffer, sizeof(buffer),
-                                                 FILE_NOTIFY_CHANGE_FILE_NAME, FALSE);
+            status =
+                NtNotifyChangeDirectoryFile(watch_dir, event, NULL, NULL, &watch_iosb, buffer,
+                                            sizeof(buffer), FILE_NOTIFY_CHANGE_FILE_NAME, FALSE);
             ok(status == STATUS_PENDING, "drain arm %d -> %08lx", i, (unsigned long)status);
             if (wait_ms(event, 300) == STATUS_TIMEOUT)
             {
