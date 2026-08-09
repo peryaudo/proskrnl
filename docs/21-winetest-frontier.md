@@ -526,6 +526,87 @@ at `:2104` still correctly skipped, so this is a case where §4 trap 2's
 "an early-out hides its body" does **not** apply and saying so is part of the
 measurement.
 
+**The thread-STACK contract is DONE, and it was never an `mm/` item**
+(`ntdll:virtual` 1111 → **46**, and `kernel32:fiber` is **GREEN**). This
+document and the manifest agreed for three revisions that the 1102-assertion
+cluster was the NT stack shape — "proskrnl commits what it reserves and has no
+guard band" — i.e. `mm/` design work in the file `docs/12` calls the top danger
+zone. **Nothing in `mm/` was touched.** The shape has been built since M5
+(`PspAllocateUserStack` / `PspAllocateThreadStack`: one reservation, a
+committed slice at the top, one `PAGE_GUARD` page that `mm/fault.c` walks
+down). What was missing was two fields nobody wrote, and one syscall class
+nobody implemented:
+
+- **`TEB.DeallocationStack` was left at the `memset`'s zero.** It is the
+  stack's third corner and the only fixed one — `StackBase` and `StackLimit`
+  bracket the committed slice and both move — so `StackBase -
+  DeallocationStack` is the only way user mode can state the RESERVE.
+  `test_stack_size_thread` computes exactly that and then queries
+  `MEMORY_BASIC_INFORMATION` **at** `DeallocationStack`, so one unwritten field
+  failed 16 assertions per thread across 61 threads: **976** of the 1102.
+  Fixed in `kernel/ps/peb.c` `PspBuildTeb` (which now takes all three
+  addresses), pinned by `tests/ntapi/sem_ps/teb_stack.c`. **A zero here is not
+  a missing value, it is the claim that every stack reaches address 0** — and
+  Wine's PE side reads the field directly in four places
+  (`GetCurrentThreadStackLimits`, `SetThreadStackGuarantee`,
+  `dlls/kernel32/virtual.c` `badptr_handler`'s guard re-arm, and
+  `SwitchToFiber`, which swaps it).
+
+- **`NtSetInformationProcess(ProcessThreadStackAllocation)` — class 41 — was
+  in the accept-as-a-no-op default arm**, and it is the ONLY kernel call
+  `RtlCreateUserStack` makes. **This is the accepted-and-dropped shape at its
+  worst, because the dropped thing is an OUTPUT.** The class's answer is a
+  pointer it writes into the caller's buffer, and that buffer is a plain
+  uninitialised local (`third_party/wine` `dlls/ntdll/thread.c`,
+  `PROCESS_STACK_ALLOCATION_INFORMATION alloc;`). A no-op success therefore
+  handed ntdll a garbage `StackBase`, which it committed a guard page and a
+  stack at and reported as the new stack's `DeallocationStack`. Implemented in
+  `kernel/ps/query.c`, pinned by `tests/ntapi/sem_ps/thread_stack_alloc.c`; it
+  cost `ntdll:virtual` 47 assertions (:1351/:1352 and the ZeroBits bands at
+  :1403/:1424) — and `kernel32:fiber`'s fatal page fault, because
+  `CreateFiberEx` takes the same route (`dlls/kernelbase/thread.c`).
+  **`docs/16`'s rule generalises one step: a no-op is safe only for a class
+  the caller reads NOTHING back from**, not merely one whose status carries no
+  information.
+
+- **`TEB.Tib.FiberData` is seeded `0x1e00`** on every non-fiber thread, which
+  is what took `kernel32:fiber` from "1 failure and then a kill" to 32985
+  tests, 0 failures. Nothing dereferences it — kernelbase gates every fiber
+  path on `HasFiberData` — but `fiber.c:203` asserts it on a plain thread. It
+  is written by `init_teb` (`dlls/ntdll/unix/virtual.c`), one line below the
+  `ActivationContextStack` furniture `PspBuildTeb` already mirrored: **W12's
+  "replacing a layer means inheriting what that layer did", third instance,
+  and the tell was a TEB constructor that copies SOME of `init_teb`.** Pinned
+  by `tests/ntapi/sem_ps/teb_fiber_data.c`.
+
+Three things worth carrying beyond the fields themselves:
+
+- **This is `§4` trap 4 at its most expensive so far.** The manifest block was
+  written from the failure TEXT — "got reserve 0xad0000 where 0x200 was
+  asked", "the region below the stack reports MEM_FREE" — and both readings
+  were accurate observations of a consequence. They pointed three sessions'
+  worth of planning at `mm/section.c` and `mm/fault.c`. The cause was two
+  assignments in `kernel/ps/peb.c` and one `if` in `kernel/ps/query.c`.
+- **A crash count is still not a failure count, and now the inverse is true
+  too**: 1111 was a real, measured number and it was still 24× the size of the
+  work. Nothing was hidden behind the cleared assertions — 3737 executed, 148
+  todos and 2 skips before and after — so `§4` trap 2 does not apply here, and
+  saying so is part of the measurement.
+- **`ZeroBits` is now stated once.** `MiZeroBitsPlacementLimit`
+  (`kernel/mm/virtual.c`) holds the classic entry point's two invalid bands
+  and the ceiling a valid value names; `NtAllocateVirtualMemory` and class 41
+  both go through it, because the oracle implements the class BY CALLING that
+  syscall and a second transcription would be a second authority for one rule
+  (Art. 11).
+
+**The 46 that remain are four subjects and the manifest block has them.** The
+two that are new work are both small and both are next items rather than parts
+of this one: `NtCreateThreadEx` still opens with `(void)zeroBits;` (35
+assertions, the same contract one syscall over), and the DEFAULT thread-stack
+reserve is a hardwired `0x100000` where the oracle uses the image's
+`SizeOfStackReserve` (2 assertions — but it changes every thread's stack in the
+system, so it earns its own measurement).
+
 What is left under this heading:
 
 - **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
@@ -1271,7 +1352,12 @@ Pairs and framings that will consume effort and unblock nothing.
    host-capability probe answer "yes" (W6). An empty assertion log before a
    fault says only that the test never *checked* anything on the way in, and
    the last thing a winetest does before running a feature block is ask
-   whether the feature is there.
+   whether the feature is there. `kernel32:fiber` was the same shape a second
+   time and is now GREEN: one failed `ok()`, then a fault deep inside a
+   fiber's own stack, and the cause was the uninitialised `StackBase` that
+   `NtSetInformationProcess` class 41's no-op arm left `CreateFiberEx`
+   holding (W5). Its triage block had named `mm/fault.c`'s guard-page path as
+   the suspect on the strength of where the fault landed.
 
 4. **The loudest failure in a cluster is usually the consequence.** This
    trap has been paid for three times. An earlier revision of this document
