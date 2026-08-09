@@ -38,6 +38,14 @@ static const void *through_path = W("\\Registry\\Machine\\Software\\prsk_m8_syml
 static const void *dangling_path = W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\dangle");
 static const void *dangle_target_path =
     W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\dangle_target");
+/* A link whose destination runs THROUGH itself, so each follow appends one
+ * more component and the path grows without bound. */
+static const void *loop_path = W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\loop");
+static const void *loop_target_path =
+    W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\loop\\loop");
+/* Two links naming each other: a cycle whose path length never changes. */
+static const void *cycle_a_path = W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\cycle_a");
+static const void *cycle_b_path = W("\\Registry\\Machine\\Software\\prsk_m8_symlink\\cycle_b");
 
 /* Open <path> with OBJ_OPENLINK: the link key itself, not its target. */
 static NTSTATUS open_link_itself(const void *path, HANDLE *out)
@@ -256,6 +264,91 @@ START_TEST(symlink)
         }
         NtDeleteKey(dangle);
         NtClose(dangle);
+    }
+
+    /* --- link loops ------------------------------------------------------- */
+
+    /* A resolution that never terminates has to be REFUSED, and the status is
+     * not a name error: the oracle's generic name walk gives up after 32
+     * nested lookups and answers STATUS_INVALID_PARAMETER (wine
+     * server/object.c lookup_named_object: `if (recursion_count > 32)`), which
+     * the symlink arm of key_lookup_name reaches through its own
+     * lookup_named_object call. ntdll:reg pins the same answer at reg.c:1312.
+     *
+     * Both shapes below are needed. The first GROWS the path by one component
+     * per follow, so a length bound would stop it; the second alternates
+     * between two names of constant length, and only a bound on the number of
+     * FOLLOWS stops that one. */
+    {
+        HANDLE loop = NULL, cycle_a = NULL, cycle_b = NULL, resolved = NULL;
+        UNICODE_STRING loop_name;
+        OBJECT_ATTRIBUTES loop_attr;
+
+        delete_link(loop_path);
+        delete_link(cycle_a_path);
+        delete_link(cycle_b_path);
+
+        init_ustr(&loop_name, loop_path);
+        init_attr(&loop_attr, NULL, &loop_name, OBJ_CASE_INSENSITIVE);
+        status = NtCreateKey(&loop, KEY_ALL_ACCESS, &loop_attr, 0, NULL,
+                             REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, NULL);
+        ok(status == STATUS_SUCCESS, "create self-extending link -> %08lx", (unsigned long)status);
+        status = set_link_value(loop, loop_target_path);
+        ok(status == STATUS_SUCCESS, "set self-extending value -> %08lx", (unsigned long)status);
+
+        status = reg_open_path(loop_path, &resolved);
+        ok(status == STATUS_INVALID_PARAMETER, "open self-extending loop -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            NtClose(resolved);
+
+        /* A create resolves through a link the same way, so it refuses
+         * identically rather than materialising one of the intermediate
+         * names. */
+        resolved = NULL;
+        status =
+            NtCreateKey(&resolved, KEY_ALL_ACCESS, &loop_attr, 0, NULL, REG_OPTION_VOLATILE, NULL);
+        ok(status == STATUS_INVALID_PARAMETER, "create through self-extending loop -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            NtClose(resolved);
+
+        /* OBJ_OPENLINK still reaches the link key itself — which is the only
+         * way a loop can be cleaned up. */
+        resolved = NULL;
+        status = open_link_itself(loop_path, &resolved);
+        ok(status == STATUS_SUCCESS, "OPENLINK a looping link -> %08lx", (unsigned long)status);
+        if (NT_SUCCESS(status))
+            NtClose(resolved);
+
+        /* The two-link cycle. */
+        init_ustr(&loop_name, cycle_a_path);
+        init_attr(&loop_attr, NULL, &loop_name, OBJ_CASE_INSENSITIVE);
+        status = NtCreateKey(&cycle_a, KEY_ALL_ACCESS, &loop_attr, 0, NULL,
+                             REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, NULL);
+        ok(status == STATUS_SUCCESS, "create cycle_a -> %08lx", (unsigned long)status);
+        init_ustr(&loop_name, cycle_b_path);
+        status = NtCreateKey(&cycle_b, KEY_ALL_ACCESS, &loop_attr, 0, NULL,
+                             REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, NULL);
+        ok(status == STATUS_SUCCESS, "create cycle_b -> %08lx", (unsigned long)status);
+        status = set_link_value(cycle_a, cycle_b_path);
+        ok(status == STATUS_SUCCESS, "point cycle_a at cycle_b -> %08lx", (unsigned long)status);
+        status = set_link_value(cycle_b, cycle_a_path);
+        ok(status == STATUS_SUCCESS, "point cycle_b at cycle_a -> %08lx", (unsigned long)status);
+
+        resolved = NULL;
+        status = reg_open_path(cycle_a_path, &resolved);
+        ok(status == STATUS_INVALID_PARAMETER, "open two-link cycle -> %08lx",
+           (unsigned long)status);
+        if (NT_SUCCESS(status))
+            NtClose(resolved);
+
+        NtDeleteKey(loop);
+        NtClose(loop);
+        NtDeleteKey(cycle_a);
+        NtClose(cycle_a);
+        NtDeleteKey(cycle_b);
+        NtClose(cycle_b);
     }
 
     /* --- deletion --------------------------------------------------------- */
