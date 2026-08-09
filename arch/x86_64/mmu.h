@@ -60,6 +60,20 @@ void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t phys
                    int present, int writable, int executable);
 void MiUnmapUserPage(uint64_t pml4Physical, uint64_t virtualAddress);
 
+/* Create the page tables a later MiMapUserPage over [virtualAddress, size)
+ * will need, refusing (0) rather than panicking when one cannot be
+ * allocated. Mapping itself is infallible by contract, so the commit sites
+ * that CAN answer STATUS_NO_MEMORY charge the tables here first — otherwise
+ * ring 3 exhausting memory panics the kernel inside the commit. */
+int MiChargeUserTables(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t size);
+
+/* Test knob (the docs/17 §6E hazard-E shape, tests/kmt): make the next user
+ * page-table ALLOCATION the charge attempts fail, self-clearing. The refusal
+ * this knob convicts is only otherwise reachable by exhausting the machine —
+ * and which allocation loses at that ceiling is not a property to build a
+ * test on. Affects the charge alone; MiMapUserPage's own walk is past it. */
+extern int MiChargeFailNextTable;
+
 /* Total TLB flushes issued (every PTE rewrite ends in a local invlpg —
  * uniprocessor, no shootdown). Exported for CUI-9's hazard-H conviction:
  * kmt asserts the count MOVES across a COW resolve, because a dropped

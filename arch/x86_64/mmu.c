@@ -43,10 +43,14 @@ static uint64_t *MiTableEntry(uint64_t tablePhysical, int index)
 }
 
 /* Get the page table one level down from *entry, allocating it if absent.
- * Returns the physical address of the lower table. tableFlags carries the
- * permissive intermediate-entry bits (user walks add PTE_USER; the leaf
- * decides the effective protection). */
-static uint64_t MiEnsureTable(uint64_t *entry, uint64_t tableFlags)
+ * Returns the physical address of the lower table, or 0 when the allocation
+ * fails. tableFlags carries the permissive intermediate-entry bits (user
+ * walks add PTE_USER; the leaf decides the effective protection).
+ *
+ * ONE walk, two answers to a shortage (Art. 11): MiEnsureTable below panics
+ * because its callers cannot refuse; MiChargeUserTables is the caller that
+ * can, and it uses this form. */
+static uint64_t MipTryEnsureTable(uint64_t *entry, uint64_t tableFlags)
 {
     if (*entry & PTE_PRESENT)
     {
@@ -59,10 +63,20 @@ static uint64_t MiEnsureTable(uint64_t *entry, uint64_t tableFlags)
     uint64_t table = MiAllocatePage();
     if (table == 0)
     {
-        KiPanic("MiEnsureTable: out of physical pages");
+        return 0;
     }
     memset(MiPhysicalToVirtual(table), 0, PAGE_SIZE);
     *entry = table | tableFlags;
+    return table;
+}
+
+static uint64_t MiEnsureTable(uint64_t *entry, uint64_t tableFlags)
+{
+    uint64_t table = MipTryEnsureTable(entry, tableFlags);
+    if (table == 0)
+    {
+        KiPanic("MiEnsureTable: out of physical pages");
+    }
     return table;
 }
 
@@ -299,6 +313,68 @@ void MiDeleteUserPml4(uint64_t pml4Physical)
  * QEMU's softmmu can forgive a missing flush that real hardware will not,
  * so the counter — not a green boot — is the evidence. */
 uint64_t MiInvlpgCount;
+
+/* Create the user page tables covering [virtualAddress, size) without mapping
+ * anything, and answer 0 if one cannot be allocated.
+ *
+ * Every commit site below promises not to fail — a committed page always gets
+ * its PTE — and the page TABLES are the one allocation inside that promise
+ * which can. Uncharged, an out-of-memory reached through an ordinary
+ * NtCreateUserProcess or NtAllocateVirtualMemory panicked the machine at
+ * MiEnsureTable instead of refusing, i.e. ring 3 could bring the kernel down
+ * by running out of memory. A caller that can answer STATUS_NO_MEMORY charges
+ * here first (MiCreateMappedVad, MiCommitPages), which is also what makes
+ * MiEnsureTable's panic honest: past the charge, an absent table is a bug and
+ * not a shortage.
+ *
+ * Tables created before a failure stay. They are empty, cost one page each,
+ * and MiDeleteUserPml4 frees the whole user tree at teardown; unwinding them
+ * would need to know which levels this call created rather than found. */
+int MiChargeFailNextTable;
+
+/* MipTryEnsureTable under the test knob: only an allocation the charge
+ * actually attempts (the entry is absent) can be made to fail, so arming the
+ * knob for a range whose tables all exist leaves it armed — which the kmt
+ * case asserts, rather than passing on a refusal that never happened. */
+static uint64_t MipChargeTable(uint64_t *entry, uint64_t tableFlags)
+{
+    if (!(*entry & PTE_PRESENT) && MiChargeFailNextTable)
+    {
+        MiChargeFailNextTable = 0;
+        return 0;
+    }
+    return MipTryEnsureTable(entry, tableFlags);
+}
+
+int MiChargeUserTables(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t size)
+{
+    ASSERT((virtualAddress & (PAGE_SIZE - 1)) == 0);
+    uint64_t tableFlags = PTE_PRESENT | PTE_WRITE | PTE_USER;
+    uint64_t end = virtualAddress + size;
+    /* One page table spans 2 MiB, so step by that rather than by page. */
+    for (uint64_t address = virtualAddress; address < end;
+         address = (address & ~(LARGE_PAGE_SIZE - 1)) + LARGE_PAGE_SIZE)
+    {
+        ASSERT(address < (1ULL << 47)); /* canonical user half */
+        uint64_t pdpt =
+            MipChargeTable(MiTableEntry(pml4Physical, (int)((address >> 39) & 0x1FF)), tableFlags);
+        if (pdpt == 0)
+        {
+            return 0;
+        }
+        uint64_t pd =
+            MipChargeTable(MiTableEntry(pdpt, (int)((address >> 30) & 0x1FF)), tableFlags);
+        if (pd == 0)
+        {
+            return 0;
+        }
+        if (MipChargeTable(MiTableEntry(pd, (int)((address >> 21) & 0x1FF)), tableFlags) == 0)
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 void MiMapUserPage(uint64_t pml4Physical, uint64_t virtualAddress, uint64_t physicalAddress,
                    int present, int writable, int executable)

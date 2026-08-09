@@ -328,6 +328,69 @@ static void test_image_section(void)
        (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
 }
 
+/* A commit REFUSES when its page tables cannot be charged, and does not
+ * panic. MiMapUserPage is infallible by contract, so the tables were the one
+ * allocation inside the commit that could fail — and it panicked
+ * (MiEnsureTable) rather than refusing, i.e. ring 3 running the machine out
+ * of memory could bring the kernel down (docs/03 "Page tables are CHARGED").
+ *
+ * The knob is why this is a test and not a hope: the only other way to reach
+ * the refusal is to exhaust the machine, and WHICH allocation loses at that
+ * ceiling is not a property to build a conviction on (the cui9 leg re-rolls
+ * it whenever per-process cost moves). Both arms are covered — private
+ * memory through MiCommitPages, a view through MiCreateMappedVad. */
+static void test_page_table_charge(void)
+{
+    uint64_t free_at_start = MiGetFreePageCount();
+    {
+        MI_ADDRESS_SPACE space;
+        ok(MiCreateAddressSpace(&space) == STATUS_SUCCESS, "create address space");
+
+        /* --- the private-commit arm ------------------------------------- */
+        PVOID base = 0;
+        SIZE_T size = 0x2000;
+        MiChargeFailNextTable = 1;
+        NTSTATUS status =
+            MiAllocateVirtualMemory(&space, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        ok(status == STATUS_NO_MEMORY, "commit under a table shortage -> %08lx",
+           (unsigned long)status);
+        ok(MiChargeFailNextTable == 0, "knob did not self-clear (no table was needed)");
+        MiChargeFailNextTable = 0;
+
+        /* The same request succeeds with the knob down, so the refusal above
+         * was the charge and not the arguments. */
+        base = 0;
+        size = 0x2000;
+        status =
+            MiAllocateVirtualMemory(&space, &base, &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        ok(status == STATUS_SUCCESS, "commit without the knob -> %08lx", (unsigned long)status);
+
+        /* --- the view arm ------------------------------------------------ */
+        PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe_smoke.exe");
+        if (file != 0)
+        {
+            PMI_SECTION section = 0;
+            ok(MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section) == STATUS_SUCCESS,
+               "create image section");
+            if (section != 0)
+            {
+                uint64_t viewBase = 0, viewSize = 0;
+                MiChargeFailNextTable = 1;
+                status = MiMapViewOfSection(section, &space, &viewBase, 0, &viewSize, PAGE_EXECUTE);
+                ok(status == STATUS_NO_MEMORY, "image map under a table shortage -> %08lx",
+                   (unsigned long)status);
+                ok(MiChargeFailNextTable == 0, "knob did not self-clear (view arm)");
+                MiChargeFailNextTable = 0;
+                ObDereferenceObject(section);
+            }
+        }
+
+        MiDeleteAddressSpace(&space);
+    }
+    ok(MiGetFreePageCount() == free_at_start, "refused commits leaked frames (%lu vs %lu)",
+       (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
+}
+
 static void test_guard_bookkeeping(void)
 {
     uint64_t free_at_start = MiGetFreePageCount();
@@ -381,6 +444,7 @@ int kmt_run_m5(void)
     KMT_RUN(test_anonymous_section_engine);
     KMT_RUN(test_file_section_consistency);
     KMT_RUN(test_image_section);
+    KMT_RUN(test_page_table_charge);
     KMT_RUN(test_guard_bookkeeping);
     return kmt_failures - before;
 }
