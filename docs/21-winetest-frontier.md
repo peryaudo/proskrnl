@@ -599,13 +599,70 @@ Three things worth carrying beyond the fields themselves:
   syscall and a second transcription would be a second authority for one rule
   (Art. 11).
 
-**The 46 that remain are four subjects and the manifest block has them.** The
-two that are new work are both small and both are next items rather than parts
-of this one: `NtCreateThreadEx` still opens with `(void)zeroBits;` (35
-assertions, the same contract one syscall over), and the DEFAULT thread-stack
-reserve is a hardwired `0x100000` where the oracle uses the image's
-`SizeOfStackReserve` (2 assertions — but it changes every thread's stack in the
-system, so it earns its own measurement).
+**`NtCreateThreadEx`'s own ZeroBits is DONE** (`ntdll:virtual` 46 → **11**, the
+35 at `:1411`/`:1431`). The syscall opened with `(void)zeroBits;`, so every
+value in `test_stack_size`'s 32-count / 27-mask sweep answered
+`STATUS_SUCCESS`. It now refuses `zeroBits > 21 && zeroBits < 32` with
+`STATUS_INVALID_PARAMETER_3` and passes `MiZeroBitsLimit(zeroBits)` down as the
+stack reservation's placement ceiling (`PSP_THREAD_OPTIONS.stackLimitHigh` →
+`PspAllocateThreadStack` → `MiAllocateVirtualMemoryEx`). Pinned by
+`tests/ntapi/sem_ps/thread_zero_bits.c`.
+
+**This document told the next reader to reuse the wrong ladder, and that is
+the part worth carrying.** The block above said the bands "are already stated
+once in `mm/virtual.c` `MiZeroBitsPlacementLimit`". They are not this entry
+point's bands. On x86-64 `NtCreateThreadEx` has **one** invalid band where
+`NtAllocateVirtualMemory` has **two**: the oracle's `zero_bits >= 32` refusal
+is inside `#ifndef _WIN64`, and its `> 32 && < granularity_mask` band has no
+counterpart in `dlls/ntdll/unix/thread.c`. So `ZeroBits 33` is
+`STATUS_INVALID_PARAMETER_3` through `ProcessThreadStackAllocation` — which
+really is implemented by *calling* `NtAllocateVirtualMemory`, so it inherits
+that ladder — and here it is a legal MASK naming a 63-byte ceiling, i.e.
+`STATUS_NO_MEMORY`. **An implementation that took this document's advice
+passes all 35 winetest assertions and answers the wrong status for the whole
+band**, because the winetest accepts `NO_MEMORY` and `INVALID_PARAMETER_3`
+interchangeably there. Art. 11's answer is not "share the ladder" but "share
+the part that is one rule": `MiZeroBitsLimit`, the count-or-mask resolution,
+which both entry points already call.
+
+**Two other things it settles, both measured:**
+
+- **A late refusal leaves a handle in the caller's slot, and the pin's first
+  draft was refuted for saying otherwise.** The oracle creates the thread
+  object first and reserves the stack second (`create_server_thread`, then
+  `init_thread_stack`, then `done: if (status) { NtClose( *handle ); … }`), so
+  a `NO_MEMORY` refusal *closes* the handle and leaves its stale value where
+  the caller can read it. The pin states that and does not pin it — a closed
+  handle value is not something a caller can use — while the argument arm,
+  where nothing is created and the slot really is untouched, is pinned. The
+  ordering *is* pinned in the other direction too: the band check precedes the
+  process-handle resolution, so a bad `ZeroBits` is reported for a handle that
+  names nothing.
+- **The executed count fell 3737 → 2235 and that is the item working, not
+  coverage lost.** `test_stack_size_thread` runs once per create that
+  SUCCEEDS, and the sweep exists because most of them must not. proskrnl now
+  runs **18** of those bodies where it ran 44; the ORACLE runs **24** (2527
+  executed, 112 todo, 0 failures), so the pair moved from *above* the oracle's
+  count to *below* it. The 18 is exactly what this kernel's lowest free hole predicts —
+  the pin prints it at `0x7c0000`, so a 1 MiB stack needs a ceiling of at
+  least `0x8bffff`, which only counts 0..8 and masks `~0u >> 0..8` provide:
+  9 + 9. The oracle serves counts 0..11 because its lowest hole is lower:
+  12 + 12. Every one of those six extra bodies is a create the winetest
+  accepts as `STATUS_NO_MEMORY`, so the remaining gap costs coverage and no
+  failures. What did NOT reconcile is the old run's arithmetic — 26 fewer
+  bodies × 35 `ok()`s is 910 where 1502 assertions went, and the old run
+  showed 44 bodies from 59 successful creates. Both new counts are predicted
+  exactly by the two runners' lowest holes, so the residue is in behaviour
+  this item removed; it is recorded rather than explained. The reachable-set
+  half of this — which ceilings a kernel can meet at all — is in `docs/03`
+  "`ZeroBits`: the rule is exact, the reachable set is the address space's",
+  because it outlives this pair.
+
+**The 11 that remain are three subjects and the manifest block has them.** The
+one that is new work is small: the DEFAULT thread-stack reserve is a hardwired
+`0x100000` where the oracle uses the image's `SizeOfStackReserve` (2
+assertions — but it changes every thread's stack in the system, so it earns
+its own measurement).
 
 What is left under this heading:
 
