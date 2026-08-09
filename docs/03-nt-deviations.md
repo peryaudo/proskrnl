@@ -1029,17 +1029,30 @@ The milestone's own deviations (docs/02 CUI-5; the pins live in
   Junctions" — NTFS only; kernelbase surfaces `ERROR_INVALID_FUNCTION`).
   The oracle's ext4 *can* link, so the refusal is pinned `beyond_oracle`
   — the suite's first use of the tag.
-- **Directory-change watches deliver one record and do not buffer between
-  watches** (`kernel/io/notify.c`): a parked watch completes on the first
-  matching change with a single `FILE_NOTIFY_INFORMATION` record; a change
-  arriving while no watch is parked is dropped. Real NT (and the pinned
-  Wine, which queues changes on the directory handle) buffers across the
-  re-arm window, so a watcher that changes-then-rearms can miss events on
-  proskrnl. `sem_file/notify_change.c` is written one-change-per-watch and
-  drains the oracle's queue explicitly; the winetest change pairs stay
-  parked where they lean on the buffered window (see the unpark notes).
-  Escalation: give the watch list a per-handle backlog when a real watcher
-  convicts the gap.
+- ~~**Directory-change watches deliver one record and do not buffer between
+  watches**~~ — **RETIRED by the winetest frontier's W4b** (`docs/21`;
+  the pair that convicted it is `kernel32:change`). It was a CUI-5 deviation and
+  it is now the oracle's own shape: changes queue on the ARMED HANDLE with or
+  without a watch parked, a later arm that finds the queue non-empty completes
+  at once, and a completion drains the WHOLE queue into one chained buffer.
+  With it went the last of the "assign it once" state (`kernel/io/notify.c`,
+  `FILE_OBJECT.notify*`): the subtree flag and "did the first arm pass a
+  buffer" are fixed by the first arm exactly as the filter always was.
+  Pinned by `sem_file/notify_queue.c`; `kernel32:change` went from 14 failures
+  to green on it. Two things the escalation note did not predict:
+  - **The queue is what makes a rename reportable at all.** NT owes an
+    in-place rename TWO records, `FILE_ACTION_RENAMED_OLD_NAME` chained to
+    `FILE_ACTION_RENAMED_NEW_NAME`, in ONE completion. `fs/fat32` reported
+    both all along; the one-shot watch consumed the first and dropped the
+    second, and a bare OLD_NAME is indistinguishable from a delete. So
+    reporting and delivering had to become separate calls, with the batch
+    delivered at the end of the VFS operation (`FatReleaseVolumeGate`).
+  - **A handle whose FIRST arm passed no buffer can never report data
+    again.** The server queues no record at all when `want_data` is clear
+    (`server/change.c inotify_do_change_notify`), so every later completion
+    is `STATUS_NOTIFY_ENUM_DIR` with Information 0 however large a buffer the
+    re-arm supplies. That is the `FindFirstChangeNotification` handle for
+    life.
 - **`NtCancelSynchronousIoFile` cancels npfs parks only**
   (`kernel/io/async.c IoWaitCancellable`): the Io layer marks every
   potentially-blocking device op, but only npfs's waits (blocking

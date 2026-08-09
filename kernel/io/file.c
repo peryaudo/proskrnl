@@ -42,6 +42,10 @@ static void IopDeleteFileObject(PVOID body)
     {
         MiFreePool(file->dirOrder);
     }
+    /* CUI-5: the handle's change queue and its place on the armed-directory
+     * list (kernel/io/notify.c). Here rather than at cleanup, because a
+     * parked watch holds a reference and so outlives the last handle. */
+    IopDetachDirectoryNotify(file);
     if (file->completionPort != 0)
     {
         /* The bind's reference, released with the file object rather than

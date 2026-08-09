@@ -107,10 +107,30 @@ typedef struct FILE_OBJECT
      * completes does not clear it, because the association is with the
      * HANDLE and lasts as long as the handle does.
      *
-     * The SUBTREE flag is deliberately not sticky here even though the
-     * server stores it in the same block — kernel/io/notify.c says why. */
+     * The SUBTREE flag and "did the caller pass a buffer" are fixed by that
+     * same first arm — they are stored in the same `if (!dir->filter)` block
+     * — and pinned by sem_file/notify_queue.c. notifyWantData clear is not a
+     * shortcut: with it clear the server queues NO RECORD at all and only
+     * wakes the request, so every completion on such a handle is
+     * STATUS_NOTIFY_ENUM_DIR with Information 0 however big a buffer a later
+     * arm supplies.
+     *
+     * notifyRecords is the CHANGE QUEUE: changes accumulate on the handle
+     * whether or not a watch is parked, and a later arm that finds it
+     * non-empty completes at once. notifyWake carries the same signal for a
+     * change that queued no record (notifyWantData clear, or a pool
+     * failure): something happened, but nothing can be reported.
+     * notifyPath is the handle's volume-relative path — the match key, taken
+     * once with the filter because matching now happens at CHANGE time
+     * rather than per parked watch. kernel/io/notify.c owns all of it. */
     BOOLEAN notifyArmed;
+    BOOLEAN notifySubtree;
+    BOOLEAN notifyWantData;
+    BOOLEAN notifyWake;
     ULONG notifyFilter;
+    LIST_ENTRY notifyEntry;   /* the armed-directory list, while notifyArmed */
+    LIST_ENTRY notifyRecords; /* queued IOP_DIR_RECORD, oldest first */
+    UNICODE_STRING notifyPath;
 
     /* CUI-8: the NT file-object lock (IopLockFileObject's role), scoped to
      * what it observably protects here: NT serializes all I/O on a
@@ -353,13 +373,27 @@ BOOLEAN IoSyncIoCancelled(void);
 void IoReapRetiredDirWatches(void);
 
 /* CUI-5 NtNotifyChangeDirectoryFile (kernel/io/notify.c): the FS mutation
- * sites report changes here (cheap when no watch is armed); the cancel and
- * close paths sweep the kernel-owned watch list. */
+ * sites report changes here (cheap when no directory handle is armed); the
+ * cancel and close paths sweep the kernel-owned watch list. */
 BOOLEAN IoDirectoryWatchesActive(void);
 void IoReportDirectoryChange(struct IO_DEVICE *device, const UNICODE_STRING *parentPath,
                              const UNICODE_STRING *name, ULONG filterBit, ULONG action);
 ULONG IopCancelDirectoryWatches(struct FILE_OBJECT *file, PKTHREAD issuer,
                                 PIO_STATUS_BLOCK targetIosb);
+
+/* Queue-then-deliver, and the split is the contract rather than a
+ * convenience: one FS operation may report SEVERAL changes that NT owes the
+ * caller in ONE completion — an in-place rename is FILE_ACTION_RENAMED_OLD_NAME
+ * chained to FILE_ACTION_RENAMED_NEW_NAME (sem_file/notify_queue.c). So
+ * IoReportDirectoryChange only appends, and the batch is delivered at the end
+ * of the operation. Called from the volume gate's release path — the one
+ * place that is both "the operation is over" and outside the gate — and from
+ * the arm itself, for a queue that was already non-empty. */
+void IoDeliverDirectoryChanges(void);
+
+/* Drop the notification state of a dying file object: unregister it from the
+ * armed list and free its queued records (the server's dir_destroy). */
+void IopDetachDirectoryNotify(struct FILE_OBJECT *file);
 
 /* Complete a pending request from any context: IOSB into the owner's
  * address space strictly BEFORE the event signal (docs/08), then drop both
