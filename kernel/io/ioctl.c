@@ -13,14 +13,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/lib/string.h"
 
-/* A user-mode ApcRoutine needs completion plumbing this path does not have;
- * refuse loudly rather than dropping the completion (as kernel/io/rw.c). */
-static BOOLEAN IopIoctlApcUnsupported(PIO_APC_ROUTINE apcRoutine)
-{
-    return apcRoutine != 0 && ExGetPreviousMode() == UserMode;
-}
-
-static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc,
+static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, ULONG code, PVOID input, ULONG inputLength,
                                  PVOID output, ULONG outputLength)
 {
@@ -32,10 +25,6 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     if (!NT_SUCCESS(status))
     {
         return status;
-    }
-    if (IopIoctlApcUnsupported(apc))
-    {
-        return STATUS_NOT_IMPLEMENTED;
     }
     /* Before the verb runs, not at completion time (io.h). */
     status = IopValidateEventHandle(event);
@@ -96,7 +85,28 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
         memset(outBounce, 0, outputLength);
     }
 
-    IO_CONTROL_CONTEXT request = {.eventHandle = event, .userIosb = iosb};
+    /* W4a: allocate the completion APC BEFORE the verb runs, through the one
+     * engine (kernel/io/async.c) that rw.c and notify.c already use — so a
+     * verb that pends cannot fail to complete later for want of memory, and
+     * there is no second KAPC allocation site (Art. 11). A NULL routine or a
+     * kernel-mode caller yields 0 and everything below is a no-op. */
+    PKAPC apcBlock = 0;
+    status = IopPrepareCompletionApc(apc, apcContext, iosb, &apcBlock);
+    if (!NT_SUCCESS(status))
+    {
+        if (inBounce != 0)
+        {
+            MiFreePool(inBounce);
+        }
+        if (outBounce != 0)
+        {
+            MiFreePool(outBounce);
+        }
+        ObDereferenceObject(file);
+        return status;
+    }
+
+    IO_CONTROL_CONTEXT request = {.eventHandle = event, .userIosb = iosb, .apcBlock = apcBlock};
     ULONG_PTR information = 0;
     IopEnterSyncIo(iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
@@ -122,13 +132,34 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     if (status == STATUS_PENDING)
     {
         /* The op parked an IOP_PENDING_REQUEST: the caller's IOSB stays
-         * untouched until completion (pinned sem_pipe/async_listen). */
+         * untouched until completion (pinned sem_pipe/async_listen), and the
+         * APC block went WITH it — IopCompletePendingRequest queues it to
+         * this thread whenever the park ends. Nothing to do here. */
         ObDereferenceObject(file);
         return STATUS_PENDING;
     }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {
         status = IopCompleteRequest(iosb, event, status, information);
+        /* Inline completion: the IOSB is in place, so the APC can run. The
+         * issuer is this thread (pinned sem_pipe/listen_apc.c). */
+        IopQueueCompletionApc(KeGetCurrentThread(), apcBlock);
+    }
+    else
+    {
+        /* A refusal that never wrote the IOSB completes nothing, so the
+         * routine must NOT run — measured: an immediate STATUS_PIPE_CONNECTED
+         * listen leaves the caller's IOSB poison intact and never calls back
+         * (sem_pipe/listen_apc.c). Free the block rather than leak it; this
+         * is the one path where the request neither pended nor completed.
+         *
+         * Reaching here after a device PREPARED a pending request would
+         * double-free, since the request owns the same block — so that is an
+         * invariant, not a coincidence: a device that calls
+         * IopPreparePendingRequest must return STATUS_PENDING. npfs is the
+         * only DeviceControl that pends and it does exactly that
+         * (fs/npfs/pipe.c NpfsListen). */
+        IopQueueCompletionApc(0, apcBlock);
     }
     ObDereferenceObject(file);
     return status;
@@ -138,8 +169,7 @@ NTSTATUS NtDeviceIoControlFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc,
                                PIO_STATUS_BLOCK iosb, ULONG code, PVOID input, ULONG inputLength,
                                PVOID output, ULONG outputLength)
 {
-    (void)apcContext;
-    return IopDeviceControl(handle, event, apc, iosb, code, input, inputLength, output,
+    return IopDeviceControl(handle, event, apc, apcContext, iosb, code, input, inputLength, output,
                             outputLength);
 }
 
@@ -147,7 +177,6 @@ NTSTATUS NtFsControlFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID
                          PIO_STATUS_BLOCK iosb, ULONG code, PVOID input, ULONG inputLength,
                          PVOID output, ULONG outputLength)
 {
-    (void)apcContext;
-    return IopDeviceControl(handle, event, apc, iosb, code, input, inputLength, output,
+    return IopDeviceControl(handle, event, apc, apcContext, iosb, code, input, inputLength, output,
                             outputLength);
 }

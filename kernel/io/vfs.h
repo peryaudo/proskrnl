@@ -20,6 +20,7 @@
 struct FILE_OBJECT; /* kernel/io/io.h */
 struct IO_DEVICE;   /* kernel/io/io.h */
 struct KTHREAD;     /* kernel/ke/ke.h */
+struct KAPC;        /* kernel/ke/ke.h */
 
 /* What a DeviceControl op needs to PEND an operation (CUI-3): the caller's
  * completion event handle and IOSB, captured into an IOP_PENDING_REQUEST by
@@ -29,6 +30,13 @@ typedef struct IO_CONTROL_CONTEXT
 {
     HANDLE eventHandle;        /* optional completion event (0 = none) */
     PIO_STATUS_BLOCK userIosb; /* the caller's IOSB (probed writable) */
+
+    /* W4a: the completion APC block, already allocated by the Io layer
+     * (IopPrepareCompletionApc) before the verb ran, or 0. A device that
+     * PENDS hands it to IopPreparePendingRequest along with the rest and
+     * never touches it again; a device that completes inline leaves it
+     * alone and the Io layer queues it. */
+    struct KAPC *apcBlock;
 } IO_CONTROL_CONTEXT;
 
 /* NT share-mode accounting state (the SHARE_ACCESS concept, kept internal).
