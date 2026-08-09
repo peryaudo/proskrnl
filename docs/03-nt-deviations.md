@@ -443,6 +443,45 @@ first (Art. 5). Wrinkles worth remembering:
   the fallback for implausible CMOS content), `TickCount` in milliseconds
   with `TickCountMultiplier = 1 << 24`, exactly the pinned Wine's constants;
   `NtQuerySystemTime` serves the same clock.
+- **Sub-tick system time (the winetest frontier, docs/21 W13's residue).**
+  The clock a *query* answers is the 1 ms tick plus a TSC-measured fraction
+  of the tick in progress (`kernel/ke/timer.c` `KiTickFraction`), calibrated
+  on the same PIT gate that sets the LAPIC timer's period
+  (`arch/x86_64/lapic.c`). Without it `GetSystemTimePreciseAsFileTime` — which
+  is `RtlGetSystemTimePrecise`, which on this kernel is `NtQuerySystemTime`
+  (the fork's arm in `dlls/ntdll/time.c`) — moved in whole 1 ms steps, and
+  Windows documents it as precise to under a microsecond. Pinned by
+  `tests/ntapi/sem_ps/precise_time.c`; it is what took `kernel32:time` green.
+  - **The divergence this creates, stated plainly: on NT `NtQuerySystemTime`
+    IS the shared page, and here it runs up to one tick AHEAD of it.** The
+    page stays tick-granular — a mirror published once per tick cannot be
+    refreshed by writing an interpolated value into it — so the two readings
+    no longer coincide, and `GetSystemTimeAsFileTime`, the *coarse* getter on
+    Windows, is sub-tick here because Wine routes it to the same syscall
+    (`dlls/kernelbase/file.c`). What makes the trade acceptable is that the
+    gap has a bound (one tick) and a direction (query ≥ page), and every
+    ordering the boundary asserts wants that direction: `sem_ps/time.c`, and
+    `ntdll:time`'s `time.c:460`. The one assertion pointing the OTHER way is
+    `ntdll:time`'s `time.c:458` — `NtQuerySystemTime <= USD SystemTime` —
+    which upstream already wraps in
+    `todo_wine_if(t1 > t2 && t1 - t2 < 50 * TICKSPERMSEC)` because Wine
+    diverges the same way for the same reason. **Measured on that pair's
+    proskrnl leg rather than argued** (it is parked for an oracle-side host
+    flake, so `WTEST_NO_ORACLE=1`): 10657 tests executed and 0 failures both
+    before and after, with the todo count going 1 → 2 — the second todo IS
+    that assertion moving into its tolerance arm, which is the whole
+    divergence, visible and bounded. Closing the gap properly means the
+    Windows arrangement —
+    a page carrying the QPC baseline so user mode interpolates for itself —
+    and that is a KUSER_SHARED_DATA layout item, not this one.
+  - **Only the clamp is load-bearing, not the TSC's quality.** The fraction is
+    capped one unit short of a whole tick, so a reading can never reach the
+    value the next tick will publish however fast or drifty the counter is,
+    and each tick re-bases it — the worst case is the accuracy the clock had
+    before interpolation. No invariant-TSC test is made, and none is needed.
+  - **`NtQueryPerformanceCounter` inherits the resolution** (it is interrupt
+    time, `kernel/ps/query.c`), which is what its 10 MHz reported frequency
+    had been claiming all along.
 - **`FileFsDeviceInformation.DeviceType` for a mounted volume is
   `FILE_DEVICE_DISK_FILE_SYSTEM` (0x8)**, the pinned oracle's value for
   regular files — not bare `FILE_DEVICE_DISK` (real NT's volume answer);
