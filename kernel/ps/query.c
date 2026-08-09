@@ -25,7 +25,9 @@
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/rtc.h"
 #include "arch/x86_64/smbios.h"
+#include "arch/x86_64/cpu.h"
 
+#include "abi/ntkeapi.h"
 #include "abi/ntpsapi.h"
 #include "abi/ntimage.h"
 #include "abi/ntpebteb.h"
@@ -36,6 +38,16 @@
  * is a module global, so it is declared at file scope: the same declaration
  * inside a function would read as a local and take a local's casing. */
 extern char KiImageEnd[];
+
+/* The machine's feature array, which lives on the shared page and is filled
+ * once by PspInitializeSharedUserData. Every capability answer this file
+ * gives is that array restated — never a second read of CPUID (Art. 11):
+ * two derivations of one fact drift even while they currently agree. */
+static const BOOLEAN *PspProcessorFeatures(void)
+{
+    ASSERT(KiUserSharedData != 0);
+    return ((const KUSER_SHARED_DATA *)KiUserSharedData)->ProcessorFeatures;
+}
 
 /* --- process information -------------------------------------------------- */
 
@@ -1597,8 +1609,11 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
          * create_hardware_registry_keys switches on ProcessorArchitecture
          * (CUI-1). Level/revision use Wine's get_cpuinfo encoding of CPUID
          * leaf 1 eax: level = family, revision = extended-model/model/
-         * stepping nibbles. FeatureBits stay 0 until a boundary test pins
-         * them. Pinned by sem_ps/cpu_info. */
+         * stepping nibbles. FeatureBits is the same KF_* word class 154
+         * reports, truncated to the field's ULONG exactly as the oracle
+         * truncates it (dlls/ntdll/unix/system.c `.ProcessorFeatureBits =
+         * get_cpu_features()`), so the two classes cannot disagree about a
+         * feature. Pinned by sem_ps/cpu_info + sem_ps/shared_machine. */
         if (length < sizeof(SYSTEM_CPU_INFORMATION))
         {
             if (returnLength != 0)
@@ -1623,6 +1638,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         info.ProcessorRevision = (USHORT)((((regs[0] >> 16) & 0xf) << 12) |
                                           (((regs[0] >> 4) & 0xf) << 8) | (regs[0] & 0xf));
         info.MaximumProcessors = 1; /* uniprocessor (Art. 3) */
+        info.ProcessorFeatureBits = (ULONG)KiProcessorFeatureBits(PspProcessorFeatures());
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
@@ -1868,19 +1884,10 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
 
     case SystemProcessorFeaturesInformation:
     {
-        /* The KF_* feature bitmap. The base word is the set every x86_64
-         * implementation is architecturally required to have — tsc, vme,
-         * cmov, pge, pse, mtrr, cx8, mmx, pat, fxsr, sep, sse, sse2, nx —
-         * so it is a fact about the architecture, not a guess about this
-         * CPU. The optional bits are read from CPUID rather than assumed,
-         * because a caller that tests for cx16 or rdrand and is told yes on
-         * a machine without them gets a fault, which is the failure mode a
-         * fabricated answer produces (Art. 12).
-         *
-         * Bit values cross-checked against the oracle's own derivation
-         * (dlls/ntdll/unix/system.c get_cpu_features, which cites the KF_*
-         * flags and Geoff Chappell's documentation); CPUID leaf/bit numbers
-         * against the Intel SDM Vol. 2A, CPUID instruction. */
+        /* The KF_* feature bitmap, composed from the shared page's
+         * ProcessorFeatures array by KiProcessorFeatureBits — which is where
+         * the derivation and its citations live, and is the same
+         * array-reading shape the oracle's get_cpu_features has. */
         SYSTEM_PROCESSOR_FEATURES_INFORMATION info;
         if (length < sizeof(info))
         {
@@ -1892,36 +1899,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
             return status;
         }
         memset(&info, 0, sizeof(info));
-        ULONGLONG features = 0x20013dfe;
-        uint32_t regs[4];
-        KiCpuid(1, 0, regs);
-        if (regs[2] & (1u << 0)) /* CPUID.1:ECX.SSE3 */
-        {
-            features |= 0x00080000;
-        }
-        if (regs[2] & (1u << 13)) /* CPUID.1:ECX.CMPXCHG16B */
-        {
-            features |= 0x00100000;
-        }
-        if (regs[2] & (1u << 26)) /* CPUID.1:ECX.XSAVE */
-        {
-            features |= 0x00800000;
-        }
-        if (regs[2] & (1u << 30)) /* CPUID.1:ECX.RDRAND */
-        {
-            features |= 0x100000000ull;
-        }
-        KiCpuid(0, 0, regs);
-        /* The vendor string is EBX:EDX:ECX of leaf 0. */
-        if (regs[1] == 0x68747541 && regs[3] == 0x69746E65 && regs[2] == 0x444D4163)
-        {
-            features |= 0x00200000; /* "AuthenticAMD" */
-        }
-        else if (regs[1] == 0x756E6547 && regs[3] == 0x49656E69 && regs[2] == 0x6C65746E)
-        {
-            features |= 0x01000000; /* "GenuineIntel" */
-        }
-        info.ProcessorFeatureBits = features;
+        info.ProcessorFeatureBits = KiProcessorFeatureBits(PspProcessorFeatures());
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
@@ -2002,11 +1980,15 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
 
     case SystemProcessorFeaturesBitMapInformation:
     {
-        /* The PF_* flag bitmap, two words. EXACT length, unlike its
-         * KF_* sibling at 154 which takes `size >= len`. proskrnl sets no
-         * PF_* flags — it maintains no ProcessorFeatures array — so the
-         * bitmap is empty, which is what the oracle reports for a machine
-         * whose flags it has not probed. */
+        /* The OVERFLOW half of the PF_* flag space, two words. EXACT length,
+         * unlike its KF_* sibling at 154 which takes `size >= len`. It holds
+         * the flags numbered at or above PROCESSOR_FEATURE_MAX, i.e. the ones
+         * that do not fit KUSER_SHARED_DATA.ProcessorFeatures — the oracle
+         * only ever sets bits here on aarch64 (dlls/ntdll/unix/system.c
+         * set_feature_bitmap, whose `assert(flag >= PROCESSOR_FEATURE_MAX)`
+         * states the split, and which is compiled only under __aarch64__).
+         * x86_64 has no such flag, so both runners report two zero words —
+         * an empty SET, not an unfilled field. */
         ULONGLONG bitmap[2] = {0, 0};
         if (length != sizeof(bitmap))
         {

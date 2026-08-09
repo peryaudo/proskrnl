@@ -1805,6 +1805,61 @@ real tables on proskrnl instead of nothing; the firstboot registry
 differential stays at 0 divergences (its scope already excludes the
 host-derived keys).
 
+## Processor features: the array says what ring 3 may execute, not what the silicon has
+
+`KUSER_SHARED_DATA.ProcessorFeatures` is filled at boot from CPUID
+(`arch/x86_64/cpu.c` `KiInitializeProcessorFeatures`), transcribing the
+oracle's `init_shared_data_cpuinfo` (`dlls/ntdll/unix/system.c`) leaf for leaf
+and bit for bit. It is the ONE statement of the machine's capabilities: Wine's
+PE ntdll implements `RtlIsProcessorFeaturePresent` as a plain load from the
+array (`dlls/ntdll/signal_x86_64.c`), and the two `Nt*` classes that report a
+feature word — `SystemCpuInformation` (1) and
+`SystemProcessorFeaturesInformation` (154) — compose it from the array through
+one function rather than re-reading CPUID, exactly as the oracle's
+`get_cpu_features` reads the same page (Art. 11). Pinned by
+`tests/ntapi/sem_ps/shared_machine.c`, which checks every optional entry
+against CPUID as the TEST executes it, so the pin measures the rule and not
+this developer box's feature set.
+
+**The one divergence from the oracle's derivation, and it is a difference in
+the machine rather than in the rule: the AVX family reports FALSE here.**
+`PF_AVX_INSTRUCTIONS_AVAILABLE`, `PF_AVX2_*` and `PF_AVX512F_*` are gated on
+`PF_XSAVE_ENABLED`, which is CPUID.1:ECX.27 (OSXSAVE) and therefore a
+statement about the running kernel — and this kernel never sets CR4.OSXSAVE,
+because a thread's FPU state is an FXSAVE image (`arch/x86_64/ctxswitch.S`).
+A VEX-encoded instruction raises #UD while OSXSAVE is clear, so reporting AVX
+available would hand a believing caller a fault; that is the
+fabricated-plausible-answer failure of Art. 12 expressed as a bit rather than
+as a status. The oracle does not need the gate because the Linux it runs on
+always enables XSAVE, and it already applies the same shape to the one flag
+where its host might not — `PF_RDWRFSGSBASE_AVAILABLE` is ANDed with the host
+kernel's `AT_HWCAP2` bit, i.e. with CR4.FSGSBASE. Here that question is
+answered by reading CR4, because here we are that kernel; `KiReadCr4()` is
+where the FSGSBASE half lives.
+
+Two consequences worth stating so nobody re-derives them:
+
+- **user mode agrees with the array by its own measurement.** A library that
+  checks CPUID for itself sees OSXSAVE clear and reaches the same conclusion,
+  so the report is not merely safe, it is consistent with what a caller that
+  ignores the flag would find.
+- **`XState.EnabledFeatures` stays zero for the same reason**, so
+  `RtlGetEnabledExtendedFeatures` reports nothing enabled and
+  `ntdll:virtual`'s `test_user_shared_data` skips its xstate block rather than
+  measuring a configuration no `CONTEXT` record here carries. When XSAVE is
+  enabled — which is a context-switch change, not a reporting one — the AVX
+  gate must become the XCR0 state test, not simply be deleted: CR4.OSXSAVE
+  says the kernel *can* save extended state, not *which* states it does.
+
+`NumberOfPhysicalPages`, `ActiveProcessorCount` and `ActiveGroupCount` are
+filled from the same boot site, each from the one place its quantity is stated
+(`MiGetTotalPageCount`, `KE_NUMBER_PROCESSORS`, and one group), so the page
+cannot disagree with `SystemBasicInformation` about the same number — which is
+what the winetest compares. `SystemProcessorFeaturesBitMapInformation` (250)
+stays two zero words and that is a full answer, not an unfilled field: it
+carries the flags numbered at or above `PROCESSOR_FEATURE_MAX`, which is an
+aarch64-only set on both runners.
+
 ## `SystemWineVersionInformation` (1000) — implemented as HACK-005
 
 NT has no class 1000; it is a Wine extension, and adding it puts an NT-absent

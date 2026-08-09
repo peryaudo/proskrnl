@@ -24,6 +24,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
 #include "arch/x86_64/mmu.h"
+#include "arch/x86_64/cpu.h"
 
 #include "abi/ntpebteb.h"
 #include "abi/ntkeapi.h"
@@ -72,6 +73,21 @@ void PspInitializeSharedUserData(void)
     kusd->ProductTypeIsValid = TRUE;
     kusd->NativeProcessorArchitecture = 9; /* PROCESSOR_ARCHITECTURE_AMD64 */
     kusd->NXSupportPolicy = 2;             /* NX_SUPPORT_POLICY_OPTIN */
+
+    /* What the MACHINE is: how much memory it has, how many processors are
+     * running, and which instructions ring 3 may execute. Wine's PE ntdll
+     * reads the last of those straight out of this array
+     * (RtlIsProcessorFeaturePresent), so it is boundary state and not an
+     * internal note. The counts come from the one place each is stated —
+     * MiGetTotalPageCount and KE_NUMBER_PROCESSORS — so they cannot disagree
+     * with what NtQuerySystemInformation reports for the same quantities
+     * (Art. 11), which is exactly what ntdll:virtual's test_user_shared_data
+     * compares. XState stays zero: nothing here enables XSAVE, and
+     * KiInitializeProcessorFeatures reports that. */
+    kusd->NumberOfPhysicalPages = (ULONG)MiGetTotalPageCount();
+    kusd->ActiveProcessorCount = KE_NUMBER_PROCESSORS;
+    kusd->ActiveGroupCount = 1;
+    KiInitializeProcessorFeatures(kusd->ProcessorFeatures);
 
     /* NtSystemRoot = "C:\\windows" (UTF-16). ntdll composes DLL search paths
      * from it when ProcessParameters carries no DllPath. */
