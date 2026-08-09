@@ -31,14 +31,18 @@ Guard rails, all of them there because the skill says so:
   * STALL DETECTION. An iteration that lands nothing leaves `main` where it
     was. Two of those in a row means the loop is spinning, not working.
 
-Usage:
-    tools/fix_winetest_agent.py                    # loop until the frontier is closed
-    tools/fix_winetest_agent.py --max-iterations 3 # bounded run
-    tools/fix_winetest_agent.py --check-only       # just ask whether work remains
-    tools/fix_winetest_agent.py --item W8          # pass an argument to the skill
+Usage - `uv run` fetches the SDK into a cached throwaway env, so there is no
+venv to create or activate first:
 
-Requires the Claude Agent SDK (`pip install claude-agent-sdk`) and the
-`claude` CLI on PATH, plus whatever credentials that CLI already uses.
+    R="uv run --with claude-agent-sdk tools/fix_winetest_agent.py"
+    $R                    # loop until the frontier is closed
+    $R --max-iterations 3 # bounded run
+    $R --check-only       # just ask whether work remains
+    $R --item W8          # pass an argument to the skill
+
+Any interpreter that already has `claude-agent-sdk` installed runs it the
+same way (`python3 tools/fix_winetest_agent.py ...`). Either way it also
+needs the `claude` CLI on PATH, plus whatever credentials that CLI uses.
 """
 
 import argparse
@@ -63,9 +67,9 @@ try:
     )
 except ImportError:  # pragma: no cover - dependency check, not logic
     sys.exit(
-        "claude_agent_sdk is not installed.\n"
-        "    python3 -m venv .venv && . .venv/bin/activate\n"
-        "    pip install claude-agent-sdk\n"
+        "claude_agent_sdk is not installed. Re-run it under uv:\n"
+        "    uv run --with claude-agent-sdk tools/fix_winetest_agent.py ...\n"
+        "or install it into this interpreter (`pip install claude-agent-sdk`).\n"
         "It also needs the `claude` CLI on PATH."
     )
 
