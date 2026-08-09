@@ -502,6 +502,16 @@ static int MipVadPageHwWritable(PMI_VAD vad, ULONG index, int protectionWritable
 static NTSTATUS MiCommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base, uint64_t size,
                               ULONG protect)
 {
+    /* The page tables first, because they are the one allocation the loop
+     * below cannot report: MiMapUserPage is infallible by contract and used
+     * to panic here when a table could not be allocated (arch/x86_64/mmu.c
+     * MiChargeUserTables). Charging them up front makes a stack or heap
+     * commit under memory pressure answer STATUS_NO_MEMORY like any other
+     * refusal. */
+    if (!MiChargeUserTables(space->pml4Physical, base, size))
+    {
+        return STATUS_NO_MEMORY;
+    }
     int present, writable, executable;
     MiProtectToPteBits(protect, &present, &writable, &executable);
     for (uint64_t page = base; page < base + size; page += PAGE_SIZE)
@@ -1626,6 +1636,16 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
     PMI_VAD vad = MiCreateVad(base, MiRoundUp(size, PAGE_SIZE), allocationProtect);
     if (vad == 0)
     {
+        return 0;
+    }
+    /* Every page of a mapped view is committed at map time (no demand
+     * paging), and the commit loop cannot report a failure — so the page
+     * tables it will need are charged here, where the caller already turns a
+     * 0 into STATUS_NO_MEMORY (arch/x86_64/mmu.c MiChargeUserTables). */
+    if (!MiChargeUserTables(space->pml4Physical, base, MiRoundUp(size, PAGE_SIZE)))
+    {
+        MiFreePool(vad->pageProtect);
+        MiFreePool(vad);
         return 0;
     }
     vad->type = vadType;

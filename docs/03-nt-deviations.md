@@ -1734,6 +1734,19 @@ between create and map is invisible to the view. Masters widen the window across
 sections without changing its class; the gate closes the only path a real caller
 takes.
 
+### Page tables are CHARGED, because committing a page cannot fail
+
+`MiMapUserPage` is infallible by contract — a committed page always gets its PTE —
+and the intermediate page TABLES were the one allocation inside that promise which
+could fail. `MiEnsureTable` panicked on it, so a ring-3 program that simply ran the
+machine out of memory could bring the kernel down instead of getting
+`STATUS_NO_MEMORY`. The commit sites that *can* refuse now charge the tables first
+(`MiChargeUserTables`, `arch/x86_64/mmu.c`; called by `MiCreateMappedVad` for a view
+and `MiCommitPages` for private memory), which is also what makes the remaining panic
+honest: past the charge, an absent table is a bug and not a shortage. Tables created
+before a failed charge stay — they are empty, cost one page each, and
+`MiDeleteUserPml4` frees the whole user tree at teardown.
+
 ### Hazard I (KASAN): vacuous by scope
 
 The tree's KASAN is pool-only (`kernel/mm/kasan.h`); COW's fresh frames are whole
