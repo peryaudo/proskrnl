@@ -220,7 +220,7 @@ ntdll_test.exe:path
 #         is, note the axis: the oracle skips when the call did NOT return
 #         STATUS_PENDING (dlls/ntdll/unix/file.c's `ret_status ==
 #         STATUS_PENDING` argument to add_completion, server/fd.c
-#         set_fd_completion's `req->async ||`, server/async.c's
+#         add_fd_completion's `req->async ||`, server/async.c's
 #         `async->pending ||`), and its guard is !NT_ERROR, which lets
 #         BUFFER_OVERFLOW through to the skip. NOT on the completion status:
 #         a first cut of this session keyed it on NT_SUCCESS inside
@@ -245,7 +245,7 @@ ntdll_test.exe:path
 #     THE AXIS is the part to get right and it is NOT the completion status:
 #     the oracle skips only when the call did not REPORT STATUS_PENDING to
 #     its caller (add_completion's `ret_status == STATUS_PENDING`,
-#     set_fd_completion's `req->async ||`, async_terminate's
+#     add_fd_completion's `req->async ||`, async_set_result's
 #     `async->pending ||`), and its guard is !NT_ERROR, so
 #     STATUS_BUFFER_OVERFLOW is skipped too. In proskrnl the caller passes
 #     that answer down (IopWillReportPending), because the DEVICE paths

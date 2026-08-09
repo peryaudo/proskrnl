@@ -180,7 +180,7 @@ pair's five remaining assertions to **zero**
 misleads and its failure mode is a hang.** The packet is skipped when the
 call did not **return `STATUS_PENDING`** — not when it succeeded. The
 oracle's guards carry no status term at all (`server/fd.c`
-`set_fd_completion`'s `req->async ||`, `server/async.c` `async_terminate`'s
+`add_fd_completion`'s `req->async ||`, `server/async.c` `async_set_result`'s
 `async->pending ||`); the `!NT_ERROR` sitting beside the second is the
 separate outer question of whether to signal completion at all. Keyed on
 `NT_SUCCESS` inside `IopCompleteTransfer` — which runs *before*
