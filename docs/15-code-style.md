@@ -75,7 +75,7 @@ A **function-local `static`** splits along the same line: a mutable one is modul
 happens to be declared inside its only user, so it is a global — `ObpNextTypeIndex`,
 `KiLastIdleSweepTick`; a `const` one is a local constant with a longer life, so it is a local
 — `systemRoot`, `kernelName`. Write the `const` (`static const char *const name = …`), and
-`make tidy` tells the two apart on its own.
+`make format` tells the two apart on its own.
 
 - Numeric ABI constants are **generated**, never named by hand (Article 4, `docs/09`).
 
@@ -86,18 +86,25 @@ brace on its own line, for functions *and* control flow), 4-space indent, 100 co
 right-aligned pointers, no include reordering. Run it:
 
 ```sh
-make format          # clang-format -i over all kernel C (uses the llvm keg)
-make tidy            # clang-tidy --fix: applies the naming rules, in place
-make tidy-check      # the same pass without the writes (CI, someone else's tree)
+make format          # the one style gate: frontier check, clang-format, clang-tidy --fix
 ```
 
-clang-format governs *layout*; the *naming* rules above are enforced by **`make tidy`**
-(clang-tidy's `readability-identifier-naming`, configured in `.clang-tidy`). **`make tidy`
-rewrites source, exactly like `make format`** — a mis-cased function, parameter, local or
-member is renamed at every use in the translation unit and the result re-laid-out through
+clang-format governs *layout*; the *naming* rules above are enforced by clang-tidy's
+`readability-identifier-naming` (configured in `.clang-tidy`). Both run under **`make
+format`** — there is no second command, because a layout pass and a naming pass that can be
+run separately get run separately, and then one of them is the one nobody ran.
+
+**`make format` rewrites source** — a mis-cased function, parameter, local or member is
+renamed at every use in the translation unit and the result re-laid-out through
 `.clang-format`; `git diff` afterwards is the review. It still **fails** the run: a warning
 it just fixed is a warning you introduced, and that failure is what makes it a gate. Re-run
 to see the tree green. A `PostToolUse` hook formats edited files automatically.
+
+The clang-tidy half is `tools/tidy.sh`, which fans the *checking* pass out over every core
+(90-odd TUs, ~100s single-file, ~10s parallel) and then re-runs only the TUs that had a
+finding with `--fix`, serially. The fixing pass stays serial on purpose: a header matched by
+`HeaderFilterRegex` is rewritten by every TU that includes it, and two concurrent rewriters
+clobber each other's edits. `TIDY_JOBS=n` overrides the parallelism.
 
 The tree is clean under every check `.clang-tidy` enables, and that is the property to keep:
 a warning always means "you introduced something". Two ways out, never a third:
@@ -125,7 +132,7 @@ directly against the pinned tree's sources (unixlib seams, per-program PE entry 
 mirrors Wine style, so `user/wine/.clang-format` disables formatting and
 `user/wine/.clang-tidy` turns the naming check off. **`user/smss/` is not exempt:** the
 session manager is our own code, so it follows this guide exactly like `kernel/`, `drivers/`
-and `fs/` — `make format` formats it and `make tidy` checks it (under the mingw target it is
+and `fs/` — `make format` formats *and* checks it (under the mingw target it is
 built for, since it is a PE). Its names are unprefixed-by-department but subsystem-prefixed
 all the same: `Smss*` for the process's own surface, `Session*` for the acceptance flows,
 `Firstboot*` for the wineboot hand-off.

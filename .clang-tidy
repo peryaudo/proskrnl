@@ -1,7 +1,7 @@
 # proskrnl — clang-tidy for freestanding kernel C.
 #
 # Enforces the Win32/NT casing of docs/15 via readability-identifier-naming
-# (run `make tidy`, which applies every fix clang-tidy can make and fails on
+# (run `make format`, which applies every fix clang-tidy can make and fails on
 # what is left), plus a set of correctness checks the tree is clean under.
 # tests/ and user/wine/ inherit this file and turn the naming check off
 # (Wine style); third-party headers are excluded via HeaderFilterRegex.

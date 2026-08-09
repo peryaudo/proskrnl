@@ -1604,7 +1604,7 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     ULONG emitted = 0;
     /* No pre-loop seed for `status`: the first thing every iteration does is
      * assign it (the position check or the buffer probe), so a seed here is a
-     * store no path can read — which `make tidy`'s dead-store analysis
+     * store no path can read — which `make format`'s dead-store analysis
      * rejects, and rightly: a seed that can never be observed hides which
      * assignment actually produced the answer. */
     for (;;)

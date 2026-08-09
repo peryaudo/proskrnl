@@ -137,7 +137,7 @@ stated as hard gates.
   machine-computable property (`tools/blocking_frontier.py`, issue #96), and the CUI-8
   post-mortem showed what happens when it is left to judgement: the census drew the
   frontier at `fs/`, never asked Ob, and missed that `NtClose` parks (`docs/20` §10.1).
-  The check (`make frontier-check`, run by `make tidy` and CI) enforces two facts:
+  The check (`make frontier-check`, run by `make format` and CI) enforces two facts:
   1. **No must-not-block region has a path to a park** — the completion drain, the
      interrupt/tick path, the idle consistency sweep, and the panic path (the same set
      the runtime `KiEnterNoBlockRegion`/`KI_MAY_BLOCK()` brackets declare — the static

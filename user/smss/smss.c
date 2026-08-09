@@ -66,7 +66,7 @@ static void SmssFormatUnsigned(char *buf, unsigned size, unsigned *pos, unsigned
 
 /* The analyzer does not model the Windows target's __builtin_ms_va_start, so
  * every va_arg below reads as "uninitialized va_list" under the mingw triple
- * `make tidy` uses for this PE; the same code is clean under an ELF triple. */
+ * `make format` uses for this PE; the same code is clean under an ELF triple. */
 /* NOLINTBEGIN(clang-analyzer-valist.Uninitialized) */
 void SmssPrintf(const char *fmt, ...)
 {

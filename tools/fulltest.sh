@@ -102,8 +102,8 @@
 #   3. CI builds from nothing; the views copy this tree's incremental build/. A
 #      stale object or a missing Makefile dependency is invisible here.
 #
-# Everything SEMANTIC, this answers. It is also not `make tidy` — that rewrites
-# source, so it is a fixer, not a verdict, and stays a separate step.
+# Everything SEMANTIC, this answers. It is also not `make format` — that
+# rewrites source, so it is a fixer, not a verdict, and stays a separate step.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

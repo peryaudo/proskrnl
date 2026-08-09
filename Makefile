@@ -161,7 +161,7 @@ ASRC := arch/x86_64/trap.S \
 # The boot console's glyph renderer (kernel/init/bootvid.c): the only
 # third_party code compiled into the kernel image, pinned and unmodified
 # (docs/11 "Third-party code inside the kernel image"). Kept OUT of CSRC on
-# purpose — `make tidy` runs clang-tidy over $(CSRC) with the docs/15 naming
+# purpose — `make format` runs clang-tidy over $(CSRC) with the docs/15 naming
 # rules, which are ours to follow and not upstream's.
 FLANTERM_SRC := third_party/flanterm/src/flanterm.c \
                 third_party/flanterm/src/flanterm_backends/fb.c
@@ -1444,46 +1444,44 @@ gen-abi:
 	python3 tools/gen_abi.py
 	python3 tools/gen_syscalls.py
 
-# Enforce the Win32/NT layout (docs/15). clang-format governs layout only;
-# naming (PascalCase, NT prefixes) is on you and on review. user/smss is our
-# own code and follows the same rules; user/wine is the exception (it mirrors
-# the pinned tree's Wine style and carries its own DisableFormat).
-format:
-	$(CLANG_FORMAT) -i $(shell find kernel arch drivers fs user/smss -name '*.[ch]')
-
-# Enforce the docs/15 naming rules (and correctness lints) via clang-tidy.
-# smss is a user-mode PE, so its TUs are checked under the same mingw target
-# they are built for, not the kernel's freestanding-ELF flags.
+# Enforce the docs/15 house style — the one style gate, `make format`.
 #
-# `tidy` REWRITES source, like `format`: every fix clang-tidy can make (the
-# identifier renames above all) is applied in place and re-laid-out through
-# .clang-format. It still fails the run — a warning it just fixed is a warning
-# you introduced, and the failure is what makes it a gate; re-run to see the
-# tree green and `git diff` for what it did. `tidy-check` is the same pass
-# without the writes, for CI and for reviewing someone else's tree.
+# Three passes, in this order: the blocking frontier (G14), clang-format for
+# *layout*, then clang-tidy for *naming* (readability-identifier-naming) and
+# the correctness lints .clang-tidy enables. user/smss is our own code and
+# takes all three; user/wine is the exception (it mirrors the pinned tree's
+# Wine style and carries its own DisableFormat/.clang-tidy). smss is a
+# user-mode PE, so its TUs are checked under the same mingw target they are
+# built for, not the kernel's freestanding-ELF flags.
 #
-# The per-file "N warnings generated" lines are progress, not findings: they
-# count the diagnostics HeaderFilterRegex and the NOLINTs then drop. A finding
-# is an `error:` line, and it fails the run.
+# It REWRITES source: every fix clang-tidy can make (the identifier renames
+# above all) is applied in place and re-laid-out through .clang-format. It
+# still fails the run — a warning it just fixed is a warning you introduced,
+# and the failure is what makes it a gate; re-run to see the tree green and
+# `git diff` for what it did. tools/tidy.sh has the parallelism, and the
+# reason the fixing pass is the serial one.
 SMSS_TIDY_FLAGS := -std=c11 --target=x86_64-windows-gnu -ffreestanding -I.
-TIDY_FLAGS      := --quiet --warnings-as-errors='*'
-tidy: TIDY_FLAGS += --fix --fix-notes --format-style=file
-tidy tidy-check: frontier-check
-	$(CLANG_TIDY) $(TIDY_FLAGS) $(CSRC) -- $(CFLAGS)
-	$(CLANG_TIDY) $(TIDY_FLAGS) $(wildcard user/smss/*.c) -- $(SMSS_TIDY_FLAGS)
+# Recursively expanded (`=`, not `:=`): the find runs when `format` runs, not
+# on every parse of this Makefile.
+FORMAT_SRC = $(shell find kernel arch drivers fs user/smss -name '*.[ch]')
+format: frontier-check
+	@echo "clang-format: $(words $(FORMAT_SRC)) files"
+	@$(CLANG_FORMAT) -i $(FORMAT_SRC)
+	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS)" $(CSRC)
+	@tools/tidy.sh $(CLANG_TIDY) "$(SMSS_TIDY_FLAGS)" $(wildcard user/smss/*.c)
 
 # The blocking frontier (issue #96 A, the static half): which code can park is
 # a call-graph query, so ask the machine rather than a reviewer. `frontier`
-# prints it; `frontier-check` (in `tidy`, so every gate run takes it) fails on
-# a service that newly parks without being written into the baseline, and on a
-# must-not-block region that grew a path to one.
+# prints it; `frontier-check` (in `format`, so every gate run takes it) fails
+# on a service that newly parks without being written into the baseline, and
+# on a must-not-block region that grew a path to one.
 frontier:
 	python3 tools/blocking_frontier.py --report
 
 frontier-check:
 	python3 tools/blocking_frontier.py --check
 
-.PHONY: all test run clean format tidy tidy-check gen-abi frontier frontier-check
+.PHONY: all test run clean format gen-abi frontier frontier-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)

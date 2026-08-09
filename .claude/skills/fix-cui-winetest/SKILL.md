@@ -180,7 +180,7 @@ Then prove it, in this order, and do not proceed past a failure:
 make -j<N>                                  # per CLAUDE.local.md
 tests/run/run.sh proskrnl <name>            # the new pin, on the kernel
 tests/run/run.sh winetest <module>:<subtest># re-measure the pair
-make -j<N> tidy                             # REWRITES source — so, before the verdict
+make format                                 # REWRITES source — so, before the verdict
 make fulltest                               # THE verdict — every leg CI runs, ~3 min
 ```
 
@@ -192,7 +192,7 @@ this box: the unfiltered oracle and proskrnl legs, the whole winetest sweep,
 user32:msg trophy and the blocking-frontier check. It prints a PASS/FAIL table
 and exits non-zero if any leg is red; read the table, not the exit code alone.
 
-`tidy` runs *before* it, never after: it rewrites source in place, and a verdict
+`format` runs *before* it, never after: it rewrites source in place, and a verdict
 taken on a tree that then changed is not a verdict on what you push (Step 8,
 precondition 2). Same rule for any other edit — re-run rather than reason about
 whether it mattered.
@@ -304,7 +304,7 @@ three of these true:
    an unadded file is green in all 26 legs and red on CI — and any edit after
    the run, including a "trivial" comment fix, invalidates it. Re-run rather
    than reason about whether it mattered;
-3. `make tidy` clean and the Step 6 gate-check resolved.
+3. `make format` clean and the Step 6 gate-check resolved.
 
 ### How to actually merge — `gh pr merge` is not the only door
 

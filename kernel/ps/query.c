@@ -2577,7 +2577,7 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
          * — and a disagreement would copy out either a truncated list or the
          * uninitialized tail of the scratch block. Stated as an invariant
          * rather than trusted, which also gives the last `offset +=` above a
-         * reader (it is otherwise a dead store `make tidy` rejects). */
+         * reader (it is otherwise a dead store `make format` rejects). */
         ASSERT(offset == needed);
         memcpy(buffer, scratch, needed);
         MiFreePool(scratch);
