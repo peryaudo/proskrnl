@@ -361,6 +361,32 @@ uint64_t MiZeroBitsLimit(uint64_t zeroBits)
     return (~(uint64_t)0) >> shift;
 }
 
+/* The CLASSIC allocation entry point's whole zero_bits contract, stated once:
+ * the two bands NT calls invalid, and the placement ceiling everything else
+ * names (virtual.h).
+ *
+ * It is a function rather than four lines at each caller because there is a
+ * second caller and the oracle makes it the same way: its
+ * NtSetInformationProcess(ProcessThreadStackAllocation) arm reserves the
+ * stack by CALLING NtAllocateVirtualMemory (third_party/wine
+ * dlls/ntdll/unix/process.c), so the class inherits these bands rather than
+ * having bands of its own. Two transcriptions of one ladder would be a second
+ * authority for the same rule (Art. 11) — and a silently divergent one, since
+ * every status they disagree about is a status no test asks for twice. */
+NTSTATUS MiZeroBitsPlacementLimit(uint64_t zeroBits, uint64_t *limitHighOut)
+{
+    /* Wine's zero_bits validation shape (dlls/ntdll/unix/virtual.c,
+     * NtAllocateVirtualMemory). The x86-64 arm only: the `zero_bits >= 32`
+     * refusal below it is inside `#ifndef _WIN64`. */
+    if ((zeroBits > 21 && zeroBits < 32) ||
+        (zeroBits > 32 && zeroBits < MI_ALLOCATION_GRANULARITY - 1))
+    {
+        return STATUS_INVALID_PARAMETER_3;
+    }
+    *limitHighOut = MiZeroBitsLimit(zeroBits);
+    return STATUS_SUCCESS;
+}
+
 /* Does a range the CALLER named fit inside the placement limits? The
  * free-range search below cannot ask this — it only ever returns addresses it
  * chose — so it is the other half of the same constraint, and both halves are
@@ -2330,13 +2356,11 @@ NTSTATUS MiReferenceProcessByHandle(HANDLE processHandle, ACCESS_MASK desiredAcc
 NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zeroBits,
                                  SIZE_T *sizeInOut, ULONG type, ULONG protect)
 {
-    /* Wine's zero_bits validation shape (dlls/ntdll/unix/virtual.c,
-     * NtAllocateVirtualMemory). The x86-64 arm only: the `zero_bits >= 32`
-     * refusal below it is inside `#ifndef _WIN64`. */
-    if ((zeroBits > 21 && zeroBits < 32) ||
-        (zeroBits > 32 && zeroBits < MI_ALLOCATION_GRANULARITY - 1))
+    uint64_t zeroBitsLimit = 0;
+    NTSTATUS zeroBitsStatus = MiZeroBitsPlacementLimit(zeroBits, &zeroBitsLimit);
+    if (!NT_SUCCESS(zeroBitsStatus))
     {
-        return STATUS_INVALID_PARAMETER_3;
+        return zeroBitsStatus;
     }
     /* This entry point's own type mask, narrower than the engine's by
      * exactly the two placeholder bits. VirtualAlloc2 (NtAllocateVirtualMemoryEx)
@@ -2385,7 +2409,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
      * general allocator hits by luck. Twelve of its thirteen failures were
      * this one line (virtual.c:170). */
     status = MiAllocateVirtualMemoryEx(&target->addressSpace, &base, &size, type, protect, 0,
-                                       base == 0 ? MiZeroBitsLimit(zeroBits) : 0, 0, 0);
+                                       base == 0 ? zeroBitsLimit : 0, 0, 0);
     if (NT_SUCCESS(status))
     {
         *baseInOut = base;

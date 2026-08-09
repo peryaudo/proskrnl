@@ -131,6 +131,14 @@ BOOLEAN MiRangeWithinLimits(uint64_t base, uint64_t size, uint64_t limitLow, uin
  * The long form is at the definition (mm/virtual.c). */
 uint64_t MiZeroBitsLimit(uint64_t zeroBits);
 
+/* The classic entry point's zero_bits contract as one call: STATUS_INVALID_
+ * PARAMETER_3 for the two bands NT refuses (22..31 and 33..0xfffe), else the
+ * placement ceiling above. Shared by NtAllocateVirtualMemory and
+ * NtSetInformationProcess(ProcessThreadStackAllocation), which the oracle
+ * implements by calling the former — so the bands are stated once (Art. 11).
+ * The long form is at the definition (mm/virtual.c). */
+NTSTATUS MiZeroBitsPlacementLimit(uint64_t zeroBits, uint64_t *limitHighOut);
+
 /* Create + insert a mapped-view VAD (`vadType` MEM_MAPPED or MEM_IMAGE), all
  * pages uncommitted. `sectionBody` is the referenced Section object body the
  * view pins (released at unmap); `ownsFrames` says decommit/teardown frees
