@@ -404,6 +404,71 @@ Three things it settles:
   sharper than "sweep for dropped words": **a no-op success is a fabricated
   answer whenever the caller reads the STATUS rather than a later query.**
 
+**The zero_bits cluster on the mapping path is DONE** (`ntdll:virtual` 1126 →
+**1115**, eleven assertions at `:1517`/`:1530`). `NtMapViewOfSection` validated
+`zero_bits` and then never passed it to placement; it now hands
+`MiZeroBitsLimit(zeroBits)` to `MiMapViewOfSectionEx` as `limitHigh`, i.e. the
+same bounded-placement mechanism `MEM_ADDRESS_REQUIREMENTS` uses, so there is
+one ceiling engine rather than two (Art. 11). Pinned by
+`tests/ntapi/sem_mm/map_zero_bits.c`.
+
+**This is the THIRD accepted-and-dropped input in this one pair**, after
+`MEM_EXTENDED_PARAMETER_EC_CODE` (W6) and the two capability classes above —
+and the first of the three that a status table could never have shown, because
+the syscall's answer was `STATUS_SUCCESS` and correct in every field. Only an
+assertion about WHERE the view landed can see it. The sweep for
+accepted-and-dropped words is now the best-evidenced hunt in this document by
+some distance.
+
+Three things it settles, none guessable from the argument's name:
+
+- **The invalid band is not the allocation path's band.** `NtMapViewOfSection`
+  refuses only 22..31, so `33` — which `NtAllocateVirtualMemory` refuses with
+  `STATUS_INVALID_PARAMETER_3` — is here a legal MASK with a 63-byte ceiling and
+  answers `STATUS_NO_MEMORY`. An implementation that reused the allocation
+  path's validation passes every other case and fails this one.
+- **A named base keeps the constraint**, where the allocation path drops it. The
+  oracle passes `get_zero_bits_limit( zero_bits )` down unconditionally, so
+  `map_view` tests the view's whole EXTENT: based under the ceiling, ending above
+  it, is `STATUS_CONFLICTING_ADDRESSES`. And the two halves of `map_view`
+  disagree about the ceiling by one byte — the search uses it inclusive
+  (`end = limit_high + 1`), the named-base guard exclusive
+  (`base + size > limit_high`) — so a named view whose LAST BYTE is exactly the
+  ceiling is refused. `MiRangeWithinLimits` transcribes that rather than tidying
+  it, and the pin measures it: the first draft asserted the inclusive reading.
+- **The IMAGE arm needed the limits too, and gate-check is what said so.** No
+  winetest assertion reaches it and the pin as first written did not either —
+  the review found a boundary change (`MipMapImageView` newly bounded) landing
+  unmeasured, which is a G5 failure however defensible the code is. Pinning it
+  then refuted the obvious guess: a ceiling below 64 KiB is
+  `STATUS_INVALID_PARAMETER` for an image view, not the `STATUS_NO_MEMORY` the
+  data arm gives for the same `zero_bits`, because `map_image_view` raises
+  `limit_low` to `address_space_start` first and `map_view` refuses
+  `limit_low >= limit_high`. The same review caught a comment citing
+  `map_image_view` for an ordering it does not have (it never sees a
+  caller-supplied address at all — G8), and `MiFindFreeViewBase` left dead by
+  the change.
+- **The pin had to derive its addresses, and the reason is worth carrying.** The
+  first draft wrote them down (a base of `0x10000`, a scratch reservation under a
+  `2^20` ceiling) and was oracle-green while measuring almost nothing: the
+  reservation answered `STATUS_NO_MEMORY` and every assertion behind it was
+  skipped. Two facts, both measured, make hard-coded low addresses wrong here —
+  proskrnl's lowest free hole in a test process is **0x7c0000**, not `0x10000`;
+  and an UNCONSTRAINED reservation on the oracle comes back at
+  `0x7ffffe8c0000`, because a limit is what selects the low-address search over
+  a plain anonymous mmap. The pin now probes for the lowest hole (with a
+  deliberately loose `zero_bits 1`), takes the next power of two above it, and
+  sizes a section so a view based there ends exactly at that ceiling — one bit
+  either side then gives `STATUS_INVALID_PARAMETER_4` and `STATUS_SUCCESS`. **A
+  `SUCCESS || NO_MEMORY` assertion in front of a block is a way to run green
+  without measuring**, which is §4 trap 2 in miniature.
+
+What it did NOT change is worth stating too: the executed count falls 3757 →
+3737 because the sweep's two inner `ok()`s sit under `if (status ==
+STATUS_SUCCESS)` and ten maps now correctly refuse — 10 × 2, exactly the
+difference — and a before/after diff of the failing-assertion histogram shows
+those two lines removed and no other line moved.
+
 That is now two accepted-and-dropped capability probes in this one pair
 (`MEM_EXTENDED_PARAMETER_EC_CODE` was the first), which still makes "sweep the
 boundary for accepted-and-dropped words" a better-evidenced hunt than any
