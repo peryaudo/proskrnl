@@ -406,9 +406,16 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
 static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument,
                                    PETHREAD *threadOut, uint64_t *threadIdOut, uint64_t *tebBaseOut)
 {
+    /* No caller named a size — this thread is the kernel's — so the geometry
+     * is the image's, through the one rule (PspResolveStackGeometry). That is
+     * what the layer this injection replaces does: ntdll's own int_handler
+     * reaches NtCreateThreadEx with a zero reserve and a zero commit. */
+    uint64_t reserve = 0, commit = 0;
+    PspResolveStackGeometry(process->imageInformation.MaximumStackSize,
+                            process->imageInformation.CommittedStackSize, 0, 0, &reserve, &commit);
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
     NTSTATUS status =
-        PspAllocateThreadStack(process, 0x100000, 0x10000, 0, &allocBase, &stackTop, &stackLimit);
+        PspAllocateThreadStack(process, reserve, commit, 0, &allocBase, &stackTop, &stackLimit);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -487,40 +494,24 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
                              BOOLEAN createSuspended, const PSP_THREAD_OPTIONS *options,
                              PHANDLE threadHandleOut, uint64_t *threadIdOut, uint64_t *tebBaseOut)
 {
-    /* Stack geometry, following the oracle's own rules
-     * (third_party/wine dlls/ntdll/unix/virtual.c virtual_alloc_thread_stack):
-     * a 0 size means the image's default, the RESERVE is the larger of the
-     * two, and the whole thing is floored at 1 MiB and rounded to the
-     * allocation granularity. The floor is not decoration -- without it a
-     * caller asking for a small stack gets one, and ntdll's own thread
-     * startup overflows it. */
-    /* The RESERVE is the caller's, floored and rounded as the oracle floors
-     * and rounds it (third_party/wine dlls/ntdll/unix/virtual.c
-     * virtual_alloc_thread_stack: `size = max( reserve_size, commit_size );
-     * if (size < 1024 * 1024) size = 1024 * 1024;` then round to the
-     * granularity). It was hardcoded at 1 MiB (docs/review-2026-07 §11).
+    /* Stack geometry through the one rule (PspResolveStackGeometry, whose
+     * contract in ps.h quotes the oracle's body): a 0 size is the IMAGE's
+     * declared size — not a number this kernel picked — the reserve is the
+     * larger of the two, and the whole thing is floored at 1 MiB.
      *
-     * The COMMIT is the caller's as a FLOOR only, never below the 64 KiB
-     * default. That is deliberate and it is not laziness: this kernel grows
-     * a thread stack one page at a time off a single guard page, so a
-     * function whose frame is larger than the gap steps clean over the guard
-     * and takes a plain access violation. Wine does not have the problem
-     * because it commits the WHOLE reservation up front and uses the guard
-     * page only as an overflow tripwire. Honouring a 4 KiB commit literally
-     * -- which is what ntdll's own threadpool asks for -- crashes those
-     * threads in ntdll startup, convicted by sem_port/ports. The commit is
-     * not part of any pinned contract; the reserve is (the TEB's
-     * DeallocationStack). */
-    uint64_t reserve = options->stackReserve != 0 ? options->stackReserve : 0x100000;
-    uint64_t commit = options->stackCommit > 0x10000 ? options->stackCommit : 0x10000;
-    if (reserve < commit)
-    {
-        reserve = commit;
-    }
-    if (reserve < 0x100000)
-    {
-        reserve = 0x100000;
-    }
+     * The image's sizes are the TARGET process's, which is also what the
+     * oracle uses: a create for another process is forwarded as an APC and
+     * runs inside that process, where `main_image_info` is its image
+     * (dlls/ntdll/unix/thread.c NtCreateThreadEx's remote arm).
+     *
+     * Pinned by tests/ntapi/sem_ps/thread_stack_default.c. The reserve was
+     * hardwired at 1 MiB, which cost ntdll:virtual:1050/:1068 and, more than
+     * that, silently discarded the one number an image gets to state about
+     * its threads. */
+    uint64_t reserve = 0, commit = 0;
+    PspResolveStackGeometry(process->imageInformation.MaximumStackSize,
+                            process->imageInformation.CommittedStackSize, options->stackReserve,
+                            options->stackCommit, &reserve, &commit);
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
     NTSTATUS status = PspAllocateThreadStack(process, reserve, commit, options->stackLimitHigh,
