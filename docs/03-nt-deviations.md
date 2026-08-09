@@ -581,6 +581,26 @@ boundary symbols winebuild would have emitted supplied by
   paging means committed IS the working set, and with no pagefile the
   commit limit IS physical memory. (Before this, the heap test's own
   `/ (ullTotalPhys / 100)` was a guest divide-by-zero.)
+- **`FILE_OBJECT` carries the caller's RAW desired access, not just the
+  granted mask** (`kernel/io/io.h` `FILE_OBJECT.desiredAccess`, set at the
+  one create site in `kernel/io/file.c` and by
+  `NtCreateNamedPipeFile`; docs/21 W11, pinned
+  `tests/ntapi/sem_pipe/create_refusals.c`). npfs needs it: a pipe's share
+  mask bounds what the CLIENT may ask for, and the rule is about a client
+  that EXPLICITLY names a direction the pipe does not offer. After
+  `ObpMapDesiredAccess` that distinction is gone — `GENERIC_READ`,
+  `GENERIC_ALL` and `MAXIMUM_ALLOWED` all land on masks carrying
+  `FILE_READ_DATA`, so a mapped-mask check refuses a `MAXIMUM_ALLOWED`
+  client open of an OUTBOUND pipe, which is a routine `CreateFile` pattern
+  and which the oracle admits (measured; `server/named_pipe.c`
+  `named_pipe_open_file` tests the `GENERIC_*` bits before wineserver's own
+  mapping). **Not an NT-absent addition**: NT hands its FSDs exactly this
+  word as
+  `IO_STACK_LOCATION.Parameters.Create.SecurityContext->DesiredAccess`, and
+  proskrnl's vfs `Create` op has no IRP to carry it, so the file object
+  does. The first cut of this check read `grantedAccess` and was caught by
+  gate-check, not by a test — the twelve-case matrix in the pin uses only
+  `GENERIC_*` masks, where the two formulations agree.
 - **The gate already convicted and fixed real kernel bugs** (Art. 6 in
   action): the absolute-timeout translation (`KiComputeDueTime` treated a
   positive since-1601 deadline as an interrupt-time due — every absolute

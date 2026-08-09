@@ -84,6 +84,21 @@ typedef struct FILE_OBJECT
                             * server/fd.c default_fd_get_file_info) */
     BOOLEAN shareCounted;  /* this open holds share-access slots */
     ACCESS_MASK grantedAccess;
+
+    /* What the caller ASKED for at create, before ObpMapDesiredAccess — the
+     * only place the GENERIC_* bits survive, since mapping folds
+     * GENERIC_READ, GENERIC_ALL and MAXIMUM_ALLOWED into overlapping
+     * grantedAccess masks that cannot be told apart afterwards.
+     *
+     * A filesystem needs it when a rule is about the caller's REQUEST rather
+     * than about the rights it ended up with: npfs refuses a client that
+     * explicitly names a direction the pipe does not offer, and must NOT
+     * refuse one that named no direction at all (fs/npfs/pipe.c
+     * NpfsVfsCreate; pinned sem_pipe/create_refusals.c). NT hands its FSDs
+     * the same word — IO_STACK_LOCATION.Parameters.Create.SecurityContext->
+     * DesiredAccess, which is what fastfat and npfs read — and proskrnl's
+     * vfs op has no IRP to carry it, so the file object does. */
+    ACCESS_MASK desiredAccess;
     ULONG shareAccess; /* this open's FILE_SHARE_* */
     LARGE_INTEGER currentByteOffset;
 

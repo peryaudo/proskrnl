@@ -587,6 +587,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
         options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | FILE_NO_INTERMEDIATE_BUFFERING |
                    FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
     file->grantedAccess = granted;
+    file->desiredAccess = desiredAccess;
     file->shareAccess = shareAccess;
 
     ULONG_PTR information = 0;
