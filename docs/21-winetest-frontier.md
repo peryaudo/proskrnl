@@ -1263,7 +1263,19 @@ Pairs and framings that will consume effort and unblock nothing.
    only the LAST component is what turns one missing key into a whole test
    function's worth of failures.
 
-7. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
+7. **The manifest is READ BY THE KERNEL-SIDE SWEEP, and it has a size
+   bound.** `user/smss/session.c` slurps `C:\wtests\manifest.txt` into a
+   static buffer. Writing a long triage block — which this whole document
+   tells you to do — took the file past that buffer, and the sweep then
+   skipped itself as "not a wtest image": all 49 active pairs reported FAIL
+   with **nothing on serial** saying why, on a change that touched no kernel
+   code any pair runs. Measured, not hypothesised; the buffer is now 256 KiB
+   and the over-capacity case names itself instead of reading as an absent
+   feature. The transferable part is not the number: **a documentation file
+   that is also an input has a failure mode documentation files do not**, and
+   this one's failure looked exactly like a mass kernel regression.
+
+8. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
    `ntdll:om`, `kernel32:{console,process,loader,module,debugger,toolhelp}`,
    `ntdll:{alpc,wow64}` and `cmd.exe_test:batch` fail identically on both
    runners, or depend on the standalone link rather than the boundary, or
