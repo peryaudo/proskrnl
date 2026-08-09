@@ -832,10 +832,10 @@ pipes, so every one of those three defects passed it. The pin now measures
 them (`test_client_open_precedence`) because review said to go measure, not
 because the failure count did.
 
-### W12 — Registry (**triaged; the fold is DONE, the rest is mostly DATA**)
+### W12 — Registry (**triaged; the fold and the license furniture are DONE, the rest is mostly DATA**)
 
-`ntdll:reg`, now **172** failures across 1042 tests, down from 192 across
-1050. The manifest block has the full breakdown; three things belong here.
+`ntdll:reg`, now **160** failures across 1042 tests, down from 192 across
+1050. The manifest block has the full breakdown; four things belong here.
 
 **This item's own diagnosis of its largest cluster was wrong.** It said the
 24 failures at `reg.c:1354` were "`NtCreateKey` answering
@@ -899,11 +899,41 @@ not a loss:** six of the cleared assertions were per-iteration over a subkey
 list with one stale entry in it, so removing the entry removes 4 iterations
 × 2 `ok()`s — 4 that were failing and 4 that were passing.
 
-**The smallest item left on this pair is more furniture, and it is cheap:**
-`wine.inf` writes THREE values into `Software\Wine\LicenseInformation`
-(`loader/wine.inf.in:1212-1214`) and `kernel/cm/registry.c` seeds one, which
-is 12 failures in `NtQueryLicenseValue`'s `REG_DWORD` half. Same shape as
-W14's `win.ini`: generate it from the pinned `wine.inf`, do not transcribe it.
+**The license furniture is DONE** (`ntdll:reg` 172 → **160**, the 12 at
+`reg.c:1009-:1032`). `wine.inf`'s `[LicenseInformation]` writes **eleven**
+values into `Software\Wine\LicenseInformation` — not the three this document
+said, which counted only the `Kernel-MUI-*` rows and missed the eight
+`Shell-*InBoxGames*` ones below them — and `CmInitialize` seeded exactly one
+by hand, so `Kernel-MUI-Number-Allowed` answered
+`STATUS_OBJECT_NAME_NOT_FOUND`. The seed is now the WHOLE section, generated
+out of the pinned `wine.inf` (`kernel/cm/license.h`, `tools/gen_license.py`,
+the `gen_upcase`/`gen_sysini` shape: checked in, with a Makefile `--check`
+that catches a pin bump editing the section). Pinned by
+`tests/ntapi/sem_reg/license_value.c`.
+
+Three things worth carrying forward, none of them about license values:
+
+- **The advice to generate rather than transcribe was right for a reason
+  this item then demonstrated.** The transcribed seed was not merely a
+  maintenance risk in the abstract — it was *already wrong when written*,
+  and by more than the winetest could see: it carried one of eleven values.
+  A hand-copied subset is a claim about which lines matter, and the claim is
+  invisible in the code that makes it. The generator's whole value is that
+  its claim ("the key is what the INF writes") is checkable.
+- **`docs/16` had a stale row and the winetest gate had already falsified
+  it.** `NtQueryLicenseValue` sat under "no consumer in the baked stack"
+  while `table.inc` carried a `KI_SYSCALL` row for it — implemented a
+  session earlier, for this very pair. Corrected: 202/264 → **203/264**,
+  61 missing. It is the same shape as W8's and W10's open question (the
+  winetest gate IS a baked consumer), except here the id was already built
+  and only the record disagreed. Worth a sweep next time that document is
+  re-derived: the recipe at its head is exactly what would have caught it.
+- **What the pin measures is the SECOND value, not the first.** Every
+  assertion in the existing `license_value.c` passed on a kernel that knew
+  one name and one type, because `type` and `retlen` are read out of the
+  stored value. The added block asks the same size/type protocol of a
+  `REG_DWORD` value — which is the general form: a pin over a keyed lookup
+  measures the LOOKUP only if it asks for more than one key.
 
 ### W13 — Time-zone data
 
@@ -1066,9 +1096,10 @@ Pairs and framings that will consume effort and unblock nothing.
    registry, check the oracle's prefix for it.** `kernel32:time`'s time-zone
    keys (W13) are the same shape one layer down, in the hive rather than on
    the volume, and `ntdll:reg` is the largest instance measured so far:
-   ~156 of its 172 remaining failures are `Software\Classes\Interface`,
-   `Software\Wow6432Node` and three license values that `wine.inf` writes
-   and the baked hive does not carry (W12). One `grep` of
+   156 of its 160 remaining failures are `Software\Classes\Interface` and
+   `Software\Wow6432Node`, which `wine.inf` writes and the baked hive does
+   not carry, and the license values it also writes were 12 more until this
+   sweep's own item seeded them (W12). One `grep` of
    `build/tests/wineprefix/system.reg` answers it, and `NtCreateKey` creating
    only the LAST component is what turns one missing key into a whole test
    function's worth of failures.
