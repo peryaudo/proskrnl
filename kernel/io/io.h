@@ -111,19 +111,20 @@ typedef struct FILE_OBJECT
      * Bits ACCUMULATE: a second set ORs in, unknown bits are masked out, and
      * nothing can clear one (all measured — sem_pipe/ioctl_event.c).
      *
-     * NONE of the three bits changes behaviour yet. The word is stored and
-     * reported back truthfully and that is all, so a caller reading its own
-     * mode back gets the truth about what was RECORDED, not a claim that it
-     * took effect. FILE_SKIP_COMPLETION_PORT_ON_SUCCESS is the one that
-     * would, and it is deliberately unbuilt here: its rule keys on whether
-     * the call RETURNED STATUS_PENDING, not on the completion status
-     * (third_party/wine dlls/ntdll/unix/file.c, server/fd.c set_fd_completion
-     * and server/async.c async_terminate all agree), and that decision has
-     * to be made where the returned status is known — which is not inside
-     * IopCompleteTransfer. Keying it on NT_SUCCESS instead makes an async
-     * port-bound handle with the flag set answer STATUS_PENDING and post
-     * nothing, i.e. hang GetQueuedCompletionStatus forever. docs/21 W4a and
-     * the ntdll:pipe manifest block carry the measurement. */
+     * FILE_SKIP_COMPLETION_PORT_ON_SUCCESS is HONOURED (kernel/io/rw.c
+     * IopCompleteTransfer): a completion that did not report STATUS_PENDING
+     * to its caller posts no packet. Its axis is pendedness, NOT the
+     * completion status — keyed on NT_SUCCESS instead, an async port-bound
+     * handle would answer STATUS_PENDING and post nothing, hanging
+     * GetQueuedCompletionStatus forever.
+     *
+     * The other two are stored and reported back truthfully and do nothing
+     * else, so a caller reading its own mode back gets the truth about what
+     * was RECORDED rather than a claim that it took effect:
+     * FILE_SKIP_SET_EVENT_ON_HANDLE is unbuilt, and
+     * FILE_SKIP_SET_USER_EVENT_ON_FAST_IO has no fast path to suppress —
+     * every completion here goes through IopCompleteRequest, which is why
+     * the oracle accepts it with a FIXME too. docs/16 carries the split. */
     ULONG completionFlags;
     LARGE_INTEGER currentByteOffset;
 
@@ -407,6 +408,20 @@ NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDIN
  * Prepare returns 0 in *apcOut for a NULL routine or a kernel-mode issuer;
  * queue eats the block for a dead or dying issuer (its next edge is the
  * reaper, not the dispatcher). */
+/* The ONE inline-completion tail (kernel/io/rw.c): write the IOSB, signal
+ * the event, post the completion PACKET when the handle is bound to a port
+ * and the mode flags do not suppress it, then queue the completion APC.
+ * Shared with the ioctl path so an ioctl produces the same three effects a
+ * transfer does — a second tail is how the two would drift (G10).
+ *
+ * `reportsPending` says whether this call will answer STATUS_PENDING to its
+ * caller, which only the caller knows: the device paths return the status
+ * unchanged, while the disk paths run it through IopAsyncReturnShape
+ * afterwards. It is the axis FILE_SKIP_COMPLETION_PORT_ON_SUCCESS turns on. */
+NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
+                             PVOID apcContext, NTSTATUS status, ULONG_PTR information,
+                             BOOLEAN reportsPending);
+
 NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, PKAPC *apcOut);
 void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc);

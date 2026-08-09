@@ -140,10 +140,18 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {
-        status = IopCompleteRequest(iosb, event, status, information);
-        /* Inline completion: the IOSB is in place, so the APC can run. The
-         * issuer is this thread (pinned sem_pipe/listen_apc.c). */
-        IopQueueCompletionApc(KeGetCurrentThread(), apcBlock);
+        /* Through the SAME inline-completion tail the transfer paths use
+         * (kernel/io/rw.c), not a hand-rolled one: an ioctl owes the same
+         * three effects — the IOSB and event, then the completion PACKET if
+         * the handle is bound to a port, then the APC. It used to call
+         * IopCompleteRequest directly and so no ioctl ever produced a packet,
+         * which is what ntdll:pipe:1539 convicts.
+         *
+         * reportsPending is FALSE: this branch returns `status` unchanged, so
+         * the caller never sees STATUS_PENDING from here — the pended case
+         * returned above. Pinned by sem_pipe/completion_packet.c. */
+        status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, information,
+                                     /* reportsPending */ FALSE);
     }
     else
     {

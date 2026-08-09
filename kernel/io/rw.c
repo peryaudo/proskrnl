@@ -35,12 +35,37 @@
  * and a port-driven one are alternatives, never both, and a caller that
  * asked for neither gets neither. Win32 never hits the quiet case — the
  * OVERLAPPED pointer is always the context. */
-static NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event,
-                                    PKAPC apc, PVOID apcContext, NTSTATUS status,
-                                    ULONG_PTR information)
+NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
+                             PVOID apcContext, NTSTATUS status, ULONG_PTR information,
+                             BOOLEAN reportsPending)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
     ULONG_PTR completionValue = apc != 0 ? 0 : (ULONG_PTR)apcContext;
+    /* FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, and its axis is the one thing
+     * about it worth reading twice: the packet is skipped only when the call
+     * did NOT report STATUS_PENDING to its caller. A request that pends
+     * ALWAYS posts, flag or no flag — a caller holding ERROR_IO_PENDING has
+     * nothing else to wait on, so skipping there hangs it forever.
+     *
+     * The oracle says this in three places that agree: add_completion's
+     * `ret_status == STATUS_PENDING` argument (dlls/ntdll/unix/file.c),
+     * set_fd_completion's `req->async ||` (server/fd.c) and async_terminate's
+     * `async->pending ||` (server/async.c). Note what those guards do NOT
+     * carry: a status term. The skip is decided by pendedness alone, and the
+     * `!NT_ERROR` that sits beside it in server/async.c is the separate
+     * outer question of whether to signal completion at all — folding it in
+     * here would post where the oracle stays silent. The name
+     * "…_ON_SUCCESS" is the misleading part of this whole contract.
+     *
+     * `reportsPending` is the caller's answer because only the caller knows:
+     * the device paths return this status as-is, while the disk paths run it
+     * through IopAsyncReturnShape afterwards. It comes from
+     * IopWillReportPending, which IS that shape's predicate — one statement
+     * of the rule, not two that can drift. */
+    if ((file->completionFlags & FILE_SKIP_COMPLETION_PORT_ON_SUCCESS) != 0 && !reportsPending)
+    {
+        completionValue = 0;
+    }
     if (file->completionPort != 0 && completionValue != 0)
     {
         /* Through the one packet-posting engine (G10), never a second
@@ -53,6 +78,19 @@ static NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HA
     return final;
 }
 
+/* WILL this call answer STATUS_PENDING to its caller? Factored out of
+ * IopAsyncReturnShape below because IopCompleteTransfer needs the same
+ * question answered for the completion-packet rule, and two spellings of it
+ * would drift (G10). */
+static BOOLEAN IopWillReportPending(PFILE_OBJECT file, NTSTATUS final, BOOLEAN isWrite)
+{
+    if (file->synchronousIo)
+    {
+        return FALSE;
+    }
+    return final == STATUS_SUCCESS || (!isWrite && final == STATUS_END_OF_FILE);
+}
+
 /* The CUI-8 §7 pin (tests/ntapi/sem_file/async_inline.c against the pinned
  * Wine — dlls/ntdll/unix/file.c, the NtReadFile/NtWriteFile ret_status
  * tails): a data transfer on an ASYNCHRONOUS disk-file handle completes
@@ -63,15 +101,7 @@ static NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HA
  * below pinned the same shape first (CUI-5). */
 static NTSTATUS IopAsyncReturnShape(PFILE_OBJECT file, NTSTATUS final, BOOLEAN isWrite)
 {
-    if (file->synchronousIo)
-    {
-        return final;
-    }
-    if (final == STATUS_SUCCESS || (!isWrite && final == STATUS_END_OF_FILE))
-    {
-        return STATUS_PENDING;
-    }
-    return final;
+    return IopWillReportPending(file, final, isWrite) ? STATUS_PENDING : final;
 }
 
 /* Shared argument shaping for NtReadFile/NtWriteFile. `writeToEndOut`
@@ -248,12 +278,15 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
         {
             status =
-                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
+                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
+                                    /* reportsPending */ FALSE);
         }
         else
         {
             goto abandon;
         }
+        /* The DEVICE path returns this status unchanged — there is no
+         * IopAsyncReturnShape below it — so it never reports pending. */
         ObDereferenceObject(file);
         return status;
     }
@@ -297,8 +330,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         }
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
-        status =
-            IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0);
+        status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0,
+                                     IopWillReportPending(file, STATUS_END_OF_FILE, FALSE));
         status = IopAsyncReturnShape(file, status, FALSE);
         ObDereferenceObject(file);
         return status;
@@ -332,8 +365,9 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS,
-                                 (ULONG_PTR)bytes);
+    status =
+        IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS,
+                            (ULONG_PTR)bytes, IopWillReportPending(file, STATUS_SUCCESS, FALSE));
     status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
     return status;
@@ -424,12 +458,15 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         if (NT_SUCCESS(status))
         {
             status =
-                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred);
+                IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
+                                    /* reportsPending */ FALSE);
         }
         else
         {
             goto abandon;
         }
+        /* The DEVICE path returns this status unchanged — there is no
+         * IopAsyncReturnShape below it — so it never reports pending. */
         ObDereferenceObject(file);
         return status;
     }
@@ -547,7 +584,8 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, length);
+    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, length,
+                                 IopWillReportPending(file, STATUS_SUCCESS, TRUE));
     status = IopAsyncReturnShape(file, status, TRUE);
     ObDereferenceObject(file);
     return status;
