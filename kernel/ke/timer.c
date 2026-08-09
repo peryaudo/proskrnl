@@ -14,11 +14,18 @@
  */
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
+#include "arch/x86_64/lapic.h"
 
 #include "abi/ntkeapi.h"
 
 volatile uint64_t KeTickCount;
 static volatile uint64_t KiInterruptTime; /* 100 ns units since boot */
+
+/* The TSC as of the last tick — the base the sub-tick interpolation below
+ * measures from. Written by KiUpdateClock and read by KiTickFraction, both
+ * under the dispatcher lock, so a reader never pairs one tick's
+ * KiInterruptTime with another tick's TSC. */
+static uint64_t KiTickTsc;
 
 /* The KUSER_SHARED_DATA page, once Ps has built it (0 before that). */
 void *KiUserSharedData;
@@ -42,12 +49,52 @@ void KiInitializeTimerList(void)
     InitializeListHead(&KiTimerListHead);
     KeTickCount = 0;
     KiInterruptTime = 0;
+    KiTickTsc = KiReadTimestampCounter();
+}
+
+/* How far into the current tick we are, in 100 ns units — 0 .. one tick short
+ * of the next one. The tick is what the clock IS; this only subdivides it, so
+ * that the precise system time Windows promises under 1 us
+ * (GetSystemTimePreciseAsFileTime, learn.microsoft.com) is not quantised to
+ * the scheduler's 1 ms (docs/03 "Sub-tick system time").
+ *
+ * Two properties carry the whole design, and both come from the CLAMP rather
+ * than from the TSC being trustworthy:
+ *
+ *   - Monotone. The result is strictly less than one tick, so the reading can
+ *     never reach the value the next tick will publish, however fast the TSC
+ *     runs relative to the LAPIC.
+ *   - Bounded error. A TSC that drifts (a processor without an invariant TSC
+ *     changing P-state, say) only ever mis-places a reading INSIDE its own
+ *     tick, because the next tick re-bases it. The worst case is the accuracy
+ *     the clock already had before interpolation.
+ *
+ * Clamping in TSC units rather than after the conversion is also what keeps
+ * the multiply from overflowing: delta is below one millisecond's worth of
+ * cycles by the time it is scaled. */
+static uint64_t KiTickFraction(void)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    /* The gate measures cycles per MILLISECOND and the tick is 1 ms; a tick
+     * of another length would need the rate converted, not just reused. */
+    _Static_assert(KI_100NS_PER_TICK == 10000ULL, "tick is 1 ms, KiTscPerMillisecond's unit");
+    uint64_t rate = KiTscPerMillisecond;
+    if (rate == 0)
+    {
+        return 0; /* before KiInitializeClock: the tick is all there is */
+    }
+    uint64_t delta = KiReadTimestampCounter() - KiTickTsc;
+    if (delta >= rate)
+    {
+        return KI_100NS_PER_TICK - 1;
+    }
+    return (delta * KI_100NS_PER_TICK) / rate;
 }
 
 ULONGLONG KeQueryInterruptTime(void)
 {
     uint64_t flags = KiAcquireDispatcherLock();
-    ULONGLONG now = KiInterruptTime;
+    ULONGLONG now = KiInterruptTime + KiTickFraction();
     KiReleaseDispatcherLock(flags);
     return now;
 }
@@ -79,6 +126,12 @@ static void KiUpdateUserSharedDataTime(void)
     {
         return;
     }
+    /* The RAW tick times, deliberately: the page is a MIRROR published once
+     * per tick, so writing an interpolated value into it would only date the
+     * snapshot, never refresh it. That leaves the page one fraction behind
+     * what a query answers — the same relation Windows has between
+     * SharedUserData and the precise clock, and the direction the ordering
+     * pins depend on (page <= query, tests/ntapi/sem_ps/time.c). */
     uint64_t tickMs = KiInterruptTime / 10000;
     KiWriteKSystemTime(&usd->InterruptTime, KiInterruptTime);
     KiWriteKSystemTime(&usd->SystemTime, KiSystemTimeBase + KiInterruptTime);
@@ -94,7 +147,10 @@ static void KiUpdateUserSharedDataTime(void)
 void KeSetSystemTime(LONGLONG newTime)
 {
     uint64_t flags = KiAcquireDispatcherLock();
-    KiSystemTimeBase = (uint64_t)newTime - KiInterruptTime;
+    /* Against the same clock KeQuerySystemTime reads — tick plus fraction —
+     * so the caller's instant is the one a query answers next. Rebasing off
+     * the tick alone would land the clock up to one tick past `newTime`. */
+    KiSystemTimeBase = (uint64_t)newTime - (KiInterruptTime + KiTickFraction());
     KiReleaseDispatcherLock(flags);
     KiUpdateUserSharedDataTime();
 }
@@ -110,7 +166,17 @@ uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
 {
     if (timeout->QuadPart < 0)
     {
-        /* Relative: unsigned negation avoids UB on the most-negative value. */
+        /* Relative: unsigned negation avoids UB on the most-negative value.
+         *
+         * Deliberately the TICK, not the sub-tick reading KiTickFraction
+         * gives: a due time is compared against KiInterruptTime by the queue,
+         * so arming it off a finer clock would move every timeout later by
+         * the fraction, up to a whole extra tick. The cost of leaving it is
+         * that a wait armed late in a tick can expire slightly EARLY against
+         * the interval it asked for — which has always been true here and is
+         * now merely measurable, the clock having become finer than the
+         * queue. NT rounds the other way. Nothing pins a wait's lower bound
+         * yet, so this stays as it is until something does (docs/21 W13). */
         return KiInterruptTime + (0 - (uint64_t)timeout->QuadPart);
     }
     /* Absolute: 100 ns since 1601 in SYSTEM time (the NT timeout contract;
@@ -184,6 +250,11 @@ void KiUpdateClock(BOOLEAN interruptedUser)
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
     KeTickCount++;
     KiInterruptTime += KI_100NS_PER_TICK;
+    /* Re-base the sub-tick interpolation on this tick. Taken here rather than
+     * at the interrupt's entry, so the fraction is measured from a point the
+     * clock has already accounted for: interrupt latency lands the base
+     * slightly LATE, which only makes a reading lag, never overshoot. */
+    KiTickTsc = KiReadTimestampCounter();
 
     /* CUI-6: whole-tick sampling accounting, NT's clock-interrupt shape —
      * the interrupted thread is charged the whole tick, kernel or user by

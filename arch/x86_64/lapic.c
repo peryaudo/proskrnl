@@ -115,8 +115,13 @@ static void KiEnableXApic(void)
     KiApicWindow = (volatile uint8_t *)LAPIC_WINDOW_BASE;
 }
 
-/* Count LAPIC timer ticks (divide-by-16) across one 10 ms PIT gate. */
-static uint32_t KiCalibrateApicTimer(void)
+uint64_t KiTscPerMillisecond;
+
+/* Count LAPIC timer ticks (divide-by-16) across one 10 ms PIT gate, and count
+ * TSC cycles across the same gate into *tscPerMs — one measurement, two
+ * consumers, so the interpolation kernel/ke/timer.c does between ticks is
+ * calibrated against the very gate that set the tick's length. */
+static uint32_t KiCalibrateApicTimer(uint64_t *tscPerMs)
 {
     /* Gate high, speaker off; channel 2, lobyte/hibyte, mode 0 (one-shot,
      * OUT rises at terminal count). */
@@ -139,13 +144,16 @@ static uint32_t KiCalibrateApicTimer(void)
     KiApicWrite(LAPIC_LVT_TMR, LAPIC_TMR_MASKED | TIMER_VECTOR);
     KiApicWrite(LAPIC_TMR_INIT, 0xFFFFFFFFU);
     KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT >> 8);
+    uint64_t tscStart = KiReadTimestampCounter();
 
     while ((KiInByte(PIT_GATE) & 0x20) == 0)
     {
     }
 
+    uint64_t tscEnd = KiReadTimestampCounter();
     uint32_t remaining = KiApicRead(LAPIC_TMR_CUR);
-    KiApicWrite(LAPIC_TMR_INIT, 0);        /* stop */
+    KiApicWrite(LAPIC_TMR_INIT, 0); /* stop */
+    *tscPerMs = (tscEnd - tscStart) / 10;
     return (0xFFFFFFFFU - remaining) / 10; /* ticks per 1 ms */
 }
 
@@ -169,11 +177,22 @@ void KiInitializeClock(void)
 
     KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
-    uint32_t ticksPerMs = KiCalibrateApicTimer();
+    uint64_t tscPerMs = 0;
+    uint32_t ticksPerMs = KiCalibrateApicTimer(&tscPerMs);
     if (ticksPerMs == 0)
     {
         KiPanic("KiInitializeClock: LAPIC timer calibration failed");
     }
+    if (tscPerMs == 0)
+    {
+        /* A stopped TSC would make every interpolated reading saturate at
+         * one tick short of the next tick — still monotone, but a silently
+         * useless clock. There is no such processor (the TSC has been
+         * architectural since the Pentium, Intel SDM Vol. 3B §18.17) and no
+         * such QEMU, so this refuses rather than degrading quietly (G12). */
+        KiPanic("KiInitializeClock: TSC calibration failed");
+    }
+    KiTscPerMillisecond = tscPerMs;
 
     KiApicWrite(LAPIC_TMR_DIV, 0x3);
     KiApicWrite(LAPIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);

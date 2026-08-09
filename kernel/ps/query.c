@@ -1685,7 +1685,13 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         LARGE_INTEGER now;
         KeQuerySystemTime(&now);
         info.SystemTime = now;
-        info.BootTime.QuadPart = now.QuadPart - (LONGLONG)KeQueryInterruptTime();
+        /* The boot instant IS the wall-clock base (ke.h: system time = base +
+         * interrupt time), so read it rather than subtracting one sample of
+         * the clock from another. Two samples no longer cancel: since the
+         * clock became sub-tick (docs/03 "Sub-tick system time") they are
+         * taken at different instants, and a boot time NT reports as fixed
+         * would jitter by however long this call took. */
+        info.BootTime.QuadPart = (LONGLONG)KiSystemTimeBase;
         info.TimeZoneBias.QuadPart = 0; /* UTC, as the shared page */
         memcpy(buffer, &info, length);
         if (returnLength != 0)
