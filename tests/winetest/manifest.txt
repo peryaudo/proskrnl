@@ -655,6 +655,69 @@ ntdll_test.exe:unwind
 #     singletons at :3190/:3202/:3220/:3232/:3598 are outside it and were
 #     never triaged.) The thread-STACK contract (1102) is untouched and is
 #     still the item.
+#
+#     NOW 46, DOWN FROM 1111 — the thread-STACK contract is GONE, and it was
+#     never the mm+ps design problem this block spent three revisions
+#     describing. It was TWO FIELDS NOBODY WROTE (docs/21 W5):
+#       - TEB.DeallocationStack was left at the memset's zero, so every
+#         thread on this kernel reported a stack reaching address 0.
+#         test_stack_size_thread computes `reserved = StackBase -
+#         DeallocationStack` and then queries MEMORY_BASIC_INFORMATION AT
+#         DeallocationStack, which is why ONE unwritten field failed 16
+#         assertions per thread x 61 threads = 976 (:1050-:1102). The stack
+#         SHAPE this block called missing — one reservation, a committed
+#         slice at the top, a guard band that walks down — has been built
+#         since M5 (kernel/ps/{process,thread}.c PspAllocate*Stack); only its
+#         base was never published. Fixed in kernel/ps/peb.c PspBuildTeb,
+#         pinned by tests/ntapi/sem_ps/teb_stack.c.
+#       - NtSetInformationProcess class 41 (ProcessThreadStackAllocation) was
+#         falling into the accept-as-a-no-op default arm, and it is the ONLY
+#         kernel call RtlCreateUserStack makes. Its answer is a pointer it
+#         WRITES into the caller's buffer, which in dlls/ntdll/thread.c is an
+#         uninitialised local — so ntdll committed a guard page and a stack
+#         at whatever was in that stack slot and reported it as the new
+#         stack's DeallocationStack. That cost :1351/:1352 (12, the
+#         MEM_RESERVE/Protect pair at the reservation's base) and
+#         :1403/:1424 (35, the ZeroBits bands a no-op cannot refuse). Fixed
+#         in kernel/ps/query.c, pinned by
+#         tests/ntapi/sem_ps/thread_stack_alloc.c.
+#     THIS BLOCK'S OWN DIAGNOSIS WAS WRONG IN THE WAY docs/21 §4 trap 4
+#     DESCRIBES. It read "the requested reserve is ignored (0xad0000 where
+#     0x200 was asked)" and "the region below the stack reports MEM_FREE" as
+#     evidence that proskrnl "commits what it reserves and has no guard
+#     band", and scheduled mm+ps work in the file docs/12 calls a danger
+#     zone. Both observations were real and both were CONSEQUENCES of reading
+#     a NULL DeallocationStack. Nothing in mm/ was touched.
+#     NOTHING WAS HIDDEN BEHIND IT: 3737 tests executed, 148 todo markers and
+#     2 skips before and after, so the 1065 that went are 1065 assertions
+#     that now PASS rather than assertions that stopped running. The two
+#     todo_wine commit-size assertions at :1049/:1067 still correctly fail as
+#     todos (proskrnl commits 0x10000 where they want 0x4000/0x9000).
+#
+#     WHAT IS LEFT IS 46, AND IT IS FOUR SUBJECTS:
+#       - 35  :1411 x20 and :1431 x15 — the SAME ZeroBits contract on
+#         NtCreateThreadEx, which still opens with `(void)zeroBits;`
+#         (kernel/ps/thread.c). RtlCreateUserThread passes the argument down
+#         and the stack is placed without it, so the sweep's invalid values
+#         (i >= 12, and the mask form for i = 12..26) succeed where they must
+#         refuse. NEXT ITEM, and small: the bands are already stated once in
+#         mm/virtual.c MiZeroBitsPlacementLimit, and PspAllocateThreadStack
+#         needs the limit passed to its reservation.
+#       - 2   :1050/:1068 — the DEFAULT thread-stack reserve. proskrnl uses a
+#         hardwired 0x100000 (kernel/ps/thread.c) where the oracle uses the
+#         IMAGE's SizeOfStackReserve when the caller names none
+#         (dlls/ntdll/unix/virtual.c virtual_alloc_thread_stack, `if
+#         (!reserve_size) reserve_size = main_image_info.MaximumStackSize;`).
+#         ntdll_test.exe asks for 0x200000 — measured, not inferred: the
+#         assertion prints both numbers. The value is already on EPROCESS
+#         (imageInformation.MaximumStackSize), so this is a default, not a
+#         mechanism. Its own item: it changes every thread's stack in the
+#         system and deserves its own measurement.
+#       - 6   the cross-process image map at :1728-:1752 (NtMapViewOfSection
+#         with a non-zero offset into ANOTHER process -> c000000d, i.e.
+#         mm/section.c's "image subrange views: not M5"), unchanged.
+#       - 3   :2039 (MemExtendedParameterImageMachine) and the
+#         NtProtectVirtualMemory old_prot pair at :2679/:2686, unchanged.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
@@ -693,23 +756,7 @@ kernel32_test.exe:comm
 kernel32_test.exe:directory
 kernel32_test.exe:drive
 kernel32_test.exe:environ
-# DIAGNOSED, FIXABLE — but mm/ work, approach with care. One failure
-#     (fiber.c:203 "wrong data") and then the process is KILLED by a
-#     user-mode page fault, so nothing is missing. From the serial log:
-#     RIP=0x1740844a0 RSP=0x4498a0 CR2=0x4498c0 with the thread's recorded
-#     stack at [0x10000,0x210000). RSP is OUTSIDE that range — which is what
-#     a fiber IS, since CreateFiber allocates its own stack and switches RSP
-#     — and CR2 is 0x20 above RSP, so the faulting access is an ordinary
-#     push into memory that should be there. Suspect: the fault handler's
-#     stack-growth/guard-page path keyed to the TEB's recorded bounds rather
-#     than the VAD the access lands in (err=0x7 fits a guard page never
-#     cleared).
-#     docs/12 names mm/ as the most dangerous area for an LLM. Pin it with a
-#     tests/ntapi case that allocates a stack and touches it from a switched
-#     RSP — do NOT adjust the fault handler until the winetest stops
-#     crashing (Art. 6).
-# TODO: Implement
-# kernel32_test.exe:fiber
+kernel32_test.exe:fiber
 # UNTRIAGED, FIXABLE. 152 failures, and the two big clusters are one
 #     subject: file.c:2672 (96 times) and :2663 (16) sweep the matrix of a
 #     SECTION's protection against the access a file is then OPENED with —
