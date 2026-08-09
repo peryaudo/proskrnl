@@ -491,6 +491,29 @@ ntdll_test.exe:unwind
 #     place the test returns at the same point for the right reason. 3757
 #     tests executed before and after, one failure fewer, one skip fewer
 #     (3 -> 2), no new failure anywhere.
+#
+#     NOW 1115, and the tail above is 13. The zero_bits cluster is FIXED:
+#     NtMapViewOfSection honours zero_bits as a PLACEMENT CONSTRAINT, through
+#     the same limitHigh the MEM_ADDRESS_REQUIREMENTS path already uses
+#     (kernel/mm/section.c, pinned by tests/ntapi/sem_mm/map_zero_bits.c,
+#     docs/21 W5). It had been validated and then dropped — the argument
+#     never reached the placement search, so every one of those maps landed
+#     wherever the bottom-up walk put it (0x7c0000 in the test process,
+#     measured). All 11 assertions at :1517/:1530 are gone and nothing else
+#     in the pair moved: a line-by-line diff of the failing-assertion
+#     histogram before and after shows those two lines removed and no other
+#     change.
+#     THE EXECUTED COUNT DROPS WITH IT, 3757 -> 3737, AND THAT IS NOT A LOSS:
+#     the sweep's two inner ok()s (the ceiling check and the unmap) sit under
+#     `if (status == STATUS_SUCCESS)`, so the ten maps that now correctly
+#     answer STATUS_NO_MEMORY stop running two assertions each. 10 x 2 = the
+#     whole of the difference.
+#     What is left of the tail: 6 the cross-process image map at :1728-:1752
+#     (NtMapViewOfSection with a non-zero offset into ANOTHER process ->
+#     c000000d, i.e. mm/section.c's "image subrange views: not M5"), 5 the
+#     KUSER_SHARED_DATA / cpu fields, 2 the NtProtectVirtualMemory old_prot
+#     pair. The thread-STACK contract (1102) is untouched and is still the
+#     item.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
