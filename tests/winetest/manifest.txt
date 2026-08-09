@@ -402,14 +402,7 @@ ntdll_test.exe:string
 #     or retry it), not a kernel change — which is why there is no
 #     `TODO: Implement` line.
 # ntdll_test.exe:time
-# UNTRIAGED, FIXABLE. Zero failed assertions and then an unhandled
-#     0xc0000005 that kills the process — so unlike the other crashers there
-#     is no cascade to see past, and the crash IS the finding. Unwinding is
-#     PE-side, so a kernel failure under it points at exception dispatch or
-#     context capture in arch/. Shares that subject with ntdll:exception and
-#     should follow its NtSetContextThread triage.
-# TODO: Implement
-# ntdll_test.exe:unwind
+ntdll_test.exe:unwind
 # RE-MEASURED, FIXABLE — and the count went UP because the pair now RUNS.
 #     Placeholders landed this session (kernel/mm/virtual.c,
 #     tests/ntapi/sem_mm/placeholder.c, docs/21 W5): the panic at
