@@ -208,9 +208,11 @@ wineserver's `propagate_console_signal` implements.
 
 ### The one inverted case — worth knowing about
 
-`NtSetInformationProcess` (`kernel/ps/query.c:621`) is the opposite shape. After
-three explicit classes (`ProcessWineMakeProcessSystem`,
-`ProcessDefaultHardErrorMode`, `ProcessPriorityClass`) its default **accepts as a
+`NtSetInformationProcess` (`kernel/ps/query.c` `NtSetInformationProcess`) is the
+opposite shape. After five explicit classes
+(`ProcessManageWritesToExecutableMemory`, `ProcessWineMakeProcessSystem`,
+`ProcessPriorityBoost`, `ProcessDefaultHardErrorMode`, `ProcessPriorityClass`)
+its default **accepts as a
 no-op** and returns `STATUS_SUCCESS`, naming the class on serial. That is
 deliberate — the classes ntdll sets at startup have no observable effect here —
 but it means this service never trips the `syscall PARTIAL` line or the armed
@@ -220,3 +222,14 @@ safety net; it is what caught `ProcessWineMakeProcessSystem` and the hard-error
 mode, both of which then became real implementations. Treat an unexplained
 `ps: NtSetInformationProcess class N accepted as a no-op` in a boot log as a
 suspect, not noise.
+
+It has now caught a third, and that one is worth naming because its cost was
+invisible in a tally: `ProcessManageWritesToExecutableMemory` (83) is a
+**capability probe**, not a setting. A caller reads its status to decide whether
+it is on an ARM64EC host, so the no-op arm's `STATUS_SUCCESS` was an answer of
+"yes" on an x86_64 machine. It is now an explicit `STATUS_NOT_SUPPORTED` — what
+the pinned oracle answers off ARM64 — with the thread-side twin
+`ThreadManageWritesToExecutableMemory` (48) beside it in `kernel/ps/thread.c`
+(pinned by `tests/ntapi/sem_ps/manage_exec_writes.c`). **A no-op is only safe for
+a class whose answer carries no information**; the moment the STATUS itself is
+the value the caller wanted, accepting is fabricating.

@@ -913,7 +913,20 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
   but on-target it realistically never signals (conhost and cmd live for
   the whole session). The remaining `NtSetInformationProcess` classes stay
   accepted no-ops — now NAMED on serial per call (Art. 12 hygiene; this
-  class was the planted-bug shape that rule exists for).
+  class was the planted-bug shape that rule exists for). **One class has
+  since left that group for the opposite reason**:
+  `ProcessManageWritesToExecutableMemory` (83) and its thread twin
+  `ThreadManageWritesToExecutableMemory` (48) answer
+  `STATUS_NOT_SUPPORTED`, because the status IS the value — a caller sets
+  the class to ask "am I on an ARM64EC host?", so a no-op success answered
+  yes on x86_64 (`dlls/ntdll/tests/virtual.c` `test_exec_memory_writes`
+  then asserts the processor architecture is ARM64 and skips its body).
+  The refusal is the pinned oracle's own off-ARM64 arm and it precedes
+  every argument check, so a wrong length, a wrong `Version` and a junk
+  handle all get it too; pinned by `sem_ps/manage_exec_writes.c`. The
+  ARM64EC contract behind the class — write exceptions on executable
+  pages, `VmPageDirtyStateInformation` — is unbuilt and unreachable on an
+  x86_64 host.
 - **The hostname is configuration**: the wineboot glue's `gethostname`
   answers the fixed name `proskrnl` (there is no hostname source below the
   boundary); wineboot's stock `create_computer_name_keys` seeds
