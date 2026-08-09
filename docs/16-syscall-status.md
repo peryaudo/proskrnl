@@ -115,6 +115,7 @@ built, the rest refuse.
 | `NtSetInformationJobObject` | — | `kernel/ps/job.c:320` |
 | `NtSetInformationObject` | 1: `ObjectHandleFlagInformation` | `kernel/ob/handle.c:452` |
 | `NtQuerySection` | 2: `SectionBasicInformation`, `SectionImageInformation` | `kernel/mm/section.c:1283` |
+| `NtQueryVirtualMemory` | 3: `MemoryBasicInformation`, `MemoryRegionInformation`, `MemoryImageInformation` | `kernel/mm/virtual.c:2605` |
 | `NtPowerInformation` | 1: `ProcessorInformation` | `kernel/ps/query.c:1949` |
 | `NtQueryInformationFile` | — | `kernel/io/query.c:141` |
 | `NtSetInformationFile` | — | `kernel/io/query.c:596` |

@@ -1198,6 +1198,34 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   precedent): mapping a section INTO a placeholder is a second, larger contract and no
   baked consumer reaches it. `NtCreateSectionEx`'s parameter array is
   accepted-and-ignored (the pinned oracle FIXME shape).
+- **`MemoryImageInformation` reports signing level ZERO where the oracle reports 12**
+  (`kernel/mm/virtual.c` `MiQueryVirtualMemoryImage`, `docs/21` W5; pinned
+  `tests/ntapi/sem_mm/image_info.c`). The pinned Wine writes
+  `info->ImageSigningLevel = 12` for every image view unconditionally
+  (`dlls/ntdll/unix/virtual.c` `get_memory_image_info`); proskrnl leaves the field at 0
+  because nothing on this system validates an image signature, and 12 would be a claim
+  about a check that never ran (Art. 12 — the same rule that forbids a plausible status
+  from a stub). This is not a divergence from the BOUNDARY: the winetest accepts either
+  value at every one of its five image queries
+  (`ok( info.ImageSigningLevel == 0 || info.ImageSigningLevel == 12, ...)`,
+  `dlls/ntdll/tests/virtual.c` `test_query_image_information`), so NT itself reports 0
+  for an image it has not checked. The pin therefore asserts the pair rather than one
+  value, and says so.
+  Two more of the class's rules are the oracle's and are easy to get backwards, so they
+  are recorded here as well as in the code: a MAPPED-but-not-image address (a private
+  allocation, a data view, a pagefile view) is a **SUCCESS with an all-zero struct**
+  rather than a refusal; and the struct is **zeroed before the lookup**, so the caller's
+  buffer comes back zeroed even on the `STATUS_INVALID_ADDRESS` refusal — the exact
+  opposite of `MemoryRegionInformation`, which leaves the buffer untouched on its.
+  `ImagePartialMap` stays clear because `MipMapImageView` maps the whole
+  `SizeOfImage` whatever view size was asked for, so no view this kernel can produce is
+  partial. Be precise about WHY that is not itself a dropped input: the image path
+  accepting and ignoring the requested view size is a real gap, it is **shared with the
+  pinned oracle** (the winetest wraps both the `size == 0x4000` and the
+  `ImagePartialMap` assertions in `todo_wine`), and it is unbuilt on both sides rather
+  than impossible. So `ImagePartialMap` = 0 is an accurate report of the views that
+  exist, not a bit nobody computed — and when partial image views are built, this bit is
+  part of that item.
 - **`MEM_EXTENDED_PARAMETER_EC_CODE` is the one attribute bit that refuses, and the
   refusal belongs to the ALLOCATION engine.** Every other bit of the
   `MemExtendedParameterAttributeFlags` word is accepted and dropped;

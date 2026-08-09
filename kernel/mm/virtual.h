@@ -80,6 +80,13 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
  * (STATUS_INVALID_ADDRESS) rather than a described hole. */
 NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address,
                                     PMEMORY_REGION_INFORMATION info);
+/* M10 (docs/21 W5 tail): which IMAGE view the address falls in, if any. Same
+ * VAD walk once more — a mapped-but-not-image address is a SUCCESS with an
+ * all-zero struct, and only a free (or out-of-range) address is the refusal
+ * STATUS_INVALID_ADDRESS. The struct is zeroed on every path, including that
+ * refusal. */
+NTSTATUS MiQueryVirtualMemoryImage(PMI_ADDRESS_SPACE space, const void *address,
+                                   PMEMORY_IMAGE_INFORMATION info);
 /* Reprotect a committed run (M7); reports the previous protection. */
 NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtectOut);
