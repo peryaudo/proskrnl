@@ -1894,8 +1894,44 @@ def gen_ntkeapi(wine: Path) -> str:
     wdm = (wine / "include/ddk/wdm.h").read_text()
     winnt = (wine / "include/winnt.h").read_text()
 
-    defines = extract_defines(wdm, "ddk/wdm.h", ["PROCESSOR_FEATURE_MAX"]) + "\n" + extract_defines(
-        winnt, "winnt.h", ["MAXIMUM_XSTATE_FEATURES"]
+    # The PF_* indices into KUSER_SHARED_DATA.ProcessorFeatures — the ones
+    # the x86_64 feature derivation sets (kernel/../arch/x86_64/cpu.c, after
+    # wine/dlls/ntdll/unix/system.c init_shared_data_cpuinfo). Listed in
+    # numeric order; the ARM-only names are deliberately not carried.
+    processor_features = [
+        "PF_COMPARE_EXCHANGE_DOUBLE",
+        "PF_MMX_INSTRUCTIONS_AVAILABLE",
+        "PF_XMMI_INSTRUCTIONS_AVAILABLE",
+        "PF_3DNOW_INSTRUCTIONS_AVAILABLE",
+        "PF_RDTSC_INSTRUCTION_AVAILABLE",
+        "PF_PAE_ENABLED",
+        "PF_XMMI64_INSTRUCTIONS_AVAILABLE",
+        "PF_SSE_DAZ_MODE_AVAILABLE",
+        "PF_NX_ENABLED",
+        "PF_SSE3_INSTRUCTIONS_AVAILABLE",
+        "PF_COMPARE_EXCHANGE128",
+        "PF_XSAVE_ENABLED",
+        "PF_VIRT_FIRMWARE_ENABLED",
+        "PF_RDWRFSGSBASE_AVAILABLE",
+        "PF_FASTFAIL_AVAILABLE",
+        "PF_RDRAND_INSTRUCTION_AVAILABLE",
+        "PF_RDTSCP_INSTRUCTION_AVAILABLE",
+        "PF_RDPID_INSTRUCTION_AVAILABLE",
+        "PF_MONITORX_INSTRUCTION_AVAILABLE",
+        "PF_SSSE3_INSTRUCTIONS_AVAILABLE",
+        "PF_SSE4_1_INSTRUCTIONS_AVAILABLE",
+        "PF_SSE4_2_INSTRUCTIONS_AVAILABLE",
+        "PF_AVX_INSTRUCTIONS_AVAILABLE",
+        "PF_AVX2_INSTRUCTIONS_AVAILABLE",
+        "PF_AVX512F_INSTRUCTIONS_AVAILABLE",
+        "PF_ERMS_AVAILABLE",
+        "PF_BMI2_INSTRUCTIONS_AVAILABLE",
+        "PF_MOVDIR64B_INSTRUCTION_AVAILABLE",
+    ]
+    defines = (
+        extract_defines(wdm, "ddk/wdm.h", ["PROCESSOR_FEATURE_MAX"])
+        + "\n"
+        + extract_defines(winnt, "winnt.h", ["MAXIMUM_XSTATE_FEATURES"] + processor_features)
     )
     enums = "\n\n".join(
         [
