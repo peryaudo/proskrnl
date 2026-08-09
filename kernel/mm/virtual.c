@@ -1380,6 +1380,97 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
     return STATUS_SUCCESS;
 }
 
+/* MemoryRegionInformation: the whole reservation, not the like-protected run
+ * inside it that MemoryBasicInformation describes. Same VAD walk as
+ * MiQueryVirtualMemoryBasic — the difference is entirely in the question, so
+ * it extends that engine rather than adding a second one (Art. 11).
+ *
+ * Three things here are the oracle's, not invented (third_party/wine
+ * dlls/ntdll/unix/virtual.c get_memory_region_info; pinned
+ * sem_mm/region_info.c):
+ *
+ *   - a FREE address is STATUS_INVALID_ADDRESS. MemoryBasicInformation
+ *     describes the hole; this class refuses it. The caller's buffer is left
+ *     untouched on that refusal, which is why nothing is written until the
+ *     VAD is known.
+ *   - RegionType is reported as ZERO, every bit of it. The oracle sets it to
+ *     0 with a FIXME and does not classify the region, and the winetest
+ *     asserts each of Private/MappedDataFile/MappedImage/MappedPageFile/
+ *     MappedPhysical/DirectMapped is clear even for a mapped view. It is a
+ *     measured answer, not an unfilled field.
+ *   - CommitSize counts a MAPPED view's pages only when they are WRITE-COPY,
+ *     while a private allocation's every committed page counts. That is the
+ *     oracle's `vprot_mask |= PAGE_WRITECOPY for a non-valloc view`, and it
+ *     is measured on both sides: the same section mapped PAGE_READONLY
+ *     reports commit 0 and mapped PAGE_WRITECOPY reports the whole view.
+ */
+NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address,
+                                    PMEMORY_REGION_INFORMATION info)
+{
+    uint64_t base = MiRoundDown((uint64_t)(uintptr_t)address, PAGE_SIZE);
+    if (base >= KI_USER_SPACE_LIMIT)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PMI_VAD vad = MiFindVad(space, base);
+    if (vad == 0)
+    {
+        return STATUS_INVALID_ADDRESS;
+    }
+
+    ULONG pages = MiVadPageCount(vad);
+    BOOLEAN mapped = vad->type != MEM_PRIVATE;
+    uint64_t committed = 0;
+    for (ULONG i = 0; i < pages; i++)
+    {
+        ULONG protect = vad->pageProtect[i];
+        if (protect == 0)
+        {
+            continue;
+        }
+        /* Mask the modifier bits before comparing, as everything else in this
+         * file does (MiProtectVirtualMemory and friends): a guarded or
+         * uncached write-copy page is still write-copy. The oracle tests a
+         * BIT (`vprot & vprot_mask`), which VPROT_GUARD does not disturb, so
+         * a strict equality here would silently drop those pages. */
+        ULONG bare = protect & ~(ULONG)(PAGE_GUARD | PAGE_NOCACHE);
+        if (mapped && bare != PAGE_WRITECOPY && bare != PAGE_EXECUTE_WRITECOPY)
+        {
+            continue;
+        }
+        committed += PAGE_SIZE;
+    }
+
+    info->AllocationBase = (PVOID)(uintptr_t)vad->base;
+    info->AllocationProtect = vad->allocationProtect;
+    info->RegionType = 0;
+    info->RegionSize = (uint64_t)pages * PAGE_SIZE;
+    info->CommitSize = committed;
+    /* PartitionId and NodePreference are deliberately NOT set. The oracle
+     * never writes them (get_memory_region_info assigns five fields and
+     * returns), so the caller's own bytes must survive there — see
+     * MiRegionInfoWriteBytes, which is what stops them being copied out. A
+     * zero here would be a fabricated answer for a field nobody computed. */
+    return STATUS_SUCCESS;
+}
+
+/* How many bytes of MEMORY_REGION_INFORMATION a request of `length` actually
+ * gets. Not min(length, sizeof) — the oracle fills each tail field only when
+ * the buffer reaches the offset of the NEXT one, and never fills the last
+ * two at all (third_party/wine dlls/ntdll/unix/virtual.c
+ * get_memory_region_info: RegionSize under `len >= FIELD_OFFSET(CommitSize)`,
+ * CommitSize under `len >= FIELD_OFFSET(PartitionId)`). So a 28-byte buffer
+ * gets RegionSize and NOT four bytes of a half-written CommitSize. */
+static SIZE_T MiRegionInfoWriteBytes(SIZE_T length)
+{
+    if (length >= offsetof(MEMORY_REGION_INFORMATION, PartitionId))
+    {
+        return offsetof(MEMORY_REGION_INFORMATION, PartitionId);
+    }
+    return offsetof(MEMORY_REGION_INFORMATION, CommitSize);
+}
+
 /* --- section-view plumbing (virtual.h; used by mm/section.c) ---------------- */
 
 uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size)
@@ -2407,15 +2498,38 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
                               MEMORY_INFORMATION_CLASS informationClass, PVOID buffer,
                               SIZE_T length, SIZE_T *returnLength)
 {
-    if (informationClass != MemoryBasicInformation)
+    /* Each class states its own minimum, and MemoryRegionInformation's is
+     * NOT its own size: the oracle accepts any buffer reaching CommitSize's
+     * offset and fills what fits (third_party/wine dlls/ntdll/unix/virtual.c
+     * get_memory_region_info; pinned sem_mm/region_info.c, which measures
+     * offsetof(RegionSize) refused and offsetof(CommitSize) accepted). */
+    SIZE_T needed;
+    SIZE_T writeBytes;
+    switch (informationClass)
     {
+    case MemoryBasicInformation:
+        needed = sizeof(MEMORY_BASIC_INFORMATION);
+        writeBytes = sizeof(MEMORY_BASIC_INFORMATION);
+        break;
+    case MemoryRegionInformation:
+        needed = offsetof(MEMORY_REGION_INFORMATION, CommitSize);
+        writeBytes = MiRegionInfoWriteBytes(length);
+        break;
+    default:
         return STATUS_INVALID_INFO_CLASS;
     }
-    if (length < sizeof(MEMORY_BASIC_INFORMATION))
+    if (length < needed)
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
-    NTSTATUS status = KiProbeForWrite(buffer, sizeof(MEMORY_BASIC_INFORMATION), sizeof(uint64_t));
+    /* Probe exactly what will be WRITTEN, never the caller's stated `length`.
+     * KiProbeForWrite demands every page of the range be present and
+     * writable, so probing a length larger than the bytes we touch would
+     * refuse a caller the oracle serves — and this probe is also the
+     * write-watch dirty-marking site (kernel/syscall/uaccess.c), so a wider
+     * range would mark pages nothing wrote. MemoryBasicInformation's probe is
+     * therefore unchanged by the arrival of a second class. */
+    NTSTATUS status = KiProbeForWrite(buffer, writeBytes, sizeof(uint64_t));
     if (NT_SUCCESS(status) && returnLength != 0)
     {
         status = KiProbeForWrite(returnLength, sizeof(*returnLength), sizeof(*returnLength));
@@ -2430,6 +2544,28 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
     status = MiReferenceProcessByHandle(process, PROCESS_QUERY_INFORMATION, &target, &referenced);
     if (!NT_SUCCESS(status))
     {
+        return status;
+    }
+
+    if (informationClass == MemoryRegionInformation)
+    {
+        MEMORY_REGION_INFORMATION region;
+        status = MiQueryVirtualMemoryRegion(&target->addressSpace, address, &region);
+        if (NT_SUCCESS(status))
+        {
+            /* Only the fields the oracle would have filled — but ReturnLength
+             * is the WHOLE struct either way, which is what the oracle
+             * reports and what the winetest asserts against sizeof(). */
+            memcpy(buffer, &region, writeBytes);
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(region);
+            }
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
         return status;
     }
 
