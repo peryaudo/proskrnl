@@ -137,10 +137,13 @@ NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64
                             uint64_t offset, uint64_t *viewSizeInOut, ULONG protect);
 
 /* CUI-7 constrained form (NtMapViewOfSectionEx placement limits, inclusive
- * of the last byte; zeros mean unconstrained). The classic entry delegates
- * here — one mapping engine (Art. 11). */
+ * of the last byte; zeros mean unconstrained). `machine` is the caller's
+ * MemExtendedParameterImageMachine: zero is unconstrained, and a non-zero
+ * value the IMAGE does not declare refuses STATUS_NOT_SUPPORTED (a data
+ * section ignores it). The classic entry delegates here — one mapping
+ * engine (Art. 11). */
 NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                               uint64_t offset, uint64_t *viewSizeInOut, ULONG protect,
-                              uint64_t limitLow, uint64_t limitHigh);
+                              uint64_t limitLow, uint64_t limitHigh, USHORT machine);
 
 #endif /* PROSKRNL_KERNEL_MM_SECTION_H */

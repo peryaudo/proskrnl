@@ -80,6 +80,10 @@ typedef struct
     uint64_t limitHigh; /* inclusive last usable byte; 0 = unconstrained */
     uint64_t align;
     ULONG attributes;
+    /* MemExtendedParameterImageMachine; 0 = unconstrained. Read by the
+     * mapping engine's IMAGE arm only (section.c MipMapImageView) — the
+     * allocation path and a data view both ignore it, which is why it is
+     * carried out of the parser rather than acted on inside it. */
     USHORT machine;
 } MI_EXTENDED_PARAMS;
 
