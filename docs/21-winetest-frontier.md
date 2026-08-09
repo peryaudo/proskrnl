@@ -935,13 +935,58 @@ Three things worth carrying forward, none of them about license values:
   `REG_DWORD` value — which is the general form: a pin over a keyed lookup
   measures the LOOKUP only if it asks for more than one key.
 
-### W13 — Time-zone data
+### W13 — Time-zone data (**DONE — 19 failures to 1, without going green**)
 
-`kernel32:time`: 13 of its 19 failures are one line, and it is data rather
-than logic. `kernel/cm/registry.c` seeds exactly ONE time-zone key (UTC),
-because that is the one kernelbase requires to boot. Mechanical, but a
-large data set, and it must come from the pinned prefix rather than from
-memory (G8).
+The table is seeded whole and generated: 139 zone keys plus their 92
+`Dynamic DST` subkeys, 2576 values, parsed out of the pinned kernelbase's own
+WINE_REGISTRY resource (`dlls/kernelbase/kernelbase.rgs`) by
+`tools/gen_timezones.py` into `kernel/cm/timezones.h`, seeded by
+`CmInitialize`. Pinned by `tests/ntapi/sem_reg/timezone_keys.c`; the manifest
+block has the numbers.
+
+**The source was one layer further in than "the pinned prefix", and finding
+it is the reusable part.** This item said the data "must come from the pinned
+prefix rather than from memory". The prefix is a *rendering*, not a source —
+`wineboot --init` writes it — and generating from `build/tests/wineprefix`
+would have made the kernel's table depend on a directory the build does not
+own. The actual pin is a `WINE_REGISTRY` resource compiled into kernelbase and
+applied by `dlls/setupapi/fakedll.c` `register_resource` through atl's
+`IRegistrar`, so the generator parses the *registrar script grammar*
+(`dlls/atl/registrar.c` `get_word` / `do_process_key`) — including the two
+things a from-the-format-docs parser gets wrong: `d` is `wcstoul(..., 10)`, so
+`d 2000` is decimal and not hex, and `''` inside a quoted word is one literal
+quote. Byte-for-byte agreement with the prefix's own 231 keys was then checked
+row by row, which is the confirmation that the resource is where the prefix
+came from rather than a parallel copy of it.
+
+**The item's other half was not in the item, and the manifest block had it
+wrong.** Four failures at `:990-:1008` were filed here as "downstream of the
+same gap". They were `tzres.dll` missing from the baked image — §4 trap 6, the
+same shape as W14's `win.ini`, one directory over from the hive this item was
+about. What makes them *visible* rather than harmless is an asymmetry inside
+kernelbase: `GetDynamicTimeZoneInformation` and `GetTimeZoneInformationForYear`
+resolve the same `MUI_Std` through the same `RegLoadMUIStringW` and disagree
+about its FAILURE — the first ignores the error and leaves the raw
+`@tzres.dll,-22000`, the second falls back to the zone's plain `Std`. So a
+missing resource file does not degrade both APIs equally; it makes them
+contradict each other, and the test compares them. **A shared resolver is not
+a shared answer when the callers differ in how they handle its failure.**
+
+**The pair does not go green and stays parked**, on one assertion in a
+different department: `time.c:843` wants
+`GetSystemTimePreciseAsFileTime` to advance by under 1 ms, and on this kernel
+it advances by exactly one 10 ms tick because `RtlGetSystemTimePrecise` falls
+back to `NtQuerySystemTime` and `KUSER_SHARED_DATA.SystemTime` is the clock.
+That is a sub-tick time source — interpolating the tick with a hardware
+counter — and it is the next item under this heading, not this one.
+
+**A note for the next generated seed, because there will be one.** A 3600-line
+generated header is not `make format`-stable: clang-format reflows the byte
+table and aligns the `#define`s, which rewrites a checked-in generated file and
+breaks its own `--check` on the next run. The generator emits
+`// clang-format off`. `kernel/cm/license.h`'s header already warned about this
+hazard for a single identifier; at table scale it is not a warning, it is a
+requirement.
 ### W14 — `kernel32:profile` (**DONE — and it closes, without going green**)
 
 Never a numbered item here; it sat in the manifest as "the smallest item on
