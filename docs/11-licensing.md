@@ -37,8 +37,12 @@ Wine code is linked, and the values are the observable contract, which Article 4
 be generated rather than recalled precisely so the extraction is auditable. The same
 applies to `kernel/lib/upcase.h`, the NLS upcase table generated from `nls/l_intl.nls`:
 name equality at the boundary IS that table, so approximating it with a hand-written rule
-was a divergence, not a license precaution. The four conditions above still govern anything
-that links third-party **code**; nothing but Flanterm does.
+was a divergence, not a license precaution. And to `kernel/cm/license.h`, the
+`[LicenseInformation]` payload generated from `loader/wine.inf`, for the same reason one
+step further out: `NtQueryLicenseValue` names that registry key literally, so the oracle's
+answer IS that payload and a hand-written subset of it was a divergence too (docs/21 W12).
+The four conditions above still govern anything that links third-party **code**; nothing
+but Flanterm does.
 
 ## Route (a) and the kernel image
 

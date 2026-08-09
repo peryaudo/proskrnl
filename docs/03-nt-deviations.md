@@ -574,6 +574,22 @@ boundary symbols winebuild would have emitted supplied by
 - **`Machine\System\CurrentControlSet\Control\Session Manager` is seeded
   Cm furniture** — real NT always has it; the heap test's
   read-Session-Manager child probes it directly.
+- **`HKLM\Software\Wine\LicenseInformation` is seeded from the pinned
+  `wine.inf`, WHOLE and GENERATED** (`kernel/cm/license.h`,
+  `tools/gen_license.py`, applied by `CmInitialize`). It is the key
+  `NtQueryLicenseValue` names literally (`dlls/ntdll/unix/registry.c`), and
+  on the oracle it is prefix furniture that `loader/wine.inf`'s
+  `[LicenseInformation]` writes at `wineboot --init`; the hermetic images
+  carry no `wineboot.exe`, so the kernel seeds it — the Session Manager
+  precedent, one layer down from `win.ini` (`tools/gen_sysini.py`, docs/21
+  W14). What the generator buys over transcription is the failure it
+  already prevented once: the seed was hand-written and carried only
+  `Kernel-MUI-Language-Allowed`, so the `REG_DWORD` value beside it
+  answered `STATUS_OBJECT_NAME_NOT_FOUND` and `ntdll:reg` lost 12
+  assertions to a payload nobody had noticed was a subset (docs/21 W12).
+  A hand-copied subset is a claim about which lines matter, and the claim
+  goes stale silently; the whole section is checkable. The Makefile's
+  `--check` rule is what notices a pin bump editing that section.
 - **GlobalMemoryStatusEx's three sources answer for real** (`kernel/ps/
   query.c`): `MmNumberOfPhysicalPages`, the new
   `SystemPerformanceInformation` class, and

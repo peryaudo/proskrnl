@@ -637,9 +637,18 @@ $(UPCASE_CHECK): kernel/lib/upcase.h tools/gen_upcase.py $(WINE_NLS)/l_intl.nls
 	python3 tools/gen_upcase.py --check
 	@touch $@
 
+# kernel/cm/license.h is checked in for the same reason and drifts the same
+# way — a wine pin that edits [LicenseInformation] moves the ORACLE's answer
+# and leaves the kernel's seed where it was, which reads as a divergence.
+LICENSE_CHECK := $(BUILD)/license.checked
+$(LICENSE_CHECK): kernel/cm/license.h tools/gen_license.py third_party/wine/loader/wine.inf
+	@mkdir -p $(dir $@)
+	python3 tools/gen_license.py --check
+	@touch $@
+
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
         $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(UPCASE_CHECK) \
-        tools/mkimage.sh arch/x86_64/limine.conf
+        $(LICENSE_CHECK) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -1465,6 +1474,13 @@ gen-abi:
 # present. `--check` is what proves it has not drifted from the pin.
 gen-nls:
 	python3 tools/gen_upcase.py
+
+# The HKLM\Software\Wine\LicenseInformation payload CmInitialize seeds, from
+# the pinned tree's own loader/wine.inf — the section that writes that key
+# into the oracle's prefix. Its own target for the same reason gen-nls is:
+# the source is INF DATA rather than a Wine header. Art. 4 / G4.
+gen-license:
+	python3 tools/gen_license.py
 
 # Enforce the docs/15 house style — the one style gate, `make format`.
 #
