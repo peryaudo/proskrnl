@@ -42,6 +42,7 @@
 #include "kernel/cm/cm.h"
 
 #include "kernel/cm/license.h"
+#include "kernel/cm/timezones.h"
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/dbgprint.h"
@@ -2415,9 +2416,9 @@ NTSTATUS NtReplaceKey(POBJECT_ATTRIBUTES newFileAttributes, HANDLE keyHandle,
  * seeds the keys real NT guarantees exist (Session Manager: created by NT
  * itself, probed by kernel32:heap test_child_heap and read by the kernel's
  * own GlobalFlag stamp, kernel/ps/peb.c). */
-static PCMP_KEY_NODE CmpWalkPath(PCWSTR path, BOOLEAN create)
+static PCMP_KEY_NODE CmpWalkPath(PCMP_KEY_NODE start, PCWSTR path, BOOLEAN create)
 {
-    PCMP_KEY_NODE node = CmpRootNode;
+    PCMP_KEY_NODE node = start;
     while (*path != 0)
     {
         const WCHAR *end = path;
@@ -2450,7 +2451,15 @@ static PCMP_KEY_NODE CmpWalkPath(PCWSTR path, BOOLEAN create)
 
 static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
 {
-    return CmpWalkPath(path, TRUE);
+    return CmpWalkPath(CmpRootNode, path, TRUE);
+}
+
+/* The same walk, relative to a key already found — the seed tables below name
+ * their keys relative to their own root, and re-walking the absolute prefix
+ * once per row would be a second spelling of the same path. */
+static PCMP_KEY_NODE CmpEnsureSkeletonKeyUnder(PCMP_KEY_NODE parent, PCWSTR path)
+{
+    return CmpWalkPath(parent, path, TRUE);
 }
 
 /* Seed a value if absent — furniture only; a persisted hive's own value (or
@@ -2554,7 +2563,7 @@ void CmInitialize(void)
      * "CUI-1 firstboot notes"); this is only the root the open needs. */
     CmpEnsureSkeletonKey(WSTR("User\\S-1-5-21-0-0-0-1000"));
 
-    /* The one time-zone table entry kernelbase REQUIRES. Ring 3 asks the
+    /* The time-zone table kernelbase resolves a zone out of. Ring 3 asks the
      * kernel for the zone (kernel/ps/query.c answers
      * SystemDynamicTimeZoneInformation with TimeZoneKeyName L"UTC"), and
      * GetDynamicTimeZoneInformation (dlls/kernelbase/locale.c) then OPENS
@@ -2562,22 +2571,48 @@ void CmInitialize(void)
      * name> for the display strings — a missing subkey is a hard
      * TIME_ZONE_ID_INVALID return, and every CRT conversion that reads the
      * zone fails behind it (msvcrt:time's GetTimeZoneInformation check and
-     * the whole mktime/localtime block under it). Wine's table is installed
-     * prefix-side, so proskrnl — which has no prefix — seeds it here, the
-     * Session Manager precedent above. Names, spellings and the all-zero
-     * 44-byte REG_TZI_FORMAT (zero bias, no DST rules) are the pinned
-     * oracle prefix's own UTC entry, and the zero bias is the same answer
-     * kernel/ps/query.c already gives — one zone, stated once. */
+     * the whole mktime/localtime block under it). But the table is not only
+     * the RUNNING zone's row: GetTimeZoneInformationForYear takes a zone key
+     * name from its caller and looks up any row plus its per-year `Dynamic
+     * DST` subkey, which is what kernel32:time walks.
+     *
+     * Wine's table is installed prefix-side (the WINE_REGISTRY resource in
+     * kernelbase itself, dlls/kernelbase/kernelbase.rgs, applied by
+     * dlls/setupapi/fakedll.c at `wineboot --init`), so proskrnl — which has
+     * no prefix — seeds it here, the Session Manager precedent above. The
+     * WHOLE table is seeded and it is GENERATED out of that .rgs
+     * (kernel/cm/timezones.h, tools/gen_timezones.py) rather than
+     * transcribed, for the reason the license block below records: this key
+     * carried exactly ONE hand-copied row (UTC, because that is the row
+     * kernelbase needs to boot) and kernel32:time measured the cost of that
+     * claim at fourteen assertions. Pinned by
+     * tests/ntapi/sem_reg/timezone_keys.c. */
     seeded = CmpEnsureSkeletonKey(
-        WSTR("Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\UTC"));
-    CmpSeedStringValue(seeded, WSTR("Display"), WSTR("(UTC) Coordinated Universal Time"));
-    CmpSeedStringValue(seeded, WSTR("Dlt"), WSTR("Coordinated Universal Time"));
-    CmpSeedStringValue(seeded, WSTR("Std"), WSTR("Coordinated Universal Time"));
-    CmpSeedStringValue(seeded, WSTR("MUI_Display"), WSTR("@tzres.dll,-22002"));
-    CmpSeedStringValue(seeded, WSTR("MUI_Dlt"), WSTR("@tzres.dll,-22001"));
-    CmpSeedStringValue(seeded, WSTR("MUI_Std"), WSTR("@tzres.dll,-22000"));
-    static const UCHAR utcTzi[44] = {0};
-    CmpSeedBinaryValue(seeded, WSTR("TZI"), utcTzi, sizeof(utcTzi));
+        WSTR("Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones"));
+    for (ULONG i = 0; i < CMP_TIMEZONE_KEY_COUNT; i++)
+    {
+        const CMP_TIMEZONE_KEY *zoneKey = &CmpTimeZoneKeys[i];
+        PCMP_KEY_NODE zoneNode = CmpEnsureSkeletonKeyUnder(seeded, zoneKey->path);
+        for (ULONG j = 0; j < zoneKey->valueCount; j++)
+        {
+            const CMP_TIMEZONE_VALUE *zoneValue = &CmpTimeZoneValues[zoneKey->firstValue + j];
+            if (zoneValue->type == REG_SZ)
+            {
+                CmpSeedStringValue(zoneNode, zoneValue->name, zoneValue->string);
+            }
+            else if (zoneValue->type == REG_DWORD)
+            {
+                CmpSeedDwordValue(zoneNode, zoneValue->name, zoneValue->dword);
+            }
+            else
+            {
+                ASSERT(zoneValue->type == REG_BINARY);
+                CmpSeedBinaryValue(zoneNode, zoneValue->name,
+                                   &CmpTimeZoneBinary[zoneValue->binaryOffset],
+                                   zoneValue->binaryBytes);
+            }
+        }
+    }
 
     /* The license values NtQueryLicenseValue answers from (the syscall
      * below). On the oracle these live in the prefix, installed by
@@ -2660,7 +2695,8 @@ NTSTATUS NtQueryLicenseValue(const UNICODE_STRING *name, ULONG *type, void *buff
         return status;
     }
 
-    PCMP_KEY_NODE node = CmpWalkPath(WSTR("Machine\\Software\\Wine\\LicenseInformation"), FALSE);
+    PCMP_KEY_NODE node =
+        CmpWalkPath(CmpRootNode, WSTR("Machine\\Software\\Wine\\LicenseInformation"), FALSE);
     if (node == 0)
     {
         return STATUS_OBJECT_NAME_NOT_FOUND;

@@ -646,9 +646,19 @@ $(LICENSE_CHECK): kernel/cm/license.h tools/gen_license.py third_party/wine/load
 	python3 tools/gen_license.py --check
 	@touch $@
 
+# kernel/cm/timezones.h likewise: the pinned kernelbase carries the table in a
+# WINE_REGISTRY resource, so a pin bump that tracks new tzdata moves the
+# ORACLE's answer for every zone and leaves the kernel's seed where it was.
+TIMEZONES_CHECK := $(BUILD)/timezones.checked
+$(TIMEZONES_CHECK): kernel/cm/timezones.h tools/gen_timezones.py \
+                    third_party/wine/dlls/kernelbase/kernelbase.rgs
+	@mkdir -p $(dir $@)
+	python3 tools/gen_timezones.py --check
+	@touch $@
+
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
         $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(UPCASE_CHECK) \
-        $(LICENSE_CHECK) tools/mkimage.sh arch/x86_64/limine.conf
+        $(LICENSE_CHECK) $(TIMEZONES_CHECK) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -1481,6 +1491,14 @@ gen-nls:
 # the source is INF DATA rather than a Wine header. Art. 4 / G4.
 gen-license:
 	python3 tools/gen_license.py
+
+# The HKLM\Software\Microsoft\Windows NT\CurrentVersion\Time Zones table
+# CmInitialize seeds, from the pinned kernelbase's own WINE_REGISTRY resource
+# (dlls/kernelbase/kernelbase.rgs) — the payload that writes that key into the
+# oracle's prefix. Its own target for the same reason gen-license is: the
+# source is registrar-script DATA rather than a Wine header. Art. 4 / G4.
+gen-timezones:
+	python3 tools/gen_timezones.py
 
 # Enforce the docs/15 house style — the one style gate, `make format`.
 #
