@@ -228,8 +228,41 @@ ntdll_test.exe:path
 #         the flag set would have answered PENDING and posted nothing,
 #         hanging GetQueuedCompletionStatus forever. The decision has to be
 #         made where the RETURNED status is known.
-#     This is the FIRST measurement of this pair that is not a lower bound:
-#     it reaches its own summary line rather than stopping.
+#     CORRECTION, and it matters for how the five are read: this pair does
+#     NOT reach its summary line. It ends `FAIL (timeout)` — five failed
+#     assertions and then a WEDGE, reproducibly. An earlier revision of this
+#     block claimed "the first measurement that is not a lower bound"; that
+#     was wrong, and it was wrong because the count was read without reading
+#     the verdict line beside it. The five are still a lower bound.
+#
+#     THE FIX FOR THE FIVE WAS BUILT AND MEASURED IN A SCRATCH BRANCH, and
+#     deliberately not landed. Routing ioctl.c's inline completion through
+#     rw.c's IopCompleteTransfer — so an ioctl posts a packet exactly as a
+#     transfer does — plus FILE_SKIP_COMPLETION_PORT_ON_SUCCESS on the
+#     correct axis, takes the five to ZERO failed assertions. The axis is
+#     the part to get right and it is NOT the completion status: the oracle
+#     skips only when the call did not REPORT STATUS_PENDING to its caller
+#     (add_completion's `ret_status == STATUS_PENDING`, set_fd_completion's
+#     `req->async ||`, async_terminate's `async->pending ||`), and its guard
+#     is !NT_ERROR, so STATUS_BUFFER_OVERFLOW is skipped too. In proskrnl
+#     that means the caller must pass the answer down, because the DEVICE
+#     paths return the status unchanged while the DISK paths run it through
+#     IopAsyncReturnShape afterwards.
+#     It was held back because it cannot move the pair's VERDICT while the
+#     wedge below is there — zero-failures-then-timeout and
+#     five-failures-then-timeout are the same FAIL — and a change to the
+#     completion path is not worth landing on a signal that cannot confirm
+#     it. Build it together with the wedge.
+#
+#     THE WEDGE IS THE NEXT ITEM, and the likely shape is recorded here
+#     because it fell out of the same work: IopCompletePendingRequest
+#     (kernel/io/async.c) never posts a completion packet at all, and the
+#     oracle's rule is that a request which PENDED always posts one. So an
+#     overlapped caller that binds a port and waits on a pended ioctl waits
+#     forever. The APC block already travels in the IOP_PENDING_REQUEST
+#     (docs/21 W4a); the port, key and value need the same treatment — and
+#     the port needs a REFERENCE, for exactly the reason the issuer thread
+#     did.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
