@@ -790,12 +790,12 @@ static NTSTATUS MiReplacePlaceholder(PMI_ADDRESS_SPACE space, uint64_t base, uin
 NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                  ULONG type, ULONG protect)
 {
-    return MiAllocateVirtualMemoryEx(space, baseInOut, sizeInOut, type, protect, 0, 0, 0);
+    return MiAllocateVirtualMemoryEx(space, baseInOut, sizeInOut, type, protect, 0, 0, 0, 0);
 }
 
 NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                    ULONG type, ULONG protect, uint64_t limitLow, uint64_t limitHigh,
-                                   uint64_t align)
+                                   uint64_t align, ULONG attributes)
 {
     uint64_t requestedBase = (uint64_t)(uintptr_t)*baseInOut;
     uint64_t size = *sizeInOut;
@@ -851,6 +851,28 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         return STATUS_INVALID_PARAMETER;
     }
     if ((type & MEM_RESERVE_PLACEHOLDER) != 0 && protect != PAGE_NOACCESS)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* MEM_EXTENDED_PARAMETER_EC_CODE asks for ARM64EC code memory, which only
+     * an ARM64EC image has: the oracle's guard is `if (!arm64ec_view &&
+     * (attributes & MEM_EXTENDED_PARAMETER_EC_CODE)) return
+     * STATUS_INVALID_PARAMETER;` (third_party/wine dlls/ntdll/unix/virtual.c
+     * allocate_virtual_memory), and proskrnl is x86_64-only
+     * (docs/adr/0006-x64-only.md) so the left half is permanently true.
+     *
+     * The bit is a PROBE, not a preference. ntdll:unwind's
+     * test_virtual_unwind_arm64 calls exactly this to ask whether it is on an
+     * ARM64EC host, and on a "yes" runs ARM64 unwind opcodes over the x86_64
+     * code buffer it just got — so accepting the bit and dropping it does not
+     * return a wrong answer, it hands the caller a lie it then executes.
+     *
+     * Position is the oracle's: below the working-set and type-flag tests
+     * above, so an oversized EC_CODE request still reports
+     * STATUS_WORKING_SET_LIMIT_RANGE. It is in the ENGINE rather than in
+     * MiCaptureExtendedParams because the mapping path takes the same word
+     * and ignores it. Both halves pinned (sem_mm/alloc_ex, sem_mm/map_ex). */
+    if ((attributes & MEM_EXTENDED_PARAMETER_EC_CODE) != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -2290,7 +2312,7 @@ NTSTATUS NtAllocateVirtualMemory(HANDLE process, PVOID *baseInOut, ULONG_PTR zer
      * general allocator hits by luck. Twelve of its thirteen failures were
      * this one line (virtual.c:170). */
     status = MiAllocateVirtualMemoryEx(&target->addressSpace, &base, &size, type, protect, 0,
-                                       base == 0 ? MiZeroBitsLimit(zeroBits) : 0, 0);
+                                       base == 0 ? MiZeroBitsLimit(zeroBits) : 0, 0, 0);
     if (NT_SUCCESS(status))
     {
         *baseInOut = base;
@@ -2446,7 +2468,8 @@ NTSTATUS NtAllocateVirtualMemoryEx(HANDLE process, PVOID *baseInOut, SIZE_T *siz
     PVOID base = *baseInOut;
     SIZE_T size = *sizeInOut;
     status = MiAllocateVirtualMemoryEx(&target->addressSpace, &base, &size, type, protect,
-                                       extended.limitLow, extended.limitHigh, extended.align);
+                                       extended.limitLow, extended.limitHigh, extended.align,
+                                       extended.attributes);
     if (NT_SUCCESS(status))
     {
         *baseInOut = base;
