@@ -1843,14 +1843,30 @@ gui() {
 
     # The guest never powers itself off (it must hold the painted frame for
     # the screendump), so this leg always ends the guest itself.
+    #
+    # The budget is gui2's below, and for its reason: this leg boots a
+    # VIRGIN image, so the marker it waits for is behind the whole firstboot
+    # INF pass, and that pass is minutes on a host without KVM. It used to
+    # be 300/180 -- sized when the seeded registry was one time-zone row
+    # rather than the whole 139-zone table, which grew the hive 63 KiB ->
+    # 237 KiB and, since every mutation rewrites the hive whole
+    # (kernel/cm/hive.c, the Art. 3 writeback model), grew the pass with it.
+    # Under TCG that put the paint marker past 180 s, and this was the only
+    # GUI leg never re-budgeted for it.
+    #
+    # Deliberately gui2's numbers rather than gui3/gui4/gui5's larger ones:
+    # CI overrides both upward for TCG (test.yml), so what the default buys
+    # is how long a KVM developer waits on a genuinely WEDGED guest -- 97 s
+    # is the measured KVM cost here, so 600 s still refuses a wedge in ten
+    # minutes instead of fifteen.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" \
-        TIMEOUT="${TIMEOUT:-300}" PASS_RE='\[KTEST\] gui input PASS' \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui input PASS' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
     # Wait for a marker to appear in the serial log, or give up.
     await() {
-        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-180}))
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-600}))
         while ((SECONDS < deadline)); do
             grep -qE "$pattern" "$log" 2>/dev/null && return 0
             kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first

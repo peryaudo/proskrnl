@@ -265,10 +265,15 @@ jobs:
         with:
           shard: cui-b
 
+  # Six full GUI boots, each ~7 minutes under TCG. The cap is 90 rather than
+  # the 60 every other shard gets because the measured job is already ~52
+  # minutes with GUI-1 failing early, and a job-level timeout is the worst
+  # failure mode here: it kills the run BEFORE the serial-logs step, so every
+  # leg's verdict and the logs that would explain it are lost at once.
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -281,6 +286,9 @@ jobs:
       - name: GUI-1 framebuffer screendump + key input (tests/run/run.sh gui)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh gui
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
 
       # GUI-2: winemine.exe on the scanout — unmodified user32/gdi32/comctl32
       # and winemine over the PE build of win32u, painting through winefb.drv.
