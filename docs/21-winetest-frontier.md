@@ -832,10 +832,10 @@ pipes, so every one of those three defects passed it. The pin now measures
 them (`test_client_open_precedence`) because review said to go measure, not
 because the failure count did.
 
-### W12 — Registry (**triaged; the fold and the license furniture are DONE, the rest is mostly DATA**)
+### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
-`ntdll:reg`, now **160** failures across 1042 tests, down from 192 across
-1050. The manifest block has the full breakdown; four things belong here.
+`ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
+1050. The manifest block has the full breakdown; five things belong here.
 
 **This item's own diagnosis of its largest cluster was wrong.** It said the
 24 failures at `reg.c:1354` were "`NtCreateKey` answering
@@ -898,6 +898,60 @@ Four things worth carrying forward:
 not a loss:** six of the cleared assertions were per-iteration over a subkey
 list with one stale entry in it, so removing the entry removes 4 iterations
 × 2 `ok()`s — 4 that were failing and 4 that were passing.
+
+**The four singleton assertions are DONE** (`ntdll:reg` 160 → **156**), and
+they were three unrelated rules that only looked like one item because each
+was small. `docs/03` "M8 Cm notes" carries all three; the manifest block has
+the numbers. What belongs here is what each one says about *where to look
+next*:
+
+- **`:550`/`:557` — "always case-insensitive" was half-implemented, and the
+  code comment saying otherwise was the reason.** A registry path is resolved
+  by two engines: `\Registry` is an **Ob** name (whose walk honours
+  `OBJ_CASE_INSENSITIVE`) and everything under it is a Cm subkey (whose
+  compare ignores the flag entirely). A caller passing `Attributes = 0` was
+  therefore asking for a case-SENSITIVE match on the single component Cm never
+  compares. The oracle folds it in `dlls/ntdll/unix/registry.c` — **the half
+  proskrnl replaces at the unixlib seam** — and `kernel/cm/registry.c` had
+  cited that exact file as the reason the kernel needed no code for it. The
+  citation was correct; the conclusion was self-refuting. **Replacing a layer
+  means inheriting what that layer did**, and this is the second instance of
+  the shape after W1's `STATUS_NOT_IMPLEMENTED` split, which is the same seam
+  read the other way. A sweep of `dlls/ntdll/unix/` for behaviour that is
+  *performed there* rather than merely *forwarded* is now an evidenced hunt,
+  and the tell is a kernel comment that cites `unix/` for why something is
+  absent. Pinned by `sem_reg/root_case.c`, with the negative controls doing
+  the real work — the oracle refuted the first draft, where a create under
+  `\REGISTRY` manufactured the very name the next open was meant to miss.
+- **`:854` — the winetest could only see the DELETED case of a defect that
+  covered every case.** `NtQueryObject(ObjectNameInformation)` answered success
+  with an empty name for *any* key handle, because keys are Cm tree nodes and
+  Ob's walk sees only the one namespace object. That is Art. 12's
+  fabricated-plausible answer with no stub anywhere in it, and the assertion
+  that convicted it is about deletion, not about naming. Fixed with an
+  `OBJECT_TYPE.queryName` hook — the oracle's own `key_ops.get_full_name`
+  shape, answering from the same `CmpBuildFullPath` `KeyNameInformation` uses
+  (Art. 11), refusing before the buffer-size protocol. **This is the third
+  optional `OBJECT_TYPE` hook** after `mapAccess` (W2) and the type's generic
+  mapping, and all three exist for the same reason: a type whose behaviour the
+  oracle keeps in its own `*_ops` table needs a place to put it that is not a
+  second engine.
+- **`:1312` — the refusal was right and the STATUS was wrong.** A symlink loop
+  answered `STATUS_OBJECT_NAME_NOT_FOUND`, which says the name is absent; every
+  name in a loop is present and it is the *request* that cannot be served. The
+  oracle says `STATUS_INVALID_PARAMETER`, and its bound is on the same quantity
+  with the same value (`server/object.c` `lookup_named_object`'s
+  `recursion_count > 32`). The pin covers **two** loop shapes and that is the
+  transferable part: a self-extending target grows the path one component per
+  follow, so a LENGTH bound stops it, while a two-link cycle keeps the path a
+  constant size and only a FOLLOW-COUNT bound stops that. A pin with only the
+  first would pass an implementation that hangs on the second.
+
+**With those gone the pair has no small items left**, and that is the useful
+statement about it: all 156 remaining failures are the `Software\Classes\Interface`
+and `Software\Wow6432Node` furniture — one data question carrying one human
+decision (may a kernel with no WOW64 carry a `Wow6432Node` key?). Nothing here
+is triage any more.
 
 **The license furniture is DONE** (`ntdll:reg` 172 → **160**, the 12 at
 `reg.c:1009-:1032`). `wine.inf`'s `[LicenseInformation]` writes **eleven**
@@ -1201,7 +1255,7 @@ Pairs and framings that will consume effort and unblock nothing.
    registry, check the oracle's prefix for it.** `kernel32:time`'s time-zone
    keys (W13) are the same shape one layer down, in the hive rather than on
    the volume, and `ntdll:reg` is the largest instance measured so far:
-   156 of its 160 remaining failures are `Software\Classes\Interface` and
+   **all 156** of its remaining failures are `Software\Classes\Interface` and
    `Software\Wow6432Node`, which `wine.inf` writes and the baked hive does
    not carry, and the license values it also writes were 12 more until this
    sweep's own item seeded them (W12). One `grep` of
