@@ -200,9 +200,9 @@ ntdll_test.exe:path
 #         behaviour yet, which docs/16 states plainly. Pinned by
 #         tests/ntapi/sem_pipe/ioctl_event.c.
 #
-#     SO THE PAIR NO LONGER PANICS AT ALL. It runs the completion tests and
-#     ends with FIVE failures, which are ONE subject and the next item:
-#     THE COMPLETION-PACKET RULES.
+#     SO THE PAIR NO LONGER PANICS AT ALL. It ran the completion tests and
+#     ended with FIVE failures, which were ONE subject — THE COMPLETION-
+#     PACKET RULES — and are now fixed (see below):
 #       - :1539 x2, after FSCTL_PIPE_PEEK on a port-bound handle, where a
 #         packet is owed ("NtRemoveIoCompletion returned 102" — a timeout —
 #         and the value left at its 0xdeadbeef poison). kernel/io/rw.c's
@@ -235,24 +235,27 @@ ntdll_test.exe:path
 #     was wrong, and it was wrong because the count was read without reading
 #     the verdict line beside it. The five are still a lower bound.
 #
-#     THE FIX FOR THE FIVE WAS BUILT AND MEASURED IN A SCRATCH BRANCH, and
-#     deliberately not landed. Routing ioctl.c's inline completion through
-#     rw.c's IopCompleteTransfer — so an ioctl posts a packet exactly as a
-#     transfer does — plus FILE_SKIP_COMPLETION_PORT_ON_SUCCESS on the
-#     correct axis, takes the five to ZERO failed assertions. The axis is
-#     the part to get right and it is NOT the completion status: the oracle
-#     skips only when the call did not REPORT STATUS_PENDING to its caller
-#     (add_completion's `ret_status == STATUS_PENDING`, set_fd_completion's
-#     `req->async ||`, async_terminate's `async->pending ||`), and its guard
-#     is !NT_ERROR, so STATUS_BUFFER_OVERFLOW is skipped too. In proskrnl
-#     that means the caller must pass the answer down, because the DEVICE
-#     paths return the status unchanged while the DISK paths run it through
-#     IopAsyncReturnShape afterwards.
-#     It was held back because it cannot move the pair's VERDICT while the
-#     wedge below is there — zero-failures-then-timeout and
-#     five-failures-then-timeout are the same FAIL — and a change to the
-#     completion path is not worth landing on a signal that cannot confirm
-#     it. Build it together with the wedge.
+#     THE FIVE ARE FIXED. ioctl.c's inline completion now runs through
+#     rw.c's IopCompleteTransfer — so an ioctl posts a completion packet
+#     exactly as a transfer does — and FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
+#     is honoured on the correct axis. Measured: the five go to ZERO failed
+#     assertions. Pinned by tests/ntapi/sem_pipe/completion_packet.c, green
+#     on both runners.
+#     THE AXIS is the part to get right and it is NOT the completion status:
+#     the oracle skips only when the call did not REPORT STATUS_PENDING to
+#     its caller (add_completion's `ret_status == STATUS_PENDING`,
+#     set_fd_completion's `req->async ||`, async_terminate's
+#     `async->pending ||`), and its guard is !NT_ERROR, so
+#     STATUS_BUFFER_OVERFLOW is skipped too. In proskrnl the caller passes
+#     that answer down (IopWillReportPending), because the DEVICE paths
+#     return the status unchanged while the DISK paths run it through
+#     IopAsyncReturnShape afterwards. Keyed on NT_SUCCESS instead, an async
+#     port-bound handle would answer STATUS_PENDING and post nothing —
+#     GetQueuedCompletionStatus hangs forever.
+#     THE PAIR'S VERDICT DOES NOT MOVE, and that is the honest bit: zero
+#     failed assertions and then the same wedge, so it still reads FAIL
+#     (timeout). The five being gone is a real measurement; the pair being
+#     sound is not something this can show.
 #
 #     THE WEDGE IS THE NEXT ITEM, and the likely shape is recorded here
 #     because it fell out of the same work: IopCompletePendingRequest
