@@ -832,13 +832,78 @@ pipes, so every one of those three defects passed it. The pin now measures
 them (`test_client_open_precedence`) because review said to go measure, not
 because the failure count did.
 
-### W12 — Registry
+### W12 — Registry (**triaged; the fold is DONE, the rest is mostly DATA**)
 
-`ntdll:reg`, 192 failures. A quarter of them are one cluster:
-`NtCreateKey` answering `STATUS_OBJECT_PATH_SYNTAX_BAD` 24 times, with
-`NtQueryValueKey` failing behind it on the handle that create never
-produced. That cluster is a NAME question, which W3 has just made cheaper
-to reason about, and it is the place to start.
+`ntdll:reg`, now **172** failures across 1042 tests, down from 192 across
+1050. The manifest block has the full breakdown; three things belong here.
+
+**This item's own diagnosis of its largest cluster was wrong.** It said the
+24 failures at `reg.c:1354` were "`NtCreateKey` answering
+`STATUS_OBJECT_PATH_SYNTAX_BAD` … a NAME question, which W3 has just made
+cheaper to reason about". Measured, none of that holds: the call is
+`NtOpenKey` (the assertion's message text says `NtCreateKey` and is simply
+wrong), and the refusal is **right** — its `RootDirectory` is a handle an
+earlier failed open left at zero, so the kernel is asked to resolve a
+relative name with no root, which is exactly that status on both runners.
+**§4 trap 4, from reading the failure TEXT instead of the test's helper.**
+What stops the cluster is registry furniture the image does not carry
+(`Software\Classes\Interface`, `Software\Wow6432Node`) — §4 trap 6, and a
+question with a decision inside it rather than an implementation: may a
+kernel with no WOW64 carry a `Wow6432Node` key? Roughly 156 of the
+remaining 172 are that one question asked in four places.
+
+**The name fold is a TABLE now, not a rule (DONE).**
+`RtlUpcaseUnicodeChar` reads the NLS upcase trie generated from the pinned
+tree's own `nls/l_intl.nls` (`kernel/lib/upcase.h`, `tools/gen_upcase.py`),
+which is the same data BOTH halves of the oracle fold through — Wine's PE
+ntdll maps it (`dlls/ntdll/unix/env.c` `init_environment`) and wineserver
+reads the lowercase half for `memicmp_strW` (`server/unicode.c`), which is
+what compares a registry key name. Total over the BMP, per 16-bit code unit.
+Pinned by `tests/ntapi/sem_reg/key_name_fold.c` and
+`sem_file/name_case_fold.c`; `docs/03` "Name case folding" carries the trade.
+
+Four things worth carrying forward:
+
+- **One missed fold cost twenty assertions, in three test functions that
+  are not about folding.** `reg.c:346` creates a key whose name reaches
+  Latin Extended-A and Greek, `:353` re-opens it upper-cased, `:357` deletes
+  it. The open missed, so the delete got a null handle, so the subkey
+  OUTLIVED its test — and only a leaf key is deletable, so its parent
+  (`\Registry\User\<SID>\WineTest`) could never be deleted again.
+  `test_NtDeleteKey`'s entire deleted-key contract (`:821-:851`), the
+  symlink test's delete, `NtRenameKey`'s subkey enumeration and
+  `RtlQueryRegistryValues`' call count all failed behind it. This is §4
+  trap 4 with a new twist: the consequence was not merely *louder* than the
+  cause, it was in a different SUBJECT, and it persisted across test
+  functions because the leak was in the registry rather than in a variable.
+  The evidence is unusually direct — `:2380` printed the leftover by name.
+- **A rule is a claim; a table is not.** `docs/03` recorded this fold as a
+  hand-written rule twice, each time judging the unfolded remainder
+  "unobservable", and user mode reached past it both times (`ntdll:directory`
+  for Latin-1, `ntdll:reg` for the rest). The generalisable form: when the
+  oracle carries DATA and proskrnl carries a rule that approximates it, the
+  deviation is not "the part nobody uses" — it is "the part nobody has used
+  YET", and the cost of being wrong is paid in a subject far from the fold.
+- **The table is not Unicode's simple uppercase, and the pin says so.**
+  U+03C2 folds to itself where U+03C3 folds to U+03A3; U+0131 folds to
+  itself; U+01C5 folds to itself where U+01C6 folds to U+01C4. An
+  implementation written from the Unicode character database passes every
+  other case here and fails those three.
+- **And it is per code UNIT.** `reg.c:350` requires the low surrogates
+  U+DC00 and U+DC28 — the two cases of one astral code point — to stay
+  different names. Decoding surrogate pairs before folding is the "more
+  correct" thing to do and fails exactly there.
+
+**The executed count fell with the failure count (1050 → 1042) and that is
+not a loss:** six of the cleared assertions were per-iteration over a subkey
+list with one stale entry in it, so removing the entry removes 4 iterations
+× 2 `ok()`s — 4 that were failing and 4 that were passing.
+
+**The smallest item left on this pair is more furniture, and it is cheap:**
+`wine.inf` writes THREE values into `Software\Wine\LicenseInformation`
+(`loader/wine.inf.in:1212-1214`) and `kernel/cm/registry.c` seeds one, which
+is 12 failures in `NtQueryLicenseValue`'s `REG_DWORD` half. Same shape as
+W14's `win.ini`: generate it from the pinned `wine.inf`, do not transcribe it.
 
 ### W13 — Time-zone data
 
@@ -970,10 +1035,19 @@ Pairs and framings that will consume effort and unblock nothing.
    whether the feature is there.
 
 4. **The loudest failure in a cluster is usually the consequence.** This
-   trap has been paid for twice. An earlier revision of this document named
-   `kernel32:thread`'s `OpenThread` assertion as a cause on the strength of
-   its access mask; the actual cause was a self-suspend four assertions
-   earlier. Read the test's helper before believing the assertion text.
+   trap has been paid for three times. An earlier revision of this document
+   named `kernel32:thread`'s `OpenThread` assertion as a cause on the
+   strength of its access mask; the actual cause was a self-suspend four
+   assertions earlier. Read the test's helper before believing the assertion
+   text — **and do not believe the assertion's message either.** W12's
+   largest cluster was triaged for a milestone as "`NtCreateKey` →
+   `STATUS_OBJECT_PATH_SYNTAX_BAD`" because that is what the failure printed;
+   the failing call is `NtOpenKey`, the message string is wrong in the
+   upstream test, and the refusal was correct. The same item's other half
+   showed the consequence landing in a different SUBJECT entirely: a key the
+   fold failed to open was never deleted, and the failures were in
+   `NtDeleteKey`, `NtRenameKey` and `RtlQueryRegistryValues` two thousand
+   lines later.
 
 5. **Hardware debug registers (DR0–7) and `EFLAGS.TF` unblock nothing.**
    They were only ever wanted by `ntdll:exception`, which is now re-parked as
@@ -991,7 +1065,13 @@ Pairs and framings that will consume effort and unblock nothing.
    **Before diagnosing a pair that reads a file out of `%windir%` or the
    registry, check the oracle's prefix for it.** `kernel32:time`'s time-zone
    keys (W13) are the same shape one layer down, in the hive rather than on
-   the volume.
+   the volume, and `ntdll:reg` is the largest instance measured so far:
+   ~156 of its 172 remaining failures are `Software\Classes\Interface`,
+   `Software\Wow6432Node` and three license values that `wine.inf` writes
+   and the baked hive does not carry (W12). One `grep` of
+   `build/tests/wineprefix/system.reg` answers it, and `NtCreateKey` creating
+   only the LAST component is what turns one missing key into a whole test
+   function's worth of failures.
 
 7. **Pairs excluded under manifest rules (a)/(b)/(c) are not frontier.**
    `ntdll:om`, `kernel32:{console,process,loader,module,debugger,toolhelp}`,
