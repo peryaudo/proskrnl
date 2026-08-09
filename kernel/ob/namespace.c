@@ -911,8 +911,16 @@ void ObpInitializeObjectManager(void)
      * Wine server builds the same tree (server/directory.c, create_session).
      * One session: PsInitializePeb hands every process SessionId 1, so that
      * is the only id a lookup can ask for. */
+    /* The one session id, and the one spelling of the path built from it.
+     * Both appear more than once below (the directory, the Local link, the
+     * BNOLINKS entry), and they must agree — so they are written once here
+     * rather than repeated as literals. Under one session that is a
+     * simplification, not a shortcut; if a second session ever exists this
+     * function grows a loop and these become its parameters. */
+    PCWSTR sessionId = WSTR("1");
+    PCWSTR sessionBnoPath = WSTR("\\Sessions\\1\\BaseNamedObjects");
     PVOID sessions = ObpCreatePermanentDirectory(ObpRootDirectory, WSTR("Sessions"));
-    PVOID session = ObpCreatePermanentDirectory(sessions, WSTR("1"));
+    PVOID session = ObpCreatePermanentDirectory(sessions, sessionId);
     PVOID windows = ObpCreatePermanentDirectory(session, WSTR("Windows"));
     ObpCreatePermanentDirectory(windows, WSTR("WindowStations"));
     /* The session's named-object home: kernelbase's
@@ -921,7 +929,36 @@ void ObpInitializeObjectManager(void)
      * CreateEvent/Mutex/Semaphore dies ERROR_BAD_PATHNAME without it. The
      * pinned Wine server creates it per session too (server/directory.c,
      * create_session). Pinned by sem_ob/session_bno. */
-    ObpCreatePermanentDirectory(session, WSTR("BaseNamedObjects"));
+    PVOID sessionBno = ObpCreatePermanentDirectory(session, WSTR("BaseNamedObjects"));
+
+    /* The three names that live INSIDE that directory, and the directory
+     * behind the third. They are what makes "Local\Foo" and "Global\Foo"
+     * work, and nothing anywhere special-cases those words: kernelbase hands
+     * the WHOLE name — prefix included — to the object manager relative to
+     * \Sessions\<id>\BaseNamedObjects (dlls/kernelbase/sync.c
+     * BaseGetNamedObjectDirectory), so the prefix is resolved as an ordinary
+     * path component and a missing link is ERROR_PATH_NOT_FOUND.
+     *
+     * Targets are the pinned oracle's (server/directory.c create_session):
+     * Global -> the ROOT BaseNamedObjects, Local -> the session's OWN
+     * BaseNamedObjects (so Local\X and X are one object), Session ->
+     * \Sessions\BNOLINKS, which carries one link per session id back to that
+     * session's directory. Pinned by tests/ntapi/sem_ob/bno_links.c.
+     *
+     * The oracle spells Local as an OBJECT symlink to the link's own parent,
+     * which is parent-by-construction; ours is a PATH, and it is the same
+     * directory only because there is one session (sessionBnoPath above).
+     * Saying "its own parent" here would claim a property this code does not
+     * have.
+     *
+     * kernel32:virtual convicted their absence: OpenFileMapping on a
+     * "Local\..." name answered ERROR_PATH_NOT_FOUND and took ~28 assertions
+     * with it, none of which named the namespace. */
+    ObpCreatePermanentSymbolicLink(sessionBno, WSTR("Global"), WSTR("\\BaseNamedObjects"));
+    ObpCreatePermanentSymbolicLink(sessionBno, WSTR("Local"), sessionBnoPath);
+    ObpCreatePermanentSymbolicLink(sessionBno, WSTR("Session"), WSTR("\\Sessions\\BNOLINKS"));
+    PVOID bnolinks = ObpCreatePermanentDirectory(sessions, WSTR("BNOLINKS"));
+    ObpCreatePermanentSymbolicLink(bnolinks, sessionId, sessionBnoPath);
 }
 
 /* --- the directory / symbolic-link Nt* surface ---------------------------- */
