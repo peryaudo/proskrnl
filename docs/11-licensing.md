@@ -41,6 +41,10 @@ was a divergence, not a license precaution. And to `kernel/cm/license.h`, the
 `[LicenseInformation]` payload generated from `loader/wine.inf`, for the same reason one
 step further out: `NtQueryLicenseValue` names that registry key literally, so the oracle's
 answer IS that payload and a hand-written subset of it was a divergence too (docs/21 W12).
+And to `kernel/cm/timezones.h`, the time-zone table generated from the WINE_REGISTRY
+resource in the pinned `dlls/kernelbase/kernelbase.rgs`, for the same reason again:
+`GetTimeZoneInformationForYear` resolves a caller-named zone out of that key, and the one
+hand-copied row it used to hold was a divergence (docs/21 W13).
 The four conditions above still govern anything that links third-party **code**; nothing
 but Flanterm does.
 

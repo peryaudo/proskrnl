@@ -590,6 +590,36 @@ boundary symbols winebuild would have emitted supplied by
   A hand-copied subset is a claim about which lines matter, and the claim
   goes stale silently; the whole section is checkable. The Makefile's
   `--check` rule is what notices a pin bump editing that section.
+- **`HKLM\Software\Microsoft\Windows NT\CurrentVersion\Time Zones` is seeded
+  the same way** (`kernel/cm/timezones.h`, `tools/gen_timezones.py`,
+  `CmInitialize`): 139 zone keys and their 92 `Dynamic DST` subkeys, 2576
+  values, generated out of the pinned kernelbase's own WINE_REGISTRY resource
+  (`dlls/kernelbase/kernelbase.rgs`, applied to the oracle's prefix by
+  `dlls/setupapi/fakedll.c` at `wineboot --init`). It is byte-identical to what
+  that prefix carries, checked row by row when it was written. The key had
+  carried exactly one hand-copied row before this — UTC, because that is the
+  row `GetDynamicTimeZoneInformation` needs to boot — and `kernel32:time`
+  measured the cost of that subset at fourteen assertions, the license values'
+  lesson a second time in the same file (docs/21 W13). Pinned by
+  `tests/ntapi/sem_reg/timezone_keys.c`.
+  - **The zone proskrnl REPORTS is still UTC alone** (`kernel/ps/query.c`
+    answers `SystemDynamicTimeZoneInformation` with `TimeZoneKeyName` `L"UTC"`,
+    the no-RTC-offset rule above). The table is what a caller may ASK about —
+    `GetTimeZoneInformationForYear` takes a zone key name from its caller — so
+    the two are different questions and the table is not a claim that the
+    machine is in 139 places.
+  - **The seeded rows are ordinary persisted keys**, so they join the hive
+    image `CmpSaveHive` rewrites on every mutating registry call. Measured cost
+    on the winetest and CUI legs: none visible. They are not volatile because
+    the seed path has one never-stomp rule for all furniture (`CmpSeedValue`)
+    and a volatile parent would additionally refuse a non-volatile child —
+    observable, where the growth is not. The never-stomp rule does make the
+    seed ONE-WAY on a surviving disk: a pin bump that brings new tzdata is
+    caught in the header by the Makefile's `--check`, but a hive already
+    holding the old rows keeps them, because the seed only fills what is
+    absent. Every test image is baked fresh, so nothing measures it; a
+    long-lived install would need its hive re-seeded rather than merely
+    re-booted.
 - **GlobalMemoryStatusEx's three sources answer for real** (`kernel/ps/
   query.c`): `MmNumberOfPhysicalPages`, the new
   `SystemPerformanceInformation` class, and
