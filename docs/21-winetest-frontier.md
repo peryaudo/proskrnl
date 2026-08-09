@@ -356,29 +356,84 @@ writing.
   built half refuses `STATUS_CONFLICTING_ADDRESSES` for every extent it
   cannot serve exactly, which is the specific NT failure and not a stub.
 
-### W6 — The exception/context cluster (**triage-first, not build-first**)
+### W6 — The exception/context cluster (**`ntdll:unwind` is GREEN; `ntdll:exception` is not frontier**)
 
-`ntdll:exception` and `ntdll:unwind`. Both die with an unhandled user-mode
-`0xc0000005` rather than with a missing class.
+This item grouped two pairs on the strength of their shared symptom — both
+died with an unhandled user-mode `0xc0000005` — and predicted one cause for
+both: `NtSetContextThread` ignoring `ContextFlags` selectivity. **Both halves
+of that were wrong, and neither was wrong in the way the shape suggested.**
 
-`ntdll:exception`'s is measured and points somewhere specific: the process
-is killed at `RIP=0 RSP=0` immediately after `NtSetContextThread` on the
-CURRENT thread. That is a context *restore* that zeroed `RIP`/`RSP`.
-**Strong hypothesis: `NtSetContextThread` is not honouring `ContextFlags`
-selectivity** — a caller setting only some flags gets its whole context
-overwritten. Cheap to confirm, cheap to fix, and a genuine boundary
-contract. The DR0–7 and `EFLAGS.TF` work sits *behind* it.
+**`ntdll:unwind` is GREEN on both legs, and its cause was two subsystems
+away from `arch/`.** The pair's block said "unwinding is PE-side, so a kernel
+failure under it points at exception dispatch or context capture in `arch/`".
+Nothing in `arch/` was involved. `test_virtual_unwind_arm64`
+(`dlls/ntdll/tests/unwind.c`) opens by asking
 
-**Deliverable ordering: one triage commit-series (no kernel change — a
-`tests/ntapi` case isolating `NtSetContextThread` with a partial
-`ContextFlags`, oracle-green) BEFORE any kernel work.** If the hypothesis
-is wrong the item is re-scoped and we have lost a day instead of a week.
+```c
+param.ULong64 = MEM_EXTENDED_PARAMETER_EC_CODE;
+if (!pNtAllocateVirtualMemoryEx || pNtAllocateVirtualMemoryEx( ..., &param, 1 )) return;
+```
 
-- **`docs/12` names `ps/usermode.c` and `arch/x86_64/*.S` as danger
-  zones.** Do not let an agent write this one unsupervised.
-- **Art. 1 / G1.** `CONTEXT` layout and `ContextFlags` semantics are
-  squarely on the boundary and must be reproduced exactly; every offset
-  comes from `abi/` with `static_assert`, never from memory.
+— the allocation IS the "am I an ARM64EC host?" probe. The oracle refuses it
+(`allocate_virtual_memory`'s `if (!arm64ec_view && (attributes &
+MEM_EXTENDED_PARAMETER_EC_CODE)) return STATUS_INVALID_PARAMETER;`) and the
+whole ARM64EC block is skipped. proskrnl captured the attribute word in
+`MiCaptureExtendedParams` and then **dropped it**, so the probe answered
+"yes", and the test ran ARM64 unwind opcodes over an x86_64 code buffer until
+it died. The same probe appears a second time at `unwind.c:3960`, gating
+`test_dynamic_unwind`'s ARM64EC metadata block, so one refusal closes both.
+Implementing it (`kernel/mm/virtual.c`, pinned by `sem_mm/alloc_ex.c` +
+`sem_mm/map_ex.c`) took the pair from a kill to **455166 tests executed, 0
+failures — the oracle's count exactly.**
+
+**Three things worth carrying forward:**
+
+1. **This is §4 trap 4 again, at its widest reach yet.** The loudest failure
+   was a fatal fault deep in unwind machinery; the cause was one accepted-and-
+   dropped input bit in `mm/`. Grouping by symptom put the item under
+   "exception/context" and pointed the next reader at the two files
+   (`ps/usermode.c`, `arch/x86_64/*.S`) `docs/12` calls danger zones. It was
+   a fifteen-line fix in neither of them.
+2. **It is also W10's lesson 1, in the surface `docs/12` calls SAFE.** "A
+   dropped flag does not fail an assertion" — there it deadlocked, here it
+   crashed. The `MEM_EXTENDED_PARAMETER` word had a parser that *validated
+   its structure faithfully* and then discarded its content, which is the
+   most convincing possible way to hide a dropped input: the ladder above it
+   is pinned line-for-line against the oracle (`sem_mm/alloc_ex.c` predates
+   this by a milestone) and every one of those assertions passed.
+3. **Where the guard lives is the load-bearing part.** It cannot go in
+   `MiCaptureExtendedParams`, because `NtMapViewOfSectionEx` takes the same
+   attribute word and *ignores* it; it cannot go in the syscall wrapper,
+   because the oracle's guard is below `allocate_virtual_memory`'s
+   working-set test and an oversized EC_CODE request must still answer
+   `STATUS_WORKING_SET_LIMIT_RANGE`. So it is in the allocation engine, and
+   both boundaries are pinned rather than argued.
+
+**`ntdll:exception` is NOT frontier, and this document scheduled it wrongly.**
+§0 scopes the backlog to pairs green on the pinned oracle. Measured, this
+one's ORACLE leg is red: 25 failures, then the oracle's own process dies at
+`0xc0000005` with no summary line. 23 of the 25 need `syswow64` (the oracle
+is built `--enable-win64`, so `test_debug_registers_wow64` and
+`test_wow64_context` cannot start their 32-bit helpers) and two are
+`RegisterClassA`/`CreateWindowA` under `--without-x`. Re-parked as manifest
+category (b) with no TODO: re-opening it is a decision about the oracle
+BUILD, not a kernel change.
+
+That also disposes of the `RIP=0` hypothesis this item was built on — not by
+refuting it, but by removing the only evidence for it. Worth noting anyway
+that `ContextFlags` selectivity **is** implemented on both directions
+(`kernel/ps/usermode.c` `KiTrapFrameToContext` / `KiContextToTrapFrame`,
+whose comments record the `docs/review-2026-07` §9 fix that made the
+documented get-modify-set idiom stop writing `Rip`/`Rsp` as zero), so the
+prediction was probably stale when it was written. **§4 trap 2's sibling:
+a symptom read off a leg nobody had checked was oracle-green is not a
+measurement at all.**
+
+- **Art. 1 / G1** still applies to whatever reopens the context surface:
+  `CONTEXT` layout and `ContextFlags` semantics are squarely on the boundary,
+  and every offset comes from `abi/` with `static_assert`, never from memory.
+- **Trap 5 (DR0–7 and `EFLAGS.TF`) is now unreachable rather than merely
+  low-value** — the only pair that wanted them cannot convict.
 
 ### W15 — The BaseNamedObjects links (**DONE**)
 
@@ -755,12 +810,18 @@ Pairs and framings that will consume effort and unblock nothing.
    `ntdll:{info,file}`, `kernel32:{mailslot,fiber}` — carries the same
    unknown, and their counts are lower bounds.
 
-3. **A crash is usually a cascade, not the bug.** `kernel32:volume` and
+3. **A crash is usually a cascade, not the bug — and "zero failures before
+   the crash" does not make it one.** `kernel32:volume` and
    `kernel32:resource` both `0xc0000005` *after* a run of `ok()` failures
    where an API had already returned NULL. Chasing the crash rather than
-   the first failing `ok()` wastes the day. The two crashers where the
-   crash IS the finding are `ntdll:unwind` (zero failed assertions before
-   it) and `ntdll:exception` (whose crash has a named syscall behind it).
+   the first failing `ok()` wastes the day. This trap used to name
+   `ntdll:unwind` as the counter-example, "the crash IS the finding",
+   precisely because it had zero failed assertions before it. **Measured, it
+   was a cascade too** — of a single dropped allocation attribute that made a
+   host-capability probe answer "yes" (W6). An empty assertion log before a
+   fault says only that the test never *checked* anything on the way in, and
+   the last thing a winetest does before running a feature block is ask
+   whether the feature is there.
 
 4. **The loudest failure in a cluster is usually the consequence.** This
    trap has been paid for twice. An earlier revision of this document named
@@ -768,10 +829,10 @@ Pairs and framings that will consume effort and unblock nothing.
    its access mask; the actual cause was a self-suspend four assertions
    earlier. Read the test's helper before believing the assertion text.
 
-5. **Hardware debug registers (DR0–7) and `EFLAGS.TF` are the lowest-value
-   item in the plan.** They unblock only `ntdll:exception`, and only
-   *after* W6's `NtSetContextThread` fix — which may unblock it alone. Do
-   W6's triage, then re-ask.
+5. **Hardware debug registers (DR0–7) and `EFLAGS.TF` unblock nothing.**
+   They were only ever wanted by `ntdll:exception`, which is now re-parked as
+   oracle-red (W6): its leg cannot convict the kernel at all until the oracle
+   build gains a WoW64 arch and a display. Do not schedule them.
 
 6. **The wtest image is NOT a wineboot-initialised prefix, and the
    difference reads as a kernel divergence.** The oracle leg runs in a
@@ -832,7 +893,9 @@ Pairs and framings that will consume effort and unblock nothing.
   pended data path). **Grows the `IOP_PENDING_REQUEST` engine; do not add a
   second one.**
 - `kernel/mm/` — `virtual.c` and `section.c` (W5). **Danger zone.**
-- `kernel/ps/usermode.c`, `arch/x86_64/*.S` — W6. **Danger zone.**
+- `kernel/ps/usermode.c`, `arch/x86_64/*.S` — **danger zone**, but no longer
+  a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
+  dead half is re-parked.
 - `kernel/ke/{wait,apc}.c` — W10. **Danger zone.**
 - `fs/npfs/pipe.c` — W11. `kernel/cm/registry.c` — W12, W13.
 - `tests/winetest/manifest.txt` — the counts and the triage, always.
