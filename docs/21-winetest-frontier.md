@@ -286,6 +286,34 @@ is wrong the item is re-scoped and we have lost a day instead of a week.
   squarely on the boundary and must be reproduced exactly; every offset
   comes from `abi/` with `static_assert`, never from memory.
 
+### W15 — The BaseNamedObjects links (**DONE**)
+
+`\Sessions\<id>\BaseNamedObjects` existed; the three names *inside* it did
+not. NT (and the pinned oracle, `server/directory.c` `create_session`) puts
+three symlinks there — `Global` → the root `\BaseNamedObjects`, `Local` →
+**its own parent**, `Session` → `\Sessions\BNOLINKS`, which carries one link
+per session id back to that session's directory. Landed in
+`kernel/ob/namespace.c`, pinned by `tests/ntapi/sem_ob/bno_links.c`.
+
+Nothing special-cases the words `Local\` or `Global\`: kernelbase hands the
+whole name, prefix included, to the object manager relative to the session's
+directory (`dlls/kernelbase/sync.c` `BaseGetNamedObjectDirectory`), so the
+prefix is an ordinary path component and a missing link is
+`ERROR_PATH_NOT_FOUND`.
+
+**It took `kernel32:virtual` from 40 failures to 12, and that is the lesson
+rather than the code.** The 28 it cleared spanned `virtual.c:790-:862` and
+read like a section bug — the manifest block called them "NtCreateSection
+refusing/accepting wrongly at :758-:790", folding them in with three
+assertions that really are a section-access gap and survive. They
+were the *consequence*: one `OpenFileMapping` on a `"Local\Foo"` name
+returned `ERROR_PATH_NOT_FOUND`, and every assertion downstream of the handle
+it never returned failed behind it. **§4 trap 4, paid for a third time** —
+and this instance is the sharpest, because the failing assertions named a
+subsystem (`NtQuerySection`, `MapViewOfFile`) that had nothing wrong with it.
+
+The remaining 12 are four small subjects and the manifest block has them.
+
 ### W7 — Volume furniture (**PARTLY DONE**)
 
 `\DosDevices`, `\Device\MountPointManager` and the boot volume's

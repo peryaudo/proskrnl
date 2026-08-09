@@ -607,16 +607,41 @@ kernel32_test.exe:timer
 #     runs, it moves to manifest-gui.txt rather than back here.
 # kernel32_test.exe:toolhelp
 kernel32_test.exe:version
-# PARTLY FIXED, FIXABLE. 40 failures, down from 4148. The
-#     view-protection compatibility matrix landed this session
+# PARTLY FIXED, FIXABLE. 12 failures, down from 4148. The
+#     view-protection compatibility matrix landed earlier
 #     (kernel/mm/virtual.c MiCheckViewProtection,
 #     tests/ntapi/sem_mm/view_protect_matrix.c) and took ~2100 assertions at
 #     virtual.c:4250/:4251 with it, plus the ~840 at :4264-:4291 where the
 #     MEM_COMMIT arm was answering by the wrong rule for every non-private
-#     view. The 40 that remain are NOT one subject: NtCreateSection
-#     refusing/accepting wrongly at :758-:790 and :4074,
-#     WriteProcessMemory at :236-:275, and a MEMORY_BASIC_INFORMATION group
-#     at :517-:560. Each needs its own look.
+#     view. NOW 12, down from 40 — and the 28 that went were ONE cause that
+#     nothing in the failure text named: the object namespace was missing the
+#     Local / Global / Session symlinks inside \Sessions\1\BaseNamedObjects
+#     (and \Sessions\BNOLINKS behind Session), so OpenFileMapping on a
+#     "Local\Foo" name answered ERROR_PATH_NOT_FOUND and every assertion
+#     downstream of the handle it never returned failed with it. Landed in
+#     kernel/ob/namespace.c, pinned by tests/ntapi/sem_ob/bno_links.c.
+#     That block spanned :790-:862 and READ like a section bug — the old
+#     triage above called it "NtCreateSection refusing/accepting wrongly at
+#     :758-:790" — which is docs/21 §4 trap 4: the loudest failures in a
+#     cluster were the consequence, and the cause was three missing names.
+#
+#     The 12 that remain are FOUR subjects, none of them large:
+#       - :758/:764/:770 (3), CreateFileMapping on a NO-ACCESS file handle
+#         (CreateFileA with dwDesiredAccess 0) must fail and does not. The
+#         required-access rule is already in kernel/io/file.c
+#         IopBuildSectionBacking and already matches the oracle's
+#         (dlls/ntdll/unix/sync.c NtCreateSection: FILE_READ_DATA for the
+#         read protections, + FILE_WRITE_DATA for PAGE_READWRITE /
+#         PAGE_EXECUTE_READWRITE on a non-image), so the gap is NOT the rule
+#         but something upstream granting more than the handle should carry —
+#         start by measuring what a 0-access CreateFileA handle actually
+#         grants, not by editing the rule.
+#       - :4074 (1), the same subject one protection along: a READ-ONLY file
+#         handle with PAGE_READWRITE must fail ERROR_ACCESS_DENIED.
+#       - :236/:261/:275 (3), WriteProcessMemory — error 87 then two "0 bytes
+#         written".
+#       - :517/:520/:525/:534/:560 (5), a MEMORY_BASIC_INFORMATION protect
+#         group ("wrong protect 4/2/202", "wrong size 1000").
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
 # TODO: Implement
 # kernel32_test.exe:virtual
