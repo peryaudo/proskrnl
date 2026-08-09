@@ -322,17 +322,27 @@ ntdll_test.exe:string
 #     group at :1084/:1131 has nothing to find. It is mm+ps work and it is
 #     the whole item — the other 97 are a long tail behind it.
 #
-#     The tail, for whoever gets past the stack: 70 are
-#     MemoryRegionInformation answering STATUS_INVALID_INFO_CLASS (:634-:652
-#     and :2844-:3062 — one unbuilt class, and :3095 win_skips
-#     MemoryImageInformation the same way); 11 are zero_bits on
+#     NOW 1129, down from 1199: MemoryRegionInformation is BUILT
+#     (kernel/mm/virtual.c MiQueryVirtualMemoryRegion,
+#     tests/ntapi/sem_mm/region_info.c, docs/21 W5). All 70 of its assertions
+#     at :634-:652 and :2844-:3062 pass; the class reports the WHOLE
+#     reservation where MemoryBasicInformation reports the like-protected run
+#     inside it, refuses a free address with STATUS_INVALID_ADDRESS instead of
+#     describing the hole, and counts a MAPPED view's pages toward CommitSize
+#     only when they are write-copy.
+#
+#     The rest of the tail, for whoever gets past the stack: :3095 is a
+#     win_skip of MemoryImageInformation, which is the NEXT unbuilt class in
+#     the same syscall and is now this cluster's only survivor — one
+#     assertion, and everything it guards is behind it (it returns early), so
+#     that one is a lower bound like any other early-out; 11 are zero_bits on
 #     NtMapViewOfSection (:1517, the constraint sem_mm/zero_bits.c pinned for
 #     NtAllocateVirtualMemory, not yet honoured on the mapping path); 6 are a
 #     cross-process map-then-ReadProcessMemory (:1728-:1752); 4 are
 #     KUSER_SHARED_DATA fields (NumberOfPhysicalPages, ActiveProcessorCount,
-#     ActiveGroupCount); and 6 are singletons, of which :743 is the closest
-#     to this session's work — MEM_EXTENDED_PARAMETER_EC_CODE is captured and
-#     ignored where a non-ARM64 host must refuse it.
+#     ActiveGroupCount); and 6 are singletons, of which :743 is
+#     MEM_EXTENDED_PARAMETER_EC_CODE, captured and ignored where a non-ARM64
+#     host must refuse it.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
