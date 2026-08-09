@@ -375,13 +375,77 @@ the "subtly wrong yet still runs" zone with multi-month bug latency. A
 change that makes the hang stop is not a fix; only a differential test
 convicts.
 
-### W11 — npfs
+### W11 — npfs (**the create/open/listen refusals are DONE**)
 
-`ntdll:pipe` and `kernel32:pipe`. `kernel32:pipe`'s 93 failures are one
-scenario repeated ~26 times (`pipe.c:1404`-:1406, reading from the client
-end), not 93 bugs. `ntdll:pipe`'s dominant cluster is `pipe.c:344` wanting
-`STATUS_ILLEGAL_FUNCTION` twelve times. Related to W4a but not the same
-item.
+`ntdll:pipe`'s 19 failures were **five refusals npfs never made**, and all
+five are now implemented and pinned by
+`tests/ntapi/sem_pipe/create_refusals.c`:
+
+- `FSCTL_PIPE_LISTEN` on the **client** end is `STATUS_ILLEGAL_FUNCTION`, not
+  `STATUS_INVALID_PARAMETER` — listening is a verb that end does not *have*,
+  which is a different statement from "your arguments were wrong";
+- the pipe's **share mask bounds the CLIENT's access**, which is the inverse
+  of the usual share-mode reading: a `FILE_SHARE_READ` pipe is
+  `FILE_PIPE_OUTBOUND`, readable by the client and never writable;
+- create with **sharing 0** is `STATUS_INVALID_PARAMETER` — a pipe must NAME
+  a direction, and zero is malformed rather than "share nothing";
+- `FilePipeLocalInformation` needs **`FILE_READ_ATTRIBUTES` on the handle**;
+- `FILE_CREATE` on an **existing** pipe is `STATUS_ACCESS_DENIED`, not the
+  `OBJECT_NAME_COLLISION` a file create gives, and it is checked *after* the
+  instance limit so a full pipe still reports `INSTANCE_NOT_AVAILABLE`.
+
+The pair measured **zero failed assertions** afterwards — and then panicked
+at `NtFsControlFile` with a user `ApcRoutine`, i.e. **it is now a W4a item,
+not an npfs one**. Everything past that panic is unmeasured (§4 trap 2).
+
+**Two things this item corrects.**
+
+1. **The two pipe pairs were never one subject.** This block used to name
+   them together. `kernel32:pipe` did not move with the npfs refusals except
+   for the two assertions that *are* this rule (`:758`, `:778`); its
+   remaining 94 are a client-read scenario repeated 76 times plus an
+   overlapped-server cluster, and the create surface is not in either.
+2. **`kernel32:pipe`'s "93" was never reproducible.** The merge base
+   measures **96** with the same binary. Part of that pair is timing-bound —
+   `pipe.c:845` is the test's own watchdog (`alarmThreadMain`), so it is a
+   consequence of the overlapped cluster and not a finding (§4 trap 3) — so
+   its per-line breakdown is the yardstick and its total is not.
+
+**Every defect in this item was an ORDER or a MASK, not a value.** All five
+statuses were right the first time; three of the four things that went wrong
+were about *where* a guard sits, and the fourth about *which* access word it
+reads. Worth carrying, because none of it is visible in a status table:
+
+- **Length, then access.** The pin first asserted that a too-short buffer on
+  an unentitled handle still reports `ACCESS_DENIED`, reasoning from the
+  server guard's own order. It reports `STATUS_INFO_LENGTH_MISMATCH`: the
+  class's fixed size is validated in `NtQueryInformationFile` itself, before
+  the pipe object is reached (the oracle's `info_sizes[]` table,
+  `dlls/ntdll/unix/file.c`). Reading a *server* guard's order as the
+  *syscall's* order is how that was got wrong — **the oracle refuted it.**
+- **No listener, then access.** The client-open guard was first placed above
+  the listening-instance search, so a busy pipe opened with a disallowed
+  access answered `ACCESS_DENIED` where the oracle answers
+  `STATUS_PIPE_NOT_AVAILABLE`. Not cosmetic: `ERROR_PIPE_BUSY` is what drives
+  a `WaitNamedPipe`-and-retry loop and `ERROR_ACCESS_DENIED` ends it.
+- **Sharing and access, then disposition.** The create guard was first placed
+  below the pre-existing disposition check, so a zero-access request carrying
+  a bad disposition reported the disposition. The oracle's guard block
+  precedes its disposition switch.
+- **The RAW access word, not the granted mask.** The client rule is about a
+  caller that EXPLICITLY names a direction, and `ObpMapDesiredAccess` folds
+  `GENERIC_READ`, `GENERIC_ALL` and `MAXIMUM_ALLOWED` onto overlapping masks.
+  Checking the mapped mask refused a `MAXIMUM_ALLOWED` open of an OUTBOUND
+  pipe — an ordinary `CreateFile` pattern the oracle admits. `FILE_OBJECT`
+  now carries the caller's own word (`docs/03`), which is the same thing NT
+  hands an FSD.
+
+**The last three were caught by GATE-CHECK, not by a test**, and that is the
+lesson with the longest reach: a twelve-case matrix built from the failing
+winetest assertions used only `GENERIC_*` masks against freshly-listening
+pipes, so every one of those three defects passed it. The pin now measures
+them (`test_client_open_precedence`) because review said to go measure, not
+because the failure count did.
 
 ### W12 — Registry
 
