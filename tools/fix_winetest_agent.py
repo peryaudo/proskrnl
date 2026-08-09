@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "claude-agent-sdk>=0.2,<0.3",
+# ]
+# ///
 """tools/fix_winetest_agent.py - drive /fix-cui-winetest in a loop.
 
 The CUI winetest frontier is closed one manifest item at a time, and
@@ -31,18 +37,19 @@ Guard rails, all of them there because the skill says so:
   * STALL DETECTION. An iteration that lands nothing leaves `main` where it
     was. Two of those in a row means the loop is spinning, not working.
 
-Usage - `uv run` fetches the SDK into a cached throwaway env, so there is no
-venv to create or activate first:
+Usage - the SDK dependency is declared in the PEP 723 header above, so
+`uv run` resolves it into a cached env by itself. Nothing to install, no
+venv to activate:
 
-    R="uv run --with claude-agent-sdk tools/fix_winetest_agent.py"
-    $R                    # loop until the frontier is closed
-    $R --max-iterations 3 # bounded run
-    $R --check-only       # just ask whether work remains
-    $R --item W8          # pass an argument to the skill
+    uv run tools/fix_winetest_agent.py                    # until the frontier closes
+    uv run tools/fix_winetest_agent.py --max-iterations 3 # bounded run
+    uv run tools/fix_winetest_agent.py --check-only       # does work remain?
+    uv run tools/fix_winetest_agent.py --item W8          # argument for the skill
 
 Any interpreter that already has `claude-agent-sdk` installed runs it the
-same way (`python3 tools/fix_winetest_agent.py ...`). Either way it also
-needs the `claude` CLI on PATH, plus whatever credentials that CLI uses.
+same way (`python3 tools/fix_winetest_agent.py ...`); that path ignores the
+header, so the version floor is not enforced there. Either way it also needs
+the `claude` CLI on PATH, plus whatever credentials that CLI uses.
 """
 
 import argparse
@@ -67,8 +74,9 @@ try:
     )
 except ImportError:  # pragma: no cover - dependency check, not logic
     sys.exit(
-        "claude_agent_sdk is not installed. Re-run it under uv:\n"
-        "    uv run --with claude-agent-sdk tools/fix_winetest_agent.py ...\n"
+        "claude_agent_sdk is not installed. Re-run it under uv, which reads\n"
+        "the dependency from this file's PEP 723 header:\n"
+        "    uv run tools/fix_winetest_agent.py ...\n"
         "or install it into this interpreter (`pip install claude-agent-sdk`).\n"
         "It also needs the `claude` CLI on PATH."
     )
