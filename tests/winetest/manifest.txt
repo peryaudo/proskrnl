@@ -80,9 +80,14 @@
 # ONE OF THOSE EIGHT GOES RED ON SOME DEVELOPER HOSTS, AND IT IS NOT THE
 # KERNEL. kernel32:version fails the ORACLE leg on at least one KVM
 # developer box with exactly the 36 failures the root/C-POSIX era produced
-# — all of them one site, version.c:1087, where the subtest writes a
+# — all of them ONE CAUSE at version.c:1087, where the subtest writes a
 # temporary EXE and manifest and then CreateProcessA's it, and the spawn
-# fails ERROR_FILE_NOT_FOUND. The runner's non-root + UTF-8 fixes are
+# fails ERROR_FILE_NOT_FOUND. They land on FOUR lines, not one: 9 each at
+# :1087, :1090, :1093 and :1094, the last three being the assertions
+# downstream of the spawn that :1087 reports. (This block used to say "one
+# site", which reads as one LINE and makes the documented signature look
+# unmatched to whoever is deciding whether their own red is pre-existing.)
+# The runner's non-root + UTF-8 fixes are
 # applied and do not clear it. Verified pre-existing there by checking out
 # an earlier commit and re-running the same binary under the same prefix:
 # identical 36. It is GREEN on CI, on both legs, so the residue is
@@ -161,13 +166,31 @@ ntdll_test.exe:large_int
 #     proskrnl involvement, so it cannot convict the kernel.
 # ntdll_test.exe:om
 ntdll_test.exe:path
-# UNTRIAGED, FIXABLE. 19 failures, then it stops inside NtFsControlFile.
-#     The dominant cluster is pipe.c:344 twelve times ("expected
-#     STATUS_ILLEGAL_FUNCTION, got c000000d"), plus :281/:291/:296
-#     (NtCreateNamedPipeFile and NtQueryInformationFile returning success
-#     where a refusal was wanted) and :357 x4 (CreateFile succeeding for a
-#     sharing/access combination that must fail). fs/npfs territory, same as
-#     kernel32:pipe.
+# PARTLY FIXED, FIXABLE — the 19 npfs failures are GONE and the pair now
+#     stops one item further on, which is progress with a new frontier.
+#     What they were: five refusals npfs did not owe anybody an answer for,
+#     all five now implemented and pinned by
+#     tests/ntapi/sem_pipe/create_refusals.c (docs/21 W11) —
+#       :344 x12  FSCTL_PIPE_LISTEN on the CLIENT end is
+#                 STATUS_ILLEGAL_FUNCTION, not INVALID_PARAMETER;
+#       :357 x4   the pipe's SHARE mask bounds the CLIENT's access (a
+#                 FILE_SHARE_READ pipe is OUTBOUND: readable, never
+#                 writable) — the inverse of the usual share-mode reading;
+#       :281      create with sharing 0 is INVALID_PARAMETER, because a pipe
+#                 must NAME a direction;
+#       :291      FilePipeLocalInformation needs FILE_READ_ATTRIBUTES on the
+#                 handle;
+#       :296      FILE_CREATE on an existing pipe is ACCESS_DENIED, not the
+#                 OBJECT_NAME_COLLISION a file create gives.
+#     Re-measured after the fix: ZERO failed assertions. The pair now runs to
+#     test_overlapped and PANICS at NtFsControlFile with a user ApcRoutine —
+#     kernel/io/ioctl.c's IopIoctlApcUnsupported, which is docs/21 W4a (the
+#     ioctl APC leg), reached by pipe.c's listen_pipe(..., use_apc = TRUE).
+#     So this pair is no longer an npfs item at all; it is blocked on W4a and
+#     inherits that item's G14 blocking-frontier risk.
+#     And per docs/21 §4 trap 2: everything past that panic — the rest of
+#     test_overlapped and every subtest behind it — has never been measured.
+#     The zero above is a lower bound, not a near-green.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
@@ -424,13 +447,31 @@ kernel32_test.exe:heap
 #     measures the harness, not the boundary.
 # kernel32_test.exe:module
 kernel32_test.exe:path
-# UNTRIAGED, FIXABLE. 93 failures. One cluster dominates: pipe.c:1404,
-#     :1405 and :1406 ("ReadFile from client end of pipe" / "read file len" /
-#     "content check") 26+26+24 times, plus :1396/:1401/:1402 on the client
-#     open and write in front of them — so it is one scenario failing
-#     repeatedly, not 93 independent bugs. Then :758 (a PIPE_ACCESS_*
-#     mismatch allowed that must not be), :778, :1059, :1527/:1533 (a
-#     PeekNamedPipe after a wait). fs/npfs territory, same as ntdll:pipe.
+# PARTLY FIXED, FIXABLE. 94 failures, down from a re-measured 96 — and the
+#     block this replaces said 93, which was never reproduced: the merge base
+#     measures 96 today. The difference is not drift in the kernel but in
+#     WHICH cluster was counted, because part of this pair is timing-bound
+#     (see the alarm below), so treat its total as approximate and its
+#     per-line breakdown as the real yardstick.
+#     The two that this session's npfs work removed are :758 and :778 — a
+#     client open whose access the pipe's share mask must refuse
+#     (docs/21 W11, tests/ntapi/sem_pipe/create_refusals.c). Verified by
+#     measuring the merge base with the same binary: identical except for
+#     those two.
+#     What remains is TWO subjects, neither of them the create surface:
+#       - one scenario repeated: :1404/:1405/:1406 ("ReadFile from client end
+#         of pipe" / "read file len" / "content check") 26+26+24 times, with
+#         :1396/:1401/:1402 x3 on the client open and write in front of them.
+#         76 of the 94 assertions, ONE bug.
+#       - an OVERLAPPED-server cluster that is timing-bound: :1059/:1077/
+#         :1083/:1101/:1106 (overlapped ReadFile/WriteFile and the
+#         DisconnectNamedPipe behind them), :1164 (a ConnectNamedPipe
+#         completion packet) and :845, which is the test's own watchdog
+#         (alarmThreadMain's `ok(FALSE, "alarm")` on WAIT_TIMEOUT) — so :845
+#         is a CONSEQUENCE of that cluster, not a finding. docs/21 §4 trap 3.
+#       - plus :1527/:1533, a PeekNamedPipe after a wait.
+#     fs/npfs territory still, but the overlapped half is async-completion
+#     shaped and shares a subject with ntdll:pipe's W4a blocker.
 # TODO: Implement
 # kernel32_test.exe:pipe
 kernel32_test.exe:power
