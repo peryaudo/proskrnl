@@ -117,16 +117,32 @@ ntdll_test.exe:change
 # ntdll_test.exe:directory
 ntdll_test.exe:env
 ntdll_test.exe:error
-# UNTRIAGED, FIXABLE — the exception/context cluster, and it is
-#     triage-first rather than build-first. 15 failures visible, then the
-#     process is KILLED by a user fault at RIP=0 CR2=0 immediately after
-#     NtSetContextThread on the CURRENT thread (-2) — a context RESTORE that
-#     zeroed RIP and RSP, which points at ContextFlags selectivity not being
-#     honoured rather than at anything the failures name. Fix that first and
-#     re-count; the visible failures (exception.c:3164 debug registers,
-#     :3195/:3202 the single-step flag, :3316-:3318 exception address, and a
-#     segment-register group at :3407-:3435) all sit BEHIND it.
-# TODO: Implement
+# THE ORACLE CANNOT SERVE AS THE SPEC — category (b), MEASURED. The pinned
+#     oracle leg is RED: 25 failures and then the oracle's OWN process dies
+#     at 0xc0000005 without ever printing a summary line, so this pair
+#     convicts nothing on either side (Art. 6). Both causes are properties of
+#     how tools/setup_linux.sh builds the oracle, not of the boundary:
+#
+#       - 23 of the 25 need a 32-bit subsystem. test_debug_registers_wow64
+#         (exception.c:9299-:9393) unconditionally starts
+#         C:\windows\syswow64\msinfo32.exe and test_wow64_context
+#         (:4589-:4637) C:\windows\syswow64\cmd.exe; WINE_CONFIGURE is
+#         --enable-win64, so there is no syswow64 and every assertion behind
+#         the failed CreateProcess reads back 0x55555555 fill. The fatal
+#         0xc0000005 is in that same tail, after RtlWow64GetCpuAreaInfo
+#         answers c000000d.
+#       - exception.c:6357/:6361 are RegisterClassA/CreateWindowA failing
+#         0x78 under --without-x (`nodrv_CreateWindow` in the log).
+#
+#     No TODO, because re-opening this is a decision about the ORACLE BUILD
+#     (enable a WoW64 arch and give the leg a display), not a kernel change.
+#     Until that is taken, the proskrnl side is unconvictable — and the old
+#     triage block here, which named NtSetContextThread ContextFlags
+#     selectivity as the cause of a RIP=0 kill, was never measured against a
+#     green oracle. Note that selectivity IS implemented and commented as
+#     such (kernel/ps/usermode.c KiTrapFrameToContext / KiContextToTrapFrame,
+#     the docs/review-2026-07 §9 fix), so that hypothesis was probably stale
+#     as well. docs/21 W6 has the correction.
 # ntdll_test.exe:exception
 # GATED ON A WHOLE SUBSYSTEM, FIXABLE. 36 failures, then a panic at the
 #     missing NtCreateMailslotFile — so, like kernel32:mailslot, it is
