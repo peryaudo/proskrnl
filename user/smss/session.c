@@ -325,7 +325,10 @@ static int SessionFlowNtapi(void)
 #define WTEST_MAX_PAIRS     128
 #define WTEST_EXE_CHARS     40
 #define WTEST_SUBTEST_CHARS 32
-#define WTEST_MANIFEST_MAX  (64 * 1024)
+/* The manifest is mostly TRIAGE COMMENTS and grows with every frontier item
+ * worked, so the headroom is deliberate rather than round: 66 KiB of file
+ * against a 64 KiB buffer is what made this constant matter. */
+#define WTEST_MANIFEST_MAX (256 * 1024)
 #define WTEST_TIMEOUT_MS                                                                           \
     (300 * 1000) /* TCG is ~10x native; the string tests are millions of ok()s */
 
@@ -341,7 +344,16 @@ typedef struct
     int overflow;
 } WTEST_LIST, *PWTEST_LIST;
 
-/* Whole-file read into the static manifest buffer; 0 on any miss. */
+/* Whole-file read into the static manifest buffer.
+ *
+ * Three answers, not two, and the distinction is load-bearing: 0 means the
+ * file is ABSENT, which is every non-wtest image and is silent by design;
+ * -1 means it is THERE and could not be read whole, which must be loud. The
+ * two were one answer until the manifest's triage comments grew it past this
+ * buffer — at which point the entire sweep stopped running and reported
+ * itself as "not a wtest image", so all 49 pairs read FAIL with nothing on
+ * serial saying why. A silent skip that looks like an absent feature is the
+ * fabricated-plausible-answer shape (Art. 12) in the harness. */
 static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG *lengthOut)
 {
     UNICODE_STRING name;
@@ -360,12 +372,20 @@ static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG
                                    FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
     if (status != STATUS_SUCCESS)
         return 0;
-    int ok = 0;
+    int ok = -1;
     FILE_STANDARD_INFORMATION standard;
     status =
         NtQueryInformationFile(handle, &iosb, &standard, sizeof(standard), FileStandardInformation);
-    if (status == STATUS_SUCCESS && standard.EndOfFile.QuadPart > 0 &&
-        standard.EndOfFile.QuadPart <= capacity)
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] wtest FAIL (manifest size query -> %08lx)\n", (unsigned long)status);
+    }
+    else if (standard.EndOfFile.QuadPart <= 0 || standard.EndOfFile.QuadPart > capacity)
+    {
+        SmssPrintf("[KTEST] wtest FAIL (manifest is %u bytes, buffer is %u)\n",
+                   (unsigned)standard.EndOfFile.QuadPart, (unsigned)capacity);
+    }
+    else
     {
         ULONG length = (ULONG)standard.EndOfFile.QuadPart;
         LARGE_INTEGER offset;
@@ -375,6 +395,11 @@ static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG
         {
             *lengthOut = length;
             ok = 1;
+        }
+        else
+        {
+            SmssPrintf("[KTEST] wtest FAIL (manifest read -> %08lx, %u of %u bytes)\n",
+                       (unsigned long)status, (unsigned)iosb.Information, (unsigned)length);
         }
     }
     NtClose(handle);
@@ -462,9 +487,12 @@ static int SessionFlowWtest(void)
     SessionWtestList.overflow = 0;
 
     ULONG manifestLength = 0;
-    if (!SessionReadWtestManifest(SessionWtestManifest, sizeof(SessionWtestManifest),
-                                  &manifestLength))
+    int read = SessionReadWtestManifest(SessionWtestManifest, sizeof(SessionWtestManifest),
+                                        &manifestLength);
+    if (read == 0)
         return 0; /* not a wtest image */
+    if (read < 0)
+        return 1; /* there, unreadable — already named itself on serial */
     if (!SessionParseWtestManifest(SessionWtestManifest, manifestLength, &SessionWtestList))
         return 1;
 
