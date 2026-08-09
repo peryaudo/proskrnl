@@ -52,7 +52,14 @@ typedef struct NPFS_PIPE
     LIST_ENTRY listEntry; /* on NpfsPipeList */
     UNICODE_STRING name;  /* pool copy, no leading backslash */
     ULONG pipeType;       /* FILE_PIPE_TYPE_* */
-    ULONG configuration;  /* FILE_PIPE_{INBOUND,OUTBOUND,FULL_DUPLEX} */
+
+    /* The create's SHARE mask, stored raw rather than as the
+     * FILE_PIPE_{INBOUND,OUTBOUND,FULL_DUPLEX} it renders to. It is the fact
+     * two later rules read back — a further instance must present the SAME
+     * mask (NtCreateNamedPipeFile) and a client's access is bounded by it
+     * (NpfsVfsCreate) — so it has one home and NpfsConfigurationFromShare is
+     * a view of it, not a second copy. */
+    ULONG sharing;
     ULONG maxInstances;
     ULONG inQuota;
     ULONG outQuota;
@@ -190,6 +197,20 @@ static PNPFS_PIPE NpfsFindPipe(const UNICODE_STRING *name)
 static BOOLEAN NpfsEndDisconnected(PNPFS_END end)
 {
     return end->orphaned || end->instance->state == FILE_PIPE_DISCONNECTED_STATE;
+}
+
+/* Render the pipe's share mask as the configuration FilePipeLocalInformation
+ * reports, the way Wine's kernelbase spells the PIPE_ACCESS_* modes
+ * (dlls/kernelbase/sync.c CreateNamedPipeW: INBOUND -> FILE_SHARE_WRITE,
+ * OUTBOUND -> FILE_SHARE_READ, DUPLEX -> both). A VIEW of NPFS_PIPE.sharing,
+ * computed on demand — the mask is the stored fact. */
+static ULONG NpfsConfigurationFromShare(ULONG sharing)
+{
+    if ((sharing & (FILE_SHARE_READ | FILE_SHARE_WRITE)) == (FILE_SHARE_READ | FILE_SHARE_WRITE))
+    {
+        return FILE_PIPE_FULL_DUPLEX;
+    }
+    return (sharing & FILE_SHARE_WRITE) ? FILE_PIPE_INBOUND : FILE_PIPE_OUTBOUND;
 }
 
 /* --- the data path ---------------------------------------------------------- */
@@ -495,7 +516,12 @@ static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CO
     PNPFS_INSTANCE instance = end->instance;
     if (!end->isServer)
     {
-        return STATUS_INVALID_PARAMETER;
+        /* Listening is a verb the CLIENT end does not have, which is what
+         * ILLEGAL_FUNCTION says — not INVALID_PARAMETER, which would claim
+         * the arguments were wrong (wine server/named_pipe.c
+         * pipe_client_ioctl: FSCTL_PIPE_LISTEN -> STATUS_ILLEGAL_FUNCTION;
+         * pinned sem_pipe/create_refusals.c). */
+        return STATUS_ILLEGAL_FUNCTION;
     }
     if (instance->state == FILE_PIPE_DISCONNECTED_STATE)
     {
@@ -699,12 +725,13 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
     }
     PNPFS_INSTANCE instance = end->instance;
 
+    /* The class's fixed size was checked by NtQueryInformationFile before the
+     * handle was even resolved (kernel/io/query.c, the oracle's own ordering —
+     * pinned sem_pipe/create_refusals.c), so the length is a precondition
+     * here, not a case to answer. */
     if (informationClass == FilePipeInformation)
     {
-        if (length < sizeof(FILE_PIPE_INFORMATION))
-        {
-            return STATUS_INFO_LENGTH_MISMATCH;
-        }
+        ASSERT(length >= sizeof(FILE_PIPE_INFORMATION));
         FILE_PIPE_INFORMATION *info = buffer;
         info->ReadMode = end->readMode;
         info->CompletionMode = end->completionMode;
@@ -713,17 +740,14 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
     }
 
     ASSERT(informationClass == FilePipeLocalInformation);
-    if (length < sizeof(FILE_PIPE_LOCAL_INFORMATION))
-    {
-        return STATUS_INFO_LENGTH_MISMATCH;
-    }
+    ASSERT(length >= sizeof(FILE_PIPE_LOCAL_INFORMATION));
     FILE_PIPE_LOCAL_INFORMATION *info = buffer;
     memset(info, 0, sizeof(*info));
     PNPFS_PIPE pipe = instance->pipe;
     if (pipe != 0)
     {
         info->NamedPipeType = pipe->pipeType;
-        info->NamedPipeConfiguration = pipe->configuration;
+        info->NamedPipeConfiguration = NpfsConfigurationFromShare(pipe->sharing);
         info->MaximumInstances = pipe->maxInstances;
         info->CurrentInstances = pipe->instanceCount;
         info->InboundQuota = pipe->inQuota;
@@ -808,7 +832,8 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
 {
     (void)device;
     (void)relativeTo;
-    (void)grantedAccess;
+    (void)grantedAccess; /* the RAW request is what this FS's rule reads:
+                          * file->desiredAccess, below */
     (void)shareAccess;
     (void)fileAttributes;
     (void)options;
@@ -849,6 +874,32 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     if (instance == 0)
     {
         return STATUS_PIPE_NOT_AVAILABLE; /* every instance busy (pinned) */
+    }
+
+    /* The pipe's own SHARE mask bounds what the CLIENT may ask for — the
+     * inverse of the usual reading, where a share mask bounds what OTHERS may
+     * do. A FILE_SHARE_READ pipe is FILE_PIPE_OUTBOUND: readable by the
+     * client, never writable (wine server/named_pipe.c named_pipe_open_file,
+     * the guard between the listener search and create_pipe_client).
+     *
+     * BELOW the listener search, and that position is the content. The oracle
+     * answers STATUS_PIPE_NOT_AVAILABLE for a pipe whose instances are all
+     * taken even when the access would also have been refused, and the
+     * difference is not cosmetic: PIPE_BUSY is what drives a
+     * WaitNamedPipe-and-retry loop, where ACCESS_DENIED ends it. Measured, in
+     * sem_pipe/create_refusals.c's test_client_open_precedence.
+     *
+     * Tested on the caller's OWN word rather than on grantedAccess: the rule
+     * is about a client that EXPLICITLY names a direction, and mapping folds
+     * GENERIC_ALL and MAXIMUM_ALLOWED — which name none — into a mask
+     * carrying both data bits. Both of those open an OUTBOUND pipe
+     * successfully on the oracle, and reading the mapped mask would refuse
+     * them (same pin). */
+    ULONG wants = file->desiredAccess;
+    if (((wants & GENERIC_READ) && !(pipe->sharing & FILE_SHARE_READ)) ||
+        ((wants & GENERIC_WRITE) && !(pipe->sharing & FILE_SHARE_WRITE)))
+    {
+        return STATUS_ACCESS_DENIED;
     }
 
     PNPFS_END end = MiAllocatePool(sizeof(NPFS_END));
@@ -1015,19 +1066,6 @@ const IO_VFS_OPS NpfsVfsOps = {
 
 /* --- NtCreateNamedPipeFile --------------------------------------------------- */
 
-/* Map the create's share mask to the pipe's configuration, the way Wine's
- * kernelbase spells the PIPE_ACCESS_* modes (dlls/kernelbase/sync.c
- * CreateNamedPipeW: INBOUND -> FILE_SHARE_WRITE, OUTBOUND -> FILE_SHARE_READ,
- * DUPLEX -> both), observable through FilePipeLocalInformation. */
-static ULONG NpfsConfigurationFromShare(ULONG sharing)
-{
-    if ((sharing & (FILE_SHARE_READ | FILE_SHARE_WRITE)) == (FILE_SHARE_READ | FILE_SHARE_WRITE))
-    {
-        return FILE_PIPE_FULL_DUPLEX;
-    }
-    return (sharing & FILE_SHARE_WRITE) ? FILE_PIPE_INBOUND : FILE_PIPE_OUTBOUND;
-}
-
 NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
                                POBJECT_ATTRIBUTES attributes, PIO_STATUS_BLOCK iosb, ULONG sharing,
                                ULONG disposition, ULONG options, ULONG pipeType, ULONG readMode,
@@ -1046,6 +1084,29 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     if (attributes == 0 || attributes->ObjectName == 0)
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;
+    }
+    /* The oracle's request guard, in ITS order — the sharing word first, the
+     * access word second, and BOTH ahead of the disposition, so a request
+     * wrong in two ways reports the earlier one (wine server/named_pipe.c,
+     * DECL_HANDLER(create_named_pipe), whose guard block precedes its
+     * disposition switch; the whole ordering is pinned by
+     * sem_pipe/create_refusals.c, which measures zero-access-with-a-bad-
+     * disposition as ACCESS_DENIED rather than INVALID_PARAMETER).
+     *
+     * A pipe must NAME a direction: zero sharing is not "share nothing", it
+     * is a malformed request, and a bit outside {READ, WRITE} is refused even
+     * alongside a legal one. The oracle spells the third clause in its own
+     * NAMED_PIPE_MESSAGE_STREAM_* flags; at this boundary the same rule is
+     * that a BYTE-type pipe may not be born in message READ mode, which
+     * NpfsSetPipeInfo already refuses after the fact. */
+    if (sharing == 0 || (sharing & ~(ULONG)(FILE_SHARE_READ | FILE_SHARE_WRITE)) != 0 ||
+        ((readMode & FILE_PIPE_MESSAGE_MODE) && !(pipeType & FILE_PIPE_TYPE_MESSAGE)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (desiredAccess == 0)
+    {
+        return STATUS_ACCESS_DENIED;
     }
     if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF && disposition != FILE_CREATE)
     {
@@ -1088,6 +1149,15 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     /* Find-or-create the pipe, then add an instance under its limit. */
     PNPFS_PIPE pipe = NpfsFindPipe(&fsPath);
     ULONG_PTR information = FILE_OPENED;
+    if (pipe == 0 && disposition == FILE_OPEN)
+    {
+        /* Only FILE_CREATE and FILE_OPEN_IF may MINT a pipe; FILE_OPEN opens
+         * an existing one or nothing (the oracle's disposition switch:
+         * FILE_OPEN takes open_named_object, the other two
+         * create_named_object). */
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto out_device;
+    }
     if (pipe == 0)
     {
         pipe = MiAllocatePool(sizeof(NPFS_PIPE));
@@ -1107,7 +1177,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         pipe->name.Length = fsPath.Length;
         pipe->name.MaximumLength = fsPath.Length;
         pipe->pipeType = pipeType & FILE_PIPE_TYPE_MESSAGE;
-        pipe->configuration = NpfsConfigurationFromShare(sharing);
+        pipe->sharing = sharing;
         pipe->maxInstances = maxInstances;
         pipe->inQuota = inboundQuota != 0 ? inboundQuota : 4096;
         pipe->outQuota = outboundQuota != 0 ? outboundQuota : 4096;
@@ -1119,6 +1189,18 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     else if (pipe->instanceCount >= pipe->maxInstances)
     {
         status = STATUS_INSTANCE_NOT_AVAILABLE; /* pinned create_pipe */
+        goto out_device;
+    }
+    else if (pipe->sharing != sharing || disposition == FILE_CREATE)
+    {
+        /* A further instance must present the SAME direction as the first,
+         * and FILE_CREATE never opens an existing pipe — the answer is
+         * ACCESS_DENIED, not the OBJECT_NAME_COLLISION a file create gives.
+         * Ordered AFTER the instance limit, so a pipe at its limit still
+         * reports INSTANCE_NOT_AVAILABLE (wine server/named_pipe.c,
+         * DECL_HANDLER(create_named_pipe)'s existing-pipe arm; pinned
+         * sem_pipe/create_refusals.c). */
+        status = STATUS_ACCESS_DENIED;
         goto out_device;
     }
 
@@ -1170,6 +1252,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     file->synchronousIo =
         (options & (FILE_SYNCHRONOUS_IO_NONALERT | FILE_SYNCHRONOUS_IO_ALERT)) != 0;
     file->grantedAccess = ObpMapDesiredAccess(&IoFileObjectType, desiredAccess);
+    file->desiredAccess = desiredAccess;
     file->shareAccess = sharing;
 
     status = ObpCreateHandle(file, file->grantedAccess, attributes->Attributes, handleOut);

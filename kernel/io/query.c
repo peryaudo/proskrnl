@@ -118,8 +118,10 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         needed = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation.FileName);
         break;
     case FilePipeInformation:
+        needed = sizeof(FILE_PIPE_INFORMATION);
+        break;
     case FilePipeLocalInformation:
-        needed = 0; /* length checking lives in the pipe FS (M9) */
+        needed = sizeof(FILE_PIPE_LOCAL_INFORMATION);
         break;
     case FileNetworkOpenInformation:
         needed = sizeof(FILE_NETWORK_OPEN_INFORMATION); /* CUI-5 */
@@ -148,8 +150,21 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         return STATUS_INFO_LENGTH_MISMATCH;
     }
 
+    /* The two pipe classes are the ones the oracle guards with an ACCESS
+     * check on the HANDLE: a SYNCHRONIZE-only pipe end may not read them back
+     * (wine server/named_pipe.c pipe_end_get_file_info, the
+     * FilePipeInformation / FilePipeLocalInformation arms; pinned
+     * sem_pipe/create_refusals.c). Expressed as the reference's required
+     * access so Ob decides it at its one check site rather than a mask test
+     * open-coded here (G10), and placed after the class-size switch because
+     * the oracle answers INFO_LENGTH_MISMATCH ahead of ACCESS_DENIED —
+     * measured, not assumed. */
+    ACCESS_MASK required =
+        (informationClass == FilePipeInformation || informationClass == FilePipeLocalInformation)
+            ? FILE_READ_ATTRIBUTES
+            : 0;
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, required, &file);
     if (!NT_SUCCESS(status))
     {
         return status;
