@@ -108,6 +108,10 @@ tests/run/run.sh winetest   # the M10 stretch gate: the full non-GUI sweep of Wi
                             # (takes a <module>[:<subtest>] filter — see "Iterating")
 tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firstboot
                             # SYSTEM hive against a fresh oracle prefix (regdump/regdiff)
+tests/run/run.sh prebuild   # build every test .exe and run NOTHING — a build step with no
+                            # verdict, for a caller that runs the legs in separate
+                            # sandboxes (`make fulltest`, docs/08) and wants the ~165
+                            # mingw compiles paid once, fanned out, instead of per leg
 ```
 
 Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image

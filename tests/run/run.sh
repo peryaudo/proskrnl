@@ -55,6 +55,16 @@
 #                     already have. It is REFUSED without a filter — the gate
 #                     is both legs, always.
 #
+#   run.sh prebuild   Build every test .exe and run NOTHING. It is a build
+#                     step, never a verdict: it exists so a caller that runs
+#                     the two ntapi legs in separate sandboxes
+#                     (tools/fulltest.sh) pays the ~165 mingw compiles once,
+#                     fanned out over $ORACLE_JOBS, instead of once per leg —
+#                     the `proskrnl` leg builds them one at a time, and at
+#                     ~1.2 s each that is three minutes of the leg's clock.
+#                     Both legs then find their .exes up to date and behave
+#                     exactly as they always did.
+#
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
 #     [KTEST] <name> FAIL failures=<n> todo_unexpected=<n>
@@ -450,6 +460,42 @@ oracle_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
         i=$(( i + stride ))
     done
     return "$rc"
+}
+
+# Build every test .exe, run nothing (see the header). Same round-robin
+# fan-out as the oracle leg, and the same build_test — one authority for how a
+# test .exe is produced, so a prebuilt tree and a leg-built one are the same
+# tree. A build failure is fatal here for the reason it is fatal there: a
+# missing .exe must never be silently re-supplied by a previous build.
+prebuild_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
+    local i="$1" stride="$2"; shift 2
+    local srcs=("$@") rc=0
+    while (( i < ${#srcs[@]} )); do
+        build_test "${srcs[$i]}" >/dev/null || rc=1
+        i=$(( i + stride ))
+    done
+    return "$rc"
+}
+
+prebuild() {
+    mkdir -p "$BUILD/ntapi"
+    build_helper_dll >/dev/null
+    local srcs=() src w pids=() pid rc=0
+    while read -r src; do srcs+=("$src"); done < <(all_sources)
+    local jobs="$ORACLE_JOBS"
+    (( jobs > ${#srcs[@]} )) && jobs=${#srcs[@]}
+    (( jobs < 1 )) && jobs=1
+    for (( w = 0; w < jobs; w++ )); do
+        prebuild_worker "$w" "$jobs" "${srcs[@]}" &
+        pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
+    if (( rc )); then
+        echo "run.sh: a test failed to build — the prebuilt tree is incomplete" >&2
+        return 1
+    fi
+    echo "== prebuild: ${#srcs[@]} test .exes up to date =="
+    return 0
 }
 
 # The oracle leg. The three checks above are not tests/ntapi cases, so a
@@ -2420,6 +2466,7 @@ case "$MODE" in
     oracle)   oracle ;;
     proskrnl) proskrnl ;;
     winetest) winetest ;;   # SUBTESTS filters manifest pairs (see the header)
+    prebuild) prebuild ;;   # a BUILD step, not a leg: no verdict comes out of it
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
     firstboot) firstboot ;;
@@ -2441,7 +2488,7 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
