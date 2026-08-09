@@ -58,6 +58,9 @@ typedef struct
 #define EXT_NUMA_NODE            2
 #define EXT_ATTRIBUTE_FLAGS      5
 
+/* MEM_EXTENDED_PARAMETER_EC_CODE (wine/include/winnt.h). */
+#define MEM_EXT_EC_CODE 0x00000040
+
 #ifndef MEM_WRITE_WATCH
 #define MEM_WRITE_WATCH 0x00200000
 #endif
@@ -235,6 +238,98 @@ START_TEST(alloc_ex)
         status = NtFreeVirtualMemory(NtCurrentProcess(), &base, &freeSize, MEM_RELEASE);
         ok(status == STATUS_SUCCESS, "free watch alloc -> %08lx", (unsigned long)status);
     }
+
+    /* --- MEM_EXTENDED_PARAMETER_EC_CODE, the one attribute bit that refuses ---
+     * ARM64EC code memory. The oracle refuses it on anything that is not an
+     * ARM64EC image (wine dlls/ntdll/unix/virtual.c allocate_virtual_memory:
+     * `if (!arm64ec_view && (attributes & MEM_EXTENDED_PARAMETER_EC_CODE))
+     * return STATUS_INVALID_PARAMETER;`). proskrnl is x86_64-only
+     * (docs/adr/0006-x64-only.md), so its refusal is unconditional.
+     *
+     * ntdll:unwind's test_virtual_unwind_arm64 uses exactly this call as its
+     * "am I an ARM64EC host" probe and runs ARM64 unwinding over the x86_64
+     * code it allocated when the call succeeds, so an accepted-and-dropped
+     * bit here is not a wrong answer, it is a crash a page later. */
+    memset(params, 0, sizeof(params));
+    params[0].type_bits = EXT_ATTRIBUTE_FLAGS;
+    params[0].u.u64 = MEM_EXT_EC_CODE;
+    base = NULL;
+    size = 0x10000;
+    status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &base, &size, MEM_RESERVE | MEM_COMMIT,
+                                       PAGE_EXECUTE_READWRITE, params, 1);
+    ok(status == STATUS_INVALID_PARAMETER, "EC_CODE reserve+commit -> %08lx",
+       (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        SIZE_T freeSize = 0;
+        NtFreeVirtualMemory(NtCurrentProcess(), &base, &freeSize, MEM_RELEASE);
+    }
+
+    /* The guard reads exactly bit 0x40 and nothing else: every OTHER bit of
+     * the attribute word is accepted and dropped, so an implementation that
+     * refused a nonzero attribute word would pass the arm above and fail
+     * here.
+     *
+     * This arm pins the ORACLE, and the oracle is laxer than NT here on
+     * purpose: get_extended_params stores the word and validates no bit of
+     * it, so MEM_EXTENDED_PARAMETER_NONPAGED{,_LARGE,_HUGE} — which real NT
+     * plausibly gates on SeLockMemoryPrivilege — ride along in this mask.
+     * If this assertion ever fires on Windows, that is an oracle gap to
+     * re-pin, not a kernel regression. */
+    params[0].u.u64 = (ULONGLONG)0xffffffffu & ~(ULONGLONG)MEM_EXT_EC_CODE;
+    base = NULL;
+    size = 0x1000;
+    status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &base, &size, MEM_RESERVE | MEM_COMMIT,
+                                       PAGE_READWRITE, params, 1);
+    ok(status == STATUS_SUCCESS, "every non-EC_CODE attribute bit -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        SIZE_T freeSize = 0;
+        status = NtFreeVirtualMemory(NtCurrentProcess(), &base, &freeSize, MEM_RELEASE);
+        ok(status == STATUS_SUCCESS, "free non-EC_CODE alloc -> %08lx", (unsigned long)status);
+    }
+
+    /* The bit is refused on the COMMIT path too, not just on reservation: the
+     * guard sits inside the allocation engine below the type-flag ladder, so
+     * a commit that would otherwise succeed refuses when it carries EC_CODE.
+     * (Same site in the oracle; there is one guard, not one per path.) */
+    base = NULL;
+    size = 0x10000;
+    status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &base, &size, MEM_RESERVE,
+                                       PAGE_READWRITE, NULL, 0);
+    ok(status == STATUS_SUCCESS, "reserve for EC_CODE commit -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        PVOID commitBase = base;
+        SIZE_T commitSize = 0x1000;
+        SIZE_T freeSize = 0;
+        params[0].u.u64 = MEM_EXT_EC_CODE;
+        status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &commitBase, &commitSize, MEM_COMMIT,
+                                           PAGE_EXECUTE_READWRITE, params, 1);
+        ok(status == STATUS_INVALID_PARAMETER, "EC_CODE commit -> %08lx", (unsigned long)status);
+        commitBase = base;
+        commitSize = 0x1000;
+        status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &commitBase, &commitSize, MEM_COMMIT,
+                                           PAGE_READWRITE, NULL, 0);
+        ok(status == STATUS_SUCCESS, "same commit without EC_CODE -> %08lx", (unsigned long)status);
+        status = NtFreeVirtualMemory(NtCurrentProcess(), &base, &freeSize, MEM_RELEASE);
+        ok(status == STATUS_SUCCESS, "free EC_CODE reservation -> %08lx", (unsigned long)status);
+    }
+
+    /* Where the guard sits, pinned the way sem_mm/reserve_commit pins the
+     * rest of this ladder. The oracle's EC_CODE test is the LAST line of
+     * allocate_virtual_memory's prologue, below the working-set test that
+     * opens it — so an oversized request carrying EC_CODE reports
+     * STATUS_WORKING_SET_LIMIT_RANGE, not STATUS_INVALID_PARAMETER. An
+     * implementation that refused the bit up in the syscall wrapper, before
+     * the allocation engine, would answer this one backwards. */
+    params[0].u.u64 = MEM_EXT_EC_CODE;
+    base = NULL;
+    size = (SIZE_T)0x7fffffff0000 + 1;
+    status = NtAllocateVirtualMemoryEx(NtCurrentProcess(), &base, &size, MEM_RESERVE,
+                                       PAGE_EXECUTE_READWRITE, params, 1);
+    ok(status == STATUS_WORKING_SET_LIMIT_RANGE, "EC_CODE + oversized size -> %08lx",
+       (unsigned long)status);
 
     /* NOTE: MEM_RESERVE_PLACEHOLDER / MEM_REPLACE_PLACEHOLDER are legal bits
      * in the oracle's type mask but the placeholder machinery is deliberately

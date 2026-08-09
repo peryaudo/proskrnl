@@ -39,6 +39,10 @@ typedef struct
 } mm_addr_req;
 
 #define EXT_ADDRESS_REQUIREMENTS 1
+#define EXT_ATTRIBUTE_FLAGS      5
+
+/* MEM_EXTENDED_PARAMETER_EC_CODE (wine/include/winnt.h). */
+#define MEM_EXT_EC_CODE 0x00000040
 
 #ifndef AT_ROUND_TO_PAGE
 #define AT_ROUND_TO_PAGE 0x40000000
@@ -137,6 +141,27 @@ START_TEST(map_ex)
         ok(status == STATUS_INVALID_PARAMETER, "bad unmap flag -> %08lx", (unsigned long)status);
         status = NtUnmapViewOfSectionEx(NtCurrentProcess(), view, MEM_UNMAP_WITH_TRANSIENT_BOOST);
         ok(status == STATUS_SUCCESS, "boost unmap -> %08lx", (unsigned long)status);
+    }
+
+    /* --- MEM_EXTENDED_PARAMETER_EC_CODE is an ALLOCATION-path guard --------
+     * The same attribute word that refuses STATUS_INVALID_PARAMETER from
+     * NtAllocateVirtualMemoryEx (sem_mm/alloc_ex.c) is accepted and dropped
+     * here: the oracle's guard lives in allocate_virtual_memory, and
+     * NtMapViewOfSectionEx passes its `attributes` to nothing (wine
+     * dlls/ntdll/unix/virtual.c). Pinned so the refusal cannot be
+     * implemented one level too high, in the shared parameter parser. */
+    memset(&param, 0, sizeof(param));
+    param.type_bits = EXT_ATTRIBUTE_FLAGS;
+    param.u.u64 = MEM_EXT_EC_CODE;
+    view = NULL;
+    viewSize = 0;
+    status = NtMapViewOfSectionEx(section, NtCurrentProcess(), &view, NULL, &viewSize, 0,
+                                  PAGE_READWRITE, &param, 1);
+    ok(status == STATUS_SUCCESS, "EC_CODE attribute on a map -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        status = NtUnmapViewOfSectionEx(NtCurrentProcess(), view, 0);
+        ok(status == STATUS_SUCCESS, "unmap EC_CODE map -> %08lx", (unsigned long)status);
     }
 
     NtClose(section);
