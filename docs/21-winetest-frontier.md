@@ -769,11 +769,105 @@ of them a way an implementation reaching for the obvious guard answers wrongly:
 tests executed, 96 todo markers and 2 skips before and after, one failure fewer.
 §4 trap 2 does not apply here.
 
-**The 8 that remain are two subjects and the manifest block has them**: the
-cross-process image map at `:1728-:1752` (6, `mm/section.c`'s image subrange
-views) and the `NtProtectVirtualMemory` `old_prot` pair at `:2679`/`:2686` (2) —
-a FAILED protect must still write `PAGE_NOACCESS` into the caller's slot, which
-is the oracle's `else *old_prot = PAGE_NOACCESS;` and is a one-line item.
+**The `old_prot` pair is DONE** (`ntdll:virtual` 8 → **6**, `:2679` and
+`:2686`). A FAILED `NtProtectVirtualMemory` still writes the caller's
+`*old_prot`, and what it writes is `PAGE_NOACCESS`; `kernel/mm/virtual.c` wrote
+the slot on success only. One line of the oracle
+(`dlls/ntdll/unix/virtual.c` `NtProtectVirtualMemory`'s closing `else *old_prot
+= PAGE_NOACCESS;`), pinned by `tests/ntapi/sem_mm/protect_old_prot.c`.
+
+**This document called it "a one-line item" and the line was right; the
+CONTRACT around it is four statements, and three of them are about where the
+rule STOPS.** That is the transferable part, because each is a way an
+implementation reaching for the obvious `else` diverges while passing the
+winetest:
+
+- **The slot is written for every failure of the OPERATION.** An unserviceable
+  protection, an uncommitted range and a free address all write
+  `PAGE_NOACCESS` — and none of the three *has* a previous protection to
+  report, which is the point: the contract is "always answered", not "answered
+  when there is an answer".
+- **`*base` and `*size` are not written with it.** The oracle rounds them into
+  locals and copies them back on success only, so a failed call leaves the
+  caller's own unrounded values alone. An implementation that reports its
+  rounding unconditionally satisfies every `old_prot` assertion in the pair and
+  still diverges; the pin passes a deliberately unaligned address and a size of
+  1 to see it.
+- **It does NOT cover a failure to REACH the operation.** A junk process handle
+  and a real handle without `PROCESS_VM_OPERATION` both return above the
+  `else` — on the oracle because `server_queue_process_apc`'s failure returns
+  `status` directly. So "write `PAGE_NOACCESS` at every non-success return of
+  the syscall" is wrong in exactly those two cases and right everywhere else,
+  which no winetest assertion can see.
+- **It holds through the REMOTE arm**, which on the oracle is a second,
+  textually separate assignment reached by an APC. A real handle to the
+  caller's own process takes that arm — `process != NtCurrentProcess()` is what
+  selects it, not the target being a different process — so the second site is
+  measurable without a child, and "the two arms must agree" stayed a
+  measurement rather than becoming an argument (§4 trap 4).
+
+**The pin then convicted a THIRD status that no winetest assertion can see, and
+finding it is the reusable half of this item.** The two failures the pin adds
+around the slot — a free address, and a range running off the end of a view —
+answered `STATUS_INVALID_ADDRESS` on proskrnl where the oracle answers
+`STATUS_INVALID_PARAMETER`. `ntdll:virtual` cannot convict that: upstream's own
+comment at `virtual.c:2677` records that Wine and Windows disagree there
+(`STATUS_CONFLICTING_ADDRESSES` on win64), so the assertion is a bare
+`ok(status, ...)`. **What makes it a defect rather than a third opinion is one
+step past the status**: Wine's PE-side `RtlNtStatusToDosError` maps `c0000141`
+to `ERROR_UNEXP_NET_ERR` (59) (`dlls/ntdll/error.h:686`), so `VirtualProtect`
+over a free address reported an *unexpected network error* where both
+authorities report an address or parameter problem. Where two authorities
+disagree the pinned oracle is the arbiter (Art. 6), so it is the oracle's status
+now, pinned both ways; `docs/03` "What a FAILED `NtProtectVirtualMemory`
+answers" has the table. **The generalisable tell is that a status nobody asserts
+is still observable through the error mapping** — gate-check found this by
+walking `RtlNtStatusToDosError` for the status the diff's own docs entry was
+about to bless, which is a cheap check to run on any NTSTATUS a pin declines to
+pin.
+
+**And then the ORDER, which is the fourth defect this one small item turned up
+and the one with the longest reach.** `MiProtectVirtualMemory` validated the
+protection on the way IN; the oracle validates it LAST — `find_view`, then
+`get_committed_size`, then `set_protection`, which is where `get_vprot_flags`
+refuses. So a bad protection over a free address must report the ADDRESS and
+over a reserved range the COMMIT, and proskrnl reported the protection for both.
+Same shape as W11's finding that "every defect in this item was an ORDER or a
+MASK, not a value", and the same discovery route: gate-check reading the two
+ladders side by side, not a failing assertion. **Validating arguments before
+resolving the object is the reflex to distrust** — it is what a careful
+implementation does everywhere else, and NT's syscalls routinely do not.
+
+**Then the same review asked what `size == 0` does, and that was a FIFTH
+divergence — found by holding the new comment to its own claim.** The kernel
+comment had just declared the ladder to be the oracle's three questions, and an
+`end <= base` guard sat above all three. The oracle has no size guard at all, so
+a zero-size protect is an ordinary trip down the ladder: success over a
+committed page (reporting that page's protection, `*size` 0), `NOT_COMMITTED`
+over a reserved range, `INVALID_PARAMETER` over a free address,
+`INVALID_PAGE_PROTECTION` with a bad protection. proskrnl answered
+`STATUS_INVALID_PARAMETER` to all four. Measured with print-only probes first
+and pinned once measured, which is the cheap order for a corner nobody asserts.
+**The transferable part is the review move**: a comment that states a rule is a
+claim the diff can be checked against, and the check found a defect the comment
+itself had made visible. Four of this item's five findings came out of
+gate-check rather than out of a failing assertion.
+
+**Nothing was hiding behind the two winetest assertions** — 2200 executed,
+96 todo, 2 skips before and after — so §4 trap 2 does not apply.
+
+**The 6 that remain are ONE subject**: the cross-process image map at
+`:1728-:1752`, i.e. `NtMapViewOfSection` with a non-zero offset into another
+process, which `mm/section.c` refuses (`image subrange views: not M5`). The
+manifest block has the triage, and its second half is the part to read before
+scheduling this as mechanical work: the oracle maps the whole image and then
+`free_pages`es the head, which is easy to mirror — but `:1743` memcmps the two
+views, and that only holds because the oracle relocates by
+`image_info->map_addr - image_info->base`, the server's ONE dynamic base for the
+mapping, where `MipFindOrCreateImageMaster` keys a relocated master on
+`(identity, base)` and so produces a different copy per base. **Both halves of
+that are read off the two sources and not measured** — treat them as a
+prediction (§4 trap 4), not as a diagnosis.
 
 What is left under this heading:
 
