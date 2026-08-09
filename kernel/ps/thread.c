@@ -2487,6 +2487,18 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
         }
         return STATUS_SUCCESS;
     }
+    case ThreadManageWritesToExecutableMemory:
+        /* The ARM64EC write-to-executable-memory contract, and on x86_64 the
+         * whole of it is one refusal: the pinned oracle's arm is
+         * `#ifdef __aarch64__ ... #else return STATUS_NOT_SUPPORTED; #endif`
+         * (third_party/wine dlls/ntdll/unix/thread.c, case
+         * ThreadManageWritesToExecutableMemory). So the length, the Version
+         * and the mutually-exclusive flag are never looked at here — the
+         * answer is about the MACHINE, not about the arguments — and nothing
+         * captures the caller's buffer. Pinned by
+         * tests/ntapi/sem_ps/manage_exec_writes.c, which measures exactly
+         * that ordering. */
+        return STATUS_NOT_SUPPORTED;
     default:
         /* The refusal split (Art. 12, docs/21 W1): a class NUMBER outside
          * the enum abi/ generates is INVALID and answers

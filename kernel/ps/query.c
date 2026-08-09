@@ -729,6 +729,28 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * planted-bug shape this rewrite retires). */
         return PspMakeProcessSystem(processHandle, buffer, length);
     }
+    if (infoClass == ProcessManageWritesToExecutableMemory)
+    {
+        /* A CAPABILITY PROBE, and the no-op arm at the bottom of this
+         * function was answering it "yes". dlls/ntdll/tests/virtual.c
+         * test_exec_memory_writes sets this class and reads the status: a
+         * success means "this is an ARM64EC host", so it then asserts the
+         * processor architecture is ARM64 (:3339) and skips its whole body.
+         * An accepted-and-dropped input turned into a wrong answer — the
+         * same shape as the dropped MEM_EXTENDED_PARAMETER_EC_CODE attribute
+         * (docs/21 W6).
+         *
+         * The pinned oracle's arm is `#ifdef __aarch64__ ... #else return
+         * STATUS_NOT_SUPPORTED; #endif` (third_party/wine
+         * dlls/ntdll/unix/process.c, case
+         * ProcessManageWritesToExecutableMemory), so on x86_64 the refusal
+         * precedes every argument check the ARM64EC path makes — length,
+         * Version, the mutually-exclusive flag, and the handle — and nothing
+         * captures the caller's buffer. Pinned by
+         * tests/ntapi/sem_ps/manage_exec_writes.c, which measures that
+         * ordering rather than only the happy case. */
+        return STATUS_NOT_SUPPORTED;
+    }
     if (infoClass == ProcessPriorityBoost)
     {
         /* Stored, so the query can see it. A wrong size is
