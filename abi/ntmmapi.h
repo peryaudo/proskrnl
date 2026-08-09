@@ -36,6 +36,7 @@
 #define MEM_UNMAP_WITH_TRANSIENT_BOOST 0x00000001
 #define WRITE_WATCH_FLAG_RESET 0x00000001
 #define MEM_EXTENDED_PARAMETER_TYPE_BITS 8
+#define MEM_EXTENDED_PARAMETER_EC_CODE 0x00000040
 
 /* Section allocation attributes + access rights (M5), extracted from
  * wine/include/winnt.h. */

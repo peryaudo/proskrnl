@@ -695,6 +695,10 @@ def gen_ntmmapi(wine: Path) -> str:
             "MEM_UNMAP_WITH_TRANSIENT_BOOST",
             "WRITE_WATCH_FLAG_RESET",
             "MEM_EXTENDED_PARAMETER_TYPE_BITS",
+            # The one MEM_EXTENDED_PARAMETER attribute bit that is not
+            # accepted-and-ignored: ARM64EC code memory, which an x86_64-only
+            # kernel refuses (docs/adr/0006-x64-only.md).
+            "MEM_EXTENDED_PARAMETER_EC_CODE",
         ],
     )
 
