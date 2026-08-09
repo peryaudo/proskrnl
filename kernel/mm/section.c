@@ -662,27 +662,44 @@ static void MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_M
  * relocated frames outright; writable pages are private copies of them,
  * per-PE-section protection throughout (docs/02, docs/17 §4). */
 static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
-                                uint64_t *viewSizeInOut)
+                                uint64_t *viewSizeInOut, uint64_t limitLow, uint64_t limitHigh)
 {
     const MI_IMAGE_INFO *image = section->image;
     uint64_t size = image->sizeOfImage;
     uint64_t base = *baseInOut;
 
+    /* The placement limits bind an image view too — dropping them here would
+     * make zero_bits and MEM_ADDRESS_REQUIREMENTS mean one thing for a data
+     * section and nothing for an image, which is the accepted-and-dropped
+     * shape this whole item is about.
+     *
+     * The oracle's map_image_view (dlls/ntdll/unix/virtual.c) is the
+     * reference for TWO of the three arms: it tries the PREFERRED base under
+     * the limits and, when that fails, falls through to a search bounded by
+     * them. It has no third arm, because it never sees a caller-supplied
+     * address at all — virtual_map_section hands `addr_ptr` to the image
+     * path as an out-parameter only, so an explicit base is silently ignored
+     * there. proskrnl honours one (pre-existing, and outside this change),
+     * and the limits are applied to it for the same reason the data path
+     * applies them to its named base — an arm no oracle run can measure,
+     * because the oracle has no such arm (docs/03 records it). */
     if (base != 0)
     {
-        if (!MiViewRangeIsFree(space, base, size))
+        if (!MiRangeWithinLimits(base, size, limitLow, limitHigh) ||
+            !MiViewRangeIsFree(space, base, size))
         {
             return STATUS_CONFLICTING_ADDRESSES;
         }
     }
     else if (image->preferredBase >= MI_ALLOCATION_GRANULARITY &&
+             MiRangeWithinLimits(image->preferredBase, size, limitLow, limitHigh) &&
              MiViewRangeIsFree(space, image->preferredBase, size))
     {
         base = image->preferredBase;
     }
     else
     {
-        base = MiFindFreeViewBase(space, size);
+        base = MiFindFreeViewBaseEx(space, size, limitLow, limitHigh, 0);
         if (base == 0)
         {
             return STATUS_NO_MEMORY;
@@ -771,13 +788,38 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
                               uint64_t offset, uint64_t *viewSizeInOut, ULONG protect,
                               uint64_t limitLow, uint64_t limitHigh)
 {
+    /* An IMAGE view's floor is its own — the oracle's map_image_view raises
+     * limit_low to `address_space_start` before it does anything else ("make
+     * sure the DOS area remains free", dlls/ntdll/unix/virtual.c) — but the
+     * refusal that follows from it belongs to map_view, i.e. to the arm
+     * BOTH kinds of view funnel through, so it is stated once here rather
+     * than inside one arm (Art. 11).
+     *
+     * Its visible consequence is that the two arms answer DIFFERENTLY for
+     * the same zero_bits: a ceiling below 64K is STATUS_INVALID_PARAMETER
+     * for an image view, where the data arm — which keeps limit_low 0 —
+     * lets the same ceiling reach its search and answers STATUS_NO_MEMORY.
+     * Both measured (sem_mm/map_zero_bits.c). The data arm cannot reach the
+     * refusal from either syscall today (zero_bits supplies no limitLow, and
+     * MiCaptureExtendedParams already refuses a MEM_ADDRESS_REQUIREMENTS
+     * whose Highest is at or below its Lowest); it is written where the
+     * oracle writes it so the two cannot drift apart later. */
+    if (section->image != 0 && limitLow < MI_LOWEST_USER_ADDRESS)
+    {
+        limitLow = MI_LOWEST_USER_ADDRESS;
+    }
+    if (limitHigh != 0 && limitLow >= limitHigh)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
     if (section->image != 0)
     {
         if (offset != 0)
         {
             return STATUS_INVALID_PARAMETER; /* image subrange views: not M5 */
         }
-        return MipMapImageView(section, space, baseInOut, viewSizeInOut);
+        return MipMapImageView(section, space, baseInOut, viewSizeInOut, limitLow, limitHigh);
     }
 
     /* Data view: offset/size against the section (Wine's virtual_map_section
@@ -822,7 +864,15 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
     uint64_t base = *baseInOut;
     if (base != 0)
     {
-        if (!MiViewRangeIsFree(space, base, size))
+        /* The limits bound a named base too, and they are checked BEFORE the
+         * range is looked at — the oracle's map_view tests limit_low /
+         * limit_high above its map_fixed_area (dlls/ntdll/unix/virtual.c).
+         * Both answer STATUS_CONFLICTING_ADDRESSES, so the order is not
+         * observable through the status; it is written this way because the
+         * two questions are separate and only one of them is about the
+         * address space. */
+        if (!MiRangeWithinLimits(base, size, limitLow, limitHigh) ||
+            !MiViewRangeIsFree(space, base, size))
         {
             return STATUS_CONFLICTING_ADDRESSES;
         }
@@ -1115,8 +1165,23 @@ NTSTATUS NtMapViewOfSection(HANDLE sectionHandle, HANDLE processHandle, PVOID *b
         return status;
     }
 
-    status = MiMapViewOfSection(sectionBody, &process->addressSpace, &base,
-                                (uint64_t)offset.QuadPart, &viewSize, protect);
+    /* zero_bits is a PLACEMENT CONSTRAINT here as it is on the allocation
+     * path, through the same limitHigh MEM_ADDRESS_REQUIREMENTS uses (Art.
+     * 11) — but it is passed UNCONDITIONALLY, which is the one thing this
+     * syscall does differently. NtAllocateVirtualMemory drops the limit when
+     * the caller names a base (`if (!*ret) limit = ...; else limit = 0;`);
+     * NtMapViewOfSection has no such arm (`virtual_map_section( handle,
+     * addr_ptr, 0, get_zero_bits_limit( zero_bits ), ... )`, the oracle's
+     * dlls/ntdll/unix/virtual.c NtMapViewOfSection), so a named base keeps
+     * the ceiling and a view that ENDS above it is refused. Both halves are
+     * pinned by tests/ntapi/sem_mm/map_zero_bits.c.
+     *
+     * The checks above have already refused the invalid 22..31 band and a
+     * base that is itself above the ceiling; what reaches here is a limit
+     * that placement must honour. */
+    status =
+        MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base, (uint64_t)offset.QuadPart,
+                             &viewSize, protect, 0, MiZeroBitsLimit(zeroBits));
     if (NT_SUCCESS(status))
     {
         *baseInOut = (PVOID)(uintptr_t)base;

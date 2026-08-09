@@ -1255,6 +1255,48 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   ARM64EC host and, on a "yes", runs ARM64 unwind opcodes over the x86_64 buffer it
   just received. Accepting and dropping the bit therefore did not return a wrong
   answer — it killed the process with an unhandled `0xc0000005` (`docs/21` W6).
+- **`zero_bits` binds `NtMapViewOfSection` differently from
+  `NtAllocateVirtualMemory`, in three ways, and only the first is the obvious one**
+  (`kernel/mm/section.c`, `docs/21` W5; pinned `tests/ntapi/sem_mm/map_zero_bits.c`).
+  Both syscalls read the argument through the oracle's one definition
+  (`get_zero_bits_limit`, `dlls/ntdll/unix/unix_private.h`) and proskrnl through one
+  `MiZeroBitsLimit`, and the resulting ceiling rides the same `limitHigh` the
+  `MEM_ADDRESS_REQUIREMENTS` path already uses — one bounded-placement mechanism, not
+  two (Art. 11). What differs:
+  (1) the invalid band here is **22..31 only**, so `33` is a legal mask whose ceiling
+  is 63 bytes and the answer is `STATUS_NO_MEMORY`, where the allocation path refuses
+  `33` outright with `STATUS_INVALID_PARAMETER_3`;
+  (2) the refusal names argument **four**, not three;
+  (3) a **named base does not drop the constraint**. `NtAllocateVirtualMemory` drops
+  it (`if (!*ret) limit = get_zero_bits_limit( zero_bits ); else limit = 0;`);
+  `NtMapViewOfSection` passes it down unconditionally
+  (`virtual_map_section( handle, addr_ptr, 0, get_zero_bits_limit( zero_bits ), … )`),
+  so `map_view` tests the view's whole EXTENT against it and a view based under the
+  ceiling but ending above it is `STATUS_CONFLICTING_ADDRESSES`. That extent test is
+  `is_beyond_limit( base, size, limit_high )` — `base + size > limit_high` — while the
+  free-range SEARCH beside it treats the same `limit_high` as inclusive
+  (`end = limit_high + 1`), so a named view whose last byte is exactly the ceiling is
+  one byte too long. `MiRangeWithinLimits` transcribes that asymmetry rather than
+  tidying it; the pin measures it, because either convention is defensible and only the
+  measurement says which one NT picked.
+  The limits reach the IMAGE path too (`MipMapImageView` takes them: the preferred
+  base is only taken when it fits, everything else is the bounded search) — before
+  this they were dropped there, which also silently dropped
+  `NtMapViewOfSectionEx`'s `MEM_ADDRESS_REQUIREMENTS` for an image section. **The
+  image arm answers one case differently from the data arm**, and it is measured, not
+  a simplification: `map_image_view` raises `limit_low` to `address_space_start`
+  ("make sure the DOS area remains free") before anything else, and `map_view` then
+  refuses `limit_low >= limit_high` outright — so a ceiling below 64 KiB is
+  `STATUS_INVALID_PARAMETER` for an image view where the data arm, which passes
+  `limit_low` 0, lets the same ceiling reach its search and answers
+  `STATUS_NO_MEMORY`. (The floor is the image arm's; the refusal that follows from it
+  is `map_view`'s, i.e. shared, so it is stated once in `MiMapViewOfSectionEx` above
+  the arm split.) One thing the oracle does that proskrnl does not, recorded so nobody
+  reads the code as a transcription of it: the oracle's image path **ignores a
+  caller-supplied address entirely** (`virtual_map_section` hands `addr_ptr` to it as
+  an out-parameter only), while proskrnl honours one. That predates this change, and
+  the limits are now applied to that arm as well — for consistency with the data
+  path's named base, since no oracle run can measure an arm the oracle does not have.
 - **Splitting a VAD carries its write-watch record.** One split serves both
   `MEM_RELEASE` and `MEM_PRESERVE_PLACEHOLDER` (`MiCarveVad`, Art. 11). The release
   path's own earlier copy of it rebuilt the surviving pieces without `watchDirty`, so a

@@ -83,10 +83,6 @@ struct MI_VAD
 /* ...and is one right now: reserved, empty, waiting to be replaced. */
 #define MI_VAD_FREE_PLACEHOLDER 0x02
 
-/* NT never allocates the first 64K. Cross-check: third_party/wine
- * dlls/ntdll/unix/virtual.c, `address_space_start = (void *)0x10000`. */
-#define MI_LOWEST_USER_ADDRESS 0x10000ULL
-
 static uint64_t MiRoundDown(uint64_t value, uint64_t align)
 {
     return value & ~(align - 1);
@@ -317,7 +313,7 @@ static BOOLEAN MiRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t si
  * never asked about a value NT calls invalid. It still answers something
  * sane for one, because a placement ceiling that silently became 0 —
  * "unconstrained" — is the failure mode being fixed. */
-static uint64_t MiZeroBitsLimit(uint64_t zeroBits)
+uint64_t MiZeroBitsLimit(uint64_t zeroBits)
 {
     if (zeroBits == 0)
     {
@@ -363,6 +359,31 @@ static uint64_t MiZeroBitsLimit(uint64_t zeroBits)
         }
     }
     return (~(uint64_t)0) >> shift;
+}
+
+/* Does a range the CALLER named fit inside the placement limits? The
+ * free-range search below cannot ask this — it only ever returns addresses it
+ * chose — so it is the other half of the same constraint, and both halves are
+ * spelled once here (Art. 11).
+ *
+ * The one-byte asymmetry with MiFindFreeRegion is the oracle's and it is
+ * measured, not inferred (tests/ntapi/sem_mm/map_zero_bits.c, the exact-extent
+ * case): the search treats limitHigh as INCLUSIVE (`end = limit_high + 1`,
+ * dlls/ntdll/unix/virtual.c map_view), while the named-base guard beside it
+ * refuses at `base + size > limit_high` (the same file's is_beyond_limit), so
+ * a named view whose LAST BYTE is exactly limitHigh is one byte too long.
+ * Transcribed rather than tidied. 0 = unconstrained, either end. */
+BOOLEAN MiRangeWithinLimits(uint64_t base, uint64_t size, uint64_t limitLow, uint64_t limitHigh)
+{
+    if (limitLow != 0 && base < limitLow)
+    {
+        return FALSE;
+    }
+    if (limitHigh != 0 && (base >= limitHigh || base + size > limitHigh))
+    {
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /* Lowest aligned hole of `size` bytes, bottom-up like Wine. 0 = full. The
@@ -1551,11 +1572,6 @@ static SIZE_T MiRegionInfoWriteBytes(SIZE_T length)
 }
 
 /* --- section-view plumbing (virtual.h; used by mm/section.c) ---------------- */
-
-uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size)
-{
-    return MiFindFreeViewBaseEx(space, size, 0, 0, 0);
-}
 
 uint64_t MiFindFreeViewBaseEx(PMI_ADDRESS_SPACE space, uint64_t size, uint64_t limitLow,
                               uint64_t limitHigh, uint64_t align)

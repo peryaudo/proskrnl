@@ -35,6 +35,21 @@ typedef struct MI_VAD MI_VAD, *PMI_VAD;
  * dlls/ntdll/unix/virtual.c, `granularity_mask = 0xffff`. */
 #define MI_ALLOCATION_GRANULARITY 0x10000ULL
 
+/* NT never allocates the first 64K. The same value as the granularity above
+ * and a different fact: this one is the FLOOR of the user address space,
+ * which mm/section.c's image arm needs because the oracle raises a placement
+ * limit to it (map_image_view, "make sure the DOS area remains free") and
+ * then refuses a ceiling below it.
+ *
+ * Cross-check: third_party/wine dlls/ntdll/unix/virtual.c,
+ * `virtual_set_large_address_space` — `address_space_start = (void *)0x10000`
+ * for a win64 non-wow64 process, which is every process here, and which
+ * dlls/ntdll/unix/env.c calls unconditionally at startup. Do NOT read the
+ * `address_space_start` INITIALIZER at the head of that file for this value:
+ * its x86_64 arm is 0x110000, the pre-startup DOS-area setting, and a reader
+ * who stops there will think this constant is wrong. */
+#define MI_LOWEST_USER_ADDRESS 0x10000ULL
+
 NTSTATUS MiCreateAddressSpace(PMI_ADDRESS_SPACE space);
 /* Free every committed frame, VAD, and user-half page table. The address
  * space must not be the current CR3. */
@@ -99,15 +114,22 @@ void MiQueryVmCounters(PMI_ADDRESS_SPACE space, uint64_t *reservedBytesOut,
 
 /* --- section-view plumbing (mm/section.c, M5) ------------------------------ */
 
-/* Lowest free 64K-aligned region of `size` bytes (0 = address space full) /
- * emptiness check for an explicit base. */
-uint64_t MiFindFreeViewBase(PMI_ADDRESS_SPACE space, uint64_t size);
-
-/* CUI-7 constrained form (NtMapViewOfSectionEx placement); zeros mean
- * unconstrained. Same free-range authority as MiFindFreeViewBase. */
+/* Lowest free 64K-aligned region of `size` bytes (0 = address space full),
+ * bounded by the CUI-7 placement limits (zeros mean unconstrained) — the one
+ * free-range authority every view placement resolves through. */
 uint64_t MiFindFreeViewBaseEx(PMI_ADDRESS_SPACE space, uint64_t size, uint64_t limitLow,
                               uint64_t limitHigh, uint64_t align);
 BOOLEAN MiViewRangeIsFree(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size);
+
+/* The other half of the same placement constraint: does a range the CALLER
+ * named fit inside the limits? (0 = unconstrained, either end.) */
+BOOLEAN MiRangeWithinLimits(uint64_t base, uint64_t size, uint64_t limitLow, uint64_t limitHigh);
+
+/* The highest address a `zeroBits` placement may occupy, INCLUSIVE (0 =
+ * unconstrained) — the argument NtAllocateVirtualMemory and
+ * NtMapViewOfSection both carry, read through the oracle's one definition.
+ * The long form is at the definition (mm/virtual.c). */
+uint64_t MiZeroBitsLimit(uint64_t zeroBits);
 
 /* Create + insert a mapped-view VAD (`vadType` MEM_MAPPED or MEM_IMAGE), all
  * pages uncommitted. `sectionBody` is the referenced Section object body the
