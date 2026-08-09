@@ -621,6 +621,40 @@ ntdll_test.exe:unwind
 #     KUSER_SHARED_DATA / cpu fields, 2 the NtProtectVirtualMemory old_prot
 #     pair. The thread-STACK contract (1102) is untouched and is still the
 #     item.
+#
+#     NOW 1111. The KUSER_SHARED_DATA / cpu group is FIXED — and it was FOUR
+#     assertions, not the five this block claimed: :2080, :2085, :2088 and
+#     :2091 are test_user_shared_data, while :2039 was miscounted into the
+#     group and belongs to test_NtMapViewOfSectionEx's
+#     MemExtendedParameterImageMachine arm, a different subject that still
+#     fails.
+#     The page now describes the MACHINE: NumberOfPhysicalPages from
+#     MiGetTotalPageCount (the same source SystemBasicInformation reports,
+#     which is what the test compares it against), ActiveProcessorCount from
+#     KE_NUMBER_PROCESSORS, ActiveGroupCount 1, and ProcessorFeatures derived
+#     from CPUID as the oracle derives it (arch/x86_64/cpu.c, after
+#     dlls/ntdll/unix/system.c init_shared_data_cpuinfo). All four had been
+#     left at the memset's zero — and the feature array is not an internal
+#     note but the whole of Wine's RtlIsProcessorFeaturePresent, so a zeroed
+#     array is a machine on which every capability query answers "no".
+#     The AVX family is deliberately reported FALSE (gated on OSXSAVE, which
+#     this kernel does not set because the context switch is an FXSAVE
+#     image): docs/03 "Processor features" carries the trade. Pinned by
+#     tests/ntapi/sem_ps/shared_machine.c, which checks each optional entry
+#     against CPUID as the test itself executes it rather than naming a
+#     feature set.
+#     NOTHING ELSE MOVED, and the executed count did not either: a
+#     line-by-line diff of the failing-assertion histogram shows exactly
+#     those four lines removed, 3737 tests executed and 148 todo markers
+#     before and after. The xstate block behind :2104 stays SKIPPED —
+#     XState.EnabledFeatures is still zero, correctly, so no hidden body was
+#     exposed here (docs/21 §4 trap 2 does not apply to this one).
+#     The 13-item tail listed above is now 9: 6 the cross-process image map,
+#     2 the NtProtectVirtualMemory old_prot pair, and :2039. (The tail list
+#     has never been the whole non-stack remainder — :2246 and the five
+#     singletons at :3190/:3202/:3220/:3232/:3598 are outside it and were
+#     never triaged.) The thread-STACK contract (1102) is untouched and is
+#     still the item.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface

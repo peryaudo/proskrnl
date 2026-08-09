@@ -476,6 +476,56 @@ single item left here — and `docs/16`'s serial line
 (`ps: NtSetInformationProcess class N accepted as a no-op`) is where that sweep
 starts, because it named this one in the winetest log all along.
 
+**The KUSER_SHARED_DATA / cpu-fields group is DONE** (`ntdll:virtual` 1115 →
+**1111**), and it is the smallest item in this section with the largest reach
+outside the pair. Four fields the page's `memset` had left at zero —
+`NumberOfPhysicalPages`, `ActiveProcessorCount`, `ActiveGroupCount` and the
+whole `ProcessorFeatures` array — now describe the machine
+(`kernel/ps/peb.c` + `arch/x86_64/cpu.c`, pinned by
+`tests/ntapi/sem_ps/shared_machine.c`). Three things are worth carrying:
+
+- **A zeroed field on this page is not a missing value, it is a WRONG answer
+  to a question user mode asks constantly.** Wine's PE ntdll implements
+  `RtlIsProcessorFeaturePresent` as a plain load from `ProcessorFeatures`
+  (`dlls/ntdll/signal_x86_64.c`), so the array was answering "this machine
+  can do nothing" to every library that asks — msvcrt and ucrtbase pick
+  string and math routines from it. The winetest sees one assertion of that
+  (`:2085`, RDTSC); the surface behind it is every capability query in the
+  stack. **It is the accepted-and-dropped-input shape (W5, W6) with the
+  input coming from the CPU instead of from a caller.**
+- **The one place it must NOT transcribe the oracle is where the oracle is
+  describing a different kernel.** `init_shared_data_cpuinfo` sets the AVX
+  bits straight from CPUID, which is safe on Linux because Linux always
+  enables XSAVE; proskrnl's context switch is an FXSAVE image, so
+  CR4.OSXSAVE is clear and a VEX instruction raises #UD. Reporting AVX would
+  be Art. 12's fabricated answer expressed as a bit. The gate is
+  `PF_XSAVE_ENABLED` (CPUID.1:ECX.27, the OS-enable bit — *not* ECX.26, the
+  CPU's own XSAVE bit), and the oracle already applies exactly this shape to
+  `PF_RDWRFSGSBASE_AVAILABLE`, which it ANDs with the host kernel's
+  `AT_HWCAP2` bit. `docs/03` "Processor features" has the trade and the
+  instruction for whoever enables XSAVE later (the gate becomes the XCR0
+  state test, it is not deleted).
+- **The pin had to measure the RULE, not the box.** The developer host, CI's
+  TCG guest and the oracle's host are three different CPUs, so naming a
+  feature set would have made the pin's colour a property of the machine —
+  the host-dependence the manifest header spends its longest paragraph on.
+  Every optional entry is instead checked against CPUID *executed by the
+  test*, which ring 3 can do on both runners, and only the bits x86-64
+  mandates are asserted outright. The same pin fixed a real Art. 11 defect
+  the winetest could not see: class 154 had its own CPUID derivation
+  (reading ECX bit **26** where the oracle reads 27, i.e. claiming xstate on
+  a kernel that never enabled it) and class 1's `FeatureBits` was a hardwired
+  zero. Both now compose from the array through one function, and the pin
+  asserts the two classes agree.
+
+Two smaller corrections fell out of it. The manifest called this group **5**
+assertions; it is **4** — `:2039` was miscounted into it and belongs to
+`MemExtendedParameterImageMachine`. And nothing was hiding behind it: 3737
+tests executed and 148 todo markers before and after, with the xstate block
+at `:2104` still correctly skipped, so this is a case where §4 trap 2's
+"an early-out hides its body" does **not** apply and saying so is part of the
+measurement.
+
 What is left under this heading:
 
 - **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
