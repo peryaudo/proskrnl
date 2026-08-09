@@ -182,15 +182,28 @@ ntdll_test.exe:path
 #                 handle;
 #       :296      FILE_CREATE on an existing pipe is ACCESS_DENIED, not the
 #                 OBJECT_NAME_COLLISION a file create gives.
-#     Re-measured after the fix: ZERO failed assertions. The pair now runs to
-#     test_overlapped and PANICS at NtFsControlFile with a user ApcRoutine —
-#     kernel/io/ioctl.c's IopIoctlApcUnsupported, which is docs/21 W4a (the
-#     ioctl APC leg), reached by pipe.c's listen_pipe(..., use_apc = TRUE).
-#     So this pair is no longer an npfs item at all; it is blocked on W4a and
-#     inherits that item's G14 blocking-frontier risk.
-#     And per docs/21 §4 trap 2: everything past that panic — the rest of
-#     test_overlapped and every subtest behind it — has never been measured.
-#     The zero above is a lower bound, not a near-green.
+#     That took it to ZERO failed assertions and a PANIC at NtFsControlFile
+#     with a user ApcRoutine. W4a (the ioctl APC leg) is now BUILT too
+#     (kernel/io/{ioctl,async}.c, pinned tests/ntapi/sem_pipe/listen_apc.c),
+#     and the pair runs THROUGH test_overlapped into the completion tests.
+#
+#     WHAT THE TWO FIXES REVEALED, which is the honest state now: ONE failed
+#     assertion and a NEW panic, neither of which had ever been reached.
+#       - pipe.c:413, "hEvent not signaled". listen_pipe on an ALREADY
+#         CONNECTED pipe answers STATUS_PIPE_CONNECTED immediately, and the
+#         test SetEvent()s the event first and requires it CLEAR afterwards.
+#         So NT clears the completion event when the request is SUBMITTED,
+#         even for a request that then fails immediately — proskrnl only
+#         clears it on the pending path (IopPreparePendingRequest), so an
+#         immediate refusal leaves the caller's event set. :412 passes, so
+#         the IOSB is correctly untouched; it is the event alone. Small and
+#         well-defined; not folded into W4a because it is a different rule.
+#       - then a PANIC at NtQueryInformationFile class 41,
+#         FileIoCompletionNotificationInformation — what
+#         SetFileCompletionNotificationModes asks for, and the subject of the
+#         "completion tests" the pair has just entered. That is the pair's
+#         new blocker.
+#     Per docs/21 §4 trap 2, everything past THAT panic is still unmeasured.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port

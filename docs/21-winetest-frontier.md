@@ -121,23 +121,47 @@ Pinned by `tests/ntapi/sem_file/nt_path_syntax.c`.
 
 ### W4 — The completion legs
 
-**W4a — the ioctl APC leg.** `kernel/io/ioctl.c`'s `IopIoctlApcUnsupported`
-still returns `STATUS_NOT_IMPLEMENTED` for a user `ApcRoutine`, and
-`dlls/ntdll/tests/pipe.c`'s `listen_pipe()` passes one. `kernel/io/rw.c`
-already has the authority — `IopCompleteTransfer` writes the IOSB, posts
-the port packet, then calls `IopQueueCompletionApc`. Extend that ONE
-function to serve the ioctl path (Art. 11); a second APC-queueing site
-inside `ioctl.c` is the wrong shape. For a PENDED listen the APC must be
-queued at `IopCompletePendingRequest` and to the **issuer** thread.
+**W4a — the ioctl APC leg (DONE).** `IopIoctlApcUnsupported` is gone.
+`NtDeviceIoControlFile`/`NtFsControlFile` allocate the completion APC before
+the verb runs, through the same `IopPrepareCompletionApc` engine `rw.c` and
+`notify.c` use — so a verb that pends cannot fail to complete later for want
+of memory, and there is no second `KAPC` allocation site (Art. 11). Pinned by
+`tests/ntapi/sem_pipe/listen_apc.c`.
 
-- **G14 — the sharpest gate risk in the plan.** The completion drain is a
-  declared must-not-block region. Queueing an APC from the drain must not
-  be able to park; if it can, `tools/blocking_frontier.py` will say so, and
-  per `docs/20` §8.4 a new blocking point re-opens every STILL-TRUE table.
-- **Art. 11 / G11.** The APC object outlives the syscall on the pended
-  path. `docs/03` "CUI-3 SCM notes" records that a pending listen is *not*
-  cancelled at its issuer thread's exit — that narrowness now has an APC
-  attached to it and must be re-answered, not inherited.
+The pended path was the interesting half and it resolved more simply than
+this item expected: the APC block **moves into the `IOP_PENDING_REQUEST`**,
+and `IopCompletePendingRequest` queues it to the **issuer** after the IOSB is
+written and the event signalled. That needs no new bookkeeping because npfs
+already funnels *every* way a park can end — a client attaching,
+`NtCancelIoFile`, the owner's cleanup — through that one function, so "queued
+or freed exactly once" falls out. The single path that neither pends nor
+completes (a refusal that never wrote the IOSB) frees the block explicitly.
+
+- **G14 was the predicted risk and it did not materialise.**
+  `blocking_frontier.py --check` is clean: `IopQueueCompletionApc` reduces to
+  a list insert, so completing from a drain cannot park. No frontier row, no
+  re-opened `docs/20` §8.4 table.
+- **G11 is where this item nearly shipped a use-after-free, and gate-check
+  caught it, not a test.** Queueing the APC to `IOP_PENDING_REQUEST.issuer`
+  turned a field that had been *compared and never dereferenced* into one
+  that gets read and inserted into — while the request held **no reference**
+  to that thread. `docs/03` "CUI-3 SCM notes" records that a pending listen
+  is **not** swept at its issuer's exit, so the thread can die with the
+  request still parked and a later client connect would complete into freed
+  pool. The fix is the one `IOP_DIR_WATCH` already uses: hold a referenced
+  `ETHREAD` (`issuerObject`) for exactly as long as the request can queue to
+  it. The lesson generalises — *changing what a field is used for changes
+  what it must own*, and no assertion in the pin could have seen it.
+
+**What it revealed is the real news.** `ntdll:pipe` ran through
+`test_overlapped` into the completion tests and surfaced two things that had
+never been reached: `pipe.c:413` — NT clears the completion event when a
+request is **submitted**, even one that then fails immediately with
+`STATUS_PIPE_CONNECTED`, where proskrnl clears it only on the pending path —
+and a panic at `NtQueryInformationFile` class 41,
+`FileIoCompletionNotificationInformation`. Both are in the manifest block,
+and neither is folded into this item: the first is a different rule and the
+second a different class.
 
 **W4b — change-notify: DONE.** `ntdll:change` and `kernel32:change` are both
 green. Three rules landed, all pinned:
