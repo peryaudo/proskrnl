@@ -1477,6 +1477,63 @@ NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address
     return STATUS_SUCCESS;
 }
 
+/* MemoryImageInformation: "is this address inside an image view, and which
+ * one". The same VAD walk again, asked a third question (Art. 11) — the only
+ * state it reads is the VAD's type, base and size.
+ *
+ * Four things here are the oracle's, not invented (third_party/wine
+ * dlls/ntdll/unix/virtual.c get_memory_image_info and the server handler it
+ * calls, server/mapping.c DECL_HANDLER(get_image_view_info); pinned
+ * sem_mm/image_info.c):
+ *
+ *   - a MAPPED-but-not-image address is a SUCCESS with an ALL-ZERO struct,
+ *     not a refusal. find_mapped_addr finds the view, the `view->flags &
+ *     SEC_IMAGE` arm does not run, and the zeroed reply IS the answer. A
+ *     private allocation, a data view and a pagefile view all land here.
+ *   - the struct is zeroed BEFORE the lookup, so the caller sees zeroes even
+ *     on the STATUS_INVALID_ADDRESS refusal below. That is the opposite of
+ *     MemoryRegionInformation, which leaves every byte of the buffer intact
+ *     on its refusal, and the pin measures both.
+ *   - an address above the user range is STATUS_INVALID_ADDRESS, NOT the
+ *     STATUS_INVALID_PARAMETER MiQueryVirtualMemoryRegion answers for the
+ *     same address: the oracle's fall-back folds every error the basic query
+ *     can raise into one status (`if (status || basic_info.State ==
+ *     MEM_FREE) status = STATUS_INVALID_ADDRESS;`).
+ *   - SizeOfImage is the VIEW's size (reply->size), which on proskrnl is
+ *     always the image's whole SizeOfImage: MipMapImageView maps
+ *     image->sizeOfImage whatever view size was asked for. That is also why
+ *     ImagePartialMap stays clear — there is no partial image view to report,
+ *     rather than a bit nobody computed. ImageSigningLevel stays 0 for the
+ *     same kind of reason and the opposite conclusion: the oracle reports 12
+ *     unconditionally, nothing here validates a signature, and the winetest
+ *     accepts either (docs/03 "`MemoryImageInformation` reports signing level
+ *     ZERO"). */
+NTSTATUS MiQueryVirtualMemoryImage(PMI_ADDRESS_SPACE space, const void *address,
+                                   PMEMORY_IMAGE_INFORMATION info)
+{
+    memset(info, 0, sizeof(*info));
+
+    uint64_t base = MiRoundDown((uint64_t)(uintptr_t)address, PAGE_SIZE);
+    if (base >= KI_USER_SPACE_LIMIT)
+    {
+        return STATUS_INVALID_ADDRESS;
+    }
+
+    PMI_VAD vad = MiFindVad(space, base);
+    if (vad == 0)
+    {
+        return STATUS_INVALID_ADDRESS;
+    }
+    if (vad->type != MEM_IMAGE)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    info->ImageBase = (PVOID)(uintptr_t)vad->base;
+    info->SizeOfImage = vad->size;
+    return STATUS_SUCCESS;
+}
+
 /* How many bytes of MEMORY_REGION_INFORMATION a request of `length` actually
  * gets. Not min(length, sizeof) — the oracle fills each tail field only when
  * the buffer reaches the offset of the NEXT one, and never fills the last
@@ -2538,6 +2595,12 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
         needed = offsetof(MEMORY_REGION_INFORMATION, CommitSize);
         writeBytes = MiRegionInfoWriteBytes(length);
         break;
+    case MemoryImageInformation:
+        /* This class's minimum IS its own size — there is no partial fill
+         * (get_memory_image_info's `if (len < sizeof(*info))`). */
+        needed = sizeof(MEMORY_IMAGE_INFORMATION);
+        writeBytes = sizeof(MEMORY_IMAGE_INFORMATION);
+        break;
     default:
         return STATUS_INVALID_INFO_CLASS;
     }
@@ -2584,6 +2647,26 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
             {
                 *returnLength = sizeof(region);
             }
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        return status;
+    }
+
+    if (informationClass == MemoryImageInformation)
+    {
+        MEMORY_IMAGE_INFORMATION image;
+        status = MiQueryVirtualMemoryImage(&target->addressSpace, address, &image);
+        /* Copied UNCONDITIONALLY: the oracle zeroes the caller's struct
+         * before it decides, so a STATUS_INVALID_ADDRESS still lands zeroes
+         * in the buffer. ReturnLength is the field that survives a refusal,
+         * because it is written on success alone. */
+        memcpy(buffer, &image, writeBytes);
+        if (NT_SUCCESS(status) && returnLength != 0)
+        {
+            *returnLength = sizeof(image);
         }
         if (referenced)
         {
