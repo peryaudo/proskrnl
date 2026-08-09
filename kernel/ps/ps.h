@@ -436,6 +436,29 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackAllocationBase, uint64_t s
                      uint64_t stackLimit, uint64_t uniqueProcessId, uint64_t uniqueThreadId,
                      uint64_t *tebOut);
 
+/* NT's thread-stack geometry rule, for EVERY stack this kernel reserves —
+ * the main thread's and every additional one's. Stated once because it is one
+ * rule (Art. 11): the two entry points differ only in where the caller's
+ * numbers come from, not in what happens to them.
+ *
+ * `imageReserve` / `imageCommit` are the main image's declared sizes
+ * (SizeOfStackReserve / SizeOfStackCommit, reaching here as
+ * SECTION_IMAGE_INFORMATION's MaximumStackSize / CommittedStackSize);
+ * `reserve` / `commit` are what the caller asked for, 0 meaning "the image's".
+ * The pinned oracle's own body (third_party/wine dlls/ntdll/unix/virtual.c
+ * virtual_alloc_thread_stack):
+ *
+ *     if (!reserve_size) reserve_size = main_image_info.MaximumStackSize;
+ *     if (!commit_size)  commit_size  = main_image_info.CommittedStackSize;
+ *     size = max( reserve_size, commit_size );
+ *     if (size < 1024 * 1024) size = 1024 * 1024;
+ *
+ * Granularity rounding is NOT done here: each stack allocator rounds behind
+ * its own overflow guard, and an image may declare a reserve near 2^64.
+ * Pinned by tests/ntapi/sem_ps/thread_stack_default.c. */
+void PspResolveStackGeometry(uint64_t imageReserve, uint64_t imageCommit, uint64_t reserve,
+                             uint64_t commit, uint64_t *reserveOut, uint64_t *commitOut);
+
 /* --- thread.c (M7) ------------------------------------------------------- */
 
 /* The caller-controlled parts of a thread create that are not the entry
@@ -447,8 +470,8 @@ typedef struct PSP_THREAD_OPTIONS
 {
     ACCESS_MASK desiredAccess;
     ULONG handleAttributes; /* OBJ_INHERIT etc., from OBJECT_ATTRIBUTES */
-    uint64_t stackReserve;  /* 0 = the default 1 MiB */
-    uint64_t stackCommit;   /* 0 = the default 64 KiB */
+    uint64_t stackReserve;  /* 0 = the image's SizeOfStackReserve */
+    uint64_t stackCommit;   /* 0 = the image's SizeOfStackCommit */
     /* NtCreateThreadEx's ZeroBits, resolved to a placement CEILING for the
      * stack reservation — inclusive of its last byte, 0 = unconstrained, the
      * convention MiAllocateVirtualMemoryEx's limitHigh already uses. It is

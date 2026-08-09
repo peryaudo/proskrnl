@@ -38,9 +38,54 @@ PEPROCESS PsInitialSystemProcess;
 uint64_t PspAllocateProcessId(void);
 
 /* Default stack shape for flat binaries (a PE brings its own sizes): the
- * NT x64 defaults — 1 MiB reserved, 64 KiB committed up front. */
+ * NT x64 defaults — 1 MiB reserved, 64 KiB committed up front. The reserve is
+ * also NT's FLOOR for every stack, applied by PspResolveStackGeometry. */
 #define PSP_STACK_RESERVE (1024ULL * 1024)
 #define PSP_STACK_COMMIT  (64ULL * 1024)
+
+/* NT's thread-stack geometry rule (ps.h has the oracle's body and the
+ * contract). One statement for the main thread and for every thread
+ * NtCreateThreadEx makes: an unnamed size is the IMAGE's, the reserve is the
+ * larger of the two, and the whole thing is floored at 1 MiB. */
+void PspResolveStackGeometry(uint64_t imageReserve, uint64_t imageCommit, uint64_t reserve,
+                             uint64_t commit, uint64_t *reserveOut, uint64_t *commitOut)
+{
+    if (reserve == 0)
+    {
+        reserve = imageReserve;
+    }
+    if (commit == 0)
+    {
+        commit = imageCommit;
+    }
+    /* The COMMIT floor is proskrnl's, not NT's, and it is deliberate: this
+     * kernel grows a thread stack one page at a time off a single guard page,
+     * so a function whose frame is larger than the gap steps clean over the
+     * guard and takes a plain access violation. Wine does not have the
+     * problem because it commits the WHOLE reservation up front and uses the
+     * guard page only as an overflow tripwire. Honouring a 4 KiB commit
+     * literally — which is what ntdll's own threadpool asks for — crashes
+     * those threads in ntdll startup, convicted by sem_port/ports. Wine's
+     * ntdll also assumes the initial commit its own loader would have made:
+     * signal_start_thread (dlls/ntdll/signal_x86_64.c) zeroes 0xf000 bytes
+     * below the initial CONTEXT before NtContinue. The commit is not part of
+     * any pinned contract (the winetest's commit assertions are todo_wine on
+     * both runners); the reserve is, through the TEB's DeallocationStack. */
+    if (commit < PSP_STACK_COMMIT)
+    {
+        commit = PSP_STACK_COMMIT;
+    }
+    if (reserve < commit)
+    {
+        reserve = commit;
+    }
+    if (reserve < PSP_STACK_RESERVE)
+    {
+        reserve = PSP_STACK_RESERVE;
+    }
+    *reserveOut = reserve;
+    *commitOut = commit;
+}
 
 /* Deleting a process (last reference gone) tears down what termination left:
  * the parked KTHREAD, the handle-table storage, and the address space. Runs
@@ -409,6 +454,13 @@ static NTSTATUS PspMapImage(PEPROCESS process, PKI_RAMDISK_FILE file, uint64_t *
     if (NT_SUCCESS(status))
     {
         PspApplyUserDispatchers(process, &dispatcherRvas, *baseOut);
+        /* Retain the image's facts here too, not only on the NtCreateUserProcess
+         * path: PspResolveStackGeometry reads MaximumStackSize for every thread
+         * this process later creates, and a zero there is not "no image", it is
+         * the claim that the image declared nothing — which would silently drop
+         * a boot module's SizeOfStackReserve onto NT's floor. Same one fill
+         * ProcessImageInformation serves (G11). */
+        PspFillImageInformation(section->image, *entryOut, &process->imageInformation);
     }
     ObDereferenceObject(section); /* the view holds its own pin */
     return status;
@@ -452,13 +504,13 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     {
         isPe = TRUE;
         status = PspMapImage(process, file, &entry, &imageBase, &stackReserve, &stackCommit);
-        if (NT_SUCCESS(status) && stackReserve == 0)
+        if (NT_SUCCESS(status))
         {
-            stackReserve = PSP_STACK_RESERVE;
-        }
-        if (NT_SUCCESS(status) && stackReserve < 4ULL * PAGE_SIZE)
-        {
-            stackReserve = 4ULL * PAGE_SIZE;
+            /* The main thread names no sizes of its own, so both are the
+             * image's — the same rule every other thread's stack goes
+             * through. It replaces a 16 KiB floor this path used to apply,
+             * which was neither NT's nor the sibling path's. */
+            PspResolveStackGeometry(stackReserve, stackCommit, 0, 0, &stackReserve, &stackCommit);
         }
     }
     else
@@ -751,18 +803,11 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
             status = STATUS_ENTRYPOINT_NOT_FOUND;
         }
     }
-    if (NT_SUCCESS(status) && stackReserve < 4ULL * PAGE_SIZE)
+    if (NT_SUCCESS(status))
     {
-        stackReserve = PSP_STACK_RESERVE;
-    }
-    /* Wine's ntdll assumes the initial commit its own loader would have
-     * made: signal_start_thread (dlls/ntdll/signal_x86_64.c) zeroes 0xf000
-     * bytes below the initial CONTEXT before NtContinue, deeper than a
-     * minimal PE-header SizeOfStackCommit. Commit at least the 64 KiB every
-     * additional thread gets (kernel/ps/thread.c). */
-    if (NT_SUCCESS(status) && stackCommit < PSP_STACK_COMMIT)
-    {
-        stackCommit = PSP_STACK_COMMIT;
+        /* The main thread names no sizes of its own, so both are the image's
+         * — the same rule every other thread's stack goes through. */
+        PspResolveStackGeometry(stackReserve, stackCommit, 0, 0, &stackReserve, &stackCommit);
     }
 
     uint64_t stackTop = 0;

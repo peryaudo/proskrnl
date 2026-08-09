@@ -211,9 +211,18 @@ the pinned tree:
   mode can state the RESERVE (`GetCurrentThreadStackLimits`, `SetThreadStackGuarantee`,
   `badptr_handler`'s guard re-arm and `SwitchToFiber` all read it). Pinned by
   `sem_ps/teb_stack.c` and `sem_ps/teb_fiber_data.c`.
-- **The initial stack commit is at least 64 KiB** regardless of the PE header's
-  `SizeOfStackCommit`: `signal_start_thread` zeroes `0xf000` bytes below the initial
-  CONTEXT before `NtContinue`, deeper than a minimal 1-page commit.
+- **Every stack's commit is at least 64 KiB** regardless of the PE header's
+  `SizeOfStackCommit` or the caller's `stackSize`: `signal_start_thread` zeroes `0xf000`
+  bytes below the initial CONTEXT before `NtContinue`, deeper than a minimal 1-page
+  commit, and this kernel grows a stack one page at a time off a single guard page — a
+  frame larger than the gap steps clean over the guard (the 4 KiB commit ntdll's
+  threadpool asks for, convicted by `sem_port/ports`). The RESERVE deviates from nothing:
+  an unnamed reserve is the image's `SizeOfStackReserve`, floored at NT's 1 MiB, for the
+  main thread and for every `NtCreateThreadEx` thread alike — one rule, one function
+  (`PspResolveStackGeometry`, `kernel/ps/process.c`), transcribed from
+  `virtual_alloc_thread_stack` and pinned by `sem_ps/thread_stack_default.c`. The commit
+  is not part of any pinned contract (the winetest's commit assertions are `todo_wine` on
+  both runners); the reserve is, through the TEB's `DeallocationStack`.
 - **NLS data is real**: `NtInitializeNlsFiles` maps `locale.nls` and reports the fixed
   en-US system LCID `0x409` (the fallback Wine's `init_locale` reports with no configuring
   host locale); its size argument is left **untouched** (Wine never writes it — pinned by
@@ -1901,19 +1910,35 @@ and `sem_ps/thread_stack_alloc.c`). Nothing here deviates.
 What differs is which ceilings can be **met**, and it is worth writing down because it is
 user-observable and it is not a bug. A ceiling is satisfiable only if a free hole of the
 requested size lies under it, so the answer depends on where the address space starts being
-free. proskrnl's lowest free hole in a test process is `0x7c0000`; the pinned oracle's is
-lower. So a 1 MiB thread stack under `ZeroBits` 9, 10 or 11 is `STATUS_SUCCESS` on the
-oracle and `STATUS_NO_MEMORY` here — the same difference two Windows machines with
-different loader layouts would show, and `ntdll:virtual`'s `test_stack_size` accepts
-`STATUS_NO_MEMORY` at every one of those values for exactly that reason.
+free. proskrnl's lowest free hole in a *fresh* test process is `0x7c0000` (printed by
+`sem_ps/thread_zero_bits.c`); the pinned oracle's is lower. So a 1 MiB thread stack under
+the tightest few `ZeroBits` values — 9, 10 and 11 when the sweep starts at that hole — is
+`STATUS_SUCCESS` on the oracle and `STATUS_NO_MEMORY` here, the same difference two Windows
+machines with different loader layouts would show, and `ntdll:virtual`'s `test_stack_size`
+accepts `STATUS_NO_MEMORY` at every one of those values for exactly that reason. **Which
+values, exactly, is not a constant**: the hole a sweep actually sees is the fresh one minus
+whatever the threads before it reserved, so the refused set widens by one as soon as those
+threads get bigger (below).
 
-The consequence to expect when reading a winetest count: proskrnl runs **18** of
-`test_stack_size_thread`'s bodies where the oracle runs 24, because six of the sweep's
-creates correctly refuse here. That is coverage the pair cannot reach on this kernel, not a
-failure, and it is why the pair's *executed* count sits below the oracle's while its
+The consequence to expect when reading a winetest count: proskrnl runs **16** of
+`test_stack_size_thread`'s bodies where the oracle runs 24, because the sweep's tighter
+ceilings correctly refuse here. That is coverage the pair cannot reach on this kernel, not
+a failure, and it is why the pair's *executed* count sits below the oracle's while its
 *failure* count matches on that cluster. No promise is made about where an allocation
 lands; if this kernel's low reserved region ever shrinks, the reachable set grows and
 nothing above needs changing.
+
+**This paragraph said 18 and the number was arithmetic, not a count.** It was derived from
+the two runners' lowest free holes (9 counts + 9 masks); counted per line in the serial
+log, the pair ran **17** bodies then — 15 from the sweep plus the two
+`test_stack_growth_thread` creates ahead of it — and runs **16** now. The one it lost is a
+sweep create that flipped to `STATUS_NO_MEMORY` when the two threads ahead of it started
+reserving the image's 2 MiB instead of a hardwired 1 MiB, because **this kernel never
+releases a dead thread's stack** (`PspDeleteThread` frees the name, the token and the
+KTHREAD, and nothing frees the reservation until the process dies), so each thread's
+reserve is subtracted from the low address space permanently. That mechanism is read off
+the code and is consistent with the arithmetic; which sweep index moved was not measured.
+The leak itself is issue #152 — a real defect, not a property of the `ZeroBits` rule.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
