@@ -2,6 +2,7 @@
 #
 #   make            build the bootable image (build/proskrnl.hdd)
 #   make test       build + boot in QEMU, check the [KTEST] verdict on serial
+#   make fulltest   every leg CI runs, fanned out over this box (tools/fulltest.sh)
 #   make run        build + boot the interactive image: cmd.exe on your terminal
 #   make clean
 
@@ -1373,6 +1374,17 @@ test: $(IMG)
 	tests/run/uacheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
 	tests/run/fatcheck.sh verify test $(IMG)
+
+# The WHOLE CI suite, on this machine, in parallel (tools/fulltest.sh): the
+# same legs .github/workflows/test.yml runs, one sandboxed view each, fanned
+# out over the box instead of spread over seven hosted shards. A green run is
+# the answer to "would CI be green" without waiting for CI.
+#
+#   make fulltest                              every leg (the verdict)
+#   make fulltest FULLTEST_ARGS="gui4 cui8"    a subset, for iteration only
+fulltest:
+	tools/fulltest.sh $(FULLTEST_ARGS)
+.PHONY: fulltest
 
 # A WEAK second oracle for driver-vs-device-model assumptions (docs/08): the
 # same boot under the host's QEMU instead of the pin. A divergence names a

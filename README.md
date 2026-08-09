@@ -224,9 +224,10 @@ permanently (ADR 0011).
 ## Build instructions
 
 ```sh
-make test    # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
-make run     # boot interactively: a cmd.exe prompt on your terminal ('exit' powers off)
-make rungui  # boot the GUI-2 image with a host window on the scanout (winemine.exe)
+make test     # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
+make fulltest # every leg CI runs, fanned out over this machine (docs/08) — the whole verdict
+make run      # boot interactively: a cmd.exe prompt on your terminal ('exit' powers off)
+make rungui   # boot the GUI-2 image with a host window on the scanout (winemine.exe)
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
 tests/run/run.sh proskrnl query_dir   # ...or one test / a glob, while iterating (both legs)

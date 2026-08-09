@@ -317,6 +317,70 @@ trap self-test and `crash.bin`'s contained access violation — still resolve to
 script recognizes addresses by their *printed shape* (field width, kernel link base,
 `PSP_IMAGE_BASE`, the `[USERFAULT]` block layout), and nothing else forces those to agree.
 
+## The whole suite, locally: `make fulltest`
+
+CI (`.github/workflows/test.yml`) is 26 legs over seven shards, and the shards exist
+because a hosted runner has two cores and no KVM. A dev box has neither limitation, so
+`make fulltest` (`tools/fulltest.sh`) runs **the same 26 legs** — same commands, same
+environment, nothing lightened — as independent parallel units. The wall clock becomes the
+*longest* leg instead of the sum of a shard's, and the question "would CI be green" is
+answerable in minutes rather than in a push-and-wait.
+
+Everything about that speed-up is scheduling; the interesting part is the isolation it
+needs. The legs were written to run one at a time and say so in the tree: each calls
+`make -C $ROOT` for its own image (two makes in one build directory race over the same
+objects), several boot a **shared master image in place** (`console`, `cui8` and the six
+GUI legs boot `build/proskrnl{,-console,-gui*}.hdd` directly, and QEMU writes into what it
+boots), and six more `rm -f` that master to force a virgin one before copying it — a
+guaranteed corrupt read for any neighbour copying it at that moment. Making every one of
+those shared-nothing would be a rewrite of `tests/run/run.sh`, and a rewrite of the harness
+is the last thing that should ride along with *making the harness faster*.
+
+So the isolation is in the filesystem instead of in the tests. Each leg gets a **view**:
+`build/fulltest/views/<leg>/`, whose entries are symlinks to this tree's (`kernel/`,
+`tests/`, `third_party/`, `Makefile`, …) and whose `build/` is a real copy of the build
+outputs, minus the disk images (every leg makes the one it boots) and minus the previous
+run's logs, screendumps and wineprefixes (a stale artifact must not be reachable from a
+fresh verdict; and run.sh's own comment forbids a *copied* wineprefix). A leg's `$ROOT`
+resolves to its view, so its makes, images, serial logs and mutated disks are its own, and
+`tests/run/run.sh` is untouched by any of it. The view's root is a real directory and only
+its entries are links, which is what makes `$ROOT` come out as the view — `make_view()`
+asserts that rather than trusting it, because if it ever stopped holding, every leg would
+quietly be running in the real tree again.
+
+Two knobs carry judgement rather than taste:
+
+- **`-j` defaults to a quarter of the cores, not all of them.** Each leg is a single-vCPU
+  guest, so the box could hold many more — but four legs measure the *machine* rather than
+  the boundary (the oracle's `times` case reads the host idle counter; `cui8` asserts a park
+  under a throttled disk; `procs` and `gui5con` have choreography with sleeps in it), and a
+  box with every core saturated is a different machine. A quarter is where the two terms of
+  the wall clock meet: on a 32-core KVM box the 26 legs are ~1089 s of work whose longest
+  single leg is 114 s (`guiwtest`), and `-j8` lands the whole suite in **150 s** — no width
+  can do better than ~120 s, and buying that last 20% with a saturated box would be paying
+  in false reds.
+- **`tests/run/run.sh prebuild`** builds the ~165 ntapi test `.exe`s once, fanned out,
+  before the legs start. It is a build step and produces no verdict — it exists because the
+  `proskrnl` leg builds them one at a time, and at ~1.2 s each that is three minutes on the
+  leg's clock, paid again in every sandbox that needs them.
+
+**Do not touch the tree while it runs.** The views symlink the sources, so an edit mid-run
+reaches every leg at once — and that includes editing `run.sh` or `fulltest.sh` themselves,
+where the shell re-reads a script whose byte offsets just moved underneath it. It is the
+same rule a single hand-run leg has always had (a leg bakes its image from the live tree);
+the fan-out only makes one careless save cost twenty-six verdicts instead of one.
+
+What CI still has that `fulltest` does not is three things, and only the first is about
+speed. **CI is a slower machine** — two cores, TCG, a virgin cache — so the failures it can
+see that `fulltest` cannot are the ones settled by machine speed rather than by semantics,
+which is exactly why the `msg` leg is advisory on PRs there. **CI tests the committed
+tree**, `fulltest` the working one: a required file nobody `git add`ed is green in every leg
+and red on CI (this tool's own script was that file, once), so the summary reports when the
+tree is dirty. And **CI builds from nothing**, while the views copy this tree's incremental
+`build/`, which hides a stale object or a missing Makefile dependency. Everything
+*semantic*, `fulltest` has already answered — which is what makes it usable as the gate
+before a merge rather than a preview of one.
+
 ## Detection loses to prevention
 
 The final point. An implementer who cannot review the hardest code should rely on
