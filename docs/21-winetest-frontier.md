@@ -153,15 +153,32 @@ completes (a refusal that never wrote the IOSB) frees the block explicitly.
   it. The lesson generalises — *changing what a field is used for changes
   what it must own*, and no assertion in the pin could have seen it.
 
-**What it revealed is the real news.** `ntdll:pipe` ran through
+**What it revealed, and what then closed.** `ntdll:pipe` ran through
 `test_overlapped` into the completion tests and surfaced two things that had
-never been reached: `pipe.c:413` — NT clears the completion event when a
-request is **submitted**, even one that then fails immediately with
-`STATUS_PIPE_CONNECTED`, where proskrnl clears it only on the pending path —
-and a panic at `NtQueryInformationFile` class 41,
-`FileIoCompletionNotificationInformation`. Both are in the manifest block,
-and neither is folded into this item: the first is a different rule and the
-second a different class.
+never been reached — and both are now built too:
+
+- `pipe.c:413`: an ioctl refused **on the spot** still leaves the caller's
+  completion event CLEAR with the IOSB untouched, which the returned status
+  alone cannot satisfy because the test reads event and IOSB together.
+  Routed through `IopAbandonRequest`, the authority the transfer paths use.
+- class 41, `FileIoCompletionNotificationInformation`, in both directions —
+  per-**handle** state on the `FILE_OBJECT` — with
+  `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` honoured in `IopCompleteTransfer`.
+  The oracle refuted the obvious guess here: the mode bits **accumulate**, a
+  second set ORs in, and nothing can clear one.
+
+Both pinned by `tests/ntapi/sem_pipe/ioctl_event.c`.
+
+**`ntdll:pipe` no longer panics anywhere.** It reaches its own summary line —
+the first measurement of this pair that is not a lower bound — with **three**
+failures, and they are one subject: **the ioctl path posts no completion
+packet at all.** `IopCompleteTransfer` (`rw.c`) is the only site that posts,
+and `ioctl.c` calls `IopCompleteRequest` directly. The rule to reuse is
+already there: `completionValue = apc ? 0 : apcContext`, posted only when
+non-zero. The manifest block has the third failure's warning too — a
+`STATUS_BUFFER_OVERFLOW` read still queued a packet despite the skip flag,
+which points at a read completing through some site *other* than
+`IopCompleteTransfer` rather than at the rule.
 
 **W4b — change-notify: DONE.** `ntdll:change` and `kernel32:change` are both
 green. Three rules landed, all pinned:
