@@ -1202,7 +1202,26 @@ def gen_ntioapi(wine: Path) -> str:
             ),
             extract_struct(winioctl, "_FILE_PIPE_WAIT_FOR_BUFFER", "FILE_PIPE_WAIT_FOR_BUFFER"),
             extract_struct(winioctl, "_FILE_PIPE_PEEK_BUFFER", "FILE_PIPE_PEEK_BUFFER"),
+            # M10 (docs/21 W4a's tail): FileIoCompletionNotificationInformation,
+            # what SetFileCompletionNotificationModes reads and writes.
+            extract_struct(
+                winternl,
+                "_FILE_IO_COMPLETION_NOTIFICATION_INFORMATION",
+                "FILE_IO_COMPLETION_NOTIFICATION_INFORMATION",
+            ),
         ]
+    )
+    # The mode bits themselves. FILE_SKIP_SET_USER_EVENT_ON_FAST_IO is
+    # generated alongside the two proskrnl honours so the accepted-bits mask
+    # can be written against the real set rather than against a guess.
+    completion_modes = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "FILE_SKIP_COMPLETION_PORT_ON_SUCCESS",
+            "FILE_SKIP_SET_EVENT_ON_HANDLE",
+            "FILE_SKIP_SET_USER_EVENT_ON_FAST_IO",
+        ],
     )
 
     iosb = extract_struct(winternl, "_IO_STATUS_BLOCK", "IO_STATUS_BLOCK")
@@ -1330,6 +1349,8 @@ _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_
 _Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
 _Static_assert(sizeof(FILE_PIPE_INFORMATION) == 8, "FILE_PIPE_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_IO_COMPLETION_NOTIFICATION_INFORMATION) == 4,
+               "FILE_IO_COMPLETION_NOTIFICATION_INFORMATION x64 layout");
 _Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
@@ -1391,6 +1412,9 @@ _Static_assert(sizeof(FILE_FS_FULL_SIZE_INFORMATION) == 32, "FILE_FS_FULL_SIZE_I
         + pipe_defines
         + "\n\n"
         + pipe_structs
+        + "\n\n/* The I/O completion-notification MODES (docs/21 W4a's tail),\n"
+        + " * extracted from wine/include/winternl.h. */\n"
+        + completion_modes
         + "\n\n"
         + completion_defines
         + "\n\n"

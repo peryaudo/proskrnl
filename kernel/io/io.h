@@ -100,6 +100,31 @@ typedef struct FILE_OBJECT
      * vfs op has no IRP to carry it, so the file object does. */
     ACCESS_MASK desiredAccess;
     ULONG shareAccess; /* this open's FILE_SHARE_* */
+
+    /* FileIoCompletionNotificationInformation (class 41), the word
+     * SetFileCompletionNotificationModes reads and writes. It lives on the
+     * FILE_OBJECT, so duplicated handles SHARE it — which is the oracle's
+     * shape too (its `struct fd` carries it and dup copies it); what the
+     * pin demonstrates is only that the two ENDS of one pipe differ, which
+     * is a weaker claim than per-handle.
+     *
+     * Bits ACCUMULATE: a second set ORs in, unknown bits are masked out, and
+     * nothing can clear one (all measured — sem_pipe/ioctl_event.c).
+     *
+     * NONE of the three bits changes behaviour yet. The word is stored and
+     * reported back truthfully and that is all, so a caller reading its own
+     * mode back gets the truth about what was RECORDED, not a claim that it
+     * took effect. FILE_SKIP_COMPLETION_PORT_ON_SUCCESS is the one that
+     * would, and it is deliberately unbuilt here: its rule keys on whether
+     * the call RETURNED STATUS_PENDING, not on the completion status
+     * (third_party/wine dlls/ntdll/unix/file.c, server/fd.c set_fd_completion
+     * and server/async.c async_terminate all agree), and that decision has
+     * to be made where the returned status is known — which is not inside
+     * IopCompleteTransfer. Keying it on NT_SUCCESS instead makes an async
+     * port-bound handle with the flag set answer STATUS_PENDING and post
+     * nothing, i.e. hang GetQueuedCompletionStatus forever. docs/21 W4a and
+     * the ntdll:pipe manifest block carry the measurement. */
+    ULONG completionFlags;
     LARGE_INTEGER currentByteOffset;
 
     /* M10 change-notify: the completion FILTER is established by the FIRST

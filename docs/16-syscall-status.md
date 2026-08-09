@@ -132,6 +132,24 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
 
 ### Argument-shape gaps (the verb is built, one calling form is not)
 
+- **`FileIoCompletionNotificationInformation` (class 41) — the VERB is built,
+  the MODES are not, and the split is deliberate.** Both directions work
+  (`kernel/io/query.c`): the word lives on the `FILE_OBJECT`, accumulates,
+  masks unknown bits, and refuses a synchronous handle with
+  `STATUS_INVALID_PARAMETER` — all measured
+  (`tests/ntapi/sem_pipe/ioctl_event.c`). **None of the three bits changes
+  behaviour**; the word is stored and reported back truthfully and nothing
+  more, which is what a caller reading its own mode back is entitled to.
+  `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` is the one that would matter, and
+  the reason it is unbuilt is worth keeping: its rule keys on whether the
+  call **returned `STATUS_PENDING`**, not on the completion status
+  (`dlls/ntdll/unix/file.c`, `server/fd.c` `set_fd_completion`, and
+  `server/async.c` `async_terminate` all agree), so the decision belongs
+  where the returned status is known — not inside `IopCompleteTransfer`,
+  which runs before `IopAsyncReturnShape` converts success into pending.
+  A first cut keyed it on `NT_SUCCESS` and would have made an async
+  port-bound handle answer `STATUS_PENDING` and post nothing, hanging
+  `GetQueuedCompletionStatus` forever. That is why it is a separate item.
 - **User APCs on I/O — now a SPLIT row, and the line numbers it used to carry
   had drifted off their guards.** The completion-APC form is **built** for
   `NtDeviceIoControlFile`/`NtFsControlFile` (`kernel/io/ioctl.c`, pinned

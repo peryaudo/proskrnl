@@ -543,6 +543,16 @@ typedef struct {
     CHAR    Data[1];
 } FILE_PIPE_PEEK_BUFFER, *PFILE_PIPE_PEEK_BUFFER;
 
+typedef struct {
+    ULONG Flags;
+} FILE_IO_COMPLETION_NOTIFICATION_INFORMATION, *PFILE_IO_COMPLETION_NOTIFICATION_INFORMATION;
+
+/* The I/O completion-notification MODES (docs/21 W4a's tail),
+ * extracted from wine/include/winternl.h. */
+#define FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 0x1
+#define FILE_SKIP_SET_EVENT_ON_HANDLE 0x2
+#define FILE_SKIP_SET_USER_EVENT_ON_FAST_IO 0x4
+
 #define IO_COMPLETION_QUERY_STATE 0x0001
 #define IO_COMPLETION_MODIFY_STATE 0x0002
 #define IO_COMPLETION_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE|0x3)
@@ -615,6 +625,8 @@ _Static_assert(offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName) == 94, "FILE_
 _Static_assert(offsetof(FILE_NAMES_INFORMATION, FileName) == 12, "FILE_NAMES_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_ALL_INFORMATION, NameInformation) == 96, "FILE_ALL_INFORMATION x64 layout");
 _Static_assert(sizeof(FILE_PIPE_INFORMATION) == 8, "FILE_PIPE_INFORMATION x64 layout");
+_Static_assert(sizeof(FILE_IO_COMPLETION_NOTIFICATION_INFORMATION) == 4,
+               "FILE_IO_COMPLETION_NOTIFICATION_INFORMATION x64 layout");
 _Static_assert(sizeof(FILE_PIPE_LOCAL_INFORMATION) == 40, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_LOCAL_INFORMATION, NamedPipeState) == 32, "FILE_PIPE_LOCAL_INFORMATION x64 layout");
 _Static_assert(offsetof(FILE_PIPE_PEEK_BUFFER, Data) == 16, "FILE_PIPE_PEEK_BUFFER x64 layout");
