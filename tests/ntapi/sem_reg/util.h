@@ -170,6 +170,20 @@ static inline NTSTATUS reg_open_path_access(const void *path, ACCESS_MASK access
     return NtOpenKey(out, access, &attr);
 }
 
+/* Open a subkey relative to an open key handle, with an explicit
+ * DesiredAccess — the read-only twin of reg_create_sub. */
+static inline NTSTATUS reg_open_sub_access(HANDLE root, const void *sub, ACCESS_MASK access,
+                                           HANDLE *out)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+
+    init_ustr(&name, sub);
+    init_attr(&attr, root, &name, OBJ_CASE_INSENSITIVE);
+    *out = NULL;
+    return NtOpenKey(out, access, &attr);
+}
+
 static inline NTSTATUS reg_open_path(const void *path, HANDLE *out)
 {
     UNICODE_STRING name;
