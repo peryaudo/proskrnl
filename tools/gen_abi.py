@@ -736,6 +736,14 @@ def gen_ntmmapi(wine: Path) -> str:
     mri = extract_struct(
         winternl, "_MEMORY_REGION_INFORMATION", "MEMORY_REGION_INFORMATION"
     )
+    # M10 winetest (docs/21 W5 tail): NtQueryVirtualMemory's
+    # MemoryImageInformation. The bitfield tail is the contract too — the
+    # winetest reads ImagePartialMap/ImageNotExecutable/ImageSigningLevel as
+    # named bits AND asserts the whole ImageFlags word is zero for a
+    # non-image address, so the bit ORDER inside the union is observable.
+    mii = extract_struct(
+        winternl, "_MEMORY_IMAGE_INFORMATION", "MEMORY_IMAGE_INFORMATION"
+    )
     info_class = extract_enum(
         winternl, "_MEMORY_INFORMATION_CLASS", "MEMORY_INFORMATION_CLASS"
     )
@@ -809,6 +817,18 @@ _Static_assert(offsetof(MEMORY_REGION_INFORMATION, PartitionId) == 32,
                "MEMORY_REGION_INFORMATION x64 layout");
 """
 
+    # MemoryImageInformation's minimum IS its own size (no partial fill, unlike
+    # MemoryRegionInformation), so sizeof() is what the length refusal is
+    # stated against and ImageFlags' offset is what the zeroed answer for a
+    # non-image address covers.
+    mii_asserts = """\
+_Static_assert(sizeof(MEMORY_IMAGE_INFORMATION) == 24, "MEMORY_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_IMAGE_INFORMATION, SizeOfImage) == 8,
+               "MEMORY_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_IMAGE_INFORMATION, ImageFlags) == 16,
+               "MEMORY_IMAGE_INFORMATION x64 layout");
+"""
+
     ext_param_asserts = """\
 _Static_assert(sizeof(MEM_ADDRESS_REQUIREMENTS) == 24, "MEM_ADDRESS_REQUIREMENTS x64 layout");
 _Static_assert(offsetof(MEM_ADDRESS_REQUIREMENTS, Alignment) == 16,
@@ -857,6 +877,12 @@ _Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMA
         + mri
         + "\n\n"
         + mri_asserts
+        + "\n/* M10 (docs/21 W5 tail): NtQueryVirtualMemory's\n"
+        + " * MemoryImageInformation, extracted verbatim from\n"
+        + " * wine/include/winternl.h. */\n"
+        + mii
+        + "\n\n"
+        + mii_asserts
         + "\n\n/* CUI-7: the *Ex extended-parameter contract, extracted verbatim from\n"
         + " * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold\n"
         + " * (wine/include/basetsd.h: unsigned 64-bit). */\n"
