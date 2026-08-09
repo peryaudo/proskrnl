@@ -1,6 +1,6 @@
 ---
 name: fix-cui-winetest
-description: Take ONE `# TODO: Implement` work item from the CUI winetest manifest (tests/winetest/manifest.txt, planned in docs/21), pin it against the oracle, implement it, re-measure, un-park the pair if it is green, then gate-check, open a PR, wait for CI and rebase-merge. Refuses when no unparkable item is left. Invoke manually with /fix-cui-winetest; never triggered automatically.
+description: Take ONE `# TODO: Implement` work item from the CUI winetest manifest (tests/winetest/manifest.txt, planned in docs/21), pin it against the oracle, implement it, re-measure, un-park the pair if it is green, then gate-check, prove it with `make fulltest`, open a PR and rebase-merge. Refuses when no unparkable item is left. Invoke manually with /fix-cui-winetest; never triggered automatically.
 argument-hint: [pair-or-W-item]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, TaskCreate, TaskUpdate, TaskList
 ---
@@ -21,8 +21,8 @@ Finishing one item properly beats starting three.
 > subagent would hide all of that behind one summary at the end. `allowed-tools`
 > pre-approves the tool set so the run does not stall on a permission prompt
 > half an hour in. The cost is that this occupies the session for the whole
-> run, including the CI wait — that is the intended trade; do not "fix" it by
-> delegating or backgrounding the work.
+> run — that is the intended trade; do not "fix" it by delegating or
+> backgrounding the work.
 >
 > Full access means you can push to a remote and merge to `main` with nobody
 > watching. The steps below are what keeps that safe — the unfiltered gate
@@ -40,8 +40,10 @@ Also honour `CLAUDE.local.md` for the `make -j` flag on this machine.
 
 **One instance at a time.** Test legs bake disk images from the *live working
 tree*, so a checkout, stash or edit while a leg is running corrupts that
-leg's image. Never mutate the tree while `run.sh` or `make test` is in
-flight, and do not run two of these skills concurrently.
+leg's image. `make fulltest` does not change this — its sandboxes symlink the
+sources, so an edit mid-run reaches every leg at once. Never mutate the tree
+while `run.sh`, `make test` or `make fulltest` is in flight, and do not run two
+of these skills concurrently.
 
 ## Step 1 — Pick an item, or REFUSE
 
@@ -137,15 +139,31 @@ Then prove it, in this order, and do not proceed past a failure:
 make -j<N>                                  # per CLAUDE.local.md
 tests/run/run.sh proskrnl <name>            # the new pin, on the kernel
 tests/run/run.sh winetest <module>:<subtest># re-measure the pair
-tests/run/run.sh oracle                     # unfiltered — the spec gate
-tests/run/run.sh proskrnl                   # unfiltered — the regression gate
-make -j<N> test
-make -j<N> tidy
-python3 tools/blocking_frontier.py --check
+make -j<N> tidy                             # REWRITES source — so, before the verdict
+make fulltest                               # THE verdict — every leg CI runs, ~3 min
 ```
 
-A subset run is for iteration only; only the **unfiltered** legs are a
-verdict.
+The first three are ITERATION: a subset run is never a verdict. `make fulltest`
+(`tools/fulltest.sh`, docs/08) is — it runs the same 26 legs
+`.github/workflows/test.yml` runs, sandboxed one per leg and fanned out over
+this box: the unfiltered oracle and proskrnl legs, the whole winetest sweep,
+`make test`, the fuzzer, the FAT batteries, every CUI and GUI leg, the
+user32:msg trophy and the blocking-frontier check. It prints a PASS/FAIL table
+and exits non-zero if any leg is red; read the table, not the exit code alone.
+
+`tidy` runs *before* it, never after: it rewrites source in place, and a verdict
+taken on a tree that then changed is not a verdict on what you push (Step 8,
+precondition 2). Same rule for any other edit — re-run rather than reason about
+whether it mattered.
+
+**A red leg is yours until proven otherwise.** The one standing exception on a
+KVM developer box is the `winetest` leg going red on the ORACLE half of
+`kernel32:version` — 36 failures, all at `version.c:1087`, `CreateProcessA`
+returning `ERROR_FILE_NOT_FOUND`. That residue is host-local, pre-existing and
+documented in the manifest header; it is green on CI. Accept it only when the
+signature matches *exactly* (that line, that count, the oracle half) and the
+kernel half of the pair passed. Any other red — including a different count on
+that same pair — is a stop.
 
 ## Step 5 — Un-park only if it is actually green
 
@@ -173,7 +191,8 @@ that a future reader would otherwise have to re-derive, and update
 Review the full diff against the gates and **resolve what it finds**. Be
 adversarial with your own work: G11's ownership audit and G12's loud-refusal
 hunt are the two that most often catch a real defect. If a fix falls out of
-it, re-run the affected legs from Step 4.
+it, re-run Step 4 — `make fulltest` in full, not the legs you guess are
+affected: it is three minutes, and the guess is the part that goes wrong.
 
 Invoke `gate-check` — running in the main conversation, you get its fork for
 free, and a reviewer that has not seen you write the diff catches more than
@@ -197,84 +216,69 @@ negotiable:
 
 No WIP or fixup commits. Squash and reorder locally first.
 
-## Step 8 — PR, CI, merge
+## Step 8 — PR and merge; the local suite is the gate, not CI
 
 Push a feature branch and open a PR whose body states: what landed, whether
 the pair went green (and if not, the measured residue), what the oracle
-refuted, and the verification you ran.
+refuted, and the verification you ran — quote the `make fulltest` summary
+line, and name the host-local exception if you accepted one.
 
-Wait for CI.
+Then merge: `gh pr merge <n> --rebase`. **Do not wait for CI.** CI runs the
+same 26 legs `make fulltest` just ran; waiting adds half an hour and no
+information. Merge only with all three of these true:
 
-**All checks green** → `gh pr merge <n> --rebase`. Done.
+1. `make fulltest` green — or red *only* on the documented `kernel32:version`
+   oracle residue, signature matched as Step 4 describes;
+2. the commits are exactly the tree you tested, and `git status --porcelain` is
+   empty. fulltest judges the WORKING tree and CI judges the COMMITTED one, so
+   an unadded file is green in all 26 legs and red on CI — and any edit after
+   the run, including a "trivial" comment fix, invalidates it. Re-run rather
+   than reason about whether it mattered;
+3. `make tidy` clean and the Step 6 gate-check resolved.
 
-**A check is red or cancelled** → re-run the failed job once (some legs are
-genuinely flaky). If it goes green, merge. If it stays red, you must decide
-whether the failure belongs to this branch, and the answer decides the
-outcome:
+What skipping the wait costs, honestly: CI is a slower machine (two cores,
+TCG, virgin cache), so the failures it can see that fulltest cannot are the
+ones settled by machine SPEED rather than by semantics — which is why the
+user32:msg leg is advisory on PRs there (docs/03 "GUI-5 winetest notes").
+Everything semantic, fulltest has already answered. CI still runs on `main`
+after the merge and remains the project's record; if a leg fulltest passed
+goes red there, that is a real finding — either a machine-speed divergence or
+a hole in fulltest's fidelity — and it is yours to chase, not to ignore.
 
-### Proving a failure is NOT the branch's
+### When fulltest is red
 
-The bar is **positive evidence**, not absence of a connection. "I can't see
-how my change would cause this" is not evidence — it is the thing every
-author believes right before they are wrong. Produce at least one of:
+**STOP and report.** A red leg is this branch's until proven otherwise, and
+the proof bar is *positive evidence*, not absence of a connection — "I can't
+see how my change would cause this" is what every author believes right before
+they are wrong. Produce one of:
 
-1. **The same signature on `main`.** Find a recent `main` run of the *same
-   job* that failed the *same way* — same failure mode, same test named, and
-   for a hang/timeout the same orphan-process list or the same last log line.
-   A `main` run contains none of your commits, so this is conclusive. Cite
-   the run ID and both timestamps.
+1. **The same signature with the change removed.** With nothing in flight
+   (the stash itself would corrupt a running leg), `git stash` — or check out
+   the merge base — re-run that one leg with `tools/fulltest.sh <leg>`, and get
+   the identical failure. Nothing is faster or more conclusive, and locally it
+   costs a minute.
 2. **A mechanical impossibility, stated concretely.** Not "unrelated" but
-   *why*: e.g. "the ntapi **oracle** leg executes test binaries under Wine and
-   runs no kernel code at all, and this branch changes only `kernel/`" — and
-   then account for anything the branch *did* add to that leg. Adding a
-   `tests/ntapi` case changes worker sharding, so it can perturb *timing*
-   even when it cannot perturb *semantics*; say which one the failure needs.
-3. **A green local run of that same leg on this branch**, unfiltered, plus a
-   named cause elsewhere. This is the weakest of the three and never stands
-   alone.
+   *why*: e.g. "the ntapi **oracle** leg runs test binaries under Wine and
+   executes no kernel code at all, and this branch changes only `kernel/`" —
+   then account for anything the branch *did* add to that leg. A new
+   `tests/ntapi` case changes worker sharding, so it can perturb *timing* even
+   when it cannot perturb *semantics*; say which one the failure needs.
 
-Known pre-existing failures, which still need their signature matched rather
-than being assumed:
+Known host-local failures, which still need their signature matched rather
+than assumed: the `kernel32:version` oracle residue (Step 4), and the ntapi
+oracle wedging on `io_teardown` (issue #118 — now bounded by the per-case
+timeout, so it shows up as one named case, not a dead leg).
 
-- the ntapi **oracle** leg can wedge on `io_teardown` and die at the
-  60-minute cap, leaving no output but an orphan-process list (issue #118);
-- `delete_on_close` fails on any second oracle run in the same wineprefix
-  (issue #117).
+**Never merge on red when** the failing leg is one this diff is *about*
+(`proskrnl`, `winetest`, `boot`, `frontier`), when the failure names a file,
+test or subsystem the diff touches, when it is a real assertion rather than a
+hang or an infrastructure error, or when you have suspicion but not one of the
+two proofs above. Handing back an unmerged PR with a clear question is a good
+outcome; merging a defect into `main` is not.
 
-### Never merge on red when
-
-- the failing check is one this diff is *about* — the ntapi **proskrnl**
-  (regression) leg, the winetest leg for a kernel change, `boot`, or
-  `frontier`;
-- the failure names a file, test, or subsystem the diff touches;
-- the job failed on a real assertion rather than a hang/timeout/infrastructure
-  error, and you cannot point to that same assertion failing on `main`;
-- you have suspicion but not one of the three proofs above.
-
-In any of these, **STOP and report**. Say what is red, what you ruled out,
-and what evidence would settle it. Handing back an unmerged PR with a clear
-question is a good outcome; merging a defect into `main` is not.
-
-### When it IS proven unrelated
-
-Then it is a defect in the project that happens to be blocking you, and the
-record matters more than the merge:
-
-1. **Search first** — `gh issue list --state open` — and do not duplicate.
-   If an issue already covers it (e.g. #117, #118), use that one.
-2. **Otherwise file it**, with: the signature, the reproduction, the evidence
-   that it is pre-existing (the `main` run ID), which CI job it blocks and
-   how often, and a suggested fix if you have one. An issue nobody can act on
-   is barely better than no issue.
-3. **Record the decision on the PR** — a comment naming the red check, the
-   issue, and the `main` run that proves it pre-existing. A merge over a red
-   check must never look silent to whoever reads the history later.
-4. **Then** `gh pr merge <n> --rebase`.
-
-Note what this is not: permission to merge because CI is inconvenient. It is
-permission to merge when you have *proved* the red check is measuring
-something other than your change — and the issue you file is the proof,
-written down.
+If a red IS proven pre-existing, file it (`gh issue list --state open` first —
+do not duplicate) with the signature, the reproduction and the evidence, note
+it on the PR so the merge is not silent in the history, and then merge.
 
 Finally, report: the item, whether the pair is now in the gate, the residue
 if not, anything the oracle refuted, and any unrelated defect you found on
