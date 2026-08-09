@@ -533,8 +533,8 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     if (device == 0)
     {
         PVOID deviceBody;
-        status =
-            ObpLookupParseObject(attributes, &IoDeviceType, &deviceBody, &fsPath, &reparseBuffer);
+        status = ObpLookupParseObject(attributes, &IoDeviceType, 0, &deviceBody, &fsPath,
+                                      &reparseBuffer);
         if (!NT_SUCCESS(status))
         {
             return status;

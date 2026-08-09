@@ -561,8 +561,8 @@ static NTSTATUS IopSetRenameInformation(HANDLE handle, const void *buffer, ULONG
         KPROCESSOR_MODE saved = thread->previousMode;
         thread->previousMode = KernelMode;
         PVOID deviceBody;
-        status =
-            ObpLookupParseObject(&attributes, &IoDeviceType, &deviceBody, &fsPath, &reparseBuffer);
+        status = ObpLookupParseObject(&attributes, &IoDeviceType, 0, &deviceBody, &fsPath,
+                                      &reparseBuffer);
         thread->previousMode = saved;
         if (!NT_SUCCESS(status))
         {

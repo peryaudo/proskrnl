@@ -310,6 +310,43 @@ from ring 3 and drives the spawn + wait + exit-code propagation
 signals). Persistence acceptance is the boot-twice harness `tests/run/run.sh persist`
 (seed on boot 1, byte-verify + volatile-key-absence on boot 2).
 
+### "Always case-insensitive" needed the OTHER half of the name too
+
+The row above has said "always-case-insensitive lookup" since M8, and it was half
+true. A registry path is resolved by **two** engines: `\Registry` is an
+object-manager name that `ObpLookupName` resolves, honouring
+`OBJ_CASE_INSENSITIVE` like any other Ob name, and everything after it is a Cm
+subkey that `CmpFindSubkey` compares case-insensitively *unconditionally*. So a
+caller passing `Attributes = 0` was asking for a case-sensitive match on exactly
+the one component of the path that Cm never compares — and got it:
+`\REGISTRY\Machine\...` answered `STATUS_OBJECT_PATH_NOT_FOUND` while
+`\Registry\Machine\...` succeeded.
+
+The oracle folds it, and **where** it folds is the whole point:
+`dlls/ntdll/unix/registry.c` ORs `OBJ_CASE_INSENSITIVE` into the attributes of
+`NtCreateKey`, `NtOpenKeyEx` and `NtLoadKeyEx` before the request leaves user
+mode. That file is ntdll's **unix** half — precisely the half proskrnl replaces
+at the unixlib seam (Art. 10 / G9). The comment in `kernel/cm/registry.c` had
+even cited it correctly ("ntdll forces OBJ_CASE_INSENSITIVE") as the reason the
+kernel needed no code for it; the citation was accurate and the conclusion was
+wrong, because on proskrnl that code does not run.
+
+`CmpResolvePath` forces the bit now, through a new `extraAttributes` argument on
+`ObpLookupParseObject` rather than a second walk (Art. 11) — the caller's
+`OBJECT_ATTRIBUTES` is user memory that cannot be edited in place, and a
+kernel-stack copy would fail the probe. **Not a deviation**: it is the oracle's
+answer, and it is also Windows 10 1607+'s (`ntdll:reg` `reg.c:541-:558` accepts
+either answer for the mixed-case spelling and requires success for
+`\REGISTRY\MACHINE\SOFTWARE\CLASSES` on every version). Pinned by
+`tests/ntapi/sem_reg/root_case.c`.
+
+**The generalisable rule, and it is worth a sweep:** *replacing a layer means
+inheriting what that layer did.* Every behaviour the pinned Wine implements in
+`dlls/ntdll/unix/` is a behaviour proskrnl owes, and a code comment citing that
+directory as the reason something needs no kernel implementation is
+self-refuting. This is the second time the same shape has bitten: `docs/21` W1's
+`STATUS_NOT_IMPLEMENTED` split is the same seam read the other way round.
+
 ## M9 npfs/condrv notes (pipes + the console)
 
 What the M9 bring-up pinned, deviated on, or left unbuilt:

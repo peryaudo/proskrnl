@@ -1143,7 +1143,8 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     PVOID deviceBody;
     UNICODE_STRING fsPath;
     PWSTR reparseBuffer = 0;
-    status = ObpLookupParseObject(attributes, &IoDeviceType, &deviceBody, &fsPath, &reparseBuffer);
+    status =
+        ObpLookupParseObject(attributes, &IoDeviceType, 0, &deviceBody, &fsPath, &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         return status;
