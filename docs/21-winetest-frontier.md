@@ -710,9 +710,70 @@ documents now carry the counted number — §4 trap 4's smaller sibling, the sam
 one W13's "one 10 ms tick" was: a quantity nobody measured, written into a
 triage block as though somebody had.
 
-**The 9 that remain are two subjects and the manifest block has them**, neither
-of them small: the cross-process image map at `:1728-:1752` (6, `mm/section.c`'s
-image subrange views) and three singletons at `:2039`/`:2679`/`:2686`.
+**`MemExtendedParameterImageMachine` is DONE** (`ntdll:virtual` 9 → **8**, the
+singleton at `:2039`). `MiCaptureExtendedParams` captured the word into
+`MI_EXTENDED_PARAMS.machine` and nothing ever read it, so a map naming
+`IMAGE_FILE_MACHINE_R3000` over an x86-64 DLL answered `STATUS_SUCCESS`. The
+rule is one line of the oracle's `map_image_into_view`
+(`dlls/ntdll/unix/virtual.c`: `if (machine && machine != nt->FileHeader.Machine)`
+→ `STATUS_NOT_SUPPORTED`), now in `MipMapImageView` and pinned by
+`tests/ntapi/sem_mm/map_image_machine.c`. **`map_image_into_view` is not
+`map_image_view`**, which sits 300 lines below it in the same file and is what
+this document already cites for the image arm's `limit_low` floor; gate-check
+caught the first draft naming the floor's function for the machine's rule in
+five places, which is G8's "cite where to re-verify" failing in the way that is
+hardest to notice — a real symbol, in the right file, one frame off.
+
+**This is the accepted-and-dropped-input shape a SIXTH time in this one pair**,
+after `MEM_EXTENDED_PARAMETER_EC_CODE`, the two capability classes, the mapping
+path's `zero_bits` and the image's `SizeOfStackReserve` — same tell every time:
+a value parsed faithfully, stored in a named field, and never read. The hunt
+that finds them is a grep for a captured field with one writer and no readers,
+and it is still the best-evidenced hunt in this document.
+
+Four things the pin measures that the parameter's name does not give you, each
+of them a way an implementation reaching for the obvious guard answers wrongly:
+
+- **ZERO is "no constraint", not "the machine must be zero".** The winetest's
+  own probe at `:2016` maps with `ULong = 0` and requires a success before it
+  concludes the parameter is supported at all — so an implementation that read
+  zero as a constraint would `win_skip` the whole block and score `:2039` as
+  passing;
+- **a DATA section takes the same word and IGNORES it.** The oracle's `machine`
+  reaches `map_image_into_view` and nothing else, so a guard written one level
+  up — in the shared parameter parser — refuses a data mapping the oracle
+  admits. Exactly the position argument `sem_mm/map_ex.c` makes for
+  `MEM_EXTENDED_PARAMETER_EC_CODE`, with the arms the other way round: that bit
+  belongs to the allocation engine, this word to the mapping engine's image arm,
+  and neither belongs to `MiCaptureExtendedParams`;
+- **placement is decided first.** `virtual_map_image` places the view with
+  `map_image_view` and only then calls `map_image_into_view`, whose machine
+  check is its last act before the relocation — so an impossible ceiling plus a
+  wrong machine answers the ceiling's `STATUS_NO_MEMORY` and never reaches the
+  comparison. The pin derives that ceiling from the image's own measured extent
+  rather than writing one down, and the two runners show why: the same
+  `ntdll.dll` is `0x41a000` on the oracle and `0xba000` on proskrnl, so any
+  hard-coded number would have measured one runner and skipped the other (§4
+  trap 2 in miniature, the shape `map_zero_bits` paid for above);
+- **the winetest's whole block maps into a CHILD, and the pin nearly did not.**
+  Every call at `:2016-:2039` passes `create_target_process("sleep")`'s handle,
+  and on the oracle the word then rides an APC into that process
+  (`call.map_view_ex.machine`) rather than being applied by the caller. The
+  first draft measured only the same-process arm; gate-check said so, and the
+  remote arm is now pinned alongside it. On proskrnl both arms are the one
+  `MiMapViewOfSectionEx` reached through `MiReferenceProcessByHandle` — but
+  "they must agree" was an argument, not a measurement, which is exactly what
+  §4 trap 4 keeps punishing.
+
+**Nothing was hiding behind it, and saying so is part of the measurement**: 2200
+tests executed, 96 todo markers and 2 skips before and after, one failure fewer.
+§4 trap 2 does not apply here.
+
+**The 8 that remain are two subjects and the manifest block has them**: the
+cross-process image map at `:1728-:1752` (6, `mm/section.c`'s image subrange
+views) and the `NtProtectVirtualMemory` `old_prot` pair at `:2679`/`:2686` (2) —
+a FAILED protect must still write `PAGE_NOACCESS` into the caller's slot, which
+is the oracle's `else *old_prot = PAGE_NOACCESS;` and is a one-line item.
 
 What is left under this heading:
 
