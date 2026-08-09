@@ -197,14 +197,20 @@ taken on a tree that then changed is not a verdict on what you push (Step 8,
 precondition 2). Same rule for any other edit — re-run rather than reason about
 whether it mattered.
 
-**A red leg is yours until proven otherwise.** The one standing exception on a
-KVM developer box is the `winetest` leg going red on the ORACLE half of
-`kernel32:version` — 36 failures, all at `version.c:1087`, `CreateProcessA`
-returning `ERROR_FILE_NOT_FOUND`. That residue is host-local, pre-existing and
-documented in the manifest header; it is green on CI. Accept it only when the
-signature matches *exactly* (that line, that count, the oracle half) and the
-kernel half of the pair passed. Any other red — including a different count on
-that same pair — is a stop.
+**A red leg is yours until proven otherwise, and there is no longer a
+standing exception.** `make fulltest` should be **26/26**. The one residue
+this skill used to tell you to accept — the `winetest` leg going red on the
+ORACLE half of `kernel32:version`, host-local to a KVM developer box — is
+now PARKED in the manifest rather than tolerated, so the leg does not run it
+at all. If you see that pair again, someone un-parked it; read its block
+before deciding anything.
+
+Treat every red leg as a stop. A suite with a permanently-accepted red is a
+suite people stop reading, which is exactly how a real failure gets skimmed
+past — the same argument the manifest header makes for never activating a
+red pair. If you find a NEW host-local residue, do what was done for
+`kernel32:version`: park it with its signature written down and a sentence
+saying what would un-park it. Do not add a second standing exception here.
 
 ## Step 5 — Un-park only if it is actually green (but LAND it either way)
 
@@ -291,8 +297,8 @@ Then merge. **Do not wait for CI.** CI runs the same 26 legs `make fulltest`
 just ran; waiting adds half an hour and no information. Merge only with all
 three of these true:
 
-1. `make fulltest` green — or red *only* on the documented `kernel32:version`
-   oracle residue, signature matched as Step 4 describes;
+1. `make fulltest` green — all 26 legs. There is no tolerated residue any
+   more (Step 4); a red leg is a stop;
 2. the commits are exactly the tree you tested, and `git status --porcelain` is
    empty. fulltest judges the WORKING tree and CI judges the COMMITTED one, so
    an unadded file is green in all 26 legs and red on CI — and any edit after
@@ -375,10 +381,13 @@ they are wrong. Produce one of:
    `tests/ntapi` case changes worker sharding, so it can perturb *timing* even
    when it cannot perturb *semantics*; say which one the failure needs.
 
-Known host-local failures, which still need their signature matched rather
-than assumed: the `kernel32:version` oracle residue (Step 4), and the ntapi
-oracle wedging on `io_teardown` (issue #118 — now bounded by the per-case
-timeout, so it shows up as one named case, not a dead leg).
+One known flake, and it is a flake rather than a residue: `sem_ps/times`, a
+timing assertion that can trip on a loaded box and clears on a re-run.
+Matching its signature is what lets you RE-RUN; it is not what lets you
+merge on red.
+
+(The ntapi oracle's `io_teardown` wedge, issue #118, is fixed and no longer
+belongs on any list here. If a leg wedges, it is new.)
 
 **Never merge on red when** the failing leg is one this diff is *about*
 (`proskrnl`, `winetest`, `boot`, `frontier`), when the failure names a file,

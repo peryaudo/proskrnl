@@ -78,20 +78,21 @@
 # re-measuring it that way first.
 #
 # ONE OF THOSE EIGHT GOES RED ON SOME DEVELOPER HOSTS, AND IT IS NOT THE
-# KERNEL. kernel32:version fails the ORACLE leg on at least one KVM
-# developer box with exactly the 36 failures the root/C-POSIX era produced
-# — all of them ONE CAUSE at version.c:1087, where the subtest writes a
-# temporary EXE and manifest and then CreateProcessA's it, and the spawn
-# fails ERROR_FILE_NOT_FOUND. They land on FOUR lines, not one: 9 each at
-# :1087, :1090, :1093 and :1094, the last three being the assertions
-# downstream of the spawn that :1087 reports. (This block used to say "one
-# site", which reads as one LINE and makes the documented signature look
-# unmatched to whoever is deciding whether their own red is pre-existing.)
-# The runner's non-root + UTF-8 fixes are
-# applied and do not clear it. Verified pre-existing there by checking out
-# an earlier commit and re-running the same binary under the same prefix:
-# identical 36. It is GREEN on CI, on both legs, so the residue is
-# host-local and the pair stays active.
+# KERNEL — kernel32:version, now PARKED for that reason (its block below has
+# the full signature and the trade). It fails the ORACLE leg on at least one
+# KVM developer box with exactly the 36 failures the root/C-POSIX era
+# produced, while proskrnl's half passes and CI is green on both legs.
+#
+# It used to stay ACTIVE on the strength of being green on CI. That was the
+# wrong trade: it made `make fulltest` permanently red on a developer box,
+# and a suite that is always red is a suite people stop reading — the same
+# argument this header makes two paragraphs up for never activating a red
+# pair. Coverage lost to a parked pair is visible in this file; attention
+# lost to a red gate is not.
+#
+# The lesson for the NEXT host-local residue: park it, write the signature
+# down, and say what would un-park it. Do not leave the gate red and expect
+# everyone to remember why.
 # ---------------------------------------------------------------------------
 
 # --- ntdll (third_party/wine/dlls/ntdll/tests) ------------------------------
@@ -681,7 +682,28 @@ kernel32_test.exe:timer
 #     Re-check by staging shell32 + user32 + gdi32 + shlwapi; if the pair
 #     runs, it moves to manifest-gui.txt rather than back here.
 # kernel32_test.exe:toolhelp
-kernel32_test.exe:version
+# (b) HOST-LOCAL ORACLE FAILURE — and NOT a kernel gap, which is why this
+#     block carries no `TODO: Implement`. proskrnl's half PASSES; the ORACLE
+#     half fails on at least one KVM developer box with 36 failures, 9 each
+#     at version.c:1087, :1090, :1093 and :1094. One cause: the subtest
+#     writes a temporary EXE and manifest and then CreateProcessA's it, the
+#     spawn fails ERROR_FILE_NOT_FOUND, and the three lines after :1087 are
+#     the assertions downstream of the spawn it never made.
+#     Verified pre-existing on that box by checking out an earlier commit and
+#     re-running the same binary under the same prefix: identical 36. The
+#     runner's non-root + UTF-8 fixes are applied and do not clear it.
+#
+#     PARKED FOR HYGIENE, AND THE TRADE IS REAL. It is GREEN on CI, on both
+#     legs, so commenting it out costs genuine CI coverage of a pair that
+#     passes there. It is parked anyway because the alternative is worse: a
+#     `make fulltest` that is permanently red on a developer box teaches the
+#     next person to skim past the one line that matters, which is the same
+#     argument the header makes for never activating a red pair.
+#     Re-activating it needs the HOST question answered (why CreateProcessA
+#     cannot find a file the subtest just wrote, under the pinned Wine, on
+#     that box), not kernel work — so whoever fixes their environment should
+#     un-comment it rather than wait for a milestone.
+# kernel32_test.exe:version
 # PARTLY FIXED, FIXABLE. 12 failures, down from 4148. The
 #     view-protection compatibility matrix landed earlier
 #     (kernel/mm/virtual.c MiCheckViewProtection,
