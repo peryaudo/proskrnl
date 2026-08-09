@@ -554,7 +554,16 @@ static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CO
                  * listens on one instance; a second is refused loudly, not
                  * given a made-up answer (Art. 12). */
                 PIOP_PENDING_REQUEST pending = 0;
-                NTSTATUS status = IopPreparePendingRequest(request, &pending);
+                /* Only the CURRENT server end may park here. NpfsVfsCleanup
+                 * drains this queue and clears serverEnd, so a request parked
+                 * after that point would never be completed — and since the
+                 * request now holds a FILE_OBJECT reference (kernel/io/io.h),
+                 * never freed either. Nothing between the state read above and
+                 * this line can block, and the Io layer holds a reference for
+                 * the whole call, so it cannot happen today; the assert is
+                 * here to convict the day something between them can. */
+                ASSERT(instance->serverEnd == end);
+                NTSTATUS status = IopPreparePendingRequest(file, request, &pending);
                 if (!NT_SUCCESS(status))
                 {
                     return status;
