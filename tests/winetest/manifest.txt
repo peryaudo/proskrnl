@@ -825,40 +825,7 @@ kernel32_test.exe:power
 #     not kernel work.
 # kernel32_test.exe:sync
 kernel32_test.exe:thread
-# DIAGNOSED, FIXABLE (a clock, not data any more). ONE failure, down from
-#     19, and the whole time-zone cluster is gone.
-#
-#     What closed. The table
-#     HKLM\Software\Microsoft\Windows NT\CurrentVersion\Time Zones is now
-#     seeded WHOLE — 139 zones plus their 92 `Dynamic DST` subkeys, generated
-#     out of the pinned kernelbase's own WINE_REGISTRY resource
-#     (kernel/cm/timezones.h, tools/gen_timezones.py) — where it used to carry
-#     one hand-copied row, UTC. That closed time.c:1029 and the 13 at :1046,
-#     and the 109 assertions those `if (!ret) continue` arms had been hiding
-#     ran for the first time and ALL PASS: 2249 -> 2358 executed, 19 -> 5
-#     failures. Pinned by tests/ntapi/sem_reg/timezone_keys.c.
-#
-#     The four at :990-:1008 were NOT the table, and the old block here said
-#     they were ("downstream of the same gap"). They are tzres.dll's absence
-#     from the baked image: both GetDynamicTimeZoneInformation and
-#     GetTimeZoneInformationForYear resolve MUI_Std/MUI_Dlt through
-#     RegLoadMUIStringW, and they DISAGREE about its failure — the first
-#     ignores the error and keeps the raw "@tzres.dll,-22000", the second
-#     falls back to the zone's plain `Std` — so with the file missing two APIs
-#     answered different strings for the same zone. The image carries it now
-#     (tests/run/run.sh), the win.ini precedent, and 5 -> 1.
-#
-#     What is left is time.c:843 alone, and it is kernel work in a different
-#     department: GetSystemTimePreciseAsFileTime must advance by less than
-#     1 ms between two calls that report different values, and on proskrnl it
-#     advances by exactly one 10 ms tick. RtlGetSystemTimePrecise falls back
-#     to NtQuerySystemTime on this kernel (the fork's proskrnl arm in
-#     dlls/ntdll/time.c) and KUSER_SHARED_DATA.SystemTime IS the clock, so
-#     closing it means a sub-tick system-time source — interpolating the tick
-#     with a hardware counter — which is timekeeping design and needs its own
-#     pin, not more data.
-# TODO: Implement
-# kernel32_test.exe:time
+kernel32_test.exe:time
 kernel32_test.exe:timer
 # (c) toolhelp belongs to the GUI image, not this one, and it is a whole-pair
 #     dependency rather than a few assertions. Every one of its snapshot

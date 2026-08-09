@@ -935,7 +935,7 @@ Three things worth carrying forward, none of them about license values:
   `REG_DWORD` value — which is the general form: a pin over a keyed lookup
   measures the LOOKUP only if it asks for more than one key.
 
-### W13 — Time-zone data (**DONE — 19 failures to 1, without going green**)
+### W13 — Time-zone data, then a clock (**DONE — `kernel32:time` is GREEN**)
 
 The table is seeded whole and generated: 139 zone keys plus their 92
 `Dynamic DST` subkeys, 2576 values, parsed out of the pinned kernelbase's own
@@ -972,13 +972,73 @@ missing resource file does not degrade both APIs equally; it makes them
 contradict each other, and the test compares them. **A shared resolver is not
 a shared answer when the callers differ in how they handle its failure.**
 
-**The pair does not go green and stays parked**, on one assertion in a
-different department: `time.c:843` wants
-`GetSystemTimePreciseAsFileTime` to advance by under 1 ms, and on this kernel
-it advances by exactly one 10 ms tick because `RtlGetSystemTimePrecise` falls
-back to `NtQuerySystemTime` and `KUSER_SHARED_DATA.SystemTime` is the clock.
-That is a sub-tick time source — interpolating the tick with a hardware
-counter — and it is the next item under this heading, not this one.
+**The last assertion was a CLOCK, and it is now built: the pair is GREEN on
+both legs** (2358 tests executed, 0 failures, the oracle's count exactly).
+`time.c:843` wants `GetSystemTimePreciseAsFileTime` to advance by under 1 ms
+between two calls that report different values; it is `RtlGetSystemTimePrecise`,
+which on this kernel is `NtQuerySystemTime` (the fork's arm in
+`dlls/ntdll/time.c`), so it moved in whole ticks. `KiTickFraction`
+(`kernel/ke/timer.c`) adds the TSC-measured fraction of the tick in progress,
+calibrated on the same PIT gate that sets the LAPIC timer's period — one
+measurement, two consumers, so the subdivision cannot disagree with the thing
+it subdivides. Pinned by `tests/ntapi/sem_ps/precise_time.c`; `docs/03`
+"Sub-tick system time" carries the trade.
+
+**This block said "one 10 ms tick" and the tick is 1 ms** — `KI_100NS_PER_TICK`
+is 10000 and `arch/x86_64/lapic.c` programs the LAPIC periodic at 1 ms. Nobody
+had measured it: the winetest prints no delta, and the figure was written from
+the *shape* of the failure rather than from a number. The pin prints one, and
+it read exactly 10000 (100 ns units) eight times out of eight. Harmless here —
+1 ms fails `< 1 ms` just as 10 ms does — but it is §4 trap 4's smaller sibling:
+a quantity nobody measured, recorded in a triage block as though somebody had.
+
+**What made the design safe is the CLAMP, not the counter**, and that is the
+half worth carrying to any future hardware clock. The fraction is capped one
+unit short of a whole tick, so a reading can never reach the value the next
+tick will publish — monotonicity survives a TSC that runs fast, drifts with
+P-states, or is calibrated wrong, and each tick re-bases the error. So no
+invariant-TSC probe is made and no second time base exists; the tick remains
+the clock and this only subdivides it. The same clamp is what keeps the
+conversion from overflowing, because it is applied in TSC units *before* the
+multiply.
+
+**Two things the change did NOT do, both deliberate.** The shared page stays
+tick-granular — a mirror published once per tick cannot be refreshed by writing
+an interpolated value into it — so a query now reads up to one tick ahead of
+`KUSER_SHARED_DATA.SystemTime`, which is the relation Windows has and the
+direction every ordering pin here already wanted. And no Wine patch was
+needed: `GetSystemTimeAsFileTime` and `GetSystemTimePreciseAsFileTime` both
+land on `NtQuerySystemTime` on this kernel (`dlls/kernelbase/file.c`), so
+making the syscall precise moves both together and `test_GetSystemTimeAsFileTime`'s
+ordering assertions keep comparing one clock with itself. **A precise clock
+reachable only through a second, differently-sourced entry point would have
+failed exactly those** — which is why the pin measures coarse-against-precise
+agreement as well as resolution.
+
+**Two things a finer clock made VISIBLE rather than created, and both are
+open items rather than parts of this one.** Neither is convicted by anything
+today, and neither gets bent to fit without a pin first (Art. 5):
+
+- **A relative wait can expire slightly early.** `KiComputeDueTime` arms off
+  the tick while the clock that measures the wait is now sub-tick, so a
+  1 ms wait armed 0.9 ms into a tick can be timed at ~0.1 ms. That was
+  always true; only the measuring instrument changed. NT rounds the other
+  way. Arming off the fraction instead is a one-line change that moves every
+  timeout up to a tick LATER, which is why it needs a pin on a wait's lower
+  bound before it lands — the tree has none.
+- **`NtQuerySystemTime` runs ahead of the shared page**, where on NT it *is*
+  the page. `docs/03` "Sub-tick system time" has the bound, the direction and
+  the one upstream assertion that points the other way. The real fix is the
+  Windows arrangement — a QPC baseline in `KUSER_SHARED_DATA` that user mode
+  interpolates for itself — which is a layout item, not a clock item.
+
+**Where the pin could not point, and why.** The resolution assertions go
+through `RtlGetSystemTimePrecise` rather than straight at `NtQuerySystemTime`,
+because the ORACLE's `NtQuerySystemTime` picks `CLOCK_REALTIME_COARSE` whenever
+the host reports it at 1 ms or better (`dlls/ntdll/unix/sync.c`). Aiming the
+assertion at the syscall would have made the pin's colour depend on the
+developer box's `CONFIG_HZ` — a host-local residue manufactured by the test,
+which is the thing the manifest header spends its longest paragraph on.
 
 **A note for the next generated seed, because there will be one.** A 3600-line
 generated header is not `make format`-stable: clang-format reflows the byte
