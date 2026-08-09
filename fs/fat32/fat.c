@@ -856,6 +856,10 @@ NTSTATUS FatSetVolumeLabel(PFAT_VOLUME volume, const WCHAR *label, ULONG labelBy
         {
             return STATUS_INVALID_VOLUME_LABEL; /* OEM-representable only */
         }
+        /* Deliberately NOT RtlUpcaseUnicodeChar: this is the OEM domain, and
+         * the range check above has already refused everything outside
+         * ASCII, so there is nothing left for the shared fold to decide.
+         * Not a second name-equality fold (Art. 11). */
         if (c >= 'a' && c <= 'z')
         {
             c = (WCHAR)(c - 'a' + 'A');

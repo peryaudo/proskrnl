@@ -216,23 +216,38 @@ static void test_rtl_upcase_unicode_char(void)
     /* The boundaries either side of a-z: '`' (0x60) and '{' (0x7B). */
     ok(RtlUpcaseUnicodeChar('`') == '`', "the character below 'a' was folded");
     ok(RtlUpcaseUnicodeChar('{') == '{', "the character above 'z' was folded");
-    /* ASCII + the Latin-1 Supplement (rtl.c, docs/03 "Name case folding"):
-     * proskrnl carries a RULE, not NT's 64 KiB table, and the rule now
-     * reaches U+00E0..U+00FE because ntdll:directory reached it. */
+    /* The Latin-1 Supplement, with the three irregularities that are why
+     * this was never `c - 0x20` over the range: sharp-s and the division
+     * sign fold to THEMSELVES, and y-diaeresis folds UP out of Latin-1 to
+     * U+0178 rather than down onto sharp-s. Getting the last one wrong
+     * would make ÿ and ß one name. */
     ok(RtlUpcaseUnicodeChar(0x00E9) == 0x00C9, "U+00E9 did not fold to U+00C9");
     ok(RtlUpcaseUnicodeChar(0x00E0) == 0x00C0, "the bottom of the Latin-1 range did not fold");
     ok(RtlUpcaseUnicodeChar(0x00FE) == 0x00DE, "the top of the Latin-1 range did not fold");
-    /* The three irregularities, which are why this is not `c - 0x20` over
-     * the range: sharp-s and the division sign fold to THEMSELVES, and
-     * y-diaeresis folds up out of Latin-1 to U+0178 rather than down onto
-     * sharp-s. Getting the last one wrong would make ÿ and ß one name. */
     ok(RtlUpcaseUnicodeChar(0x00DF) == 0x00DF, "U+00DF (sharp s) was folded");
     ok(RtlUpcaseUnicodeChar(0x00F7) == 0x00F7, "U+00F7 (division sign) was folded");
     ok(RtlUpcaseUnicodeChar(0x00FF) == 0x0178, "U+00FF did not fold to U+0178");
-    /* Beyond Latin-1 the fold is still the identity — the deviation docs/03
-     * records, and the boundary of the rule. */
-    ok(RtlUpcaseUnicodeChar(0x0430) == 0x0430, "U+0430 folded beyond the Latin-1 rule");
+    /* And PAST Latin-1, because the fold is no longer a rule that stops
+     * there: it is the pinned NLS table (kernel/lib/upcase.h, docs/03 "Name
+     * case folding"), so it is total over the BMP. These three assertions
+     * used to say the opposite — U+0430 unfolded was the boundary of the
+     * rule — and ntdll:reg is what refuted it (docs/21 W12). */
+    ok(RtlUpcaseUnicodeChar(0x0430) == 0x0410, "U+0430 did not fold to U+0410 (Cyrillic)");
+    ok(RtlUpcaseUnicodeChar(0x014D) == 0x014C, "U+014D did not fold to U+014C");
+    ok(RtlUpcaseUnicodeChar(0x0371) == 0x0370, "U+0371 did not fold to U+0370 (Greek)");
+    /* The table is NOT Unicode's simple uppercase mapping, and these are
+     * where it differs — the assertions a fold written from UnicodeData.txt
+     * fails and nothing else catches. */
+    ok(RtlUpcaseUnicodeChar(0x03C3) == 0x03A3, "U+03C3 did not fold to U+03A3");
+    ok(RtlUpcaseUnicodeChar(0x03C2) == 0x03C2, "U+03C2 (final sigma) was folded");
+    ok(RtlUpcaseUnicodeChar(0x0131) == 0x0131, "U+0131 (dotless i) was folded");
+    /* Per 16-bit code UNIT: a surrogate half is not a character and has no
+     * case, whatever the astral code point it is half of does
+     * (ntdll:reg reg.c:350 requires exactly this). */
+    ok(RtlUpcaseUnicodeChar(0xD801) == 0xD801, "a high surrogate was folded");
+    ok(RtlUpcaseUnicodeChar(0xDC28) == 0xDC28, "a low surrogate was folded");
     ok(RtlUpcaseUnicodeChar(0) == 0, "NUL was changed");
+    ok(RtlUpcaseUnicodeChar(0xFFFF) == 0xFFFF, "the last BMP unit was changed");
 }
 
 static void test_rtl_init_unicode_string(void)
@@ -270,9 +285,8 @@ static void test_rtl_equal_unicode_string(void)
     ok(!RtlEqualUnicodeString(&abc, &upper, FALSE), "case difference ignored when sensitive");
     ok(RtlEqualUnicodeString(&abc, &upper, TRUE), "case-insensitive compare missed a match");
 
-    /* Upcasing reaches the Latin-1 Supplement (rtl.c): U+00E9/U+00C9 (é/É)
-     * are ONE name case-insensitively, which is exactly what ntdll:directory
-     * requires of the enumeration sort. */
+    /* U+00E9/U+00C9 (é/É) are ONE name case-insensitively, which is exactly
+     * what ntdll:directory requires of the enumeration sort. */
     static const WCHAR e_acute[] = {0x00E9, 0};
     static const WCHAR e_acute_upper[] = {0x00C9, 0};
     UNICODE_STRING lower_accent, upper_accent;
@@ -282,13 +296,17 @@ static void test_rtl_equal_unicode_string(void)
        "é/É did not compare equal case-insensitively");
     ok(!RtlEqualUnicodeString(&lower_accent, &upper_accent, FALSE),
        "é/É compared equal case-SENSITIVELY");
-    /* And stops there: Cyrillic а/А stay distinct, the docs/03 deviation. */
+    /* And does NOT stop there: Cyrillic а/А are one name too, because the
+     * fold is the pinned NLS table rather than a rule with an edge. */
     static const WCHAR cyrillic_a[] = {0x0430, 0};
     static const WCHAR cyrillic_a_upper[] = {0x0410, 0};
     UNICODE_STRING lower_cyr, upper_cyr;
     RtlInitUnicodeString(&lower_cyr, cyrillic_a);
     RtlInitUnicodeString(&upper_cyr, cyrillic_a_upper);
-    ok(!RtlEqualUnicodeString(&lower_cyr, &upper_cyr, TRUE), "the fold reached beyond Latin-1");
+    ok(RtlEqualUnicodeString(&lower_cyr, &upper_cyr, TRUE),
+       "а/А did not compare equal case-insensitively");
+    ok(!RtlEqualUnicodeString(&lower_cyr, &upper_cyr, FALSE),
+       "а/А compared equal case-SENSITIVELY");
 }
 
 static void test_rtl_copy_unicode_string(void)

@@ -625,9 +625,21 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(CONHOST)=windows/system32/conhost.exe \
             win:$(M9SMOKE)=m9_smoke.exe
 
+# kernel/lib/upcase.h is checked in (see `gen-nls`), so nothing in the build
+# would notice it drifting from the pin it was generated out of. This is what
+# notices: it re-runs only when the pinned table, the generator or the output
+# changes, and it hangs off $(IMG) rather than off the kernel because a
+# third_party/wine prerequisite must not reach `make build/proskrnl` — that
+# target is built on hosts (and in the lint job) where the tree is absent.
+UPCASE_CHECK := $(BUILD)/upcase.checked
+$(UPCASE_CHECK): kernel/lib/upcase.h tools/gen_upcase.py $(WINE_NLS)/l_intl.nls
+	@mkdir -p $(dir $@)
+	python3 tools/gen_upcase.py --check
+	@touch $@
+
 $(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
-        arch/x86_64/limine.conf
+        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(UPCASE_CHECK) \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
@@ -1444,6 +1456,16 @@ gen-abi:
 	python3 tools/gen_abi.py
 	python3 tools/gen_syscalls.py
 
+# The NLS upcase table kernel/lib/rtl.c folds names through, from the pinned
+# tree's own nls/l_intl.nls — the same bytes the oracle folds through. Its own
+# target rather than part of `gen-abi` because the source is NLS DATA, not a
+# Wine header; the rule against hand-editing is the same one (Art. 4 / G4).
+# It is checked in rather than built into $(BUILD) because `make format` runs
+# clang-tidy over kernel/ on a bare checkout, where third_party/wine is not
+# present. `--check` is what proves it has not drifted from the pin.
+gen-nls:
+	python3 tools/gen_upcase.py
+
 # Enforce the docs/15 house style — the one style gate, `make format`.
 #
 # Three passes, in this order: the blocking frontier (G14), clang-format for
@@ -1481,7 +1503,7 @@ frontier:
 frontier-check:
 	python3 tools/blocking_frontier.py --check
 
-.PHONY: all test run clean format gen-abi frontier frontier-check
+.PHONY: all test run clean format gen-abi gen-nls frontier frontier-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)
