@@ -10,8 +10,8 @@
  *
  *   dlls/ntdll/unix/file.c   add_completion( handle, cvalue, status, total,
  *                                            ret_status == STATUS_PENDING )
- *   server/fd.c   set_fd_completion: `req->async || !(comp_flags & SKIP…)`
- *   server/async.c async_terminate: `async->pending || !(comp_flags & SKIP…)`
+ *   server/fd.c   add_fd_completion: `req->async || !(comp_flags & SKIP…)`
+ *   server/async.c async_set_result: `async->pending || !(comp_flags & SKIP…)`
  *
  * — post iff the request PENDED, or the flag is not set. Note what those
  * guards do NOT carry: a status term. The discriminator is whether the call

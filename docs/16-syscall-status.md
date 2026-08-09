@@ -143,8 +143,8 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
   and its axis is worth stating because the flag's NAME misleads: the packet
   is skipped when the call did **not return `STATUS_PENDING`**, not when it
   succeeded. The oracle's guards carry no status term at all
-  (`server/fd.c` `set_fd_completion`'s `req->async ||`, `server/async.c`
-  `async_terminate`'s `async->pending ||`). Keyed on `NT_SUCCESS` instead, an
+  (`server/fd.c` `add_fd_completion`'s `req->async ||`, `server/async.c`
+  `async_set_result`'s `async->pending ||`). Keyed on `NT_SUCCESS` instead, an
   async port-bound handle would answer `STATUS_PENDING` and post nothing,
   hanging `GetQueuedCompletionStatus` forever.
   Still **unbuilt**: `FILE_SKIP_SET_EVENT_ON_HANDLE` (stored, reported, does

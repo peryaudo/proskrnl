@@ -49,7 +49,7 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
      *
      * The oracle says this in three places that agree: add_completion's
      * `ret_status == STATUS_PENDING` argument (dlls/ntdll/unix/file.c),
-     * set_fd_completion's `req->async ||` (server/fd.c) and async_terminate's
+     * add_fd_completion's `req->async ||` (server/fd.c) and async_set_result's
      * `async->pending ||` (server/async.c). Note what those guards do NOT
      * carry: a status term. The skip is decided by pendedness alone, and the
      * `!NT_ERROR` that sits beside it in server/async.c is the separate
