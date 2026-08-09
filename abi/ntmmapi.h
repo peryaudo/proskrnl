@@ -103,6 +103,45 @@ typedef enum {
 #endif
 } MEMORY_INFORMATION_CLASS;
 
+/* M10 (docs/21 W5 tail): NtQueryVirtualMemory's
+ * MemoryRegionInformation, extracted verbatim from
+ * wine/include/winternl.h. */
+typedef struct {
+    PVOID AllocationBase;
+    ULONG AllocationProtect;
+    union
+    {
+        ULONG RegionType;
+        struct
+        {
+            ULONG Private : 1;
+            ULONG MappedDataFile : 1;
+            ULONG MappedImage : 1;
+            ULONG MappedPageFile : 1;
+            ULONG MappedPhysical : 1;
+            ULONG DirectMapped : 1;
+            ULONG Reserved : 26;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+    SIZE_T RegionSize;
+    SIZE_T CommitSize;
+    ULONG_PTR PartitionId;
+    ULONG_PTR NodePreference;
+} MEMORY_REGION_INFORMATION, *PMEMORY_REGION_INFORMATION;
+
+_Static_assert(sizeof(MEMORY_REGION_INFORMATION) == 48, "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, AllocationProtect) == 8,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, RegionType) == 12,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, RegionSize) == 16,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, CommitSize) == 24,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, PartitionId) == 32,
+               "MEMORY_REGION_INFORMATION x64 layout");
+
+
 /* CUI-7: the *Ex extended-parameter contract, extracted verbatim from
  * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold
  * (wine/include/basetsd.h: unsigned 64-bit). */
