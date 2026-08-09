@@ -71,6 +71,12 @@ NTSTATUS MiFreeVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *
                              ULONG type);
 NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
                                    PMEMORY_BASIC_INFORMATION info);
+/* M10 (docs/21 W5 tail): the WHOLE reservation the address falls in, where
+ * MiQueryVirtualMemoryBasic reports the run of like-protected pages inside
+ * it. Same VAD walk, different question — a free address is a REFUSAL here
+ * (STATUS_INVALID_ADDRESS) rather than a described hole. */
+NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address,
+                                    PMEMORY_REGION_INFORMATION info);
 /* Reprotect a committed run (M7); reports the previous protection. */
 NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtectOut);
