@@ -627,15 +627,25 @@ kernel32_test.exe:version
 #
 #     The 12 that remain are FOUR subjects, none of them large:
 #       - :758/:764/:770 (3), CreateFileMapping on a NO-ACCESS file handle
-#         (CreateFileA with dwDesiredAccess 0) must fail and does not. The
-#         required-access rule is already in kernel/io/file.c
-#         IopBuildSectionBacking and already matches the oracle's
-#         (dlls/ntdll/unix/sync.c NtCreateSection: FILE_READ_DATA for the
-#         read protections, + FILE_WRITE_DATA for PAGE_READWRITE /
-#         PAGE_EXECUTE_READWRITE on a non-image), so the gap is NOT the rule
-#         but something upstream granting more than the handle should carry —
-#         start by measuring what a 0-access CreateFileA handle actually
-#         grants, not by editing the rule.
+#         (CreateFileA with dwDesiredAccess 0) must fail and does not.
+#         TWO CAUSES ARE NOW ELIMINATED, which is where the next person
+#         should start rather than re-deriving them:
+#           * the RULE is right. tests/ntapi/sem_mm/section_file_access.c
+#             pins the whole protection -> required-file-access matrix from
+#             dlls/ntdll/unix/sync.c NtCreateSection (FILE_READ_DATA for the
+#             read protections, + FILE_WRITE_DATA for PAGE_READWRITE /
+#             PAGE_EXECUTE_READWRITE on a non-image) and is GREEN ON BOTH
+#             RUNNERS, including the exact SYNCHRONIZE|FILE_READ_ATTRIBUTES
+#             mask kernelbase builds for a 0-access CreateFileA.
+#           * the WIN32 path is right too. A probe driving the same
+#             CreateFileA/CreateFileMappingA calls on proskrnl answered
+#             ERROR_ACCESS_DENIED (5) for the no-access handle with both
+#             PAGE_READWRITE and PAGE_READONLY — i.e. exactly what :758 wants.
+#         So the divergence needs the winetest's PRECEDING SEQUENCE, not the
+#         call in isolation: the same file has already been opened writable,
+#         mapped, and closed several times by then. Bisect that sequence.
+#         NtCreateSectionEx is not a second path — it delegates
+#         (kernel/mm/section.c).
 #       - :4074 (1), the same subject one protection along: a READ-ONLY file
 #         handle with PAGE_READWRITE must fail ERROR_ACCESS_DENIED.
 #       - :236/:261/:275 (3), WriteProcessMemory — error 87 then two "0 bytes
