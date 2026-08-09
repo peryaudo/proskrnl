@@ -232,10 +232,14 @@ jobs:
         with:
           shard: cui-a
 
+  # 90 for the same reason the gui job below carries it: five legs that each
+  # boot a virgin image through the firstboot INF pass, measured at 52m32s
+  # against a 60 cap, and an overrun here loses every leg's verdict at once
+  # rather than reporting the one that was slow.
   cui-b:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
