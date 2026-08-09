@@ -436,18 +436,52 @@ ntdll_test.exe:unwind
 #     describing the hole, and counts a MAPPED view's pages toward CommitSize
 #     only when they are write-copy.
 #
-#     The rest of the tail, for whoever gets past the stack: :3095 is a
-#     win_skip of MemoryImageInformation, which is the NEXT unbuilt class in
-#     the same syscall and is now this cluster's only survivor — one
-#     assertion, and everything it guards is behind it (it returns early), so
-#     that one is a lower bound like any other early-out; 11 are zero_bits on
-#     NtMapViewOfSection (:1517, the constraint sem_mm/zero_bits.c pinned for
-#     NtAllocateVirtualMemory, not yet honoured on the mapping path); 6 are a
-#     cross-process map-then-ReadProcessMemory (:1728-:1752); 4 are
-#     KUSER_SHARED_DATA fields (NumberOfPhysicalPages, ActiveProcessorCount,
-#     ActiveGroupCount); and 6 are singletons, of which :743 is
-#     MEM_EXTENDED_PARAMETER_EC_CODE, captured and ignored where a non-ARM64
-#     host must refuse it.
+#     NOW 1127, AND THE "1129" ABOVE DID NOT REPRODUCE: the merge base
+#     measures 1128 on this box today with the same binary, so read the
+#     per-line breakdown below as the yardstick and the total as approximate.
+#     MemoryImageInformation is BUILT (kernel/mm/virtual.c
+#     MiQueryVirtualMemoryImage, tests/ntapi/sem_mm/image_info.c, docs/21 W5)
+#     and the region cluster is now empty. What moved is exactly one
+#     assertion — :3095's win_skip — but the measurement behind it is the
+#     point: the win_skip returned early out of test_query_image_information,
+#     and the 58 assertions it was hiding ALL PASS. 3699 tests executed
+#     before, 3757 after, one failure fewer and no new one (docs/21 §4
+#     trap 2: an early-out hides its body, and this is the rare time the body
+#     was already sound).
+#     Three of the class's rules are the oracle's and none is guessable from
+#     the class name: a MAPPED-but-not-image address (private allocation,
+#     data view, pagefile view) is a SUCCESS with an ALL-ZERO struct rather
+#     than a refusal; the struct is ZEROED BEFORE the lookup, so the buffer
+#     comes back zeroed even on the STATUS_INVALID_ADDRESS refusal — the
+#     opposite of MemoryRegionInformation, which leaves it untouched on its;
+#     and an address above the user range is INVALID_ADDRESS here where the
+#     region class answers INVALID_PARAMETER, because the oracle's fall-back
+#     folds every basic-info error into one status.
+#
+#     The rest of the tail, for whoever gets past the stack — 25 assertions,
+#     re-measured, and :743 (MEM_EXTENDED_PARAMETER_EC_CODE) is GONE from it,
+#     fixed by docs/21 W6:
+#       - 11 zero_bits on NtMapViewOfSection (:1517 x10, :1530) — the
+#         constraint sem_mm/zero_bits.c pinned for NtAllocateVirtualMemory,
+#         not yet honoured on the mapping path;
+#       - 6 a cross-process map-then-ReadProcessMemory (:1728-:1752), which
+#         starts at NtMapViewOfSection into ANOTHER process answering
+#         c000000d;
+#       - 5 KUSER_SHARED_DATA / cpu fields (:2080 NumberOfPhysicalPages,
+#         :2085 "_RDTSC not available", :2088 ActiveProcessorCount, :2091
+#         ActiveGroupCount) plus :2039;
+#       - 2 an NtProtectVirtualMemory old_prot pair (:2679/:2686,
+#         "Unexpected old_prot 0");
+#       - 1 :3339, AND IT IS THE NEXT ITEM RATHER THAN A SINGLETON. It is
+#         docs/21 W6's shape exactly: NtSetInformationProcess with
+#         ProcessManageWritesToExecutableMemory SUCCEEDS on proskrnl, so the
+#         test concludes it is on an ARM64EC host, asserts the processor
+#         architecture is ARM64 (":3339 succeeded on non-ARM64"), and then
+#         skips the WHOLE of test_exec_memory_writes at :3343. A non-ARM64
+#         host must answer STATUS_INVALID_INFO_CLASS or STATUS_NOT_SUPPORTED.
+#         One assertion of visible cost, a whole test function of hidden
+#         cost — the second accepted-and-dropped capability probe found in
+#         this pair.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface

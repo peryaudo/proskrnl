@@ -327,11 +327,61 @@ the class name and were transcribed from the oracle
 a FIXME and the winetest asserts each flag clear even for a mapped view, so
 that is a measured answer and not an unfilled field.
 
+**`MemoryImageInformation` is DONE too, and it closes the region cluster**
+(`MiQueryVirtualMemoryImage`, pinned by `tests/ntapi/sem_mm/image_info.c`).
+The visible move is one assertion — `ntdll:virtual` 1128 → 1127 — and the
+measurement behind it is worth more than the number: `:3095`'s `win_skip`
+returned early out of `test_query_image_information`, and the **58 assertions
+it was hiding all pass** (3699 tests executed before, 3757 after, no new
+failure). That is §4 trap 2 with the unusual outcome — the body behind an
+early-out was already sound — which is only knowable by removing the early-out.
+(The manifest's "1129" did not reproduce either: the merge base measures 1128
+on this box today with the same binary.)
+
+Three rules came from the oracle (`dlls/ntdll/unix/virtual.c`
+`get_memory_image_info` plus `server/mapping.c`
+`DECL_HANDLER(get_image_view_info)`) and none follows from the class name:
+
+- a **mapped-but-not-image address is a SUCCESS with an all-zero struct**, not
+  a refusal. A private allocation, a data view and a pagefile view all answer
+  that way; only a FREE address refuses. An implementation that refused
+  everything non-image passes every image case and fails only this one;
+- the struct is **zeroed before the lookup**, so the caller's buffer comes back
+  zeroed even on the `STATUS_INVALID_ADDRESS` refusal — the exact opposite of
+  `MemoryRegionInformation`, which leaves every byte intact on its. The pin
+  first asserted the region class's rule here and **the oracle refuted it**;
+- an address above the user range is `STATUS_INVALID_ADDRESS`, where the region
+  class answers `STATUS_INVALID_PARAMETER` for the same address: the oracle's
+  fall-back folds every basic-info error into one status. Reusing the region
+  class's range check verbatim fails exactly this assertion and nothing else.
+
+**One field the two runners are allowed to disagree on, and it is deliberate.**
+The oracle writes `ImageSigningLevel = 12` for every image view
+unconditionally; proskrnl leaves it 0, because nothing here validates a
+signature and 12 would be a claim about a check that never ran. The winetest
+accepts either at all five of its image queries, so 0 is inside the boundary's
+own tolerance rather than a divergence — the pin asserts the PAIR and says so,
+and `docs/03` carries the trade. `ImagePartialMap` stays clear for a different
+reason: `MipMapImageView` maps the whole `SizeOfImage` whatever view size is
+asked for, so no view this kernel produces is partial. That accepted-and-
+ignored view size is itself an unbuilt case — but it is unbuilt on **both**
+sides (the winetest wraps its `size == 0x4000` and `ImagePartialMap`
+assertions in `todo_wine`), so the bit is an accurate report of the views that
+exist rather than one nobody computed. When partial image views are built, the
+bit is part of that item, not this one.
+
+**And the pair handed back the next item.** `ntdll:virtual:3339` is W6's shape
+a second time: `NtSetInformationProcess(ProcessManageWritesToExecutableMemory)`
+**succeeds** on proskrnl, so the test concludes it is on an ARM64EC host and
+skips the whole of `test_exec_memory_writes`. One assertion of visible cost, a
+test function of hidden cost, and the same defect class — an accepted input
+silently dropped, turning a capability PROBE into a wrong "yes". That is now
+two instances in this one pair (`MEM_EXTENDED_PARAMETER_EC_CODE` was the
+first), which makes "sweep the boundary for accepted-and-dropped words" a
+better-evidenced hunt than any single item left here.
+
 What is left under this heading:
 
-- **`MemoryImageInformation`** (`ntdll:virtual:3095`), the next unbuilt class
-  in the same syscall and now the region cluster's only survivor. It is a
-  `win_skip`, so it returns early and everything behind it is unmeasured.
 - **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
   wants. Untouched by the above.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
