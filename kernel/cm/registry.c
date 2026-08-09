@@ -10,8 +10,11 @@
  *     disposition, and creates only the LAST path component (a missing
  *     intermediate is STATUS_OBJECT_NAME_NOT_FOUND — wine server/registry.c
  *     key_lookup_name).
- *   - Registry lookup is ALWAYS case-insensitive (ntdll forces
- *     OBJ_CASE_INSENSITIVE for create and open alike).
+ *   - Registry lookup is ALWAYS case-insensitive, in BOTH halves of a name:
+ *     Cm's subkey compare never reads the flag, and CmpResolvePath forces
+ *     OBJ_CASE_INSENSITIVE on the Ob walk that resolves the leading
+ *     "\Registry" component — which is where the oracle's ntdll forces it
+ *     too, one layer above the seam proskrnl replaced.
  *   - Subkeys and values are kept in case-insensitive sorted order (wine
  *     server/registry.c find_subkey/find_value: binary search, insert at the
  *     sort position) — enumeration order is observable.
@@ -496,8 +499,23 @@ static NTSTATUS CmpResolvePath(const OBJECT_ATTRIBUTES *attributes, BOOLEAN forC
     else
     {
         UNICODE_STRING remaining;
-        status = ObpLookupParseObject(attributes, &CmpKeyType, &referencedBody, &remaining,
-                                      &reparseBuffer);
+        /* OBJ_CASE_INSENSITIVE is FORCED for the "\Registry" half of the
+         * name, whatever the caller asked for. The registry's own compare
+         * (CmpFindSubkey) never looked at the flag, but the leading component
+         * is an OBJECT-MANAGER name and Ob's walk does — so a caller passing
+         * Attributes = 0 was asking for a case-sensitive match on exactly one
+         * component of a path that is case-insensitive everywhere else.
+         *
+         * The pinned oracle folds it in its ntdll, in the half proskrnl
+         * REPLACES at the unixlib seam: dlls/ntdll/unix/registry.c NtCreateKey
+         * does `objattr->attributes |= OBJ_OPENIF | OBJ_CASE_INSENSITIVE` and
+         * NtOpenKeyEx does `attributes = attr->Attributes |
+         * OBJ_CASE_INSENSITIVE`, and NtLoadKeyEx repeats the first. Replacing
+         * a layer means inheriting what it did; the observable answer is the
+         * oracle's either way, and it is what ntdll:reg measures on Windows 10
+         * 1607+ (reg.c:541-:558). Pinned by sem_reg/root_case.c. */
+        status = ObpLookupParseObject(attributes, &CmpKeyType, OBJ_CASE_INSENSITIVE,
+                                      &referencedBody, &remaining, &reparseBuffer);
         if (!NT_SUCCESS(status))
         {
             return status;

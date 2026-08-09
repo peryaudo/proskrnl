@@ -268,10 +268,15 @@ NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes)
  * A symbolic link met mid-path is always substituted; met as the FINAL
  * component it is substituted unless `followFinalLink` is FALSE (opening the
  * link itself, or OBJ_OPENLINK). *reparseBuffer, if the walk allocated one,
- * must be freed by the caller AFTER it is done with *leafName. */
+ * must be freed by the caller AFTER it is done with *leafName.
+ *
+ * `extraAttributes` are OBJ_* bits ORed into the caller's own for this walk —
+ * how a subsystem whose entry points force an attribute says so without
+ * rewriting the caller's (user-mode) OBJECT_ATTRIBUTES block. Cm uses it for
+ * OBJ_CASE_INSENSITIVE; see ObpLookupParseObject. */
 static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN followFinalLink,
-                              BOOLEAN forCreate, POBJECT_TYPE parseType, PVOID *foundBody,
-                              PVOID *parentBody, UNICODE_STRING *leafName,
+                              BOOLEAN forCreate, POBJECT_TYPE parseType, ULONG extraAttributes,
+                              PVOID *foundBody, PVOID *parentBody, UNICODE_STRING *leafName,
                               UNICODE_STRING *parseRemaining, PWSTR *reparseBuffer)
 {
     *foundBody = 0;
@@ -279,7 +284,8 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
     *reparseBuffer = 0;
 
     const UNICODE_STRING *name = attributes->ObjectName;
-    BOOLEAN caseInsensitive = (attributes->Attributes & OBJ_CASE_INSENSITIVE) != 0;
+    BOOLEAN caseInsensitive =
+        ((attributes->Attributes | extraAttributes) & OBJ_CASE_INSENSITIVE) != 0;
 
     /* Resolve the walk's starting directory. */
     PVOID rootBody;
@@ -554,8 +560,8 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
      * link, as an open would. Matches the pinned third_party/wine; docs/09
      * Art. 6. */
     BOOLEAN followFinalLink = (type != &ObpSymbolicLinkType);
-    NTSTATUS status = ObpLookupName(attributes, followFinalLink, TRUE, 0, &found, &parent, &leaf, 0,
-                                    &reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, followFinalLink, TRUE, 0, 0, &found, &parent, &leaf,
+                                    0, &reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         goto out;
@@ -659,8 +665,8 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
      * itself; any other open follows a final link to its target. */
     BOOLEAN followFinalLink =
         type != &ObpSymbolicLinkType && (attributes->Attributes & OBJ_OPENLINK) == 0;
-    NTSTATUS status = ObpLookupName(attributes, followFinalLink, FALSE, 0, &found, &parent, &leaf,
-                                    0, &reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, followFinalLink, FALSE, 0, 0, &found, &parent,
+                                    &leaf, 0, &reparseBuffer);
     if (reparseBuffer != 0)
     {
         MiFreePool(reparseBuffer);
@@ -706,9 +712,12 @@ NTSTATUS ObpOpenObjectByName(POBJECT_TYPE type, const OBJECT_ATTRIBUTES *attribu
 }
 
 NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE parseType,
-                              PVOID *parseObject, UNICODE_STRING *remainingName,
-                              PWSTR *reparseBuffer)
+                              ULONG extraAttributes, PVOID *parseObject,
+                              UNICODE_STRING *remainingName, PWSTR *reparseBuffer)
 {
+    /* Only the case bit is honoured here; ob.h says why a second one is fatal
+     * rather than ignored. */
+    ASSERT((extraAttributes & ~(ULONG)OBJ_CASE_INSENSITIVE) == 0);
     NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
     if (!NT_SUCCESS(probeStatus))
     {
@@ -728,8 +737,8 @@ NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE 
     remaining.Buffer = 0;
     remaining.Length = 0;
     remaining.MaximumLength = 0;
-    NTSTATUS status = ObpLookupName(attributes, TRUE, FALSE, parseType, &found, &parent, &leaf,
-                                    &remaining, reparseBuffer);
+    NTSTATUS status = ObpLookupName(attributes, TRUE, FALSE, parseType, extraAttributes, &found,
+                                    &parent, &leaf, &remaining, reparseBuffer);
     if (!NT_SUCCESS(status))
     {
         if (*reparseBuffer != 0)

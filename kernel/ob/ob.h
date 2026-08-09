@@ -269,10 +269,25 @@ void ObpVerifyNamespace(void);
  * object of `parseType` and *remainingName is whatever the walk did not
  * consume (empty when the path named the object itself); it may point into
  * *reparseBuffer, which the caller frees AFTER copying. A path resolving to
- * an object of any other type is STATUS_OBJECT_TYPE_MISMATCH. */
+ * an object of any other type is STATUS_OBJECT_TYPE_MISMATCH.
+ *
+ * `extraAttributes` are OBJ_* bits ORed into the caller's own for this walk.
+ * It exists because the caller's OBJECT_ATTRIBUTES block is user memory that
+ * cannot be edited in place (and a kernel-stack copy would fail the probe),
+ * while a subsystem whose own entry points force an attribute has to get it
+ * down here: Cm passes OBJ_CASE_INSENSITIVE, because that is what the pinned
+ * oracle's ntdll ORs in before the request leaves user mode (see
+ * kernel/cm/registry.c CmpResolvePath). Io passes 0.
+ *
+ * OBJ_CASE_INSENSITIVE is the only bit accepted, and anything else is fatal
+ * rather than ignored: the walk this reaches consults the caller's Attributes
+ * for nothing else (the link and open-if bits are read by the CALLERS, not
+ * here), so a second bit passed in hope would be a silent no-op — which is
+ * the shape docs/09 Art. 12 exists to stop. Widening it means teaching
+ * ObpLookupName to read the new bit, in the same commit. */
 NTSTATUS ObpLookupParseObject(const OBJECT_ATTRIBUTES *attributes, POBJECT_TYPE parseType,
-                              PVOID *parseObject, UNICODE_STRING *remainingName,
-                              PWSTR *reparseBuffer);
+                              ULONG extraAttributes, PVOID *parseObject,
+                              UNICODE_STRING *remainingName, PWSTR *reparseBuffer);
 
 /* Validate a caller-supplied OBJECT_ATTRIBUTES (the block, its ObjectName,
  * and the name buffer) before any of it is read. The Ob create/open engine
