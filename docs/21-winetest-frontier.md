@@ -139,22 +139,47 @@ queued at `IopCompletePendingRequest` and to the **issuer** thread.
   cancelled at its issuer thread's exit — that narrowness now has an APC
   attached to it and must be re-answered, not inherited.
 
-**W4b — change-notify: PARTLY DONE.** `ntdll:change` is green. Two rules
-landed, both about what a request that returned `STATUS_PENDING` owes its
-caller, and both pinned by `tests/ntapi/sem_file/notify_sticky.c`:
+**W4b — change-notify: DONE.** `ntdll:change` and `kernel32:change` are both
+green. Three rules landed, all pinned:
 
 - the completion FILTER belongs to the HANDLE, not the call — the first arm
-  fixes it and every later arm reuses it (the server's "assign it once");
-- an error completion writes the IOSB when the watch carries no event.
+  fixes it and every later arm reuses it (the server's "assign it once",
+  `sem_file/notify_sticky.c`);
+- an error completion writes the IOSB when the watch carries no event
+  (same pin);
+- the whole notification STATE belongs to the handle, not the request
+  (`sem_file/notify_queue.c`) — which closed the `docs/03` CUI-5 deviation
+  rather than working around it.
 
-`kernel32:change` is still red, and it is now clear that the watch ENGINE
-is not the suspect: what fails is what the engine is TOLD about. A rename
-must emit two chained records, directory create/remove are not reported at
-all, and the OVERLAPPED `Internal`/`InternalHigh` fields are unwritten.
-Those are `kernel/io/notify.c` producers plus the completion path.
+**The old block here was wrong about the diagnosis, and about the size.** It
+said 33 failures in "three separate producers" — a rename emitting one record
+where two were owed, directory create/remove "not reported at all", and
+unwritten `Internal`/`InternalHigh`. Re-measured, the pair had **14**
+failures, directory create and remove WERE reported, and all fourteen were one
+subject: the notification state lives on the DIRECTORY HANDLE
+(`server/change.c`, `struct dir`), and proskrnl kept it per-request. Changes
+queue on the handle whether or not a watch is parked; a later arm drains the
+whole queue into one chained completion. The rename's second record was not a
+missing producer — `fs/fat32` emitted it all along — it was a one-shot watch
+consuming the first and dropping the second. `Internal`/`InternalHigh` were
+not unwritten either; they were written with the wrong answer, because
+`want_data` is sticky too and the handle in question had first been armed with
+a NULL buffer.
 
-The `docs/03` CUI-5 deviation (changes are not buffered between watches)
-is still open and still the right next question for this item.
+**The lesson is §4 trap 4 one level up.** Every one of those three "separate
+producers" was a real observation of a symptom, and grouping them by symptom
+produced three work items where there was one cause. The block was written
+from the failure TEXT; the cause was only visible in the server's data
+structure.
+
+**A stale pin fell out of it, and it is worth recording how.**
+`sem_file/notify_change.c` carried the subtree case in a `beyond_oracle`
+block, on the finding that "the pinned Wine's recursive inotify watch never
+delivers in the oracle environment". It delivers fine. That handle had simply
+been armed non-recursive earlier in the same test, and the subtree flag is
+sticky — so the measurement was real and its explanation was invented. Moved
+to `sem_file/notify_queue.c` on a fresh handle, where it is oracle-green and
+no longer beyond anything.
 
 ### W5 — Mm: placeholder reservations (**DONE**) and `SEC_RESERVE` sections
 
@@ -539,18 +564,22 @@ Pairs and framings that will consume effort and unblock nothing.
   `STATUS_CANCELLED`, the other sees the block untouched. The kernel
   reproduces both. *Why* the event changes the answer has not been traced
   through the oracle's async path, and someone should.
-- **Subtree stickiness** (W4b). The server stores the subtree flag in the
+- ~~**Subtree stickiness** (W4b). The server stores the subtree flag in the
   same "assign it once" block as the filter, so symmetry suggests it is
   sticky too — but nothing on either side measures a re-arm that changes
-  it, and proskrnl deliberately leaves it per-call. If a test ever
-  convicts, that is where to look.
+  it, and proskrnl deliberately leaves it per-call.~~ **Measured and
+  confirmed.** `kernel32:change` convicts it at change.c:558-:597, and
+  `sem_file/notify_queue.c` now pins it oracle-green on a fresh handle.
+  The symmetry argument was right, and the reason it went unmeasured for a
+  milestone was a test that could not see it — the only case aimed at the
+  subtree flag re-armed a handle already fixed non-recursive.
 
 ---
 
 ## 6. Critical files
 
-- `kernel/io/` — `notify.c` (W4b), `ioctl.c` + `rw.c` + `async.c` (W4a),
-  `query.c`, `mountmgr.c` (W7).
+- `kernel/io/` — `ioctl.c` + `rw.c` + `async.c` (W4a), `query.c`,
+  `mountmgr.c` (W7). (`notify.c` was W4b and is done.)
 - `kernel/mm/` — `virtual.c` and `section.c` (W5). **Danger zone.**
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — W6. **Danger zone.**
 - `kernel/ke/{wait,apc}.c` — W10. **Danger zone.**
