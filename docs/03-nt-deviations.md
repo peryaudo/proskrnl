@@ -1957,6 +1957,62 @@ reserve is subtracted from the low address space permanently. That mechanism is 
 the code and is consistent with the arithmetic; which sweep index moved was not measured.
 The leak itself is issue #152 — a real defect, not a property of the `ZeroBits` rule.
 
+## What a FAILED `NtProtectVirtualMemory` answers
+
+`NtProtectVirtualMemory` writes `PAGE_NOACCESS` into the caller's `*old_prot` on **every**
+failure of the operation, and leaves `*base`/`*size` alone — the oracle's closing
+`else *old_prot = PAGE_NOACCESS;` (`dlls/ntdll/unix/virtual.c`), mirrored in its remote-APC
+arm. Nothing deviates; it is implemented and pinned by
+`tests/ntapi/sem_mm/protect_old_prot.c` (`docs/21` W5), and it is what
+`ntdll:virtual:2679`/`:2686` wanted. Three edges of that rule are pinned with it, because
+none of them is in the line: the slot is written even for failures that never had a previous
+protection to report (an unserviceable protection, an uncommitted range, a free address);
+`*base` and `*size` are *not* written with it, since the oracle rounds them into locals and
+copies back on success only; and the two returns *above* the `else` stay silent — a probe
+failure has no writable slot, and a process handle that cannot be resolved (junk, or lacking
+`PROCESS_VM_OPERATION`) means the operation never ran.
+
+**The ORDER the refusals are decided in is the oracle's too, and it was not.** The oracle
+asks view → committed → protection: `find_view`, then `get_committed_size`, then
+`set_protection`, which is where `get_vprot_flags` refuses an unserviceable protection. So a
+bad protection over a free address reports `STATUS_INVALID_PARAMETER` and over a reserved
+range reports `STATUS_NOT_COMMITTED`; only over a range it could otherwise have protected
+does it report itself. `MiProtectVirtualMemory` validated the protection on the way in — the
+shape every implementation reaches for — and so answered `STATUS_INVALID_PAGE_PROTECTION` for
+all three. No winetest assertion reaches the two that differ; the pin does.
+
+**A zero-size request walks the same ladder** rather than being refused above it. The oracle
+has no size guard: `ROUND_SIZE(addr, 0, mask)` is 0 for an aligned address, `find_view` still
+answers the containing view, and `set_protection` walks no pages. Measured on both runners:
+zero-size over a committed page succeeds and reports that page's protection with `*base`
+rounded and `*size` 0; over a reserved range it is `STATUS_NOT_COMMITTED`; over a free address
+`STATUS_INVALID_PARAMETER`; with an unserviceable protection `STATUS_INVALID_PAGE_PROTECTION`.
+`MiProtectVirtualMemory` refused all four with `STATUS_INVALID_PARAMETER` from an
+`end <= base` guard, which is now `end < base` — the overflow the oracle's `find_view`
+refuses in the same words. The named page is therefore checked for commit, and read for the
+previous protection, outside the range loop, because a zero-size range has no pages in it.
+
+**The status for a range no single view covers was a third answer, and it is now the
+oracle's.** Both ways to miss — a free address, and a range that starts inside a view and
+runs off its end — are the oracle's `find_view` returning NULL, whose one caller answers
+`STATUS_INVALID_PARAMETER`. `MiProtectVirtualMemory` used to answer `STATUS_INVALID_ADDRESS`
+for both, and that is not a different shade of the same refusal at the boundary Win32 sees:
+
+| | status | `RtlNtStatusToDosError` |
+|---|---|---|
+| pinned oracle | `STATUS_INVALID_PARAMETER` (`c000000d`) | `ERROR_INVALID_PARAMETER` (87) |
+| Windows x64 | `STATUS_CONFLICTING_ADDRESSES` (`c0000018`) | `ERROR_INVALID_ADDRESS` (487) |
+| proskrnl, before | `STATUS_INVALID_ADDRESS` (`c0000141`) | **`ERROR_UNEXP_NET_ERR` (59)** |
+
+So `VirtualProtect` over a free address used to report an "unexpected network error"
+(`dlls/ntdll/error.h:686`, against `:389`). Wine and Windows genuinely disagree here —
+upstream says so itself at `dlls/ntdll/tests/virtual.c:2677`, which is why `ntdll:virtual`
+asserts only that the call fails and no winetest assertion convicts any of the three — and
+where two authorities disagree the pinned oracle is this project's arbiter (Art. 6). Pinned
+both ways by the same file. If a real caller is ever found to branch on
+`ERROR_INVALID_ADDRESS` there, that caller is evidence for Windows' answer and the change is
+its own commit with its own pin.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
