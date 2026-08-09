@@ -2,9 +2,8 @@
  *
  * Counted UTF-16 string helpers for the Ob namespace. Signatures per Wine's
  * winternl.h exports (docs/15: a real NT name keeps its real signature);
- * comparison is culture-free, upcasing ASCII only — object names the kernel
- * itself creates are ASCII, and NT's own upcase table is data we do not
- * carry (docs/03).
+ * comparison is culture-free, upcasing through the pinned NLS table (docs/03
+ * "Name case folding").
  */
 #ifndef PROSKRNL_KERNEL_LIB_RTL_H
 #define PROSKRNL_KERNEL_LIB_RTL_H
@@ -15,12 +14,13 @@
  * clang-format, which splits it from the string. */
 #define WSTR(s) u##s
 
-/* ASCII-only upcase — the one authority for case folding in this kernel
- * (Art. 11): the Ob namespace, the I/O directory-mask matcher and the FAT32
- * name comparison all fold through it, so they cannot disagree about what
- * two names mean. NT folds through a 64 KiB upcase table we deliberately do
- * not carry (docs/03 "Name case folding"), so every character outside a-z
- * comes back unchanged. */
+/* The one authority for case folding in this kernel (Art. 11): the Ob
+ * namespace, Cm's key lookup and subkey order, the I/O directory-mask
+ * matcher and the FAT32 name comparison all fold through it, so they cannot
+ * disagree about what two names mean. It is the NLS upcase table the ORACLE
+ * folds through, generated from the pinned tree (kernel/lib/upcase.h,
+ * tools/gen_upcase.py) — total over the BMP, and per 16-bit code unit, so a
+ * surrogate pair is two units and never one character. */
 WCHAR RtlUpcaseUnicodeChar(WCHAR c);
 
 void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source);

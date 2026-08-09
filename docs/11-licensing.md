@@ -30,6 +30,16 @@ the GPL-2.0 kernel image** only when all of these hold:
   unchanged: Wine headers and MS documentation);
 - it is recorded in `docs/provenance.md` with the license named.
 
+**Generated contract DATA is a different question, and Article 4 already answers it.**
+`abi/*` is numeric values mechanically extracted from Wine's LGPL-2.1 headers and compiled
+into the GPL-2.0 kernel, and that is not "third-party code inside the kernel image" — no
+Wine code is linked, and the values are the observable contract, which Article 4 requires
+be generated rather than recalled precisely so the extraction is auditable. The same
+applies to `kernel/lib/upcase.h`, the NLS upcase table generated from `nls/l_intl.nls`:
+name equality at the boundary IS that table, so approximating it with a hand-written rule
+was a divergence, not a license precaution. The four conditions above still govern anything
+that links third-party **code**; nothing but Flanterm does.
+
 ## Route (a) and the kernel image
 
 The kernel talks to Wine/wineserver-lite across a **process boundary** (syscalls; shared

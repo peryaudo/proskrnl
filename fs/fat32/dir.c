@@ -449,6 +449,11 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
         {
             break;
         }
+        /* The shared fold (Art. 11), then an ASCII filter — and the order is
+         * safe rather than lucky: no BMP code unit folds INTO printable
+         * ASCII, so widening RtlUpcaseUnicodeChar to the full NLS table
+         * cannot make a non-ASCII character survive this test. Checked
+         * exhaustively over the table, not assumed. */
         WCHAR c = RtlUpcaseUnicodeChar(name->Buffer[i]);
         if (c <= 0x20 || c > 0x7E || c == '.')
         {

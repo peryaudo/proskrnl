@@ -1,6 +1,7 @@
 /* kernel/lib/rtl.c — counted UTF-16 string helpers (M3). See rtl.h. */
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/upcase.h"
 #include "kernel/init/panic.h"
 
 void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source)
@@ -18,44 +19,34 @@ void RtlInitUnicodeString(PUNICODE_STRING target, PCWSTR source)
     target->MaximumLength = (USHORT)(target->Length + sizeof(WCHAR));
 }
 
+/* The NLS three-level trie lookup, exactly as both halves of the oracle
+ * spell it (Wine's PE ntdll `casemap()`, dlls/ntdll/locale.c; wineserver's
+ * `to_upper()`, server/unicode.c). Each level indexes the same table and the
+ * leaf holds a DELTA rather than the folded unit, which is why a lookup for a
+ * character with no case is free: its delta is zero.
+ *
+ * THE FOLD IS PER CODE UNIT, NOT PER CODE POINT, and that is a contract
+ * rather than a shortcut. ntdll:reg (reg.c:350) creates a key whose name
+ * ends in the surrogate pair U+D801 U+DC00 and requires that the SAME pair
+ * with its low half swapped for U+DC28 — the other case of the same astral
+ * code point, U+10400/U+10428 — not match it. Decoding the pair first would
+ * be the "more correct" thing to do and would fail exactly that assertion.
+ *
+ * The table itself is generated from the pinned tree's own nls/l_intl.nls
+ * (tools/gen_upcase.py; Art. 4 / G4 — 1433 constants nobody types by hand),
+ * so this cannot drift from the oracle it is measured against. It replaced a
+ * hand-written rule that reached ASCII and then, once, the Latin-1
+ * Supplement; docs/03 "Name case folding" carries the history and what is
+ * still unmodelled (upcase only; no downcase, no OEM code page).
+ *
+ * Pinned by tests/ntapi/sem_reg/key_name_fold.c (registry key names, the
+ * consumer that convicted the rule) and sem_file/name_case_fold.c (file
+ * names and the enumeration ORDER the fold decides). */
 WCHAR RtlUpcaseUnicodeChar(WCHAR c)
 {
-    if (c >= 'a' && c <= 'z')
-    {
-        return (WCHAR)(c - 'a' + 'A');
-    }
-    /* The Latin-1 Supplement, because user mode reached it: ntdll:directory
-     * creates U+00E9 and U+00C9 in one directory and requires the
-     * enumeration to sort them as one letter (directory.c:324). docs/03
-     * called this deviation "unobservable until user mode invents non-ASCII
-     * object names"; it is observable now.
-     *
-     * The mapping is Unicode's, and its three irregularities are the reason
-     * this is a switch and not `c - 0x20` over the range — a bare subtract
-     * turns U+00FF into U+00DF, silently making y-diaeresis and sharp-s the
-     * same NAME everywhere this fold is used. Cross-check against the
-     * Unicode character database (UnicodeData.txt, the simple uppercase
-     * mapping field) rather than memory:
-     *
-     *   U+00DF LATIN SMALL LETTER SHARP S     -> itself (uppercase is "SS",
-     *                                           which no single-character
-     *                                           fold can express)
-     *   U+00F7 DIVISION SIGN                  -> itself (not a letter)
-     *   U+00FF LATIN SMALL LETTER Y DIAERESIS -> U+0178
-     *   everything else in U+00E0..U+00FE     -> minus 0x20
-     *
-     * Beyond Latin-1 the fold still does nothing, and that remains a
-     * recorded deviation (docs/03): NT carries a 64 KiB table and proskrnl
-     * carries a rule. Pinned by tests/ntapi/sem_file/name_case_fold.c. */
-    if (c == 0x00FF)
-    {
-        return 0x0178;
-    }
-    if (c >= 0x00E0 && c <= 0x00FE && c != 0x00F7)
-    {
-        return (WCHAR)(c - 0x20);
-    }
-    return c;
+    USHORT level1 = RtlpUpcaseTable[c >> 8];
+    USHORT level2 = RtlpUpcaseTable[level1 + ((c >> 4) & 0x0F)];
+    return (WCHAR)(c + RtlpUpcaseTable[level2 + (c & 0x0F)]);
 }
 
 BOOLEAN RtlEqualUnicodeString(const UNICODE_STRING *s1, const UNICODE_STRING *s2,
