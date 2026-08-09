@@ -202,9 +202,15 @@ the pinned tree:
 - **TEB and PEB live in 4-page blocks** (`dlls/ntdll/unix/virtual.c virtual_alloc_teb` /
   `virtual_alloc_first_teb`): the PE side keeps per-thread state *behind* the TEB proper
   (`debug_info` at `teb+0x2000+sizeof(TEB32)`) and reads relative to the PEB. The TEB also
-  seeds `ActivationContextStackPointer`, the `StaticUnicodeString` buffer, and the x64
-  no-exception-list marker, as Wine's `init_teb` does — `actctx.c` dereferences them
-  without checking.
+  seeds `ActivationContextStackPointer`, the `StaticUnicodeString` buffer, the x64
+  no-exception-list marker, and `Tib.FiberData`'s `0x1e00`, as Wine's `init_teb` does —
+  `actctx.c` dereferences the first two without checking, and `kernel32:fiber` asserts
+  the last on a thread that is not a fiber (`fiber.c:203`). `DeallocationStack` is
+  seeded too, from the stack's reservation base rather than from `init_teb`: it is the
+  stack's third, fixed corner, and `StackBase - DeallocationStack` is the only way user
+  mode can state the RESERVE (`GetCurrentThreadStackLimits`, `SetThreadStackGuarantee`,
+  `badptr_handler`'s guard re-arm and `SwitchToFiber` all read it). Pinned by
+  `sem_ps/teb_stack.c` and `sem_ps/teb_fiber_data.c`.
 - **The initial stack commit is at least 64 KiB** regardless of the PE header's
   `SizeOfStackCommit`: `signal_start_thread` zeroes `0xf000` bytes below the initial
   CONTEXT before `NtContinue`, deeper than a minimal 1-page commit.

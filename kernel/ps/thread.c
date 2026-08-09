@@ -409,8 +409,8 @@ static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uin
      * unique (one CID table for pids and tids), and the global alert-by-tid
      * lookup depends on it (ntdll:sync test_tid_alert). */
     uint64_t threadId = PspAllocateProcessId();
-    status =
-        PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, threadId, &tebBase);
+    status = PspBuildTeb(process, allocBase, stackTop, stackLimit, process->uniqueProcessId,
+                         threadId, &tebBase);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -525,8 +525,8 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
      * unique (one CID table for pids and tids), and the global alert-by-tid
      * lookup depends on it (ntdll:sync test_tid_alert). */
     uint64_t threadId = PspAllocateProcessId();
-    status =
-        PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, threadId, &tebBase);
+    status = PspBuildTeb(process, allocBase, stackTop, stackLimit, process->uniqueProcessId,
+                         threadId, &tebBase);
     if (!NT_SUCCESS(status))
     {
         return status;

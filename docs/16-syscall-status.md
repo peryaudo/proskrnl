@@ -213,9 +213,10 @@ wineserver's `propagate_console_signal` implements.
 ### The one inverted case — worth knowing about
 
 `NtSetInformationProcess` (`kernel/ps/query.c` `NtSetInformationProcess`) is the
-opposite shape. After five explicit classes
+opposite shape. After six explicit classes
 (`ProcessManageWritesToExecutableMemory`, `ProcessWineMakeProcessSystem`,
-`ProcessPriorityBoost`, `ProcessDefaultHardErrorMode`, `ProcessPriorityClass`)
+`ProcessThreadStackAllocation`, `ProcessPriorityBoost`,
+`ProcessDefaultHardErrorMode`, `ProcessPriorityClass`)
 its default **accepts as a
 no-op** and returns `STATUS_SUCCESS`, naming the class on serial. That is
 deliberate — the classes ntdll sets at startup have no observable effect here —
@@ -237,3 +238,15 @@ the pinned oracle answers off ARM64 — with the thread-side twin
 (pinned by `tests/ntapi/sem_ps/manage_exec_writes.c`). **A no-op is only safe for
 a class whose answer carries no information**; the moment the STATUS itself is
 the value the caller wanted, accepting is fabricating.
+
+It has caught a fourth, and it is the sharpest instance yet because the status
+was never the value at all. `ProcessThreadStackAllocation` (41) is the one
+kernel call `RtlCreateUserStack` makes, and its answer is a pointer it WRITES
+into the caller's buffer — a buffer that is an uninitialised local in the
+caller (`third_party/wine` `dlls/ntdll/thread.c`). The no-op arm returned
+`STATUS_SUCCESS` over it, so ntdll committed a guard page and a stack at
+whatever was in that stack slot, and `CreateFiberEx` ran fibers on it. It is
+now a real reservation (`kernel/ps/query.c`, pinned by
+`tests/ntapi/sem_ps/thread_stack_alloc.c`). So the rule above generalises one
+step further: **a no-op is only safe for a class the caller reads NOTHING
+back from** — not merely one whose status carries no information.

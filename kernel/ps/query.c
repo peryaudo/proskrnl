@@ -15,6 +15,7 @@
 #include "kernel/mm/phys.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/section.h"
+#include "kernel/mm/virtual.h"
 #include "kernel/io/io.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/rtl.h"
@@ -762,6 +763,91 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * tests/ntapi/sem_ps/manage_exec_writes.c, which measures that
          * ordering rather than only the happy case. */
         return STATUS_NOT_SUPPORTED;
+    }
+    if (infoClass == ProcessThreadStackAllocation)
+    {
+        /* THE ONE KERNEL CALL RtlCreateUserStack MAKES, and the accept-as-a-
+         * no-op arm at the bottom of this function was answering it with
+         * STATUS_SUCCESS over the caller's UNINITIALISED buffer
+         * (third_party/wine dlls/ntdll/thread.c: `PROCESS_STACK_ALLOCATION_
+         * INFORMATION alloc;` is a plain local, and only the success arm
+         * writes StackBase). The caller then commits a guard page and a stack
+         * at whatever was in that stack slot and reports it as the new
+         * stack's DeallocationStack — so CreateFiberEx (dlls/kernelbase/
+         * thread.c) ran its fibers on it. A no-op success is a fabricated
+         * answer whenever the caller reads something the call was supposed to
+         * WRITE, which is the sharper form of docs/21 W5's rule about a
+         * caller reading the status.
+         *
+         * The oracle's whole arm is one MEM_RESERVE allocation
+         * (dlls/ntdll/unix/process.c, case ProcessThreadStackAllocation), and
+         * three things about it are not guessable from the class name — all
+         * three pinned by tests/ntapi/sem_ps/thread_stack_alloc.c:
+         *
+         *   - THE LENGTH SELECTS THE STRUCT. sizeof(..._EX) means the _EX
+         *     form and the reservation is described by its embedded
+         *     AllocInfo; there is no version field and no flag.
+         *   - ZeroBits IS NtAllocateVirtualMemory's, so the class inherits
+         *     that syscall's bands and its STATUS_INVALID_PARAMETER_3 —
+         *     stated once, in MiZeroBitsPlacementLimit (Art. 11).
+         *   - THE HANDLE IS NEVER READ. The oracle allocates in
+         *     GetCurrentProcess() unconditionally and never mentions its own
+         *     `handle`, so the reservation is always the CALLER's and a
+         *     handle that resolves to nothing is not an error. */
+        ULONG allocOffset;
+        if (length == sizeof(PROCESS_STACK_ALLOCATION_INFORMATION_EX))
+        {
+            allocOffset = (ULONG)offsetof(PROCESS_STACK_ALLOCATION_INFORMATION_EX, AllocInfo);
+        }
+        else if (length == sizeof(PROCESS_STACK_ALLOCATION_INFORMATION))
+        {
+            allocOffset = 0;
+        }
+        else
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+
+        PROCESS_STACK_ALLOCATION_INFORMATION *userAlloc =
+            (PROCESS_STACK_ALLOCATION_INFORMATION *)((char *)buffer + allocOffset);
+        /* One probe for both directions: the request is read out of the same
+         * struct the answer goes back into. Nothing between them can park —
+         * and the reason is narrower than "a reserve takes no frames", so it
+         * is worth naming for whoever re-checks it: `blocking_frontier.py
+         * --path` finds exactly one park reachable from
+         * MiAllocateVirtualMemoryEx, a section dereference inside the
+         * VAD-teardown unwind, and that unwind belongs to the MEM_COMMIT
+         * failure arm. Every function on the pure-reserve path reports
+         * "cannot park". */
+        KI_PROBE_TOKEN token;
+        NTSTATUS status =
+            KiProbeForWriteToken(userAlloc, sizeof(*userAlloc), sizeof(SIZE_T), &token);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PROCESS_STACK_ALLOCATION_INFORMATION alloc;
+        KiReadUser(&token, &alloc, userAlloc, sizeof(alloc));
+
+        uint64_t limitHigh = 0;
+        status = MiZeroBitsPlacementLimit((uint64_t)alloc.ZeroBits, &limitHigh);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PVOID base = 0;
+        SIZE_T size = alloc.ReserveSize;
+        status = MiAllocateVirtualMemoryEx(&KeGetCurrentThread()->process->addressSpace, &base,
+                                           &size, MEM_RESERVE, PAGE_READWRITE, 0, limitHigh, 0, 0);
+        if (!NT_SUCCESS(status))
+        {
+            /* StackBase is written on the SUCCESS arm only. A refusal that
+             * scribbled a plausible pointer would be the same defect this
+             * case exists to remove, one status further along. */
+            return status;
+        }
+        KiWriteUser(&token, &userAlloc->StackBase, &base, sizeof(base));
+        return STATUS_SUCCESS;
     }
     if (infoClass == ProcessPriorityBoost)
     {

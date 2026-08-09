@@ -505,8 +505,8 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status) && isPe)
     {
-        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, mainThreadId,
-                             &tebBase);
+        status = PspBuildTeb(process, process->stackAllocationBase, stackTop, stackLimit,
+                             process->uniqueProcessId, mainThreadId, &tebBase);
     }
     else if (NT_SUCCESS(status))
     {
@@ -786,8 +786,8 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     uint64_t mainThreadId = PspAllocateProcessId();
     if (NT_SUCCESS(status))
     {
-        status = PspBuildTeb(process, stackTop, stackLimit, process->uniqueProcessId, mainThreadId,
-                             &tebBase);
+        status = PspBuildTeb(process, process->stackAllocationBase, stackTop, stackLimit,
+                             process->uniqueProcessId, mainThreadId, &tebBase);
     }
     if (!NT_SUCCESS(status))
     {

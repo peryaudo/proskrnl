@@ -424,9 +424,17 @@ void PspInitializeSharedUserData(void);
 NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured);
 
 /* Allocate + initialize a TEB for a thread: a full user page, NT_TIB filled
- * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA. */
-NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
-                     uint64_t uniqueProcessId, uint64_t uniqueThreadId, uint64_t *tebOut);
+ * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA.
+ *
+ * The stack is described by THREE addresses, not two: `stackTop` and
+ * `stackLimit` bracket the committed slice and both move as it grows, while
+ * `stackAllocationBase` is the base of the whole reservation and never moves.
+ * The caller must pass all three — a TEB that reports the first two and
+ * leaves DeallocationStack zero describes a stack reaching address 0
+ * (sem_ps/teb_stack.c). */
+NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackAllocationBase, uint64_t stackTop,
+                     uint64_t stackLimit, uint64_t uniqueProcessId, uint64_t uniqueThreadId,
+                     uint64_t *tebOut);
 
 /* --- thread.c (M7) ------------------------------------------------------- */
 

@@ -609,8 +609,9 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
     return STATUS_SUCCESS;
 }
 
-NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
-                     uint64_t uniqueProcessId, uint64_t uniqueThreadId, uint64_t *tebOut)
+NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackAllocationBase, uint64_t stackTop,
+                     uint64_t stackLimit, uint64_t uniqueProcessId, uint64_t uniqueThreadId,
+                     uint64_t *tebOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
     /* A 4-page block per TEB — Wine's PE ntdll keeps per-thread state BEHIND
@@ -637,6 +638,36 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackTop, uint64_t stackLimit,
     memset(teb, 0, sizeof(TEB));
     teb->Tib.StackBase = (PVOID)(uintptr_t)stackTop;
     teb->Tib.StackLimit = (PVOID)(uintptr_t)stackLimit;
+    /* The stack's THIRD corner, and the only fixed one: StackBase and
+     * StackLimit bracket the committed slice and both move as mm/fault.c
+     * grows it, while DeallocationStack is where the reservation begins.
+     * `StackBase - DeallocationStack` is therefore the only way user mode
+     * can state the RESERVE, and Wine's PE side reads the field directly for
+     * exactly that — GetCurrentThreadStackLimits returns it as the low
+     * bound, SetThreadStackGuarantee sizes against that difference, the
+     * stack-overflow filter re-arms the guard at DeallocationStack +
+     * page_size (dlls/kernel32/virtual.c badptr_handler), and the fiber
+     * implementation swaps it on every switch (dlls/kernelbase/thread.c).
+     *
+     * It was left at the memset's zero, which is not a missing value but a
+     * wrong answer: every thread claimed a stack reaching address 0. Pinned
+     * by tests/ntapi/sem_ps/teb_stack.c. */
+    teb->DeallocationStack = (PVOID)(uintptr_t)stackAllocationBase;
+    /* NT_TIB's FiberData/Version union, seeded to 0x1e00 on every thread that
+     * is not a fiber. It is not a pointer here and nothing dereferences it —
+     * kernelbase gates every fiber path on TEB.HasFiberData
+     * (dlls/kernelbase/thread.c) and reads FiberData only inside — but user
+     * mode READS it: kernel32:fiber's test_FiberHandling opens by asserting
+     * this exact value on a plain thread (fiber.c:203).
+     *
+     * It belongs here for the same reason the case fold and the registry
+     * root's case-insensitivity did (docs/21 W12): the value is written by
+     * the half of ntdll proskrnl REPLACES — `teb->Tib.FiberData = (void
+     * *)0x1e00;` in dlls/ntdll/unix/virtual.c init_teb, alongside the
+     * ActivationContextStack and StaticUnicodeString furniture already
+     * mirrored above. Replacing a layer means inheriting what that layer did.
+     * Pinned by tests/ntapi/sem_ps/teb_fiber_data.c. */
+    teb->Tib.FiberData = (PVOID)(uintptr_t)0x1e00;
     teb->Tib.Self = (struct _NT_TIB *)(uintptr_t)tebVa;
     teb->Peb = (PEB *)(uintptr_t)process->pebBase;
     teb->ClientId.UniqueProcess = (HANDLE)(uintptr_t)uniqueProcessId;
