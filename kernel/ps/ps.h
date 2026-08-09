@@ -449,6 +449,13 @@ typedef struct PSP_THREAD_OPTIONS
     ULONG handleAttributes; /* OBJ_INHERIT etc., from OBJECT_ATTRIBUTES */
     uint64_t stackReserve;  /* 0 = the default 1 MiB */
     uint64_t stackCommit;   /* 0 = the default 64 KiB */
+    /* NtCreateThreadEx's ZeroBits, resolved to a placement CEILING for the
+     * stack reservation — inclusive of its last byte, 0 = unconstrained, the
+     * convention MiAllocateVirtualMemoryEx's limitHigh already uses. It is
+     * the resolved limit rather than the raw argument because the value is
+     * only a ceiling once MiZeroBitsLimit has decided whether it was a count
+     * or a mask, and that decision belongs to Mm (Art. 11). */
+    uint64_t stackLimitHigh;
     /* THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER at create time. The same flag
      * NtSetInformationThread(ThreadHideFromDebugger) sets later, so it is
      * born set rather than set by a second path — the server does exactly
