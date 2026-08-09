@@ -368,6 +368,24 @@ buffer is. `ObjectBasicInformation` and `ObjectTypeInformation` keep answering:
 they need the handle and the type, neither of which the delete destroyed.
 Pinned by `tests/ntapi/sem_reg/key_object_name.c`.
 
+### A registry link loop is an invalid REQUEST, not a missing name
+
+`CmpFollowLink`'s expansion cap was right and the status it refused with was
+not. `STATUS_OBJECT_NAME_NOT_FOUND` says the name is absent; a loop's names are
+all present, and it is the *request* that cannot be served. The oracle answers
+`STATUS_INVALID_PARAMETER`, from the bound on the same quantity with the same
+value: the registry's symlink arm resolves each destination by re-entering the
+generic name walk, and that walk gives up at `if (recursion_count > 32)`
+(`server/object.c` `lookup_named_object`; `server/registry.c`
+`key_lookup_name`). `ntdll:reg` measures it at `reg.c:1312`.
+
+Pinned in `sem_reg/symlink.c` over **both** loop shapes, which is the part worth
+carrying: a link whose target runs through itself makes the path grow one
+component per follow, so a bound on path LENGTH would also stop it; a
+two-link cycle alternates between two names of constant length and only a bound
+on the number of FOLLOWS stops that one. Testing the first alone would pass an
+implementation that hangs on the second.
+
 ## M9 npfs/condrv notes (pipes + the console)
 
 What the M9 bring-up pinned, deviated on, or left unbuilt:

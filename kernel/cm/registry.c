@@ -363,9 +363,12 @@ static BOOLEAN CmpPathExhausted(const UNICODE_STRING *path)
     return TRUE;
 }
 
-/* A resolution follows at most this many links before refusing — breaks
- * link cycles, which would hang the oracle (docs/03 "registry symlinks";
- * the value is NT's reparse limit, MSDN "Reparse Points"). */
+/* A resolution follows at most this many links before refusing — breaks link
+ * cycles, which would otherwise never terminate. The oracle's bound is on the
+ * same quantity and has the same value: its symlink arm resolves the
+ * destination by re-entering the generic name walk (wine server/registry.c
+ * key_lookup_name -> lookup_named_object), and that walk gives up at
+ * `if (recursion_count > 32)` (wine server/object.c lookup_named_object). */
 #define CMP_MAX_LINK_EXPANSIONS 32u
 
 /* Follow `link`: replace the walk's path with the link's destination plus
@@ -384,7 +387,15 @@ static NTSTATUS CmpFollowLink(PCMP_KEY_NODE link, const UNICODE_STRING *remainde
 
     if (++(*expansions) > CMP_MAX_LINK_EXPANSIONS)
     {
-        return STATUS_OBJECT_NAME_NOT_FOUND;
+        /* NOT a name error: the name is fine, the caller's REQUEST cannot be
+         * served. The oracle's exhausted name walk answers
+         * STATUS_INVALID_PARAMETER (wine server/object.c lookup_named_object),
+         * and that value reaches this caller because the registry's symlink
+         * arm resolves its destination through that very walk. ntdll:reg
+         * measures it at reg.c:1312; pinned by sem_reg/symlink.c, over a link
+         * whose target extends the path AND a two-link cycle whose does not —
+         * the second is why the guard counts FOLLOWS and not path length. */
+        return STATUS_INVALID_PARAMETER;
     }
 
     UNICODE_STRING valueName;
