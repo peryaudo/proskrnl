@@ -191,13 +191,47 @@ handle would answer `STATUS_PENDING` and post nothing, hanging
 
 **The pair's verdict still does not move, and that is not a hedge.** Zero
 failed assertions and then the same wedge reads `FAIL (timeout)` exactly as
-five-and-a-wedge did. The wedge is next, and its shape is known:
-`IopCompletePendingRequest` never posts a packet at all, while the rule
-above says a request that PENDED always does — so an overlapped caller that
-binds a port and waits on a pended ioctl waits forever. The APC block
-already travels in the `IOP_PENDING_REQUEST`; the port, key and value need
-the same treatment, and the port needs a REFERENCE for the reason the issuer
-thread did.
+five-and-a-wedge did.
+
+**W4c — the pended packet (DONE), and the wedge it was predicted to be (it
+is not).** This document said the wedge's "shape is known":
+`IopCompletePendingRequest` never posting a packet, while the rule above says
+a request that PENDED always does. The defect was real and is now fixed —
+`IopCompletePendingRequest` posts through `rw.c`'s `IopPostRequestPacket`,
+the same site the inline tail uses, so there is one statement of "which port"
+and "what value" rather than two; the `IOP_PENDING_REQUEST` holds a
+**referenced FILE_OBJECT** and reads the port at COMPLETION rather than
+capturing it at issue, because the oracle re-reads
+(`add_async_completion`'s `if (async->fd && !async->completion)`) and that is
+measurable: binding a port *after* an async listen has pended still posts its
+packet. `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` never applies here and a
+CANCELLED listen posts its cancel — the guards are `req->async || …` and
+`async->pending || !NT_ERROR(status)`, so pendedness alone satisfies both.
+Pinned by `tests/ntapi/sem_pipe/pending_packet.c`.
+
+**The prediction was still wrong about the wedge, and the correction is the
+more valuable half.** With the packet built, `ntdll:pipe` is bit-for-bit
+where it was: zero failed assertions, `FAIL (timeout)`, same place. The wedge
+was then measured rather than inferred, with a two-runner probe: **npfs data
+reads never pend.** `NpfsRead` (`fs/npfs/pipe.c`) parks the calling thread in
+`NpfsWait` on an ASYNCHRONOUS handle instead of answering `STATUS_PENDING`,
+and `pipe.c:1578` issues exactly that read on an empty pipe through an
+overlapped handle, then satisfies it from the SAME thread at `:1583`. The
+oracle returns `0x103` immediately with the IOSB untouched; proskrnl does not
+return at all. Recorded in `docs/03` "CUI-8 async notes".
+
+**That is the next item and it is not small.** The pending-request engine has
+no buffer/length legs yet (`kernel/io/io.h` anticipates exactly this
+consumer), the completion has to copy into the owner's address space, and the
+FILE_OBJECT's signalled/unsignalled state joins the contract
+(`pipe.c:1607-:1617`). `docs/19` is the plan to read first.
+
+**The methodological lesson, third instance of §4 trap 4 in this item.** A
+predicted cause written from the code was checked, built, and turned out to
+be a real bug that was not the reported symptom's cause. The cheap step that
+settled it was a throwaway `tests/ntapi` probe run on BOTH runners — three
+minutes — not more reading. Predict from the code, but never write the
+prediction into a triage block as though it had been measured.
 
 **W4b — change-notify: DONE.** `ntdll:change` and `kernel32:change` are both
 green. Three rules landed, all pinned:
@@ -792,8 +826,11 @@ Pairs and framings that will consume effort and unblock nothing.
 
 ## 6. Critical files
 
-- `kernel/io/` — `ioctl.c` + `rw.c` + `async.c` (W4a), `query.c`,
+- `kernel/io/` — `ioctl.c` + `rw.c` + `async.c` (W4a, W4c), `query.c`,
   `mountmgr.c` (W7). (`notify.c` was W4b and is done.)
+- `fs/npfs/pipe.c` — `NpfsRead`/`NpfsWrite`, the next item's subject (the
+  pended data path). **Grows the `IOP_PENDING_REQUEST` engine; do not add a
+  second one.**
 - `kernel/mm/` — `virtual.c` and `section.c` (W5). **Danger zone.**
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — W6. **Danger zone.**
 - `kernel/ke/{wait,apc}.c` — W10. **Danger zone.**

@@ -1307,6 +1307,21 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   unpinned gap rather than a measured divergence — issue #135, and the fix is
   the same one-line route through `IopPostRequestPacket` once a pin has
   measured what an ERROR or CANCELLED watch completion owes.
+- **npfs data reads and writes never pend: on an asynchronous handle they
+  BLOCK the caller** (`fs/npfs/pipe.c` `NpfsRead`/`NpfsWrite`, which park in
+  `NpfsWait` whenever the queue cannot serve them). NT and the oracle answer
+  `STATUS_PENDING` with the IOSB untouched and complete the request later.
+  Measured on both runners with the same binary: an `NtReadFile` on an empty
+  pipe through an overlapped handle returns `0x103` immediately on the oracle
+  and does not return at all on proskrnl. Only `FSCTL_PIPE_LISTEN` pends here
+  (`kernel/io/async.c`), which is why this went unrecorded for so long — the
+  listen was the one verb a baked caller drove asynchronously.
+  **Consequence, measured:** it is what wedges `ntdll:pipe`. `pipe.c:1578`
+  issues the overlapped read and then satisfies it from the SAME thread at
+  `:1583`, so the thread parks inside the read and the write it is waiting for
+  is never issued. Escalation: grow the pending-request engine with the
+  buffer/length legs `kernel/io/io.h` already anticipates and give the stream
+  devices a pended data path (`docs/19`; `docs/21` W4c).
 - **The differential fuzzer convicts the contract, not the in-flight window**
   (docs/19 §8.3.3, recorded honestly): proskrnl's internal in-flight state has no
   oracle counterpart under the inline pin, so the traces cannot see it — the kmt
