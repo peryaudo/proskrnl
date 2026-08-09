@@ -662,7 +662,8 @@ static void MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_M
  * relocated frames outright; writable pages are private copies of them,
  * per-PE-section protection throughout (docs/02, docs/17 §4). */
 static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
-                                uint64_t *viewSizeInOut, uint64_t limitLow, uint64_t limitHigh)
+                                uint64_t *viewSizeInOut, uint64_t limitLow, uint64_t limitHigh,
+                                USHORT machine)
 {
     const MI_IMAGE_INFO *image = section->image;
     uint64_t size = image->sizeOfImage;
@@ -705,6 +706,22 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
             return STATUS_NO_MEMORY;
         }
     }
+    /* MemExtendedParameterImageMachine bounds the machine of the image a view
+     * may be created over: zero is "no constraint", anything else must be the
+     * machine the PE header declares, or STATUS_NOT_SUPPORTED (the oracle's
+     * map_image_into_view, dlls/ntdll/unix/virtual.c: `if (machine && machine
+     * != nt->FileHeader.Machine)` — note that is a DIFFERENT function from
+     * the map_image_view cited below for the floor). Its POSITION is pinned
+     * as well as its status: virtual_map_image places the view with
+     * map_image_view and only then calls map_image_into_view, whose machine
+     * check is its last act before the relocation — so a view that cannot be
+     * PLACED reports the placement failure and never reaches here
+     * (sem_mm/map_image_machine.c). */
+    if (machine != 0 && machine != image->machine)
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
     BOOLEAN atBase = base == image->preferredBase;
     if (!atBase && image->relocsStripped)
     {
@@ -779,14 +796,14 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
 NTSTATUS MiMapViewOfSection(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                             uint64_t offset, uint64_t *viewSizeInOut, ULONG protect)
 {
-    return MiMapViewOfSectionEx(section, space, baseInOut, offset, viewSizeInOut, protect, 0, 0);
+    return MiMapViewOfSectionEx(section, space, baseInOut, offset, viewSizeInOut, protect, 0, 0, 0);
 }
 
 /* CUI-7 constrained form (NtMapViewOfSectionEx placement limits); the
  * classic entry delegates with zeros — one mapping engine (Art. 11). */
 NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
                               uint64_t offset, uint64_t *viewSizeInOut, ULONG protect,
-                              uint64_t limitLow, uint64_t limitHigh)
+                              uint64_t limitLow, uint64_t limitHigh, USHORT machine)
 {
     /* An IMAGE view's floor is its own — the oracle's map_image_view raises
      * limit_low to `address_space_start` before it does anything else ("make
@@ -819,11 +836,18 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
         {
             return STATUS_INVALID_PARAMETER; /* image subrange views: not M5 */
         }
-        return MipMapImageView(section, space, baseInOut, viewSizeInOut, limitLow, limitHigh);
+        return MipMapImageView(section, space, baseInOut, viewSizeInOut, limitLow, limitHigh,
+                               machine);
     }
 
     /* Data view: offset/size against the section (Wine's virtual_map_section
-     * shape, pinned by anonymous_section.c). */
+     * shape, pinned by anonymous_section.c). It ignores `machine` entirely —
+     * the oracle's word reaches map_image_into_view and nothing else, so
+     * virtual_map_section's data arm never sees it (pinned by
+     * sem_mm/map_image_machine.c, for the same reason sem_mm/map_ex.c pins
+     * MEM_EXTENDED_PARAMETER_EC_CODE's acceptance here: a guard written into
+     * the shared parameter parser would refuse a mapping the oracle
+     * admits). */
     if (offset >= section->size)
     {
         return STATUS_INVALID_PARAMETER;
@@ -1181,7 +1205,7 @@ NTSTATUS NtMapViewOfSection(HANDLE sectionHandle, HANDLE processHandle, PVOID *b
      * that placement must honour. */
     status =
         MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base, (uint64_t)offset.QuadPart,
-                             &viewSize, protect, 0, MiZeroBitsLimit(zeroBits));
+                             &viewSize, protect, 0, MiZeroBitsLimit(zeroBits), 0);
     if (NT_SUCCESS(status))
     {
         *baseInOut = (PVOID)(uintptr_t)base;
@@ -1281,9 +1305,9 @@ NTSTATUS NtMapViewOfSectionEx(HANDLE sectionHandle, HANDLE processHandle, PVOID 
         ObDereferenceObject(sectionBody);
         return status;
     }
-    status =
-        MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base, (uint64_t)offset.QuadPart,
-                             &viewSize, protect, extended.limitLow, extended.limitHigh);
+    status = MiMapViewOfSectionEx(sectionBody, &process->addressSpace, &base,
+                                  (uint64_t)offset.QuadPart, &viewSize, protect, extended.limitLow,
+                                  extended.limitHigh, extended.machine);
     if (NT_SUCCESS(status))
     {
         *baseInOut = (PVOID)(uintptr_t)base;

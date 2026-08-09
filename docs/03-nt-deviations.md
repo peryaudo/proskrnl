@@ -1440,6 +1440,23 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   ARM64EC host and, on a "yes", runs ARM64 unwind opcodes over the x86_64 buffer it
   just received. Accepting and dropping the bit therefore did not return a wrong
   answer — it killed the process with an unhandled `0xc0000005` (`docs/21` W6).
+- **`MemExtendedParameterImageMachine` belongs to the mapping engine's IMAGE arm, and
+  it is the mirror image of the bullet above.** A non-zero value that the PE header does
+  not declare is `STATUS_NOT_SUPPORTED` (the oracle's **`map_image_into_view`**,
+  `dlls/ntdll/unix/virtual.c`: `if (machine && machine != nt->FileHeader.Machine)` — a
+  different function from the `map_image_view` cited below for the image arm's floor);
+  zero is "no constraint", not "the machine must be zero". `MiCaptureExtendedParams`
+  carries the word out and `MipMapImageView` acts on it — NOT the parser, because a
+  **data** view takes the same word and ignores it, so a guard one level up would refuse
+  a mapping the oracle admits. Its POSITION is pinned as well as its status:
+  `virtual_map_image` places the view with `map_image_view` and only then calls
+  `map_image_into_view`, whose machine check is its last act before the relocation — so a
+  view that cannot be **placed** under the requested limits reports the placement failure
+  and never reaches the machine comparison, i.e. an impossible ceiling plus a wrong
+  machine is `STATUS_NO_MEMORY`, not `STATUS_NOT_SUPPORTED`. It holds for a **remote**
+  target too, which is the configuration the winetest uses and which on the oracle sends
+  the word to the target as an APC (`call.map_view_ex.machine`). All of it pinned by
+  `tests/ntapi/sem_mm/map_image_machine.c`; `docs/21` W5 has the item.
 - **`zero_bits` binds `NtMapViewOfSection` differently from
   `NtAllocateVirtualMemory`, in three ways, and only the first is the obvious one**
   (`kernel/mm/section.c`, `docs/21` W5; pinned `tests/ntapi/sem_mm/map_zero_bits.c`).
