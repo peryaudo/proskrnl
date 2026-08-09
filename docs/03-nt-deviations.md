@@ -620,6 +620,15 @@ boundary symbols winebuild would have emitted supplied by
     absent. Every test image is baked fresh, so nothing measures it; a
     long-lived install would need its hive re-seeded rather than merely
     re-booted.
+  - **`tzres.dll` is baked onto the winetest image** (`tests/run/run.sh`,
+    the `win.ini` precedent). The `MUI_Std`/`MUI_Dlt` values are
+    `@tzres.dll,-N` indirections, and `GetDynamicTimeZoneInformation` and
+    `GetTimeZoneInformationForYear` resolve them through the same
+    `RegLoadMUIStringW` but DISAGREE about its failure — the first ignores the
+    error and keeps the raw `@tzres.dll,-22000`, the second falls back to the
+    zone's plain `Std`. With the file absent the two APIs therefore answer
+    different strings for the same zone, which is `kernel32:time` :990-:1008
+    and is made entirely of a file the oracle's prefix has.
 - **GlobalMemoryStatusEx's three sources answer for real** (`kernel/ps/
   query.c`): `MmNumberOfPhysicalPages`, the new
   `SystemPerformanceInformation` class, and
