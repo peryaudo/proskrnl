@@ -371,25 +371,37 @@ static int check_own_header(void)
 }
 
 /* Force the relocation path: map ntdll.dll twice in this (ntdll-less)
- * process. The second view cannot sit at the first view's base, so at least
- * one view is rebased — and each view's mapped header must claim the base
- * that view actually got. The ntapi differential deliberately cannot pin
- * this field (Wine rebases builtin dlls to a server-assigned address, so
- * the value is oracle-divergent — tests/ntapi/sem_mm/image_section.c),
- * which is why the convention is probed here, on the proskrnl side only. */
+ * process. The second view cannot sit at the first view's base, so it comes
+ * back rebased — and an image section is relocated ONCE, so both views must
+ * report the SAME stamped ImageBase and hold the same bytes (docs/03 "An
+ * image section is relocated once"; the oracle memcmps exactly this at
+ * ntdll:virtual:1743, and tests/ntapi/sem_mm/map_image_offset.c pins it).
+ *
+ * This probe used to require each view's header to claim the base THAT view
+ * got, which is the rule docs/17 §6F stated and the oracle refutes. The
+ * strong claim survives where it is load-bearing and is checked above: the
+ * MAIN image is mapped by the kernel and nothing relocates it afterwards, so
+ * ITS header must name its actual base (check_own_header). For a view, the
+ * stamp is what ntdll's perform_relocations fixes the residual against, so
+ * what matters is that the two agree with each other. */
 static const WCHAR ntdll_path[] = WSTR("\\??\\C:\\windows\\system32\\ntdll.dll");
 
-static int check_view_header(void *view)
+static ULONG_PTR view_stamped_base(void *view, int *codeOut)
 {
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)view;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-        return 24;
+    {
+        *codeOut = 24;
+        return 0;
+    }
     const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)((const char *)dos + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE)
-        return 25;
-    if (nt->OptionalHeader.ImageBase != (ULONG_PTR)view)
-        return 26;
-    return 0;
+    {
+        *codeOut = 25;
+        return 0;
+    }
+    *codeOut = 0;
+    return (ULONG_PTR)nt->OptionalHeader.ImageBase;
 }
 
 static int check_rebased_header(void)
@@ -421,10 +433,12 @@ static int check_rebased_header(void)
     void *view2 = 0;
     SIZE_T size1 = 0;
     SIZE_T size2 = 0;
+    NTSTATUS status1 = STATUS_SUCCESS;
     LARGE_INTEGER offset;
     offset.QuadPart = 0;
     status = NtMapViewOfSection(section, NtCurrentProcess(), &view1, 0, 0, &offset, &size1,
                                 ViewShare, 0, PAGE_READONLY);
+    status1 = status;
     if (status != STATUS_SUCCESS && status != STATUS_IMAGE_NOT_AT_BASE)
         code = 21;
     if (code == 0)
@@ -439,9 +453,27 @@ static int check_rebased_header(void)
     if (code == 0 && view1 == 0)
         code = 23;
     if (code == 0)
-        code = check_view_header(view1);
-    if (code == 0)
-        code = check_view_header(view2);
+    {
+        ULONG_PTR stamp1 = view_stamped_base(view1, &code);
+        ULONG_PTR stamp2 = code == 0 ? view_stamped_base(view2, &code) : 0;
+        /* Both views name the same copy... */
+        if (code == 0 && stamp1 != stamp2)
+            code = 26;
+        /* ...and when THIS view is the one that got the base — the map
+         * answered plain success, so no earlier copy exists elsewhere — the
+         * stamp is that base, which is the same claim check_own_header makes
+         * of the main image. */
+        if (code == 0 && status1 == STATUS_SUCCESS && stamp1 != (ULONG_PTR)view1)
+            code = 27;
+        /* One copy means one set of bytes: the headers are equal byte for
+         * byte, which is what ntdll:virtual:1743 memcmps over the whole
+         * image. */
+        for (ULONG i = 0; code == 0 && i < 0x40; i++)
+        {
+            if (((const unsigned char *)view1)[i] != ((const unsigned char *)view2)[i])
+                code = 28;
+        }
+    }
 
     if (view1 != 0)
         NtUnmapViewOfSection(NtCurrentProcess(), view1);

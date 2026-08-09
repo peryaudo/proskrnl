@@ -74,7 +74,7 @@ int kmt_run_m6_blk(void);
 int kmt_run_cui8(void);
 
 /* The CUI-9 shared-image-master machine verdicts (tests/kmt/cui9_cow.c):
- * the (identity, base) key, the sharing metric (second view costs only its
+ * the identity key, the sharing metric (second view costs only its
  * writable pages), refcount transitions with exact frame round-trips, and
  * the docs/17 §8 no-writable-master-PTE sweep. */
 int kmt_run_cui9(void);

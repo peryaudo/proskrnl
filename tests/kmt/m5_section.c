@@ -304,17 +304,23 @@ static void test_image_section(void)
             ok(status == STATUS_IMAGE_NOT_AT_BASE, "relocated map -> %08lx", (unsigned long)status);
             ok(base2 != 0 && base2 != base1, "relocated to %lx", (unsigned long)base2);
 
-            /* The relocation copy really ran: a DIR64 fixup site differs
-             * between the two views by exactly the load delta. */
+            /* An image section is relocated ONCE and every view shares that
+             * copy, so the two views hold IDENTICAL bytes — a DIR64 fixup
+             * site included. The residual for a view away from the copy's
+             * base belongs to the PE loader, which keys off the stamped
+             * ImageBase (docs/03 "An image section is relocated once"; the
+             * oracle memcmps exactly this at ntdll:virtual:1743). This
+             * assertion used to require the two to DIFFER by the load delta;
+             * test_image_relocation below is what convicts the relocation
+             * pass now. */
             uint64_t reloc_rva = first_dir64_reloc(file, image);
             ok(reloc_rva != ~0ULL, "PE has no DIR64 relocation to verify");
             if (reloc_rva != ~0ULL)
             {
                 uint64_t at_base = mapped_qword(&space, base1 + reloc_rva);
-                uint64_t relocated = mapped_qword(&space, base2 + reloc_rva);
-                ok(relocated == at_base + (base2 - base1),
-                   "reloc site: %lx at base, %lx relocated, delta %lx", (unsigned long)at_base,
-                   (unsigned long)relocated, (unsigned long)(base2 - base1));
+                uint64_t second = mapped_qword(&space, base2 + reloc_rva);
+                ok(second == at_base, "reloc site: %lx in view 1, %lx in view 2",
+                   (unsigned long)at_base, (unsigned long)second);
             }
             ok(MiUnmapView(&space, base2) == STATUS_SUCCESS, "unmap relocated view");
         }
@@ -391,6 +397,132 @@ static void test_page_table_charge(void)
        (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
 }
 
+/* The raw file bytes behind an image RVA, or 0 when no segment covers it. */
+static const char *raw_at_rva(PKI_RAMDISK_FILE file, const MI_IMAGE_INFO *image, uint64_t rva,
+                              uint64_t length)
+{
+    for (ULONG i = 0; i < image->segmentCount; i++)
+    {
+        const MI_IMAGE_SEGMENT *seg = &image->segments[i];
+        if (rva >= seg->virtualAddress && rva + length <= seg->virtualAddress + seg->rawSize)
+            return (const char *)file->data + seg->rawOffset + (rva - seg->virtualAddress);
+    }
+    return 0;
+}
+
+/* The relocation pass itself, which the shared-copy rule made harder to
+ * reach: an image's ONE copy is relocated for the base its FIRST view got, so
+ * with the preferred base free nothing relocates at all. Take the preferred
+ * base away first, and the copy must be built somewhere else — the DIR64
+ * fixup site then sits exactly (base - preferredBase) above the value in the
+ * FILE, and a second view SHARES that one relocated copy instead of getting
+ * its own. (Before docs/03 "An image section is relocated once" the pass was
+ * convicted by comparing two views, which now hold identical bytes by
+ * design.) */
+static void test_image_relocation(void)
+{
+    PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe_smoke.exe");
+    if (file == 0)
+    {
+        return;
+    }
+
+    uint64_t free_at_start = MiGetFreePageCount();
+    {
+        MI_ADDRESS_SPACE space;
+        ok(MiCreateAddressSpace(&space) == STATUS_SUCCESS, "create address space");
+        PMI_SECTION section = 0;
+        NTSTATUS status = MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section);
+        ok(status == STATUS_SUCCESS, "create image section -> %08lx", (unsigned long)status);
+        if (section == 0 || section->image == 0)
+        {
+            if (section != 0)
+            {
+                ObDereferenceObject(section);
+            }
+            MiDeleteAddressSpace(&space);
+            return;
+        }
+        const MI_IMAGE_INFO *image = section->image;
+
+        /* Hold the preferred base so the copy cannot be built at it. */
+        PVOID hold = (PVOID)(uintptr_t)image->preferredBase;
+        SIZE_T holdSize = image->sizeOfImage;
+        status = MiAllocateVirtualMemory(&space, &hold, &holdSize, MEM_RESERVE, PAGE_NOACCESS);
+        ok(status == STATUS_SUCCESS && (uint64_t)(uintptr_t)hold == image->preferredBase,
+           "reserve the preferred base -> %08lx at %lx", (unsigned long)status,
+           (unsigned long)(uintptr_t)hold);
+
+        ULONG builds0, hits0, live0, builds1, hits1, live1;
+        uint64_t mframes0, mframes1;
+        MiGetImageMasterStats(&builds0, &hits0, &live0, &mframes0);
+
+        uint64_t base1 = 0, size1 = 0;
+        status = MiMapViewOfSection(section, &space, &base1, 0, &size1, PAGE_EXECUTE);
+        ok(status == STATUS_IMAGE_NOT_AT_BASE, "rebased map -> %08lx", (unsigned long)status);
+        ok(base1 != 0 && base1 != image->preferredBase, "mapped at the preferred base %lx",
+           (unsigned long)base1);
+
+        /* The precondition is asserted, never assumed: only a copy built HERE
+         * can be relocated for base1. A hit would mean an earlier view of
+         * pe_smoke.exe outlived its test, which is itself the finding. */
+        MiGetImageMasterStats(&builds1, &hits1, &live1, &mframes1);
+        ok(builds1 == builds0 + 1, "the copy was reused, not built (builds %lu, hits %lu)",
+           (unsigned long)(builds1 - builds0), (unsigned long)(hits1 - hits0));
+
+        uint64_t reloc_rva = first_dir64_reloc(file, image);
+        ok(reloc_rva != ~0ULL, "PE has no DIR64 relocation to verify");
+        const char *raw = reloc_rva == ~0ULL ? 0 : raw_at_rva(file, image, reloc_rva, 8);
+        ok(raw != 0, "no raw bytes behind the fixup site");
+        if (builds1 == builds0 + 1 && raw != 0 && base1 != 0)
+        {
+            uint64_t fromFile = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                fromFile |= (uint64_t)(unsigned char)raw[i] << (i * 8);
+            }
+            uint64_t mapped = mapped_qword(&space, base1 + reloc_rva);
+            ok(mapped == fromFile + (base1 - image->preferredBase),
+               "reloc site: file %lx, mapped %lx, delta %lx", (unsigned long)fromFile,
+               (unsigned long)mapped, (unsigned long)(base1 - image->preferredBase));
+
+            /* THE assertion the shared-copy rule rests on, and the only place
+             * in the tree where it is not vacuous: the copy's stamped
+             * ImageBase must name the base it was RELOCATED for, because
+             * that is what ntdll's perform_relocations subtracts to fix up a
+             * view sitting anywhere else (docs/17 §6F's surviving half). A
+             * copy at its preferred base cannot see this — the file already
+             * holds the right value there. */
+            uint64_t stamped =
+                mapped_qword(&space, base1 + image->ntHeaderOffset +
+                                         offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase));
+            ok(stamped == base1, "ImageBase stamp %lx, expected the copy's base %lx",
+               (unsigned long)stamped, (unsigned long)base1);
+
+            /* A second view shares that one relocated copy. */
+            uint64_t base2 = 0, size2 = 0;
+            status = MiMapViewOfSection(section, &space, &base2, 0, &size2, PAGE_EXECUTE);
+            ok(status == STATUS_IMAGE_NOT_AT_BASE, "second view -> %08lx", (unsigned long)status);
+            ok(base2 != 0 && base2 != base1, "second view at %lx", (unsigned long)base2);
+            if (base2 != 0)
+            {
+                ok(mapped_qword(&space, base2 + reloc_rva) == mapped,
+                   "second view relocated separately");
+                ok(MiUnmapView(&space, base2) == STATUS_SUCCESS, "unmap second view");
+            }
+        }
+
+        if (base1 != 0)
+        {
+            ok(MiUnmapView(&space, base1) == STATUS_SUCCESS, "unmap rebased view");
+        }
+        ObDereferenceObject(section);
+        MiDeleteAddressSpace(&space);
+    }
+    ok(MiGetFreePageCount() == free_at_start, "relocated mapping leaked frames (%lu vs %lu)",
+       (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
+}
+
 static void test_guard_bookkeeping(void)
 {
     uint64_t free_at_start = MiGetFreePageCount();
@@ -444,6 +576,7 @@ int kmt_run_m5(void)
     KMT_RUN(test_anonymous_section_engine);
     KMT_RUN(test_file_section_consistency);
     KMT_RUN(test_image_section);
+    KMT_RUN(test_image_relocation);
     KMT_RUN(test_page_table_charge);
     KMT_RUN(test_guard_bookkeeping);
     return kmt_failures - before;

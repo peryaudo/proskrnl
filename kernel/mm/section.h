@@ -48,11 +48,14 @@ typedef struct
 } MI_SECTION_BACKING;
 
 /* CUI-9 (docs/17 §4, docs/03 "CUI-9 COW notes"): ONE shared,
- * already-relocated image master per (identity, base) — the frames every
- * matching SEC_IMAGE view maps. `identity` is the IO_FCB for file-backed
- * images (pointer equality — the IoIsSameUnderlyingFile precedent) or the
- * PKI_RAMDISK_FILE for boot modules; `base` is in the key because a
- * different base means different relocation fixups (docs/17 §6F).
+ * already-relocated image master per IDENTITY — the frames every SEC_IMAGE
+ * view of that image maps, wherever the view is placed. `identity` is the
+ * IO_FCB for file-backed images (pointer equality — the IoIsSameUnderlyingFile
+ * precedent) or the PKI_RAMDISK_FILE for boot modules; `base` is the address
+ * the copy was relocated FOR, not part of the key. It used to be part of it
+ * (docs/17 §6F's original rule), which gave one copy per base and made two
+ * views of one section differ; the oracle relocates once per mapping and
+ * shares (docs/03 "An image section is relocated once").
  *
  * Ownership (the G11 audit): every bound VAD holds one refCount, taken in
  * MipMapImageView, released by MiUnlinkAndFreeVad through
@@ -102,8 +105,8 @@ typedef struct MI_SECTION
      * (verified against the pinned Wine; sem_mm/section_protect). */
     BOOLEAN backingWritable;
     MI_IMAGE_INFO *image; /* SEC_IMAGE: parsed PE metadata (pool) */
-    PVOID masterIdentity; /* SEC_IMAGE: the (identity, base) key half the
-                           * image masters use — the backing's fcb */
+    PVOID masterIdentity; /* SEC_IMAGE: the image masters' whole key — the
+                           * backing's fcb */
 } MI_SECTION, *PMI_SECTION;
 
 extern OBJECT_TYPE MiSectionType;
