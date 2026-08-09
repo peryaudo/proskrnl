@@ -187,23 +187,49 @@ ntdll_test.exe:path
 #     (kernel/io/{ioctl,async}.c, pinned tests/ntapi/sem_pipe/listen_apc.c),
 #     and the pair runs THROUGH test_overlapped into the completion tests.
 #
-#     WHAT THE TWO FIXES REVEALED, which is the honest state now: ONE failed
-#     assertion and a NEW panic, neither of which had ever been reached.
-#       - pipe.c:413, "hEvent not signaled". listen_pipe on an ALREADY
-#         CONNECTED pipe answers STATUS_PIPE_CONNECTED immediately, and the
-#         test SetEvent()s the event first and requires it CLEAR afterwards.
-#         So NT clears the completion event when the request is SUBMITTED,
-#         even for a request that then fails immediately — proskrnl only
-#         clears it on the pending path (IopPreparePendingRequest), so an
-#         immediate refusal leaves the caller's event set. :412 passes, so
-#         the IOSB is correctly untouched; it is the event alone. Small and
-#         well-defined; not folded into W4a because it is a different rule.
-#       - then a PANIC at NtQueryInformationFile class 41,
-#         FileIoCompletionNotificationInformation — what
-#         SetFileCompletionNotificationModes asks for, and the subject of the
-#         "completion tests" the pair has just entered. That is the pair's
-#         new blocker.
-#     Per docs/21 §4 trap 2, everything past THAT panic is still unmeasured.
+#     Those two revealed one failed assertion (pipe.c:413) and a panic at
+#     class 41, and BOTH ARE NOW FIXED as well:
+#       - pipe.c:413 — an ioctl refused ON THE SPOT still leaves the caller's
+#         completion event CLEAR, with the IOSB untouched. kernel/io/ioctl.c
+#         now routes that through IopAbandonRequest, the same authority the
+#         transfer paths use.
+#       - class 41, FileIoCompletionNotificationInformation, is built in both
+#         directions (kernel/io/query.c; the word lives on the FILE_OBJECT).
+#         The VERB only: the bits accumulate, unknown bits are masked, a
+#         synchronous handle is refused — and NONE of the three changes
+#         behaviour yet, which docs/16 states plainly. Pinned by
+#         tests/ntapi/sem_pipe/ioctl_event.c.
+#
+#     SO THE PAIR NO LONGER PANICS AT ALL. It runs the completion tests and
+#     ends with FIVE failures, which are ONE subject and the next item:
+#     THE COMPLETION-PACKET RULES.
+#       - :1539 x2, after FSCTL_PIPE_PEEK on a port-bound handle, where a
+#         packet is owed ("NtRemoveIoCompletion returned 102" — a timeout —
+#         and the value left at its 0xdeadbeef poison). kernel/io/rw.c's
+#         IopCompleteTransfer is the one site that posts, and ioctl.c calls
+#         IopCompleteRequest directly instead, so no ioctl ever produces a
+#         packet. The rule to reuse is the same one rw.c already has:
+#         completionValue = apc ? 0 : apcContext, posted only when non-zero.
+#       - :1548 and :1567, where a packet was posted and none was owed
+#         because the handle carries FILE_SKIP_COMPLETION_PORT_ON_SUCCESS.
+#       - :1561, a STATUS_BUFFER_OVERFLOW read on a handle carrying
+#         FILE_SKIP_COMPLETION_PORT_ON_SUCCESS still queues a packet
+#         (GetQueuedCompletionStatus returned 234 = ERROR_MORE_DATA, so one
+#         WAS dequeued) — because the skip is not implemented at all. When it
+#         is, note the axis: the oracle skips when the call did NOT return
+#         STATUS_PENDING (dlls/ntdll/unix/file.c's `ret_status ==
+#         STATUS_PENDING` argument to add_completion, server/fd.c
+#         set_fd_completion's `req->async ||`, server/async.c's
+#         `async->pending ||`), and its guard is !NT_ERROR, which lets
+#         BUFFER_OVERFLOW through to the skip. NOT on the completion status:
+#         a first cut of this session keyed it on NT_SUCCESS inside
+#         IopCompleteTransfer, which runs BEFORE IopAsyncReturnShape turns
+#         success into STATUS_PENDING — so an async port-bound handle with
+#         the flag set would have answered PENDING and posted nothing,
+#         hanging GetQueuedCompletionStatus forever. The decision has to be
+#         made where the RETURNED status is known.
+#     This is the FIRST measurement of this pair that is not a lower bound:
+#     it reaches its own summary line rather than stopping.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
