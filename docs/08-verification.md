@@ -326,6 +326,13 @@ environment, nothing lightened — as independent parallel units. The wall clock
 *longest* leg instead of the sum of a shard's, and the question "would CI be green" is
 answerable in minutes rather than in a push-and-wait.
 
+One CI shard has no leg here: `style` runs `make format` on a clean checkout and demands
+the tree come back byte-identical (docs/15). It cannot be a leg, because a fulltest view is
+symlinks onto the working tree and a *fixer* run inside one would edit the real files
+mid-run — which is also why `make format` belongs before `make fulltest`, never after. Its
+G14 half, `blocking_frontier.py --check`, is a leg (`frontier`); the clang-format and
+clang-tidy halves are the part a green fulltest does not answer for.
+
 Everything about that speed-up is scheduling; the interesting part is the isolation it
 needs. The legs were written to run one at a time and say so in the tree: each calls
 `make -C $ROOT` for its own image (two makes in one build directory race over the same

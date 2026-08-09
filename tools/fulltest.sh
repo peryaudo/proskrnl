@@ -104,6 +104,10 @@
 #
 # Everything SEMANTIC, this answers. It is also not `make format` — that
 # rewrites source, so it is a fixer, not a verdict, and stays a separate step.
+# (A leg cannot run it either: a view is symlinks onto this tree, so a fixer
+# inside one edits the real files mid-run.) CI's `style` shard gates it the
+# only way a checker can — run it on a clean checkout, demand no diff — so an
+# unformatted tree is green here and red there. Run it BEFORE this, not after.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -6,7 +6,8 @@
 # whole re-run to learn anything about the rest. It is now a fan-out:
 #
 #   setup ──┬── boot / oracle / ntapi / cui-a / cui-b / gui / msg ──┬── all-green
-#           └── (each shard restores the same pinned third_party)   ┘
+#           └── (each shard restores the same pinned third_party)   │
+#   style ──────── (no third_party, no setup) ─────────────────────┘
 #
 # `setup` exists to own the third_party cache. Every shard needs those trees,
 # and if each shard could miss the cache on its own, the first run after a
@@ -47,19 +48,44 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # G14: the blocking frontier (issue #96 A). Pure-python call-graph check —
-  # no toolchain and no third_party, so it needs neither `setup` nor a cache
-  # restore and answers in seconds: a service newly able to park must be
-  # written into tools/blocking_frontier.txt deliberately, and the
-  # must-not-block regions (drain/tick/idle-sweep/panic) must have no path to
-  # a park.
-  frontier:
+  # The non-semantic gates, all three of them `make format` (docs/15): the
+  # blocking frontier (G14), clang-format's layout, and clang-tidy's naming +
+  # correctness lints. No QEMU and no Wine — clang-tidy needs only the two
+  # header-only submodules the kernel compiles against — so this shard skips
+  # `setup` and the third_party cache entirely and answers in ~2 minutes while
+  # the boot shards are still restoring.
+  #
+  # `make format` REWRITES source, which is exactly what makes it checkable
+  # here: run it on a clean checkout and the tree must come back byte
+  # identical. Two ways to be red, and the messages differ — a clang-tidy
+  # finding fails the make step and names the file:line; pure layout drift
+  # passes it and shows up as the diff below.
+  style:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: blocking frontier (G14, tools/blocking_frontier.py --check)
-        run: python3 tools/blocking_frontier.py --check
+
+      # limine.h and flanterm's headers are #included by kernel/init; without
+      # them clang-tidy cannot parse those TUs. Both are https in .gitmodules
+      # (only third_party/wine needs the ssh rewrite), and neither is built.
+      - name: Fetch the header-only submodules
+        run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm
+
+      # Same packages tools/setup_linux.sh installs, minus everything that is
+      # only there to build QEMU/Wine. clang-tidy is NOT preinstalled on the
+      # runner image; ubuntu-24.04's is 18.x, the version the tree is clean
+      # under and the one setup_linux.sh gives a dev box.
+      - name: apt toolchain (clang-format, clang-tidy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang clang-format clang-tidy
+
+      - name: make format (G14 + docs/15 layout and naming)
+        run: make format
+
+      - name: the tree must be unchanged by it
+        run: git diff --exit-code
 
   # The cache owner. Nothing runs here but the prep itself: on a warm cache
   # it is a restore, on a cold one it is the QEMU + Wine source build every
@@ -357,7 +383,7 @@ jobs:
   # shard reports its own result on the PR regardless; this job only decides
   # which of them stop a merge.
   all-green:
-    needs: [frontier, setup, boot, oracle, ntapi, cui-a, cui-b, gui, msg]
+    needs: [style, setup, boot, oracle, ntapi, cui-a, cui-b, gui, msg]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
