@@ -1,6 +1,6 @@
 /*
- * sem_file/name_case_fold.c — case-insensitive name matching folds the
- * Latin-1 Supplement, not just ASCII.
+ * sem_file/name_case_fold.c — case-insensitive FILE name matching folds
+ * through the NLS upcase table, and that fold decides enumeration ORDER.
  *
  * Convicted by the winetest gate, after two other fixes made it reachable.
  * ntdll:directory creates `éa.tmp` (U+00E9) and `Éb.tmp` (U+00C9) and
@@ -17,11 +17,9 @@
  * four consumers' shared observable: two names that differ only by case
  * are the same name, and two that do not are ordered by their folded form.
  *
- * WHAT IS PINNED IS THE LATIN-1 SUPPLEMENT AND NOTHING BEYOND IT.
- * NT folds through a 64 KiB table; proskrnl carries a rule, not a table.
- * The rule is exactly Unicode's Latin-1 Supplement mapping, including its
- * three irregularities — which is why they are asserted here rather than
- * assumed:
+ * The Latin-1 assertions below were written when the fold was a hand-written
+ * RULE reaching exactly that far, and they are kept because the rule's three
+ * irregularities are the ones a replacement is most likely to get wrong:
  *
  *   U+00E0..U+00FE except U+00F7  ->  minus 0x20
  *   U+00F7 (division sign)        ->  itself (not a letter)
@@ -31,9 +29,15 @@
  *
  * That last one is the trap: a fold written as "subtract 0x20 across the
  * range" turns ÿ into ß, silently making two unrelated letters the same
- * name. Greek, Cyrillic and the rest stay unfolded and remain a recorded
- * deviation — asserting anything about them here would fail on proskrnl
- * while passing on the oracle, which is the pin telling the truth.
+ * name.
+ *
+ * THE RULE IS NOW A TABLE — the pinned tree's own nls/l_intl.nls, which is
+ * what the oracle folds through (kernel/lib/upcase.h, tools/gen_upcase.py),
+ * so the fold is total over the BMP. ntdll:reg is what convicted the rule,
+ * and sem_reg/key_name_fold.c is where the table's own irregularities and
+ * its per-code-UNIT surrogate behaviour are pinned. What this file adds is
+ * the other consumer: the same fold seen through FAT/Ob file names, and the
+ * enumeration ORDER it decides — which no registry test can see.
  *
  * Oracle-first (G5).
  */
@@ -104,6 +108,21 @@ START_TEST(name_case_fold)
     ok(same_file(dir, W("\u00f7old.tmp"), W("\u00f7old.tmp")) == 1, "U+00F7 does not match itself");
     ok(same_file(dir, W("\u00f7old.tmp"), W("\u00d7old.tmp")) == 0,
        "U+00F7 wrongly folds to U+00D7");
+
+    /* --- beyond Latin-1, which the rule could not reach ------------------
+     * The file path is a second consumer of the same table, so it has to be
+     * measured there too: a fold that reached only the registry would be two
+     * folds (Art. 11), and only these assertions can tell. */
+    ok(same_file(dir, W("\u014dfold.tmp"), W("\u014cFOLD.TMP")) == 1,
+       "U+014D does not fold to U+014C");
+    ok(same_file(dir, W("\u0430fold.tmp"), W("\u0410FOLD.TMP")) == 1,
+       "U+0430 does not fold to U+0410");
+    /* ...and the table is not Unicode's simple uppercase: final sigma folds
+     * to itself where ordinary sigma folds to U+03A3. */
+    ok(same_file(dir, W("\u03c3fold.tmp"), W("\u03a3FOLD.TMP")) == 1,
+       "U+03C3 does not fold to U+03A3");
+    ok(same_file(dir, W("\u03c2fold.tmp"), W("\u03a3FOLD.TMP")) == 0,
+       "final sigma folded to U+03A3; the table folds it to itself");
 
     /* --- the ordering consequence, which is what the winetest measures ----
      * `éa` and `Éb` fold to the same first character, so they order on the
