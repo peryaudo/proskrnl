@@ -610,20 +610,63 @@ kernel32_test.exe:version
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
 # TODO: Implement
 # kernel32_test.exe:virtual
-# PARTLY FIXED, FIXABLE. 3 failures, down from 53.
-#     \Device\MountPointManager and the boot volume's \??\Volume{...} name
-#     landed this session, which took kernel32:drive to green and cleared
-#     everything downstream of "there is no volume GUID".
-#     GetVolumePathNamesForVolumeNameW (volume.c:1087-:1203, 7 of them) came
-#     with the mount-manager's spec FILTER being made correct — it matches
-#     on each field whose OFFSET is non-zero, so a volume GUID that does not
-#     exist now selects nothing instead of being told it is mounted at C:.
-#     What is left is two items, neither of them the mount manager:
-#       - volume.c:632/:675, opening \\.\c: and \\.\PhysicalDrive0 as RAW
-#         devices, which needs a disk device object under the volume;
-#       - volume.c:2022, FILE_SUPPORTS_OPEN_BY_FILE_ID and the
-#         FILE_OPEN_BY_FILE_ID open behind it (docs/21 W7's larger half;
-#         ntdll:file wants the same thing at file.c:467).
+# RE-TRIAGED. FOUR failures, not the three this block used to claim, and
+#     only TWO of the four are kernel work. Re-measured from scratch; the
+#     mount-manager half stays fixed (down from 53).
+#
+#     THE FOURTH, AND IT IS A FLOOR: volume.c:186 is a todo_wine that
+#     proskrnl PASSES. After DefineDosDevice(DDD_REMOVE_DEFINITION), opening
+#     "x:\system32" must fail ERROR_PATH_NOT_FOUND; proskrnl returns exactly
+#     that (3), the oracle returns 2, and winetest scores a succeeded todo as
+#     a failure. So the pair CANNOT go green while proskrnl is the more
+#     NT-correct of the two runners, and making it lose would be tuning to an
+#     oracle annotation instead of to a contract — the same shape as
+#     kernel32:sync and kernel32:profile:229. Easy to miss when scanning a
+#     log for "Test failed": it prints as "Test succeeded inside todo block".
+#
+#     volume.c:2022 IS NOT AN IMPLEMENTATION ITEM EITHER — it is a decision.
+#     It wants FILE_SUPPORTS_OPEN_BY_FILE_ID on the volume, and the ORACLE
+#     ITSELF does not report that flag for FAT or FAT32: dlls/ntdll/unix/
+#     file.c sets FILE_CASE_PRESERVED_NAMES for MOUNTMGR_FS_TYPE_FAT32 and
+#     reserves the flag for its NTFS default arm. The oracle leg passes only
+#     because Wine's C: is a Linux directory, which takes that default arm.
+#     NT on a real FAT32 volume has no file-id index and answers the way
+#     proskrnl does. proskrnl's FAT32 COULD serve it — the id is already
+#     stable, (dirCluster << 32) | sfnSlot, fs/fat32/fat.h FatFileId, and
+#     resolution would be a tree scan — but reporting the flag on a volume
+#     that names itself FAT32 claims a combination NT never shows.
+#     So docs/21 W7's "larger half" needs a human decision about the FAT32
+#     backend, not an implementation. ntdll:file:467 inherits it.
+#
+#     WHAT IS ACTUALLY KERNEL WORK is volume.c:632 and :675, and both are
+#     bigger than "3 failures" suggests, because each is a win_skip standing
+#     in front of a whole test function (docs/21 §4 trap 2 in a second form:
+#     an early-out hides its body, not just its tail).
+#       - :632, CreateFile("\\.\c:") -> error 5. Diagnosed: proskrnl resolves
+#         \??\C: to the volume's ROOT DIRECTORY, so kernelbase's implied
+#         FILE_NON_DIRECTORY_FILE makes it STATUS_FILE_IS_A_DIRECTORY, which
+#         maps to ERROR_ACCESS_DENIED. On NT \??\C: is the VOLUME DEVICE and
+#         \??\C:\ is the root directory. BLOCKED ON A NAME-PARSER CHANGE:
+#         kernel/ob/namespace.c hands the FS an EMPTY remainder for both
+#         spellings (the device-terminating '\' is consumed as the separator,
+#         :349-:371), so the FS cannot tell them apart and the distinction
+#         has to be preserved in Ob's one parse — the same engine W3 pinned.
+#         Opening it exposes test_disk_extents (~6 assertions,
+#         IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS).
+#       - :675, CreateFile("\\.\PhysicalDrive0") -> error 2. There is no such
+#         name; it needs a disk device object (\Device\Harddisk0\DR0 plus the
+#         \??\PhysicalDrive0 link — both NT-present, so not a G2 addition).
+#         No parser change: a disk has no filesystem, so an empty path on it
+#         is unambiguous. Opening it exposes test_disk_query_property (~25
+#         assertions: IOCTL_STORAGE_QUERY_PROPERTY for StorageDeviceProperty,
+#         StorageDeviceSeekPenaltyProperty and StorageDeviceTrimProperty, each
+#         with its STORAGE_DESCRIPTOR_HEADER truncation protocol).
+#         PIN HAZARD, measured: \??\PhysicalDrive0 DOES exist on the pinned
+#         oracle on this box (probed), but it exists because wineserver's
+#         mountmgr enumerated the HOST's disks. A tests/ntapi pin for it would
+#         put host disk topology into the permanent gate, which is the class
+#         of host-dependence that already cost this project eight pairs (see
+#         the header). Decide that before writing the pin.
 # TODO: Implement
 # kernel32_test.exe:volume
 

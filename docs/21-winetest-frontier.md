@@ -270,6 +270,39 @@ What is left under this heading is **open-by-file-id**
 which `kernel32:volume` and `ntdll:file` both want, and
 `GetVolumePathNamesForVolumeNameW`'s multi-string form.
 
+**Open-by-file-id is NOT an implementation item — it is a decision, and this
+document was wrong to schedule it as work.** The oracle itself does not
+report `FILE_SUPPORTS_OPEN_BY_FILE_ID` for FAT or FAT32:
+`dlls/ntdll/unix/file.c` gives `MOUNTMGR_FS_TYPE_FAT32` only
+`FILE_CASE_PRESERVED_NAMES`, and reserves the flag for its NTFS default arm.
+`kernel32:volume`'s oracle leg passes solely because Wine's C: is a Linux
+directory and takes that default arm. NT on a real FAT32 volume has no
+file-id index and answers the way proskrnl does.
+
+proskrnl's FAT32 *could* serve it — the id is already stable
+(`(dirCluster << 32) | sfnSlot`, `fs/fat32/fat.h` `FatFileId`) and
+resolution would be a tree scan, which is exactly the Art. 3 "stupidly
+correct" shape. It needs no on-disk extension, so this is **not** the same
+floor as reparse points or DACLs, where FAT has nowhere to put the data.
+The question is narrower and it belongs to a human: **may a volume that
+reports its filesystem name as `FAT32` advertise a capability NT's FAT32
+never advertises?** Answering yes makes proskrnl more capable than the thing
+it names itself after; answering no parks `kernel32:volume:2022` and
+`ntdll:file:467` permanently. Until it is answered, do not implement it, and
+do not read the oracle's green leg as a spec for a FAT32 volume — it is a
+measurement of Wine-on-ext4.
+
+**The raw-device half is real kernel work, and it is bigger than its count.**
+`kernel32:volume`'s remaining `:632`/`:675` are each a `win_skip` standing in
+front of a whole test function, so the manifest's failure count hides ~31
+assertions behind two. `:632` (`\\.\c:`) is additionally **blocked on a
+name-parser change**: `kernel/ob/namespace.c` hands the FS an empty remainder
+for both `\??\C:` and `\??\C:\`, so nothing downstream can tell the volume
+device from its root directory. `:675` (`\\.\PhysicalDrive0`) needs no parser
+change but carries a pin hazard — the name exists on the oracle only because
+wineserver enumerated the *host's* disks. The manifest block has the full
+triage.
+
 **G2 note for whoever takes the rest:** these are NT-present names, so
 adding them is not an NT-absent addition — but the SHAPE matters. A
 symbolic link created through Ob's one namespace engine is fine; a special
