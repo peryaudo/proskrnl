@@ -329,17 +329,7 @@ ntdll_test.exe:string
 # TODO: Implement
 # kernel32_test.exe:actctx
 kernel32_test.exe:atom
-# UNTRIAGED, FIXABLE. 33 failures, in three groups that are three
-#     separate producers: a rename must emit TWO chained records
-#     (FILE_ACTION_RENAMED_OLD_NAME then NEW_NAME, linked by
-#     NextEntryOffset) and proskrnl emits one; directory creation and
-#     removal are not reported at all; and the OVERLAPPED (== IOSB)
-#     Internal/InternalHigh fields are left unwritten (change.c:528/:529,
-#     :554/:555). The first two are kernel/io/notify.c producers, the third
-#     is the completion path. Note ntdll:change is now green, so the watch
-#     ENGINE is not the suspect — what it is told about is.
-# TODO: Implement
-# kernel32_test.exe:change
+kernel32_test.exe:change
 kernel32_test.exe:codepage
 kernel32_test.exe:comm
 # (b) Needs a REAL console, which the oracle cannot give it: the runner
