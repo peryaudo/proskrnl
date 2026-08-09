@@ -90,6 +90,10 @@ static void CmpDeleteKeyBody(PVOID bodyPointer)
     }
 }
 
+/* ObjectNameInformation for a key handle; defined below CmpBuildFullPath,
+ * whose walk it is (ob.h OBJECT_TYPE.queryName). */
+static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nameBytes);
+
 OBJECT_TYPE CmpKeyType = {
     .name = "Key",
     .validAccess = KEY_ALL_ACCESS,
@@ -98,6 +102,9 @@ OBJECT_TYPE CmpKeyType = {
     /* CUI-7: the arming open's last handle close fires-and-frees its
      * notification record (notify.c; wineserver key_close_handle). */
     .closeProcedure = CmpCloseKeyBody,
+    /* A key is a Cm tree node, not an Ob directory entry, so Ob's own
+     * namespace walk would report every key but \REGISTRY as unnamed. */
+    .queryName = CmpQueryKeyObjectName,
 };
 
 /* --- tree primitives -------------------------------------------------------- */
@@ -804,6 +811,36 @@ static ULONG CmpBuildFullPath(const CMP_KEY_NODE *node, WCHAR *out, ULONG capaci
         used += sizeof(WCHAR);
     }
     return used;
+}
+
+/* CmpKeyType.queryName: what NtQueryObject(ObjectNameInformation) reports for
+ * a key handle. Same walk KeyNameInformation uses (CmpBuildFullPath), because
+ * the oracle answers both from one place too -- key_ops.get_full_name is the
+ * generic name walk with one guard in front of it:
+ *
+ *     if (key->flags & KEY_DELETED) { set_error( STATUS_KEY_DELETED ); ... }
+ *     return default_get_full_name( obj, max, ret_len );
+ *
+ * (wine server/registry.c key_get_full_name). A deleted key is no longer
+ * anywhere, so it has no path -- while ObjectBasicInformation and
+ * ObjectTypeInformation, which need neither, keep answering. Pinned by
+ * sem_reg/key_object_name.c; ntdll:reg measures the pair at reg.c:854/:857. */
+static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nameBytes)
+{
+    PCM_KEY_BODY body = bodyPointer;
+    PCMP_KEY_NODE node = body->node;
+
+    if (node == 0 || node->deleted)
+    {
+        return STATUS_KEY_DELETED;
+    }
+    /* Measuring pass: capacity 0 writes nothing and never touches `out`. */
+    ULONG required = CmpBuildFullPath(node, out, out != 0 ? *nameBytes / sizeof(WCHAR) : 0);
+    /* A path cannot overflow the USHORT: CMP_HIVE_MAX_DEPTH (96) components of
+     * at most CMP_MAX_COMPONENT_BYTES each, plus a separator apiece. */
+    ASSERT(required <= 0xffffu);
+    *nameBytes = (USHORT)required;
+    return STATUS_SUCCESS;
 }
 
 /* MaxNameLen/MaxClassLen/MaxValueNameLen/MaxValueDataLen over one key's

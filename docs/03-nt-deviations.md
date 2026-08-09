@@ -347,6 +347,27 @@ directory as the reason something needs no kernel implementation is
 self-refuting. This is the second time the same shape has bitten: `docs/21` W1's
 `STATUS_NOT_IMPLEMENTED` split is the same seam read the other way round.
 
+### A key handle has a name, and a deleted key has none
+
+`NtQueryObject(ObjectNameInformation)` answered **success with an empty
+`UNICODE_STRING`** for every key handle, because a key is a `CMP_KEY_NODE` in
+Cm's tree and Ob's generic name walk only ever sees the one namespace object
+(`\Registry`). A named object reported as nameless is the fabricated-plausible
+answer Art. 12 forbids — no caller can tell two keys apart through it — and the
+only assertion in the suite that could see it was the *deleted* case, which
+wanted `STATUS_KEY_DELETED` and got success.
+
+`OBJECT_TYPE` grew an optional `queryName` hook (`kernel/ob/ob.h`), which is the
+oracle's own shape: `key_ops.get_full_name = key_get_full_name`, whose entire
+body is a `KEY_DELETED` guard in front of the generic walk
+(`server/registry.c`). `CmpQueryKeyObjectName` answers from `CmpBuildFullPath`
+— the same walk `KeyNameInformation` uses, so the two spellings of "what is this
+key called" cannot drift — and refuses a deleted node **before** the
+buffer-size protocol, since a key that is nowhere has no path however big the
+buffer is. `ObjectBasicInformation` and `ObjectTypeInformation` keep answering:
+they need the handle and the type, neither of which the delete destroyed.
+Pinned by `tests/ntapi/sem_reg/key_object_name.c`.
+
 ## M9 npfs/condrv notes (pipes + the console)
 
 What the M9 bring-up pinned, deviated on, or left unbuilt:

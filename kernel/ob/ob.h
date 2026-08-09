@@ -70,6 +70,28 @@ typedef struct OBJECT_TYPE
      * type grows a private access path. NULL = no implications. */
     ACCESS_MASK (*mapAccess)(ACCESS_MASK granted);
 
+    /* Optional per-type NAME source for ObjectNameInformation (Wine's
+     * object_ops.get_full_name; server/registry.c key_get_full_name is the one
+     * this exists for). A type whose objects are named in a namespace of their
+     * OWN answers here: a registry key is a Cm tree node, so header->name is
+     * empty for every key but the root and the generic walk would report a
+     * NAMED object as nameless — a fabricated answer (Art. 12), and one no
+     * caller can tell two keys apart with.
+     *
+     * Called twice per query, both times from ObjectNameInformation's one arm
+     * so no type grows a second name path (Art. 11): first with `out` == 0 to
+     * measure into *nameBytes, then with a buffer of exactly that size, which
+     * it must fill completely. Nothing blocks between the two calls (Art. 3),
+     * so the length cannot move; the second call's report is asserted equal.
+     * A refusal from EITHER call is the caller's status, and it is taken
+     * before the buffer-size protocol — a deleted key has no path, so its
+     * name query fails however big the buffer is. A hook that SUCCEEDS must
+     * report a non-zero length (asserted): zero is the empty-name answer this
+     * hook exists to stop, and reporting it would be a plain success carrying
+     * nothing. A type with nothing to say refuses. NULL = the Ob namespace
+     * walk (ObpFullNameLength / ObpWriteFullName). */
+    NTSTATUS (*queryName)(PVOID body, WCHAR *out, USHORT *nameBytes);
+
     /* CUI-6: the small per-type id SystemHandleInformation entries carry.
      * Types are C globals with no registry, so the id is minted lazily by
      * ObpTypeIndex — the ONE assignment site (G11). 0 = not yet minted. */
