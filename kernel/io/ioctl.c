@@ -147,6 +147,14 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     }
     else
     {
+        /* The caller's event still goes DOWN, through the same authority the
+         * transfer paths use (IopAbandonRequest, kernel/io/file.c): a caller
+         * that pre-signalled it sees it clear even though nothing completed
+         * and the IOSB was never written. Measured on an immediate
+         * STATUS_PIPE_CONNECTED listen — sem_pipe/ioctl_event.c — and
+         * convicted by ntdll:pipe:413, which reads the event and the IOSB
+         * together and so cannot be satisfied by the status alone. */
+        IopAbandonRequest(event);
         /* A refusal that never wrote the IOSB completes nothing, so the
          * routine must NOT run — measured: an immediate STATUS_PIPE_CONNECTED
          * listen leaves the caller's IOSB poison intact and never calls back

@@ -123,6 +123,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FilePipeLocalInformation:
         needed = sizeof(FILE_PIPE_LOCAL_INFORMATION);
         break;
+    case FileIoCompletionNotificationInformation:
+        needed = sizeof(FILE_IO_COMPLETION_NOTIFICATION_INFORMATION);
+        break;
     case FileNetworkOpenInformation:
         needed = sizeof(FILE_NETWORK_OPEN_INFORMATION); /* CUI-5 */
         break;
@@ -179,6 +182,21 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     {
         FILE_MODE_INFORMATION *out = buffer;
         out->Mode = IopFileMode(file);
+        iosb->Status = STATUS_SUCCESS;
+        iosb->Information = sizeof(*out);
+        ObDereferenceObject(file);
+        return STATUS_SUCCESS;
+    }
+
+    /* The completion-notification modes are the FILE_OBJECT's own fact too,
+     * so they answer before (and independently of) any backend query — the
+     * same shape as FileModeInformation above. Pinned by
+     * sem_pipe/ioctl_event.c, which also pins that the two ends of one pipe
+     * carry their own word. */
+    if (informationClass == FileIoCompletionNotificationInformation)
+    {
+        FILE_IO_COMPLETION_NOTIFICATION_INFORMATION *out = buffer;
+        out->Flags = file->completionFlags;
         iosb->Status = STATUS_SUCCESS;
         iosb->Information = sizeof(*out);
         ObDereferenceObject(file);
@@ -667,6 +685,10 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         needed = sizeof(FILE_DISPOSITION_INFORMATION);
         requiredAccess = DELETE;
         break;
+    case FileIoCompletionNotificationInformation:
+        needed = sizeof(FILE_IO_COMPLETION_NOTIFICATION_INFORMATION);
+        requiredAccess = 0;
+        break;
     case FileCompletionInformation:
         /* Binding a handle to an I/O completion port —
          * CreateIoCompletionPort(file, port, key, 0) and
@@ -709,6 +731,43 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
 
     switch (informationClass)
     {
+    case FileIoCompletionNotificationInformation:
+    {
+        /* SetFileCompletionNotificationModes. The bits ACCUMULATE — this ORs
+         * into the handle's word rather than replacing it, which is measured
+         * (sem_pipe/ioctl_event.c: setting SKIP_SET_EVENT_ON_HANDLE after
+         * SKIP_COMPLETION_PORT_ON_SUCCESS reads back as both) and is also
+         * what wineserver's set_fd_completion_mode does. There is no way to
+         * clear a mode once set, and the Win32 surface has no paired clear.
+         *
+         * FILE_SKIP_SET_USER_EVENT_ON_FAST_IO is accepted and NOT honoured,
+         * exactly as the oracle accepts it with a FIXME
+         * (dlls/ntdll/unix/file.c). That is not a fabricated answer: the bit
+         * is stored and reported back truthfully, and the behaviour it would
+         * select — suppressing the caller-supplied event on a fast-path
+         * completion — has no fast path to suppress here, because every
+         * completion this kernel makes goes through IopCompleteRequest. */
+        if (file->synchronousIo)
+        {
+            /* The modes are an OVERLAPPED-handle concept and a synchronous
+             * one is REFUSED, not quietly accepted (wineserver's
+             * set_fd_completion_mode: `if (!is_fd_overlapped(fd))
+             * STATUS_INVALID_PARAMETER`). */
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        FILE_IO_COMPLETION_NOTIFICATION_INFORMATION modes;
+        memcpy(&modes, buffer, sizeof(modes));
+        /* Masked to the bits the contract defines, as the oracle masks:
+         * without this a caller could park arbitrary bits in the handle's
+         * word and read them back out, which is a fact the boundary never
+         * promised to keep. */
+        file->completionFlags |= modes.Flags & (ULONG)(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS |
+                                                       FILE_SKIP_SET_EVENT_ON_HANDLE |
+                                                       FILE_SKIP_SET_USER_EVENT_ON_FAST_IO);
+        status = STATUS_SUCCESS;
+        break;
+    }
     case FileCompletionInformation:
     {
         /* The oracle's rules are its server's, in four lines
