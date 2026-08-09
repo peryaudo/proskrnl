@@ -306,12 +306,15 @@ ntdll_test.exe:path
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
-# TRIAGED, FIXABLE. 172 failures across 1042 tests, down from 192 across
-#     1050. NOTE THE EXECUTED COUNT FELL TOO, AND IT IS NOT A LOSS: the six
-#     rename assertions below were per-ITERATION over a subkey list that had
-#     one stale entry in it, so removing the entry removes 4 iterations x 2
-#     ok()s = exactly the 8 that went missing (4 of them were failing at
-#     :2380, 4 were passing at :2367).
+# TRIAGED, FIXABLE. 160 failures across 1042 tests, down from 172 across the
+#     same 1042 — and 192 across 1050 the milestone before that. The executed
+#     count did NOT move with the last 12 (the license block's ok()s are
+#     unconditional, so clearing them changes the failure count and nothing
+#     else), but it DID fall with the 192 -> 172, and that was not a loss
+#     either: the six rename assertions below were per-ITERATION over a
+#     subkey list that had one stale entry in it, so removing the entry
+#     removes 4 iterations x 2 ok()s = exactly the 8 that went missing (4 of
+#     them were failing at :2380, 4 were passing at :2367).
 #
 #     THE OLD BLOCK'S DIAGNOSIS OF ITS OWN LARGEST CLUSTER WAS WRONG, AND
 #     THAT MATTERS MORE THAN THE NUMBER. It read the 24 failures at
@@ -358,19 +361,29 @@ ntdll_test.exe:port
 #     sem_file/name_case_fold.c (the same fold through file names, and the
 #     enumeration ORDER it decides).
 #
-#     WHAT IS LEFT, re-measured, summing to 172:
+#     WHAT WAS FIXED SINCE (docs/21 W12, the license furniture): the 12 at
+#     :1009-:1032 are gone. wine.inf's [LicenseInformation] writes ELEVEN
+#     values into Software\Wine\LicenseInformation and CmInitialize seeded
+#     exactly one of them by hand, so "Kernel-MUI-Number-Allowed" — the
+#     REG_DWORD the block below asks for — answered
+#     STATUS_OBJECT_NAME_NOT_FOUND. The seed is now the WHOLE section,
+#     generated out of the pinned wine.inf rather than transcribed
+#     (kernel/cm/license.h, tools/gen_license.py; Makefile --check catches a
+#     pin bump editing it). Pinned by tests/ntapi/sem_reg/license_value.c,
+#     which repeats the size/type protocol against a REG_DWORD value —
+#     the assertions that a one-value one-type seed passes.
+#     A record corrected on the way: docs/16 still filed
+#     NtQueryLicenseValue under "no consumer in the baked stack" although
+#     table.inc had carried a KI_SYSCALL row for it since the syscall was
+#     built; the tally was 202/264 and is 203/264.
+#
+#     WHAT IS LEFT, re-measured, summing to 160:
 #       - 48  the Classes\Interface furniture above (:1354 x24, :1361 x24);
 #       - 86  test_redirection and test_redirection_classes behind the
 #         missing Software\Wow6432Node (41 at :1470-:1673, 30 at
 #         :1781-:1879, 15 at :1901-:1970) — the same data question, and it
 #         carries the decision named above;
 #       - 22  the Wow6432Node enumeration group at :1980-:1990;
-#       - 12  NtQueryLicenseValue for "Kernel-MUI-Number-Allowed"
-#         (:1009-:1032). ALSO FURNITURE, and the smallest item on this
-#         pair: wine.inf writes THREE values into Software\Wine\
-#         LicenseInformation (loader/wine.inf.in:1212-1214) and
-#         kernel/cm/registry.c:2579 seeds one. The REG_SZ half already
-#         passes; only the REG_DWORD value is missing;
 #       -  2  reg.c:550/:557 — "\REGISTRY\Machine\Software\Classes" with
 #         attr.Attributes = 0 answers 0xc000003a. The test's own comment
 #         says the \REGISTRY component is case-SENSITIVE while everything
