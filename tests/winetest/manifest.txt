@@ -731,18 +731,46 @@ ntdll_test.exe:unwind
 #     went. The 18 and the 24 are each predicted exactly by the two runners'
 #     lowest holes, and the residue is in the OLD run's arithmetic — 44 bodies
 #     from 59 successful creates — which no longer exists to measure.)
+#     CORRECTION, MEASURED BY THE NEXT ITEM: the 18 is a PREDICTION and the
+#     count is 17 (virtual.c:1049 marked todo 17 times in that run's serial
+#     log) — 15 sweep bodies plus the two test_stack_growth_thread creates
+#     ahead of them. The arithmetic above was never checked against the log,
+#     and the unreconciled residue it admits to is partly this. It is 16 now.
 #
-#     WHAT IS LEFT IS 11, AND IT IS THREE SUBJECTS:
-#       - 2   :1050/:1068 — the DEFAULT thread-stack reserve. proskrnl uses a
-#         hardwired 0x100000 (kernel/ps/thread.c) where the oracle uses the
-#         IMAGE's SizeOfStackReserve when the caller names none
-#         (dlls/ntdll/unix/virtual.c virtual_alloc_thread_stack, `if
-#         (!reserve_size) reserve_size = main_image_info.MaximumStackSize;`).
-#         ntdll_test.exe asks for 0x200000 — measured, not inferred: the
-#         assertion prints both numbers. The value is already on EPROCESS
-#         (imageInformation.MaximumStackSize), so this is a default, not a
-#         mechanism. Its own item: it changes every thread's stack in the
-#         system and deserves its own measurement.
+#     THE DEFAULT THREAD-STACK RESERVE IS DONE (11 -> 9, the 2 at
+#     :1050/:1068). PspCreateUserThread opened with `reserve =
+#     options->stackReserve != 0 ? options->stackReserve : 0x100000;`, so the
+#     one number an image gets to state about its threads was parsed,
+#     retained on EPROCESS and then ignored. An unnamed reserve is now the
+#     IMAGE's SizeOfStackReserve (ntdll_test.exe declares 0x200000), through
+#     PspResolveStackGeometry — one function for the main thread and for
+#     every NtCreateThreadEx thread, transcribed from the oracle's
+#     virtual_alloc_thread_stack (`if (!reserve_size) reserve_size =
+#     main_image_info.MaximumStackSize;` … `if (size < 1024*1024) size =
+#     1024*1024;`). Pinned by tests/ntapi/sem_ps/thread_stack_default.c,
+#     whose discriminating case is the third one: "use the image's" and "use
+#     the LARGER of the image's and the caller's" agree everywhere except a
+#     caller naming a reserve BELOW the image's, and NT gives the caller the
+#     smaller number.
+#     THE EXECUTED COUNT FELL 2235 -> 2200 AND THE TODO COUNT 98 -> 96, WHICH
+#     IS EXACTLY ONE test_stack_size_thread BODY (35 ok()s, 2 of them todo).
+#     Counted per line in the serial log: virtual.c:1049 is marked todo 17
+#     times before and 16 after, and every other todo line is unchanged, so
+#     both test_stack_growth_thread bodies still run and the body that went is
+#     one of the ZeroBits sweep's. Why it went is READ OFF THE CODE, not
+#     measured per index: the two threads ahead of the sweep now reserve
+#     0x200000 each where they reserved 0x100000, and this kernel never
+#     releases a dead thread's stack (issue #152), so 2 MiB more of the low
+#     address space is gone before the sweep starts and its tightest ceiling
+#     no longer has a hole. The winetest accepts STATUS_NO_MEMORY at those
+#     values (docs/03 "ZeroBits: the rule is exact, the reachable set is the
+#     address space's"), so it costs coverage and no failures.
+#     THE "18 BODIES" IN docs/03 AND docs/21 WAS ARITHMETIC, NOT A COUNT
+#     (9 counts + 9 masks from the two runners' lowest holes). The log says 17
+#     before this change and 16 after; both documents now carry the counted
+#     number.
+#
+#     WHAT IS LEFT IS 9, AND IT IS TWO SUBJECTS:
 #       - 6   the cross-process image map at :1728-:1752 (NtMapViewOfSection
 #         with a non-zero offset into ANOTHER process -> c000000d, i.e.
 #         mm/section.c's "image subrange views: not M5"), unchanged.

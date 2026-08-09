@@ -646,7 +646,9 @@ which both entry points already call.
   count to *below* it. The 18 is exactly what this kernel's lowest free hole predicts —
   the pin prints it at `0x7c0000`, so a 1 MiB stack needs a ceiling of at
   least `0x8bffff`, which only counts 0..8 and masks `~0u >> 0..8` provide:
-  9 + 9. The oracle serves counts 0..11 because its lowest hole is lower:
+  9 + 9. (**The 18 is a prediction and the count is 17**, measured per line by
+  the next item below; the arithmetic was never checked against the log.) The
+  oracle serves counts 0..11 because its lowest hole is lower:
   12 + 12. Every one of those six extra bodies is a create the winetest
   accepts as `STATUS_NO_MEMORY`, so the remaining gap costs coverage and no
   failures. What did NOT reconcile is the old run's arithmetic — 26 fewer
@@ -658,11 +660,59 @@ which both entry points already call.
   "`ZeroBits`: the rule is exact, the reachable set is the address space's",
   because it outlives this pair.
 
-**The 11 that remain are three subjects and the manifest block has them.** The
-one that is new work is small: the DEFAULT thread-stack reserve is a hardwired
-`0x100000` where the oracle uses the image's `SizeOfStackReserve` (2
-assertions — but it changes every thread's stack in the system, so it earns
-its own measurement).
+**The DEFAULT thread-stack reserve is DONE** (`ntdll:virtual` 11 → **9**, the 2
+at `:1050`/`:1068`). `PspCreateUserThread` opened with `reserve =
+options->stackReserve != 0 ? options->stackReserve : 0x100000;`, so the one
+number an image gets to state about its threads was parsed, retained on
+`EPROCESS.imageInformation` and then ignored. An unnamed reserve is now the
+image's `SizeOfStackReserve` and an unnamed commit the image's
+`SizeOfStackCommit`, through `PspResolveStackGeometry` — **one function for the
+main thread and for every `NtCreateThreadEx` thread**, which is the Art. 11
+half of the item: the rule already existed in three places with three different
+floors (1 MiB in `thread.c`, 16 KiB in one `process.c` path, 4 pages in the
+other), all of them disagreeing with the oracle's `if (size < 1024 * 1024)`.
+Pinned by `tests/ntapi/sem_ps/thread_stack_default.c`.
+
+Three things worth carrying:
+
+- **The discriminating case is the one no failing assertion asked for.** "Use
+  the image's reserve" and "use the LARGER of the image's and the caller's"
+  agree on every case the winetest exercises; they part only when a caller
+  names a reserve BELOW the image's, and NT gives the caller the smaller
+  number. An implementation reaching for a tidy `max()` passes `ntdll:virtual`
+  and the pin's other three cases. The pin also refuses to be satisfied by a
+  hardwired 1 MiB: it asserts that the running image's declared reserve is not
+  NT's floor before it concludes anything, because otherwise every case is
+  green against the very default the item is removing (§4 trap 2 in miniature).
+- **This is the accepted-and-dropped-input shape again, with the input coming
+  from the PE header** — the fifth instance in this pair after
+  `MEM_EXTENDED_PARAMETER_EC_CODE`, the two capability classes, and the mapping
+  path's `zero_bits`. Same tell each time: a value parsed faithfully, stored,
+  and never read. `EPROCESS.imageInformation.MaximumStackSize` had a comment
+  saying it was retained for the query surface, and it was true.
+- **The pair's executed count fell 2235 → 2200 and the reason is a leak this
+  item did not cause but did make visible.** That is exactly one
+  `test_stack_size_thread` body (35 `ok()`s, 2 of them todo), counted per line
+  — `virtual.c:1049` is marked todo 17 times before and 16 after, with every
+  other todo line unchanged. The lost body is one of the `ZeroBits` sweep's
+  creates, now `STATUS_NO_MEMORY`, because the two threads ahead of it reserve
+  2 MiB each where they reserved 1 MiB **and this kernel never releases a dead
+  thread's stack** (`PspDeleteThread` frees the name, the token and the
+  KTHREAD, and nothing frees the reservation) — issue #152. The winetest
+  accepts `NO_MEMORY` there, so it costs coverage and no failures. The
+  mechanism is read off the code and consistent with the arithmetic; which
+  sweep index moved was not measured, and the block says so.
+
+**This document's own "18 bodies" was arithmetic, not a count**, and `docs/03`
+copied it. It came from the two runners' lowest free holes (9 counts + 9
+masks). The serial log says **17** before this change and **16** after. Both
+documents now carry the counted number — §4 trap 4's smaller sibling, the same
+one W13's "one 10 ms tick" was: a quantity nobody measured, written into a
+triage block as though somebody had.
+
+**The 9 that remain are two subjects and the manifest block has them**, neither
+of them small: the cross-process image map at `:1728-:1752` (6, `mm/section.c`'s
+image subrange views) and three singletons at `:2039`/`:2679`/`:2686`.
 
 What is left under this heading:
 
