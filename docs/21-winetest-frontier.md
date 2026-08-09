@@ -169,16 +169,35 @@ never been reached — and both are now built too:
 
 Both pinned by `tests/ntapi/sem_pipe/ioctl_event.c`.
 
-**`ntdll:pipe` no longer panics anywhere.** It reaches its own summary line —
-the first measurement of this pair that is not a lower bound — with **three**
-failures, and they are one subject: **the ioctl path posts no completion
-packet at all.** `IopCompleteTransfer` (`rw.c`) is the only site that posts,
-and `ioctl.c` calls `IopCompleteRequest` directly. The rule to reuse is
-already there: `completionValue = apc ? 0 : apcContext`, posted only when
-non-zero. The manifest block has the third failure's warning too — a
-`STATUS_BUFFER_OVERFLOW` read still queued a packet despite the skip flag,
-which points at a read completing through some site *other* than
-`IopCompleteTransfer` rather than at the rule.
+**`ntdll:pipe` no longer panics anywhere**, and the completion-packet rules
+behind that are built too: `ioctl.c` now completes through `rw.c`'s
+`IopCompleteTransfer`, so an ioctl posts a packet exactly as a transfer
+does, and `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` is honoured. That takes the
+pair's five remaining assertions to **zero**
+(`tests/ntapi/sem_pipe/completion_packet.c`).
+
+**The flag's axis is the part worth carrying forward, because its NAME
+misleads and its failure mode is a hang.** The packet is skipped when the
+call did not **return `STATUS_PENDING`** — not when it succeeded. The
+oracle's guards carry no status term at all (`server/fd.c`
+`set_fd_completion`'s `req->async ||`, `server/async.c` `async_terminate`'s
+`async->pending ||`); the `!NT_ERROR` sitting beside the second is the
+separate outer question of whether to signal completion at all. Keyed on
+`NT_SUCCESS` inside `IopCompleteTransfer` — which runs *before*
+`IopAsyncReturnShape` converts success into pending — an async port-bound
+handle would answer `STATUS_PENDING` and post nothing, hanging
+`GetQueuedCompletionStatus` forever. So the caller passes the answer down
+(`IopWillReportPending`, which is `IopAsyncReturnShape`'s own predicate).
+
+**The pair's verdict still does not move, and that is not a hedge.** Zero
+failed assertions and then the same wedge reads `FAIL (timeout)` exactly as
+five-and-a-wedge did. The wedge is next, and its shape is known:
+`IopCompletePendingRequest` never posts a packet at all, while the rule
+above says a request that PENDED always does — so an overlapped caller that
+binds a port and waits on a pended ioctl waits forever. The APC block
+already travels in the `IOP_PENDING_REQUEST`; the port, key and value need
+the same treatment, and the port needs a REFERENCE for the reason the issuer
+thread did.
 
 **W4b — change-notify: DONE.** `ntdll:change` and `kernel32:change` are both
 green. Three rules landed, all pinned:
