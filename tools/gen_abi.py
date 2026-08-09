@@ -2378,6 +2378,19 @@ def gen_ntpsapi(wine: Path) -> str:
             extract_struct(winternl, "_THREAD_DESCRIPTOR_INFORMATION",
                            "THREAD_DESCRIPTOR_INFORMATION"),
             extract_struct(winternl, "_PROCESS_PRIORITY_CLASS", "PROCESS_PRIORITY_CLASS"),
+            # NtSetInformationProcess(ProcessThreadStackAllocation): the
+            # reservation RtlCreateUserStack asks the kernel for, and the
+            # _EX form the same class accepts by LENGTH alone.
+            extract_struct(
+                winternl,
+                "_PROCESS_STACK_ALLOCATION_INFORMATION",
+                "PROCESS_STACK_ALLOCATION_INFORMATION",
+            ),
+            extract_struct(
+                winternl,
+                "_PROCESS_STACK_ALLOCATION_INFORMATION_EX",
+                "PROCESS_STACK_ALLOCATION_INFORMATION_EX",
+            ),
             extract_struct(
                 winternl,
                 "_SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION",
@@ -2684,6 +2697,14 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + '"KERNEL_USER_TIMES x64 layout");\n'
         + "_Static_assert(sizeof(PROCESS_PRIORITY_CLASS) == 2, "
         + '"PROCESS_PRIORITY_CLASS x64 layout");\n'
+        + "_Static_assert(sizeof(PROCESS_STACK_ALLOCATION_INFORMATION) == 24, "
+        + '"PROCESS_STACK_ALLOCATION_INFORMATION x64 layout");\n'
+        + "_Static_assert(offsetof(PROCESS_STACK_ALLOCATION_INFORMATION, StackBase) == 16, "
+        + '"PROCESS_STACK_ALLOCATION_INFORMATION x64 layout");\n'
+        + "_Static_assert(sizeof(PROCESS_STACK_ALLOCATION_INFORMATION_EX) == 40, "
+        + '"PROCESS_STACK_ALLOCATION_INFORMATION_EX x64 layout");\n'
+        + "_Static_assert(offsetof(PROCESS_STACK_ALLOCATION_INFORMATION_EX, AllocInfo) == 16, "
+        + '"PROCESS_STACK_ALLOCATION_INFORMATION_EX x64 layout");\n'
         + "_Static_assert(sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) == 48, "
         + '"SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION x64 layout");\n'
         + "_Static_assert(sizeof(SYSTEM_HANDLE_ENTRY) == 24, "
