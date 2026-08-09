@@ -5,10 +5,14 @@ surface is **complete** — every id either has a kernel service or is missing b
 decision, not debt. The one remaining build plan on the boundary is `docs/02` Net-1
 (sockets, a new subsystem).
 
-The id tally has not moved since CUI-7 (CUI-8 and CUI-9 changed *how* built ids
-behave — async parking, COW image masters — not *which* ids exist). What does move
-between milestones is the partial-service list at the bottom, which is the part of
-this document worth re-deriving most often.
+The id tally moved by ONE after CUI-9, and how it went unnoticed is the reason
+the re-derivation recipe below says never to trust the prose: `NtQueryLicenseValue`
+was built for the winetest frontier (`docs/21` W12) and stayed listed as missing
+under "no consumer in the baked stack" — a row whose premise the winetest gate had
+already falsified. Otherwise CUI-8 and CUI-9 changed *how* built ids behave — async
+parking, COW image masters — not *which* ids exist. What does move between
+milestones is the partial-service list at the bottom, which is the part of this
+document worth re-deriving most often.
 
 **How to re-derive this (never trust the prose over the table):** the id space is the
 pinned Wine tree's own 64-bit syscall table, generated into `kernel/syscall/table.inc`
@@ -28,9 +32,9 @@ bump; re-run the count then.
 | | count |
 |---|---|
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
-| Implemented (`KI_SYSCALL` rows) | **202** |
-| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **62** |
-| …of the missing: permanently out of scope (below) | **62** |
+| Implemented (`KI_SYSCALL` rows) | **203** |
+| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **61** |
+| …of the missing: permanently out of scope (below) | **61** |
 | …of the missing: to be built | **0** |
 
 **CUI-7 closed its 29 ids** — the registry hive surface (`NtLoadKey`,
@@ -54,13 +58,13 @@ the implemented `*Ex` ids (no baked consumer; `docs/03`) — placeholder
 ALLOCATION is built (`docs/21` W5) — and `NtSetSystemInformation` serves
 exactly the one class the baked stack issues.
 
-## The 62 missing syscalls by area
+## The 61 missing syscalls by area
 
 Every one is a decision, not debt. ★ = a live caller exists in the
 currently-baked CUI userland (ntdll PE side, kernelbase, kernel32, advapi32)
 — none of the remaining ids carries one on a real path.
 
-### Permanently out of scope — 62
+### Permanently out of scope — 61
 
 Never implemented, and that is correct under Art. 1 (boundary only — no baked
 consumer) and G12 (they refuse loudly forever, they don't fake success):
@@ -73,7 +77,7 @@ consumer) and G12 (they refuse loudly forever, they don't fake success):
 | Driver / platform machinery | 5 | `NtLoadDriver` `NtUnloadDriver` `NtSetLdtEntries` `NtCreatePagingFile` `NtMapUserPhysicalPagesScatter` | no Windows driver ABI, x64-only (no LDT), no paging (Art. 3), no AWE |
 | Audit + token minting | 6 | `NtAccessCheckAndAuditAlarm` `NtAccessCheckByTypeAndAuditAlarm` `NtCloseObjectAuditAlarm` `NtCreateToken` `NtCreateLowBoxToken` `NtCompareTokens` | one fixed identity (CUI-2), no audit subsystem, no AppContainer |
 | Superseded / legacy forms | 6 | `NtCreateProcessEx` `NtCreateThread` `NtWaitForMultipleObjects32` `NtWorkerFactoryWorkerReady` `NtAllocateReserveObject` `NtQueueApcThreadEx` | Wine uses `NtCreateUserProcess`/`NtCreateThreadEx`/`NtQueueApcThreadEx2`; thread pool is user-mode in Wine |
-| No consumer in the baked stack | 13 | `NtTraceEvent` `NtTraceControl` `NtSetIntervalProfile` `NtSystemDebugControl` `NtSetDebugFilterState` `NtQuerySystemEnvironmentValue` `NtQuerySystemEnvironmentValueEx` `NtApphelpCacheControl` `NtQueryLicenseValue` `NtInitiatePowerAction` `NtCreateMailslotFile` `NtAllocateUuids` `NtRaiseHardError` | ETW, profiling, kernel-debug control, UEFI variables, apphelp, slc, powrprof, mailslots — none reachable from a baked CUI binary's real path |
+| No consumer in the baked stack | 12 | `NtTraceEvent` `NtTraceControl` `NtSetIntervalProfile` `NtSystemDebugControl` `NtSetDebugFilterState` `NtQuerySystemEnvironmentValue` `NtQuerySystemEnvironmentValueEx` `NtApphelpCacheControl` `NtInitiatePowerAction` `NtCreateMailslotFile` `NtAllocateUuids` `NtRaiseHardError` | ETW, profiling, kernel-debug control, UEFI variables, apphelp, slc, powrprof, mailslots — none reachable from a baked CUI binary's real path |
 
 An id in this table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out of
 scope" means we never *implement* it, not that it ever fakes success.
