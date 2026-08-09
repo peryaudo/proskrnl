@@ -33,11 +33,16 @@ void FatAcquireVolumeGate(PFAT_VOLUME volume)
 void FatReleaseVolumeGate(PFAT_VOLUME volume)
 {
     KiReleaseEventGate(&volume->ioGate);
-    /* Now OUTSIDE the gate: drop the object references dir-watch
-     * completions retired while it was held (docs/20 R7 — a last-reference
-     * teardown here may re-enter a gated wrapper, which is legal now: this
-     * thread queues like any other acquirer). */
-    IoReapRetiredDirWatches();
+    /* Now OUTSIDE the gate, and this is also the END OF ONE VFS OPERATION —
+     * the boundary the change-notify queue is delivered on, so that the
+     * several changes one operation reports (an in-place rename's two
+     * records) reach a watch chained in ONE completion rather than as a
+     * first record and a lost second. The reap it carries drops the object
+     * references dir-watch completions retired while the gate was held
+     * (docs/20 R7 — a last-reference teardown here may re-enter a gated
+     * wrapper, which is legal now: this thread queues like any other
+     * acquirer). */
+    IoDeliverDirectoryChanges();
 }
 
 /* --- sector I/O ------------------------------------------------------------ */

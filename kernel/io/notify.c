@@ -8,15 +8,28 @@
  * second CancelPending path exists (Art. 11).
  *
  * The delivery contract is the pinned Wine's (dlls/ntdll/unix/file.c +
- * server/change.c), pinned by sem_file/notify_change.c: one
- * FILE_NOTIFY_INFORMATION record (name relative to the watched directory),
- * payload before IOSB before event before APC (docs/08); a record that
- * cannot be delivered completes STATUS_NOTIFY_ENUM_DIR with Information 0;
- * an NT_ERROR completion (cancel, close) signals the event but leaves the
- * IOSB untouched — the server's error-completion convention. One
- * DELIBERATE narrowing, recorded in docs/03 "CUI-5 notes": changes are not
- * buffered between watches (a change with no watch parked is dropped),
- * where the oracle queues them on the directory handle.
+ * server/change.c), pinned by sem_file/notify_change.c and
+ * sem_file/notify_queue.c: FILE_NOTIFY_INFORMATION records (names relative
+ * to the watched directory) chained by NextEntryOffset, payload before IOSB
+ * before event before APC (docs/08); records that cannot be delivered
+ * complete STATUS_NOTIFY_ENUM_DIR with Information 0; an NT_ERROR
+ * completion (cancel, close) signals the event but leaves the IOSB
+ * untouched — the server's error-completion convention.
+ *
+ * THE NOTIFICATION STATE LIVES ON THE DIRECTORY HANDLE, NOT ON THE REQUEST.
+ * That is the server's shape (`struct dir` in server/change.c) and it is
+ * what makes the four rules below one rule: the FIRST arm fixes the filter,
+ * the subtree flag and want_data ("assign it once"), and from then on
+ * changes are matched against the HANDLE and queued on it — with or without
+ * a watch parked. A later arm that finds the queue non-empty completes
+ * immediately, and it drains the WHOLE queue into one completion, which is
+ * how an in-place rename's two records reach the caller chained.
+ *
+ * The queue is why reporting and delivering are separate calls. One FS
+ * operation can report several changes (that rename), and completing on the
+ * first would hand the caller a bare RENAMED_OLD_NAME — indistinguishable
+ * from a delete. IoReportDirectoryChange only appends; IoDeliverDirectoryChanges
+ * runs at the end of the operation, from the volume gate's release path.
  */
 #include "kernel/io/io.h"
 #include "kernel/ob/ob.h"
@@ -38,21 +51,45 @@ typedef struct IOP_DIR_WATCH
                          * event, so the pointer must stay live even though
                          * the close sweep normally removes us first. The
                          * release retires with the others (docs/20 R7). */
-    PIO_DEVICE device;
     IO_STATUS_BLOCK *userIosb;
     void *userBuffer;
     ULONG bufferLength;
-    PKAPC apcBlock;         /* pre-allocated at arm (engine authority, io.h);
-                             * queued to `issuer` on a non-error completion */
-    PKEVENT event;          /* referenced; 0 = none */
-    UNICODE_STRING dirPath; /* pool copy, volume-relative ("\" = root) */
-    ULONG filter;
-    BOOLEAN watchTree;
+    PKAPC apcBlock; /* pre-allocated at arm (engine authority, io.h);
+                     * queued to `issuer` on a non-error completion */
+    PKEVENT event;  /* referenced; 0 = none */
     BOOLEAN kernelIosb;
 } IOP_DIR_WATCH, *PIOP_DIR_WATCH;
 
+/* One queued change on an armed directory handle: what the server's
+ * `struct change_record` holds, minus the rename cookie. The cookie exists
+ * there only because inotify can deliver the two halves of a rename
+ * separately and they have to be paired back up; here the FS reports the
+ * pair itself, adjacently and inside one operation (fs/fat32/file.c
+ * FatVfsRename), so there is nothing to pair. */
+typedef struct IOP_DIR_RECORD
+{
+    LIST_ENTRY listEntry;
+    ULONG action;
+    ULONG nameBytes; /* `name` is relative to the watched directory */
+    WCHAR name[1];
+} IOP_DIR_RECORD, *PIOP_DIR_RECORD;
+
+/* IopDeliverRecords writes the three leading fields as one ULONG[3] (a
+ * record can land 2-aligned, so it cannot go through the struct type); these
+ * are what make that the same thing. */
+_Static_assert(offsetof(FILE_NOTIFY_INFORMATION, NextEntryOffset) == 0, "notify record layout");
+_Static_assert(offsetof(FILE_NOTIFY_INFORMATION, Action) == 4, "notify record layout");
+_Static_assert(offsetof(FILE_NOTIFY_INFORMATION, FileNameLength) == 8, "notify record layout");
+
 static LIST_ENTRY IopDirWatchListHead = {&IopDirWatchListHead, &IopDirWatchListHead};
-static LONG IopDirWatchCount;
+
+/* The armed directory handles — the server's `change_list`. Entries are
+ * bare FILE_OBJECT pointers held under no reference: a file object leaves
+ * this list in IopDetachDirectoryNotify, which its own delete procedure
+ * runs, so the list can never outlive a member. */
+static LIST_ENTRY IopArmedDirListHead = {&IopArmedDirListHead, &IopArmedDirListHead};
+static LONG IopArmedDirCount;
+static BOOLEAN IopDeliveryPending;
 
 /* Watches whose completion ran but whose object releases are still owed
  * (docs/20 R7; PR #95 review round 2, F3): IopCompleteDirWatch runs UNDER
@@ -66,9 +103,12 @@ static LONG IopDirWatchCount;
  * gate's own release path and from the non-gated sweeps. */
 static LIST_ENTRY IopRetiredWatchListHead = {&IopRetiredWatchListHead, &IopRetiredWatchListHead};
 
+/* The FS's cheap gate before it builds a change report. It asks about ARMED
+ * HANDLES, not parked watches: a change with nothing parked is still queued
+ * for the next arm, so "no watch is waiting" is not "nobody cares". */
 BOOLEAN IoDirectoryWatchesActive(void)
 {
-    return IopDirWatchCount != 0;
+    return IopArmedDirCount != 0;
 }
 
 /* The accepted filter mask, transcribed from the pinned Wine
@@ -195,8 +235,177 @@ void IoReapRetiredDirWatches(void)
         }
         ObDereferenceObject(watch->file);
         ObDereferenceObject(watch->owner);
-        MiFreePool(watch->dirPath.Buffer);
         MiFreePool(watch);
+    }
+}
+
+/* --- the change queue and its delivery ------------------------------------- */
+
+static void IopFreeDirRecords(PLIST_ENTRY head)
+{
+    while (!IsListEmpty(head))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(head);
+        MiFreePool(CONTAINING_RECORD(entry, IOP_DIR_RECORD, listEntry));
+    }
+}
+
+/* Hand one watch the WHOLE of its handle's queue, chained, and complete it.
+ *
+ * The serialization is the pinned client's byte for byte
+ * (dlls/ntdll/unix/file.c read_changes_apc): NextEntryOffset is
+ * offsetof(FILE_NOTIFY_INFORMATION, FileName) + FileNameLength with no
+ * padding to a 4-byte boundary, so a name of an odd number of WCHARs leaves
+ * the next record 2-aligned and the caller walks it anyway.
+ *
+ * A queue that does not fit the caller's buffer takes the completion to
+ * STATUS_NOTIFY_ENUM_DIR with Information 0 and DISCARDS it — the server
+ * drains its list into the reply before it can fail, so the records are gone
+ * either way, and "re-enumerate" is precisely what the caller has been told
+ * to do instead of reading a partial history. The OBSERVABLE pair matches the
+ * pinned client exactly (that status, Information 0, queue consumed); what
+ * differs is the buffer RESIDUE, since the client fills in the records that
+ * fit before it flips (file.c:7074-:7104) and this leaves the buffer
+ * untouched. Nothing measures the residue — a caller told to re-enumerate has
+ * been told the buffer means nothing — so it is stated rather than pinned. */
+static void IopDeliverRecords(PFILE_OBJECT file, PIOP_DIR_WATCH watch)
+{
+    LIST_ENTRY drained = {&drained, &drained};
+    while (!IsListEmpty(&file->notifyRecords))
+    {
+        InsertTailList(&drained, RemoveHeadList(&file->notifyRecords));
+    }
+
+    ULONG total = 0;
+    for (PLIST_ENTRY entry = drained.Flink; entry != &drained; entry = entry->Flink)
+    {
+        PIOP_DIR_RECORD record = CONTAINING_RECORD(entry, IOP_DIR_RECORD, listEntry);
+        total += (ULONG)offsetof(FILE_NOTIFY_INFORMATION, FileName) + record->nameBytes;
+    }
+    ASSERT(total != 0);
+
+    UCHAR *payload = 0;
+    if (watch->userBuffer != 0 && total <= watch->bufferLength)
+    {
+        payload = MiAllocatePool(total);
+    }
+    if (payload == 0)
+    {
+        IopFreeDirRecords(&drained);
+        IopCompleteDirWatch(watch, STATUS_NOTIFY_ENUM_DIR, 0, 0, 0);
+        return;
+    }
+
+    /* Written FIELD BY FIELD into a byte buffer rather than through a
+     * FILE_NOTIFY_INFORMATION *, because a record after an odd-length name
+     * starts on a 2-byte boundary and a struct pointer there is undefined
+     * behaviour (the kernel builds with -fsanitize=undefined, which traps on
+     * it). The unpadded chain is the contract, not an accident: the pinned
+     * client advances by offsetof(FILE_NOTIFY_INFORMATION,
+     * FileName[FileNameLength]) with no rounding. */
+    ULONG offset = 0;
+    ULONG lastOffset = 0;
+    for (PLIST_ENTRY entry = drained.Flink; entry != &drained; entry = entry->Flink)
+    {
+        PIOP_DIR_RECORD record = CONTAINING_RECORD(entry, IOP_DIR_RECORD, listEntry);
+        ULONG size = (ULONG)offsetof(FILE_NOTIFY_INFORMATION, FileName) + record->nameBytes;
+        ULONG header[3] = {size, record->action, record->nameBytes};
+        memcpy(payload + offset, header, sizeof(header));
+        memcpy(payload + offset + offsetof(FILE_NOTIFY_INFORMATION, FileName), record->name,
+               record->nameBytes);
+        lastOffset = offset;
+        offset += size;
+    }
+    ULONG endOfChain = 0; /* the last record's NextEntryOffset */
+    memcpy(payload + lastOffset, &endOfChain, sizeof(endOfChain));
+
+    IopFreeDirRecords(&drained);
+    IopCompleteDirWatch(watch, STATUS_SUCCESS, payload, total, total);
+    MiFreePool(payload);
+}
+
+/* Pay out what this handle owes its parked watches.
+ *
+ * The FIRST parked watch takes the whole queue and any others behind it get
+ * STATUS_NOTIFY_ENUM_DIR: the server wakes EVERY async queued on the
+ * directory, and the one that gets to read_change first empties the list, so
+ * the losers see STATUS_NO_DATA_DETECTED — which read_changes_apc turns into
+ * exactly that status with Information 0. Records with nothing parked stay
+ * queued for the next arm; that is the whole point of the queue. */
+static void IopDeliverDirWatches(PFILE_OBJECT file)
+{
+    if (IsListEmpty(&file->notifyRecords) && !file->notifyWake)
+    {
+        return;
+    }
+    file->notifyWake = FALSE;
+    for (;;)
+    {
+        PIOP_DIR_WATCH watch = 0;
+        for (PLIST_ENTRY entry = IopDirWatchListHead.Flink; entry != &IopDirWatchListHead;
+             entry = entry->Flink)
+        {
+            PIOP_DIR_WATCH candidate = CONTAINING_RECORD(entry, IOP_DIR_WATCH, listEntry);
+            if (candidate->file == file)
+            {
+                watch = candidate;
+                break;
+            }
+        }
+        if (watch == 0)
+        {
+            return;
+        }
+        RemoveEntryList(&watch->listEntry);
+        if (IsListEmpty(&file->notifyRecords))
+        {
+            IopCompleteDirWatch(watch, STATUS_NOTIFY_ENUM_DIR, 0, 0, 0);
+        }
+        else
+        {
+            IopDeliverRecords(file, watch);
+        }
+    }
+}
+
+void IoDeliverDirectoryChanges(void)
+{
+    if (IopDeliveryPending)
+    {
+        IopDeliveryPending = FALSE;
+        PLIST_ENTRY entry = IopArmedDirListHead.Flink;
+        while (entry != &IopArmedDirListHead)
+        {
+            PFILE_OBJECT file = CONTAINING_RECORD(entry, FILE_OBJECT, notifyEntry);
+            entry = entry->Flink;
+            IopDeliverDirWatches(file);
+        }
+    }
+    /* The reap comes after the walk, never inside it: a release there can run
+     * a whole teardown, and a teardown detaches an armed handle from the very
+     * list being walked (docs/20 R7 is the other half of the same rule). */
+    IoReapRetiredDirWatches();
+}
+
+void IopDetachDirectoryNotify(PFILE_OBJECT file)
+{
+    if (!file->notifyArmed)
+    {
+        return;
+    }
+    /* Runs from the DELETE procedure, not from close: a parked watch holds a
+     * reference on this file object, so nothing can be waiting on the queue
+     * being freed here. The server frees the same list in dir_destroy for
+     * the same reason. */
+    RemoveEntryList(&file->notifyEntry);
+    IopArmedDirCount--;
+    file->notifyArmed = FALSE;
+    ASSERT((IopArmedDirCount == 0) == IsListEmpty(&IopArmedDirListHead));
+    IopFreeDirRecords(&file->notifyRecords);
+    if (file->notifyPath.Buffer != 0)
+    {
+        MiFreePool(file->notifyPath.Buffer);
+        file->notifyPath.Buffer = 0;
     }
 }
 
@@ -240,28 +449,36 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     }
 
     /* The watched directory's volume-relative path — the match key (and
-     * subtree prefix) for change reports. */
-    WCHAR pathBuffer[260];
+     * subtree prefix) for change reports. Taken on the FIRST arm only,
+     * because it belongs to the handle with the rest of the notification
+     * state; a later arm neither re-reads nor re-checks it. */
+    PWSTR pathCopy = 0;
     ULONG pathBytes = 0;
-    status = file->device->ops->QueryName(file, pathBuffer, sizeof(pathBuffer), &pathBytes);
-    if (NT_SUCCESS(status) && pathBytes > sizeof(pathBuffer))
+    WCHAR pathBuffer[260];
+    if (!file->notifyArmed)
     {
-        status = STATUS_OBJECT_PATH_INVALID;
-    }
-    if (!NT_SUCCESS(status))
-    {
-        ObDereferenceObject(file);
-        return status;
+        status = file->device->ops->QueryName(file, pathBuffer, sizeof(pathBuffer), &pathBytes);
+        if (NT_SUCCESS(status) && pathBytes > sizeof(pathBuffer))
+        {
+            status = STATUS_OBJECT_PATH_INVALID;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(file);
+            return status;
+        }
+        pathCopy = MiAllocatePool(pathBytes != 0 ? pathBytes : sizeof(WCHAR));
+        if (pathCopy == 0)
+        {
+            ObDereferenceObject(file);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memcpy(pathCopy, pathBuffer, pathBytes);
     }
 
     PIOP_DIR_WATCH watch = MiAllocatePool(sizeof(*watch));
-    PWSTR pathCopy = MiAllocatePool(pathBytes != 0 ? pathBytes : sizeof(WCHAR));
-    if (watch == 0 || pathCopy == 0)
+    if (watch == 0)
     {
-        if (watch != 0)
-        {
-            MiFreePool(watch);
-        }
         if (pathCopy != 0)
         {
             MiFreePool(pathCopy);
@@ -270,10 +487,6 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     memset(watch, 0, sizeof(*watch));
-    memcpy(pathCopy, pathBuffer, pathBytes);
-    watch->dirPath.Buffer = pathCopy;
-    watch->dirPath.Length = (USHORT)pathBytes;
-    watch->dirPath.MaximumLength = (USHORT)pathBytes;
 
     /* The completion APC, pre-allocated so completion cannot fail — the
      * engine authority (io.h; the old at-completion allocation dropped the
@@ -281,7 +494,10 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     status = IopPrepareCompletionApc(apcRoutine, apcContext, iosb, &watch->apcBlock);
     if (!NT_SUCCESS(status))
     {
-        MiFreePool(pathCopy);
+        if (pathCopy != 0)
+        {
+            MiFreePool(pathCopy);
+        }
         MiFreePool(watch);
         ObDereferenceObject(file);
         return status;
@@ -299,7 +515,10 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
             {
                 MiFreePool(watch->apcBlock);
             }
-            MiFreePool(pathCopy);
+            if (pathCopy != 0)
+            {
+                MiFreePool(pathCopy);
+            }
             MiFreePool(watch);
             ObDereferenceObject(file);
             return status;
@@ -320,40 +539,46 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
      * (below), so it owns a reference rather than a bare pointer. Released
      * on the retire path, never here (docs/20 R7). */
     ObfReferenceObject(file);
-    watch->device = file->device;
     watch->userIosb = iosb;
     watch->userBuffer = buffer;
     watch->bufferLength = length;
-    /* The filter is the HANDLE's, not this call's (kernel/io/io.h has the
-     * rule and its citation): the first arm on a file object fixes it, and
-     * every later one reuses it. The caller's `filter` has still been
-     * validated above — an unarmed handle stores it, and an armed one must
-     * still refuse a malformed value rather than quietly substituting the
-     * stored one. */
-    if (!file->notifyArmed)
-    {
-        file->notifyArmed = TRUE;
-        file->notifyFilter = filter;
-    }
-    watch->filter = file->notifyFilter;
-    /* The subtree flag is NOT made sticky with it. The server stores the two
-     * in the same "assign it once" block, so the symmetry is tempting — but
-     * nothing on either side measures a re-arm that changes it, and
-     * sem_file/notify_change.c's subtree case is a beyond_oracle block
-     * whose handle has already been armed non-subtree, so making it sticky
-     * would break a pinned behaviour to satisfy a rule no test states.
-     * Only a differential test convicts (Art. 6); this half has none. */
-    watch->watchTree = watchTree;
     watch->kernelIosb = ExGetPreviousMode() == KernelMode;
 
+    /* "Assign it once" (io.h has the rule and its citation): the FIRST arm
+     * on a file object fixes the filter, the subtree flag, whether the
+     * handle can report record data, and the path they are matched against;
+     * every later arm reuses all four and its own arguments are ignored. The
+     * caller's `filter` has still been validated above — an unarmed handle
+     * stores it, and an armed one must still refuse a malformed value rather
+     * than quietly substituting the stored one. */
+    if (!file->notifyArmed)
+    {
+        file->notifyPath.Buffer = pathCopy;
+        file->notifyPath.Length = (USHORT)pathBytes;
+        file->notifyPath.MaximumLength = (USHORT)pathBytes;
+        file->notifyFilter = filter;
+        file->notifySubtree = watchTree;
+        file->notifyWantData = buffer != 0;
+        file->notifyWake = FALSE;
+        InitializeListHead(&file->notifyRecords);
+        file->notifyArmed = TRUE;
+        InsertTailList(&IopArmedDirListHead, &file->notifyEntry);
+        IopArmedDirCount++;
+    }
+
     InsertTailList(&IopDirWatchListHead, &watch->listEntry);
-    IopDirWatchCount++;
     /* A request is now outstanding on this handle, so the file object is
      * BUSY: NT leaves it unsignalled until the request completes, and
      * ntdll:change waits on the directory handle expecting a timeout
      * (change.c:106). Every other service here completes inline, so this is
      * the only place the transition is observable. */
     KeClearEvent(&file->header);
+    /* A change that arrived with nothing parked is waiting on the handle:
+     * the server's `if (!list_empty( &dir->change_records ))` wake at the
+     * end of the same handler. The syscall still answers STATUS_PENDING —
+     * the IOSB, the event and the APC are all in place before it returns. */
+    IopDeliverDirWatches(file);
+    IoReapRetiredDirWatches();
     ObDereferenceObject(file);
     return STATUS_PENDING;
 }
@@ -361,45 +586,50 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
 /* The producer: a filesystem mutation site reports one change —
  * `parentPath` is the mutated directory's volume-relative path, `name` the
  * affected leaf, `filterBit` the FILE_NOTIFY_CHANGE_* class, `action` the
- * FILE_ACTION_*. Every matching watch completes (one-shot). */
+ * FILE_ACTION_*. Every armed handle that matches QUEUES it; nothing is
+ * completed here (see IoDeliverDirectoryChanges and the header). */
 void IoReportDirectoryChange(PIO_DEVICE device, const UNICODE_STRING *parentPath,
                              const UNICODE_STRING *name, ULONG filterBit, ULONG action)
 {
-    if (IopDirWatchCount == 0)
+    if (IopArmedDirCount == 0)
     {
         return;
     }
-    PLIST_ENTRY entry = IopDirWatchListHead.Flink;
-    while (entry != &IopDirWatchListHead)
+    PLIST_ENTRY entry = IopArmedDirListHead.Flink;
+    while (entry != &IopArmedDirListHead)
     {
-        PIOP_DIR_WATCH watch = CONTAINING_RECORD(entry, IOP_DIR_WATCH, listEntry);
+        PFILE_OBJECT file = CONTAINING_RECORD(entry, FILE_OBJECT, notifyEntry);
         entry = entry->Flink;
-        if (watch->device != device || (watch->filter & filterBit) == 0)
+        /* Being on this list IS being armed, and an armed handle always
+         * carries the path the match below dereferences: both are installed
+         * together, once, and leave together in IopDetachDirectoryNotify. */
+        ASSERT(file->notifyArmed && file->notifyPath.Buffer != 0);
+        if (file->device != device || (file->notifyFilter & filterBit) == 0)
         {
             continue;
         }
 
-        /* A direct child completes with the leaf alone; a subtree watch
-         * with the path below the watched directory prefixed. Both sides of
-         * the comparison come from the same FCB name storage, so byte
-         * equality is case-correct. */
+        /* A direct child is reported by its leaf alone; a subtree watch
+         * prefixes the path below the watched directory. Both sides of the
+         * comparison come from the same FCB name storage, so byte equality
+         * is case-correct. */
         const WCHAR *tail = 0;
         ULONG tailBytes = 0;
-        if (watch->dirPath.Length == parentPath->Length &&
-            memcmp(watch->dirPath.Buffer, parentPath->Buffer, parentPath->Length) == 0)
+        if (file->notifyPath.Length == parentPath->Length &&
+            memcmp(file->notifyPath.Buffer, parentPath->Buffer, parentPath->Length) == 0)
         {
             /* direct child */
         }
-        else if (watch->watchTree && parentPath->Length > watch->dirPath.Length)
+        else if (file->notifySubtree && parentPath->Length > file->notifyPath.Length)
         {
-            /* The root watch's dirPath is "\"; deeper watches have no
+            /* The root's notifyPath is "\"; deeper directories have no
              * trailing separator, so the child path continues with one. */
-            ULONG prefix = watch->dirPath.Length;
-            if (prefix == sizeof(WCHAR) && watch->dirPath.Buffer[0] == '\\')
+            ULONG prefix = file->notifyPath.Length;
+            if (prefix == sizeof(WCHAR) && file->notifyPath.Buffer[0] == '\\')
             {
                 prefix = 0;
             }
-            if (memcmp(watch->dirPath.Buffer, parentPath->Buffer, prefix) != 0 ||
+            if (memcmp(file->notifyPath.Buffer, parentPath->Buffer, prefix) != 0 ||
                 parentPath->Buffer[prefix / sizeof(WCHAR)] != '\\')
             {
                 continue;
@@ -412,35 +642,30 @@ void IoReportDirectoryChange(PIO_DEVICE device, const UNICODE_STRING *parentPath
             continue;
         }
 
+        IopDeliveryPending = TRUE;
+        /* A handle whose first arm carried no buffer stores no record — the
+         * server's `if (dir->want_data)` — and only wakes what is parked.
+         * A pool failure takes the same exit: the change HAPPENED, so the
+         * caller must be told to re-enumerate rather than told nothing. */
         ULONG nameBytes = tailBytes != 0 ? tailBytes + sizeof(WCHAR) + name->Length : name->Length;
-        ULONG recordBytes = (ULONG)offsetof(FILE_NOTIFY_INFORMATION, FileName) + nameBytes;
-        RemoveEntryList(&watch->listEntry);
-        IopDirWatchCount--;
-
-        if (watch->userBuffer != 0 && watch->bufferLength >= recordBytes)
+        PIOP_DIR_RECORD record =
+            file->notifyWantData ? MiAllocatePool(offsetof(IOP_DIR_RECORD, name) + nameBytes) : 0;
+        if (record == 0)
         {
-            FILE_NOTIFY_INFORMATION *record = MiAllocatePool(recordBytes);
-            if (record != 0)
-            {
-                record->NextEntryOffset = 0;
-                record->Action = action;
-                record->FileNameLength = nameBytes;
-                WCHAR *out = record->FileName;
-                if (tailBytes != 0)
-                {
-                    memcpy(out, tail, tailBytes);
-                    out += tailBytes / sizeof(WCHAR);
-                    *out++ = '\\';
-                }
-                memcpy(out, name->Buffer, name->Length);
-                IopCompleteDirWatch(watch, STATUS_SUCCESS, record, recordBytes, recordBytes);
-                MiFreePool(record);
-                continue;
-            }
+            file->notifyWake = TRUE;
+            continue;
         }
-        /* No buffer, a record that cannot fit, or no pool: the caller must
-         * re-enumerate (the pinned degradation). */
-        IopCompleteDirWatch(watch, STATUS_NOTIFY_ENUM_DIR, 0, 0, 0);
+        record->action = action;
+        record->nameBytes = nameBytes;
+        WCHAR *out = record->name;
+        if (tailBytes != 0)
+        {
+            memcpy(out, tail, tailBytes);
+            out += tailBytes / sizeof(WCHAR);
+            *out++ = '\\';
+        }
+        memcpy(out, name->Buffer, name->Length);
+        InsertTailList(&file->notifyRecords, &record->listEntry);
     }
 }
 
@@ -468,7 +693,6 @@ ULONG IopCancelDirectoryWatches(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_B
             continue;
         }
         RemoveEntryList(&watch->listEntry);
-        IopDirWatchCount--;
         IopCompleteDirWatch(watch, STATUS_CANCELLED, 0, 0, 0);
         cancelled++;
     }
