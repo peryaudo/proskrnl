@@ -62,6 +62,23 @@ NTSTATUS IopPreparePendingRequest(const IO_CONTROL_CONTEXT *request, PIOP_PENDIN
     pending->userIosb = request->userIosb;
     pending->kernelIosb = ExGetPreviousMode() == KernelMode;
     pending->issuer = KeGetCurrentThread();
+    /* W4a: the completion APC is queued to that thread, so the request must
+     * keep it ALIVE — a parked listen outlives its issuer (docs/03 "CUI-3
+     * SCM notes": nothing sweeps one at thread exit), and queueing into a
+     * freed KTHREAD is the hazard. Mirrors IOP_DIR_WATCH (kernel/io/
+     * notify.c), which needs the reference for the same reason. */
+    pending->issuerObject = pending->issuer->threadObject;
+    if (pending->issuerObject != 0)
+    {
+        ObfReferenceObject(pending->issuerObject);
+    }
+    /* The APC block moves INTO the request here. From this point the request
+     * owns it, and IopCompletePendingRequest is the only place it leaves —
+     * which is what makes "queued or freed exactly once" true for every way
+     * a park can end (io.h). A device that prepares a request MUST then
+     * return STATUS_PENDING; anything else would leave ioctl.c's failure
+     * branch freeing a block this request also owns. */
+    pending->apcBlock = request->apcBlock;
     *out = pending;
     return STATUS_SUCCESS;
 }
@@ -92,6 +109,18 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     {
         KeSetEvent(request->event, 0, FALSE);
         ObDereferenceObject(request->event);
+    }
+    /* W4a: the APC last, AFTER the IOSB is written and the event signalled —
+     * the routine's only argument is a pointer to that IOSB, so it must be
+     * final before the routine can run. Queued to the ISSUER, not to
+     * whoever is completing: the completer is usually another thread
+     * entirely (a connecting client, a canceller, the owner's cleanup).
+     * IopQueueCompletionApc eats the block for a dead or dying issuer, so
+     * this is also the free path — the request never owns it afterwards. */
+    IopQueueCompletionApc(request->issuer, request->apcBlock);
+    if (request->issuerObject != 0)
+    {
+        ObDereferenceObject(request->issuerObject);
     }
     ObDereferenceObject(request->owner);
     MiFreePool(request);

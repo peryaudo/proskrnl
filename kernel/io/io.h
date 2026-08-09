@@ -339,11 +339,35 @@ typedef struct IOP_PENDING_REQUEST
     PIO_STATUS_BLOCK userIosb; /* IOSB VA in `owner` (probed at issue) */
     BOOLEAN kernelIosb;        /* issuer was kernel mode: write directly */
     PKEVENT event;             /* referenced event body, or 0 */
-    PKTHREAD issuer;           /* NtCancelIoFile scoping; compared, never
-                                * dereferenced */
-    LIST_ENTRY queueEntry;     /* for a device that queues several pending
-                                * requests of one kind (npfs's listen
-                                * queue); unused when a device holds one */
+    PKTHREAD issuer;           /* NtCancelIoFile scoping — and, since W4a,
+                                * the thread the completion APC is queued
+                                * to, which is why issuerObject below now
+                                * exists */
+    void *issuerObject;        /* referenced ETHREAD body: keeps `issuer`
+                                * alive. Before W4a `issuer` was compared and
+                                * never dereferenced, so a bare pointer was
+                                * safe; queueing an APC to it reads
+                                * ->terminating and inserts into its list, so
+                                * the KTHREAD must still BE there. A parked
+                                * listen is not swept at its issuer's exit
+                                * (docs/03 "CUI-3 SCM notes"), so the thread
+                                * can die with the request still queued and a
+                                * later client connect would complete into
+                                * freed pool. Same shape and same fix as
+                                * IOP_DIR_WATCH.issuerObject (kernel/io/
+                                * notify.c). */
+
+    /* CUI-3/W4a: the completion APC, allocated at ISSUE time by
+     * IopPrepareCompletionApc so completion itself cannot fail, and owned by
+     * this request until IopCompletePendingRequest hands it to
+     * IopQueueCompletionApc. Every way a parked request ends — a client
+     * attaching, NtCancelIoFile, the owner's cleanup — runs through that one
+     * function, so the block is queued or freed exactly once whichever ends
+     * it (G11). 0 when the caller passed no ApcRoutine. */
+    PKAPC apcBlock;
+    LIST_ENTRY queueEntry; /* for a device that queues several pending
+                            * requests of one kind (npfs's listen
+                            * queue); unused when a device holds one */
 } IOP_PENDING_REQUEST, *PIOP_PENDING_REQUEST;
 
 /* Build a pending request in the ISSUER's context (references the event and

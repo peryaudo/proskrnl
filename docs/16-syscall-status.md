@@ -132,13 +132,21 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
 
 ### Argument-shape gaps (the verb is built, one calling form is not)
 
-- **User APCs on I/O.** No baked caller passes one (kernelbase sends NULL and uses
-  the event/key legs), so the APC form refuses across `NtReadFile`/`NtWriteFile`
-  (`kernel/io/rw.c:651`), `NtDeviceIoControlFile`/`NtFsControlFile`
-  (`kernel/io/ioctl.c:38`), and `NtQueryDirectoryFile` (`kernel/io/query.c:963`).
-  Note this survived CUI-8: async I/O is now real (a transfer parks its issuer and
-  answers the pending shape — `docs/03` "CUI-8 async notes"), but the *completion
-  APC* calling form is a separate question and stays unbuilt.
+- **User APCs on I/O — now a SPLIT row, and the line numbers it used to carry
+  had drifted off their guards.** The completion-APC form is **built** for
+  `NtDeviceIoControlFile`/`NtFsControlFile` (`kernel/io/ioctl.c`, pinned
+  `tests/ntapi/sem_pipe/listen_apc.c`, docs/21 W4a) — including the pended
+  case, where the block travels in the `IOP_PENDING_REQUEST` and is queued to
+  the issuer at completion. It is also built on the scatter/gather and
+  transfer paths (`IopCompleteTransfer`, pinned
+  `tests/ntapi/sem_file/apc_completion.c`).
+  It still **refuses** for the plain `NtReadFile`/`NtWriteFile` entry
+  (`kernel/io/rw.c`, the `apc != 0 && UserMode` guard) and for
+  `NtQueryDirectoryFile` (`kernel/io/query.c`), where no baked caller passes
+  one — kernelbase sends NULL and uses the event/key legs. Unbuilt refuses
+  loudly (Art. 12); the engine those two would use already exists
+  (`IopPrepareCompletionApc`/`IopQueueCompletionApc`), so what is missing is
+  the pin, not the plumbing.
 - `NtLockFile` — a non-NULL apc, iosb, or key (`kernel/io/lock.c:158`);
   `NtUnlockFile` — the keyed form (`kernel/io/lock.c:227`).
 - `NtSetTimer` — a timer APC routine; nothing on the CUI path arms one
