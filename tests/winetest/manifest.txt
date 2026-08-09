@@ -258,15 +258,35 @@ ntdll_test.exe:path
 #     (timeout). The five being gone is a real measurement; the pair being
 #     sound is not something this can show.
 #
-#     THE WEDGE IS THE NEXT ITEM, and the likely shape is recorded here
-#     because it fell out of the same work: IopCompletePendingRequest
-#     (kernel/io/async.c) never posts a completion packet at all, and the
-#     oracle's rule is that a request which PENDED always posts one. So an
-#     overlapped caller that binds a port and waits on a pended ioctl waits
-#     forever. The APC block already travels in the IOP_PENDING_REQUEST
-#     (docs/21 W4a); the port, key and value need the same treatment — and
-#     the port needs a REFERENCE, for exactly the reason the issuer thread
-#     did.
+#     THE PENDED PACKET IS NOW BUILT TOO, and it was NOT the wedge — the
+#     prediction this block used to carry was half right and the half that
+#     mattered was wrong. IopCompletePendingRequest (kernel/io/async.c) really
+#     did post no packet at all, so an overlapped caller that bound a port and
+#     waited on a pended ioctl waited forever; it now posts through the same
+#     rw.c site the inline tail uses (IopPostRequestPacket), the
+#     IOP_PENDING_REQUEST holds a REFERENCED file object, and the port is read
+#     at COMPLETION rather than captured at issue because the oracle re-reads
+#     (measured: binding a port after a listen has pended still posts).
+#     Pinned by tests/ntapi/sem_pipe/pending_packet.c, green on both runners.
+#     But the pair does not move: still ZERO failed assertions, still
+#     FAIL (timeout), wedging in the same place.
+#
+#     THE WEDGE IS MEASURED NOW, and it is a different subject entirely: npfs
+#     data reads NEVER PEND. On an asynchronous handle NpfsRead (fs/npfs/
+#     pipe.c) parks the calling thread in NpfsWait instead of answering
+#     STATUS_PENDING, and pipe.c:1578 issues exactly that read on an EMPTY
+#     pipe through an overlapped handle and then satisfies it from the SAME
+#     thread at :1583 — so the thread parks inside the read and the write it
+#     is waiting for is never issued. Probed on both runners with one binary:
+#     the oracle returns 0x103 immediately with the IOSB untouched, proskrnl
+#     does not return at all. docs/03 "CUI-8 async notes" carries it as a
+#     deviation; docs/21 W4c is the item.
+#     Not a small item: the pending-request engine has no buffer/length legs
+#     yet (kernel/io/io.h anticipates them), the completion has to copy into
+#     the owner's address space, and the file object's signalled/unsignalled
+#     state joins the contract (pipe.c:1607-:1617 asserts it).
+#     And everything past :1578 remains unmeasured — the zero above is a lower
+#     bound like every other stopped pair's (docs/21 §4 trap 2).
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
