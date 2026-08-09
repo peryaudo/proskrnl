@@ -856,18 +856,89 @@ gate-check rather than out of a failing assertion.
 **Nothing was hiding behind the two winetest assertions** — 2200 executed,
 96 todo, 2 skips before and after — so §4 trap 2 does not apply.
 
-**The 6 that remain are ONE subject**: the cross-process image map at
-`:1728-:1752`, i.e. `NtMapViewOfSection` with a non-zero offset into another
-process, which `mm/section.c` refuses (`image subrange views: not M5`). The
-manifest block has the triage, and its second half is the part to read before
-scheduling this as mechanical work: the oracle maps the whole image and then
-`free_pages`es the head, which is easy to mirror — but `:1743` memcmps the two
-views, and that only holds because the oracle relocates by
-`image_info->map_addr - image_info->base`, the server's ONE dynamic base for the
-mapping, where `MipFindOrCreateImageMaster` keys a relocated master on
-`(identity, base)` and so produces a different copy per base. **Both halves of
-that are read off the two sources and not measured** — treat them as a
-prediction (§4 trap 4), not as a diagnosis.
+**The image-offset view is DONE, and `ntdll:virtual` is GREEN — un-parked, in
+the gate** (6 → **0**; 2205 tests executed, 96 todo, 1 skipped, 0 failures,
+against the oracle's own 2527/112/0). Two rules, and the prediction this
+document made about them was right about the mechanism and wrong about which
+half was the work:
+
+- **The offset trims the image's HEAD.** `MipMapImageView` takes the offset and
+  builds the VAD over the tail — `base + offset`, `SizeOfImage - offset`, the
+  head left FREE — where the oracle maps the whole image and then
+  `free_pages`es the front (`virtual_map_image`). Same extent, without mapping
+  pages only to unmap them. `offset >= SizeOfImage` is
+  `STATUS_INVALID_PARAMETER` and is the first thing the oracle's image path
+  does, above the fd and above placement; the whole image is still what gets
+  PLACED, so a ceiling bounds `SizeOfImage` and not the tail. This half really
+  was mechanical.
+- **An image section is relocated ONCE and every view shares that copy.** This
+  is the half the document called "a question about where an image section's
+  relocation base comes from", and the answer reverses a recorded design
+  decision: `docs/17` §6F said to put the mapped base in the master's key,
+  calling the alternative "the worst bug available in this design". The oracle
+  refutes the premise (Art. 6) — it relocates to the mapping's own dynamic base
+  rather than to where the view landed (`map_image_into_view`'s `delta =
+  image_info->map_addr - image_info->base`; the server says the same in
+  `DECL_HANDLER(map_image_view)`'s at-base test), and two views of one section
+  are byte-identical on the pinned Wine. `MI_IMAGE_MASTER` is keyed on the
+  identity alone now, with `base` demoted to *what the copy was relocated for*.
+
+Both pinned by `tests/ntapi/sem_mm/map_image_offset.c`, which measures the
+remote arm as well as the local one — the winetest reaches the memcmp only
+through a child, and "both arms reach the same engine" is the argument §4 trap 4
+keeps punishing.
+
+Five things worth carrying:
+
+- **The surviving half of §6F is the sentence one step over, and it is what
+  makes the reversal safe.** A view that does not sit at the copy's base has a
+  residual, and the PE loader fixes it — keyed off the `ImageBase` the copy
+  stamps into its own header (`dlls/ntdll/loader.c` `perform_relocations`:
+  `if (module == base) return STATUS_SUCCESS;`). So the corruption §6F named is
+  real and its cause is *a stamp that disagrees with the copy*, not *a base
+  absent from the key*. `tests/kmt/cui9_cow.c` was asserting the old rule
+  outright (`ok(f1 != f2, "views at different bases share a header frame")`);
+  it now convicts the shared frames instead, and the stamp moved to
+  `tests/kmt/m5_section.c` `test_image_relocation`, which holds the preferred base so
+  the copy must actually be relocated — at the preferred base the delta is zero and
+  the assertion cannot fail. **A kmt test that encodes a design
+  decision has to be re-aimed when measurement moves the decision — it cannot
+  be left as the reason not to move it.**
+- **The change made a FALSE SKIP visible, and this is §4 trap 2 with the good
+  outcome.** `virtual.c:2244` maps the running module afresh and `memcmp`s its
+  first page against the loaded copy; with a per-base master the two headers
+  differed, so the test `skip`ped its whole body. The body passes — 2200 → 2205
+  executed, skips 2 → 1 — and the next thing it does is call
+  `perform_relocations( ptr, delta )` itself, i.e. user mode fixing up exactly
+  the residual described above. **The upstream test is a second, independent
+  statement of the rule**, and it had been sitting one skip away the whole time.
+- **The trim needed one new relation and exactly one place to state it.** The
+  master's frames are indexed by image RVA, the VAD's pages by view offset;
+  `MipVadMasterIndex` (`kernel/mm/virtual.c`) is the only place the two meet, so
+  the COW arm and the §8 shared-PTE sweep cannot disagree with the commit path
+  about which frame a page holds (Art. 11). Every one of its three call sites is
+  an `ASSERT` — which is to say the bias is invisible until it is wrong, and
+  then it is fatal at the right line.
+- **It exposed a ring-3-triggerable PANIC, and that is the most valuable thing this
+  item found.** Sharing one copy across bases lowered the per-process cost enough to
+  move the `cui9` ceiling 317 → 319 — and the create that then failed lost its race at
+  a page-table allocation instead of at a frame allocation the loader reports, so
+  `MiEnsureTable` panicked where the leg used to see `ERROR_NOT_ENOUGH_MEMORY`.
+  `MiMapUserPage` is infallible by contract and its page tables were an uncharged
+  allocation inside that promise, so **the graceful refusal at the ceiling had always
+  been one arbitrary allocation ordering away from a kernel panic**; a memory change of
+  2 processes in 319 was enough to collect. Fixed by charging the tables at the two
+  commit sites that can refuse (`docs/03` "Page tables are CHARGED"). The lesson is
+  about the leg, not the bug: `cui9` is a *ceiling* test, so any change to per-process
+  cost re-rolls which allocation loses — treat it as a first-class consumer of every
+  sharing change, not as an unrelated leg.
+- **The lookup-then-build window is safe for a reason worth writing down.**
+  Placement runs between "does this identity have a copy?" and "build one", and
+  a park in there would let a second copy appear — two relocation bases for one
+  section, which is the defect this whole item removes. Nothing there parks:
+  placement walks the VAD list, and the raw-byte source is resident by Art. 3
+  (`MiAcquireImageRawBytes`: "memcpy, never I/O"). The mandate is load-bearing
+  here rather than merely simplifying.
 
 What is left under this heading:
 
