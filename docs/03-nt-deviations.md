@@ -1198,6 +1198,22 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   precedent): mapping a section INTO a placeholder is a second, larger contract and no
   baked consumer reaches it. `NtCreateSectionEx`'s parameter array is
   accepted-and-ignored (the pinned oracle FIXME shape).
+- **`MEM_EXTENDED_PARAMETER_EC_CODE` is the one attribute bit that refuses, and the
+  refusal belongs to the ALLOCATION engine.** Every other bit of the
+  `MemExtendedParameterAttributeFlags` word is accepted and dropped;
+  `MEM_EXTENDED_PARAMETER_EC_CODE` asks for ARM64EC code memory and answers
+  `STATUS_INVALID_PARAMETER`, which is the oracle's guard with its left half
+  permanently true on an x86_64-only kernel (`if (!arm64ec_view && (attributes &
+  MEM_EXTENDED_PARAMETER_EC_CODE))`, `dlls/ntdll/unix/virtual.c`
+  `allocate_virtual_memory`; `docs/adr/0006-x64-only.md`). It sits in
+  `MiAllocateVirtualMemoryEx` below the working-set and type-flag tests — NOT in the
+  shared `MiCaptureExtendedParams` parser — because `NtMapViewOfSectionEx` takes the
+  same word and ignores it; both halves and the ordering are pinned
+  (`sem_mm/alloc_ex.c`, `sem_mm/map_ex.c`). **The bit is a probe, not a preference**:
+  `ntdll:unwind`'s `test_virtual_unwind_arm64` calls this to ask whether it is on an
+  ARM64EC host and, on a "yes", runs ARM64 unwind opcodes over the x86_64 buffer it
+  just received. Accepting and dropping the bit therefore did not return a wrong
+  answer — it killed the process with an unhandled `0xc0000005` (`docs/21` W6).
 - **Splitting a VAD carries its write-watch record.** One split serves both
   `MEM_RELEASE` and `MEM_PRESERVE_PLACEHOLDER` (`MiCarveVad`, Art. 11). The release
   path's own earlier copy of it rebuilt the surviving pieces without `watchDirty`, so a

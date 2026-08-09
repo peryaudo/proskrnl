@@ -48,10 +48,13 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
 
 /* The CUI-7 constrained form the classic entry delegates to (one engine):
  * limitLow/limitHigh bound the block inclusive of its last byte, align
- * raises the 64K placement step; zeros mean unconstrained. */
+ * raises the 64K placement step; zeros mean unconstrained. `attributes` is
+ * the MEM_EXTENDED_PARAMETER_* word the caller supplied — it belongs to the
+ * ENGINE and not to the parameter parser, because the same word is accepted
+ * and dropped on the mapping path (section.c NtMapViewOfSectionEx). */
 NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                    ULONG type, ULONG protect, uint64_t limitLow, uint64_t limitHigh,
-                                   uint64_t align);
+                                   uint64_t align, ULONG attributes);
 
 /* The captured/validated MEM_EXTENDED_PARAMETER contract (CUI-7); ONE
  * parser for the whole *Ex family (virtual.c MiCaptureExtendedParams,
