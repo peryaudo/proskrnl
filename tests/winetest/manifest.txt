@@ -472,16 +472,25 @@ ntdll_test.exe:unwind
 #         ActiveGroupCount) plus :2039;
 #       - 2 an NtProtectVirtualMemory old_prot pair (:2679/:2686,
 #         "Unexpected old_prot 0");
-#       - 1 :3339, AND IT IS THE NEXT ITEM RATHER THAN A SINGLETON. It is
-#         docs/21 W6's shape exactly: NtSetInformationProcess with
-#         ProcessManageWritesToExecutableMemory SUCCEEDS on proskrnl, so the
-#         test concludes it is on an ARM64EC host, asserts the processor
-#         architecture is ARM64 (":3339 succeeded on non-ARM64"), and then
-#         skips the WHOLE of test_exec_memory_writes at :3343. A non-ARM64
-#         host must answer STATUS_INVALID_INFO_CLASS or STATUS_NOT_SUPPORTED.
-#         One assertion of visible cost, a whole test function of hidden
-#         cost — the second accepted-and-dropped capability probe found in
-#         this pair.
+#       - 1 :3339, which is DONE — see below.
+#
+#     NOW 1126, and the 25-assertion tail above is 24. :3339 is FIXED:
+#     NtSetInformationProcess/NtSetInformationThread answer
+#     STATUS_NOT_SUPPORTED for ProcessManageWritesToExecutableMemory (83) /
+#     ThreadManageWritesToExecutableMemory (48), the pinned oracle's own
+#     off-ARM64 arm (kernel/ps/{query,thread}.c, pinned by
+#     tests/ntapi/sem_ps/manage_exec_writes.c, docs/21 W5). They had been
+#     falling into NtSetInformationProcess's accept-as-a-no-op default, so
+#     the class SUCCEEDED and test_exec_memory_writes concluded it was on an
+#     ARM64EC host (":3339 succeeded on non-ARM64", then a skip of its whole
+#     body at :3343) — the second accepted-and-dropped capability probe in
+#     this pair after MEM_EXTENDED_PARAMETER_EC_CODE.
+#     THE HIDDEN COST WAS ZERO, AND THAT IS A MEASUREMENT RATHER THAN AN
+#     ASSUMPTION (docs/21 §4 trap 2 the other way): the block behind the skip
+#     is `#ifdef __aarch64__`-shaped on both sides, so with the refusal in
+#     place the test returns at the same point for the right reason. 3757
+#     tests executed before and after, one failure fewer, one skip fewer
+#     (3 -> 2), no new failure anywhere.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
