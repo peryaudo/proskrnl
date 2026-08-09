@@ -841,6 +841,19 @@ winetest() {
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
         specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
     done
+    # tzres.dll — the resource-only DLL the time-zone table's MUI_Std/MUI_Dlt
+    # values point at ("@tzres.dll,-22000"). Both GetDynamicTimeZoneInformation
+    # and GetTimeZoneInformationForYear resolve those through RegLoadMUIStringW
+    # against %windir%\system32 (dlls/kernelbase/locale.c), but they disagree
+    # about the FAILURE: the first ignores the error and leaves the raw
+    # "@tzres.dll,-N" in place, the second falls back to the zone's plain
+    # `Std`/`Dlt`. So with the file absent the two APIs answer different
+    # strings for the same zone, which is kernel32:time :990-:1008 — a
+    # divergence made entirely of a file the oracle's prefix has and the baked
+    # image did not (the win.ini story below, one directory up). Taken from the
+    # pinned tree unstripped: it is pure resources, with no unixlib half for
+    # `winestrip` to remove.
+    specs+=("win:$ROOT/third_party/wine/dlls/tzres/x86_64-windows/tzres.dll=windows/system32/tzres.dll")
     # %windir%\{win,system}.ini, for the same reason the nls set goes in.
     # This image carries no wineboot.exe, so smss skips firstboot
     # (user/smss/smss.c) and the `wineboot --init` pass that writes them
