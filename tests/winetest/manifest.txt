@@ -799,15 +799,77 @@ ntdll_test.exe:unwind
 #     :2016 (ULong = 0) succeeded then and succeeds now. So docs/21 §4 trap 2
 #     does not apply here.
 #
-#     WHAT IS LEFT IS 8, AND IT IS TWO SUBJECTS:
-#       - 6   the cross-process image map at :1728-:1752 (NtMapViewOfSection
-#         with a non-zero offset into ANOTHER process -> c000000d, i.e.
-#         mm/section.c's "image subrange views: not M5"), unchanged.
-#       - 2   the NtProtectVirtualMemory old_prot pair at :2679/:2686,
-#         unchanged: a FAILED NtProtectVirtualMemory must still write
-#         PAGE_NOACCESS into the caller's *old_prot (the oracle's
-#         `else *old_prot = PAGE_NOACCESS;`, dlls/ntdll/unix/virtual.c),
-#         and kernel/mm/virtual.c writes the slot only on success.
+#     THE old_prot PAIR IS DONE (8 -> 6, :2679 and :2686). A FAILED
+#     NtProtectVirtualMemory still writes the caller's *old_prot, and what it
+#     writes is PAGE_NOACCESS — the oracle's closing `else *old_prot =
+#     PAGE_NOACCESS;` (dlls/ntdll/unix/virtual.c), which kernel/mm/virtual.c
+#     did not have: it wrote the slot on success only. Pinned by
+#     tests/ntapi/sem_mm/protect_old_prot.c, which measures four things the
+#     one-line rule does not state, each a way an implementation gets it
+#     plausibly wrong: the slot is written for EVERY failure of the operation
+#     (unserviceable protection, uncommitted range, free address — none of
+#     which HAS a previous protection); *base and *size are NOT written with
+#     it, because the oracle rounds them into locals and copies back on
+#     success only; the write does NOT cover a failure to reach the operation
+#     at all, so a junk process handle and a real handle without
+#     PROCESS_VM_OPERATION leave the slot untouched (above the `else` on the
+#     oracle, where server_queue_process_apc's failure returns directly); and
+#     it holds through the REMOTE arm, which is a second, textually separate
+#     assignment reached by an APC — a real handle to our own process takes
+#     that arm, since `process != NtCurrentProcess()` is what selects it.
+#     NOTHING WAS HIDING BEHIND IT: 2200 tests executed, 96 todo and 2
+#     skipped before and after, two failures fewer. docs/21 §4 trap 2 does
+#     not apply.
+#     THE PIN ALSO CONVICTED A STATUS NO WINETEST ASSERTION CAN SEE. A range
+#     no single view covers — a free address, or a range running off the end
+#     of one — answered STATUS_INVALID_ADDRESS where the oracle answers
+#     STATUS_INVALID_PARAMETER. virtual.c:2677 says Wine and Windows disagree
+#     there (win64: STATUS_CONFLICTING_ADDRESSES), so the assertion is a bare
+#     ok(status, ...) and nothing here convicts it. What makes it a defect is
+#     one step past the status: RtlNtStatusToDosError maps c0000141 to
+#     ERROR_UNEXP_NET_ERR (59) (dlls/ntdll/error.h:686), so VirtualProtect
+#     over a free address reported an "unexpected network error". Aligned to
+#     the oracle (Art. 6 arbitrates when two authorities disagree) and pinned
+#     both ways; docs/03 "What a FAILED NtProtectVirtualMemory answers".
+#     AND THE ORDER, a fourth defect no assertion in this pair reaches.
+#     MiProtectVirtualMemory validated the protection on the way IN; the
+#     oracle validates it LAST (find_view -> get_committed_size ->
+#     set_protection, which is where get_vprot_flags refuses). So a bad
+#     protection over a free address must report the ADDRESS and over a
+#     reserved range the COMMIT; proskrnl reported the protection for both.
+#     W11's "every defect was an ORDER or a MASK, not a value", found the
+#     same way — gate-check reading the two ladders side by side.
+#     AND size == 0, a fifth divergence found by holding the new comment to
+#     its own claim: an `end <= base` guard sat above the whole ladder where
+#     the oracle has no size guard at all. A zero-size protect is an ordinary
+#     trip down it — success over a committed page (reporting that page's
+#     protection, *size 0), NOT_COMMITTED over a reserved range,
+#     INVALID_PARAMETER over a free address, INVALID_PAGE_PROTECTION with a
+#     bad protection — and proskrnl answered INVALID_PARAMETER to all four.
+#     None of these five is reachable from this pair's 8; the two that were
+#     reachable are :2679/:2686.
+#
+#     WHAT IS LEFT IS 6, AND IT IS ONE SUBJECT: the cross-process image map
+#     at :1728/:1730/:1740/:1741/:1743/:1752. NtMapViewOfSection with a
+#     non-zero offset into ANOTHER process answers c000000d — mm/section.c's
+#     `image subrange views: not M5` — so ptr2 stays NULL and the four
+#     assertions behind it fail with the map (:1740/:1741 read from NULL,
+#     :1743 compares nothing, :1752 unmaps nothing).
+#     THE SHAPE IS READ OFF BOTH SOURCES AND NOT MEASURED, and the next
+#     person should treat it as a prediction (docs/21 §4 trap 4). The
+#     oracle's virtual_map_image maps the WHOLE image and then calls
+#     free_pages(view, view->base, offset), which advances view->base by
+#     offset (remove_pages_from_view's shrink-from-start arm), so the answer
+#     is base+offset with size = map_size - offset and the head unmapped.
+#     Implementing that much is mechanical. :1743 is the part that is not:
+#     it memcmps the two views, which requires them to hold IDENTICAL bytes
+#     at different addresses. The oracle gets that for free because it
+#     relocates by `image_info->map_addr - image_info->base` — the server's
+#     ONE dynamic base for the mapping, not where the view actually
+#     landed — while proskrnl's MipFindOrCreateImageMaster keys a relocated
+#     master on (identity, base), i.e. one relocated copy PER base. So the
+#     six are not one mechanical change; the second half is a question about
+#     where an image section's relocation base comes from.
 # TODO: Implement
 # ntdll_test.exe:virtual
 # (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
@@ -1112,6 +1174,12 @@ kernel32_test.exe:timer
 #       - :517/:520/:525/:534/:560 (5), a MEMORY_BASIC_INFORMATION protect
 #         group ("wrong protect 4/2/202", "wrong size 1000").
 #     Note this pair also takes ~285 seconds, the slowest in the manifest.
+#     RE-MEASURED (unchanged at 12, same four subjects, same lines) when
+#     NtProtectVirtualMemory's failure ladder was rebuilt against the oracle
+#     — the miss status moved c0000141 -> c000000d and the protection check
+#     moved behind the view and commit checks (ntdll:virtual's block above).
+#     That change reaches every VirtualProtect caller, so this pair was
+#     re-run rather than reasoned about; nothing here moved either way.
 # TODO: Implement
 # kernel32_test.exe:virtual
 # RE-TRIAGED. FOUR failures, not the three this block used to claim, and
