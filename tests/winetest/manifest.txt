@@ -306,15 +306,80 @@ ntdll_test.exe:path
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
-# UNTRIAGED, FIXABLE. 192 failures across 1050 tests. The largest
-#     clusters are reg.c:1354 (NtCreateKey -> 0xc000003b
-#     STATUS_OBJECT_PATH_SYNTAX_BAD, 24 times) and reg.c:1361 (NtQueryValueKey
-#     -> 0xc0000008 INVALID_HANDLE behind it, 24 times) — one cause, since
-#     the query uses the handle the create never produced. Then
-#     reg.c:1980-:1990 (NtOpenKey -> 0xc0000034 and a subkey count of 0) and
-#     a subkey-enumeration group at :2363/:2380. The path-syntax cluster is
-#     the one to start on: it is a quarter of the pair and it is a NAME
-#     question, which ntdll:path has just made cheaper to reason about.
+# TRIAGED, FIXABLE. 172 failures across 1042 tests, down from 192 across
+#     1050. NOTE THE EXECUTED COUNT FELL TOO, AND IT IS NOT A LOSS: the six
+#     rename assertions below were per-ITERATION over a subkey list that had
+#     one stale entry in it, so removing the entry removes 4 iterations x 2
+#     ok()s = exactly the 8 that went missing (4 of them were failing at
+#     :2380, 4 were passing at :2367).
+#
+#     THE OLD BLOCK'S DIAGNOSIS OF ITS OWN LARGEST CLUSTER WAS WRONG, AND
+#     THAT MATTERS MORE THAN THE NUMBER. It read the 24 failures at
+#     reg.c:1354 as "NtCreateKey -> STATUS_OBJECT_PATH_SYNTAX_BAD ... a NAME
+#     question". Measured: the call at :1348 is NtOpenKey (the message text
+#     says NtCreateKey and is simply wrong), and the refusal is CORRECT. Its
+#     OBJECT_ATTRIBUTES.RootDirectory is a handle an earlier NtOpenKey left
+#     at zero, so the kernel is being asked to resolve a RELATIVE name with
+#     no root — which really is STATUS_OBJECT_PATH_SYNTAX_BAD, on both
+#     runners. Reading the failure TEXT rather than the test's helper is
+#     docs/21 §4 trap 4 again.
+#
+#     What actually stops that cluster is registry FURNITURE the image does
+#     not carry (docs/21 §4 trap 6): the oracle's prefix has
+#     \Registry\Machine\Software\Classes\Interface and ...\Software\
+#     Wow6432Node (wine.inf writes both), the baked hive has neither, and
+#     NtCreateKey creates only the last component. reg.c:1780's open of
+#     "Interface" fails, root64/root32/root become 0, and 48 assertions plus
+#     the whole of test_redirection fall out behind that. It is a data
+#     question with a decision inside it (may a kernel with no WOW64 carry a
+#     Wow6432Node key?), NOT the name question this block advertised.
+#
+#     WHAT WAS FIXED: the name fold (docs/21 W12). reg.c:346 creates a key
+#     named U+00F6 U+00F3 U+014D U+0371 U+D801 U+DC00 and :353 re-opens it
+#     upper-cased; proskrnl's RtlUpcaseUnicodeChar was a hand-written rule
+#     reaching only ASCII + Latin-1, so the open missed (:355) and :357's
+#     delete was handed a null handle. That ONE miss cost 20 assertions,
+#     because the undeleted subkey outlives its test: its parent
+#     \Registry\User\<SID>\WineTest keeps a child forever, only a LEAF key
+#     is deletable, and three later test functions are about that parent —
+#     test_NtDeleteKey's whole deleted-key contract (:821-:851, 10), the
+#     symlink test's delete (:1325), NtRenameKey's subkey enumeration
+#     (:2363/:2380, 6), the hive-save delete (:2560) and
+#     RtlQueryRegistryValues' call count (:3070). Not inferred — :2380
+#     printed the leftover by name: `Unexpected subkey name
+#     L"\00f6\00f3\014d\0371\d801\dc00"`, and :2363 `Expected 4 subkeys,
+#     found 6`.
+#     RtlUpcaseUnicodeChar now reads the NLS upcase trie generated from the
+#     pinned tree's own nls/l_intl.nls (kernel/lib/upcase.h,
+#     tools/gen_upcase.py) — the same bytes the oracle folds through, on
+#     both of its sides — so it is total over the BMP and per 16-bit code
+#     unit. Pinned by tests/ntapi/sem_reg/key_name_fold.c (the table's own
+#     irregularities, and the surrogate halves that must NOT fold) and
+#     sem_file/name_case_fold.c (the same fold through file names, and the
+#     enumeration ORDER it decides).
+#
+#     WHAT IS LEFT, re-measured, summing to 172:
+#       - 48  the Classes\Interface furniture above (:1354 x24, :1361 x24);
+#       - 86  test_redirection and test_redirection_classes behind the
+#         missing Software\Wow6432Node (41 at :1470-:1673, 30 at
+#         :1781-:1879, 15 at :1901-:1970) — the same data question, and it
+#         carries the decision named above;
+#       - 22  the Wow6432Node enumeration group at :1980-:1990;
+#       - 12  NtQueryLicenseValue for "Kernel-MUI-Number-Allowed"
+#         (:1009-:1032). ALSO FURNITURE, and the smallest item on this
+#         pair: wine.inf writes THREE values into Software\Wine\
+#         LicenseInformation (loader/wine.inf.in:1212-1214) and
+#         kernel/cm/registry.c:2579 seeds one. The REG_SZ half already
+#         passes; only the REG_DWORD value is missing;
+#       -  2  reg.c:550/:557 — "\REGISTRY\Machine\Software\Classes" with
+#         attr.Attributes = 0 answers 0xc000003a. The test's own comment
+#         says the \REGISTRY component is case-SENSITIVE while everything
+#         under it is not, so this is one Ob-vs-Cm boundary rule;
+#       -  1  reg.c:854 — NtQueryObject(ObjectNameInformation) on a deleted
+#         key handle must answer STATUS_KEY_DELETED. Newly VISIBLE rather
+#         than newly broken: it is the one assertion of that group that
+#         survived the delete starting to work;
+#       -  1  reg.c:1312 — the symlink-loop open.
 # TODO: Implement
 # ntdll_test.exe:reg
 # AT ITS CUI-IMAGE FLOOR — NOT FIXABLE ON THIS IMAGE.
