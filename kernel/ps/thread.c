@@ -335,10 +335,17 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
 /* --- NtCreateThreadEx ----------------------------------------------------- */
 
 /* A fresh user stack (guard-page grown) for an additional thread. Mirrors the
- * main-thread stack shape in process.c but standalone. */
+ * main-thread stack shape in process.c but standalone.
+ *
+ * `limitHigh` is NtCreateThreadEx's ZeroBits ceiling, inclusive of the
+ * reservation's last byte (0 = unconstrained). It bounds the RESERVATION and
+ * nothing else, which is the oracle's arrangement: `init_thread_stack` passes
+ * `get_zero_bits_limit( zero_bits )` to `virtual_alloc_thread_stack`'s
+ * `map_view` and the TEB allocation beside it is unconstrained
+ * (third_party/wine dlls/ntdll/unix/thread.c, unix/virtual.c). */
 static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
-                                       uint64_t *allocBaseOut, uint64_t *stackTopOut,
-                                       uint64_t *stackLimitOut)
+                                       uint64_t limitHigh, uint64_t *allocBaseOut,
+                                       uint64_t *stackTopOut, uint64_t *stackLimitOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
@@ -358,7 +365,10 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
 
     PVOID base = 0;
     SIZE_T size = reserve;
-    NTSTATUS status = MiAllocateVirtualMemory(space, &base, &size, MEM_RESERVE, PAGE_READWRITE);
+    /* The constrained form even when limitHigh is 0: it IS the classic form's
+     * engine, and the zero means unconstrained (mm/virtual.h). */
+    NTSTATUS status = MiAllocateVirtualMemoryEx(space, &base, &size, MEM_RESERVE, PAGE_READWRITE, 0,
+                                                limitHigh, 0, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -398,7 +408,7 @@ static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uin
 {
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
     NTSTATUS status =
-        PspAllocateThreadStack(process, 0x100000, 0x10000, &allocBase, &stackTop, &stackLimit);
+        PspAllocateThreadStack(process, 0x100000, 0x10000, 0, &allocBase, &stackTop, &stackLimit);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -513,8 +523,8 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
     }
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
     uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
-    NTSTATUS status =
-        PspAllocateThreadStack(process, reserve, commit, &allocBase, &stackTop, &stackLimit);
+    NTSTATUS status = PspAllocateThreadStack(process, reserve, commit, options->stackLimitHigh,
+                                             &allocBase, &stackTop, &stackLimit);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -608,7 +618,30 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
                           ULONG_PTR zeroBits, SIZE_T stackSize, SIZE_T maximumStackSize,
                           PS_ATTRIBUTE_LIST *attributeList)
 {
-    (void)zeroBits;
+    /* ZeroBits is the new stack's placement CEILING, and its invalid band is
+     * NOT NtAllocateVirtualMemory's — this entry point has ONE band where the
+     * allocation path has two. The oracle's whole x86-64 validation is a
+     * single line (third_party/wine dlls/ntdll/unix/thread.c
+     * NtCreateThreadEx); the `zero_bits >= 32` refusal beside it is inside
+     * `#ifndef _WIN64`, and the allocation path's second band
+     * (`> 32 && < granularity_mask`, unix/virtual.c) has no counterpart here.
+     * So 33 is STATUS_INVALID_PARAMETER_3 through
+     * NtSetInformationProcess(ProcessThreadStackAllocation) — which really is
+     * implemented by calling NtAllocateVirtualMemory, hence
+     * MiZeroBitsPlacementLimit in ps/query.c — and here it is a legal MASK
+     * naming a 63-byte ceiling that no stack fits under, i.e.
+     * STATUS_NO_MEMORY. Reusing MiZeroBitsPlacementLimit would answer the
+     * wrong status for every value in that band; MiZeroBitsLimit, the
+     * count-or-mask resolution both ladders share, is the part that IS one
+     * authority (Art. 11). Pinned by tests/ntapi/sem_ps/thread_zero_bits.c.
+     *
+     * The check sits ABOVE the process-handle resolution because the oracle's
+     * does: its two lines precede `if (process != NtCurrentProcess())`, so a
+     * bad ZeroBits is reported for a handle that names nothing. */
+    if (zeroBits > 21 && zeroBits < 32)
+    {
+        return STATUS_INVALID_PARAMETER_3;
+    }
 
     PKTHREAD caller = KeGetCurrentThread();
     PEPROCESS process;
@@ -638,6 +671,7 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
     options.desiredAccess = desiredAccess;
     options.stackCommit = stackSize;
     options.stackReserve = maximumStackSize;
+    options.stackLimitHigh = MiZeroBitsLimit(zeroBits);
     if (objectAttributes != 0)
     {
         NTSTATUS probeStatus = ObProbeObjectAttributes(objectAttributes);

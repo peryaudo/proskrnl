@@ -1888,6 +1888,33 @@ versioning and inventing a number would be the plausible-answer stub Art. 12
 forbids. `sem_ps/process_query` pins the shape — a non-empty version and the
 four-string walk — never the text.
 
+## `ZeroBits`: the rule is exact, the reachable set is the address space's
+
+`NtCreateThreadEx`, `NtAllocateVirtualMemory`, `NtMapViewOfSection` and
+`NtSetInformationProcess(ProcessThreadStackAllocation)` all resolve `ZeroBits` through the
+one authority (`MiZeroBitsLimit`, `kernel/mm/virtual.c`, byte-for-byte the oracle's
+`get_zero_bits_limit`), and each states its own invalid band because the oracle's bands
+genuinely differ per entry point — `NtCreateThreadEx` has **one** on x86-64 where the
+allocation path has **two** (`docs/21` W5; pinned by `tests/ntapi/sem_ps/thread_zero_bits.c`
+and `sem_ps/thread_stack_alloc.c`). Nothing here deviates.
+
+What differs is which ceilings can be **met**, and it is worth writing down because it is
+user-observable and it is not a bug. A ceiling is satisfiable only if a free hole of the
+requested size lies under it, so the answer depends on where the address space starts being
+free. proskrnl's lowest free hole in a test process is `0x7c0000`; the pinned oracle's is
+lower. So a 1 MiB thread stack under `ZeroBits` 9, 10 or 11 is `STATUS_SUCCESS` on the
+oracle and `STATUS_NO_MEMORY` here — the same difference two Windows machines with
+different loader layouts would show, and `ntdll:virtual`'s `test_stack_size` accepts
+`STATUS_NO_MEMORY` at every one of those values for exactly that reason.
+
+The consequence to expect when reading a winetest count: proskrnl runs **18** of
+`test_stack_size_thread`'s bodies where the oracle runs 24, because six of the sweep's
+creates correctly refuse here. That is coverage the pair cannot reach on this kernel, not a
+failure, and it is why the pair's *executed* count sits below the oracle's while its
+*failure* count matches on that cluster. No promise is made about where an allocation
+lands; if this kernel's low reserved region ever shrinks, the reachable set grows and
+nothing above needs changing.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
