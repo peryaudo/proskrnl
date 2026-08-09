@@ -2743,27 +2743,95 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
      * the oracle's set_protection rule (wine dlls/ntdll/unix/virtual.c:
      * is_view_valloc -> STATUS_INVALID_PAGE_PROTECTION; pinned by
      * sem_mm/writecopy_query). Everything else goes through the ordinary
-     * anonymous-protection switch. */
+     * anonymous-protection switch.
+     *
+     * THE PROTECTION IS VALIDATED LAST, not first, and the position is the
+     * pinned part. The oracle asks its three questions in the order
+     * view -> committed -> protection: `if ((view = find_view( base, size )))`
+     * / `get_committed_size(...)` / `set_protection( view, base, size,
+     * new_prot )`, which is where get_vprot_flags refuses. So an
+     * unserviceable protection over a FREE address reports the address
+     * (STATUS_INVALID_PARAMETER) and over a RESERVED range reports the
+     * commit (STATUS_NOT_COMMITTED) — never STATUS_INVALID_PAGE_PROTECTION,
+     * which this function used to answer for both because it validated on
+     * the way in. Pinned by sem_mm/protect_old_prot.c.
+     *
+     * A ZERO-SIZE request is an ordinary trip down that ladder, not a fourth
+     * rung above it. The oracle has no size guard at all: `ROUND_SIZE(addr,
+     * 0, mask)` is 0 for an aligned address, find_view still answers the
+     * containing view, and set_protection walks no pages — so it succeeds and
+     * reports the named page's protection, while the same call on a reserved
+     * range is STATUS_NOT_COMMITTED and on a free address
+     * STATUS_INVALID_PARAMETER. All four measured (sem_mm/protect_old_prot.c
+     * pins them); this function used to refuse every one of them with
+     * STATUS_INVALID_PARAMETER. What remains refused here is the OVERFLOW the
+     * oracle's find_view refuses in the same words (`addr + size < addr`). */
     ULONG bits = newProtect & ~(PAGE_GUARD | PAGE_NOCACHE);
     BOOLEAN writeCopyFlavour = bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
-    if (!writeCopyFlavour)
-    {
-        NTSTATUS status = MiCheckPageProtect(newProtect);
-        if (!NT_SUCCESS(status))
-        {
-            return status;
-        }
-    }
     uint64_t base = MiRoundDown(*baseInOut, PAGE_SIZE);
     uint64_t end = MiRoundUp(*baseInOut + *sizeInOut, PAGE_SIZE);
-    if (end <= base)
+    if (end < base)
     {
         return STATUS_INVALID_PARAMETER;
     }
     PMI_VAD vad = MiFindVad(space, base);
     if (vad == 0 || end > vad->base + vad->size)
     {
-        return STATUS_INVALID_ADDRESS; /* not a single committed region */
+        /* No single view covers the range — a free address, or a range that
+         * runs off the end of one. Both are the oracle's find_view returning
+         * NULL (dlls/ntdll/unix/virtual.c: `if (view->base + view->size <
+         * addr + size) break;` and the miss below it), whose one caller
+         * answers STATUS_INVALID_PARAMETER for either.
+         *
+         * This used to be STATUS_INVALID_ADDRESS, which is not merely a
+         * different shade of refusal at the boundary: Wine's PE-side
+         * RtlNtStatusToDosError maps c0000141 to ERROR_UNEXP_NET_ERR (59),
+         * so VirtualProtect over a free address reported an "unexpected
+         * network error" (dlls/ntdll/error.h:686, against :389 where
+         * Windows' own STATUS_CONFLICTING_ADDRESSES maps to
+         * ERROR_INVALID_ADDRESS). NT and the oracle disagree here — upstream
+         * says so itself at dlls/ntdll/tests/virtual.c:2677 — and the
+         * pinned oracle is this project's arbiter when they do (Art. 6).
+         * Pinned by sem_mm/protect_old_prot.c; docs/03 has the three-way
+         * table. */
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* Check the WHOLE range before touching any of it. NT requires every
+     * page in the range to be committed, and discovering an uncommitted one
+     * halfway through used to leave the range half-reprotected while
+     * reporting failure -- ntdll's loader flips section protections through
+     * this path, so a partly-applied change is a process that runs with the
+     * wrong page permissions (docs/review-2026-07 §7).
+     *
+     * The NAMED page is checked outside the loop because a zero-size request
+     * has an empty range and still asks about it — the oracle's
+     * get_committed_size reads the base page's vprot whatever the size is,
+     * and answers STATUS_NOT_COMMITTED for a zero-size protect over a
+     * reserved range (measured). It is also where the reported previous
+     * protection comes from, for the same reason. */
+    ULONG baseIndex = (ULONG)((base - vad->base) / PAGE_SIZE);
+    if (vad->pageProtect[baseIndex] == 0)
+    {
+        return STATUS_NOT_COMMITTED;
+    }
+    for (uint64_t page = base + PAGE_SIZE; page < end; page += PAGE_SIZE)
+    {
+        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
+        if (vad->pageProtect[index] == 0)
+        {
+            return STATUS_NOT_COMMITTED;
+        }
+    }
+
+    /* Only now the protection itself (the head comment has the ordering and
+     * its citation). */
+    if (!writeCopyFlavour)
+    {
+        NTSTATUS valid = MiCheckPageProtect(newProtect);
+        if (!NT_SUCCESS(valid))
+        {
+            return valid;
+        }
     }
     if (writeCopyFlavour && vad->type == MEM_PRIVATE)
     {
@@ -2824,32 +2892,15 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
         }
     }
 
-    /* Check the WHOLE range before touching any of it. NT requires every
-     * page in the range to be committed, and discovering an uncommitted one
-     * halfway through used to leave the range half-reprotected while
-     * reporting failure -- ntdll's loader flips section protections through
-     * this path, so a partly-applied change is a process that runs with the
-     * wrong page permissions (docs/review-2026-07 §7). */
-    for (uint64_t page = base; page < end; page += PAGE_SIZE)
-    {
-        ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
-        if (vad->pageProtect[index] == 0)
-        {
-            return STATUS_NOT_COMMITTED;
-        }
-    }
-
     int present, writable, executable;
     MiProtectToPteBits(newProtect, &present, &writable, &executable);
 
-    ULONG oldProtect = 0;
+    /* Read before the loop, not in it: a zero-size request changes no page
+     * and still reports the named one (see the commit check above). */
+    ULONG oldProtect = vad->pageProtect[baseIndex];
     for (uint64_t page = base; page < end; page += PAGE_SIZE)
     {
         ULONG index = (ULONG)((page - vad->base) / PAGE_SIZE);
-        if (page == base)
-        {
-            oldProtect = vad->pageProtect[index];
-        }
         uint64_t frame = MiTranslateUserPage(space->pml4Physical, page, 0, 0);
         ASSERT(frame != 0);
         MiUnmapUserPage(space->pml4Physical, page);
@@ -2927,6 +2978,29 @@ NTSTATUS NtProtectVirtualMemory(HANDLE process, PVOID *baseInOut, SIZE_T *sizeIn
         *baseInOut = (PVOID)(uintptr_t)base;
         *sizeInOut = size;
         *oldProtect = old;
+    }
+    else
+    {
+        /* A FAILED protect still answers the old-protection slot, and it
+         * answers PAGE_NOACCESS — the oracle's own closing `else *old_prot =
+         * PAGE_NOACCESS;` (dlls/ntdll/unix/virtual.c NtProtectVirtualMemory,
+         * mirrored in its remote-APC arm). The slot's contract is therefore
+         * "always written once the operation ran", not "written when there
+         * was a previous protection to report": an unserviceable protection,
+         * an uncommitted range and a free address all land here, and none of
+         * them has one.
+         *
+         * The base/size slots are deliberately NOT written with it. They
+         * carry this call's rounding of the range, which only a success has
+         * applied; the oracle rounds into locals for exactly that reason.
+         *
+         * The two returns ABOVE this point stay silent, and that is the
+         * distinction rather than an omission: a probe failure has no
+         * writable slot, and an unresolvable process handle means the
+         * operation never ran — the oracle's server_queue_process_apc
+         * failure returns above the `else` too. Pinned both ways by
+         * sem_mm/protect_old_prot.c. */
+        *oldProtect = PAGE_NOACCESS;
     }
     if (referenced)
     {
