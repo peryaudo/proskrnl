@@ -370,15 +370,46 @@ assertions in `todo_wine`), so the bit is an accurate report of the views that
 exist rather than one nobody computed. When partial image views are built, the
 bit is part of that item, not this one.
 
-**And the pair handed back the next item.** `ntdll:virtual:3339` is W6's shape
-a second time: `NtSetInformationProcess(ProcessManageWritesToExecutableMemory)`
-**succeeds** on proskrnl, so the test concludes it is on an ARM64EC host and
-skips the whole of `test_exec_memory_writes`. One assertion of visible cost, a
-test function of hidden cost, and the same defect class — an accepted input
-silently dropped, turning a capability PROBE into a wrong "yes". That is now
-two instances in this one pair (`MEM_EXTENDED_PARAMETER_EC_CODE` was the
-first), which makes "sweep the boundary for accepted-and-dropped words" a
-better-evidenced hunt than any single item left here.
+**The capability probe it handed back is DONE too** (`ntdll:virtual` 1127 →
+**1126**). `ntdll:virtual:3339` was W6's shape a second time:
+`NtSetInformationProcess(ProcessManageWritesToExecutableMemory)` **succeeded**
+on proskrnl, so the test concluded it was on an ARM64EC host and skipped the
+whole of `test_exec_memory_writes`. Both classes — process 83 and thread 48 —
+now answer `STATUS_NOT_SUPPORTED`, the pinned oracle's own off-ARM64 arm
+(`dlls/ntdll/unix/process.c` / `unix/thread.c`, whose entire non-`__aarch64__`
+body is that one return). Pinned by `tests/ntapi/sem_ps/manage_exec_writes.c`.
+
+Three things it settles:
+
+- **The refusal is about the MACHINE, not the arguments, and that ordering is
+  the pinnable part.** It precedes every check the ARM64EC arm makes, so a
+  wrong length, a wrong `Version`, the mutually-exclusive flag, a NULL buffer
+  and a junk handle all get `STATUS_NOT_SUPPORTED` — never the
+  `INFO_LENGTH_MISMATCH` / `REVISION_MISMATCH` / `INVALID_PARAMETER` that the
+  same inputs get on ARM64EC (`virtual.c:3527-:3554`). An implementation that
+  validated first would pass the probe and fail the matrix; the pin measures
+  the matrix.
+- **The hidden cost was zero, and this is the trap-2 shape with the OTHER
+  answer.** An early-out hides its body, so removing one is the only way to
+  learn what is behind it — here the body is `#ifdef __aarch64__`-shaped on
+  both sides, so the test now returns at the same point for the right reason.
+  3757 tests executed before and after, one failure fewer, one skip fewer. The
+  cost of a lying probe is not always a hidden test body; sometimes it is only
+  the lie.
+- **Where the defect lived is the generalisable half.** Neither class was
+  parsed, dropped or stubbed: they fell into `NtSetInformationProcess`'s
+  **accept-as-a-no-op default arm** (`docs/16` "The one inverted case"). That
+  arm is safe exactly while a class's answer carries no information, and this
+  class's answer IS the information. So the rule to carry is narrower and
+  sharper than "sweep for dropped words": **a no-op success is a fabricated
+  answer whenever the caller reads the STATUS rather than a later query.**
+
+That is now two accepted-and-dropped capability probes in this one pair
+(`MEM_EXTENDED_PARAMETER_EC_CODE` was the first), which still makes "sweep the
+boundary for accepted-and-dropped words" a better-evidenced hunt than any
+single item left here — and `docs/16`'s serial line
+(`ps: NtSetInformationProcess class N accepted as a no-op`) is where that sweep
+starts, because it named this one in the winetest log all along.
 
 What is left under this heading:
 
