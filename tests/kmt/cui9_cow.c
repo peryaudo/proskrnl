@@ -4,8 +4,9 @@
  * frame arithmetic — never inferred from boundary behaviour).
  *
  * What this convicts:
- *  - the (identity, base) key: two sections over the SAME ramdisk file bind
- *    one master (builds+1 then hits+1), a different base builds another;
+ *  - the identity key: two sections over the SAME ramdisk file bind one
+ *    master (builds+1 then hits+1), and so does a view at a DIFFERENT base —
+ *    an image is relocated once and every view shares that copy;
  *  - the sharing metric: the second view's frame cost is bounded by its
  *    writable pages (+ page-table overhead), nowhere near the whole image;
  *  - refcount transitions: the master survives its first view's death,
@@ -174,10 +175,17 @@ static void test_shared_master(void)
              (unsigned long)mframes);
 }
 
-/* A view mapped at a DIFFERENT base builds a second, separately relocated
- * master — the base is in the key because its fixups differ (docs/17 §6F:
- * omitting it is "the worst bug available in this design"). */
-static void test_master_base_key(void)
+/* A view mapped at a DIFFERENT base SHARES the section's one relocated copy:
+ * an image is relocated once, and the residual for a view that does not sit
+ * at that copy's base belongs to the PE loader, which keys off the ImageBase
+ * the copy stamps into its header. This is the reverse of docs/17 §6F's
+ * original rule ("include the base in the key"), and the oracle is what
+ * settled it — sem_mm/map_image_offset.c memcmps two views of one section on
+ * the pinned Wine and they are identical (docs/03 "An image section is
+ * relocated once"). The corruption §6F named is real and now sits one step
+ * over: a copy whose stamped ImageBase disagrees with the base it was
+ * relocated for, which is what the stamp assertion below convicts. */
+static void test_master_identity_key(void)
 {
     PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe_smoke.exe");
     if (file == 0)
@@ -203,7 +211,7 @@ static void test_master_base_key(void)
     const MI_IMAGE_INFO *image = section->image;
 
     /* Two views in ONE space: the second cannot land at the preferred base,
-     * so it relocates — and must NOT share the at-base master's frames. */
+     * so it is not at base — and must share the first's frames anyway. */
     uint64_t base1 = 0, size1 = 0;
     NTSTATUS status = MiMapViewOfSection(section, &space, &base1, 0, &size1, PAGE_EXECUTE);
     ok(status == STATUS_SUCCESS, "map at base -> %08lx", (unsigned long)status);
@@ -217,19 +225,26 @@ static void test_master_base_key(void)
     MiGetImageMasterStats(&builds, &hits, &live, &mframes);
     ok(builds + hits == builds0 + hits0 + 2, "two maps resolved %lu times",
        (unsigned long)(builds + hits - builds0 - hits0));
+    ok(live == live0 + 1 || live == live0, "a second copy of one image (%lu -> %lu)",
+       (unsigned long)live0, (unsigned long)live);
 
-    /* The base-key conviction itself: the two views' frames must DIFFER —
-     * a base2 view reading base1's fixups is docs/17 §6F's silent
-     * non-local corruption. (Whether the base2 master was built here or
-     * pre-existed from an earlier holder is immaterial; the key is.) */
+    /* The identity-key conviction: the two views' frames are the SAME, so
+     * the second view costs nothing but page tables and the memcmp the
+     * oracle pins holds. */
     {
         uint64_t f1 = MiTranslateUserPage(space.pml4Physical, base1, 0, 0);
         uint64_t f2 = MiTranslateUserPage(space.pml4Physical, base2, 0, 0);
-        ok(f1 != 0 && f2 != 0 && f1 != f2, "views at different bases share a header frame");
+        ok(f1 != 0 && f2 != 0 && f1 == f2, "views at different bases do not share a header frame");
     }
 
-    /* The relocated master's header claims the ACTUAL base (the ImageBase
-     * stamp — ntdll's loader keys perform_relocations off it). */
+    /* The copy's header claims the base it was relocated FOR — base1 here,
+     * because the first view is what fixed it. ntdll's loader keys
+     * perform_relocations off this field, so it is what fixes up the second
+     * view's residual; a stamp naming anything else is §6F's corruption in
+     * its remaining form — though NOT here, where base1 is the preferred base
+     * and the delta is zero, so the file already holds this value;
+     * tests/kmt/m5_section.c test_image_relocation is where the stamp is
+     * convicted. Read through view TWO, which shares the frame. */
     if (base2 != 0)
     {
         uint64_t va =
@@ -244,8 +259,8 @@ static void test_master_base_key(void)
                 (uint64_t)((unsigned char *)MiPhysicalToVirtual(frame))[(va + i) & (PAGE_SIZE - 1)]
                 << (i * 8);
         }
-        ok(stamped == base2, "ImageBase stamp %lx, expected %lx", (unsigned long)stamped,
-           (unsigned long)base2);
+        ok(stamped == base1, "ImageBase stamp %lx, expected the copy's base %lx",
+           (unsigned long)stamped, (unsigned long)base1);
     }
 
     MiAssertNoWritableMasterPte(&space);
@@ -488,7 +503,7 @@ int kmt_run_cui9(void)
 {
     int before = kmt_failures;
     KMT_RUN(test_shared_master);
-    KMT_RUN(test_master_base_key);
+    KMT_RUN(test_master_identity_key);
     KMT_RUN(test_cow_arm);
     KMT_RUN(test_guard_clear_authority);
     /* The hazard-E knob must not outlive the suite: left armed (a case that

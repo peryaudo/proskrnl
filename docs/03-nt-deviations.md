@@ -1655,11 +1655,12 @@ committed floor of 250 (`tests/cui/mmceiling_floor.txt`).
 
 What the amendment admits, in docs/17 §4's two instalments:
 
-1. **A shared, already-relocated master per `(file, base)`** — `MI_IMAGE_MASTER` in
-   `kernel/mm/section.c`, keyed on the `IO_FCB` (boot modules: the ramdisk file) and
-   the mapped base, holding relocated frames that every matching view maps. The
-   read-only bulk of a DLL (`.text`, `.rdata`, headers) shares outright; relocation
-   happens once per `(file, base)`, into the master.
+1. **A shared, already-relocated master per file** — `MI_IMAGE_MASTER` in
+   `kernel/mm/section.c`, keyed on the `IO_FCB` (boot modules: the ramdisk file),
+   holding relocated frames that every view of that image maps. The read-only bulk
+   of a DLL (`.text`, `.rdata`, headers) shares outright; relocation happens **once
+   per file**, into the master. (It was once per `(file, base)`; see "An image
+   section is relocated once" below for why the base left the key.)
 2. **The COW arm** on the one write-fault authority (`MiResolveWriteFault` — the CUI-7
    write-watch resolver, extended, never forked): writable PE sections map the
    master's frames hardware-read-only, and the first store — a ring-3 fault,
@@ -1734,6 +1735,62 @@ between create and map is invisible to the view. Masters widen the window across
 sections without changing its class; the gate closes the only path a real caller
 takes.
 
+### An image section is relocated once, and every view shares that copy
+
+**docs/17 §6F said to put the mapped base in the master's key** — "a different base
+means different relocation fixups… omitting it lets a process at base X read pages
+relocated for base Y, a silent, non-local corruption, the worst bug available in this
+design". Measured against the pinned oracle, the premise is wrong, and Art. 6
+arbitrates: **the oracle relocates an image ONCE per mapping and hands every view the
+same bytes**, whatever address the view lands at. The delta it uses is the mapping's
+own dynamic base and not the view's placement (`dlls/ntdll/unix/virtual.c`
+`map_image_into_view`: `delta = image_info->map_addr - image_info->base`), and the
+server states the same thing when it decides at-base-ness (`server/mapping.c`
+`DECL_HANDLER(map_image_view)`: `view->base != (map_addr ? map_addr : base) +
+offset`). `sem_mm/map_image_offset.c` memcmps two views of one section, in-process and
+in a child, and they are byte-identical on the oracle.
+
+What §6F got right is one step over, and it is what makes the arrangement safe: **the
+copy's stamped `ImageBase` must name the base the copy was relocated for.** ntdll's
+PE-side loader keys `perform_relocations` off exactly that field
+(`dlls/ntdll/loader.c`: `if (module == base) return STATUS_SUCCESS;`), so a view that
+does *not* sit at the copy's base has its residual fixed up privately, through the COW
+arm, by the layer that owns loading. A stamp disagreeing with the relocation base is
+the corruption §6F named; the base being absent from the key is not. `MI_IMAGE_MASTER`
+keeps `base` as *what the copy was relocated for* rather than as key material.
+`tests/kmt/m5_section.c` `test_image_relocation` convicts the stamp, and it has to
+hold the preferred base to do it: a copy built AT the preferred base is relocated by
+zero, so the file already holds the right value and the assertion cannot fail. Every
+other stamp assertion in the tree (`cui9_cow.c`, `abi_probe.c`) is that vacuous case
+and is there for the frames-shared half instead.
+
+**`STATUS_IMAGE_NOT_AT_BASE` moved with it, and the two dynamic bases are not the
+same quantity.** "At base" is now measured against the image's dynamic base — the
+copy's base once one exists, else the PE's preferred base, since proskrnl assigns no
+other — which is the *shape* of the server's test (`server/mapping.c`
+`DECL_HANDLER(map_image_view)`), not the same value. The server's `map_addr` is per
+MAPPING OBJECT and is assigned **only** for a `SEC_IMAGE` mapping whose image carries
+`IMAGE_FLAGS_ImageDynamicallyRelocated` (`server/mapping.c`
+`DECL_HANDLER(get_image_map_address)`); proskrnl's is per FCB and exists for any image
+whose first view was rebased. So an image *without* that flag — an ordinary EXE — can
+separate them: rebase its first view, then map it again somewhere its first base is
+free, and proskrnl answers `STATUS_SUCCESS` where the oracle measures against the PE's
+preferred base and answers `STATUS_IMAGE_NOT_AT_BASE`. Recorded, not pinned: nothing
+in the baked stack or the winetest gate maps an EXE section twice, and closing it is a
+change to which images get a dynamic base — an item of its own, not a line here.
+
+Two consequences worth stating:
+
+- **A second view at a different base is now free** rather than a whole second copy —
+  the sharing the amendment exists for, extended to the case that previously defeated
+  it.
+- **`ntdll:virtual:2244` was a false skip.** The pair's `test_syscall_patching` maps
+  the running module afresh and `memcmp`s the first page against the loaded copy; with
+  a per-base master the two headers differed, so it `skip`ped its whole body. The body
+  passes (five assertions, 2200 → 2205 executed), and the test then calls
+  `perform_relocations( ptr, delta )` itself — user mode fixing up exactly the residual
+  described above, which is the shape confirmed rather than assumed.
+
 ### Page tables are CHARGED, because committing a page cannot fail
 
 `MiMapUserPage` is infallible by contract — a committed page always gets its PTE —
@@ -1746,6 +1803,38 @@ and `MiCommitPages` for private memory), which is also what makes the remaining 
 honest: past the charge, an absent table is a bug and not a shortage. Tables created
 before a failed charge stay — they are empty, cost one page each, and
 `MiDeleteUserPml4` frees the whole user tree at teardown.
+
+**It was the shared-copy change above that made this reachable, and the way it did is
+the part worth keeping.** Sharing one relocated copy across bases lowered the
+per-process cost slightly, so the `cui9` ceiling rose 317 → **319** — and the create
+that then failed lost its race at a page table rather than at a frame allocation the
+loader reports. Same shortage, different site, kernel panic instead of
+`ERROR_NOT_ENOUGH_MEMORY`. **Which allocation loses at the ceiling was never something
+to rely on**: the graceful refusal was one arbitrary ordering away from a panic for as
+long as any commit path could fail unreportably.
+
+### `NtMapViewOfSection`'s offset maps an image's TAIL
+
+A non-zero offset into a `SEC_IMAGE` section used to answer
+`STATUS_INVALID_PARAMETER` (`image subrange views: not M5`). It is now the oracle's
+rule: the view is `base + offset` with size `SizeOfImage - offset`, and the trimmed
+head is **free**, not a reserved stub. The oracle reaches that by mapping the whole
+image and then removing the front of the view (`virtual_map_image`: `if (offset) {
+free_pages( view, view->base, offset ); size -= offset; }`); `MipMapImageView` creates
+the VAD over the tail directly, which is the same extent without mapping pages only to
+unmap them. Three things around it, all pinned by `sem_mm/map_image_offset.c`:
+
+- **`offset >= SizeOfImage` is `STATUS_INVALID_PARAMETER`**, and it is the *first*
+  thing the oracle's image path does — above the fd, above placement. The highest
+  legal offset is therefore the last 64K granule strictly inside the image, which
+  still maps.
+- **The whole image is what gets PLACED**, and the view is the tail of it. So a
+  ceiling, a `zero_bits` limit or a caller-named base bounds `SizeOfImage`, not
+  `SizeOfImage - offset`.
+- **The trim does not make the view a different image.** The master's frames are
+  indexed by image RVA and the VAD's pages by view offset; `MipVadMasterIndex`
+  (`kernel/mm/virtual.c`) is the one place the two are related, so the COW arm and
+  docs/17 §8's shared-PTE sweep read the same frame the commit path mapped.
 
 ### Hazard I (KASAN): vacuous by scope
 

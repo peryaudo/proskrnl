@@ -245,9 +245,23 @@ absence of the half-state.
 
 - **Key on the FCB, not the file object**: two independent opens of `ntdll.dll` must
   reach the same master.
-- **Include the base in the key**: a different base means different relocation fixups.
+- ~~**Include the base in the key**: a different base means different relocation fixups.
   Omitting the base lets a process at base X read pages relocated for base Y — a silent,
-  non-local corruption, the worst bug available in this design.
+  non-local corruption, the worst bug available in this design.~~ **Measured and
+  reversed.** The oracle relocates an image ONCE per mapping and gives every view the
+  same bytes wherever it lands (`map_image_into_view`'s `delta = image_info->map_addr -
+  image_info->base`, and the server's at-base test in
+  `DECL_HANDLER(map_image_view)`); `sem_mm/map_image_offset.c` memcmps two views of one
+  section on the pinned Wine and they are identical. So the key is the identity alone.
+  **What survives is the sentence one step over**, and it is what makes that safe: the
+  copy's stamped `ImageBase` must name the base it was relocated for, because
+  `perform_relocations` (`dlls/ntdll/loader.c`) keys off that field to fix up a view
+  that sits elsewhere. Corruption comes from a stamp that disagrees with the copy, not
+  from a base that is absent from the key. `docs/03` "An image section is relocated
+  once" carries the trade. The stamp is convicted by `tests/kmt/m5_section.c`
+  `test_image_relocation`, which holds the preferred base so the copy MUST be
+  relocated — at the preferred base the assertion is vacuous, because the file
+  already holds the right value there.
 - **`MipRelocateImage` is not idempotent.** The second mapper must not re-apply fixups.
 - **The image file changing under a live section**: close this on the share-mode side
   (refuse the write) rather than by invalidating masters. The share-mode machinery

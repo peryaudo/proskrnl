@@ -160,7 +160,7 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
 void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,
                         uint64_t frame, ULONG protect, BOOLEAN ownedFrame);
 
-/* CUI-9 image masters: bind a MEM_IMAGE VAD to its (identity, base) master
+/* CUI-9 image masters: bind a MEM_IMAGE VAD to its section's shared master
  * (kernel/mm/section.c owns the master object; the VAD owns one reference
  * on success). The per-page private/shared record this allocates is the
  * frame-ownership authority MiDecommitPages and the §8 sweep consult. */

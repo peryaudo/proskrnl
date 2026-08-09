@@ -260,7 +260,7 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
 
 /* --- mapping: the shared image masters (CUI-9) ------------------------------- */
 
-/* The one master list, keyed on (identity, base) by pointer equality. No
+/* The one master list, keyed on the identity by pointer equality. No
  * lock: nothing on the build/lookup/teardown path parks (pool and frame
  * allocation never block), so under the uniprocessor no-preemption mandate
  * every traversal runs to completion (docs/18 inherits these as shootdown
@@ -321,7 +321,7 @@ static int64_t MipRvaToFileOffset(const MI_IMAGE_INFO *image, ULONG rva, ULONG l
 /* Apply the .reloc directory to a freshly built master whose base sits
  * `delta` bytes from the preferred base. Blocks are read from the FILE
  * bytes (linear); fixups are applied to the master's frames — ONCE per
- * (identity, base), which closes docs/17 §6F's non-idempotence hazard by
+ * master, which closes docs/17 §6F's non-idempotence hazard by
  * construction: a view never relocates. Shape as LdrProcessRelocationBlock
  * (Wine's reimplementation is the reference). */
 static NTSTATUS MipRelocateImage(PMI_IMAGE_MASTER master, PMI_SECTION section, const void *rawData,
@@ -451,10 +451,11 @@ static void MipFreeImageMaster(PMI_IMAGE_MASTER master)
     MiFreePool(master);
 }
 
-/* Build the (identity, base) master: fresh frames, raw bytes copied in, the
- * whole relocation pass applied ONCE, the header's ImageBase stamped with
- * the actual base. Failure unwinds completely — no half-built master is
- * ever linked. */
+/* Build the identity's master, relocated for `base`: fresh frames, raw bytes
+ * copied in, the whole relocation pass applied ONCE, the header's ImageBase
+ * stamped with that base — which is what lets a view placed ELSEWHERE fix up
+ * its residual (dlls/ntdll/loader.c perform_relocations). Failure unwinds
+ * completely — no half-built master is ever linked. */
 /* Borrow an image section's raw file bytes: the create-time snapshot while
  * the section still holds one, else a transient page-cache re-read — the
  * cache is fully resident (Art. 3, no eviction), so this is memcpy, never
@@ -584,30 +585,35 @@ static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAG
     return STATUS_SUCCESS;
 }
 
-/* Resolve the (identity, base) master, building it on first use. The
- * returned reference belongs to the caller (the view's VAD will own it). */
-static NTSTATUS MipFindOrCreateImageMaster(PMI_SECTION section, uint64_t base,
-                                           PMI_IMAGE_MASTER *out)
+/* The identity's ONE relocated copy, or 0 when it has none yet. No reference
+ * is taken; the caller takes one only once it has decided to bind a view.
+ *
+ * The key is the IDENTITY ALONE. An image section is relocated once and every
+ * view of it shares that copy, however the view is placed: the oracle
+ * relocates to the mapping's own dynamic base rather than to where the view
+ * landed (`delta = image_info->map_addr - image_info->base`, third_party/wine
+ * dlls/ntdll/unix/virtual.c map_image_into_view), and the server states the
+ * same thing in its at-base test (server/mapping.c DECL_HANDLER(map_image_view):
+ * `view->base != (map_addr ? map_addr : base) + offset`). Keying on
+ * (identity, base) instead — docs/17 §6F's original rule — gave one relocated
+ * copy PER base, so two views of one section differed wherever a relocation
+ * applied, which is exactly what ntdll:virtual:1743 memcmps. The residual for
+ * a view that does NOT sit at the copy's base belongs to the PE loader, which
+ * keys off the ImageBase this build stamps into the header
+ * (dlls/ntdll/loader.c perform_relocations); docs/17 §6F carries the trade. */
+static PMI_IMAGE_MASTER MipFindImageMaster(PMI_SECTION section)
 {
     ASSERT(section->masterIdentity != 0); /* every image backing carries one */
     for (PLIST_ENTRY entry = MipImageMasterList.Flink; entry != &MipImageMasterList;
          entry = entry->Flink)
     {
         PMI_IMAGE_MASTER master = CONTAINING_RECORD(entry, MI_IMAGE_MASTER, listEntry);
-        if (master->identity == section->masterIdentity && master->base == base)
+        if (master->identity == section->masterIdentity)
         {
-            master->refCount++;
-            MipMasterHits++;
-            *out = master;
-            return STATUS_SUCCESS;
+            return master;
         }
     }
-    NTSTATUS status = MipBuildImageMaster(section, base, out);
-    if (NT_SUCCESS(status))
-    {
-        (*out)->refCount = 1;
-    }
-    return status;
+    return 0;
 }
 
 void MiDereferenceImageMaster(PVOID body)
@@ -645,29 +651,60 @@ void MiGetImageMasterStats(ULONG *builds, ULONG *hits, ULONG *live, uint64_t *ma
  * (MiResolveWriteFault: copy, repoint, open; docs/17 §10 step 5). Nothing
  * here can fail: the frames all exist in the master. */
 static void MipCommitViewRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, PMI_IMAGE_MASTER master,
-                               uint64_t viewBase, ULONG rvaStart, ULONG pageCount, ULONG protect)
+                               uint64_t imageBase, ULONG rvaStart, ULONG pageCount, ULONG protect,
+                               ULONG rvaFloor)
 {
-    ULONG first = rvaStart / PAGE_SIZE;
     for (ULONG i = 0; i < pageCount; i++)
     {
-        uint64_t frame = master->frames[first + i];
+        ULONG rva = rvaStart + i * PAGE_SIZE;
+        if (rva < rvaFloor)
+        {
+            continue; /* the trimmed head: below this view's first page */
+        }
+        uint64_t frame = master->frames[rva / PAGE_SIZE];
         ASSERT(frame != 0);
-        MiCommitFrameInVad(space, vad, viewBase + rvaStart + (uint64_t)i * PAGE_SIZE, frame,
-                           protect, FALSE /* the master's frame */);
+        MiCommitFrameInVad(space, vad, imageBase + rva, frame, protect,
+                           FALSE /* the master's frame */);
     }
 }
 
-/* Map an image view over the shared (identity, base) master: read-only
- * pages (headers, .text, .rdata — the bulk of a DLL) map the master's
- * relocated frames outright; writable pages are private copies of them,
- * per-PE-section protection throughout (docs/02, docs/17 §4). */
+/* Map an image view over the identity's shared master: read-only pages
+ * (headers, .text, .rdata — the bulk of a DLL) map the master's relocated
+ * frames outright; writable pages are private copies of them, per-PE-section
+ * protection throughout (docs/02, docs/17 §4).
+ *
+ * `offset` names where in the IMAGE the view starts. `base` stays the whole
+ * image's placement all the way down, because every RVA below is an image
+ * RVA; the view is the tail [base+offset, base+SizeOfImage). */
 static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint64_t *baseInOut,
-                                uint64_t *viewSizeInOut, uint64_t limitLow, uint64_t limitHigh,
-                                USHORT machine)
+                                uint64_t offset, uint64_t *viewSizeInOut, uint64_t limitLow,
+                                uint64_t limitHigh, USHORT machine)
 {
     const MI_IMAGE_INFO *image = section->image;
     uint64_t size = image->sizeOfImage;
     uint64_t base = *baseInOut;
+
+    /* The oracle's virtual_map_image opens with exactly this, above the fd
+     * and above placement (dlls/ntdll/unix/virtual.c: `if (offset >= size)
+     * return STATUS_INVALID_PARAMETER;`, where size is the image's map size).
+     * The syscall has already refused an offset that is not
+     * allocation-granularity aligned (STATUS_MAPPED_ALIGNMENT), so what
+     * reaches here is a granule boundary inside the image. */
+    if (offset >= size)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* Where this section's ONE relocated copy lives, and therefore the base
+     * this view PREFERS: the copy's own base once it exists, else the PE's
+     * preferred base (proskrnl assigns no other — it has no ASLR). The oracle
+     * prefers the same address for the same reason, and states it the same
+     * way (map_image_view: `if (image_info->map_addr) base =
+     * wine_server_get_ptr( image_info->map_addr );` before falling through to
+     * a search). A view that lands elsewhere still shares the copy —
+     * MipFindImageMaster has why. */
+    PMI_IMAGE_MASTER existing = MipFindImageMaster(section);
+    uint64_t mapBase = existing != 0 ? existing->base : image->preferredBase;
 
     /* The placement limits bind an image view too — dropping them here would
      * make zero_bits and MEM_ADDRESS_REQUIREMENTS mean one thing for a data
@@ -692,11 +729,11 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
             return STATUS_CONFLICTING_ADDRESSES;
         }
     }
-    else if (image->preferredBase >= MI_ALLOCATION_GRANULARITY &&
-             MiRangeWithinLimits(image->preferredBase, size, limitLow, limitHigh) &&
-             MiViewRangeIsFree(space, image->preferredBase, size))
+    else if (mapBase >= MI_ALLOCATION_GRANULARITY &&
+             MiRangeWithinLimits(mapBase, size, limitLow, limitHigh) &&
+             MiViewRangeIsFree(space, mapBase, size))
     {
-        base = image->preferredBase;
+        base = mapBase;
     }
     else
     {
@@ -722,17 +759,39 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         return STATUS_NOT_SUPPORTED;
     }
 
-    BOOLEAN atBase = base == image->preferredBase;
-    if (!atBase && image->relocsStripped)
+    /* "At base" is measured against the image's DYNAMIC base, not against the
+     * PE header's preferred one — the server's own test (server/mapping.c
+     * DECL_HANDLER(map_image_view): `view->base != (map_addr ? map_addr :
+     * base) + offset`), where the `+ offset` is this trim. For a
+     * relocs-stripped image the two are always the same address: such an
+     * image can only ever have been copied at its preferred base, because the
+     * refusal below is what stops any other build. */
+    BOOLEAN atBase = base == mapBase;
+    if (base != image->preferredBase && image->relocsStripped)
     {
         return STATUS_CONFLICTING_ADDRESSES; /* nailed-down image, base taken */
     }
 
-    PMI_IMAGE_MASTER master;
-    NTSTATUS status = MipFindOrCreateImageMaster(section, base, &master);
-    if (!NT_SUCCESS(status))
+    PMI_IMAGE_MASTER master = existing;
+    NTSTATUS status = STATUS_SUCCESS;
+    if (master != 0)
     {
-        return status;
+        master->refCount++;
+        MipMasterHits++;
+    }
+    else
+    {
+        /* Nothing between MipFindImageMaster above and this build can park —
+         * placement only walks the VAD list, and the raw-byte source is
+         * resident by Art. 3 (MiAcquireImageRawBytes: "memcpy, never I/O") —
+         * so this identity cannot have gained a second copy in between, which
+         * would be two relocation bases for one section. */
+        status = MipBuildImageMaster(section, base, &master);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        master->refCount = 1;
     }
 
     /* The section's raw-byte snapshot has served its purpose (parse at
@@ -748,9 +807,21 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         section->ownsRawData = FALSE;
     }
 
+    /* The offset TRIMS the image's head. The oracle maps the whole image and
+     * then removes the front of the view (virtual_map_image: `if (offset) {
+     * free_pages( view, view->base, offset ); size -= offset; }`), so the
+     * answer is base+offset with size = map_size - offset and the head is
+     * FREE rather than a reserved stub. Here the VAD is created over the tail
+     * directly — the same extent, and no page is ever mapped only to be
+     * unmapped. `sectionOffset` is what tells the master's frame index apart
+     * from this VAD's page index (virtual.c MipVadMasterIndex). */
+    uint64_t viewBase = base + offset;
+    uint64_t viewSize = size - offset;
+
     ObfReferenceObject(section); /* the view's pin, owned by the VAD */
-    PMI_VAD vad = MiCreateMappedVad(space, base, size, PAGE_EXECUTE_WRITECOPY, MEM_IMAGE, section,
-                                    FALSE /* frames are the master's, or per-page private */, 0);
+    PMI_VAD vad =
+        MiCreateMappedVad(space, viewBase, viewSize, PAGE_EXECUTE_WRITECOPY, MEM_IMAGE, section,
+                          FALSE /* frames are the master's, or per-page private */, offset);
     if (vad == 0)
     {
         ObDereferenceObject(section);
@@ -775,21 +846,23 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
         headerBytes = (ULONG)section->rawSize;
     }
     ULONG headerPages = (headerBytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    MipCommitViewRange(space, vad, master, base, 0, headerPages, PAGE_READONLY);
+    ULONG rvaFloor = (ULONG)offset;
+    MipCommitViewRange(space, vad, master, base, 0, headerPages, PAGE_READONLY, rvaFloor);
     for (ULONG i = 0; i < image->segmentCount; i++)
     {
         const MI_IMAGE_SEGMENT *seg = &image->segments[i];
         ULONG pages = (seg->virtualSize + PAGE_SIZE - 1) / PAGE_SIZE;
-        MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect);
+        MipCommitViewRange(space, vad, master, base, seg->virtualAddress, pages, seg->protect,
+                           rvaFloor);
     }
 
     /* docs/17 §8's highest-value check, scoped to the view just built —
      * the full-space sweep here walked every earlier image VAD per map,
      * quadratic in module count on the loader path. */
-    MiAssertVadNoWritableMasterPteRange(space, vad, base, size);
+    MiAssertVadNoWritableMasterPteRange(space, vad, viewBase, viewSize);
 
-    *baseInOut = base;
-    *viewSizeInOut = size;
+    *baseInOut = viewBase;
+    *viewSizeInOut = viewSize;
     return atBase ? STATUS_SUCCESS : STATUS_IMAGE_NOT_AT_BASE;
 }
 
@@ -832,12 +905,12 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
 
     if (section->image != 0)
     {
-        if (offset != 0)
-        {
-            return STATUS_INVALID_PARAMETER; /* image subrange views: not M5 */
-        }
-        return MipMapImageView(section, space, baseInOut, viewSizeInOut, limitLow, limitHigh,
-                               machine);
+        /* The requested view SIZE is deliberately not read here: the oracle's
+         * image arm never looks at *size_ptr (virtual_map_section hands
+         * virtual_map_image the offset and nothing else), so an image view is
+         * always the whole tail from `offset`. */
+        return MipMapImageView(section, space, baseInOut, offset, viewSizeInOut, limitLow,
+                               limitHigh, machine);
     }
 
     /* Data view: offset/size against the section (Wine's virtual_map_section

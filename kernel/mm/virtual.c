@@ -1681,7 +1681,17 @@ void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAd
                   MipVadPageHwWritable(vad, index, writable), executable);
 }
 
-/* CUI-9: bind an image view's VAD to its (identity, base) master. On
+/* The master's page index for a VAD page index. They differ only for a
+ * SUBRANGE image view — NtMapViewOfSection with a non-zero offset, whose
+ * first page is `sectionOffset` bytes into the image the master holds. ONE
+ * statement of the bias: every reader of a master frame comes here. */
+static ULONG MipVadMasterIndex(PMI_VAD vad, ULONG index)
+{
+    ASSERT(vad->master != 0);
+    return index + (ULONG)(vad->sectionOffset / PAGE_SIZE);
+}
+
+/* CUI-9: bind an image view's VAD to the section's shared master. On
  * success the VAD owns the caller's master reference (released by
  * MiUnlinkAndFreeVad); on failure the caller keeps it. */
 NTSTATUS MiBindVadImageMaster(PMI_VAD vad, PVOID master)
@@ -1727,11 +1737,11 @@ void MiAssertVadNoWritableMasterPteRange(PMI_ADDRESS_SPACE space, PMI_VAD vad, u
         ASSERT(frame != 0);
         if (vad->pagePrivate[index])
         {
-            ASSERT(frame != MiImageMasterFrame(vad->master, index));
+            ASSERT(frame != MiImageMasterFrame(vad->master, MipVadMasterIndex(vad, index)));
         }
         else
         {
-            ASSERT(frame == MiImageMasterFrame(vad->master, index));
+            ASSERT(frame == MiImageMasterFrame(vad->master, MipVadMasterIndex(vad, index)));
             ASSERT(!writable);
         }
     }
@@ -1986,7 +1996,8 @@ BOOLEAN MiResolveWriteFault(PMI_ADDRESS_SPACE space, uint64_t pageAddress, NTSTA
             return TRUE;
         }
         uint64_t masterFrame = MiTranslateUserPage(space->pml4Physical, pageAddress, 0, 0);
-        ASSERT(masterFrame != 0 && masterFrame == MiImageMasterFrame(vad->master, index));
+        ASSERT(masterFrame != 0 &&
+               masterFrame == MiImageMasterFrame(vad->master, MipVadMasterIndex(vad, index)));
         memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(masterFrame), PAGE_SIZE);
         vad->pagePrivate[index] = 1; /* opens MipVadPageHwWritable's gate */
         MiUnmapUserPage(space->pml4Physical, pageAddress);
