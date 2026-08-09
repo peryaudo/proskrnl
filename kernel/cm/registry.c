@@ -41,6 +41,7 @@
  */
 #include "kernel/cm/cm.h"
 
+#include "kernel/cm/license.h"
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/dbgprint.h"
@@ -2452,9 +2453,12 @@ static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
     return CmpWalkPath(path, TRUE);
 }
 
-/* Seed a REG_SZ value if absent — furniture only; a persisted hive's own
- * value (or a later ring-3 write) is never stomped. */
-static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
+/* Seed a value if absent — furniture only; a persisted hive's own value (or
+ * a later ring-3 write) is never stomped. The never-stomp rule lives HERE
+ * and nowhere else: the typed helpers below are argument shapes over this
+ * one site, so a new seed type cannot arrive with its own idea of when a
+ * seed may overwrite (Art. 11). */
+static void CmpSeedValue(PCMP_KEY_NODE node, PCWSTR name, ULONG type, const void *data, ULONG bytes)
 {
     UNICODE_STRING nameString;
     RtlInitUnicodeString(&nameString, name);
@@ -2462,20 +2466,28 @@ static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
     {
         return;
     }
-    ULONG bytes = (ULONG)(KiWideStringLength(data) + 1) * sizeof(WCHAR);
-    CmpSetValue(node, &nameString, REG_SZ, data, bytes);
+    CmpSetValue(node, &nameString, type, data, bytes);
 }
 
-/* The REG_BINARY twin of CmpSeedStringValue, same never-stomp rule. */
+/* REG_SZ, sized from the literal — the terminator is part of the value. */
+static void CmpSeedStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
+{
+    ULONG bytes = (ULONG)(KiWideStringLength(data) + 1) * sizeof(WCHAR);
+    CmpSeedValue(node, name, REG_SZ, data, bytes);
+}
+
+/* REG_DWORD — four bytes little-endian, which is what the type NAMES
+ * (abi/ntregapi.h: REG_DWORD and REG_DWORD_LITTLE_ENDIAN are the same
+ * number), so the ULONG's own storage is the payload. */
+static void CmpSeedDwordValue(PCMP_KEY_NODE node, PCWSTR name, ULONG data)
+{
+    CmpSeedValue(node, name, REG_DWORD, &data, sizeof(data));
+}
+
+/* The REG_BINARY twin of CmpSeedStringValue. */
 static void CmpSeedBinaryValue(PCMP_KEY_NODE node, PCWSTR name, const void *data, ULONG bytes)
 {
-    UNICODE_STRING nameString;
-    RtlInitUnicodeString(&nameString, name);
-    if (CmpFindValue(node, &nameString) != 0)
-    {
-        return;
-    }
-    CmpSetValue(node, &nameString, REG_BINARY, data, bytes);
+    CmpSeedValue(node, name, REG_BINARY, data, bytes);
 }
 
 void CmInitialize(void)
@@ -2567,16 +2579,31 @@ void CmInitialize(void)
     static const UCHAR utcTzi[44] = {0};
     CmpSeedBinaryValue(seeded, WSTR("TZI"), utcTzi, sizeof(utcTzi));
 
-    /* The license values NtQueryLicenseValue answers from
-     * (kernel/cm/registry.c, the syscall below). On the oracle these live
-     * in the prefix, installed by loader/wine.inf.in:1212; proskrnl has no
-     * prefix, so they are seeded here for the same reason the time-zone
-     * entry above is. `EMPTY` is the literal five-letter value, not an
-     * empty string — ntdll:reg asserts it with no broken() guard, which
-     * makes it spec rather than a prefix default (docs/08). Pinned by
-     * tests/ntapi/sem_reg/license_value.c. */
+    /* The license values NtQueryLicenseValue answers from (the syscall
+     * below). On the oracle these live in the prefix, installed by
+     * loader/wine.inf's [LicenseInformation]; proskrnl has no prefix, so
+     * they are seeded here for the same reason the time-zone entry above is.
+     * The WHOLE section is seeded, and it is GENERATED out of that INF
+     * rather than transcribed (kernel/cm/license.h, tools/gen_license.py) —
+     * seeding the names a test happens to ask for is a claim about which
+     * lines matter, and ntdll:reg measured that claim going stale: this
+     * seeded `Kernel-MUI-Language-Allowed` alone, so the DWORD value beside
+     * it answered STATUS_OBJECT_NAME_NOT_FOUND for twelve assertions.
+     * Pinned by tests/ntapi/sem_reg/license_value.c. */
     seeded = CmpEnsureSkeletonKey(WSTR("Machine\\Software\\Wine\\LicenseInformation"));
-    CmpSeedStringValue(seeded, WSTR("Kernel-MUI-Language-Allowed"), WSTR("EMPTY"));
+    for (ULONG i = 0; i < CMP_LICENSE_VALUE_COUNT; i++)
+    {
+        const CMP_LICENSE_VALUE *licenseValue = &CmpLicenseValues[i];
+        if (licenseValue->type == REG_DWORD)
+        {
+            CmpSeedDwordValue(seeded, licenseValue->name, licenseValue->dword);
+        }
+        else
+        {
+            ASSERT(licenseValue->type == REG_SZ);
+            CmpSeedStringValue(seeded, licenseValue->name, licenseValue->string);
+        }
+    }
 
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",
