@@ -887,7 +887,26 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
          * name->parent), and a caller that gets "prsk_evt" where NT gives
          * "\BaseNamedObjects\prsk_evt" cannot tell two objects of the same
          * leaf name apart (docs/review-2026-07 §9). */
-        USHORT nameBytes = ObpFullNameLength(header);
+        /* A type that keeps its own namespace answers for itself, and its
+         * refusal precedes the sizing below (ob.h OBJECT_TYPE.queryName). */
+        USHORT nameBytes;
+        if (header->type->queryName != 0)
+        {
+            status = header->type->queryName(entry->body, 0, &nameBytes);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            /* A hook that SUCCEEDS owes a name. Zero would fall through to the
+             * empty-UNICODE_STRING arm below — which is the fabricated answer
+             * this hook exists to remove (ob.h), and it would come back as a
+             * plain success. A type with nothing to report refuses instead. */
+            ASSERT(nameBytes != 0);
+        }
+        else
+        {
+            nameBytes = ObpFullNameLength(header);
+        }
         ULONG needed =
             sizeof(OBJECT_NAME_INFORMATION) + (nameBytes != 0 ? nameBytes + sizeof(WCHAR) : 0);
         if (length < sizeof(OBJECT_NAME_INFORMATION) || (nameBytes != 0 && length < needed))
@@ -911,7 +930,20 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         else
         {
             WCHAR *nameOut = (WCHAR *)(info + 1);
-            ObpWriteFullName(header, nameOut);
+            if (header->type->queryName != 0)
+            {
+                USHORT writtenBytes = nameBytes;
+                status = header->type->queryName(entry->body, nameOut, &writtenBytes);
+                if (!NT_SUCCESS(status))
+                {
+                    return status;
+                }
+                ASSERT(writtenBytes == nameBytes);
+            }
+            else
+            {
+                ObpWriteFullName(header, nameOut);
+            }
             nameOut[nameBytes / sizeof(WCHAR)] = 0;
             info->Name.Buffer = nameOut;
             info->Name.Length = nameBytes;
