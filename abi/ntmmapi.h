@@ -142,6 +142,31 @@ _Static_assert(offsetof(MEMORY_REGION_INFORMATION, CommitSize) == 24,
 _Static_assert(offsetof(MEMORY_REGION_INFORMATION, PartitionId) == 32,
                "MEMORY_REGION_INFORMATION x64 layout");
 
+/* M10 (docs/21 W5 tail): NtQueryVirtualMemory's
+ * MemoryImageInformation, extracted verbatim from
+ * wine/include/winternl.h. */
+typedef struct {
+    PVOID ImageBase;
+    SIZE_T SizeOfImage;
+    union
+    {
+        ULONG ImageFlags;
+        struct
+        {
+            ULONG ImagePartialMap : 1;
+            ULONG ImageNotExecutable : 1;
+            ULONG ImageSigningLevel : 4;
+            ULONG Reserved : 26;
+        };
+    };
+} MEMORY_IMAGE_INFORMATION, *PMEMORY_IMAGE_INFORMATION;
+
+_Static_assert(sizeof(MEMORY_IMAGE_INFORMATION) == 24, "MEMORY_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_IMAGE_INFORMATION, SizeOfImage) == 8,
+               "MEMORY_IMAGE_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_IMAGE_INFORMATION, ImageFlags) == 16,
+               "MEMORY_IMAGE_INFORMATION x64 layout");
+
 
 /* CUI-7: the *Ex extended-parameter contract, extracted verbatim from
  * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold
