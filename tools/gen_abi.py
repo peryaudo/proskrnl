@@ -723,6 +723,15 @@ def gen_ntmmapi(wine: Path) -> str:
     )
 
     mbi = extract_struct(winnt, "_MEMORY_BASIC_INFORMATION", "MEMORY_BASIC_INFORMATION")
+    # M10 winetest (docs/21 W5 tail): NtQueryVirtualMemory's
+    # MemoryRegionInformation. The struct's tail is the contract, not
+    # decoration — the class's length rules are stated in terms of
+    # FIELD_OFFSET(.., RegionSize/CommitSize/PartitionId), so the member ORDER
+    # is what NtQueryVirtualMemory validates against and it must be generated
+    # rather than retyped.
+    mri = extract_struct(
+        winternl, "_MEMORY_REGION_INFORMATION", "MEMORY_REGION_INFORMATION"
+    )
     info_class = extract_enum(
         winternl, "_MEMORY_INFORMATION_CLASS", "MEMORY_INFORMATION_CLASS"
     )
@@ -775,6 +784,27 @@ _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Protect) == 36, "MEMORY_BASIC_
 _Static_assert(offsetof(MEMORY_BASIC_INFORMATION, Type) == 40, "MEMORY_BASIC_INFORMATION x64 layout");
 """
 
+    # The offsets below are not decoration: MemoryRegionInformation's LENGTH
+    # rule is stated in terms of them, and it reads off the NEXT field each
+    # time (wine dlls/ntdll/unix/virtual.c get_memory_region_info) — a buffer
+    # short of CommitSize's offset is STATUS_INFO_LENGTH_MISMATCH; RegionSize
+    # is filled when the buffer reaches CommitSize's offset; CommitSize when
+    # it reaches PartitionId's. So an offset that moved would move the
+    # refusal, and the fill boundary, with it.
+    mri_asserts = """\
+_Static_assert(sizeof(MEMORY_REGION_INFORMATION) == 48, "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, AllocationProtect) == 8,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, RegionType) == 12,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, RegionSize) == 16,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, CommitSize) == 24,
+               "MEMORY_REGION_INFORMATION x64 layout");
+_Static_assert(offsetof(MEMORY_REGION_INFORMATION, PartitionId) == 32,
+               "MEMORY_REGION_INFORMATION x64 layout");
+"""
+
     ext_param_asserts = """\
 _Static_assert(sizeof(MEM_ADDRESS_REQUIREMENTS) == 24, "MEM_ADDRESS_REQUIREMENTS x64 layout");
 _Static_assert(offsetof(MEM_ADDRESS_REQUIREMENTS, Alignment) == 16,
@@ -817,6 +847,12 @@ _Static_assert(offsetof(SECTION_IMAGE_INFORMATION, CheckSum) == 60, "SECTION_IMA
         + mbi_asserts
         + "\n/* Extracted verbatim from wine/include/winternl.h. */\n"
         + info_class
+        + "\n\n/* M10 (docs/21 W5 tail): NtQueryVirtualMemory's\n"
+        + " * MemoryRegionInformation, extracted verbatim from\n"
+        + " * wine/include/winternl.h. */\n"
+        + mri
+        + "\n\n"
+        + mri_asserts
         + "\n\n/* CUI-7: the *Ex extended-parameter contract, extracted verbatim from\n"
         + " * wine/include/{winnt.h,winternl.h}. DWORD64 is a Win32 alias scaffold\n"
         + " * (wine/include/basetsd.h: unsigned 64-bit). */\n"
