@@ -207,8 +207,37 @@ this document should not treat "zero assertions before the stop" as evidence
 about anything past the stop again — the same reasoning applies to every
 other panicking pair listed here.
 
+**`MemoryRegionInformation` is DONE** (`MiQueryVirtualMemoryRegion`, pinned
+by `tests/ntapi/sem_mm/region_info.c`), which took `ntdll:virtual` from 1199
+to **1129** — all 70 of the class's assertions. It is the same VAD walk
+`MiQueryVirtualMemoryBasic` does, asked a different question, so it extends
+that engine rather than adding one. Three parts of it are not guessable from
+the class name and were transcribed from the oracle
+(`dlls/ntdll/unix/virtual.c` `get_memory_region_info`) and measured:
+
+- a **free address is a refusal** (`STATUS_INVALID_ADDRESS`) where
+  `MemoryBasicInformation` describes the hole — and the caller's buffer is
+  left untouched on it, which is a separate promise from the status;
+- the **length rule is stated in the struct's own field offsets**, not as one
+  size: short of `CommitSize`'s offset is `STATUS_INFO_LENGTH_MISMATCH`,
+  anything from there up succeeds and fills what fits — and `ReturnLength` is
+  the WHOLE struct however short the buffer was;
+- **`CommitSize` counts a MAPPED view's pages only when they are write-copy**,
+  while a private allocation's every committed page counts. The same section
+  mapped `PAGE_READONLY` reports 0 and mapped `PAGE_WRITECOPY` reports the
+  whole view. That one is why the pin covers both mappings: the read-only
+  case alone would have "passed" an implementation that just summed committed
+  pages.
+
+`RegionType` is reported as **zero, every bit** — the oracle sets it to 0 with
+a FIXME and the winetest asserts each flag clear even for a mapped view, so
+that is a measured answer and not an unfilled field.
+
 What is left under this heading:
 
+- **`MemoryImageInformation`** (`ntdll:virtual:3095`), the next unbuilt class
+  in the same syscall and now the region cluster's only survivor. It is a
+  `win_skip`, so it returns early and everything behind it is unmeasured.
 - **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
   wants. Untouched by the above.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
