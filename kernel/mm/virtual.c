@@ -38,6 +38,18 @@ struct MI_VAD
     ULONG type;        /* MEM_PRIVATE / MEM_MAPPED / MEM_IMAGE */
     PVOID sectionBody; /* referenced Section body; 0 for private */
     BOOLEAN ownsFrames;
+    /* PAGE_NOCACHE belongs to the RESERVATION, not to the page, and it is
+     * write-once. The oracle records it in the VIEW's own protect word at
+     * reserve time (`if (protect & PAGE_NOCACHE) vprot |= SEC_NOCACHE;`,
+     * inside allocate_virtual_memory's `(type & MEM_RESERVE) || !base`
+     * branch) and reads it back from there on every query
+     * (get_win32_prot's `if (map_prot & SEC_NOCACHE) ret |= PAGE_NOCACHE;`).
+     * So a later NtProtectVirtualMemory can neither add it nor remove it, and
+     * neither can a MEM_COMMIT into an existing reservation — both take paths
+     * that never touch view->protect. A per-page implementation reproduces
+     * none of that; pinned in both directions by
+     * sem_mm/protect_modifier_bits.c. */
+    BOOLEAN noCache;
     /* CUI-7 write-watch (MEM_WRITE_WATCH at reserve): one dirty byte per
      * page, the AUTHORITATIVE record — the PTE's writable bit is only the
      * trap mechanism (docs/17 §6.B names why the bit alone is not a
@@ -98,11 +110,66 @@ static ULONG MiVadPageCount(PMI_VAD vad)
     return (ULONG)(vad->size / PAGE_SIZE);
 }
 
+/* --- the protection MODIFIER bits -------------------------------------------
+ *
+ * A Win32 page protection is a base protection in its LOW BYTE plus modifier
+ * flags above it, and the private-memory surface reads exactly two things:
+ * the byte, and PAGE_GUARD. The oracle's get_vprot_flags (third_party/wine
+ * dlls/ntdll/unix/virtual.c) is the whole rule —
+ *
+ *     switch (protect & 0xff) { ... default: return STATUS_INVALID_PAGE_PROTECTION; }
+ *     if (protect & PAGE_GUARD) *vprot |= VPROT_GUARD;
+ *
+ * — so PAGE_WRITECOMBINE, PAGE_TARGETS_NO_UPDATE and PAGE_ENCLAVE_NO_CHANGE
+ * are ACCEPTED and dropped. This kernel used to refuse the whole word, which
+ * broke an entire Win32 API rather than a corner: kernelbase's
+ * WriteProcessMemory makes a non-writable range writable through
+ * `PAGE_EXECUTE_READWRITE | PAGE_TARGETS_NO_UPDATE | PAGE_ENCLAVE_NO_CHANGE`
+ * (dlls/kernelbase/memory.c), and STATUS_INVALID_PAGE_PROTECTION reaches the
+ * caller as ERROR_INVALID_PARAMETER (kernel32:virtual:236).
+ *
+ * Dropping them is not only about the refusal: the caller's word must not be
+ * STORED either, because MEMORY_BASIC_INFORMATION.Protect is read back out of
+ * the stored value and the oracle rebuilds it from the kept flags alone
+ * (get_win32_prot: `VIRTUAL_Win32Flags[vprot & 0x0f]`, plus PAGE_GUARD). So
+ * every private protection is canonicalized ONCE, where it is captured from
+ * the caller — MiAllocateVirtualMemoryEx and MiProtectVirtualMemory, the two
+ * places the oracle calls get_vprot_flags — and everything downstream of them
+ * sees a word with nothing above PAGE_GUARD in it.
+ *
+ * PAGE_NOCACHE is NOT dropped, and it is not kept here either: it belongs to
+ * the RESERVATION, not to the page (MI_VAD.noCache; see the reserve branch).
+ *
+ * The rule stops at the section surface, and that boundary is pinned rather
+ * than assumed: NtCreateSection masks the same way (dlls/ntdll/unix/sync.c)
+ * but NtMapViewOfSection has no mask at all (virtual_map_section's bare
+ * `switch (protect)`), so a modifier bit — PAGE_GUARD included — refuses a
+ * view. Nothing here may be applied to the map path. Pinned by
+ * sem_mm/protect_modifier_bits.c. */
+static ULONG MiStoredPageProtect(ULONG protect)
+{
+    return (protect & 0xff) | (protect & PAGE_GUARD);
+}
+
+/* ...and the inverse, for every place a stored protection is REPORTED: the
+ * page's own flags plus the reservation's PAGE_NOCACHE. That is get_win32_prot
+ * exactly — its NOCACHE term reads the VIEW's word (`map_prot & SEC_NOCACHE`)
+ * while everything else reads the page's. An uncommitted page reports 0, which
+ * is not a protection to decorate. */
+static ULONG MiReportedPageProtect(PMI_VAD vad, ULONG stored)
+{
+    if (stored == 0 || !vad->noCache)
+    {
+        return stored;
+    }
+    return stored | PAGE_NOCACHE;
+}
+
 /* Valid anonymous-commit protections (Wine's get_vprot_flags): the WRITECOPY
  * flavours need a backing file and are rejected for private memory. */
 static NTSTATUS MiCheckPageProtect(ULONG protect)
 {
-    switch (protect & ~(PAGE_GUARD | PAGE_NOCACHE))
+    switch (protect & 0xff)
     {
     case PAGE_NOACCESS:
     case PAGE_READONLY:
@@ -239,7 +306,10 @@ static NTSTATUS MiCheckViewProtection(PMI_VAD vad, ULONG protect)
 
 static void MiProtectToPteBits(ULONG protect, int *present, int *writable, int *executable)
 {
-    ULONG bits = protect & ~(PAGE_GUARD | PAGE_NOCACHE);
+    /* Every caller passes a STORED protection, which by MiStoredPageProtect
+     * carries nothing above PAGE_GUARD — so the base protection is the low
+     * byte, the oracle's own mask. */
+    ULONG bits = protect & 0xff;
     /* A guard page is committed but mapped not-present so the first touch
      * traps (mm/fault.c clears the guard and remaps). */
     *present = bits != PAGE_NOACCESS && (protect & PAGE_GUARD) == 0;
@@ -599,6 +669,7 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->type = MEM_PRIVATE;
     vad->sectionBody = 0;
     vad->ownsFrames = TRUE;
+    vad->noCache = FALSE;
     vad->writeWatch = FALSE;
     vad->watchDirty = 0;
     vad->master = 0;
@@ -631,6 +702,7 @@ static PMI_VAD MiCloneVadRange(PMI_VAD vad, uint64_t base, uint64_t size)
     ULONG firstPage = (ULONG)((base - vad->base) / PAGE_SIZE);
     ULONG pages = (ULONG)(size / PAGE_SIZE);
     piece->placeholder = vad->placeholder;
+    piece->noCache = vad->noCache; /* a reservation property survives its split */
     memcpy(piece->pageProtect, vad->pageProtect + firstPage, pages * sizeof(ULONG));
     if (vad->watchDirty != 0)
     {
@@ -769,7 +841,7 @@ void MiDeleteAddressSpace(PMI_ADDRESS_SPACE space)
  * (STATUS_INVALID_PARAMETER); naming a real placeholder but the wrong extent
  * of it is a range CONFLICT. */
 static NTSTATUS MiReplacePlaceholder(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
-                                     ULONG type, ULONG protect)
+                                     ULONG type, ULONG protect, BOOLEAN noCache)
 {
     PMI_VAD vad = MiFindVad(space, base);
     if (vad == 0)
@@ -809,6 +881,14 @@ static NTSTATUS MiReplacePlaceholder(PMI_ADDRESS_SPACE space, uint64_t base, uin
     vad->watchDirty = watchDirty;
     vad->writeWatch = watchDirty != 0;
     vad->allocationProtect = protect;
+    /* The replacement is a reserve, so it re-states the reservation's
+     * PAGE_NOCACHE rather than inheriting the placeholder's: the oracle's
+     * `vprot |= SEC_NOCACHE` is computed for THIS call and map_view stores it
+     * as the view's protect. Not separately measured — it is the same
+     * assignment the reserve branch makes, applied where the oracle applies
+     * it. */
+    BOOLEAN wasNoCache = vad->noCache;
+    vad->noCache = noCache;
     /* A replacement stays IN the protocol (MI_VAD_PLACEHOLDER) and stops
      * being an empty one — that is what lets the eventual
      * MEM_PRESERVE_PLACEHOLDER free give the range back rather than refuse.
@@ -836,6 +916,7 @@ static NTSTATUS MiReplacePlaceholder(PMI_ADDRESS_SPACE space, uint64_t base, uin
             vad->watchDirty = wasWatchDirty;
             vad->writeWatch = wasWriteWatch;
             vad->allocationProtect = wasProtect;
+            vad->noCache = wasNoCache;
             vad->placeholder = wasPlaceholder;
             return status;
         }
@@ -1005,6 +1086,14 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         return STATUS_SUCCESS;
     }
 
+    /* The caller's protection word is captured HERE, once, for both branches
+     * below (MiStoredPageProtect's comment has the rule and its citation).
+     * PAGE_NOCACHE is read off the raw word before it is dropped, and used by
+     * the reserve branch alone — a commit into an existing reservation cannot
+     * add it, because the oracle's assignment sits inside the reserve arm. */
+    BOOLEAN noCache = (protect & PAGE_NOCACHE) != 0;
+    protect = MiStoredPageProtect(protect);
+
     if ((type & MEM_RESERVE) || requestedBase == 0)
     {
         /* The reserve branch's own validation, where the oracle's
@@ -1016,7 +1105,7 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         }
         if (type & MEM_REPLACE_PLACEHOLDER)
         {
-            status = MiReplacePlaceholder(space, base, size, type, protect);
+            status = MiReplacePlaceholder(space, base, size, type, protect, noCache);
             if (!NT_SUCCESS(status))
             {
                 return status;
@@ -1042,6 +1131,7 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         {
             return STATUS_NO_MEMORY;
         }
+        vad->noCache = noCache;
         if (type & MEM_WRITE_WATCH)
         {
             /* Not yet linked: free by hand on failure. */
@@ -1454,10 +1544,14 @@ NTSTATUS MiQueryVirtualMemoryBasic(PMI_ADDRESS_SPACE space, const void *address,
         last++;
     }
     info->AllocationBase = (PVOID)(uintptr_t)vad->base;
-    info->AllocationProtect = vad->allocationProtect;
+    /* Both protections carry the reservation's PAGE_NOCACHE — the oracle
+     * builds them from the same get_win32_prot, the page's flags for one and
+     * the view's for the other. AllocationProtect is never 0 for a live VAD,
+     * so it is decorated whether or not anything is committed. */
+    info->AllocationProtect = MiReportedPageProtect(vad, vad->allocationProtect);
     info->RegionSize = (uint64_t)(last - first + 1) * PAGE_SIZE;
     info->State = protect != 0 ? MEM_COMMIT : MEM_RESERVE;
-    info->Protect = protect;
+    info->Protect = MiReportedPageProtect(vad, protect);
     info->Type = vad->type;
     return STATUS_SUCCESS;
 }
@@ -1511,12 +1605,12 @@ NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address
         {
             continue;
         }
-        /* Mask the modifier bits before comparing, as everything else in this
-         * file does (MiProtectVirtualMemory and friends): a guarded or
-         * uncached write-copy page is still write-copy. The oracle tests a
-         * BIT (`vprot & vprot_mask`), which VPROT_GUARD does not disturb, so
-         * a strict equality here would silently drop those pages. */
-        ULONG bare = protect & ~(ULONG)(PAGE_GUARD | PAGE_NOCACHE);
+        /* The base protection is the low byte, as everywhere else in this
+         * file: a GUARDED write-copy page is still write-copy. The oracle
+         * tests a BIT (`vprot & vprot_mask`), which VPROT_GUARD does not
+         * disturb, so a strict equality here would silently drop those
+         * pages. */
+        ULONG bare = protect & 0xff;
         if (mapped && bare != PAGE_WRITECOPY && bare != PAGE_EXECUTE_WRITECOPY)
         {
             continue;
@@ -1525,7 +1619,7 @@ NTSTATUS MiQueryVirtualMemoryRegion(PMI_ADDRESS_SPACE space, const void *address
     }
 
     info->AllocationBase = (PVOID)(uintptr_t)vad->base;
-    info->AllocationProtect = vad->allocationProtect;
+    info->AllocationProtect = MiReportedPageProtect(vad, vad->allocationProtect);
     info->RegionType = 0;
     info->RegionSize = (uint64_t)pages * PAGE_SIZE;
     info->CommitSize = committed;
@@ -2800,7 +2894,15 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
      * pins them); this function used to refuse every one of them with
      * STATUS_INVALID_PARAMETER. What remains refused here is the OVERFLOW the
      * oracle's find_view refuses in the same words (`addr + size < addr`). */
-    ULONG bits = newProtect & ~(PAGE_GUARD | PAGE_NOCACHE);
+    /* The caller's word is captured here, the second of the oracle's two
+     * get_vprot_flags sites for private protections (MiStoredPageProtect has
+     * the rule): everything below — the WRITECOPY test, the view-protection
+     * gate, the PTE bits and what lands in pageProtect — sees the canonical
+     * form, so a modifier bit can neither refuse the call nor be reported
+     * back by a later query. PAGE_NOCACHE is dropped rather than recorded:
+     * this path is not a reserve, and only a reserve states it. */
+    newProtect = MiStoredPageProtect(newProtect);
+    ULONG bits = newProtect & 0xff;
     BOOLEAN writeCopyFlavour = bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
     uint64_t base = MiRoundDown(*baseInOut, PAGE_SIZE);
     uint64_t end = MiRoundUp(*baseInOut + *sizeInOut, PAGE_SIZE);
@@ -2918,11 +3020,11 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     {
         if (bits == PAGE_READWRITE)
         {
-            newProtect = (newProtect & (PAGE_GUARD | PAGE_NOCACHE)) | PAGE_WRITECOPY;
+            newProtect = (newProtect & PAGE_GUARD) | PAGE_WRITECOPY;
         }
         else if (bits == PAGE_EXECUTE_READWRITE)
         {
-            newProtect = (newProtect & (PAGE_GUARD | PAGE_NOCACHE)) | PAGE_EXECUTE_WRITECOPY;
+            newProtect = (newProtect & PAGE_GUARD) | PAGE_EXECUTE_WRITECOPY;
         }
     }
 
@@ -2951,7 +3053,7 @@ NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, ui
     }
     *baseInOut = base;
     *sizeInOut = end - base;
-    *oldProtectOut = oldProtect;
+    *oldProtectOut = MiReportedPageProtect(vad, oldProtect);
     return STATUS_SUCCESS;
 }
 
