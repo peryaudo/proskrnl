@@ -159,8 +159,7 @@ START_TEST(wow64_process)
      * CREATOR's work, not the guest's ---------------------------------- */
     BOOL created = CreateProcessA("C:\\windows\\syswow64\\cmd.exe", NULL, NULL, NULL, FALSE,
                                   CREATE_SUSPENDED, NULL, NULL, &si, &pi);
-    todo_proskrnl ok(created, "CreateProcessA(syswow64\\cmd.exe) -> %lu",
-                     (unsigned long)GetLastError());
+    ok(created, "CreateProcessA(syswow64\\cmd.exe) -> %lu", (unsigned long)GetLastError());
     if (!created)
     {
         skip("no wow64 child to measure");

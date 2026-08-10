@@ -740,6 +740,32 @@ static void SessionFlowGui(void)
     }
 }
 
+/* The WOW64 acceptance (docs/02 "a 32-bit CUI app runs"): hello32.exe is an
+ * ordinary 32-bit Win32 console program, so a PASS here means the whole
+ * chain worked — the kernel built a WOW64 process, the 64-bit ntdll found
+ * WowTebOffset set and loaded wow64.dll, wow64cpu far-jumped into compat
+ * mode, and every syscall the guest made came back through it. Present only
+ * on the wow64 image (Makefile IMG_WOW64); absence is silent, as with every
+ * other image-specific flow. */
+static int SessionFlowWow64(void)
+{
+    static const WCHAR path[] = WSTR("\\??\\C:\\hello32.exe");
+    if (!SmssFileExists(path, 0))
+        return 0; /* not the wow64 image */
+
+    NTSTATUS exitStatus = 0;
+    NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] wow64 hello32.exe FAIL (create=%x)\n", SMSS_HEX(status));
+        return 1;
+    }
+    int pass = exitStatus == 0;
+    SmssPrintf("[KTEST] wow64 hello32.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
+               SMSS_HEX(exitStatus));
+    return pass ? 0 : 1;
+}
+
 /* --- the session ------------------------------------------------------------ */
 
 int SessionRun(int abiFailures, int registryOk)
@@ -758,6 +784,10 @@ int SessionRun(int abiFailures, int registryOk)
      * acceptance's other half). AFTER the M9 verdict so the runner knows
      * the boot suite is already green. Then the interactive cmd session. */
     failures += SessionFlowM9Echo();
+
+    /* The wow64 image only. Before the interactive cmd flow, which blocks. */
+    failures += SessionFlowWow64();
+
     failures += SessionFlowCmdConsole();
 
     /* GUI images only: deliberately LAST and deliberately never returning —

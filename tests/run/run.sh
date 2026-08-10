@@ -589,6 +589,27 @@ oracle() {
     return $(( fails > 0 ? 1 : 0 ))
 }
 
+# The WOW64 guest payload, as mkimage `win:` specs appended to `specs`: the
+# i386 Wine set under syswow64 plus the three x86_64 DLLs that IMPLEMENT
+# wow64 (host code, so system32 beside ntdll — where wow64.dll's
+# load_64bit_module looks) and win32u, which wow64win imports
+# unconditionally. Same file list as the Makefile's WOW64FILES; both legs
+# that can spawn a 32-bit child call this.
+add_wow64_payload() {
+    make -C "$ROOT" wow64strip >/dev/null || exit 1
+    local d
+    for d in ntdll kernel32 kernelbase msvcrt ucrtbase version; do
+        specs+=("win:$ROOT/build/winestrip32/$d.dll=windows/syswow64/$d.dll")
+    done
+    for d in cmd msinfo32; do
+        specs+=("win:$ROOT/build/winestrip32/$d.exe=windows/syswow64/$d.exe")
+    done
+    for d in wow64 wow64cpu wow64win win32u; do
+        specs+=("win:$ROOT/build/winestrip/$d.dll=windows/system32/$d.dll")
+    done
+}
+
+
 # Bake the SAME .exes into a disk image under C:\ntapi beside the Wine PE
 # userland (ntdll/kernel32/kernelbase + the NLS tables), boot it, and read
 # each test's own [KTEST] <name> PASS line off the serial log. The session
@@ -651,8 +672,13 @@ proskrnl() {
         specs+=("win:$exe=ntapi/$name.exe")
         names+=("$name")
     done < <(all_tests)
+    add_wow64_payload
+    # The 64-bit control arm of the wow64 pins spawns system32\cmd.exe, so
+    # the image needs a 64-bit cmd beside the 32-bit one.
+    make -C "$ROOT" build/modules/cmd.exe >/dev/null || exit 1
+    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
 
-    "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+    SIZE_MB="${SIZE_MB:-256}" "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
 
     local log="$ROOT/build/tests/proskrnl$tag-serial.log"
     LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
