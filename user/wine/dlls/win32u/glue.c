@@ -387,6 +387,53 @@ NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS st
 
 /* --- 4. ntdll unix-side helpers -------------------------------------------- */
 
+/* The 64-bit ntdll's NLS case table, when nobody else will initialize it.
+ *
+ * In a WOW64 process the 64-bit ntdll deliberately does NOT finish its
+ * process init: loader_init calls init_wow64, which loads wow64.dll and hands
+ * control to Wow64LdrpInitialize and never comes back — so locale_init, three
+ * lines further down, never runs (third_party/wine dlls/ntdll/loader.c). Its
+ * `nls_info` therefore keeps the static initializer, whose UpperCaseTable is
+ * NULL, and RtlUpcaseUnicodeChar dereferences it. Upstream that is harmless:
+ * the only 64-bit code in a WOW64 process is the wow64*.dll thunk set, which
+ * never asks ntdll to fold case.
+ *
+ * proskrnl puts one more 64-bit DLL there — this one, because wow64win.dll
+ * calls the real NtUser/NtGdi entry points rather than a syscall — so the gap becomes
+ * ours to close. A 32-bit GUI applet died on it before its window appeared,
+ * inside the ntdll_wcsicmp below.
+ *
+ * Only the CASE tables are installed. The code-page halves stay what the
+ * 64-bit ntdll already has (CP_UTF8, its static default): choosing the
+ * system's real ANSI/OEM pages would mean walking the locale table the way
+ * locale_init does, and nothing here converts multibyte text. In a 64-bit
+ * process locale_init has already run and this is a no-op — the PEB field it
+ * publishes is the flag. */
+static void prsk_init_nls_case_tables(void)
+{
+    PEB *peb = NtCurrentTeb()->Peb;
+    USHORT utf8[2] = { 0, CP_UTF8 };
+    NLSTABLEINFO info;
+    void *casePtr = NULL;
+    SIZE_T size = 0;
+
+    if (peb->UnicodeCaseTableData) return; /* locale_init got here first */
+    /* Section type 10 = the case table, the argument locale_init passes
+     * (dlls/ntdll/locale.c; kernel/ps/query.c NtGetNlsSectionPtr serves it). */
+    /* Loud, because the failure is not: with no casemap the very next
+     * RtlUpcaseUnicodeChar dereferences NULL somewhere deep inside a window
+     * class lookup, which reads as a win32u bug rather than as a missing
+     * table. */
+    if (NtGetNlsSectionPtr( 10, 0, NULL, &casePtr, &size ))
+    {
+        winefb_report( "[KTEST] gui2 nls case table FAIL\n" );
+        return;
+    }
+    RtlInitNlsTables( utf8, utf8, casePtr, &info );
+    RtlResetRtlTranslations( &info );
+    peb->UnicodeCaseTableData = casePtr;
+}
+
 /* Spelled as loops over RtlUpcaseUnicodeChar, NOT as calls to wcsicmp:
  * wine/unixlib.h #defines wcsicmp/wcsnicmp AS these two functions, so a
  * definition that calls the libc name calls itself (same trap as the
@@ -492,6 +539,9 @@ BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved 
          * sent, so a server that only wakes up on its first request is too
          * late. prsk_transport_startup does that wait, once: it returns when
          * the server process has published the mapping, or fails. */
+        /* Before anything else in this DLL folds case (the transport's own
+         * name lookups included): see prsk_init_nls_case_tables. */
+        prsk_init_nls_case_tables();
         if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
         winefb_init();
     }
