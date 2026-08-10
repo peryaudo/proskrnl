@@ -132,8 +132,7 @@ START_TEST(wow64_machines)
     si.cb = sizeof(si);
     BOOL created = CreateProcessA("C:\\windows\\syswow64\\cmd.exe", NULL, NULL, NULL, FALSE,
                                   CREATE_SUSPENDED, NULL, NULL, &si, &pi);
-    todo_proskrnl ok(created, "CreateProcessA(syswow64\\cmd.exe) -> %lu",
-                     (unsigned long)GetLastError());
+    ok(created, "CreateProcessA(syswow64\\cmd.exe) -> %lu", (unsigned long)GetLastError());
     if (created)
     {
         memset(machines, 0, sizeof(machines));

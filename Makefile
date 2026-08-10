@@ -96,6 +96,7 @@ CSRC := kernel/init/main.c \
         kernel/ps/process.c \
         kernel/ps/thread.c \
         kernel/ps/peb.c \
+        kernel/ps/wow64.c \
         kernel/ps/usermode.c \
         kernel/ps/query.c \
         kernel/ps/nls.c \
@@ -617,7 +618,13 @@ $(WINESTRIP32)/$(1).exe: third_party/wine/programs/$(1)/i386-windows/$(1).exe
 endef
 $(foreach p,$(WINESTRIP32_EXE_NAMES),$(eval $(call WINESTRIP32_EXE_RULE,$(p))))
 
-WOW64_HOST_NAMES := wow64 wow64cpu wow64win
+# win32u rides along with the trio and is NOT a GUI decision: wow64win.dll
+# is the win32u syscall thunk table and imports it unconditionally, while
+# wow64.dll's load_64bit_module TERMINATES the process if wow64win cannot
+# load (dlls/wow64/syscall.c) — so a CUI wow64 process needs it present to
+# start at all. The pinned PE win32u imports nothing but ntdll, so it is a
+# leaf that no CUI guest ever calls into.
+WOW64_HOST_NAMES := wow64 wow64cpu wow64win win32u
 WOW64_HOST_DLLS := $(foreach d,$(WOW64_HOST_NAMES),$(WINESTRIP)/$(d).dll)
 $(foreach d,$(WOW64_HOST_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
@@ -726,6 +733,13 @@ HELLOCRT := $(BUILD)/modules/hello_crt.exe
 $(HELLOCRT): tests/cui/hello_crt.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
+# WOW64 acceptance (docs/02 "a 32-bit CUI app runs"): the same hello_crt
+# shape, built by the i686 cross with its full 32-bit CRT. Nothing in the
+# source knows about WOW64 — an ordinary Win32 app is the whole test.
+HELLO32 := $(BUILD)/modules/hello32.exe
+$(HELLO32): tests/cui/hello32.c
+	@mkdir -p $(dir $@)
+	$(MINGW32) -O1 -g0 -Wall -o $@ $<
 UPCASE := $(BUILD)/modules/upcase.exe
 $(UPCASE): tests/cui/upcase.c
 	@mkdir -p $(dir $@)
@@ -816,6 +830,23 @@ $(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9
 
 console-img: $(IMG_CONSOLE)
 .PHONY: console-img
+
+# The WOW64 image (docs/02, the final milestone): the console image's
+# payload plus the syswow64 guest stack, the wow64 host trio, and the 32-bit
+# acceptance client. Its own image rather than the default one because with
+# no COW every wow64 child copies its images whole, and no other leg needs
+# to pay that.
+IMG_WOW64 := $(BUILD)/tests/wow64.hdd
+$(IMG_WOW64): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(CMD) $(HELLO32) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WOW64_PAYLOAD) \
+        tools/mkimage.sh arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_WOW64) $(MODULE_SPECS) $(WINFILES) $(WOW64FILES) \
+	    win:$(CMD)=windows/system32/cmd.exe \
+	    win:$(HELLO32)=hello32.exe
+
+wow64-img: $(IMG_WOW64)
+.PHONY: wow64-img
 
 # The GUI-1 acceptance client (docs/02 "a user program maps the framebuffer
 # and draws a rectangle visible in a screendump; key input is readable").
