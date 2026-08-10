@@ -227,6 +227,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/run/run.sh procs
 
+      # WOW64's gate 1. Lands on cui-a rather than cui-b for budget: cui-b
+      # measures 52m32s against its 90 cap, cui-a ~30m against 60, and this
+      # leg is one more full boot.
+      - name: WOW64 — a 32-bit Win32 CUI binary runs (tests/run/run.sh wow64)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh wow64
+
       - uses: ./.github/actions/serial-logs
         if: failure()
         with:

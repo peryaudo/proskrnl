@@ -166,6 +166,39 @@ local macOS Wine.
 
 ## Status
 
+**WOW64 complete** — the last planned milestone (`docs/02`). An
+unmodified 32-bit Win32 CUI binary runs: `tests/cui/hello32.c` is an
+ordinary i686 mingw console program over the same Wine import libraries
+the 64-bit clients use, and nothing in it knows it is a guest — every
+syscall it makes has travelled guest → wow64cpu → wow64.dll → the
+64-bit ntdll before arriving, because Wine's "new WoW64" keeps the whole
+32→64 transition in user mode and the kernel never sees a 32-bit
+syscall. `ntdll_test.exe:wow64` is green on both legs, unparked.
+
+What the kernel owes a guest turned out to be furniture plus machine
+state: a second ntdll from `syswow64` with `SYSTEM_DLL_INIT_BLOCK`
+written into both copies, PEB32 + `WOW64INFO` and a 32-bit parameter
+block, TEB32 cross-linked with the TEB64, two stacks, and the
+`WOW64_CPURESERVED` + `I386_CONTEXT` area the guest's first context
+lives in. The GDT moved to NT's own selector *values* (0x23/0x2b/0x33,
+per-thread 0x53) because every `CONTEXT` leaks them, and the ring-3
+return path now *loads* the compat segments — staging them in a trap
+frame is not enough, since `iretq` nullifies the kernel's DPL-0 data
+selectors. Three surfaces were built because a gate consumer depended
+on them and for no other reason: `ThreadWow64Context`, debugger
+**attach** (`docs/adr/0011` amended to allow it and to state why the
+event queue stays refused forever), and a real per-process **LDT** —
+the last because `STATUS_NOT_IMPLEMENTED` is never an answer proskrnl
+may give, so a Wine gap became a case built against NT's contract in a
+`beyond_oracle` block rather than an exemption. Two placement rules were
+measured and both contradicted the plan: the 64-bit stack of a WOW64
+thread lives **above** 4GB, and the CPU area is that stack's ceiling —
+starting the thread above it let its own first call frames overwrite the
+guest context. Along the way the pins convicted two pre-existing 64-bit
+bugs: every TEB carried a bogus `Tib.ExceptionList`, and a process
+created without a Desktop or ShellInfo got a null pointer where the
+contract promises an empty string.
+
 **CUI-9 complete**: shared, already-relocated image masters plus
 copy-on-write — the machine no longer pays a full private copy of every
 DLL per process. The Article 3 "no COW" mandate was lifted the way
@@ -218,8 +251,11 @@ argument: slowness having already stopped a suite from reaching a
 verdict.
 
 Either way, growing the winetest manifest as its parked blockers land
-(`docs/03` "M10 winetest notes"). Debug objects are ruled out of scope
-permanently (ADR 0011).
+(`docs/03` "M10 winetest notes"). Debug objects stay out of scope apart
+from the attach carve-out WOW64 needed: `NtCreateDebugObject`,
+`NtDebugActiveProcess`, `NtRemoveProcessDebug` and the `BeingDebugged`
+flag they move, with the event queue permanently refused (ADR 0011 and
+its WOW64 amendment).
 
 ## Build instructions
 

@@ -148,7 +148,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # schedule is already within a third of the best any width could do.
 ALL_LEGS=(guiwtest winetest gui5con tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui procs files console boot
-          cui6 oracle fatstress fuzz fatinterop frontier)
+          cui6 oracle wow64 fatstress fuzz fatinterop frontier)
 
 usage() {
     cat >&2 <<EOF
@@ -338,7 +338,7 @@ echo "== fulltest: ${#LEGS[@]} legs, -j$JOBS, $NPROC cores, accel=$("$ROOT/tools
 echo "== fulltest: build =="
 BUILD_START=$SECONDS
 make -C "$ROOT" -j"$NPROC" \
-    all console-img gui-img gui2-img gui3-img gui4-img gui5-img gui5con-img \
+    all console-img gui-img gui2-img gui3-img gui4-img gui5-img gui5con-img wow64-img \
     wtests winestrip winestrip-gui win32u wineserver-lite \
     build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe \
     build/modules/pe_smoke.exe build/modules/sample.dat build/modules/torn_workload.bin \

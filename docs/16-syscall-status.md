@@ -32,10 +32,17 @@ bump; re-run the count then.
 | | count |
 |---|---|
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
-| Implemented (`KI_SYSCALL` rows) | **203** |
-| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **61** |
-| …of the missing: permanently out of scope (below) | **61** |
+| Implemented (`KI_SYSCALL` rows) | **207** |
+| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **57** |
+| …of the missing: permanently out of scope (below) | **57** |
 | …of the missing: to be built | **0** |
+
+**The WOW64 milestone closed four ids**, each because a gate consumer
+depended on it and for no other reason: `NtCreateDebugObject`,
+`NtDebugActiveProcess` and `NtRemoveProcessDebug` (ADR 0011's attach-only
+amendment — the event queue stays refused), and `NtSetLdtEntries`, whose
+per-process LDT was built because `STATUS_NOT_IMPLEMENTED` is never an
+answer proskrnl may give and the winetest's sweep reaches it.
 
 **CUI-7 closed its 29 ids** — the registry hive surface (`NtLoadKey`,
 `NtLoadKey2`, `NtLoadKeyEx`, `NtUnloadKey`, `NtSaveKey`, `NtRestoreKey`,
@@ -58,13 +65,13 @@ the implemented `*Ex` ids (no baked consumer; `docs/03`) — placeholder
 ALLOCATION is built (`docs/21` W5) — and `NtSetSystemInformation` serves
 exactly the one class the baked stack issues.
 
-## The 61 missing syscalls by area
+## The 57 missing syscalls by area
 
 Every one is a decision, not debt. ★ = a live caller exists in the
 currently-baked CUI userland (ntdll PE side, kernelbase, kernel32, advapi32)
 — none of the remaining ids carries one on a real path.
 
-### Permanently out of scope — 61
+### Permanently out of scope — 57
 
 Never implemented, and that is correct under Art. 1 (boundary only — no baked
 consumer) and G12 (they refuse loudly forever, they don't fake success):
@@ -72,9 +79,9 @@ consumer) and G12 (they refuse loudly forever, they don't fake success):
 | group | count | ids | why |
 |---|---|---|---|
 | LPC + ALPC | 20 | `NtAcceptConnectPort` `NtCompleteConnectPort` `NtConnectPort` `NtSecureConnectPort` `NtListenPort` `NtCreatePort` `NtImpersonateClientOfPort` `NtReplyPort` `NtReplyWaitReceivePort` `NtReplyWaitReceivePortEx` `NtRequestWaitReplyPort` `NtReadRequestData` `NtWriteRequestData` `NtRegisterThreadTerminatePort` `NtAlpcCreatePort` `NtAlpcConnectPort` `NtAlpcAcceptConnectPort` `NtAlpcDisconnectPort` `NtAlpcSendWaitReceivePort` `NtAlpcImpersonateClientOfPort` | Wine's local RPC is named pipes over M9's npfs, never ALPC (`docs/03` "CUI-3 SCM notes") |
-| Debug objects | 6 | `NtCreateDebugObject` `NtDebugActiveProcess` `NtDebugContinue` `NtRemoveProcessDebug` `NtWaitForDebugEvent` `NtSetInformationDebugObject` | ADR 0011: no baked consumer (a debugger is a tool, not an app), and native Windows debuggers expect PDB symbol flow where proskrnl's toolchain is DWARF end-to-end (`docs/03` "Debug objects") |
+| Debug objects — the EVENT QUEUE half | 3 | `NtDebugContinue` `NtWaitForDebugEvent` `NtSetInformationDebugObject` | ADR 0011 as amended at WOW64: attach is built (the other three ids, below the line), the queue is not. A queue is a scheduling contract — every debuggee thread blocking until a debugger answers — i.e. a second stop/continue authority beside the dispatcher (Art. 11), for a consumer that does not exist. Native Windows debuggers also expect PDB symbol flow where proskrnl's toolchain is DWARF end-to-end (`docs/03` "Debug objects") |
 | KTM + transacted registry | 6 | `NtCreateTransaction` `NtCommitTransaction` `NtRollbackTransaction` `NtCreateKeyTransacted` `NtOpenKeyTransacted` `NtOpenKeyTransactedEx` | ktmw32 is not baked; no CUI consumer |
-| Driver / platform machinery | 5 | `NtLoadDriver` `NtUnloadDriver` `NtSetLdtEntries` `NtCreatePagingFile` `NtMapUserPhysicalPagesScatter` | no Windows driver ABI, x64-only (no LDT), no paging (Art. 3), no AWE |
+| Driver / platform machinery | 4 | `NtLoadDriver` `NtUnloadDriver` `NtCreatePagingFile` `NtMapUserPhysicalPagesScatter` | no Windows driver ABI, no paging (Art. 3), no AWE. `NtSetLdtEntries` LEFT this row at WOW64: `ntdll:wow64` sets two descriptors and reads them back, so the LDT is built (`kernel/ps/ldt.c`) |
 | Audit + token minting | 6 | `NtAccessCheckAndAuditAlarm` `NtAccessCheckByTypeAndAuditAlarm` `NtCloseObjectAuditAlarm` `NtCreateToken` `NtCreateLowBoxToken` `NtCompareTokens` | one fixed identity (CUI-2), no audit subsystem, no AppContainer |
 | Superseded / legacy forms | 6 | `NtCreateProcessEx` `NtCreateThread` `NtWaitForMultipleObjects32` `NtWorkerFactoryWorkerReady` `NtAllocateReserveObject` `NtQueueApcThreadEx` | Wine uses `NtCreateUserProcess`/`NtCreateThreadEx`/`NtQueueApcThreadEx2`; thread pool is user-mode in Wine |
 | No consumer in the baked stack | 12 | `NtTraceEvent` `NtTraceControl` `NtSetIntervalProfile` `NtSystemDebugControl` `NtSetDebugFilterState` `NtQuerySystemEnvironmentValue` `NtQuerySystemEnvironmentValueEx` `NtApphelpCacheControl` `NtInitiatePowerAction` `NtCreateMailslotFile` `NtAllocateUuids` `NtRaiseHardError` | ETW, profiling, kernel-debug control, UEFI variables, apphelp, slc, powrprof, mailslots — none reachable from a baked CUI binary's real path |

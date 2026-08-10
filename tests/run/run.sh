@@ -1345,6 +1345,31 @@ persist() {
     return 0
 }
 
+# The WOW64 milestone's acceptance leg: a 32-bit Win32 CUI binary runs.
+#
+# tests/cui/hello32.c is an ordinary i686 mingw console program over the same
+# Wine import libraries the 64-bit clients use. Nothing in it knows it is a
+# guest -- it reaches the kernel only the way any Win32 app does, and every
+# syscall it makes has travelled guest -> wow64cpu -> wow64.dll -> the 64-bit
+# ntdll first. smss runs it and reports the verdict; the exit status is
+# distinct per check, so a WRONG answer (pointer width, IsWow64Process, a
+# failed heap round trip) is a distinct failure rather than a silent pass.
+wow64() {
+    mkdir -p "$BUILD"
+    make -C "$ROOT" wow64-img >/dev/null || exit 1
+    local img="$ROOT/build/tests/wow64.hdd" log="$BUILD/wow64.log"
+    LOG="$log" PASS_RE="\[KTEST\] wow64 hello32.exe PASS" TIMEOUT="${TIMEOUT:-900}" \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    if ! grep -q "\[KTEST\] wow64 hello32.exe PASS" "$log"; then
+        echo "[KTEST] wow64-smoke FAIL (no 32-bit PASS marker; see $log)"
+        grep -E "\[KTEST\] wow64 |\[PANIC\]|\[USERFAULT\]" "$log" | tail -5
+        return 1
+    fi
+    echo "[KTEST] wow64-smoke PASS"
+    return 0
+}
+
+
 # The CUI-1 acceptance (docs/02 "a registry differential vs. the oracle's
 # prefix is green" — Art. 6, the diff convicts): boot a VIRGIN standard
 # image once (firstboot runs wineboot --init through rundll32/setupapi),
@@ -2528,6 +2553,7 @@ case "$MODE" in
     fuzz)     fuzz "${@:2}" ;;
     persist)  persist ;;
     firstboot) firstboot ;;
+    wow64)    wow64 ;;
     console)  console ;;
     scm)      scm ;;
     procs)    procs ;;

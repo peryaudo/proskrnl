@@ -710,12 +710,27 @@ window. `gen_hive.py` is **not** needed — wineboot did it at runtime.
 *Optional GUI-7:* the ReactOS shell (taskbar/Start menu/icons) — a separate integration
 effort with a two-upstream cost; see `docs/06`.
 
-## WOW64 — 32-bit apps *(last, purely additive)*
+## WOW64 — 32-bit apps *(last, purely additive)* — **DONE**
 GDT compat-mode descriptors; `NtCreateUserProcess` detects `IMAGE_FILE_MACHINE_I386` and
 marks a WOW64 process; restrict its address space to low memory; deliver compat-mode
 exceptions; a second (32-bit) set of Wine PE DLLs under `SysWOW64`. The 32→64 transition
 is entirely in user mode (Wine's "new WoW64"); the kernel never sees a 32-bit syscall.
-**Done when:** a 32-bit CUI app runs. Touches no semantics; removable.
+**Done when:** a 32-bit CUI app runs — `tests/run/run.sh wow64` (`tests/cui/hello32.c`,
+an i686 mingw console program that reaches the kernel only the way any Win32 app does)
+— **and** `ntdll_test.exe:wow64` is green on both legs. Both hold.
+
+What it actually cost, beyond the plan above: the GDT was re-laid-out to NT's selector
+*values* (cs32 0x23, ds 0x2b, cs64 0x33, per-thread fs32 0x53), because every `CONTEXT`
+leaks them and wow64cpu reads them back; the ring-3 return path had to *load* the compat
+segments, not merely stage them in a trap frame, since `iretq` nullifies the kernel's
+DPL-0 data selectors; and three things NT has that proskrnl did not — `ThreadWow64Context`
+over the CPU area, debugger **attach** (`docs/adr/0011`'s amendment: attach only, no
+event queue), and a real per-process **LDT** for `NtSetLdtEntries` — each because a gate
+consumer depended on it. Two placement rules were measured rather than guessed and both
+contradicted the plan: a WOW64 thread's 64-bit stack lives **above** 4GB (the low space
+is the guest's), and the `WOW64_CPURESERVED` area *is* that stack's ceiling rather than
+decoration on top of it. Touches no semantics; removable (`kernel/ps/wow64.c` plus
+one-line guarded call sites).
 
 ---
 
