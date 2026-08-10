@@ -511,10 +511,7 @@ ntdll_test.exe:string
 # ntdll_test.exe:time
 ntdll_test.exe:unwind
 ntdll_test.exe:virtual
-# (a)+(b) WOW64 is a later milestone (docs/02), so the 32-bit thunk surface
-#     this exercises is unbuilt by plan rather than by omission — and the
-#     oracle is red on it anyway (4 failures, 1 skipped).
-# ntdll_test.exe:wow64
+ntdll_test.exe:wow64
 
 # --- kernel32 (third_party/wine/dlls/kernel32/tests) ------------------------
 # UNTRIAGED, FIXABLE. 39 failures in five sites, and the shape says

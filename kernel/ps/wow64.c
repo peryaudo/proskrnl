@@ -99,6 +99,16 @@ static NTSTATUS PspWow64BuildParameters32(PEPROCESS process, const PSP_CAPTURED_
         {
             maximum = 260 * sizeof(WCHAR);
         }
+        /* The same never-a-NULL-Buffer rule the 64-bit block follows, and
+         * the same two exemptions (ps/peb.c says why DllPath's null is
+         * load-bearing). build_wow64_parameters duplicates whatever the
+         * 64-bit block has, so the two must agree field for field —
+         * ntdll:wow64 checks each 32-bit Buffer lands inside the 32-bit
+         * block AND that its Length matches the 64-bit one. */
+        if (maximum < sizeof(WCHAR) && i != PSP_PARAM_DLL_PATH && i != PSP_PARAM_RUNTIME_INFO)
+        {
+            maximum = sizeof(WCHAR);
+        }
         maximums[i] = maximum;
         structSize += PSP_ROUND16(maximum);
     }

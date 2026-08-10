@@ -617,6 +617,13 @@ static void test_pe32_image(void)
            "PE32 SizeOfImage %lx", (unsigned long)image->sizeOfImage);
         ok(image->relocRva != 0 && image->relocSize != 0, "PE32 probe has no .reloc directory");
 
+        /* A PE32 image belongs in a WOW64 space, and saying so is what keeps
+         * the status below readable: an i386 image mapped into a NATIVE
+         * space reports STATUS_IMAGE_MACHINE_TYPE_MISMATCH, which overrides
+         * the not-at-base report this case is actually about
+         * (mm/section.c; sem_mm/map_image_machine.c pins the crossing). */
+        space.machine = IMAGE_FILE_MACHINE_I386;
+
         /* Hold the preferred base so the one copy must be relocated. */
         PVOID hold = (PVOID)(uintptr_t)image->preferredBase;
         SIZE_T holdSize = image->sizeOfImage;

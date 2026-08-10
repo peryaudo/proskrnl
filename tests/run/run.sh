@@ -916,6 +916,9 @@ winetest() {
         specs+=("win:$ROOT/build/wtests/$exe=wtests/$exe")
     done
     specs+=("win:$baked=wtests/manifest.txt")
+    # ntdll:wow64 spawns 32-bit children out of syswow64, so the winetest
+    # image carries the same guest payload the ntapi leg does.
+    add_wow64_payload
 
     # MB-scale test binaries: a bigger volume than the 64 MB default. And
     # 1 GiB of guest RAM: no eviction (Art. 3) means the page cache holds

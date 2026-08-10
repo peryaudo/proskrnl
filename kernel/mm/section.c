@@ -867,6 +867,23 @@ static NTSTATUS MipMapImageView(PMI_SECTION section, PMI_ADDRESS_SPACE space, ui
 
     *baseInOut = viewBase;
     *viewSizeInOut = viewSize;
+    /* The machine check comes LAST and overrides the not-at-base report,
+     * because the server sets both with the same set_error and this one runs
+     * second (server/mapping.c DECL_HANDLER(map_view)). A 32-bit process is
+     * allowed to map the NATIVE 64-bit machine — that is how a WOW64 process
+     * maps the 64-bit ntdll and the wow64 host DLLs — but no other crossing
+     * passes silently. Success-class, so the view stands either way; a
+     * kernel answering plain STATUS_SUCCESS looks right to every
+     * NT_SUCCESS() check and is still wrong (sem_mm/map_image_machine.c,
+     * ntdll:wow64 test_image_mappings). */
+    if (space->machine != 0 && image->machine != space->machine)
+    {
+        BOOLEAN spaceIs64 = space->machine == IMAGE_FILE_MACHINE_AMD64;
+        if (spaceIs64 || image->machine != IMAGE_FILE_MACHINE_AMD64)
+        {
+            return STATUS_IMAGE_MACHINE_TYPE_MISMATCH;
+        }
+    }
     return atBase ? STATUS_SUCCESS : STATUS_IMAGE_NOT_AT_BASE;
 }
 

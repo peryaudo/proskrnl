@@ -739,6 +739,9 @@ NTSTATUS MiCreateAddressSpace(PMI_ADDRESS_SPACE space)
         return STATUS_NO_MEMORY;
     }
     InitializeListHead(&space->vadListHead);
+    /* Native until a WOW64 image says otherwise (ps/process.c) — a space
+     * whose machine is 0 would report every image view as a mismatch. */
+    space->machine = IMAGE_FILE_MACHINE_AMD64;
     return STATUS_SUCCESS;
 }
 

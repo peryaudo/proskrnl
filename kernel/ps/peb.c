@@ -488,6 +488,23 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
         {
             maximum = 260 * sizeof(WCHAR);
         }
+        /* The five unconditional strings get at least an empty
+         * NUL-terminated one, so their Buffer is never NULL — build_initial_
+         * params copies ImagePathName/CommandLine/WindowTitle/Desktop/
+         * ShellInfo (and CurrentDirectory) whatever their length, and
+         * ntdll:wow64 checks each Buffer lands inside the block. A process
+         * created without a Desktop or ShellInfo had been getting a null
+         * pointer where the contract promises an empty string.
+         *
+         * DllPath and RuntimeInfo are guarded there by `if (len)` and stay
+         * NULL when absent — and DllPath's is LOAD-BEARING: the loader takes
+         * a NULL Buffer as "use the default search path" and an empty one as
+         * "search nowhere" (loader.c default_load_path), so flooring it
+         * turns every subsequent LoadLibrary into STATUS_DLL_NOT_FOUND. */
+        if (maximum < sizeof(WCHAR) && i != PSP_PARAM_DLL_PATH && i != PSP_PARAM_RUNTIME_INFO)
+        {
+            maximum = sizeof(WCHAR);
+        }
         maximums[i] = maximum;
         structSize += PSP_ROUND16(maximum);
     }
