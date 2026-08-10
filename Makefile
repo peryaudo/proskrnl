@@ -620,22 +620,38 @@ $(WINESTRIP32)/$(1).exe: third_party/wine/programs/$(1)/i386-windows/$(1).exe
 endef
 $(foreach p,$(WINESTRIP32_EXE_NAMES),$(eval $(call WINESTRIP32_EXE_RULE,$(p))))
 
+WOW64_HOST_NAMES := wow64 wow64cpu wow64win
+WOW64_HOST_DLLS := $(foreach d,$(WOW64_HOST_NAMES),$(WINESTRIP)/$(d).dll)
+$(foreach d,$(WOW64_HOST_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+
 # win32u rides along with the trio and is NOT a GUI decision: wow64win.dll
 # is the win32u syscall thunk table and imports it unconditionally, while
 # wow64.dll's load_64bit_module TERMINATES the process if wow64win cannot
 # load (dlls/wow64/syscall.c) — so a CUI wow64 process needs it present to
 # start at all. The pinned PE win32u imports nothing but ntdll, so it is a
 # leaf that no CUI guest ever calls into.
-WOW64_HOST_NAMES := wow64 wow64cpu wow64win win32u
-WOW64_HOST_DLLS := $(foreach d,$(WOW64_HOST_NAMES),$(WINESTRIP)/$(d).dll)
-$(foreach d,$(WOW64_HOST_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+#
+# It is listed apart from the trio because on a GUI image it MUST NOT be
+# copied: there, system32\win32u.dll is this build's IMPLEMENTATION (the
+# $(WIN32U) link above), and the two files have the same name. Staging the
+# stock thunks after it wins the mcopy -o race and hands every 64-bit GUI
+# process a win32u whose NtUser* entry points issue syscalls at a kernel that
+# mints none — which is exactly what it did: conhost took a page fault inside
+# its first NtUserCreateWindowEx before the console window ever appeared.
+# wow64win is happy either way; the implementation exports every name it
+# imports (see WOW64_GUI_NAMES).
+WOW64_STOCK_W32U := win:$(WINESTRIP)/win32u.dll=windows/system32/win32u.dll
+$(eval $(call WINESTRIP_RULE,win32u))
 
-# The full guest payload as mkimage `win:` specs: the i386 set under
-# syswow64, the wow64 host trio under system32.
-WOW64FILES := $(foreach d,$(WINESTRIP32_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
-              $(foreach p,$(WINESTRIP32_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe) \
-              $(foreach d,$(WOW64_HOST_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll)
-WOW64_PAYLOAD := $(WINESTRIP32_DLLS) $(WINESTRIP32_EXES) $(WOW64_HOST_DLLS)
+# The guest payload as mkimage `win:` specs, split so a GUI image can take
+# the halves it wants: the i386 set under syswow64, the wow64 host trio under
+# system32, and (CUI only) the stock win32u.
+WOW64GUESTFILES := $(foreach d,$(WINESTRIP32_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
+              $(foreach p,$(WINESTRIP32_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe)
+WOW64HOSTFILES := $(foreach d,$(WOW64_HOST_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll)
+WOW64FILES := $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64_STOCK_W32U)
+WOW64_GUEST_PAYLOAD := $(WINESTRIP32_DLLS) $(WINESTRIP32_EXES) $(WOW64_HOST_DLLS)
+WOW64_PAYLOAD := $(WOW64_GUEST_PAYLOAD) $(WINESTRIP)/win32u.dll
 
 .PHONY: wow64strip
 wow64strip: $(WOW64_PAYLOAD)
@@ -1343,6 +1359,80 @@ APPLETFILES := $(foreach d,$(WINESTRIP_APPLET_NAMES),win:$(WINESTRIP)/$(d).dll=w
                win:$(WINESTRIP)/comctl32_v6.dll=$(SXS_CC_DIR)/comctl32.dll \
                win:$(WINESTRIP)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR)).manifest
 
+# The 32-bit half of the same applet shelf, so `make rungui` can run a WOW64
+# GUI app (docs/02 WOW64 shipped the CUI half only). Nothing new is BUILT for
+# it: the i386 user32/gdi32 import the pinned tree's STOCK win32u.dll, which
+# on the guest side is nothing but syscall thunks — wow64cpu takes those
+# syscalls into 64-bit code, wow64.dll routes service table 1 to
+# wow64win.dll, and wow64win calls this build's own 64-bit win32u.dll, whose
+# NtUser*/NtGdi* exports it imports BY NAME (every one of the 483 it asks for
+# is exported — checked at link time by tools/gen_win32u_def.py's importer
+# proof, extended here to wow64win). So the 32-bit path reaches the one
+# desktop authority through the same door user32 does, and no second copy of
+# any of it exists (Art. 11).
+#
+# The name list is the i386 mirror of the WHOLE 64-bit shelf — the CUI set,
+# the GUI set and the applet closure — minus what WINESTRIP32_NAMES already
+# stages, plus the stock guest win32u. A mirror rather than a computed
+# closure because the 64-bit list already encodes what an import scan cannot
+# see: cryptbase is reached by a FORWARD from advapi32 (advapi32's
+# SystemFunction036 forwards there and appears in no import table), uxtheme
+# by a delay import, imm32 by user32's own init, riched20/oleaut32 by
+# LoadLibrary. The first cut of this list was the computed closure and the
+# guest died on exactly the forward: "module not found for forward
+# 'cryptbase.SystemFunction036'". What an applet never loads costs disk and
+# nothing else; what it does load costs a master of its own, since a 32-bit
+# image shares nothing with the 64-bit file of the same name (CUI-9 keys an
+# image master on the file, and these are different files).
+WOW64_GUI_NAMES := $(filter-out $(WINESTRIP32_NAMES), \
+                       $(WINESTRIP_NAMES) $(WINESTRIP_GUI_NAMES) $(WINESTRIP_APPLET_NAMES)) win32u
+WOW64_GUI_DLLS := $(foreach d,$(WOW64_GUI_NAMES),$(WINESTRIP32)/$(d).dll)
+$(foreach d,$(WOW64_GUI_NAMES),$(eval $(call WINESTRIP32_RULE,$(d))))
+
+# The applets themselves, the 64-bit shelf's list plus winemine. A 32-bit
+# process reaches these by NAME through the file redirector wow64.dll applies
+# to every guest syscall (dlls/wow64/file.c get_file_redirect): a guest
+# opening C:\windows\system32\notepad.exe gets syswow64\notepad.exe, so the
+# minted PATH=C:\windows\system32 resolves to whichever bitness asked.
+WOW64_APPLET_EXE_NAMES := $(WINESTRIP_APPLET_EXE_NAMES) winemine
+WOW64_APPLET_EXES := $(foreach p,$(WOW64_APPLET_EXE_NAMES),$(WINESTRIP32)/$(p).exe)
+$(foreach p,$(WOW64_APPLET_EXE_NAMES),$(eval $(call WINESTRIP32_EXE_RULE,$(p))))
+
+# The x86 arm of the Common-Controls SxS assembly. The 64-bit one above is
+# not shared: actctx resolves a dependent assembly against the CURRENT
+# process's architecture (third_party/wine dlls/ntdll/actctx.c current_archW
+# = L"x86" for i386), so a 32-bit applet looks up an x86_-prefixed directory
+# and manifest and dies in comdlg32's CreateActCtx without them.
+SXS_CC_DIR32 := windows/winsxs/x86_microsoft.windows.common-controls_6595b64144ccf1df_6.0.2600.2982_none_deadbeef
+$(eval $(call WINESTRIP32_RULE,comctl32_v6))
+$(WINESTRIP32)/common-controls.manifest: third_party/wine/dlls/comctl32_v6/comctl32.manifest
+	@mkdir -p $(dir $@)
+	sed 's/processorArchitecture=""/processorArchitecture="x86"/' $< > $@
+
+# The WOW64 GUI acceptance client (tests/run/run.sh wow64gui): the gui4a
+# shape built by the i686 toolchain against the pinned tree's i386 import
+# libraries. `_ntapi_start`, with the underscore: i386 PE decorates cdecl
+# symbols and the 64-bit spelling links to nothing.
+WOW64GUI := $(BUILD)/modules/wow64gui.exe
+WOW64GUI_LIBS := $(WINE_PE)/user32/i386-windows/libuser32.a \
+                 $(WINE_PE)/gdi32/i386-windows/libgdi32.a \
+                 $(WINE_PE)/kernel32/i386-windows/libkernel32.a \
+                 $(WINE_PE)/kernelbase/i386-windows/libkernelbase.a \
+                 $(WINE_PE)/ntdll/i386-windows/libntdll.a
+$(WOW64GUI): tests/gui/wow64gui.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW32) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Wl,--entry=_ntapi_start \
+	    tests/gui/wow64gui.c tests/ntapi/ntapi.c $(WOW64GUI_LIBS) -lgcc -o $@
+
+WOW64_GUI_PAYLOAD := $(WOW64_GUI_DLLS) $(WOW64_APPLET_EXES) $(WOW64GUI) \
+                     $(WINESTRIP32)/comctl32_v6.dll $(WINESTRIP32)/common-controls.manifest
+WOW64GUIFILES := $(foreach d,$(WOW64_GUI_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
+                 $(foreach p,$(WOW64_APPLET_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe) \
+                 win:$(WINESTRIP32)/comctl32_v6.dll=$(SXS_CC_DIR32)/comctl32.dll \
+                 win:$(WINESTRIP32)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR32)).manifest \
+                 win:$(WOW64GUI)=wow64gui.exe
+
 # GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
 # image — the full Wine userland + cmd.exe + interactive.flag, exactly the
 # make-run recipe — plus the GUI stack, the desktop server, and the
@@ -1359,17 +1449,24 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(CMD)=windows/system32/cmd.exe \
              win:$(LOOPER)=looper.exe \
              win:$(BUILD)/interactive.flag=interactive.flag \
-             $(APPLETFILES)
+             $(APPLETFILES) \
+             $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES)
 
+# 128 MiB rather than the default 64: this is the one image carrying both
+# bitnesses of the whole shelf, and the 32-bit half does not fit in what the
+# 64-bit half leaves (measured — 12 MiB free before, 32 MiB wanted). The ESP
+# still starts at sector 4096, so the fixed offset every reader uses
+# (tests/run/run.sh, tools/qemu.sh) is unchanged.
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
 $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
+        $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
+	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
 
 gui5con-img: $(IMG_GUI5CON)
 .PHONY: gui5con-img
