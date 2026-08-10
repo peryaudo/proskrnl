@@ -23,6 +23,14 @@ typedef struct
 {
     uint64_t pml4Physical;
     LIST_ENTRY vadListHead;
+    /* The machine this space's code runs as: IMAGE_FILE_MACHINE_AMD64, or
+     * I386 for a WOW64 process (ps/process.c stamps it from the main
+     * image). An image view whose machine differs reports
+     * STATUS_IMAGE_MACHINE_TYPE_MISMATCH — a SUCCESS-class status, so the
+     * view is still created and only a caller that inspects the value
+     * notices. Mm needs it here rather than reaching into EPROCESS because
+     * a view may be mapped into another process's space. */
+    USHORT machine;
 } MI_ADDRESS_SPACE, *PMI_ADDRESS_SPACE;
 
 /* One VAD; layout private to virtual.c. Section views (M5) traffic in
