@@ -236,3 +236,23 @@ NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t leng
     memcpy(destination, userSource, length);
     return STATUS_SUCCESS;
 }
+
+NTSTATUS KiCaptureTimeout(const LARGE_INTEGER *userTimeout, PLARGE_INTEGER captured,
+                          PLARGE_INTEGER *deadline)
+{
+    ASSERT(captured != 0 && deadline != 0);
+    /* Set on every path: a caller that ignores a failing status must not go
+     * on to park on an uninitialised deadline. */
+    *deadline = 0;
+    if (userTimeout == 0)
+    {
+        return STATUS_SUCCESS; /* wait forever — nothing to read */
+    }
+    NTSTATUS status = KiCopyFromUser(captured, userTimeout, sizeof(*captured));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *deadline = captured;
+    return STATUS_SUCCESS;
+}

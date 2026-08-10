@@ -587,12 +587,16 @@ NTSTATUS NtSetTimer(HANDLE handle, const LARGE_INTEGER *dueTime, PTIMER_APC_ROUT
          * never faked (docs/03). */
         return STATUS_NOT_IMPLEMENTED;
     }
-    NTSTATUS status = KiProbeForRead(dueTime, sizeof(*dueTime), sizeof(uint64_t));
+    /* Captured through KiCopyFromUser rather than probed-then-dereferenced:
+     * `*dueTime` on an ordinary WOW64 caller's 4-mod-8 LARGE_INTEGER is a
+     * UBSan alignment trap, and refusing it for alignment diverges from the
+     * oracle (uaccess.h KiCaptureTimeout says it at length). */
+    LARGE_INTEGER due;
+    NTSTATUS status = KiCopyFromUser(&due, dueTime, sizeof(due));
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    LARGE_INTEGER due = *dueTime;
 
     PVOID body;
     status = ObReferenceObjectByHandle(handle, TIMER_MODIFY_STATE, &ObpTimerType,
@@ -807,6 +811,16 @@ static NTSTATUS ObpKeyedEventOperation(HANDLE handle, const void *key, BOOLEAN a
     {
         return STATUS_INVALID_PARAMETER_1;
     }
+    /* Captured before anything is referenced or linked: the park below hands
+     * the deadline to the dispatcher, which must never see a user pointer
+     * (uaccess.h KiCaptureTimeout). */
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    NTSTATUS captureStatus = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(captureStatus))
+    {
+        return captureStatus;
+    }
     OBP_KEYED_EVENT *keyed;
     BOOLEAN referenced = FALSE;
     if (handle == 0)
@@ -869,8 +883,7 @@ static NTSTATUS ObpKeyedEventOperation(HANDLE handle, const void *key, BOOLEAN a
 
     if (parked)
     {
-        status = KeWaitForSingleObject(&self.wake, UserRequest, KernelMode, alertable,
-                                       (PLARGE_INTEGER)timeout);
+        status = KeWaitForSingleObject(&self.wake, UserRequest, KernelMode, alertable, deadline);
         flags = KiAcquireDispatcherLock();
         if (status == STATUS_SUCCESS)
         {
