@@ -29,7 +29,8 @@
 #define KI_GDT_USER_CS   0x30
 #define KI_GDT_TSS       0x40 /* 16-byte descriptor: slots 8+9 */
 #define KI_GDT_USER_FS32 0x50 /* per-thread, based at the TEB32 */
-#define KI_GDT_ENTRIES   11
+#define KI_GDT_LDT       0x58 /* 16-byte descriptor: slots 11+12 */
+#define KI_GDT_ENTRIES   13
 
 /* IST slot (1-based, TSS.IST[n-1]) for #DF: a kernel-stack overflow must
  * land the dump on a known-good stack instead of triple-faulting silently
@@ -79,6 +80,13 @@ void KiSetUserGsBase(uint64_t base);
  * non-WOW64 thread). Uniprocessor, so one descriptor rewritten at context
  * switch stands in for NT's per-processor GDT (Art. 3). */
 void KiSetUserFs32Base(uint64_t teb32);
+
+/* Install the current process's LDT (base = its kernel VA, or 0 for the
+ * processes that never called NtSetLdtEntries — which is nearly all of
+ * them). `limit` is the table's last byte. Uniprocessor, so one GDT slot
+ * rewritten at context switch stands in for NT's per-processor GDT
+ * (Art. 3), exactly as the compat-mode FS descriptor above does. */
+void KiSetProcessLdt(uint64_t base, uint32_t limit);
 
 #endif /* __ASSEMBLER__ */
 

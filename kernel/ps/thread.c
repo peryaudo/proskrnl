@@ -1705,10 +1705,15 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * STATUS_UNSUCCESSFUL. Pinned by
          * tests/ntapi/sem_ps/thread_info_sweep.c.
          *
-         * An LDT selector keeps the loud refusal: the LDT is a 32-bit
-         * concept, WOW64 is a later milestone (docs/02), and proskrnl has
-         * no LDT to answer from — inventing an entry is exactly the
-         * fabrication Art. 12 forbids. */
+         * An LDT selector answers the same way, which sem_ps/ldt.c measured
+         * rather than assumed: a 64-bit thread has no LDT for the lookup to
+         * reach, so the oracle never gets as far as STATUS_NO_LDT and
+         * refuses the whole 0x00..0xff range identically. ntdll:wow64's
+         * test_selectors sweeps exactly that range through
+         * RtlWow64GetThreadSelectorEntry, which asks here first and
+         * synthesizes a descriptor PE-side on refusal — so the refusal IS
+         * the contract, and the pre-WOW64 STATUS_NOT_IMPLEMENTED on the LDT
+         * half was fatal the moment the sweep walked past selector 3. */
         if (length != sizeof(THREAD_DESCRIPTOR_INFORMATION))
         {
             return STATUS_INFO_LENGTH_MISMATCH;
@@ -1724,15 +1729,29 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         {
             return access;
         }
+        /* An LDT selector may name a real entry, once the process has set
+         * one (kernel/ps/ldt.c; a 64-bit thread of a process that never
+         * called NtSetLdtEntries has no LDT, which is the uniform refusal
+         * sem_ps/ldt.c pins). Read back byte-exact — the caller memcmps
+         * what it wrote. */
         THREAD_DESCRIPTOR_INFORMATION descriptor;
         memcpy(&descriptor, buffer, sizeof(descriptor));
-        if ((descriptor.Selector >> 16) != 0 || (descriptor.Selector & 4) == 0)
+        if ((descriptor.Selector >> 16) == 0 && (descriptor.Selector & 4) != 0 &&
+            PspQueryLdtEntry(KeGetCurrentThread()->process, descriptor.Selector, &descriptor.Entry))
         {
-            return STATUS_UNSUCCESSFUL;
+            status = KiProbeForWrite(buffer, sizeof(descriptor), sizeof(ULONG));
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            memcpy(buffer, &descriptor, sizeof(descriptor));
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(descriptor.Entry);
+            }
+            return STATUS_SUCCESS;
         }
-        DbgPrint("NtQueryInformationThread: no LDT (selector %#lx)\n",
-                 (unsigned long)descriptor.Selector);
-        return STATUS_NOT_IMPLEMENTED;
+        return STATUS_UNSUCCESSFUL;
     }
     case ThreadNameInformation:
     {
