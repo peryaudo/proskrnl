@@ -940,10 +940,67 @@ Five things worth carrying:
   (`MiAcquireImageRawBytes`: "memcpy, never I/O"). The mandate is load-bearing
   here rather than merely simplifying.
 
+**The page-protection MODIFIER BITS are DONE** (`kernel32:virtual` 12 → **4**), and this
+is the item where the block's own grouping was wrong in the *helpful* direction: it listed
+"WriteProcessMemory (3)" and "a MEMORY_BASIC_INFORMATION protect group (5)" as two of its
+four subjects, and they are **one cause** — how much of a `PAGE_*` word each entry point
+reads. `docs/03` "The page-protection modifier bits" has the table and the five things it
+settles; three belong here:
+
+- **The mask is not uniform across the boundary, and the tidy rule is the wrong one.**
+  `get_vprot_flags` reads `protect & 0xff` plus `PAGE_GUARD`; `NtCreateSection` reads
+  `protect & 0xff`; `NtMapViewOfSection` reads the word **whole** and refuses any modifier —
+  `PAGE_GUARD` included. So "canonicalize wherever a protection is captured" passes every
+  assertion in the pair and admits a view the oracle refuses. Same shape as W11's "every
+  defect in this item was an ORDER or a MASK, not a value", and the discriminating case is
+  again one no winetest makes.
+- **`PAGE_NOCACHE` is a property of the RESERVATION, and the oracle refuted the first
+  draft.** The pin asserted it was dropped with the others; it is kept, in the *view's* word,
+  written once in the reserve arm and readable neither out nor in afterwards. That single bit
+  was five failures — and only two of them read as protections: `:517`'s "wrong size 1000" is
+  the same cause one step out, a re-protected page differing from its neighbour by the
+  `PAGE_NOCACHE` bit alone and splitting the reported region run. **A per-page store for a
+  per-view property shows up as a region-size bug.**
+- **Widening the validation is half the fix.** `MEMORY_BASIC_INFORMATION.Protect` is read
+  back out of the stored protection, so a kernel that accepts the caller's word and keeps it
+  answers every status correctly and then reports a value no NT produces. The oracle rebuilds
+  the reported protection from the flags it kept, and that is the part an implementation
+  written from a status table misses.
+
+**The partial-write COUNT went with it** (the other two of the eight): `NtWriteVirtualMemory`
+reports the prefix it managed where `NtReadVirtualMemory` reports zero, an asymmetry that
+lives entirely in two adjacent PE-side functions. `MiCopyToUserRangeChecked` already returned
+the byte-accurate number; the syscall wrote the caller's slot on full success only. Pinned by
+`tests/ntapi/sem_ps/virtual_memory.c`.
+
+**And the measurement corrected two things this document and the manifest both had wrong,
+which is worth more than the four assertions.** `kernel32:virtual` **PANICS** — `virtual.c:869`
+creates a `SEC_RESERVE` mapping and `mm/section.c` has answered `STATUS_NOT_IMPLEMENTED`
+there since M5 — so it is a *stopped* pair and every count it has ever carried (4148, 40, 12,
+4) is a lower bound over the same measured prefix. §4 trap 2 lists the panicking pairs by
+name and this one is not among them. The manifest's "~285 seconds, the slowest in the
+manifest" does not reproduce either: both legs together are ~10 s on this box, because the
+proskrnl leg stops after ~5 s of guest time. **A pair that stops fast reads like a pair that
+is nearly green, and this one had been read that way for three revisions.**
+
 What is left under this heading:
 
 - **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
-  wants. Untouched by the above.
+  wants. Untouched by the above, and it is now the pair's **stop** rather than
+  one of its items: `NtCreateSection` answers `STATUS_NOT_IMPLEMENTED` for it
+  and the armed panic flag makes that fatal, so everything past
+  `virtual.c:869` is unmeasured. The contract the pair states is bigger than
+  "reserve instead of commit": two views of one `SEC_RESERVE` section share
+  COMMIT state, so a `VirtualAlloc(MEM_COMMIT)` through one view must show
+  through `VirtualQuery` on the other (`virtual.c:928-:945`), and
+  `MEM_DECOMMIT` over such a view must fail `ERROR_INVALID_PARAMETER`. That is
+  a commit ledger on the SECTION, not on the VAD.
+- **`SEC_NOCACHE` on a SECTION**, the other half of the modifier-bit item
+  above. The private-memory rule is built and pinned; a section created with
+  `SEC_NOCACHE` still loses the flag, so its views report a protection without
+  `PAGE_NOCACHE` where the oracle reports one. No baked consumer and no
+  winetest assertion reaches it; `docs/03` carries the deviation. It is the
+  same one-field shape as `MI_VAD.noCache`, on the section instead.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
   `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in
   `NtUnmapViewOfSectionEx` still refuse loudly. Mapping a section *into* a
@@ -1754,7 +1811,11 @@ Pairs and framings that will consume effort and unblock nothing.
    1199 the moment its panic was removed, and nothing about it changed for
    the worse. Every pair here that ends in a PANIC or a kill —
    `ntdll:{info,file}`, `kernel32:{mailslot,fiber}` — carries the same
-   unknown, and their counts are lower bounds.
+   unknown, and their counts are lower bounds. **`kernel32:virtual` is on
+   that list too and was not, for three revisions**: it panics at
+   `virtual.c:869`'s `SEC_RESERVE` mapping, having executed 13 of the
+   module's tests where the oracle executes 30936, and its block read as a
+   nearly-green pair with four small subjects left.
 
 3. **A crash is usually a cascade, not the bug — and "zero failures before
    the crash" does not make it one.** `kernel32:volume` and

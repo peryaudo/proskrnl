@@ -2118,6 +2118,64 @@ both ways by the same file. If a real caller is ever found to branch on
 `ERROR_INVALID_ADDRESS` there, that caller is evidence for Windows' answer and the change is
 its own commit with its own pin.
 
+## The page-protection modifier bits, and where the mask stops
+
+A Win32 page protection is a base protection in its **low byte** plus modifier flags above
+it, and how much of the word a syscall reads is *not* uniform across the boundary. Getting
+that wrong is what broke `WriteProcessMemory` outright: kernelbase makes a non-writable range
+writable for the duration of the copy with
+`PAGE_EXECUTE_READWRITE | PAGE_TARGETS_NO_UPDATE | PAGE_ENCLAVE_NO_CHANGE`
+(`dlls/kernelbase/memory.c`), `MiCheckPageProtect` refused the whole word, and
+`STATUS_INVALID_PAGE_PROTECTION` reaches the caller as `ERROR_INVALID_PARAMETER` — so every
+`WriteProcessMemory` into a read-only or executable range failed (`kernel32:virtual:236`).
+Nothing deviates now; the three masks are the oracle's and they are pinned by
+`tests/ntapi/sem_mm/protect_modifier_bits.c`:
+
+| entry point | what it reads | a modifier bit is |
+|---|---|---|
+| `NtAllocateVirtualMemory` / `NtProtectVirtualMemory` (`get_vprot_flags`) | `protect & 0xff`, plus `PAGE_GUARD` | accepted, dropped |
+| `NtCreateSection` (`dlls/ntdll/unix/sync.c`) | `protect & 0xff` | accepted |
+| `NtMapViewOfSection` (`virtual_map_section`) | `switch (protect)`, no mask at all | `STATUS_INVALID_PAGE_PROTECTION` |
+
+The last row is why this is a table rather than one function: "mask the modifier bits off
+wherever a protection is captured" is the tidy rule, it passes every winetest assertion, and
+it admits a view the oracle refuses — including one asking for `PAGE_GUARD`, which the
+private path keeps. `MiStoredPageProtect` is therefore applied at exactly the two places the
+oracle calls `get_vprot_flags` (`MiAllocateVirtualMemoryEx` and `MiProtectVirtualMemory`) and
+nowhere near `mm/section.c`.
+
+**Dropping the bits is not enough on its own: they must not be STORED.**
+`MEMORY_BASIC_INFORMATION.Protect` is read back out of the recorded per-page protection,
+while the oracle rebuilds it from the kept flags alone (`get_win32_prot`:
+`VIRTUAL_Win32Flags[vprot & 0x0f]`, plus `PAGE_GUARD`). An implementation that only widens
+its *validation* answers every status correctly and then reports a protection value no NT
+ever produces.
+
+**`PAGE_NOCACHE` is the exception, and it belongs to the RESERVATION rather than to the
+page.** The oracle records it in the *view's* own protect word, once, in the reserve arm —
+`if (protect & PAGE_NOCACHE) vprot |= SEC_NOCACHE;`, inside `allocate_virtual_memory`'s
+`(type & MEM_RESERVE) || !base` branch — and reads it back from there on every query
+(`get_win32_prot`'s `if (map_prot & SEC_NOCACHE) ret |= PAGE_NOCACHE;`). So it is sticky and
+write-once in three directions a per-page implementation reproduces in none: a later
+`NtProtectVirtualMemory` can neither remove it nor add it, and neither can a `MEM_COMMIT`
+into an existing reservation, which takes the other branch. proskrnl now keeps it on the VAD
+(`MI_VAD.noCache`) and re-applies it at every report site. The first draft of the pin
+asserted the obvious thing — that `PAGE_NOCACHE` was dropped like the others — and **the
+oracle refuted it** (Art. 6).
+
+That one bit was five of `kernel32:virtual`'s failures, and only two of them look like
+protections: `:517`'s "wrong size 1000" is the same cause one step out, because a
+re-protected page then differed from its neighbour by the `PAGE_NOCACHE` bit alone and split
+the reported region run in half.
+
+**What is still unbuilt is the SECTION half of the same bit, and it is a deviation.** A
+section created with `SEC_NOCACHE` keeps the flag on the oracle (`server/mapping.c` preserves
+it into `sec_flags`, which becomes the view's protect word), so every view of it reports
+`PAGE_NOCACHE`. `MiCreateSection`'s attribute switch never looks at `SEC_NOCACHE`, so
+proskrnl's views report the protection without it. Nothing in the baked stack or the winetest
+manifest reaches it; it is recorded here rather than fixed because the fix is the same
+one-field shape on the *section*, and it should land with a pin of its own (`docs/21` W5).
+
 ## What a live SECTION holds against a later OPEN
 
 NT models a section as a **pseudo-open of the file**, and the pinned oracle says so
