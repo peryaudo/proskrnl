@@ -24,6 +24,24 @@
 
 #define KIPCR_KERNEL_RSP 0
 #define KIPCR_USER_RSP   8
+#define KIPCR_USER_FS32  16
+
+/* Load the ring-3 data selectors before an iretq to user mode. iretq
+ * NULLIFIES any data segment whose descriptor DPL is below the new CPL, so
+ * without this user mode runs with ds = es = fs = 0 — which is invisible to
+ * 64-bit code (segments are ignored) and fatal to a WOW64 guest: wow64cpu
+ * captures the live %ds and %fs with RtlCaptureContext and restores the
+ * guest through them (dlls/wow64cpu/cpu.c BTCpuProcessInit), and compat mode
+ * enforces the limits a null selector does not have. FS carries the thread's
+ * TEB32 descriptor for a WOW64 thread and null for every other, which is
+ * what the PCR field selects. Must run BEFORE swapgs, while GS is the PCR. */
+.macro KI_LOAD_USER_SEGMENTS
+    movl %gs:KIPCR_USER_FS32, %eax
+    movw %ax, %fs
+    movl $(KI_GDT_USER_DS | 3), %eax
+    movw %ax, %ds
+    movw %ax, %es
+.endm
 
 /* The synthetic trap-frame vector marking a syscall entry (>= 32, so it is
  * never confused with a CPU exception vector; not delivered anywhere). */
@@ -76,6 +94,10 @@ KiSystemCall64:
      * common ring-transition return. */
     .global KiReturnToUser
 KiReturnToUser:
+    /* Before the pops: the macro needs a scratch register, and every GPR is
+     * still on the stack here — doing it after would hand user mode a
+     * clobbered RAX (i.e. the syscall's return value). */
+    KI_LOAD_USER_SEGMENTS
     popq %r15
     popq %r14
     popq %r13
@@ -116,6 +138,7 @@ KiEnterUserMode:
     pushq %rdi                  /* RIP */
     movq %rcx, %rdx            /* user rdx = arg2 */
     movq %rax, %rcx            /* user rcx = arg1 */
+    KI_LOAD_USER_SEGMENTS      /* clobbers eax; the zeroing below follows */
     xorl %eax, %eax
     xorl %ebx, %ebx
     xorl %esi, %esi

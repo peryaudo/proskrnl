@@ -353,6 +353,12 @@ static void KiLoadThreadHardwareState(PKTHREAD next)
         KiSetKernelStack(next->stackTop);
     }
     KiSetUserGsBase((uint64_t)(uintptr_t)next->teb);
+    /* WOW64: the compat-mode FS descriptor is per-thread (it is BASED at the
+     * thread's TEB32), so it is switched here with the rest of the hardware
+     * thread state. Uniprocessor, so one GDT slot rewritten in place stands
+     * in for NT's per-processor GDT (Art. 3). A thread of a 64-bit process
+     * answers 0, which also clears the selector the return path loads. */
+    KiSetUserFs32Base(PspWow64Fs32Base(next));
 
     uint64_t pml4 = next->process->addressSpace.pml4Physical;
     uint64_t cr3;

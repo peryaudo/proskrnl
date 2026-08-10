@@ -399,7 +399,7 @@ static ULONG PspGetDwordOption(HANDLE key, PCWSTR name, ULONG defaultValue)
  * NtCreateUserProcess, and every pointer here is a kernel pointer.
  * Consumer: kernel32:heap test_debug_heap children (RtlGetNtGlobalFlags). */
 #define PSP_IFEO_BASENAME_MAX 64
-static ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyFoundOut)
+ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyFoundOut)
 {
     PKTHREAD thread = KeGetCurrentThread();
     KPROCESSOR_MODE savedMode = thread->previousMode;
@@ -454,7 +454,10 @@ static ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *im
     }
 
     thread->previousMode = savedMode;
-    *imageKeyFoundOut = imageKeyFound;
+    if (imageKeyFoundOut != 0)
+    {
+        *imageKeyFoundOut = imageKeyFound;
+    }
     return globalFlag;
 }
 
@@ -676,9 +679,17 @@ NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackAllocationBase, uint64_t s
      * exactly as Wine's own TEB constructor seeds it (third_party/wine
      * dlls/ntdll/unix/virtual.c init_teb): an empty activation-context
      * stack (actctx.c walks ActivationContextStackPointer->ActiveFrame
-     * unconditionally), the static-string buffer, and the x64 no-exception
-     * list marker. All pointers are USER VAs into this same block. */
-    teb->Tib.ExceptionList = (void *)~(uintptr_t)0;
+     * unconditionally) and the static-string buffer. All pointers are USER
+     * VAs into this same block.
+     *
+     * Tib.ExceptionList is deliberately NOT among them. x64 SEH is
+     * table-driven, so the field is dead on a 64-bit TEB and init_teb
+     * leaves it zero there; the ~0 "empty chain" marker is the THIRTY-TWO
+     * bit convention and belongs only on a TEB32 (virtual.c:4003/:4016),
+     * while a wow64 TEB64 carries the TEB32 POINTER instead (:4020, written
+     * by ps/wow64.c). Seeding ~0 here made every 64-bit thread claim a
+     * bogus SEH chain head; sem_ps/wow64_process.c's 64-bit control arm
+     * measures the difference. */
     teb->ActivationContextStackPointer =
         (ACTIVATION_CONTEXT_STACK *)(uintptr_t)(tebVa + offsetof(TEB, ActivationContextStack));
     uint64_t frameListVa = tebVa + offsetof(TEB, ActivationContextStack) +
