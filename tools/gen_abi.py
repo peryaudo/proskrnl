@@ -918,7 +918,10 @@ def gen_ntimage(wine: Path) -> str:
             "IMAGE_DOS_SIGNATURE",
             "IMAGE_NT_SIGNATURE",
             "IMAGE_NT_OPTIONAL_HDR64_MAGIC",
+            "IMAGE_NT_OPTIONAL_HDR32_MAGIC",
             "IMAGE_FILE_MACHINE_AMD64",
+            "IMAGE_FILE_MACHINE_I386",
+            "IMAGE_FILE_LARGE_ADDRESS_AWARE",
             "IMAGE_FILE_RELOCS_STRIPPED",
             "IMAGE_FILE_EXECUTABLE_IMAGE",
             "IMAGE_FILE_DLL",
@@ -952,6 +955,11 @@ def gen_ntimage(wine: Path) -> str:
             ("_IMAGE_DATA_DIRECTORY", "IMAGE_DATA_DIRECTORY"),
             ("_IMAGE_OPTIONAL_HEADER64", "IMAGE_OPTIONAL_HEADER64"),
             ("_IMAGE_NT_HEADERS64", "IMAGE_NT_HEADERS64"),
+            # PE32 (WOW64 milestone): winnt.h's 32-bit optional header keeps
+            # its reserved _IMAGE_OPTIONAL_HEADER/_IMAGE_NT_HEADERS tags but
+            # typedefs the 32-suffixed names.
+            ("_IMAGE_OPTIONAL_HEADER", "IMAGE_OPTIONAL_HEADER32"),
+            ("_IMAGE_NT_HEADERS", "IMAGE_NT_HEADERS32"),
             ("_IMAGE_SECTION_HEADER", "IMAGE_SECTION_HEADER"),
             ("_IMAGE_BASE_RELOCATION", "IMAGE_BASE_RELOCATION"),
             ("_IMAGE_EXPORT_DIRECTORY", "IMAGE_EXPORT_DIRECTORY"),
@@ -967,6 +975,10 @@ _Static_assert(sizeof(IMAGE_OPTIONAL_HEADER64) == 240, "IMAGE_OPTIONAL_HEADER64 
 _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, ImageBase) == 24, "IMAGE_OPTIONAL_HEADER64 layout");
 _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve) == 72, "IMAGE_OPTIONAL_HEADER64 layout");
 _Static_assert(offsetof(IMAGE_NT_HEADERS64, OptionalHeader) == 24, "IMAGE_NT_HEADERS64 layout");
+_Static_assert(sizeof(IMAGE_OPTIONAL_HEADER32) == 224, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec: PE32 optional header, 0xE0)");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER32, ImageBase) == 28, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec)");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER32, SizeOfStackReserve) == 72, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec)");
+_Static_assert(offsetof(IMAGE_NT_HEADERS32, OptionalHeader) == 24, "IMAGE_NT_HEADERS32 layout");
 _Static_assert(sizeof(IMAGE_SECTION_HEADER) == IMAGE_SIZEOF_SECTION_HEADER, "IMAGE_SECTION_HEADER layout");
 _Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout");
 _Static_assert(sizeof(IMAGE_EXPORT_DIRECTORY) == 40, "IMAGE_EXPORT_DIRECTORY layout");
@@ -1885,6 +1897,135 @@ _Static_assert(offsetof(EXCEPTION_RECORD, ExceptionInformation) == 0x20, "EXCEPT
         + " * header the struct was extracted from (Art. 4). */\n"
         + gen_offset_asserts(context, "CONTEXT")
         + "\n\n#endif /* PROSKRNL_ABI_NTCONTEXT_H */\n"
+    )
+
+
+# WOW64 (docs/02 final milestone; ADR 0006): the 32-bit mirrors a WOW64
+# process exposes — PEB32/TEB32 at fixed offsets inside the 64-bit blocks,
+# the 32-bit process parameters, the guest I386_CONTEXT, and the wow64.dll
+# handshake structures (WOW64INFO, WOW64_CPURESERVED, SYSTEM_DLL_INIT_BLOCK).
+def gen_ntwow64(wine: Path) -> str:
+    winternl = (wine / "include/winternl.h").read_text()
+    winnt = (wine / "include/winnt.h").read_text()
+
+    ctx_defines = extract_defines(
+        winnt,
+        "winnt.h",
+        [
+            "I386_SIZE_OF_80387_REGISTERS",
+            "I386_MAXIMUM_SUPPORTED_EXTENSION",
+            "CONTEXT_i386",
+            "CONTEXT_I386_CONTROL",
+            "CONTEXT_I386_INTEGER",
+            "CONTEXT_I386_SEGMENTS",
+            "CONTEXT_I386_FLOATING_POINT",
+            "CONTEXT_I386_DEBUG_REGISTERS",
+            "CONTEXT_I386_EXTENDED_REGISTERS",
+            "CONTEXT_I386_XSTATE",
+            "CONTEXT_I386_FULL",
+            "CONTEXT_I386_ALL",
+        ],
+    )
+    wow_defines = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "WOW64_CPURESERVED_FLAG_RESET_STATE",
+            "WOW64_CPUFLAGS_MSFT64",
+            "WOW64_CPUFLAGS_SOFTWARE",
+            "WOW64_TLS_CPURESERVED",
+            "WOW64_TLS_WOW64INFO",
+            "WOW64_TLS_MAX_NUMBER",
+        ],
+    )
+
+    tib32 = extract_struct(winnt, "_NT_TIB32", "NT_TIB32")
+    fsave = extract_struct(winnt, "_I386_FLOATING_SAVE_AREA", "I386_FLOATING_SAVE_AREA")
+    i386_context = extract_struct(winnt, "_I386_CONTEXT", "I386_CONTEXT")
+
+    small_structs = "\n\n".join(
+        [
+            extract_struct(winternl, "_LIST_ENTRY32", "LIST_ENTRY32"),
+            extract_struct(winternl, "_UNICODE_STRING32", "UNICODE_STRING32"),
+            extract_struct(winternl, "_CLIENT_ID32", "CLIENT_ID32"),
+            extract_struct(
+                winternl, "_ACTIVATION_CONTEXT_STACK32", "ACTIVATION_CONTEXT_STACK32"
+            ),
+            extract_struct(winternl, "_CURDIR32", "CURDIR32"),
+            extract_struct(
+                winternl, "RTL_DRIVE_LETTER_CURDIR32", "RTL_DRIVE_LETTER_CURDIR32"
+            ),
+        ]
+    )
+    params32 = extract_struct(
+        winternl, "_RTL_USER_PROCESS_PARAMETERS32", "RTL_USER_PROCESS_PARAMETERS32"
+    )
+    peb32 = extract_struct(winternl, "_PEB32", "PEB32")
+    teb32 = extract_struct(winternl, "_TEB32", "TEB32")
+    cpureserved = extract_struct(winternl, "_WOW64_CPURESERVED", "WOW64_CPURESERVED")
+    cpu_area = extract_struct(winternl, "_WOW64_CPU_AREA_INFO", "WOW64_CPU_AREA_INFO")
+    wow64info = extract_struct(winternl, "_WOW64INFO", "WOW64INFO")
+    init_block = extract_anonymous_struct(winternl, "SYSTEM_DLL_INIT_BLOCK")
+
+    # Wine's own C_ASSERT is the size pin; carry its value, never retype it.
+    info_size = re.search(r"C_ASSERT\(\s*sizeof\(WOW64INFO\)\s*==\s*(\d+)\s*\)", winternl)
+    if not info_size:
+        sys.exit("gen_abi: WOW64INFO C_ASSERT not found in winternl.h")
+
+    scaffold = """\
+/* Pointer-free 32-bit mirrors: every member is a ULONG/ULONG64, so the
+ * structs are layout-correct in a 64-bit kernel build as-is. */
+typedef ULONG ULONG32;
+"""
+
+    return (
+        BANNER.format(
+            name="abi/ntwow64.h", source="wine/include/{winternl.h,winnt.h}"
+        )
+        + "#ifndef PROSKRNL_ABI_NTWOW64_H\n"
+        + "#define PROSKRNL_ABI_NTWOW64_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntcontext.h" /* ULONG64, DECLSPEC_ALIGN */\n'
+        + '#include "abi/ntpebteb.h"  /* GUID */\n\n'
+        + scaffold
+        + "\n/* Extracted from wine/include/winnt.h. */\n"
+        + ctx_defines
+        + "\n\n"
+        + tib32
+        + "\n\n"
+        + fsave
+        + "\n\n"
+        + i386_context
+        + "\n\n/* Extracted from wine/include/winternl.h. */\n"
+        + wow_defines
+        + "\n\n"
+        + small_structs
+        + "\n\n"
+        + params32
+        + "\n\n"
+        + peb32
+        + "\n\n"
+        + teb32
+        + "\n\n"
+        + cpureserved
+        + "\n\n"
+        + cpu_area
+        + "\n\n"
+        + wow64info
+        + "\n\n/* win10-2004 layout (wine winternl.h: \"undocumented layout of\n"
+        + " * LdrSystemDllInitBlock\"): the block the creator fills in both the\n"
+        + " * 64-bit and 32-bit ntdll before the first thread enters user mode. */\n"
+        + init_block
+        + "\n\n#include <stddef.h>\n"
+        + f'_Static_assert(sizeof(WOW64INFO) == {info_size.group(1)}, "WOW64INFO size (C_ASSERT in the Wine header)");\n'
+        + "/* Layout pins, generated from the offset comments in the SAME Wine\n"
+        + " * headers the structs were extracted from (Art. 4). */\n"
+        + gen_offset_asserts(peb32, "PEB32")
+        + "\n"
+        + gen_offset_asserts(teb32, "TEB32")
+        + "\n"
+        + gen_offset_asserts(i386_context, "I386_CONTEXT")
+        + "\n\n#endif /* PROSKRNL_ABI_NTWOW64_H */\n"
     )
 
 
@@ -3269,6 +3410,7 @@ def main() -> None:
         ("ntcontext.h", gen_ntcontext(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
         ("ntpebteb.h", gen_ntpebteb(args.wine)),
+        ("ntwow64.h", gen_ntwow64(args.wine)),
         ("ntkeapi.h", gen_ntkeapi(args.wine)),
         ("ntregapi.h", gen_ntregapi(args.wine)),
         ("ntseapi.h", gen_ntseapi(args.wine)),
