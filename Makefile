@@ -101,6 +101,8 @@ CSRC := kernel/init/main.c \
         kernel/ps/query.c \
         kernel/ps/nls.c \
         kernel/ps/job.c \
+        kernel/ps/debug.c \
+        kernel/ps/ldt.c \
         kernel/ps/atom.c \
         kernel/ps/display.c \
         kernel/se/token.c \

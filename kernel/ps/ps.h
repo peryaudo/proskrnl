@@ -146,6 +146,20 @@ typedef struct EPROCESS
     LIST_ENTRY jobLinks; /* on EJOB.processList while job != 0 */
     BOOLEAN jobExitNotified;
 
+    /* WOW64 milestone (kernel/ps/debug.c, ADR 0011's attach-only
+     * amendment): the debug object attached to this process, referenced
+     * while attached and dropped by PspDetachDebugObject — which process
+     * teardown also calls, so a target that exits while attached releases
+     * it. There is no event queue behind this; the whole observable effect
+     * is PEB.BeingDebugged. */
+    struct EDEBUGOBJECT *debugObject;
+    LIST_ENTRY debugLinks; /* on EDEBUGOBJECT.processList while attached */
+
+    /* WOW64 milestone (kernel/ps/ldt.c): the process's LDT, allocated on the
+     * first NtSetLdtEntries and freed at delete. 0 for every process that
+     * never asks, which is nearly all of them. */
+    void *ldt;
+
     /* CUI-3: ProcessWineMakeProcessSystem's mark (kernel/ps/query.c) — the
      * process no longer counts toward the live-user-process total whose
      * zero-crossing signals the global shutdown event — and the
@@ -253,6 +267,21 @@ typedef struct ETHREAD
 extern OBJECT_TYPE PspThreadType;
 
 extern OBJECT_TYPE PspProcessType;
+
+/* WOW64 milestone (kernel/ps/ldt.c): the per-process LDT. Loaded into the
+ * GDT's LDT slot at context switch, read back by
+ * NtQueryInformationThread(ThreadDescriptorTableEntry), released at
+ * process delete. */
+void PspLoadProcessLdt(PEPROCESS process);
+BOOLEAN PspQueryLdtEntry(PEPROCESS process, ULONG selector, void *entryOut);
+void PspFreeLdt(PEPROCESS process);
+
+extern OBJECT_TYPE PspDebugObjectType; /* WOW64 milestone, kernel/ps/debug.c */
+
+/* Drop this process's debug attachment, if any: the ONE unlink site, shared
+ * by NtRemoveProcessDebug, the debug object's kill-on-close, and process
+ * teardown. */
+void PspDetachDebugObject(PEPROCESS process);
 
 extern OBJECT_TYPE PspJobType; /* CUI-3, kernel/ps/job.c */
 
