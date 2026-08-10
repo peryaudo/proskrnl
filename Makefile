@@ -196,6 +196,7 @@ MODULES   := $(BUILD)/modules/alloc_wait.bin $(BUILD)/modules/crash.bin \
              $(BUILD)/modules/m8_persist.bin \
              $(BUILD)/modules/pe_smoke.exe $(BUILD)/modules/m7_smoke.exe \
              $(BUILD)/modules/abi_probe.exe \
+             $(BUILD)/modules/pe32_probe.exe \
              $(BUILD)/modules/sample.dat
 # Each boot module is passed to mkimage as <binary>=<cmdline>; the kernel
 # reads the cmdline as the module's expected outcome, or "initrd" for a
@@ -206,6 +207,7 @@ MODULE_SPECS := $(BUILD)/modules/alloc_wait.bin=expect=0 \
                 $(BUILD)/modules/pe_smoke.exe=expect=0 \
                 $(BUILD)/modules/m7_smoke.exe=m7 \
                 $(BUILD)/modules/abi_probe.exe=abi \
+                $(BUILD)/modules/pe32_probe.exe=initrd \
                 $(BUILD)/modules/sample.dat=initrd
 
 # --- M5 PE user client + RAM-disk seed data --------------------------------
@@ -220,6 +222,9 @@ MINGW ?= x86_64-w64-mingw32-gcc
 # is the only way to tell a symbol this build defines from one the linker
 # quietly bound to a DLL import (see the win32u.dll link rule).
 MINGW_OBJDUMP ?= x86_64-w64-mingw32-objdump
+# The i386 cross, for the one PE32 artifact the image parser is tested
+# against (WOW64 milestone). tools/setup_linux.sh installs it.
+MINGW32 ?= i686-w64-mingw32-gcc
 PECFLAGS := -std=c11 -mabi=sysv -ffreestanding -fno-builtin -nostdlib -nostartfiles \
             -O1 -g0 -Wall -Wextra -Wno-unused-parameter -I. \
             -Wl,--entry=pe_start -Wl,--dynamicbase -Wl,--pic-executable -Wl,--high-entropy-va
@@ -268,6 +273,15 @@ $(BUILD)/modules/%.bin: $(BUILD)/tests/boot/%.o $(USER_RT) tests/boot/user.ld
 $(BUILD)/modules/pe_smoke.exe: tests/boot/pe_smoke.c tests/ntapi/syscall/syscall_stubs.S
 	@mkdir -p $(dir $@)
 	$(MINGW) $(PECFLAGS) $^ -o $@
+
+# The PE32 parser fixture (WOW64): a genuine i386 container, carried as an
+# initrd file and never executed — see the source. --dynamicbase is what
+# makes the linker keep the .reloc directory the kmt case relocates through.
+$(BUILD)/modules/pe32_probe.exe: tests/boot/pe32_probe.c
+	@mkdir -p $(dir $@)
+	$(MINGW32) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. \
+	    -Wl,--entry=_pe_start -Wl,--dynamicbase $< -o $@
 
 # The M7 PE client (docs/02 "Done when"): threads, PEB/TEB, the SEH test.
 # --export-all-symbols gives the image an export directory so the kernel's

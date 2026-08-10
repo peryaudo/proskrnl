@@ -562,11 +562,15 @@ static NTSTATUS MipBuildImageMaster(PMI_SECTION section, uint64_t base, PMI_IMAG
              * this field (loader.c: module == base → nothing to do), so
              * leaving the preferred base here would relocate the image a
              * SECOND time. Adding the delta to the stored preferred base
-             * lands on `base`. */
+             * lands on `base`. The field's offset and WIDTH follow the
+             * image's own optional-header form — a PE32 guest image keeps
+             * its ImageBase in 4 bytes, 16 earlier. */
+            BOOLEAN pe32 = image->machine == IMAGE_FILE_MACHINE_I386;
             MipMasterAddDelta(master,
                               (uint64_t)image->ntHeaderOffset +
-                                  offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase),
-                              8, delta);
+                                  (pe32 ? offsetof(IMAGE_NT_HEADERS32, OptionalHeader.ImageBase)
+                                        : offsetof(IMAGE_NT_HEADERS64, OptionalHeader.ImageBase)),
+                              pe32 ? 4 : 8, delta);
         }
     }
     if (tempRaw != 0)

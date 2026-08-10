@@ -192,7 +192,10 @@ static void test_file_section_consistency(void)
 
 /* The first DIR64 relocation in the image's .reloc directory, as an RVA;
  * ~0 when there is none. Walks the FILE bytes, like the mapper. */
-static uint64_t first_dir64_reloc(PKI_RAMDISK_FILE file, const MI_IMAGE_INFO *image)
+/* The first base relocation of the given type (IMAGE_REL_BASED_DIR64 for a
+ * PE32+ image, HIGHLOW for a PE32 one), or ~0 when the image carries none. */
+static uint64_t first_reloc_of_type(PKI_RAMDISK_FILE file, const MI_IMAGE_INFO *image,
+                                    unsigned type)
 {
     if (image->relocRva == 0)
         return ~0ULL;
@@ -218,7 +221,7 @@ static uint64_t first_dir64_reloc(PKI_RAMDISK_FILE file, const MI_IMAGE_INFO *im
             const USHORT *entries = (const USHORT *)(cursor + sizeof(IMAGE_BASE_RELOCATION));
             for (ULONG j = 0; j < count; j++)
             {
-                if ((entries[j] >> 12) == IMAGE_REL_BASED_DIR64)
+                if ((entries[j] >> 12) == type)
                     return block.VirtualAddress + (entries[j] & 0xFFF);
             }
             cursor += block.SizeOfBlock;
@@ -313,7 +316,7 @@ static void test_image_section(void)
              * assertion used to require the two to DIFFER by the load delta;
              * test_image_relocation below is what convicts the relocation
              * pass now. */
-            uint64_t reloc_rva = first_dir64_reloc(file, image);
+            uint64_t reloc_rva = first_reloc_of_type(file, image, IMAGE_REL_BASED_DIR64);
             ok(reloc_rva != ~0ULL, "PE has no DIR64 relocation to verify");
             if (reloc_rva != ~0ULL)
             {
@@ -470,7 +473,7 @@ static void test_image_relocation(void)
         ok(builds1 == builds0 + 1, "the copy was reused, not built (builds %lu, hits %lu)",
            (unsigned long)(builds1 - builds0), (unsigned long)(hits1 - hits0));
 
-        uint64_t reloc_rva = first_dir64_reloc(file, image);
+        uint64_t reloc_rva = first_reloc_of_type(file, image, IMAGE_REL_BASED_DIR64);
         ok(reloc_rva != ~0ULL, "PE has no DIR64 relocation to verify");
         const char *raw = reloc_rva == ~0ULL ? 0 : raw_at_rva(file, image, reloc_rva, 8);
         ok(raw != 0, "no raw bytes behind the fixup site");
@@ -570,6 +573,95 @@ static void test_guard_bookkeeping(void)
        (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
 }
 
+/* A PE32 (i386) image goes through the SAME parser and relocation engine as
+ * a PE32+ one, and every place the two containers differ is a place the
+ * engine can silently read the wrong bytes: the optional header's fields sit
+ * 16 bytes apart from ImageBase onward, the fixups are HIGHLOW rather than
+ * DIR64, and the ImageBase the mapper stamps back after relocating is FOUR
+ * bytes wide, not eight. Nothing runs here — the guest process path is the
+ * WOW64 milestone's later half; this convicts the parse and the fixups
+ * (tests/boot/pe32_probe.c is carried on the RAM disk for exactly this). */
+static void test_pe32_image(void)
+{
+    PKI_RAMDISK_FILE file = KiFindRamdiskFile("pe32_probe.exe");
+    if (file == 0)
+    {
+        DbgPrint("  (pe32_probe.exe not in the RAM-disk; skipping)\n");
+        return;
+    }
+
+    uint64_t free_at_start = MiGetFreePageCount();
+    {
+        MI_ADDRESS_SPACE space;
+        ok(MiCreateAddressSpace(&space) == STATUS_SUCCESS, "create address space");
+
+        PMI_SECTION section = 0;
+        NTSTATUS status = MiCreateSection(0, PAGE_EXECUTE, SEC_IMAGE, file, &section);
+        ok(status == STATUS_SUCCESS, "create PE32 image section -> %08lx", (unsigned long)status);
+        if (section == 0 || section->image == 0)
+        {
+            if (section != 0)
+                ObDereferenceObject(section);
+            MiDeleteAddressSpace(&space);
+            return;
+        }
+        const MI_IMAGE_INFO *image = section->image;
+        ok(image->machine == IMAGE_FILE_MACHINE_I386, "machine %04x", image->machine);
+        ok(image->containsCode, "no code in the PE32 probe");
+        ok(image->entryRva != 0, "entry RVA 0");
+        /* Read through the PE32 optional header, so a parser that used the
+         * 64-bit one would land 16 bytes off and fail these. */
+        ok(image->preferredBase != 0 && image->preferredBase < (1ULL << 32),
+           "PE32 preferred base %lx", (unsigned long)image->preferredBase);
+        ok(image->sizeOfImage >= image->sizeOfHeaders && image->sizeOfImage < (1ULL << 32),
+           "PE32 SizeOfImage %lx", (unsigned long)image->sizeOfImage);
+        ok(image->relocRva != 0 && image->relocSize != 0, "PE32 probe has no .reloc directory");
+
+        /* Hold the preferred base so the one copy must be relocated. */
+        PVOID hold = (PVOID)(uintptr_t)image->preferredBase;
+        SIZE_T holdSize = image->sizeOfImage;
+        status = MiAllocateVirtualMemory(&space, &hold, &holdSize, MEM_RESERVE, PAGE_NOACCESS);
+        ok(status == STATUS_SUCCESS && (uint64_t)(uintptr_t)hold == image->preferredBase,
+           "reserve the preferred base -> %08lx", (unsigned long)status);
+
+        uint64_t base = 0, viewSize = 0;
+        status = MiMapViewOfSection(section, &space, &base, 0, &viewSize, PAGE_EXECUTE);
+        ok(status == STATUS_IMAGE_NOT_AT_BASE, "rebased PE32 map -> %08lx", (unsigned long)status);
+        ok(base != 0 && base != image->preferredBase, "mapped at the preferred base");
+
+        uint64_t reloc_rva = first_reloc_of_type(file, image, IMAGE_REL_BASED_HIGHLOW);
+        ok(reloc_rva != ~0ULL, "PE32 probe has no HIGHLOW relocation");
+        const char *raw = reloc_rva == ~0ULL ? 0 : raw_at_rva(file, image, reloc_rva, 4);
+        ok(raw != 0, "no raw bytes behind the PE32 fixup site");
+        if (raw != 0 && base != 0)
+        {
+            uint32_t fromFile = 0;
+            for (int i = 0; i < 4; i++)
+                fromFile |= (uint32_t)(unsigned char)raw[i] << (i * 8);
+            uint32_t mapped = (uint32_t)(mapped_qword(&space, base + reloc_rva) & 0xFFFFFFFF);
+            ok(mapped == fromFile + (uint32_t)(base - image->preferredBase),
+               "HIGHLOW site: file %lx, mapped %lx, delta %lx", (unsigned long)fromFile,
+               (unsigned long)mapped, (unsigned long)(base - image->preferredBase));
+
+            /* The 4-byte stamp, at the PE32 optional header's own offset.
+             * With the 64-bit offset/width this reads (and would have
+             * written) 16 bytes past the field, into SectionAlignment. */
+            uint32_t stamped =
+                (uint32_t)(mapped_qword(
+                               &space, base + image->ntHeaderOffset +
+                                           offsetof(IMAGE_NT_HEADERS32, OptionalHeader.ImageBase)) &
+                           0xFFFFFFFF);
+            ok(stamped == (uint32_t)base, "PE32 ImageBase stamp %lx, expected %lx",
+               (unsigned long)stamped, (unsigned long)base);
+        }
+
+        ObDereferenceObject(section);
+        MiDeleteAddressSpace(&space);
+    }
+    ok(MiGetFreePageCount() == free_at_start, "PE32 image leaked frames (%lu vs %lu)",
+       (unsigned long)MiGetFreePageCount(), (unsigned long)free_at_start);
+}
+
 int kmt_run_m5(void)
 {
     int before = kmt_failures;
@@ -577,6 +669,7 @@ int kmt_run_m5(void)
     KMT_RUN(test_file_section_consistency);
     KMT_RUN(test_image_section);
     KMT_RUN(test_image_relocation);
+    KMT_RUN(test_pe32_image);
     KMT_RUN(test_page_table_charge);
     KMT_RUN(test_guard_bookkeeping);
     return kmt_failures - before;
