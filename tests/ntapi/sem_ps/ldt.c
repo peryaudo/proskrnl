@@ -27,12 +27,27 @@
  * (dlls/ntdll/unix/virtual.c: `if (is_win64 && !is_wow64()) return
  * STATUS_NOT_IMPLEMENTED`), and G12 forbids pinning that status — an oracle
  * answering "unbuilt" is unbuilt, not authoritative. So the case is built
- * against NT's own contract instead: MS documents NtSetLdtEntries as taking
- * two selector/descriptor pairs and installing them in the calling
- * process's LDT, where a subsequent ThreadDescriptorTableEntry query reads
- * them back. ntdll:wow64's test_selectors is the caller that depends on it,
- * and its own branch (`if (status != STATUS_NOT_IMPLEMENTED)`) then holds
- * the kernel to exactly that round trip.
+ * against NT's own contract instead.
+ *
+ * THE SOURCE, since Art. 5 requires a `beyond_oracle` block to name one:
+ * NtSetLdtEntries has no MS reference page, so the contract is taken from
+ * the CONFORMANCE TEST that exercises it —
+ * third_party/wine/dlls/ntdll/tests/wow64.c test_selectors:1341-:1359,
+ * Wine's transcription of real Windows behavior and the very caller that
+ * depends on it. It fixes every assertion below: two selector/descriptor
+ * pairs per call, selector 0 accepted as a no-op, success for 0x000f and
+ * 0x001f, and a following ThreadDescriptorTableEntry query on each returning
+ * the descriptor byte-for-byte (`memcmp(&ds_entry, &info.Entry,
+ * sizeof(ds_entry))`). Its own guard — `if (status != STATUS_NOT_IMPLEMENTED)`
+ * — is what makes that round trip the contract for any kernel which does not
+ * refuse, and proskrnl may not refuse.
+ *
+ * The sanitization arms are NOT from that test, which never probes them.
+ * They apply the descriptor-format rules of Intel SDM Vol. 3A §3.4.5 and
+ * Table 3-1 to the obvious hazard: a descriptor the CPU will load is a
+ * capability, so a DPL-0 or system descriptor from user mode must be refused
+ * rather than installed. Refusing (rather than masking) is also what keeps
+ * the read-back byte-exact.
  *
  * Oracle-first (G5): every assert here is measured on the pinned Wine.
  */
