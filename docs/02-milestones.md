@@ -729,8 +729,12 @@ event queue), and a real per-process **LDT** for `NtSetLdtEntries` — each beca
 consumer depended on it. Two placement rules were measured rather than guessed and both
 contradicted the plan: a WOW64 thread's 64-bit stack lives **above** 4GB (the low space
 is the guest's), and the `WOW64_CPURESERVED` area *is* that stack's ceiling rather than
-decoration on top of it. Touches no semantics; removable (`kernel/ps/wow64.c` plus
-one-line guarded call sites).
+decoration on top of it. Touches no `Nt*` semantics. The WOW64 construction itself is removable
+(`kernel/ps/wow64.c` plus one-line guarded call sites, and `ps/ldt.c` / `ps/debug.c`
+likewise self-contained); the core changes it forced — the GDT selector re-layout, the
+ring-3 return path loading its data segments, and the PE32/machine arm in `mm` — are
+CORRECTNESS fixes that stand without it and are not reverted with it. `docs/03` "WOW64
+notes" says which is which and why.
 
 ---
 

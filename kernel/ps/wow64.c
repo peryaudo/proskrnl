@@ -19,8 +19,16 @@
  *
  * Every layout here comes from abi/ntwow64.h (generated, Art. 4) and every
  * VALUE from the pinned tree's own initializers, named per block. This file
- * is the WOW64 milestone's cohesive home (Art. 7 / G7): deleting it and the
- * handful of `if (process->wow64)` call sites restores the CUI core.
+ * is the WOW64 milestone's cohesive home (Art. 7 / G7): every core call site
+ * into it is one guarded `if (process->wow64)` line, so deleting this file
+ * and those lines removes the feature.
+ *
+ * That is NOT true of everything the milestone touched, and the difference
+ * is written down rather than left to be discovered: the GDT selector
+ * re-layout, the ring-3 return path loading its data segments, and mm's
+ * PE32/machine arm are CORRECTNESS fixes that stand without WOW64 and are
+ * not reverted with it (they close real divergences a 64-bit process sees
+ * too). `docs/03` "WOW64 notes" draws the line.
  */
 #include "kernel/ps/ps.h"
 
@@ -224,6 +232,11 @@ NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
     peb32->ProcessParameters = (ULONG)params32Va;
     peb32->NtGlobalFlag = globalFlag;
     peb32->NumberOfProcessors = KE_NUMBER_PROCESSORS;
+    /* The reported OS version. NOT independent values: they are the same
+     * four kernel/ps/peb.c writes into the 64-bit PEB, and a guest that
+     * disagreed with its own host about the Windows version would be a
+     * boundary divergence. Sourced there (Wine's own default, third_party/
+     * wine dlls/ntdll/version.c current_version). */
     peb32->OSMajorVersion = 10;
     peb32->OSMinorVersion = 0;
     peb32->OSBuildNumber = 19045;
@@ -275,6 +288,9 @@ NTSTATUS PspWow64BuildTeb32(PEPROCESS process, uint64_t tebVa, uint64_t uniquePr
     memset(teb32, 0, sizeof(TEB32));
     teb32->Tib.Self = (ULONG)teb32Va;
     teb32->Tib.ExceptionList = ~0u; /* the empty 32-bit SEH chain */
+    /* The literal Wine's own TEB32 constructor writes (third_party/wine
+     * dlls/ntdll/unix/virtual.c init_teb: `teb32->Tib.FiberData = 0x1e00`);
+     * kernel/ps/peb.c carries the same value for the 64-bit TEB. */
     teb32->Tib.FiberData = 0x1e00;
     teb32->Tib.StackBase = (ULONG)guestStackBase;
     teb32->Tib.StackLimit = (ULONG)guestStackLimit;
@@ -362,6 +378,9 @@ NTSTATUS PspWow64BuildCpuArea(PEPROCESS process, uint64_t tebVa, uint64_t hostSt
     context.SegGs = KI_USER_DS_SELECTOR;
     context.SegFs = KI_USER_FS32_SELECTOR;
     context.EFlags = 0x202; /* IF, and bit 1 (reserved, always set) */
+    /* The x87 control word a fresh thread starts with (third_party/wine
+     * dlls/ntdll/unix/signal_x86_64.c init_thread_context; kernel/ps/
+     * usermode.c cites the same value for the 64-bit FPU state). */
     context.FloatSave.ControlWord = 0x27f;
     MiCopyToUserRange(space, cpuArea + sizeof(WOW64_CPURESERVED), &context, sizeof(context));
 

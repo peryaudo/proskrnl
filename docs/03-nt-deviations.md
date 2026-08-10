@@ -2788,3 +2788,38 @@ ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an
 compat-mode exception delivery, `ProcessWow64Information`). No `Nt*` semantics change. The
 32→64 transition ("Heaven's Gate") is entirely user-mode; the kernel never sees a 32-bit
 syscall. See `docs/02` §WOW64.
+
+## WOW64 notes — what "purely additive" turned out to mean (Art. 7)
+
+The plan called WOW64 "purely additive" and `docs/02` still calls it removable. That is
+true of the *feature*, and NOT true of the diff, so the difference is written down here
+rather than left to be discovered.
+
+**Removable, as claimed.** `kernel/ps/wow64.c` is the whole WOW64 construction —
+PEB32/TEB32, the 32-bit parameter block, `WOW64INFO`, the second ntdll and its
+`SYSTEM_DLL_INIT_BLOCK`, the guest stack, the `WOW64_CPURESERVED` area. Every core call
+site into it is one guarded line, and deleting the file plus those lines removes the
+feature. `kernel/ps/ldt.c` and `kernel/ps/debug.c` are likewise self-contained.
+
+**NOT removable, and deliberately so.** Three core changes stand on their own and would
+NOT be reverted if WOW64 were dropped:
+
+- **The GDT selector re-layout** (`arch/x86_64/gdt.h`: kernel CS/DS `0x08/0x10 →
+  0x10/0x18`, ring-3 `0x23/0x1b → 0x33/0x2b`, `KI_GDT_ENTRIES 8 → 13`). proskrnl's old
+  values were divergent from both NT and Linux, and `0x23` — proskrnl's *64-bit* user CS
+  until now — is NT's *32-bit* one. Every `CONTEXT` leaks these to ring 3. Fixing that is
+  a correctness change that WOW64 forced but does not own; `tests/boot/abi_probe.c`
+  `check_selectors` now pins it independently of any 32-bit code.
+- **The ring-3 return path loading its data segments** (`kernel/syscall/entry.S`
+  `KI_LOAD_USER_SEGMENTS`). `iretq` nullifies the kernel's DPL-0 data selectors, so user
+  `%ds`/`%es` read back as 0 without this — a real divergence from NT for a 64-bit
+  process too, and one `RtlCaptureContext` exposes. Also pinned by `abi_probe`.
+- **`MI_ADDRESS_SPACE.machine` and the PE32 arm in `mm/pecoff.c` / `mm/section.c`.** A
+  32-bit image mapped into a 64-bit process must report
+  `STATUS_IMAGE_MACHINE_TYPE_MISMATCH` (success-class — the view IS created) whether or
+  not WOW64 exists. Answering plain `STATUS_SUCCESS` satisfied every `NT_SUCCESS()` check
+  and was simply wrong.
+
+So: the WOW64 *milestone* is subtractable; the *bug fixes it forced* are not, and should
+not be. Art. 7 asks that the GUI/WOW64 layers not entangle the CUI core — it does not ask
+that a core defect stay unfixed because a later milestone is what surfaced it.
