@@ -16,9 +16,7 @@
  * file mutating under a live relocated master would be cross-process
  * corruption (docs/17 §6F; docs/03 "CUI-9 COW notes").
  */
-#include "../sem_file/util.h"
-
-#include <windows.h>
+#include "imagefile.h"
 
 NTSYSAPI NTSTATUS NTAPI NtCreateSection(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                         const LARGE_INTEGER *, ULONG, ULONG, HANDLE);
@@ -36,11 +34,8 @@ START_TEST(image_deny_write)
 {
     NTSTATUS status;
     IO_STATUS_BLOCK iosb;
-    HANDLE dir, source, copy, reader, writer, section;
+    HANDLE dir, reader, writer, section;
     LARGE_INTEGER byte_offset;
-    char path[MAX_PATH];
-    static char buffer[0x10000];
-    DWORD moved;
     SIZE_T view_size;
     void *view;
 
@@ -48,33 +43,13 @@ START_TEST(image_deny_write)
     ok(dir != NULL, "test dir");
     if (dir == NULL)
         return;
-    scrub_file(dir, W("idw.dll"));
 
     /* A private copy of ntdll.dll: a real, relocatable PE this test owns,
      * so the deny-write pin never fights the loader's own mapping of the
-     * system DLL. */
-    GetSystemDirectoryA(path, sizeof(path));
-    strcat(path, "\\ntdll.dll");
-    source = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
-    ok(source != INVALID_HANDLE_VALUE, "cannot open %s", path);
-    status = open_file(&copy, dir, W("idw.dll"), FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE, 0, &iosb);
-    ok(status == STATUS_SUCCESS, "create idw.dll -> %08lx", (unsigned long)status);
-    byte_offset.QuadPart = 0;
-    for (;;)
-    {
-        if (!ReadFile(source, buffer, sizeof(buffer), &moved, NULL) || moved == 0)
-            break;
-        status = NtWriteFile(copy, NULL, NULL, NULL, &iosb, buffer, moved, &byte_offset, NULL);
-        ok(status == STATUS_SUCCESS, "copy chunk -> %08lx", (unsigned long)status);
-        if (!NT_SUCCESS(status))
-            break;
-        byte_offset.QuadPart += moved;
-    }
-    ok(byte_offset.QuadPart > 0x10000, "copied only %lx bytes",
-       (unsigned long)byte_offset.QuadPart);
-    CloseHandle(source);
-    NtClose(copy);
+     * system DLL (imagefile.h — sem_mm/section_file_hold.c wants the same
+     * file and the two must not drift). */
+    if (!copy_system_image(dir, W("idw.dll")))
+        return;
 
     /* The read handle the section will be built over shares generously, so
      * any later refusal is the image mapping's doing, not this handle's. */
