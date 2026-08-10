@@ -3310,13 +3310,18 @@ NTSTATUS NtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG in
 
 NTSTATUS NtDelayExecution(BOOLEAN alertable, const LARGE_INTEGER *interval)
 {
+    /* KiCopyFromUser, not KiCaptureTimeout: the interval here is MANDATORY,
+     * so there is no NULL case for this service to have an opinion about and
+     * a NULL keeps answering whatever probing it answers -- unchanged by this
+     * commit, and not a fixed answer this code invents (Art. 12). What does
+     * change is the alignment: the capture reads a 4-mod-8 WOW64 interval
+     * instead of refusing it (uaccess.h KiCaptureTimeout). */
     LARGE_INTEGER captured;
-    NTSTATUS status = KiProbeForRead(interval, sizeof(LARGE_INTEGER), sizeof(uint64_t));
+    NTSTATUS status = KiCopyFromUser(&captured, interval, sizeof(captured));
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    memcpy(&captured, interval, sizeof(captured));
     return KeDelayExecutionThread(UserMode, alertable, &captured);
 }
 

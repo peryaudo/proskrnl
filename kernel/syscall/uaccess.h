@@ -64,6 +64,41 @@ NTSTATUS KiProbeForWrite(void *address, uint64_t length, uint64_t alignment);
  * syscall arguments, structure captures). KernelMode callers just copy. */
 NTSTATUS KiCopyFromUser(void *destination, const void *userSource, uint64_t length);
 
+/* Capture the OPTIONAL deadline every Nt wait ends in (`const LARGE_INTEGER
+ * *timeout`, NULL meaning "wait forever") into the caller's kernel local, and
+ * hand back the pointer to give the dispatcher: 0 for the NULL case, else
+ * `captured`. This is the one authority for the question (Art. 11) and every
+ * ring-3 wait entry point goes through it, because handing KeWaitForMultipleObjects
+ * or KeDelayExecutionThread the user pointer instead is wrong three ways:
+ *
+ *   - the dispatcher (and KiComputeDueTime under it) dereferences it at ring
+ *     0, so an unmapped deadline faults with CS.RPL == 0;
+ *   - a service that waits more than once on the same pointer
+ *     (NtRemoveIoCompletionEx's drain) is re-reading user memory ACROSS a
+ *     park, the stale-probe shape the tokens below exist to catch;
+ *   - a probe's alignment argument cannot be the guard, because the ordinary
+ *     WOW64 deadline is 4-mod-8 (an i386 caller's stack LARGE_INTEGER) and
+ *     the oracle accepts it — refusing it with STATUS_DATATYPE_MISALIGNMENT
+ *     is a divergence, and letting it reach a `->QuadPart` load is a UBSan
+ *     alignment trap, i.e. a #UD panic. Capturing through KiCopyFromUser's
+ *     alignment-1 memcpy answers both: the dispatcher only ever sees an
+ *     8-aligned kernel local, and the value is read rather than refused.
+ *     Pinned by tests/ntapi/sem_wait/misaligned_timeout.c.
+ *
+ * Alignment-1 is deliberately PERMISSIVE, and knowingly wider than the pin:
+ * the pinned Wine checks no alignment at all, so the oracle cannot say what a
+ * 1-mod-4 deadline should do and nothing here claims to know what real NT
+ * would answer (Art. 6 — the oracle is the spec, so "no refusal" is the only
+ * answer this side has evidence for). Narrowing it needs a measurement on
+ * Windows, not a recollection.
+ *
+ * Only the OPTIONAL deadline goes through this. A MANDATORY one (NtSetTimer's
+ * dueTime, NtDelayExecution's interval) has no NULL case to interpret and
+ * calls KiCopyFromUser directly, so that neither site has to invent a status
+ * for a NULL it was never handed a spec for (Art. 12). */
+NTSTATUS KiCaptureTimeout(const LARGE_INTEGER *userTimeout, PLARGE_INTEGER captured,
+                          PLARGE_INTEGER *deadline);
+
 /* --- probe tokens (issue #96 C) -------------------------------------------
  *
  * Every stale-probe defect the CUI-8 sweeps convicted — the create path, the

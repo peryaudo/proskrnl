@@ -1195,13 +1195,20 @@ NTSTATUS NtAlertMultipleThreadByThreadId(HANDLE *threadIds, ULONG count, void *u
 NTSTATUS NtWaitForAlertByThreadId(const void *address, const LARGE_INTEGER *timeout)
 {
     (void)address; /* opaque to the wait; pairs are keyed by thread id only */
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    NTSTATUS captureStatus = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(captureStatus))
+    {
+        return captureStatus;
+    }
     PETHREAD self = KeGetCurrentThread()->threadObject;
     if (self == 0)
     {
         return STATUS_TIMEOUT; /* kernel threads have no alert latch */
     }
-    NTSTATUS status = KeWaitForSingleObject(&self->tidAlertEvent, UserRequest, KernelMode, FALSE,
-                                            (PLARGE_INTEGER)timeout);
+    NTSTATUS status =
+        KeWaitForSingleObject(&self->tidAlertEvent, UserRequest, KernelMode, FALSE, deadline);
     if (status == STATUS_SUCCESS)
     {
         self->tidAlertsOut++;

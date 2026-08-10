@@ -4,6 +4,11 @@
  * then defers entirely to the M2 Ke dispatcher: an executive object's body
  * begins with its DISPATCHER_HEADER. Parameter conventions (count 1..64 else
  * STATUS_INVALID_PARAMETER_1) are pinned by tests/ntapi/sem_ob/.
+ *
+ * The deadline is CAPTURED, never forwarded: KiCaptureTimeout takes the
+ * ring-3 LARGE_INTEGER into a kernel local so the dispatcher never
+ * dereferences a user pointer (uaccess.h says why, and why a probe's
+ * alignment argument could not do the job).
  */
 #include "kernel/ob/ob.h"
 #include "kernel/ke/ke.h"
@@ -27,25 +32,14 @@ static NTSTATUS ObpReferenceWaitObject(HANDLE handle, PVOID *body)
     return STATUS_SUCCESS;
 }
 
-/* KeWaitFor* dereferences `timeout` directly, so a ring-3 pointer has to be
- * validated before it is handed over -- an unmapped one faults with
- * CS.RPL == 0, which KiDispatchTrap does not contain. NULL means "wait
- * forever" and is not a pointer to check. */
-static NTSTATUS ObpProbeTimeout(const LARGE_INTEGER *timeout)
-{
-    if (timeout == 0)
-    {
-        return STATUS_SUCCESS;
-    }
-    return KiProbeForRead(timeout, sizeof(*timeout), sizeof(uint64_t));
-}
-
 NTSTATUS NtWaitForSingleObject(HANDLE handle, BOOLEAN alertable, const LARGE_INTEGER *timeout)
 {
-    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
-    if (!NT_SUCCESS(probeStatus))
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    NTSTATUS captureStatus = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(captureStatus))
     {
-        return probeStatus;
+        return captureStatus;
     }
     PVOID body;
     NTSTATUS status = ObpReferenceWaitObject(handle, &body);
@@ -53,8 +47,7 @@ NTSTATUS NtWaitForSingleObject(HANDLE handle, BOOLEAN alertable, const LARGE_INT
     {
         return status;
     }
-    status =
-        KeWaitForSingleObject(body, UserRequest, KernelMode, alertable, (PLARGE_INTEGER)timeout);
+    status = KeWaitForSingleObject(body, UserRequest, KernelMode, alertable, deadline);
     ObDereferenceObject(body);
     return status;
 }
@@ -75,10 +68,12 @@ NTSTATUS NtSignalAndWaitForSingleObject(HANDLE signalHandle, HANDLE waitHandle, 
     {
         return STATUS_INVALID_HANDLE;
     }
-    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
-    if (!NT_SUCCESS(probeStatus))
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    NTSTATUS captureStatus = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(captureStatus))
     {
-        return probeStatus;
+        return captureStatus;
     }
     PVOID waitBody;
     NTSTATUS status = ObpReferenceWaitObject(waitHandle, &waitBody);
@@ -96,8 +91,7 @@ NTSTATUS NtSignalAndWaitForSingleObject(HANDLE signalHandle, HANDLE waitHandle, 
     }
     if (NT_SUCCESS(status))
     {
-        status = KeWaitForSingleObject(waitBody, UserRequest, KernelMode, alertable,
-                                       (PLARGE_INTEGER)timeout);
+        status = KeWaitForSingleObject(waitBody, UserRequest, KernelMode, alertable, deadline);
     }
     ObDereferenceObject(waitBody);
     return status;
@@ -114,14 +108,17 @@ NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE 
     {
         return STATUS_INVALID_PARAMETER_3;
     }
-    NTSTATUS probeStatus = ObpProbeTimeout(timeout);
-    if (!NT_SUCCESS(probeStatus))
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    NTSTATUS captureStatus = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(captureStatus))
     {
-        return probeStatus;
+        return captureStatus;
     }
     /* The handle array is read element by element below; validate the whole
      * span once, after the count has been bounded. */
-    probeStatus = KiProbeForRead(handles, (uint64_t)count * sizeof(HANDLE), sizeof(HANDLE));
+    NTSTATUS probeStatus =
+        KiProbeForRead(handles, (uint64_t)count * sizeof(HANDLE), sizeof(HANDLE));
     if (!NT_SUCCESS(probeStatus))
     {
         return probeStatus;
@@ -185,7 +182,7 @@ NTSTATUS NtWaitForMultipleObjects(ULONG count, const HANDLE *handles, WAIT_TYPE 
         if (NT_SUCCESS(status))
         {
             status = KeWaitForMultipleObjects(count, objects, waitType, UserRequest, KernelMode,
-                                              alertable, (PLARGE_INTEGER)timeout, waitBlocks);
+                                              alertable, deadline, waitBlocks);
         }
         if (waitBlocks != 0)
         {

@@ -186,6 +186,13 @@ NTSTATUS NtRemoveIoCompletion(HANDLE handle, PULONG_PTR keyOut, PULONG_PTR value
     {
         return status;
     }
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    status = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     PVOID body;
     status = ObReferenceObjectByHandle(handle, IO_COMPLETION_MODIFY_STATE, &IoCompletionType,
                                        ExGetPreviousMode(), &body, 0);
@@ -195,7 +202,7 @@ NTSTATUS NtRemoveIoCompletion(HANDLE handle, PULONG_PTR keyOut, PULONG_PTR value
     }
     PIO_COMPLETION port = body;
     IOP_COMPLETION_PACKET packet;
-    status = IopRemoveOnePacket(port, timeout, &packet);
+    status = IopRemoveOnePacket(port, deadline, &packet);
     if (status == STATUS_SUCCESS)
     {
         *keyOut = packet.key;
@@ -225,6 +232,16 @@ NTSTATUS NtRemoveIoCompletionEx(HANDLE handle, FILE_IO_COMPLETION_INFORMATION *i
     {
         return status;
     }
+    /* Captured, and not merely probed, because the drain below waits MORE
+     * THAN ONCE: re-reading the caller's LARGE_INTEGER after a park is the
+     * stale-probe shape (uaccess.h KiCaptureTimeout). */
+    LARGE_INTEGER capturedTimeout;
+    PLARGE_INTEGER deadline;
+    status = KiCaptureTimeout(timeout, &capturedTimeout, &deadline);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     PVOID body;
     status = ObReferenceObjectByHandle(handle, IO_COMPLETION_MODIFY_STATE, &IoCompletionType,
                                        ExGetPreviousMode(), &body, 0);
@@ -238,7 +255,7 @@ NTSTATUS NtRemoveIoCompletionEx(HANDLE handle, FILE_IO_COMPLETION_INFORMATION *i
      * up to `count` — the batch is whatever is ready. */
     ULONG written = 0;
     IOP_COMPLETION_PACKET packet;
-    status = IopRemoveOnePacket(port, timeout, &packet);
+    status = IopRemoveOnePacket(port, deadline, &packet);
     while (status == STATUS_SUCCESS)
     {
         information[written].CompletionKey = packet.key;
