@@ -20,6 +20,7 @@ NtClose
 NtCompareObjects
 NtContinue
 NtContinueEx
+NtCreateDebugObject
 NtCreateDirectoryObject
 NtCreateEvent
 NtCreateFile
@@ -36,6 +37,7 @@ NtCreateSymbolicLinkObject
 NtCreateThreadEx
 NtCreateTimer
 NtCreateUserProcess
+NtDebugActiveProcess
 NtDelayExecution
 NtDeleteFile
 NtDeleteKey
@@ -127,6 +129,7 @@ NtReleaseMutant
 NtReleaseSemaphore
 NtRemoveIoCompletion
 NtRemoveIoCompletionEx
+NtRemoveProcessDebug
 NtRenameKey
 NtReplaceKey
 NtResetEvent

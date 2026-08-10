@@ -110,6 +110,8 @@ static void PspDeleteProcess(PVOID body)
         MiFreePool(process->imageNtPath.Buffer);
     }
     PspUnlinkProcessFromJob(process);
+    PspDetachDebugObject(process); /* a target that exits while attached */
+    PspFreeLdt(process);
     PspShutdownNoteProcessExit(process); /* idempotent: covers a process
                                           * deleted without ever exiting */
     SeDeassignPrimaryToken(process);
@@ -157,6 +159,9 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->cookie = cookie != 0 ? cookie : 0xd1ce; /* never 0: 0 means "unset" to ntdll */
     process->job = 0;
     process->jobExitNotified = FALSE;
+    process->debugObject = 0;
+    InitializeListHead(&process->debugLinks);
+    process->ldt = 0;
     /* CUI-6: the awake triple every fresh process starts from (Wine
      * dlls/ntdll/unix/system.c NtSetThreadExecutionState's static init). */
     process->executionState = ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED | ES_USER_PRESENT;
@@ -587,8 +592,8 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     uint64_t stackLimit = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspAllocateUserStack(process, stackReserve, stackCommit, 0, &stackTop,
-                                      &stackLimit);
+        status =
+            PspAllocateUserStack(process, stackReserve, stackCommit, 0, &stackTop, &stackLimit);
     }
 
     /* M7: the shared KUSER_SHARED_DATA page + the PEB/params, then the main
@@ -878,6 +883,9 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         process->wow64 = TRUE;
         process->machine = IMAGE_FILE_MACHINE_I386;
+        /* Mm reports cross-machine image views against the SPACE, because a
+         * view may be mapped into another process's space (section.c). */
+        process->addressSpace.machine = IMAGE_FILE_MACHINE_I386;
         process->wowSpaceLimit = PspWow64SpaceLimit(exeSection->image->characteristics);
     }
     status =
@@ -949,9 +957,9 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     uint64_t stackLimit = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspAllocateUserStack(process, stackReserve, stackCommit,
-                                      isWow64 ? PspWow64HostStackFloor() : 0, &stackTop,
-                                      &stackLimit);
+        status =
+            PspAllocateUserStack(process, stackReserve, stackCommit,
+                                 isWow64 ? PspWow64HostStackFloor() : 0, &stackTop, &stackLimit);
     }
     if (NT_SUCCESS(status))
     {
