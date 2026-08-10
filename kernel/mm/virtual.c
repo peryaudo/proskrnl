@@ -3284,6 +3284,21 @@ NTSTATUS NtWriteVirtualMemory(HANDLE processHandle, void *baseAddress, const voi
     }
     if (written != size)
     {
+        /* A partial WRITE reports the prefix it managed, where a partial READ
+         * reports zero — the asymmetry is the oracle's and it lives on the PE
+         * side (third_party/wine dlls/ntdll/unix/virtual.c): the write keeps
+         * the server's count (`size = reply->written;` unconditionally) and
+         * the read throws it away (`if ((status = wine_server_call( req )))
+         * size = 0;`). The server's number is a BYTE count off
+         * process_vm_writev, not a page count (server/ptrace.c
+         * write_process_memory_vm: `*written = max( len, 0 )`), which is what
+         * MiCopyToUserRangeChecked already returns. This slot used to be left
+         * at the zero the entry set, so kernel32:virtual:261/:275 saw 0 where
+         * 0x2000 had landed. Pinned by sem_ps/virtual_memory.c. */
+        if (bytesWritten != 0)
+        {
+            *bytesWritten = written;
+        }
         return STATUS_PARTIAL_COPY;
     }
     if (bytesWritten != 0)

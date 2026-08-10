@@ -2176,6 +2176,23 @@ proskrnl's views report the protection without it. Nothing in the baked stack or
 manifest reaches it; it is recorded here rather than fixed because the fix is the same
 one-field shape on the *section*, and it should land with a pin of its own (`docs/21` W5).
 
+## A partial `NtWriteVirtualMemory` reports the bytes it wrote
+
+`NtWriteVirtualMemory` and `NtReadVirtualMemory` both answer `STATUS_PARTIAL_COPY` when the
+range runs into memory they cannot touch, and they report **different** counts. The
+asymmetry is upstream's and it is on the PE side (`dlls/ntdll/unix/virtual.c`): the write
+keeps the server's count unconditionally (`size = reply->written;`) while the read throws it
+away (`if ((status = wine_server_call( req ))) size = 0;`). The server's number is a byte
+count off `process_vm_writev`, not a page count (`server/ptrace.c`
+`write_process_memory_vm`: `*written = max( len, 0 )`), so a write that starts mid-page and
+runs into a read-only page reports the bytes up to that page.
+
+proskrnl reported zero for both, because the syscall wrote the caller's slot only on full
+success — `kernel32:virtual:261`/`:275`. `MiCopyToUserRangeChecked` already returned the
+byte-accurate count; only the reporting was missing. Nothing deviates; pinned by
+`tests/ntapi/sem_ps/virtual_memory.c`, which measures the count through both handle arms and
+in both alignments.
+
 ## What a live SECTION holds against a later OPEN
 
 NT models a section as a **pseudo-open of the file**, and the pinned oracle says so
