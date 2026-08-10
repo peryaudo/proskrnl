@@ -199,6 +199,25 @@ bugs: every TEB carried a bogus `Tib.ExceptionList`, and a process
 created without a Desktop or ShellInfo got a null pointer where the
 contract promises an empty string.
 
+**WOW64 now reaches the desktop, too.** `make rungui` carries both
+bitnesses of the applet shelf, so a 32-bit Win32 GUI app runs in the
+interactive session beside the 64-bit ones — the guest's `user32`/`gdi32`
+import the pinned tree's stock i386 `win32u.dll` (pure syscall thunks),
+`wow64cpu` catches the syscalls, `wow64.dll` routes service table 1 to
+`wow64win.dll`, and `wow64win` calls the SAME 64-bit `win32u.dll` this
+build already ships. Nothing was minted for it; one desktop authority,
+one more door. `tests/run/run.sh wow64gui` is the acceptance: a 32-bit
+client typed at the windowed console, its window found on QEMU's
+screendump, its bitness confirmed by asking the kernel
+(`ProcessWow64Information`) rather than by trusting the file. It cost
+four defects, all older than the feature and none of them 32-bit in
+nature — a misaligned-buffer assumption in `NtQueryDirectoryFile`, the
+interrupt return path never reloading the ring-3 data selectors (the
+syscall path's twin, fixed a milestone earlier), a WOW64 process's
+second thread getting no 32-bit furniture at all, and
+`THREAD_CREATE_FLAGS_SKIP_LOADER_INIT` accepted and dropped. `docs/03`
+"WOW64 GUI notes" has each one and its pin.
+
 **CUI-9 complete**: shared, already-relocated image masters plus
 copy-on-write — the machine no longer pays a full private copy of every
 DLL per process. The Article 3 "no COW" mandate was lifted the way
@@ -281,6 +300,7 @@ tests/run/run.sh gui3       # GUI-3: two GUI processes over wineserver-lite
 tests/run/run.sh gui4       # GUI-4: overlap composited, click routed, window dragged
 tests/run/run.sh gui5       # GUI-5: clipboard, low-level hooks, AttachThreadInput, font diff
 tests/run/run.sh gui5con    # GUI-5: conhost dual-mode — real user32/gdi32 command prompt
+tests/run/run.sh wow64gui   # WOW64: a 32-bit GUI app on the same desktop, typed at that prompt
 tests/run/run.sh guiwtest   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
 ```
 

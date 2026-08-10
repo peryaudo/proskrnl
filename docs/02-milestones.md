@@ -719,6 +719,15 @@ is entirely in user mode (Wine's "new WoW64"); the kernel never sees a 32-bit sy
 an i686 mingw console program that reaches the kernel only the way any Win32 app does)
 — **and** `ntdll_test.exe:wow64` is green on both legs. Both hold.
 
+**And the GUI half, since:** `make rungui` carries both bitnesses of the applet shelf, so
+a 32-bit Win32 GUI app runs in the interactive session — `tests/run/run.sh wow64gui` is
+its acceptance (a 32-bit client typed at the windowed console, its window graded on the
+scanout, its bitness taken from the kernel). Nothing new is built for it: the guest's
+`user32`/`gdi32` import the pinned tree's STOCK i386 `win32u.dll`, whose syscalls
+`wow64cpu` catches and `wow64.dll` routes through `wow64win.dll` into the same 64-bit
+`win32u.dll` this build already ships. The four defects it convicted — none of them
+32-bit in nature — are in `docs/03` "WOW64 GUI notes".
+
 What it actually cost, beyond the plan above: the GDT was re-laid-out to NT's selector
 *values* (cs32 0x23, ds 0x2b, cs64 0x33, per-thread fs32 0x53), because every `CONTEXT`
 leaks them and wow64cpu reads them back; the ring-3 return path had to *load* the compat

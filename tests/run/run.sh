@@ -2519,6 +2519,119 @@ gui5con() {
     return 0
 }
 
+# The WOW64 GUI acceptance (docs/02 WOW64 + docs/07): a 32-bit .exe, typed at
+# the same windowed console a person would type it at, puts a window on the
+# desktop the 64-bit applets share.
+#
+# It runs on the gui5con image, which since this change carries both bitnesses
+# of the GUI shelf, because that IS the thing under test: `make rungui` is the
+# session, and the leg is that session driven by the harness instead of by
+# hand. No image of its own — a second one would be a second payload list to
+# keep in step, and the interactive one is the one that must not rot.
+#
+# The verdict is check_wow64gui.py's three halves (bitness, geometry, pixels);
+# everything here is choreography. Note what makes it a WOW64 verdict rather
+# than a GUI one: the client asks the KERNEL whether it is a WOW64 process
+# (ProcessWow64Information) and prints sizeof(void *) beside the answer, so a
+# leg that somehow ran a 64-bit binary fails instead of passing quietly.
+#
+# The guest does not power itself off (the client parks pumping so its window
+# is still on the scanout when the dump is taken), so the leg ends QEMU — the
+# gui3/gui4 arrangement, not gui5con's `exit`.
+wow64gui() {
+    make -C "$ROOT" gui5con-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui5con.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/wow64gui.sock" log="$dir/wow64gui.log"
+    local ppm1="$dir/wow64gui-before.ppm" ppm2="$dir/wow64gui-after.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm1" "$ppm2" "$log"
+
+    # More memory than gui5con's: the 32-bit child brings up a SECOND Wine
+    # stack whose images share nothing with the 64-bit one already resident
+    # (CUI-9 masters are keyed on the file, and syswow64's are other files),
+    # on top of a session that has the whole GUI userland up.
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    wow64gui_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== wow64gui: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    await '\[KTEST\] gui5con conhost mode=window' || { wow64gui_fail "the windowed conhost never picked window mode"; return 1; }
+    await 'starting cmd\.exe' || { wow64gui_fail "the interactive cmd never started"; return 1; }
+    await '\[KTEST\] gui2 input READY' || { wow64gui_fail "no keyboard reader"; return 1; }
+    await '\[KTEST\] gui4 mouse READY' || { wow64gui_fail "no pointer reader"; return 1; }
+
+    # The console window, found on the scanout the way gui5con finds it. The
+    # dump that finds it is also the BEFORE dump: nothing has been typed yet,
+    # so the client's colour must be absent from it.
+    local located="" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+    while ((SECONDS < deadline)); do
+        qmp screendump "$ppm1" >/dev/null 2>&1 || true
+        if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
+                --log "$log" --ppm "$ppm1" 2>/dev/null); then
+            break
+        fi
+        located=""
+        kill -0 "$qemu_wrapper" 2>/dev/null || { wow64gui_fail "QEMU died while waiting for the window"; return 1; }
+        sleep 3
+    done
+    [ -n "$located" ] || { wow64gui_fail "no console window ever appeared on the scanout"; return 1; }
+    local cx cy w h maxx maxy
+    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
+    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
+    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    if [ -z "$w" ] || [ -z "$maxx" ]; then
+        wow64gui_fail "could not parse guest geometry"; return 1
+    fi
+
+    # One activation click in the console window (the gui5con arithmetic), so
+    # the typing below reaches it.
+    qmp absmove $(( (cx * maxx + w - 2) / (w - 1) )) $(( (cy * maxy + h - 2) / (h - 1) ))
+    sleep 1
+    qmp button left down && qmp button left up
+    sleep 2
+
+    qmp type 'c:\wow64gui.exe
+'
+    await '\[KTEST\] wow64gui painted' || { wow64gui_fail "the 32-bit client never painted"; return 1; }
+    # The paint marker is the client's; the flush that carries those pixels to
+    # the scanout is the driver's and comes after it.
+    await '\[KTEST\] gui2 window rect=420,420,360x240' || { wow64gui_fail "the client's window was never flushed"; return 1; }
+    sleep 2
+    qmp screendump "$ppm2" || { wow64gui_fail "screendump failed"; return 1; }
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! python3 "$ROOT/tests/gui/check_wow64gui.py" --log "$log" \
+            --before "$ppm1" --after "$ppm2"; then
+        echo "== wow64gui: FAIL (the 32-bit window's verdict; see $log) =="
+        return 1
+    fi
+    echo "== wow64gui: PASS (a 32-bit GUI app ran on the shared desktop) =="
+    return 0
+}
+
 # Every leg's serial logs are swept for unclaimed ring-0 faults on user
 # addresses before the leg reports (tests/run/uacheck.sh, issue #32 A3): the
 # recovery frame turns a missing probe into an ordinary-looking
@@ -2571,8 +2684,9 @@ case "$MODE" in
     gui4)     gui4 ;;
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
+    wow64gui) wow64gui ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
