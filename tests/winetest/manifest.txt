@@ -117,32 +117,47 @@ ntdll_test.exe:change
 # ntdll_test.exe:directory
 ntdll_test.exe:env
 ntdll_test.exe:error
-# THE ORACLE CANNOT SERVE AS THE SPEC — category (b), MEASURED. The pinned
-#     oracle leg is RED: 25 failures and then the oracle's OWN process dies
-#     at 0xc0000005 without ever printing a summary line, so this pair
-#     convicts nothing on either side (Art. 6). Both causes are properties of
-#     how tools/setup_linux.sh builds the oracle, not of the boundary:
+# TWO SEPARATE BLOCKERS, BOTH MEASURED, NEITHER A WOW64 ONE. Re-measured at
+#     the WOW64 milestone, which changed this entry's story: the oracle used
+#     to be RED with 25 failures and then die at 0xc0000005 without printing
+#     a summary, and 23 of those needed a 32-bit subsystem the oracle build
+#     did not have. It has one now (WINE_CONFIGURE gained i386), so
+#     test_debug_registers_wow64 (exception.c:9299-:9393) and
+#     test_wow64_context (:4589-:4637) get their syswow64 children, the
+#     fatal crash in that tail is gone, and the ORACLE now runs to a summary
+#     with FOUR failures:
 #
-#       - 23 of the 25 need a 32-bit subsystem. test_debug_registers_wow64
-#         (exception.c:9299-:9393) unconditionally starts
-#         C:\windows\syswow64\msinfo32.exe and test_wow64_context
-#         (:4589-:4637) C:\windows\syswow64\cmd.exe; WINE_CONFIGURE is
-#         --enable-win64, so there is no syswow64 and every assertion behind
-#         the failed CreateProcess reads back 0x55555555 fill. The fatal
-#         0xc0000005 is in that same tail, after RtlWow64GetCpuAreaInfo
-#         answers c000000d.
-#       - exception.c:6357/:6361 are RegisterClassA/CreateWindowA failing
-#         0x78 under --without-x (`nodrv_CreateWindow` in the log).
+#       - exception.c:6357/:6361 RegisterClassA/CreateWindowA -> 0x78 under
+#         --without-x (`nodrv_CreateWindow` in the log), and :6198/:6204
+#         behind them (KiUserCallbackDispatcher never found, because the
+#         window it needs was never created).
 #
-#     No TODO, because re-opening this is a decision about the ORACLE BUILD
-#     (enable a WoW64 arch and give the leg a display), not a kernel change.
-#     Until that is taken, the proskrnl side is unconvictable — and the old
-#     triage block here, which named NtSetContextThread ContextFlags
-#     selectivity as the cause of a RIP=0 kill, was never measured against a
-#     green oracle. Note that selectivity IS implemented and commented as
-#     such (kernel/ps/usermode.c KiTrapFrameToContext / KiContextToTrapFrame,
-#     the docs/review-2026-07 §9 fix), so that hypothesis was probably stale
-#     as well. docs/21 W6 has the correction.
+#     So the remaining oracle gap is DISPLAY-ONLY, and re-opening that half
+#     is a decision about the ORACLE BUILD (give the leg a display), not a
+#     kernel change.
+#
+#     The proskrnl side is now the larger half, and it is a REAL defect with
+#     nothing to do with WOW64 — recorded here so it is not mistaken for
+#     oracle noise again:
+#
+#       - exception.c:3316/:3318 report the faulting address and RIP one
+#         byte PAST the instruction for an NX (instruction-fetch) fault;
+#       - exception.c:3409-:3435 read back the wrong `fs` in a captured
+#         CONTEXT, and :3420 answers 0x9d (STATUS_UNSUCCESSFUL) from
+#         NtGetContextThread;
+#       - the leg then dies at RIP=0 on a #PF with err=0x14 (user,
+#         instruction fetch, no-execute).
+#
+#     Each is its own work item against `kernel/ps/usermode.c`, and each is
+#     convictable now that the oracle prints a summary — which is the actual
+#     change this re-measurement bought. Until they are fixed the pair stays
+#     parked, but no longer for the reason it used to say.
+#
+#     The old triage block here blamed NtSetContextThread ContextFlags
+#     selectivity for a RIP=0 kill and was never measured against a green
+#     oracle; selectivity IS implemented (kernel/ps/usermode.c
+#     KiTrapFrameToContext / KiContextToTrapFrame, the docs/review-2026-07
+#     §9 fix). docs/21 W6 has that correction.
 # ntdll_test.exe:exception
 # GATED ON A WHOLE SUBSYSTEM, FIXABLE. 36 failures, then a panic at the
 #     missing NtCreateMailslotFile — so, like kernel32:mailslot, it is
