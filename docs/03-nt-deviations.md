@@ -2827,7 +2827,8 @@ that a core defect stay unfixed because a later milestone is what surfaced it.
 ## WOW64 GUI notes — the defects a 32-bit window found
 
 `make rungui` gained the 32-bit half of the GUI shelf: a 32-bit `.exe`, typed at the
-windowed console, paints a window on the desktop the 64-bit applets share. No `Nt*`
+windowed console, paints a window on the desktop the 64-bit applets share
+(`tests/run/run.sh wow64gui` is the acceptance). No `Nt*`
 semantics moved for it, and nothing new was minted: the guest's own `user32`/`gdi32`
 import the pinned tree's STOCK i386 `win32u.dll`, which is nothing but syscall thunks —
 `wow64cpu` catches those syscalls, `wow64.dll` routes service table 1 to `wow64win.dll`,

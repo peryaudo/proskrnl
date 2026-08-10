@@ -351,6 +351,18 @@ jobs:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
 
+      # WOW64's gate 2, and the one `make rungui` is graded by: a 32-bit
+      # .exe typed at that same windowed console, painting a window on the
+      # desktop the 64-bit applets share. Here rather than beside the CUI
+      # wow64 leg on cui-a because it needs the whole GUI stack and the
+      # scanout, which is what this shard already provisions.
+      - name: "WOW64 GUI: a 32-bit app on the shared desktop (tests/run/run.sh wow64gui)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh wow64gui
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
       - uses: ./.github/actions/serial-logs
         if: failure()
         with:
