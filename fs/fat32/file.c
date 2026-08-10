@@ -754,9 +754,11 @@ static NTSTATUS FatVfsCreateLocked(PIO_DEVICE device, PFILE_OBJECT file, const U
         return STATUS_CANNOT_DELETE;
     }
 
-    /* Share modes: the NT point — after existence and typing, before any
-     * overwrite side effect. */
-    status = IoCheckShareAccess(grantedAccess, shareAccess, &fcb->header);
+    /* Share modes and the hold live sections keep: the NT point — after
+     * existence and typing, before any overwrite side effect. The
+     * disposition and options go in because the section rules read them (a
+     * truncating create over a mapped file is STATUS_USER_MAPPED_FILE). */
+    status = IoCheckShareAccess(grantedAccess, shareAccess, disposition, options, &fcb->header);
     if (!NT_SUCCESS(status))
     {
         FAT_REFUSE_CREATED(status);

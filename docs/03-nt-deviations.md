@@ -1724,12 +1724,15 @@ write access answers `STATUS_SHARING_VIOLATION` (pinned oracle-green by
 `sem_mm/image_deny_write`; the oracle's mapping fd enforces the same). Residual,
 recorded honestly: a *pre-existing* writable handle can still `NtWriteFile` the file
 while a master lives — real NT refuses that write through `MmFlushImageSection`, the
-oracle permits it, and no baked consumer does it. The gate's scope is the write bits
-(`FILE_WRITE_DATA | FILE_APPEND_DATA`) only: a `DELETE`-access open (and so a
-delete/supersede) of a live image still passes, where real NT refuses that too via
-the same `MmFlushImageSection` reference — the identical residual class as the
-writable handle (the oracle permits it, no baked consumer does it), recorded here so
-the delete side is a visible gap rather than an unstated one. The same staleness already exists
+oracle permits it, and no baked consumer does it. **The gate's scope has since been
+measured rather than reasoned about, and it moved in both directions** — see "What a
+live SECTION holds against a later OPEN" below, which is now the statement of record:
+the write bit is `FILE_WRITE_DATA` *alone* (this paragraph used to say
+`FILE_WRITE_DATA | FILE_APPEND_DATA`, and the oracle refuted it), while the delete
+side — which this paragraph recorded as a visible gap — is closed for the
+`FILE_DELETE_ON_CLOSE` spelling. What survives of the gap is narrower: a plain
+`DELETE`-access open of a live image, later followed by a disposition set, is
+permitted here exactly as the pinned oracle permits it. The same staleness already exists
 per-section today: the raw-byte snapshot is taken at `NtCreateSection`, so a write
 between create and map is invisible to the view. Masters widen the window across
 sections without changing its class; the gate closes the only path a real caller
@@ -2114,6 +2117,56 @@ where two authorities disagree the pinned oracle is this project's arbiter (Art.
 both ways by the same file. If a real caller is ever found to branch on
 `ERROR_INVALID_ADDRESS` there, that caller is evidence for Windows' answer and the change is
 its own commit with its own pin.
+
+## What a live SECTION holds against a later OPEN
+
+NT models a section as a **pseudo-open of the file**, and the pinned oracle says so
+literally: `create_mapping` (`third_party/wine` `server/mapping.c`) keeps the file's
+fd with a magic access word — `FILE_MAPPING_ACCESS` always, `FILE_MAPPING_IMAGE`
+under `SEC_IMAGE`, `FILE_MAPPING_WRITE` when the section's own file access carried
+`FILE_WRITE_DATA` (`server/file.h:303-305`) — and sharing
+`FILE_SHARE_READ|WRITE|DELETE`. `check_sharing` (`server/fd.c`) reads those three
+bits back as four rules. proskrnl carries them as three counters on the `IO_FCB`
+(`sectionCount` / `imageSectionCount` / `writableSectionCount`), applied in
+`IoCheckShareAccess`; pinned by `tests/ntapi/sem_mm/section_file_hold.c`.
+
+| A live section that is… | refuses a later open that… | with |
+|---|---|---|
+| non-image, file access included `FILE_WRITE_DATA` (i.e. `PAGE_READWRITE` / `PAGE_EXECUTE_READWRITE`) | does not share `FILE_SHARE_WRITE` | `STATUS_SHARING_VIOLATION` |
+| `SEC_IMAGE` | asks for `FILE_WRITE_DATA` | `STATUS_SHARING_VIOLATION` |
+| `SEC_IMAGE` | passes `FILE_DELETE_ON_CLOSE` | `STATUS_CANNOT_DELETE` |
+| anything | names a truncating disposition | `STATUS_USER_MAPPED_FILE` |
+
+Five things are not guessable from that table and each is a way an implementation
+reaching for the tidy version diverges:
+
+- **The mapping rules sit ABOVE `check_sharing`'s own "no data access → sharing is
+  ignored" escape**, so an opener asking for nothing but `FILE_READ_ATTRIBUTES` —
+  exempt from every ordinary share mode — is still refused by the write rule. That is
+  the entire `a2 == 0` column of `kernel32:file`'s `test_file_sharing` mapping loop.
+- **A section demands nothing of the opener's *sharing* except through the write
+  rule**, because the magic bits carry no read/write/delete bit of their own and the
+  mapping fd shares everything. An image section refuses a writer and admits an
+  unshared reader.
+- **The image rule is `FILE_WRITE_DATA` alone.** Every other share-mode rule in NT
+  groups `FILE_WRITE_DATA | FILE_APPEND_DATA`; this one does not, and an
+  append-only open of a running image succeeds. Sixteen `kernel32:file` assertions
+  are exactly that cell.
+- **`PAGE_WRITECOPY` is not writable here.** The discriminator is the section's
+  *required file access*, not the word "write" in the protection's name, which is
+  why `IopSectionFileAccess` (`kernel/io/file.c`) is one function answering both
+  "what must the creating handle grant" and "does this section take the write hold".
+- **The ORDER between the four is observable**: write beats truncate, delete beats
+  truncate, and the pair of section rules sits *between* `check_sharing`'s two
+  share-mode directions rather than before or after both. An image section opened
+  `GENERIC_WRITE` with `FILE_OVERWRITE_IF` reports the sharing violation; drop the
+  write and the same call reports `STATUS_USER_MAPPED_FILE`.
+
+The truncating dispositions are the oracle's three `O_TRUNC` ones —
+`FILE_SUPERSEDE`, `FILE_OVERWRITE`, `FILE_OVERWRITE_IF` (`server/file.c`
+`create_file`'s switch). This is what makes `CopyFile` onto a mapped destination and
+`DeleteFile` of a mapped image answer `ERROR_USER_MAPPED_FILE` and
+`ERROR_ACCESS_DENIED`: both are Win32 spellings of an open, not separate rules.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 

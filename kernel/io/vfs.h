@@ -63,15 +63,30 @@ typedef struct IO_FCB
     IO_SHARE_ACCESS shareAccess;
     LIST_ENTRY lockList;   /* IO_FILE_LOCK, kernel/io/lock.c */
     BOOLEAN deletePending; /* FileDispositionInformation state */
-    LONG sectionCount;     /* live sections backed by this file */
+    /* The three counters IoCheckShareAccess reads back as a live section's
+     * hold on the file. They are proskrnl's spelling of the magic access
+     * bits the pinned oracle's mapping fd carries — FILE_MAPPING_ACCESS /
+     * FILE_MAPPING_IMAGE / FILE_MAPPING_WRITE, wine server/file.h:303-305,
+     * set in server/mapping.c create_mapping — and IopSectionFileAccess
+     * (kernel/io/file.c) is the one place that decides which a section takes.
+     *
+     * sectionCount: every live section backed by this file. A truncating
+     * create over one answers STATUS_USER_MAPPED_FILE. */
+    LONG sectionCount;
     /* Live SEC_IMAGE sections (a subset of sectionCount). While nonzero, an
-     * open asking write access answers STATUS_SHARING_VIOLATION — the NT
-     * running-image rule, and what the pinned oracle's image-mapping fd
-     * enforces (wine server/fd.c sharing checks; pinned by
-     * sem_mm/image_deny_write). CUI-9's shared masters depend on it: a file
+     * open asking FILE_WRITE_DATA answers STATUS_SHARING_VIOLATION and a
+     * FILE_DELETE_ON_CLOSE open answers STATUS_CANNOT_DELETE — the NT
+     * running-image rule (pinned by sem_mm/image_deny_write and
+     * sem_mm/section_file_hold). CUI-9's shared masters depend on it: a file
      * mutating under a live relocated master would be cross-process
      * corruption (docs/17 §6F; docs/03 "CUI-9 COW notes"). */
     LONG imageSectionCount;
+    /* Live non-image sections whose own file access carried FILE_WRITE_DATA
+     * (a PAGE_READWRITE / PAGE_EXECUTE_READWRITE data section). While
+     * nonzero, an open that does not SHARE write answers
+     * STATUS_SHARING_VIOLATION whatever access it asks for — including none
+     * at all. */
+    LONG writableSectionCount;
 } IO_FCB, *PIO_FCB;
 
 /* What GetInfo reports (the FS's raw facts; info-class shaping happens in

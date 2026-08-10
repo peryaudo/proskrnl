@@ -121,32 +121,68 @@ static void IopShareRelevantAccess(ACCESS_MASK desiredAccess, BOOLEAN *reads, BO
     *deletes = (desiredAccess & DELETE) != 0;
 }
 
-NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB fcb)
+/* Does this disposition arrive at the file with the intent to truncate? The
+ * pinned oracle asks the question as `open_flags & O_TRUNC`, and its three
+ * O_TRUNC dispositions are FILE_SUPERSEDE, FILE_OVERWRITE_IF and
+ * FILE_OVERWRITE (wine server/file.c create_file's switch, :233-:241). */
+static BOOLEAN IopDispositionTruncates(ULONG disposition)
+{
+    return disposition == FILE_SUPERSEDE || disposition == FILE_OVERWRITE ||
+           disposition == FILE_OVERWRITE_IF;
+}
+
+NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, ULONG disposition,
+                            ULONG options, PIO_FCB fcb)
 {
     BOOLEAN reads, writes, deletes;
     IopShareRelevantAccess(desiredAccess, &reads, &writes, &deletes);
-    if (!reads && !writes && !deletes)
-    {
-        return STATUS_SUCCESS; /* attribute-only open */
-    }
-    /* A live SEC_IMAGE section (or any view of one) holds the file
-     * non-write-shared, whatever handles exist: the NT running-image rule,
-     * matching the pinned oracle (sem_mm/image_deny_write). */
-    if (writes && fcb->imageSectionCount != 0)
-    {
-        return STATUS_SHARING_VIOLATION;
-    }
     IO_SHARE_ACCESS *share = &fcb->shareAccess;
     BOOLEAN sharesRead = (shareAccess & FILE_SHARE_READ) != 0;
     BOOLEAN sharesWrite = (shareAccess & FILE_SHARE_WRITE) != 0;
     BOOLEAN sharesDelete = (shareAccess & FILE_SHARE_DELETE) != 0;
 
-    /* Both directions (the NT rule): what I want must be shared by every
-     * existing opener, and what I share must cover what they hold. */
+    /* The ladder below is the pinned oracle's, in ITS order (wine
+     * server/fd.c check_sharing): the two share-mode directions are NOT
+     * adjacent — the section rules sit between them, and above the
+     * attribute-only escape. Both placements are observable and pinned by
+     * sem_mm/section_file_hold. */
+
+    /* 1. What I want must be shared by every existing opener. */
     if ((reads && share->sharedRead != share->openCount) ||
         (writes && share->sharedWrite != share->openCount) ||
-        (deletes && share->sharedDelete != share->openCount) ||
-        (!sharesRead && share->readers != 0) || (!sharesWrite && share->writers != 0) ||
+        (deletes && share->sharedDelete != share->openCount))
+    {
+        return STATUS_SHARING_VIOLATION;
+    }
+
+    /* 2. What live SECTIONS hold. A section is a pseudo-open carrying no
+     * read/write/delete bit of its own, so it constrains an opener only
+     * through these three counters — and it constrains one that asks for no
+     * data access at all, which step 4 below would let through. */
+    if ((fcb->writableSectionCount != 0 && !sharesWrite) ||
+        (fcb->imageSectionCount != 0 && (desiredAccess & FILE_WRITE_DATA) != 0))
+    {
+        return STATUS_SHARING_VIOLATION;
+    }
+    if (fcb->imageSectionCount != 0 && (options & FILE_DELETE_ON_CLOSE) != 0)
+    {
+        return STATUS_CANNOT_DELETE;
+    }
+    if (fcb->sectionCount != 0 && IopDispositionTruncates(disposition))
+    {
+        return STATUS_USER_MAPPED_FILE;
+    }
+
+    /* 3. An attribute-only open is exempt from ordinary share modes (the NT
+     * rule sem_file/share_modes pins) — but not, per step 2, from a
+     * section's. */
+    if (!reads && !writes && !deletes)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    /* 4. And what I share must cover what every existing opener holds. */
+    if ((!sharesRead && share->readers != 0) || (!sharesWrite && share->writers != 0) ||
         (!sharesDelete && share->deleters != 0))
     {
         return STATUS_SHARING_VIOLATION;
@@ -873,21 +909,43 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
 
 /* --- the Mm seam: file-backed sections (kernel/mm/section.c) ---------------- */
 
+/* The file access a section over this file exercises (the NT rule Wine also
+ * applies, third_party/wine dlls/ntdll/unix/sync.c NtCreateSection's
+ * protection switch, :2986-:3004): read always; write for a writable
+ * non-image data section. The rows that demand read are pinned by
+ * sem_mm/section_file_access.
+ *
+ * ONE function, because the same answer decides two things that must never
+ * disagree — what the creating handle has to grant, and whether the resulting
+ * section takes the writableSectionCount slot the oracle spells
+ * FILE_MAPPING_WRITE (server/mapping.c create_mapping's `else if (file_access
+ * & FILE_WRITE_DATA)`). The acquire and release sides both derive from
+ * (attributes, protection) through here, so a count cannot leak. */
+static ACCESS_MASK IopSectionFileAccess(ULONG sectionAttributes, ULONG pageProtection)
+{
+    ACCESS_MASK needed = FILE_READ_DATA;
+    ULONG bits = pageProtection & 0xFF;
+    if ((sectionAttributes & SEC_IMAGE) == 0 &&
+        (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE))
+    {
+        needed |= FILE_WRITE_DATA;
+    }
+    return needed;
+}
+
+/* Does a section with these attributes hold the file write-shared-or-nothing?
+ * The oracle's `else if` is exclusive: an IMAGE section never takes the write
+ * hold however it was built. */
+static BOOLEAN IopSectionHoldsWrite(ULONG sectionAttributes, ULONG pageProtection)
+{
+    return (sectionAttributes & SEC_IMAGE) == 0 &&
+           (IopSectionFileAccess(sectionAttributes, pageProtection) & FILE_WRITE_DATA) != 0;
+}
+
 NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULONG pageProtection,
                                 const LARGE_INTEGER *maximumSize, MI_SECTION_BACKING *backing)
 {
-    /* The file handle must grant what the section will exercise (the NT
-     * rule Wine also applies): read always; write for a writable non-image
-     * data section. */
-    ACCESS_MASK needed = FILE_READ_DATA;
-    if ((sectionAttributes & SEC_IMAGE) == 0)
-    {
-        ULONG bits = pageProtection & 0xFF;
-        if (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE)
-        {
-            needed |= FILE_WRITE_DATA;
-        }
-    }
+    ACCESS_MASK needed = IopSectionFileAccess(sectionAttributes, pageProtection);
     PFILE_OBJECT file;
     NTSTATUS status = IopReferenceFileByHandle(fileHandle, needed, &file);
     if (!NT_SUCCESS(status))
@@ -978,18 +1036,27 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
     {
         file->fcb->imageSectionCount++;
     }
+    if (IopSectionHoldsWrite(sectionAttributes, pageProtection))
+    {
+        file->fcb->writableSectionCount++;
+    }
     return STATUS_SUCCESS;
 }
 
-void IopSectionBackingReleased(PVOID fileObjectBody, BOOLEAN image)
+void IopSectionBackingReleased(PVOID fileObjectBody, ULONG sectionAttributes, ULONG pageProtection)
 {
     PFILE_OBJECT file = fileObjectBody;
     ASSERT(file->fcb->sectionCount > 0);
     file->fcb->sectionCount--;
-    if (image)
+    if (sectionAttributes & SEC_IMAGE)
     {
         ASSERT(file->fcb->imageSectionCount > 0);
         file->fcb->imageSectionCount--;
+    }
+    if (IopSectionHoldsWrite(sectionAttributes, pageProtection))
+    {
+        ASSERT(file->fcb->writableSectionCount > 0);
+        file->fcb->writableSectionCount--;
     }
     /* The last section is gone: give the FS its chance to apply a
      * delete-on-close it had to defer while the file was mapped. Nothing
@@ -1038,7 +1105,7 @@ static NTSTATUS IopOpenFileSection(const WCHAR *ntPath, ULONG sectionAttributes,
                 MiCreateBackedSection(0, pageProtection, sectionAttributes, &backing, sectionOut);
             if (!NT_SUCCESS(status))
             {
-                IopSectionBackingReleased(backing.fileObject, (sectionAttributes & SEC_IMAGE) != 0);
+                IopSectionBackingReleased(backing.fileObject, sectionAttributes, pageProtection);
             }
             ObDereferenceObject(backing.fileObject); /* the section holds its own */
         }

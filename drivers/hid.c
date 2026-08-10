@@ -61,8 +61,6 @@ static NTSTATUS HidInputCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICO
     HID_STREAM *stream = (HID_STREAM *)device->context;
     (void)relativeTo;
     (void)fileAttributes;
-    (void)disposition;
-    (void)options;
     if (path->Length != 0)
     {
         return STATUS_OBJECT_NAME_NOT_FOUND; /* the device has no namespace */
@@ -73,7 +71,8 @@ static NTSTATUS HidInputCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICO
      * feature. Enforced through the existing share engine rather than a
      * private flag (G10/Art. 11) -- the Io layer releases the slots on
      * close (IopCloseFileObject), so this device inherits that for free. */
-    NTSTATUS status = IoCheckShareAccess(grantedAccess, shareAccess, &stream->fcb);
+    NTSTATUS status =
+        IoCheckShareAccess(grantedAccess, shareAccess, disposition, options, &stream->fcb);
     if (!NT_SUCCESS(status))
     {
         return status;
