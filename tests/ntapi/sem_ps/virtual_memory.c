@@ -8,11 +8,127 @@
  * amount moved. The cross-process read is exercised against the child's PEB,
  * whose address the parent learns from ProcessBasicInformation (so the test
  * is independent of ASLR). Green on the pinned Wine oracle first (Art. 5).
+ *
+ * THE PARTIAL COPY IS NOT SYMMETRIC, and that asymmetry is what
+ * kernel32:virtual:261 and :275 convict. Both syscalls answer
+ * STATUS_PARTIAL_COPY when the range runs into memory they cannot touch, but
+ * they report DIFFERENT counts, because the reporting lives on the PE side and
+ * only one of the two arms keeps the server's number (third_party/wine
+ * dlls/ntdll/unix/virtual.c):
+ *
+ *   NtWriteVirtualMemory:  size = reply->written;   ...  *bytes_written = size;
+ *   NtReadVirtualMemory:   if ((status = wine_server_call( req ))) size = 0;
+ *
+ * — so a failed READ always reports zero and a failed WRITE reports the prefix
+ * it managed. The server's own count is the byte count, not a page count
+ * (server/ptrace.c write_process_memory_vm: `*written = max( len, 0 )` off
+ * process_vm_writev), so a write that starts mid-page and runs into a
+ * read-only page reports the bytes up to that page and not a rounded figure.
+ * An implementation that zeroes both — proskrnl did, by writing the slot only
+ * on full success — is right about every status here and wrong about every
+ * count.
  */
 #include "util.h"
 
 NTSYSAPI NTSTATUS NTAPI NtReadVirtualMemory(HANDLE, const void *, void *, SIZE_T, SIZE_T *);
 NTSYSAPI NTSTATUS NTAPI NtWriteVirtualMemory(HANDLE, void *, const void *, SIZE_T, SIZE_T *);
+NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemory(HANDLE, PVOID *, ULONG_PTR, SIZE_T *, ULONG, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
+
+/* Four pages, the second half re-protected so a copy across the middle has to
+ * stop there. `arm` names the handle the caller is driving the syscalls
+ * through: the pseudo-handle takes the oracle's own-process path and a real
+ * handle to ourselves takes the same server round trip a foreign target does,
+ * so "both arms agree" stays a measurement (docs/21 §4 trap 4).
+ */
+static void test_partial_counts(HANDLE process, const char *arm)
+{
+    unsigned char source[0x4000];
+    unsigned char sink[0x4000];
+    NTSTATUS status;
+    ULONG oldProtect;
+    SIZE_T moved, size;
+    PVOID base, addr;
+
+    base = NULL;
+    size = sizeof(source);
+    status = NtAllocateVirtualMemory(NtCurrentProcess(), &base, 0, &size, MEM_RESERVE | MEM_COMMIT,
+                                     PAGE_READWRITE);
+    ok(status == STATUS_SUCCESS, "%s: commit 4 pages -> %08lx", arm, (unsigned long)status);
+    if (!NT_SUCCESS(status))
+        return;
+
+    memset(source, 0x5a, sizeof(source));
+
+    /* --- the WRITE side: the prefix is reported ------------------------- */
+    addr = (char *)base + 0x2000;
+    size = 0x2000;
+    status = NtProtectVirtualMemory(NtCurrentProcess(), &addr, &size, PAGE_READONLY, &oldProtect);
+    ok(status == STATUS_SUCCESS, "%s: protect the tail read-only -> %08lx", arm,
+       (unsigned long)status);
+
+    moved = 0xdeadbeef;
+    status = NtWriteVirtualMemory(process, base, source, 0x4000, &moved);
+    ok(status == STATUS_PARTIAL_COPY, "%s: write across the boundary -> %08lx", arm,
+       (unsigned long)status);
+    ok(moved == 0x2000, "%s: partial write reports %llx, expected 2000", arm,
+       (unsigned long long)moved);
+
+    /* The count is in BYTES, not whole pages: start 0x10 short of the
+     * boundary and only those 0x10 bytes can land. A page-granular
+     * implementation reports 0 here and passes the case above.
+     *
+     * MEASURED, and worth saying because the oracle's own documentation
+     * points the other way: process_vm_writev(2) states that partial
+     * transfers apply at iovec granularity and that a single element is
+     * never split, while the server passes this whole 0x1010-byte request
+     * as ONE element (server/ptrace.c write_process_memory_vm) and Linux
+     * reports 0x10. NT's STATUS_PARTIAL_COPY contract is byte-accurate, so
+     * if a future host ever rounds this to 0 the ORACLE has moved away from
+     * NT and this case belongs in a beyond_oracle block — not the kernel. */
+    moved = 0xdeadbeef;
+    status = NtWriteVirtualMemory(process, (char *)base + 0x1ff0, source, 0x1010, &moved);
+    ok(status == STATUS_PARTIAL_COPY, "%s: unaligned write across the boundary -> %08lx", arm,
+       (unsigned long)status);
+    ok(moved == 0x10, "%s: unaligned partial write reports %llx, expected 10", arm,
+       (unsigned long long)moved);
+
+    /* Nothing writable at all: PARTIAL_COPY with a count of zero, which is
+     * the case a "report the prefix" implementation must not turn into a
+     * success. */
+    moved = 0xdeadbeef;
+    status = NtWriteVirtualMemory(process, (char *)base + 0x2000, source, 0x2000, &moved);
+    ok(status == STATUS_PARTIAL_COPY, "%s: write into read-only memory -> %08lx", arm,
+       (unsigned long)status);
+    ok(moved == 0, "%s: fully refused write reports %llx", arm, (unsigned long long)moved);
+
+    /* The success control: without it every count above would also pass on a
+     * kernel that reported the prefix and never completed anything. */
+    moved = 0xdeadbeef;
+    status = NtWriteVirtualMemory(process, base, source, 0x2000, &moved);
+    ok(status == STATUS_SUCCESS, "%s: write inside the writable half -> %08lx", arm,
+       (unsigned long)status);
+    ok(moved == 0x2000, "%s: full write reports %llx", arm, (unsigned long long)moved);
+
+    /* --- the READ side: zero, always ------------------------------------ */
+    addr = (char *)base + 0x2000;
+    size = 0x2000;
+    status = NtProtectVirtualMemory(NtCurrentProcess(), &addr, &size, PAGE_NOACCESS, &oldProtect);
+    ok(status == STATUS_SUCCESS, "%s: protect the tail no-access -> %08lx", arm,
+       (unsigned long)status);
+
+    memset(sink, 0, sizeof(sink));
+    moved = 0xdeadbeef;
+    status = NtReadVirtualMemory(process, base, sink, 0x4000, &moved);
+    ok(status == STATUS_PARTIAL_COPY, "%s: read across the boundary -> %08lx", arm,
+       (unsigned long)status);
+    ok(moved == 0, "%s: partial read reports %llx, expected 0", arm, (unsigned long long)moved);
+
+    size = 0;
+    addr = base;
+    NtFreeVirtualMemory(NtCurrentProcess(), &addr, &size, MEM_RELEASE);
+}
 
 /* Local wide-string helpers: the harness is -nostdlib and links only
  * ntdll/kernel32/kernelbase, so no CRT wcs* / user32 wsprintfW. */
@@ -77,6 +193,18 @@ START_TEST(virtual_memory)
         NtReadVirtualMemory(NtCurrentProcess(), (const void *)(ULONG_PTR)0x1000, sink, 16, &moved);
     ok(status == STATUS_PARTIAL_COPY, "read of an unmapped page -> %08lx", (unsigned long)status);
     ok(moved == 0, "failed read reports %lu bytes", (unsigned long)moved);
+
+    /* --- the partial-copy COUNTS, through both handle arms --------------- */
+    test_partial_counts(NtCurrentProcess(), "self");
+    {
+        HANDLE self = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
+        ok(self != NULL, "OpenProcess(ALL_ACCESS) -> %lu", (unsigned long)GetLastError());
+        if (self)
+        {
+            test_partial_counts(self, "remote");
+            NtClose(self);
+        }
+    }
 
     /* --- cross-process read of the child's PEB -------------------------- */
     WCHAR self[512];
