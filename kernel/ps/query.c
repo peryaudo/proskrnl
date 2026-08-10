@@ -2818,12 +2818,14 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         }
         /* The target's own machine decides the Process bits below, so the
          * reference is held long enough to read it rather than only to
-         * validate the handle. */
+         * validate the handle. ONE authority for the value
+         * (MI_ADDRESS_SPACE.machine, which mm/section.c already judges image
+         * views against) rather than a second derivation from `wow64` that
+         * could drift from it. */
         USHORT targetMachine = 0;
         if (processHandle == NtCurrentProcess())
         {
-            PEPROCESS self = KeGetCurrentThread()->process;
-            targetMachine = self->wow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
+            targetMachine = KeGetCurrentThread()->process->addressSpace.machine;
         }
         else if (processHandle != 0)
         {
@@ -2835,7 +2837,7 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
                 return status;
             }
             PEPROCESS target = body;
-            targetMachine = target->wow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
+            targetMachine = target->addressSpace.machine;
             ObDereferenceObject(body);
         }
         SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[3];
