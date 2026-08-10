@@ -560,24 +560,82 @@ kernel32_test.exe:directory
 kernel32_test.exe:drive
 kernel32_test.exe:environ
 kernel32_test.exe:fiber
-# UNTRIAGED, FIXABLE. 152 failures, and the two big clusters are one
-#     subject: file.c:2672 (96 times) and :2663 (16) sweep the matrix of a
-#     SECTION's protection against the access a file is then OPENED with —
-#     "open succeeded for modes map PAGE_READWRITE" and its inverse. That is
-#     NOT the view-protection matrix kernel32:virtual was about (fixed this
-#     session); it is the share/mapping interaction on the CREATE path — an
-#     existing mapping constrains what a later open may ask for. Then 16 at
-#     :3208 (FindFirstFile with the "*." pattern, a FAT short-name
-#     question), 3 at :2695/:2696, and a handful around CopyFile of a mapped
-#     or self-named file (:702, :847, :1006, :1174).
-#     AND 152 IS A LOWER BOUND: re-measured while checking that the win.ini
-#     bake (kernel32:profile's block) did not perturb this pair, the run
-#     PANICS at file.c:3338's CreateMailslotW and never reaches its summary
-#     line — so, like ntdll:file, this pair is also gated on mailslots
-#     (docs/21 W8) and nothing past :3338 has ever been counted (docs/21 §4
-#     trap 2). The clusters above are unchanged and none of them is near
-#     file.c:3389, this pair's only win.ini reader, which sits BEHIND the
-#     panic and is therefore not reached at all.
+# PARTLY FIXED, FIXABLE. 38 failures, down from a re-measured 164 — and both
+#     numbers are counted, not carried over. The block this replaces said 152,
+#     which does not reproduce: the merge base measures 164 with the same
+#     binary, of which 14 are "Test succeeded inside todo block" (winetest
+#     scores a succeeded todo as a failure) and 150 are "Test failed".
+#     TWO WAYS TO MISCOUNT THIS LOG, both paid for here:
+#       - grepping "Test failed" misses the succeeded-todo lines entirely (the
+#         same reading error kernel32:profile's block records at :229);
+#       - the proskrnl leg's console REDRAWS a line that wraps — it prints
+#         "file.c:848:Test failed:", then a bare CR, then the whole line
+#         again — so a per-line counter that does not drop the empty first
+#         draft reports one assertion twice. That is where an earlier draft of
+#         this block's "166" came from.
+#
+#     WHAT WENT: 126 assertions, ONE subject — the hold a live SECTION keeps
+#     on its file. NT models a section as a pseudo-open carrying magic access
+#     bits (wine server/file.h:303-305 FILE_MAPPING_ACCESS / _IMAGE / _WRITE,
+#     set in server/mapping.c create_mapping) that server/fd.c check_sharing
+#     reads back as four rules. proskrnl had one of the four, and had it
+#     reading the wrong access bit:
+#       :2672 x96  a PAGE_READWRITE data section demands FILE_SHARE_WRITE of
+#                  every later open — whatever access that open asks for,
+#                  INCLUDING none, because the rule sits ABOVE check_sharing's
+#                  own "no data access -> sharing ignored" escape. proskrnl's
+#                  IoCheckShareAccess opened with that escape, which is why
+#                  the whole a2 == 0 column was exempt;
+#       :2663 x16  the image rule is `access & FILE_WRITE_DATA` and nothing
+#                  else. proskrnl grouped FILE_APPEND_DATA with it the way
+#                  every OTHER share-mode rule in NT does, so the two
+#                  append-only columns of the SEC_IMAGE row were refused;
+#       :2695 x3 + :2696 x3   a truncating disposition (FILE_SUPERSEDE /
+#                  FILE_OVERWRITE / FILE_OVERWRITE_IF, the oracle's three
+#                  O_TRUNC dispositions, server/file.c:233-:241) over ANY live
+#                  section is STATUS_USER_MAPPED_FILE;
+#       :2707/:2708  FILE_DELETE_ON_CLOSE over a SEC_IMAGE section is
+#                  STATUS_CANNOT_DELETE — a third status, not a sharing
+#                  violation.
+#     SIX MORE were outside test_file_sharing entirely and read as three
+#     unrelated Win32 symptoms; all three are the same two rules reached
+#     through a Win32 spelling of an open:
+#       :847/:848    CopyFile onto a MAPPED destination (CREATE_ALWAYS ->
+#                  ERROR_USER_MAPPED_FILE);
+#       :1174/:1175  the same through CopyFile2;
+#       :1931/:1932  DeleteFile of a MAPPED IMAGE (an open carrying
+#                  FILE_DELETE_ON_CLOSE -> ERROR_ACCESS_DENIED).
+#     The old block filed :847 and :1174 under "a handful around CopyFile of a
+#     mapped or self-named file" and did not have :1931 at all.
+#     The ORDER between the four rules is observable and is the oracle's, not
+#     a tidy one: write beats truncate, delete beats truncate, and the section
+#     rules sit BETWEEN check_sharing's two share-mode directions. Landed in
+#     kernel/io/file.c (IoCheckShareAccess over three IO_FCB counters), pinned
+#     by tests/ntapi/sem_mm/section_file_hold.c; docs/21 W16, docs/03 "What a
+#     live SECTION holds against a later OPEN".
+#
+#     WHAT IS LEFT, re-measured, summing to 38:
+#       - 16  :3208, FindFirstFile with the "*." pattern — a FAT short-name
+#         question, and the largest single item left here;
+#       - 14  succeeded-todo markers at :388/:394/:396/:398, :1409,
+#         :1557/:1561/:1578, :2087, :2132 and :3321/:3323/:3333/:3335, each a
+#         place proskrnl is MORE NT-correct than the pinned Wine the todo was
+#         calibrated against. Read them before treating them as work: the same
+#         shape as kernel32:volume:186 and kernel32:profile:229, where the
+#         pair cannot go green while proskrnl is the better of the two
+#         runners;
+#       -  3  :702 and :1006/:1007, CopyFile/CopyFile2 of a file to ITSELF,
+#         which must fail ERROR_SHARING_VIOLATION and does not. Same file
+#         opened twice, no section involved — a plain share-mode question and
+#         the cheapest item on this list;
+#       -  5  singletons: :1403, :1884, :2398, :2806, :3269.
+#
+#     AND 38 IS STILL A LOWER BOUND: the run PANICS at file.c:3338's
+#     CreateMailslotW and never reaches its summary line — so, like
+#     ntdll:file, this pair is gated on mailslots (docs/21 W8) and nothing
+#     past :3338 has ever been counted (docs/21 §4 trap 2). It stops in
+#     exactly the same place it did before this session, so 164 -> 38 is a
+#     like-for-like comparison of the same measured prefix.
 # TODO: Implement
 # kernel32_test.exe:file
 kernel32_test.exe:format_msg

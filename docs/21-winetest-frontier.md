@@ -1597,6 +1597,88 @@ than a hypothesis. That run logged the count and not the line numbers, so
 the two sets being the SAME four is an inference from count plus mechanism;
 they are the whole of this subtest's failing assertions either way.
 
+### W16 — What a live SECTION holds against a later OPEN (**DONE**)
+
+`kernel32:file` **164 → 38**, one subject, 126 assertions. NT models a section as a
+pseudo-open of its file carrying magic access bits (`FILE_MAPPING_ACCESS` /
+`_IMAGE` / `_WRITE`, `third_party/wine` `server/file.h:303-305`, set in
+`server/mapping.c` `create_mapping`) which `server/fd.c` `check_sharing` reads back
+as four rules. proskrnl had **one** of the four, and had it reading the wrong access
+bit. Landed in `kernel/io/file.c` (three `IO_FCB` counters, applied inside
+`IoCheckShareAccess`), pinned by `tests/ntapi/sem_mm/section_file_hold.c`; the table
+and the five non-obvious parts are in `docs/03` "What a live SECTION holds against a
+later OPEN".
+
+Five things worth carrying beyond the rules themselves:
+
+- **The gate ran BELOW the escape it needed to be above, and that is where 96 of the
+  126 lived.** proskrnl's `IoCheckShareAccess` opened with NT's "an attribute-only
+  open ignores share modes" early-out, which is correct *for share modes* and is why
+  the mapping rules never saw an opener asking for nothing. The oracle's ladder puts
+  all four section rules above that escape and between `check_sharing`'s two
+  share-mode directions — so the fix was not a new check, it was **moving an existing
+  return three statements down**. Same shape as W11's "every defect in this item was
+  an ORDER or a MASK, not a value", and W5's `NtProtectVirtualMemory` ladder: a
+  validation placed where a careful implementation would put it, where NT does not.
+- **The image rule is `FILE_WRITE_DATA` alone, and the tidy grouping is the bug.**
+  Every other share-mode rule in NT reads `FILE_WRITE_DATA | FILE_APPEND_DATA`, and
+  proskrnl's image gate reused that pair — costing exactly the two append-only
+  columns × eight sharing modes = the 16 at `file.c:2663`. `docs/03`'s CUI-9 hazard-F
+  paragraph had *stated* the wider scope as though it were measured; it was not, and
+  the oracle refuted it. **A residual recorded in prose is a claim**, and this one had
+  been sitting in `docs/03` for a milestone — alongside a second claim in the same
+  paragraph ("a `DELETE`-access open of a live image still passes") that this item
+  half-closed.
+- **Six of the 126 were outside `test_file_sharing` and read as three unrelated Win32
+  symptoms.** `CopyFile` onto a mapped destination (`:847`/`:848`), the same through
+  `CopyFile2` (`:1174`/`:1175`), and `DeleteFile` of a mapped image
+  (`:1931`/`:1932`). The first two are `CREATE_ALWAYS` and the third is an open
+  carrying `FILE_DELETE_ON_CLOSE`, so all three are the truncate and delete rules in
+  Win32 spelling. §4 trap 4 with the consequence landing in an API whose name says
+  nothing about sections — the manifest had filed two of the three under "a handful
+  around CopyFile of a mapped or self-named file" and did not list the third at all.
+- **The counting itself was the item's third measurement defect, and it is the one
+  most likely to recur.** The manifest said 152; the merge base measures **164** with
+  the same binary. Two independent ways to get it wrong, both paid for here: grepping
+  `Test failed` misses the 14 `Test succeeded inside todo block` lines (W14's lesson,
+  again), and **the proskrnl leg's console REDRAWS a wrapped line** — the location
+  prefix, a bare CR, then the whole line — so a per-line counter that does not drop
+  the empty first draft reports one assertion twice. An earlier draft of this entry
+  said 166 → 39 for exactly that reason. Any triage block quoting a serial-log count
+  should say which parser produced it.
+- **The pin's own reachability had to be measured, because it was green first try.**
+  28 opens across six blocks, every one behind an `if (section != NULL)`, is a shape
+  that runs green while measuring a fraction of itself (§4 trap 2 in miniature). A
+  throwaway `ntapi_printf` in the one helper every case goes through printed 28 lines
+  and the four distinct statuses, which is what makes "green on the oracle" mean
+  something here. Cost: one three-minute run.
+
+**A second defect fell out of gate-check and is its own commit.**
+`IopSectionFileAccess` — the new one-authority function — was documented as "the
+oracle's protection switch" while implementing only two of its three rows:
+`PAGE_EXECUTE` and `PAGE_NOACCESS` demand **no file access at all**
+(`dlls/ntdll/unix/sync.c` `NtCreateSection`, `:2999-:3001`), so a
+`CreateFileA(name, 0, …)` handle can back a `PAGE_NOACCESS` section, and proskrnl
+answered `STATUS_ACCESS_DENIED`. No winetest assertion reaches it; the existing pin
+`sem_mm/section_file_access.c` had the row in its own HEADER and no `ok()` for it,
+which is how a citation came to claim coverage that did not exist. **A comment that
+names a pin is a claim about that pin, and it is checkable** — this is the third time
+in this document that gate-check convicted a citation rather than a behaviour.
+
+**What it did NOT do:** the pair still stops in exactly the same place, the panic at
+`file.c:3338`'s `CreateMailslotW` (W8), so 38 is a lower bound like every other
+stopped pair's and 164 → 38 is a like-for-like comparison of the same measured
+prefix. `ntdll:virtual`'s lesson applies unchanged — nothing past the stop has ever
+been counted.
+
+**What is left there, and some of it is not work.** 16 at `:3208` (FindFirstFile's
+`"*."` pattern, a FAT short-name question) is the largest item; 14 are succeeded-todo
+markers where proskrnl is the more NT-correct of the two runners, which is the
+`kernel32:volume:186` shape and needs reading before it is scheduled; 3 are
+`CopyFile`/`CopyFile2` of a file to ITSELF failing to report
+`ERROR_SHARING_VIOLATION`, a plain share-mode question with no section in it and the
+cheapest thing on the board; 5 are singletons.
+
 ---
 
 ## 3. What needs a constitutional amendment
