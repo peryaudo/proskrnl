@@ -909,11 +909,20 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
 
 /* --- the Mm seam: file-backed sections (kernel/mm/section.c) ---------------- */
 
-/* The file access a section over this file exercises (the NT rule Wine also
- * applies, third_party/wine dlls/ntdll/unix/sync.c NtCreateSection's
- * protection switch, :2986-:3004): read always; write for a writable
- * non-image data section. The rows that demand read are pinned by
- * sem_mm/section_file_access.
+/* The file access a section over this file exercises: all three rows of the
+ * pinned oracle's protection switch (third_party/wine dlls/ntdll/unix/sync.c
+ * NtCreateSection, :2986-:3004), pinned by sem_mm/section_file_access.
+ *
+ *   PAGE_READONLY / PAGE_EXECUTE_READ /
+ *   PAGE_WRITECOPY / PAGE_EXECUTE_WRITECOPY  -> FILE_READ_DATA
+ *   PAGE_READWRITE / PAGE_EXECUTE_READWRITE  -> FILE_READ_DATA | FILE_WRITE_DATA
+ *                                               (FILE_READ_DATA under SEC_IMAGE)
+ *   PAGE_EXECUTE / PAGE_NOACCESS             -> nothing at all
+ *
+ * The third row is not decoration: an EMPTY required mask is satisfied by a
+ * handle carrying no data right, so `CreateFileA(name, 0, ...)` can back a
+ * PAGE_NOACCESS section. Reading the switch as "read always" refuses that,
+ * and only an assertion with a no-access handle can see it.
  *
  * ONE function, because the same answer decides two things that must never
  * disagree — what the creating handle has to grant, and whether the resulting
@@ -923,8 +932,12 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
  * (attributes, protection) through here, so a count cannot leak. */
 static ACCESS_MASK IopSectionFileAccess(ULONG sectionAttributes, ULONG pageProtection)
 {
-    ACCESS_MASK needed = FILE_READ_DATA;
     ULONG bits = pageProtection & 0xFF;
+    if (bits == PAGE_EXECUTE || bits == PAGE_NOACCESS)
+    {
+        return 0;
+    }
+    ACCESS_MASK needed = FILE_READ_DATA;
     if ((sectionAttributes & SEC_IMAGE) == 0 &&
         (bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE))
     {
