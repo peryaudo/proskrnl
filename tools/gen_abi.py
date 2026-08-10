@@ -2128,6 +2128,13 @@ _Static_assert(sizeof(KUSER_SHARED_DATA) == 0x738, "KUSER_SHARED_DATA size (C_AS
 # The M4 Ps surface (process termination, NtDisplayString) + the M7 surface:
 # thread/process creation, the user dispatcher return protocol, queries.
 NTPSAPI_FUNCTIONS = [
+    # WOW64 milestone: the three calls DebugActiveProcess makes (ADR 0011's
+    # attach-only amendment). The event queue stays unbuilt and undeclared.
+    "NtCreateDebugObject",
+    "NtDebugActiveProcess",
+    "NtRemoveProcessDebug",
+    # WOW64 milestone: the per-process LDT (kernel/ps/ldt.c).
+    "NtSetLdtEntries",
     # CUI-1: smss's firstboot hand-off builds real process parameters.
     "RtlCreateProcessParametersEx",
     "RtlDestroyProcessParameters",
@@ -2275,6 +2282,21 @@ def gen_ntpsapi(wine: Path) -> str:
             "LOW_PRIORITY",
             "LOW_REALTIME_PRIORITY",
             "HIGH_PRIORITY",
+        ],
+    )
+
+    # The WOW64 milestone's attach-only debug carve-out (ADR 0011 amendment):
+    # the debug object's access rights and its one creation flag.
+    debug_rights = extract_defines(
+        winternl,
+        "winternl.h",
+        [
+            "DEBUG_READ_EVENT",
+            "DEBUG_PROCESS_ASSIGN",
+            "DEBUG_SET_INFORMATION",
+            "DEBUG_QUERY_INFORMATION",
+            "DEBUG_ALL_ACCESS",
+            "DEBUG_KILL_ON_CLOSE",
         ],
     )
 
@@ -2769,6 +2791,9 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + "    *PRTL_USER_PROCESS_PARAMETERS;\n\n"
         + "/* Process/thread access rights, extracted from wine/include/winnt.h. */\n"
         + process_rights
+        + "\n\n/* Debug-object access rights and creation flags, extracted from\n"
+        + " * wine/include/winternl.h (ADR 0011's attach-only amendment). */\n"
+        + debug_rights
         + "\n\n/* NtSetInformationThread(ThreadPriority)'s band, extracted from\n"
         + " * wine/include/ddk/wdm.h. */\n"
         + priority_levels

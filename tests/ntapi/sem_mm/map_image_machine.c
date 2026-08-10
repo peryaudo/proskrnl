@@ -352,4 +352,44 @@ START_TEST(map_image_machine)
     NtClose(section);
 
     test_data_section_ignores_it();
+    /* --- a CROSS-MACHINE image: the success-class warning ---------------
+     * Mapping a 32-bit image into a 64-bit process is not an error — the
+     * view IS created — but the caller is told the machine does not match
+     * so it can decline to run the code. STATUS_IMAGE_MACHINE_TYPE_MISMATCH
+     * is success-class (0x4...), which is exactly why a kernel that returns
+     * plain STATUS_SUCCESS looks correct to every NT_SUCCESS() check and is
+     * still wrong; ntdll:wow64's test_image_mappings is the caller that
+     * notices. Needs the syswow64 payload, so it is skipped where there is
+     * none. */
+    GetWindowsDirectoryA(path, sizeof(path));
+    strcat(path, "\\syswow64\\version.dll");
+    file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        skip("no syswow64 payload to map");
+        return;
+    }
+    section = NULL;
+    status =
+        NtCreateSection(&section, SECTION_ALL_ACCESS, NULL, NULL, PAGE_READONLY, SEC_IMAGE, file);
+    ok(status == STATUS_SUCCESS, "create i386 image section -> %08lx", (unsigned long)status);
+    CloseHandle(file);
+    if (!NT_SUCCESS(status))
+        return;
+
+    memset(&info, 0, sizeof(info));
+    status = NtQuerySection(section, SECTION_IMAGE_INFO_CLASS, &info, sizeof(info), &retlen);
+    ok(status == STATUS_SUCCESS, "query i386 image info -> %08lx", (unsigned long)status);
+    ok(info.machine == 0x014c, "syswow64 image machine %x is not I386", info.machine);
+
+    view = NULL;
+    viewSize = 0;
+    status = NtMapViewOfSection(section, NtCurrentProcess(), &view, 0, 0, NULL, &viewSize, 1, 0,
+                                PAGE_READONLY);
+    ok(status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH, "map i386 image -> %08lx",
+       (unsigned long)status);
+    ok(view != NULL, "the view was not created despite the success-class status");
+    if (view != NULL)
+        NtUnmapViewOfSection(NtCurrentProcess(), view);
+    NtClose(section);
 }
