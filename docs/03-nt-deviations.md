@@ -2855,3 +2855,19 @@ them:
   within a second on its next `mov %fs:0x18, %eax`. The macro now lives in
   `arch/x86_64/kipcr.inc` and both paths run it. Like its syscall half, this is a
   correctness fix that outlives WOW64.
+- **A WOW64 process's SECOND thread got no 32-bit furniture.** `NtCreateUserProcess` built
+  the TEB32, the guest stack and the CPU area; `NtCreateThreadEx` built none of it, so the
+  first thread a 32-bit GUI app created ran with `fs:[0x18]` reading zero. Both thread
+  builders now go through one `PspBuildThreadFurniture` — which is also the answer to why
+  there were two paths to drift apart (Art. 11).
+- **`THREAD_CREATE_FLAGS_SKIP_LOADER_INIT` was accepted and dropped.** In a WOW64 process
+  every thread is a guest thread unless its creator says otherwise (the diversion is in
+  `loader_init`, which this flag makes return before it), so the flag is how the two
+  64-bit reader threads `winefb.drv` starts stay 64-bit. Silently discarding it is the
+  Art. 12 shape exactly: success, a handle, and a thread that jumps to its own start
+  routine truncated to 32 bits. Now recorded in `SameTebFlags` (and mirrored into the
+  TEB32, as the oracle mirrors it); pinned by `tests/ntapi/sem_ps/thread_skip_flags.c`.
+  The mirror is written *after* `PspWow64BuildTeb32`, never before — that call writes the
+  whole 32-bit TEB, so the order is load-bearing, and it is the oracle's order for the
+  same reason. The 64-bit half is what an ntapi test can reach; the guest half is checked
+  by `tests/cui/hello32.c`, the one client that runs the same binary on both runtimes.

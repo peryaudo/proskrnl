@@ -345,8 +345,9 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
  * `map_view` and the TEB allocation beside it is unconstrained
  * (third_party/wine dlls/ntdll/unix/thread.c, unix/virtual.c). */
 static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
-                                       uint64_t limitHigh, uint64_t *allocBaseOut,
-                                       uint64_t *stackTopOut, uint64_t *stackLimitOut)
+                                       uint64_t limitLow, uint64_t limitHigh,
+                                       uint64_t *allocBaseOut, uint64_t *stackTopOut,
+                                       uint64_t *stackLimitOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
@@ -366,10 +367,12 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
 
     PVOID base = 0;
     SIZE_T size = reserve;
-    /* The constrained form even when limitHigh is 0: it IS the classic form's
-     * engine, and the zero means unconstrained (mm/virtual.h). */
-    NTSTATUS status = MiAllocateVirtualMemoryEx(space, &base, &size, MEM_RESERVE, PAGE_READWRITE, 0,
-                                                limitHigh, 0, 0);
+    /* The constrained form even when both limits are 0: it IS the classic
+     * form's engine, and a zero means unconstrained (mm/virtual.h).
+     * limitLow is how a WOW64 thread's 64-bit stack is kept above 4GB, the
+     * same floor the main thread's takes (PspAllocateUserStack). */
+    NTSTATUS status = MiAllocateVirtualMemoryEx(space, &base, &size, MEM_RESERVE, PAGE_READWRITE,
+                                                limitLow, limitHigh, 0, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -397,6 +400,135 @@ static NTSTATUS PspAllocateThreadStack(PEPROCESS process, uint64_t reserve, uint
     return STATUS_SUCCESS;
 }
 
+/* The two loader flags NtCreateThreadEx records for the thread it is about to
+ * start: SameTebFlags.SkipThreadAttach and .SkipLoaderInit. Written straight
+ * into the TEB rather than kept on the KTHREAD, because the only reader is
+ * ring 3 — the loader that runs on the new thread (sem_ps/thread_skip_flags.c
+ * pins the bits; dlls/ntdll/loader.c reads them). Mirrored into the TEB32 for
+ * the same reason the oracle mirrors them (dlls/ntdll/unix/thread.c
+ * NtCreateThreadEx: `wow_teb->SkipLoaderInit = teb->SkipLoaderInit`): the
+ * guest's loader is the one that reads the 32-bit copy. */
+/* The two bits, by position in abi/ntpebteb.h's generated SameTebFlags union
+ * (SafeThunkCall is bit 0; SkipThreadAttach the fourth, SkipLoaderInit the
+ * fifteenth). Spelled as masks rather than set through the bitfield because
+ * the alternative is a whole TEB on the kernel stack to hold three bits.
+ * G8: re-verify in abi/ntpebteb.h, which is generated from the pinned tree. */
+#define PSP_TEB_SKIP_THREAD_ATTACH 0x0008u
+#define PSP_TEB_SKIP_LOADER_INIT   0x4000u
+
+static void PspSetTebSkipFlags(PEPROCESS process, uint64_t tebBase,
+                               const PSP_THREAD_OPTIONS *options)
+{
+    USHORT flags = 0;
+    if (options->skipThreadAttach)
+    {
+        flags |= PSP_TEB_SKIP_THREAD_ATTACH;
+    }
+    if (options->skipLoaderInit)
+    {
+        flags |= PSP_TEB_SKIP_LOADER_INIT;
+    }
+    if (flags == 0)
+    {
+        return; /* PspBuildTeb zeroed the word already */
+    }
+    MiCopyToUserRange(&process->addressSpace, tebBase + offsetof(TEB, SameTebFlags), &flags,
+                      sizeof(flags));
+    if (process->wow64)
+    {
+        PspWow64MirrorTebFlags(process, tebBase, flags);
+    }
+}
+
+/* Everything a new thread needs BELOW its KTHREAD: its stack (or, in a WOW64
+ * process, both of them), its TEB (both of those too), and the WOW64_CPURESERVED
+ * area the guest's first context lives in. One authority for it (Art. 11),
+ * because there are two thread builders — this call and PspInjectUserThread's
+ * — and a WOW64 process needs identical furniture from both. Only the main
+ * thread's copy lives elsewhere, in NtCreateUserProcess, which builds the
+ * address space these values are placed into.
+ *
+ * `entryRspOut` is where the thread's ring-3 stack pointer starts and is NOT
+ * the returned stackTop in a WOW64 process: there the CPU area is carved off
+ * the top of the 64-bit stack and the 64-bit frames must stay UNDER it, while
+ * stackTop stays the real top so guard-page growth (mm/fault.c) still bounds
+ * the region it actually allocated. */
+static NTSTATUS PspBuildThreadFurniture(PEPROCESS process, uint64_t reserve, uint64_t commit,
+                                        const PSP_THREAD_OPTIONS *options, uint64_t startRoutine,
+                                        uint64_t argument, uint64_t threadId,
+                                        uint64_t *allocBaseOut, uint64_t *stackTopOut,
+                                        uint64_t *entryRspOut, uint64_t *tebBaseOut)
+{
+    /* A WOW64 thread has TWO stacks: the image's sizes go to the GUEST one
+     * and the 64-bit one is fixed-size and lives above 4GB — the split
+     * init_thread_stack makes for EVERY thread (dlls/ntdll/unix/thread.c),
+     * not just for the first. */
+    uint64_t limitHigh = options->stackLimitHigh;
+    uint64_t guestStackBase = 0, guestStackLimit = 0, guestStackAllocation = 0;
+    if (process->wow64)
+    {
+        NTSTATUS guestStatus =
+            PspWow64AllocateGuestStack(process, reserve, commit, limitHigh, &guestStackBase,
+                                       &guestStackLimit, &guestStackAllocation);
+        if (!NT_SUCCESS(guestStatus))
+        {
+            return guestStatus;
+        }
+        reserve = PspWow64HostStackSize();
+        commit = PspWow64HostStackSize();
+        limitHigh = 0; /* the ceiling was the guest stack's; this one has a floor */
+    }
+
+    uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
+    NTSTATUS status = PspAllocateThreadStack(process, reserve, commit,
+                                             process->wow64 ? PspWow64HostStackFloor() : 0,
+                                             limitHigh, &allocBase, &stackTop, &stackLimit);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    uint64_t tebBase = 0;
+    status = PspBuildTeb(process, allocBase, stackTop, stackLimit, process->uniqueProcessId,
+                         threadId, &tebBase);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    uint64_t entryRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
+    if (process->wow64)
+    {
+        status = PspWow64BuildTeb32(process, tebBase, process->uniqueProcessId, threadId,
+                                    guestStackBase, guestStackLimit, guestStackAllocation);
+        if (NT_SUCCESS(status))
+        {
+            uint64_t cpuArea = 0;
+            status = PspWow64BuildCpuArea(process, tebBase, stackTop, startRoutine, argument,
+                                          guestStackBase, &cpuArea);
+            if (NT_SUCCESS(status))
+            {
+                entryRsp = (cpuArea & ~(uint64_t)0xf) - 0x28;
+            }
+        }
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    /* AFTER the TEB32, never before: PspWow64BuildTeb32 writes the whole 32-bit
+     * TEB, so a mirror set first would be zeroed by it. The oracle's order is
+     * the same one, for the same reason — init_thread_stack builds the wow TEB
+     * and only then does NtCreateThreadEx set the bits in both
+     * (dlls/ntdll/unix/thread.c). */
+    PspSetTebSkipFlags(process, tebBase, options);
+
+    *allocBaseOut = allocBase;
+    *stackTopOut = stackTop;
+    *entryRspOut = entryRsp;
+    *tebBaseOut = tebBase;
+    return STATUS_SUCCESS;
+}
+
 /* Build a user thread in `process` (its own stack + TEB + ETHREAD), entering
  * ring 3 at startRoutine(argument) through the image's loader protocol, and
  * hand back a creator reference WITHOUT touching the caller's handle table.
@@ -414,21 +546,16 @@ static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uin
     uint64_t reserve = 0, commit = 0;
     PspResolveStackGeometry(process->imageInformation.MaximumStackSize,
                             process->imageInformation.CommittedStackSize, 0, 0, &reserve, &commit);
-    uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
-    NTSTATUS status =
-        PspAllocateThreadStack(process, reserve, commit, 0, &allocBase, &stackTop, &stackLimit);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-
-    uint64_t tebBase = 0;
     /* Ids come from the shared Ps id source: NT's client ids are GLOBALLY
      * unique (one CID table for pids and tids), and the global alert-by-tid
      * lookup depends on it (ntdll:sync test_tid_alert). */
     uint64_t threadId = PspAllocateProcessId();
-    status = PspBuildTeb(process, allocBase, stackTop, stackLimit, process->uniqueProcessId,
-                         threadId, &tebBase);
+    uint64_t allocBase = 0, stackTop = 0, entryRsp = 0, tebBase = 0;
+    PSP_THREAD_OPTIONS options;
+    memset(&options, 0, sizeof(options));
+    NTSTATUS status =
+        PspBuildThreadFurniture(process, reserve, commit, &options, startRoutine, argument,
+                                threadId, &allocBase, &stackTop, &entryRsp, &tebBase);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -447,7 +574,7 @@ static NTSTATUS PspBuildUserThread(PEPROCESS process, uint64_t startRoutine, uin
      * matching Wine's dlls/ntdll RtlUserThreadStart). */
     tcb->userStartRip =
         process->ldrInitializeThunk != 0 ? process->ldrInitializeThunk : startRoutine;
-    tcb->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
+    tcb->userStartRsp = entryRsp;
     tcb->userStartArg1 = startRoutine;
     tcb->userStartArg2 = argument;
 
@@ -514,21 +641,14 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
                             process->imageInformation.CommittedStackSize, options->stackReserve,
                             options->stackCommit, &reserve, &commit);
     reserve = (reserve + MI_ALLOCATION_GRANULARITY - 1) & ~(MI_ALLOCATION_GRANULARITY - 1);
-    uint64_t allocBase = 0, stackTop = 0, stackLimit = 0;
-    NTSTATUS status = PspAllocateThreadStack(process, reserve, commit, options->stackLimitHigh,
-                                             &allocBase, &stackTop, &stackLimit);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-
-    uint64_t tebBase = 0;
     /* Ids come from the shared Ps id source: NT's client ids are GLOBALLY
      * unique (one CID table for pids and tids), and the global alert-by-tid
      * lookup depends on it (ntdll:sync test_tid_alert). */
     uint64_t threadId = PspAllocateProcessId();
-    status = PspBuildTeb(process, allocBase, stackTop, stackLimit, process->uniqueProcessId,
-                         threadId, &tebBase);
+    uint64_t allocBase = 0, stackTop = 0, entryRsp = 0, tebBase = 0;
+    NTSTATUS status =
+        PspBuildThreadFurniture(process, reserve, commit, options, startRoutine, argument, threadId,
+                                &allocBase, &stackTop, &entryRsp, &tebBase);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -547,7 +667,7 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
      * matching Wine's dlls/ntdll RtlUserThreadStart). */
     tcb->userStartRip =
         process->ldrInitializeThunk != 0 ? process->ldrInitializeThunk : startRoutine;
-    tcb->userStartRsp = (stackTop & ~(uint64_t)0xf) - 0x28;
+    tcb->userStartRsp = entryRsp;
     tcb->userStartArg1 = startRoutine;
     tcb->userStartArg2 = argument;
 
@@ -692,6 +812,12 @@ NTSTATUS NtCreateThreadEx(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
      * (dlls/ntdll/unix/thread.c) and its own PsCreateSystemThread passes
      * nothing else — a frozen process must still be able to answer. */
     options.bypassProcessFreeze = (createFlags & THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE) != 0;
+    /* Recorded in the new thread's TEB, where the loader reads them
+     * (sem_ps/thread_skip_flags.c). SKIP_LOADER_INIT is also the only way a
+     * thread of a WOW64 process stays 64-bit: the guest diversion lives in
+     * loader_init, which this flag makes return before it. */
+    options.skipThreadAttach = (createFlags & THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH) != 0;
+    options.skipLoaderInit = (createFlags & THREAD_CREATE_FLAGS_SKIP_LOADER_INIT) != 0;
     uint64_t threadId = 0, tebBase = 0;
     NTSTATUS status = PspCreateUserThread(process, (uint64_t)(uintptr_t)startRoutine,
                                           (uint64_t)(uintptr_t)argument, suspended, &options,

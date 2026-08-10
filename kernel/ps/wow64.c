@@ -328,6 +328,19 @@ NTSTATUS PspWow64BuildTeb32(PEPROCESS process, uint64_t tebVa, uint64_t uniquePr
  * TEB32 — and 0 for every thread of a 64-bit process, which is what marks
  * the descriptor absent. The scheduler's whole WOW64 cost is this one call
  * (G7: delete wow64.c and the call site collapses to "always 0"). */
+/* The TEB32's copy of the loader's two "skip" bits. The guest's loader reads
+ * the 32-bit TEB, so the flags have to be in both — the oracle mirrors them
+ * for the same reason (dlls/ntdll/unix/thread.c NtCreateThreadEx:
+ * `wow_teb->SkipThreadAttach = teb->SkipThreadAttach`). Here rather than
+ * beside its 64-bit half so the offset stays in its one home (Art. 11) and
+ * the WOW64 construction stays a file that can be deleted (Art. 7). */
+void PspWow64MirrorTebFlags(PEPROCESS process, uint64_t tebVa, USHORT sameTebFlags)
+{
+    MiCopyToUserRange(&process->addressSpace,
+                      tebVa + PSP_WOW_TEB_OFFSET + offsetof(TEB32, SameTebFlags), &sameTebFlags,
+                      sizeof(sameTebFlags));
+}
+
 uint64_t PspWow64Fs32Base(PKTHREAD thread)
 {
     if (thread->teb == 0 || thread->process == 0 || !thread->process->wow64)
@@ -344,7 +357,8 @@ uint64_t PspWow64Fs32Base(PKTHREAD thread)
  * TEB64.Tib.StackBase and TEB64.TlsSlots[WOW64_TLS_CPURESERVED] — wow64.dll
  * reads the TLS slot, ntdll's RtlWow64GetCpuAreaInfo reads either. */
 NTSTATUS PspWow64BuildCpuArea(PEPROCESS process, uint64_t tebVa, uint64_t hostStackTop,
-                              uint64_t guestEntry, uint64_t guestStackBase, uint64_t *cpuAreaOut)
+                              uint64_t guestEntry, uint64_t guestArgument, uint64_t guestStackBase,
+                              uint64_t *cpuAreaOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
@@ -359,16 +373,23 @@ NTSTATUS PspWow64BuildCpuArea(PEPROCESS process, uint64_t tebVa, uint64_t hostSt
 
     /* The guest's first context. Values from the pinned tree's own thread
      * seeding (dlls/ntdll/unix/signal_x86_64.c, the wow_context arm):
-     * Eax = the image entry, Ebx = the PEB32, Esp just under the guest
-     * stack's top, Eip = the GUEST ntdll's RtlUserThreadStart, and the
-     * segment trio the compat-mode descriptors gdt.c installs. wow64.dll's
-     * thread_init rewrites Eip/Esp to enter the guest LdrInitializeThunk;
-     * what must be right HERE is everything it reads to do so. */
+     * Eax = the thread's start routine, Ebx = its argument, Esp just under
+     * the guest stack's top, Eip = the GUEST ntdll's RtlUserThreadStart, and
+     * the segment trio the compat-mode descriptors gdt.c installs.
+     * wow64.dll's thread_init rewrites Eip/Esp to enter the guest
+     * LdrInitializeThunk; what must be right HERE is everything it reads to
+     * do so.
+     *
+     * The argument is translated the one way the oracle translates it:
+     * `wow_context->Ebx = (arg == peb ? (ULONG_PTR)wow_peb : (ULONG_PTR)arg)`.
+     * The main thread's argument IS the PEB, so it lands on the PEB32 and
+     * this reads exactly as the old hardwired version did; a thread created
+     * by the guest gets its own 32-bit argument through unchanged. */
     I386_CONTEXT context;
     memset(&context, 0, sizeof(context));
     context.ContextFlags = CONTEXT_I386_FULL;
     context.Eax = (ULONG)guestEntry;
-    context.Ebx = (ULONG)process->peb32Base;
+    context.Ebx = (ULONG)(guestArgument == process->pebBase ? process->peb32Base : guestArgument);
     context.Esp = (ULONG)((guestStackBase - 16) & ~15ULL);
     context.Eip = (ULONG)process->wow64RtlUserThreadStart;
     context.SegCs = KI_USER_CS32_SELECTOR;
@@ -441,10 +462,20 @@ NTSTATUS PspWow64FillInitBlock(PEPROCESS process, uint64_t hostBlockVa, uint64_t
  * address it. The 64-bit stack it pairs with is the ordinary one every
  * thread gets — except placed ABOVE 4GB (see PSP_WOW_HOST_STACK_SIZE). */
 NTSTATUS PspWow64AllocateGuestStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
-                                    uint64_t *baseOut, uint64_t *limitOut, uint64_t *allocationOut)
+                                    uint64_t limitHigh, uint64_t *baseOut, uint64_t *limitOut,
+                                    uint64_t *allocationOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
+    /* The GUEST stack is where a WOW64 thread's ZeroBits ceiling applies —
+     * the 64-bit stack is placed by the floor above 4GB instead, and takes
+     * no ceiling at all. Same clamp as the oracle's: `if (!limit || limit >
+     * user_space_wow_limit) limit = user_space_wow_limit`
+     * (init_thread_stack, dlls/ntdll/unix/thread.c). */
     uint64_t limit = process->wowSpaceLimit - 1;
+    if (limitHigh != 0 && limitHigh < limit)
+    {
+        limit = limitHigh;
+    }
 
     /* The same clamping ladder the 64-bit stack goes through (process.c
      * PspAllocateUserStack): both sizes come from a file the caller

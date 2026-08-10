@@ -950,7 +950,7 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     uint64_t guestStackBase = 0, guestStackLimit = 0, guestStackAllocation = 0;
     if (NT_SUCCESS(status) && isWow64)
     {
-        status = PspWow64AllocateGuestStack(process, stackReserve, stackCommit, &guestStackBase,
+        status = PspWow64AllocateGuestStack(process, stackReserve, stackCommit, 0, &guestStackBase,
                                             &guestStackLimit, &guestStackAllocation);
         stackReserve = PspWow64HostStackSize();
         stackCommit = PspWow64HostStackSize();
@@ -1001,8 +1001,8 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
              * thread_init reads (init_thread_stack, dlls/ntdll/unix/thread.c,
              * makes exactly this substitution). */
             uint64_t cpuArea = 0;
-            status =
-                PspWow64BuildCpuArea(process, tebBase, stackTop, entry, guestStackBase, &cpuArea);
+            status = PspWow64BuildCpuArea(process, tebBase, stackTop, entry, process->pebBase,
+                                          guestStackBase, &cpuArea);
             if (NT_SUCCESS(status))
             {
                 stackTop = cpuArea;
