@@ -2823,3 +2823,28 @@ NOT be reverted if WOW64 were dropped:
 So: the WOW64 *milestone* is subtractable; the *bug fixes it forced* are not, and should
 not be. Art. 7 asks that the GUI/WOW64 layers not entangle the CUI core — it does not ask
 that a core defect stay unfixed because a later milestone is what surfaced it.
+
+## WOW64 GUI notes — the defects a 32-bit window found
+
+`make rungui` gained the 32-bit half of the GUI shelf: a 32-bit `.exe`, typed at the
+windowed console, paints a window on the desktop the 64-bit applets share. No `Nt*`
+semantics moved for it, and nothing new was minted: the guest's own `user32`/`gdi32`
+import the pinned tree's STOCK i386 `win32u.dll`, which is nothing but syscall thunks —
+`wow64cpu` catches those syscalls, `wow64.dll` routes service table 1 to `wow64win.dll`,
+and `wow64win` calls the SAME 64-bit `win32u.dll` this build already ships, by name, for
+all 483 entry points it imports. One desktop authority (Art. 11), reached through one
+more door.
+
+What it cost was a handful of defects, all of them older than the feature and none of
+them 32-bit in nature — a WOW64 GUI process is simply the first caller that exercises
+them:
+
+- **`NtQueryDirectoryFile` assumed an 8-byte-aligned output buffer.** Entries are laid out
+  on 8-byte boundaries *relative to the buffer*; the buffer's own alignment is the
+  caller's business. i386 gives the pinned tree's own SxS lookup (`actctx.c`
+  `lookup_manifest_file`) a 4-aligned `char buffer[8192]`, and every `LARGE_INTEGER` field
+  the kernel stored through a struct pointer then landed misaligned — legal on the
+  hardware, undefined in C, and a UBSan `#UD` in this build. The fields are now staged in
+  an aligned local and copied out as bytes. Pinned by
+  `tests/ntapi/sem_file/dir_unaligned_buffer.c` (buffer+1/+2/+4 answer exactly like
+  buffer+0, measured on the oracle first).
