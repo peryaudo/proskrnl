@@ -119,6 +119,16 @@ START_TEST(section_file_access)
     ok(status == STATUS_ACCESS_DENIED, "no-access handle, READWRITE -> %08lx",
        (unsigned long)status);
 
+    /* --- ...and serves the two that demand NOTHING. The header's third row
+     * (`PAGE_EXECUTE` / `PAGE_NOACCESS` -> 0) was documented here and never
+     * asserted, which made the whole "read always" reading of the switch
+     * look pinned when only two of its three rows were. An empty required
+     * mask is satisfied by a handle carrying no data right at all. */
+    status = try_section(noAccess, PAGE_EXECUTE, SEC_COMMIT);
+    ok(status == STATUS_SUCCESS, "no-access handle, EXECUTE -> %08lx", (unsigned long)status);
+    status = try_section(noAccess, PAGE_NOACCESS, SEC_COMMIT);
+    ok(status == STATUS_SUCCESS, "no-access handle, NOACCESS -> %08lx", (unsigned long)status);
+
     NtClose(noAccess);
     NtClose(readable);
     NtClose(writable);
