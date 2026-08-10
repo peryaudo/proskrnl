@@ -355,11 +355,13 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
     }
     case ProcessWow64Information:
     {
-        /* The WOW64 PEB address: always 0 — x64-only, no WOW64 process can
-         * exist (docs/adr/0006), so 0 is the true answer, not a stub. EXACT
+        /* The target's PEB32, or 0 for a 64-bit process — which is what
+         * makes IsWow64Process answer (kernelbase), and what wow64.dll's
+         * process_init reads to find the WOW64INFO behind it. EXACT
          * ULONG_PTR size, and the mismatch returns before returnLength is
-         * touched (Wine dlls/ntdll/unix/process.c). Consumer: kernelbase's
-         * IsWow64Process. Pinned by sem_ps/process_query. */
+         * touched (Wine dlls/ntdll/unix/process.c). Pinned by
+         * sem_ps/process_query (the 64-bit arm) and sem_ps/wow64_process
+         * (the PEB64 + 0x1000 arm). */
         if (length != sizeof(ULONG_PTR))
         {
             status = STATUS_INFO_LENGTH_MISMATCH;
@@ -370,7 +372,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         {
             break;
         }
-        ULONG_PTR wowPeb = 0;
+        ULONG_PTR wowPeb = (ULONG_PTR)process->peb32Base;
         memcpy(buffer, &wowPeb, sizeof(wowPeb));
         if (returnLength != 0)
         {
@@ -1393,9 +1395,14 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
      * always false here (dlls/ntdll/unix/system.c). Pinned by
      * tests/ntapi/sem_ps/info_class_range.c. */
     case SystemNativeBasicInformation:
-    /* "Emulation" is the 32-bit view a WOW64 caller would get; proskrnl has
-     * no WOW64, so the emulated view IS the native one — the oracle reaches
-     * the same place via `virtual_get_system_info(&sbi, is_wow64())`. */
+    /* "Emulation" is the 32-bit view: the same record with the address
+     * space narrowed to what a WOW64 caller can reach. The oracle reaches
+     * it via `virtual_get_system_info(&sbi, is_wow64())`, i.e. the split is
+     * on the CALLER, not on the class — and wow64.dll's process_init reads
+     * exactly this to derive both highest_user_address and the default
+     * zero-bits it then injects into every guest allocation. A 64-bit
+     * caller sees the native view here (its own emulated view IS native),
+     * so only the wow64 arm below differs. */
     case SystemEmulationBasicInformation:
     case SystemBasicInformation:
     {
@@ -1425,6 +1432,17 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         info.ActiveProcessorsAffinityMask = 1;
         info.LowestUserAddress = (void *)0x10000;
         info.HighestUserAddress = (void *)(KI_USER_SPACE_LIMIT - 1);
+        {
+            /* The narrowed views. A WOW64 process asking for its own
+             * BASIC information gets the guest ceiling — it cannot address
+             * anything above it — and the EMULATION class gives that same
+             * ceiling to whoever asks about the 32-bit view. */
+            PEPROCESS caller = KeGetCurrentThread()->process;
+            if (caller->wow64 && caller->wowSpaceLimit != 0)
+            {
+                info.HighestUserAddress = (void *)(uintptr_t)(caller->wowSpaceLimit - 1);
+            }
+        }
         info.AllocationGranularity = 0x10000;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
@@ -2798,7 +2816,16 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
         {
             return status;
         }
-        if (processHandle != 0 && processHandle != NtCurrentProcess())
+        /* The target's own machine decides the Process bits below, so the
+         * reference is held long enough to read it rather than only to
+         * validate the handle. */
+        USHORT targetMachine = 0;
+        if (processHandle == NtCurrentProcess())
+        {
+            PEPROCESS self = KeGetCurrentThread()->process;
+            targetMachine = self->wow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
+        }
+        else if (processHandle != 0)
         {
             PVOID body;
             status = ObReferenceObjectByHandle(processHandle, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -2807,9 +2834,11 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
             {
                 return status;
             }
+            PEPROCESS target = body;
+            targetMachine = target->wow64 ? IMAGE_FILE_MACHINE_I386 : IMAGE_FILE_MACHINE_AMD64;
             ObDereferenceObject(body);
         }
-        SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[2];
+        SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[3];
         ULONG needed = sizeof(machines);
         if (length < needed)
         {
@@ -2827,13 +2856,22 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
             return status;
         }
         memset(machines, 0, sizeof(machines));
+        /* Native first, then the WOW64 container, then the terminator —
+         * the order and the flag pattern the oracle answers with
+         * (dlls/ntdll/unix/system.c). RtlWow64GetProcessMachines reads
+         * exactly this to tell wow64.dll which machine it is emulating, so
+         * the I386 row is what makes a WOW64 process possible at all.
+         * Process marks the row whose machine the TARGET runs; a NULL
+         * handle names no process and so sets none. */
         machines[0].Machine = IMAGE_FILE_MACHINE_AMD64;
         machines[0].KernelMode = 1;
         machines[0].UserMode = 1;
         machines[0].Native = 1;
-        /* Wine sets Process when the target's machine matches; every real
-         * process here is native AMD64, only the NULL handle has none. */
-        machines[0].Process = processHandle != 0;
+        machines[0].Process = targetMachine == IMAGE_FILE_MACHINE_AMD64;
+        machines[1].Machine = IMAGE_FILE_MACHINE_I386;
+        machines[1].UserMode = 1;
+        machines[1].WoW64Container = 1;
+        machines[1].Process = targetMachine == IMAGE_FILE_MACHINE_I386;
         memcpy(buffer, machines, needed);
         if (returnLength != 0)
         {
