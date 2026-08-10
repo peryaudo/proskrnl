@@ -54,6 +54,15 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS,
 #define MAXIMUM_PROC_PER_GROUP 64
 #define MAXIMUM_PROCESSORS MAXIMUM_PROC_PER_GROUP
 
+/* Debug-object access rights and creation flags, extracted from
+ * wine/include/winternl.h (ADR 0011's attach-only amendment). */
+#define DEBUG_READ_EVENT 0x0001
+#define DEBUG_PROCESS_ASSIGN 0x0002
+#define DEBUG_SET_INFORMATION 0x0004
+#define DEBUG_QUERY_INFORMATION 0x0008
+#define DEBUG_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x0f)
+#define DEBUG_KILL_ON_CLOSE 0x1
+
 /* NtSetInformationThread(ThreadPriority)'s band, extracted from
  * wine/include/ddk/wdm.h. */
 #define LOW_PRIORITY 0
@@ -1704,6 +1713,10 @@ _Static_assert(offsetof(RTL_PROCESS_MODULES, Modules) == 8, "RTL_PROCESS_MODULES
 
 /* The M4+M7 Ps Nt* surface; signatures extracted verbatim from
  * wine/include/winternl.h (linkage macros dropped). */
+NTSTATUS NtCreateDebugObject(HANDLE*,ACCESS_MASK,OBJECT_ATTRIBUTES*,ULONG);
+NTSTATUS NtDebugActiveProcess(HANDLE,HANDLE);
+NTSTATUS NtRemoveProcessDebug(HANDLE,HANDLE);
+NTSTATUS NtSetLdtEntries(ULONG,ULONG,ULONG,ULONG,ULONG,ULONG);
 NTSTATUS RtlCreateProcessParametersEx(RTL_USER_PROCESS_PARAMETERS**,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,PWSTR,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,const UNICODE_STRING*,ULONG);
 void RtlDestroyProcessParameters(RTL_USER_PROCESS_PARAMETERS*);
 NTSTATUS NtTerminateProcess(HANDLE,LONG);
