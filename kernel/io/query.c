@@ -1369,15 +1369,46 @@ static ULONG IopDirEntryMinimumLength(FILE_INFORMATION_CLASS informationClass)
     }
 }
 
-/* Serialize one IO_DIR_ENTRY at `out`. */
+/* No entry has been written to the buffer yet (NtQueryDirectoryFile's
+ * previousOffset). */
+#define IOP_NO_PREVIOUS_ENTRY 0xFFFFFFFFu
+
+/* Serialize one IO_DIR_ENTRY at `out`, whose alignment is the CALLER's
+ * business and not this code's.
+ *
+ * Entries are laid out on 8-byte boundaries RELATIVE TO THE BUFFER, which
+ * invites the reading that the buffer itself is 8-aligned — it is not, and NT
+ * imposes no such requirement (tests/ntapi/sem_file/dir_unaligned_buffer.c
+ * pins buffer+1/+2/+4 answering exactly like buffer+0; the probe above asks
+ * for alignment 1 for the same reason). The real caller that convicted this:
+ * a WOW64 process's SxS lookup, which enumerates with i386's 4-byte-aligned
+ * `char buffer[8192]` (third_party/wine dlls/ntdll/actctx.c
+ * lookup_manifest_file) — every LARGE_INTEGER field then landed on a
+ * 4-aligned address and the kernel took a UBSan #UD before the first WOW64
+ * window could be painted.
+ *
+ * So the fields are staged in an ALIGNED LOCAL and the result is copied out
+ * as bytes. `fixedSize` comes from the caller rather than being re-derived
+ * here: IopDirEntryFixedSize is the one authority for a class's fixed part
+ * (Art. 11), and the caller has already asked it. */
 static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DIR_ENTRY *entry,
-                            void *out, ULONG nameBytes)
+                            void *out, ULONG fixedSize, ULONG nameBytes)
 {
+    union
+    {
+        FILE_DIRECTORY_INFORMATION dir;
+        FILE_FULL_DIRECTORY_INFORMATION full;
+        FILE_BOTH_DIRECTORY_INFORMATION both;
+        FILE_NAMES_INFORMATION names;
+        FILE_ID_FULL_DIRECTORY_INFORMATION idFull;
+        FILE_ID_BOTH_DIRECTORY_INFORMATION idBoth;
+    } staged;
+
     switch (informationClass)
     {
     case FileDirectoryInformation:
     {
-        FILE_DIRECTORY_INFORMATION *d = out;
+        FILE_DIRECTORY_INFORMATION *d = &staged.dir;
         memset(d, 0, offsetof(FILE_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
         d->LastAccessTime = entry->info.lastAccessTime;
@@ -1387,12 +1418,11 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->AllocationSize.QuadPart = (LONGLONG)entry->info.allocationSize;
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     case FileFullDirectoryInformation:
     {
-        FILE_FULL_DIRECTORY_INFORMATION *d = out;
+        FILE_FULL_DIRECTORY_INFORMATION *d = &staged.full;
         memset(d, 0, offsetof(FILE_FULL_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
         d->LastAccessTime = entry->info.lastAccessTime;
@@ -1402,12 +1432,11 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->AllocationSize.QuadPart = (LONGLONG)entry->info.allocationSize;
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     case FileBothDirectoryInformation:
     {
-        FILE_BOTH_DIRECTORY_INFORMATION *d = out;
+        FILE_BOTH_DIRECTORY_INFORMATION *d = &staged.both;
         memset(d, 0, offsetof(FILE_BOTH_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
         d->LastAccessTime = entry->info.lastAccessTime;
@@ -1418,22 +1447,20 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
         IopFillShortName(entry, d->ShortName, &d->ShortNameLength);
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     case FileNamesInformation:
     {
-        FILE_NAMES_INFORMATION *d = out;
+        FILE_NAMES_INFORMATION *d = &staged.names;
         memset(d, 0, offsetof(FILE_NAMES_INFORMATION, FileName));
         d->FileNameLength = entry->nameLength;
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     case FileIdFullDirectoryInformation:
     {
         /* The Full shape + the file id — same fields as IdBoth without the
          * short name, which is the only difference between the two. */
-        FILE_ID_FULL_DIRECTORY_INFORMATION *d = out;
+        FILE_ID_FULL_DIRECTORY_INFORMATION *d = &staged.idFull;
         memset(d, 0, offsetof(FILE_ID_FULL_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
         d->LastAccessTime = entry->info.lastAccessTime;
@@ -1444,7 +1471,6 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->FileAttributes = entry->info.fileAttributes;
         d->FileNameLength = entry->nameLength;
         d->FileId.QuadPart = (LONGLONG)entry->info.fileId;
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     case FileIdBothDirectoryInformation:
@@ -1454,7 +1480,7 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
          * EaSize stays 0 (no EAs on FAT); ShortName is filled through the
          * same one authority as the Both class, so the two classes cannot
          * disagree about an entry. */
-        FILE_ID_BOTH_DIRECTORY_INFORMATION *d = out;
+        FILE_ID_BOTH_DIRECTORY_INFORMATION *d = &staged.idBoth;
         memset(d, 0, offsetof(FILE_ID_BOTH_DIRECTORY_INFORMATION, FileName));
         d->CreationTime = entry->info.creationTime;
         d->LastAccessTime = entry->info.lastAccessTime;
@@ -1466,12 +1492,14 @@ static void IopFillDirEntry(FILE_INFORMATION_CLASS informationClass, const IO_DI
         d->FileNameLength = entry->nameLength;
         d->FileId.QuadPart = (LONGLONG)entry->info.fileId;
         IopFillShortName(entry, d->ShortName, &d->ShortNameLength);
-        memcpy(d->FileName, entry->name, nameBytes);
         break;
     }
     default:
-        break;
+        return; /* not an enumeration class; the caller refused it already */
     }
+
+    memcpy(out, &staged, fixedSize);
+    memcpy((char *)out + fixedSize, entry->name, nameBytes);
 }
 
 NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcContext,
@@ -1600,7 +1628,12 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     file->dirScanStarted = TRUE;
 
     ULONG written = 0;
-    ULONG *previousNextOffset = 0;
+    /* The previous entry's offset INTO the buffer, not a pointer to it: the
+     * NextEntryOffset it needs is a byte-copy to an address whose alignment
+     * is the caller's (see IopFillDirEntry), and an offset is what the copy
+     * wants anyway. IOP_NO_PREVIOUS_ENTRY rather than 0 — 0 is where the
+     * FIRST entry lives, so it cannot double as "there isn't one". */
+    ULONG previousOffset = IOP_NO_PREVIOUS_ENTRY;
     ULONG emitted = 0;
     /* No pre-loop seed for `status`: the first thing every iteration does is
      * assign it (the position check or the buffer probe), so a seed here is a
@@ -1649,12 +1682,16 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
             nameBytes = length - start - fixedSize;
             status = STATUS_BUFFER_OVERFLOW;
         }
-        IopFillDirEntry(informationClass, &entry, (char *)buffer + start, nameBytes);
-        if (previousNextOffset != 0)
+        IopFillDirEntry(informationClass, &entry, (char *)buffer + start, fixedSize, nameBytes);
+        if (previousOffset != IOP_NO_PREVIOUS_ENTRY)
         {
-            *previousNextOffset = start - (ULONG)((char *)previousNextOffset - (char *)buffer);
+            /* NextEntryOffset is the first field of every class, and it is
+             * written through memcpy for the same reason the entry's fields
+             * are: the buffer's alignment belongs to the caller. */
+            ULONG delta = start - previousOffset;
+            memcpy((char *)buffer + previousOffset, &delta, sizeof(delta));
         }
-        previousNextOffset = (ULONG *)((char *)buffer + start); /* NextEntryOffset is first */
+        previousOffset = start;
         written = start + fixedSize + nameBytes;
         emitted++;
         file->dirPosition = cursor;
