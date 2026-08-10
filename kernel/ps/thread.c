@@ -1733,11 +1733,38 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
          * one (kernel/ps/ldt.c; a 64-bit thread of a process that never
          * called NtSetLdtEntries has no LDT, which is the uniform refusal
          * sem_ps/ldt.c pins). Read back byte-exact — the caller memcmps
-         * what it wrote. */
+         * what it wrote.
+         *
+         * The LDT belongs to the process of the thread the HANDLE names,
+         * not to the caller's: this class takes a thread handle, and the
+         * oracle resolves it the same way (get_thread_ldt_entry hands
+         * ldt_get_entry the TARGET's ClientId, dlls/ntdll/unix/
+         * signal_x86_64.c). Reading the caller's table instead would answer
+         * a cross-thread query with the wrong process's descriptors. */
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_QUERY_INFORMATION,
+                                               &PspThreadType, ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
         THREAD_DESCRIPTOR_INFORMATION descriptor;
         memcpy(&descriptor, buffer, sizeof(descriptor));
-        if ((descriptor.Selector >> 16) == 0 && (descriptor.Selector & 4) != 0 &&
-            PspQueryLdtEntry(KeGetCurrentThread()->process, descriptor.Selector, &descriptor.Entry))
+        BOOLEAN found = (descriptor.Selector >> 16) == 0 && (descriptor.Selector & 4) != 0 &&
+                        target != 0 &&
+                        PspQueryLdtEntry(target->process, descriptor.Selector, &descriptor.Entry);
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        if (found)
         {
             status = KiProbeForWrite(buffer, sizeof(descriptor), sizeof(ULONG));
             if (!NT_SUCCESS(status))
