@@ -39,6 +39,53 @@ static ULONG MipSegmentProtect(ULONG characteristics)
     return r ? PAGE_READONLY : PAGE_NOACCESS;
 }
 
+/* The optional-header fields the mapper needs, normalized to their widest
+ * form. PE32 and PE32+ agree up to ImageBase and diverge there (ULONG vs
+ * ULONGLONG, plus BaseOfData present only in PE32), so every field after it
+ * — the data directory included — sits at a different offset in the two
+ * layouts and has to be read through the matching struct rather than a
+ * shared prefix. MS PE/COFF spec §3.4 "Optional Header". */
+typedef struct
+{
+    uint64_t imageBase;
+    uint64_t stackReserve;
+    uint64_t stackCommit;
+    ULONG sectionAlignment;
+    ULONG sizeOfImage;
+    ULONG sizeOfHeaders;
+    ULONG entryRva;
+    ULONG checksum;
+    ULONG numberOfRvaAndSizes;
+    const IMAGE_DATA_DIRECTORY *dataDirectory;
+    USHORT subsystem;
+    USHORT dllCharacteristics;
+    USHORT subsystemMajor;
+    USHORT subsystemMinor;
+    USHORT osMajor;
+    USHORT osMinor;
+} MIP_OPTIONAL_HEADER;
+
+#define MIP_CAPTURE_OPTIONAL(opt, header)                                                          \
+    do                                                                                             \
+    {                                                                                              \
+        (opt).imageBase = (header)->OptionalHeader.ImageBase;                                      \
+        (opt).stackReserve = (header)->OptionalHeader.SizeOfStackReserve;                          \
+        (opt).stackCommit = (header)->OptionalHeader.SizeOfStackCommit;                            \
+        (opt).sectionAlignment = (header)->OptionalHeader.SectionAlignment;                        \
+        (opt).sizeOfImage = (header)->OptionalHeader.SizeOfImage;                                  \
+        (opt).sizeOfHeaders = (header)->OptionalHeader.SizeOfHeaders;                              \
+        (opt).entryRva = (header)->OptionalHeader.AddressOfEntryPoint;                             \
+        (opt).checksum = (header)->OptionalHeader.CheckSum;                                        \
+        (opt).numberOfRvaAndSizes = (header)->OptionalHeader.NumberOfRvaAndSizes;                  \
+        (opt).dataDirectory = (header)->OptionalHeader.DataDirectory;                              \
+        (opt).subsystem = (header)->OptionalHeader.Subsystem;                                      \
+        (opt).dllCharacteristics = (header)->OptionalHeader.DllCharacteristics;                    \
+        (opt).subsystemMajor = (header)->OptionalHeader.MajorSubsystemVersion;                     \
+        (opt).subsystemMinor = (header)->OptionalHeader.MinorSubsystemVersion;                     \
+        (opt).osMajor = (header)->OptionalHeader.MajorOperatingSystemVersion;                      \
+        (opt).osMinor = (header)->OptionalHeader.MinorOperatingSystemVersion;                      \
+    } while (0)
+
 NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
 {
     const char *bytes = data;
@@ -52,7 +99,7 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
     {
         return STATUS_INVALID_IMAGE_NOT_MZ;
     }
-    if (dos->e_lfanew == 0 || (uint64_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64) > size)
+    if (dos->e_lfanew == 0 || (uint64_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS32) > size)
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
@@ -61,17 +108,38 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
-    if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+
+    /* Two machines, each with the optional-header width the loader that
+     * produced it uses: AMD64/PE32+ natively, and I386/PE32 for the WOW64
+     * guest side (docs/02 "WOW64"). A machine/width mismatch is malformed. */
+    MIP_OPTIONAL_HEADER opt;
+    if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 &&
+        (uint64_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64) <= size &&
+        nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
     {
-        return STATUS_INVALID_IMAGE_FORMAT; /* x86_64 PE32+ only (ADR 0006) */
+        MIP_CAPTURE_OPTIONAL(opt, nt);
     }
-    if (nt->OptionalHeader.SectionAlignment < PAGE_SIZE ||
-        (nt->OptionalHeader.SectionAlignment & (nt->OptionalHeader.SectionAlignment - 1)) != 0)
+    else if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_I386 &&
+             ((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.Magic ==
+                 IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        /* The PE32 arm needs no second bound check: sizeof(NT_HEADERS32) is
+         * the smaller of the two and the caller-side check above already
+         * cleared it. */
+        const IMAGE_NT_HEADERS32 *nt32 = (const IMAGE_NT_HEADERS32 *)nt;
+        MIP_CAPTURE_OPTIONAL(opt, nt32);
+    }
+    else
+    {
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
+
+    if (opt.sectionAlignment < PAGE_SIZE ||
+        (opt.sectionAlignment & (opt.sectionAlignment - 1)) != 0)
     {
         return STATUS_INVALID_IMAGE_FORMAT; /* flat native images: not M5 */
     }
-    if ((nt->OptionalHeader.ImageBase & (MI_ALLOCATION_GRANULARITY - 1)) != 0)
+    if ((opt.imageBase & (MI_ALLOCATION_GRANULARITY - 1)) != 0)
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
@@ -86,28 +154,28 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
                                        nt->FileHeader.SizeOfOptionalHeader);
     uint64_t sectionTableEnd =
         (uint64_t)((const char *)(sections + nt->FileHeader.NumberOfSections) - bytes);
-    if (sectionTableEnd > size || sectionTableEnd > nt->OptionalHeader.SizeOfHeaders)
+    if (sectionTableEnd > size || sectionTableEnd > opt.sizeOfHeaders)
     {
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
     memset(info, 0, sizeof(*info));
-    info->preferredBase = nt->OptionalHeader.ImageBase;
-    info->sizeOfImage = (nt->OptionalHeader.SizeOfImage + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
-    info->sizeOfHeaders = nt->OptionalHeader.SizeOfHeaders;
+    info->preferredBase = opt.imageBase;
+    info->sizeOfImage = (opt.sizeOfImage + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
+    info->sizeOfHeaders = opt.sizeOfHeaders;
     info->ntHeaderOffset = (ULONG)dos->e_lfanew;
-    info->entryRva = nt->OptionalHeader.AddressOfEntryPoint;
+    info->entryRva = opt.entryRva;
     info->machine = nt->FileHeader.Machine;
     info->characteristics = nt->FileHeader.Characteristics;
-    info->dllCharacteristics = nt->OptionalHeader.DllCharacteristics;
-    info->subsystem = nt->OptionalHeader.Subsystem;
-    info->subsystemMajor = nt->OptionalHeader.MajorSubsystemVersion;
-    info->subsystemMinor = nt->OptionalHeader.MinorSubsystemVersion;
-    info->osMajor = nt->OptionalHeader.MajorOperatingSystemVersion;
-    info->osMinor = nt->OptionalHeader.MinorOperatingSystemVersion;
-    info->stackReserve = nt->OptionalHeader.SizeOfStackReserve;
-    info->stackCommit = nt->OptionalHeader.SizeOfStackCommit;
-    info->checksum = nt->OptionalHeader.CheckSum;
+    info->dllCharacteristics = opt.dllCharacteristics;
+    info->subsystem = opt.subsystem;
+    info->subsystemMajor = opt.subsystemMajor;
+    info->subsystemMinor = opt.subsystemMinor;
+    info->osMajor = opt.osMajor;
+    info->osMinor = opt.osMinor;
+    info->stackReserve = opt.stackReserve;
+    info->stackCommit = opt.stackCommit;
+    info->checksum = opt.checksum;
     info->fileSize = (ULONG)size;
     info->relocsStripped = (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) != 0;
 
@@ -117,10 +185,9 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
-    if (nt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC)
+    if (opt.numberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC)
     {
-        const IMAGE_DATA_DIRECTORY *dir =
-            &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        const IMAGE_DATA_DIRECTORY *dir = &opt.dataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         if (dir->Size != 0 && dir->VirtualAddress != 0 && dir->VirtualAddress < info->sizeOfImage &&
             dir->Size <= info->sizeOfImage - dir->VirtualAddress)
         {
@@ -129,10 +196,9 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
         }
     }
 
-    if (nt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
+    if (opt.numberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
     {
-        const IMAGE_DATA_DIRECTORY *dir =
-            &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        const IMAGE_DATA_DIRECTORY *dir = &opt.dataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
         if (dir->Size != 0 && dir->VirtualAddress != 0 && dir->VirtualAddress < info->sizeOfImage &&
             dir->Size <= info->sizeOfImage - dir->VirtualAddress)
         {
