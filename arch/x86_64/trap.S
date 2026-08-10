@@ -9,6 +9,9 @@
  * Handling", exception summary table: #DF(8), #TS(10), #NP(11), #SS(12),
  * #GP(13), #PF(14), #AC(17), #CP(21) push an error code; all others do not.
  */
+#include "arch/x86_64/gdt.h"
+#include "arch/x86_64/kipcr.inc"
+
     .section .text
 
     .macro KI_TRAP_NOERR num
@@ -98,6 +101,16 @@ KiTrapCommon:
     cld
     mov %rsp, %rdi          /* PKTRAP_FRAME */
     call KiDispatchTrap
+    /* Returning to ring 3? Then reload its data selectors, for the reason
+     * KI_LOAD_USER_SEGMENTS states (kipcr.inc): the iretq below nullifies
+     * them, and a WOW64 guest resumed with a null FS faults on its next TEB
+     * read. Before the pops (the macro clobbers %eax) and before the swapgs
+     * (it reads the PCR through GS). 144 = KTRAP_FRAME.segCs: 15 GPRs, then
+     * the vector and error code, then rip — welded by trap.h's assert. */
+    testq $3, 144(%rsp)
+    jz 1f
+    KI_LOAD_USER_SEGMENTS
+1:
     pop %r15
     pop %r14
     pop %r13

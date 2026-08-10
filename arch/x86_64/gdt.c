@@ -36,11 +36,11 @@
 
 KIPCR KiPcr;
 
-/* entry.S offsets. */
-_Static_assert(offsetof(KIPCR, kernelRsp) == 0, "KIPCR.kernelRsp offset welded into entry.S");
-_Static_assert(offsetof(KIPCR, userRsp) == 8, "KIPCR.userRsp offset welded into entry.S");
+/* The offsets kipcr.inc welds into the two ring-3 return paths. */
+_Static_assert(offsetof(KIPCR, kernelRsp) == 0, "KIPCR.kernelRsp offset welded into kipcr.inc");
+_Static_assert(offsetof(KIPCR, userRsp) == 8, "KIPCR.userRsp offset welded into kipcr.inc");
 _Static_assert(offsetof(KIPCR, userFs32Selector) == 16,
-               "KIPCR.userFs32Selector offset welded into entry.S");
+               "KIPCR.userFs32Selector offset welded into kipcr.inc");
 
 /* 64-bit TSS (Intel SDM vol. 3 figure 8-11). Only RSP0 is used. */
 typedef struct
