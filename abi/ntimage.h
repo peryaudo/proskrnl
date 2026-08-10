@@ -11,7 +11,10 @@
 #define IMAGE_DOS_SIGNATURE 0x5A4D     /* MZ   */
 #define IMAGE_NT_SIGNATURE 0x00004550 /* PE00 */
 #define IMAGE_NT_OPTIONAL_HDR64_MAGIC 0x20b
+#define IMAGE_NT_OPTIONAL_HDR32_MAGIC 0x10b
 #define IMAGE_FILE_MACHINE_AMD64 0x8664
+#define IMAGE_FILE_MACHINE_I386 0x014c
+#define IMAGE_FILE_LARGE_ADDRESS_AWARE 0x0020
 #define IMAGE_FILE_RELOCS_STRIPPED 0x0001 /* No relocation info */
 #define IMAGE_FILE_EXECUTABLE_IMAGE 0x0002
 #define IMAGE_FILE_DLL 0x2000
@@ -114,6 +117,53 @@ typedef struct {
 } IMAGE_NT_HEADERS64, *PIMAGE_NT_HEADERS64;
 
 typedef struct {
+
+  /* Standard fields */
+
+  WORD  Magic; /* 0x10b or 0x107 */	/* 0x00 */
+  BYTE  MajorLinkerVersion;
+  BYTE  MinorLinkerVersion;
+  DWORD SizeOfCode;
+  DWORD SizeOfInitializedData;
+  DWORD SizeOfUninitializedData;
+  DWORD AddressOfEntryPoint;		/* 0x10 */
+  DWORD BaseOfCode;
+  DWORD BaseOfData;
+
+  /* NT additional fields */
+
+  DWORD ImageBase;
+  DWORD SectionAlignment;		/* 0x20 */
+  DWORD FileAlignment;
+  WORD  MajorOperatingSystemVersion;
+  WORD  MinorOperatingSystemVersion;
+  WORD  MajorImageVersion;
+  WORD  MinorImageVersion;
+  WORD  MajorSubsystemVersion;		/* 0x30 */
+  WORD  MinorSubsystemVersion;
+  DWORD Win32VersionValue;
+  DWORD SizeOfImage;
+  DWORD SizeOfHeaders;
+  DWORD CheckSum;			/* 0x40 */
+  WORD  Subsystem;
+  WORD  DllCharacteristics;
+  DWORD SizeOfStackReserve;
+  DWORD SizeOfStackCommit;
+  DWORD SizeOfHeapReserve;		/* 0x50 */
+  DWORD SizeOfHeapCommit;
+  DWORD LoaderFlags;
+  DWORD NumberOfRvaAndSizes;
+  IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES]; /* 0x60 */
+  /* 0xE0 */
+} IMAGE_OPTIONAL_HEADER32, *PIMAGE_OPTIONAL_HEADER32;
+
+typedef struct {
+  DWORD Signature; /* "PE"\0\0 */	/* 0x00 */
+  IMAGE_FILE_HEADER FileHeader;		/* 0x04 */
+  IMAGE_OPTIONAL_HEADER32 OptionalHeader;	/* 0x18 */
+} IMAGE_NT_HEADERS32, *PIMAGE_NT_HEADERS32;
+
+typedef struct {
   BYTE  Name[IMAGE_SIZEOF_SHORT_NAME];
   union {
     DWORD PhysicalAddress;
@@ -157,6 +207,10 @@ _Static_assert(sizeof(IMAGE_OPTIONAL_HEADER64) == 240, "IMAGE_OPTIONAL_HEADER64 
 _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, ImageBase) == 24, "IMAGE_OPTIONAL_HEADER64 layout");
 _Static_assert(offsetof(IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve) == 72, "IMAGE_OPTIONAL_HEADER64 layout");
 _Static_assert(offsetof(IMAGE_NT_HEADERS64, OptionalHeader) == 24, "IMAGE_NT_HEADERS64 layout");
+_Static_assert(sizeof(IMAGE_OPTIONAL_HEADER32) == 224, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec: PE32 optional header, 0xE0)");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER32, ImageBase) == 28, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec)");
+_Static_assert(offsetof(IMAGE_OPTIONAL_HEADER32, SizeOfStackReserve) == 72, "IMAGE_OPTIONAL_HEADER32 layout (MS PE/COFF spec)");
+_Static_assert(offsetof(IMAGE_NT_HEADERS32, OptionalHeader) == 24, "IMAGE_NT_HEADERS32 layout");
 _Static_assert(sizeof(IMAGE_SECTION_HEADER) == IMAGE_SIZEOF_SECTION_HEADER, "IMAGE_SECTION_HEADER layout");
 _Static_assert(sizeof(IMAGE_BASE_RELOCATION) == 8, "IMAGE_BASE_RELOCATION layout");
 _Static_assert(sizeof(IMAGE_EXPORT_DIRECTORY) == 40, "IMAGE_EXPORT_DIRECTORY layout");
