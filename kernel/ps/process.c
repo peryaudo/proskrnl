@@ -235,7 +235,8 @@ static NTSTATUS PspAllocateUserRegion(PEPROCESS process, uint64_t requestedBase,
  * reserve the whole region, commit `commit` bytes at the top, and arm one
  * PAGE_GUARD page below them; mm/fault.c grows the committed slice downward. */
 static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
-                                     uint64_t *stackTopOut, uint64_t *stackLimitOut)
+                                     uint64_t limitLow, uint64_t *stackTopOut,
+                                     uint64_t *stackLimitOut)
 {
     /* Both sizes come from the image's optional header, i.e. from a file the
      * caller supplies. Round with a guard and floor the reserve at something
@@ -267,10 +268,15 @@ static NTSTATUS PspAllocateUserStack(PEPROCESS process, uint64_t reserve, uint64
         commit = reserve - 2ULL * PAGE_SIZE;
     }
 
+    /* limitLow is how a WOW64 thread's 64-bit stack is kept ABOVE 4GB: the
+     * low address space is the guest's and is scarce, so the host stack is
+     * pushed out of it (init_thread_stack, dlls/ntdll/unix/thread.c, passes
+     * limit_4g as the LOW limit for exactly this). 0 means unconstrained,
+     * which is every 64-bit process. */
     PVOID base = 0;
     SIZE_T size = reserve;
-    NTSTATUS status =
-        MiAllocateVirtualMemory(&process->addressSpace, &base, &size, MEM_RESERVE, PAGE_READWRITE);
+    NTSTATUS status = MiAllocateVirtualMemoryEx(&process->addressSpace, &base, &size, MEM_RESERVE,
+                                                PAGE_READWRITE, limitLow, 0, 0, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -357,6 +363,58 @@ static void PspLookupUserDispatcherRvas(PMI_SECTION section, PSP_USER_DISPATCHER
      * kernelbase's CtrlRoutine, which runs the process's handler list. */
     rvas->ctrlRoutine =
         MiLookupImageExport(rawData, section->rawSize, section->image, "__wine_ctrl_routine");
+    MiReleaseImageRawBytes(tempRaw);
+}
+
+/* One named export's RVA, through the same borrowed snapshot the dispatcher
+ * lookup uses. 0 = absent (every caller decides for itself whether that is
+ * fatal — Art. 12: nobody fabricates an address). */
+uint32_t PspLookupExportRva(PMI_SECTION section, const char *name)
+{
+    if (section->image == 0)
+    {
+        return 0;
+    }
+    const void *rawData;
+    void *tempRaw;
+    if (!NT_SUCCESS(MiAcquireImageRawBytes(section, &rawData, &tempRaw)))
+    {
+        return 0;
+    }
+    uint32_t rva = MiLookupImageExport(rawData, section->rawSize, section->image, name);
+    MiReleaseImageRawBytes(tempRaw);
+    return rva;
+}
+
+/* The guest ntdll's entry points (WOW64). The set is
+ * load_ntdll_wow64_functions's (dlls/ntdll/unix/loader.c): the six the init
+ * block names, plus the two optional pointers it carries. */
+void PspLookupWow64Ntdll32Rvas(PMI_SECTION section, PSP_WOW64_NTDLL32_RVAS *rvas)
+{
+    memset(rvas, 0, sizeof(*rvas));
+    if (section->image == 0)
+    {
+        return;
+    }
+    const void *rawData;
+    void *tempRaw;
+    NTSTATUS status = MiAcquireImageRawBytes(section, &rawData, &tempRaw);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint("[PS] wow64 guest ntdll export resolution failed (%#x)\n", (unsigned)status);
+        return;
+    }
+#define PSP_WOW64_RVA(field, symbol)                                                               \
+    rvas->field = MiLookupImageExport(rawData, section->rawSize, section->image, symbol)
+    PSP_WOW64_RVA(ldrInitializeThunk, "LdrInitializeThunk");
+    PSP_WOW64_RVA(kiUserExceptionDispatcher, "KiUserExceptionDispatcher");
+    PSP_WOW64_RVA(kiUserApcDispatcher, "KiUserApcDispatcher");
+    PSP_WOW64_RVA(kiUserCallbackDispatcher, "KiUserCallbackDispatcher");
+    PSP_WOW64_RVA(rtlUserThreadStart, "RtlUserThreadStart");
+    PSP_WOW64_RVA(ldrSystemDllInitBlock, "LdrSystemDllInitBlock");
+    PSP_WOW64_RVA(rtlpFreezeTimeBias, "RtlpFreezeTimeBias");
+    PSP_WOW64_RVA(rtlpQueryProcessDebugInformationRemote, "RtlpQueryProcessDebugInformationRemote");
+#undef PSP_WOW64_RVA
     MiReleaseImageRawBytes(tempRaw);
 }
 
@@ -529,7 +587,8 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
     uint64_t stackLimit = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspAllocateUserStack(process, stackReserve, stackCommit, &stackTop, &stackLimit);
+        status = PspAllocateUserStack(process, stackReserve, stackCommit, 0, &stackTop,
+                                      &stackLimit);
     }
 
     /* M7: the shared KUSER_SHARED_DATA page + the PEB/params, then the main
@@ -662,6 +721,25 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
         return status;
     }
 
+    /* WOW64: a PE32 main image runs Wine's new WoW64, which needs the GUEST
+     * ntdll mapped beside the host one. Opened here, with the two 64-bit
+     * sections, so a missing syswow64 fails the create cleanly instead of
+     * halfway through building a process (kernel/ps/wow64.c). */
+    BOOLEAN isWow64 =
+        exeSection->image != 0 && exeSection->image->machine == IMAGE_FILE_MACHINE_I386;
+    PMI_SECTION ntdll32Section = 0;
+    if (isWow64)
+    {
+        status = IoOpenImageSection(PspWow64Ntdll32Path(), &ntdll32Section);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(ntdllSection);
+            ObDereferenceObject(exeSection);
+            PspFreeCapturedParams(options->params);
+            return status;
+        }
+    }
+
     /* The child's parameters: the caller's captured block, or kernel
      * defaults for kernel-launched images. Owned here from this point. */
     PSP_CAPTURED_PARAMS *params = options->params;
@@ -786,6 +864,22 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     uint64_t stackCommit = PSP_STACK_COMMIT;
     PSP_USER_DISPATCHER_RVAS dispatcherRvas;
     PspLookupUserDispatcherRvas(ntdllSection, &dispatcherRvas);
+    /* Same rule for the guest ntdll: RVAs while the snapshot is attached. */
+    PSP_WOW64_NTDLL32_RVAS ntdll32Rvas;
+    uint32_t hostInitBlockRva = 0;
+    if (isWow64)
+    {
+        PspLookupWow64Ntdll32Rvas(ntdll32Section, &ntdll32Rvas);
+        hostInitBlockRva = PspLookupExportRva(ntdllSection, "LdrSystemDllInitBlock");
+    }
+    /* The guest's address-space ceiling has to be known before ANY of its
+     * allocations are placed, so it comes straight off the parsed image. */
+    if (isWow64)
+    {
+        process->wow64 = TRUE;
+        process->machine = IMAGE_FILE_MACHINE_I386;
+        process->wowSpaceLimit = PspWow64SpaceLimit(exeSection->image->characteristics);
+    }
     status =
         PspMapImageSection(process, exeSection, &entry, &imageBase, &stackReserve, &stackCommit);
     uint64_t ntdllEntry = 0;
@@ -793,6 +887,13 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     if (NT_SUCCESS(status))
     {
         status = PspMapImageSection(process, ntdllSection, &ntdllEntry, &ntdllBase, 0, 0);
+    }
+    uint64_t ntdll32Base = 0;
+    if (NT_SUCCESS(status) && isWow64)
+    {
+        uint64_t ntdll32Entry = 0;
+        status = PspMapImageSection(process, ntdll32Section, &ntdll32Entry, &ntdll32Base, 0, 0);
+        process->ntdll32Base = ntdll32Base;
     }
     if (NT_SUCCESS(status))
     {
@@ -803,6 +904,28 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
             status = STATUS_ENTRYPOINT_NOT_FOUND;
         }
     }
+    if (NT_SUCCESS(status) && isWow64)
+    {
+        /* The handshake: the host ntdll's LdrSystemDllInitBlock and the
+         * guest's own copy both get the guest's entry points, which is how
+         * wow64.dll learns where to re-enter the guest (init_wow64 ->
+         * process_init, dlls/wow64/syscall.c). Without the guest's
+         * RtlUserThreadStart there is nothing to start, so it is fatal the
+         * same way the host's is. */
+        if (ntdll32Rvas.rtlUserThreadStart == 0 || ntdll32Rvas.ldrInitializeThunk == 0)
+        {
+            status = STATUS_ENTRYPOINT_NOT_FOUND;
+        }
+        else
+        {
+            status = PspWow64FillInitBlock(process,
+                                           hostInitBlockRva != 0 ? ntdllBase + hostInitBlockRva : 0,
+                                           ntdll32Rvas.ldrSystemDllInitBlock != 0
+                                               ? ntdll32Base + ntdll32Rvas.ldrSystemDllInitBlock
+                                               : 0,
+                                           &ntdll32Rvas);
+        }
+    }
     if (NT_SUCCESS(status))
     {
         /* The main thread names no sizes of its own, so both are the image's
@@ -810,11 +933,25 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
         PspResolveStackGeometry(stackReserve, stackCommit, 0, 0, &stackReserve, &stackCommit);
     }
 
+    /* A WOW64 thread has TWO stacks. The 64-bit one is fixed-size and the
+     * image's own sizes go to the GUEST stack instead — the split
+     * init_thread_stack makes (dlls/ntdll/unix/thread.c). */
+    uint64_t guestStackBase = 0, guestStackLimit = 0, guestStackAllocation = 0;
+    if (NT_SUCCESS(status) && isWow64)
+    {
+        status = PspWow64AllocateGuestStack(process, stackReserve, stackCommit, &guestStackBase,
+                                            &guestStackLimit, &guestStackAllocation);
+        stackReserve = PspWow64HostStackSize();
+        stackCommit = PspWow64HostStackSize();
+    }
+
     uint64_t stackTop = 0;
     uint64_t stackLimit = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspAllocateUserStack(process, stackReserve, stackCommit, &stackTop, &stackLimit);
+        status = PspAllocateUserStack(process, stackReserve, stackCommit,
+                                      isWow64 ? PspWow64HostStackFloor() : 0, &stackTop,
+                                      &stackLimit);
     }
     if (NT_SUCCESS(status))
     {
@@ -823,6 +960,10 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     if (NT_SUCCESS(status))
     {
         status = PspBuildPeb(process, imageBase, params);
+    }
+    if (NT_SUCCESS(status) && isWow64)
+    {
+        status = PspWow64BuildPeb32(process, imageBase, params, PspQueryGlobalFlag(params, 0));
     }
     uint64_t tebBase = 0;
     /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — NT's
@@ -833,6 +974,28 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         status = PspBuildTeb(process, process->stackAllocationBase, stackTop, stackLimit,
                              process->uniqueProcessId, mainThreadId, &tebBase);
+    }
+    if (NT_SUCCESS(status) && isWow64)
+    {
+        status = PspWow64BuildTeb32(process, tebBase, process->uniqueProcessId, mainThreadId,
+                                    guestStackBase, guestStackLimit, guestStackAllocation);
+        if (NT_SUCCESS(status))
+        {
+            /* The CPU area overwrites TEB64.Tib.StackBase with itself, and
+             * that is not cosmetic: it is carved off the TOP of the 64-bit
+             * stack, so the area IS the ceiling the 64-bit frames must stay
+             * under. Start the thread anywhere above it and its own first
+             * call frames overwrite the guest context wow64.dll's
+             * thread_init reads (init_thread_stack, dlls/ntdll/unix/thread.c,
+             * makes exactly this substitution). */
+            uint64_t cpuArea = 0;
+            status =
+                PspWow64BuildCpuArea(process, tebBase, stackTop, entry, guestStackBase, &cpuArea);
+            if (NT_SUCCESS(status))
+            {
+                stackTop = cpuArea;
+            }
+        }
     }
     if (!NT_SUCCESS(status))
     {
@@ -917,6 +1080,10 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
 out_params:
     PspFreeCapturedParams(params);
 out_sections:
+    if (ntdll32Section != 0)
+    {
+        ObDereferenceObject(ntdll32Section);
+    }
     ObDereferenceObject(ntdllSection); /* the views hold their own pins */
     ObDereferenceObject(exeSection);
     return status;

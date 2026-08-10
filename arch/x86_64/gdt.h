@@ -51,6 +51,11 @@ typedef struct
 {
     uint64_t kernelRsp; /* current thread's kernel stack top; syscall entry loads this */
     uint64_t userRsp;   /* scratch: user RSP saved across the entry stub */
+    /* The selector the return path loads into FS. 0x53 for a WOW64 thread
+     * (whose compat-mode descriptor is based at its TEB32), 0 otherwise —
+     * loaded unconditionally, because the alternative is a branch on every
+     * ring-3 return to save one segment write. */
+    uint64_t userFs32Selector;
 } KIPCR, *PKIPCR;
 
 extern KIPCR KiPcr;

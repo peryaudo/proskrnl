@@ -39,6 +39,8 @@ KIPCR KiPcr;
 /* entry.S offsets. */
 _Static_assert(offsetof(KIPCR, kernelRsp) == 0, "KIPCR.kernelRsp offset welded into entry.S");
 _Static_assert(offsetof(KIPCR, userRsp) == 8, "KIPCR.userRsp offset welded into entry.S");
+_Static_assert(offsetof(KIPCR, userFs32Selector) == 16,
+               "KIPCR.userFs32Selector offset welded into entry.S");
 
 /* 64-bit TSS (Intel SDM vol. 3 figure 8-11). Only RSP0 is used. */
 typedef struct
@@ -101,6 +103,7 @@ void KiSetUserFs32Base(uint64_t teb32)
     if (!teb32)
     {
         KiGdt[KI_GDT_USER_FS32 / 8] = 0; /* not present */
+        KiPcr.userFs32Selector = 0;      /* ...and the return path loads null */
         return;
     }
     /* A WOW64 TEB32 always lives under 4GB (the guest addresses it with a
@@ -110,6 +113,7 @@ void KiSetUserFs32Base(uint64_t teb32)
      * reports and what ntdll:wow64's test_selectors reads back (limit
      * 0xfff, type 0x13 data, D/B set, G clear). */
     KiGdt[KI_GDT_USER_FS32 / 8] = KiMakeDescriptor((uint32_t)teb32, 0xFFF, 0xF2, 1u << 2 /* D/B */);
+    KiPcr.userFs32Selector = KI_USER_FS32_SELECTOR;
 }
 
 void KiInitializeGdt(void)

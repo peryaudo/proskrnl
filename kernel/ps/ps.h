@@ -106,6 +106,22 @@ typedef struct EPROCESS
     uint64_t ctrlRoutine;
     uint64_t ntdllBase; /* where the system DLL mapped (0 = none loaded) */
 
+    /* WOW64 (docs/02 final milestone). A process whose main image is a PE32
+     * runs Wine's new WoW64: the 32->64 transition is entirely user-mode, so
+     * the kernel's whole share is this furniture plus the guest's initial
+     * context. `wow64` is the one predicate every WOW64 branch keys off.
+     * peb32Base/teb-side mirrors are built by kernel/ps/wow64.c. */
+    BOOLEAN wow64;
+    USHORT machine;         /* the main image's IMAGE_FILE_MACHINE_* */
+    uint64_t peb32Base;     /* the PEB32 (pebBase + PAGE_SIZE); 0 when !wow64 */
+    uint64_t ntdll32Base;   /* where syswow64\ntdll.dll mapped */
+    uint64_t wowSpaceLimit; /* highest guest address + 1 (2GB, or 4GB for a
+                             * LARGE_ADDRESS_AWARE image) — the ceiling every
+                             * guest allocation is placed under */
+    /* The GUEST ntdll's RtlUserThreadStart — where the initial 32-bit
+     * context points before wow64.dll's thread_init rewrites it. */
+    uint64_t wow64RtlUserThreadStart;
+
     /* M7: all threads of the process (the main thread plus NtCreateThreadEx
      * threads). The process object signals when the last one exits. */
     LIST_ENTRY threadListHead;
@@ -435,6 +451,54 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
 NTSTATUS PspBuildTeb(PEPROCESS process, uint64_t stackAllocationBase, uint64_t stackTop,
                      uint64_t stackLimit, uint64_t uniqueProcessId, uint64_t uniqueThreadId,
                      uint64_t *tebOut);
+
+/* ---- WOW64 (kernel/ps/wow64.c) ------------------------------------------
+ * Every entry point the 32-bit side needs, in one place so that deleting
+ * that file and the `if (process->wow64)` call sites leaves the CUI core
+ * intact (Art. 7 / G7). */
+
+/* The guest ntdll's entry points, looked up in the syswow64 image before it
+ * is mapped (the PSP_USER_DISPATCHER_RVAS pattern) and turned into VAs by
+ * PspWow64FillInitBlock. */
+typedef struct PSP_WOW64_NTDLL32_RVAS
+{
+    uint32_t ldrInitializeThunk;
+    uint32_t kiUserExceptionDispatcher;
+    uint32_t kiUserApcDispatcher;
+    uint32_t kiUserCallbackDispatcher;
+    uint32_t rtlUserThreadStart;
+    uint32_t ldrSystemDllInitBlock;
+    uint32_t rtlpFreezeTimeBias;
+    uint32_t rtlpQueryProcessDebugInformationRemote;
+} PSP_WOW64_NTDLL32_RVAS;
+
+/* NtGlobalFlag as the create path computes it (peb.c) — the PEB32 must
+ * carry the same value the PEB does. imageKeyFoundOut may be 0. */
+ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyFoundOut);
+
+/* The compat-mode FS base for `thread` (its TEB32), or 0 for a thread of a
+ * 64-bit process. Called on every context switch. */
+uint64_t PspWow64Fs32Base(PKTHREAD thread);
+
+/* The lowest address a WOW64 thread's 64-bit stack may take (4GB): the low
+ * space belongs to the guest. */
+uint64_t PspWow64HostStackFloor(void);
+
+NTSTATUS PspWow64ThreadCpuArea(PETHREAD thread, uint64_t *cpuAreaOut);
+const WCHAR *PspWow64Ntdll32Path(void);
+uint64_t PspWow64HostStackSize(void);
+uint64_t PspWow64SpaceLimit(USHORT imageCharacteristics);
+NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
+                            const PSP_CAPTURED_PARAMS *captured, ULONG globalFlag);
+NTSTATUS PspWow64BuildTeb32(PEPROCESS process, uint64_t tebVa, uint64_t uniqueProcessId,
+                            uint64_t uniqueThreadId, uint64_t guestStackBase,
+                            uint64_t guestStackLimit, uint64_t guestStackAllocation);
+NTSTATUS PspWow64BuildCpuArea(PEPROCESS process, uint64_t tebVa, uint64_t hostStackTop,
+                              uint64_t guestEntry, uint64_t guestStackBase, uint64_t *cpuAreaOut);
+NTSTATUS PspWow64FillInitBlock(PEPROCESS process, uint64_t hostBlockVa, uint64_t guestBlockVa,
+                               const PSP_WOW64_NTDLL32_RVAS *rvas);
+NTSTATUS PspWow64AllocateGuestStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
+                                    uint64_t *baseOut, uint64_t *limitOut, uint64_t *allocationOut);
 
 /* NT's thread-stack geometry rule, for EVERY stack this kernel reserves —
  * the main thread's and every additional one's. Stated once because it is one
