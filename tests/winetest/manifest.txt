@@ -854,7 +854,9 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# PARTLY FIXED, FIXABLE. 12 failures, down from 4148. The
+# PARTLY FIXED, FIXABLE. 4 failures, down from 4148 — and every one of those
+#     numbers is a LOWER BOUND, because the pair panics partway through (see
+#     the end of this block). The
 #     view-protection compatibility matrix landed earlier
 #     (kernel/mm/virtual.c MiCheckViewProtection,
 #     tests/ntapi/sem_mm/view_protect_matrix.c) and took ~2100 assertions at
@@ -872,7 +874,33 @@ kernel32_test.exe:timer
 #     :758-:790" — which is docs/21 §4 trap 4: the loudest failures in a
 #     cluster were the consequence, and the cause was three missing names.
 #
-#     The 12 that remain are FOUR subjects, none of them large:
+#     NOW 4, down from 12, and the 8 that went were ONE cause across two
+#     subjects this block listed as two. Both are the page-protection MODIFIER
+#     BITS — the flags above the low byte of a PAGE_* word:
+#       - :236/:261/:275 (3) were kernelbase's WriteProcessMemory. It makes a
+#         non-writable range writable with `PAGE_EXECUTE_READWRITE |
+#         PAGE_TARGETS_NO_UPDATE | PAGE_ENCLAVE_NO_CHANGE`
+#         (dlls/kernelbase/memory.c) and proskrnl refused the whole word,
+#         which reaches the caller as ERROR_INVALID_PARAMETER (the "error 87").
+#         The two "0 bytes written" behind it are a SECOND rule in the same
+#         API: a partial NtWriteVirtualMemory reports the prefix it managed
+#         where a partial read reports zero, and proskrnl reported zero for
+#         both.
+#       - :517/:520/:525/:534/:560 (5) were filed here as "a
+#         MEMORY_BASIC_INFORMATION protect group" and are the other end of the
+#         same word: PAGE_NOCACHE belongs to the RESERVATION, not to the page
+#         (allocate_virtual_memory's `vprot |= SEC_NOCACHE` inside the reserve
+#         arm, read back by get_win32_prot), so a later VirtualProtect can
+#         neither drop it nor add it. proskrnl stored it per page, which is
+#         also where the "wrong size 1000" came from: one re-protected page
+#         then differed from its neighbour by the NOCACHE bit and split the
+#         reported region in half. Not a separate subject at all.
+#     Landed in kernel/mm/virtual.c, pinned by
+#     tests/ntapi/sem_mm/protect_modifier_bits.c and
+#     tests/ntapi/sem_ps/virtual_memory.c; docs/21 W5, docs/03 "The page-
+#     protection modifier bits".
+#
+#     The 4 that remain are ONE subject:
 #       - :758/:764/:770 (3), CreateFileMapping on a NO-ACCESS file handle
 #         (CreateFileA with dwDesiredAccess 0) must fail and does not.
 #         TWO CAUSES ARE NOW ELIMINATED, which is where the next person
@@ -895,11 +923,25 @@ kernel32_test.exe:timer
 #         (kernel/mm/section.c).
 #       - :4074 (1), the same subject one protection along: a READ-ONLY file
 #         handle with PAGE_READWRITE must fail ERROR_ACCESS_DENIED.
-#       - :236/:261/:275 (3), WriteProcessMemory — error 87 then two "0 bytes
-#         written".
-#       - :517/:520/:525/:534/:560 (5), a MEMORY_BASIC_INFORMATION protect
-#         group ("wrong protect 4/2/202", "wrong size 1000").
-#     Note this pair also takes ~285 seconds, the slowest in the manifest.
+#
+#     AND 4 IS A LOWER BOUND, which no earlier revision of this block said.
+#     The pair PANICS: virtual.c:869 creates a SEC_RESERVE mapping and
+#     kernel/mm/section.c answers STATUS_NOT_IMPLEMENTED there (it has since
+#     M5), which the armed panic flag makes fatal. So the run stops after
+#     :770 having executed 4+3+3+3 of the module's tests where the ORACLE
+#     executes 30936, and NOTHING past that point has ever been counted
+#     (docs/21 §4 trap 2). Every count this block has ever carried — 4148, 40,
+#     12, 4 — is a count of the same measured prefix, so they compare
+#     like for like and none of them is the pair's failure count.
+#     SEC_RESERVE is docs/21 W5's remaining half and is not small: two views
+#     of one SEC_RESERVE section share COMMIT state, so VirtualAlloc on one
+#     must show through VirtualQuery on the other (virtual.c:928-:945), and
+#     MEM_DECOMMIT over it must fail ERROR_INVALID_PARAMETER.
+#
+#     The "~285 seconds, the slowest in the manifest" this block used to carry
+#     is not reproducible either: the whole pair, both legs, is ~10 s on this
+#     box. The proskrnl leg stops at the panic above after ~5 s of guest time,
+#     and the oracle leg's 30936 tests take a few seconds.
 #     RE-MEASURED (unchanged at 12, same four subjects, same lines) when
 #     NtProtectVirtualMemory's failure ladder was rebuilt against the oracle
 #     — the miss status moved c0000141 -> c000000d and the protection check
