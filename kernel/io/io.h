@@ -262,7 +262,13 @@ PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID conte
 
 /* --- share-mode accounting (kernel/io/file.c; NT's Io*ShareAccess) --------- */
 
-NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB fcb);
+/* The create-time conflict authority: ordinary share modes AND the hold a
+ * live SECTION keeps on the file, in the pinned oracle's one order (wine
+ * server/fd.c check_sharing). `disposition`/`options` are the create's own —
+ * the section rules read a truncating disposition and FILE_DELETE_ON_CLOSE,
+ * which is why this takes more than NT's IoCheckShareAccess does. */
+NTSTATUS IoCheckShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, ULONG disposition,
+                            ULONG options, PIO_FCB fcb);
 void IoSetShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB fcb);
 void IoRemoveShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB fcb);
 

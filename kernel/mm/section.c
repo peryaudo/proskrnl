@@ -29,7 +29,7 @@
  * when a section (or a failed create) lets go. */
 NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULONG pageProtection,
                                 const LARGE_INTEGER *maximumSize, MI_SECTION_BACKING *backing);
-void IopSectionBackingReleased(PVOID fileObjectBody, BOOLEAN image);
+void IopSectionBackingReleased(PVOID fileObjectBody, ULONG sectionAttributes, ULONG pageProtection);
 
 static void MipDeleteSection(PVOID body)
 {
@@ -55,7 +55,8 @@ static void MipDeleteSection(PVOID body)
     }
     if (section->fileObject != 0)
     {
-        IopSectionBackingReleased(section->fileObject, (section->attributes & SEC_IMAGE) != 0);
+        IopSectionBackingReleased(section->fileObject, section->attributes,
+                                  section->pageProtection);
         ObDereferenceObject(section->fileObject);
     }
 }
@@ -1146,7 +1147,7 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
             {
                 MipDeleteSection(&scratch);
             }
-            IopSectionBackingReleased(backing.fileObject, (secFlags & SEC_IMAGE) != 0);
+            IopSectionBackingReleased(backing.fileObject, secFlags, protect);
             ObDereferenceObject(backing.fileObject);
         }
         return status;
@@ -1169,7 +1170,7 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
         MipDeleteSection(&scratch); /* OBJ_OPENIF hit an existing object, or failure */
         if (haveBacking)
         {
-            IopSectionBackingReleased(backing.fileObject, (secFlags & SEC_IMAGE) != 0);
+            IopSectionBackingReleased(backing.fileObject, secFlags, protect);
         }
     }
     if (haveBacking)
