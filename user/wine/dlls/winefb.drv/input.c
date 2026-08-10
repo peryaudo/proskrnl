@@ -371,6 +371,16 @@ static DWORD WINAPI pointer_thread( void *arg )
  * the rest lose the race quietly above. Residual (docs/03 GUI-4 notes): if
  * the winning process dies, input is orphaned until a process that has not
  * yet attempted creates its first window surface. */
+/* SKIP_LOADER_INIT on both, and it is not an optimization. In a WOW64
+ * process EVERY thread is a guest thread by default — loader_init ends in
+ * init_wow64, which hands the new thread to wow64.dll and never returns
+ * (dlls/ntdll/loader.c) — so a 64-bit reader thread created without the flag
+ * is far-jumped into 32-bit mode and runs its own start routine truncated to
+ * 32 bits. These two are the only 64-bit threads proskrnl adds to a process
+ * it did not create, and they touch nothing the loader would have set up for
+ * them: they open a device and block in NtReadFile. (In a 64-bit process the
+ * flag costs them only their DLL_THREAD_ATTACH notifications, which nothing
+ * here has ever used.) */
 void winefb_start_input(void)
 {
     static LONG started;
@@ -384,7 +394,7 @@ void winefb_start_input(void)
      * is what becomes the thread's exit status. */
     if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
                           (PRTL_THREAD_START_ROUTINE)input_thread, NULL,
-                          0, 0, 0, 0, NULL ))
+                          THREAD_CREATE_FLAGS_SKIP_LOADER_INIT, 0, 0, 0, NULL ))
     {
         ERR( "cannot start the input thread\n" );
         return;
@@ -393,7 +403,7 @@ void winefb_start_input(void)
 
     if (NtCreateThreadEx( &thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
                           (PRTL_THREAD_START_ROUTINE)pointer_thread,
-                          NULL, 0, 0, 0, 0, NULL ))
+                          NULL, THREAD_CREATE_FLAGS_SKIP_LOADER_INIT, 0, 0, 0, NULL ))
     {
         ERR( "cannot start the pointer thread\n" );
         return;

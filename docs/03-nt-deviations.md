@@ -2871,3 +2871,12 @@ them:
   whole 32-bit TEB, so the order is load-bearing, and it is the oracle's order for the
   same reason. The 64-bit half is what an ntapi test can reach; the guest half is checked
   by `tests/cui/hello32.c`, the one client that runs the same binary on both runtimes.
+
+One user-mode addition, in `user/wine/dlls/win32u/glue.c` rather than the kernel: **the
+64-bit ntdll of a WOW64 process never runs `locale_init`.** `loader_init` calls
+`init_wow64`, which hands control to `Wow64LdrpInitialize` and never returns, so
+`nls_info.UpperCaseTable` stays NULL and `RtlUpcaseUnicodeChar` faults. Upstream that is
+harmless — the only 64-bit code in such a process is the `wow64*` thunk set, which never
+folds case. proskrnl puts one more 64-bit DLL there, so `win32u` installs the case tables
+itself when nobody else has (idempotent; a no-op in a 64-bit process, where the PEB field
+it publishes is already set).
