@@ -468,12 +468,20 @@ ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyF
  * to the matching user VAs before the block is copied out. */
 #define PSP_ROUND16(x) (((uint64_t)(x) + 15) & ~15ULL)
 
-NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured)
+NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured,
+                     ULONG *globalFlagOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
     BOOLEAN imageKeyFound = FALSE;
     ULONG globalFlag = PspQueryGlobalFlag(captured, &imageKeyFound);
+    /* Handed back so a WOW64 process's PEB32 carries the SAME value rather
+     * than re-deriving it (and re-walking the registry) — ps.h says the two
+     * must agree, and two evaluation sites is how they stop agreeing. */
+    if (globalFlagOut != 0)
+    {
+        *globalFlagOut = globalFlag;
+    }
 
     /* --- RTL_USER_PROCESS_PARAMETERS -------------------------------------- */
     /* CurrentDirectory gets MAX_PATH capacity whatever its length: ntdll's

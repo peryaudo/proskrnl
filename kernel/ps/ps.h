@@ -112,7 +112,6 @@ typedef struct EPROCESS
      * context. `wow64` is the one predicate every WOW64 branch keys off.
      * peb32Base/teb-side mirrors are built by kernel/ps/wow64.c. */
     BOOLEAN wow64;
-    USHORT machine;         /* the main image's IMAGE_FILE_MACHINE_* */
     uint64_t peb32Base;     /* the PEB32 (pebBase + PAGE_SIZE); 0 when !wow64 */
     uint64_t ntdll32Base;   /* where syswow64\ntdll.dll mapped */
     uint64_t wowSpaceLimit; /* highest guest address + 1 (2GB, or 4GB for a
@@ -466,7 +465,8 @@ void PspInitializeSharedUserData(void);
  * image, from a captured params block (M10) whose header scalars —
  * ConsoleHandle/hStd* included — are written through verbatim. Does not
  * take ownership of `captured`. */
-NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured);
+NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured,
+                     ULONG *globalFlagOut);
 
 /* Allocate + initialize a TEB for a thread: a full user page, NT_TIB filled
  * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA.

@@ -610,7 +610,7 @@ NTSTATUS PspCreateUserProcess(PKI_RAMDISK_FILE file, PEPROCESS *processOut, PETH
         status = PspBuildDefaultParams(process->imageName, process->imageName, &defaults);
         if (NT_SUCCESS(status))
         {
-            status = PspBuildPeb(process, imageBase, defaults);
+            status = PspBuildPeb(process, imageBase, defaults, 0);
             PspFreeCapturedParams(defaults);
         }
     }
@@ -882,9 +882,12 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     if (isWow64)
     {
         process->wow64 = TRUE;
-        process->machine = IMAGE_FILE_MACHINE_I386;
-        /* Mm reports cross-machine image views against the SPACE, because a
-         * view may be mapped into another process's space (section.c). */
+        /* The machine lives on the SPACE and nowhere else: mm judges image
+         * views against it (a view may be mapped into another process's
+         * space, so Mm cannot reach into EPROCESS for it), and
+         * SystemSupportedProcessorArchitectures reads the same field. A
+         * second copy on EPROCESS was write-only and is exactly the drift
+         * Art. 11 forbids. */
         process->addressSpace.machine = IMAGE_FILE_MACHINE_I386;
         process->wowSpaceLimit = PspWow64SpaceLimit(exeSection->image->characteristics);
     }
@@ -965,13 +968,14 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         status = PspMapSharedUserData(process);
     }
+    ULONG globalFlag = 0;
     if (NT_SUCCESS(status))
     {
-        status = PspBuildPeb(process, imageBase, params);
+        status = PspBuildPeb(process, imageBase, params, &globalFlag);
     }
     if (NT_SUCCESS(status) && isWow64)
     {
-        status = PspWow64BuildPeb32(process, imageBase, params, PspQueryGlobalFlag(params, 0));
+        status = PspWow64BuildPeb32(process, imageBase, params, globalFlag);
     }
     uint64_t tebBase = 0;
     /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — NT's
