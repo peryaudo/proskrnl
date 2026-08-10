@@ -14,6 +14,7 @@
  * round out the milestone's "thread creation".
  */
 #include "kernel/ps/ps.h"
+#include "abi/ntwow64.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h"
 #include "kernel/se/se.h" /* CUI-6: SeTokenType / TOKEN_IMPERSONATE for impersonation attach */
@@ -1621,6 +1622,77 @@ NTSTATUS NtQueryInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass
         }
         return STATUS_SUCCESS;
     }
+    case ThreadWow64Context:
+    {
+        /* The guest CONTEXT of a WOW64 thread, read out of the CPU area on
+         * its 64-bit stack (kernel/ps/wow64.c builds it there;
+         * RtlWow64GetCpuAreaInfo is ntdll's view of the same bytes).
+         *
+         * This is the first thing wow64cpu asks for — BTCpuProcessInit
+         * calls RtlWow64GetThreadContext to learn the guest's CS and SS
+         * (dlls/wow64cpu/cpu.c), so a WOW64 process cannot start without
+         * it. A non-WOW64 target has no CPU area and must FAIL: ntdll's
+         * RtlWow64GetThreadSelectorEntry keys its hardcoded-selector
+         * fallback on exactly that failure (dlls/ntdll/process.c). Pinned
+         * by sem_ps/wow64_thread_context. */
+        if (length != sizeof(I386_CONTEXT))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(I386_CONTEXT), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_GET_CONTEXT, &PspThreadType,
+                                               ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        uint64_t cpuArea = 0;
+        status = PspWow64ThreadCpuArea(target, &cpuArea);
+        if (NT_SUCCESS(status))
+        {
+            /* The caller's ContextFlags select what it wants; the CPU area
+             * carries a full context, so honouring them is a copy of the
+             * whole struct with the flags word the caller asked for left
+             * in place (the same shape KiTrapFrameToContext takes). */
+            I386_CONTEXT context;
+            ULONG wanted;
+            status = KiCopyFromUser(&wanted, buffer, sizeof(wanted));
+            if (NT_SUCCESS(status))
+            {
+                status = MiCopyFromUserRange(&target->process->addressSpace, &context,
+                                             cpuArea + sizeof(WOW64_CPURESERVED),
+                                             sizeof(context)) == sizeof(context)
+                             ? STATUS_SUCCESS
+                             : STATUS_ACCESS_VIOLATION;
+            }
+            if (NT_SUCCESS(status))
+            {
+                context.ContextFlags = wanted;
+                memcpy(buffer, &context, sizeof(context));
+                /* No return length, deliberately: the oracle leaves it
+                 * untouched for this class and sem_ps/wow64_thread_context
+                 * pins that, so writing one is a divergence, not a
+                 * courtesy. */
+            }
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        return status;
+    }
     case ThreadDescriptorTableEntry:
     {
         /* The sweep asks with a ZEROED descriptor, and the oracle rejects
@@ -2070,6 +2142,125 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
      * explicitly so that adding one is a decision. */
     switch (infoClass)
     {
+    case ThreadWow64Context:
+    {
+        /* The write half of the CPU area (RtlWow64SetThreadContext). Every
+         * WOW64 thread starts through it: wow64.dll's thread_init seeds the
+         * guest entry this way, and BTCpuSetContext is how the guest's
+         * exception and APC returns land. Merged per ContextFlags GROUP,
+         * not wholesale — a caller setting only CONTEXT_I386_CONTROL must
+         * not zero the integer registers (set_thread_wow64_context,
+         * dlls/ntdll/unix/signal_x86_64.c). */
+        if (length != sizeof(I386_CONTEXT))
+        {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        NTSTATUS status = KiProbeForRead(buffer, sizeof(I386_CONTEXT), sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        I386_CONTEXT wanted;
+        status = KiCopyFromUser(&wanted, buffer, sizeof(wanted));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        PETHREAD self = KeGetCurrentThread()->threadObject;
+        PETHREAD target = self;
+        BOOLEAN referenced = FALSE;
+        if (threadHandle != 0 && threadHandle != NtCurrentThread())
+        {
+            PVOID body;
+            status = ObReferenceObjectByHandle(threadHandle, THREAD_SET_CONTEXT, &PspThreadType,
+                                               ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        uint64_t cpuArea = 0;
+        status = PspWow64ThreadCpuArea(target, &cpuArea);
+        if (NT_SUCCESS(status))
+        {
+            uint64_t contextVa = cpuArea + sizeof(WOW64_CPURESERVED);
+            I386_CONTEXT context;
+            status = MiCopyFromUserRange(&target->process->addressSpace, &context, contextVa,
+                                         sizeof(context)) == sizeof(context)
+                         ? STATUS_SUCCESS
+                         : STATUS_ACCESS_VIOLATION;
+            if (NT_SUCCESS(status))
+            {
+                ULONG flags = wanted.ContextFlags;
+                if ((flags & CONTEXT_I386_CONTROL) == CONTEXT_I386_CONTROL)
+                {
+                    context.Ebp = wanted.Ebp;
+                    context.Eip = wanted.Eip;
+                    context.SegCs = wanted.SegCs;
+                    context.EFlags = wanted.EFlags;
+                    context.Esp = wanted.Esp;
+                    context.SegSs = wanted.SegSs;
+                }
+                if ((flags & CONTEXT_I386_INTEGER) == CONTEXT_I386_INTEGER)
+                {
+                    context.Eax = wanted.Eax;
+                    context.Ebx = wanted.Ebx;
+                    context.Ecx = wanted.Ecx;
+                    context.Edx = wanted.Edx;
+                    context.Esi = wanted.Esi;
+                    context.Edi = wanted.Edi;
+                }
+                if ((flags & CONTEXT_I386_SEGMENTS) == CONTEXT_I386_SEGMENTS)
+                {
+                    context.SegDs = wanted.SegDs;
+                    context.SegEs = wanted.SegEs;
+                    context.SegFs = wanted.SegFs;
+                    context.SegGs = wanted.SegGs;
+                }
+                if ((flags & CONTEXT_I386_FLOATING_POINT) == CONTEXT_I386_FLOATING_POINT)
+                {
+                    context.FloatSave = wanted.FloatSave;
+                }
+                if ((flags & CONTEXT_I386_DEBUG_REGISTERS) == CONTEXT_I386_DEBUG_REGISTERS)
+                {
+                    context.Dr0 = wanted.Dr0;
+                    context.Dr1 = wanted.Dr1;
+                    context.Dr2 = wanted.Dr2;
+                    context.Dr3 = wanted.Dr3;
+                    context.Dr6 = wanted.Dr6;
+                    context.Dr7 = wanted.Dr7;
+                }
+                if ((flags & CONTEXT_I386_EXTENDED_REGISTERS) == CONTEXT_I386_EXTENDED_REGISTERS)
+                {
+                    memcpy(context.ExtendedRegisters, wanted.ExtendedRegisters,
+                           sizeof(context.ExtendedRegisters));
+                }
+                /* The context is now the guest's whole state, so the
+                 * "re-derive it from scratch" request the CPU area may be
+                 * carrying is satisfied and must be cleared — otherwise
+                 * wow64cpu resets the very state just written
+                 * (WOW64_CPURESERVED_FLAG_RESET_STATE, dlls/wow64cpu). */
+                context.ContextFlags = CONTEXT_I386_ALL;
+                MiCopyToUserRange(&target->process->addressSpace, contextVa, &context,
+                                  sizeof(context));
+                WOW64_CPURESERVED reserved;
+                if (MiCopyFromUserRange(&target->process->addressSpace, &reserved, cpuArea,
+                                        sizeof(reserved)) == sizeof(reserved))
+                {
+                    reserved.Flags &= ~(USHORT)WOW64_CPURESERVED_FLAG_RESET_STATE;
+                    MiCopyToUserRange(&target->process->addressSpace, cpuArea, &reserved,
+                                      sizeof(reserved));
+                }
+            }
+        }
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        return status;
+    }
     case ThreadZeroTlsCell:
     {
         /* This class used to share ThreadAffinityMask's body one line
