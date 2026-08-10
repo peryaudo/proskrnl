@@ -32,6 +32,11 @@ NTSYSAPI NTSTATUS NTAPI NtCreateDebugObject(PHANDLE, ACCESS_MASK, POBJECT_ATTRIB
 NTSYSAPI NTSTATUS NTAPI NtDebugActiveProcess(HANDLE, HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtRemoveProcessDebug(HANDLE, HANDLE);
 
+/* wine/include/ntstatus.h STATUS_DEBUGGER_INACTIVE. */
+#ifndef STATUS_DEBUGGER_INACTIVE
+#define STATUS_DEBUGGER_INACTIVE ((NTSTATUS)0xc0000354)
+#endif
+
 /* wine/include/winternl.h DEBUG_KILL_ON_CLOSE; DEBUG_ALL_ACCESS is the
  * standard-rights-required | 0x1f form DbgUiConnectToDbg asks for. */
 #define PS_DEBUG_KILL_ON_CLOSE 0x1
@@ -133,4 +138,80 @@ START_TEST(debug_attach)
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     CloseHandle(debugObject);
+
+    /* --- closing the debug object while a target is still attached ------
+     * The path every real debugger takes on exit: DbgUiConnectToDbg asks
+     * for DEBUG_KILL_ON_CLOSE, so a debugger that dies without detaching
+     * must take its debuggee with it. Measured here rather than assumed,
+     * because both halves of it are easy to get plausibly wrong — a wrong
+     * exit status is a value the parent reads back, and skipping the
+     * detach leaves a live process permanently marked BeingDebugged with
+     * no handle left to clear it. */
+    memset(&attr, 0, sizeof(attr));
+    attr.Length = sizeof(attr);
+    debugObject = NULL;
+    status = NtCreateDebugObject(&debugObject, PS_DEBUG_ALL_ACCESS, &attr, PS_DEBUG_KILL_ON_CLOSE);
+    ok(status == STATUS_SUCCESS, "NtCreateDebugObject (kill) -> %08lx", (unsigned long)status);
+
+    created = CreateProcessA("C:\\windows\\system32\\cmd.exe", NULL, NULL, NULL, FALSE,
+                             CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    ok(created, "CreateProcessA(cmd.exe) for kill-on-close -> %lu", (unsigned long)GetLastError());
+    if (!created)
+    {
+        CloseHandle(debugObject);
+        return;
+    }
+    status = NtDebugActiveProcess(pi.hProcess, debugObject);
+    ok(status == STATUS_SUCCESS, "NtDebugActiveProcess (kill) -> %08lx", (unsigned long)status);
+
+    CloseHandle(debugObject);
+    ok(WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0,
+       "the target outlived its debug object's last handle");
+    DWORD exitCode = 0;
+    ok(GetExitCodeProcess(pi.hProcess, &exitCode), "GetExitCodeProcess -> %lu",
+       (unsigned long)GetLastError());
+    ok(exitCode == (DWORD)STATUS_DEBUGGER_INACTIVE, "killed with %08lx", (unsigned long)exitCode);
+
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    /* And WITHOUT the flag, the same close must still DETACH — the target
+     * survives, but with BeingDebugged clear and no handle left that could
+     * have cleared it. */
+    memset(&attr, 0, sizeof(attr));
+    attr.Length = sizeof(attr);
+    debugObject = NULL;
+    status = NtCreateDebugObject(&debugObject, PS_DEBUG_ALL_ACCESS, &attr, 0);
+    ok(status == STATUS_SUCCESS, "NtCreateDebugObject (no kill) -> %08lx", (unsigned long)status);
+
+    created = CreateProcessA("C:\\windows\\system32\\cmd.exe", NULL, NULL, NULL, FALSE,
+                             CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    ok(created, "CreateProcessA(cmd.exe) for detach-on-close -> %lu",
+       (unsigned long)GetLastError());
+    if (!created)
+    {
+        CloseHandle(debugObject);
+        return;
+    }
+    memset(&basic, 0, sizeof(basic));
+    status = NtQueryInformationProcess(pi.hProcess, ProcessBasicInformation, &basic, sizeof(basic),
+                                       NULL);
+    ok(status == STATUS_SUCCESS, "ProcessBasicInformation (no kill) -> %08lx",
+       (unsigned long)status);
+    peb = (ULONG_PTR)basic.PebBaseAddress;
+
+    status = NtDebugActiveProcess(pi.hProcess, debugObject);
+    ok(status == STATUS_SUCCESS, "NtDebugActiveProcess (no kill) -> %08lx", (unsigned long)status);
+    ok(peb_byte(pi.hProcess, peb, PEB_BEING_DEBUGGED) == 1, "BeingDebugged clear after attach");
+
+    CloseHandle(debugObject);
+    ok(WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT,
+       "the target died although kill-on-close was clear");
+    ok(peb_byte(pi.hProcess, peb, PEB_BEING_DEBUGGED) == 0,
+       "BeingDebugged still set after the last debug handle closed");
+
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
 }
