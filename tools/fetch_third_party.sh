@@ -220,7 +220,7 @@ for a in json.load(sys.stdin).get("assets", []):
 # (test.yml pins ubuntu-24.04). The publish step uploads the per-key
 # distro.txt LAST, so its presence also proves the key's asset set is
 # complete — treat its absence as a miss, and a different distro as fatal.
-distro_url="$(awk -F'\t' -v n="tp-v5-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+distro_url="$(awk -F'\t' -v n="tp-v6-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
 if [[ -z "$distro_url" ]]; then
     echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
     echo "  Either the pins were just bumped and CI on main has not" >&2
@@ -241,7 +241,7 @@ fi
 echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
-    prefix="tp-v5-$KEY-$c.tar.zst.part"
+    prefix="tp-v6-$KEY-$c.tar.zst.part"
     parts="$(grep "^$prefix" <<<"$assets" || true)"
     if [[ -z "$parts" ]]; then
         echo "fetch_third_party: no '$prefix*' assets for the current pins." >&2

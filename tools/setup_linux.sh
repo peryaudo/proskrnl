@@ -55,7 +55,7 @@ $SUDO apt-get install -y --no-install-recommends \
     ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
     libgtk-3-dev bzip2 \
     flex bison python3-venv \
-    gcc libc6-dev gcc-mingw-w64-x86-64
+    gcc libc6-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
 
 # Bring every third_party submodule to its pinned gitlink, one at a time so
 # a single broken tree cannot strand the rest (an empty clone with an unborn
@@ -138,7 +138,13 @@ WINE_FT_ENV=(
     FREETYPE_CFLAGS="-I$ROOT/third_party/freetype/include"
     FREETYPE_LIBS="-L$FT_NATIVE -lfreetype"
 )
-WINE_CONFIGURE=(--enable-win64 --without-x --with-freetype --without-fontconfig)
+# --enable-archs=i386,x86_64 (WOW64 milestone): one 64-bit host build carrying
+# BOTH PE arch trees — dlls/*/x86_64-windows/ as before plus dlls/*/i386-windows/,
+# the syswow64 payload and the reason wow64.dll has a 32-bit ntdll to load. On an
+# x86_64 host a non-empty --enable-archs alone keeps the host build 64-bit
+# (configure.ac's -m32 fallback tests `x"$enable_archs" = x`), so --enable-win64
+# is subsumed. The i386 PE side needs the i686 mingw cross from the apt list.
+WINE_CONFIGURE=(--enable-archs=i386,x86_64 --without-x --with-freetype --without-fontconfig)
 
 # A box provisioned before GUI-3 carries a --without-freetype wine, and the
 # two "already built — skipping" guards below would serve it forever. wine's
@@ -155,7 +161,17 @@ if [[ -f third_party/wine/include/config.h ]] &&
     echo "== wine: pre-GUI-3 (--without-freetype) build found — reconfiguring =="
 fi
 
-echo "== wine: the ntapi + font-metrics oracle (64-bit only, no X) =="
+# Same trap, one milestone later: a box provisioned before WOW64 carries a
+# --enable-win64 (x86_64-only) wine. configure writes the arch list verbatim
+# into the generated Makefile's PE_ARCHS, so its lacking i386 is a truthful
+# "this tree has no 32-bit PE side" marker — reconfigure such a tree too.
+if [[ $wineStale -eq 0 && -f third_party/wine/Makefile ]] &&
+    ! grep -q '^PE_ARCHS *=.*i386' third_party/wine/Makefile; then
+    wineStale=1
+    echo "== wine: pre-WOW64 (x86_64-only) build found — reconfiguring =="
+fi
+
+echo "== wine: the ntapi + font-metrics oracle (x86_64 + i386 PE, no X) =="
 if [[ $wineStale -eq 0 && ( -x third_party/wine/wine64 || -x third_party/wine/wine ) ]]; then
     echo "   already built — skipping"
 else
