@@ -13,8 +13,13 @@
 #include <stdint.h>
 #endif
 
-/* Selector layout — the real NT one (KGDT64_* in the Windows SDK's
- * ksamd64.inc; re-verify there or against a live NT `CONTEXT.SegCs`).
+/* Selector layout — the real NT one (KGDT64_R3_CMCODE / _R3_DATA /
+ * _R3_CODE / _R3_CMTEB). Re-verify in the PINNED TREE, which hardcodes all
+ * four for exactly this reason: dlls/ntdll/process.c
+ * RtlWow64GetThreadSelectorEntry's fallback (`context.SegCs = 0x23;
+ * context.SegSs = 0x2b; context.SegFs = 0x53`), dlls/wow64cpu/cpu.c's
+ * far-jump thunk, and dlls/ntdll/tests/wow64.c test_selectors, which reads
+ * every one of them back and asserts its type/DPL/limit.
  * syscall loads CS/SS from STAR[47:32] (+0/+8); sysretq loads them from
  * STAR[63:48] (+16/+8) and sysretl from (+0/+8) — which is exactly why NT
  * orders the ring-3 slots compat-code, data, code. Adopting NT's VALUES

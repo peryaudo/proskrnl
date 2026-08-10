@@ -33,13 +33,10 @@
  *    kernel is FXSAVE-only and no baked consumer issues CONTEXT_XSTATE;
  *    add when an AVX-using client or a newer kernelbase appears (layout:
  *    Wine include/winnt.h XSTATE_CONFIGURATION + Intel SDM Vol. 1 XSAVE).
- *  - User CS/SS selector VALUES: today Wine's PE stack reads the selectors
- *    at runtime (dlls/ntdll/unix/signal_x86_64.c cs64_sel), so proskrnl's
- *    own GDT layout (arch/x86_64/gdt.h) is unpinned and this probe
- *    deliberately does not check the values. The WOW64 milestone makes
- *    them load-bearing (heaven's-gate far transfers encode CS) — pin them
- *    there against real NT / MS docs, with the TEB32/PEB32 mirroring and
- *    the 32-bit KUSD fields (TickCountMultiplier consumers included).
+ *  - 32-bit KUSER_SHARED_DATA fields (TickCountMultiplier consumers
+ *    included): the guest reads the SAME shared page as the host, so there
+ *    is one layout and no 32-bit mirror to pin; add a check here if a
+ *    consumer ever shows the two disagreeing.
  *  - Debugger conventions (DebugPort, first/second-chance routing,
  *    DbgUiRemoteBreakin): no debug surface exists; add with DbgUi/Dbgk.
  *  - Se/token conventions (NtQueryInformationToken shapes ntdll probes at
@@ -171,6 +168,48 @@ static int check_entry_state(void)
      * the same latent class as the alignment one. */
     if ((abi_entry_rflags & 0x400) != 0)
         return 32;
+    return 0;
+}
+
+/* --- ring-3 selector values ------------------------------------------------
+ *
+ * Until WOW64 these were free: Wine's PE stack reads whatever the kernel
+ * gave it (dlls/ntdll/unix/signal_x86_64.c cs64_sel), so any self-consistent
+ * GDT worked. They are load-bearing now. wow64cpu's far transfers ENCODE the
+ * selector in the instruction stream, and where the guest cannot ask, ntdll
+ * hardcodes NT's values outright: RtlWow64GetThreadSelectorEntry falls back
+ * to `SegCs = 0x23; SegSs = 0x2b; SegFs = 0x53` (dlls/ntdll/process.c) and
+ * dlls/ntdll/tests/wow64.c test_selectors reads each one back and asserts
+ * its type, DPL and limit.
+ *
+ * This is the one place they can be pinned. A tests/ntapi case cannot: the
+ * oracle runs on Linux, whose GDT is the host's, so it would be measuring
+ * Linux rather than NT (sem_ps/wow64_thread_context.c binds only the guest
+ * trio and deliberately leaves FS unbound for exactly that reason). Here the
+ * probe runs ON proskrnl and the values ARE the contract. */
+static int check_selectors(void)
+{
+    unsigned short cs, ss, ds, es;
+    __asm__ volatile("movw %%cs, %0" : "=r"(cs));
+    __asm__ volatile("movw %%ss, %0" : "=r"(ss));
+    __asm__ volatile("movw %%ds, %0" : "=r"(ds));
+    __asm__ volatile("movw %%es, %0" : "=r"(es));
+
+    /* KGDT64_R3_CODE | RPL 3. 0x23 is NT's THIRTY-TWO-bit code selector and
+     * must not be this. */
+    if (cs != 0x33)
+        return 33;
+    /* KGDT64_R3_DATA | RPL 3, shared by SS/DS/ES. */
+    if (ss != 0x2b)
+        return 34;
+    /* Loaded, not merely staged in the trap frame: iretq nullifies the
+     * kernel's DPL-0 data selectors, and wow64cpu captures the LIVE %ds
+     * through RtlCaptureContext to build its return thunk (dlls/wow64cpu/
+     * cpu.c). A zero here is what a staging-only return path leaves. */
+    if (ds != 0x2b)
+        return 35;
+    if (es != 0x2b)
+        return 36;
     return 0;
 }
 
@@ -530,6 +569,8 @@ static int check_time(void)
 int abi_probe_main(void)
 {
     int code = check_entry_state();
+    if (code == 0)
+        code = check_selectors();
     if (code == 0)
         code = check_identity();
     if (code == 0)
