@@ -588,6 +588,49 @@ $(WINESTRIP)/$(1).dll: $(WINE_PE)/$(1)/x86_64-windows/$(1).dll
 endef
 $(foreach d,$(WINESTRIP_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
+# WOW64: the same treatment for the i386 PE tree, landing under a separate
+# prefix because the two arch trees give a dll the SAME file name — the
+# guest set goes to windows\syswow64 while system32 keeps the 64-bit one,
+# which is the whole naming convention WOW64 rests on
+# (get_machine_wow64_dir, third_party/wine dlls/ntdll/unix/loader.c).
+# Deliberately a SHORT list: with no COW every wow64 child copies its images
+# whole, and the guest stack needs only what ntdll's loader pulls in.
+WINESTRIP32 := $(BUILD)/winestrip32
+WINESTRIP32_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase version
+WINESTRIP32_DLLS := $(foreach d,$(WINESTRIP32_NAMES),$(WINESTRIP32)/$(d).dll)
+define WINESTRIP32_RULE
+$(WINESTRIP32)/$(1).dll: $(WINE_PE)/$(1)/i386-windows/$(1).dll
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach d,$(WINESTRIP32_NAMES),$(eval $(call WINESTRIP32_RULE,$(d))))
+
+# The 32-bit CUI programs the guest side runs, and the three x86_64 DLLs
+# that IMPLEMENT wow64 (they are host code — 64-bit — and live in system32
+# beside ntdll, which is where wow64.dll's load_64bit_module looks).
+WINESTRIP32_EXE_NAMES := cmd msinfo32
+WINESTRIP32_EXES := $(foreach p,$(WINESTRIP32_EXE_NAMES),$(WINESTRIP32)/$(p).exe)
+define WINESTRIP32_EXE_RULE
+$(WINESTRIP32)/$(1).exe: third_party/wine/programs/$(1)/i386-windows/$(1).exe
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach p,$(WINESTRIP32_EXE_NAMES),$(eval $(call WINESTRIP32_EXE_RULE,$(p))))
+
+WOW64_HOST_NAMES := wow64 wow64cpu wow64win
+WOW64_HOST_DLLS := $(foreach d,$(WOW64_HOST_NAMES),$(WINESTRIP)/$(d).dll)
+$(foreach d,$(WOW64_HOST_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+
+# The full guest payload as mkimage `win:` specs: the i386 set under
+# syswow64, the wow64 host trio under system32.
+WOW64FILES := $(foreach d,$(WINESTRIP32_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
+              $(foreach p,$(WINESTRIP32_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe) \
+              $(foreach d,$(WOW64_HOST_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll)
+WOW64_PAYLOAD := $(WINESTRIP32_DLLS) $(WINESTRIP32_EXES) $(WOW64_HOST_DLLS)
+
+.PHONY: wow64strip
+wow64strip: $(WOW64_PAYLOAD)
+
 # CUI-3: the SCM programs — the pinned tree's own UNMODIFIED pure-PE
 # binaries (the whoami precedent: prebuilt, no glue, no relink), baked
 # debug-stripped like the DLLs (services.exe stays resident; unstripped
