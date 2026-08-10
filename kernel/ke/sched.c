@@ -359,6 +359,9 @@ static void KiLoadThreadHardwareState(PKTHREAD next)
      * in for NT's per-processor GDT (Art. 3). A thread of a 64-bit process
      * answers 0, which also clears the selector the return path loads. */
     KiSetUserFs32Base(PspWow64Fs32Base(next));
+    /* And the process's own LDT, if it ever asked for one (kernel/ps/ldt.c);
+     * a null selector for everyone else. */
+    PspLoadProcessLdt(next->process);
 
     uint64_t pml4 = next->process->addressSpace.pml4Physical;
     uint64_t cr3;

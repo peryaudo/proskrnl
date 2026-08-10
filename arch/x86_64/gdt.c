@@ -116,6 +116,26 @@ void KiSetUserFs32Base(uint64_t teb32)
     KiPcr.userFs32Selector = KI_USER_FS32_SELECTOR;
 }
 
+/* The LDT descriptor is a 16-byte SYSTEM descriptor in long mode (type 0x2,
+ * available LDT), same shape as the TSS one below; `lldt` with a null
+ * selector is how NT marks a process without an LDT. Intel SDM Vol. 3A
+ * §3.5.1 "Segment Descriptor Tables" and Table 3-2 (system descriptor
+ * types). */
+void KiSetProcessLdt(uint64_t base, uint32_t limit)
+{
+    if (base == 0)
+    {
+        KiGdt[KI_GDT_LDT / 8] = 0;
+        KiGdt[KI_GDT_LDT / 8 + 1] = 0;
+        __asm__ volatile("lldt %w0" : : "r"((uint16_t)0));
+        return;
+    }
+    KiGdt[KI_GDT_LDT / 8] = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) | (0x82ULL << 40) |
+                            (((uint64_t)(limit >> 16) & 0xF) << 48) | (((base >> 24) & 0xFF) << 56);
+    KiGdt[KI_GDT_LDT / 8 + 1] = base >> 32;
+    __asm__ volatile("lldt %w0" : : "r"((uint16_t)KI_GDT_LDT));
+}
+
 void KiInitializeGdt(void)
 {
     /* Access bytes: P|S|type. Code 0x9A/0xFA (exec/read, DPL 0/3), data
