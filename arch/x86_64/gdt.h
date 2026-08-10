@@ -51,8 +51,8 @@
 #ifndef __ASSEMBLER__
 
 /* The processor control region, reached as GS while in kernel mode (swapgs
- * on every user<->kernel crossing). Offsets are welded into
- * kernel/syscall/entry.S; the static_asserts live in gdt.c. */
+ * on every user<->kernel crossing). Offsets are welded into the KIPCR_*
+ * constants above; the static_asserts live in gdt.c. */
 typedef struct
 {
     uint64_t kernelRsp; /* current thread's kernel stack top; syscall entry loads this */

@@ -2848,3 +2848,10 @@ them:
   an aligned local and copied out as bytes. Pinned by
   `tests/ntapi/sem_file/dir_unaligned_buffer.c` (buffer+1/+2/+4 answer exactly like
   buffer+0, measured on the oracle first).
+- **The interrupt return path did not reload the ring-3 data selectors.** The WOW64
+  milestone fixed this for the *syscall* path (`KI_LOAD_USER_SEGMENTS`) and `trap.S`'s
+  `iretq` kept nullifying them, so whether a guest survived depended on WHERE the timer
+  tick landed: the CUI leg's short-lived guest never noticed, and a windowed one died
+  within a second on its next `mov %fs:0x18, %eax`. The macro now lives in
+  `arch/x86_64/kipcr.inc` and both paths run it. Like its syscall half, this is a
+  correctness fix that outlives WOW64.
