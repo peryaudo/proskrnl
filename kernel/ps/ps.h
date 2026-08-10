@@ -508,6 +508,7 @@ ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyF
 /* The compat-mode FS base for `thread` (its TEB32), or 0 for a thread of a
  * 64-bit process. Called on every context switch. */
 uint64_t PspWow64Fs32Base(PKTHREAD thread);
+void PspWow64MirrorTebFlags(PEPROCESS process, uint64_t tebVa, USHORT sameTebFlags);
 
 /* The lowest address a WOW64 thread's 64-bit stack may take (4GB): the low
  * space belongs to the guest. */
@@ -523,11 +524,13 @@ NTSTATUS PspWow64BuildTeb32(PEPROCESS process, uint64_t tebVa, uint64_t uniquePr
                             uint64_t uniqueThreadId, uint64_t guestStackBase,
                             uint64_t guestStackLimit, uint64_t guestStackAllocation);
 NTSTATUS PspWow64BuildCpuArea(PEPROCESS process, uint64_t tebVa, uint64_t hostStackTop,
-                              uint64_t guestEntry, uint64_t guestStackBase, uint64_t *cpuAreaOut);
+                              uint64_t guestEntry, uint64_t guestArgument, uint64_t guestStackBase,
+                              uint64_t *cpuAreaOut);
 NTSTATUS PspWow64FillInitBlock(PEPROCESS process, uint64_t hostBlockVa, uint64_t guestBlockVa,
                                const PSP_WOW64_NTDLL32_RVAS *rvas);
 NTSTATUS PspWow64AllocateGuestStack(PEPROCESS process, uint64_t reserve, uint64_t commit,
-                                    uint64_t *baseOut, uint64_t *limitOut, uint64_t *allocationOut);
+                                    uint64_t limitHigh, uint64_t *baseOut, uint64_t *limitOut,
+                                    uint64_t *allocationOut);
 
 /* NT's thread-stack geometry rule, for EVERY stack this kernel reserves —
  * the main thread's and every additional one's. Stated once because it is one
@@ -582,6 +585,14 @@ typedef struct PSP_THREAD_OPTIONS
     /* THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE: this thread is exempt from
      * its process's freeze, in BOTH directions — see ETHREAD's field. */
     BOOLEAN bypassProcessFreeze;
+    /* THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH / _SKIP_LOADER_INIT. Neither is
+     * kernel behaviour: the kernel's whole part is to record them in the new
+     * thread's SameTebFlags, where the USER-MODE loader reads them back
+     * (dlls/ntdll/loader.c loader_init opens with `if
+     * (NtCurrentTeb()->SkipLoaderInit) return;`). Pinned by
+     * tests/ntapi/sem_ps/thread_skip_flags.c. */
+    BOOLEAN skipThreadAttach;
+    BOOLEAN skipLoaderInit;
 } PSP_THREAD_OPTIONS;
 
 /* Create and ready an additional user thread in `process`: its own guard-page
