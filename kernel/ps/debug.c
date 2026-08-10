@@ -71,20 +71,32 @@ static void PspSetBeingDebugged(PEPROCESS process, BOOLEAN debugged)
 static void PspCloseDebugObject(PVOID body)
 {
     PEDEBUGOBJECT debug = body;
-    if ((debug->flags & DEBUG_KILL_ON_CLOSE) == 0)
-    {
-        return;
-    }
-    /* Two passes, because PspTerminateProcessThreads only FLAGS the target's
+    /* The DETACH is unconditional; only the KILL is conditional. Getting
+     * that split wrong leaves a live process permanently marked
+     * BeingDebugged with no handle left that could ever clear it —
+     * detach_debugged_processes runs on every debug_obj_destroy and takes
+     * the exit code as its argument, not as its condition
+     * (server/debugger.c:345, server/process.c:1110).
+     *
+     * STATUS_DEBUGGER_INACTIVE is the oracle's own code for the kill
+     * (debugger.c:346) and is a value the target's parent reads back out of
+     * GetExitCodeProcess, so it is not a status to invent. Both halves are
+     * pinned by sem_ps/debug_attach.c, which closes the handle with a target
+     * still attached — the path every real debugger takes on exit, since
+     * DbgUiConnectToDbg always asks for DEBUG_KILL_ON_CLOSE.
+     *
+     * Two passes, because PspTerminateProcessThreads only FLAGS the target's
      * threads and wakes them (it does not unlink the process), while the
      * detach below does unlink — walking and unlinking at once would drop
-     * the list out from under the walk. STATUS_SUCCESS is the job path's
-     * choice for the same situation (PspTerminateJobMembers) and nothing
-     * pins a different one for a debuggee. */
-    for (PLIST_ENTRY entry = debug->processList.Flink; entry != &debug->processList;
-         entry = entry->Flink)
+     * the list out from under the walk. */
+    if ((debug->flags & DEBUG_KILL_ON_CLOSE) != 0)
     {
-        PspTerminateProcessThreads(CONTAINING_RECORD(entry, EPROCESS, debugLinks), STATUS_SUCCESS);
+        for (PLIST_ENTRY entry = debug->processList.Flink; entry != &debug->processList;
+             entry = entry->Flink)
+        {
+            PspTerminateProcessThreads(CONTAINING_RECORD(entry, EPROCESS, debugLinks),
+                                       STATUS_DEBUGGER_INACTIVE);
+        }
     }
     while (!IsListEmpty(&debug->processList))
     {
