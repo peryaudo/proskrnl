@@ -583,10 +583,27 @@ kernel32_test.exe:fiber
 kernel32_test.exe:format_msg
 kernel32_test.exe:generated
 kernel32_test.exe:heap
-# (b) The oracle dies on it too (exit 5, no summary): the subtest builds and
-#     spawns 32-bit child images and drives them through the debug loop
-#     ("Platform: x86_64 (guest: i386)" in its own banner), and the run ends
-#     in its child-hang process dump rather than a verdict.
+# (b) THE ORACLE STILL PRODUCES NO VERDICT — re-measured at the WOW64
+#     milestone, deliberately, because this pair was the milestone's stretch
+#     goal and the obvious hypothesis was that it needed the 32-bit
+#     subsystem the oracle build lacked. It does not: with i386 in
+#     WINE_CONFIGURE the oracle still ends in its child-hang process dump
+#     with NO summary line, and the fault is not in the debug loop at all —
+#     it is an unhandled access at loader.c:4868 (`test_dll_file`, probing
+#     user32.dll: `movzwl 6(%rsi), %r13d`). Zero "Test failed" lines before
+#     it, i.e. the run dies rather than fails.
+#
+#     Under Art. 6 that settles it: a pair whose oracle never reaches a
+#     verdict convicts nothing on either side, so the proskrnl half is
+#     unconvictable no matter what it does. For the record, what it does is
+#     panic at NtWaitForDebugEvent — the debug EVENT QUEUE, which ADR 0011's
+#     WOW64 amendment refuses permanently and on purpose — with real
+#     failures at loader.c:4658-:4678 ahead of it. Neither observation is
+#     actionable while the oracle is silent.
+#
+#     Re-opening this is a decision about the ORACLE (fix or work around the
+#     loader.c:4868 fault upstream), not a kernel change, which is why there
+#     is no TODO.
 # kernel32_test.exe:loader
 # UNTRIAGED, AND PROBABLY NOT KERNEL WORK. 94 failures: 72 at
 #     locale.c:3809/:3813 (LCMAP_SORTKEY and CompareStringEx collation), 11
