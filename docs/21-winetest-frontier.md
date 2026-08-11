@@ -1055,18 +1055,57 @@ What is left under this heading:
     Art. 11's tell is not "two functions that do the same thing" but **a rule
     written down wherever somebody happened to hit it** — each copy correct,
     none of them a statement that the *surface* owes this.
-- **The SEC_* MODIFIER flags on a section** — `SEC_NOCACHE`, and now also
-  `SEC_WRITECOMBINE` and `SEC_LARGE_PAGES`, which the same measurement added
-  to this item. A section created with any of them keeps none: the flag is
-  neither reported by `NtQuerySection` nor refused where NT refuses it
-  (`SEC_LARGE_PAGES` and `SEC_WRITECOMBINE` are `ERROR_INVALID_PARAMETER`
-  combinations for NT and succeed here). 24 of `kernel32:virtual`'s remaining
-  25 — i.e. with the out-handle clear landed this is now the WHOLE of that
-  pair's real work, the 25th being the `:1465` todo floor. It is also the
-  first winetest evidence for a bullet that used to say "no winetest
-  assertion reaches it". `docs/03` carries the `SEC_NOCACHE` deviation; the
-  private-memory half is built and pinned, and this is the same one-field
-  shape as `MI_VAD.noCache`, on the section instead.
+- **The SEC_\* MODIFIER flags on a section are DONE** (`kernel32:virtual` 25 →
+  **1**, and the 1 is the `:1465` todo floor). This item was scheduled as
+  "the same one-field shape as `MI_VAD.noCache`, on the section instead". It
+  is not one field: `server/mapping.c` `get_mapping_flags` is twenty lines
+  that decide **three** things at once, proskrnl had the first and neither of
+  the other two, and the three are not separable — the anonymous arm's
+  `return flags` is simultaneously the refusal ladder's early exit and the
+  "which bits survive" answer. Transcribed whole as `MipMappingFlags`
+  (`kernel/mm/section.c`), pinned by `tests/ntapi/sem_mm/section_sec_flags.c`,
+  table in `docs/03` "The SEC_\* modifier flags on a section".
+
+  Four things worth carrying, and the first two are what a per-flag reading
+  of this item would have got wrong:
+
+  - **The refusals are per-ARM, not per-flag, and the discriminating case is
+    the one the winetest never asks.** `SEC_LARGE_PAGES` refuses on an image,
+    on any file-backed section and on an anonymous `SEC_RESERVE` — and
+    **succeeds, keeping the bit**, on an anonymous `SEC_COMMIT`, because that
+    is the single arm whose `return` sits above the guard. All five of the
+    pair's `ERROR_INVALID_PARAMETER` rows carry `SEC_LARGE_PAGES` or
+    `SEC_WRITECOMBINE`, so "these two flags are unsupported" passes the whole
+    44-row matrix and diverges exactly there. Same shape as W5's
+    `zero_bits`: *the invalid band is not the other entry point's band.*
+  - **What survives differs by arm too, and `SEC_IMAGE | SEC_NOCACHE` is the
+    one accepted-and-DROPPED combination on the surface.** That single row is
+    what separates an implementation reading the section's **resolved**
+    attributes from one reading the flags its caller passed — both answer
+    every other case in the matrix, and only a view of such a section can
+    see it. It is why the kernel's view half reads
+    `MI_SECTION.attributes` rather than the create call's word.
+  - **The order was wrong and no winetest assertion could say so.**
+    `get_mapping_flags` runs above `create_mapping`'s `get_file_obj`, so a
+    refused combination is reported for a file handle that names nothing;
+    proskrnl resolved the backing first and answered
+    `STATUS_INVALID_HANDLE`. Fourth instance in this document of "a
+    validation placed where a careful implementation would put it, where NT
+    does not" (W11's guards, W5's `NtProtectVirtualMemory` ladder, W16's
+    share-mode escape).
+  - **17 assertions were hiding behind the value this item was fixing, and
+    they all pass** — `virtual.c:1017` is
+    `if (section_info.Attributes & SEC_NOCACHE)`, guarding the whole
+    view-reports-`PAGE_NOCACHE` block. §4 trap 2 with the good outcome, and
+    the *self-referential* variant of it: the gate reads exactly the field
+    rule 2 was answering wrongly, so the pair could not measure the second
+    half of the item until the first half landed.
+
+  What did NOT move: the pair still ends `FAIL (timeout)` in the same place
+  (the W4c wedge in `test_write_watch`), and 1 is a lower bound like every
+  count this pair has ever carried. With this item done there is **no known
+  kernel work left inside its measured prefix** — the pair's next lesson is
+  whatever lies past the wedge.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
   `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in
   `NtUnmapViewOfSectionEx` still refuse loudly. Mapping a section *into* a

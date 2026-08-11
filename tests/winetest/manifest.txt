@@ -854,82 +854,73 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# RE-MEASURED after the out-handle clear landed: 96 -> 25, and the pair
-#     still WEDGES. 71 assertions went; the wedge and the todo floor are
-#     unchanged, so the verdict line reads FAIL (timeout) exactly as it did
-#     before and the movement is entirely inside the count.
+# RE-MEASURED after the SEC_* modifier flags landed: 25 -> 1, and the ONE
+#     that is left is the todo floor below. Every failing assertion this pair
+#     had that is real work is gone; the verdict line still reads
+#     FAIL (timeout) because the wedge is untouched and belongs to another
+#     item, so the pair stays parked. Do not read "1 failure" as "one item
+#     away from green" — see WHERE IT STOPS.
 #
-#     WHAT WENT, AND IT WAS ONE CAUSE FOR ALL 71. A handle-producing Nt*
-#     call clears the caller's out-handle as its FIRST act, above every
-#     validation, so a refusal leaves NULL in a slot the caller never
-#     initialized. kernelbase's CreateFileMappingW (dlls/kernelbase/sync.c)
-#     declares `HANDLE ret;` uninitialized and `return ret`s on every path
-#     including the failing ones, so a create proskrnl REFUSED CORRECTLY
-#     handed the test stack garbage. Now in kernel/ob/handle.c
-#     ObpClearOutHandle — one function, called by every entry point that owes
-#     it — pinned by tests/ntapi/sem_ob/out_handle.c, docs/03 "What a
-#     REFUSED handle-producing call leaves in the caller's slot".
+#     WHAT WENT, AND IT WAS ONE CAUSE FOR ALL 24. server/mapping.c
+#     get_mapping_flags is twenty lines that decide three things at once, and
+#     proskrnl implemented the first (which section KIND) and neither of the
+#     other two. Now transcribed whole as MipMappingFlags
+#     (kernel/mm/section.c) with the view half in MiCreateMappedVad
+#     (kernel/mm/virtual.c); pinned by tests/ntapi/sem_mm/section_sec_flags.c,
+#     docs/03 "The SEC_* modifier flags on a section". The three rules:
 #
-#     TWO THINGS THIS BLOCK GOT WRONG, both worth more than the 71:
+#       - WHICH COMBINATIONS REFUSE (was :1616 x5 + :1617 x5, indices
+#         2/20/24/40/41). SEC_LARGE_PAGES and SEC_WRITECOMBINE are neither
+#         uniformly legal nor uniformly illegal: SEC_LARGE_PAGES refuses on an
+#         image, on any file-backed section and on an anonymous SEC_RESERVE —
+#         and SUCCEEDS on an anonymous SEC_COMMIT, the one arm that returns
+#         above the guard. No row of this matrix asks that case.
+#       - WHICH BITS SURVIVE, per arm (was :1638 x13 + :1014). An anonymous
+#         section keeps the caller's word WHOLE, a file-backed one keeps
+#         SEC_NOCACHE|SEC_WRITECOMBINE and reports SEC_FILE for the kind, an
+#         image keeps neither — so SEC_IMAGE|SEC_NOCACHE is accepted and the
+#         bit dropped.
+#       - WHERE THE CHECK SITS: above create_mapping's get_file_obj, so a
+#         refused combination is reported for a junk file handle. No winetest
+#         assertion reaches it; the pin does.
 #
-#       - IT IS NOT A beyond_oracle PIN. This block said "the oracle's own
-#         ntdll leaves *handle alone too and passes only because its stack
-#         happens to hold zero". It does not: dlls/ntdll/unix/sync.c
-#         NtCreateSection opens with `*handle = 0;`, and so does every other
-#         create/open on that surface. The pin is an ordinary transcription
-#         and is green on both legs.
-#       - THE "4 THAT HAVE NOT MOVED" WERE THE SAME BUG, and this block sent
-#         the next person to bisect a sequence that had nothing wrong with
-#         it. :758/:764/:770 are `ok( !mapping, "CreateFileMapping ...
-#         succeeded" )` — assertions about the returned HANDLE. The error
-#         checks are the NEXT lines (:759/:765/:771) and were passing all
-#         along, which is exactly what the block's own probe measured when it
-#         "eliminated the WIN32 path". Reading a line number as the error
-#         check instead of the handle check turned one cause into two
-#         subjects and a wrong instruction (docs/21 §4 trap 4). :4074 is the
-#         same shape one protection along.
+#     AND ONE THING BEHIND A GATE, which is docs/21 §4 trap 2 with the good
+#     outcome. virtual.c:1017 is `if (section_info.Attributes & SEC_NOCACHE)`,
+#     guarding 17 assertions about what a view of a SEC_NOCACHE section
+#     reports. The gate reads exactly the value rule 2 was getting wrong, so
+#     that block had NEVER RUN on proskrnl. It runs now and every one of the
+#     17 passes.
 #
-#     WHERE IT STOPS is unchanged: the last thing it prints is
-#     test_CreateFileMapping's SEC_* matrix (index 41 now, 43 before — the
-#     later rows no longer produce output because they no longer fail), then
-#     nothing for the remaining ~19 minutes. The next test in START_TEST
-#     order is test_write_watch, whose pipe leg issues an overlapped ReadFile
-#     on an empty named pipe and satisfies it from the SAME thread (test body
-#     :191 and :202) — the CUI-8 wedge already recorded for ntdll:pipe
-#     (docs/03 "CUI-8 async notes", docs/21 W4c). Not new, not this pair's
-#     item, and it still means EVERYTHING PAST test_write_watch is unmeasured:
-#     25 is a lower bound like every count this block has ever carried.
+#     WHERE IT STOPS is unchanged, and the last line it prints has moved
+#     BACKWARDS for a good reason: test_CreateFileMapping's SEC_* matrix now
+#     produces no output at all, so the final line is virtual.c:1465 — the
+#     todo floor, in test_NtAreMappedFilesTheSame, which runs one function
+#     EARLIER. Then nothing. The next test in START_TEST order after
+#     test_CreateFileMapping (and the three IsBad*Ptr tests, which are silent)
+#     is test_write_watch, whose pipe leg issues an overlapped ReadFile on an
+#     empty named pipe and satisfies it from the SAME thread (test body :191
+#     and :202) — the CUI-8 wedge already recorded for ntdll:pipe (docs/03
+#     "CUI-8 async notes", docs/21 W4c). Not new, not this pair's item, and it
+#     still means EVERYTHING PAST test_write_watch is unmeasured: 1 is a lower
+#     bound exactly like every count this block has ever carried.
 #
-#     THE 25, DECOMPOSED. One subject and a floor:
+#     THE 1, AND IT IS A FLOOR. virtual.c:1465 is a todo_wine that proskrnl
+#     PASSES: NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must answer
+#     STATUS_SUCCESS, proskrnl does, the oracle does not, and winetest scores
+#     a succeeded todo as a FAILURE. So this pair cannot reach zero while
+#     proskrnl is the more NT-correct of the two runners, exactly as
+#     kernel32:volume:186 cannot — and making it lose would be tuning to an
+#     oracle annotation instead of to a contract. Easy to miss when scanning
+#     for "Test failed": it prints as "Test succeeded inside todo block".
 #
-#       - 24 — the SEC_* MODIFIER FLAGS ON A SECTION, i.e. SEC_NOCACHE,
-#         SEC_WRITECOMBINE and SEC_LARGE_PAGES, none of which a proskrnl
-#         section keeps. Ten of them (:1616 x5, :1617 x5, indices
-#         2/20/24/40/41) are combinations NT REFUSES with
-#         ERROR_INVALID_PARAMETER and proskrnl accepts — every one of the
-#         five carries SEC_LARGE_PAGES or SEC_WRITECOMBINE. The other
-#         fourteen (:1638 x13 plus :1014) are NtQuerySection reporting the
-#         section without the modifier: SEC_RESERVE (04000000) where
-#         SEC_RESERVE|SEC_NOCACHE was asked for, SEC_COMMIT (08000000) where
-#         SEC_COMMIT|SEC_NOCACHE was, and so on. This group is now the WHOLE
-#         of the pair's real work; docs/21 W5 carries it.
-#       - 1, AND IT IS A FLOOR. virtual.c:1465 is a todo_wine that proskrnl
-#         PASSES: NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must
-#         answer STATUS_SUCCESS, proskrnl does, the oracle does not, and
-#         winetest scores a succeeded todo as a FAILURE. So this pair cannot
-#         reach zero while proskrnl is the more NT-correct of the two
-#         runners, exactly as kernel32:volume:186 cannot — and making it lose
-#         would be tuning to an oracle annotation instead of to a contract.
-#         Easy to miss when scanning for "Test failed": it prints as "Test
-#         succeeded inside todo block".
+#     TWO INDEPENDENT REASONS THIS PAIR STAYS PARKED, then, and NEITHER is
+#     work on this pair: the wedge (which belongs to W4c) and the todo floor
+#     (which belongs to nobody). There is no known kernel item left inside the
+#     measured prefix; the next thing this pair can teach anybody is whatever
+#     lies past test_write_watch, and that is W4c's to unlock.
 #
-#     TWO INDEPENDENT REASONS THIS PAIR STAYS PARKED, then: the wedge (which
-#     belongs to W4c) and the todo floor (which belongs to nobody). Progress
-#     here is measured in the 24 that are real work, not in the verdict line.
-#
-#     Both measurements above were taken with a 1200 s per-pair timeout,
-#     which is NOT in the line below — a parked pair should not cost the
-#     sweep twenty minutes to learn what 300 s already says.
+#     The measurement above used the 300 s per-pair timeout in the line below.
+#     The oracle leg is green: 30936 tests executed, 140 todo, 0 failures.
 # TODO: Implement
 # kernel32_test.exe:virtual
 # RE-TRIAGED. FOUR failures, not the three this block used to claim, and
