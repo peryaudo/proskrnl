@@ -108,6 +108,9 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
 
     IO_CONTROL_CONTEXT request = {
         .eventHandle = event, .userIosb = iosb, .apcBlock = apcBlock, .apcContext = apcContext};
+    /* The remaining members — the CUI-8 data legs and `pended` — are zeroed
+     * by the designated initializer above; an ioctl carries no data leg (its
+     * output travels in outBounce) and `pended` is the engine's answer. */
     ULONG_PTR information = 0;
     IopEnterSyncIo(iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
@@ -130,12 +133,19 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     {
         MiFreePool(outBounce);
     }
-    if (status == STATUS_PENDING)
+    if (request.pended)
     {
         /* The op parked an IOP_PENDING_REQUEST: the caller's IOSB stays
          * untouched until completion (pinned sem_pipe/async_listen), and the
          * APC block went WITH it — IopCompletePendingRequest queues it to
-         * this thread whenever the park ends. Nothing to do here. */
+         * this thread whenever the park ends. Nothing to do here.
+         *
+         * The FLAG, not the status (vfs.h): STATUS_PENDING is also a legal
+         * FINAL answer from a device — condrv's read path returns exactly
+         * that — and a verb that answered it without parking would have its
+         * APC block leaked here. No ioctl verb does today; keying on the
+         * flag means none ever can. */
+        ASSERT(status == STATUS_PENDING);
         ObDereferenceObject(file);
         return STATUS_PENDING;
     }

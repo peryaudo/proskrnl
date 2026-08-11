@@ -117,9 +117,11 @@ static NTSTATUS HidInputQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capaci
 
 /* Blocking read: returns as soon as at least one event exists, with
  * whatever else the eventq already holds. Whole events only. */
-static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                             IO_CONTROL_CONTEXT *request)
 {
     HID_STREAM *stream = HidStreamFromFile(file);
+    (void)request; /* the HID streams block rather than pend (docs/03 CUI-5) */
     if (length == 0)
     {
         *infoOut = 0;
@@ -164,7 +166,7 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
  * them (cached at init; this path never touches MMIO). */
 static NTSTATUS HidPointerDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                         ULONG inputLength, void *output, ULONG outputLength,
-                                        ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
+                                        ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
     HID_STREAM *stream = HidStreamFromFile(file);
     (void)input;

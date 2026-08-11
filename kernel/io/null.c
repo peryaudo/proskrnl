@@ -85,11 +85,13 @@ static NTSTATUS IopNullQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacit
 
 /* End of file, always — never a zero-length SUCCESS, which a caller reading
  * in a loop would spin on forever. */
-static NTSTATUS IopNullRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS IopNullRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                            IO_CONTROL_CONTEXT *request)
 {
     (void)file;
     (void)buffer;
     (void)length;
+    (void)request; /* \Device\Null never pends (vfs.h) */
     *infoOut = 0;
     return STATUS_END_OF_FILE;
 }

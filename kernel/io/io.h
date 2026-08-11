@@ -49,14 +49,21 @@ extern OBJECT_TYPE IoFileObjectType;
 /* Body of an Ob "File" object: one open of one file. NT's FILE_OBJECT
  * concept; internal layout ours (docs/03). File handles are waitable — NT
  * signals the file object at I/O completion and leaves it UNSIGNALLED while
- * a request is outstanding. Almost everything here completes inline
- * (docs/19 §2), so the object is born signalled and never observably
- * clears; the one service that genuinely pends is
- * NtNotifyChangeDirectoryFile, and for the interval it is armed the object
- * really is busy and callers really do look (ntdll:change waits on the
- * DIRECTORY HANDLE and requires a timeout, change.c:106/:112/:143).
- * kernel/io/notify.c clears it at arm and signals it at completion; pinned
- * by tests/ntapi/sem_file/dir_handle_signal.c.
+ * a request is outstanding. The object is born signalled; the two services
+ * that genuinely PEND clear it and put it back through the one engine that
+ * states the rule (kernel/io/async.c IopMarkRequestOutstanding /
+ * IopSignalRequestCompletion): NtNotifyChangeDirectoryFile (ntdll:change
+ * waits on the DIRECTORY HANDLE and requires a timeout, change.c:106/:112/
+ * :143; pinned sem_file/dir_handle_signal.c) and the CUI-8 npfs pended read
+ * (pinned sem_pipe/pended_read.c).
+ *
+ * Two things about it that read as bugs and are the contract: exactly ONE
+ * of the caller's event and this object is signalled at completion, so a
+ * request that pended with an event leaves the object down; and there is no
+ * outstanding-request count anywhere, so an unrelated inline completion on
+ * the handle re-signals it with the pended request still parked. What a
+ * BLOCKING request does is the known gap — the oracle clears the object for
+ * one of those too, and proskrnl does not (docs/03 "CUI-8 async notes").
  *
  * Spelled KEVENT rather than a bare DISPATCHER_HEADER so the clear and the
  * signal go through the Ke event engine that already owns those two
@@ -118,13 +125,18 @@ typedef struct FILE_OBJECT
      * handle would answer STATUS_PENDING and post nothing, hanging
      * GetQueuedCompletionStatus forever.
      *
-     * The other two are stored and reported back truthfully and do nothing
-     * else, so a caller reading its own mode back gets the truth about what
-     * was RECORDED rather than a claim that it took effect:
-     * FILE_SKIP_SET_EVENT_ON_HANDLE is unbuilt, and
-     * FILE_SKIP_SET_USER_EVENT_ON_FAST_IO has no fast path to suppress —
-     * every completion here goes through IopCompleteRequest, which is why
-     * the oracle accepts it with a FIXME too. docs/16 carries the split. */
+     * FILE_SKIP_SET_EVENT_ON_HANDLE is HONOURED as of CUI-8 (kernel/io/
+     * async.c IopFileSignalFrozen): it freezes `header` below, in both
+     * directions and for the handle's whole life. It had nothing to say
+     * while every request completed inline; the pended read is what gave
+     * the file object a signalled state that moves.
+     *
+     * FILE_SKIP_SET_USER_EVENT_ON_FAST_IO is stored and reported back
+     * truthfully and does nothing else — there is no fast path to suppress,
+     * since every completion here goes through IopCompleteRequest, which is
+     * why the oracle accepts it with a FIXME too. So a caller reading its
+     * own mode back gets the truth about what was RECORDED rather than a
+     * claim that it took effect. docs/16 carries the split. */
     ULONG completionFlags;
     LARGE_INTEGER currentByteOffset;
 
@@ -423,6 +435,26 @@ typedef struct IOP_PENDING_REQUEST
      * ApcRoutine (kernel/io/rw.c IopPostRequestPacket states the rule). */
     PVOID apcContext;
 
+    /* CUI-8: the DATA legs docs/19 §5d anticipated ("buffer/length legs
+     * beside the IOSB"), grown into THIS engine rather than a fourth
+     * bookkeeping shape. Their owner is the request:
+     *
+     *  - `kernelBuffer` is pool the ISSUER allocated (rw.c's bounce), handed
+     *    over at IopPreparePendingRequest and freed by the one completer, so
+     *    "allocated once, freed once" holds for every way a park can end
+     *    exactly as it does for apcBlock;
+     *  - `userBuffer` is a VA in `owner`, which is not this address space at
+     *    completion time — so the bytes go out through
+     *    MiCopyToUserRangeChecked, the same checked copy the IOSB uses and
+     *    for the same reason (the owner may have freed it while parked).
+     *
+     * Zero for a request with no data leg (every pended listen and watch).
+     * The FS fills kernelBuffer at completion and reports the count as the
+     * completion's `information`; nothing past that count is copied. */
+    PVOID userBuffer;
+    PVOID kernelBuffer;
+    ULONG bufferLength;
+
     LIST_ENTRY queueEntry; /* for a device that queues several pending
                             * requests of one kind (npfs's listen
                             * queue); unused when a device holds one */
@@ -431,7 +463,7 @@ typedef struct IOP_PENDING_REQUEST
 /* Build a pending request in the ISSUER's context (references the event, the
  * current process, the issuing thread and `file`). The caller's IOSB must
  * already be probed. */
-NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request,
+NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request,
                                   PIOP_PENDING_REQUEST *out);
 
 /* The completion-APC leg, one authority (Art. 11; the rw.c and notify.c
@@ -468,6 +500,30 @@ void IopPostRequestPacket(PFILE_OBJECT file, PKAPC apc, PVOID apcContext, BOOLEA
 NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, PKAPC *apcOut);
 void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc);
+
+/* The completion SIGNAL leg of an operation that PENDED, one authority
+ * (Art. 11 — the pended-request engine and the directory-watch engine both
+ * owe it and stated it separately before): NT signals the caller's EVENT
+ * when it supplied one and the FILE OBJECT otherwise, never both. The
+ * pinned oracle is one `else if`:
+ *
+ *     if (async->event) set_event( async->event );
+ *     else if (async->fd && !async->is_system) set_fd_signaled( async->fd, 1 );
+ *                                        (third_party/wine server/async.c
+ *                                         async_set_result)
+ *
+ * It fires for EVERY outcome, a cancel and an error included: what is being
+ * reported is "nothing outstanding", not "something succeeded". Pinned by
+ * sem_file/notify_change.c (the watch leg) and sem_pipe/pended_read.c (the
+ * data leg, both halves of the exclusivity). */
+void IopSignalRequestCompletion(PKEVENT event, struct FILE_OBJECT *file);
+
+/* Its twin at ISSUE: a request that really parks leaves the file object
+ * UNSIGNALLED until it completes (`set_fd_signaled( async->fd, 0 )`,
+ * server/async.c queue_async — unconditionally, whether or not an event was
+ * also supplied). Called by IopPreparePendingRequest for the pended verbs
+ * and by the watch arm for its own engine. */
+void IopMarkRequestOutstanding(struct FILE_OBJECT *file);
 
 /* CUI-5 NtCancelSynchronousIoFile (kernel/io/async.c): mark the current
  * thread's in-flight synchronous I/O around a potentially-blocking device

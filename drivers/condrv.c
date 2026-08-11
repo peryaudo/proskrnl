@@ -111,9 +111,11 @@ static NTSTATUS CondrvSerialQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG ca
 /* Blocking tty-style read: returns as soon as at least one byte exists,
  * with whatever else the FIFO already holds (conhost's input thread feeds
  * single keystrokes through exactly this shape). */
-static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                                 IO_CONTROL_CONTEXT *request)
 {
     (void)file;
+    (void)request; /* the console reads block rather than pend (docs/03 CUI-5) */
     if (length == 0)
     {
         *infoOut = 0;
@@ -662,9 +664,11 @@ static NTSTATUS CondrvConsoleQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG c
     return full <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
 
-static NTSTATUS CondrvConsoleRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS CondrvConsoleRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                                  IO_CONTROL_CONTEXT *request)
 {
     PCONDRV_OPEN open = file->fsContext;
+    (void)request; /* the console reads block rather than pend (docs/03 CUI-5) */
     switch (open->kind)
     {
     case CondrvOpenServer:
@@ -722,7 +726,7 @@ static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG 
 
 static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                            ULONG inputLength, void *output, ULONG outputLength,
-                                           ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
+                                           ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
     (void)request; /* console verbs complete inline (docs/19 §2) */
     PCONDRV_OPEN open = file->fsContext;

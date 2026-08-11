@@ -159,11 +159,17 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
   `async_set_result`'s `async->pending ||`). Keyed on `NT_SUCCESS` instead, an
   async port-bound handle would answer `STATUS_PENDING` and post nothing,
   hanging `GetQueuedCompletionStatus` forever.
-  Still **unbuilt**: `FILE_SKIP_SET_EVENT_ON_HANDLE` (stored, reported, does
-  nothing) and `FILE_SKIP_SET_USER_EVENT_ON_FAST_IO` (accepted and inert,
-  because there is no fast path to suppress — every completion goes through
-  `IopCompleteRequest`; the oracle accepts it with a FIXME for the same
-  reason).
+  `FILE_SKIP_SET_EVENT_ON_HANDLE` is **honoured** too, since CUI-8's pended
+  reads gave the file object's signalled state something to say: setting the
+  bit clears the handle once and freezes it there for good (the guard lives
+  inside the transition, `kernel/io/async.c` `IopFileSignalFrozen`, exactly
+  where `server/fd.c` `set_fd_signaled` keeps it). Pinned by
+  `tests/ntapi/sem_pipe/pended_read.c`; `ntdll:pipe` `pipe.c:1680-:1702` is
+  the winetest consumer.
+  Still **unbuilt**: `FILE_SKIP_SET_USER_EVENT_ON_FAST_IO` (accepted and
+  inert, because there is no fast path to suppress — every completion goes
+  through `IopCompleteRequest`; the oracle accepts it with a FIXME for the
+  same reason).
 - **User APCs on I/O — now a SPLIT row, and the line numbers it used to carry
   had drifted off their guards.** The completion-APC form is **built** for
   `NtDeviceIoControlFile`/`NtFsControlFile` (`kernel/io/ioctl.c`, pinned

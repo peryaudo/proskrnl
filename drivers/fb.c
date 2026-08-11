@@ -143,7 +143,7 @@ static NTSTATUS FbQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, UL
 
 static NTSTATUS FbDeviceControl(PFILE_OBJECT file, ULONG code, const void *input, ULONG inputLength,
                                 void *output, ULONG outputLength, ULONG_PTR *infoOut,
-                                const IO_CONTROL_CONTEXT *request)
+                                IO_CONTROL_CONTEXT *request)
 {
     (void)file;
     (void)input;

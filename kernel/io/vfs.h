@@ -44,6 +44,40 @@ typedef struct IO_CONTROL_CONTEXT
      * needs it at completion time, in a context that no longer has the
      * syscall's arguments. */
     PVOID apcContext;
+
+    /* CUI-8: the DATA legs, for a transfer that pends (the npfs read).
+     * `userBuffer` is the caller's buffer VA in the OWNING process — it is
+     * not valid in the completer's context, so the completion copies through
+     * MiCopyToUserRangeChecked exactly as it does for the IOSB;
+     * `kernelBuffer` is the Io layer's pool bounce of `bufferLength` bytes,
+     * which the FS fills at completion.
+     *
+     * OWNERSHIP, and it is the apcBlock rule above word for word: a device
+     * that PENDS hands the bounce to IopPreparePendingRequest and never
+     * touches it again (the request frees it), a device that completes
+     * inline leaves it alone and the Io layer frees it. Zero for a verb with
+     * no data leg. */
+    PVOID userBuffer;
+    PVOID kernelBuffer;
+    ULONG bufferLength;
+
+    /* The one OUT field, and the reason the whole struct is non-const: DID
+     * this operation park an IOP_PENDING_REQUEST? NT answers the same
+     * question with a FLAG on the IRP (`IoMarkIrpPending`) rather than with
+     * a status, and it is right to, because STATUS_PENDING as a *status* is
+     * ambiguous — condrv's server fetch returns it as a FINAL answer
+     * meaning "nothing deliverable, wait on the handle" (drivers/condrv.c
+     * CondrvServerRead, mirroring wineserver), with its IOSB written and
+     * everything already freed.
+     *
+     * Reading the status instead cost a day: `if (status == STATUS_PENDING)
+     * return` in the read path leaked conhost's bounce buffer on every poll
+     * of an idle console, and the pool exhaustion downstream of that read
+     * as a 3x per-process memory regression in the cui9 ceiling.
+     *
+     * Set by IopPreparePendingRequest itself, never by the device — so a
+     * device cannot park a request and forget to say so. FALSE in, always. */
+    BOOLEAN pended;
 } IO_CONTROL_CONTEXT;
 
 /* NT share-mode accounting state (the SHARE_ACCESS concept, kept internal).
@@ -248,8 +282,18 @@ typedef struct IO_VFS_OPS
      * the IOSB precedes every completion signal). */
 
     /* Read up to `length` bytes; may block until data or a peer state
-     * change. *infoOut = bytes read (also on STATUS_BUFFER_OVERFLOW). */
-    NTSTATUS (*Read)(struct FILE_OBJECT *file, void *buffer, ULONG length, ULONG_PTR *infoOut);
+     * change. *infoOut = bytes read (also on STATUS_BUFFER_OVERFLOW).
+     *
+     * On an ASYNCHRONOUS handle a device may instead PEND — park an
+     * IOP_PENDING_REQUEST built from `request` (whose data legs carry
+     * `buffer` itself) and answer STATUS_PENDING, leaving the caller's IOSB
+     * and buffer untouched until something else completes it. npfs does
+     * (CUI-8): a read on an empty pipe that parked the CALLING thread
+     * deadlocked every caller that satisfies its own overlapped read from
+     * the same thread. A device that never pends ignores `request`. */
+    NTSTATUS(*Read)
+    (struct FILE_OBJECT *file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+     struct IO_CONTROL_CONTEXT *request);
 
     /* Write `length` bytes; may block on quota. *infoOut = bytes written. */
     NTSTATUS(*Write)
@@ -271,7 +315,7 @@ typedef struct IO_VFS_OPS
      * `request` and completes before returning (docs/19 §2). */
     NTSTATUS(*DeviceControl)
     (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
-     ULONG outputLength, ULONG_PTR *infoOut, const struct IO_CONTROL_CONTEXT *request);
+     ULONG outputLength, ULONG_PTR *infoOut, struct IO_CONTROL_CONTEXT *request);
 
     /* CUI-3: cancel-complete (STATUS_CANCELLED) every pending request this
      * FILE_OBJECT issued that matches the filter — `issuer` non-0 restricts

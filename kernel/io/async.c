@@ -26,7 +26,47 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
-NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request,
+/* FILE_SKIP_SET_EVENT_ON_HANDLE freezes the file object's signalled state
+ * in BOTH directions, and the guard sits here rather than at the two call
+ * sites for the same reason the oracle puts it inside `set_fd_signaled`
+ * (server/fd.c: `if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE)
+ * return;`) — every producer of the transition inherits it instead of
+ * remembering it. The caller's own EVENT is unaffected: the flag is about
+ * the handle, and the oracle's event signal does not go through this path
+ * at all.
+ *
+ * Every producer that goes through HERE, which is not quite every producer:
+ * condrv writes its server handle's `header` directly, as a device-managed
+ * readiness bit rather than as an I/O completion (drivers/condrv.c
+ * CondrvSignalServer), so the freeze would not reach a console handle. No
+ * caller sets the flag on one, and the exit is the same one docs/03 names —
+ * give condrv an event of its own. */
+static BOOLEAN IopFileSignalFrozen(PFILE_OBJECT file)
+{
+    return (file->completionFlags & FILE_SKIP_SET_EVENT_ON_HANDLE) != 0;
+}
+
+void IopSignalRequestCompletion(PKEVENT event, PFILE_OBJECT file)
+{
+    if (event != 0)
+    {
+        KeSetEvent(event, 0, FALSE);
+    }
+    else if (file != 0 && !IopFileSignalFrozen(file))
+    {
+        KeSetEvent(&file->header, 0, FALSE);
+    }
+}
+
+void IopMarkRequestOutstanding(PFILE_OBJECT file)
+{
+    if (file != 0 && !IopFileSignalFrozen(file))
+    {
+        KeClearEvent(&file->header);
+    }
+}
+
+NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request,
                                   PIOP_PENDING_REQUEST *out)
 {
     PIOP_PENDING_REQUEST pending = MiAllocatePool(sizeof(*pending));
@@ -87,6 +127,19 @@ NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, const IO_CONTROL_CONTEXT *r
      * the same statement issuerObject makes about the issuing thread. */
     pending->file = file;
     ObfReferenceObject(file);
+    /* CUI-8: the data legs move in with the same "the request owns it now"
+     * rule as the APC block (vfs.h). */
+    pending->userBuffer = request->userBuffer;
+    pending->kernelBuffer = request->kernelBuffer;
+    pending->bufferLength = request->bufferLength;
+    /* A request is now OUTSTANDING on this handle, so the file object is
+     * busy until it completes — unconditionally, event or not. */
+    IopMarkRequestOutstanding(file);
+    /* The engine marks the park, not the device (vfs.h): NT's
+     * IoMarkIrpPending, and for NT's reason — STATUS_PENDING as a status is
+     * ambiguous, since condrv answers it as a FINAL status. Set here, at the
+     * one place a park can be created, so no device can park and forget. */
+    request->pended = TRUE;
     *out = pending;
     return STATUS_SUCCESS;
 }
@@ -96,6 +149,32 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     IO_STATUS_BLOCK iosb;
     iosb.Status = status;
     iosb.Information = information;
+    /* CUI-8: the DATA before the IOSB, because the IOSB is what tells the
+     * caller the bytes are there (docs/19 §1.2 one level down — the same
+     * ordering argument, applied inside the completion). The count is the
+     * FS's, and it can never exceed what the caller asked for: the bounce
+     * itself is bufferLength bytes, so the clamp is a bound on the copy, not
+     * a correction of the status.
+     *
+     * Checked, cross-address-space, and for the IOSB's reason: `owner` is
+     * not the completing context (the peer's write, a cancel, the handle's
+     * cleanup), and a caller that unmapped its own buffer while the read was
+     * parked gets no bytes rather than a halted kernel. */
+    if (request->kernelBuffer != 0 && information != 0)
+    {
+        ULONG bytes =
+            information < request->bufferLength ? (ULONG)information : request->bufferLength;
+        if (request->kernelIosb)
+        {
+            memcpy(request->userBuffer, request->kernelBuffer, bytes); /* a global buffer */
+        }
+        else
+        {
+            MiCopyToUserRangeChecked(&request->owner->addressSpace,
+                                     (uint64_t)(uintptr_t)request->userBuffer,
+                                     request->kernelBuffer, bytes);
+        }
+    }
     if (request->kernelIosb)
     {
         *request->userIosb = iosb; /* a kernel-mode issuer's IOSB is global */
@@ -113,9 +192,12 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
         MiCopyToUserRangeChecked(&request->owner->addressSpace,
                                  (uint64_t)(uintptr_t)request->userIosb, &iosb, sizeof(iosb));
     }
+    /* The event when there was one, the FILE OBJECT otherwise — never both,
+     * through the one authority that states it (io.h
+     * IopSignalRequestCompletion). */
+    IopSignalRequestCompletion(request->event, request->file);
     if (request->event != 0)
     {
-        KeSetEvent(request->event, 0, FALSE);
         ObDereferenceObject(request->event);
     }
     /* The completion PACKET, in the same position the inline tail puts it
@@ -159,6 +241,10 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
      * even the cleanup case still has one outstanding. */
     ObDereferenceObject(request->file);
     ObDereferenceObject(request->owner);
+    if (request->kernelBuffer != 0)
+    {
+        MiFreePool(request->kernelBuffer);
+    }
     MiFreePool(request);
 }
 
