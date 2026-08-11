@@ -275,7 +275,7 @@ sticky — so the measurement was real and its explanation was invented. Moved
 to `sem_file/notify_queue.c` on a fresh handle, where it is oracle-green and
 no longer beyond anything.
 
-### W5 — Mm: placeholder reservations (**DONE**) and `SEC_RESERVE` sections
+### W5 — Mm: placeholder reservations (**DONE**) and `SEC_RESERVE` sections (**DONE**)
 
 The placeholder half is built: `MEM_RESERVE_PLACEHOLDER` /
 `MEM_REPLACE_PLACEHOLDER` on `NtAllocateVirtualMemoryEx` and
@@ -981,26 +981,55 @@ there since M5 — so it is a *stopped* pair and every count it has ever carried
 name and this one is not among them. The manifest's "~285 seconds, the slowest in the
 manifest" does not reproduce either: both legs together are ~10 s on this box, because the
 proskrnl leg stops after ~5 s of guest time. **A pair that stops fast reads like a pair that
-is nearly green, and this one had been read that way for three revisions.**
+is nearly green, and this one had been read that way for three revisions.** (The panic is
+gone as of the `SEC_RESERVE` item below, and the "4" was indeed a lower bound: the pair now
+reports **96** and wedges. The tense above is left as it was measured.)
 
 What is left under this heading:
 
-- **`SEC_RESERVE` sections** (`kernel/mm/section.c`), which `kernel32:virtual`
-  wants. Untouched by the above, and it is now the pair's **stop** rather than
-  one of its items: `NtCreateSection` answers `STATUS_NOT_IMPLEMENTED` for it
-  and the armed panic flag makes that fatal, so everything past
-  `virtual.c:869` is unmeasured. The contract the pair states is bigger than
-  "reserve instead of commit": two views of one `SEC_RESERVE` section share
-  COMMIT state, so a `VirtualAlloc(MEM_COMMIT)` through one view must show
-  through `VirtualQuery` on the other (`virtual.c:928-:945`), and
-  `MEM_DECOMMIT` over such a view must fail `ERROR_INVALID_PARAMETER`. That is
-  a commit ledger on the SECTION, not on the VAD.
-- **`SEC_NOCACHE` on a SECTION**, the other half of the modifier-bit item
-  above. The private-memory rule is built and pinned; a section created with
-  `SEC_NOCACHE` still loses the flag, so its views report a protection without
-  `PAGE_NOCACHE` where the oracle reports one. No baked consumer and no
-  winetest assertion reaches it; `docs/03` carries the deviation. It is the
-  same one-field shape as `MI_VAD.noCache`, on the section instead.
+- **`SEC_RESERVE` sections are DONE** (`kernel/mm/section.c`,
+  `kernel/mm/virtual.c`; pinned by `tests/ntapi/sem_mm/reserve_section.c`,
+  `docs/03` "A `SEC_RESERVE` section's commit ledger"). The contract was the
+  bigger one this item predicted: the commit ledger belongs to the SECTION, so
+  an anonymous reserve section's frame array doubles as it (`0` =
+  uncommitted), `MI_SECTION.viewListHead` names every live view, and a
+  `MEM_COMMIT` through one view fills the ledger and maps the new frames into
+  every view at once — eagerly, because Art. 3's "a committed page is present"
+  is a contract `uaccess.c` reads. `SEC_RESERVE` handed a file handle drops to
+  `SEC_FILE` the way `get_mapping_flags` does, which is the half an
+  implementation routing the flag instead of the (handle, flag) pair gets
+  wrong.
+  **It removed the pair's stop, and what that exposed is the point of the
+  item**: `kernel32:virtual` went from *4 failures then a panic at
+  `virtual.c:869`* to **96 failures and a wedge**, i.e. it was measured past
+  page one for the first time (§4 trap 2 again, third time in this document).
+  The manifest block has the decomposition; two of its three causes are new
+  work and neither is a `SEC_RESERVE` residue.
+- **`NtCreateSection` does not zero the caller's handle on a refusal**, and
+  that is now the pair's LARGEST single cause — 67 of the 96. `kernelbase`'s
+  `CreateFileMappingW` (`dlls/kernelbase/sync.c:1037`) declares `HANDLE ret;`
+  uninitialized, passes `&ret` to `NtCreateSection`, and `return ret`s on
+  every path including the failing ones; proskrnl's `NtCreateSection` returns
+  its refusals before writing `*handle`, so `CreateFileMapping` hands the test
+  a stack-garbage handle for a create it correctly refused. It shows up as the
+  refusal *appearing to succeed* (`virtual.c:1616`) and then
+  `NtQuerySection` answering `STATUS_INVALID_HANDLE` on the result
+  (`:1636`, `:1638`). The read is from both sides' source plus the exact
+  agreement of the index sets; **the confirming pin is one line** — pass a
+  garbage-initialized `HANDLE` to a `NtCreateSection` that must fail and
+  assert it comes back `NULL` — and it is the first thing the next item should
+  write, since the oracle's own ntdll leaves `*handle` alone too and only its
+  stack happens to hold zero.
+- **The SEC_* MODIFIER flags on a section** — `SEC_NOCACHE`, and now also
+  `SEC_WRITECOMBINE` and `SEC_LARGE_PAGES`, which the same measurement added
+  to this item. A section created with any of them keeps none: the flag is
+  neither reported by `NtQuerySection` nor refused where NT refuses it
+  (`SEC_LARGE_PAGES` and `SEC_WRITECOMBINE` are `ERROR_INVALID_PARAMETER`
+  combinations for NT and succeed here). 24 of `kernel32:virtual`'s 96, which
+  is the first winetest evidence for a bullet that used to say "no winetest
+  assertion reaches it". `docs/03` carries the `SEC_NOCACHE` deviation; the
+  private-memory half is built and pinned, and this is the same one-field
+  shape as `MI_VAD.noCache`, on the section instead.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
   `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in
   `NtUnmapViewOfSectionEx` still refuse loudly. Mapping a section *into* a
@@ -1811,11 +1840,15 @@ Pairs and framings that will consume effort and unblock nothing.
    1199 the moment its panic was removed, and nothing about it changed for
    the worse. Every pair here that ends in a PANIC or a kill —
    `ntdll:{info,file}`, `kernel32:{mailslot,fiber}` — carries the same
-   unknown, and their counts are lower bounds. **`kernel32:virtual` is on
-   that list too and was not, for three revisions**: it panics at
-   `virtual.c:869`'s `SEC_RESERVE` mapping, having executed 13 of the
+   unknown, and their counts are lower bounds. **`kernel32:virtual` was on
+   that list too and was not named on it for three revisions**: it panicked
+   at `virtual.c:869`'s `SEC_RESERVE` mapping, having executed 13 of the
    module's tests where the oracle executes 30936, and its block read as a
-   nearly-green pair with four small subjects left.
+   nearly-green pair with four small subjects left. Its panic is now gone
+   (W5) and the count went **4 → 96** — the second pair in this document to
+   pay the trap in full, after `ntdll:virtual`'s 0 → 1199. Two for two:
+   assume a stopped pair's real count is an order of magnitude above what it
+   reports.
 
 3. **A crash is usually a cascade, not the bug — and "zero failures before
    the crash" does not make it one.** `kernel32:volume` and
