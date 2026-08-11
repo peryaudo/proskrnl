@@ -34,6 +34,16 @@ Guard rails, all of them there because the skill says so:
     and CI judges the committed one; a dirty tree left behind by a previous
     iteration means that iteration did not finish, and starting another on
     top of it is how a half-done change gets measured as if it were done.
+  * FINISH WHAT AN ITERATION STARTED. A `query()` ends when the assistant
+    ends its turn, and headless there is nobody to speak next -- so an agent
+    that backgrounds a 20-minute test leg and says "I'll report when it
+    lands" ends the iteration then and there, with the pin and the kernel
+    change written and nothing committed. That reports as `subtype=success`.
+    An iteration is therefore judged by the TREE, not by the result message:
+    a dirty tree afterwards means it stopped mid-workflow, and the loop
+    resumes that same session (`resume=<session id>`) and tells it to
+    finish, up to `--max-nudges` times. It also says so in the system prompt
+    up front, because recovering is worse than not stopping.
   * STALL DETECTION. An iteration that lands nothing leaves `main` where it
     was. Two of those in a row means the loop is spinning, not working.
 
@@ -55,6 +65,7 @@ the `claude` CLI on PATH, plus whatever credentials that CLI uses.
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import errno
 import os
 import re
@@ -91,6 +102,49 @@ LOCKFILE = REPO_ROOT / "build" / "fix_winetest_agent.lock"
 # settings at all and /fix-cui-winetest would not exist.
 SETTING_SOURCES = ["user", "project", "local"]
 SYSTEM_PROMPT = {"type": "preset", "preset": "claude_code"}
+
+# The skill is written for an interactive session, where backgrounding a long
+# leg is free: the harness re-invokes the agent when the task completes. Here
+# it is fatal -- the turn ending is the run ending -- so the one thing the
+# skill's text cannot know is said here instead. This is the fix; the nudge
+# below is only the net under it.
+HEADLESS_NOTE = """\
+
+## You are running headless, under the Claude Agent SDK
+
+Two things differ from an interactive session, and both are silent:
+
+- **Ending your turn ends the run.** Nothing re-invokes you. A backgrounded
+  Bash command, an armed monitor, a "I'll pick this up when the run lands" --
+  each of those ends the iteration where it stands, with whatever you had
+  written uncommitted. Long steps (`tests/run/run.sh`, `make fulltest`, a
+  winetest pair that may take twenty minutes) are run in the FOREGROUND and
+  waited for, however long they take. There is no deadline you are racing.
+- **There is no user to answer a question.** Decide it, act, and state the
+  assumption you made.
+
+You are done when the work is committed and `git status --porcelain` is
+empty -- or when you have refused the item and left the tree exactly as you
+found it. Anything in between is an unfinished run, not a report.
+"""
+
+SYSTEM_PROMPT_FIX = {**SYSTEM_PROMPT, "append": HEADLESS_NOTE}
+
+# Sent by resuming the iteration's own session, so it still has its context.
+CONTINUE_PROMPT = """\
+Your turn ended but the iteration is NOT finished -- {reason}
+
+Nothing is waiting for you: this is a headless run, so anything you
+backgrounded or armed a monitor for never reported back, and the tree is
+exactly as you left it. Pick the work up where it stopped and carry
+`/fix-cui-winetest` to its end -- re-run whatever you were waiting on in the
+FOREGROUND this time, then finish Steps 5-8: the manifest/docs bookkeeping,
+gate-check, `make format`, `make fulltest`, the commits, the PR, the merge.
+
+If the right call is to abandon the item instead, do that -- but leave the
+tree CLEAN (`git checkout` / `git clean` what you wrote) and say why, so the
+loop stops for a reason rather than refusing to start the next iteration.
+"""
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*(WORK_REMAINING|NONE_LEFT)\s*$", re.MULTILINE)
 
@@ -260,21 +314,74 @@ async def check_work_remaining(model, timeout):
     return matches[-1] == "WORK_REMAINING"
 
 
-async def run_fix_iteration(model, effort, item, timeout):
-    """Invoke /fix-cui-winetest once, on a fresh context."""
+def unfinished_reason():
+    """Why the iteration that just ended is not over, or None if it is.
+
+    The TREE is the judge, never the result message: an agent that ends its
+    turn waiting for something that will never speak reports success. A dirty
+    tree is exactly the skill's own Step 8 precondition failing, and it is
+    the one state that must not survive into the next iteration.
+
+    A clean tree with `main` unmoved is NOT unfinished -- that is what a
+    legitimate refusal looks like, and the stall counter handles it. Branch
+    state is deliberately not judged: the merge route leaves the checkout on
+    a scratch branch with the work already on `main`.
+    """
+    dirty = git("status", "--porcelain")
+    if dirty:
+        return "the working tree still has uncommitted changes:\n" + dirty
+    return None
+
+
+async def run_fix_iteration(args, timeout):
+    """Invoke /fix-cui-winetest once, on a fresh context, and see it through.
+
+    `timeout` bounds the whole iteration including any continuation, so a
+    wedged agent cannot buy itself more wall clock by stopping early.
+    """
     options = ClaudeAgentOptions(
         cwd=str(REPO_ROOT),
-        model=model,
+        model=args.model,
         permission_mode="bypassPermissions",
         setting_sources=SETTING_SOURCES,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT_FIX,
         skills="all",
-        **({"effort": effort} if effort else {}),
+        **({"effort": args.effort} if args.effort else {}),
     )
-    prompt = FIX_PROMPT_TEMPLATE.format(args=f" {item}" if item else "")
-    log(f"invoking {prompt!r} on {model}")
-    coro = run_agent(prompt, options)
-    _, result = await (asyncio.wait_for(coro, timeout) if timeout else coro)
+    prompt = FIX_PROMPT_TEMPLATE.format(args=f" {args.item}" if args.item else "")
+    log(f"invoking {prompt!r} on {args.model}")
+
+    deadline = time.monotonic() + timeout if timeout else None
+
+    async def turn(text, opts):
+        coro = run_agent(text, opts)
+        if deadline is None:
+            return await coro
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(coro, left)
+
+    _, result = await turn(prompt, options)
+    log(f"turn finished ({result_summary(result)})")
+
+    for nudge in range(1, args.max_nudges + 1):
+        reason = unfinished_reason()
+        if reason is None:
+            break
+        session = getattr(result, "session_id", None)
+        if not session:
+            log(f"iteration stopped early and left work behind -- {reason}")
+            log("no session id to resume from; leaving it for a human")
+            break
+        log(f"iteration stopped early -- {reason}")
+        log(f"resuming session {session[:8]} to finish it (nudge {nudge}/{args.max_nudges})")
+        _, result = await turn(
+            CONTINUE_PROMPT.format(reason=reason),
+            dataclasses.replace(options, resume=session),
+        )
+        log(f"turn finished ({result_summary(result)})")
+
     log(f"iteration finished ({result_summary(result)})")
     return result
 
@@ -290,8 +397,11 @@ def assert_clean_tree(allow_dirty):
         "working tree is not clean:\n"
         + dirty
         + "\n\nThe skill's Step 8 requires `git status --porcelain` to be empty "
-        "before a merge, so a dirty tree means the previous iteration did not "
-        "finish. Resolve it by hand, or pass --allow-dirty if you know better."
+        "before a merge, so a dirty tree means an iteration did not finish. "
+        "The loop tries to finish one itself (--max-nudges), so reaching this "
+        "means either the tree was dirty before the run started or the nudges "
+        "were used up -- read the last iteration's output before deciding. "
+        "Resolve it by hand, or pass --allow-dirty if you know better."
     )
 
 
@@ -328,7 +438,7 @@ async def main_async(args):
 
         before = git("rev-parse", "HEAD")
         try:
-            await run_fix_iteration(args.model, args.effort, args.item, args.iteration_timeout)
+            await run_fix_iteration(args, args.iteration_timeout)
         except asyncio.TimeoutError:
             log(f"iteration exceeded --iteration-timeout ({args.iteration_timeout}s); stopping")
             return 1
@@ -391,6 +501,13 @@ def parse_args(argv):
         type=int,
         default=2,
         help="stop after N consecutive iterations that land nothing (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--max-nudges",
+        type=int,
+        default=3,
+        help="times to resume an iteration that ended with the tree dirty, i.e. "
+        "stopped mid-workflow (default: %(default)s; 0 disables)",
     )
     parser.add_argument(
         "--item",
