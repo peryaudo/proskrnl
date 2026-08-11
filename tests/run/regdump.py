@@ -4,7 +4,7 @@
 # prefix is green"). Two input formats, ONE output shape, so regdiff.py
 # compares apples to apples:
 #
-#   - the proskrnl hive ("PHV1"): the kernel's own on-disk format, spec'd by
+#   - the proskrnl hive ("PHV2"): the kernel's own on-disk format, spec'd by
 #     the normative comment in kernel/cm/hive.c (the trusted source, G8).
 #     Extracted from the FAT32 boot volume by tests/run/run.sh firstboot.
 #   - a Wine text registry file ("WINE REGISTRY Version 2"): the oracle
@@ -148,9 +148,15 @@ def parse_phv2(blob):
 
         if op == OP_CREATE_KEY:
             if path:                           # the image's own top key is not a key IN it
+                parent = path.rsplit("\\", 1)[0] if "\\" in path else ""
+                if parent and parent.lower() not in tree.keys:
+                    break                      # replay refuses a missing parent; so do we
                 tree.add_key(path)
         elif op == OP_DELETE_KEY:
-            tree.keys.discard(path.lower())
+            dead_l = path.lower()
+            if any(k.startswith(dead_l + "\\") for k in tree.keys):
+                break                          # replay refuses a non-leaf delete; so do we
+            tree.keys.discard(dead_l)
             dead = path.lower()
             for key in [k for k in tree.values if k[0] == dead]:
                 del tree.values[key]
@@ -310,7 +316,7 @@ def parse_winereg(text, prefix):
 def load(filename, subtree=None):
     with open(filename, "rb") as f:
         blob = f.read()
-    if blob[:4] == b"PHV1":
+    if blob[:4] == b"PHV2":
         tree = parse_phv2(blob)
     else:
         tree = parse_winereg(blob.decode("utf-8", errors="replace"), "machine")

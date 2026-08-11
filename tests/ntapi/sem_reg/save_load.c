@@ -16,7 +16,7 @@
  *     before it, so a missing file answers the file error even without the
  *     privilege.
  *   - The saved file's CONTENT is each implementation's own hive format
- *     (wineserver text, proskrnl PHV1 — docs/03 "Cm hive format"): the pins
+ *     (wineserver text, proskrnl PHV2 — docs/03 "Cm hive format"): the pins
  *     are semantic (nonzero size; save then load then query equality),
  *     never byte comparisons.
  *   - The destination is created fresh: loading onto an EXISTING key is

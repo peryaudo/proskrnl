@@ -91,6 +91,12 @@ START_TEST(save_load_delta)
     reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst\\beta"));
     reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst\\gamma"));
     reg_delete_path(dst_path);
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\gamma\\deep"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\alpha"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\Beta"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\gamma"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\newname"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2"));
     delete_file(hive_file);
 
     status = set_privilege(PRSK_SE_BACKUP_PRIVILEGE, TRUE);
@@ -293,6 +299,12 @@ START_TEST(save_load_delta)
     reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_src\\gamma"));
     reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_src\\newname"));
     reg_delete_path(src_path);
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\gamma\\deep"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\alpha"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\Beta"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\gamma"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2\\newname"));
+    reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_phv2_dst2"));
     NtClose(software);
     delete_file(hive_file);
     set_privilege(PRSK_SE_BACKUP_PRIVILEGE, FALSE);

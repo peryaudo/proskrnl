@@ -215,7 +215,7 @@ static PCMP_KEY_NODE CmpFindSubkey(PCMP_KEY_NODE node, const UNICODE_STRING *nam
     return 0;
 }
 
-static PCMP_VALUE CmpFindValue(PCMP_KEY_NODE node, const UNICODE_STRING *name)
+PCMP_VALUE CmpFindValue(PCMP_KEY_NODE node, const UNICODE_STRING *name)
 {
     for (PLIST_ENTRY e = node->valueListHead.Flink; e != &node->valueListHead; e = e->Flink)
     {
@@ -317,6 +317,54 @@ void CmpFreeValues(PCMP_KEY_NODE node)
         MiFreePool(value);
     }
     node->valueCount = 0;
+}
+
+/* Remove one named value, if it is there. TRUE = it was. THE value-removal
+ * site: NtDeleteValueKey and the hive log's DELETE_VALUE replay both come
+ * through here rather than each unlinking and freeing their own way. */
+BOOLEAN CmpRemoveValue(PCMP_KEY_NODE node, const UNICODE_STRING *name)
+{
+    PCMP_VALUE value = CmpFindValue(node, name);
+    if (value == 0)
+    {
+        return FALSE;
+    }
+    RemoveEntryList(&value->listEntry);
+    node->valueCount--;
+    if (value->name.Buffer != 0)
+    {
+        MiFreePool(value->name.Buffer);
+    }
+    if (value->data != 0)
+    {
+        MiFreePool(value->data);
+    }
+    MiFreePool(value);
+    return TRUE;
+}
+
+/* Re-name `node` in place under its existing parent and re-sort it among its
+ * siblings. FALSE = out of pool, with the node untouched. THE rename site:
+ * NtRenameKey and the hive log's RENAME_KEY replay share it, so the sibling
+ * ordering cannot be maintained two different ways. */
+BOOLEAN CmpRenameNode(PCMP_KEY_NODE node, const UNICODE_STRING *newName)
+{
+    PWSTR nameCopy = MiAllocatePool(newName->Length);
+    if (nameCopy == 0)
+    {
+        return FALSE;
+    }
+    memcpy(nameCopy, newName->Buffer, newName->Length);
+    if (node->name.Buffer != 0)
+    {
+        MiFreePool(node->name.Buffer);
+    }
+    node->name.Buffer = nameCopy;
+    node->name.Length = newName->Length;
+    node->name.MaximumLength = newName->Length;
+    RemoveEntryList(&node->siblingEntry);
+    CmpLinkSubkeySorted(node->parent, node);
+    return TRUE;
 }
 
 /* --- path resolution -------------------------------------------------------- */
@@ -1216,7 +1264,7 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     {
         if (!found->isVolatile)
         {
-            CmpSaveHive();
+            CmpLogCreateKey(found);
         }
         /* Creation notifies the PARENT (wineserver create_key:
          * touch_key(get_parent(key), REG_NOTIFY_CHANGE_NAME)). */
@@ -1313,15 +1361,28 @@ NTSTATUS NtDeleteKey(HANDLE keyHandle)
         {
             BOOLEAN wasVolatile = node->isVolatile;
             PCMP_KEY_NODE parent = node->parent;
+            /* The log names the key by path, and in three lines this node is
+             * no longer AT that path -- so capture it while it still is. */
+            UNICODE_STRING logPath;
+            BOOLEAN havePath = !wasVolatile && CmpCaptureLogPath(node, &logPath);
+            if (!wasVolatile && !havePath)
+            {
+                /* Out of pool for the path: the key is gone in memory but the
+                 * log cannot say so. Never silent (G12) -- a quiet skip here
+                 * is a deletion that comes back on the next boot. */
+                DbgPrint("cm: could not capture a delete path - this deletion will NOT "
+                         "survive reboot\n");
+            }
             RemoveEntryList(&node->siblingEntry);
             parent->subkeyCount--;
             parent->lastWriteTime = CmpNow();
             node->parent = 0;
             node->deleted = TRUE;
             CmpFreeValues(node);
-            if (!wasVolatile)
+            if (havePath)
             {
-                CmpSaveHive();
+                CmpLogDeleteKey(&logPath, parent->lastWriteTime);
+                CmpReleaseLogPath(&logPath);
             }
             /* Deletion notifies the PARENT; the deleted key's own watchers
              * stay silent until their handles close (wineserver delete_key:
@@ -1394,26 +1455,31 @@ NTSTATUS NtRenameKey(HANDLE keyHandle, UNICODE_STRING *newName)
     }
 
     {
-        PWSTR nameCopy = MiAllocatePool(name.Length);
-        if (nameCopy == 0)
+        /* Same reason as the delete above: after CmpRenameNode the node
+         * answers to the NEW path, so the record's key is captured first. */
+        UNICODE_STRING logPath;
+        BOOLEAN havePath = !node->isVolatile && CmpCaptureLogPath(node, &logPath);
+        if (!node->isVolatile && !havePath)
         {
+            /* Same as the delete above: loud, because a skipped rename record
+             * means the OLD name comes back on the next boot. */
+            DbgPrint("cm: could not capture a rename path - this rename will NOT "
+                     "survive reboot\n");
+        }
+        if (!CmpRenameNode(node, &name))
+        {
+            if (havePath)
+            {
+                CmpReleaseLogPath(&logPath);
+            }
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto out;
         }
-        memcpy(nameCopy, name.Buffer, name.Length);
-        if (node->name.Buffer != 0)
-        {
-            MiFreePool(node->name.Buffer);
-        }
-        node->name.Buffer = nameCopy;
-        node->name.Length = name.Length;
-        node->name.MaximumLength = name.Length;
-        RemoveEntryList(&node->siblingEntry);
-        CmpLinkSubkeySorted(node->parent, node);
         node->lastWriteTime = CmpNow();
-        if (!node->isVolatile)
+        if (havePath)
         {
-            CmpSaveHive();
+            CmpLogRenameKey(&logPath, &name, node->lastWriteTime);
+            CmpReleaseLogPath(&logPath);
         }
         /* Rename notifies the key ITSELF (wineserver rename_key:
          * touch_key(key, REG_NOTIFY_CHANGE_NAME)). */
@@ -1482,29 +1548,17 @@ NTSTATUS NtDeleteValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName)
      * fail to delete it with the same string (docs/review-2026-07 §9). */
     UNICODE_STRING name = *valueName;
     name.Length &= ~1u;
-    PCMP_VALUE value = CmpFindValue(node, &name);
-    if (value == 0)
+    if (!CmpRemoveValue(node, &name))
     {
         status = STATUS_OBJECT_NAME_NOT_FOUND;
     }
     else
     {
-        RemoveEntryList(&value->listEntry);
-        node->valueCount--;
-        if (value->name.Buffer != 0)
-        {
-            MiFreePool(value->name.Buffer);
-        }
-        if (value->data != 0)
-        {
-            MiFreePool(value->data);
-        }
-        MiFreePool(value);
         node->lastWriteTime = CmpNow();
         status = STATUS_SUCCESS;
         if (!node->isVolatile)
         {
-            CmpSaveHive();
+            CmpLogDeleteValue(node, &name);
         }
         CmpNotifyChange(node, REG_NOTIFY_CHANGE_LAST_SET);
     }
@@ -1578,7 +1632,15 @@ NTSTATUS NtSetValueKey(HANDLE keyHandle, const UNICODE_STRING *valueName, ULONG 
         node->lastWriteTime = CmpNow();
         if (!node->isVolatile)
         {
-            CmpSaveHive();
+            /* One record for the one value that changed -- the whole point of
+             * the log. CmpSetValue just created or replaced it, so the lookup
+             * cannot miss. */
+            PCMP_VALUE written = CmpFindValue(node, &name);
+            /* CmpSetValue just created or replaced it. If that ever stopped
+             * being true, CmpLogRecord would read a null as the TOUCH form
+             * and append a plausible wrong record instead of failing. */
+            ASSERT(written != 0);
+            CmpLogSetValue(node, written);
         }
         CmpNotifyChange(node, REG_NOTIFY_CHANGE_LAST_SET);
     }
@@ -1799,7 +1861,7 @@ static LUID CmpLuid(ULONG low)
 }
 
 /* Capture a user OBJECT_ATTRIBUTES' name into pool so the file can be opened
- * under previousMode == KernelMode (the CmpSaveHive precedent: user pointers
+ * under previousMode == KernelMode (the hive writer precedent: user pointers
  * must not be dereferenced once the mode is flipped). */
 static NTSTATUS CmpCaptureFileName(const OBJECT_ATTRIBUTES *attributes, UNICODE_STRING *nameOut)
 {
@@ -1983,7 +2045,7 @@ NTSTATUS NtLoadKeyEx(const OBJECT_ATTRIBUTES *attributes, OBJECT_ATTRIBUTES *fil
      * rest of the attributes (pinned by sem_reg/save_load). The graft ROOT
      * is volatile: the mount does not survive reboot (NT's own contract for
      * loaded hives; wineserver's periodic branch saves likewise never
-     * persist it) and CmpSaveHive's skip-volatile rule prunes it; the
+     * persist it) and the hive writer's skip-volatile rule prunes it; the
      * CONTENT keys parse as ordinary keys so an explicit NtSaveKey of the
      * loaded root round-trips (docs/03 "CUI-7" notes). */
     {
@@ -2139,7 +2201,11 @@ NTSTATUS NtUnloadKey(OBJECT_ATTRIBUTES *attributes)
     CmpDeleteNodeRecursive(found);
     if (!wasVolatile)
     {
-        CmpSaveHive();
+        /* A whole subtree went away, which the log's leaf-only DELETE_KEY
+         * cannot express -- so this path rewrites from a snapshot instead of
+         * appending (hive.c's format comment says so too). Cold: nothing in
+         * firstboot or the baked services unloads a non-volatile key. */
+        CmpRewriteHive();
     }
     CmpNotifyChange(parent, REG_NOTIFY_CHANGE_NAME);
     return STATUS_SUCCESS;
@@ -2178,7 +2244,7 @@ NTSTATUS NtSetInformationKey(HANDLE keyHandle, const int infoClass, PVOID inform
             body->node->lastWriteTime = stamp;
             if (!body->node->isVolatile)
             {
-                CmpSaveHive();
+                CmpLogTouchKey(body->node);
             }
         }
     }
@@ -2412,7 +2478,9 @@ NTSTATUS NtRestoreKey(HANDLE keyHandle, HANDLE fileHandle, ULONG flags)
                     MiFreePool(scratch);
                     if (!node->isVolatile)
                     {
-                        CmpSaveHive();
+                        /* Restore replaced a whole subtree; same reason as
+                         * NtUnloadKey, so it rewrites rather than appends. */
+                        CmpRewriteHive();
                     }
                     CmpNotifyChange(node, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET);
                 }
@@ -2742,6 +2810,15 @@ void CmInitialize(void)
         }
     }
 
+    /* Compact ONCE, unconditionally, here: after the replay and after every
+     * seed above, and before the hive goes live. Unconditional rather than
+     * threshold-driven so that (a) there is no policy to tune, (b) the file
+     * only ever holds one boot's appends, and (c) the rewrite path runs on
+     * every boot of every leg instead of rotting behind a condition almost
+     * nothing meets. It also means the seeded furniture -- the 139-zone
+     * time-zone table above, the license values -- lands in the snapshot
+     * rather than being appended one record at a time. */
+    CmpCompactHive();
     CmpSetHiveReady();
     DbgPrint("cm: registry up (\\Registry, hive %s)\n",
              CmpRootNode->subkeyCount > 2 ? "loaded" : "empty");
