@@ -46,7 +46,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fatgen import FatImage          # noqa: E402
-from regdump import parse_phv1       # noqa: E402
+from regdump import parse_phv2       # noqa: E402
 
 ESP_OFF = 2097152   # mkimage.sh: p2 at sector 4096
 PART_LBA = 4096
@@ -147,7 +147,16 @@ def check_structure(part_path):
 
 
 def check_hive(part_path):
-    """Valid magic => must parse (kernel/cm/hive.c: magic is written LAST)."""
+    """A PHV2 header => the log must replay, and its VALID PREFIX is the state.
+
+    PHV2 is an append-only record log (kernel/cm/hive.c): each record carries
+    its own length and CRC, and both the kernel's reader and regdump's stop at
+    the first record that fails and keep everything before it. So the
+    invariant a torn image must satisfy is no longer "valid magic => the whole
+    file parses" -- it is "a PHV2 header => replay reaches a well-defined
+    prefix without raising". A torn append truncates the log by one record;
+    that is the guarantee, and a crash here means the framing is wrong rather
+    than that the write was interrupted."""
     with open(part_path, "rb") as f:
         try:
             vol = FatImage(f, 0)
@@ -161,12 +170,12 @@ def check_hive(part_path):
             return None
         data = b"".join(vol.read_cluster(c) for c in vol.chain(first))
         data = data[:size].ljust(size, b"\0")  # short chains read as zeros
-        if struct.unpack_from("<I", data, 0)[0] != 0x31564850:  # "PHV1"
-            return None  # torn (magic still 0/garbage): falls back to empty
+        if struct.unpack_from("<I", data, 0)[0] != 0x32564850:  # "PHV2"
+            return None  # no header yet (compaction mid-flight): falls back to empty
         try:
-            parse_phv1(data)
+            parse_phv2(data)
         except Exception as e:
-            return f"hive has a valid magic but fails to parse: {e}"
+            return f"hive has a PHV2 header but its log does not replay: {e}"
     return None
 
 
