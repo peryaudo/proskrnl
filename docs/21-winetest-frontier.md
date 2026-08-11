@@ -193,8 +193,8 @@ handle would answer `STATUS_PENDING` and post nothing, hanging
 failed assertions and then the same wedge reads `FAIL (timeout)` exactly as
 five-and-a-wedge did.
 
-**W4c — the pended packet (DONE), and the wedge it was predicted to be (it
-is not).** This document said the wedge's "shape is known":
+**W4c — the pended packet (DONE), the wedge it was predicted to be (it is
+not), and the pended READ that the wedge actually was (DONE).** This document said the wedge's "shape is known":
 `IopCompletePendingRequest` never posting a packet, while the rule above says
 a request that PENDED always does. The defect was real and is now fixed —
 `IopCompletePendingRequest` posts through `rw.c`'s `IopPostRequestPacket`,
@@ -220,11 +220,76 @@ overlapped handle, then satisfies it from the SAME thread at `:1583`. The
 oracle returns `0x103` immediately with the IOSB untouched; proskrnl does not
 return at all. Recorded in `docs/03` "CUI-8 async notes".
 
-**That is the next item and it is not small.** The pending-request engine has
-no buffer/length legs yet (`kernel/io/io.h` anticipates exactly this
-consumer), the completion has to copy into the owner's address space, and the
-FILE_OBJECT's signalled/unsignalled state joins the contract
-(`pipe.c:1607-:1617`). `docs/19` is the plan to read first.
+**The pended READ is now BUILT, and it unwedged three pairs at once.** The
+estimate above was right about the parts and wrong about the size: the
+pending-request engine grew the buffer/length legs `kernel/io/io.h`
+anticipated (`docs/19` §5d), the completion copies into the owner's address
+space through `MiCopyToUserRangeChecked` immediately before the IOSB, and the
+FILE_OBJECT's signalled state did join the contract. All of it is one commit
+in `kernel/io/{async,rw,notify,query}.c` + `fs/npfs/pipe.c`, pinned by
+`tests/ntapi/sem_pipe/pended_read.c` (ten cases, oracle-green first).
+
+- **`ntdll:pipe`**: the 5-minute timeout is gone. The pair now runs about
+  five minutes further and PANICS at `NtQueryInformationFile` class 8
+  (`FileAccessInformation`) with **23** failed assertions behind it. `0 → 23`
+  is §4 trap 2's arithmetic — none of the 23 is new, every one is past
+  `pipe.c:1578` where nothing had ever executed.
+- **`kernel32:virtual`**: was `FAIL (timeout)` stopping at `virtual.c:1465`,
+  one function short of `test_write_watch` (whose pipe leg is the same
+  same-thread overlapped read). It now runs to the END of the module and dies
+  at an unhandled `0xc0000005` after `:4735`, with **4** failures — the
+  `:1465` todo floor plus `test_far_regions`' `DuplicateHandle → 6` and its
+  two dependents.
+- **`kernel32:pipe`**: the overlapped echo server's own five
+  (`:1059/:1077/:1083/:1101/:1106`) are gone. `28-34 → 29`, still killed by
+  the test's own 20 s watchdog — and since that watchdog is a DEADLINE, the
+  total moves with where it cuts, so only the per-line breakdown compares.
+  **And the block's diagnosis of the rest was refuted**: it called the 5×N
+  client-open cluster "a consequence" of those five; the five are fixed and
+  the cluster stands.
+
+**Two rules came with it that nothing had convicted before**, both pinned in
+the same file and both worth carrying forward because each reads as a bug:
+
+- **Exactly ONE of the caller's event and the FILE OBJECT is signalled at
+  completion**, and the object is cleared at park *unconditionally*
+  (`server/async.c` `queue_async` + `async_set_result`). So a read that
+  pended WITH an event leaves the handle down through its own completion.
+  The other half of that rule — any INLINE completion on the handle puts it
+  back UP, with the read still parked (`pipe.c:1678`) — was built, measured,
+  and **deliberately removed**: condrv borrows the file object as its own
+  readiness signal, so re-signalling from the completion tail spins
+  conhost's poll loop and cost `kernel32:virtual` most of its run. One
+  assertion, recorded in `docs/03`, and the exit is an event of condrv's own.
+- **`FILE_SKIP_SET_EVENT_ON_HANDLE` freezes that state in both directions**,
+  where `docs/16` had it filed as unbuilt. The order is the content: the
+  oracle clears the handle *before* recording the bit, and its
+  `set_fd_signaled` is a no-op afterwards, so the one clear that ever happens
+  is that one. Written the other way round the clear is a no-op and the
+  handle stays signalled forever.
+
+**The trap this item actually paid, and it is worth more than the code.**
+`STATUS_PENDING` was already a FINAL status for one device — `condrv`'s
+server fetch returns it to mean "nothing deliverable" — so reading it as
+"the device parked a request" in `NtReadFile` leaked conhost's bounce buffer
+on every poll of an idle console. What that looked like was **not** a pipe
+bug: `cui9`'s process ceiling fell 319 → 79 with per-process memory up 3×,
+because the pool exhaustion behind the leak stopped the COW image masters
+from being built. Three behaviour-level bisections all came back "still
+fails" before a file-level one found it. The fix is NT's own:
+`IoMarkIrpPending` as a FLAG on the request (`IO_CONTROL_CONTEXT.pended`),
+set by the ENGINE at the one place a park is created, so no device can park
+and forget — and no status can be read for two things. **The lesson
+generalises past this item: a status that a second producer already uses for
+something else is not a channel, and the failure will surface somewhere with
+no visible connection to the change.**
+
+**What is deliberately NOT built** (Art. 5 — no consumer convicts it): an
+asynchronous WRITE over quota still parks its caller, and a BLOCKING request
+does not clear the file object. The second one is measured and is
+`ntdll:pipe`'s largest remaining cluster (`:1740`/`:1742`/`:1753`, 10) plus
+the two-assertion todo floor at `:1829` that it would *turn into passes* —
+so it is a 12-assertion item in one step, and the obvious next one here.
 
 **The methodological lesson, third instance of §4 trap 4 in this item.** A
 predicted cause written from the code was checked, built, and turned out to
@@ -1101,11 +1166,14 @@ What is left under this heading:
     rule 2 was answering wrongly, so the pair could not measure the second
     half of the item until the first half landed.
 
-  What did NOT move: the pair still ends `FAIL (timeout)` in the same place
-  (the W4c wedge in `test_write_watch`), and 1 is a lower bound like every
-  count this pair has ever carried. With this item done there is **no known
-  kernel work left inside its measured prefix** — the pair's next lesson is
-  whatever lies past the wedge.
+  What did NOT move *at the time*: the pair still ended `FAIL (timeout)` in
+  the same place (the W4c wedge in `test_write_watch`), and 1 was a lower
+  bound like every count this pair has ever carried. **W4c has since unlocked
+  it**: the pair now runs to the end of the module and dies at an unhandled
+  `0xc0000005`, with 4 failures — the `:1465` todo floor plus
+  `test_far_regions`' `DuplicateHandle -> 6` and its two dependents. Which is
+  what "no known kernel work left inside its measured prefix" was worth: the
+  prefix grew.
 - **Placeholder MAPPING** — `MEM_REPLACE_PLACEHOLDER` in
   `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in
   `NtUnmapViewOfSectionEx` still refuse loudly. Mapping a section *into* a
@@ -1529,9 +1597,16 @@ Four things worth carrying:
   whatever prefix fitted in 20 seconds, which is why they drifted without a
   matching kernel change. §4 trap 2's list did not name it; it does now.
 
-What is left is **one subject**: the overlapped server (`serverThreadMain3`),
-i.e. the W4c pended-read item, plus the 20 consequences of the client it
-never lets connect and 2 `PeekNamedPipe` singletons.
+What was left was called **one subject**: the overlapped server
+(`serverThreadMain3`), i.e. the W4c pended-read item, "plus the 20
+consequences of the client it never lets connect". **W4c landed and that
+grouping was wrong.** The overlapped server's own five are gone; the
+client-open cluster is unchanged at 24. It is a second bug, not a
+consequence — §4 trap 4 in its other direction, where the loudest cluster
+gets attributed to the cause that happens to be nearby. Which server's
+`exerciseServer` it belongs to is NOT established (only `serverThreadMain2`
+traces unconditionally), and the manifest block says so rather than guessing
+again.
 
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
@@ -2119,9 +2194,9 @@ Pairs and framings that will consume effort and unblock nothing.
 
 - `kernel/io/` — `ioctl.c` + `rw.c` + `async.c` (W4a, W4c), `query.c`,
   `mountmgr.c` (W7). (`notify.c` was W4b and is done.)
-- `fs/npfs/pipe.c` — `NpfsRead`/`NpfsWrite`, the next item's subject (the
-  pended data path). **Grows the `IOP_PENDING_REQUEST` engine; do not add a
-  second one.**
+- `fs/npfs/pipe.c` — `NpfsRead` pends (W4c, done); `NpfsWrite` still blocks,
+  and is the same shape if a consumer ever convicts it. **It grew the
+  `IOP_PENDING_REQUEST` engine; do not add a second one.**
 - `kernel/mm/` — `virtual.c` and `section.c` (W5). **Danger zone.**
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — **danger zone**, but no longer
   a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
