@@ -854,57 +854,54 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# RE-MEASURED after SEC_RESERVE landed: 96 failures, and the pair now WEDGES.
-#     The count went 4 -> 96 because the pair was measured past page one for
-#     the FIRST TIME, not because anything regressed. It used to PANIC at
-#     virtual.c:869 — NtCreateSection with SEC_RESERVE answered
-#     STATUS_NOT_IMPLEMENTED and the armed panic flag made that fatal — so
-#     every count this block has ever carried (4148, 40, 12, 4) was a lower
-#     bound over the same short prefix, 13 of the module's tests where the
-#     oracle executes 30936 (docs/21 §4 trap 2). SEC_RESERVE is now built
-#     (kernel/mm/section.c + kernel/mm/virtual.c, pinned by
-#     tests/ntapi/sem_mm/reserve_section.c, docs/03 "A SEC_RESERVE section's
-#     commit ledger"); the panic is gone and what stood behind it is below.
+# RE-MEASURED after the out-handle clear landed: 96 -> 25, and the pair
+#     still WEDGES. 71 assertions went; the wedge and the todo floor are
+#     unchanged, so the verdict line reads FAIL (timeout) exactly as it did
+#     before and the movement is entirely inside the count.
 #
-#     WHERE IT STOPS, measured at the default 300 s and again at 1200 s with
-#     the same result: the last thing it prints is test_CreateFileMapping's
-#     SEC_* matrix (index 43), then the deliberate access violations of
-#     test_IsBadReadPtr / test_IsBadWritePtr, and then NOTHING for the
-#     remaining ~19 minutes. The kernel's own trace ring at the kill holds
-#     only idle swaps, so the process is PARKED — not slow, not spinning.
-#     The next test in START_TEST order is test_write_watch, whose pipe leg
-#     issues an overlapped ReadFile on an empty named pipe and satisfies it
-#     from the SAME thread afterwards (test body :191 and :202). That is the
-#     CUI-8 wedge already recorded for ntdll:pipe — NpfsRead parks instead of
-#     answering STATUS_PENDING (docs/03 "CUI-8 async notes", docs/21 W4c) —
-#     so the wedge is not new and not this pair's item. Which also means
-#     EVERYTHING PAST test_write_watch is still unmeasured: 96 is itself a
-#     lower bound, and the next re-measure after W4c will move it again.
+#     WHAT WENT, AND IT WAS ONE CAUSE FOR ALL 71. A handle-producing Nt*
+#     call clears the caller's out-handle as its FIRST act, above every
+#     validation, so a refusal leaves NULL in a slot the caller never
+#     initialized. kernelbase's CreateFileMappingW (dlls/kernelbase/sync.c)
+#     declares `HANDLE ret;` uninitialized and `return ret`s on every path
+#     including the failing ones, so a create proskrnl REFUSED CORRECTLY
+#     handed the test stack garbage. Now in kernel/ob/handle.c
+#     ObpClearOutHandle — one function, called by every entry point that owes
+#     it — pinned by tests/ntapi/sem_ob/out_handle.c, docs/03 "What a
+#     REFUSED handle-producing call leaves in the caller's slot".
 #
-#     THE 96, DECOMPOSED. Three causes and a floor; the index sets partition
-#     exactly, which is how the first two were told apart:
+#     TWO THINGS THIS BLOCK GOT WRONG, both worth more than the 71:
 #
-#       - 67 (:1616 x23, :1636 x23, :1638 x21) — ONE BUG, and it is not in
-#         mm: NtCreateSection DOES NOT ZERO THE CALLER'S HANDLE WHEN IT
-#         REFUSES. kernelbase's CreateFileMappingW (dlls/kernelbase/sync.c)
-#         declares `HANDLE ret;` uninitialized, passes &ret to
-#         NtCreateSection and `return ret`s on every path including the
-#         failing ones; kernel/mm/section.c returns each refusal before
-#         writing *handle. So a create proskrnl REFUSES CORRECTLY hands the
-#         test stack garbage, which reads as ":1616 CreateFileMapping
-#         succeeded" and then ":1636 NtQuerySection failed err c0000008"
-#         (STATUS_INVALID_HANDLE) on the garbage, and ":1638 wrong attr" on
-#         the untouched info struct. The evidence is the index sets: :1636's
-#         23 are exactly :1616's 28 minus the five the next item owns, and
-#         every one of those 23 is a sec_flag_tests row proskrnl is right to
-#         refuse (7 = SEC_RESERVE|SEC_COMMIT is one, and
-#         sem_mm/reserve_section.c pins that refusal green on BOTH runners).
-#         THE CONFIRMING PIN IS ONE LINE and should be written first: pass a
-#         garbage-initialized HANDLE to a NtCreateSection that must fail and
-#         assert it comes back NULL. Note the oracle's own ntdll leaves
-#         *handle alone too and passes only because its stack holds zero, so
-#         this is a beyond_oracle pin against NT's documented contract, not
-#         a transcription.
+#       - IT IS NOT A beyond_oracle PIN. This block said "the oracle's own
+#         ntdll leaves *handle alone too and passes only because its stack
+#         happens to hold zero". It does not: dlls/ntdll/unix/sync.c
+#         NtCreateSection opens with `*handle = 0;`, and so does every other
+#         create/open on that surface. The pin is an ordinary transcription
+#         and is green on both legs.
+#       - THE "4 THAT HAVE NOT MOVED" WERE THE SAME BUG, and this block sent
+#         the next person to bisect a sequence that had nothing wrong with
+#         it. :758/:764/:770 are `ok( !mapping, "CreateFileMapping ...
+#         succeeded" )` — assertions about the returned HANDLE. The error
+#         checks are the NEXT lines (:759/:765/:771) and were passing all
+#         along, which is exactly what the block's own probe measured when it
+#         "eliminated the WIN32 path". Reading a line number as the error
+#         check instead of the handle check turned one cause into two
+#         subjects and a wrong instruction (docs/21 §4 trap 4). :4074 is the
+#         same shape one protection along.
+#
+#     WHERE IT STOPS is unchanged: the last thing it prints is
+#     test_CreateFileMapping's SEC_* matrix (index 41 now, 43 before — the
+#     later rows no longer produce output because they no longer fail), then
+#     nothing for the remaining ~19 minutes. The next test in START_TEST
+#     order is test_write_watch, whose pipe leg issues an overlapped ReadFile
+#     on an empty named pipe and satisfies it from the SAME thread (test body
+#     :191 and :202) — the CUI-8 wedge already recorded for ntdll:pipe
+#     (docs/03 "CUI-8 async notes", docs/21 W4c). Not new, not this pair's
+#     item, and it still means EVERYTHING PAST test_write_watch is unmeasured:
+#     25 is a lower bound like every count this block has ever carried.
+#
+#     THE 25, DECOMPOSED. One subject and a floor:
+#
 #       - 24 — the SEC_* MODIFIER FLAGS ON A SECTION, i.e. SEC_NOCACHE,
 #         SEC_WRITECOMBINE and SEC_LARGE_PAGES, none of which a proskrnl
 #         section keeps. Ten of them (:1616 x5, :1617 x5, indices
@@ -914,27 +911,8 @@ kernel32_test.exe:timer
 #         fourteen (:1638 x13 plus :1014) are NtQuerySection reporting the
 #         section without the modifier: SEC_RESERVE (04000000) where
 #         SEC_RESERVE|SEC_NOCACHE was asked for, SEC_COMMIT (08000000) where
-#         SEC_COMMIT|SEC_NOCACHE was, and so on. docs/21 W5 carries this as
-#         its remaining half; this is the first winetest evidence for it —
-#         the bullet used to say no winetest assertion reached it.
-#       - 4 — the subject this block has carried for two revisions, and it
-#         has not moved: :758/:764/:770 (CreateFileMapping on a NO-ACCESS
-#         file handle, CreateFileA with dwDesiredAccess 0, must fail and does
-#         not) plus :4074 (the same subject one protection along: a READ-ONLY
-#         handle with PAGE_READWRITE). TWO CAUSES ARE ELIMINATED, which is
-#         where the next person starts rather than re-deriving them: the RULE
-#         is right (tests/ntapi/sem_mm/section_file_access.c pins the whole
-#         protection -> required-file-access matrix from dlls/ntdll/unix/
-#         sync.c NtCreateSection and is GREEN ON BOTH RUNNERS, including the
-#         exact SYNCHRONIZE|FILE_READ_ATTRIBUTES mask kernelbase builds for a
-#         0-access CreateFileA), and the WIN32 path is right (a probe driving
-#         the same CreateFileA/CreateFileMappingA calls on proskrnl answered
-#         ERROR_ACCESS_DENIED for the no-access handle under both
-#         PAGE_READWRITE and PAGE_READONLY — exactly what :758 wants). So the
-#         divergence needs the winetest's PRECEDING SEQUENCE, not the call in
-#         isolation: by then the same file has been opened writable, mapped
-#         and closed several times. Bisect that sequence. NtCreateSectionEx
-#         is not a second path — it delegates (kernel/mm/section.c).
+#         SEC_COMMIT|SEC_NOCACHE was, and so on. This group is now the WHOLE
+#         of the pair's real work; docs/21 W5 carries it.
 #       - 1, AND IT IS A FLOOR. virtual.c:1465 is a todo_wine that proskrnl
 #         PASSES: NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must
 #         answer STATUS_SUCCESS, proskrnl does, the oracle does not, and
@@ -947,14 +925,11 @@ kernel32_test.exe:timer
 #
 #     TWO INDEPENDENT REASONS THIS PAIR STAYS PARKED, then: the wedge (which
 #     belongs to W4c) and the todo floor (which belongs to nobody). Progress
-#     here is measured in the 91 that are real work, not in the verdict line.
+#     here is measured in the 24 that are real work, not in the verdict line.
 #
-#     The "~285 seconds, the slowest in the manifest" this block used to
-#     carry stopped being true when the panic went in, and is now wrong in
-#     the other direction: with the panic gone the leg runs to whatever
-#     per-pair timeout it is given. The 1200 s used for this measurement is
-#     NOT in the line below — a parked pair should not cost the sweep twenty
-#     minutes to learn what 300 s already says.
+#     Both measurements above were taken with a 1200 s per-pair timeout,
+#     which is NOT in the line below — a parked pair should not cost the
+#     sweep twenty minutes to learn what 300 s already says.
 # TODO: Implement
 # kernel32_test.exe:virtual
 # RE-TRIAGED. FOUR failures, not the three this block used to claim, and

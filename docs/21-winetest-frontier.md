@@ -1005,28 +1005,65 @@ What is left under this heading:
   page one for the first time (§4 trap 2 again, third time in this document).
   The manifest block has the decomposition; two of its three causes are new
   work and neither is a `SEC_RESERVE` residue.
-- **`NtCreateSection` does not zero the caller's handle on a refusal**, and
-  that is now the pair's LARGEST single cause — 67 of the 96. `kernelbase`'s
-  `CreateFileMappingW` (`dlls/kernelbase/sync.c:1037`) declares `HANDLE ret;`
-  uninitialized, passes `&ret` to `NtCreateSection`, and `return ret`s on
-  every path including the failing ones; proskrnl's `NtCreateSection` returns
-  its refusals before writing `*handle`, so `CreateFileMapping` hands the test
-  a stack-garbage handle for a create it correctly refused. It shows up as the
-  refusal *appearing to succeed* (`virtual.c:1616`) and then
-  `NtQuerySection` answering `STATUS_INVALID_HANDLE` on the result
-  (`:1636`, `:1638`). The read is from both sides' source plus the exact
-  agreement of the index sets; **the confirming pin is one line** — pass a
-  garbage-initialized `HANDLE` to a `NtCreateSection` that must fail and
-  assert it comes back `NULL` — and it is the first thing the next item should
-  write, since the oracle's own ntdll leaves `*handle` alone too and only its
-  stack happens to hold zero.
+- **The out-handle clear is DONE** (`kernel32:virtual` 96 → **25**), and it was
+  worth 71 assertions rather than the 67 this document scheduled. A
+  handle-producing `Nt*` call writes 0 into the caller's slot as its FIRST act,
+  above every validation; `kernelbase`'s `CreateFileMappingW`
+  (`dlls/kernelbase/sync.c:1037`) declares `HANDLE ret;` uninitialized and
+  `return ret`s on every path including the failing ones, so a create proskrnl
+  refused CORRECTLY handed the test stack garbage — and the test then closed
+  it, which closes whatever unrelated object that value names. One authority
+  (`ObpClearOutHandle`, `kernel/ob/handle.c`, beside the one site that already
+  writes a handle out), pinned by `tests/ntapi/sem_ob/out_handle.c`; `docs/03`
+  "What a REFUSED handle-producing call leaves in the caller's slot" has the
+  table.
+
+  Four things it settles, and two of them are corrections to what this
+  document and the manifest asserted:
+
+  - **It is NOT a `beyond_oracle` pin, and the instruction to write one was
+    wrong.** Both documents said "the oracle's own ntdll leaves `*handle` alone
+    too and only its stack happens to hold zero". It does not: every
+    create/open on that surface opens with `*handle = 0;`
+    (`dlls/ntdll/unix/{sync,file,registry,process,thread,security,server}.c`).
+    The rule was readable in the oracle the whole time; the claim that it was
+    not is what made the item look like a judgement call. **A sentence saying
+    the oracle cannot answer something is a claim about the oracle, and it is
+    one `grep` away from being checked.**
+  - **The "4 that have not moved for two revisions" were the same bug**, and
+    the manifest sent the next person to bisect a sequence with nothing wrong
+    with it. `virtual.c:758`/`:764`/`:770` are
+    `ok( !mapping, "CreateFileMapping … succeeded" )` — assertions about the
+    returned HANDLE. The error checks are the NEXT lines (`:759`/`:765`/`:771`)
+    and were passing all along, which is exactly what the block's own probe had
+    measured when it "eliminated the WIN32 path". §4 trap 4 in its purest
+    form: the failure TEXT said precisely what happened and was read as a
+    statement about the refusal instead of about the slot. A triage block that
+    quotes a line number should quote the line.
+  - **The rule is per-entry-point, and that is the load-bearing half.** Three
+    creates deliberately do NOT clear — `NtCreateThreadEx`,
+    `NtCreateUserProcess` and `NtFilterToken` — so it cannot be hoisted into
+    the system-service dispatcher or into `ObpCreateObjectWithHandle`. The pin's
+    last two cases are exactly those entry points, because an implementation
+    that hoisted it passes every positive case and diverges only there.
+    proskrnl had in fact drifted the *other* way: `NtFilterToken` cleared where
+    the oracle does not, via a `Se`-local copy of the rule.
+  - **The rule already existed in the tree three times, in three spellings,
+    and that is why the item was invisible.** `kernel/se/token.c`'s
+    `SepPreZeroHandle` (with the oracle citation), `kernel/cm/registry.c`'s two
+    `*keyHandle = 0; /* as wine ntdll */` lines, and nothing anywhere else.
+    Art. 11's tell is not "two functions that do the same thing" but **a rule
+    written down wherever somebody happened to hit it** — each copy correct,
+    none of them a statement that the *surface* owes this.
 - **The SEC_* MODIFIER flags on a section** — `SEC_NOCACHE`, and now also
   `SEC_WRITECOMBINE` and `SEC_LARGE_PAGES`, which the same measurement added
   to this item. A section created with any of them keeps none: the flag is
   neither reported by `NtQuerySection` nor refused where NT refuses it
   (`SEC_LARGE_PAGES` and `SEC_WRITECOMBINE` are `ERROR_INVALID_PARAMETER`
-  combinations for NT and succeed here). 24 of `kernel32:virtual`'s 96, which
-  is the first winetest evidence for a bullet that used to say "no winetest
+  combinations for NT and succeed here). 24 of `kernel32:virtual`'s remaining
+  25 — i.e. with the out-handle clear landed this is now the WHOLE of that
+  pair's real work, the 25th being the `:1465` todo floor. It is also the
+  first winetest evidence for a bullet that used to say "no winetest
   assertion reaches it". `docs/03` carries the `SEC_NOCACHE` deviation; the
   private-memory half is built and pinned, and this is the same one-field
   shape as `MI_VAD.noCache`, on the section instead.
