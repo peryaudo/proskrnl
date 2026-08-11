@@ -39,6 +39,19 @@ NTSYSAPI NTSTATUS NTAPI NtEnumerateValueKey(HANDLE, ULONG, ULONG, void *, ULONG,
 NTSYSAPI NTSTATUS NTAPI NtQueryKey(HANDLE, ULONG, void *, ULONG, ULONG *);
 NTSYSAPI NTSTATUS NTAPI NtFlushKey(HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtCreateEvent(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG, BOOLEAN);
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE, DWORD, HANDLE *);
+NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE, BOOLEAN, PTOKEN_PRIVILEGES, DWORD,
+                                                PTOKEN_PRIVILEGES, PDWORD);
+
+#ifndef NtCurrentProcess
+#define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
+#endif
+
+/* Privilege LUID values as wine server/token.c spells them (= winnt.h
+ * SE_*_PRIVILEGE ordinals). NtSaveKey needs backup, the load/unload family
+ * restore; both are disabled by default in the token. */
+#define PRSK_SE_BACKUP_PRIVILEGE  17
+#define PRSK_SE_RESTORE_PRIVILEGE 18
 
 /* Info-class values as wine/include/winternl.h's KEY_INFORMATION_CLASS /
  * KEY_VALUE_INFORMATION_CLASS enums order them. */
@@ -236,6 +249,56 @@ static inline void reg_delete_path(const void *path)
         NtDeleteKey(key);
         NtClose(key);
     }
+}
+
+/* Enable or disable one privilege in the process token. The hive-file
+ * syscalls (NtSaveKey, the NtLoadKey family, NtUnloadKey) refuse with
+ * STATUS_PRIVILEGE_NOT_HELD until their privilege is enabled. */
+static inline NTSTATUS set_privilege(DWORD luidLow, BOOLEAN enable)
+{
+    HANDLE token;
+    TOKEN_PRIVILEGES tp;
+    NTSTATUS status =
+        NtOpenProcessToken(NtCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
+    if (!NT_SUCCESS(status))
+        return status;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid.LowPart = luidLow;
+    tp.Privileges[0].Luid.HighPart = 0;
+    tp.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
+    status = NtAdjustPrivilegesToken(token, FALSE, &tp, 0, NULL, NULL);
+    NtClose(token);
+    return status;
+}
+
+/* Open (or create) a hive image file by NT path, synchronously. */
+static inline NTSTATUS open_hive_file(const void *path, ACCESS_MASK access, ULONG disposition,
+                                      HANDLE *out)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    init_ustr(&name, path);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    return NtCreateFile(out, access | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                        disposition, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
+                        0);
+}
+
+/* Delete a file by NT path, if it is there (delete-on-close). */
+static inline void delete_file(const void *path)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle;
+    init_ustr(&name, path);
+    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
+    if (NT_SUCCESS(NtCreateFile(
+            &handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
+            FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
+            0)))
+        NtClose(handle);
 }
 
 #endif /* NTAPI_SEM_REG_UTIL_H */

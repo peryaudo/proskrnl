@@ -46,10 +46,9 @@ typedef NTSTATUS NTAPI qmvk_wine_fn(HANDLE, PVOID, ULONG, PVOID, ULONG, PULONG);
 #define NtQueryMultipleValueKeyWine ((qmvk_wine_fn *)(void *)NtQueryMultipleValueKey)
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
                                     const void *, ULONG, PLARGE_INTEGER, PULONG);
-NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE, DWORD, HANDLE *);
-NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE, BOOLEAN, PTOKEN_PRIVILEGES, DWORD,
-                                                PTOKEN_PRIVILEGES, PDWORD);
 NTSYSAPI NTSTATUS NTAPI NtSaveKey(HANDLE, HANDLE);
+/* set_privilege(), open_hive_file(), delete_file() and the PRSK_SE_* LUIDs
+ * live in util.h — three sem_reg suites use them. */
 
 #ifndef NtCurrentProcess
 #define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
@@ -69,55 +68,10 @@ typedef struct
     ULONG type;
 } multi_value_entry;
 
-#define PRSK_SE_BACKUP_PRIVILEGE  17
-#define PRSK_SE_RESTORE_PRIVILEGE 18
-
 static const void *base_path = W("\\Registry\\Machine\\Software\\prsk_m8_restore");
 static const void *hive_file = W("\\??\\C:\\prsk_m8r.hiv");
 
-static NTSTATUS set_privilege(DWORD luidLow, BOOLEAN enable)
-{
-    HANDLE token;
-    TOKEN_PRIVILEGES tp;
-    NTSTATUS status =
-        NtOpenProcessToken(NtCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
-    if (!NT_SUCCESS(status))
-        return status;
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid.LowPart = luidLow;
-    tp.Privileges[0].Luid.HighPart = 0;
-    tp.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
-    status = NtAdjustPrivilegesToken(token, FALSE, &tp, 0, NULL, NULL);
-    NtClose(token);
-    return status;
-}
 
-static NTSTATUS open_file(const void *path, ACCESS_MASK access, ULONG disposition, HANDLE *out)
-{
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    init_ustr(&name, path);
-    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-    return NtCreateFile(out, access | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0,
-                        disposition, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
-                        0);
-}
-
-static void delete_file(const void *path)
-{
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    init_ustr(&name, path);
-    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-    if (NT_SUCCESS(NtCreateFile(
-            &handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
-            FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
-            0)))
-        NtClose(handle);
-}
 
 static ULONG query_dword(HANDLE key, const void *valueName)
 {
@@ -265,7 +219,7 @@ START_TEST(restore_setinfo)
     beyond_oracle
     {
         /* Save the current state, mutate, then restore rolls it back. */
-        status = open_file(hive_file, GENERIC_WRITE, FILE_OVERWRITE_IF, &file);
+        status = open_hive_file(hive_file, GENERIC_WRITE, FILE_OVERWRITE_IF, &file);
         ok(status == STATUS_SUCCESS, "create hive file -> %08lx", (unsigned long)status);
         {
             NTSTATUS restoreStatus;
@@ -295,7 +249,7 @@ START_TEST(restore_setinfo)
         reg_delete_path(W("\\Registry\\Machine\\Software\\prsk_m8_restore\\keep"));
 
         /* Unsupported flags refuse. */
-        status = open_file(hive_file, GENERIC_READ, FILE_OPEN, &file);
+        status = open_hive_file(hive_file, GENERIC_READ, FILE_OPEN, &file);
         ok(status == STATUS_SUCCESS, "open hive file -> %08lx", (unsigned long)status);
         status = NtRestoreKey(base, file, 0x1234);
         ok(status == STATUS_INVALID_PARAMETER, "bad flags -> %08lx", (unsigned long)status);
