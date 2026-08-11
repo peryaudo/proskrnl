@@ -255,6 +255,13 @@ typedef struct IO_VFS_OPS
     NTSTATUS(*Write)
     (struct FILE_OBJECT *file, const void *buffer, ULONG length, ULONG_PTR *infoOut);
 
+    /* NtFlushBuffersFile on a stream device. There is no cache to push, so
+     * this is not a writeback: for a pipe it is the NT promise that the
+     * call does not return until the PEER has consumed everything this end
+     * wrote, and it may block for exactly that long. NULL = the device
+     * really has nothing to flush (the answer is then STATUS_SUCCESS). */
+    NTSTATUS (*Flush)(struct FILE_OBJECT *file);
+
     /* One NtDeviceIoControlFile/NtFsControlFile verb (both funnel here: the
      * NT split by device type is not observable through this boundary).
      * *infoOut = bytes placed in `output`. A verb on an asynchronous handle

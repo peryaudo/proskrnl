@@ -43,8 +43,13 @@ typedef struct NPFS_QUEUE
     LIST_ENTRY bufferList; /* NPFS_BUFFER, oldest first */
     ULONG bytesAvailable;  /* unread payload bytes across the list */
     ULONG quota;           /* creation quota this direction */
-    KEVENT dataEvent;      /* notification: data arrived / state changed */
-    KEVENT spaceEvent;     /* notification: space freed / state changed */
+    /* Bumped by every READ that leaves this queue empty. That instant — not
+     * the queue merely BEING empty — is when a parked NpfsFlush completes,
+     * and the two differ because a disconnect empties the queue too
+     * (NpfsFlushQueue) while owing the flush a different status. */
+    ULONG drainSeq;
+    KEVENT dataEvent;  /* notification: data arrived / state changed */
+    KEVENT spaceEvent; /* notification: space freed / state changed */
 } NPFS_QUEUE, *PNPFS_QUEUE;
 
 typedef struct NPFS_PIPE
@@ -175,6 +180,7 @@ static void NpfsInitializeQueue(PNPFS_QUEUE queue, ULONG quota)
     InitializeListHead(&queue->bufferList);
     queue->bytesAvailable = 0;
     queue->quota = quota;
+    queue->drainSeq = 0;
     KeInitializeEvent(&queue->dataEvent, NotificationEvent, FALSE);
     KeInitializeEvent(&queue->spaceEvent, NotificationEvent, FALSE);
 }
@@ -294,12 +300,99 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
     }
     ASSERT(queue->bytesAvailable >= copied);
     queue->bytesAvailable -= copied;
-    if (copied != 0)
+    if (IsListEmpty(&queue->bufferList))
     {
-        KeSetEvent(&queue->spaceEvent, 0, FALSE); /* a parked writer re-checks */
+        queue->drainSeq++; /* the instant a parked NpfsFlush is satisfied */
     }
+    /* A parked writer re-checks its quota, and a parked NpfsFlush re-checks
+     * the sequence above. The wake cannot be keyed on `copied` for the
+     * flush's sake: a zero-byte message consumes no bytes and still leaves
+     * the queue drained. The loop above only breaks with a buffer present,
+     * so every read that reaches here made progress. */
+    KeSetEvent(&queue->spaceEvent, 0, FALSE);
     *infoOut = copied;
     return status;
+}
+
+/* NtFlushBuffersFile on a pipe end (kernel/io/rw.c IopFlushBuffers): park
+ * until the PEER has consumed everything this end wrote. Transcribed from
+ * wine/server/named_pipe.c pipe_end_flush, whose whole body is
+ *
+ *     if (!pipe_end->pipe) { set_error( STATUS_PIPE_DISCONNECTED ); return; }
+ *     if (pipe_end->connection && !list_empty( &pipe_end->connection->message_queue ))
+ *         { fd_queue_async( ..., ASYNC_TYPE_WAIT ); set_error( STATUS_PENDING ); }
+ *
+ * — three facts, none of which follows from the verb's name:
+ *
+ *   - the queue it waits on is the PEER's (this end's OUTGOING), so a flush
+ *     never waits for data somebody sent US;
+ *   - `!pipe_end->pipe` is exactly the end a server DISCONNECTED out from
+ *     under, i.e. end->orphaned. The server's OWN end keeps its pipe, so the
+ *     same disconnect leaves it answering STATUS_SUCCESS while its client
+ *     answers STATUS_PIPE_DISCONNECTED;
+ *   - with no `connection` there is nothing to drain the queue, so a
+ *     listening instance and a closed peer are both immediate successes,
+ *     buffered bytes or not. Waiting on the queue alone hangs there.
+ *
+ * The PARKED case is a fourth answer, and it is the one that stops a caller
+ * waiting forever: pipe_end_disconnect wakes the fd's wait queue with its own
+ * status (fd_async_wake_up(pipe_end->fd, ASYNC_TYPE_WAIT, status)), so a
+ * flush that was already waiting reports STATUS_PIPE_DISCONNECTED when the
+ * server disconnects and STATUS_PIPE_BROKEN when the peer closes — where a
+ * flush issued after either event reports success. Pinned both ways by
+ * tests/ntapi/sem_pipe/flush_buffers.c.
+ *
+ * Which makes the ORDER of the re-check load-bearing, and it is why the drain
+ * is a SEQUENCE rather than a look at the queue. The oracle decides a parked
+ * flush's status at the transition — reselect_read_queue terminates the async
+ * the moment the read empties the queue — so a later disconnect cannot change
+ * an answer that has already been given. A re-check that merely asked "is the
+ * queue empty now" cannot tell a drain from a disconnect's own
+ * NpfsFlushQueue, and cannot see the drain at all once the peer has closed:
+ * kernel32:pipe's echo servers read and CLOSE before the flusher is next
+ * scheduled, so all 24 of their flushes answered STATUS_PIPE_BROKEN. */
+static NTSTATUS NpfsFlush(PFILE_OBJECT file)
+{
+    PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return STATUS_SUCCESS; /* a device-root open carries no stream */
+    }
+    PNPFS_INSTANCE instance = end->instance;
+    PNPFS_QUEUE queue = NpfsOutgoingQueue(end);
+    ULONG drainSeq = queue->drainSeq;
+    BOOLEAN parked = FALSE;
+
+    for (;;)
+    {
+        if (parked && queue->drainSeq != drainSeq)
+        {
+            return STATUS_SUCCESS; /* a read emptied it: already completed */
+        }
+        if (end->orphaned)
+        {
+            return STATUS_PIPE_DISCONNECTED;
+        }
+        if (instance->state != FILE_PIPE_CONNECTED_STATE)
+        {
+            if (!parked)
+            {
+                return STATUS_SUCCESS;
+            }
+            return instance->state == FILE_PIPE_DISCONNECTED_STATE ? STATUS_PIPE_DISCONNECTED
+                                                                   : STATUS_PIPE_BROKEN;
+        }
+        if (IsListEmpty(&queue->bufferList))
+        {
+            return STATUS_SUCCESS;
+        }
+        NTSTATUS waitStatus = NpfsWait(&queue->spaceEvent);
+        if (waitStatus != STATUS_SUCCESS)
+        {
+            return waitStatus; /* CUI-4: foreign terminate breaks the flush park */
+        }
+        parked = TRUE;
+    }
 }
 
 /* Append one pooled buffer to `queue` and wake its reader. */
@@ -1067,6 +1160,7 @@ const IO_VFS_OPS NpfsVfsOps = {
     .QueryName = NpfsQueryName,
     .Read = NpfsRead,
     .Write = NpfsWrite,
+    .Flush = NpfsFlush,
     .DeviceControl = NpfsDeviceControl,
     .CancelPending = NpfsCancelPending,
     .QueryPipeInfo = NpfsQueryPipeInfo,
