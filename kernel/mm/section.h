@@ -10,6 +10,12 @@
  *  - Anonymous SEC_COMMIT sections allocate ALL their (zeroed) frames at
  *    creation; every view maps those same frames — genuine sharing, no COW,
  *    no demand paging, nothing to page out.
+ *  - Anonymous SEC_RESERVE sections allocate none of them: the frame array
+ *    IS the commit ledger (0 = uncommitted), it belongs to the SECTION, and
+ *    NtAllocateVirtualMemory(MEM_COMMIT) through any one view fills it and
+ *    maps the new frames into EVERY view (viewListHead below). Still no
+ *    demand paging — a committed page is present in every view the moment
+ *    the commit returns.
  *  - File-backed data sections map the file's unified page cache
  *    (mm/pagecache.h) — the same frames NtReadFile/NtWriteFile copy through
  *    (M6), so mapped-view/read-write consistency is structural.
@@ -85,11 +91,28 @@ void MiGetImageMasterStats(ULONG *builds, ULONG *hits, ULONG *live, uint64_t *ma
 
 typedef struct MI_SECTION
 {
-    ULONG attributes;     /* SEC_COMMIT / SEC_FILE / SEC_IMAGE as NT reports them */
+    ULONG attributes;     /* SEC_COMMIT / SEC_RESERVE / SEC_FILE / SEC_IMAGE
+                           * as NT reports them */
     ULONG pageProtection; /* creation protection */
     uint64_t size;        /* section byte size (page-rounded when anonymous) */
     ULONG pageCount;
-    uint64_t *frames;     /* anonymous sections: one owned frame per page */
+    uint64_t *frames; /* anonymous sections: one owned frame per page.
+                       * Under SEC_RESERVE this doubles as the COMMIT
+                       * LEDGER — 0 means the page is reserved and not
+                       * committed, in every view at once, because the
+                       * oracle keeps the same record on the mapping
+                       * rather than on the view (third_party/wine
+                       * server/mapping.c create_mapping's
+                       * `mapping->committed = create_ranges()`, which
+                       * each view then grabs a reference to). */
+    /* Every live view of this section, by MI_VAD.sectionLink (mm/virtual.c
+     * owns the MI_VAD layout and both the link and the unlink). A view holds
+     * a reference on its section, so the list is empty by the time
+     * MipDeleteSection runs — asserted there. It exists for the SEC_RESERVE
+     * commit fanout: commit state is the SECTION's and page tables are the
+     * VIEW's, so the one place those meet has to be able to name every
+     * view. */
+    LIST_ENTRY viewListHead;
     PMI_PAGE_CACHE cache; /* file-backed data sections: the file's page cache */
     const void *rawData;  /* image sections: raw file bytes for copy/reloc */
     uint64_t rawSize;

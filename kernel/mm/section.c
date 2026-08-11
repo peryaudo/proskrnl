@@ -34,6 +34,9 @@ void IopSectionBackingReleased(PVOID fileObjectBody, ULONG sectionAttributes, UL
 static void MipDeleteSection(PVOID body)
 {
     PMI_SECTION section = body;
+    /* Every view holds a reference on its section, so nothing can be mapped
+     * here (the G11 ownership audit for the SEC_RESERVE view list). */
+    ASSERT(IsListEmpty(&section->viewListHead));
     if (section->frames != 0)
     {
         for (ULONG i = 0; i < section->pageCount; i++)
@@ -79,9 +82,15 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
                                 const MI_SECTION_BACKING *backing)
 {
     memset(scratch, 0, sizeof(*scratch));
+    InitializeListHead(&scratch->viewListHead);
     scratch->pageProtection = pageProtection;
     /* An anonymous section has no backing file to constrain it. */
     scratch->backingWritable = backing == 0 || backing->fileObject == 0 || backing->writable;
+
+    /* The one statement of "does this section take the FILE arm", because
+     * SEC_RESERVE's whole meaning turns on it (below). */
+    BOOLEAN fileBacked = backing != 0 && backing->cache != 0;
+    BOOLEAN reserve = FALSE;
 
     switch (attributes & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_FILE))
     {
@@ -119,15 +128,22 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         break;
 
     case SEC_RESERVE:
-        /* Commit-on-demand section pages need a pagefile-shaped commit
-         * ledger; nothing before M7+ needs one. Loud, not wrong. */
-        return STATUS_NOT_IMPLEMENTED;
+        /* SEC_RESERVE describes an ANONYMOUS mapping. Handed a file handle
+         * the oracle drops the whole flag and answers SEC_FILE
+         * (third_party/wine server/mapping.c get_mapping_flags: SEC_COMMIT
+         * falls THROUGH into this case, and both return
+         * `SEC_FILE | (flags & (SEC_NOCACHE | SEC_WRITECOMBINE))` when a
+         * handle is present) — so a file-backed "reserve" section is an
+         * ordinary, fully committed data section and only the anonymous one
+         * carries a ledger. Pinned both ways by sem_mm/reserve_section.c. */
+        reserve = !fileBacked;
+        break;
 
     default:
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (backing != 0 && backing->cache != 0)
+    if (fileBacked)
     {
         /* File-backed data section: views map the file's unified page cache,
          * so a view and a read/write can never disagree (docs/02's
@@ -160,19 +176,26 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         return STATUS_SUCCESS;
     }
 
-    /* Anonymous (pagefile-backed): all frames exist, zeroed, from the start
-     * (Art. 3: no demand paging) and are shared by every view. */
+    /* Anonymous (pagefile-backed): SEC_COMMIT means all frames exist, zeroed,
+     * from the start (Art. 3: no demand paging) and are shared by every view.
+     * SEC_RESERVE means the same array with nothing in it yet — it is the
+     * commit LEDGER, filled a range at a time by
+     * MiCommitReserveSectionRange (mm/virtual.c). */
     if (maximumSize == 0 || maximumSize->QuadPart <= 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
-    scratch->attributes = SEC_COMMIT;
+    scratch->attributes = reserve ? SEC_RESERVE : SEC_COMMIT;
     scratch->size = ((uint64_t)maximumSize->QuadPart + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
     scratch->pageCount = (ULONG)(scratch->size / PAGE_SIZE);
     scratch->frames = MiAllocatePool((uint64_t)scratch->pageCount * sizeof(uint64_t));
     if (scratch->frames == 0)
     {
         return STATUS_NO_MEMORY;
+    }
+    if (reserve)
+    {
+        return STATUS_SUCCESS; /* the pool zeroes: every page uncommitted */
     }
     for (ULONG i = 0; i < scratch->pageCount; i++)
     {
@@ -190,6 +213,19 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         memset(MiPhysicalToVirtual(scratch->frames[i]), 0, PAGE_SIZE);
     }
     return STATUS_SUCCESS;
+}
+
+/* Move a built section from the caller's stack into its object body. This is
+ * a function rather than a memcpy at each site because MI_SECTION carries a
+ * LIST_ENTRY, and a list head is SELF-REFERENTIAL: a straight copy leaves the
+ * object's head pointing at the scratch that is about to go out of scope. The
+ * list is empty either way — nothing can map a section that has no name and
+ * no handle yet — so re-seating it is the whole job, and doing it here means
+ * a third publish site added later cannot forget. */
+static void MipPublishSection(PMI_SECTION body, const MI_SECTION *scratch)
+{
+    memcpy(body, scratch, sizeof(*body));
+    InitializeListHead(&body->viewListHead);
 }
 
 NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
@@ -224,7 +260,7 @@ NTSTATUS MiCreateBackedSection(const LARGE_INTEGER *maximumSize, ULONG pageProte
         scratch.fileObject = backing->fileObject;
         ObfReferenceObject(scratch.fileObject);
     }
-    memcpy(body, &scratch, sizeof(scratch));
+    MipPublishSection(body, &scratch);
     *sectionOut = body;
     return STATUS_SUCCESS;
 }
@@ -1023,6 +1059,18 @@ NTSTATUS MiMapViewOfSectionEx(PMI_SECTION section, PMI_ADDRESS_SPACE space, uint
     for (ULONG i = 0; i < pageCount; i++)
     {
         uint64_t frame = frames[firstPage + i];
+        if (frame == 0)
+        {
+            /* A SEC_RESERVE section's page that nobody has committed yet.
+             * The VAD page stays uncommitted here and MiCommitReserveSection-
+             * Range fills it in for THIS view the moment ANY view commits it
+             * — which is why the view is on the section's list before this
+             * loop runs. Nothing else can hold a 0 frame: a SEC_COMMIT
+             * section allocates all of its at creation and a page cache
+             * every page it reports. */
+            ASSERT((section->attributes & SEC_RESERVE) != 0);
+            continue;
+        }
         if (privateCopy)
         {
             uint64_t copy = MiAllocatePage();
@@ -1163,7 +1211,7 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
             scratch.fileObject = backing.fileObject;
             ObfReferenceObject(scratch.fileObject); /* the section's pin */
         }
-        memcpy(body, &scratch, sizeof(scratch));
+        MipPublishSection(body, &scratch);
     }
     else
     {
