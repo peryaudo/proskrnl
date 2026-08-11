@@ -694,31 +694,58 @@ kernel32_test.exe:heap
 #     measures the harness, not the boundary.
 # kernel32_test.exe:module
 kernel32_test.exe:path
-# PARTLY FIXED, FIXABLE. 94 failures, down from a re-measured 96 — and the
-#     block this replaces said 93, which was never reproduced: the merge base
-#     measures 96 today. The difference is not drift in the kernel but in
-#     WHICH cluster was counted, because part of this pair is timing-bound
-#     (see the alarm below), so treat its total as approximate and its
-#     per-line breakdown as the real yardstick.
-#     The two that this session's npfs work removed are :758 and :778 — a
-#     client open whose access the pipe's share mask must refuse
-#     (docs/21 W11, tests/ntapi/sem_pipe/create_refusals.c). Verified by
-#     measuring the merge base with the same binary: identical except for
-#     those two.
-#     What remains is TWO subjects, neither of them the create surface:
-#       - one scenario repeated: :1404/:1405/:1406 ("ReadFile from client end
-#         of pipe" / "read file len" / "content check") 26+26+24 times, with
-#         :1396/:1401/:1402 x3 on the client open and write in front of them.
-#         76 of the 94 assertions, ONE bug.
-#       - an OVERLAPPED-server cluster that is timing-bound: :1059/:1077/
-#         :1083/:1101/:1106 (overlapped ReadFile/WriteFile and the
-#         DisconnectNamedPipe behind them), :1164 (a ConnectNamedPipe
-#         completion packet) and :845, which is the test's own watchdog
-#         (alarmThreadMain's `ok(FALSE, "alarm")` on WAIT_TIMEOUT) — so :845
-#         is a CONSEQUENCE of that cluster, not a finding. docs/21 §4 trap 3.
-#       - plus :1527/:1533, a PeekNamedPipe after a wait.
-#     fs/npfs territory still, but the overlapped half is async-completion
-#     shaped and shares a subject with ntdll:pipe's W4a blocker.
+# PARTLY FIXED, FIXABLE. 28-34 failures across four runs, down from a
+#     re-measured 110.
+#
+#     FIRST, THE COUNT IS A LOWER BOUND AND ALWAYS WAS — this block did not
+#     say so and the previous two revisions were read as if it were a total.
+#     :845 is alarmThreadMain, and what it does after `ok(FALSE, "alarm")` is
+#     ExitProcess(1). So this pair is KILLED 20 s in, prints no summary line
+#     ("N tests executed" never appears; the runner reports exit=0x1), and
+#     everything past the kill has never been counted (docs/21 §4 trap 2 —
+#     the pair belongs on that list and was not on it). The oracle executes
+#     38468 tests with 0 failures; proskrnl does not reach its own count.
+#     That is also why the total moved 93 -> 96 -> 94 -> 110 across sessions
+#     without a matching kernel change: the 20 s deadline cuts the run at a
+#     different place each time, so the total is a property of the DEADLINE
+#     as much as of the kernel. Its per-line breakdown is the yardstick; the
+#     total is not, and comparing two totals is only like-for-like when the
+#     run stops in the same place.
+#
+#     WHAT WENT: 82 assertions, ONE cause, and it was not the one this block
+#     named. The block called the 76-assertion cluster at :1404/:1405/:1406
+#     "fs/npfs territory ... the overlapped half is async-completion shaped".
+#     The cluster starts in serverThreadMain1 and 2, which are PIPE_WAIT byte
+#     echo servers with no overlap anywhere in them, and every server-side
+#     assertion in both was already passing. The cause was
+#     NtFlushBuffersFile: on a pipe it must not return until the peer has
+#     consumed what this end wrote (wine server/named_pipe.c pipe_end_flush),
+#     and kernel/io/rw.c answered a no-op STATUS_SUCCESS for every cache-less
+#     device. So `FlushFileBuffers(hnp); DisconnectNamedPipe(hnp)` discarded
+#     the echo before the client's ReadFile ever ran — the client's read is
+#     what fails, three assertions per loop, and the server's own four pass.
+#     docs/21 W11, docs/03 "What a pipe's NtFlushBuffersFile waits for",
+#     pinned by tests/ntapi/sem_pipe/flush_buffers.c. Both synchronous echo
+#     servers are now clean end to end (16 loops, 0 failures).
+#
+#     WHAT IS LEFT is ONE subject plus two singletons, and the split is why
+#     the total wobbles between runs while nothing about it changes:
+#       -  5  :1059/:1077/:1083/:1101/:1106, the OVERLAPPED server
+#         (serverThreadMain3): overlapped ReadFile/WriteFile on a
+#         FILE_FLAG_OVERLAPPED pipe and the DisconnectNamedPipe behind them.
+#         This is the ntdll:pipe wedge's subject — npfs data reads never pend
+#         (docs/03 "CUI-8 async notes", docs/21 W4c) — and it is what now
+#         stops the pair: the server never gets back to ConnectNamedPipe;
+#       -  5x N  :1396/:1401/:1402/:1404/:1405, the CLIENT of that same
+#         server failing to open the pipe at all and everything behind the
+#         handle it never got, once per exerciseServer loop until the 20 s
+#         deadline. N was 4, 5, 5, 5 across four runs — a consequence, not a
+#         second bug (docs/21 §4 trap 4), and the whole of the spread;
+#       -  1  :845, the watchdog firing at 20 s because of the above — a
+#         consequence too, and the reason the count is a lower bound;
+#       -  2  :1527/:1533, a PeekNamedPipe after a wait.
+#     So the whole remaining pair is the async pipe path. Nothing here is
+#     triage any more.
 # TODO: Implement
 # kernel32_test.exe:pipe
 kernel32_test.exe:power
