@@ -194,13 +194,15 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
 ### Mm flag gaps
 
 What is left of the CUI-7 placeholder decisions after `docs/21` W5 built the
-allocation half: `SEC_RESERVE` in `NtCreateSection`/`NtCreateSectionEx`
-(`kernel/mm/section.c`), `MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`
+allocation half: `MEM_REPLACE_PLACEHOLDER` in `NtMapViewOfSectionEx`
 (`kernel/mm/section.c`), `MEM_PRESERVE_PLACEHOLDER` in
 `NtUnmapViewOfSectionEx` (`kernel/mm/section.c`). Mapping a section into a
 placeholder is a larger contract than replacing one with private memory, and
 no baked consumer reaches it; `NtAllocateVirtualMemoryEx`'s and
 `NtFreeVirtualMemory`'s placeholder flags are no longer on this list.
+`SEC_RESERVE` in `NtCreateSection`/`NtCreateSectionEx` left it too — it is
+implemented (`docs/03` "A `SEC_RESERVE` section's commit ledger", pinned by
+`tests/ntapi/sem_mm/reserve_section.c`).
 
 ### Refusing in full, by design
 

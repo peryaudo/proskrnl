@@ -1392,9 +1392,10 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   nothing else can tell a placeholder from a `PAGE_NOACCESS` reservation, because they
   report identically through `MEMORY_BASIC_INFORMATION`. `MEM_REPLACE_PLACEHOLDER` in
   `NtMapViewOfSectionEx` and `MEM_PRESERVE_PLACEHOLDER` in `NtUnmapViewOfSectionEx`
-  still refuse loudly with `STATUS_NOT_IMPLEMENTED` (Art. 12; the `SEC_RESERVE`
-  precedent): mapping a section INTO a placeholder is a second, larger contract and no
-  baked consumer reaches it. `NtCreateSectionEx`'s parameter array is
+  still refuse loudly with `STATUS_NOT_IMPLEMENTED` (Art. 12): mapping a section INTO
+  a placeholder is a second, larger contract and no baked consumer reaches it. (This
+  used to cite `SEC_RESERVE` as its precedent; that one is built — see "A
+  `SEC_RESERVE` section's commit ledger" below.) `NtCreateSectionEx`'s parameter array is
   accepted-and-ignored (the pinned oracle FIXME shape).
 - **`MemoryImageInformation` reports signing level ZERO where the oracle reports 12**
   (`kernel/mm/virtual.c` `MiQueryVirtualMemoryImage`, `docs/21` W5; pinned
@@ -2242,6 +2243,64 @@ The truncating dispositions are the oracle's three `O_TRUNC` ones —
 `create_file`'s switch). This is what makes `CopyFile` onto a mapped destination and
 `DeleteFile` of a mapped image answer `ERROR_USER_MAPPED_FILE` and
 `ERROR_ACCESS_DENIED`: both are Win32 spellings of an open, not separate rules.
+
+## A `SEC_RESERVE` section's commit ledger
+
+`SEC_RESERVE` is the one section kind whose views are **not** committed by the map,
+and NT keeps the commit record on the SECTION rather than on the view: a
+`VirtualAlloc(MEM_COMMIT)` through one view commits those pages for *every* view of
+that section, while each view keeps its own page protection. The pinned oracle
+splits the two records in two places — `server/mapping.c` `create_mapping` hangs a
+`create_ranges()` ledger off the mapping and each view grabs a reference to that one
+object, and `dlls/ntdll/unix/virtual.c` `allocate_virtual_memory`'s commit arm calls
+`set_protection( view, ... )` (this view only) beside `add_mapping_committed_range`
+(shared). proskrnl keeps the same split: an anonymous section's frame array **is**
+the ledger (`0` = uncommitted, `kernel/mm/section.h`) and `MI_SECTION.viewListHead`
+names every live view, which is what lets one commit reach all of them. Pinned by
+`tests/ntapi/sem_mm/reserve_section.c`.
+
+`SEC_RESERVE` is also a property of an ANONYMOUS mapping only: handed a file handle
+the oracle drops the flag whole and answers `SEC_FILE` (`get_mapping_flags`, whose
+`SEC_COMMIT` case falls *through* into `SEC_RESERVE`), so a file-backed "reserve"
+section is an ordinary fully-committed data section. An implementation that routed
+the flag rather than the (handle, flag) pair builds a reserve section over a file and
+diverges only there; the pin covers it.
+
+Three consequences, none of them guessable from the flag's name:
+
+- **A commit is EAGER in every view, not a promise redeemed at a fault.** Art. 3's
+  "no demand paging" is a contract other code reads: a committed page is present, and
+  `syscall/uaccess.c`'s page-table-walk probe depends on it. So
+  `MiCommitReserveSectionRange` (`kernel/mm/virtual.c`) allocates the frames, writes
+  them into the section's ledger, and maps them into every view *before the commit
+  returns* — including views in other processes. NT would fault them in one at a
+  time; nothing observable at the boundary separates the two, and the physical cost
+  is paid earlier.
+- **A `PAGE_WRITECOPY` view takes its private copy at commit time** — the same
+  whole-copy rule the rest of the mapping surface uses (Art. 3, no COW outside
+  `SEC_IMAGE`), applied at the moment the page comes into existence rather than at
+  the map.
+- **A commit that runs out of frames changes NOTHING** — unlike `MiCommitPages`,
+  whose partial commit is NT's own shape for private memory. The difference is whose
+  record it is: the ledger belongs to the *section*, and a half-filled ledger would
+  have the views that already exist reporting `MEM_RESERVE` for pages a view mapped
+  afterwards reports as `MEM_COMMIT` (the map takes its frames from the same array) —
+  two views of one section disagreeing about State, which is the exact contract this
+  feature implements. So `MiCommitReserveSectionRange` counts what it must create,
+  gets all of it, and only then publishes; `STATUS_NO_MEMORY` leaves the section and
+  every view as they were.
+
+And one measured disagreement, which is why the pin deliberately asserts **nothing**
+about it: **what an access to an uncommitted page of a reserve view does.** NT raises
+`STATUS_ACCESS_VIOLATION`, and so does proskrnl — by construction rather than by
+measurement, and the construction is the whole path: the page has no PTE, so
+`MiHandleUserFault` (`kernel/mm/fault.c`) finds no write-fault to resolve and no
+guard page, and returns the AV. The pinned ORACLE lets the read through —
+`virtual_map_section` mmaps the whole view accessible under "file mappings must
+always be accessible" and only tracks the commit state in software — so the two
+authorities disagree and no assertion could be green on both legs (Art. 6). Recorded
+here instead: proskrnl follows NT, and a test that pins it would be pinning the
+oracle's mmap arrangement.
 
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 

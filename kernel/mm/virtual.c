@@ -31,6 +31,15 @@
 struct MI_VAD
 {
     LIST_ENTRY listEntry; /* on MI_ADDRESS_SPACE.vadListHead, ascending */
+    /* On MI_SECTION.viewListHead when this VAD is a section VIEW; linked to
+     * ITSELF otherwise, so the unlink in MiUnlinkAndFreeVad needs no test.
+     * The section's SEC_RESERVE commit fanout is the one reader
+     * (MiCommitReserveSectionRange). */
+    LIST_ENTRY sectionLink;
+    /* The space this VAD is linked into, so a walk that arrives through the
+     * SECTION rather than through a process can still map a page. Stamped by
+     * MiInsertVad, i.e. by the one site that puts a VAD on a list. */
+    PMI_ADDRESS_SPACE space;
     uint64_t base;
     uint64_t size;
     ULONG allocationProtect;
@@ -539,6 +548,7 @@ static void MiInsertVad(PMI_ADDRESS_SPACE space, PMI_VAD vad)
     vad->listEntry.Blink = entry->Blink;
     entry->Blink->Flink = &vad->listEntry;
     entry->Blink = &vad->listEntry;
+    vad->space = space;
 }
 
 /* Commit (or re-protect) the pages [base, base+size) inside `vad`. Frames
@@ -636,6 +646,11 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
 static void MiUnlinkAndFreeVad(PMI_VAD vad)
 {
     RemoveEntryList(&vad->listEntry);
+    /* A section view leaves its section's view list here, BEFORE the
+     * reference below is dropped — so the section can never see a VAD that
+     * is about to be freed, and a private VAD (linked to itself) is
+     * unaffected. */
+    RemoveEntryList(&vad->sectionLink);
     if (vad->master != 0)
     {
         MiDereferenceImageMaster(vad->master); /* the view's pin on the master */
@@ -663,6 +678,8 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     {
         return 0;
     }
+    InitializeListHead(&vad->sectionLink); /* on no section's view list yet */
+    vad->space = 0;
     vad->base = base;
     vad->size = size;
     vad->allocationProtect = allocationProtect;
@@ -933,6 +950,11 @@ NTSTATUS MiAllocateVirtualMemory(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE
 {
     return MiAllocateVirtualMemoryEx(space, baseInOut, sizeInOut, type, protect, 0, 0, 0, 0);
 }
+
+/* The SEC_RESERVE commit fanout; defined with the rest of the section-view
+ * plumbing below, because that is where the view list is linked. */
+static NTSTATUS MiCommitReserveSectionRange(PMI_SECTION section, PMI_VAD vad, uint64_t base,
+                                            uint64_t size, ULONG protect);
 
 NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SIZE_T *sizeInOut,
                                    ULONG type, ULONG protect, uint64_t limitLow, uint64_t limitHigh,
@@ -1211,9 +1233,26 @@ NTSTATUS MiAllocateVirtualMemoryEx(PMI_ADDRESS_SPACE space, PVOID *baseInOut, SI
         }
         if (vad->type != MEM_PRIVATE)
         {
-            /* Already committed by the map; what is left is the protection
-             * change, applied through the one engine that owns it. The
-             * base/size it reports back are its own rounding of the same
+            /* A SEC_RESERVE view is the one section view whose pages are NOT
+             * all committed by the map, so this is where the commit actually
+             * happens — in the section's ledger and in every view of it. The
+             * oracle runs its `set_protection` FIRST and the shared
+             * `add_mapping_committed_range` second; the order is not
+             * observable (one call, one lock) and this way round the
+             * re-protect below runs over a range that is committed
+             * throughout, which is what it expects. */
+            PMI_SECTION section = vad->sectionBody;
+            if ((section->attributes & SEC_RESERVE) != 0)
+            {
+                status = MiCommitReserveSectionRange(section, vad, base, size, protect);
+                if (!NT_SUCCESS(status))
+                {
+                    return status;
+                }
+            }
+            /* Committed by the map (or, above, just now); what is left is the
+             * protection change, applied through the one engine that owns it.
+             * The base/size it reports back are its own rounding of the same
              * range, which this caller has already computed — so they go to
              * scratch and the caller's values below stand. */
             uint64_t protectBase = base;
@@ -1735,10 +1774,15 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
     {
         return 0;
     }
-    /* Every page of a mapped view is committed at map time (no demand
-     * paging), and the commit loop cannot report a failure — so the page
-     * tables it will need are charged here, where the caller already turns a
-     * 0 into STATUS_NO_MEMORY (arch/x86_64/mmu.c MiChargeUserTables). */
+    /* The page tables for the WHOLE view are charged here, where the caller
+     * already turns a 0 into STATUS_NO_MEMORY (arch/x86_64/mmu.c
+     * MiChargeUserTables), because neither of the two loops that map pages
+     * into a view can report a failure: the map-time loop below has no
+     * status to return, and a SEC_RESERVE view's later commit reaches pages
+     * in OTHER processes' spaces, where a refusal would be unattributable.
+     * Charging the whole extent up front covers both — the reserve view's
+     * uncommitted pages included, which is exactly the case the later commit
+     * needs tables for. */
     if (!MiChargeUserTables(space->pml4Physical, base, MiRoundUp(size, PAGE_SIZE)))
     {
         MiFreePool(vad->pageProtect);
@@ -1750,7 +1794,170 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
     vad->ownsFrames = ownsFrames;
     vad->sectionOffset = sectionOffset;
     MiInsertVad(space, vad);
+    if (sectionBody != 0)
+    {
+        /* The view joins its section's list before the caller maps a single
+         * page, so a commit racing in from another view (uniprocessor: from
+         * a later call) can never miss it. The matching unlink is
+         * MiUnlinkAndFreeVad's, and it is the ONLY one. */
+        InsertTailList(&((PMI_SECTION)sectionBody)->viewListHead, &vad->sectionLink);
+    }
     return vad;
+}
+
+/* Does `view` want this SECTION page mapped into it — is the page inside the
+ * view's extent, and not present there already? ONE statement of the
+ * question, because MiCommitReserveSectionRange asks it twice (once to count
+ * the frames it must get, once to place them) and two spellings that drifted
+ * apart would over- or under-allocate in silence. */
+static BOOLEAN MipReserveViewWants(PMI_VAD view, ULONG sectionIndex)
+{
+    ULONG viewFirst = (ULONG)(view->sectionOffset / PAGE_SIZE);
+    if (sectionIndex < viewFirst || sectionIndex - viewFirst >= MiVadPageCount(view))
+    {
+        return FALSE; /* outside this view's extent */
+    }
+    /* A committed page always has a non-zero recorded protection; the
+     * re-protect the caller runs afterwards owns those. */
+    return view->pageProtect[sectionIndex - viewFirst] == 0;
+}
+
+/* MEM_COMMIT over a SEC_RESERVE view (mm/section.h): fill the SECTION's
+ * commit ledger for [base, size) and make the pages present in EVERY view of
+ * that section, `vad` at the caller's protection and the rest at their own.
+ *
+ * Two records with two owners, and the oracle keeps them apart the same way:
+ * `add_mapping_committed_range` is a server call against the MAPPING, while
+ * `set_protection( view, base, size, protect )` beside it touches the
+ * calling view's per-page protection only (third_party/wine
+ * dlls/ntdll/unix/virtual.c, allocate_virtual_memory's commit arm). What the
+ * oracle does NOT need is this fanout: its views are mmap'd over one shared
+ * fd, so a page committed anywhere is already mapped everywhere and its
+ * ledger is pure bookkeeping. Here the frames are the ledger, so making the
+ * page present in the other views is the same act as recording it — and it
+ * has to happen now rather than at a fault, because a committed page is
+ * present by this kernel's contract (mm/virtual.h; syscall/uaccess.c's
+ * page-table-walk probe depends on it).
+ *
+ * ALL OR NOTHING, which is not fastidiousness about an out-of-memory path.
+ * The ledger belongs to the SECTION and a view's committed state is derived
+ * from it, so a commit that filled half the ledger and then failed would
+ * leave the views that exist reporting MEM_RESERVE for pages a view mapped
+ * AFTERWARDS reports as MEM_COMMIT (mm/section.c's map loop takes its frames
+ * from the same array) — two views of one section disagreeing about State,
+ * which is the one thing this feature exists to prevent. So every page this
+ * commit must create is allocated BEFORE any of them is published: the
+ * ledger's, plus a private copy for each WRITECOPY view that covers one.
+ * Nothing else here can fail, and MiCommitFrameInVad cannot (its page tables
+ * were charged for the whole view at map time, MiCreateMappedVad). */
+static NTSTATUS MiCommitReserveSectionRange(PMI_SECTION section, PMI_VAD vad, uint64_t base,
+                                            uint64_t size, ULONG protect)
+{
+    ASSERT((section->attributes & SEC_RESERVE) != 0 && section->frames != 0);
+    ULONG first = (ULONG)((base - vad->base + vad->sectionOffset) / PAGE_SIZE);
+    ULONG count = (ULONG)(size / PAGE_SIZE);
+    ASSERT(first + count <= section->pageCount);
+
+    /* Count first. The ledger question is asked while the ledger still says
+     * what it said on entry, and the per-view question depends on view state
+     * only — which nothing below changes for a view it has not reached. */
+    ULONG needed = 0;
+    for (ULONG i = 0; i < count; i++)
+    {
+        if (section->frames[first + i] == 0)
+        {
+            needed++;
+        }
+    }
+    for (PLIST_ENTRY entry = section->viewListHead.Flink; entry != &section->viewListHead;
+         entry = entry->Flink)
+    {
+        PMI_VAD view = CONTAINING_RECORD(entry, MI_VAD, sectionLink);
+        if (!view->ownsFrames)
+        {
+            continue; /* a shared view maps the ledger's own frame */
+        }
+        for (ULONG i = 0; i < count; i++)
+        {
+            if (MipReserveViewWants(view, first + i))
+            {
+                needed++;
+            }
+        }
+    }
+    if (needed == 0)
+    {
+        return STATUS_SUCCESS; /* every page is already where it belongs */
+    }
+
+    /* The one fallible stretch. A frame that cannot be got here is returned
+     * with the section and every view exactly as they were. */
+    uint64_t *fresh = MiAllocatePool((uint64_t)needed * sizeof(uint64_t));
+    if (fresh == 0)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    ULONG available = 0;
+    for (; available < needed; available++)
+    {
+        fresh[available] = MiAllocatePage();
+        if (fresh[available] == 0)
+        {
+            break;
+        }
+        memset(MiPhysicalToVirtual(fresh[available]), 0, PAGE_SIZE);
+    }
+    if (available != needed)
+    {
+        while (available-- > 0)
+        {
+            MiFreePage(fresh[available]);
+        }
+        MiFreePool(fresh);
+        return STATUS_NO_MEMORY;
+    }
+
+    /* Past here nothing fails. The two walks below ask the same questions the
+     * two above did, in the same order, so `available` runs out exactly. */
+    for (ULONG i = 0; i < count; i++)
+    {
+        if (section->frames[first + i] == 0)
+        {
+            ASSERT(available > 0);
+            section->frames[first + i] = fresh[--available];
+        }
+    }
+
+    for (PLIST_ENTRY entry = section->viewListHead.Flink; entry != &section->viewListHead;
+         entry = entry->Flink)
+    {
+        PMI_VAD view = CONTAINING_RECORD(entry, MI_VAD, sectionLink);
+        for (ULONG i = 0; i < count; i++)
+        {
+            ULONG sectionIndex = first + i;
+            if (!MipReserveViewWants(view, sectionIndex))
+            {
+                continue;
+            }
+            ULONG index = sectionIndex - (ULONG)(view->sectionOffset / PAGE_SIZE);
+            uint64_t frame = section->frames[sectionIndex];
+            if (view->ownsFrames)
+            {
+                /* A WRITECOPY view is a private full copy (Art. 3), so it
+                 * takes a copy of the page the commit just produced rather
+                 * than the shared frame itself. */
+                ASSERT(available > 0);
+                uint64_t copy = fresh[--available];
+                memcpy(MiPhysicalToVirtual(copy), MiPhysicalToVirtual(frame), PAGE_SIZE);
+                frame = copy;
+            }
+            MiCommitFrameInVad(view->space, view, view->base + (uint64_t)index * PAGE_SIZE, frame,
+                               view == vad ? protect : view->allocationProtect, view->ownsFrames);
+        }
+    }
+    ASSERT(available == 0); /* counted and consumed by the same two questions */
+    MiFreePool(fresh);
+    return STATUS_SUCCESS;
 }
 
 void MiCommitFrameInVad(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t virtualAddress,
