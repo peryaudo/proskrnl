@@ -854,100 +854,107 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# PARTLY FIXED, FIXABLE. 4 failures, down from 4148 — and every one of those
-#     numbers is a LOWER BOUND, because the pair panics partway through (see
-#     the end of this block). The
-#     view-protection compatibility matrix landed earlier
-#     (kernel/mm/virtual.c MiCheckViewProtection,
-#     tests/ntapi/sem_mm/view_protect_matrix.c) and took ~2100 assertions at
-#     virtual.c:4250/:4251 with it, plus the ~840 at :4264-:4291 where the
-#     MEM_COMMIT arm was answering by the wrong rule for every non-private
-#     view. NOW 12, down from 40 — and the 28 that went were ONE cause that
-#     nothing in the failure text named: the object namespace was missing the
-#     Local / Global / Session symlinks inside \Sessions\1\BaseNamedObjects
-#     (and \Sessions\BNOLINKS behind Session), so OpenFileMapping on a
-#     "Local\Foo" name answered ERROR_PATH_NOT_FOUND and every assertion
-#     downstream of the handle it never returned failed with it. Landed in
-#     kernel/ob/namespace.c, pinned by tests/ntapi/sem_ob/bno_links.c.
-#     That block spanned :790-:862 and READ like a section bug — the old
-#     triage above called it "NtCreateSection refusing/accepting wrongly at
-#     :758-:790" — which is docs/21 §4 trap 4: the loudest failures in a
-#     cluster were the consequence, and the cause was three missing names.
+# RE-MEASURED after SEC_RESERVE landed: 96 failures, and the pair now WEDGES.
+#     The count went 4 -> 96 because the pair was measured past page one for
+#     the FIRST TIME, not because anything regressed. It used to PANIC at
+#     virtual.c:869 — NtCreateSection with SEC_RESERVE answered
+#     STATUS_NOT_IMPLEMENTED and the armed panic flag made that fatal — so
+#     every count this block has ever carried (4148, 40, 12, 4) was a lower
+#     bound over the same short prefix, 13 of the module's tests where the
+#     oracle executes 30936 (docs/21 §4 trap 2). SEC_RESERVE is now built
+#     (kernel/mm/section.c + kernel/mm/virtual.c, pinned by
+#     tests/ntapi/sem_mm/reserve_section.c, docs/03 "A SEC_RESERVE section's
+#     commit ledger"); the panic is gone and what stood behind it is below.
 #
-#     NOW 4, down from 12, and the 8 that went were ONE cause across two
-#     subjects this block listed as two. Both are the page-protection MODIFIER
-#     BITS — the flags above the low byte of a PAGE_* word:
-#       - :236/:261/:275 (3) were kernelbase's WriteProcessMemory. It makes a
-#         non-writable range writable with `PAGE_EXECUTE_READWRITE |
-#         PAGE_TARGETS_NO_UPDATE | PAGE_ENCLAVE_NO_CHANGE`
-#         (dlls/kernelbase/memory.c) and proskrnl refused the whole word,
-#         which reaches the caller as ERROR_INVALID_PARAMETER (the "error 87").
-#         The two "0 bytes written" behind it are a SECOND rule in the same
-#         API: a partial NtWriteVirtualMemory reports the prefix it managed
-#         where a partial read reports zero, and proskrnl reported zero for
-#         both.
-#       - :517/:520/:525/:534/:560 (5) were filed here as "a
-#         MEMORY_BASIC_INFORMATION protect group" and are the other end of the
-#         same word: PAGE_NOCACHE belongs to the RESERVATION, not to the page
-#         (allocate_virtual_memory's `vprot |= SEC_NOCACHE` inside the reserve
-#         arm, read back by get_win32_prot), so a later VirtualProtect can
-#         neither drop it nor add it. proskrnl stored it per page, which is
-#         also where the "wrong size 1000" came from: one re-protected page
-#         then differed from its neighbour by the NOCACHE bit and split the
-#         reported region in half. Not a separate subject at all.
-#     Landed in kernel/mm/virtual.c, pinned by
-#     tests/ntapi/sem_mm/protect_modifier_bits.c and
-#     tests/ntapi/sem_ps/virtual_memory.c; docs/21 W5, docs/03 "The page-
-#     protection modifier bits".
+#     WHERE IT STOPS, measured at the default 300 s and again at 1200 s with
+#     the same result: the last thing it prints is test_CreateFileMapping's
+#     SEC_* matrix (index 43), then the deliberate access violations of
+#     test_IsBadReadPtr / test_IsBadWritePtr, and then NOTHING for the
+#     remaining ~19 minutes. The kernel's own trace ring at the kill holds
+#     only idle swaps, so the process is PARKED — not slow, not spinning.
+#     The next test in START_TEST order is test_write_watch, whose pipe leg
+#     issues an overlapped ReadFile on an empty named pipe and satisfies it
+#     from the SAME thread afterwards (test body :191 and :202). That is the
+#     CUI-8 wedge already recorded for ntdll:pipe — NpfsRead parks instead of
+#     answering STATUS_PENDING (docs/03 "CUI-8 async notes", docs/21 W4c) —
+#     so the wedge is not new and not this pair's item. Which also means
+#     EVERYTHING PAST test_write_watch is still unmeasured: 96 is itself a
+#     lower bound, and the next re-measure after W4c will move it again.
 #
-#     The 4 that remain are ONE subject:
-#       - :758/:764/:770 (3), CreateFileMapping on a NO-ACCESS file handle
-#         (CreateFileA with dwDesiredAccess 0) must fail and does not.
-#         TWO CAUSES ARE NOW ELIMINATED, which is where the next person
-#         should start rather than re-deriving them:
-#           * the RULE is right. tests/ntapi/sem_mm/section_file_access.c
-#             pins the whole protection -> required-file-access matrix from
-#             dlls/ntdll/unix/sync.c NtCreateSection (FILE_READ_DATA for the
-#             read protections, + FILE_WRITE_DATA for PAGE_READWRITE /
-#             PAGE_EXECUTE_READWRITE on a non-image) and is GREEN ON BOTH
-#             RUNNERS, including the exact SYNCHRONIZE|FILE_READ_ATTRIBUTES
-#             mask kernelbase builds for a 0-access CreateFileA.
-#           * the WIN32 path is right too. A probe driving the same
-#             CreateFileA/CreateFileMappingA calls on proskrnl answered
-#             ERROR_ACCESS_DENIED (5) for the no-access handle with both
-#             PAGE_READWRITE and PAGE_READONLY — i.e. exactly what :758 wants.
-#         So the divergence needs the winetest's PRECEDING SEQUENCE, not the
-#         call in isolation: the same file has already been opened writable,
-#         mapped, and closed several times by then. Bisect that sequence.
-#         NtCreateSectionEx is not a second path — it delegates
-#         (kernel/mm/section.c).
-#       - :4074 (1), the same subject one protection along: a READ-ONLY file
-#         handle with PAGE_READWRITE must fail ERROR_ACCESS_DENIED.
+#     THE 96, DECOMPOSED. Three causes and a floor; the index sets partition
+#     exactly, which is how the first two were told apart:
 #
-#     AND 4 IS A LOWER BOUND, which no earlier revision of this block said.
-#     The pair PANICS: virtual.c:869 creates a SEC_RESERVE mapping and
-#     kernel/mm/section.c answers STATUS_NOT_IMPLEMENTED there (it has since
-#     M5), which the armed panic flag makes fatal. So the run stops after
-#     :770 having executed 4+3+3+3 of the module's tests where the ORACLE
-#     executes 30936, and NOTHING past that point has ever been counted
-#     (docs/21 §4 trap 2). Every count this block has ever carried — 4148, 40,
-#     12, 4 — is a count of the same measured prefix, so they compare
-#     like for like and none of them is the pair's failure count.
-#     SEC_RESERVE is docs/21 W5's remaining half and is not small: two views
-#     of one SEC_RESERVE section share COMMIT state, so VirtualAlloc on one
-#     must show through VirtualQuery on the other (virtual.c:928-:945), and
-#     MEM_DECOMMIT over it must fail ERROR_INVALID_PARAMETER.
+#       - 67 (:1616 x23, :1636 x23, :1638 x21) — ONE BUG, and it is not in
+#         mm: NtCreateSection DOES NOT ZERO THE CALLER'S HANDLE WHEN IT
+#         REFUSES. kernelbase's CreateFileMappingW (dlls/kernelbase/sync.c)
+#         declares `HANDLE ret;` uninitialized, passes &ret to
+#         NtCreateSection and `return ret`s on every path including the
+#         failing ones; kernel/mm/section.c returns each refusal before
+#         writing *handle. So a create proskrnl REFUSES CORRECTLY hands the
+#         test stack garbage, which reads as ":1616 CreateFileMapping
+#         succeeded" and then ":1636 NtQuerySection failed err c0000008"
+#         (STATUS_INVALID_HANDLE) on the garbage, and ":1638 wrong attr" on
+#         the untouched info struct. The evidence is the index sets: :1636's
+#         23 are exactly :1616's 28 minus the five the next item owns, and
+#         every one of those 23 is a sec_flag_tests row proskrnl is right to
+#         refuse (7 = SEC_RESERVE|SEC_COMMIT is one, and
+#         sem_mm/reserve_section.c pins that refusal green on BOTH runners).
+#         THE CONFIRMING PIN IS ONE LINE and should be written first: pass a
+#         garbage-initialized HANDLE to a NtCreateSection that must fail and
+#         assert it comes back NULL. Note the oracle's own ntdll leaves
+#         *handle alone too and passes only because its stack holds zero, so
+#         this is a beyond_oracle pin against NT's documented contract, not
+#         a transcription.
+#       - 24 — the SEC_* MODIFIER FLAGS ON A SECTION, i.e. SEC_NOCACHE,
+#         SEC_WRITECOMBINE and SEC_LARGE_PAGES, none of which a proskrnl
+#         section keeps. Ten of them (:1616 x5, :1617 x5, indices
+#         2/20/24/40/41) are combinations NT REFUSES with
+#         ERROR_INVALID_PARAMETER and proskrnl accepts — every one of the
+#         five carries SEC_LARGE_PAGES or SEC_WRITECOMBINE. The other
+#         fourteen (:1638 x13 plus :1014) are NtQuerySection reporting the
+#         section without the modifier: SEC_RESERVE (04000000) where
+#         SEC_RESERVE|SEC_NOCACHE was asked for, SEC_COMMIT (08000000) where
+#         SEC_COMMIT|SEC_NOCACHE was, and so on. docs/21 W5 carries this as
+#         its remaining half; this is the first winetest evidence for it —
+#         the bullet used to say no winetest assertion reached it.
+#       - 4 — the subject this block has carried for two revisions, and it
+#         has not moved: :758/:764/:770 (CreateFileMapping on a NO-ACCESS
+#         file handle, CreateFileA with dwDesiredAccess 0, must fail and does
+#         not) plus :4074 (the same subject one protection along: a READ-ONLY
+#         handle with PAGE_READWRITE). TWO CAUSES ARE ELIMINATED, which is
+#         where the next person starts rather than re-deriving them: the RULE
+#         is right (tests/ntapi/sem_mm/section_file_access.c pins the whole
+#         protection -> required-file-access matrix from dlls/ntdll/unix/
+#         sync.c NtCreateSection and is GREEN ON BOTH RUNNERS, including the
+#         exact SYNCHRONIZE|FILE_READ_ATTRIBUTES mask kernelbase builds for a
+#         0-access CreateFileA), and the WIN32 path is right (a probe driving
+#         the same CreateFileA/CreateFileMappingA calls on proskrnl answered
+#         ERROR_ACCESS_DENIED for the no-access handle under both
+#         PAGE_READWRITE and PAGE_READONLY — exactly what :758 wants). So the
+#         divergence needs the winetest's PRECEDING SEQUENCE, not the call in
+#         isolation: by then the same file has been opened writable, mapped
+#         and closed several times. Bisect that sequence. NtCreateSectionEx
+#         is not a second path — it delegates (kernel/mm/section.c).
+#       - 1, AND IT IS A FLOOR. virtual.c:1465 is a todo_wine that proskrnl
+#         PASSES: NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must
+#         answer STATUS_SUCCESS, proskrnl does, the oracle does not, and
+#         winetest scores a succeeded todo as a FAILURE. So this pair cannot
+#         reach zero while proskrnl is the more NT-correct of the two
+#         runners, exactly as kernel32:volume:186 cannot — and making it lose
+#         would be tuning to an oracle annotation instead of to a contract.
+#         Easy to miss when scanning for "Test failed": it prints as "Test
+#         succeeded inside todo block".
 #
-#     The "~285 seconds, the slowest in the manifest" this block used to carry
-#     is not reproducible either: the whole pair, both legs, is ~10 s on this
-#     box. The proskrnl leg stops at the panic above after ~5 s of guest time,
-#     and the oracle leg's 30936 tests take a few seconds.
-#     RE-MEASURED (unchanged at 12, same four subjects, same lines) when
-#     NtProtectVirtualMemory's failure ladder was rebuilt against the oracle
-#     — the miss status moved c0000141 -> c000000d and the protection check
-#     moved behind the view and commit checks (ntdll:virtual's block above).
-#     That change reaches every VirtualProtect caller, so this pair was
-#     re-run rather than reasoned about; nothing here moved either way.
+#     TWO INDEPENDENT REASONS THIS PAIR STAYS PARKED, then: the wedge (which
+#     belongs to W4c) and the todo floor (which belongs to nobody). Progress
+#     here is measured in the 91 that are real work, not in the verdict line.
+#
+#     The "~285 seconds, the slowest in the manifest" this block used to
+#     carry stopped being true when the panic went in, and is now wrong in
+#     the other direction: with the panic gone the leg runs to whatever
+#     per-pair timeout it is given. The 1200 s used for this measurement is
+#     NOT in the line below — a parked pair should not cost the sweep twenty
+#     minutes to learn what 300 s already says.
 # TODO: Implement
 # kernel32_test.exe:virtual
 # RE-TRIAGED. FOUR failures, not the three this block used to claim, and
