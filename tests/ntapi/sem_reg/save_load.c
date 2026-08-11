@@ -42,68 +42,14 @@ NTSYSAPI NTSTATUS NTAPI NtUnloadKey(OBJECT_ATTRIBUTES *);
 NTSYSAPI NTSTATUS NTAPI NtSaveKey(HANDLE, HANDLE);
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
                                     const void *, ULONG, PLARGE_INTEGER, PULONG);
-NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE, DWORD, HANDLE *);
-NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE, BOOLEAN, PTOKEN_PRIVILEGES, DWORD,
-                                                PTOKEN_PRIVILEGES, PDWORD);
-
-#ifndef NtCurrentProcess
-#define NtCurrentProcess() ((HANDLE) ~(ULONG_PTR)0)
-#endif
-
-/* Privilege LUID values as wine server/token.c spells them (= winnt.h
- * SE_*_PRIVILEGE ordinals). */
-#define PRSK_SE_BACKUP_PRIVILEGE  17
-#define PRSK_SE_RESTORE_PRIVILEGE 18
+/* set_privilege(), delete_file() and the token prototypes they need live in
+ * util.h — save_load_delta.c uses the same two. */
 
 static const void *base_path = W("\\Registry\\Machine\\Software\\prsk_m8_save");
 static const void *load_path = W("\\Registry\\Machine\\Software\\prsk_m8_load");
 static const void *load2_path = W("\\Registry\\Machine\\Software\\prsk_m8_load2");
 static const void *hive_file = W("\\??\\C:\\prsk_m8.hiv");
 static const void *junk_file = W("\\??\\C:\\prsk_m8.junk");
-
-static NTSTATUS set_privilege(DWORD luidLow, BOOLEAN enable)
-{
-    HANDLE token;
-    TOKEN_PRIVILEGES tp;
-    NTSTATUS status =
-        NtOpenProcessToken(NtCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token);
-    if (!NT_SUCCESS(status))
-        return status;
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid.LowPart = luidLow;
-    tp.Privileges[0].Luid.HighPart = 0;
-    tp.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
-    status = NtAdjustPrivilegesToken(token, FALSE, &tp, 0, NULL, NULL);
-    NtClose(token);
-    return status;
-}
-
-static NTSTATUS open_hive_file(const void *path, ACCESS_MASK access, ULONG disposition, HANDLE *out)
-{
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    init_ustr(&name, path);
-    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-    return NtCreateFile(out, access | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0,
-                        disposition, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
-                        0);
-}
-
-static void delete_file(const void *path)
-{
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    init_ustr(&name, path);
-    init_attr(&attr, NULL, &name, OBJ_CASE_INSENSITIVE);
-    if (NT_SUCCESS(NtCreateFile(
-            &handle, DELETE | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
-            FILE_DELETE_ON_CLOSE | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL,
-            0)))
-        NtClose(handle);
-}
 
 /* Query a REG_DWORD value on an open key; 0xffffffff = not there. */
 static ULONG query_dword(HANDLE key, const void *valueName)
