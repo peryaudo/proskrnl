@@ -2169,13 +2169,64 @@ protections: `:517`'s "wrong size 1000" is the same cause one step out, because 
 re-protected page then differed from its neighbour by the `PAGE_NOCACHE` bit alone and split
 the reported region run in half.
 
-**What is still unbuilt is the SECTION half of the same bit, and it is a deviation.** A
-section created with `SEC_NOCACHE` keeps the flag on the oracle (`server/mapping.c` preserves
-it into `sec_flags`, which becomes the view's protect word), so every view of it reports
-`PAGE_NOCACHE`. `MiCreateSection`'s attribute switch never looks at `SEC_NOCACHE`, so
-proskrnl's views report the protection without it. Nothing in the baked stack or the winetest
-manifest reaches it; it is recorded here rather than fixed because the fix is the same
-one-field shape on the *section*, and it should land with a pin of its own (`docs/21` W5).
+**The SECTION half of the same bit is built too, and it is the next section's subject.** A
+section created with `SEC_NOCACHE` keeps the flag, and every view of it reports
+`PAGE_NOCACHE` — `MiCreateMappedVad` sets the same `MI_VAD.noCache` from the section's
+attribute word, so the report site is unchanged and there is one statement of what the bit
+means.
+
+## The `SEC_*` modifier flags on a section
+
+`SEC_NOCACHE`, `SEC_WRITECOMBINE` and `SEC_LARGE_PAGES` are not three flags with three
+answers. They are read by **one** twenty-line function — `third_party/wine`
+`server/mapping.c` `get_mapping_flags` — which decides three separate things at once, and an
+implementation can satisfy any two of them while failing the third. Nothing deviates; the
+function is transcribed as `MipMappingFlags` (`kernel/mm/section.c`), pinned by
+`tests/ntapi/sem_mm/section_sec_flags.c`.
+
+**1 — which combinations refuse.** Neither modifier is uniformly legal or uniformly illegal:
+
+| section kind | `SEC_NOCACHE` | `SEC_WRITECOMBINE` | `SEC_LARGE_PAGES` |
+|---|---|---|---|
+| anonymous `SEC_COMMIT` | kept | kept | **kept** |
+| anonymous `SEC_RESERVE` | kept | kept | `STATUS_INVALID_PARAMETER` |
+| file-backed (either kind) | kept | kept | `STATUS_INVALID_PARAMETER` |
+| `SEC_IMAGE` | accepted, **dropped** | `STATUS_INVALID_PARAMETER` | `STATUS_INVALID_PARAMETER` |
+
+The anonymous-`SEC_COMMIT` row is the one no winetest asks: it is the single arm that
+`return`s *above* the `SEC_LARGE_PAGES` guard, so the same word that succeeds there refuses
+the moment a file handle is named. "`SEC_LARGE_PAGES` is unsupported" as one rule passes the
+whole of `kernel32:virtual`'s 44-row matrix and diverges exactly there.
+
+**2 — which bits survive, and it differs by arm.** An anonymous section keeps the caller's
+word **whole** (the oracle's literal `return flags`, unknown bits included); a file-backed
+one reports `SEC_FILE` in place of the kind it was asked for plus
+`flags & (SEC_NOCACHE | SEC_WRITECOMBINE)` and nothing else; an image reports
+`SEC_FILE | SEC_IMAGE` and keeps neither modifier. `SEC_IMAGE | SEC_NOCACHE` is therefore the
+one accepted-and-not-kept combination on the surface, and it is what separates an
+implementation that reads the section's **resolved** attributes from one that reads the flags
+its caller passed — both answer every other case here.
+
+**3 — where the check sits.** `get_mapping_flags` runs above `create_mapping`'s
+`get_file_obj`, so a refused combination is reported for a file handle that names nothing:
+`SEC_COMMIT | SEC_LARGE_PAGES` with a junk handle is `STATUS_INVALID_PARAMETER`, while
+`SEC_COMMIT` alone with the same handle is `STATUS_INVALID_HANDLE`. `NtCreateSection` calls
+`MipMappingFlags` before it resolves the backing for that reason and `MipBuildSection` calls
+it again for the answer — the same "validate the arguments *after* resolving the object is
+what NT does" shape as `NtProtectVirtualMemory`'s ladder above.
+
+**And exactly one of the kept bits is readable afterwards.** A view's protect word is the
+section's resolved flags (`dlls/ntdll/unix/virtual.c` `virtual_map_section`:
+`vprot |= sec_flags`), and `get_win32_prot` reads one modifier back out of it —
+`if (map_prot & SEC_NOCACHE) ret |= PAGE_NOCACHE;`. So `SEC_NOCACHE` decorates every page's
+`Protect` and the view's `AllocationProtect`, survives a re-protect that splits the view, and
+appears in the `*old_prot` a re-protect reports; `SEC_WRITECOMBINE` is kept by the section
+and read by nothing. An implementation that decorates the reported protection with every
+modifier it kept fails only the `SEC_WRITECOMBINE` view.
+
+It was 24 of `kernel32:virtual`'s 25 remaining failures — and the 17 assertions behind that
+pair's `if (section_info.Attributes & SEC_NOCACHE)` gate (`virtual.c:1017`) had never run,
+because the gate reads the value rule 2 was getting wrong. They all pass.
 
 ## A partial `NtWriteVirtualMemory` reports the bytes it wrote
 

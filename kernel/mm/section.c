@@ -73,6 +73,73 @@ OBJECT_TYPE MiSectionType = {
 
 /* --- creation --------------------------------------------------------------- */
 
+/* --- the SEC_* word ----------------------------------------------------------
+ *
+ * The ONE place a section's attribute word is decided and the only place a
+ * SEC_* combination is refused: Wine's server/mapping.c get_mapping_flags,
+ * transcribed. Three separate rules live in it and each is measurable
+ * (pinned by sem_mm/section_sec_flags.c; docs/03 "The SEC_* modifier flags
+ * on a section"):
+ *
+ *  - WHICH COMBINATIONS REFUSE. SEC_LARGE_PAGES and SEC_WRITECOMBINE are
+ *    neither uniformly legal nor uniformly illegal. SEC_LARGE_PAGES refuses
+ *    on an image, on any file-backed section and on an anonymous
+ *    SEC_RESERVE — and SUCCEEDS on an anonymous SEC_COMMIT, which is the one
+ *    arm that returns above the guard. SEC_WRITECOMBINE refuses only on an
+ *    image. "SEC_LARGE_PAGES is unsupported" as a single rule passes the
+ *    whole of kernel32:virtual's matrix and diverges there.
+ *  - WHICH BITS SURVIVE, per arm: an anonymous section keeps the caller's
+ *    word WHOLE (the oracle's literal `return flags`), a file-backed one
+ *    keeps SEC_NOCACHE|SEC_WRITECOMBINE and reports SEC_FILE in place of the
+ *    kind it was asked for, an image keeps neither.
+ *  - WHERE THE CHECK SITS: above create_mapping's `get_file_obj`, so a
+ *    refused combination is reported for a file handle that names nothing.
+ *    NtCreateSection calls this before it touches the handle for that
+ *    reason.
+ *
+ * `haveFile` is the oracle's `handle` — whether a file handle was NAMED, not
+ * whether it resolved to anything. */
+static NTSTATUS MipMappingFlags(BOOLEAN haveFile, ULONG flags, PULONG resolved)
+{
+    switch (flags & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_FILE))
+    {
+    case SEC_IMAGE:
+        if ((flags & (SEC_WRITECOMBINE | SEC_LARGE_PAGES)) != 0)
+        {
+            break;
+        }
+        if (haveFile)
+        {
+            *resolved = SEC_FILE | SEC_IMAGE;
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INVALID_FILE_FOR_SECTION;
+
+    case SEC_COMMIT:
+        if (!haveFile)
+        {
+            *resolved = flags;
+            return STATUS_SUCCESS;
+        }
+        /* ...and with a handle it falls through, exactly as the oracle does. */
+        __attribute__((fallthrough));
+
+    case SEC_RESERVE:
+        if ((flags & SEC_LARGE_PAGES) != 0)
+        {
+            break;
+        }
+        *resolved = haveFile ? (SEC_FILE | (flags & (SEC_NOCACHE | SEC_WRITECOMBINE))) : flags;
+        return STATUS_SUCCESS;
+
+    default:
+        break; /* naming two kinds, or none, matches no arm */
+    }
+    /* Every `break` above lands here, which is the oracle's own
+     * `set_error( STATUS_INVALID_PARAMETER )` below its switch. */
+    return STATUS_INVALID_PARAMETER;
+}
+
 /* Build a section's contents into `scratch` (nothing Ob-visible yet, so
  * every failure unwinds cleanly — including a backing whose rawData we were
  * handed ownership of). Validation order and statuses follow Wine's
@@ -87,19 +154,35 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
     /* An anonymous section has no backing file to constrain it. */
     scratch->backingWritable = backing == 0 || backing->fileObject == 0 || backing->writable;
 
-    /* The one statement of "does this section take the FILE arm", because
-     * SEC_RESERVE's whole meaning turns on it (below). */
-    BOOLEAN fileBacked = backing != 0 && backing->cache != 0;
-    BOOLEAN reserve = FALSE;
-
-    switch (attributes & (SEC_IMAGE | SEC_RESERVE | SEC_COMMIT | SEC_FILE))
+    /* The attribute word, and with it every SEC_* refusal, in one call. What
+     * it returns is also the STRUCTURE decision below: SEC_RESERVE survives
+     * only on an anonymous section, so a file-backed "reserve" reports
+     * SEC_FILE and is an ordinary, fully committed data section with no
+     * commit ledger (pinned both ways by sem_mm/reserve_section.c). */
+    ULONG resolved = 0;
+    NTSTATUS status = MipMappingFlags(backing != 0, attributes, &resolved);
+    if (!NT_SUCCESS(status))
     {
-    case SEC_IMAGE:
-        if (backing == 0 || backing->rawData == 0)
+        return status;
+    }
+    scratch->attributes = resolved;
+
+    /* An IMAGE section is handed a page cache too (its raw-byte snapshot's
+     * release path keeps the file's cache reachable), so the image arm is
+     * asked before the SEC_FILE one below. */
+    BOOLEAN reserve = (resolved & SEC_RESERVE) != 0;
+
+    if ((resolved & SEC_IMAGE) != 0)
+    {
+        /* "SEC_IMAGE with no file handle" is MipMappingFlags' answer and is
+         * not re-asked here: resolved SEC_IMAGE implies a named handle. What
+         * is left for this arm is a handle that named something with no raw
+         * bytes behind it, which is a different question. */
+        ASSERT(backing != 0);
+        if (backing->rawData == 0)
         {
             return STATUS_INVALID_FILE_FOR_SECTION;
         }
-        scratch->attributes = SEC_FILE | SEC_IMAGE;
         scratch->rawData = backing->rawData;
         scratch->rawSize = backing->rawSize;
         scratch->ownsRawData = backing->ownsRawData;
@@ -113,7 +196,7 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         {
             return STATUS_NO_MEMORY;
         }
-        NTSTATUS status = MiParseImage(backing->rawData, backing->rawSize, scratch->image);
+        status = MiParseImage(backing->rawData, backing->rawSize, scratch->image);
         if (!NT_SUCCESS(status))
         {
             MiFreePool(scratch->image);
@@ -123,31 +206,17 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         scratch->size = scratch->image->sizeOfImage;
         scratch->pageCount = (ULONG)(scratch->size / PAGE_SIZE);
         return STATUS_SUCCESS;
-
-    case SEC_COMMIT:
-        break;
-
-    case SEC_RESERVE:
-        /* SEC_RESERVE describes an ANONYMOUS mapping. Handed a file handle
-         * the oracle drops the whole flag and answers SEC_FILE
-         * (third_party/wine server/mapping.c get_mapping_flags: SEC_COMMIT
-         * falls THROUGH into this case, and both return
-         * `SEC_FILE | (flags & (SEC_NOCACHE | SEC_WRITECOMBINE))` when a
-         * handle is present) — so a file-backed "reserve" section is an
-         * ordinary, fully committed data section and only the anonymous one
-         * carries a ledger. Pinned both ways by sem_mm/reserve_section.c. */
-        reserve = !fileBacked;
-        break;
-
-    default:
-        return STATUS_INVALID_PARAMETER;
     }
 
-    if (fileBacked)
+    if ((resolved & SEC_FILE) != 0)
     {
         /* File-backed data section: views map the file's unified page cache,
          * so a view and a read/write can never disagree (docs/02's
-         * consistency test — structural under Art. 3). */
+         * consistency test — structural under Art. 3). SEC_FILE is what the
+         * word above says about a named handle, and every caller that names
+         * one hands over that handle's cache — IopBuildSectionBacking for
+         * NtCreateSection, KiEnsureRamdiskCache for MiCreateSection. */
+        ASSERT(backing != 0 && backing->cache != 0);
         PMI_PAGE_CACHE cache = backing->cache;
         uint64_t size = cache->fileSize;
         if (maximumSize != 0 && maximumSize->QuadPart != 0)
@@ -169,7 +238,6 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
         {
             return STATUS_MAPPED_FILE_SIZE_ZERO;
         }
-        scratch->attributes = SEC_FILE;
         scratch->size = size;
         scratch->pageCount = (ULONG)((size + PAGE_SIZE - 1) / PAGE_SIZE);
         scratch->cache = cache;
@@ -185,7 +253,6 @@ static NTSTATUS MipBuildSection(MI_SECTION *scratch, const LARGE_INTEGER *maximu
     {
         return STATUS_INVALID_PARAMETER;
     }
-    scratch->attributes = reserve ? SEC_RESERVE : SEC_COMMIT;
     scratch->size = ((uint64_t)maximumSize->QuadPart + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
     scratch->pageCount = (ULONG)(scratch->size / PAGE_SIZE);
     scratch->frames = MiAllocatePool((uint64_t)scratch->pageCount * sizeof(uint64_t));
@@ -287,10 +354,10 @@ NTSTATUS MiCreateSection(const LARGE_INTEGER *maximumSize, ULONG pageProtection,
         backing.rawSize = file->size;
         backing.fcb = file; /* the ramdisk file IS the on-disk identity here */
     }
-    if (file == 0 && (attributes & SEC_IMAGE) != 0)
-    {
-        return STATUS_INVALID_FILE_FOR_SECTION;
-    }
+    /* No "no file for SEC_IMAGE" guard here: MipMappingFlags is the one
+     * statement of it, and it also knows the combinations that refuse ABOVE
+     * that question (SEC_IMAGE|SEC_LARGE_PAGES names neither a file nor an
+     * image). A second copy would answer the wrong one of the two. */
     return MiCreateBackedSection(maximumSize, pageProtection, attributes, file != 0 ? &backing : 0,
                                  sectionOut);
 }
@@ -1170,6 +1237,20 @@ NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIB
         }
         sizeArg = &capturedSize;
     }
+
+    /* The SEC_* combination is decided BEFORE the file handle is touched,
+     * because the oracle's get_mapping_flags runs above create_mapping's
+     * `get_file_obj` — so a refused combination is reported for a handle
+     * that names nothing, and only a call with a junk handle can see it
+     * (sem_mm/section_sec_flags.c). MipBuildSection asks the same function
+     * again for the answer; this call is only the ORDER. */
+    ULONG resolvedFlags = 0;
+    status = MipMappingFlags(file != 0, secFlags, &resolvedFlags);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    (void)resolvedFlags;
 
     /* A file handle brings the M6 Io backing: the file's page cache for
      * data sections, a raw-bytes snapshot for SEC_IMAGE. */
