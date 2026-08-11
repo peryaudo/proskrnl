@@ -134,6 +134,8 @@
 /* The SYSTEM hive on the boot volume; NT's path shape, our bytes. */
 #define CMP_HIVE_DIR  WSTR("\\??\\C:\\windows\\system32\\config")
 #define CMP_HIVE_PATH WSTR("\\??\\C:\\windows\\system32\\config\\SYSTEM")
+/* Compaction writes here and renames over CMP_HIVE_PATH. */
+#define CMP_HIVE_TEMP_PATH WSTR("\\??\\C:\\windows\\system32\\config\\SYSTEM.new")
 
 static KMUTEX CmpHiveMutex;   /* serializes concurrent savers */
 static BOOLEAN CmpHiveReady;  /* set once CmInitialize finished */
@@ -221,10 +223,17 @@ static void CmpWrite64(CMP_WRITER *writer, ULONGLONG value)
  * the tail. `byteLength` and `crc32` are backpatched by CmpEndRecord, which
  * is why the record's start offset is returned. */
 static ULONGLONG CmpBeginRecord(CMP_WRITER *writer, UCHAR op, UCHAR keyFlags,
-                                const CMP_KEY_NODE *node, const CMP_KEY_NODE *top, ULONG valueCount)
+                                const CMP_KEY_NODE *node, const CMP_KEY_NODE *top,
+                                const UNICODE_STRING *capturedPath, LARGE_INTEGER stamp,
+                                ULONG valueCount)
 {
     ULONGLONG start = writer->offset;
-    ULONG pathBytes = CmpBuildPath(node, top, 0, 0);
+    /* Either derive the path from the live node (the snapshot walk) or use one
+     * the caller captured BEFORE it mutated the tree. NtDeleteKey unlinks the
+     * node and NtRenameKey replaces its name before the log is written, so
+     * deriving the path at that point would spell the wrong key -- a truncated
+     * one and the NEW one respectively. */
+    ULONG pathBytes = capturedPath != 0 ? capturedPath->Length : CmpBuildPath(node, top, 0, 0);
 
     ASSERT((start & (CMP_RECORD_ALIGN - 1)) == 0);
     CmpWrite32(writer, 0); /* byteLength, backpatched */
@@ -238,7 +247,7 @@ static ULONGLONG CmpBeginRecord(CMP_WRITER *writer, UCHAR op, UCHAR keyFlags,
     CmpWrite16(writer, (USHORT)(pathBytes / sizeof(WCHAR)));
     CmpWrite16(writer, 0); /* sharedChars: reserved */
     CmpWrite16(writer, (USHORT)valueCount);
-    CmpWrite64(writer, (ULONGLONG)node->lastWriteTime.QuadPart);
+    CmpWrite64(writer, (ULONGLONG)stamp.QuadPart);
     ASSERT(writer->offset - start == CMP_RECORD_HEADER_BYTES);
 
     if (writer->buffer != 0 && pathBytes != 0)
@@ -248,7 +257,14 @@ static ULONGLONG CmpBeginRecord(CMP_WRITER *writer, UCHAR op, UCHAR keyFlags,
          * the header is 24 bytes, so this destination is WCHAR-aligned. */
         UCHAR *pathAt = writer->buffer + writer->offset;
         WCHAR *pathOut = (WCHAR *)(void *)pathAt; /* NOLINT(bugprone-casting-through-void) */
-        (void)CmpBuildPath(node, top, pathOut, pathBytes / sizeof(WCHAR));
+        if (capturedPath != 0)
+        {
+            memcpy(pathOut, capturedPath->Buffer, pathBytes);
+        }
+        else
+        {
+            (void)CmpBuildPath(node, top, pathOut, pathBytes / sizeof(WCHAR));
+        }
     }
     writer->offset += pathBytes;
     CmpWritePad(writer);
@@ -285,7 +301,8 @@ static void CmpWriteValue(CMP_WRITER *writer, const CMP_VALUE *value)
 static void CmpWriteKeySnapshot(CMP_WRITER *writer, const CMP_KEY_NODE *node,
                                 const CMP_KEY_NODE *top)
 {
-    ULONGLONG start = CmpBeginRecord(writer, CMP_OP_CREATE_KEY, node->isLink ? 1 : 0, node, top, 0);
+    ULONGLONG start = CmpBeginRecord(writer, CMP_OP_CREATE_KEY, node->isLink ? 1 : 0, node, top, 0,
+                                     node->lastWriteTime, 0);
     CmpEndRecord(writer, start);
 
     /* Values go out in chunks. valueCount is a u16 in the record, and a key
@@ -301,7 +318,8 @@ static void CmpWriteKeySnapshot(CMP_WRITER *writer, const CMP_KEY_NODE *node,
         {
             chunk++;
         }
-        start = CmpBeginRecord(writer, CMP_OP_SET_VALUES, 0, node, top, chunk);
+        start =
+            CmpBeginRecord(writer, CMP_OP_SET_VALUES, 0, node, top, 0, node->lastWriteTime, chunk);
         for (ULONG i = 0; i < chunk; i++)
         {
             CmpWriteValue(writer, CONTAINING_RECORD(entry, CMP_VALUE, listEntry));
@@ -509,6 +527,28 @@ static PCMP_KEY_NODE CmpResolveRecordKey(PCMP_KEY_NODE top, const UNICODE_STRING
     return CmpWalkPathCounted(parent, &leaf, create);
 }
 
+/* The single-name tail DELETE_VALUE and RENAME_KEY share:
+ * u16 nameChars | u16 pad | UTF-16LE name. FALSE = malformed. */
+static BOOLEAN CmpReadTailName(const CMP_RECORD *record, UNICODE_STRING *out)
+{
+    if (record->tailBytes < 4)
+    {
+        return FALSE;
+    }
+    USHORT nameChars = KiReadLe16(record->tail);
+    ULONGLONG nameBytes = (ULONGLONG)nameChars * sizeof(WCHAR);
+    if (4 + nameBytes > record->tailBytes)
+    {
+        return FALSE;
+    }
+    out->Length = (USHORT)nameBytes;
+    out->MaximumLength = out->Length;
+    /* In place: the tail starts 8-aligned, so the name at +4 is even. */
+    const UCHAR *namePtr = record->tail + 4;
+    out->Buffer = (PWSTR)(void *)namePtr; /* NOLINT(bugprone-casting-through-void) */
+    return TRUE;
+}
+
 /* Apply one record to the tree under `top`. FALSE stops the replay. */
 static BOOLEAN CmpApplyRecord(PCMP_KEY_NODE top, const CMP_RECORD *record)
 {
@@ -534,6 +574,59 @@ static BOOLEAN CmpApplyRecord(PCMP_KEY_NODE top, const CMP_RECORD *record)
         }
         node->lastWriteTime.QuadPart = (LONGLONG)record->lastWriteTime;
         return CmpApplyValues(node, record);
+    }
+    case CMP_OP_DELETE_KEY:
+    {
+        PCMP_KEY_NODE node = CmpResolveRecordKey(top, &record->path, FALSE);
+        /* Never a cascade: the emitters only ever log a LEAF delete (see the
+         * format comment), so a record naming a key that still has subkeys is
+         * corruption and must not be obeyed. */
+        if (node == 0 || node == top || node->parent == 0 || node->subkeyCount != 0)
+        {
+            return FALSE;
+        }
+        PCMP_KEY_NODE parent = node->parent;
+        /* Replay only ever runs over a subtree nobody has opened -- the boot
+         * tree before the hive goes live, or an NtLoadKey destination created
+         * moments ago. State the invariant rather than argue it. */
+        ASSERT(node->bodyCount == 0);
+        RemoveEntryList(&node->siblingEntry);
+        parent->subkeyCount--;
+        parent->lastWriteTime.QuadPart = (LONGLONG)record->lastWriteTime;
+        CmpFreeValues(node);
+        MiFreePool(node->name.Buffer);
+        MiFreePool(node);
+        return TRUE;
+    }
+    case CMP_OP_DELETE_VALUE:
+    {
+        PCMP_KEY_NODE node = CmpResolveRecordKey(top, &record->path, FALSE);
+        UNICODE_STRING name;
+        if (node == 0 || !CmpReadTailName(record, &name))
+        {
+            return FALSE;
+        }
+        node->lastWriteTime.QuadPart = (LONGLONG)record->lastWriteTime;
+        /* A value the log deletes twice (a replay of a compacted prefix plus
+         * its tail) is not an error: absence is the requested state. */
+        (void)CmpRemoveValue(node, &name);
+        return TRUE;
+    }
+    case CMP_OP_RENAME_KEY:
+    {
+        PCMP_KEY_NODE node = CmpResolveRecordKey(top, &record->path, FALSE);
+        UNICODE_STRING newName;
+        if (node == 0 || node == top || node->parent == 0 || !CmpReadTailName(record, &newName) ||
+            newName.Length == 0)
+        {
+            return FALSE;
+        }
+        if (!CmpRenameNode(node, &newName))
+        {
+            return FALSE;
+        }
+        node->lastWriteTime.QuadPart = (LONGLONG)record->lastWriteTime;
+        return TRUE;
     }
     default:
         /* An op this reader does not implement ends the log rather than
@@ -709,15 +802,275 @@ void CmpLoadHive(void)
     MiFreePool(buffer);
 }
 
-void CmpSaveHive(void)
+/* --- the append path --------------------------------------------------------
+ *
+ * A mutation writes ONE record at the end of the file instead of rewriting
+ * the whole tree, which is the entire point of the format. The file is
+ * opened and closed per append rather than held open for the boot: holding
+ * it would collide with compaction's rename, which FAT32 refuses against a
+ * file with an open handle (fs/fat32/file.c FatVfsRenameLocked).
+ *
+ * The log only ever GROWS between boots -- there is no runtime compaction --
+ * so the cap below is a real ceiling rather than a sanity check, and it is
+ * loud on the way to it (G12: never a silent drop). Once-per-boot compaction
+ * is what keeps it out of reach in practice. */
+
+#define CMP_HIVE_SOFT_WARN_BYTES (16u << 20)
+
+static ULONGLONG CmpHiveLogBytes; /* the live file's size, tracked as we append */
+static BOOLEAN CmpHiveLogWarned;  /* one soft-threshold line per boot */
+
+static NTSTATUS CmpAppendToHiveFile(const UCHAR *buffer, ULONG bytes)
+{
+    HANDLE handle;
+    NTSTATUS status =
+        CmpOpenHiveFile(CMP_HIVE_PATH, FILE_GENERIC_WRITE, FILE_OPEN,
+                        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &handle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    IO_STATUS_BLOCK iosb;
+    LARGE_INTEGER offset;
+    offset.QuadPart = -1; /* FILE_WRITE_TO_END_OF_FILE (kernel/io/rw.c) -- the file's
+                           * length is the disk's business, never tracked in memory */
+    status = NtWriteFile(handle, 0, 0, 0, &iosb, buffer, bytes, &offset, 0);
+    NtClose(handle);
+    return status;
+}
+
+/* Build one record and append it. `node` supplies the path unless
+ * `capturedPath` is set (see CmpBeginRecord). `value` != 0 emits a
+ * one-value SET_VALUES; `tailName` != 0 supplies the DELETE_VALUE /
+ * RENAME_KEY tail; both null with op SET_VALUES is the "touch" form. */
+static void CmpLogRecord(UCHAR op, UCHAR keyFlags, const CMP_KEY_NODE *node,
+                         const UNICODE_STRING *capturedPath, LARGE_INTEGER stamp,
+                         const CMP_VALUE *value, const UNICODE_STRING *tailName)
 {
     if (!CmpHiveReady)
     {
         return; /* skeleton building during CmInitialize */
     }
 
-    /* One saver at a time; each mutating syscall persists its own snapshot
-     * before returning (immediate writeback, Art. 3). */
+    KeWaitForSingleObject(&CmpHiveMutex, Executive, KernelMode, FALSE, 0);
+
+    ULONG valueCount = value != 0 ? 1 : 0;
+    CMP_WRITER measure = {0, 0};
+    ULONGLONG start =
+        CmpBeginRecord(&measure, op, keyFlags, node, CmpRootNode, capturedPath, stamp, valueCount);
+    if (value != 0)
+    {
+        CmpWriteValue(&measure, value);
+    }
+    else if (tailName != 0)
+    {
+        CmpWrite16(&measure, (USHORT)(tailName->Length / sizeof(WCHAR)));
+        CmpWrite16(&measure, 0);
+        CmpWriteBytes(&measure, tailName->Buffer, tailName->Length);
+        CmpWritePad(&measure);
+    }
+    CmpEndRecord(&measure, start);
+    ULONGLONG total = measure.offset;
+
+    NTSTATUS status = STATUS_SUCCESS;
+    if (CmpHiveLogBytes + total > CMP_HIVE_MAX_BYTES)
+    {
+        /* Nothing can shrink the log until the next boot compacts it, so this
+         * is a real end rather than a retryable one -- and it names itself
+         * every time rather than dropping a mutation quietly. */
+        DbgPrint("cm: hive log is at its %lu MiB cap - this change will NOT survive reboot\n",
+                 (unsigned long)(CMP_HIVE_MAX_BYTES >> 20));
+        KeReleaseMutex(&CmpHiveMutex, FALSE);
+        return;
+    }
+
+    UCHAR *buffer = MiAllocatePool(total);
+    if (buffer == 0)
+    {
+        KeReleaseMutex(&CmpHiveMutex, FALSE);
+        DbgPrint("cm: hive append skipped - out of pool\n");
+        return;
+    }
+    CMP_WRITER emit = {buffer, 0};
+    start = CmpBeginRecord(&emit, op, keyFlags, node, CmpRootNode, capturedPath, stamp, valueCount);
+    if (value != 0)
+    {
+        CmpWriteValue(&emit, value);
+    }
+    else if (tailName != 0)
+    {
+        CmpWrite16(&emit, (USHORT)(tailName->Length / sizeof(WCHAR)));
+        CmpWrite16(&emit, 0);
+        CmpWriteBytes(&emit, tailName->Buffer, tailName->Length);
+        CmpWritePad(&emit);
+    }
+    CmpEndRecord(&emit, start);
+    ASSERT(emit.offset == total);
+
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode;
+    status = CmpAppendToHiveFile(buffer, (ULONG)total);
+    thread->previousMode = saved;
+    MiFreePool(buffer);
+
+    if (NT_SUCCESS(status))
+    {
+        CmpHiveLogBytes += total;
+        if (CmpHiveLogBytes > CMP_HIVE_SOFT_WARN_BYTES && !CmpHiveLogWarned)
+        {
+            CmpHiveLogWarned = TRUE;
+            DbgPrint("cm: hive log past %lu MiB this boot (cap %lu MiB); it is compacted at "
+                     "boot, so this means one boot is writing a great deal\n",
+                     (unsigned long)(CMP_HIVE_SOFT_WARN_BYTES >> 20),
+                     (unsigned long)(CMP_HIVE_MAX_BYTES >> 20));
+        }
+    }
+    KeReleaseMutex(&CmpHiveMutex, FALSE);
+
+    if (!NT_SUCCESS(status) && !CmpHiveWarned)
+    {
+        CmpHiveWarned = TRUE;
+        DbgPrint("cm: hive append FAILED %08lx - registry changes will not survive reboot\n",
+                 (unsigned long)status);
+    }
+}
+
+/* The per-mutation entry points. Each is named for the syscall that calls it
+ * so the call sites read as what they persist. */
+
+void CmpLogCreateKey(const CMP_KEY_NODE *node)
+{
+    CmpLogRecord(CMP_OP_CREATE_KEY, node->isLink ? 1 : 0, node, 0, node->lastWriteTime, 0, 0);
+}
+
+void CmpLogSetValue(const CMP_KEY_NODE *node, const CMP_VALUE *value)
+{
+    CmpLogRecord(CMP_OP_SET_VALUES, 0, node, 0, node->lastWriteTime, value, 0);
+}
+
+void CmpLogTouchKey(const CMP_KEY_NODE *node)
+{
+    CmpLogRecord(CMP_OP_SET_VALUES, 0, node, 0, node->lastWriteTime, 0, 0);
+}
+
+void CmpLogDeleteValue(const CMP_KEY_NODE *node, const UNICODE_STRING *valueName)
+{
+    CmpLogRecord(CMP_OP_DELETE_VALUE, 0, node, 0, node->lastWriteTime, 0, valueName);
+}
+
+/* Delete and rename both need the path the key had BEFORE the tree moved, so
+ * they take one the caller captured with CmpCaptureLogPath. */
+void CmpLogDeleteKey(const UNICODE_STRING *capturedPath, LARGE_INTEGER stamp)
+{
+    CmpLogRecord(CMP_OP_DELETE_KEY, 0, 0, capturedPath, stamp, 0, 0);
+}
+
+void CmpLogRenameKey(const UNICODE_STRING *capturedPath, const UNICODE_STRING *newName,
+                     LARGE_INTEGER stamp)
+{
+    CmpLogRecord(CMP_OP_RENAME_KEY, 0, 0, capturedPath, stamp, 0, newName);
+}
+
+/* Capture a node's log path into pool while the node is still where it is.
+ * FALSE = out of pool, and the caller must then skip its log record rather
+ * than log a wrong path. CmpReleaseLogPath frees it. */
+BOOLEAN CmpCaptureLogPath(const CMP_KEY_NODE *node, UNICODE_STRING *out)
+{
+    ULONG bytes = CmpBuildPath(node, CmpRootNode, 0, 0);
+    out->Buffer = 0;
+    out->Length = 0;
+    out->MaximumLength = 0;
+    if (bytes == 0 || bytes > 0xFFFFu)
+    {
+        return FALSE;
+    }
+    PWSTR buffer = MiAllocatePool(bytes);
+    if (buffer == 0)
+    {
+        return FALSE;
+    }
+    (void)CmpBuildPath(node, CmpRootNode, buffer, bytes / sizeof(WCHAR));
+    out->Buffer = buffer;
+    out->Length = (USHORT)bytes;
+    out->MaximumLength = (USHORT)bytes;
+    return TRUE;
+}
+
+void CmpReleaseLogPath(UNICODE_STRING *path)
+{
+    if (path->Buffer != 0)
+    {
+        MiFreePool(path->Buffer);
+        path->Buffer = 0;
+    }
+    path->Length = 0;
+    path->MaximumLength = 0;
+}
+
+static void CmpRewriteHiveLocked(void);
+
+/* Rename the just-written temp file over the live hive, replacing it. This is
+ * the commit point of a compaction. FAT32's rename refuses a destination with
+ * an open handle (fs/fat32/file.c FatVfsRenameLocked), which is exactly why
+ * the hive file is never held open across a boot. */
+static NTSTATUS CmpRenameOverHive(HANDLE tempHandle)
+{
+    /* A union rather than a cast buffer: it gives the struct its natural
+     * alignment without one, and the trailing room is the name. */
+    union
+    {
+        FILE_RENAME_INFORMATION info;
+        UCHAR raw[sizeof(FILE_RENAME_INFORMATION) + 64 * sizeof(WCHAR)];
+    } storage;
+    PFILE_RENAME_INFORMATION renameInfo = &storage.info;
+    UNICODE_STRING target;
+    RtlInitUnicodeString(&target, CMP_HIVE_PATH);
+    ASSERT(target.Length <= 64 * sizeof(WCHAR));
+
+    memset(&storage, 0, sizeof(storage));
+    renameInfo->ReplaceIfExists = TRUE;
+    /* RootDirectory == 0 means the name is a FULL NT path, not a leaf --
+     * kernel/io/query.c IopSetRenameInformation answers
+     * STATUS_OBJECT_PATH_SYNTAX_BAD for anything else. */
+    renameInfo->RootDirectory = 0;
+    renameInfo->FileNameLength = target.Length;
+    memcpy(renameInfo->FileName, target.Buffer, target.Length);
+
+    IO_STATUS_BLOCK iosb;
+    return NtSetInformationFile(tempHandle, &iosb, renameInfo,
+                                (ULONG)(sizeof(FILE_RENAME_INFORMATION) + target.Length),
+                                FileRenameInformation);
+}
+
+/* Rewrite the whole log from a fresh snapshot: write a temp file, then rename
+ * it over the live one.
+ *
+ * THE only whole-file writer, and it has three callers (Art. 11): the
+ * once-per-boot compaction, NtUnloadKey on a non-volatile target and
+ * NtRestoreKey -- the two syscalls that drop a whole subtree, which the log's
+ * leaf-only DELETE_KEY cannot express.
+ *
+ * Crash story, which is strictly better than PHV1's: the temp file is written
+ * and closed BEFORE the rename, so a crash during it leaves the live hive
+ * completely untouched. The only exposed window is inside the rename itself,
+ * between FAT deleting the old directory entry and writing the new one
+ * (fs/fat32/dir.c FatRenameEntry) -- two directory-slot writes, during which
+ * the data is intact under the temp name. PHV1's equivalent window was a
+ * 237 KiB body write on EVERY mutation. */
+void CmpRewriteHive(void)
+{
+    if (!CmpHiveReady)
+    {
+        return; /* skeleton building during CmInitialize */
+    }
+    CmpRewriteHiveLocked();
+}
+
+/* The body, callable from CmInitialize before CmpHiveReady is set (that is
+ * what boot-time compaction is). */
+static void CmpRewriteHiveLocked(void)
+{
     KeWaitForSingleObject(&CmpHiveMutex, Executive, KernelMode, FALSE, 0);
 
     UCHAR *buffer = 0;
@@ -726,7 +1079,7 @@ void CmpSaveHive(void)
     if (!NT_SUCCESS(status))
     {
         KeReleaseMutex(&CmpHiveMutex, FALSE);
-        DbgPrint("cm: hive save skipped - out of pool\n");
+        DbgPrint("cm: hive rewrite skipped - out of pool\n");
         return;
     }
 
@@ -734,18 +1087,13 @@ void CmpSaveHive(void)
     KPROCESSOR_MODE saved = thread->previousMode;
     thread->previousMode = KernelMode;
 
-    /* Ensure ...\config exists (first boot), then rewrite the file. The
-     * magic goes down with the body here because this whole function is
-     * about to become a once-per-boot compaction that writes a temp file and
-     * renames it; until then the PHV1 ordering is kept so the torn-write
-     * behaviour does not change in the same commit as the format. */
     HANDLE handle;
     status = CmpOpenHiveFile(CMP_HIVE_DIR, FILE_GENERIC_READ, FILE_OPEN_IF,
                              FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &handle);
     if (NT_SUCCESS(status))
     {
         NtClose(handle);
-        status = CmpOpenHiveFile(CMP_HIVE_PATH, FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        status = CmpOpenHiveFile(CMP_HIVE_TEMP_PATH, FILE_GENERIC_READ | FILE_GENERIC_WRITE,
                                  FILE_OVERWRITE_IF,
                                  FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &handle);
     }
@@ -754,24 +1102,40 @@ void CmpSaveHive(void)
         IO_STATUS_BLOCK iosb;
         LARGE_INTEGER offset;
         offset.QuadPart = 0;
-        ULONG magic = KiReadLe32(buffer);
-        KiWriteLe32(buffer, 0); /* magic goes in only after the body is on disk */
         status = NtWriteFile(handle, 0, 0, 0, &iosb, buffer, total, &offset, 0);
         if (NT_SUCCESS(status))
         {
-            KiWriteLe32(buffer, magic);
-            status = NtWriteFile(handle, 0, 0, 0, &iosb, buffer, 4, &offset, 0);
+            status = CmpRenameOverHive(handle);
         }
         NtClose(handle);
     }
     thread->previousMode = saved;
     MiFreePool(buffer);
+    if (NT_SUCCESS(status))
+    {
+        CmpHiveLogBytes = total;
+    }
     KeReleaseMutex(&CmpHiveMutex, FALSE);
 
     if (!NT_SUCCESS(status) && !CmpHiveWarned)
     {
         CmpHiveWarned = TRUE;
-        DbgPrint("cm: hive save FAILED %08lx - registry changes will not survive reboot\n",
+        DbgPrint("cm: hive rewrite FAILED %08lx - registry changes will not survive reboot\n",
                  (unsigned long)status);
     }
+}
+
+/* Compaction: run UNCONDITIONALLY ONCE PER BOOT, from CmInitialize after the
+ * replay and after every seed, immediately before CmpSetHiveReady.
+ *
+ * Unconditional on purpose. A size threshold would need a policy nobody can
+ * tune from first principles, and -- worse -- it would leave the rewrite path
+ * running on almost no boot, which is how a rarely-taken path rots. Every
+ * boot of every test leg exercises this one. It also means the seeded
+ * furniture (the 139-zone time-zone table, the license values) lands in the
+ * snapshot rather than being appended, and that one boot's log is all the
+ * file ever accumulates. */
+void CmpCompactHive(void)
+{
+    CmpRewriteHiveLocked();
 }

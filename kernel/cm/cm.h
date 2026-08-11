@@ -128,6 +128,9 @@ PCMP_KEY_NODE CmpWalkPathCounted(PCMP_KEY_NODE start, const UNICODE_STRING *path
  * allocation failure. */
 PCMP_KEY_NODE CmpAllocateNode(PCMP_KEY_NODE parent, const UNICODE_STRING *name);
 
+/* Find one named value on `node`, or 0. */
+PCMP_VALUE CmpFindValue(PCMP_KEY_NODE node, const UNICODE_STRING *name);
+
 /* Set/replace value `name` on `node` from a kernel-side buffer. */
 NTSTATUS CmpSetValue(PCMP_KEY_NODE node, const UNICODE_STRING *name, ULONG type, const void *data,
                      ULONG dataLength);
@@ -161,10 +164,40 @@ void CmpCloseKeyBody(PVOID bodyPointer);
 void CmpInitializeHiveLock(void);
 void CmpSetHiveReady(void);
 void CmpLoadHive(void);
-void CmpSaveHive(void);
+
+/* Rewrite the whole log from a fresh snapshot (temp file + rename). The only
+ * whole-file writer: boot-time compaction, and the two syscalls whose subtree
+ * drop the log's leaf-only DELETE_KEY cannot express (NtUnloadKey on a
+ * non-volatile target, NtRestoreKey). */
+void CmpRewriteHive(void);
+
+/* Compact once, unconditionally, from CmInitialize -- after the replay and
+ * after every seed, immediately before CmpSetHiveReady. */
+void CmpCompactHive(void);
+
+/* Append one record for one mutation. No-ops before CmpSetHiveReady. */
+void CmpLogCreateKey(const CMP_KEY_NODE *node);
+void CmpLogSetValue(const CMP_KEY_NODE *node, const CMP_VALUE *value);
+void CmpLogTouchKey(const CMP_KEY_NODE *node);
+void CmpLogDeleteValue(const CMP_KEY_NODE *node, const UNICODE_STRING *valueName);
+
+/* Delete and rename move the key before the log is written, so they log a
+ * path captured beforehand. A failed capture means SKIP the record rather
+ * than log a wrong path. */
+BOOLEAN CmpCaptureLogPath(const CMP_KEY_NODE *node, UNICODE_STRING *out);
+void CmpReleaseLogPath(UNICODE_STRING *path);
+void CmpLogDeleteKey(const UNICODE_STRING *capturedPath, LARGE_INTEGER stamp);
+void CmpLogRenameKey(const UNICODE_STRING *capturedPath, const UNICODE_STRING *newName,
+                     LARGE_INTEGER stamp);
+
+/* Remove one named value / rename a node in place. Exported because the hive
+ * log's replay applies the same two edits the syscalls do, through the same
+ * code (Art. 11). */
+BOOLEAN CmpRemoveValue(PCMP_KEY_NODE node, const UNICODE_STRING *name);
+BOOLEAN CmpRenameNode(PCMP_KEY_NODE node, const UNICODE_STRING *newName);
 
 /* CUI-7 subtree forms of the same engine (one serializer, one parser —
- * Art. 11): a complete PHV1 image of `top` (name stored empty, caller frees
+ * Art. 11): a complete PHV2 image of `top` (name stored empty, caller frees
  * *bufferOut), and the inverse — parse a whole image into `top`, unwinding
  * everything on malformation with STATUS_NOT_REGISTRY_FILE (`top` itself
  * stays, as the oracle's failed load leaves its destination). */

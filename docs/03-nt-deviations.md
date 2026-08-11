@@ -281,6 +281,30 @@ and 16383-char value-name limits — are each cross-checked against
   go through the ordinary `NtCreateFile`/`NtWriteFile` path onto write-through FAT32, so
   mutations are durable at syscall return and **`NtFlushKey` is a success no-op**
   (strictly stronger than NT's lazy flusher; unobservable from a running program).
+- **A mutation APPENDS one record; it does not rewrite the file.** That is the whole
+  point, and it is what makes a mutation O(change) instead of O(hive). Durability is
+  unchanged — the record is on write-through FAT32 before the syscall returns, so nothing
+  is buffered and `NtFlushKey` stays an honest no-op. The file is opened and closed per
+  append rather than held open for the boot, because FAT32 refuses to rename over a file
+  with an open handle (`fs/fat32/file.c` `FatVfsRenameLocked`) and compaction below needs
+  that rename. Two syscalls do NOT append: `NtUnloadKey` on a non-volatile target and
+  `NtRestoreKey` drop a whole subtree, which the log's leaf-only `DELETE_KEY` cannot
+  express, so they rewrite from a snapshot instead. Both are cold — nothing in firstboot
+  or the baked services reaches either.
+- **Compaction runs unconditionally, exactly once per boot**, in `CmInitialize` after the
+  replay and after every seed, immediately before the hive goes live. Not threshold
+  driven, and the reasons are worth keeping: there is no policy to tune; the file only
+  ever accumulates one boot's appends, which is what keeps the 64 MiB cap out of reach;
+  and — the one that actually decides it — **the rewrite path then runs on every boot of
+  every leg** instead of rotting behind a condition almost nothing meets. Compacting
+  *after* the seeds is also what stops the 139-zone time-zone table and the license values
+  from being appended a record at a time: they land in the snapshot. The mechanism is
+  write-a-temp-file-then-rename-over-it, so a crash during the snapshot leaves the live
+  hive untouched, and the only exposed window is the two directory-slot writes inside
+  FAT's rename — against PHV1's 237 KiB body write on *every mutation*.
+- **The log's growth is loud, because nothing shrinks it until the next boot.** Past a
+  16 MiB soft threshold the kernel says so once per boot; at the 64 MiB cap an append
+  refuses and names itself every time rather than dropping a mutation quietly (G12).
 - **Three replay rules are load bearing**, and the format comment states them: `SET_VALUES`
   MERGES (so absence needs its own `DELETE_VALUE` op — a log whose only value op were
   "set" would replay a deletion away); a record's PARENT MUST ALREADY EXIST (ancestors are
