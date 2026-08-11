@@ -56,7 +56,8 @@
 #define CMP_HIVE_MAGIC        0x31564850u /* "PHV1" */
 #define CMP_HIVE_VERSION      1u
 #define CMP_HIVE_HEADER_BYTES 16u
-#define CMP_HIVE_MAX_BYTES    (64u << 20) /* sanity cap for load */
+/* CMP_HIVE_MAX_BYTES lives in cm.h — the ring-3 load paths bound their file
+ * with the same number. */
 
 #define CMP_TAG_KEY   'K'
 #define CMP_TAG_VALUE 'V'

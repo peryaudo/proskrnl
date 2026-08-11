@@ -101,9 +101,28 @@ void CmpFreeValues(PCMP_KEY_NODE node);
  * an asymmetry between them is worse than either limit. */
 #define CMP_HIVE_MAX_DEPTH 96u
 
+/* Sanity cap on any hive image the kernel will read or write — the boot hive
+ * and every NtLoadKey/NtSaveKey subtree image alike. ONE number: the load
+ * paths in NtLoadKey and NtRestoreKey bound a ring-3-supplied file with it
+ * before allocating, and the hive writer bounds itself with it. */
+#define CMP_HIVE_MAX_BYTES (64u << 20)
+
 /* Depth of `node` counting itself, 0 for the null parent of the root. THE
  * authority for the question. */
 ULONG CmpKeyDepth(const CMP_KEY_NODE *node);
+
+/* `node`'s path in WCHARs, writing at most `capacity` of them and returning
+ * the BYTES the whole path needs. relativeTo == 0 gives the absolute
+ * "\REGISTRY\..." form; a non-null relativeTo stops there (exclusive) and
+ * drops the leading separator, which is how the hive log spells a key. */
+ULONG CmpBuildPath(const CMP_KEY_NODE *node, const CMP_KEY_NODE *relativeTo, WCHAR *out,
+                   ULONG capacity);
+
+/* Resolve a '\'-separated counted path under `start`, optionally creating the
+ * components. 0 = a component is missing (when !create) or the pool is
+ * exhausted. THE resolver: replay and the boot skeleton share it so a
+ * case-variant name folds identically everywhere (Art. 11). */
+PCMP_KEY_NODE CmpWalkPathCounted(PCMP_KEY_NODE start, const UNICODE_STRING *path, BOOLEAN create);
 
 /* Returns 0 when the parent is already at CMP_HIVE_MAX_DEPTH, as well as on
  * allocation failure. */

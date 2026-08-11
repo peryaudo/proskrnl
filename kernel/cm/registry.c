@@ -90,7 +90,7 @@ static void CmpDeleteKeyBody(PVOID bodyPointer)
     }
 }
 
-/* ObjectNameInformation for a key handle; defined below CmpBuildFullPath,
+/* ObjectNameInformation for a key handle; defined below CmpBuildPath,
  * whose walk it is (ob.h OBJECT_TYPE.queryName). */
 static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nameBytes);
 
@@ -789,30 +789,41 @@ static NTSTATUS CmpFinishInfo(ULONG length, ULONG fixedSize, ULONG required, ULO
     return STATUS_SUCCESS;
 }
 
-/* The key's FULL path, as the oracle's get_full_name builds it for
- * KeyNameInformation: "\REGISTRY\..." from the root down, backslash
- * separated, with no trailing NUL. Writes at most `capacity` WCHARs and
- * returns the number of BYTES the whole path needs, so a short buffer still
- * gets the right required size. */
-static ULONG CmpBuildFullPath(const CMP_KEY_NODE *node, WCHAR *out, ULONG capacity)
+/* The key's path, backslash separated, with no trailing NUL. Writes at most
+ * `capacity` WCHARs and returns the number of BYTES the whole path needs, so
+ * a short buffer still gets the right required size.
+ *
+ * With relativeTo == 0 this is the FULL path as the oracle's get_full_name
+ * builds it for KeyNameInformation: "\REGISTRY\..." from the root down. With
+ * relativeTo set, the walk STOPS at that node (exclusive) and omits the
+ * leading separator, which is how the hive log spells a key. ONE walk for
+ * both (Art. 11) — a second one would drift from this one's separator and
+ * capacity rules the first time either changed. */
+ULONG CmpBuildPath(const CMP_KEY_NODE *node, const CMP_KEY_NODE *relativeTo, WCHAR *out,
+                   ULONG capacity)
 {
-    if (node == 0)
+    if (node == 0 || node == relativeTo)
     {
         return 0;
     }
-    ULONG used = CmpBuildFullPath(node->parent, out, capacity);
+    ULONG used = CmpBuildPath(node->parent, relativeTo, out, capacity);
     if (node->name.Length == 0)
     {
-        return used; /* the anonymous root contributes nothing */
+        return used; /* an anonymous node contributes nothing */
     }
-    /* A separator before every named component, including the first: the
-     * root itself is anonymous, so "\Registry\Machine\..." needs the leading
-     * backslash to come from Registry, not from the root. */
-    if (used / sizeof(WCHAR) < capacity)
+    /* Absolute form (relativeTo == 0): a separator before every named
+     * component, including the first, so "\REGISTRY\Machine\..." gets its
+     * leading backslash. Relative form: separators only BETWEEN components,
+     * so the result is "Machine\Software\..." with no leading backslash —
+     * which is the spelling the hive log stores. */
+    if (relativeTo == 0 || used != 0)
     {
-        out[used / sizeof(WCHAR)] = '\\';
+        if (used / sizeof(WCHAR) < capacity)
+        {
+            out[used / sizeof(WCHAR)] = '\\';
+        }
+        used += sizeof(WCHAR);
     }
-    used += sizeof(WCHAR);
     for (ULONG i = 0; i < node->name.Length / sizeof(WCHAR); i++)
     {
         if (used / sizeof(WCHAR) < capacity)
@@ -825,7 +836,7 @@ static ULONG CmpBuildFullPath(const CMP_KEY_NODE *node, WCHAR *out, ULONG capaci
 }
 
 /* CmpKeyType.queryName: what NtQueryObject(ObjectNameInformation) reports for
- * a key handle. Same walk KeyNameInformation uses (CmpBuildFullPath), because
+ * a key handle. Same walk KeyNameInformation uses (CmpBuildPath), because
  * the oracle answers both from one place too -- key_ops.get_full_name is the
  * generic name walk with one guard in front of it:
  *
@@ -846,7 +857,7 @@ static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nam
         return STATUS_KEY_DELETED;
     }
     /* Measuring pass: capacity 0 writes nothing and never touches `out`. */
-    ULONG required = CmpBuildFullPath(node, out, out != 0 ? *nameBytes / sizeof(WCHAR) : 0);
+    ULONG required = CmpBuildPath(node, 0, out, out != 0 ? *nameBytes / sizeof(WCHAR) : 0);
     /* A path cannot overflow the USHORT: CMP_HIVE_MAX_DEPTH (96) components of
      * at most CMP_MAX_COMPONENT_BYTES each, plus a separator apiece. */
     ASSERT(required <= 0xffffu);
@@ -971,7 +982,7 @@ static NTSTATUS CmpFillKeyInfo(const CMP_KEY_NODE *node, KEY_INFORMATION_CLASS i
          * tests/ntapi/sem_reg/query_key_sizing.c. */
         ULONG capacity = length > fixed ? (length - fixed) / sizeof(WCHAR) : 0;
         WCHAR *nameOut = capacity != 0 ? (WCHAR *)(out + fixed) : 0;
-        ULONG nameBytes = CmpBuildFullPath(node, nameOut, capacity);
+        ULONG nameBytes = CmpBuildPath(node, 0, nameOut, capacity);
         KEY_NAME_INFORMATION info;
         info.NameLength = nameBytes;
         memcpy(out, &info, length < fixed ? length : fixed);
@@ -1937,7 +1948,7 @@ NTSTATUS NtLoadKeyEx(const OBJECT_ATTRIBUTES *attributes, OBJECT_ATTRIBUTES *fil
         if (NT_SUCCESS(status))
         {
             length = (ULONGLONG)standard.EndOfFile.QuadPart;
-            if (length < 32 || length > (64u << 20))
+            if (length < 32 || length > CMP_HIVE_MAX_BYTES)
             {
                 status = STATUS_NOT_REGISTRY_FILE;
             }
@@ -2322,7 +2333,7 @@ NTSTATUS NtRestoreKey(HANDLE keyHandle, HANDLE fileHandle, ULONG flags)
         if (NT_SUCCESS(status))
         {
             length = (ULONGLONG)standard.EndOfFile.QuadPart;
-            if (length < 32 || length > (64u << 20))
+            if (length < 32 || length > CMP_HIVE_MAX_BYTES)
             {
                 status = STATUS_NOT_REGISTRY_FILE;
             }
@@ -2472,20 +2483,37 @@ NTSTATUS NtReplaceKey(POBJECT_ATTRIBUTES newFileAttributes, HANDLE keyHandle,
  * seeds the keys real NT guarantees exist (Session Manager: created by NT
  * itself, probed by kernel32:heap test_child_heap and read by the kernel's
  * own GlobalFlag stamp, kernel/ps/peb.c). */
-static PCMP_KEY_NODE CmpWalkPath(PCMP_KEY_NODE start, PCWSTR path, BOOLEAN create)
+/* The counted form, and THE resolver for a '\'-separated path: every caller
+ * — the boot skeleton, the seed tables, and the hive log's replay — comes
+ * through here, so they all fold names through the one CmpFindSubkey /
+ * RtlEqualUnicodeString(TRUE) / kernel/lib/upcase.h path (Art. 11). A second
+ * resolver would answer a case-variant name differently from every syscall.
+ *
+ * Returns 0 when a component is missing and !create, and ALSO when the pool
+ * is exhausted — a ring-3 NtLoadKey image replays through here, so running
+ * out of pool must be a refusal the caller turns into a status, never a
+ * panic. Boot-time callers, which cannot continue without their key, panic
+ * on 0 themselves. */
+PCMP_KEY_NODE CmpWalkPathCounted(PCMP_KEY_NODE start, const UNICODE_STRING *path, BOOLEAN create)
 {
     PCMP_KEY_NODE node = start;
-    while (*path != 0)
+    const WCHAR *cursor = path->Buffer;
+    const WCHAR *limit = path->Buffer + path->Length / sizeof(WCHAR);
+    while (cursor < limit)
     {
-        const WCHAR *end = path;
-        while (*end != 0 && *end != L'\\')
+        const WCHAR *end = cursor;
+        while (end < limit && *end != L'\\')
         {
             end++;
         }
         UNICODE_STRING segment;
-        segment.Buffer = (PWSTR)path;
-        segment.Length = (USHORT)((end - path) * sizeof(WCHAR));
+        segment.Buffer = (PWSTR)cursor;
+        segment.Length = (USHORT)((end - cursor) * sizeof(WCHAR));
         segment.MaximumLength = segment.Length;
+        if (segment.Length == 0)
+        {
+            return 0; /* an empty component is malformed, never "this key" */
+        }
         PCMP_KEY_NODE child = CmpFindSubkey(node, &segment);
         if (child == 0)
         {
@@ -2496,18 +2524,31 @@ static PCMP_KEY_NODE CmpWalkPath(PCMP_KEY_NODE start, PCWSTR path, BOOLEAN creat
             child = CmpAllocateNode(node, &segment);
             if (child == 0)
             {
-                KiPanic("CmInitialize: out of pool");
+                return 0;
             }
         }
         node = child;
-        path = (*end != 0) ? end + 1 : end;
+        cursor = (end < limit) ? end + 1 : end;
     }
     return node;
 }
 
+/* The NUL-terminated spelling, for the seed tables written as C literals. */
+static PCMP_KEY_NODE CmpWalkPath(PCMP_KEY_NODE start, PCWSTR path, BOOLEAN create)
+{
+    UNICODE_STRING pathString;
+    RtlInitUnicodeString(&pathString, path);
+    return CmpWalkPathCounted(start, &pathString, create);
+}
+
 static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
 {
-    return CmpWalkPath(CmpRootNode, path, TRUE);
+    PCMP_KEY_NODE node = CmpWalkPath(CmpRootNode, path, TRUE);
+    if (node == 0)
+    {
+        KiPanic("CmInitialize: out of pool");
+    }
+    return node;
 }
 
 /* The same walk, relative to a key already found — the seed tables below name
@@ -2515,7 +2556,12 @@ static PCMP_KEY_NODE CmpEnsureSkeletonKey(PCWSTR path)
  * once per row would be a second spelling of the same path. */
 static PCMP_KEY_NODE CmpEnsureSkeletonKeyUnder(PCMP_KEY_NODE parent, PCWSTR path)
 {
-    return CmpWalkPath(parent, path, TRUE);
+    PCMP_KEY_NODE node = CmpWalkPath(parent, path, TRUE);
+    if (node == 0)
+    {
+        KiPanic("CmInitialize: out of pool");
+    }
+    return node;
 }
 
 /* Seed a value if absent — furniture only; a persisted hive's own value (or
