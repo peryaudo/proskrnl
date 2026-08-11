@@ -140,9 +140,10 @@ void PspDetachDebugObject(PEPROCESS process)
 NTSTATUS NtCreateDebugObject(PHANDLE handleOut, ACCESS_MASK desiredAccess,
                              OBJECT_ATTRIBUTES *attributes, ULONG flags)
 {
-    if (handleOut == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handleOut);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     /* DEBUG_KILL_ON_CLOSE is the only defined flag; anything else is a
      * caller error rather than something to ignore (server/debugger.c

@@ -691,6 +691,17 @@ NTSTATUS NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES att
                       ULONG eaLength)
 {
     (void)allocSize; /* advisory pre-allocation; FAT ignores it */
+    /* The clear sits at the ENTRY POINT, not in IopCreateFile, because that
+     * is where the oracle states it (dlls/ntdll/unix/file.c NtCreateFile
+     * opens with `*handle = 0;`; NtOpenFile reaches it by tail-calling
+     * NtCreateFile) and because the engine also serves the transient
+     * kernel-internal opens below. Above the EA refusal: a refusal of the
+     * operation owes the cleared slot too. */
+    NTSTATUS status = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     if (eaBuffer != 0 && eaLength != 0)
     {
         return STATUS_EAS_NOT_SUPPORTED; /* FAT has no extended attributes */
@@ -701,6 +712,11 @@ NTSTATUS NtCreateFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES att
 NTSTATUS NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
                     PIO_STATUS_BLOCK ioStatus, ULONG sharing, ULONG options)
 {
+    NTSTATUS status = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     return IopCreateFile(handle, access, attr, ioStatus, FILE_ATTRIBUTE_NORMAL, sharing, FILE_OPEN,
                          options);
 }

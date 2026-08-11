@@ -196,6 +196,29 @@ void ObpCloseAllHandles(POBP_HANDLE_TABLE table);
 /* Free the (already emptied) table storage. */
 void ObpDeleteHandleTable(POBP_HANDLE_TABLE table);
 
+/* Clear a caller's out-handle BEFORE the service can fail: the boundary's
+ * contract is that a handle-producing Nt* call writes 0 into the caller's
+ * slot as its first act, so a refusal leaves NULL there rather than whatever
+ * the caller never initialized. THE one statement of that rule (Art. 11) —
+ * every entry point that owes it calls this and nothing writes the zero by
+ * hand.
+ *
+ * It is a per-entry-point obligation, not a property of the surface, and the
+ * difference is measurable: the pinned oracle opens NtCreateSection,
+ * NtCreateFile, NtCreateKey, NtOpenProcess, … with `*handle = 0;`
+ * (third_party/wine dlls/ntdll/unix/{sync,file,registry,process,thread,
+ * security}.c) and opens NtCreateThreadEx, NtCreateUserProcess and
+ * NtFilterToken without it. So this cannot be hoisted into the system
+ * service dispatcher or into ObpCreateObjectWithHandle; the caller decides.
+ * Pinned by tests/ntapi/sem_ob/out_handle.c, whose last case is exactly the
+ * entry point that must NOT clear.
+ *
+ * Returns STATUS_ACCESS_VIOLATION for a NULL or unwritable slot, which is
+ * where NT reports it too — the handle is probed at the top, before the
+ * arguments are looked at. That subsumes the `if (handle == 0)` prologue the
+ * Nt* entry points used to each carry. */
+NTSTATUS ObpClearOutHandle(PHANDLE handleOut);
+
 /* Create a handle to `body` in the current process's table: bumps
  * handleCount and takes the handle's pointer reference. attributes keeps
  * the OBJ_* bits worth remembering. handleOut is probed for a UserMode

@@ -556,25 +556,10 @@ NTSTATUS SepReferenceTokenByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PTO
 
 /* --- opening tokens --------------------------------------------------------- */
 
-/* Pre-zero the caller's out-handle: the oracle's unix layer writes
- * `*handle = 0` before the server call (dlls/ntdll/unix/security.c
- * NtOpenProcessTokenEx / NtOpenThreadTokenEx); on proskrnl only the kernel
- * can keep that observable. */
-static NTSTATUS SepPreZeroHandle(PHANDLE handleOut)
-{
-    NTSTATUS status = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    *handleOut = 0;
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS NtOpenProcessTokenEx(HANDLE processHandle, DWORD desiredAccess, DWORD handleAttributes,
                               HANDLE *tokenHandle)
 {
-    NTSTATUS status = SepPreZeroHandle(tokenHandle);
+    NTSTATUS status = ObpClearOutHandle(tokenHandle);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -630,7 +615,7 @@ NTSTATUS NtOpenThreadTokenEx(HANDLE threadHandle, DWORD desiredAccess, BOOLEAN o
                              DWORD handleAttributes, HANDLE *tokenHandle)
 {
     (void)openAsSelf;
-    NTSTATUS status = SepPreZeroHandle(tokenHandle);
+    NTSTATUS status = ObpClearOutHandle(tokenHandle);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1428,7 +1413,7 @@ NTSTATUS NtDuplicateToken(HANDLE existingToken, ACCESS_MASK desiredAccess,
      * NtDuplicateToken FIXMEs it away). */
     (void)effectiveOnly;
 
-    NTSTATUS status = SepPreZeroHandle(newTokenHandle);
+    NTSTATUS status = ObpClearOutHandle(newTokenHandle);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1590,11 +1575,12 @@ NTSTATUS NtFilterToken(HANDLE existingToken, ULONG flags, PTOKEN_GROUPS sidsToDi
     (void)flags;          /* LUA_TOKEN etc. — ignored, as the oracle does */
     (void)restrictedSids; /* restricted-SID lists — ignored, as the oracle does */
 
-    NTSTATUS status = SepPreZeroHandle(newTokenHandle);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
+    /* NO ObpClearOutHandle here, deliberately: NtFilterToken is one of the
+     * three entry points the oracle does NOT open with `*handle = 0;`
+     * (dlls/ntdll/unix/security.c — its first statement is the flags FIXME),
+     * so a refusal leaves the caller's slot exactly as it was. Pinned by
+     * sem_ob/out_handle.c alongside NtCreateThreadEx. */
+    NTSTATUS status;
 
     /* Capture the disable-SIDs into a contiguous blob (nested user SID
      * pointers) and the delete-LUIDs into a flat array. */

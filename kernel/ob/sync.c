@@ -83,9 +83,10 @@ static NTSTATUS ObpProbeOptional(void *pointer, ULONG size, ULONG alignment)
 NTSTATUS NtCreateEvent(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                        EVENT_TYPE type, BOOLEAN initialState)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     if (type != NotificationEvent && type != SynchronizationEvent)
     {
@@ -103,9 +104,10 @@ NTSTATUS NtCreateEvent(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUT
 
 NTSTATUS NtOpenEvent(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpEventType, attr, access, handle);
 }
@@ -228,9 +230,10 @@ NTSTATUS NtQueryEvent(HANDLE handle, EVENT_INFORMATION_CLASS informationClass, P
 NTSTATUS NtCreateMutant(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                         BOOLEAN initialOwner)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     PVOID body;
     NTSTATUS status =
@@ -251,9 +254,10 @@ NTSTATUS NtCreateMutant(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBU
 
 NTSTATUS NtOpenMutant(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpMutantType, attr, access, handle);
 }
@@ -344,9 +348,10 @@ NTSTATUS NtQueryMutant(HANDLE handle, MUTANT_INFORMATION_CLASS informationClass,
 NTSTATUS NtCreateSemaphore(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                            LONG initialCount, LONG maximumCount)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     if (maximumCount <= 0 || initialCount < 0 || initialCount > maximumCount)
     {
@@ -364,9 +369,10 @@ NTSTATUS NtCreateSemaphore(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTR
 
 NTSTATUS NtOpenSemaphore(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpSemaphoreType, attr, access, handle);
 }
@@ -546,9 +552,10 @@ OBJECT_TYPE ObpTimerType = {
 NTSTATUS NtCreateTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                        TIMER_TYPE type)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     if (type != NotificationTimer && type != SynchronizationTimer)
     {
@@ -568,6 +575,11 @@ NTSTATUS NtOpenTimer(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES
 {
     /* CUI-6: OpenWaitableTimer's back end (sem_ob/compare_permanent pins
      * the open/wrong-type/missing-name shapes). */
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
+    {
+        return clearStatus;
+    }
     return ObpOpenObjectByName(&ObpTimerType, attr, access, handle);
 }
 
@@ -773,9 +785,10 @@ static BOOLEAN ObpCritSecKeyedEventReady;
 NTSTATUS NtCreateKeyedEvent(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                             ULONG flags)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     if (flags != 0)
     {
@@ -793,9 +806,10 @@ NTSTATUS NtCreateKeyedEvent(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATT
 
 NTSTATUS NtOpenKeyedEvent(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpKeyedEventType, attr, access, handle);
 }

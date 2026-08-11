@@ -133,6 +133,24 @@ static HANDLE ObpHandleFromIndex(ULONG index)
     return (HANDLE)(ULONG_PTR)((index + 1) * 4);
 }
 
+NTSTATUS ObpClearOutHandle(PHANDLE handleOut)
+{
+    /* The NULL slot is refused here rather than left to the probe, because
+     * the probe is a no-op for a KernelMode caller (uaccess.h) and this store
+     * would then be a ring-0 write to address 0. */
+    if (handleOut == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    NTSTATUS status = KiProbeForWrite(handleOut, sizeof(*handleOut), sizeof(*handleOut));
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    *handleOut = 0;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS ObpCreateHandle(PVOID body, ACCESS_MASK grantedAccess, ULONG attributes, PHANDLE handleOut)
 {
     /* Every create/open/duplicate writes its result through here, so this is
@@ -593,9 +611,23 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
      * The object is looked up in the SOURCE's table and created in the
      * TARGET's; DUPLICATE_CLOSE_SOURCE closes the entry in whichever process
      * owns it, not in the caller's. Pinned by sem_ob/dup_cross_process. */
+    NTSTATUS status;
+    if (targetHandle != 0)
+    {
+        /* The one entry point on the surface whose clear is GUARDED, because
+         * its out-pointer is optional: a DUPLICATE_CLOSE_SOURCE-only call
+         * legitimately passes NULL. Same guard the oracle writes
+         * (third_party/wine dlls/ntdll/unix/server.c NtDuplicateObject:
+         * `if (dest) *dest = 0;`). */
+        status = ObpClearOutHandle(targetHandle);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
     PEPROCESS sourceProc, targetProc;
     BOOLEAN sourceReferenced, targetReferenced;
-    NTSTATUS status = ObpReferenceDupProcess(sourceProcess, &sourceProc, &sourceReferenced);
+    status = ObpReferenceDupProcess(sourceProcess, &sourceProc, &sourceReferenced);
     if (!NT_SUCCESS(status))
     {
         return status;

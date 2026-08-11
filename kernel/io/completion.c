@@ -57,9 +57,10 @@ NTSTATUS NtCreateIoCompletion(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIB
                               ULONG concurrentThreads)
 {
     (void)concurrentThreads; /* a scheduler hint; uniprocessor (Art. 3) */
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     PVOID body;
     NTSTATUS status = ObpCreateObjectWithHandle(&IoCompletionType, sizeof(IO_COMPLETION), attr,
@@ -115,9 +116,10 @@ NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTAT
  * NtOpenDirectoryObject shape. Pinned by sem_port/ports.c. */
 NTSTATUS NtOpenIoCompletion(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&IoCompletionType, attr, access, handle);
 }
