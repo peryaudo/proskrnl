@@ -1458,6 +1458,81 @@ pipes, so every one of those three defects passed it. The pin now measures
 them (`test_client_open_precedence`) because review said to go measure, not
 because the failure count did.
 
+**`kernel32:pipe`'s big cluster is DONE and it was a FLUSH** (110 →
+**28-34**, ~80 assertions; the spread is the pair's own 20 s deadline and the
+manifest block explains it). The pair's block called those 76 assertions "fs/npfs
+territory … the overlapped half is async-completion shaped", and both halves
+of that were wrong: the cluster begins in `serverThreadMain1` and
+`serverThreadMain2`, which are `PIPE_WAIT` byte echo servers with no overlap
+in them, and every server-side assertion in both was already passing. On a
+pipe `NtFlushBuffersFile` must not return until the PEER has consumed what
+this end wrote (`server/named_pipe.c` `pipe_end_flush`); `kernel/io/rw.c`
+answered a no-op `STATUS_SUCCESS` for every cache-less device, so
+`FlushFileBuffers(hnp); DisconnectNamedPipe(hnp)` **discarded the echo**
+before the client's `ReadFile` ran. Landed as an optional `IO_VFS_OPS.Flush`
+slot plus `NpfsFlush` (`fs/npfs/pipe.c`), pinned by
+`tests/ntapi/sem_pipe/flush_buffers.c`, table in `docs/03` "What a pipe's
+`NtFlushBuffersFile` waits for".
+
+Four things worth carrying:
+
+- **This is Art. 12's fabricated-plausible answer with no stub anywhere in
+  it**, the same shape as W12's `ObjectNameInformation`. `IopFlushBuffers`
+  had a considered, commented reason for its early return — "a cache-less
+  stream device (M9) has nothing to flush" — which is TRUE of a console and
+  false of a pipe. **A no-op that is right for the device you had in mind is
+  still a fabricated answer for the one you did not**, and nothing convicts
+  it until an ordering somewhere else falls apart three subsystems away.
+- **The failure landed in the CLIENT and the cause was in the SERVER's
+  previous call**, §4 trap 4 again: the failing assertion is
+  `ReadFile from client end of pipe`, the working code is
+  `FlushFileBuffers`, and the four assertions BETWEEN them all passed.
+- **The first implementation was correct about the wait and wrong about the
+  ANSWER, and only the pair could see it.** Parking until the queue drains
+  fixed the ordering — the client's reads started passing — and then all 24
+  flushes returned `STATUS_PIPE_BROKEN`, because the echo clients read and
+  CLOSE back to back and the parked flusher is not scheduled in between. The
+  oracle decides a parked flush's status *at the transition that satisfies
+  it* (`reselect_read_queue` terminates the async inside the read), so
+  nothing later can change it; `NPFS_QUEUE.drainSeq` is that instant, and a
+  re-check that merely asked "is the queue empty now" could not tell a drain
+  from the disconnect's own `NpfsFlushQueue`. **The pin as first written did
+  not cover it** — the case only appears when the drain and the close land
+  before the flusher runs — and it does now (`test_flush_drain_then_peer_close`).
+- **GATE-CHECK found a second, larger defect that no winetest assertion
+  reaches, and it is the one worth carrying.** The new park sat OUTSIDE a
+  synchronous-I/O span, and proskrnl's cancel is a per-THREAD flag that only
+  `IopEnterSyncIo` resets. So a thread whose blocking pipe read had just been
+  cancelled answered `STATUS_CANCELLED` to its next flush, and a parked flush
+  could not be cancelled at all (`NtCancelSynchronousIoFile` needs
+  `syncIoActive`, so it answered `STATUS_NOT_FOUND` and left the caller
+  stuck). Both were then MEASURED on the kernel with the span removed rather
+  than argued, and both are pinned. **Every new blocking point in the Io layer
+  is a place the previous request's cancel can leak into**, and nothing in the
+  type system says so — the flush was simply the first blocking pipe operation
+  whose wrapper had no span. The same review also claimed the parked-then-
+  failed flush writes `{status, 0}` into the caller's IOSB; **the oracle
+  refuted that** — a failing flush leaves the block untouched whether it
+  parked or not, which is what the pin now says.
+- **A failing case can lie about which case failed, and this pin did.** With
+  one set of globals behind the worker thread, the flush left parked by a
+  broken kernel wrote its answer into the NEXT case's assertion — so the
+  measurement above first read as "the flush inherited the read's cancel
+  (status `STATUS_PIPE_BROKEN`)", naming the wrong subject entirely. Each
+  flush now owns a state block that is never reused. **A test whose failure
+  path lies is worse than one that merely fails**, and the tell is any
+  worker-thread pin whose bounded wait can time out.
+- **The pair was a STOPPED pair the whole time and no block said so.** `:845`
+  is the test's own watchdog, and what it does after `ok(FALSE, "alarm")` is
+  `ExitProcess(1)`: the run is killed 20 s in and prints no summary line. So
+  every total this pair has carried — 93, 96, 94, 110 — is a lower bound over
+  whatever prefix fitted in 20 seconds, which is why they drifted without a
+  matching kernel change. §4 trap 2's list did not name it; it does now.
+
+What is left is **one subject**: the overlapped server (`serverThreadMain3`),
+i.e. the W4c pended-read item, plus the 20 consequences of the client it
+never lets connect and 2 `PeekNamedPipe` singletons.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
@@ -1916,7 +1991,13 @@ Pairs and framings that will consume effort and unblock nothing.
    1199 the moment its panic was removed, and nothing about it changed for
    the worse. Every pair here that ends in a PANIC or a kill —
    `ntdll:{info,file}`, `kernel32:{mailslot,fiber}` — carries the same
-   unknown, and their counts are lower bounds. **`kernel32:virtual` was on
+   unknown, and their counts are lower bounds. **`kernel32:pipe` belongs on
+   it too and is a THIRD spelling of the trap**: it neither panics nor is
+   killed from outside — the test's own 20 s watchdog calls `ExitProcess(1)`
+   (`pipe.c:845`, `alarmThreadMain`), so the run has a DEADLINE rather than a
+   crash point, and its total drifted 93 → 96 → 94 → 110 across sessions
+   because the deadline cut it in a different place each time. A count that
+   moves without a kernel change is the tell. **`kernel32:virtual` was on
    that list too and was not named on it for three revisions**: it panicked
    at `virtual.c:869`'s `SEC_RESERVE` mapping, having executed 13 of the
    module's tests where the oracle executes 30936, and its block read as a
