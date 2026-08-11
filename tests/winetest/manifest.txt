@@ -302,22 +302,60 @@ ntdll_test.exe:path
 #     But the pair does not move: still ZERO failed assertions, still
 #     FAIL (timeout), wedging in the same place.
 #
-#     THE WEDGE IS MEASURED NOW, and it is a different subject entirely: npfs
-#     data reads NEVER PEND. On an asynchronous handle NpfsRead (fs/npfs/
-#     pipe.c) parks the calling thread in NpfsWait instead of answering
-#     STATUS_PENDING, and pipe.c:1578 issues exactly that read on an EMPTY
-#     pipe through an overlapped handle and then satisfies it from the SAME
-#     thread at :1583 — so the thread parks inside the read and the write it
-#     is waiting for is never issued. Probed on both runners with one binary:
-#     the oracle returns 0x103 immediately with the IOSB untouched, proskrnl
-#     does not return at all. docs/03 "CUI-8 async notes" carries it as a
-#     deviation; docs/21 W4c is the item.
-#     Not a small item: the pending-request engine has no buffer/length legs
-#     yet (kernel/io/io.h anticipates them), the completion has to copy into
-#     the owner's address space, and the file object's signalled/unsignalled
-#     state joins the contract (pipe.c:1607-:1617 asserts it).
-#     And everything past :1578 remains unmeasured — the zero above is a lower
-#     bound like every other stopped pair's (docs/21 §4 trap 2).
+#     THE WEDGE IS GONE. It was npfs data reads never pending: on an
+#     asynchronous handle NpfsRead parked the calling thread in NpfsWait
+#     instead of answering STATUS_PENDING, and pipe.c:1578 issues exactly that
+#     read on an EMPTY pipe through an overlapped handle and then satisfies it
+#     from the SAME thread at :1583 — so the thread parked inside the read and
+#     the write it was waiting for was never issued. Built (docs/21 W4c,
+#     docs/03 "CUI-8 async notes"): the read parks an IOP_PENDING_REQUEST on
+#     the pipe END and the peer's write completes it, through the engine's new
+#     buffer/length legs rather than a fourth bookkeeping shape. Pinned by
+#     tests/ntapi/sem_pipe/pended_read.c.
+#     Two more rules came with it, both convicted by this pair and both pinned
+#     in the same file: exactly ONE of the caller's event and the FILE OBJECT
+#     is signalled at a PENDED completion, and FILE_SKIP_SET_EVENT_ON_HANDLE
+#     FREEZES that state in both directions (:1680-:1702), where docs/16 used
+#     to file it as unbuilt.
+#
+#     SO THE PAIR RUNS 5 MINUTES FURTHER AND IS MEASURED FOR THE FIRST TIME —
+#     and that is why the count is 23 rather than 0. The 0 above was a stopped
+#     pair's lower bound (docs/21 §4 trap 2), and NONE of the 23 is new: every
+#     one is past pipe.c:1578, where nothing had ever executed. It ends in a
+#     PANIC now instead of a timeout, so 23 is a lower bound too.
+#
+#     WHAT IS LEFT, in execution order:
+#       -  1  :1678, and it is a DELIBERATE cost rather than a gap. NT counts
+#         no outstanding requests, so ANY completion on a handle re-signals the
+#         file object — here a write on the end whose read is parked. proskrnl
+#         does not, because condrv BORROWS the file object as its own
+#         device-managed readiness signal (CondrvSignalServer, cleared by
+#         CondrvServerRead when the queue empties), so completing that read
+#         re-signals conhost's park the instant it is taken and its poll loop
+#         spins. Measured, on kernel32:virtual: it stopped finishing the todo
+#         block at virtual.c:4341 inside 300 s. Costs 1 assertion; the exit is
+#         an event of condrv's own (docs/03 "CUI-8 async notes").
+#       - 10  test_blocking's handle state — :1740 x2, :1742 x4, :1753 x4, all
+#         "client is signaled" / "event is signaled". ONE cause: a BLOCKING
+#         request does not clear the file object here. The oracle queues a
+#         blocking async like any other (server/async.c queue_async), so its
+#         handle goes down for the duration of a SYNCHRONOUS read; proskrnl
+#         parks the thread and leaves the object signalled. Same subject as the
+#         pended-read rule above, one case short of it.
+#       -  2  :1829, and it is a FLOOR of the same absence: a todo_wine that
+#         proskrnl PASSES ("client is not signaled" after a blocking read with
+#         an event), because Wine leaves the handle down and NT does not.
+#         Building the item above turns these two into passes, so the pair's
+#         count moves by 12 in one step or not at all.
+#       - 12  test_pipe_state, :886-:989 — FilePipeInformation's ACCESS and
+#         RANGE rules: the set needs FILE_WRITE_ATTRIBUTES (ACCESS_DENIED
+#         without it, on the server end), a ReadMode of 1 on a byte pipe is
+#         INVALID_PARAMETER for the client, and values outside 0-1 are refused.
+#         Its own item, nothing to do with pending.
+#       - PANIC at NtQueryInformationFile class 8 (FileAccessInformation),
+#         from test_file_access at pipe.c:1015. Unbuilt; everything past it —
+#         the rest of test_pipe_with_data_state, test_readfileex, the
+#         impersonation tests — has never run.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
@@ -728,24 +766,35 @@ kernel32_test.exe:path
 #     pinned by tests/ntapi/sem_pipe/flush_buffers.c. Both synchronous echo
 #     servers are now clean end to end (16 loops, 0 failures).
 #
-#     WHAT IS LEFT is ONE subject plus two singletons, and the split is why
-#     the total wobbles between runs while nothing about it changes:
-#       -  5  :1059/:1077/:1083/:1101/:1106, the OVERLAPPED server
-#         (serverThreadMain3): overlapped ReadFile/WriteFile on a
-#         FILE_FLAG_OVERLAPPED pipe and the DisconnectNamedPipe behind them.
-#         This is the ntdll:pipe wedge's subject — npfs data reads never pend
-#         (docs/03 "CUI-8 async notes", docs/21 W4c) — and it is what now
-#         stops the pair: the server never gets back to ConnectNamedPipe;
-#       -  5x N  :1396/:1401/:1402/:1404/:1405, the CLIENT of that same
-#         server failing to open the pipe at all and everything behind the
-#         handle it never got, once per exerciseServer loop until the 20 s
-#         deadline. N was 4, 5, 5, 5 across four runs — a consequence, not a
-#         second bug (docs/21 §4 trap 4), and the whole of the spread;
-#       -  1  :845, the watchdog firing at 20 s because of the above — a
-#         consequence too, and the reason the count is a lower bound;
-#       -  2  :1527/:1533, a PeekNamedPipe after a wait.
-#     So the whole remaining pair is the async pipe path. Nothing here is
-#     triage any more.
+#     WHAT WENT SINCE: the OVERLAPPED server's own five, :1059/:1077/:1083/
+#     :1101/:1106 (serverThreadMain3's overlapped ReadFile/WriteFile and the
+#     DisconnectNamedPipe behind them). Their cause was the ntdll:pipe wedge —
+#     npfs data reads never pended, so an overlapped read on an empty pipe
+#     parked the server thread instead of answering STATUS_PENDING. Built
+#     (docs/21 W4c, docs/03 "CUI-8 async notes", pinned
+#     tests/ntapi/sem_pipe/pended_read.c) and all five are gone.
+#
+#     WHAT IS LEFT, re-measured, summing to 29 — and the total is STILL a lower
+#     bound, for the same reason it always was: :845 kills the process at 20 s,
+#     so the count is a property of the DEADLINE as much as of the kernel.
+#       - 26  :1396 x6 and :1401/:1402/:1404/:1405 x5, the
+#         CLIENT failing to open the pipe at all and everything behind the
+#         handle it never got, once per exerciseServer loop until the deadline.
+#         UNCHANGED by the fix above, which is the finding: the previous
+#         revision of this block called it "a consequence" of the overlapped
+#         server's five, and it is not — those are fixed and this stands. What
+#         it IS has not been established. The log names serverThreadMain2 last,
+#         but that is only because serverThreadMain2's trace is the one
+#         unconditional trace() in the file (1/2/3/4/5 all print under
+#         winetest_debug > 1), so it does not identify which server's
+#         exerciseServer is stuck. Do not re-attribute it without measuring;
+#       -  1  :845, the watchdog firing at 20 s because of the above;
+#       -  2  :1527/:1533, WaitForSingleObject(hFile, 0) wanting WAIT_TIMEOUT
+#         and PeekNamedPipe wanting ERROR_BAD_PIPE after a DisconnectNamedPipe.
+#         The first is the file-object signal again from the other side: the
+#         oracle leaves a handle UNSIGNALLED after a request that failed
+#         without pending (async_set_result signals only under
+#         `pending || !NT_ERROR`), and proskrnl's object is simply still up.
 # TODO: Implement
 # kernel32_test.exe:pipe
 kernel32_test.exe:power
@@ -918,33 +967,36 @@ kernel32_test.exe:timer
 #     that block had NEVER RUN on proskrnl. It runs now and every one of the
 #     17 passes.
 #
-#     WHERE IT STOPS is unchanged, and the last line it prints has moved
-#     BACKWARDS for a good reason: test_CreateFileMapping's SEC_* matrix now
-#     produces no output at all, so the final line is virtual.c:1465 — the
-#     todo floor, in test_NtAreMappedFilesTheSame, which runs one function
-#     EARLIER. Then nothing. The next test in START_TEST order after
-#     test_CreateFileMapping (and the three IsBad*Ptr tests, which are silent)
-#     is test_write_watch, whose pipe leg issues an overlapped ReadFile on an
-#     empty named pipe and satisfies it from the SAME thread (test body :191
-#     and :202) — the CUI-8 wedge already recorded for ntdll:pipe (docs/03
-#     "CUI-8 async notes", docs/21 W4c). Not new, not this pair's item, and it
-#     still means EVERYTHING PAST test_write_watch is unmeasured: 1 is a lower
-#     bound exactly like every count this block has ever carried.
+#     THE WEDGE IS GONE AND THE PAIR IS MEASURED PAST IT. It stopped at
+#     virtual.c:1465, one function short of test_write_watch, whose pipe leg
+#     issues an overlapped ReadFile on an empty named pipe and satisfies it
+#     from the SAME thread (test body :191 and :202). npfs data reads now pend
+#     (docs/21 W4c, docs/03 "CUI-8 async notes", pinned
+#     tests/ntapi/sem_pipe/pended_read.c), so test_write_watch runs and the
+#     pair goes on through test_shared_memory to the END of the module.
+#     The verdict does not go green and does not even keep its shape: it was
+#     FAIL (timeout), it is now FAIL (exit=0xc0000005) after ~10 s. 1 -> 4 is
+#     the trap-2 arithmetic again, not a regression — the 1 was everything a
+#     stopped pair had ever executed.
 #
-#     THE 1, AND IT IS A FLOOR. virtual.c:1465 is a todo_wine that proskrnl
-#     PASSES: NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must answer
-#     STATUS_SUCCESS, proskrnl does, the oracle does not, and winetest scores
-#     a succeeded todo as a FAILURE. So this pair cannot reach zero while
-#     proskrnl is the more NT-correct of the two runners, exactly as
-#     kernel32:volume:186 cannot — and making it lose would be tuning to an
-#     oracle annotation instead of to a contract. Easy to miss when scanning
-#     for "Test failed": it prints as "Test succeeded inside todo block".
-#
-#     TWO INDEPENDENT REASONS THIS PAIR STAYS PARKED, then, and NEITHER is
-#     work on this pair: the wedge (which belongs to W4c) and the todo floor
-#     (which belongs to nobody). There is no known kernel item left inside the
-#     measured prefix; the next thing this pair can teach anybody is whatever
-#     lies past test_write_watch, and that is W4c's to unlock.
+#     WHAT IS LEFT, summing to 4:
+#       -  1  :1465, THE FLOOR, unchanged: a todo_wine that proskrnl PASSES
+#         (NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must answer
+#         STATUS_SUCCESS, proskrnl does, the oracle does not) and winetest
+#         scores a succeeded todo as a FAILURE. This pair cannot reach zero
+#         while proskrnl is the more NT-correct of the two runners, exactly as
+#         kernel32:volume:186 cannot. Easy to miss when scanning for "Test
+#         failed": it prints as "Test succeeded inside todo block".
+#       -  3  :4549 DuplicateHandle -> 6 (ERROR_INVALID_HANDLE) and
+#         :4571/:4572 the ReadProcessMemory behind the handle it never got —
+#         test_far_regions' cross-process leg. ONE cause, and the third is
+#         plain fallout of the first.
+#       - then an unhandled 0xc0000005 in ntdll (RIP inside the PE, err=0x6, a
+#         WRITE fault on the user stack) after :4735's single-processor skip.
+#         Read it as a cascade until proved otherwise (docs/21 §4 trap 3): the
+#         DuplicateHandle failure is upstream of it and is the first thing to
+#         fix. And everything the fault cut off is unmeasured, so 4 is a lower
+#         bound like every count this block has carried.
 #
 #     The measurement above used the 300 s per-pair timeout in the line below.
 #     The oracle leg is green: 30936 tests executed, 140 todo, 0 failures.
