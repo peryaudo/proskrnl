@@ -1793,6 +1793,19 @@ PMI_VAD MiCreateMappedVad(PMI_ADDRESS_SPACE space, uint64_t base, uint64_t size,
     vad->sectionBody = sectionBody;
     vad->ownsFrames = ownsFrames;
     vad->sectionOffset = sectionOffset;
+    /* SEC_NOCACHE belongs to the SECTION and every view of it inherits the
+     * bit: the oracle ORs the mapping's RESOLVED flags into the view's own
+     * protect word (`vprot |= sec_flags`, third_party/wine
+     * dlls/ntdll/unix/virtual.c virtual_map_section) and get_win32_prot
+     * reads PAGE_NOCACHE back out of exactly that word. Resolved is the
+     * load-bearing part: SEC_IMAGE|SEC_NOCACHE drops the bit at create time,
+     * so an image view reports no modifier however it was created
+     * (sem_mm/section_sec_flags.c). SEC_WRITECOMBINE survives on the section
+     * and is read by nothing. */
+    if (sectionBody != 0 && (((PMI_SECTION)sectionBody)->attributes & SEC_NOCACHE) != 0)
+    {
+        vad->noCache = TRUE;
+    }
     MiInsertVad(space, vad);
     if (sectionBody != 0)
     {
