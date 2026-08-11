@@ -47,6 +47,7 @@
 #include "abi/ntioapi.h"
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
+#include "kernel/lib/crc32.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/le.h"
 #include "kernel/lib/rtl.h"
@@ -74,6 +75,10 @@ static BOOLEAN CmpHiveWarned; /* one loud line per boot on save failure */
 void CmpInitializeHiveLock(void)
 {
     KeInitializeMutex(&CmpHiveMutex, 0);
+    /* Prove the checksum before anything depends on it: a wrong CRC would
+     * otherwise surface as an unreadable hive on some later boot, which
+     * reads as data loss rather than as arithmetic. */
+    KiCrc32SelfTest();
 }
 
 void CmpSetHiveReady(void)
