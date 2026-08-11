@@ -746,7 +746,16 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
          * is stored and reported back truthfully, and the behaviour it would
          * select — suppressing the caller-supplied event on a fast-path
          * completion — has no fast path to suppress here, because every
-         * completion this kernel makes goes through IopCompleteRequest. */
+         * completion this kernel makes goes through IopCompleteRequest.
+         *
+         * FILE_SKIP_SET_EVENT_ON_HANDLE, by contrast, IS honoured, and its
+         * one subtlety is the ORDER below: the oracle clears the handle
+         * BEFORE recording the bit (server/fd.c set_fd_completion_mode),
+         * and its `set_fd_signaled` is a no-op once the bit is set — so the
+         * clear must happen while the flag is still absent, and the handle
+         * is frozen unsignalled from then on. Written the other way round
+         * the clear does nothing and the handle stays signalled forever,
+         * which is the exact inverse of the contract. */
         if (file->synchronousIo)
         {
             /* The modes are an OVERLAPPED-handle concept and a synchronous
@@ -758,6 +767,14 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         }
         FILE_IO_COMPLETION_NOTIFICATION_INFORMATION modes;
         memcpy(&modes, buffer, sizeof(modes));
+        if ((modes.Flags & FILE_SKIP_SET_EVENT_ON_HANDLE) != 0)
+        {
+            /* "Take the handle unsignalled" — the same transition a park
+             * makes, through the same authority, which is why it borrows
+             * that name. Called while the bit is still absent because the
+             * guard inside it makes the call a no-op once the bit is set. */
+            IopMarkRequestOutstanding(file);
+        }
         /* Masked to the bits the contract defines, as the oracle masks:
          * without this a caller could park arbitrary bits in the handle's
          * word and read them back out, which is a fact the boundary never

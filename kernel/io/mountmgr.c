@@ -344,8 +344,7 @@ static NTSTATUS IopMountMgrQueryPoints(const void *input, ULONG inputLength, voi
 
 static NTSTATUS IopMountMgrDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                          ULONG inputLength, void *output, ULONG outputLength,
-                                         ULONG_PTR *infoOut,
-                                         const struct IO_CONTROL_CONTEXT *request)
+                                         ULONG_PTR *infoOut, struct IO_CONTROL_CONTEXT *request)
 {
     (void)file;
     (void)request;

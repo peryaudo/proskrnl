@@ -1609,21 +1609,88 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   unpinned gap rather than a measured divergence — issue #135, and the fix is
   the same one-line route through `IopPostRequestPacket` once a pin has
   measured what an ERROR or CANCELLED watch completion owes.
-- **npfs data reads and writes never pend: on an asynchronous handle they
-  BLOCK the caller** (`fs/npfs/pipe.c` `NpfsRead`/`NpfsWrite`, which park in
-  `NpfsWait` whenever the queue cannot serve them). NT and the oracle answer
-  `STATUS_PENDING` with the IOSB untouched and complete the request later.
-  Measured on both runners with the same binary: an `NtReadFile` on an empty
-  pipe through an overlapped handle returns `0x103` immediately on the oracle
-  and does not return at all on proskrnl. Only `FSCTL_PIPE_LISTEN` pends here
-  (`kernel/io/async.c`), which is why this went unrecorded for so long — the
-  listen was the one verb a baked caller drove asynchronously.
-  **Consequence, measured:** it is what wedges `ntdll:pipe`. `pipe.c:1578`
-  issues the overlapped read and then satisfies it from the SAME thread at
-  `:1583`, so the thread parks inside the read and the write it is waiting for
-  is never issued. Escalation: grow the pending-request engine with the
-  buffer/length legs `kernel/io/io.h` already anticipates and give the stream
-  devices a pended data path (`docs/19`; `docs/21` W4c).
+- **npfs data READS now pend on an asynchronous handle; WRITES still block**
+  (`fs/npfs/pipe.c`). The read half is built and is a pin, not a deviation:
+  a read an asynchronous handle cannot serve parks an `IOP_PENDING_REQUEST`
+  on the END and answers `STATUS_PENDING` with the caller's IOSB and buffer
+  untouched; the peer's write, a state change, `NtCancelIoFile` or the
+  handle's own cleanup completes it. Pinned by `sem_pipe/pended_read.c`.
+  The engine grew the buffer/length legs `kernel/io/io.h` anticipated
+  (`docs/19` §5d) rather than a fourth bookkeeping shape: the bounce
+  `kernel/io/rw.c` already allocated becomes the request's, and the bytes go
+  into the owner's address space through `MiCopyToUserRangeChecked`
+  immediately before the IOSB.
+  **What it was, and why the shape matters:** parking the CALLING thread was
+  a deadlock rather than a latency, because the standard overlapped idiom
+  satisfies its own read from the same thread — `ntdll:pipe` issues the read
+  at `pipe.c:1578` and writes at `:1583`, and that one line wedged the pair
+  for three milestones (`docs/21` W4c). `kernel32:virtual`'s `test_write_watch`
+  and `kernel32:pipe`'s overlapped echo server are the same shape.
+  **Still blocking, deliberately:** a WRITE over quota on an asynchronous
+  handle parks its caller, because no measured consumer convicts it (Art. 5)
+  — the pipes the winetest pairs drive have room. Escalation: the same
+  treatment on the outgoing queue, keyed on the peer's read freeing quota,
+  the day a pair or a baked caller shows it.
+- **A pended request leaves the FILE OBJECT unsignalled, and exactly one of
+  the event or the object is signalled at completion** (`kernel/io/async.c`
+  `IopMarkRequestOutstanding` / `IopSignalRequestCompletion`, one authority
+  the directory-watch engine now shares). Transcribed from the oracle:
+  `queue_async` does `set_fd_signaled( async->fd, 0 )` for every non-system
+  async — whether or not an event was also supplied, which is the part that
+  matters here — and `async_set_result` does `if (async->event)
+  set_event(...); else if (async->fd) set_fd_signaled( ..., 1 )`. A consequence that reads as a bug
+  and is the contract: a read that pended WITH an event leaves the handle
+  unsignalled through its own completion. `ntdll:pipe` measures it
+  (`pipe.c:1607-:1617`); pinned by `sem_pipe/pended_read.c`.
+  **An INLINE completion does NOT re-signal the object, and NT's does.**
+  NT counts no outstanding requests, so any completion on a handle puts it
+  back up — `ntdll:pipe` pends a read on a client end, writes one byte on
+  that same end, and requires the handle signalled with the read still
+  parked (`pipe.c:1678`). proskrnl deliberately does not, because **condrv
+  borrows the file object as its own device-managed readiness signal**
+  (`drivers/condrv.c` `CondrvSignalServer`; `CondrvServerRead` CLEARS it
+  when the request queue empties). Re-signalling from `IopCompleteTransfer`
+  runs on that very read, so conhost's park is re-signalled the instant it
+  is taken and its poll loop spins — measured: `kernel32:virtual` went from
+  reaching `virtual.c:1465` to not finishing the todo block at `:4341`
+  inside 300 s. Cost: one assertion. Escalation: give condrv an event of its
+  own instead of borrowing `header`, then restore the tail's signal.
+  **Still missing, measured:** a BLOCKING request does not clear the object.
+  The oracle queues a blocking async too, so `ntdll:pipe`'s `test_blocking`
+  requires the handle to be unsignalled while a synchronous read is parked
+  (`pipe.c:1740`/`:1742`/`:1753`) — and the same absence makes proskrnl PASS
+  the `todo_wine` at `:1829`, i.e. scores a failure for being closer to NT.
+- **"The device pended" is a FLAG, not a status** (`kernel/io/vfs.h`
+  `IO_CONTROL_CONTEXT.pended`, set by `IopPreparePendingRequest` itself) —
+  NT's `IoMarkIrpPending`, and for NT's reason. `STATUS_PENDING` as a
+  *status* is ambiguous here: `CondrvServerRead` returns it as a FINAL
+  answer meaning "nothing deliverable, wait on the handle", IOSB written and
+  buffers freed. Keying the read path's early return on the status leaked
+  conhost's bounce buffer on every poll of an idle console, and the pool
+  exhaustion behind that surfaced as a 3x per-process memory regression in
+  the `cui9` ceiling (319 -> 79 processes) — a symptom with no visible
+  connection to its cause. The flag is set by the ENGINE at the one place a
+  park is created, so no device can park and forget to say so.
+- **A pended read whose owner unmapped its buffer completes SUCCESS with the
+  byte count and no bytes** (`kernel/io/async.c` `IopCompletePendingRequest`,
+  the `MiCopyToUserRangeChecked` leg). Same shape and same reason as the IOSB
+  write beside it: the completer is another process's thread, the transfer
+  HAS happened by then, and a ring-0 fault on a vanished user page would
+  unwind past every cleanup. NT would raise on the caller instead. No baked
+  consumer unmaps a buffer under a pended read; recorded so the answer is a
+  decision rather than an accident.
+- **`FILE_SKIP_SET_EVENT_ON_HANDLE` FREEZES the file object's signalled
+  state** (`kernel/io/async.c` `IopFileSignalFrozen`) — a pin, and it
+  supersedes this document's earlier "stored and reported back, unbuilt".
+  The oracle puts the guard inside the transition (`server/fd.c`
+  `set_fd_signaled`: `if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE)
+  return;`) and clears the handle in `set_fd_completion_mode` BEFORE
+  recording the bit — so the ORDER is the content: the one clear that ever
+  happens is that one, and the handle is unsignalled for the rest of its
+  life. Written the other way round the clear is a no-op and the handle
+  stays signalled forever, the exact inverse. The caller's own event is
+  untouched by any of it. Pinned by `sem_pipe/pended_read.c`;
+  `ntdll:pipe` `pipe.c:1680-:1702` is the winetest consumer.
 - **The differential fuzzer convicts the contract, not the in-flight window**
   (docs/19 §8.3.3, recorded honestly): proskrnl's internal in-flight state has no
   oracle counterpart under the inline pin, so the traces cannot see it — the kmt

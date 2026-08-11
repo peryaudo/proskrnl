@@ -178,23 +178,14 @@ static void IopCompleteDirWatch(PIOP_DIR_WATCH watch, NTSTATUS status, const voi
                                      (uint64_t)(uintptr_t)watch->userIosb, &result, sizeof(result));
         }
     }
-    /* The request is over. NT signals the caller's EVENT if it supplied
-     * one and the FILE OBJECT otherwise — not both, which is the half an
-     * implementation gets wrong: ntdll:change completes an event-carrying
-     * watch and then requires the wait on the DIRECTORY to keep timing out
-     * (change.c:112) while the wait on the event succeeds (:115).
-     *
-     * Either way it fires for EVERY outcome, cancel and error included:
-     * what is being reported is "nothing outstanding", not "something
-     * succeeded". */
-    if (watch->event != 0)
-    {
-        KeSetEvent(watch->event, 0, FALSE);
-    }
-    else
-    {
-        KeSetEvent(&watch->file->header, 0, FALSE);
-    }
+    /* The request is over: the caller's EVENT if it supplied one and the
+     * FILE OBJECT otherwise, never both — through the one authority that
+     * states the rule (io.h IopSignalRequestCompletion), which the pended
+     * data path owes identically. ntdll:change is what convicts it here: it
+     * completes an event-carrying watch and then requires the wait on the
+     * DIRECTORY to keep timing out (change.c:112) while the wait on the
+     * event succeeds (:115). */
+    IopSignalRequestCompletion(watch->event, watch->file);
     if (!isError)
     {
         /* The engine's APC leg (io.h): pre-allocated at arm, queued to the
@@ -570,9 +561,9 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     /* A request is now outstanding on this handle, so the file object is
      * BUSY: NT leaves it unsignalled until the request completes, and
      * ntdll:change waits on the directory handle expecting a timeout
-     * (change.c:106). Every other service here completes inline, so this is
-     * the only place the transition is observable. */
-    KeClearEvent(&file->header);
+     * (change.c:106). The npfs data park owes the same transition, so the
+     * rule lives with its twin in the engine (io.h). */
+    IopMarkRequestOutstanding(file);
     /* A change that arrived with nothing parked is waiting on the handle:
      * the server's `if (!list_empty( &dir->change_records ))` wake at the
      * end of the same handler. The syscall still answers STATUS_PENDING —

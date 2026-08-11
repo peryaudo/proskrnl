@@ -110,6 +110,18 @@ typedef struct NPFS_END
     BOOLEAN orphaned;     /* disconnected out from under this end */
     ULONG readMode;       /* FILE_PIPE_{BYTE_STREAM,MESSAGE}_MODE */
     ULONG completionMode; /* FILE_PIPE_{QUEUE,COMPLETE}_OPERATION */
+
+    /* CUI-8: the parked async READS (kernel/io/async.c), in issue order.
+     * Per END rather than per instance, because a read consumes from this
+     * end's INCOMING queue and the two directions are independent.
+     *
+     * Owned here, and every way one can end reaches a completer (G11): the
+     * peer's write or state change (NpfsServicePendingReads, driven from
+     * NpfsWakeAll and from the append), NtCancelIoFile, and this handle's
+     * own cleanup. Each request holds a reference to the FILE_OBJECT, so an
+     * abandoned one would never be freed either — which is why the cleanup
+     * arm is not optional. */
+    LIST_ENTRY pendingReadHead;
 } NPFS_END, *PNPFS_END;
 
 /* The flat pipe namespace (one dispatcher lock, no preemption: plain lists
@@ -141,8 +153,18 @@ static PNPFS_QUEUE NpfsOutgoingQueue(PNPFS_END end)
     return end->isServer ? &end->instance->outbound : &end->instance->inbound;
 }
 
+static void NpfsServiceInstance(PNPFS_INSTANCE instance);
+
 /* Wake every waiter on the instance — any state transition may unblock a
- * read, a write, or a listen parked on the other side. */
+ * read, a write, or a listen parked on the other side — and then COMPLETE
+ * every parked async read the new state can answer.
+ *
+ * The two belong together and that is why the service call is here rather
+ * than at the four call sites: a parked THREAD re-checks its condition when
+ * its event fires, while a parked REQUEST has no thread to do that, so the
+ * transition itself has to complete it. Every caller reaches this at a
+ * clean point — the state word and the end pointers are final before it is
+ * called — which is what makes completing from inside the wake safe. */
 static void NpfsWakeAll(PNPFS_INSTANCE instance)
 {
     KeSetEvent(&instance->inbound.dataEvent, 0, FALSE);
@@ -150,6 +172,7 @@ static void NpfsWakeAll(PNPFS_INSTANCE instance)
     KeSetEvent(&instance->outbound.dataEvent, 0, FALSE);
     KeSetEvent(&instance->outbound.spaceEvent, 0, FALSE);
     KeSetEvent(&instance->connectEvent, 0, FALSE);
+    NpfsServiceInstance(instance);
 }
 
 /* Clear-then-wait: safe against lost wakeups because nothing runs between
@@ -221,41 +244,51 @@ static ULONG NpfsConfigurationFromShare(ULONG sharing)
 
 /* --- the data path ---------------------------------------------------------- */
 
-static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut)
+/* CAN a read on `end` be answered right now? STATUS_SUCCESS means there are
+ * bytes to drain; STATUS_PENDING means there is nothing to report yet;
+ * anything else is the read's final answer.
+ *
+ * One statement of the rule for all three consumers (Art. 11): the blocking
+ * loop's re-check, the asynchronous issue path's decision to park, and the
+ * sweep that completes parked requests. `queuedAhead` says an OLDER request
+ * on this end is still parked — NT serves a handle's asyncs in issue order,
+ * so an arriving read must not overtake one (pinned pended_read.c case 7).
+ * Only the data arm consults it: the failure arms consume nothing, so every
+ * request on the queue is about to get the same answer anyway.
+ *
+ * FILE_PIPE_COMPLETE_OPERATION is deliberately NOT here. It is not a fact
+ * about the stream, it is what the ISSUER does when the answer is "nothing
+ * yet" — so it lives in NpfsRead, and a request that parked while the end
+ * was in wait mode stays parked if the mode is switched under it. */
+static NTSTATUS NpfsReadReady(PNPFS_END end, BOOLEAN queuedAhead)
 {
-    PNPFS_END end = file->fsContext;
     PNPFS_INSTANCE instance = end->instance;
     PNPFS_QUEUE queue = NpfsIncomingQueue(end);
 
-    for (;;)
+    if (NpfsEndDisconnected(end))
     {
-        if (NpfsEndDisconnected(end))
-        {
-            return STATUS_PIPE_DISCONNECTED;
-        }
-        if (instance->state == FILE_PIPE_LISTENING_STATE)
-        {
-            return STATUS_PIPE_LISTENING;
-        }
-        if (!IsListEmpty(&queue->bufferList))
-        {
-            break;
-        }
-        if (instance->state == FILE_PIPE_CLOSING_STATE)
-        {
-            return STATUS_PIPE_BROKEN; /* peer gone, nothing buffered */
-        }
-        if (end->completionMode == FILE_PIPE_COMPLETE_OPERATION)
-        {
-            return STATUS_PIPE_EMPTY;
-        }
-        NTSTATUS waitStatus = NpfsWait(&queue->dataEvent);
-        if (waitStatus != STATUS_SUCCESS)
-        {
-            return waitStatus; /* CUI-4: foreign terminate breaks the read park */
-        }
+        return STATUS_PIPE_DISCONNECTED;
     }
+    if (instance->state == FILE_PIPE_LISTENING_STATE)
+    {
+        return STATUS_PIPE_LISTENING;
+    }
+    if (!IsListEmpty(&queue->bufferList))
+    {
+        return queuedAhead ? STATUS_PENDING : STATUS_SUCCESS;
+    }
+    if (instance->state == FILE_PIPE_CLOSING_STATE)
+    {
+        return STATUS_PIPE_BROKEN; /* peer gone, nothing buffered */
+    }
+    return STATUS_PENDING;
+}
 
+/* Move bytes out of the end's incoming queue. Precondition: NpfsReadReady
+ * just answered STATUS_SUCCESS, so the queue is non-empty. */
+static NTSTATUS NpfsReadDrain(PNPFS_END end, void *buffer, ULONG length, ULONG_PTR *infoOut)
+{
+    PNPFS_QUEUE queue = NpfsIncomingQueue(end);
     NTSTATUS status = STATUS_SUCCESS;
     ULONG copied = 0;
     if (end->readMode == FILE_PIPE_MESSAGE_MODE)
@@ -265,7 +298,13 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
         PNPFS_BUFFER message = CONTAINING_RECORD(queue->bufferList.Flink, NPFS_BUFFER, listEntry);
         ULONG remaining = message->length - message->consumed;
         copied = remaining < length ? remaining : length;
-        memcpy(buffer, message->data + message->consumed, copied);
+        if (copied != 0)
+        {
+            /* `buffer` is 0 for a zero-length read, which reaches here as a
+             * legitimate request (a message-mode caller probing for the next
+             * message's size gets BUFFER_OVERFLOW and 0 bytes). */
+            memcpy(buffer, message->data + message->consumed, copied);
+        }
         message->consumed += copied;
         if (message->consumed == message->length)
         {
@@ -312,6 +351,102 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
     KeSetEvent(&queue->spaceEvent, 0, FALSE);
     *infoOut = copied;
     return status;
+}
+
+/* Complete every read parked on `end` that the CURRENT state can answer.
+ * Runs in whatever context changed that state — the peer's NtWriteFile, a
+ * disconnect, a close — never in the issuer's.
+ *
+ * Oldest first, and it STOPS at the first request that must still wait,
+ * which is what makes the queue order observable rather than incidental:
+ * one write that only covers the head request leaves the rest parked. */
+static void NpfsServicePendingReads(PNPFS_END end)
+{
+    while (!IsListEmpty(&end->pendingReadHead))
+    {
+        NTSTATUS status = NpfsReadReady(end, /* queuedAhead */ FALSE);
+        if (status == STATUS_PENDING)
+        {
+            return;
+        }
+        PIOP_PENDING_REQUEST pending =
+            CONTAINING_RECORD(end->pendingReadHead.Flink, IOP_PENDING_REQUEST, queueEntry);
+        ULONG_PTR transferred = 0;
+        if (status == STATUS_SUCCESS)
+        {
+            /* Into the request's OWN bounce (the buffer rw.c allocated and
+             * handed over), never the caller's VA: this is not the owner's
+             * address space. kernel/io/async.c places the bytes. */
+            status = NpfsReadDrain(end, pending->kernelBuffer, pending->bufferLength, &transferred);
+        }
+        RemoveEntryList(&pending->queueEntry);
+        IopCompletePendingRequest(pending, status, transferred);
+    }
+}
+
+static void NpfsServiceInstance(PNPFS_INSTANCE instance)
+{
+    if (instance->serverEnd != 0)
+    {
+        NpfsServicePendingReads(instance->serverEnd);
+    }
+    if (instance->clientEnd != 0)
+    {
+        NpfsServicePendingReads(instance->clientEnd);
+    }
+}
+
+static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                         IO_CONTROL_CONTEXT *request)
+{
+    PNPFS_END end = file->fsContext;
+
+    for (;;)
+    {
+        NTSTATUS status = NpfsReadReady(end, !IsListEmpty(&end->pendingReadHead));
+        if (status == STATUS_SUCCESS)
+        {
+            return NpfsReadDrain(end, buffer, length, infoOut);
+        }
+        if (status != STATUS_PENDING)
+        {
+            return status;
+        }
+        /* Nothing to report yet, so what happens next is the ISSUER's
+         * property, not the stream's. */
+        if (end->completionMode == FILE_PIPE_COMPLETE_OPERATION)
+        {
+            return STATUS_PIPE_EMPTY; /* PIPE_NOWAIT: never waits, never pends */
+        }
+        if (!file->synchronousIo)
+        {
+            /* CUI-8: an ASYNCHRONOUS handle genuinely pends rather than
+             * parking this thread, and the difference is a deadlock rather
+             * than a latency: the standard overlapped idiom issues the read
+             * and then satisfies it FROM THE SAME THREAD (ntdll:pipe
+             * pipe.c:1578/:1583, kernel32:virtual's test_write_watch,
+             * kernel32:pipe's overlapped server). A thread parked inside the
+             * read never reaches the write it is waiting for. Pinned by
+             * sem_pipe/pended_read.c; docs/03 "CUI-8 async notes".
+             *
+             * A QUEUE, not one slot — the same shape the listen queue took
+             * for the same reason (an accept loop submits the next request
+             * before the previous one completes). */
+            PIOP_PENDING_REQUEST pending = 0;
+            status = IopPreparePendingRequest(file, request, &pending);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            InsertTailList(&end->pendingReadHead, &pending->queueEntry);
+            return STATUS_PENDING;
+        }
+        NTSTATUS waitStatus = NpfsWait(&NpfsIncomingQueue(end)->dataEvent);
+        if (waitStatus != STATUS_SUCCESS)
+        {
+            return waitStatus; /* CUI-4: foreign terminate breaks the read park */
+        }
+    }
 }
 
 /* NtFlushBuffersFile on a pipe end (kernel/io/rw.c IopFlushBuffers): park
@@ -395,8 +530,14 @@ static NTSTATUS NpfsFlush(PFILE_OBJECT file)
     }
 }
 
-/* Append one pooled buffer to `queue` and wake its reader. */
-static NTSTATUS NpfsAppendBuffer(PNPFS_QUEUE queue, const void *data, ULONG length)
+/* Append one pooled buffer to `queue` and wake its reader — a parked THREAD
+ * through the data event, and a parked async REQUEST by completing it here
+ * and now (CUI-8). Both legs live in this one function so that "data
+ * arrived" and "whoever was waiting for it hears about it" cannot come
+ * apart: a caller that appended without servicing would leave a pended read
+ * parked on bytes that are already in the queue. */
+static NTSTATUS NpfsAppendBuffer(PNPFS_INSTANCE instance, PNPFS_QUEUE queue, const void *data,
+                                 ULONG length)
 {
     PNPFS_BUFFER buffer = MiAllocatePool(sizeof(NPFS_BUFFER) + length);
     if (buffer == 0)
@@ -412,6 +553,7 @@ static NTSTATUS NpfsAppendBuffer(PNPFS_QUEUE queue, const void *data, ULONG leng
     InsertTailList(&queue->bufferList, &buffer->listEntry);
     queue->bytesAvailable += length;
     KeSetEvent(&queue->dataEvent, 0, FALSE);
+    NpfsServiceInstance(instance);
     return STATUS_SUCCESS;
 }
 
@@ -468,7 +610,7 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
                 return status; /* CUI-4: foreign terminate breaks the write park */
             }
         }
-        status = NpfsAppendBuffer(queue, buffer, length);
+        status = NpfsAppendBuffer(end->instance, queue, buffer, length);
         if (!NT_SUCCESS(status))
         {
             return status;
@@ -504,7 +646,8 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
         {
             chunk = space;
         }
-        status = NpfsAppendBuffer(queue, (const unsigned char *)buffer + written, chunk);
+        status =
+            NpfsAppendBuffer(end->instance, queue, (const unsigned char *)buffer + written, chunk);
         if (!NT_SUCCESS(status))
         {
             return status;
@@ -604,7 +747,7 @@ static NTSTATUS NpfsWaitForPipe(const void *input, ULONG inputLength)
     }
 }
 
-static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, const IO_CONTROL_CONTEXT *request)
+static NTSTATUS NpfsListen(PNPFS_END end, PFILE_OBJECT file, IO_CONTROL_CONTEXT *request)
 {
     PNPFS_INSTANCE instance = end->instance;
     if (!end->isServer)
@@ -699,13 +842,23 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
     /* Unread bytes are DISCARDED (pinned) and the client end is orphaned. */
     NpfsFlushQueue(&instance->inbound);
     NpfsFlushQueue(&instance->outbound);
-    if (instance->clientEnd != 0)
+    PNPFS_END orphaned = instance->clientEnd;
+    if (orphaned != 0)
     {
-        instance->clientEnd->orphaned = TRUE;
+        orphaned->orphaned = TRUE;
         instance->clientEnd = 0;
     }
     instance->state = FILE_PIPE_DISCONNECTED_STATE;
     NpfsWakeAll(instance);
+    /* The ONE place an end leaves the instance while its handle lives on, so
+     * the ONE place NpfsWakeAll's sweep cannot reach it: the orphaned client
+     * is no longer instance->clientEnd, and any read it left parked would sit
+     * there forever. It is answered here, with the status its state now gives
+     * (STATUS_PIPE_DISCONNECTED, NpfsReadReady's first arm). */
+    if (orphaned != 0)
+    {
+        NpfsServicePendingReads(orphaned);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -774,7 +927,7 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
 
 static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                   ULONG inputLength, void *output, ULONG outputLength,
-                                  ULONG_PTR *infoOut, const IO_CONTROL_CONTEXT *request)
+                                  ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
     PNPFS_END end = file->fsContext;
     if (end == 0)
@@ -1012,6 +1165,7 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     memset(end, 0, sizeof(*end));
     end->instance = instance;
     end->isServer = FALSE;
+    InitializeListHead(&end->pendingReadHead);
     end->readMode = FILE_PIPE_BYTE_STREAM_MODE; /* client default (pinned:
                                                  * message framing needs the
                                                  * explicit switch) */
@@ -1052,6 +1206,20 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
         return; /* a device-root open holds no pipe state */
     }
     PNPFS_INSTANCE instance = end->instance;
+
+    /* CUI-8: the handle is going away, so every read it left parked is
+     * cancel-completed FIRST — before the state moves and before the end
+     * leaves the instance's reach (G11: a request never outlives the handle
+     * that issued it, and each one holds a FILE_OBJECT reference, so an
+     * abandoned one would never be freed either). Same answer and same
+     * position as the parked listens below. */
+    while (!IsListEmpty(&end->pendingReadHead))
+    {
+        PIOP_PENDING_REQUEST pending =
+            CONTAINING_RECORD(end->pendingReadHead.Flink, IOP_PENDING_REQUEST, queueEntry);
+        RemoveEntryList(&pending->queueEntry);
+        IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
+    }
 
     /* The peer sees a half-closed pipe: drains what is buffered, then
      * BROKEN on read / CLOSING on write (pinned sem_pipe/create_pipe). */
@@ -1110,6 +1278,17 @@ static void NpfsVfsClose(PFILE_OBJECT file)
          * the cleanup hook never fired — detach now so nothing dangles. */
         NpfsVfsCleanup(file);
     }
+    /* Cleanup has run for every end that reaches here (the hook above, or
+     * the handle's own close), and it drains this queue — so the end can
+     * never be freed with a request still pointing into it.
+     *
+     * AFTER the fallback above on purpose: that arm runs cleanup from inside
+     * the DELETE procedure, with the refcount already at zero, and a request
+     * completing there would drop a FILE_OBJECT reference that no longer
+     * exists. It cannot carry one — parking a read needs a user handle, and a
+     * handle guarantees the cleanup hook fired the ordinary way — so the
+     * assert is placed to convict the day that stops being true. */
+    ASSERT(IsListEmpty(&end->pendingReadHead));
     MiFreePool(end);
     ASSERT(instance->endCount > 0);
     if (--instance->endCount == 0)
@@ -1120,23 +1299,16 @@ static void NpfsVfsClose(PFILE_OBJECT file)
     }
 }
 
-/* Cancel the instance's parked listen if this file object's end issued it
- * and the filter matches (kernel/io/async.c IopCancelIo). Only the server
- * end can have issued one — a client handle never cancels it. */
-static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
+/* Cancel-complete every request on `head` the filter matches, oldest first
+ * — one NtCancelIoFile cancels all of that thread's pending I/O on the
+ * handle, not just the first. One statement of the filter for both queues
+ * (Art. 11): `issuer` non-0 narrows to that thread, `userIosb` non-0 to the
+ * one request with that IOSB VA. */
+static ULONG NpfsCancelQueue(PLIST_ENTRY head, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
 {
-    PNPFS_END end = file->fsContext;
-    if (end == 0 || !end->isServer)
-    {
-        return 0;
-    }
-    PNPFS_INSTANCE instance = end->instance;
-    /* Cancel EVERY queued listen the filter matches, oldest first -- one
-     * NtCancelIoFile cancels all of that thread's pending I/O on the handle,
-     * not just the first. */
-    int cancelled = 0;
-    PLIST_ENTRY entry = instance->pendingListenHead.Flink;
-    while (entry != &instance->pendingListenHead)
+    ULONG cancelled = 0;
+    PLIST_ENTRY entry = head->Flink;
+    while (entry != head)
     {
         PIOP_PENDING_REQUEST pending = CONTAINING_RECORD(entry, IOP_PENDING_REQUEST, queueEntry);
         entry = entry->Flink;
@@ -1147,7 +1319,25 @@ static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BL
         }
         RemoveEntryList(&pending->queueEntry);
         IopCompletePendingRequest(pending, STATUS_CANCELLED, 0);
-        cancelled = 1;
+        cancelled++;
+    }
+    return cancelled;
+}
+
+/* Cancel this file object's parked requests (kernel/io/async.c IopCancelIo):
+ * the reads it left on its own end (CUI-8), and — only for a server handle,
+ * since a client end never issues one — the instance's parked listens. */
+static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
+{
+    PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        return 0; /* a device-root open holds no pipe state */
+    }
+    ULONG cancelled = NpfsCancelQueue(&end->pendingReadHead, issuer, userIosb);
+    if (end->isServer)
+    {
+        cancelled += NpfsCancelQueue(&end->instance->pendingListenHead, issuer, userIosb);
     }
     return cancelled;
 }
@@ -1335,6 +1525,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     memset(end, 0, sizeof(*end));
     end->instance = instance;
     end->isServer = TRUE;
+    InitializeListHead(&end->pendingReadHead);
     end->readMode = readMode & FILE_PIPE_MESSAGE_MODE;
     end->completionMode = completionMode & FILE_PIPE_COMPLETE_OPERATION;
     instance->serverEnd = end;

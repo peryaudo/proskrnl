@@ -64,6 +64,22 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
                              BOOLEAN reportsPending)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
+    /* An inline completion deliberately does NOT re-signal the FILE OBJECT,
+     * and that is a collision rather than an omission. NT counts no
+     * outstanding requests: ANY completion on the handle puts it back up, so
+     * ntdll:pipe pends a read on a client end, writes one byte on that same
+     * end, and requires the handle signalled with the read still parked
+     * (pipe.c:1678 — one failure, and it is the whole cost).
+     *
+     * Doing it here costs far more than it buys, measured: condrv OWNS
+     * `header` on its server handle as a device-managed readiness signal
+     * (drivers/condrv.c CondrvSignalServer), and CondrvServerRead CLEARS it
+     * the moment the request queue empties — on the very read this tail then
+     * completes. So conhost's park was re-signalled the instant it was taken
+     * and its poll loop spun: kernel32:virtual went from reaching
+     * virtual.c:1465 to not finishing the todo block at :4341 inside 300 s.
+     * The exit is to give condrv an event of its own instead of borrowing
+     * the file object's; docs/03 "CUI-8 async notes" carries it. */
     /* FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, and its axis is the one thing
      * about it worth reading twice: the packet is skipped only when the call
      * did NOT report STATUS_PENDING to its caller. A request that pends
@@ -260,10 +276,41 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto abandon;
         }
+        /* CUI-8: what the device needs to PEND instead of parking this
+         * thread (vfs.h). The bounce is the request's data leg — the SAME
+         * buffer either way, so a pended read fills exactly what an inline
+         * one would; ownership passes to the request when, and only when,
+         * `pended` comes back TRUE, which is why the free below is skipped
+         * only there. */
+        IO_CONTROL_CONTEXT request = {.eventHandle = event,
+                                      .userIosb = iosb,
+                                      .apcBlock = apcBlock,
+                                      .apcContext = apcContext,
+                                      .userBuffer = buffer,
+                                      .kernelBuffer = bounce,
+                                      .bufferLength = length};
         ULONG_PTR transferred = 0;
         IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
-        status = file->device->ops->Read(file, bounce, length, &transferred);
+        status = file->device->ops->Read(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
+        if (request.pended)
+        {
+            /* The request owns the bounce and the APC block now, and it will
+             * write the IOSB, place the bytes and fire the completion legs
+             * from whatever context completes it (kernel/io/async.c). The
+             * caller's IOSB is deliberately untouched here.
+             *
+             * Keyed on the FLAG, never on the status: condrv answers
+             * STATUS_PENDING as a FINAL status meaning "nothing deliverable"
+             * (drivers/condrv.c CondrvServerRead), with the IOSB written and
+             * nothing parked — returning here for that leaked the bounce on
+             * every poll of an idle console. The assert is the other half of
+             * the contract, since a park that answered anything else would
+             * complete twice. */
+            ASSERT(status == STATUS_PENDING);
+            ObDereferenceObject(file);
+            return STATUS_PENDING;
+        }
         if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && transferred != 0)
         {
             /* Re-validated, not "probed above": the op parked, so the entry
