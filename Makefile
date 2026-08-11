@@ -71,6 +71,7 @@ CSRC := kernel/init/main.c \
         kernel/lib/dbgprint.c \
         kernel/lib/string.c \
         kernel/lib/rtl.c \
+        kernel/lib/crc32.c \
         kernel/mm/phys.c \
         kernel/mm/pool.c \
         kernel/mm/kasan.c \
