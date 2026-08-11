@@ -653,12 +653,44 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
     }
     /* Writes are already through (immediate writeback); what may be dirty
      * is mapped-view stores into the cache — push the whole stream out. A
-     * cache-less stream device (M9) has nothing to flush. */
+     * cache-less stream device (M9) has no cache, but that does not make the
+     * call a no-op: a pipe end owes the NT promise that the flush does not
+     * return until the peer has consumed what this end wrote, so the device
+     * answers for itself (Flush). Only a device with no Flush op has genuinely
+     * nothing to do — a no-op success for anything else is the fabricated
+     * answer Art. 12 forbids, and it cost kernel32:pipe its echo tests. */
     if (file->device->ops->GetCache == 0)
     {
-        status = STATUS_SUCCESS;
-        iosb->Status = STATUS_SUCCESS;
-        iosb->Information = 0;
+        if (file->device->ops->Flush != 0)
+        {
+            /* Inside a synchronous-I/O span, like every other npfs park
+             * (rw.c's transfers, ioctl.c's verbs). It is not decoration: the
+             * cancel is a per-THREAD flag (KTHREAD.syncIoCancelled) that only
+             * IopEnterSyncIo resets, and IoWaitCancellable reads it — so a
+             * park outside a span both inherits the previous request's cancel
+             * and cannot itself be cancelled (NtCancelSynchronousIoFile needs
+             * syncIoActive). The oracle's flush async is created blocking
+             * (server/fd.c DECL_HANDLER(flush) -> async_handoff(async, NULL,
+             * 1)) and cancel_sync matches every blocking async of the target
+             * thread, so both halves are observable; pinned by
+             * sem_pipe/flush_buffers.c. */
+            IopEnterSyncIo(iosb);
+            status = file->device->ops->Flush(file);
+            IopLeaveSyncIo();
+        }
+        else
+        {
+            status = STATUS_SUCCESS; /* nothing buffered anywhere (condrv) */
+        }
+        /* A FAILING flush writes nothing into the caller's block — measured,
+         * and the first draft of the pin guessed the other way: even a flush
+         * that PENDED and then failed leaves it untouched. IOSB re-probed
+         * after the device's parks, as below. */
+        if (NT_SUCCESS(status) && NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+        {
+            iosb->Status = status;
+            iosb->Information = 0;
+        }
         ObDereferenceObject(file);
         return status;
     }

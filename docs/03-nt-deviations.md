@@ -2396,6 +2396,76 @@ authorities disagree and no assertion could be green on both legs (Art. 6). Reco
 here instead: proskrnl follows NT, and a test that pins it would be pinning the
 oracle's mmap arrangement.
 
+## What a pipe's `NtFlushBuffersFile` waits for
+
+On a named pipe the flush is not a writeback — there is no cache to push. It is the
+promise that **the call does not return until the PEER has consumed everything this
+end wrote**, and that promise is what the `FlushFileBuffers`-then-`DisconnectNamedPipe`
+idiom rests on: a disconnect DISCARDS whatever the peer has not read, so without the
+wait the reply is thrown away before the peer ever sees it. The rule is
+`server/named_pipe.c` `pipe_end_flush`, whose whole body is two guards, plus the wake
+in `reselect_read_queue`. Implemented as `NpfsFlush` (`fs/npfs/pipe.c`) behind a new
+optional `IO_VFS_OPS.Flush` slot; pinned by `tests/ntapi/sem_pipe/flush_buffers.c`.
+
+| the end's situation | answer |
+|---|---|
+| connected, peer's queue empty | `STATUS_SUCCESS`, at once |
+| connected, peer's queue has bytes | parks; `STATUS_SUCCESS` when the last byte is read |
+| LISTENING (no peer at all) | `STATUS_SUCCESS`, at once — not `STATUS_PIPE_LISTENING` |
+| peer's handle closed (CLOSING), bytes still queued | `STATUS_SUCCESS`, at once |
+| this end was DISCONNECTED out from under it (a client) | `STATUS_PIPE_DISCONNECTED` |
+| the server's OWN end, after its own disconnect | `STATUS_SUCCESS` |
+| already PARKED when the server disconnects | `STATUS_PIPE_DISCONNECTED` |
+| already PARKED when the peer closes | `STATUS_PIPE_BROKEN` |
+
+Four things in that table are not derivable from the verb's name, and each is a way
+an implementation reaching for the obvious guard diverges:
+
+- **The queue it waits on is the PEER's**, i.e. this end's OUTGOING. A flush never
+  waits for data somebody sent *us*.
+- **The two ends do not answer alike after one disconnect.** `FSCTL_PIPE_DISCONNECT`
+  clears the *client's* pipe pointer (`server->pipe_end.connection->pipe = NULL`)
+  and leaves the server's own alone, so the client is `STATUS_PIPE_DISCONNECTED`
+  while the server — which merely has no connection any more — is a success. A
+  kernel that asks one "is this end disconnected" question answers both the same
+  way; proskrnl's `NpfsEndDisconnected` is exactly that question, which is why the
+  flush asks `end->orphaned` instead.
+- **No connection means nothing to wait for, buffered bytes or not.** A listening
+  instance and a closed peer are both immediate successes. An implementation that
+  waits on the QUEUE alone hangs on the second one forever.
+- **A parked flush's status is decided at the TRANSITION that satisfies it, not when
+  the parked thread is next scheduled.** The oracle terminates the async inside the
+  read that empties the queue; nothing that happens afterwards can change an answer
+  already given. This is why `NPFS_QUEUE` carries a `drainSeq` rather than the flush
+  re-reading the queue: a disconnect empties the queue too, so "is it empty now" cannot
+  tell a drain from a disconnect — and once the peer has CLOSED, the state alone says
+  `STATUS_PIPE_BROKEN` about a flush the drain had already completed. That is not a
+  corner: `kernel32:pipe`'s echo servers read and close back to back, so all 24 of
+  their flushes took the wrong branch of exactly this question.
+
+**The defect this replaced is G12's shape without a stub in it.** `IopFlushBuffers`
+answered `STATUS_SUCCESS` for every cache-less device, which is true of a console and
+false of a pipe — a plausible no-op that nothing convicts until an ordering somewhere
+else falls apart. It cost `kernel32:pipe` both of its synchronous echo servers
+(`docs/21` W11).
+
+**And the flush parks inside a synchronous-I/O span (`IopEnterSyncIo`), which is a
+correctness requirement rather than bookkeeping.** proskrnl's cancel is a per-THREAD
+flag (`KTHREAD.syncIoCancelled` + `syncIoCancelEvent`), and *only* `IopEnterSyncIo`
+resets it, while `IoWaitCancellable` reads it unconditionally. So a park outside a
+span gets the previous request's cancel — a thread whose blocking pipe read was
+cancelled, then flushing, answered `STATUS_CANCELLED` to a caller that had asked for
+nothing of the kind — and cannot itself be cancelled, because
+`NtCancelSynchronousIoFile` requires `syncIoActive` and answers `STATUS_NOT_FOUND`
+without it, leaving the flush parked with no way out. Both halves are observable
+(the oracle's flush async is created blocking, `server/fd.c` `DECL_HANDLER(flush)` →
+`async_handoff(async, NULL, 1)`, and `cancel_sync` matches every blocking async of the
+target thread), both were measured on the kernel before the span was added, and both
+are pinned. **The generalisable tell is that a per-thread flag makes every new
+blocking point in the Io layer a place the previous request's state can leak into** —
+the flush was the first blocking pipe operation whose wrapper had no span, and
+nothing in the type system said so.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:
