@@ -30,6 +30,7 @@
 # becomes its string list; REG_DWORD/QWORD become integers; everything else
 # (and any undecodable string) stays raw hex.
 import struct
+import zlib
 import sys
 
 # Registry value types: fixed by the Windows SDK contract; re-verify against
@@ -97,63 +98,99 @@ class RegTree:
         self.values[(path.lower(), name.lower())] = (type_name(regtype), canon_data(regtype, data))
 
 
-# --- the proskrnl hive (PHV1) — format spec: kernel/cm/hive.c ---------------
+# --- the proskrnl hive (PHV2) — format spec: kernel/cm/hive.c ---------------
+
+PHV2_MAGIC = 0x32564850
+PHV2_RECORD_HEADER = 24
+PHV2_VALUE_HEADER = 12
+
+OP_CREATE_KEY, OP_DELETE_KEY, OP_SET_VALUES, OP_DELETE_VALUE, OP_RENAME_KEY = 1, 2, 3, 4, 5
 
 
-def parse_phv1(blob):
-    magic, version, total, _ = struct.unpack_from("<IIII", blob, 0)
-    if magic != 0x31564850 or version != 1:
-        raise ValueError("not a PHV1 hive (magic %#x version %d)" % (magic, version))
-    if total != len(blob):
-        raise ValueError("PHV1 totalBytes %d != file size %d" % (total, len(blob)))
+def _crc32(data):
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def _round8(n):
+    return (n + 7) & ~7
+
+
+def parse_phv2(blob):
+    """Replay a PHV2 record log into a RegTree.
+
+    The kernel's own reader stops at the first record that fails its length,
+    bounds or CRC check and keeps the prefix (a torn append costs one record).
+    This mirrors that exactly -- if it did not, a legitimately torn hive would
+    read here as a whole-file diff rather than as one missing key.
+    """
+    magic, version = struct.unpack_from("<II", blob, 0)
+    if magic != PHV2_MAGIC or version != 2:
+        raise ValueError("not a PHV2 hive (magic %#x version %d)" % (magic, version))
 
     tree = RegTree()
     pos = 16
+    while len(blob) - pos >= PHV2_RECORD_HEADER:
+        length, crc = struct.unpack_from("<II", blob, pos)
+        if length < PHV2_RECORD_HEADER or length % 8 or length > len(blob) - pos:
+            break
+        rec = blob[pos : pos + length]
+        if _crc32(rec[8:]) != crc:
+            break
+        op, _flags, path_chars, shared, value_count = struct.unpack_from("<BBHHH", rec, 8)
+        if shared != 0:                       # reserved; a reader must refuse it
+            break
+        path_bytes = path_chars * 2
+        tail_at = _round8(PHV2_RECORD_HEADER + path_bytes)
+        if tail_at > length:
+            break
+        path = rec[PHV2_RECORD_HEADER : PHV2_RECORD_HEADER + path_bytes].decode("utf-16-le")
+        pos += length
 
-    def take(n):
-        nonlocal pos
-        if len(blob) - pos < n:
-            raise ValueError("PHV1 truncated at offset %d" % pos)
-        out = blob[pos : pos + n]
-        pos += n
-        return out
-
-    def parse_key_body(path, value_count):
-        nonlocal pos
-        for _ in range(value_count):
-            rec = take(12)
-            if rec[0] != ord("V"):
-                raise ValueError("PHV1 bad value tag at %d" % (pos - 12))
-            name_chars, regtype, data_bytes = struct.unpack_from("<xxHII", rec, 0)
-            name = take(name_chars * 2).decode("utf-16-le")
-            data = take(data_bytes)
-            if data_bytes % 2:
-                take(1)
-            tree.add_value(path, name, regtype, data)
-        while True:
-            rec = take(2)
-            if rec[0] == ord("E"):
-                if rec[1] != 0:
-                    raise ValueError("PHV1 bad end record at %d" % (pos - 2))
-                return
-            if rec[0] != ord("K"):
-                raise ValueError("PHV1 bad key tag at %d" % (pos - 2))
-            header = take(14)
-            name_chars, _, child_values = struct.unpack_from("<HQI", header, 0)
-            if name_chars == 0:
-                raise ValueError("PHV1 nested key with empty name at %d" % (pos - 14))
-            name = take(name_chars * 2).decode("utf-16-le")
-            child = path + "\\" + name if path else name
-            tree.add_key(child)
-            parse_key_body(child, child_values)
-
-    root = take(16)
-    if root[0] != ord("K") or struct.unpack_from("<H", root, 2)[0] != 0:
-        raise ValueError("PHV1 bad root record")
-    parse_key_body("", struct.unpack_from("<I", root, 12)[0])
-    if pos != len(blob):
-        raise ValueError("PHV1 trailing bytes after root record")
+        if op == OP_CREATE_KEY:
+            if path:                           # the image's own top key is not a key IN it
+                tree.add_key(path)
+        elif op == OP_DELETE_KEY:
+            tree.keys.discard(path.lower())
+            dead = path.lower()
+            for key in [k for k in tree.values if k[0] == dead]:
+                del tree.values[key]
+        elif op == OP_SET_VALUES:
+            at = tail_at
+            for _ in range(value_count):
+                name_chars, regtype, data_bytes = struct.unpack_from("<HxxII", rec, at)
+                name_at = at + PHV2_VALUE_HEADER
+                name = rec[name_at : name_at + name_chars * 2].decode("utf-16-le")
+                data_at = name_at + name_chars * 2
+                tree.add_value(path, name, regtype, rec[data_at : data_at + data_bytes])
+                at += _round8(PHV2_VALUE_HEADER + name_chars * 2 + data_bytes)
+        elif op == OP_DELETE_VALUE:
+            (name_chars,) = struct.unpack_from("<H", rec, tail_at)
+            name_at = tail_at + 4
+            name = rec[name_at : name_at + name_chars * 2].decode("utf-16-le")
+            tree.values.pop((path.lower(), name.lower()), None)
+        elif op == OP_RENAME_KEY:
+            (name_chars,) = struct.unpack_from("<H", rec, tail_at)
+            name_at = tail_at + 4
+            new_name = rec[name_at : name_at + name_chars * 2].decode("utf-16-le")
+            parent = path.rsplit("\\", 1)[0] if "\\" in path else ""
+            dst = (parent + "\\" + new_name) if parent else new_name
+            _rename_subtree(tree, path, dst)
+        else:
+            break                              # an op this reader does not know ends the log
     return tree
+
+
+def _rename_subtree(tree, src, dst):
+    """Move src and everything under it to dst, as replay does."""
+    src_l, dst_l = src.lower(), dst.lower()
+    moved = {k for k in tree.keys if k == src_l or k.startswith(src_l + "\\")}
+    tree.keys -= moved
+    for k in moved:
+        tree.keys.add(dst_l + k[len(src_l) :])
+    for (kpath, vname), v in list(tree.values.items()):
+        if kpath == src_l or kpath.startswith(src_l + "\\"):
+            del tree.values[(kpath, vname)]
+            tree.values[(dst_l + kpath[len(src_l) :], vname)] = v
 
 
 # --- the Wine text registry (server/registry.c) ------------------------------
@@ -274,7 +311,7 @@ def load(filename, subtree=None):
     with open(filename, "rb") as f:
         blob = f.read()
     if blob[:4] == b"PHV1":
-        tree = parse_phv1(blob)
+        tree = parse_phv2(blob)
     else:
         tree = parse_winereg(blob.decode("utf-8", errors="replace"), "machine")
     if subtree:

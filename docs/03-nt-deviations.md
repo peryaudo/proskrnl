@@ -269,17 +269,41 @@ and 16383-char value-name limits — are each cross-checked against
 
 **Inside (all free under the semantic shadow):**
 
-- **The hive is our own format, "proskrnl hive v1"** (`kernel/cm/hive.c` is its normative
+- **The hive is our own format, "proskrnl hive v2"** (`kernel/cm/hive.c` is its normative
   spec): one file, `\??\C:\windows\system32\config\SYSTEM` (NT's path shape), holding a
-  length-prefixed preorder dump of the whole tree — no cells, no bins, no free lists, no
-  incremental updates. Every successful mutating syscall rewrites the entire file through
-  the ordinary `NtCreateFile`/`NtWriteFile` path onto write-through FAT32, so mutations
-  are durable at syscall return and **`NtFlushKey` is a success no-op** (strictly stronger
-  than NT's lazy flusher; unobservable from a running program).
+  **flat log of records** — no cells, no bins, no free lists. Each record carries its own
+  length, a CRC-32, an op (create key / delete key / set values / delete value / rename
+  key) and the **full path** of the key it acts on, relative to the image's top key; the
+  tree is the fold of the log in order. v1 stored the tree AS a tree, a nested preorder
+  dump in which a key's parent was its lexical position — which left exactly one way to
+  change a key three levels down, rewriting the whole file, and that is what made every
+  mutating syscall O(hive). Structure is a field now rather than a position. Writes still
+  go through the ordinary `NtCreateFile`/`NtWriteFile` path onto write-through FAT32, so
+  mutations are durable at syscall return and **`NtFlushKey` is a success no-op**
+  (strictly stronger than NT's lazy flusher; unobservable from a running program).
+- **Three replay rules are load bearing**, and the format comment states them: `SET_VALUES`
+  MERGES (so absence needs its own `DELETE_VALUE` op — a log whose only value op were
+  "set" would replay a deletion away); a record's PARENT MUST ALREADY EXIST (ancestors are
+  always logged first, so a missing one means corruption, and replay refuses rather than
+  conjuring intermediates — the same rule as `NtCreateKey` creating only the last
+  component); and NO RECORD EVER DELETES A NON-EMPTY KEY (`NtDeleteKey` refuses a key with
+  subkeys, and the two syscalls that do drop a subtree — `NtUnloadKey` on a non-volatile
+  target, and `NtRestoreKey` — rewrite the log from a fresh snapshot instead of appending).
 - **No recovery logging** (NT's `.LOG1`/`.LOG2` dirty-page journals are shed, docs/05): the
-  file's magic is written only after the body, so a torn rewrite parses as *no* hive and
-  the next boot starts with an empty registry — deterministic loss, never a garbage parse.
-  A kernel crash between a mutation and its rewrite completing can lose that mutation.
+  per-record length + CRC are what a reader recovers with instead. It validates each
+  record and **stops at the first one that fails, keeping everything before it**, so a
+  torn write costs the last record rather than the file. That is strictly better than v1,
+  whose magic was written last so that an unfinished body left no valid file at all and
+  the next boot started with an *empty registry*. The two readers outside the kernel —
+  `tests/run/regdump.py` (the firstboot differential) and `tests/run/tornreplay.py` (the
+  torn-write leg) — implement the same stop-at-first-bad-record rule, because a reader
+  that did not would report a legitimately torn hive as a whole-file divergence.
+  A kernel crash between a mutation and its write completing can still lose that mutation.
+- **A ring-3 image gets a verdict, the boot hive gets its prefix.** One replay function
+  with one flag: `NtLoadKey`/`NtRestoreKey` were handed a file by a caller, so anything
+  malformed unwinds and answers `STATUS_NOT_REGISTRY_FILE` (what v1 did, and what the
+  oracle does); the boot hive is the kernel's own append log, where a torn tail is an
+  expected ending rather than corruption. Pinned by `sem_reg/save_load.c`'s junk-file case.
 - **One hive** backs the whole tree (NT splits SYSTEM/SOFTWARE/SAM/... and mounts user
   hives): `\Registry\Machine` and `\Registry\User` are plain keys persisted in the same
   file. Unobservable until something enumerates hive *mount points* as such.
