@@ -199,9 +199,10 @@ OBJECT_TYPE PspJobType = {
 NTSTATUS NtCreateJobObject(PHANDLE handleOut, ACCESS_MASK desiredAccess,
                            const OBJECT_ATTRIBUTES *attributes)
 {
-    if (handleOut == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handleOut);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     PVOID body;
     NTSTATUS status = ObpCreateObjectWithHandle(&PspJobType, sizeof(EJOB), attributes,
@@ -697,9 +698,10 @@ NTSTATUS NtTerminateJobObject(HANDLE handle, NTSTATUS exitStatus)
 NTSTATUS NtOpenJobObject(PHANDLE handleOut, ACCESS_MASK desiredAccess,
                          const OBJECT_ATTRIBUTES *attributes)
 {
-    if (handleOut == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handleOut);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     /* The shared name-resolution/open engine (G11) — no parallel path. */
     return ObpOpenObjectByName(&PspJobType, attributes, desiredAccess, handleOut);

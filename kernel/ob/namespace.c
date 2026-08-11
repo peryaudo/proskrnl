@@ -974,9 +974,10 @@ void ObpInitializeObjectManager(void)
 
 NTSTATUS NtCreateDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     PVOID body;
     NTSTATUS status = ObpCreateObjectWithHandle(&ObpDirectoryType, sizeof(OBP_DIRECTORY), attr,
@@ -991,9 +992,10 @@ NTSTATUS NtCreateDirectoryObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATT
 
 NTSTATUS NtOpenDirectoryObject(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpDirectoryType, attr, access, handle);
 }
@@ -1159,7 +1161,15 @@ NTSTATUS NtQueryDirectoryObject(HANDLE handle, PDIRECTORY_BASIC_INFORMATION buff
 NTSTATUS NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
                                     PUNICODE_STRING target)
 {
-    if (handle == 0 || target == 0)
+    /* The slot is cleared above the target check, as the oracle clears it
+     * above its own `!target->MaximumLength` / `!target->Buffer` pair
+     * (third_party/wine dlls/ntdll/unix/sync.c NtCreateSymbolicLinkObject). */
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
+    {
+        return clearStatus;
+    }
+    if (target == 0)
     {
         return STATUS_ACCESS_VIOLATION;
     }
@@ -1218,9 +1228,10 @@ NTSTATUS NtCreateSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, POBJECT_
 
 NTSTATUS NtOpenSymbolicLinkObject(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS clearStatus = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(clearStatus))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return clearStatus;
     }
     return ObpOpenObjectByName(&ObpSymbolicLinkType, attr, access, handle);
 }

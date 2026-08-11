@@ -1142,11 +1142,18 @@ static NTSTATUS MipViewProtectToAccess(ULONG protect, ACCESS_MASK *access)
 NTSTATUS NtCreateSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr,
                          const LARGE_INTEGER *size, ULONG protect, ULONG secFlags, HANDLE file)
 {
-    if (handle == 0)
+    /* The caller's slot is cleared before ANY of the ladder below can refuse:
+     * kernelbase's CreateFileMappingW returns an uninitialized local on its
+     * failing paths (dlls/kernelbase/sync.c), so a refusal that leaves the
+     * slot alone reads as a create that succeeded. The oracle's own
+     * NtCreateSection opens with `*handle = 0;` for the same reason
+     * (dlls/ntdll/unix/sync.c). Pinned by sem_ob/out_handle.c. */
+    NTSTATUS status = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(status))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return status;
     }
-    NTSTATUS status = MipCheckSectionProtect(protect);
+    status = MipCheckSectionProtect(protect);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1242,9 +1249,10 @@ NTSTATUS NtCreateSectionEx(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTR
 
 NTSTATUS NtOpenSection(HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr)
 {
-    if (handle == 0)
+    NTSTATUS status = ObpClearOutHandle(handle);
+    if (!NT_SUCCESS(status))
     {
-        return STATUS_ACCESS_VIOLATION;
+        return status;
     }
     return ObpOpenObjectByName(&MiSectionType, attr, access, handle);
 }

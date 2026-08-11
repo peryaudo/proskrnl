@@ -1079,16 +1079,11 @@ NTSTATUS NtCreateKey(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
     (void)titleIndex; /* as wine: unused */
     (void)class;      /* key classes are not stored (docs/03 M8 notes) */
 
-    if (keyHandle == 0)
-    {
-        return STATUS_ACCESS_VIOLATION;
-    }
-    NTSTATUS status = KiProbeForWrite(keyHandle, sizeof(*keyHandle), sizeof(*keyHandle));
+    NTSTATUS status = ObpClearOutHandle(keyHandle); /* as wine ntdll's NtCreateKey */
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    *keyHandle = 0; /* as wine ntdll's NtCreateKey */
     if (disposition != 0)
     {
         status = KiProbeForWrite(disposition, sizeof(*disposition), sizeof(*disposition));
@@ -1227,16 +1222,11 @@ NTSTATUS NtOpenKeyEx(PHANDLE keyHandle, ACCESS_MASK desiredAccess,
      * attributes to the server, so opening a link unresolved takes
      * OBJ_OPENLINK in the attributes, not the option). */
     (void)options;
-    if (keyHandle == 0)
-    {
-        return STATUS_ACCESS_VIOLATION;
-    }
-    NTSTATUS status = KiProbeForWrite(keyHandle, sizeof(*keyHandle), sizeof(*keyHandle));
+    NTSTATUS status = ObpClearOutHandle(keyHandle); /* as wine ntdll's NtOpenKeyEx */
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-    *keyHandle = 0; /* as wine ntdll's NtOpenKeyEx */
     {
         /* attributes->Length is read here, before CmpResolvePath below gets
          * a chance to validate the block. */

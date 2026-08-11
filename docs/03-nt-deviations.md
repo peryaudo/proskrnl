@@ -2194,6 +2194,49 @@ byte-accurate count; only the reporting was missing. Nothing deviates; pinned by
 `tests/ntapi/sem_ps/virtual_memory.c`, which measures the count through both handle arms and
 in both alignments.
 
+## What a REFUSED handle-producing call leaves in the caller's slot
+
+A handle-producing `Nt*` call writes **0 into the caller's out-handle as its first act**,
+above every validation, so a refusal leaves `NULL` there rather than whatever the caller
+never initialized. The pinned oracle states it once per entry point, as that function's
+opening statement (`*handle = 0;`): `dlls/ntdll/unix/sync.c` for the sync objects, the
+namespace objects, the section and the completion port; `unix/file.c` for `NtCreateFile` and
+`NtCreateNamedPipeFile` (`NtOpenFile` reaches it by tail-calling `NtCreateFile`, and proskrnl
+states it at both entry points because its own `NtOpenFile` does not go through
+`NtCreateFile`); `unix/registry.c` for `NtCreateKey` / `NtOpenKeyEx`;
+`unix/process.c` and `unix/thread.c` for `NtOpenProcess` / `NtOpenThread`; `unix/security.c`
+for the token opens and `NtDuplicateToken`; `unix/server.c` for `NtDuplicateObject`, which is
+the one that **guards** the store (`if (dest) *dest = 0;`) because its out pointer is
+optional.
+
+Nothing deviates. It is recorded here because the rule is neither guessable nor uniform, and
+because the cost of missing it is paid a long way from the syscall:
+
+- **The consumer that depends on it is Win32, not the test suite.** `kernelbase`'s
+  `CreateFileMappingW` (`dlls/kernelbase/sync.c`) declares `HANDLE ret;` uninitialized,
+  passes `&ret` to `NtCreateSection` and `return ret`s on **every** path including the
+  failing ones. A kernel that refuses correctly and leaves the slot alone therefore hands
+  Win32 a stack-garbage `HANDLE` for a create that did not happen — and the caller then
+  closes it, which closes whatever unrelated object that value names. 71 of
+  `kernel32:virtual`'s 96 failures were that one omission.
+- **It is a per-entry-point obligation, and three of the surface's creates do NOT have it.**
+  `NtCreateThreadEx` (`unix/thread.c`) refuses `zero_bits` without touching `*handle`;
+  `NtCreateUserProcess` (`unix/process.c`) builds into locals and assigns the caller's two
+  slots on the success path only; `NtFilterToken` (`unix/security.c`) opens with its flags
+  FIXME. So the clear cannot live in the system service dispatcher, nor in the shared
+  create/open engine — an implementation that hoists it passes every positive case and
+  diverges on those three.
+- **One statement of it (Art. 11).** `ObpClearOutHandle` (`kernel/ob/handle.c`), beside
+  `ObpCreateHandle`, which is already the one site that writes a handle out. It also
+  subsumes the `if (handle == 0) return STATUS_ACCESS_VIOLATION;` prologue the entry points
+  each carried, and the two hand-written copies of the rule that had appeared meanwhile
+  (`kernel/cm/registry.c`'s `*keyHandle = 0;` and `kernel/se/token.c`'s `SepPreZeroHandle`).
+  The NULL slot is refused inside it rather than left to the probe, because the probe is a
+  no-op for a KernelMode caller and the store would then be a ring-0 write to address 0.
+
+Pinned by `tests/ntapi/sem_ob/out_handle.c`, whose last two cases are the entry points that
+must **not** clear.
+
 ## What a live SECTION holds against a later OPEN
 
 NT models a section as a **pseudo-open of the file**, and the pinned oracle says so

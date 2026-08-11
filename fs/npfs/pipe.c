@@ -1081,11 +1081,16 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
                                ULONG completionMode, ULONG maxInstances, ULONG inboundQuota,
                                ULONG outboundQuota, PLARGE_INTEGER timeout)
 {
-    if (handleOut == 0 || iosb == 0)
+    NTSTATUS status = ObpClearOutHandle(handleOut);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (iosb == 0)
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
     if (!NT_SUCCESS(status))
     {
         return status;

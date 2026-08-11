@@ -1413,8 +1413,7 @@ NTSTATUS NtOpenProcess(HANDLE *processHandle, ACCESS_MASK desiredAccess,
      * wineserver's get_process_from_id (server/process.c): an id that never
      * belonged to a process is STATUS_INVALID_CID. Pinned by
      * sem_ps/open_process. */
-    NTSTATUS status =
-        KiProbeForWrite(processHandle, sizeof(*processHandle), sizeof(*processHandle));
+    NTSTATUS status = ObpClearOutHandle(processHandle);
     if (!NT_SUCCESS(status))
     {
         return status;

@@ -1326,8 +1326,13 @@ NTSTATUS NtOpenThread(HANDLE *threadHandle, ACCESS_MASK desiredAccess,
      * req->tid; get_thread_from_id fails with STATUS_INVALID_CID). Reuses
      * the one by-id thread lookup (PspFindThreadByThreadId, G11) — never a
      * second walk. */
+    NTSTATUS status = ObpClearOutHandle(threadHandle);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     CLIENT_ID capturedId;
-    NTSTATUS status = KiCopyFromUser(&capturedId, clientId, sizeof(capturedId));
+    status = KiCopyFromUser(&capturedId, clientId, sizeof(capturedId));
     if (!NT_SUCCESS(status))
     {
         return status;
