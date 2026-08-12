@@ -2841,21 +2841,37 @@ shim passes no thread and a child spawned by a parent thread that had `SetThread
 off the process default inherits the process default instead of that thread's desktop.
 Explorer's process default *is* its desktop, so GUI-6 never sees the difference.
 
-**The desktop is always forced, and its user entries look foreign.** On Wine the desktop
-and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window` without `force` waits
-for it, and every app process sees the windows' user entries carry a foreign pid, which is
-what routes win32u onto its `WND_DESKTOP` special cases. There is one GUI process here and
-explorer is GUI-6, so the shim sets `force` on every `get_desktop_window` (the same server
-path the forcing caller takes — win32u never tries to launch an explorer.exe the image does
-not carry) and then clears the owner ids on the two entries so they read as foreign
+**The desktop is forced on explorerless images, and its user entries look foreign.** On
+Wine the desktop and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window`
+without `force` returns empty until explorer creates the desktop — win32u answers that by
+*launching* `C:\windows\system32\explorer.exe` itself (`dlls/win32u/winstation.c
+get_desktop_window`) — and every app process sees the windows' user entries carry a foreign
+pid, which is what routes win32u onto its `WND_DESKTOP` special cases. Since GUI-6 that is
+the shipping arrangement on any image that carries `explorer.exe` (the gui6 image): the
+fixture sites are all off, explorer creates and owns the desktop, and the entries are
+foreign because they are. On an image *without* explorer — the CUI images and the earlier
+GUI legs' (gui2..gui5, gui5con, guiwtest), kept explorerless by decision at GUI-6: one
+extra process boot and the shell32 closure on five images bought nothing those legs
+convict — win32u's launch would fail and its force-fallback re-enter both convicted
+failure modes below, so there the GUI-2 fixture stays, keyed on one probe
+(`shim.c prsk_no_explorer`, the explorer path win32u hardcodes, answer printed on serial):
+the shim sets `force` on every `get_desktop_window` (the same server path the forcing
+caller takes) and then clears the owner ids on the two entries so they read as foreign
 (`shim.c detach_user_entry`; the server side is already detached,
 `server/window.c detach_window_thread`). Without that second half the entries kept our own
 pid, win32u went looking for a client-side WND that was never made, `GetWindowLong` on the
 desktop answered style 0, and the first `ShowWindow` took the invisible-parent shortcut —
-the window turned visible without ever being exposed, and nothing painted. The desktop
-window's rects, which explorer would size, come from winefb.drv's `pSetDesktopWindow`
-sizing it to the scanout — the same repair `X11DRV_SetDesktopWindow` makes when it finds
-them uninitialized.
+the window turned visible without ever being exposed, and nothing painted. (The other
+convicted mode is the forced create's `set_process_default_desktop` side effect, restored
+across the call — the `defaultDesktop` block in `prsk_server_dispatch`, which cost 10
+`msg.c` failures before GUI-5 found it.) The desktop window's rects are sized by
+winefb.drv's `pSetDesktopWindow` to the scanout — under explorer that hook runs in
+explorer's process exactly as `X11DRV_SetDesktopWindow` does on Wine; under the fixture it
+is the same repair X11DRV makes when it finds the rects uninitialized. The two
+`user32:msg` assertions this fixture costs (`SetFocus`/`SetForegroundWindow` on the
+desktop window: no owning thread ⇒ `ERROR_INVALID_HANDLE` where Wine's explorer-owned
+desktop answers `ERROR_ACCESS_DENIED`) remain in `tests/winetest/msg-budget.txt`'s bound —
+they flip only on an explorer-bearing guiwtest image, which the decision above declined.
 
 **`HKU\<sid>` exists from boot.** win32u's `font_init` opens
 `\Registry\User\S-1-5-21-0-0-0-1000` (the fixed Se identity) and loads no fonts at all when
@@ -3217,9 +3233,11 @@ difference from the measured count):
   `check_queue_input_window`/`get_window_thread` on the desktop window, and here that
   window has **no owning thread** — GUI-2's forced-foreign fixture again. Wine answers
   `ERROR_ACCESS_DENIED` because the desktop belongs to explorer, a different input queue;
-  we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. Explorer owning the
-  desktop is precisely what GUI-6 builds (docs/02 says the fixture retires there), so this
-  is the one divergence deliberately left for that milestone rather than papered over.
+  we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. GUI-6 built exactly that
+  arrangement — on an explorer-bearing image the fixture is off and the desktop has a real
+  owner — but the guiwtest image was kept explorerless by decision (GUI-2 notes above), so
+  the pair stays in the bound: it flips the day the guiwtest image gains explorer, and the
+  divergence is a recorded fixture cost, not a papered-over unknown.
 - *Up to twelve assertions are decided by emulated-machine speed, not by semantics,* and
   they are the reason the budget is a ceiling rather than a measurement.
   `test_PeekMessage3` sets a 100 ms timer, never kills it, and then asserts **seven** times
