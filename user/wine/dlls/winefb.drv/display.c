@@ -37,6 +37,26 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access, ULONG sharing 
     return handle;
 }
 
+/* Does the image carry the explorer win32u would auto-launch? The same one
+ * fact wineserver-lite probes at bring-up (shim.c probe_explorer, the exact
+ * path dlls/win32u/winstation.c get_desktop_window hardcodes), probed the
+ * same way; it selects the desktop arrangement, and the two probes must
+ * agree because they read the same volume. Cached: the answer cannot change
+ * within a boot. */
+static BOOL winefb_explorer_on_image(void)
+{
+    static int cached = -1;
+
+    if (cached < 0)
+    {
+        HANDLE handle = open_device( L"\\??\\C:\\windows\\system32\\explorer.exe",
+                                     FILE_GENERIC_READ, FILE_SHARE_READ );
+        cached = handle != NULL;
+        if (handle) NtClose( handle );
+    }
+    return cached;
+}
+
 BOOL winefb_map_scanout(void)
 {
     static const WCHAR fb0[] =
@@ -151,6 +171,31 @@ void winefb_set_desktop_window( HWND hwnd )
                        (unsigned)winefb_scanout.mode.width, (unsigned)winefb_scanout.mode.height,
                        GetRValue( WINEFB_DESKTOP_BG ), GetGValue( WINEFB_DESKTOP_BG ),
                        GetBValue( WINEFB_DESKTOP_BG ) );
+
+        /* The scanout shows exactly one desktop, so the desktop being shown
+         * is where input must go. An X server keeps that truth implicit
+         * (focus events name the mapped root); this driver states it: the
+         * desktop whose window was just created becomes the INPUT desktop
+         * (NtUserSwitchDesktop -> server set_input_desktop). Without this a
+         * boot that creates desktops in sequence -- a transient "Default"
+         * under firstboot's rundll32 children, then the session's "shell"
+         * -- leaves the input desktop pointing at the first while every
+         * visible window sits on the last, and the activation click's
+         * set_foreground_window refuses with ERROR_INVALID_WINDOW_HANDLE
+         * (server/queue.c: foreground is a property of the input desktop).
+         * Creation order makes the session's desktop, always created last,
+         * win.
+         *
+         * Only on an explorer-bearing image (the same one fact the server
+         * probes at bring-up, shim.c probe_explorer): under the
+         * explorerless fixture the forced create runs this hook for EVERY
+         * desktop a caller lands on -- including user32:msg's temp
+         * desktops, where Wine moves no input -- and the single session
+         * desktop is already the input desktop by the create handler's
+         * first-desktop rule, so there the switch is at best a no-op and
+         * at worst a new divergence. */
+        if (winefb_explorer_on_image())
+            NtUserSwitchDesktop( NtUserGetThreadDesktop( GetCurrentThreadId() ));
     }
 }
 
