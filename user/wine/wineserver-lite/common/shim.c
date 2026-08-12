@@ -1119,8 +1119,34 @@ DECL_HANDLER(get_process_idle_event)
     NtClose( local );
     if (!(target = find_client( (DWORD)(ULONG_PTR)info.UniqueProcessId )))
     {
-        set_error( STATUS_INVALID_HANDLE );
-        return;
+        /* The launcher asks before the child has made its first server
+         * call. On the oracle this cannot happen -- wineserver has known
+         * the process since new_process -- so the record is minted on
+         * first reference instead of refused: duplicate the caller's
+         * handle (the launcher holds the creation handle, so same-access
+         * is the full one) and attach the client early; the child's own
+         * transport attach later finds the record by pid
+         * (prsk_attach_client). Refusing here made WaitForInputIdle on a
+         * just-launched process fail INVALID_HANDLE instantly, which
+         * turned win32u's explorer auto-launch into a race between the
+         * launcher's forced get_desktop_window retry and explorer's own
+         * desktop-window creation -- the launcher's forced create won,
+         * explorer's CreateWindowExW came second, and explorer exited
+         * without ever entering its message loop (GUI-6). */
+        HANDLE full = NULL;
+
+        if (NtDuplicateObject( caller->handle, wine_server_ptr_handle( req->handle ),
+                               GetCurrentProcess(), &full, 0, 0, DUPLICATE_SAME_ACCESS ))
+        {
+            set_error( STATUS_INVALID_HANDLE );
+            return;
+        }
+        if (!(target = create_client( (DWORD)(ULONG_PTR)info.UniqueProcessId, full )))
+        {
+            NtClose( full );
+            set_error( STATUS_NO_MEMORY );
+            return;
+        }
     }
     if (target->idle_sync)
         reply->event =
