@@ -111,6 +111,30 @@ UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count )
     struct winefb_toplevel list[WINEFB_MAX_TOPLEVELS];
     UINT count = query_visible_toplevels( list, WINEFB_MAX_TOPLEVELS );
     UINT i, above = 0;
+    user_handle_t top_window = 0;
+
+    /* The desktop window is desktop->top_window — the PARENT of every entry
+     * in the list, so the walk below can never find it and would fall to the
+     * nothing-subtracted answer. Before GUI-6 that could not matter: the
+     * desktop's surface flushed once, before any other window existed, and
+     * was painted over ever after. An explorer-owned desktop repaints on
+     * WM_PAINT at any moment, and that flush must clip below EVERY top-level
+     * or the background erase eats whichever window last reached the scanout
+     * (the gui5con vanishing-console bug: only the text lines conhost
+     * incrementally redrew survived). Same raw-request rule as above: no
+     * NtUser* inside a flush. force=0 — a flushing surface implies the
+     * desktop window already exists. */
+    SERVER_START_REQ( get_desktop_window )
+    {
+        req->force = 0;
+        if (!wine_server_call( req )) top_window = reply->top_window;
+    }
+    SERVER_END_REQ;
+    if (top_window && hwnd == wine_server_ptr_handle( top_window ))
+    {
+        for (i = 0; i < count && above < max_count; i++) rects[above++] = list[i].rect;
+        return above;
+    }
 
     for (i = 0; i < count; i++)
     {
