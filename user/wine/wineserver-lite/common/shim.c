@@ -994,14 +994,15 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
  * C:\windows\system32\explorer.exe (dlls/win32u/winstation.c
  * get_desktop_window) -- the stock arrangement, and the one the gui6 image
  * runs since GUI-6: explorer creates the desktop window, owns it, and
- * every app process sees it as foreign because it IS foreign. An image
- * that does not carry explorer.exe (the CUI images, gui2..gui5, gui5con,
- * guiwtest -- kept explorerless by decision, docs/03 "GUI-2 notes") would
- * instead have win32u's launch fail and its force-fallback re-enter the
- * two convicted GUI-2/GUI-5 failure modes, so on those images the GUI-2
- * fixture stays: every caller gets `force` -- the desktop is created on
- * the spot, the same server path the forcing caller takes -- and the two
- * fixups below keep the arrangement honest. prsk_no_explorer (declared
+ * every app process sees it as foreign because it IS foreign (the gui6
+ * and gui5con/`make rungui` images). An image that does not carry
+ * explorer.exe (the CUI images, gui2..gui5, guiwtest -- kept explorerless
+ * by decision, docs/03 "GUI-2 notes") would instead have win32u's launch
+ * fail and its force-fallback re-enter the two convicted GUI-2/GUI-5
+ * failure modes, so on those images the GUI-2 fixture stays: every caller
+ * gets `force` -- the desktop is created on the spot, the same server
+ * path the forcing caller takes -- and the two fixups below keep the
+ * arrangement honest. prsk_no_explorer (declared
  * with the server globals, probed at bring-up) is the one switch all
  * three fixture sites share. */
 static int request_forces_desktop( enum request req )

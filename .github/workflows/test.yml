@@ -284,7 +284,7 @@ jobs:
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 110   # eight boots under TCG; was 90 with seven before GUI-6
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -359,6 +359,16 @@ jobs:
       - name: "WOW64 GUI: a 32-bit app on the shared desktop (tests/run/run.sh wow64gui)"
         if: ${{ !cancelled() }}
         run: tests/run/run.sh wow64gui
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # GUI-6: Wine's explorer owns the desktop — wallpaper + file window
+      # against the blessed golden (exact compare, deterministic: no
+      # tablet, one scanout mode, poll-until-match).
+      - name: "GUI-6 the Wine desktop vs tests/gui/golden/desktop.ppm (tests/run/run.sh gui6)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh gui6
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"

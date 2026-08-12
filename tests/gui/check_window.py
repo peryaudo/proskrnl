@@ -9,9 +9,10 @@ device model. Neither side is hardcoded, so a QEMU that picks a different
 default resolution changes the numbers on both at once.
 
 What "appears" means here has to be checked without knowing what winemine
-looks like -- there is no golden image until GUI-6, and a byte-compared PPM
-would break on any QEMU rendering change while saying nothing about the
-kernel. So the test is structural rather than pictorial:
+looks like -- the golden image belongs to gui6 alone (check_gui6.py), and a
+byte-compared PPM of an applet would break on any QEMU rendering change
+while saying nothing about the kernel. So the test is structural rather
+than pictorial:
 
   * the screendump is the size winefb.drv reported the scanout to be;
   * the window rectangle winefb.drv reported is not blank -- a real share of

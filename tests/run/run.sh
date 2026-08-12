@@ -2632,6 +2632,155 @@ wow64gui() {
     return 0
 }
 
+# GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The image
+# carries explorer.exe, which flips wineserver-lite's desktop fixtures off
+# (shim.c probe_explorer): smss runs `explorer /desktop=shell,1280x800` with
+# a trailing `explorer.exe C:\shelf`, so explorer creates and owns the desktop —
+# wallpaper rectangle, taskbar-mode systray — and its own CreateProcessW
+# child puts the file window over it, landing on desktop "shell" through
+# connect-time inheritance.
+#
+# The verdict is the golden image the earlier GUI checkers deferred to this
+# milestone: an EXACT compare of QEMU's screendump against
+# tests/gui/golden/desktop.ppm (check_gui6.py). Determinism is built into
+# the leg, not tolerated by the checker: no tablet is attached (no cursor
+# overlay is ever drawn), the scanout has one fixed mode the golden pins,
+# and the poll below waits until the dump MATCHES — a settling frame
+# (caret, late repaints) fails only the deadline, not the leg.
+#
+# No oracle leg, for the same reason gui() has none — \Device\Fb0 is a HACK
+# device NT does not have (docs/03 "GUI-1 notes", the G5 adaptation), and
+# the pinned oracle Wine is built --without-x, so no oracle can render this
+# frame. What stands in is QEMU's own device model rendering the pixels back
+# (Art. 6), plus the fact that everything above the driver is unmodified
+# Wine: explorer, shell32, user32, gdi32 are the pinned tree's own binaries.
+#
+# Re-blessing (GUI6_BLESS=1): after a deliberate change to what the desktop
+# looks like, the same leg waits for two consecutive IDENTICAL dumps (the
+# settled-frame rule) and writes them to tests/gui/golden/desktop.ppm, to be
+# committed WITH the change that moved the pixels.
+gui6() {
+    make -C "$ROOT" gui6-img >/dev/null
+    local img="$ROOT/build/proskrnl-gui6.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/gui6.sock" log="$dir/gui6.log" ppm="$dir/gui6.ppm"
+    local golden="$ROOT/tests/gui/golden/desktop.ppm"
+    mkdir -p "$dir"
+    rm -f "$sock" "$ppm" "$log"
+
+    # gui3's memory reasoning, plus shell32: three Wine processes (server,
+    # desktop explorer, file-window explorer), no COW, each copying what it
+    # maps.
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-2048M}" \
+        TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI6-NEVER' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    gui6_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== gui6: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    if ! await '\[KTEST\] gui3 server READY'; then
+        gui6_fail "wineserver-lite never published its transport"; return 1
+    fi
+    # The probe's own answer: mis-baked image (no explorer) is named, not
+    # diagnosed from which desktop arrangement limped further.
+    if ! await '\[KTEST\] wineserver-lite: explorer\.exe present'; then
+        gui6_fail "the server never saw explorer.exe on the image"; return 1
+    fi
+    # Firstboot can auto-launch an explorer of its own (wineboot's rundll32
+    # creates windows; win32u answers with the stock launch), and its
+    # Default-desktop paint satisfies the generic markers below — so anchor
+    # the SESSION phase first or the polls bless/match a firstboot frame.
+    if ! await '\[KTEST\] firstboot PASS'; then
+        gui6_fail "firstboot never completed"; return 1
+    fi
+    # Printed from EXPLORER's process: winefb's pSetDesktopWindow sized the
+    # desktop window, so explorer owns it and the fixtures stayed off.
+    if ! await '\[KTEST\] gui2 desktop w='; then
+        gui6_fail "explorer never created the desktop window"; return 1
+    fi
+    # The browser window's own first flush — the one surface unique to the
+    # session desktop (the firstboot explorer shows no browser), and the
+    # last paint of the arrangement, so polling starts at a frame that can
+    # only still be missing the taskbar button repaint.
+    if ! await '\[KTEST\] gui2 window rect=0,0,640x480 flush=1'; then
+        gui6_fail "the explorer browser window never flushed"; return 1
+    fi
+
+    # smss says so when explorer exits — a dead desktop is a perfectly
+    # SETTLED frame, so both loops below must refuse it by name rather than
+    # bless or match a corpse.
+    desktop_died() { grep -qaE '\[KTEST\] gui6 FAIL' "$log" 2>/dev/null; }
+
+    if [ -n "${GUI6_BLESS:-}" ]; then
+        # Settled-frame rule: two consecutive identical dumps, then bless.
+        local prev="$dir/gui6-bless-prev.ppm" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        rm -f "$prev"
+        while ((SECONDS < deadline)); do
+            sleep 5
+            if desktop_died; then gui6_fail "explorer exited (the [KTEST] gui6 FAIL line names the status)"; return 1; fi
+            qmp screendump "$ppm" >/dev/null 2>&1 || true
+            if [ -s "$prev" ] && [ -s "$ppm" ] && cmp -s "$prev" "$ppm"; then
+                mkdir -p "$(dirname "$golden")"
+                cp "$ppm" "$golden"
+                python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+                wait "$qemu_wrapper" 2>/dev/null || true
+                echo "== gui6: BLESSED $golden (commit it with the change that moved the pixels) =="
+                return 0
+            fi
+            cp -f "$ppm" "$prev" 2>/dev/null || true
+            kill -0 "$qemu_wrapper" 2>/dev/null || { gui6_fail "QEMU died while blessing"; return 1; }
+        done
+        gui6_fail "the frame never settled (no two consecutive dumps agreed)"; return 1
+    fi
+
+    if [ ! -f "$golden" ]; then
+        gui6_fail "no golden at $golden — run GUI6_BLESS=1 tests/run/run.sh gui6 and commit it"
+        return 1
+    fi
+
+    # Poll until the dump matches the golden: the self-verifying wait — a
+    # still-settling frame is not a verdict, only the deadline is.
+    local matched="" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+    while ((SECONDS < deadline)); do
+        sleep 5
+        if desktop_died; then gui6_fail "explorer exited (the [KTEST] gui6 FAIL line names the status)"; return 1; fi
+        qmp screendump "$ppm" >/dev/null 2>&1 || true
+        if [ -s "$ppm" ] && python3 "$ROOT/tests/gui/check_gui6.py" \
+                --golden "$golden" --ppm "$ppm" >/dev/null 2>&1; then
+            matched=1
+            break
+        fi
+        kill -0 "$qemu_wrapper" 2>/dev/null || { gui6_fail "QEMU died while waiting for the match"; return 1; }
+    done
+
+    if [ -z "$matched" ]; then
+        # Grade once more, loudly, so the log carries the diff stats.
+        python3 "$ROOT/tests/gui/check_gui6.py" --golden "$golden" --ppm "$ppm" || true
+        gui6_fail "the screendump never matched the golden (last dump kept at $ppm)"
+        return 1
+    fi
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    echo "== gui6: PASS (the desktop matches tests/gui/golden/desktop.ppm) =="
+    return 0
+}
+
 # Every leg's serial logs are swept for unclaimed ring-0 faults on user
 # addresses before the leg reports (tests/run/uacheck.sh, issue #32 A3): the
 # recovery frame turns a missing probe into an ordinary-looking
@@ -2685,8 +2834,9 @@ case "$MODE" in
     gui5)     gui5 ;;
     gui5con)  gui5con ;;
     wow64gui) wow64gui ;;
+    gui6)     gui6 ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

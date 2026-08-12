@@ -13,8 +13,9 @@ default resolution changes the numbers on both sides at once.
 
 No golden image at GUI-1: a byte-compared PPM would break on any QEMU
 rendering change without telling us anything about the kernel.
-tests/gui/golden/ waits for GUI-6, where the thing under test is a desktop
-someone drew rather than a rectangle we can describe in six numbers.
+tests/gui/golden/ belongs to gui6 (check_gui6.py), where the thing under
+test is a desktop someone drew rather than a rectangle we can describe in
+six numbers.
 """
 import argparse
 import re

@@ -29,6 +29,14 @@ mean a window moved or repainted where nothing should have; zero changes
 mean the typing never reached the screen. The FILE half of the verdict
 (out.txt / ctrl.txt extracted from the image) lives in run.sh — pixels
 prove the window, files prove the console plumbing behind it.
+
+Explorer-bearing images (GUI-6 onward) add desktop furniture the window
+under test does not own: the taskbar, an edge-to-edge band along the
+bottom whose buttons repaint on focus changes. No window this leg creates
+is ever scanout-wide, so any row whose non-background span reaches both
+edges is furniture — excluded from the locate search and from the
+outside-the-box change budget. Explorerless images paint no such rows and
+are graded exactly as before.
 """
 import argparse
 import collections
@@ -70,9 +78,36 @@ def differs(pixels, width, x, y, colour):
     return any(abs(pixels[base + i] - colour[i]) > TOL for i in range(3))
 
 
-def bounding_box(pixels, width, height, bg):
+def furniture_rows(pixels, width, height, bg):
+    """Rows owned by desktop furniture (the taskbar), not by any window.
+
+    A furniture row's non-background pixels span the scanout edge to edge;
+    a window's never do (the leg's windows are far narrower than the mode).
+    """
+    rows = set()
+    for y in range(height):
+        row = y * width * 3
+        left = right = None
+        for x in range(width):
+            base = row + x * 3
+            if (
+                abs(pixels[base] - bg[0]) > TOL
+                or abs(pixels[base + 1] - bg[1]) > TOL
+                or abs(pixels[base + 2] - bg[2]) > TOL
+            ):
+                if left is None:
+                    left = x
+                right = x
+        if left is not None and right - left + 1 >= width - 4:
+            rows.add(y)
+    return rows
+
+
+def bounding_box(pixels, width, height, bg, skip_rows=frozenset()):
     left, top, right, bottom = width, height, -1, -1
     for y in range(height):
+        if y in skip_rows:
+            continue
         row = y * width * 3
         for x in range(width):
             base = row + x * 3
@@ -111,7 +146,8 @@ def locate(args):
     if (pw, ph) != (width, height):
         sys.exit(f"check_gui5con: dump is {pw}x{ph}, guest reported {width}x{height}")
 
-    box = bounding_box(pixels, width, height, bg)
+    furniture = furniture_rows(pixels, width, height, bg)
+    box = bounding_box(pixels, width, height, bg, furniture)
     if box is None:
         print("check_gui5con: scanout is all desktop background", file=sys.stderr)
         return 1
@@ -167,9 +203,16 @@ def final(args):
     if band and client and band.most_common(1)[0][0] == client.most_common(1)[0][0]:
         failures.append("title band and client area share a dominant colour — no caption")
 
-    # The typing advanced the screen, and only inside the window.
+    # The typing advanced the screen, and only inside the window. Taskbar
+    # rows are exempt: its buttons legitimately repaint when the click
+    # between the dumps changes the foreground window.
+    furniture = furniture_rows(before, width, height, bg) | furniture_rows(
+        after, width, height, bg
+    )
     changed_inside = changed_outside = 0
     for y in range(height):
+        if y in furniture:
+            continue
         row = y * width * 3
         for x in range(width):
             base = row + x * 3

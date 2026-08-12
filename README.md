@@ -254,11 +254,39 @@ oracle permits it, no baked consumer does it — recorded residual);
 file-backed data writecopy keeps its pinned eager-copy form (lazy COW
 there lands on mapped-view coherence, deliberately unspent).
 
-Next: **GUI-6** — the Wine desktop; or **Net-1** — sockets
+**GUI-6 complete** — the Wine desktop. The gui6 image carries
+`explorer.exe` at the path win32u's auto-launch hardcodes, which turns
+wineserver-lite's GUI-2 forced-desktop fixtures off: explorer creates
+and owns the desktop (wallpaper + taskbar-mode systray), and its own
+`CreateProcessW` child opens the shell32 `IExplorerBrowser` file window
+over it — landing on desktop "shell" through the connect-time
+winstation/desktop inheritance GUI-3 had left for this milestone,
+now run through the pinned `connect_process_winstation` at attach. The
+verdict is the exact-match golden `tests/gui/golden/desktop.ppm`
+(`tests/run/run.sh gui6`; re-bless with `GUI6_BLESS=1`). The furniture
+that bit was small and named on serial both times: uxtheme.dll (the SxS
+comctl32's delay import — absent, explorer aborts in the systray
+toolbar) and atl100.dll (the registrar behind every
+`DllRegisterServer` — absent, wine.inf's `RegisterDllsSection` ran to a
+silent `E_NOINTERFACE` and shell32's CLSIDs never landed in the hive).
+`make rungui` gets the same desktop: the gui5con image carries the
+shell payload too, its clients routed onto desktop "shell" by Wine's
+own virtual-desktop registry configuration (written natively by smss
+before the first client), so the windowed prompt, the applets it
+launches, and the WOW64 clients all live on the explorer desktop with
+its taskbar.
+**Not yet:** the gui2..gui5 and guiwtest images stay explorerless by
+decision (docs/03 "GUI-2 notes"), so the fixture survives as their
+fallback and the two desktop-ownership `user32:msg` assertions stay in
+`msg-budget.txt`'s bound; `CLSID_ShellWindows` registration
+(rpcss/local-server) is still refused, which explorer tolerates.
+
+Next: **Net-1** — sockets
 (virtio-net, `\Device\Afd`; the former CUI-5, now its own path) — its
 machine prerequisite, **CUI-8**, now stands complete: an AFD `accept`
 that never completes on its own has a pending engine and a drain seam to
-land on.
+land on. Or **GUI-7**, the ReactOS shell (docs/06), now that Wine's
+desktop provides its regression baseline.
 
 The CUI path then ends with one remaining milestone of the machine kind
 — no `Nt*`, `docs/16`'s count untouched: **CUI-10** SMP behind a giant
@@ -301,6 +329,7 @@ tests/run/run.sh gui4       # GUI-4: overlap composited, click routed, window dr
 tests/run/run.sh gui5       # GUI-5: clipboard, low-level hooks, AttachThreadInput, font diff
 tests/run/run.sh gui5con    # GUI-5: conhost dual-mode — real user32/gdi32 command prompt
 tests/run/run.sh wow64gui   # WOW64: a 32-bit GUI app on the same desktop, typed at that prompt
+tests/run/run.sh gui6       # GUI-6: the Wine desktop vs tests/gui/golden/desktop.ppm (exact match)
 tests/run/run.sh guiwtest   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
 ```
 

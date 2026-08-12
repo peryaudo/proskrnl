@@ -25,7 +25,8 @@ flushes whole windows with no clipping (per-window surfaces and compositing
 are GUI-4), so an overlap would be last-writer-wins on the scanout and would
 say nothing about the order the server keeps. The two windows are disjoint by
 construction and z-order is judged through the API, which is where it is
-defined. No golden image until GUI-6.
+defined. No golden image here — that is gui6's verdict (check_gui6.py),
+where the thing under test is a desktop someone drew.
 """
 import argparse
 import collections

@@ -1437,6 +1437,38 @@ WOW64GUIFILES := $(foreach d,$(WOW64_GUI_NAMES),win:$(WINESTRIP32)/$(d).dll=wind
 # GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
 # image — the full Wine userland + cmd.exe + interactive.flag, exactly the
 # make-run recipe — plus the GUI stack, the desktop server, and the
+# ---------------------------------------------------------------------------
+# The shell payload, shared by every explorer-bearing image (gui5con below --
+# `make rungui` -- and gui6): explorer.exe at the exact path win32u's
+# auto-launch hardcodes (dlls/win32u/winstation.c get_desktop_window), whose
+# presence is also what turns the wineserver-lite desktop fixtures OFF
+# (shim.c probe_explorer); atl100, the actual registrar behind every Wine
+# DllRegisterServer (winecrt0's __wine_register_resources loads atl100.dll
+# for AtlCreateRegistrar; absent, shell32's registration answers a silent
+# E_NOINTERFACE and CLSID_ExplorerBrowser never lands in the hive); and a
+# wine.inf staged WITH its RegisterDlls directive (the shared $(WINE_INF)
+# drops it -- on a CUI disk self-registration only had GUI DLLs to miss).
+# Here shell32 IS baked and its COM classes are load-bearing: explorer's
+# file window is shell32's IExplorerBrowser, which exists only if
+# DllRegisterServer ran at firstboot. Of the section's 30 entries exactly
+# shell32.dll is on these images (measured); the rest fail LoadLibrary and
+# are skipped one by one (setupapi do_register_dll -- a skip, not an
+# abort). The inf spec overrides $(WINFILES)'s copy by mcopy -o ordering,
+# the gui5con conhost precedent below.
+EXPLORER_EXE := $(WINESTRIP)/explorer.exe
+$(eval $(call WINESTRIP_EXE_RULE,explorer))
+$(eval $(call WINESTRIP_RULE,atl100))
+
+WINE_INF_SHELL := $(BUILD)/wine-proskrnl-shell.inf
+$(WINE_INF_SHELL): third_party/wine/loader/wine.inf tools/filter_inf.py
+	@mkdir -p $(dir $@)
+	python3 tools/filter_inf.py --keep RegisterDlls third_party/wine/loader/wine.inf $@
+
+SHELLFILES := win:$(EXPLORER_EXE)=windows/system32/explorer.exe \
+              win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll \
+              win:$(WINE_INF_SHELL)=windows/inf/wine.inf
+SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll $(WINE_INF_SHELL)
+
 # WINDOWED conhost overriding $(WINFILES)'s headless one (same destination,
 # listed later; mkimage's mcopy -o makes the later spec win). looper.exe is
 # the ^C acceptance's interruptible program (the CUI-4 actor, now
@@ -1451,6 +1483,7 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(LOOPER)=looper.exe \
              win:$(BUILD)/interactive.flag=interactive.flag \
              $(APPLETFILES) \
+             $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES)
 
 # 128 MiB rather than the default 64: this is the one image carrying both
@@ -1462,6 +1495,7 @@ IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
 $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
+        $(SHELL_PAYLOAD) \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
@@ -1471,6 +1505,74 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
 
 gui5con-img: $(IMG_GUI5CON)
 .PHONY: gui5con-img
+
+# ---------------------------------------------------------------------------
+# GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The payload is
+# the gui2 stack plus $(SHELLFILES) above (explorer + atl100 + the
+# RegisterDlls-keeping wine.inf), plus explorer's delay-import closure
+# beyond the GUI-2 set: shell32 -> shlwapi -> shcore, oleaut32 (measured
+# from the PE's import + delay-import tables; grow only on a NAMED
+# delay-load failure, which is loud), the WinSxS common-controls assembly
+# explorer's manifest binds (the comdlg32 lesson: absent, CreateActCtx
+# fails with 14001 and takes the process down), and uxtheme, the SxS
+# comctl32's own delay import (measured: absent, the systray toolbar's
+# OpenThemeData hit the delay-load failure hook and aborted explorer -- the
+# wiring the applet-shelf comment above records).
+# gui6.flag selects the smss leg (user/smss/session.c SessionGuiLegs), which
+# launches explorer /desktop=shell,WxH with a trailing
+# `explorer.exe C:\shelf` -- the desktop, then the file window as
+# explorer's own CreateProcessW child.
+$(BUILD)/gui6.flag:
+	@mkdir -p $(BUILD)
+	@echo "gui6 leg marker (user/smss/session.c SessionGuiLegs)" > $@
+
+# The file window's subject: a tiny baked directory whose Details view is
+# deterministic — fixed bytes, mtimes pinned by touch -t (mkimage's mcopy -m
+# carries them onto the FAT volume) — because the golden is an exact byte
+# compare and a view of C:\ would put the bake timestamps and PROSKRNL's own
+# size in the picture, moving the golden with every rebuild.
+GUI6_SHELF := $(BUILD)/shelf/readme.txt $(BUILD)/shelf/desktop-notes.txt
+$(BUILD)/shelf/readme.txt:
+	@mkdir -p $(dir $@)
+	@printf 'proskrnl GUI-6: the file window of the golden desktop shows this shelf.\n' > $@
+	@touch -t 202601010000.00 $@
+$(BUILD)/shelf/desktop-notes.txt:
+	@mkdir -p $(dir $@)
+	@printf 'wallpaper + taskbar: explorer.exe; this window: shell32 IExplorerBrowser.\n' > $@
+	@touch -t 202601010000.00 $@
+
+GUI6FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             $(SHELLFILES) \
+             win:$(WINESTRIP)/shell32.dll=windows/system32/shell32.dll \
+             win:$(WINESTRIP)/shlwapi.dll=windows/system32/shlwapi.dll \
+             win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll \
+             win:$(WINESTRIP)/oleaut32.dll=windows/system32/oleaut32.dll \
+             win:$(WINESTRIP)/uxtheme.dll=windows/system32/uxtheme.dll \
+             win:$(WINESTRIP)/comctl32_v6.dll=$(SXS_CC_DIR)/comctl32.dll \
+             win:$(WINESTRIP)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR)).manifest \
+             win:$(BUILD)/shelf/readme.txt=shelf/readme.txt \
+             win:$(BUILD)/shelf/desktop-notes.txt=shelf/desktop-notes.txt \
+             win:$(BUILD)/gui6.flag=gui6.flag
+
+# 128 MiB like gui5con: shell32 and friends do not fit in what the base
+# payload leaves of 64. The ESP still starts at sector 4096 (fixed offset).
+IMG_GUI6 := $(BUILD)/proskrnl-gui6.hdd
+$(IMG_GUI6): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(WINESERVER_LITE) $(SHELL_PAYLOAD) \
+        $(WINESTRIP)/shell32.dll $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll \
+        $(WINESTRIP)/oleaut32.dll $(WINESTRIP)/uxtheme.dll \
+        $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
+        $(GUI6_SHELF) $(BUILD)/gui6.flag \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI6) $(MODULE_SPECS) $(WINFILES) $(GUI6FILES)
+
+gui6-img: $(IMG_GUI6)
+.PHONY: gui6-img
 
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI

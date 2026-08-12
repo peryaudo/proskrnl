@@ -2847,12 +2847,17 @@ without `force` returns empty until explorer creates the desktop — win32u answ
 *launching* `C:\windows\system32\explorer.exe` itself (`dlls/win32u/winstation.c
 get_desktop_window`) — and every app process sees the windows' user entries carry a foreign
 pid, which is what routes win32u onto its `WND_DESKTOP` special cases. Since GUI-6 that is
-the shipping arrangement on any image that carries `explorer.exe` (the gui6 image): the
-fixture sites are all off, explorer creates and owns the desktop, and the entries are
-foreign because they are. On an image *without* explorer — the CUI images and the earlier
-GUI legs' (gui2..gui5, gui5con, guiwtest), kept explorerless by decision at GUI-6: one
-extra process boot and the shell32 closure on five images bought nothing those legs
-convict — win32u's launch would fail and its force-fallback re-enter both convicted
+the shipping arrangement on any image that carries `explorer.exe` — the gui6 image, and
+the gui5con image (`make rungui`, plus its gui5con/wow64gui legs), whose clients are
+routed onto explorer's desktop by registry (`HKCU\Software\Wine\Explorer
+"Desktop"="shell"`, the configuration a Wine user sets for a virtual desktop — written
+natively by smss before the first client connects; a GUI-process writer was the first
+cut's defect, `user/smss/smss.c SmssShellDesktopConfig`): the fixture sites are all off, explorer creates
+and owns the desktop, and the entries are foreign because they are. On an image *without*
+explorer — the CUI images and the earlier GUI legs' (gui2..gui5, guiwtest), kept
+explorerless by decision at GUI-6: one extra process boot and the shell32 closure on four
+images bought nothing those legs convict — win32u's launch would fail and its
+force-fallback re-enter both convicted
 failure modes below, so there the GUI-2 fixture stays, keyed on one probe
 (`shim.c prsk_no_explorer`, the explorer path win32u hardcodes, answer printed on serial):
 the shim sets `force` on every `get_desktop_window` (the same server path the forcing
