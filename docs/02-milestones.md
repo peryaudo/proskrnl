@@ -707,6 +707,26 @@ becoming the desktop's real owner retires GUI-2's forced-desktop / foreign-entri
 fixture (docs/03 "GUI-2 notes"). The golden artifact is a wallpaper rectangle + a file
 window. `gen_hive.py` is **not** needed — wineboot did it at runtime.
 **Done when:** `tests/gui/golden/desktop.ppm` matches.
+
+**Done.** `tests/run/run.sh gui6` is green: the gui6 image carries explorer.exe at the
+path win32u's auto-launch hardcodes, which flips wineserver-lite's desktop fixtures off
+(the retirement is conditional — gui2..gui5 and guiwtest stay explorerless by decision,
+docs/03 "GUI-2 notes"); smss runs `explorer /desktop=shell,1280x800` with a trailing
+`explorer.exe C:\shelf`, so explorer creates and owns the desktop and its own
+`CreateProcessW` child opens the file window over it — landing on desktop "shell" through
+the connect-time winstation/desktop inheritance GUI-3 had left for this milestone. The
+verdict is the exact-match golden (`check_gui6.py`; re-bless with
+`GUI6_BLESS=1 tests/run/run.sh gui6`); its file window shows a baked, timestamp-pinned
+`C:\shelf`, not `C:\`, so the picture never moves with build artifacts. `make rungui`
+gets the same desktop: the gui5con image carries the shell payload too, with clients
+routed onto desktop "shell" by Wine's own virtual-desktop registry configuration
+(written natively by smss before the first client; explorer then auto-launches with the
+taskbar). The furniture that actually bit, GUI-2-style, was small
+and named on serial: uxtheme.dll (the SxS comctl32's delay import — absent, the systray
+toolbar's `OpenThemeData` aborts explorer) and atl100.dll + a `RegisterDlls`-keeping
+wine.inf (the staged inf drops self-registration on CUI disks, and winecrt0's registrar
+lives in atl100 — without both, shell32's CLSIDs never land and the file window's
+`IExplorerBrowser` cannot instantiate).
 *Optional GUI-7:* the ReactOS shell (taskbar/Start menu/icons) — a separate integration
 effort with a two-upstream cost; see `docs/06`.
 

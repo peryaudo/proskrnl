@@ -42,8 +42,8 @@ more than one writer is where a software cursor goes wrong:
   the desktop background) beside it: a flush that overlaps the cursor must
   not erase it, and must not leave a hole where it was.
 
-No golden image until GUI-6; every check is structural, against what the
-guest declared on serial.
+No golden image here (that is gui6's verdict, check_gui6.py); every check
+is structural, against what the guest declared on serial.
 """
 import argparse
 import collections

@@ -19,7 +19,7 @@ the unhook proof: a hook that outlives its Unhook would print twice.
 The PIXEL half is the structural screendump differential every GUI leg uses
 (Art. 6): both clients said what they drew and where; QEMU's device model
 returns the pixels. Same reasoning as check_gui3.py — the windows are
-disjoint by construction, no golden image until GUI-6.
+disjoint by construction, no golden image outside gui6 (check_gui6.py).
 
 The FONTDIFF half is the guest side of the font-metrics differential: the
 same fontdiff.exe the oracle leg runs printed its metric table on serial,

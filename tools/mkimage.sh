@@ -104,9 +104,13 @@ sgdisk "$IMG" \
 # prompt, invisible with stderr captured) — the override is a feature: the
 # gui5con image lists $(WINFILES) and then swaps in the windowed conhost by
 # naming the same destination again, and every copy is announced above.
+# -m: the FAT entry keeps the SOURCE's mtime rather than the bake moment, so
+# a file whose mtime the build pins (the gui6 shelf, touch -t) lists with
+# the same date on every image ever baked — the golden desktop.ppm shows a
+# Modified column and must not move with rebakes.
 copy() {
     echo "mkimage: copying $1 -> $2" >&2
-    mcopy -o -i "$IMG@@$ESP_OFF" "$1" "$2"
+    mcopy -o -m -i "$IMG@@$ESP_OFF" "$1" "$2"
 }
 
 # Create a FAT directory at most once per run. Re-running mmd on an existing

@@ -245,6 +245,116 @@ static int SmssRunFirstboot(void)
     return 0;
 }
 
+/* GUI-6, the interactive shell session (`make rungui`, the gui5con image):
+ * route every GUI client onto explorer's desktop by machine state rather
+ * than plumbing. Two values -- HKCU\Software\Wine\Explorer
+ * "Desktop"="shell" and Explorer\Desktops "shell"="1280x800", the
+ * configuration a Wine user sets for a virtual desktop -- make win32u's
+ * get_default_desktop (dlls/win32u/winstation.c) land every self-creating
+ * client (the windowed conhost, cmd's applet children) on desktop "shell",
+ * and the first client's get_desktop_window auto-launches explorer onto
+ * it, taskbar and all (the magic name;
+ * programs/explorer/desktop.c get_default_enable_shell). 1280x800 is the
+ * scanout (one mode, HACK-001).
+ *
+ * Written by smss itself, native Nt* calls, BEFORE the windowed conhost
+ * starts: a client picks its desktop at win32u attach, so the routing must
+ * already be in the hive when the first client connects -- and the writer
+ * must not itself be a GUI process. The first cut ran the values in
+ * through rundll32/setupapi (an .inf), and that was the defect: rundll32
+ * is a GUI client, its stub window forced a desktop into existence BEFORE
+ * the values it was carrying were written, so the boot grew a transient
+ * registry-less desktop with its own auto-launched explorer, and the real
+ * session's windows sat beside a dead sibling arrangement that click
+ * activation then tripped over.
+ *
+ * Gated on the interactive flag, not on explorer's presence: the gui6 leg
+ * (same shell payload, no interactive.flag) launches explorer explicitly
+ * with /desktop=shell,WxH and needs no routing values -- and writing them
+ * there would hand firstboot's transient rundll32 children a desktop
+ * auto-launch of their own, changing what its golden pinned. */
+static void SmssShellDesktopConfig(void)
+{
+    static const struct
+    {
+        const WCHAR *key; /* under \Registry\User\<sid> -- the fixed Se
+                           * identity (kernel/se/token.c); the skeleton root
+                           * exists from boot (kernel/cm/registry.c) */
+        const WCHAR *name;
+        const WCHAR *value;
+    } values[] = {
+        {WSTR("Software\\Wine\\Explorer"), WSTR("Desktop"), WSTR("shell")},
+        {WSTR("Software\\Wine\\Explorer\\Desktops"), WSTR("shell"), WSTR("1280x800")},
+    };
+
+    if (!SmssFileExists(WSTR("\\??\\C:\\interactive.flag"), 0))
+        return;
+    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"), 0))
+        return;
+
+    for (unsigned int i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+    {
+        WCHAR path[128];
+        unsigned int n = 0;
+        const WCHAR *prefix = WSTR("\\Registry\\User\\S-1-5-21-0-0-0-1000\\");
+        while (prefix[n] != 0)
+        {
+            path[n] = prefix[n];
+            n++;
+        }
+        /* NtCreateKey creates one level, so walk the subkey path and create
+         * each component -- the parents may not exist on a virgin hive. */
+        for (unsigned int j = 0;; j++)
+        {
+            WCHAR c = values[i].key[j];
+            if (c != 0 && c != '\\')
+            {
+                path[n++] = c;
+                continue;
+            }
+            path[n] = 0;
+
+            UNICODE_STRING name;
+            OBJECT_ATTRIBUTES attr;
+            HANDLE key = 0;
+            ULONG disposition = 0;
+            SmssInitUnicodeString(&name, path);
+            attr.Length = sizeof(attr);
+            attr.RootDirectory = 0;
+            attr.ObjectName = &name;
+            attr.Attributes = OBJ_CASE_INSENSITIVE;
+            attr.SecurityDescriptor = 0;
+            attr.SecurityQualityOfService = 0;
+            NTSTATUS status = NtCreateKey(&key, KEY_ALL_ACCESS, &attr, 0, 0, 0, &disposition);
+            if (status != STATUS_SUCCESS)
+            {
+                SmssPrintf("[KTEST] shellcfg FAIL (create=%x)\n", SMSS_HEX(status));
+                return;
+            }
+            if (c == 0)
+            {
+                UNICODE_STRING valueName;
+                SmssInitUnicodeString(&valueName, values[i].name);
+                unsigned int chars = 0;
+                while (values[i].value[chars] != 0)
+                    chars++;
+                status = NtSetValueKey(key, &valueName, 0, REG_SZ, (void *)values[i].value,
+                                       (chars + 1) * sizeof(WCHAR));
+                NtClose(key);
+                if (status != STATUS_SUCCESS)
+                {
+                    SmssPrintf("[KTEST] shellcfg FAIL (set=%x)\n", SMSS_HEX(status));
+                    return;
+                }
+                break;
+            }
+            NtClose(key);
+            path[n++] = '\\';
+        }
+    }
+    SmssSay("[KTEST] shellcfg PASS\n");
+}
+
 void SmssStart(void *pebArg)
 {
     PEB *peb = pebArg;
@@ -256,8 +366,13 @@ void SmssStart(void *pebArg)
 
     /* The servers, in dependency order (launch.c): wineserver-lite before
      * ANY win32u client — firstboot's wineboot is one, and so is the GUI-5
-     * windowed conhost — then conhost itself. */
+     * windowed conhost — then conhost itself. The shell desktop routing
+     * must land BETWEEN them: the windowed conhost picks its desktop at
+     * win32u attach (winstation_init reads the registry), so the values
+     * have to be in the hive before the first client and cannot wait for
+     * firstboot. */
     SmssStartWineServer();
+    SmssShellDesktopConfig();
     SmssStartConhost();
 
     int failures = SmssRunFirstboot();

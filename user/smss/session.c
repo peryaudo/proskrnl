@@ -627,13 +627,14 @@ static int SessionFlowCmdConsole(void)
  */
 typedef struct
 {
-    const WCHAR *probe;         /* on the volume => this is the leg's image */
-    const WCHAR *prologue;      /* run to completion first, or NULL */
-    const WCHAR *background;    /* spawned and left up for the screendump, or NULL */
-    const WCHAR *foreground;    /* run last; the leg parks here */
-    const char *tag;            /* the [KTEST] prefix: "gui", "gui2", ... */
-    const char *prologueTag;    /* names the prologue in its exit line */
-    const char *foregroundName; /* set when returning at all is a FAIL */
+    const WCHAR *probe;             /* on the volume => this is the leg's image */
+    const WCHAR *prologue;          /* run to completion first, or NULL */
+    const WCHAR *background;        /* spawned and left up for the screendump, or NULL */
+    const WCHAR *foreground;        /* run last; the leg parks here */
+    const WCHAR *foregroundCmdline; /* the foreground's command line, or NULL for the path */
+    const char *tag;                /* the [KTEST] prefix: "gui", "gui2", ... */
+    const char *prologueTag;        /* names the prologue in its exit line */
+    const char *foregroundName;     /* set when returning at all is a FAIL */
 } GUI_LEG, *PGUI_LEG;
 
 /* Designated initializers throughout: an omitted field is the absent case
@@ -689,6 +690,27 @@ static const GUI_LEG SessionGuiLegs[] = {
      .foreground = WSTR("\\??\\C:\\gui5b.exe"),
      .tag = "gui5",
      .prologueTag = "fontdiff"},
+
+    /* GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. One
+     * foreground, explorer itself: /desktop=shell,WxH creates and owns the
+     * desktop (the shim's fixtures are off -- explorer.exe is on this
+     * image), and the trailing command line is executed by explorer's own
+     * manage_desktop as its CreateProcessW child: a second explorer showing
+     * C:\shelf -- the file window, landing on desktop "shell" through the
+     * connect-time inheritance (wineserver-lite shim.c create_client).
+     * C:\shelf, not C:\ -- the golden is an exact byte compare and the
+     * shelf's listing is pinned (Makefile GUI6_SHELF), where C:\ would show
+     * bake timestamps and artifact sizes that move with every build.
+     * 1280x800 is the scanout mode (one mode, HACK-001; qemu stdvga --
+     * tests/gui/golden/desktop.ppm pins it, so a mode change shows up as a
+     * size mismatch, not a silent drift). Explorer never exits: the leg
+     * parks in its message loop and the harness owns QEMU's lifetime. */
+    {.probe = WSTR("\\??\\C:\\gui6.flag"),
+     .foreground = WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
+     .foregroundCmdline = WSTR("explorer.exe /desktop=shell,1280x800 "
+                               "C:\\windows\\system32\\explorer.exe C:\\shelf"),
+     .tag = "gui6",
+     .foregroundName = "explorer.exe"},
 };
 
 static void SessionFlowGui(void)
@@ -726,7 +748,7 @@ static void SessionFlowGui(void)
             }
         }
 
-        status = SmssRun(leg->foreground, 0, 0, 0, &exitStatus);
+        status = SmssRun(leg->foreground, leg->foregroundCmdline, 0, 0, &exitStatus);
         /* Only reached if the client exited. Where it is written never to,
          * say FAIL by name rather than letting the boot fall through to a
          * sweep verdict the harness would read as a healthy end (Art. 12). */

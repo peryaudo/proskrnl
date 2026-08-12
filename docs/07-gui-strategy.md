@@ -133,7 +133,8 @@ needed for a usable windowing system.
 GUI-1 (pixels/input) ✅ · GUI-2 (win32u + winefb.drv, single process →
 **winemine.exe on screen**) ✅ · GUI-3 (wineserver-lite becomes a process ⛰️ — the
 mountain, half-climbed at GUI-2) ✅ · GUI-4 (compositing + input routing) ✅ ·
-GUI-5 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) ✅ · GUI-6 (Wine desktop).
+GUI-5 (clipboard/hooks/`AttachThreadInput`/GUI conhost + `msg.c`) ✅ · GUI-6 (Wine
+desktop: explorer owns it, golden-image gated) ✅.
 Current wording and done-criteria live in `docs/02`; the deliberate GUI-2 single-process
 shortcuts that GUI-3 must retire are in `docs/03` "GUI-2 notes".
 
