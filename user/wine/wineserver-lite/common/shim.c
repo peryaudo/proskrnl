@@ -50,6 +50,7 @@
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
+#include "ntuser.h"
 #include "ddk/wdm.h"
 
 #include "object.h"
@@ -1236,6 +1237,52 @@ struct prsk_client *prsk_attach_client( unsigned int pid, void *processHandle )
  * implicit declarations outright made the omission fatal.) */
 extern void srv_destroy_thread_windows( struct thread *thread );
 
+/* Did this thread leave any top-level window on its desktop? Asked through
+ * the same dispatch the transport drives (one engine, Art. 11). The reply
+ * buffer is sized so an ordinary reap never errors (the handler answers
+ * STATUS_BUFFER_TOO_SMALL past it, and dispatch_request would log that as
+ * a failure line); the count in the reply is the whole question, and the
+ * handler reports it either way. */
+static int prsk_thread_shows_toplevels( struct thread *thread )
+{
+    user_handle_t handles[64];
+    struct __server_request_info info;
+
+    memset( &info, 0, sizeof(info) );
+    info.u.req.get_window_list_request.__header.req = REQ_get_window_list;
+    info.u.req.get_window_list_request.__header.reply_size = sizeof(handles);
+    info.u.req.get_window_list_request.tid = thread->id;
+    info.reply_data = handles;
+    dispatch_request( &info, thread );
+    return info.u.reply.get_window_list_reply.count > 0;
+}
+
+/* A reaped client's windows leave the screen with nobody to repaint what
+ * they covered. The window-side half of that repair lives in winefb --
+ * inside the DEAD process (the hide repair in pWindowPosChanged never ran:
+ * a violent death sends no SetWindowPos). The server is the survivor that
+ * knows, so the reap asks the whole desktop to repaint: one redraw_window
+ * with window=0 resolves to the desktop window and RDW_ALLCHILDREN walks
+ * every visible top-level (server/window.c redraw_window), waking each
+ * owner's queue; their clipped flushes then converge on the repaired
+ * picture. Full windows rather than vacated bands: a violent death is
+ * rare, and the full repaint converges identically. Residual, named: on an
+ * explorerless image the desktop window has no painter, so desktop-owned
+ * pixels stay stale until the next mover repairs them (the fixture legs
+ * never kill a window-owning process mid-scene). */
+static void prsk_expose_reaped_desktop( struct thread *thread )
+{
+    struct __server_request_info info;
+
+    memset( &info, 0, sizeof(info) );
+    info.u.req.redraw_window_request.__header.req = REQ_redraw_window;
+    info.u.req.redraw_window_request.window = 0; /* the desktop and everything below it */
+    info.u.req.redraw_window_request.flags = RDW_INVALIDATE | RDW_ERASE | RDW_FRAME |
+                                             RDW_ALLCHILDREN;
+    if (dispatch_request( &info, thread ))
+        prsk_log( "[KTEST] wineserver-lite: reap expose failed (tid=%u)\n", (unsigned)thread->id );
+}
+
 /* Retire one thread's records, in wineserver's own order
  * (server/thread.c cleanup_thread): clipboard first, then the windows it
  * owns, then its message queue, then its hold on the desktop. Doing it in a
@@ -1244,12 +1291,18 @@ static void reap_thread_locked( struct prsk_thread_record *record )
 {
     struct thread *thread = record->thread;
     struct thread *previous = current;
+    int shows = prsk_thread_shows_toplevels( thread );
 
     /* The teardown helpers read `current` (they set errors and touch the
      * calling thread's desktop), so bind the thread being reaped. */
     current = thread;
     cleanup_clipboard_thread( thread );
     srv_destroy_thread_windows( thread );
+    /* After the windows are out of the tree, before the thread loses its
+     * desktop: the exposure resolves the desktop through this thread. The
+     * dispatch rebinds and then clears `current`, so it is re-bound after. */
+    if (shows) prsk_expose_reaped_desktop( thread );
+    current = thread;
     if (thread->queue)
     {
         free_msg_queue( thread );

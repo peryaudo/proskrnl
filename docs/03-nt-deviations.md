@@ -3052,8 +3052,12 @@ rather than permanently-wrong.
   as an exposure and routes the window's rect through the repaint authority (blit.c); the
   risen sibling repaints its overlap cross-process, the same convergence as the mover's.
 - **a violently-dead client's windows** are torn out of the tree by the server reap with the
-  winefb repair unreachable (it lives in the dead process); nothing repaints what they
-  covered until the next mover does. No fixture leg kills a window-owning process mid-scene.
+  winefb repair unreachable (it lives in the dead process). The reap now asks the whole
+  desktop to repaint — one `redraw_window(desktop, RDW_ALLCHILDREN)` fabricated through the
+  same dispatch the transport drives (shim.c) — which converges on every explorer-bearing
+  image; on an explorerless image the desktop window has no painter, so desktop-owned pixels
+  stay stale until the next mover repairs them (no fixture leg kills a window-owning process
+  mid-scene).
 - a **flush racing its own window's hide** used to paint unclipped (the z-order query's
   "hwnd not found" fallback subtracted nothing); it now paints nothing — the safe direction,
   since the re-show forces a full flush anyway (compose.c `winefb_windows_above`).
