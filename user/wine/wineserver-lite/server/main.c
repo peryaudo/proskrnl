@@ -183,7 +183,15 @@ static void drop_client( unsigned int index )
     unsigned int last = client_count - 1;
 
     prsk_log( "[KTEST] gui3 client gone pid=%u\n", client_slots[index].pid );
-    prsk_reap_client( client_slots[index].client ); /* closes the process handle */
+    /* The reap closes the RECORD's handle. For a record minted before its
+     * transport attach (get_process_idle_event), that is the mint-time
+     * duplicate, not this slot's own NtOpenProcess handle -- the two alias
+     * the same process, and the slot's copy would leak one handle per
+     * minted-then-attached client. */
+    if (client_slots[index].process &&
+        client_slots[index].process != prsk_client_process_handle( client_slots[index].client ))
+        NtClose( client_slots[index].process );
+    prsk_reap_client( client_slots[index].client ); /* closes the record's handle */
     client_slots[index] = client_slots[last];
     client_count--;
 }
