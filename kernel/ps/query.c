@@ -130,6 +130,14 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         info.ExitStatus = process->header.signalState != 0 ? process->exitStatus : STATUS_PENDING;
         info.PebBaseAddress = (PEB *)(uintptr_t)process->pebBase;
         info.UniqueProcessId = process->uniqueProcessId;
+        /* The creator's pid — the same EPROCESS field SystemProcessInformation
+         * reports as ParentProcessId (one authority; 0 for an unparented
+         * process, which is also the oracle's answer for a session root).
+         * Left zero, every consumer that finds a process's parent by pid dies
+         * silently — wineserver-lite's connect-time desktop inheritance
+         * matched nothing and every GUI-6 child self-created its desktop.
+         * Pinned by sem_ps/system_processes (suspended-child check). */
+        info.InheritedFromUniqueProcessId = process->parentProcessId;
         memcpy(buffer, &info, sizeof(info));
         if (returnLength != 0)
         {
