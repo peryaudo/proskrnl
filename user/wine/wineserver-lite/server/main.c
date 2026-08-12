@@ -128,7 +128,17 @@ static int create_transport(void)
 }
 
 /* Find the client record for a pid, opening the process the first time it
- * is seen so its death can be waited on. */
+ * is seen so its death can be waited on. The handle is also what every
+ * attach-time query resolves through -- the session (which window-station
+ * directory the client's names live under), the subsystem (whether an idle
+ * event exists), and the parent (winstation/desktop inheritance) -- so it
+ * must carry PROCESS_QUERY_LIMITED_INFORMATION. Opening with only
+ * SYNCHRONIZE|PROCESS_DUP_HANDLE made all three queries fail SILENTLY for
+ * every transport-attached client (session 0, everyone CUI, inheritance
+ * never fired), which stayed invisible while the failures were consistent
+ * -- and split the winstation namespace in two the moment
+ * get_process_idle_event minted the first record whose handle could
+ * actually answer (the gui5con two-WinSta0 bug). */
 static struct client_slot *client_for_pid( unsigned int pid )
 {
     OBJECT_ATTRIBUTES attr;
@@ -149,7 +159,8 @@ static struct client_slot *client_for_pid( unsigned int pid )
     InitializeObjectAttributes( &attr, NULL, 0, NULL, NULL );
     id.UniqueProcess = ULongToHandle( pid );
     id.UniqueThread = 0;
-    if (NtOpenProcess( &process, SYNCHRONIZE | PROCESS_DUP_HANDLE, &attr, &id ))
+    if (NtOpenProcess( &process, SYNCHRONIZE | PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,
+                       &attr, &id ))
     {
         prsk_log( "[KTEST] wineserver-lite: cannot open client process %u\n", pid );
         return NULL;
