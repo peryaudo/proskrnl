@@ -61,6 +61,19 @@ typedef struct
     ps_system_thread_info ti[1];
 } ps_system_process_info;
 
+/* mingw's winternl.h names PROCESS_BASIC_INFORMATION's parent field
+ * "Reserved3"; declare the named layout, byte-identical to
+ * wine/include/winternl.h PROCESS_BASIC_INFORMATION. */
+typedef struct
+{
+    NTSTATUS ExitStatus;
+    PVOID PebBaseAddress;
+    ULONG_PTR AffinityMask;
+    LONG BasePriority;
+    ULONG_PTR UniqueProcessId;
+    ULONG_PTR InheritedFromUniqueProcessId;
+} ps_process_basic_information;
+
 START_TEST(system_processes)
 {
     NTSTATUS status;
@@ -120,6 +133,21 @@ START_TEST(system_processes)
                         hasSep = 1;
                 ok(!hasSep, "self ProcessName is a base name, not a path");
             }
+
+            /* The row's ParentProcessId and ProcessBasicInformation's
+             * InheritedFromUniqueProcessId are the same fact — the creator's
+             * pid. No nonzero assertion here: a session-root process (each
+             * oracle test is one) genuinely answers 0 on both sides. The
+             * pinned nonzero contract is the spawned-child check after the
+             * walk. */
+            ps_process_basic_information pbi;
+            status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessBasicInformation, &pbi,
+                                               sizeof(pbi), NULL);
+            ok(status == STATUS_SUCCESS, "self basic info -> %08lx", (unsigned long)status);
+            ok((DWORD)(ULONG_PTR)entry->ParentProcessId == (DWORD)pbi.InheritedFromUniqueProcessId,
+               "row parent %lu != basic-info parent %lu",
+               (unsigned long)(ULONG_PTR)entry->ParentProcessId,
+               (unsigned long)pbi.InheritedFromUniqueProcessId);
         }
 
         if (entry->NextEntryOffset == 0)
@@ -134,6 +162,37 @@ START_TEST(system_processes)
     ok(entries >= 1, "empty process list");
 
     HeapFree(GetProcessHeap(), 0, buffer);
+
+    /* InheritedFromUniqueProcessId IS the creator's pid: spawn a SUSPENDED
+     * child of this same .exe — it never executes an instruction, so no
+     * child-side protocol — and read the field through the creation handle.
+     * A kernel that leaves it zero silently kills every consumer that finds
+     * a process's parent by pid (wineserver-lite's connect-time desktop
+     * inheritance at GUI-6 was exactly that: matched nothing, quietly fell
+     * back, and every GUI child self-created its desktop). */
+    WCHAR self[MAX_PATH];
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    ok(GetModuleFileNameW(NULL, self, MAX_PATH) != 0, "GetModuleFileNameW failed %lu",
+       (unsigned long)GetLastError());
+    BOOL created =
+        CreateProcessW(self, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    ok(created, "CreateProcessW(suspended self) failed %lu", (unsigned long)GetLastError());
+    if (created)
+    {
+        ps_process_basic_information childInfo;
+        status = NtQueryInformationProcess(pi.hProcess, PS_ProcessBasicInformation, &childInfo,
+                                           sizeof(childInfo), NULL);
+        ok(status == STATUS_SUCCESS, "child basic info -> %08lx", (unsigned long)status);
+        ok((DWORD)childInfo.InheritedFromUniqueProcessId == selfPid,
+           "child's parent is %lu, expected us (%lu)",
+           (unsigned long)childInfo.InheritedFromUniqueProcessId, (unsigned long)selfPid);
+        TerminateProcess(pi.hProcess, 0);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
 
     /* ProcessSessionInformation: the exact-ULONG session-id read
      * ProcessIdToSessionId issues (dlls/kernelbase/process.c); tasklist hits
