@@ -102,14 +102,18 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
 }
 
 /* Screen rects of the visible top-level windows strictly ABOVE hwnd in the
- * desktop's z-order. Returns how many were filled. If hwnd never appears
- * in the list (foreign desktop, destroyed, hidden mid-flush), nothing is
- * subtracted -- the defensive answer is yesterday's last-writer-wins, not
- * a hole in the picture. */
-UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count )
+ * desktop's z-order, filled into rects with *count set. Returns whether
+ * hwnd is VISIBLE on the desktop at all: FALSE means the flush has nothing
+ * on the screen to update (hidden or destroyed mid-flush, foreign desktop,
+ * or more top-levels than the query carries) and the caller must paint
+ * NOTHING. The old fallback answered "subtract nothing" instead, and a
+ * hidden window's late flush then stamped itself back over every sibling
+ * -- an afterimage no repair would ever remove, because the repair had
+ * already run when the window was hidden. */
+BOOL winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count, UINT *count )
 {
     struct winefb_toplevel list[WINEFB_MAX_TOPLEVELS];
-    UINT count = query_visible_toplevels( list, WINEFB_MAX_TOPLEVELS );
+    UINT found = query_visible_toplevels( list, WINEFB_MAX_TOPLEVELS );
     UINT i, above = 0;
     user_handle_t top_window = 0;
 
@@ -132,16 +136,22 @@ UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count )
     SERVER_END_REQ;
     if (top_window && hwnd == wine_server_ptr_handle( top_window ))
     {
-        for (i = 0; i < count && above < max_count; i++) rects[above++] = list[i].rect;
-        return above;
+        for (i = 0; i < found && above < max_count; i++) rects[above++] = list[i].rect;
+        *count = above;
+        return TRUE; /* the desktop window is visible for as long as it exists */
     }
 
-    for (i = 0; i < count; i++)
+    for (i = 0; i < found; i++)
     {
-        if (list[i].hwnd == hwnd) return above;
+        if (list[i].hwnd == hwnd)
+        {
+            *count = above;
+            return TRUE;
+        }
         if (above < max_count) rects[above++] = list[i].rect;
     }
-    return 0; /* hwnd not found */
+    *count = 0;
+    return FALSE; /* hwnd is not visible: paint nothing */
 }
 
 /* Every visible top-level EXCEPT exclude -- the candidates a vacated area

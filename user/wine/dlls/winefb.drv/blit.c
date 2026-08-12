@@ -31,6 +31,9 @@ struct winefb_surface
     UINT                  flushes;
     RECT                 *clip_rects; /* win32u's surface clip, surface-local; NULL = none */
     UINT                  clip_count;
+    RECT                  vacated;   /* the screen rect the REPLACED predecessor surface
+                                      * covered (create_window_surface), owed to the next
+                                      * pWindowPosChanged's repair; empty = none */
 };
 
 static struct winefb_surface *surface_from_header( struct window_surface *surface );
@@ -168,7 +171,7 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
     RGNDATA *data = (RGNDATA *)region_buffer;
     HRGN dirty_rgn, tmp_rgn;
-    UINT i, above_count;
+    UINT i, above_count = 0;
     DWORD size;
 
     /* Clip to the window's visible part (the surface is padded past it) and
@@ -184,6 +187,14 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
         clipped.bottom = (int)mode->height - surface->origin.y;
 
     if (clipped.right - clipped.left <= 0 || clipped.bottom - clipped.top <= 0) return TRUE;
+
+    /* A window the desktop does not currently show paints NOTHING: a flush
+     * racing its own hide would otherwise stamp the window back over every
+     * sibling, unclipped, after the hide's repair already ran (compose.c).
+     * Returning TRUE resets the bounds; the re-show's pWindowPosChanged
+     * forces a full flush, so nothing is lost with them. */
+    if (!winefb_windows_above( base->hwnd, above, WINEFB_MAX_TOPLEVELS, &above_count ))
+        return TRUE;
 
     /* The compositor: what actually reaches the scanout is
      * dirty ∧ win32u's surface clip ∧ ¬(anything above in z-order).
@@ -208,7 +219,6 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     }
 
     /* Screen rects of the windows above, translated to surface-local. */
-    above_count = winefb_windows_above( base->hwnd, above, WINEFB_MAX_TOPLEVELS );
     for (i = 0; i < above_count; i++)
     {
         NtGdiSetRectRgn( tmp_rgn, above[i].left - surface->origin.x,
@@ -254,17 +264,18 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
 static void winefb_surface_destroy( struct window_surface *base )
 {
     struct winefb_surface *surface = surface_from_header( base );
-    RECT old_rect, empty = { 0, 0, 0, 0 };
 
-    /* A destroyed surface vacates everything it covered: the hide/close
-     * analogue of the move repair below (a dying transport during process
-     * teardown just fails the server calls, and the repaint is lost with
-     * the process -- tolerated, the next mover repairs again). */
-    old_rect.left = surface->origin.x;
-    old_rect.top = surface->origin.y;
-    old_rect.right = surface->origin.x + surface->visible.cx;
-    old_rect.bottom = surface->origin.y + surface->visible.cy;
-    if (!IsRectEmpty( &old_rect )) repair_uncovered( base->hwnd, &old_rect, &empty );
+    /* Deliberately NO vacate repair here, and the reason is a measured
+     * fact, not a simplification: this callback runs when the surface's
+     * REFCOUNT dies, not when the window leaves the screen, and cached DCs
+     * (dce.c keeps a released cache DCE bound to its window, dibdrv surface
+     * reference included, until it is reused or purged) pin surfaces far
+     * past DestroyWindow -- across a whole session, this fired exactly
+     * never, which was the winemine close afterimage. And when it DOES
+     * fire, the timing is arbitrary: a late repair of a stale rect erases
+     * pixels that are by then someone else's. The vacate repair keys off
+     * the EVENTS instead -- hide and z-drop in winefb_window_pos_changed,
+     * surface replacement via the vacated stash (create below). */
 
     /* win32u owns the bitmaps; the clip copy is all this driver added. */
     free( surface->clip_rects );
@@ -286,13 +297,28 @@ static struct winefb_surface *surface_from_header( struct window_surface *surfac
 BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_rect,
                                    struct window_surface **surface )
 {
-    struct winefb_surface *previous;
+    struct winefb_surface *previous, *impl;
+    RECT vacated = { 0, 0, 0, 0 };
     BITMAPINFO *info;
     char buffer[FIELD_OFFSET( BITMAPINFO, bmiColors[256] )];
 
     if ((previous = surface_from_header( *surface )) &&
         EqualRect( &previous->header.rect, surface_rect ))
         return TRUE;   /* the existing surface still fits */
+
+    /* Replacing a surface (resize) loses its geometry before the coming
+     * pWindowPosChanged can compare old and new, so the screen rect the
+     * predecessor covered rides over on the successor: whatever the resize
+     * vacates is repaired there, from this stash. (Not repaired HERE:
+     * this runs mid-SetWindowPos, before the server has the new rects,
+     * and the repair walk reads server state.) */
+    if (previous)
+    {
+        vacated.left = previous->origin.x;
+        vacated.top = previous->origin.y;
+        vacated.right = previous->origin.x + previous->visible.cx;
+        vacated.bottom = previous->origin.y + previous->visible.cy;
+    }
 
     if (*surface) window_surface_release( *surface );
     *surface = NULL;
@@ -312,6 +338,7 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
 
     *surface = window_surface_create( sizeof(struct winefb_surface), &winefb_surface_funcs, hwnd,
                                       surface_rect, info, 0 );
+    if ((impl = surface_from_header( *surface ))) impl->vacated = vacated;
 
     /* A process creating a window surface is exactly the kind that should
      * try for the input devices: pUpdateDisplayDevices (the GUI-2 start
@@ -437,14 +464,34 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
                                 struct window_surface *base )
 {
     struct winefb_surface *surface = surface_from_header( base );
-    RECT old_rect, new_rect;
+    RECT old_rect, new_rect, empty = { 0, 0, 0, 0 };
 
-    if (!surface) return;
+    if (!surface)
+    {
+        /* The HIDE arrives here with the dummy surface: win32u swapped the
+         * real one out before this call, so the vacated area must come from
+         * the rects win32u hands over, not from surface state. This is the
+         * one repair a closing window gets -- DestroyWindow hides first
+         * (user_destroy_window), and the surface-destroy callback can never
+         * be its backup (see winefb_surface_destroy). A hide of an
+         * already-hidden window repairs pixels it never owned; that is
+         * idempotent -- the fill only touches desktop-owned pixels and the
+         * invalidated windows repaint what they already show. */
+        if ((swp_flags & SWP_HIDEWINDOW) && !IsRectEmpty( &new_rects->visible ))
+            repair_uncovered( hwnd, &new_rects->visible, &empty );
+        return;
+    }
     old_rect.left = surface->origin.x;
     old_rect.top = surface->origin.y;
     old_rect.right = surface->origin.x + surface->visible.cx;
     old_rect.bottom = surface->origin.y + surface->visible.cy;
     new_rect = new_rects->visible;
+
+    /* A freshly-created replacement surface has no geometry yet; what its
+     * predecessor covered rides in `vacated` (create above), so a resize
+     * repairs the strip it vacated exactly once. */
+    if (IsRectEmpty( &old_rect ) && !IsRectEmpty( &surface->vacated )) old_rect = surface->vacated;
+    SetRectEmpty( &surface->vacated );
 
     surface->origin.x = new_rect.left;
     surface->origin.y = new_rect.top;
@@ -453,6 +500,19 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
 
     if (!IsRectEmpty( &old_rect ) && !EqualRect( &old_rect, &new_rect ))
         repair_uncovered( hwnd, &old_rect, &new_rect );
+
+    /* A z-order change may have LOWERED this window under a sibling, and
+     * the risen sibling hears about it from nobody -- the server exposes
+     * nothing for top-levels (compose.c) and its own surface has no new
+     * bounds. So on the two spellings that cannot only raise, everything
+     * this rect touches is asked to repaint (the one repaint authority);
+     * every flush clips by the fresh z-order, so the picture converges,
+     * and the forced flush below repaints this window's own share. Raises
+     * (HWND_TOP/HWND_TOPMOST) skip the walk: the flush alone paints the
+     * risen window over everything, which is already the whole story. */
+    if (!(swp_flags & SWP_NOZORDER) && insert_after != HWND_TOP && insert_after != HWND_TOPMOST &&
+        !IsRectEmpty( &new_rect ))
+        winefb_repaint_rect( &new_rect, hwnd );
 
     /* Always re-blit the whole surface at its (possibly new) place. A pure
      * move dirties nothing -- the surface is reused (create_window_surface's

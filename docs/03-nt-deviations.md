@@ -2947,12 +2947,23 @@ winex11/winewayland the host compositor owns both; here both are the driver's:
   of every visible top-level *above* it, queried fresh from the server per flush
   (`get_window_list` — the same topmost-first walk the server's own hit-testing does — plus
   `get_window_rectangles`), with the region algebra done by win32u's own `NtGdi` engine;
-- **exposure**: the *mover* repairs the world from `pWindowPosChanged`/surface destroy — other
-  top-levels touching the vacated area are invalidated cross-process (`NtUserRedrawWindow` →
-  server `redraw_window` wakes their queues), the desktop-owned remainder is filled directly,
-  and the moved window's own surface is re-blitted whole (a pure move dirties nothing:
-  the surface is reused and `move_window_bits` is an identity no-op; a raise generates no
-  exposure at all).
+- **exposure**: the *mover* repairs the world from `pWindowPosChanged` — other top-levels
+  touching the vacated area are invalidated cross-process (`NtUserRedrawWindow` → server
+  `redraw_window` wakes their queues), the desktop-owned remainder is filled directly, and the
+  moved window's own surface is re-blitted whole (a pure move dirties nothing: the surface is
+  reused and `move_window_bits` is an identity no-op). The same hook repairs the **hide**
+  (`SWP_HIDEWINDOW` arrives with the dummy surface, so the vacated rect comes from the rects
+  win32u passes — this is the one repair a closing window gets, since `DestroyWindow` hides
+  first), the **resize** (a replaced surface's screen rect rides over on its successor —
+  blit.c's `vacated` stash — and is compared against the new rect exactly once), and the
+  **z-drop** (an insert-after that can lower asks everything the window's rect touches to
+  repaint; a raise needs only the forced re-blit). Deliberately NOT hung off the window
+  surface's destroy callback: that fires when the surface's *refcount* dies, not when the
+  window leaves the screen, and cached DCs (win32u keeps a released cache DCE bound, dibdrv
+  surface reference included, until reuse or purge) pin surfaces so far past `DestroyWindow`
+  that across a whole measured session the callback fired exactly **never** — which was the
+  winemine close afterimage the `guiclose` leg pins (tests/run/run.sh guiclose,
+  check_guiclose.py).
 
 Queried fresh rather than cached, on purpose: a cache would need exactly the cross-process
 invalidation protocol this design avoids. Staleness is bounded by one flush — clip and repair
@@ -3036,9 +3047,20 @@ rather than permanently-wrong.
 
 **Known residuals, named:**
 
-- **lowering** a window (`HWND_BOTTOM`) exposes the sibling that rises above it with no
-  notification anywhere; the newly-uncovered window shows through only on its own next
-  flush. Not on the milestone path; the gui4 scenario avoids it.
+- ~~**lowering** a window (`HWND_BOTTOM`) exposes the sibling that rises above it with no
+  notification anywhere~~ — retired: `pWindowPosChanged` now treats a lowering insert-after
+  as an exposure and routes the window's rect through the repaint authority (blit.c); the
+  risen sibling repaints its overlap cross-process, the same convergence as the mover's.
+- **a violently-dead client's windows** are torn out of the tree by the server reap with the
+  winefb repair unreachable (it lives in the dead process); nothing repaints what they
+  covered until the next mover does. No fixture leg kills a window-owning process mid-scene.
+- a **flush racing its own window's hide** used to paint unclipped (the z-order query's
+  "hwnd not found" fallback subtracted nothing); it now paints nothing — the safe direction,
+  since the re-show forces a full flush anyway (compose.c `winefb_windows_above`).
+- **window shapes are not composited**: the flush ignores the shape bitmap win32u hands it
+  (`shape_bits`), so a shaped (`SetWindowRgn`) or color-keyed layered window blits as a full
+  rectangle. Nothing on the milestone path shapes a window; the surface-region clip
+  (`set_clip`) IS honored, which is what child pixel-format holes use.
 - the thread-record residual from GUI-3 (a violently-killed thread's `thread_input` — focus,
   capture — survives to process exit) is now load-bearing for input routing; still bounded by
   process lifetime, still waiting for a case that hits it.
