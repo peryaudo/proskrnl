@@ -74,10 +74,14 @@ struct winefb_toplevel
 extern UINT winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count );
 extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, UINT max_count );
 
-/* blit.c: the desktop background. The desktop window is forced and foreign
- * (docs/03 GUI-2 notes) -- no process runs its WndProc, so winefb is its
- * painter, the same authority split as an X root window. One fixed color;
- * the value is reported on serial, never assumed by a checker. */
+/* blit.c: the desktop background. On an explorerless image the desktop
+ * window is forced and foreign (docs/03 GUI-2 notes) -- no process runs its
+ * WndProc, so winefb is its painter, the same authority split as an X root
+ * window. With explorer (GUI-6) its PaintDesktop erases in the same color,
+ * so the two painters agree by construction: the value is Wine's default
+ * COLOR_BACKGROUND, RGB(58,110,165) -- re-verify against the pinned
+ * dlls/win32u/sysparams.c system_colors[]. Reported on serial, never
+ * assumed by a checker. */
 #define WINEFB_DESKTOP_BG RGB( 0x3a, 0x6e, 0xa5 ) /* the classic desktop blue */
 extern void winefb_fill_rect( const RECT *screen_rect, COLORREF color );
 extern UINT winefb_pack_pixel( UINT r, UINT g, UINT b );

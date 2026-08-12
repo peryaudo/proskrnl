@@ -93,13 +93,16 @@ BOOL winefb_map_scanout(void)
     return TRUE;
 }
 
-/* The desktop window is born with empty rects and normally sized by the
- * process that owns it — explorer's desktop thread on Wine. There is no
- * explorer here (GUI-6), so the driver entry sizes it to the scanout, the
- * same repair X11DRV_SetDesktopWindow makes when it finds the rects
- * uninitialized (dlls/winex11.drv/window.c). The scanout mode is the
- * driver's whole truth about the display (one mode, HACK-001), so it is
- * the size used directly. */
+/* The desktop window is born with empty rects, and this driver entry sizes
+ * it to the scanout — the same repair X11DRV_SetDesktopWindow makes when it
+ * finds the rects uninitialized (dlls/winex11.drv/window.c). On an
+ * explorer-bearing image (gui6, GUI-6) the hook fires where it fires on
+ * Wine: in explorer's own process, during its CreateWindowExW of the
+ * desktop window, before explorer's SetWindowPos. On an explorerless image
+ * it fires in whichever app force-created the desktop (the GUI-2 fixture,
+ * docs/03) and is the only sizing the window ever gets. The scanout mode
+ * is the driver's whole truth about the display (one mode, HACK-001), so
+ * it is the size used directly. */
 void winefb_set_desktop_window( HWND hwnd )
 {
     unsigned int width, height;
@@ -131,14 +134,18 @@ void winefb_set_desktop_window( HWND hwnd )
         }
         SERVER_END_REQ;
 
-        /* The desktop window is forced and foreign (docs/03 GUI-2 notes):
-         * no process runs its WndProc, so nothing would ever paint the
-         * desktop. winefb is its painter -- the same authority split as an
-         * X root window -- and paints it exactly once, here, in the first
-         * process, the same moment that sizes it. The uncover repair
-         * (blit.c) restores this color when a window moves away. The
-         * checkers sample the background rather than assume it; this line
-         * is what they sample against. */
+        /* Someone must ground the scanout in the background color before
+         * windows composite over it. With explorer (GUI-6) its WM_ERASEBKGND
+         * -> PaintDesktop paints the same COLOR_BACKGROUND blue through the
+         * ordinary surface path; this direct fill still runs first -- in
+         * explorer's process, the moment that sizes the window -- so the
+         * scanout is never the boot framebuffer while explorer's first
+         * paint is still in flight. Under the explorerless fixture the
+         * desktop window is forced and foreign, no process runs its
+         * WndProc, and this fill plus the uncover repair (blit.c) IS the
+         * desktop painter -- the same authority split as an X root window.
+         * The checkers sample the background rather than assume it; this
+         * line is what they sample against. */
         winefb_fill_rect( &rect, WINEFB_DESKTOP_BG );
         winefb_report( "[KTEST] gui2 desktop w=%u h=%u bg=%02x%02x%02x\n",
                        (unsigned)winefb_scanout.mode.width, (unsigned)winefb_scanout.mode.height,

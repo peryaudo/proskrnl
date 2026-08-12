@@ -79,6 +79,12 @@
  * is hard to find later (Art. 12). */
 int prsk_trace_requests = 0;
 
+/* No explorer.exe on the image => the GUI-2 desktop fixtures are on.
+ * Probed once at bring-up (probe_explorer); the one switch all three
+ * fixture sites share (request_forces_desktop and the sites keying off
+ * it -- see the comment there). */
+static int prsk_no_explorer = 1;
+
 struct thread *current = NULL;
 unsigned int global_error = 0;
 int debug_level = 0;
@@ -809,6 +815,35 @@ static LONG CALLBACK report_exception( EXCEPTION_POINTERS *info )
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Does the image carry the explorer win32u would launch?  Probed once, for
+ * the exact path dlls/win32u/winstation.c get_desktop_window hardcodes.
+ * Present, the GUI-2 desktop fixtures are off and the stock arrangement
+ * runs: the first client's get_desktop_window comes back empty, win32u
+ * launches explorer, explorer creates and owns the desktop. Absent, they
+ * stay on (request_forces_desktop above). The answer is printed either way:
+ * an image mis-baked for its leg is found from the serial log, not from
+ * which of two desktop arrangements happens to limp further (Art. 12). */
+static void probe_explorer(void)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    HANDLE handle;
+
+    RtlInitUnicodeString( &name, L"\\??\\C:\\windows\\system32\\explorer.exe" );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+    if (!NtCreateFile( &handle, FILE_GENERIC_READ, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+                       FILE_SHARE_READ, FILE_OPEN,
+                       FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 ))
+    {
+        NtClose( handle );
+        prsk_no_explorer = 0;
+    }
+    prsk_log( "[KTEST] wineserver-lite: %s\n",
+              prsk_no_explorer ? "no explorer.exe; GUI-2 desktop fixtures on"
+                               : "explorer.exe present; the desktop belongs to it" );
+}
+
 static int server_bringup(void)
 {
     LARGE_INTEGER now;
@@ -818,6 +853,7 @@ static int server_bringup(void)
     NtQuerySystemTime( &now );
     server_start_time = now.QuadPart;
     set_current_time();
+    probe_explorer();
 
     RtlAddVectoredExceptionHandler( TRUE, report_exception );
 
@@ -955,13 +991,22 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
  *
  * get_desktop_window without `force` returns nothing until some other
  * process has created the desktop, and win32u answers that by launching
- * explorer.exe. There is exactly one GUI process here and explorer is GUI-6,
- * so every caller gets `force`: the desktop is created on the spot - the
- * same code path the server takes for the forcing caller - and win32u
- * never goes looking for an explorer.exe the image does not carry. */
+ * C:\windows\system32\explorer.exe (dlls/win32u/winstation.c
+ * get_desktop_window) -- the stock arrangement, and the one the gui6 image
+ * runs since GUI-6: explorer creates the desktop window, owns it, and
+ * every app process sees it as foreign because it IS foreign. An image
+ * that does not carry explorer.exe (the CUI images, gui2..gui5, gui5con,
+ * guiwtest -- kept explorerless by decision, docs/03 "GUI-2 notes") would
+ * instead have win32u's launch fail and its force-fallback re-enter the
+ * two convicted GUI-2/GUI-5 failure modes, so on those images the GUI-2
+ * fixture stays: every caller gets `force` -- the desktop is created on
+ * the spot, the same server path the forcing caller takes -- and the two
+ * fixups below keep the arrangement honest. prsk_no_explorer (declared
+ * with the server globals, probed at bring-up) is the one switch all
+ * three fixture sites share. */
 static int request_forces_desktop( enum request req )
 {
-    return !strcmp( prsk_req_names[req], "get_desktop_window" );
+    return prsk_no_explorer && !strcmp( prsk_req_names[req], "get_desktop_window" );
 }
 
 static void fixup_request_before( struct __server_request_info *info, enum request req )
@@ -974,14 +1019,15 @@ static void fixup_request_before( struct __server_request_info *info, enum reque
 /* On Wine the desktop and HWND_MESSAGE windows belong to EXPLORER, so every
  * app process sees their user entries with a foreign pid and takes win32u's
  * WND_DESKTOP paths (dlls/win32u/window.c get_user_handle_ptr ->
- * OBJ_OTHER_PROCESS). Here the force-create runs inside the app's own
- * process: the entry keeps our pid, win32u goes looking for a client-side
- * WND that was never made, GetWindowLong on the desktop answers style 0,
- * and the first ShowWindow takes the invisible-parent shortcut - the window
- * turns visible without ever being exposed, so nothing paints. Clearing the
- * owner ids makes the entries look foreign, which is exactly how they look
- * to a Wine app. The server side is already detached
- * (server/window.c detach_window_thread). */
+ * OBJ_OTHER_PROCESS). On an explorer-bearing image that is now literally
+ * true and nothing here runs. Under the fixture the force-create runs
+ * inside the app's own process: the entry keeps our pid, win32u goes
+ * looking for a client-side WND that was never made, GetWindowLong on the
+ * desktop answers style 0, and the first ShowWindow takes the
+ * invisible-parent shortcut - the window turns visible without ever being
+ * exposed, so nothing paints. Clearing the owner ids makes the entries
+ * look foreign, which is exactly how they look to a Wine app. The server
+ * side is already detached (server/window.c detach_window_thread). */
 static void detach_user_entry( user_handle_t handle )
 {
     volatile struct user_entry *entry;
@@ -1002,7 +1048,7 @@ static void detach_user_entry( user_handle_t handle )
 static void fixup_request( struct __server_request_info *info, enum request req,
                            struct thread *thread )
 {
-    if (!strcmp( prsk_req_names[req], "get_desktop_window" ))
+    if (request_forces_desktop( req ))
     {
         detach_user_entry( info->u.reply.get_desktop_window_reply.top_window );
         detach_user_entry( info->u.reply.get_desktop_window_reply.msg_window );
@@ -1103,8 +1149,11 @@ unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
      * not to an app: server/window.c hands the process that creates a
      * desktop's top window that desktop as its process DEFAULT
      * (set_process_default_desktop). On Wine only explorer ever reaches
-     * that line, so an app's default is never touched; here the app itself
-     * is the desktop-window creator, so the first window on any NEW desktop
+     * that line, so an app's default is never touched -- and on an
+     * explorer-bearing image the same is true here (request_forces_desktop
+     * answers no force, defaultDesktop stays 0, and explorer's assignment
+     * is the legitimate one). Under the fixture the app itself is the
+     * desktop-window creator, so the first window on any NEW desktop
      * silently re-homed the whole process onto it.
      *
      * msg.c's run_in_temp_desktop is exactly that: a thread switches to a

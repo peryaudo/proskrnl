@@ -349,9 +349,12 @@ static void invalidate_covered( const struct winefb_toplevel *window, const RECT
 /* Make one screen rect show what it should show again. Every visible
  * top-level it touches is asked to repaint its part (NtUserRedrawWindow ->
  * server redraw_window wakes their queues; their next clipped flush
- * restores the pixels), and the remainder belongs to the desktop, whose
- * painter is this driver -- the desktop window is forced and foreign, so
- * the background is filled here and now.
+ * restores the pixels), and the remainder belongs to the desktop, filled
+ * here and now: on an explorerless image the desktop window is forced and
+ * foreign and this driver is its only painter (docs/03 GUI-2 notes); with
+ * explorer (GUI-6) its PaintDesktop would repaint the same
+ * COLOR_BACKGROUND blue eventually, and the direct fill just gets there
+ * first with the same pixels (winefb.h WINEFB_DESKTOP_BG).
  *
  * The single repaint authority (Art. 11): the mover below vacates the rect
  * a window left, the cursor vacates the rect an arrow left, and a second
