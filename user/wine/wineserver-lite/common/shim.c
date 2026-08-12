@@ -326,6 +326,39 @@ static struct prsk_client *create_client( DWORD pid, HANDLE handle )
      * process fail the way it does on Wine and on Windows. */
     client->idle_sync = prsk_process_is_gui( handle ) ? create_internal_sync( 1, 0 ) : NULL;
     list_add_tail( &clients, &client->entry );
+
+    /* Connect the new process to its parent's window station and desktop --
+     * wineserver's own step (server/process.c new_process calls
+     * connect_process_winstation with the parent), run here at attach
+     * because attach is where this build first sees the process. The engine
+     * is the pinned one, not a copy (Art. 11): with an empty desktop path
+     * it takes exactly its inherit-from-parent branches, duplicating the
+     * parent's winstation and default-desktop handles into the child
+     * server-side. create_thread_record then hands the inherited default to
+     * the first thread, and win32u's winstation_init sees both handles
+     * already set and skips self-creation -- which is how a child of
+     * explorer lands on explorer's desktop ("shell") rather than
+     * OBJ_OPENIF-ing its way onto a self-made "Default" and auto-launching
+     * a second explorer there (GUI-6).
+     *
+     * The parent is found by InheritedFromUniqueProcessId; a parent that is
+     * not a connected client (smss, a CUI process) leaves nothing to
+     * inherit and the child self-creates, exactly like the oracle's first
+     * process. Sessions must match: winstations are per-session objects
+     * (the clients' create requests resolve against per-session
+     * directories), and the oracle never faces the question because one
+     * wineserver serves one session. */
+    {
+        PROCESS_BASIC_INFORMATION info;
+        struct unicode_str empty_path = { NULL, 0 };
+        struct prsk_client *parent;
+
+        if (!NtQueryInformationProcess( handle, ProcessBasicInformation, &info, sizeof(info),
+                                        NULL ) &&
+            (parent = find_client( (DWORD)(ULONG_PTR)info.InheritedFromUniqueProcessId )) &&
+            parent->session == client->session && parent->process->winstation)
+            connect_process_winstation( process, &empty_path, NULL, parent->process );
+    }
     return client;
 }
 
@@ -369,12 +402,15 @@ static struct thread *create_thread_record( struct prsk_client *client, DWORD ti
     list_init( &thread->desktop_entry );
 
     /* A new thread starts on its process's default desktop -- the same block
-     * wineserver's create_thread runs (server/thread.c). The FIRST thread of
-     * a client still has no desktop (its process has none yet, exactly like
-     * the oracle's first process, whose connect_process_winstation finds no
-     * parent to inherit from); win32u's winstation_init then creates
-     * WinSta0/Default and set_thread_desktop sets the process default, which
-     * is what every LATER thread inherits here. */
+     * wineserver's create_thread runs (server/thread.c). The first thread of
+     * a PARENTLESS client still has no desktop (its process has none yet,
+     * exactly like the oracle's first process, whose
+     * connect_process_winstation finds no parent to inherit from); win32u's
+     * winstation_init then creates WinSta0/Default and set_thread_desktop
+     * sets the process default, which is what every later thread inherits
+     * here. A client spawned BY a connected client inherited its default at
+     * attach (create_client's connect_process_winstation call), so its
+     * first thread lands on the parent's desktop instead. */
     if (client->process->desktop)
     {
         if (!(desktop = get_desktop_obj( client->process, client->process->desktop, 0 )))

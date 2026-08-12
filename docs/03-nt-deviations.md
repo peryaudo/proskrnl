@@ -2824,11 +2824,22 @@ exists to prevent. With the reply delivered, win32u recovers exactly as it does 
 oracle. The one piece of inheritance wineserver-lite *did* owe is the per-thread half, and
 it is built: a new thread record starts on its process's default desktop — the same block
 wineserver's `create_thread` runs (`server/thread.c`) — which is what a client's second and
-later threads inherit. The residual deviation is narrow: a process spawned *by a connected
-GUI process* would, on the oracle, inherit its parent's window station and desktop handles
-at connect time; here it self-creates and `OBJ_OPENIF` lands it on the same `WinSta0`/
-`Default`, so the objects agree and only the connect-time handles differ. That case first
-matters when a GUI process launches another (explorer, GUI-6).
+later threads inherit. The residual deviation — a process spawned *by a connected GUI
+process* self-created where the oracle inherits the parent's window station and desktop
+handles at connect time — was retired at GUI-6, where it first stopped being harmless: on
+`WinSta0`/`Default` the self-create's `OBJ_OPENIF` converged on the same objects and only
+the connect-time handles differed, but a child of explorer must land on explorer's desktop
+(`shell`), which no self-create can find. The connect step is now run at attach
+(`shim.c create_client`) through the pinned engine itself — `connect_process_winstation`
+with an empty desktop path takes exactly its inherit-from-parent branches — with the parent
+found by `InheritedFromUniqueProcessId` and required to be a connected client of the same
+session (winstations are per-session; the oracle never faces the question because one
+wineserver serves one session). One sliver survives: the oracle's call site passes the
+spawning *thread* (`server/process.c new_process`), and the engine prefers
+`parent_thread->desktop` over the process default; attach happens after the fact, so the
+shim passes no thread and a child spawned by a parent thread that had `SetThreadDesktop`'d
+off the process default inherits the process default instead of that thread's desktop.
+Explorer's process default *is* its desktop, so GUI-6 never sees the difference.
 
 **The desktop is always forced, and its user entries look foreign.** On Wine the desktop
 and `HWND_MESSAGE` windows belong to explorer: `get_desktop_window` without `force` waits
