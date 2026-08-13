@@ -71,7 +71,8 @@ struct winefb_toplevel
     RECT client; /* client rect, screen coordinates -- what a rect-scoped
                   * invalidation can name (blit.c) */
 };
-extern BOOL winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count, UINT *count );
+extern BOOL winefb_windows_above( HWND hwnd, struct winefb_toplevel *above_list, UINT max_count,
+                                  UINT *count );
 extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, UINT max_count );
 
 /* blit.c: the desktop background. On an explorerless image the desktop

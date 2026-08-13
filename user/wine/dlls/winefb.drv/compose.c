@@ -101,16 +101,19 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
     return found;
 }
 
-/* Screen rects of the visible top-level windows strictly ABOVE hwnd in the
- * desktop's z-order, filled into rects with *count set. Returns whether
- * hwnd is VISIBLE on the desktop at all: FALSE means the flush has nothing
- * on the screen to update (hidden or destroyed mid-flush, foreign desktop,
- * or more top-levels than the query carries) and the caller must paint
- * NOTHING. The old fallback answered "subtract nothing" instead, and a
- * hidden window's late flush then stamped itself back over every sibling
- * -- an afterimage no repair would ever remove, because the repair had
- * already run when the window was hidden. */
-BOOL winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count, UINT *count )
+/* The visible top-level windows strictly ABOVE hwnd in the desktop's
+ * z-order, filled into above with *count set (whole entries: the z-drop
+ * repair needs their client rects for a rect-scoped invalidation, the
+ * flush only their window rects). Returns whether hwnd is VISIBLE on the
+ * desktop at all: FALSE means the flush has nothing on the screen to
+ * update (hidden or destroyed mid-flush, foreign desktop, or more
+ * top-levels than the query carries) and the caller must paint NOTHING.
+ * The old fallback answered "subtract nothing" instead, and a hidden
+ * window's late flush then stamped itself back over every sibling -- an
+ * afterimage no repair would ever remove, because the repair had already
+ * run when the window was hidden. */
+BOOL winefb_windows_above( HWND hwnd, struct winefb_toplevel *above_list, UINT max_count,
+                           UINT *count )
 {
     struct winefb_toplevel list[WINEFB_MAX_TOPLEVELS];
     UINT found = query_visible_toplevels( list, WINEFB_MAX_TOPLEVELS );
@@ -136,7 +139,7 @@ BOOL winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count, UINT *count )
     SERVER_END_REQ;
     if (top_window && hwnd == wine_server_ptr_handle( top_window ))
     {
-        for (i = 0; i < found && above < max_count; i++) rects[above++] = list[i].rect;
+        for (i = 0; i < found && above < max_count; i++) above_list[above++] = list[i];
         *count = above;
         return TRUE; /* the desktop window is visible for as long as it exists */
     }
@@ -148,7 +151,7 @@ BOOL winefb_windows_above( HWND hwnd, RECT *rects, UINT max_count, UINT *count )
             *count = above;
             return TRUE;
         }
-        if (above < max_count) rects[above++] = list[i].rect;
+        if (above < max_count) above_list[above++] = list[i];
     }
     *count = 0;
     return FALSE; /* hwnd is not visible: paint nothing */

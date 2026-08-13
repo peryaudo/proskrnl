@@ -165,7 +165,7 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     int src_pitch = color_info->bmiHeader.biSizeImage /
                     abs( color_info->bmiHeader.biHeight );
     RECT clipped = *dirty;
-    RECT above[WINEFB_MAX_TOPLEVELS];
+    struct winefb_toplevel above[WINEFB_MAX_TOPLEVELS];
     /* 1024 rects (16 KB of stack): far beyond what subtracting ≤ 64
      * rectangles from one can band out to in practice. */
     char region_buffer[FIELD_OFFSET( RGNDATA, Buffer[1024 * sizeof(RECT)] )];
@@ -221,9 +221,10 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     /* Screen rects of the windows above, translated to surface-local. */
     for (i = 0; i < above_count; i++)
     {
-        NtGdiSetRectRgn( tmp_rgn, above[i].left - surface->origin.x,
-                         above[i].top - surface->origin.y, above[i].right - surface->origin.x,
-                         above[i].bottom - surface->origin.y );
+        NtGdiSetRectRgn( tmp_rgn, above[i].rect.left - surface->origin.x,
+                         above[i].rect.top - surface->origin.y,
+                         above[i].rect.right - surface->origin.x,
+                         above[i].rect.bottom - surface->origin.y );
         NtGdiCombineRgn( dirty_rgn, dirty_rgn, tmp_rgn, RGN_DIFF );
     }
     NtGdiDeleteObjectApp( tmp_rgn );
@@ -527,15 +528,33 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     /* A z-order change may have LOWERED this window under a sibling, and
      * the risen sibling hears about it from nobody -- the server exposes
      * nothing for top-levels (compose.c) and its own surface has no new
-     * bounds. So on the two spellings that cannot only raise, everything
-     * this rect touches is asked to repaint (the one repaint authority);
-     * every flush clips by the fresh z-order, so the picture converges,
-     * and the forced flush below repaints this window's own share. Raises
+     * bounds. So on the spellings that cannot only raise, exactly the
+     * windows now ABOVE this one are asked to repaint their overlap with
+     * it (queried fresh: pWindowPosChanged runs after the server holds the
+     * new z-order); every flush clips by that same order, so the picture
+     * converges, and the forced flush below repaints this window's own
+     * share. Windows still BELOW hear nothing -- their pixels did not
+     * change -- and no desktop fill runs, so a plain lowering never
+     * flashes background over the window's own rect. Raises
      * (HWND_TOP/HWND_TOPMOST) skip the walk: the flush alone paints the
      * risen window over everything, which is already the whole story. */
     if (!(swp_flags & SWP_NOZORDER) && insert_after != HWND_TOP && insert_after != HWND_TOPMOST &&
         !IsRectEmpty( &new_rect ))
-        winefb_repaint_rect( &new_rect, hwnd );
+    {
+        struct winefb_toplevel above[WINEFB_MAX_TOPLEVELS];
+        UINT i, above_count = 0;
+
+        if (winefb_windows_above( hwnd, above, WINEFB_MAX_TOPLEVELS, &above_count ))
+        {
+            for (i = 0; i < above_count; i++)
+            {
+                RECT overlap;
+
+                if (intersect_rect( &overlap, &above[i].rect, &new_rect ))
+                    invalidate_covered( &above[i], &overlap );
+            }
+        }
+    }
 
     /* Always re-blit the whole surface at its (possibly new) place. A pure
      * move dirties nothing -- the surface is reused (create_window_surface's

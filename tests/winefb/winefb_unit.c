@@ -222,9 +222,13 @@ static void test_zdrop_repaints_risen(void)
 
     unit_reset(SCREEN_W, SCREEN_H);
     unit_set_desktop(DESKTOP);
-    /* fixture is POST-change: B already above A */
+    /* fixture is POST-change: B already above A; C stays below A and also
+     * intersects it -- nothing about C changed, so C must hear NOTHING (a
+     * z-drop that invalidates the whole neighbourhood is a cross-process
+     * repaint storm on every lowering) */
     unit_add_window(WIN_B, 100, 100, 300, 300, 100, 100, 300, 300, 1);
     unit_add_window(WIN_A, 50, 50, 350, 350, 50, 50, 350, 350, 1);
+    unit_add_window(WIN_C, 40, 40, 360, 360, 40, 40, 360, 360, 1);
 
     ok(unit_create_surface(WIN_B, 0, 0, 256, 256), "surface B\n");
     unit_surface_fill(WIN_B, COLOR_B);
@@ -239,6 +243,7 @@ static void test_zdrop_repaints_risen(void)
         if (unit_redraw_hwnd(i) == WIN_B)
             b_invalidated = 1;
     ok(b_invalidated, "the risen sibling was invalidated\n");
+    ok(unit_redraw_count() == 1, "and NOBODY else was (got %u)\n", unit_redraw_count());
     ok(unit_pixel(150, 150) == COLOR_B, "the overlap stays the risen window's (got %08x)\n",
        unit_pixel(150, 150));
     ok(unit_pixel(60, 60) == COLOR_A, "the lowered window keeps its exposed part (got %08x)\n",
