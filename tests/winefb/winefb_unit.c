@@ -292,6 +292,59 @@ static void test_surface_clip_honored(void)
        unit_pixel(160, 160));
 }
 
+/* A shaped surface (SetWindowRgn, a color-keyed layered window -- dce.c
+ * turns both into the 1bpp shape bitmap handed to flush) must not paint
+ * outside its shape: the pixels under the holes belong to whoever is
+ * beneath. MSB-first bits, byte-aligned width, row order by biHeight's
+ * sign -- the set_surface_shape layout. */
+static void shape_case(int topdown)
+{
+    static unsigned char shape[8 * 64]; /* 64x64 at 1bpp: 8-byte rows */
+    int x, y;
+
+    /* opaque everywhere except a hole at surface-local 16..32 x 16..32 */
+    for (y = 0; y < 64; y++)
+    {
+        int row = topdown ? y : 63 - y;
+
+        for (x = 0; x < 64; x++)
+        {
+            int hole = x >= 16 && x < 32 && y >= 16 && y < 32;
+
+            if (!hole)
+                shape[row * 8 + (x >> 3)] |= 0x80 >> (x & 7);
+            else
+                shape[row * 8 + (x >> 3)] &= ~(0x80 >> (x & 7));
+        }
+    }
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_desktop(DESKTOP);
+    unit_add_window(WIN_A, 100, 100, 164, 164, 100, 100, 164, 164, 1);
+
+    ok(unit_create_surface(WIN_A, 0, 0, 64, 64), "surface A\n");
+    /* geometry first (the forced flush paints only zeros), the color and
+     * the shaped flush after -- so the hole's pixels were never painted */
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 100, 100, 164, 164, 1);
+    unit_surface_fill(WIN_A, COLOR_A);
+    unit_flush_shaped(WIN_A, shape, 8, topdown);
+
+    ok(unit_pixel(108, 108) == COLOR_A, "inside the shape painted (got %08x, %s)\n",
+       unit_pixel(108, 108), topdown ? "top-down" : "bottom-up");
+    ok(unit_pixel(140, 140) == COLOR_A, "past the hole painted (got %08x, %s)\n",
+       unit_pixel(140, 140), topdown ? "top-down" : "bottom-up");
+    ok(unit_pixel(120, 120) == 0, "the hole is not painted (got %08x, %s)\n", unit_pixel(120, 120),
+       topdown ? "top-down" : "bottom-up");
+    ok(unit_pixel(117, 131) == 0, "  ... anywhere (got %08x, %s)\n", unit_pixel(117, 131),
+       topdown ? "top-down" : "bottom-up");
+}
+
+static void test_shape_masks_flush(void)
+{
+    shape_case(1);
+    shape_case(0);
+}
+
 START_TEST(winefbunit)
 {
     test_flush_clips_above();
@@ -304,4 +357,5 @@ START_TEST(winefbunit)
     test_zdrop_repaints_risen();
     test_raise_no_invalidation();
     test_surface_clip_honored();
+    test_shape_masks_flush();
 }

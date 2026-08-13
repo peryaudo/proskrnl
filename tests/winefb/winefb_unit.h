@@ -31,6 +31,7 @@ void unit_pos_changed(unsigned int hwnd, unsigned int insert_after, unsigned int
                       int left, int top, int right, int bottom, int with_surface);
 void unit_flush_dirty(unsigned int hwnd, int left, int top, int right, int bottom);
 void unit_set_clip(unsigned int hwnd, const int *rects, unsigned int count);
+void unit_flush_shaped(unsigned int hwnd, const unsigned char *shape, int stride, int topdown);
 void unit_repaint_rect(int left, int top, int right, int bottom, unsigned int exclude);
 
 /* observation */

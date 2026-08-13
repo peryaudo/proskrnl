@@ -509,6 +509,45 @@ void unit_set_clip(unsigned int hwnd, const int *rects, unsigned int count)
     (*slot)->funcs->set_clip(*slot, count ? converted : NULL, count);
 }
 
+void unit_flush_shaped(unsigned int hwnd, const unsigned char *shape, int stride, int topdown)
+{
+    char info_buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
+    char shape_buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
+    BITMAPINFO *info = (BITMAPINFO *)info_buffer;
+    BITMAPINFO *shape_info = (BITMAPINFO *)shape_buffer;
+    struct window_surface **slot = held_slot(hwnd);
+    struct mock_surface *mock;
+    int width, height;
+    RECT dirty;
+
+    if (!slot || !*slot || !(mock = mock_from_surface(*slot)))
+        return;
+    width = (*slot)->rect.right - (*slot)->rect.left;
+    height = (*slot)->rect.bottom - (*slot)->rect.top;
+    SetRect(&dirty, 0, 0, width, height);
+
+    memset(info, 0, sizeof(info_buffer));
+    info->bmiHeader.biSize = sizeof(info->bmiHeader);
+    info->bmiHeader.biPlanes = 1;
+    info->bmiHeader.biBitCount = 32;
+    info->bmiHeader.biCompression = BI_RGB;
+    info->bmiHeader.biWidth = width;
+    info->bmiHeader.biHeight = -height;
+    info->bmiHeader.biSizeImage = width * height * 4;
+
+    /* the 1bpp shape the way dce.c's set_surface_shape lays it out */
+    memset(shape_info, 0, sizeof(shape_buffer));
+    shape_info->bmiHeader.biSize = sizeof(shape_info->bmiHeader);
+    shape_info->bmiHeader.biPlanes = 1;
+    shape_info->bmiHeader.biBitCount = 1;
+    shape_info->bmiHeader.biWidth = width;
+    shape_info->bmiHeader.biHeight = topdown ? -height : height;
+    shape_info->bmiHeader.biSizeImage = stride * height;
+
+    (*slot)->funcs->flush(*slot, &(*slot)->rect, &dirty, info, mock->pixels, TRUE, shape_info,
+                          shape);
+}
+
 /* --- the scanout ----------------------------------------------------------- */
 
 void unit_reset(unsigned int width, unsigned int height)
