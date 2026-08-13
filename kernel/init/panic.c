@@ -441,6 +441,25 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
         return;
     }
 
+    /* NMI (vector 2 — Intel SDM Vol. 3A Table 6-1, "Protected-Mode
+     * Exceptions and Interrupts") is the operator's dump trigger: nothing in
+     * the machine raises one on its own (no SMP, no watchdog, no parity
+     * reporting), so an NMI can only be QMP's `inject-nmi` — a human asking
+     * a live-but-frozen guest "where is everyone?". Answer with the full
+     * fatal dump whatever ring it landed in; without this branch a ring-3
+     * NMI would be contained as a user fault and kill an innocent process
+     * instead. */
+    if (trapFrame->vector == 2)
+    {
+        KiPanicLatch();
+        KiDumpTrapFrame("[PANIC] NMI debug dump", trapFrame);
+        KiDumpStackTrace(trapFrame->rbp);
+        KiDumpSystemState();
+        KiDumpAllThreads();
+        DbgPrint("[PANIC] NMI; halting\n");
+        KiHalt();
+    }
+
     /* M4: a fault taken IN ring 3 is contained as process termination, never
      * a kernel fault (docs/02 "a user crash is contained"). M5 slots one
      * resolvable case in front: a guard-page touch (stack growth), which
