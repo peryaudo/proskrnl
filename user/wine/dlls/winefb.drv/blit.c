@@ -466,21 +466,44 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     struct winefb_surface *surface = surface_from_header( base );
     RECT old_rect, new_rect, empty = { 0, 0, 0, 0 };
 
-    if (!surface)
+    if (swp_flags & SWP_HIDEWINDOW)
     {
-        /* The HIDE arrives here with the dummy surface: win32u swapped the
-         * real one out before this call, so the vacated area must come from
-         * the rects win32u hands over, not from surface state. This is the
-         * one repair a closing window gets -- DestroyWindow hides first
+        /* The HIDE vacates everything the window covered, and it is the one
+         * repair a closing window gets -- DestroyWindow hides first
          * (user_destroy_window), and the surface-destroy callback can never
-         * be its backup (see winefb_surface_destroy). A hide of an
-         * already-hidden window repairs pixels it never owned; that is
-         * idempotent -- the fill only touches desktop-owned pixels and the
-         * invalidated windows repaint what they already show. */
-        if ((swp_flags & SWP_HIDEWINDOW) && !IsRectEmpty( &new_rects->visible ))
-            repair_uncovered( hwnd, &new_rects->visible, &empty );
+         * be its backup (see winefb_surface_destroy). Usually the dummy
+         * surface arrives (win32u swapped the real one out) and the vacated
+         * area comes from the rects win32u hands over; a LAYERED window's
+         * hide keeps its real surface (get_window_surface leaves
+         * needs_surface TRUE for layered surfaces), so when surface state
+         * exists it names the rect actually painted -- including a
+         * predecessor's via the resize stash -- and there must be NO forced
+         * re-blit: the hidden window's flush would paint nothing anyway
+         * (the visibility check), but the repair must not be skipped just
+         * because a surface rode along. A hide of an already-hidden window
+         * repairs pixels it never owned; that is idempotent -- the fill
+         * only touches desktop-owned pixels and the invalidated windows
+         * repaint what they already show. */
+        RECT vacate = new_rects->visible;
+
+        if (surface)
+        {
+            old_rect.left = surface->origin.x;
+            old_rect.top = surface->origin.y;
+            old_rect.right = surface->origin.x + surface->visible.cx;
+            old_rect.bottom = surface->origin.y + surface->visible.cy;
+            if (!IsRectEmpty( &old_rect )) vacate = old_rect;
+            else if (!IsRectEmpty( &surface->vacated )) vacate = surface->vacated;
+            SetRectEmpty( &surface->vacated );
+            surface->origin.x = new_rects->visible.left;
+            surface->origin.y = new_rects->visible.top;
+            surface->visible.cx = new_rects->visible.right - new_rects->visible.left;
+            surface->visible.cy = new_rects->visible.bottom - new_rects->visible.top;
+        }
+        if (!IsRectEmpty( &vacate )) repair_uncovered( hwnd, &vacate, &empty );
         return;
     }
+    if (!surface) return;
     old_rect.left = surface->origin.x;
     old_rect.top = surface->origin.y;
     old_rect.right = surface->origin.x + surface->visible.cx;
