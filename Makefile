@@ -1461,8 +1461,9 @@ WOW64GUIFILES := $(foreach d,$(WOW64_GUI_NAMES),win:$(WINESTRIP32)/$(d).dll=wind
                  win:$(WOW64GUI)=wow64gui.exe
 
 # GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
-# image — the full Wine userland + cmd.exe + interactive.flag, exactly the
-# make-run recipe — plus the GUI stack, the desktop server, and the
+# image (GUEST_INTERACTIVE=1 on the QEMU command line, tools/qemu.sh) — the
+# full Wine userland + cmd.exe, exactly the make-run recipe — plus the GUI
+# stack, the desktop server, and the
 # ---------------------------------------------------------------------------
 # The shell payload, shared by every explorer-bearing image (gui5con below --
 # `make rungui` -- and gui6): explorer.exe at the exact path win32u's
@@ -1507,7 +1508,6 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(CONHOST_GUI)=windows/system32/conhost.exe \
              win:$(CMD)=windows/system32/cmd.exe \
              win:$(LOOPER)=looper.exe \
-             win:$(BUILD)/interactive.flag=interactive.flag \
              $(APPLETFILES) \
              $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES)
@@ -1520,7 +1520,7 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
 $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(CMD) $(LOOPER) $(BUILD)/interactive.flag \
+        $(WINESERVER_LITE) $(CMD) $(LOOPER) \
         $(SHELL_PAYLOAD) \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
@@ -1742,31 +1742,27 @@ test-hostqemu: $(IMG)
 	QEMU=qemu-system-x86_64 tools/qemu.sh $(IMG)
 .PHONY: test-hostqemu
 
-# The interactive boot: the Wine userland + cmd.exe + the CUI apps, plus the
-# interactive.flag marker that makes the kernel skip the test suites and hand
-# the serial console straight to cmd.exe (kernel/init/main.c
-# KiRunInteractiveCmd). No m9_echo (that blocker belongs to the scripted
-# console test) and no test boot modules. Serial is your terminal: type at
-# the prompt; `exit` powers the VM off; Ctrl-A x kills QEMU.
+# The interactive boot: the Wine userland + cmd.exe + the CUI apps. What makes
+# it interactive is the QEMU command line (GUEST_INTERACTIVE=1 below, read
+# through fw_cfg — kernel/init/main.c KiIsInteractiveBoot), not anything on
+# the image; the same image booted without it runs the ordinary session. No
+# m9_echo (that blocker belongs to the scripted console test) and no test boot
+# modules. Serial is your terminal: type at the prompt; `exit` powers the VM
+# off; Ctrl-A x kills QEMU.
 IMG_RUN := $(BUILD)/proskrnl-run.hdd
-$(BUILD)/interactive.flag:
-	@mkdir -p $(BUILD)
-	@echo "interactive boot marker (kernel/init/main.c KiIsInteractiveBoot)" > $@
-
 $(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
         $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(BUILD)/interactive.flag \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) \
         tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \
 	    win:$(HELLOCRT)=hello_crt.exe \
-	    win:$(UPCASE)=upcase.exe \
-	    win:$(BUILD)/interactive.flag=interactive.flag
+	    win:$(UPCASE)=upcase.exe
 
 # CUI-3: a resident SCM under no-eviction/no-COW (Art. 3) needs the same
 # provisioning the winetest leg always used.
 run: $(IMG_RUN)
-	INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
 
 # GUI-5: the interactive command prompt — the gui5con image (windowed
 # conhost + cmd.exe over the whole GUI stack) with a host window on the
@@ -1774,7 +1770,7 @@ run: $(IMG_RUN)
 # powers the VM off. Serial stays on the terminal carrying the kernel's
 # lines (HACK-004's permanent debug role).
 rungui: $(IMG_GUI5CON)
-	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} \
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} \
 	    EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" tools/qemu.sh $(IMG_GUI5CON)
 .PHONY: rungui
 

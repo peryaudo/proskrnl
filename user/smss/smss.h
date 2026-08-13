@@ -38,6 +38,11 @@ void SmssSleep(ULONG milliseconds);
  * NtCreateFile status so callers can tell "not found" from a broken open. */
 int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut);
 
+/* Did the QEMU command line ask for an interactive boot? Reads
+ * \Registry\Machine\Hardware\qemu "Interactive"; an absent key means we are
+ * not on QEMU at all, which defaults to interactive (smss.c). */
+int SmssIsInteractiveBoot(void);
+
 /* --- launch.c: spawning over NtCreateUserProcess --------------------------- */
 
 /* smss's own process parameters (set at entry): children built with an

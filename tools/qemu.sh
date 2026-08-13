@@ -120,6 +120,25 @@ DRIVE_CACHE="cache=unsafe"
 # makes the headless `screendump` verification below work at all.
 VGA_ARGS=(-vga std)
 
+# GUEST_INTERACTIVE=1: tell the GUEST that a human owns the console, so the
+# kernel skips its test suites and smss hands the console to cmd.exe / the
+# shell instead of running the acceptance flows. Carried on the QEMU command
+# line rather than baked into the image: the kernel reads the fw_cfg item at
+# boot and publishes it as \Registry\Machine\Hardware\qemu "Interactive"
+# (kernel/cm/registry.c), which both the kernel and smss then read.
+#
+# Deliberately its own switch and not INTERACTIVE above: that one is about the
+# HOST side (where the serial wire and the scanout go), and the two do come
+# apart — the gui5con leg (tests/run/run.sh) drives an interactive GUEST
+# through QMP with the host side headless and log-backed.
+#
+# opt/ is the user namespace fw_cfg reserves, opt/RFQDN/ the arrangement it
+# recommends: pinned tree docs/specs/fw_cfg.rst, "Externally Provided Items".
+FWCFG_ARGS=()
+if [[ -n "${GUEST_INTERACTIVE:-}" ]]; then
+    FWCFG_ARGS=(-fw_cfg name=opt/org.proskrnl/interactive,string=1)
+fi
+
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
 # multiplexes its monitor onto stdio (Ctrl-A x quits, Ctrl-A c toggles the
 # monitor). No timeout, no log, no verdict: a human owns the session, and the
@@ -171,6 +190,7 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         "${VGA_ARGS[@]}" \
         -serial mon:stdio \
         ${INTERACTIVE_DEVICE_ARGS[@]+"${INTERACTIVE_DEVICE_ARGS[@]}"} \
+        ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
     exit 0
@@ -258,6 +278,7 @@ fi
     "${MON_ARGS[@]}" \
     "${SERIAL_ARGS[@]}" \
     ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
+    ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     "${DRIVE_ARGS[@]}" &
 QPID=$!
