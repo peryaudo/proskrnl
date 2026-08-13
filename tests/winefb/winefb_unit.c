@@ -345,6 +345,30 @@ static void test_shape_masks_flush(void)
     shape_case(0);
 }
 
+/* More top-levels than the z-order query carries: every caller treats the
+ * answer as "not visible" and paints nothing -- the safe direction (an
+ * unclipped flush would be soup) -- but a silently frozen desktop is a
+ * debugging pit, so the overflow must name itself on serial (Art. 12).
+ * Runs LAST: the report is a per-process one-shot. */
+static void test_toplevel_overflow_refuses_loudly(void)
+{
+    unsigned int i;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_desktop(DESKTOP);
+    unit_add_window(WIN_A, 50, 50, 250, 250, 50, 50, 250, 250, 1);
+    for (i = 0; i < 65; i++)
+        unit_add_window(0x5000u + i, 400, 400, 420, 420, 400, 400, 420, 420, 1);
+
+    ok(unit_create_surface(WIN_A, 0, 0, 256, 256), "surface A\n");
+    unit_surface_fill(WIN_A, COLOR_A);
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 50, 50, 250, 250, 1);
+
+    ok(unit_pixel(60, 60) == 0, "an overflowed desktop paints nothing (got %08x)\n",
+       unit_pixel(60, 60));
+    ok(unit_report_count() >= 1, "and says so on serial (got %u reports)\n", unit_report_count());
+}
+
 START_TEST(winefbunit)
 {
     test_flush_clips_above();
@@ -358,4 +382,5 @@ START_TEST(winefbunit)
     test_raise_no_invalidation();
     test_surface_clip_honored();
     test_shape_masks_flush();
+    test_toplevel_overflow_refuses_loudly();
 }

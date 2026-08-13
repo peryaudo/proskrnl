@@ -38,6 +38,7 @@ void unit_repaint_rect(int left, int top, int right, int bottom, unsigned int ex
 unsigned int unit_pixel(int x, int y);
 unsigned int unit_bg(void);
 unsigned int unit_redraw_count(void);
+unsigned int unit_report_count(void);
 unsigned int unit_redraw_hwnd(unsigned int i);
 int unit_redraw_whole(unsigned int i);             /* 1 = whole window + frame */
 void unit_redraw_rect(unsigned int i, int out[4]); /* client-relative */

@@ -3062,10 +3062,23 @@ rather than permanently-wrong.
 - a **flush racing its own window's hide** used to paint unclipped (the z-order query's
   "hwnd not found" fallback subtracted nothing); it now paints nothing — the safe direction,
   since the re-show forces a full flush anyway (compose.c `winefb_windows_above`).
-- **window shapes are not composited**: the flush ignores the shape bitmap win32u hands it
-  (`shape_bits`), so a shaped (`SetWindowRgn`) or color-keyed layered window blits as a full
-  rectangle. Nothing on the milestone path shapes a window; the surface-region clip
-  (`set_clip`) IS honored, which is what child pixel-format holes use.
+- ~~**window shapes are not composited**~~ — retired for the flush half: a shaped
+  (`SetWindowRgn`) or color-keyed layered surface now blits only its shape's set bits
+  (blit.c `blit_rect_shaped`; pinned both row orders in tests/winefb/). What REMAINS is the
+  occlusion half: `winefb_windows_above` still subtracts a shaped window's full *rect* from
+  the windows below, so pixels under its holes go stale when the window beneath repaints —
+  bounded by the shaped window's lifetime, repaired by its hide like any vacate. Shape-aware
+  occlusion would need every flush to fetch every sibling's shape cross-process; not on the
+  milestone path.
+- **uniform layered alpha renders opaque**: `SetLayeredWindowAttributes` with `LWA_ALPHA`
+  < 255 needs read-modify-write blending against whatever is beneath, which a one-copy
+  compositor does not retain; dce.c folds `LWA_COLORKEY` (and per-pixel alpha masks) into
+  the shape bitmap, so those DO composite. Nothing on the milestone path fades a window.
+- **more than 64 top-level windows** makes the z-order query answer "nothing is visible":
+  every flush paints nothing until the count drops — the safe direction (subtracting
+  nothing would paint soup) — and the overflow names itself once on serial
+  (`[KTEST] gui2 toplevel overflow`, Art. 12; pinned in tests/winefb/). 64 is far beyond
+  any milestone's desktop; if that line ever prints, raise `WINEFB_MAX_TOPLEVELS`.
 - the thread-record residual from GUI-3 (a violently-killed thread's `thread_input` — focus,
   capture — survives to process exit) is now load-bearing for input routing; still bounded by
   process lifetime, still waiting for a case that hits it.
