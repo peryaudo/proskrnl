@@ -14,6 +14,7 @@
  * the only reason this driver implements it.
  */
 
+#include <pthread.h>
 #include <stdlib.h>
 
 #include "winefb.h"
@@ -510,6 +511,68 @@ static void repair_uncovered( HWND hwnd, const RECT *old_rect, const RECT *new_r
     }
 }
 
+/* The last visible screen rect each of this process's windows painted,
+ * keyed by handle. The surface knows its own rect, but pWindowPosChanged
+ * arrives with the DUMMY surface for every transition that takes the real
+ * one away -- hide, minimize (Wine parks iconic windows at -32000 and a
+ * fully-offscreen window gets no surface: win32u get_window_surface /
+ * get_surface_rect), a move off every edge -- and by then the rect has
+ * died with the released surface. The tracker is what survives: written on
+ * every surfaced pos-change, taken (once) by the surfaceless one to know
+ * what to vacate. Minimize was the convicting case: no SWP_HIDEWINDOW, no
+ * surface, and the old rect nowhere -- the minimize button left a full
+ * afterimage. Guarded by its own lock: pos-changes on different threads'
+ * windows are concurrent, and a torn RECT would repair garbage. */
+static struct
+{
+    HWND hwnd;
+    RECT rect;
+} winefb_tracked[WINEFB_MAX_TOPLEVELS];
+static pthread_mutex_t winefb_tracked_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void track_visible_rect( HWND hwnd, const RECT *rect )
+{
+    UINT i, empty = WINEFB_MAX_TOPLEVELS;
+
+    pthread_mutex_lock( &winefb_tracked_lock );
+    for (i = 0; i < WINEFB_MAX_TOPLEVELS; i++)
+    {
+        if (winefb_tracked[i].hwnd == hwnd) break;
+        if (!winefb_tracked[i].hwnd && empty == WINEFB_MAX_TOPLEVELS) empty = i;
+    }
+    if (i == WINEFB_MAX_TOPLEVELS) i = empty;
+    if (i != WINEFB_MAX_TOPLEVELS)
+    {
+        if (IsRectEmpty( rect ))
+        {
+            winefb_tracked[i].hwnd = NULL;
+        }
+        else
+        {
+            winefb_tracked[i].hwnd = hwnd;
+            winefb_tracked[i].rect = *rect;
+        }
+    }
+    pthread_mutex_unlock( &winefb_tracked_lock );
+}
+
+static RECT take_tracked_rect( HWND hwnd )
+{
+    RECT rect = { 0, 0, 0, 0 };
+    UINT i;
+
+    pthread_mutex_lock( &winefb_tracked_lock );
+    for (i = 0; i < WINEFB_MAX_TOPLEVELS; i++)
+    {
+        if (winefb_tracked[i].hwnd != hwnd) continue;
+        rect = winefb_tracked[i].rect;
+        winefb_tracked[i].hwnd = NULL;
+        break;
+    }
+    pthread_mutex_unlock( &winefb_tracked_lock );
+    return rect;
+}
+
 void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                                 const struct window_rects *new_rects,
                                 struct window_surface *base )
@@ -517,44 +580,58 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     struct winefb_surface *surface = surface_from_header( base );
     RECT old_rect, new_rect, empty = { 0, 0, 0, 0 };
 
-    if (swp_flags & SWP_HIDEWINDOW)
+    if ((swp_flags & SWP_HIDEWINDOW) && surface)
     {
         /* The HIDE vacates everything the window covered, and it is the one
          * repair a closing window gets -- DestroyWindow hides first
-         * (user_destroy_window), and the surface-destroy callback can never
-         * be its backup (see winefb_surface_destroy). Usually the dummy
-         * surface arrives (win32u swapped the real one out) and the vacated
-         * area comes from the rects win32u hands over; a LAYERED window's
-         * hide keeps its real surface (get_window_surface leaves
-         * needs_surface TRUE for layered surfaces), so when surface state
-         * exists it names the rect actually painted -- including a
-         * predecessor's via the resize stash -- and there must be NO forced
-         * re-blit: the hidden window's flush would paint nothing anyway
-         * (the visibility check), but the repair must not be skipped just
-         * because a surface rode along. A hide of an already-hidden window
-         * repairs pixels it never owned; that is idempotent -- the fill
-         * only touches desktop-owned pixels and the invalidated windows
-         * repaint what they already show. */
+         * (user_destroy_window). Usually the dummy surface arrives (the
+         * surfaceless path below); a LAYERED window's hide keeps its real
+         * surface (get_window_surface leaves needs_surface TRUE for layered
+         * surfaces), so when surface state exists it names the rect
+         * actually painted -- including a predecessor's via the resize
+         * stash -- and there must be NO forced re-blit: the hidden window's
+         * flush would paint nothing anyway (the visibility check), but the
+         * repair must not be skipped just because a surface rode along. */
         RECT vacate = new_rects->visible;
 
-        if (surface)
-        {
-            old_rect.left = surface->origin.x;
-            old_rect.top = surface->origin.y;
-            old_rect.right = surface->origin.x + surface->visible.cx;
-            old_rect.bottom = surface->origin.y + surface->visible.cy;
-            if (!IsRectEmpty( &old_rect )) vacate = old_rect;
-            else if (!IsRectEmpty( &surface->vacated )) vacate = surface->vacated;
-            SetRectEmpty( &surface->vacated );
-            surface->origin.x = new_rects->visible.left;
-            surface->origin.y = new_rects->visible.top;
-            surface->visible.cx = new_rects->visible.right - new_rects->visible.left;
-            surface->visible.cy = new_rects->visible.bottom - new_rects->visible.top;
-        }
+        old_rect.left = surface->origin.x;
+        old_rect.top = surface->origin.y;
+        old_rect.right = surface->origin.x + surface->visible.cx;
+        old_rect.bottom = surface->origin.y + surface->visible.cy;
+        if (!IsRectEmpty( &old_rect )) vacate = old_rect;
+        else if (!IsRectEmpty( &surface->vacated )) vacate = surface->vacated;
+        SetRectEmpty( &surface->vacated );
+        surface->origin.x = new_rects->visible.left;
+        surface->origin.y = new_rects->visible.top;
+        surface->visible.cx = new_rects->visible.right - new_rects->visible.left;
+        surface->visible.cy = new_rects->visible.bottom - new_rects->visible.top;
+        track_visible_rect( hwnd, &empty );
         if (!IsRectEmpty( &vacate )) repair_uncovered( hwnd, &vacate, &empty );
         return;
     }
-    if (!surface) return;
+    if (!surface)
+    {
+        /* The window lost its backing surface: hidden, minimized (Wine
+         * parks iconic windows off-screen at -32000, and a fully-offscreen
+         * window gets no surface), or moved off every edge. Whatever it
+         * last covered -- the tracker's rect -- is vacated. A hide repairs
+         * against nothing (the window is gone from the desktop); the
+         * others repair against the new rect, which for an off-screen
+         * window subtracts nothing that is on the scanout. The take is
+         * destructive, so a second surfaceless pos-change (minimize after
+         * hide, repeated hides) finds nothing and repairs nothing --
+         * idempotence without repainting pixels the window never owned.
+         * The hide keeps new_rects->visible as a fallback for a window
+         * this process never tracked (its rects still name it, unchanged
+         * by a hide). */
+        RECT vacate = take_tracked_rect( hwnd );
+        RECT after = (swp_flags & SWP_HIDEWINDOW) ? empty : new_rects->visible;
+
+        if (IsRectEmpty( &vacate ) && (swp_flags & SWP_HIDEWINDOW)) vacate = new_rects->visible;
+        if (!IsRectEmpty( &vacate ) && !EqualRect( &vacate, &after ))
+            repair_uncovered( hwnd, &vacate, &after );
+        return;
+    }
     old_rect.left = surface->origin.x;
     old_rect.top = surface->origin.y;
     old_rect.right = surface->origin.x + surface->visible.cx;
@@ -571,6 +648,7 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     surface->origin.y = new_rect.top;
     surface->visible.cx = new_rect.right - new_rect.left;
     surface->visible.cy = new_rect.bottom - new_rect.top;
+    track_visible_rect( hwnd, &new_rect );
 
     if (!IsRectEmpty( &old_rect ) && !EqualRect( &old_rect, &new_rect ))
         repair_uncovered( hwnd, &old_rect, &new_rect );
@@ -650,6 +728,24 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
  * request that let them default to the window rect would misalign every
  * later DC against the padded surface.
  *
+ * And only a CLICK raises. A click-to-focus window manager raises on user
+ * clicks and never on programmatic activation, and both halves are
+ * load-bearing: SetActiveWindow/ShowWindow-driven activations must leave
+ * the z-order alone, or every later WINDOWPOS fixup, pending-message
+ * check and foreground-denial answer drifts from what the oracle records
+ * (user32:msg convicted the unconditional spelling of exactly that --
+ * z-STATE side effects, with no message of ours anywhere). "This
+ * activation is click-driven" is the thread's own input-message source:
+ * process_mouse_message activates from inside the dispatch of the
+ * hardware mouse message (dlls/win32u/message.c sets
+ * ntuser_thread_info->msg_source to the message's device for exactly that
+ * span -- what GetCurrentInputMessageSource reads), and the clicked
+ * window's own thread is always the one dispatching. NOT the async key
+ * state: the button is routinely back up by the time the queue delivers
+ * the click, and a gate on physical state missed real clicks. A
+ * keyboard-driven activation does not raise -- winefb has no task
+ * switcher, and a click-to-focus WM behaves the same.
+ *
  * Runs at set_active_window's tail (dlls/win32u/input.c), outside every
  * surface lock, in the window's own process (activation always is), so
  * get_win_ptr and the raw request are both legal here. The desktop window
@@ -661,6 +757,8 @@ void winefb_activate_window( HWND hwnd, HWND previous )
     unsigned int paint_flags = 0;
     WND *win;
 
+    if (get_user_thread_info()->client_info->msg_source.deviceType != IMDT_MOUSE)
+        return; /* programmatic activation: the z-order is not the driver's to change */
     if (!top || top == NtUserGetDesktopWindow()) return;
     if (!(win = get_win_ptr( top )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return;
     window_rect = win->rects.window;
