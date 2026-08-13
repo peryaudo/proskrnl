@@ -146,7 +146,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 #
 # 1165 s of legs; 150 s of wall clock. The floor is guiwtest at 114 s, so the
 # schedule is already within a third of the best any width could do.
-ALL_LEGS=(guiwtest winetest wow64gui guiclose gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
+ALL_LEGS=(guiwtest winetest wow64gui winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui procs files console boot
           cui6 oracle wow64 fatstress fuzz fatinterop frontier)
 
@@ -238,10 +238,9 @@ run_leg() {
             export TIMEOUT=1200 GUI_DEADLINE=900
             cmd=("$view/tests/run/run.sh" "$leg")
             ;;
-        guiclose)
-            # The longest choreography of the GUI legs: locate, launch, drag,
-            # close, and a poll-until-repaired verdict.
-            export TIMEOUT=1800 GUI_DEADLINE=900
+        winefbunit)
+            # The compositor unit suite: no QEMU, seconds. Kept a leg so a
+            # policy regression names itself in the same summary table.
             cmd=("$view/tests/run/run.sh" "$leg")
             ;;
         guiwtest)

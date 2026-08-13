@@ -2781,172 +2781,24 @@ gui6() {
     return 0
 }
 
-# The vacate repair (docs/03 GUI-4 notes, "exposure"): a window closed with
-# its close button leaves NOTHING behind — the `make rungui` session driven
-# by the harness. winemine is started from the windowed cmd.exe, dragged by
-# its caption until it straddles the console's edge and the empty desktop
-# (both repaint authorities on the hook: the console repaints its share
-# cross-process, the desktop share is background again), and closed with a
-# click on its X. The verdict is check_guiclose.py's difference discipline
-# over two settled dumps: whatever changed between "before winemine" and
-# "after its close" must lie inside the console (the typed command) or on
-# the taskbar (furniture); one pixel anywhere else is the afterimage this
-# leg exists to forbid. Regression pin for the winemine close afterimage:
-# the repair used to hang off the window surface's refcount reaching zero,
-# which cached DCs keep from ever happening (blit.c winefb_surface_destroy).
-guiclose() {
-    make -C "$ROOT" gui5con-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui5con.hdd"
-    local dir="$ROOT/build/tests"
-    local sock="$dir/guiclose.sock" log="$dir/guiclose.log"
-    local ppm1="$dir/guiclose-before.ppm" ppm2="$dir/guiclose-after.ppm"
-    mkdir -p "$dir"
-    rm -f "$sock" "$ppm1" "$ppm2" "$dir/guiclose-locate.ppm" "$log"
-
-    # gui5con's memory reasoning: the full GUI userland plus the applets.
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1800}" PASS_RE='PRSK-GUICLOSE-NEVER' \
-        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
-    local qemu_wrapper=$!
-
-    await() {
-        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
-        while ((SECONDS < deadline)); do
-            grep -qaE "$pattern" "$log" 2>/dev/null && return 0
-            kill -0 "$qemu_wrapper" 2>/dev/null || return 1
-            sleep 1
-        done
-        return 1
-    }
-    guiclose_fail() {
-        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
-        wait "$qemu_wrapper" 2>/dev/null || true
-        echo "== guiclose: FAIL ($1; see $log) =="
-        return 1
-    }
-    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
-
-    await '\[KTEST\] gui5con conhost mode=window' || { guiclose_fail "the windowed conhost never picked window mode"; return 1; }
-    await 'starting cmd\.exe' || { guiclose_fail "the interactive cmd never started"; return 1; }
-    await '\[KTEST\] gui2 input READY' || { guiclose_fail "no keyboard reader"; return 1; }
-    await '\[KTEST\] gui4 mouse READY' || { guiclose_fail "no pointer reader"; return 1; }
-
-    # The console window, located off the scanout (the gui5con idiom).
-    local located="" i
-    for i in $(seq 1 60); do
-        qmp screendump "$dir/guiclose-locate.ppm" >/dev/null 2>&1 || true
-        if [ -s "$dir/guiclose-locate.ppm" ]; then
-            if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
-                    --log "$log" --ppm "$dir/guiclose-locate.ppm" 2>/dev/null); then
-                break
-            fi
-            located=""
-        fi
-        kill -0 "$qemu_wrapper" 2>/dev/null || { guiclose_fail "QEMU died while locating the console"; return 1; }
-        sleep 3
-    done
-    [ -n "$located" ] || { guiclose_fail "no console window ever appeared on the scanout"; return 1; }
-    local bbox cx cy
-    bbox=$(sed -E 's/^bbox=([^ ]+) .*/\1/' <<<"$located")
-    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
-    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
-    local bx by bw bh
-    bx=${bbox%%,*}; by=$(cut -d, -f2 <<<"$bbox"); bw=$(sed -E 's/.*,([0-9]+)x[0-9]+/\1/' <<<"$bbox")
-    bh=${bbox##*x}
-
-    # Guest-reported geometry for the pixel->tablet arithmetic (gui4's).
-    local w h maxx maxy
-    w=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    h=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxx=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxy=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    if [ -z "$w" ] || [ -z "$maxx" ]; then
-        guiclose_fail "could not parse guest geometry"; return 1
-    fi
-    tab() { echo $(( ($1 * maxx + w - 2) / (w - 1) )) $(( ($2 * maxy + h - 2) / (h - 1) )); }
-
-    # Activate the console (click activation is exempt from focus stealing).
-    qmp absmove $(tab "$cx" "$cy"); sleep 1
-    qmp button left down && qmp button left up
-    sleep 2
-
-    # The cursor parks on the desktop, away from everything, and returns to
-    # exactly this spot for the second dump so it cancels out of the diff.
-    local px=$((w - 40)) py=$((h - 40))
-    qmp absmove $(tab "$px" "$py"); sleep 2
-    qmp screendump "$ppm1" || { guiclose_fail "screendump 1 failed"; return 1; }
-
-    # Start winemine; its first flush names its rect on serial.
-    local nflush n
-    nflush=$(grep -acE '\[KTEST\] gui2 window rect=.* flush=1$' "$log" || true)
-    qmp type 'winemine
-'
-    local deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
-    n=$nflush
-    while ((SECONDS < deadline)); do
-        n=$(grep -acE '\[KTEST\] gui2 window rect=.* flush=1$' "$log" || true)
-        ((n > nflush)) && break
-        kill -0 "$qemu_wrapper" 2>/dev/null || { guiclose_fail "QEMU died launching winemine"; return 1; }
-        sleep 1
-    done
-    ((n > nflush)) || { guiclose_fail "winemine's window never flushed"; return 1; }
-    sleep 5
-    local rect wx wy ww wh
-    rect=$(grep -aE '\[KTEST\] gui2 window rect=.* flush=1$' "$log" | sed -n "$((nflush + 1))p" \
-            | sed -E 's/.*rect=(-?[0-9]+),(-?[0-9]+),([0-9]+)x([0-9]+).*/\1 \2 \3 \4/')
-    read -r wx wy ww wh <<<"$rect"
-
-    # Drag by the caption until the window straddles the console's corner:
-    # half out over the desktop, half over the console, so BOTH repaint
-    # authorities are on the hook when it closes.
-    local gx=$((wx + 60)) gy=$((wy + 13))
-    local tx=$((bx + bw - ww / 2)) ty=$((by + bh - wh / 4))
-    ((tx + ww - gx + wx > w - 8)) && tx=$((w - 8 - ww + gx - wx))
-    ((ty + wh - gy + wy > h - 40)) && ty=$((h - 40 - wh + gy - wy))
-    qmp absmove $(tab "$gx" "$gy"); sleep 1
-    qmp button left down; sleep 1
-    local f ix iy
-    for f in 1 2 3 4; do
-        ix=$((gx + (tx - gx) * f / 4)); iy=$((gy + (ty - gy) * f / 4))
-        qmp absmove $(tab "$ix" "$iy"); sleep 1
-    done
-    qmp button left up
-    sleep 4
-    local nx=$((wx + tx - gx)) ny=$((wy + ty - gy))
-
-    # Close it with the close button: a few pixels inside the caption's
-    # top-right corner (the caption whose position the drag just proved).
-    qmp absmove $(tab $((nx + ww - 14)) $((ny + 14))); sleep 1
-    qmp button left down && qmp button left up
-    sleep 3
-
-    # Park the cursor back on ppm1's spot and poll until the frame proves
-    # the repair — a still-settling repaint fails only the deadline.
-    qmp absmove $(tab "$px" "$py"); sleep 2
-    local matched=""
-    deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
-    while ((SECONDS < deadline)); do
-        qmp screendump "$ppm2" >/dev/null 2>&1 || true
-        if [ -s "$ppm2" ] && python3 "$ROOT/tests/gui/check_guiclose.py" --log "$log" \
-                --ppm1 "$ppm1" --ppm2 "$ppm2" --bbox "$bbox" >/dev/null 2>&1; then
-            matched=1
-            break
-        fi
-        kill -0 "$qemu_wrapper" 2>/dev/null || { guiclose_fail "QEMU died while waiting for the repair"; return 1; }
-        sleep 5
-    done
-
-    if [ -z "$matched" ]; then
-        # Grade once more, loudly, so the log carries the failing pixels.
-        python3 "$ROOT/tests/gui/check_guiclose.py" --log "$log" \
-            --ppm1 "$ppm1" --ppm2 "$ppm2" --bbox "$bbox" || true
-        guiclose_fail "the closed window's pixels never left the scanout (dumps kept at $ppm1, $ppm2)"
+# The compositor's unit verdict (tests/winefb/): the REAL compose.c/blit.c
+# objects -- the same ones linked into win32u.dll -- driven against a mocked
+# seam, with Wine's real region engine (gdi32, under the pinned wine) doing
+# the algebra. No QEMU, no boot: it runs in about a second. Every compositor
+# POLICY bug gets a case here, not a leg of its own -- the winemine close
+# afterimage, the desktop erasing the console, the hidden window's late
+# flush are all pinned inside (tests/winefb/winefb_unit.c names each). The
+# gui legs stay the end-to-end umbrella over the whole stack.
+winefbunit() {
+    make -C "$ROOT" winefb-unit >/dev/null || { echo "== winefbunit: FAIL (build) =="; return 1; }
+    local out rc=0
+    out=$("$WINE" "$ROOT/build/tests/winefb_unit.exe" 2>/dev/null) || rc=$?
+    if [ "$rc" != 0 ] || ! grep -q "\[KTEST\] winefbunit PASS" <<<"$out"; then
+        echo "$out"
+        echo "== winefbunit: FAIL (exit=$rc) =="
         return 1
     fi
-
-    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
-    wait "$qemu_wrapper" 2>/dev/null || true
-    echo "== guiclose: PASS (winemine closed over console+desktop and fully vacated) =="
+    echo "== winefbunit: PASS (compositor policy against the mocked seam) =="
     return 0
 }
 
@@ -3004,9 +2856,9 @@ case "$MODE" in
     gui5con)  gui5con ;;
     wow64gui) wow64gui ;;
     gui6)     gui6 ;;
-    guiclose) guiclose ;;
+    winefbunit) winefbunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|guiclose|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

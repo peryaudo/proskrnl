@@ -373,16 +373,12 @@ jobs:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
 
-      # The vacate repair: winemine started from the windowed cmd.exe,
-      # dragged over the console's edge onto the desktop, closed with its
-      # close button — nothing of it may remain on the scanout (the
-      # winemine close afterimage regression).
-      - name: "GUI close repair: a closed window fully vacates (tests/run/run.sh guiclose)"
+      # The compositor unit suite: the real compose.c/blit.c objects against
+      # a mocked seam under the pinned wine — every compositor policy bug
+      # (the winemine close afterimage included) is pinned here, in seconds.
+      - name: "Compositor units (tests/run/run.sh winefbunit)"
         if: ${{ !cancelled() }}
-        run: tests/run/run.sh guiclose
-        env:
-          TIMEOUT: "1800"
-          GUI_DEADLINE: "900"
+        run: tests/run/run.sh winefbunit
 
       - uses: ./.github/actions/serial-logs
         if: failure()

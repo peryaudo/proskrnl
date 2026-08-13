@@ -2962,8 +2962,9 @@ winex11/winewayland the host compositor owns both; here both are the driver's:
   window leaves the screen, and cached DCs (win32u keeps a released cache DCE bound, dibdrv
   surface reference included, until reuse or purge) pin surfaces so far past `DestroyWindow`
   that across a whole measured session the callback fired exactly **never** — which was the
-  winemine close afterimage the `guiclose` leg pins (tests/run/run.sh guiclose,
-  check_guiclose.py).
+  winemine close afterimage the compositor unit suite pins (tests/run/run.sh winefbunit,
+  tests/winefb/ — the real compose.c/blit.c objects against a mocked seam, one case per
+  compositor policy bug; the gui legs stay the end-to-end umbrella).
 
 Queried fresh rather than cached, on purpose: a cache would need exactly the cross-process
 invalidation protocol this design avoids. Staleness is bounded by one flush — clip and repair

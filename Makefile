@@ -1009,6 +1009,31 @@ $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS)
 	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
 	    -Iuser/wine/dlls/winefb.drv -c $< -o $@
 
+# The compositor unit suite (tests/run/run.sh winefbunit): the SAME
+# compose.o/blit.o the win32u.dll link uses, a mocked seam for everything
+# they reach (tests/winefb/winefb_mocks.c -- server queries, surfaces,
+# scanout, invalidation recorder), gdi32 as the region engine, the ntapi
+# harness for the verdict. Runs under the pinned wine in about a second;
+# every compositor POLICY bug is pinned here rather than in a QEMU leg.
+WINEFB_UNIT := $(BUILD)/tests/winefb_unit.exe
+WINEFB_UNIT_DRV := $(W32U_BUILD)/glue/dlls/winefb.drv/compose.o \
+                   $(W32U_BUILD)/glue/dlls/winefb.drv/blit.o
+$(W32U_BUILD)/winefb_mocks.o: tests/winefb/winefb_mocks.c tests/winefb/winefb_unit.h \
+        user/wine/dlls/winefb.drv/winefb.h $(FT_SYMS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
+	    -Iuser/wine/dlls/winefb.drv -Itests/winefb -c $< -o $@
+$(WINEFB_UNIT): tests/winefb/winefb_unit.c tests/winefb/winefb_unit.h tests/ntapi/ntapi.c \
+        tests/ntapi/ntapi.h $(W32U_BUILD)/winefb_mocks.o $(WINEFB_UNIT_DRV) $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles -O1 -g0 \
+	    -Wall -Itests/ntapi -Itests/winefb -Wl,--entry=ntapi_start \
+	    tests/winefb/winefb_unit.c tests/ntapi/ntapi.c \
+	    $(W32U_BUILD)/winefb_mocks.o $(WINEFB_UNIT_DRV) $(GUI3_LIBS) -lgcc -o $@
+
+winefb-unit: $(WINEFB_UNIT)
+.PHONY: winefb-unit
+
 # The dispatch table is generated from the pinned tree's own request list and
 # from which handlers actually linked: a request whose handler is not part of
 # this build gets a NULL slot, which the shim turns into a named refusal
