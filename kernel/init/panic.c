@@ -179,6 +179,140 @@ static void KiDumpSystemState(void)
     KiDumpTraceRing();
 }
 
+static const char *KiObjectTypeName(int type)
+{
+    switch (type)
+    {
+    case KI_OBJECT_NOTIFICATION_EVENT:
+        return "nevent";
+    case KI_OBJECT_SYNCHRONIZATION_EVENT:
+        return "sevent";
+    case KI_OBJECT_MUTANT:
+        return "mutant";
+    case KI_OBJECT_PROCESS:
+        return "process";
+    case KI_OBJECT_SEMAPHORE:
+        return "semaphore";
+    case KI_OBJECT_THREAD:
+        return "thread";
+    case KI_OBJECT_NOTIFICATION_TIMER:
+        return "ntimer";
+    case KI_OBJECT_SYNCHRONIZATION_TIMER:
+        return "stimer";
+    default:
+        return "?";
+    }
+}
+
+/* Who, besides the waiter, can still reach an object: every process handle
+ * that resolves to it, on one line. A dispatcher wait is satisfied by some
+ * OTHER party calling set/release through a handle, so a waited-on object
+ * with no foreign handle is a wait nothing can ever satisfy — the severed
+ * wake edge printed as a fact instead of inferred from silence. */
+static void KiDumpObjectHolders(PVOID object)
+{
+    DbgPrint("      held-by:");
+    int processCount = 0;
+    for (PLIST_ENTRY processEntry = PspActiveProcessListHead.Flink;
+         processEntry != &PspActiveProcessListHead && processCount < 64;
+         processEntry = processEntry->Flink, processCount++)
+    {
+        if (!KiLooksLikeKernelPointer(processEntry))
+        {
+            break;
+        }
+        PEPROCESS process = CONTAINING_RECORD(processEntry, EPROCESS, activeProcessLinks);
+        for (ULONG index = 0; index < process->handleTable.capacity; index++)
+        {
+            HANDLE handle;
+            PVOID body;
+            ACCESS_MASK access;
+            ULONG attributes;
+            if (ObpHandleTableEntryAt(&process->handleTable, index, &handle, &body, &access,
+                                      &attributes) &&
+                body == object)
+            {
+                DbgPrint(" %lu:%#lx", process->uniqueProcessId, (uint64_t)(uintptr_t)handle);
+            }
+        }
+    }
+    DbgPrint("\n");
+}
+
+/* Every thread of every process: state, wait objects (type + address), armed
+ * timeout, and the ring-3 RIP of the entry it is parked in. The fatal dumps
+ * (never the resumable #BP demo) end with this, because a hang diagnosed at
+ * panic time is a picture of WAITERS — the current thread alone almost never
+ * names the story. Bounded and pointer-guarded like every other walker here:
+ * a panic can land mid-splice, so a wild link ends the walk, never re-faults. */
+static void KiDumpAllThreads(void)
+{
+    DbgPrint("[PANIC] all threads (interrupt_time=%lums):\n", KeQueryInterruptTime() / 10000);
+    int processCount = 0;
+    for (PLIST_ENTRY processEntry = PspActiveProcessListHead.Flink;
+         processEntry != &PspActiveProcessListHead && processCount < 64;
+         processEntry = processEntry->Flink, processCount++)
+    {
+        if (!KiLooksLikeKernelPointer(processEntry))
+        {
+            DbgPrint("  <wild process link %p>\n", (void *)processEntry);
+            break;
+        }
+        PEPROCESS process = CONTAINING_RECORD(processEntry, EPROCESS, activeProcessLinks);
+        const char *imageName = process->imageName;
+        DbgPrint("  pid=%lu image='%s' threads=%d\n", process->uniqueProcessId,
+                 imageName != 0 && KiLooksLikeKernelPointer(imageName) ? imageName : "?",
+                 (int)process->activeThreadCount);
+        int threadCount = 0;
+        for (PLIST_ENTRY threadEntry = process->threadListHead.Flink;
+             threadEntry != &process->threadListHead && threadCount < 128;
+             threadEntry = threadEntry->Flink, threadCount++)
+        {
+            if (!KiLooksLikeKernelPointer(threadEntry))
+            {
+                DbgPrint("    <wild thread link %p>\n", (void *)threadEntry);
+                break;
+            }
+            PETHREAD thread = CONTAINING_RECORD(threadEntry, ETHREAD, threadListEntry);
+            PKTHREAD tcb = thread->tcb;
+            if (!KiLooksLikeKernelPointer(tcb))
+            {
+                DbgPrint("    tid=%lu <wild tcb %p>\n", thread->uniqueThreadId, (void *)tcb);
+                continue;
+            }
+            uint64_t userRip = 0;
+            if (KiLooksLikeKernelPointer(tcb->trapFrame))
+            {
+                userRip = tcb->trapFrame->rip;
+            }
+            DbgPrint("    tid=%lu tcb=%p state=%d prio=%d alertable=%d user_rip=%#018lx in=%s\n",
+                     thread->uniqueThreadId, (void *)tcb, tcb->state, (int)tcb->priority,
+                     (int)tcb->waitAlertable, userRip,
+                     tcb->lastSyscall != ~(uint64_t)0 ? KiSystemCallName(tcb->lastSyscall) : "-");
+            if (tcb->timerArmed)
+            {
+                DbgPrint("      timeout in %ldms\n",
+                         ((int64_t)tcb->timer.dueTime.QuadPart - (int64_t)KeQueryInterruptTime()) /
+                             10000);
+            }
+            int blockCount = 0;
+            for (PKWAIT_BLOCK block = tcb->waitBlockList; block != 0 && blockCount < 8;
+                 block = block->nextWaitBlock, blockCount++)
+            {
+                if (!KiLooksLikeKernelPointer(block) || !KiLooksLikeKernelPointer(block->object))
+                {
+                    DbgPrint("      <wild wait block %p>\n", (void *)block);
+                    break;
+                }
+                PDISPATCHER_HEADER object = block->object;
+                DbgPrint("      waits-on %p type=%s signal=%d\n", (void *)object,
+                         KiObjectTypeName(object->type), (int)object->signalState);
+                KiDumpObjectHolders(object);
+            }
+        }
+    }
+}
+
 /* Walk the faulting process's USER RBP chain (user modules build with
  * forced frame pointers; crt0.S zeroes RBP as the terminator). Each frame's
  * two qwords are probed through the page tables first — the uaccess.c
@@ -376,6 +510,7 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     KiDumpTrapFrame("[PANIC]", trapFrame);
     KiDumpStackTrace(trapFrame->rbp);
     KiDumpSystemState();
+    KiDumpAllThreads();
     if (trapFrame->vector == 8)
     {
         /* We got here on the IST stack (idt.c); the dumped RSP is where the
@@ -393,6 +528,7 @@ __attribute__((noreturn)) void KiPanic(const char *message)
     DbgPrint("[PANIC] %s\n", message);
     KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
     KiDumpSystemState();
+    KiDumpAllThreads();
     KiHalt();
 }
 
@@ -402,6 +538,7 @@ __attribute__((noreturn)) void KiAssertFail(const char *expression, const char *
     DbgPrint("[ASSERT] %s:%d: %s\n", file, line, expression);
     KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
     KiDumpSystemState();
+    KiDumpAllThreads();
     DbgPrint("[PANIC] assertion failed; halting\n");
     KiHalt();
 }
