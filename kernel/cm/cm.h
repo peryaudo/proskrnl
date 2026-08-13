@@ -89,6 +89,18 @@ extern PCMP_KEY_NODE CmpRootNode;
  * on the first kernel thread, after IoMountBootVolume. */
 void CmInitialize(void);
 
+/* Read one QEMU boot flag out of the volatile \Registry\Machine\Hardware\qemu
+ * key CmInitialize published from fw_cfg (registry.c, HACK-006).
+ *
+ * `whenNotQemu` is returned when the key itself is absent — meaning the
+ * fw_cfg device is absent, so this is not a QEMU guest and there is no
+ * command line to have carried flags. A flag missing from a key that DOES
+ * exist reads as 0: under QEMU the command line is authoritative.
+ *
+ * The kernel's own consumers call this; ring 3 reads the same key through the
+ * ordinary Nt*Key* surface (user/smss/smss.c SmssIsInteractiveBoot). */
+ULONG CmQueryQemuBootFlag(PCWSTR valueName, ULONG whenNotQemu);
+
 /* Free one node's values (hive load/parse error unwind + delete paths). */
 void CmpFreeValues(PCMP_KEY_NODE node);
 

@@ -44,6 +44,7 @@
  */
 #include "kernel/cm/cm.h"
 
+#include "arch/x86_64/fwcfg.h"
 #include "kernel/cm/license.h"
 #include "kernel/cm/timezones.h"
 #include "kernel/init/panic.h"
@@ -2669,6 +2670,119 @@ static void CmpSeedBinaryValue(PCMP_KEY_NODE node, PCWSTR name, const void *data
     CmpSeedValue(node, name, REG_BINARY, data, bytes);
 }
 
+/* --- the QEMU boot flags (HACK-006) ---------------------------------------
+ *
+ * One row per `-fw_cfg name=<item>,string=<decimal>` the QEMU command line
+ * may carry (tools/qemu.sh), published as one REG_DWORD under
+ * \Registry\Machine\Hardware\qemu. The `opt/` prefix is the user namespace
+ * fw_cfg reserves, and `opt/RFQDN/` the arrangement it recommends (pinned
+ * QEMU tree docs/specs/fw_cfg.rst, "Externally Provided Items").
+ *
+ * Hardware is where firmware-derived state belongs and is volatile in real NT
+ * — built at boot, never persisted — so honouring "these never reach the hive
+ * file" costs nothing here: CmpSaveHive skips a volatile node and everything
+ * below it (hive.c CmpWriteSubtree), and CmpCreateKey refuses to put a stable
+ * child under a volatile parent, so ring 3 cannot re-open the subtree to
+ * persistence either. Both seeded nodes are marked at their own creation
+ * site: the tree-walking creator (CmpWalkPathCounted) deliberately does NOT
+ * infer volatility, because the hive LOAD path builds its content keys
+ * through the same walk and those are ordinary keys (docs/03 "A loaded hive
+ * is a volatile graft").
+ *
+ * The `qemu` key exists if and only if the fw_cfg device answered, and that
+ * IS the graceful-degradation contract: a consumer that does not find the key
+ * is not running under QEMU and applies its own default rather than reading a
+ * fabricated one. */
+static const struct
+{
+    const char *item; /* the fw_cfg item name */
+    PCWSTR valueName; /* the REG_DWORD it becomes */
+} CmpQemuBootFlags[] = {
+    {"opt/org.proskrnl/interactive", WSTR("Interactive")},
+};
+
+/* Parse a fw_cfg blob as a decimal ULONG. The blob carries no terminator
+ * (QEMU sizes `string=` at strlen() with the NUL excluded), and a malformed
+ * one is a mistake on the command line — say so on serial rather than let a
+ * typo read as a silent 0. */
+static ULONG CmpParseQemuBootFlag(const char *item, const char *text, ULONG bytes)
+{
+    /* A flag is a small number; ten digits is already more than a ULONG holds
+     * in every case, so the bound doubles as the overflow guard. */
+    ULONG value = 0;
+    if (bytes == 0 || bytes > 9)
+    {
+        DbgPrint("cm: fw_cfg %s is not a 1..9 digit number; reading it as 0\n", item);
+        return 0;
+    }
+    for (ULONG i = 0; i < bytes; i++)
+    {
+        if (text[i] < '0' || text[i] > '9')
+        {
+            DbgPrint("cm: fw_cfg %s is not a decimal number; reading it as 0\n", item);
+            return 0;
+        }
+        value = value * 10 + (ULONG)(text[i] - '0');
+    }
+    return value;
+}
+
+static void CmpSeedQemuBootFlags(void)
+{
+    /* HKLM\HARDWARE exists on every boot, QEMU or not. */
+    PCMP_KEY_NODE hardware = CmpEnsureSkeletonKey(WSTR("Machine\\Hardware"));
+    hardware->isVolatile = TRUE;
+    if (!KiFwCfgPresent())
+    {
+        return;
+    }
+    PCMP_KEY_NODE qemu = CmpEnsureSkeletonKeyUnder(hardware, WSTR("qemu"));
+    qemu->isVolatile = TRUE;
+    for (unsigned int i = 0; i < sizeof(CmpQemuBootFlags) / sizeof(CmpQemuBootFlags[0]); i++)
+    {
+        const char *item = CmpQemuBootFlags[i].item;
+        char blob[16];
+        uint32_t bytes = 0;
+        ULONG value = 0;
+        if (KiFwCfgReadItem(item, blob, sizeof(blob), &bytes))
+        {
+            value = CmpParseQemuBootFlag(item, blob, bytes);
+        }
+        /* Seeded either way: under QEMU the command line is authoritative, so
+         * an unmentioned flag is off, not unknown. */
+        CmpSeedDwordValue(qemu, CmpQemuBootFlags[i].valueName, value);
+        DbgPrint("cm: qemu boot flag %s=%u\n", item, (unsigned int)value);
+    }
+}
+
+ULONG CmQueryQemuBootFlag(PCWSTR valueName, ULONG whenNotQemu)
+{
+    PCMP_KEY_NODE node = CmpWalkPath(CmpRootNode, WSTR("Machine\\Hardware\\qemu"), FALSE);
+    if (node == 0)
+    {
+        return whenNotQemu;
+    }
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, valueName);
+    PCMP_VALUE value = CmpFindValue(node, &name);
+    if (value == 0)
+    {
+        return 0; /* the key exists, so QEMU decided: an absent flag is off */
+    }
+    if (value->type != REG_DWORD || value->dataLength != sizeof(ULONG))
+    {
+        /* Reachable: the key is volatile, not read-only (this Cm has no
+         * per-key security descriptors), so ring 3 can overwrite a flag with
+         * anything. Reading it as 0 is the safe answer, but a silent 0 here
+         * would be indistinguishable from a flag nobody passed. */
+        DbgPrint("cm: qemu boot flag is not a REG_DWORD; reading it as 0\n");
+        return 0;
+    }
+    ULONG data;
+    memcpy(&data, value->data, sizeof(data));
+    return data;
+}
+
 void CmInitialize(void)
 {
     CmpInitializeHiveLock();
@@ -2712,6 +2826,10 @@ void CmInitialize(void)
     CmpEnsureSkeletonKey(WSTR("Machine"));
     CmpEnsureSkeletonKey(WSTR("User"));
     CmpEnsureSkeletonKey(WSTR("Machine\\System\\CurrentControlSet\\Control\\Session Manager"));
+
+    /* HKLM\HARDWARE and, under QEMU, the boot flags the command line carried
+     * (the table above). Volatile, so none of it reaches the hive file. */
+    CmpSeedQemuBootFlags();
 
     /* The computer-name furniture kernelbase's GetComputerNameEx* reads
      * (dlls/kernelbase/registry.c: ActiveComputerName/ComputerName, Tcpip

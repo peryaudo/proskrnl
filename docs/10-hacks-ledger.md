@@ -182,6 +182,71 @@ the two runners by construction.
 
 ---
 
+## HACK-006: `\Registry\Machine\Hardware\qemu` (the QEMU boot flags)
+
+```
+Status:     active (one value: "Interactive")
+Introduced: (this change — moving the interactive-boot switch off the image)
+Not in NT:  NT builds HKLM\HARDWARE at boot from firmware, and boot options arrive from
+            the loader as HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions. NT has
+            no `qemu` key, because NT has no fw_cfg device to read.
+Reason:     A boot knob has to live somewhere, and every existing one is BAKED INTO THE
+            IMAGE (a marker file the kernel probes for). That means one image variation
+            per knob combination — the interactive boot was a whole second 64 MiB image
+            differing from the default by one zero-byte file. Reading the knob off the
+            QEMU command line instead makes it a property of the RUN, so one image serves
+            both, and QEMU's fw_cfg device is the only channel that carries a command-line
+            string to a guest booted from a disk image (`-append` needs `-kernel`).
+Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
+            kernel/cm/registry.c (CmpSeedQemuBootFlags + CmQueryQemuBootFlag) ;
+            the two consumers that used to probe for the marker file
+            (kernel/init/main.c KiIsInteractiveBoot, user/smss/smss.c
+            SmssIsInteractiveBoot) ; tools/qemu.sh (GUEST_INTERACTIVE)
+Retirement: when proskrnl boots something other than QEMU often enough to want a real
+            boot-options channel — at which point the values move to SystemStartOptions
+            parsed from a Limine cmdline, and the readers change but the callers do not.
+```
+
+**This entry is a weaker fit for Article 2 than HACK-001..004, and says so** — the same
+admission HACK-005 carries. The other four add a device or a process at the boundary's
+outside; this one adds a *key* served through the existing `Nt*Key*` surface, and its
+`Scope` names `kernel/cm/registry.c` and `kernel/init/main.c`, so deleting
+`arch/x86_64/fwcfg.*` alone does not restore the prior kernel (Art. 7). It is logged
+rather than quietly taken because the cost is bounded and the alternative is worse: the
+only NT-shaped home for a boot option is `Control\SystemStartOptions`, which lives under
+a *persisted* key, so honouring "never written to the hive" there would mean inventing
+value-level volatility — machinery NT does not have, in the middle of the Cm the boundary
+tests pin. One seeded key with one value under an NT-real volatile hive is the smaller
+addition. `HKLM\HARDWARE` itself is not part of the hack: NT builds it, the oracle builds
+it (`wineboot --init`'s `create_hardware_registry_keys`), and
+`tests/ntapi/sem_reg/hardware_hive.c` pins it against both.
+
+**Volatility is not a deviation here, it is the NT mechanism.** In real NT the whole
+HARDWARE hive is volatile: constructed at boot from firmware, never written to disk. This
+Cm gets the same property nearly for free — `CmpSaveHive` skips a volatile node and
+everything under it (`hive.c` `CmpWriteSubtree`), and `CmpCreateKey` refuses a stable child
+of a volatile parent (`registry.c:1233`, propagating at `:1249`), so no ring-3 create can
+re-open the subtree to persistence. The propagation is the *create* path's, not the tree
+walk's: `CmpWalkPathCounted` deliberately does not infer volatility, because the hive LOAD
+path builds its content keys through that same walk and those are ordinary keys on purpose
+(docs/03 "A loaded hive is a volatile graft"). So the two seeded nodes are each marked at
+their own creation site. What the hive is **not** is read-only: this
+Cm has no per-key security descriptors, so a ring-3 write lands and is visible until the
+next boot, when fw_cfg re-seeds. Nothing depends on it being unwritable.
+
+**The absent key is the contract.** `Machine\Hardware` exists on every boot; the `qemu`
+subkey exists if and only if the fw_cfg signature probe answered. So a consumer that does
+not find the key is not running under QEMU, and applies its own default rather than
+reading a fabricated one — for the interactive flag that default is *interactive*, since
+nothing on real hardware is scraping a serial log for `[KTEST]` lines. A flag missing from
+a key that does exist reads as 0: under QEMU the command line is authoritative.
+
+Only the interactive flag moved. `C:\panic_not_implemented.flag` and `C:\cui8_stress.flag`
+are still image-baked, deliberately: retiring the image variations is a larger change than
+this one and wants its own look.
+
+---
+
 ## Non-hacks (recorded here to prevent re-litigation)
 
 These are sometimes *mistaken* for hacks but are real NT mechanisms, so they carry **no**
