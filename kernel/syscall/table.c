@@ -141,6 +141,7 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
     thread->trapFrame = trapFrame;
 
     KiLastSystemCall = number;
+    thread->lastSyscall = number;
     KiTraceEvent(KiTraceSyscall, number, trapFrame->r10, trapFrame->rdx);
 
     NTSTATUS status;

@@ -298,6 +298,12 @@ struct KTHREAD
     uint64_t userStartArg2;
     void *threadObject; /* the Ob ETHREAD body (kernel/ps), 0 for kernel threads */
 
+    /* Debug bookkeeping (Art. 9, the panic dump): the last system service
+     * this thread entered — the global KiLastSystemCall names only the
+     * CURRENT thread's, and a hang is a picture of the OTHER threads. ~0 =
+     * never entered one. */
+    uint64_t lastSyscall;
+
     NTSTATUS exitStatus; /* published at thread termination */
 
     void (*startRoutine)(void *startContext);
