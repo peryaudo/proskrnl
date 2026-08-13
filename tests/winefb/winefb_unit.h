@@ -47,5 +47,6 @@ unsigned int unit_raise_count(void);
 unsigned int unit_raise_hwnd(unsigned int i);
 unsigned int unit_raise_after(unsigned int i); /* 0 = HWND_TOP */
 unsigned int unit_raise_flags(unsigned int i);
+int unit_raise_carries_surface(unsigned int i); /* extra rects + surface paint flag intact */
 
 #endif /* PRSK_WINEFB_UNIT_H */

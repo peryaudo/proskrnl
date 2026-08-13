@@ -2965,15 +2965,22 @@ winex11/winewayland the host compositor owns both; here both are the driver's:
   winemine close afterimage the compositor unit suite pins (tests/run/run.sh winefbunit,
   tests/winefb/ — the real compose.c/blit.c objects against a mocked seam, one case per
   compositor policy bug; the gui legs stay the end-to-end umbrella);
-- **activation raises**: clicking a covered window must bring it to the *front*, and neither
-  win32u nor the server reorders top-levels on activation — on Wine the driver's
+- **activation raises, silently**: clicking a covered window must bring it to the *front*,
+  and neither win32u nor the server reorders top-levels on activation — on Wine the driver's
   `pActivateWindow` hook hands exactly this to the native windowing system (winex11 sets
   `_NET_ACTIVE_WINDOW` and the X window manager restacks). winefb is the native windowing
-  system, so its hook issues the raise itself — one `NtUserSetWindowPos(HWND_TOP)` with
-  `SWP_NOACTIVATE` (activation raises; the raise must not re-activate), whose ordinary
-  `pWindowPosChanged` forced flush is what paints the risen window. Without the hook a click
-  moved focus, caption state and input to a window whose pixels stayed underneath — never a
-  regression but a hole open since GUI-4, masked while windows rarely overlapped.
+  system, so its hook restacks itself — but as a **raw `set_window_pos` request**, never a
+  client-side `NtUserSetWindowPos`: an X window manager's restack is invisible to Win32 (no
+  `WM_WINDOWPOSCHANGING/CHANGED` reaches anyone), and `user32:msg`'s recorded sequences hold
+  the driver to exactly that — the message-visible spelling failed 77 of its cases. The
+  server half alone restacks (`link_window` owns the topmost band for `previous=0`),
+  computes the exposure, and wakes the risen window's queue; the repaint arrives as an
+  ordinary `WM_PAINT` for the newly-visible region — the same convergence an X expose event
+  drives. The request preserves the stored visible/surface rects and paint flags (built as
+  `apply_window_pos` builds it — they are load-bearing: `get_visible_region` and `top_rect`
+  derive from them). Without the hook a click moved focus, caption state and input to a
+  window whose pixels stayed underneath — never a regression but a hole open since GUI-4,
+  masked while windows rarely overlapped.
 
 Queried fresh rather than cached, on purpose: a cache would need exactly the cross-process
 invalidation protocol this design avoids. Staleness is bounded by one flush — clip and repair

@@ -23,10 +23,25 @@
 #include "winefb.h"
 #include "ntgdi.h"
 #include "win32u_private.h"
+#include "ntuser_private.h"
 #include "wine/server.h"
 #include "wine/debug.h"
 
 #include "winefb_unit.h"
+
+/* the activation raise's record (filled by the wine_server_call dispatcher,
+ * read back through the unit_raise_* API below) */
+static struct
+{
+    user_handle_t hwnd;
+    user_handle_t after;
+    unsigned int flags;
+    unsigned int paint_flags;
+    unsigned int extra_count;
+} raises[UNIT_MAX_REDRAWS];
+static unsigned int raise_count;
+
+static struct window_surface **held_slot(user_handle_t hwnd);
 
 /* --- libc the driver objects expect (the exe links no CRT) --------------- */
 
@@ -223,8 +238,26 @@ unsigned int CDECL wine_server_call(void *req_ptr)
     case REQ_get_desktop_window:
         info->u.reply.get_desktop_window_reply.top_window = fixture_desktop;
         return 0;
+    case REQ_set_window_pos:
+    {
+        /* the activation raise: recorded, never restacked -- the band and
+         * exposure semantics belong to the pinned server (link_window) */
+        const struct set_window_pos_request *req = &info->u.req.set_window_pos_request;
+
+        if (raise_count < UNIT_MAX_REDRAWS)
+        {
+            raises[raise_count].hwnd = req->handle;
+            raises[raise_count].after = req->previous;
+            raises[raise_count].flags = req->swp_flags;
+            raises[raise_count].paint_flags = req->paint_flags;
+            raises[raise_count].extra_count =
+                info->u.req.request_header.request_size / sizeof(RECT);
+        }
+        raise_count++;
+        return 0;
+    }
     default:
-        return STATUS_NOT_IMPLEMENTED; /* the unit seam is four requests wide */
+        return STATUS_NOT_IMPLEMENTED; /* the unit seam is five requests wide */
     }
 }
 
@@ -282,26 +315,35 @@ BOOL WINAPI NtUserRedrawWindow(HWND hwnd, const RECT *rect, HRGN hrgn, UINT flag
     return TRUE;
 }
 
-/* --- the activation raise: NtUser* recorded, never executed --------------- */
+/* --- the activation raise's seam ------------------------------------------
+ *
+ * The raise is a raw set_window_pos request (recorded in the dispatcher
+ * above); what the hook needs client-side is the window's cached rects and
+ * surface, which win32u keeps behind get_win_ptr. The mock serves a
+ * fabricated WND from the fixture, with the held surface attached. */
 
-static struct
-{
-    user_handle_t hwnd;
-    user_handle_t after;
-    unsigned int flags;
-} raises[UNIT_MAX_REDRAWS];
-static unsigned int raise_count;
+struct window_surface dummy_surface; /* the driver compares against its address only */
 
-BOOL WINAPI NtUserSetWindowPos(HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags)
+void user_unlock(void)
 {
-    if (raise_count < UNIT_MAX_REDRAWS)
-    {
-        raises[raise_count].hwnd = (user_handle_t)(UINT_PTR)hwnd;
-        raises[raise_count].after = (user_handle_t)(UINT_PTR)after;
-        raises[raise_count].flags = flags;
-    }
-    raise_count++;
-    return TRUE;
+    /* release_win_ptr's inline body; the mock takes no lock */
+}
+
+static WND mock_wnd;
+
+WND *get_win_ptr(HWND hwnd)
+{
+    struct fixture_window *win = fixture_find((user_handle_t)(UINT_PTR)hwnd);
+    struct window_surface **slot = held_slot((user_handle_t)(UINT_PTR)hwnd);
+
+    if (!win)
+        return WND_OTHER_PROCESS;
+    memset(&mock_wnd, 0, sizeof(mock_wnd));
+    mock_wnd.rects.window = win->rect;
+    mock_wnd.rects.client = win->client;
+    mock_wnd.rects.visible = win->rect;
+    mock_wnd.surface = slot ? *slot : NULL;
+    return &mock_wnd;
 }
 
 /* NtUserGetDesktopWindow is an ntuser.h inline over this entry point */
@@ -341,6 +383,16 @@ unsigned int unit_raise_after(unsigned int i)
 unsigned int unit_raise_flags(unsigned int i)
 {
     return i < raise_count ? raises[i].flags : 0;
+}
+
+int unit_raise_carries_surface(unsigned int i)
+{
+    if (i >= raise_count)
+        return -1;
+    /* the request must preserve the load-bearing rects (visible + surface
+     * as extra data) and keep the surface paint flag, or the server's
+     * stored state degrades (blit.c winefb_activate_window) */
+    return raises[i].extra_count == 2 && (raises[i].paint_flags & SET_WINPOS_PAINT_SURFACE) != 0;
 }
 
 unsigned int unit_redraw_count(void)
