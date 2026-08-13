@@ -9,7 +9,8 @@
  *   1. prove the registry is up from ring 3 (\Registry\Machine opens);
  *   2. start the system servers — wineserver-lite, then conhost (launch.c);
  *   3. firstboot: wineboot --init applies wine.inf (firstboot.c);
- *   4. an interactive boot (C:\interactive.flag) hands the console to a
+ *   4. an interactive boot (the QEMU command line's interactive flag,
+ *      SmssIsInteractiveBoot) hands the console to a
  *      human cmd.exe; otherwise the acceptance flows and test sweeps run
  *      (session.c) and smss exits with the failure count.
  *
@@ -150,6 +151,65 @@ void SmssSleep(ULONG milliseconds)
     NtDelayExecution(FALSE, &interval);
 }
 
+/* The interactive boot, read from the same place the kernel reads it: the
+ * volatile \Registry\Machine\Hardware\qemu key the kernel published from the
+ * QEMU command line's fw_cfg items (kernel/cm/registry.c, HACK-006). No key
+ * means no fw_cfg device, i.e. not a QEMU guest — nothing there is scraping a
+ * serial log, so a human is assumed and the session goes interactive. The
+ * kernel's KiIsInteractiveBoot states the same rule for its own half of the
+ * boot; the two are separate address spaces, not a second authority. */
+int SmssIsInteractiveBoot(void)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    HANDLE key;
+    SmssInitUnicodeString(&name, WSTR("\\Registry\\Machine\\Hardware\\qemu"));
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = 0;
+    attr.ObjectName = &name;
+    attr.Attributes = OBJ_CASE_INSENSITIVE;
+    attr.SecurityDescriptor = 0;
+    attr.SecurityQualityOfService = 0;
+    NTSTATUS open = NtOpenKey(&key, KEY_QUERY_VALUE, &attr);
+    if (open == STATUS_OBJECT_NAME_NOT_FOUND || open == STATUS_OBJECT_PATH_NOT_FOUND)
+        return 1; /* no fw_cfg device published it: not a QEMU guest */
+    if (open != STATUS_SUCCESS)
+    {
+        /* Absent is the only failure that means "not QEMU". Anything else is
+         * a broken registry, and answering it "interactive" would park a
+         * scripted leg at a prompt nobody is typing into — the loud, harmless
+         * way round is to say so and run the ordinary session. */
+        SmssPrintf("smss: HKLM\\Hardware\\qemu open failed (%x); assuming not interactive\n",
+                   SMSS_HEX(open));
+        return 0;
+    }
+
+    UNICODE_STRING valueName;
+    SmssInitUnicodeString(&valueName, WSTR("Interactive"));
+    UCHAR buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+    ULONG resultLength = 0;
+    NTSTATUS status = NtQueryValueKey(key, &valueName, KeyValuePartialInformation, buffer,
+                                      sizeof(buffer), &resultLength);
+    NtClose(key);
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+        return 0; /* the key exists, so QEMU decided: an absent flag is off */
+    if (status != STATUS_SUCCESS || info->Type != REG_DWORD || info->DataLength != sizeof(ULONG))
+    {
+        /* The key is volatile, not read-only, so ring 3 can have overwritten
+         * the flag with anything; 0 is the safe reading, but not a silent one
+         * (the kernel's CmQueryQemuBootFlag says the same). */
+        SmssPrintf("smss: HKLM\\Hardware\\qemu Interactive is not a REG_DWORD (%x); reading 0\n",
+                   SMSS_HEX(status));
+        return 0;
+    }
+
+    ULONG value;
+    for (unsigned int i = 0; i < sizeof(value); i++)
+        ((UCHAR *)&value)[i] = info->Data[i];
+    return value != 0;
+}
+
 int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut)
 {
     UNICODE_STRING name;
@@ -269,7 +329,7 @@ static int SmssRunFirstboot(void)
  * activation then tripped over.
  *
  * Gated on the interactive flag, not on explorer's presence: the gui6 leg
- * (same shell payload, no interactive.flag) launches explorer explicitly
+ * (same shell payload, no interactive flag) launches explorer explicitly
  * with /desktop=shell,WxH and needs no routing values -- and writing them
  * there would hand firstboot's transient rundll32 children a desktop
  * auto-launch of their own, changing what its golden pinned. */
@@ -287,7 +347,7 @@ static void SmssShellDesktopConfig(void)
         {WSTR("Software\\Wine\\Explorer\\Desktops"), WSTR("shell"), WSTR("1280x800")},
     };
 
-    if (!SmssFileExists(WSTR("\\??\\C:\\interactive.flag"), 0))
+    if (!SmssIsInteractiveBoot())
         return;
     if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"), 0))
         return;
@@ -377,11 +437,10 @@ void SmssStart(void *pebArg)
 
     int failures = SmssRunFirstboot();
 
-    /* The interactive boot (make run): the image carries C:\interactive.flag
-     * (Makefile IMG_RUN), meaning a human owns the serial console — the test
-     * session is skipped and the console goes straight to cmd.exe. The
-     * image, not a kernel- or smss-side switch, decides. */
-    if (SmssFileExists(WSTR("\\??\\C:\\interactive.flag"), 0))
+    /* The interactive boot (make run): a human owns the serial console — the
+     * test session is skipped and the console goes straight to cmd.exe. The
+     * QEMU command line, not the image, decides (SmssIsInteractiveBoot). */
+    if (SmssIsInteractiveBoot())
     {
         SessionInteractive();
         NtTerminateProcess((HANDLE) ~(ULONG_PTR)0, 0);

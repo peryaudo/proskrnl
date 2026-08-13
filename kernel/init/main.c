@@ -280,13 +280,22 @@ static BOOLEAN KiBootFileExists(PCWSTR path)
     return TRUE;
 }
 
-/* The interactive boot (make run): the image carries C:\interactive.flag
- * (Makefile IMG_RUN), meaning a human owns the serial console — the test
- * suites are skipped and the console goes straight to cmd.exe (via the
- * session manager). The image, not a kernel-side switch, decides. */
+/* The interactive boot (make run, make rungui): a human owns the console —
+ * the test suites are skipped and the console goes straight to cmd.exe or the
+ * shell (via the session manager).
+ *
+ * Decided by the QEMU command line rather than by the image: `-fw_cfg
+ * name=opt/org.proskrnl/interactive,string=1` (tools/qemu.sh
+ * GUEST_INTERACTIVE=1), surfacing as \Registry\Machine\Hardware\qemu
+ * "Interactive" (kernel/cm/registry.c). Booting somewhere with no fw_cfg
+ * device at all — real hardware, another hypervisor — has no command line to
+ * have said either way, and nobody there is scraping a serial log for
+ * [KTEST] lines, so the default is the interactive boot. smss makes the same
+ * call for its half of the session (user/smss/smss.c
+ * SmssIsInteractiveBoot). */
 static BOOLEAN KiIsInteractiveBoot(void)
 {
-    return KiBootFileExists(WSTR("\\??\\C:\\interactive.flag"));
+    return CmQueryQemuBootFlag(WSTR("Interactive"), 1) != 0;
 }
 
 /* Art. 12 dialed to fatal: C:\panic_not_implemented.flag (baked into every

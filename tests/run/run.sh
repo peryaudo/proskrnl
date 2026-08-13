@@ -2399,7 +2399,11 @@ gui5con() {
     mkdir -p "$dir"
     rm -f "$sock" "$ppm1" "$ppm2" "$log"
 
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+    # An interactive GUEST (the shell session smss starts only for a human)
+    # under a headless HOST: this leg types through QMP and reads its verdict
+    # off $log, so GUEST_INTERACTIVE is set and INTERACTIVE is not.
+    QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
+        EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
@@ -2551,7 +2555,8 @@ wow64gui() {
     # stack whose images share nothing with the 64-bit one already resident
     # (CUI-9 masters are keyed on the file, and syswow64's are other files),
     # on top of a session that has the whole GUI userland up.
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+    QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
+        EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
