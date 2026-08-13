@@ -369,6 +369,32 @@ static void test_toplevel_overflow_refuses_loudly(void)
     ok(unit_report_count() >= 1, "and says so on serial (got %u reports)\n", unit_report_count());
 }
 
+/* Activation raises: clicking a covered window must bring it to the front
+ * of the z-order, not just move focus -- win32u and the server never
+ * reorder top-levels on activation (on Wine the X11 window manager does
+ * the raise; here winefb is the window manager). The hook issues one
+ * SetWindowPos to HWND_TOP without re-activating; the desktop window
+ * never raises. */
+static void test_activate_raises(void)
+{
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_desktop(DESKTOP);
+    unit_add_window(WIN_B, 100, 100, 300, 300, 100, 100, 300, 300, 1);
+    unit_add_window(WIN_A, 50, 50, 350, 350, 50, 50, 350, 350, 1);
+
+    unit_activate(WIN_A, WIN_B);
+    ok(unit_raise_count() == 1, "one raise issued (got %u)\n", unit_raise_count());
+    ok(unit_raise_hwnd(0) == WIN_A, "the activated window raises (got %x)\n", unit_raise_hwnd(0));
+    ok(unit_raise_after(0) == (unsigned int)(UINT_PTR)HWND_TOP, "  ... to HWND_TOP (got %x)\n",
+       unit_raise_after(0));
+    ok((unit_raise_flags(0) & SWP_NOACTIVATE) != 0, "  ... without re-activating\n");
+    ok((unit_raise_flags(0) & (SWP_NOSIZE | SWP_NOMOVE)) == (SWP_NOSIZE | SWP_NOMOVE),
+       "  ... moving nothing\n");
+
+    unit_activate(DESKTOP, WIN_A);
+    ok(unit_raise_count() == 1, "the desktop window never raises (got %u)\n", unit_raise_count());
+}
+
 START_TEST(winefbunit)
 {
     test_flush_clips_above();
@@ -383,4 +409,5 @@ START_TEST(winefbunit)
     test_surface_clip_honored();
     test_shape_masks_flush();
     test_toplevel_overflow_refuses_loudly();
+    test_activate_raises();
 }

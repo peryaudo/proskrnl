@@ -33,6 +33,7 @@ void unit_flush_dirty(unsigned int hwnd, int left, int top, int right, int botto
 void unit_set_clip(unsigned int hwnd, const int *rects, unsigned int count);
 void unit_flush_shaped(unsigned int hwnd, const unsigned char *shape, int stride, int topdown);
 void unit_repaint_rect(int left, int top, int right, int bottom, unsigned int exclude);
+void unit_activate(unsigned int hwnd, unsigned int previous);
 
 /* observation */
 unsigned int unit_pixel(int x, int y);
@@ -42,5 +43,9 @@ unsigned int unit_report_count(void);
 unsigned int unit_redraw_hwnd(unsigned int i);
 int unit_redraw_whole(unsigned int i);             /* 1 = whole window + frame */
 void unit_redraw_rect(unsigned int i, int out[4]); /* client-relative */
+unsigned int unit_raise_count(void);
+unsigned int unit_raise_hwnd(unsigned int i);
+unsigned int unit_raise_after(unsigned int i); /* 0 = HWND_TOP */
+unsigned int unit_raise_flags(unsigned int i);
 
 #endif /* PRSK_WINEFB_UNIT_H */

@@ -282,6 +282,67 @@ BOOL WINAPI NtUserRedrawWindow(HWND hwnd, const RECT *rect, HRGN hrgn, UINT flag
     return TRUE;
 }
 
+/* --- the activation raise: NtUser* recorded, never executed --------------- */
+
+static struct
+{
+    user_handle_t hwnd;
+    user_handle_t after;
+    unsigned int flags;
+} raises[UNIT_MAX_REDRAWS];
+static unsigned int raise_count;
+
+BOOL WINAPI NtUserSetWindowPos(HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags)
+{
+    if (raise_count < UNIT_MAX_REDRAWS)
+    {
+        raises[raise_count].hwnd = (user_handle_t)(UINT_PTR)hwnd;
+        raises[raise_count].after = (user_handle_t)(UINT_PTR)after;
+        raises[raise_count].flags = flags;
+    }
+    raise_count++;
+    return TRUE;
+}
+
+/* NtUserGetDesktopWindow is an ntuser.h inline over this entry point */
+ULONG_PTR WINAPI NtUserCallNoParam(ULONG code)
+{
+    if (code == NtUserCallNoParam_GetDesktopWindow)
+        return fixture_desktop;
+    return 0;
+}
+
+/* every fixture window is a top-level: its root is itself */
+HWND WINAPI NtUserGetAncestor(HWND hwnd, UINT type)
+{
+    return hwnd;
+}
+
+void unit_activate(unsigned int hwnd, unsigned int previous)
+{
+    winefb_activate_window((HWND)(UINT_PTR)hwnd, (HWND)(UINT_PTR)previous);
+}
+
+unsigned int unit_raise_count(void)
+{
+    return raise_count;
+}
+
+unsigned int unit_raise_hwnd(unsigned int i)
+{
+    return i < raise_count ? raises[i].hwnd : 0;
+}
+
+unsigned int unit_raise_after(unsigned int i)
+{
+    return i < raise_count ? raises[i].after : 0xdeadbeef;
+}
+
+unsigned int unit_raise_flags(unsigned int i)
+{
+    return i < raise_count ? raises[i].flags : 0;
+}
+
 unsigned int unit_redraw_count(void)
 {
     return redraw_count;
@@ -569,6 +630,7 @@ void unit_reset(unsigned int width, unsigned int height)
     fixture_count = 0;
     fixture_desktop = 0;
     redraw_count = 0;
+    raise_count = 0;
     report_count = 0;
     for (i = 0; i < UNIT_MAX_WINDOWS; i++)
     {
