@@ -155,6 +155,45 @@ static void blit_rect( const struct winefb_surface *surface, const RECT *r, cons
     else repack_rows( dst, mode->pitch, src, src_pitch, width, height );
 }
 
+/* Blit one region rect through the surface's 1bpp shape: only runs of set
+ * bits reach the scanout. The layout is dce.c set_surface_shape's -- one
+ * bit per pixel, MSB first, byte-aligned width, dimensions the surface
+ * rect's, row order by biHeight's sign (get_image_from_bitmap answers the
+ * bitmap's native orientation) -- and a set bit means opaque
+ * (set_surface_shape_rect sets the shape region's bits; the color-key and
+ * alpha-mask paths invert their match into the same polarity). */
+static void blit_rect_shaped( const struct winefb_surface *surface, const RECT *r,
+                              const void *color_bits, int src_pitch,
+                              const BITMAPINFO *shape_info, const void *shape_bits )
+{
+    int shape_height = abs( shape_info->bmiHeader.biHeight );
+    int shape_stride = shape_info->bmiHeader.biSizeImage / shape_height;
+    int x, y;
+
+    for (y = r->top; y < r->bottom; y++)
+    {
+        int shape_row = shape_info->bmiHeader.biHeight < 0 ? y : shape_height - 1 - y;
+        const unsigned char *row;
+        int run_start = -1;
+
+        if (shape_row < 0 || shape_row >= shape_height) continue;
+        row = (const unsigned char *)shape_bits + (size_t)shape_row * shape_stride;
+        for (x = r->left; x <= r->right; x++)
+        {
+            int opaque = x < r->right && (row[x >> 3] & (0x80 >> (x & 7)));
+
+            if (opaque && run_start < 0) run_start = x;
+            else if (!opaque && run_start >= 0)
+            {
+                RECT run = { run_start, y, x, y + 1 };
+
+                blit_rect( surface, &run, color_bits, src_pitch );
+                run_start = -1;
+            }
+        }
+    }
+}
+
 static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect, const RECT *dirty,
                                   const BITMAPINFO *color_info, const void *color_bits,
                                   BOOL shape_changed, const BITMAPINFO *shape_info,
@@ -239,8 +278,17 @@ static BOOL winefb_surface_flush( struct window_surface *base, const RECT *rect,
     {
         const RECT *rects = (const RECT *)data->Buffer;
 
+        /* shape_bits is the surface's CURRENT shape whenever it has one
+         * (window_surface_flush passes it on every flush, changed or not);
+         * unshaped surfaces -- almost all of them -- take the straight
+         * blit. */
         for (i = 0; i < data->rdh.nCount; i++)
-            blit_rect( surface, &rects[i], color_bits, src_pitch );
+        {
+            if (shape_bits)
+                blit_rect_shaped( surface, &rects[i], color_bits, src_pitch, shape_info,
+                                  shape_bits );
+            else blit_rect( surface, &rects[i], color_bits, src_pitch );
+        }
     }
 
     /* The cursor is above every window, so a writer that just painted the
