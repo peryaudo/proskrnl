@@ -48,6 +48,7 @@ extern BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *s
 extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint,
                                        UINT swp_flags, const struct window_rects *new_rects,
                                        struct window_surface *surface );
+extern void winefb_activate_window( HWND hwnd, HWND previous );
 extern void winefb_start_input(void);
 
 /* cursor.c: the software cursor. winefb_cursor_present is the overlay

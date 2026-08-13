@@ -619,3 +619,28 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     window_surface_unlock( base );
     window_surface_flush( base );
 }
+
+/* The click-to-front half of activation. win32u never reorders top-levels
+ * on activation and neither does the server -- on Wine the driver's
+ * ActivateWindow hook hands the raise to the native windowing system
+ * (winex11 sets _NET_ACTIVE_WINDOW and the WM restacks;
+ * dlls/winex11.drv/event.c X11DRV_ActivateWindow). Here winefb IS the
+ * native windowing system, so the raise is issued directly, and the
+ * SetWindowPos it rides through is what repaints the risen window (the
+ * forced flush in winefb_window_pos_changed) -- without this hook a click
+ * ACTIVATED a covered window (focus, caption, input all moved) while its
+ * pixels stayed underneath, which is exactly how it looked.
+ *
+ * SWP_NOACTIVATE breaks the cycle: activation raises, the raise must not
+ * re-activate. Runs at set_active_window's tail (dlls/win32u/input.c),
+ * outside every surface lock, so NtUser* is legal here (the compose.c rule
+ * forbids it only inside a flush). The desktop window never raises: it
+ * composes below everything by definition (compose.c), and hoisting it
+ * would put a screen-sized surface over every window on the desktop. */
+void winefb_activate_window( HWND hwnd, HWND previous )
+{
+    HWND top = NtUserGetAncestor( hwnd, GA_ROOT );
+
+    if (!top || top == NtUserGetDesktopWindow()) return;
+    NtUserSetWindowPos( top, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE );
+}

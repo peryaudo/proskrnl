@@ -2964,7 +2964,16 @@ winex11/winewayland the host compositor owns both; here both are the driver's:
   that across a whole measured session the callback fired exactly **never** — which was the
   winemine close afterimage the compositor unit suite pins (tests/run/run.sh winefbunit,
   tests/winefb/ — the real compose.c/blit.c objects against a mocked seam, one case per
-  compositor policy bug; the gui legs stay the end-to-end umbrella).
+  compositor policy bug; the gui legs stay the end-to-end umbrella);
+- **activation raises**: clicking a covered window must bring it to the *front*, and neither
+  win32u nor the server reorders top-levels on activation — on Wine the driver's
+  `pActivateWindow` hook hands exactly this to the native windowing system (winex11 sets
+  `_NET_ACTIVE_WINDOW` and the X window manager restacks). winefb is the native windowing
+  system, so its hook issues the raise itself — one `NtUserSetWindowPos(HWND_TOP)` with
+  `SWP_NOACTIVATE` (activation raises; the raise must not re-activate), whose ordinary
+  `pWindowPosChanged` forced flush is what paints the risen window. Without the hook a click
+  moved focus, caption state and input to a window whose pixels stayed underneath — never a
+  regression but a hole open since GUI-4, masked while windows rarely overlapped.
 
 Queried fresh rather than cached, on purpose: a cache would need exactly the cross-process
 invalidation protocol this design avoids. Staleness is bounded by one flush — clip and repair
