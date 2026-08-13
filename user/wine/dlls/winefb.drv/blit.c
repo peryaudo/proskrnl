@@ -19,7 +19,9 @@
 #include "winefb.h"
 #include "ntgdi.h"
 #include "win32u_private.h"
+#include "ntuser_private.h"
 #include "wine/debug.h"
+#include "wine/server.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
@@ -625,22 +627,67 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
  * ActivateWindow hook hands the raise to the native windowing system
  * (winex11 sets _NET_ACTIVE_WINDOW and the WM restacks;
  * dlls/winex11.drv/event.c X11DRV_ActivateWindow). Here winefb IS the
- * native windowing system, so the raise is issued directly, and the
- * SetWindowPos it rides through is what repaints the risen window (the
- * forced flush in winefb_window_pos_changed) -- without this hook a click
- * ACTIVATED a covered window (focus, caption, input all moved) while its
- * pixels stayed underneath, which is exactly how it looked.
+ * native windowing system, so the raise is issued directly -- without this
+ * hook a click ACTIVATED a covered window (focus, caption, input all
+ * moved) while its pixels stayed underneath, which is exactly how it
+ * looked.
  *
- * SWP_NOACTIVATE breaks the cycle: activation raises, the raise must not
- * re-activate. Runs at set_active_window's tail (dlls/win32u/input.c),
- * outside every surface lock, so NtUser* is legal here (the compose.c rule
- * forbids it only inside a flush). The desktop window never raises: it
- * composes below everything by definition (compose.c), and hoisting it
- * would put a screen-sized surface over every window on the desktop. */
+ * The raise is a RAW set_window_pos request, not NtUserSetWindowPos, and
+ * message silence is the whole reason: an X window manager's restack is
+ * invisible to Win32 -- no WM_WINDOWPOSCHANGING/CHANGED reaches anyone --
+ * and user32:msg's recorded sequences hold the driver to exactly that (a
+ * client-side SetWindowPos here failed 77 of its cases). The server half
+ * alone restacks (link_window handles the topmost band for previous=0:
+ * a non-topmost window lands above the first non-topmost sibling,
+ * server/window.c), computes the exposure, and wakes this window's queue;
+ * the repaint arrives as an ordinary WM_PAINT for just the newly-visible
+ * region, and its clipped flush paints it on top -- the same convergence
+ * an X expose event drives. The request is built exactly as
+ * apply_window_pos builds it (dlls/win32u/window.c: unchanged rects,
+ * visible + offset surface rect as the extra data, the same paint_flags),
+ * because the stored visible/surface rects are load-bearing -- the
+ * server's get_visible_region and top_rect derive from them -- and a
+ * request that let them default to the window rect would misalign every
+ * later DC against the padded surface.
+ *
+ * Runs at set_active_window's tail (dlls/win32u/input.c), outside every
+ * surface lock, in the window's own process (activation always is), so
+ * get_win_ptr and the raw request are both legal here. The desktop window
+ * never raises: it composes below everything by definition (compose.c). */
 void winefb_activate_window( HWND hwnd, HWND previous )
 {
     HWND top = NtUserGetAncestor( hwnd, GA_ROOT );
+    RECT window_rect, client_rect, extra[2];
+    unsigned int paint_flags = 0;
+    WND *win;
 
     if (!top || top == NtUserGetDesktopWindow()) return;
-    NtUserSetWindowPos( top, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE );
+    if (!(win = get_win_ptr( top )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return;
+    window_rect = win->rects.window;
+    client_rect = win->rects.client;
+    extra[0] = extra[1] = win->rects.visible;
+    if (win->surface)
+    {
+        BOOL layered = win->surface->alpha_mask != 0;
+
+        extra[1] = layered ? dummy_surface.rect : win->surface->rect;
+        OffsetRect( &extra[1], extra[0].left, extra[0].top );
+        paint_flags |= SET_WINPOS_PAINT_SURFACE;
+        if (layered) paint_flags |= SET_WINPOS_LAYERED_WINDOW;
+    }
+    if (win->clip_clients) paint_flags |= SET_WINPOS_PIXEL_FORMAT;
+    release_win_ptr( win );
+
+    SERVER_START_REQ( set_window_pos )
+    {
+        req->handle      = wine_server_user_handle( top );
+        req->previous    = 0; /* HWND_TOP; link_window owns the topmost band */
+        req->swp_flags   = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE;
+        req->window      = wine_server_rectangle( window_rect );
+        req->client      = wine_server_rectangle( client_rect );
+        req->paint_flags = paint_flags;
+        wine_server_add_data( req, extra, sizeof(extra) );
+        wine_server_call( req );
+    }
+    SERVER_END_REQ;
 }

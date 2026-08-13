@@ -381,15 +381,21 @@ static void test_activate_raises(void)
     unit_set_desktop(DESKTOP);
     unit_add_window(WIN_B, 100, 100, 300, 300, 100, 100, 300, 300, 1);
     unit_add_window(WIN_A, 50, 50, 350, 350, 50, 50, 350, 350, 1);
+    ok(unit_create_surface(WIN_A, 0, 0, 384, 384), "surface A\n");
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 50, 50, 350, 350, 1);
 
     unit_activate(WIN_A, WIN_B);
     ok(unit_raise_count() == 1, "one raise issued (got %u)\n", unit_raise_count());
     ok(unit_raise_hwnd(0) == WIN_A, "the activated window raises (got %x)\n", unit_raise_hwnd(0));
-    ok(unit_raise_after(0) == (unsigned int)(UINT_PTR)HWND_TOP, "  ... to HWND_TOP (got %x)\n",
-       unit_raise_after(0));
+    ok(unit_raise_after(0) == (unsigned int)(UINT_PTR)HWND_TOP,
+       "  ... to HWND_TOP, the band left to link_window (got %x)\n", unit_raise_after(0));
     ok((unit_raise_flags(0) & SWP_NOACTIVATE) != 0, "  ... without re-activating\n");
     ok((unit_raise_flags(0) & (SWP_NOSIZE | SWP_NOMOVE)) == (SWP_NOSIZE | SWP_NOMOVE),
        "  ... moving nothing\n");
+    ok((unit_raise_flags(0) & SWP_NOZORDER) == 0, "  ... and actually restacking\n");
+    ok(unit_raise_carries_surface(0) == 1,
+       "  ... preserving the visible+surface rects and the surface paint flag\n");
+    ok(unit_redraw_count() == 0, "the raise is message-silent: no client-side invalidation\n");
 
     unit_activate(DESKTOP, WIN_A);
     ok(unit_raise_count() == 1, "the desktop window never raises (got %u)\n", unit_raise_count());
