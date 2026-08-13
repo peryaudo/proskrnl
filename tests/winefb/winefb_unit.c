@@ -369,6 +369,54 @@ static void test_toplevel_overflow_refuses_loudly(void)
     ok(unit_report_count() >= 1, "and says so on serial (got %u reports)\n", unit_report_count());
 }
 
+/* MINIMIZE is a surface-losing transition with no SWP_HIDEWINDOW: Wine
+ * parks the iconic window at -32000 and a fully-offscreen window gets no
+ * surface, so pWindowPosChanged arrives with the dummy surface and the
+ * new rects name a place that is not on the scanout. The vacate must come
+ * from the tracker (the surface that knew the old rect is gone) -- the
+ * minimize button used to leave a full afterimage here. */
+static void test_minimize_repairs_vacated(void)
+{
+    unsigned int bg;
+
+    unsigned int redraws;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    bg = unit_bg();
+    unit_set_desktop(DESKTOP);
+    /* A straddles the console's corner and the empty desktop, the guiclose
+     * geometry: both repaint authorities are on the hook */
+    unit_add_window(WIN_A, 200, 150, 360, 376, 200, 150, 360, 376, 1);
+    unit_add_window(WIN_C, 0, 0, 400, 300, 10, 30, 390, 290, 1);
+
+    ok(unit_create_surface(WIN_A, 0, 0, 256, 256), "surface A\n");
+    unit_surface_fill(WIN_A, COLOR_A);
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 200, 150, 360, 376, 1);
+    ok(unit_pixel(250, 350) == COLOR_A, "A painted over the desktop (got %08x)\n",
+       unit_pixel(250, 350));
+
+    /* the minimize: no surface, no SWP_HIDEWINDOW, iconic rects offscreen */
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER | SWP_FRAMECHANGED, -32000, -32000, -31840, -31776, 0);
+    ok(unit_redraw_count() == 1, "the covered sibling was invalidated (got %u)\n",
+       unit_redraw_count());
+    ok(unit_redraw_hwnd(0) == WIN_C, "  ... the console (got %x)\n", unit_redraw_hwnd(0));
+    ok(unit_pixel(250, 350) == bg, "the desktop share is background again (got %08x)\n",
+       unit_pixel(250, 350));
+    ok(unit_pixel(210, 310) == bg, "  ... the strip below the console too (got %08x)\n",
+       unit_pixel(210, 310));
+    ok(unit_pixel(199, 350) == 0, "no fill left of the vacated rect (got %08x)\n",
+       unit_pixel(199, 350));
+    ok(unit_pixel(250, 377) == 0, "no fill below the vacated rect (got %08x)\n",
+       unit_pixel(250, 377));
+
+    /* a second surfaceless pos-change finds nothing to vacate: the take is
+     * destructive, so nothing is invalidated or filled twice */
+    redraws = unit_redraw_count();
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, -32000, -32000, -31840, -31776, 0);
+    ok(unit_redraw_count() == redraws, "a repeated loss vacates nothing (got %u)\n",
+       unit_redraw_count());
+}
+
 /* Activation raises: clicking a covered window must bring it to the front
  * of the z-order, not just move focus -- win32u and the server never
  * reorder top-levels on activation (on Wine the X11 window manager does
@@ -384,6 +432,14 @@ static void test_activate_raises(void)
     ok(unit_create_surface(WIN_A, 0, 0, 384, 384), "surface A\n");
     unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 50, 50, 350, 350, 1);
 
+    /* programmatic activation (no click in flight): the z-order is not the
+     * driver's to change -- SetActiveWindow-driven sequences must see
+     * neither a message nor a z-state change (the user32:msg conviction) */
+    unit_activate(WIN_A, WIN_B);
+    ok(unit_raise_count() == 0, "programmatic activation never raises (got %u)\n",
+       unit_raise_count());
+
+    unit_set_button_down(1); /* the click that drove this activation */
     unit_activate(WIN_A, WIN_B);
     ok(unit_raise_count() == 1, "one raise issued (got %u)\n", unit_raise_count());
     ok(unit_raise_hwnd(0) == WIN_A, "the activated window raises (got %x)\n", unit_raise_hwnd(0));
@@ -415,5 +471,6 @@ START_TEST(winefbunit)
     test_surface_clip_honored();
     test_shape_masks_flush();
     test_toplevel_overflow_refuses_loudly();
+    test_minimize_repairs_vacated();
     test_activate_raises();
 }

@@ -18,6 +18,7 @@
  * in one translation unit.
  */
 
+#include <pthread.h>
 #include <stdarg.h>
 
 #include "winefb.h"
@@ -42,6 +43,7 @@ static struct
 static unsigned int raise_count;
 
 static struct window_surface **held_slot(user_handle_t hwnd);
+static void remember_handle(user_handle_t hwnd);
 
 /* --- libc the driver objects expect (the exe links no CRT) --------------- */
 
@@ -64,6 +66,17 @@ void free(void *ptr)
 {
     if (ptr)
         HeapFree(GetProcessHeap(), 0, ptr);
+}
+
+/* single-threaded here; the driver's tracker lock needs the symbols only */
+int pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    return 0;
+}
+
+int pthread_mutex_unlock(pthread_mutex_t *mutex)
+{
+    return 0;
 }
 
 int abs(int value)
@@ -346,6 +359,25 @@ WND *get_win_ptr(HWND hwnd)
     return &mock_wnd;
 }
 
+/* the async key state the click gate reads: nonzero = a button is down */
+/* The click gate reads the thread's input-message source the way win32u
+ * does (get_user_thread_info()->client_info->msg_source); the mock serves
+ * a static thread-info block the fixture writes the way the hardware
+ * dispatch would. */
+static struct ntuser_thread_info mock_client_info;
+static struct user_thread_info mock_thread_info;
+
+struct user_thread_info *get_user_thread_info(void)
+{
+    mock_thread_info.client_info = &mock_client_info;
+    return &mock_thread_info;
+}
+
+void unit_set_button_down(int down)
+{
+    mock_client_info.msg_source.deviceType = down ? IMDT_MOUSE : IMDT_UNAVAILABLE;
+}
+
 /* NtUserGetDesktopWindow is an ntuser.h inline over this entry point */
 ULONG_PTR WINAPI NtUserCallNoParam(ULONG code)
 {
@@ -601,6 +633,8 @@ void unit_pos_changed(unsigned int hwnd, unsigned int insert_after, unsigned int
     struct window_surface **slot = held_slot(hwnd);
     struct window_rects rects;
 
+    remember_handle(hwnd);
+
     SetRect(&rects.window, left, top, right, bottom);
     rects.client = rects.window;
     rects.visible = rects.window;
@@ -672,17 +706,45 @@ void unit_flush_shaped(unsigned int hwnd, const unsigned char *shape, int stride
 
 /* --- the scanout ----------------------------------------------------------- */
 
+/* every handle a case ever named, so unit_reset can drain the driver's
+ * per-process rect tracker between cases (it is static state in blit.c,
+ * exactly as in a real process; a stale entry would leak one case's
+ * geometry into the next) */
+static user_handle_t seen_handles[UNIT_MAX_WINDOWS];
+static unsigned int seen_count;
+
+static void remember_handle(user_handle_t hwnd)
+{
+    unsigned int i;
+
+    for (i = 0; i < seen_count; i++)
+        if (seen_handles[i] == hwnd)
+            return;
+    if (seen_count < UNIT_MAX_WINDOWS)
+        seen_handles[seen_count++] = hwnd;
+}
+
 void unit_reset(unsigned int width, unsigned int height)
 {
     static char *pixels;
     FB_MODE_INFO mode = {0};
+    struct window_rects gone = {{0}};
     unsigned int i;
+
+    /* drain the driver's rect tracker: a surfaceless hide with empty rects
+     * takes each entry and repairs nothing new into the about-to-die
+     * scanout */
+    for (i = 0; i < seen_count; i++)
+        winefb_window_pos_changed((HWND)(UINT_PTR)seen_handles[i], 0, 0, SWP_HIDEWINDOW, &gone,
+                                  NULL);
+    seen_count = 0;
 
     /* fixture */
     fixture_count = 0;
     fixture_desktop = 0;
     redraw_count = 0;
     raise_count = 0;
+    unit_set_button_down(0);
     report_count = 0;
     for (i = 0; i < UNIT_MAX_WINDOWS; i++)
     {

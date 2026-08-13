@@ -34,6 +34,7 @@ void unit_set_clip(unsigned int hwnd, const int *rects, unsigned int count);
 void unit_flush_shaped(unsigned int hwnd, const unsigned char *shape, int stride, int topdown);
 void unit_repaint_rect(int left, int top, int right, int bottom, unsigned int exclude);
 void unit_activate(unsigned int hwnd, unsigned int previous);
+void unit_set_button_down(int down); /* the click gate's async key state */
 
 /* observation */
 unsigned int unit_pixel(int x, int y);
