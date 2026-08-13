@@ -133,6 +133,31 @@ static void test_hide_repairs_vacated(void)
        unit_pixel(250, 377));
 }
 
+/* A LAYERED window's hide arrives with its REAL surface still attached
+ * (win32u's get_window_surface keeps needs_surface TRUE for layered
+ * surfaces, so the dummy swap never happens), and the repair must run all
+ * the same -- and must not re-blit the hidden window back. */
+static void test_hide_with_surface_repairs(void)
+{
+    unsigned int bg;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    bg = unit_bg();
+    unit_set_desktop(DESKTOP);
+    unit_add_window(WIN_A, 100, 100, 200, 200, 100, 100, 200, 200, 1);
+
+    ok(unit_create_surface(WIN_A, 0, 0, 128, 128), "surface A\n");
+    unit_surface_fill(WIN_A, COLOR_A);
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER, 100, 100, 200, 200, 1);
+    ok(unit_pixel(150, 150) == COLOR_A, "A painted (got %08x)\n", unit_pixel(150, 150));
+
+    unit_set_visible(WIN_A, 0); /* the server-side hide lands first */
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER | SWP_HIDEWINDOW, 100, 100, 200, 200, 1);
+    ok(unit_pixel(150, 150) == bg, "the vacated rect is background again (got %08x)\n",
+       unit_pixel(150, 150));
+    ok(unit_pixel(110, 190) == bg, "  ... whole (got %08x)\n", unit_pixel(110, 190));
+}
+
 /* The mover: what a moved window uncovered is background again, and the
  * window is painted whole at its new place. */
 static void test_move_repairs_vacated(void)
@@ -268,6 +293,7 @@ START_TEST(winefbunit)
     test_desktop_flush_clips_below();
     test_hidden_flush_paints_nothing();
     test_hide_repairs_vacated();
+    test_hide_with_surface_repairs();
     test_move_repairs_vacated();
     test_resize_repairs_vacated();
     test_zdrop_repaints_risen();
