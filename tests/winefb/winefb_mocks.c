@@ -601,6 +601,16 @@ int unit_create_surface(unsigned int hwnd, int left, int top, int right, int bot
     if (!slot)
         return 0;
     SetRect(&rect, left, top, right, bottom);
+    /* the win32u shape (get_default_window_surface): the previous surface
+     * reaches pCreateWindowSurface only when its padded rect still fits;
+     * otherwise the driver sees the DUMMY (here: NULL) and the predecessor
+     * is released by apply_window_pos later -- the case the resize stash
+     * missed and the tracker covers */
+    if (*slot && !EqualRect(&(*slot)->rect, &rect))
+    {
+        window_surface_release(*slot);
+        *slot = NULL;
+    }
     return winefb_create_window_surface((HWND)(UINT_PTR)hwnd, FALSE, &rect, slot) && *slot != NULL;
 }
 
