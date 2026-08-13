@@ -56,7 +56,24 @@ static UINT query_visible_toplevels( struct winefb_toplevel *out, UINT max_count
         count = reply->count;
     }
     SERVER_END_REQ;
-    if (status || count > WINEFB_MAX_TOPLEVELS) return 0;
+    if (status || count > WINEFB_MAX_TOPLEVELS)
+    {
+        /* More top-levels than the query carries: every caller reads the
+         * empty answer as "not visible" and paints nothing -- the safe
+         * direction (subtracting nothing would paint soup), but a frozen
+         * desktop with a silent log is a debugging pit, so the overflow
+         * names itself once per process (Art. 12). 64 is far beyond any
+         * milestone's desktop; if this line ever prints, raise the cap. */
+        static BOOL reported;
+
+        if (!reported && count > WINEFB_MAX_TOPLEVELS)
+        {
+            reported = TRUE;
+            winefb_report( "[KTEST] gui2 toplevel overflow n=%u max=%u\n", (unsigned)count,
+                           (unsigned)WINEFB_MAX_TOPLEVELS );
+        }
+        return 0;
+    }
 
     for (i = 0; i < count && found < max_count; i++)
     {

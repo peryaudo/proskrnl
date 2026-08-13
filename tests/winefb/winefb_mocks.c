@@ -99,9 +99,18 @@ void winefb_start_input(void)
 {
 }
 
+static unsigned int report_count;
+
 void winefb_report(const char *format, ...)
 {
-    /* the unit verdict comes from the harness, not from serial lines */
+    /* the unit verdict comes from the harness, not from serial lines; the
+     * COUNT is observable so a case can assert a refusal was loud */
+    report_count++;
+}
+
+unsigned int unit_report_count(void)
+{
+    return report_count;
 }
 
 /* --- the fixture: what the "server" answers -------------------------------
@@ -188,7 +197,7 @@ unsigned int CDECL wine_server_call(void *req_ptr)
         struct fixture_window *win = fixture_find(req->handle);
 
         if (!win)
-            return 0xc0000008; /* STATUS_INVALID_HANDLE */
+            return STATUS_INVALID_HANDLE;
         info->u.reply.get_window_info_reply.info = win->visible ? WS_VISIBLE : 0;
         return 0;
     }
@@ -200,7 +209,7 @@ unsigned int CDECL wine_server_call(void *req_ptr)
         struct fixture_window *win = fixture_find(req->handle);
 
         if (!win)
-            return 0xc0000008;
+            return STATUS_INVALID_HANDLE;
         reply->window.left = win->rect.left;
         reply->window.top = win->rect.top;
         reply->window.right = win->rect.right;
@@ -215,7 +224,7 @@ unsigned int CDECL wine_server_call(void *req_ptr)
         info->u.reply.get_desktop_window_reply.top_window = fixture_desktop;
         return 0;
     default:
-        return 0xc0000002; /* STATUS_NOT_IMPLEMENTED: the unit seam is four requests wide */
+        return STATUS_NOT_IMPLEMENTED; /* the unit seam is four requests wide */
     }
 }
 
@@ -560,6 +569,7 @@ void unit_reset(unsigned int width, unsigned int height)
     fixture_count = 0;
     fixture_desktop = 0;
     redraw_count = 0;
+    report_count = 0;
     for (i = 0; i < UNIT_MAX_WINDOWS; i++)
     {
         if (held[i].surface)
