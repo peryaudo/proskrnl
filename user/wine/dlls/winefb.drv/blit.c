@@ -34,9 +34,6 @@ struct winefb_surface
     UINT                  flushes;
     RECT                 *clip_rects; /* win32u's surface clip, surface-local; NULL = none */
     UINT                  clip_count;
-    RECT                  vacated;   /* the screen rect the REPLACED predecessor surface
-                                      * covered (create_window_surface), owed to the next
-                                      * pWindowPosChanged's repair; empty = none */
 };
 
 static struct winefb_surface *surface_from_header( struct window_surface *surface );
@@ -349,8 +346,7 @@ static struct winefb_surface *surface_from_header( struct window_surface *surfac
 BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_rect,
                                    struct window_surface **surface )
 {
-    struct winefb_surface *previous, *impl;
-    RECT vacated = { 0, 0, 0, 0 };
+    struct winefb_surface *previous;
     BITMAPINFO *info;
     char buffer[FIELD_OFFSET( BITMAPINFO, bmiColors[256] )];
 
@@ -358,20 +354,14 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
         EqualRect( &previous->header.rect, surface_rect ))
         return TRUE;   /* the existing surface still fits */
 
-    /* Replacing a surface (resize) loses its geometry before the coming
-     * pWindowPosChanged can compare old and new, so the screen rect the
-     * predecessor covered rides over on the successor: whatever the resize
-     * vacates is repaired there, from this stash. (Not repaired HERE:
-     * this runs mid-SetWindowPos, before the server has the new rects,
-     * and the repair walk reads server state.) */
-    if (previous)
-    {
-        vacated.left = previous->origin.x;
-        vacated.top = previous->origin.y;
-        vacated.right = previous->origin.x + previous->visible.cx;
-        vacated.bottom = previous->origin.y + previous->visible.cy;
-    }
-
+    /* No vacate bookkeeping here, and none would work: when the padded
+     * rect changes (resize, minimize), win32u's get_default_window_surface
+     * hands this call the DUMMY surface, not the predecessor -- the old
+     * surface sits in win->surface until apply_window_pos releases it, and
+     * never flows through here. What the predecessor covered is the rect
+     * TRACKER's business (winefb_window_pos_changed), recorded per hwnd on
+     * every surfaced pos-change, which is exactly the state that survives
+     * any surface replacement. */
     if (*surface) window_surface_release( *surface );
     *surface = NULL;
 
@@ -390,7 +380,6 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
 
     *surface = window_surface_create( sizeof(struct winefb_surface), &winefb_surface_funcs, hwnd,
                                       surface_rect, info, 0 );
-    if ((impl = surface_from_header( *surface ))) impl->vacated = vacated;
 
     /* A process creating a window surface is exactly the kind that should
      * try for the input devices: pUpdateDisplayDevices (the GUI-2 start
@@ -598,9 +587,8 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
         old_rect.top = surface->origin.y;
         old_rect.right = surface->origin.x + surface->visible.cx;
         old_rect.bottom = surface->origin.y + surface->visible.cy;
+        if (IsRectEmpty( &old_rect )) old_rect = take_tracked_rect( hwnd );
         if (!IsRectEmpty( &old_rect )) vacate = old_rect;
-        else if (!IsRectEmpty( &surface->vacated )) vacate = surface->vacated;
-        SetRectEmpty( &surface->vacated );
         surface->origin.x = new_rects->visible.left;
         surface->origin.y = new_rects->visible.top;
         surface->visible.cx = new_rects->visible.right - new_rects->visible.left;
@@ -611,19 +599,18 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     }
     if (!surface)
     {
-        /* The window lost its backing surface: hidden, minimized (Wine
-         * parks iconic windows off-screen at -32000, and a fully-offscreen
-         * window gets no surface), or moved off every edge. Whatever it
-         * last covered -- the tracker's rect -- is vacated. A hide repairs
-         * against nothing (the window is gone from the desktop); the
-         * others repair against the new rect, which for an off-screen
-         * window subtracts nothing that is on the scanout. The take is
-         * destructive, so a second surfaceless pos-change (minimize after
-         * hide, repeated hides) finds nothing and repairs nothing --
-         * idempotence without repainting pixels the window never owned.
-         * The hide keeps new_rects->visible as a fallback for a window
-         * this process never tracked (its rects still name it, unchanged
-         * by a hide). */
+        /* The window lost its backing surface (the ordinary case is the
+         * HIDE: win32u swaps the dummy in before this call; a minimized
+         * window KEEPS a surface -- get_surface_rect only refuses
+         * larger-than-screen windows, so the iconic -32000 rect arrives on
+         * the surfaced path below). Whatever it last covered -- the
+         * tracker's rect -- is vacated. A hide repairs against nothing
+         * (the window is gone from the desktop); anything else surfaceless
+         * repairs against the new rect. The take is destructive, so
+         * repeated losses find nothing and repair nothing -- idempotence
+         * without repainting pixels the window never owned. The hide keeps
+         * new_rects->visible as a fallback for a window this process never
+         * tracked (its rects still name it, unchanged by a hide). */
         RECT vacate = take_tracked_rect( hwnd );
         RECT after = (swp_flags & SWP_HIDEWINDOW) ? empty : new_rects->visible;
 
@@ -638,11 +625,14 @@ void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_hint, U
     old_rect.bottom = surface->origin.y + surface->visible.cy;
     new_rect = new_rects->visible;
 
-    /* A freshly-created replacement surface has no geometry yet; what its
-     * predecessor covered rides in `vacated` (create above), so a resize
-     * repairs the strip it vacated exactly once. */
-    if (IsRectEmpty( &old_rect ) && !IsRectEmpty( &surface->vacated )) old_rect = surface->vacated;
-    SetRectEmpty( &surface->vacated );
+    /* A freshly-created replacement surface has no geometry yet -- and its
+     * PREDECESSOR never flowed through create (get_default_window_surface
+     * hands create the dummy when the padded rect changes), so what the
+     * window used to cover comes from the tracker: recorded on the last
+     * surfaced pos-change, taken exactly once here. Minimize was the
+     * convicting case -- a real surface at the iconic -32000 rect, a fresh
+     * padded rect, and the console-sized hole nowhere else. */
+    if (IsRectEmpty( &old_rect )) old_rect = take_tracked_rect( hwnd );
 
     surface->origin.x = new_rect.left;
     surface->origin.y = new_rect.top;

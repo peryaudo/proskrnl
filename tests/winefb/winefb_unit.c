@@ -395,8 +395,13 @@ static void test_minimize_repairs_vacated(void)
     ok(unit_pixel(250, 350) == COLOR_A, "A painted over the desktop (got %08x)\n",
        unit_pixel(250, 350));
 
-    /* the minimize: no surface, no SWP_HIDEWINDOW, iconic rects offscreen */
-    unit_pos_changed(WIN_A, 0, SWP_NOZORDER | SWP_FRAMECHANGED, -32000, -32000, -31840, -31776, 0);
+    /* the minimize, as traced live: a REAL surface (get_surface_rect only
+     * refuses larger-than-screen windows), freshly REPLACED (the iconic
+     * padded rect differs, so the predecessor went to apply_window_pos and
+     * never through create -- the dummy-swap unit_create_surface models),
+     * at the iconic -32000 rect; no SWP_HIDEWINDOW anywhere */
+    ok(unit_create_surface(WIN_A, 0, 0, 256, 128), "iconic surface A\n");
+    unit_pos_changed(WIN_A, 0, SWP_NOZORDER | SWP_FRAMECHANGED, -32000, -32000, -31840, -31976, 1);
     ok(unit_redraw_count() == 1, "the covered sibling was invalidated (got %u)\n",
        unit_redraw_count());
     ok(unit_redraw_hwnd(0) == WIN_C, "  ... the console (got %x)\n", unit_redraw_hwnd(0));
