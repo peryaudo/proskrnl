@@ -77,6 +77,34 @@ START_TEST(perf_counter)
     ok(frequency.QuadPart == TICKS_PER_SEC, "frequency %lld (want 10 MHz)",
        (long long)frequency.QuadPart);
 
+    /* --- and the shared page states the same frequency -------------------- */
+    /* KUSER_SHARED_DATA.QpcFrequency at 0x7ffe0000 + 0x300. The address is
+     * NT's fixed one; the offset is the layout abi/ntkeapi.h carries a
+     * static_assert for and third_party/wine include/ddk/wdm.h documents in
+     * the same position. Read as a raw offset rather than through a struct
+     * because this file is built for both runners and only needs one field.
+     *
+     * beyond_oracle: the pinned Wine never populates this field — its own
+     * test_RtlQueryPerformanceCounter (dlls/ntdll/tests/time.c) reaches the
+     * assertion `usd->QpcFrequency == 10000000` only inside a block it
+     * todo_wine win_skips whenever QpcBypassEnabled is clear, which on Wine it
+     * always is. So the oracle has nothing to say here, while the contract is
+     * fixed twice over: by that upstream assertion and by Microsoft's
+     * statement that the page is where the frequency is published
+     * (learn.microsoft.com, "Acquiring high-resolution time stamps").
+     *
+     * This asserts the FREQUENCY only. It deliberately says nothing about
+     * QpcBypassEnabled, which proskrnl leaves clear on purpose: the bypass is
+     * a promise that user mode may skip the syscall, and the PE-side ntdll
+     * here has no path that would (docs/22 §4d). */
+    beyond_oracle
+    {
+        const volatile LONGLONG *pageFrequency = (const volatile LONGLONG *)(0x7ffe0000 + 0x300);
+        ok(*pageFrequency == frequency.QuadPart,
+           "KUSER_SHARED_DATA.QpcFrequency %lld, syscall reports %lld", (long long)*pageFrequency,
+           (long long)frequency.QuadPart);
+    }
+
     if (frequency.QuadPart < 1000)
     {
         skip("frequency %lld too low to reason about a millisecond", (long long)frequency.QuadPart);
