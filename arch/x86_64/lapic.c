@@ -431,5 +431,11 @@ void KiInitializeClock(void)
     KiApicWrite(LAPIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
     KiApicWrite(LAPIC_TMR_INIT, ticksPerMs); /* 1 ms period */
 
+    /* Start the clock's interpolation base here, with interrupts still off:
+     * the first tick measures how much time actually passed since the base
+     * (kernel/ke/timer.c KiTicksElapsed), and the base KiInitializeTimerList
+     * set predates the 10 ms gate above. */
+    KiResetTickBase();
+
     __asm__ volatile("sti");
 }

@@ -82,8 +82,9 @@ Ranked by how wrong the answer gets, not by how hard the fix is.
 **a. Lost time on delayed or coalesced ticks.** Every LAPIC interrupt the platform fails to
 deliver on schedule is one millisecond deleted from the clock, permanently — and the next
 tick re-bases `KiTickTsc` to the current TSC, erasing the evidence. Under QEMU (TCG always,
-KVM under host contention) this is routine, not exotic. Convicted by: any test that
-compares elapsed QPC against elapsed wall time over seconds while the machine is loaded.
+KVM under host contention) this is routine, not exotic. **Measured, once §4a made it
+visible: 1326 ms lost across a 69.6 s TCG boot, a clock running 1.9% slow.** Convicted by
+measurement rather than by a test — see §6.
 
 **b. The clamp converts a stall into a frozen clock.** During a long inter-tick gap the
 fraction saturates at 9999 and QPC stops advancing entirely; a 50 ms stall reads as ≈0
@@ -278,10 +279,21 @@ of it is machinery we have no consumer for.
 Each item has to close on a differential or a pinned measurement, not on an inference
 (Article 6).
 
-- **§4a** — a `tests/ntapi/` case that samples QPC and a tick-count-derived elapsed across a
-  loaded interval and asserts they track within a band. This is the test that would have
-  caught the current defect, and it is green on the oracle by construction (Wine's QPC goes
-  through `clock_gettime`, i.e. the vDSO, i.e. a free-running counter).
+- **§4a** — **no in-guest test can convict this, and the first draft of this section was
+  wrong to claim one could.** The proposal was a case comparing QPC against a
+  tick-derived elapsed; they are the same clock in two units, so they track each other
+  exactly whether or not the clock is losing time. Every clock a guest can read shares the
+  error, which is precisely why the defect survived this long. The only independent
+  reference inside the guest is the CMOS RTC, and its one-second granularity makes a cheap
+  assertion impossible.
+
+  What replaces it is a **measurement**, reported on every boot: the count of ticks the
+  clock had to recover (`KiCatchUpTicks`, in the end-of-run `clock:` line and in the panic
+  dump). It is evidence rather than a verdict, and it must be labelled as such — but it is
+  a number that was 0 before this change existed and is not 0 now, which is what makes the
+  defect real rather than theoretical. **Measured on the TCG runner: 1326 ticks recovered
+  across a 69.6 s boot — the clock had been running 1.9% slow.** A regression here shows up
+  as that number climbing, or as timing-sensitive tests flaking.
 - **§4b** — a boot line reporting the source chosen and, whenever both numbers exist, the
   gate's own measurement beside it with an agreement verdict, so a regression shows as a
   changed source or a changed verdict rather than as drift nobody notices. Deliberately

@@ -144,7 +144,12 @@ static int KiLooksLikeKernelPointer(const void *pointer)
  * overflow becomes visually obvious), and the last syscall by NAME. */
 static void KiDumpSystemState(void)
 {
-    DbgPrint("  uptime=%lums\n", (uint64_t)KeTickCount);
+    /* Recovered ticks alongside uptime: a platform that failed to deliver its
+     * clock interrupts on schedule produced an uptime that is honest only
+     * because the clock caught up (kernel/ke/timer.c KiTicksElapsed), and a
+     * dump that showed uptime alone would hide how much of it was recovered
+     * rather than ticked. */
+    DbgPrint("  uptime=%lums (recovered=%lu)\n", (uint64_t)KeTickCount, (uint64_t)KiCatchUpTicks);
     PKTHREAD thread = KiCurrentThread; /* 0 before the scheduler exists */
     if (thread != 0 && KiLooksLikeKernelPointer(thread))
     {
