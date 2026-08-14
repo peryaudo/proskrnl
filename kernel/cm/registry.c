@@ -2692,13 +2692,30 @@ static void CmpSeedBinaryValue(PCMP_KEY_NODE node, PCWSTR name, const void *data
  * The `qemu` key exists if and only if the fw_cfg device answered, and that
  * IS the graceful-degradation contract: a consumer that does not find the key
  * is not running under QEMU and applies its own default rather than reading a
- * fabricated one. */
+ * fabricated one.
+ *
+ * There are therefore THREE states per flag, and each row picks the middle
+ * one for itself:
+ *
+ *   no `qemu` key      not a QEMU guest; the consumer's own default
+ *                      (kernel/init/main.c, user/smss/smss.c)
+ *   key, item absent   under QEMU, nothing said -> `whenUnspecified` below
+ *   key, item present  the command line's value, decimal
+ *
+ * `whenUnspecified` is what makes "every QEMU run is armed" a property of
+ * BOOTING UNDER QEMU rather than of having launched through tools/qemu.sh:
+ * a hand-rolled qemu line (docs/08's recipe) gets the panic net too, and
+ * turning it off has to be said out loud. Interactive is the other way round
+ * — unspecified means the ordinary scripted session, because that is what
+ * almost every QEMU boot of this kernel is. */
 static const struct
 {
-    const char *item; /* the fw_cfg item name */
-    PCWSTR valueName; /* the REG_DWORD it becomes */
+    const char *item;      /* the fw_cfg item name */
+    PCWSTR valueName;      /* the REG_DWORD it becomes */
+    ULONG whenUnspecified; /* under QEMU with no such item on the line */
 } CmpQemuBootFlags[] = {
-    {"opt/org.proskrnl/interactive", WSTR("Interactive")},
+    {"opt/org.proskrnl/interactive", WSTR("Interactive"), 0},
+    {"opt/org.proskrnl/panic_not_implemented", WSTR("PanicOnNotImplemented"), 1},
 };
 
 /* Parse a fw_cfg blob as a decimal ULONG. The blob carries no terminator
@@ -2743,15 +2760,17 @@ static void CmpSeedQemuBootFlags(void)
         const char *item = CmpQemuBootFlags[i].item;
         char blob[16];
         uint32_t bytes = 0;
-        ULONG value = 0;
-        if (KiFwCfgReadItem(item, blob, sizeof(blob), &bytes))
+        ULONG value = CmpQemuBootFlags[i].whenUnspecified;
+        BOOLEAN said = KiFwCfgReadItem(item, blob, sizeof(blob), &bytes);
+        if (said)
         {
             value = CmpParseQemuBootFlag(item, blob, bytes);
         }
-        /* Seeded either way: under QEMU the command line is authoritative, so
-         * an unmentioned flag is off, not unknown. */
+        /* Seeded either way, so the key always states the whole answer and no
+         * reader has to know the defaults table. */
         CmpSeedDwordValue(qemu, CmpQemuBootFlags[i].valueName, value);
-        DbgPrint("cm: qemu boot flag %s=%u\n", item, (unsigned int)value);
+        DbgPrint("cm: qemu boot flag %s=%u (%s)\n", item, (unsigned int)value,
+                 said ? "command line" : "default");
     }
 }
 

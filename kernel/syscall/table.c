@@ -61,8 +61,8 @@ static const KI_SERVICE_DESCRIPTOR KiServiceTable[NTSYS_SYSCALL_LIMIT] = {
 #undef KI_SYSCALL_MISSING
 /* NOLINTEND(bugprone-casting-through-void) */
 
-/* Art. 12 dialed to fatal (see syscall.h): armed at boot from
- * C:\panic_not_implemented.flag by kernel/init/main.c. */
+/* Art. 12 dialed to fatal (see syscall.h): armed at boot from the QEMU
+ * command line by kernel/init/main.c KiConfigurePanicOnNotImplemented. */
 BOOLEAN KiPanicOnNotImplemented = FALSE;
 
 const char *KiSystemCallName(uint64_t number)
@@ -157,7 +157,7 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
         DbgPrint("[KTEST] syscall MISSING %#lx %s\n", (unsigned long)number, descriptor->name);
         if (KiPanicOnNotImplemented)
         {
-            KiPanic("syscall MISSING (panic_not_implemented.flag armed)");
+            KiPanic("syscall MISSING (PanicOnNotImplemented armed)");
         }
         status = STATUS_NOT_IMPLEMENTED;
     }
@@ -199,7 +199,7 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
             if (KiPanicOnNotImplemented)
             {
                 KiPanic("syscall returned STATUS_NOT_IMPLEMENTED "
-                        "(panic_not_implemented.flag armed)");
+                        "(PanicOnNotImplemented armed)");
             }
         }
 

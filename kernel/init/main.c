@@ -298,17 +298,33 @@ static BOOLEAN KiIsInteractiveBoot(void)
     return CmQueryQemuBootFlag(WSTR("Interactive"), 1) != 0;
 }
 
-/* Art. 12 dialed to fatal: C:\panic_not_implemented.flag (baked into every
- * image by tools/mkimage.sh unless PANIC_NOTIMPL=0) arms the dispatcher's
- * panic on any STATUS_NOT_IMPLEMENTED answer (kernel/syscall/table.c) — no
- * refusal is exempt. Same image-decides pattern as KiIsInteractiveBoot. */
+/* Art. 12 dialed to fatal: arm the dispatcher's panic on any
+ * STATUS_NOT_IMPLEMENTED answer (kernel/syscall/table.c) — no refusal is
+ * exempt.
+ *
+ * Same channel as KiIsInteractiveBoot, opposite default. Armed on every boot
+ * that found a fw_cfg device — that default is the seeding table's, not this
+ * script's or that one's (kernel/cm/registry.c CmpQemuBootFlags), so "under
+ * QEMU" is what arms it rather than "launched through tools/qemu.sh". The
+ * distinction matters because the two were the same thing only by discipline:
+ * every leg does boot through that script today, but a hand-rolled qemu line
+ * (docs/08's recipe) would have lost the net silently, and losing it is
+ * invisible — the run still passes.
+ *
+ * Off where no fw_cfg device answered at all, which is the one case that is
+ * not a development VM. Arming is a development stance ("convict the first
+ * unbuilt service I needed"), and defaulting a machine we know nothing about
+ * into a kernel panic on a missing service is the wrong way round; the
+ * interactive flag defaults the other way there for the mirror reason — that
+ * unknown machine has a human at it. PANIC_NOTIMPL=0 says otherwise out
+ * loud. */
 static void KiConfigurePanicOnNotImplemented(void)
 {
-    KiPanicOnNotImplemented = KiBootFileExists(WSTR("\\??\\C:\\panic_not_implemented.flag"));
+    KiPanicOnNotImplemented = CmQueryQemuBootFlag(WSTR("PanicOnNotImplemented"), 0) != 0;
     if (KiPanicOnNotImplemented)
     {
         DbgPrint("[KTEST] panic on STATUS_NOT_IMPLEMENTED armed "
-                 "(C:\\panic_not_implemented.flag)\n");
+                 "(Hardware\\qemu PanicOnNotImplemented)\n");
     }
 }
 
@@ -316,7 +332,9 @@ static void KiConfigurePanicOnNotImplemented(void)
  * drain-spin, so every device await parks — the maximally different legal
  * interleaving, with which every verdict must still agree (the cui8 leg
  * compares). Never baked into a default image (tools/mkimage.sh
- * CUI8_STRESS=1); same image-decides pattern as the panic flag. */
+ * CUI8_STRESS=1) — the last knob still decided by the IMAGE rather than by
+ * the run, now that the interactive and panic flags ride the QEMU command
+ * line (docs/10 HACK-006). KiBootFileExists is its one remaining caller. */
 static void KiConfigureCui8Stress(void)
 {
     if (KiBootFileExists(WSTR("\\??\\C:\\cui8_stress.flag")))
