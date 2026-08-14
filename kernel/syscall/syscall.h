@@ -25,16 +25,17 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame);
  * dump prints it next to the raw last-syscall number (Art. 9). */
 const char *KiSystemCallName(uint64_t number);
 
-/* Art. 12 dialed to fatal: TRUE when the boot volume carries
- * C:\panic_not_implemented.flag (baked into every image by tools/mkimage.sh
- * unless PANIC_NOTIMPL=0; probed at boot by kernel/init/main.c — the
- * KiIsInteractiveBoot pattern: the image, not a kernel switch, decides).
- * While armed, a ring-3 syscall that answers STATUS_NOT_IMPLEMENTED —
- * a KI_SYSCALL_MISSING id or a partial service's unbuilt case — panics
- * instead of returning, so a run convicts the exact first unbuilt service
- * it needed rather than limping past it. No refusal is exempt: the status
- * means "unbuilt", and the oracle answering it too makes the oracle unbuilt
- * as well — never a contract worth reproducing (Art. 12). */
+/* Art. 12 dialed to fatal: TRUE when the boot armed it —
+ * \Registry\Machine\Hardware\qemu "PanicOnNotImplemented", which every boot
+ * that finds a fw_cfg device arms by default (kernel/cm/registry.c
+ * CmpQemuBootFlags; read at boot by kernel/init/main.c
+ * KiConfigurePanicOnNotImplemented). So booting under QEMU arms it, however
+ * that QEMU was launched; tools/qemu.sh PANIC_NOTIMPL=0 disarms it, and no
+ * fw_cfg device at all means off. While armed, a ring-3 syscall that answers STATUS_NOT_IMPLEMENTED
+ * — a KI_SYSCALL_MISSING id or a partial service's unbuilt case — panics instead of returning, so a
+ * run convicts the exact first unbuilt service it needed rather than limping past it. No refusal is
+ * exempt: the status means "unbuilt", and the oracle answering it too makes the oracle unbuilt as
+ * well — never a contract worth reproducing (Art. 12). */
 extern BOOLEAN KiPanicOnNotImplemented;
 
 /* entry.S: first descent into ring 3 (kernel/ps). KERNEL_GS_BASE must already

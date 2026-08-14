@@ -185,8 +185,8 @@ the two runners by construction.
 ## HACK-006: `\Registry\Machine\Hardware\qemu` (the QEMU boot flags)
 
 ```
-Status:     active (one value: "Interactive")
-Introduced: (this change — moving the interactive-boot switch off the image)
+Status:     active (two values: "Interactive", "PanicOnNotImplemented")
+Introduced: (this change — moving the boot switches off the image)
 Not in NT:  NT builds HKLM\HARDWARE at boot from firmware, and boot options arrive from
             the loader as HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions. NT has
             no `qemu` key, because NT has no fw_cfg device to read.
@@ -199,9 +199,11 @@ Reason:     A boot knob has to live somewhere, and every existing one is BAKED I
             string to a guest booted from a disk image (`-append` needs `-kernel`).
 Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             kernel/cm/registry.c (CmpSeedQemuBootFlags + CmQueryQemuBootFlag) ;
-            the two consumers that used to probe for the marker file
-            (kernel/init/main.c KiIsInteractiveBoot, user/smss/smss.c
-            SmssIsInteractiveBoot) ; tools/qemu.sh (GUEST_INTERACTIVE)
+            the consumers that used to probe for a marker file
+            (kernel/init/main.c KiIsInteractiveBoot and
+            KiConfigurePanicOnNotImplemented, user/smss/smss.c
+            SmssIsInteractiveBoot) ; tools/qemu.sh (GUEST_INTERACTIVE,
+            PANIC_NOTIMPL)
 Retirement: when proskrnl boots something other than QEMU often enough to want a real
             boot-options channel — at which point the values move to SystemStartOptions
             parsed from a Limine cmdline, and the readers change but the callers do not.
@@ -237,13 +239,32 @@ next boot, when fw_cfg re-seeds. Nothing depends on it being unwritable.
 **The absent key is the contract.** `Machine\Hardware` exists on every boot; the `qemu`
 subkey exists if and only if the fw_cfg signature probe answered. So a consumer that does
 not find the key is not running under QEMU, and applies its own default rather than
-reading a fabricated one — for the interactive flag that default is *interactive*, since
-nothing on real hardware is scraping a serial log for `[KTEST]` lines. A flag missing from
-a key that does exist reads as 0: under QEMU the command line is authoritative.
+reading a fabricated one. A flag missing from a key that does exist reads as 0: under QEMU
+the command line is authoritative.
 
-Only the interactive flag moved. `C:\panic_not_implemented.flag` and `C:\cui8_stress.flag`
-are still image-baked, deliberately: retiring the image variations is a larger change than
-this one and wants its own look.
+**There are three states per flag, not two, and each flag chooses its own middle one.**
+No `qemu` key at all means not a QEMU guest, and the consumer applies its own default. The
+key present with the item absent means *under QEMU, nothing said*, and that answer lives in
+`CmpQemuBootFlags`. The key present with the item set means the command line decided.
+
+The two flags differ in both defaults, on purpose. `Interactive` is off under QEMU when
+unspecified (almost every QEMU boot of this kernel is a scripted session) and on off-QEMU
+(nothing on real hardware is scraping a serial log for `[KTEST]` lines, so the unknown
+machine is assumed to have a human at it). `PanicOnNotImplemented` is the mirror: **on**
+under QEMU when unspecified, off off-QEMU. Arming it is a development stance — "convict
+the first unbuilt service I needed" — so every development VM should have it and an
+unknown machine should not be pushed into a kernel panic over a missing service.
+
+Putting that default in the seeding table rather than in `tools/qemu.sh` is deliberate:
+it makes the panic net a property of **booting under QEMU** rather than of having launched
+through one particular script. Every leg does go through that script today, but only by
+discipline — a hand-rolled `qemu` line (docs/08's own recipe) would have lost the net
+silently, and losing it is invisible because the run still passes. `PANIC_NOTIMPL=0` now
+passes `string=0` to say otherwise out loud.
+
+Two flags have moved: `interactive` and `panic_not_implemented`. `C:\cui8_stress.flag` is
+still image-baked — it is set by exactly one leg and is the least of the three; the
+remaining image variations want their own look.
 
 ---
 

@@ -1998,9 +1998,17 @@ The full accounting of which missing syscalls are out of scope vs. planned is
 
 ## Panic-on-STATUS_NOT_IMPLEMENTED boot (Art. 12 dialed to fatal)
 
-- **Every image carries `C:\panic_not_implemented.flag` by default**
-  (`tools/mkimage.sh`; `PANIC_NOTIMPL=0` omits it). While the marker is
-  present (`kernel/init/main.c KiConfigurePanicOnNotImplemented`), a ring-3
+- **Every boot under QEMU is armed by default.** The switch is
+  `\Registry\Machine\Hardware\qemu` `"PanicOnNotImplemented"`, seeded at
+  `CmInitialize` from the fw_cfg item `opt/org.proskrnl/panic_not_implemented`
+  and defaulting to **on** when the device is present but the item is absent
+  (docs/10 HACK-006). It used to be a marker file baked onto every image, so
+  the coverage is unchanged — but it is now a property of running under QEMU
+  rather than of the image or of the launcher, so a hand-rolled `qemu` line
+  gets the net too. `tools/qemu.sh PANIC_NOTIMPL=0` passes `string=0` to opt
+  out; a kernel that finds **no fw_cfg device** defaults it off, that being
+  the one case that is not a development VM. While armed
+  (`kernel/init/main.c KiConfigurePanicOnNotImplemented`), a ring-3
   syscall that answers `STATUS_NOT_IMPLEMENTED` — a `KI_SYSCALL_MISSING` id
   or a partial service's unbuilt case — panics at the dispatcher
   (`kernel/syscall/table.c`) after naming the service (and its first two

@@ -134,9 +134,23 @@ VGA_ARGS=(-vga std)
 #
 # opt/ is the user namespace fw_cfg reserves, opt/RFQDN/ the arrangement it
 # recommends: pinned tree docs/specs/fw_cfg.rst, "Externally Provided Items".
+#
+# PANIC_NOTIMPL=0 opts OUT of Art. 12 dialed to fatal (a ring-3 syscall
+# answering STATUS_NOT_IMPLEMENTED panics at the dispatcher instead of
+# returning, so a run convicts the first unbuilt service it needed rather than
+# limping past it). Only the opt-out is passed here: arming is the KERNEL's
+# default for any boot that finds a fw_cfg device (kernel/cm/registry.c
+# CmpQemuBootFlags), so every QEMU run is armed whether or not it was launched
+# through this script — a hand-rolled qemu line gets the net too, and losing
+# it has to be said out loud. Off where there is no fw_cfg device at all: that
+# is not a development VM, and a kernel panic on a missing service is not
+# something to inflict on an unknown machine.
 FWCFG_ARGS=()
 if [[ -n "${GUEST_INTERACTIVE:-}" ]]; then
-    FWCFG_ARGS=(-fw_cfg name=opt/org.proskrnl/interactive,string=1)
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/interactive,string=1)
+fi
+if [[ "${PANIC_NOTIMPL:-1}" == 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/panic_not_implemented,string=0)
 fi
 
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU

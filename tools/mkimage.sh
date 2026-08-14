@@ -162,16 +162,10 @@ for spec in ${WIN_SPECS[@]+"${WIN_SPECS[@]}"}; do
     done
     copy "$src" "::/$dest"
 done
-# Art. 12 dialed to fatal, by default on EVERY image: the marker makes the
-# kernel panic on any STATUS_NOT_IMPLEMENTED syscall answer, no exemptions
-# (kernel/init/main.c KiConfigurePanicOnNotImplemented, kernel/syscall/
-# table.c). PANIC_NOTIMPL=0 omits the marker for a limp-along boot.
-if [[ "${PANIC_NOTIMPL:-1}" != 0 ]]; then
-    NOTIMPL_FLAG="$(mktemp)"
-    echo "panic-on-STATUS_NOT_IMPLEMENTED marker (kernel/init/main.c)" > "$NOTIMPL_FLAG"
-    copy "$NOTIMPL_FLAG" ::/panic_not_implemented.flag
-    rm -f "$NOTIMPL_FLAG"
-fi
+# Art. 12 dialed to fatal is no longer baked here: PANIC_NOTIMPL now rides the
+# QEMU command line (tools/qemu.sh, which arms it on every run unless
+# PANIC_NOTIMPL=0), so the image no longer varies with it and one image serves
+# both stances. See docs/10 HACK-006.
 # CUI-8 stress (docs/19 §8.1, OFF by default): CUI8_STRESS=1 bakes the
 # marker that zeroes the kernel's await drain-spin (kernel/init/main.c), so
 # every device await parks — the maximally different legal interleaving.
