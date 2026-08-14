@@ -91,6 +91,24 @@ static uint64_t KiTickFraction(void)
     return (delta * KI_100NS_PER_TICK) / rate;
 }
 
+/* Remaining time for NtQueryTimer, computed HERE because the subtraction needs
+ * the clock the timer queue actually expires against — KiUpdateClock's
+ * comparison below, and KiComputeDueTime's basis above — which is the raw
+ * tick, deliberately not the sub-tick reading. The caller used to spell that
+ * clock `KeTickCount * KI_100NS_PER_TICK`: numerically identical, since the
+ * two advance together, but a second expression of one quantity, and the kind
+ * that a change to how the tick advances has to find in two places (Art. 11).
+ * Negative once past due — the NT shape; an unarmed timer has no due point. */
+LONGLONG KiQueryTimerRemainingTime(PKTIMER timer)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    if (timer->header.inserted == 0)
+    {
+        return 0;
+    }
+    return (LONGLONG)timer->dueTime.QuadPart - (LONGLONG)KiInterruptTime;
+}
+
 ULONGLONG KeQueryInterruptTime(void)
 {
     uint64_t flags = KiAcquireDispatcherLock();

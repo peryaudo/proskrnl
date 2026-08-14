@@ -707,12 +707,7 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
     TIMER_BASIC_INFORMATION info;
     uint64_t flags = KiAcquireDispatcherLock();
     info.TimerState = timer->header.signalState != 0;
-    /* Remaining = due - now in 100 ns (negative once past due — the NT
-     * shape); an unarmed timer reports 0. */
-    info.RemainingTime.QuadPart =
-        timer->header.inserted != 0
-            ? timer->dueTime.QuadPart - (LONGLONG)KeTickCount * (LONGLONG)KI_100NS_PER_TICK
-            : 0;
+    info.RemainingTime.QuadPart = KiQueryTimerRemainingTime(timer);
     KiReleaseDispatcherLock(flags);
     ObDereferenceObject(body);
 

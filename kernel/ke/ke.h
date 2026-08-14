@@ -598,6 +598,12 @@ void KiRemoveTimer(PKTIMER timer);
 /* Convert a wait/delay LARGE_INTEGER (negative = relative 100 ns) into an
  * absolute interrupt-time deadline. */
 uint64_t KiComputeDueTime(PLARGE_INTEGER timeout);
+/* How long until a queued timer comes due, in 100 ns — negative once past due,
+ * zero if it is not armed. Lives here rather than in the caller because the
+ * answer is "due minus the queue's own clock", and that clock is this
+ * department's (KiInterruptTime is static to timer.c on purpose). Dispatcher
+ * lock held. */
+LONGLONG KiQueryTimerRemainingTime(PKTIMER timer);
 /* The clock tick: advance time, expire due timers. Interrupt context. */
 void KiUpdateClock(BOOLEAN interruptedUser);
 
