@@ -91,6 +91,18 @@ static uint64_t KiTickFraction(void)
     return (delta * KI_100NS_PER_TICK) / rate;
 }
 
+/* Start the interpolation base at the instant the clock does. Called by
+ * KiInitializeClock with interrupts still off, because the base set in
+ * KiInitializeTimerList predates calibration by the length of the PIT gate
+ * plus whatever boot work sits between them — and the first tick, which now
+ * measures how much time actually passed (KiTicksElapsed), would otherwise
+ * hand all of that to uptime as though the clock had been running through
+ * it. */
+void KiResetTickBase(void)
+{
+    KiTickTsc = KiReadTimestampCounter();
+}
+
 /* Remaining time for NtQueryTimer, computed HERE because the subtraction needs
  * the clock the timer queue actually expires against — KiUpdateClock's
  * comparison below, and KiComputeDueTime's basis above — which is the raw
@@ -263,36 +275,126 @@ volatile uint64_t KiIdleTime100ns;
 volatile uint64_t KiTotalKernelTime100ns;
 volatile uint64_t KiTotalUserTime100ns;
 
+/* Ticks this interrupt is worth. The LAPIC delivers one interrupt per
+ * programmed period, but the period is only what the platform PROMISED: a
+ * hypervisor that does not schedule its guest, or that coalesces a queued
+ * interrupt, delivers one interrupt after several periods have passed.
+ * Advancing by exactly one tick per interrupt deleted the difference
+ * permanently — and undetectably, because re-basing the interpolation on the
+ * current TSC erased the evidence in the same breath.
+ *
+ * So the TSC decides how FAR the clock moves and the interrupt only decides
+ * WHEN it moves. That is the division Linux draws between a clocksource (a
+ * counter you read) and a clockevent (a timer that interrupts), and it is what
+ * makes the fraction above a subdivision of real time rather than of the
+ * platform's good intentions.
+ *
+ * The bound is one second's worth of ticks: past that the reading is evidence
+ * of a lying counter rather than of a stalled platform, and KiTicksElapsed
+ * says what taking the bound costs. */
+#define KI_MAX_CATCHUP_TICKS 1000ULL
+
+/* Ticks added beyond one per interrupt since boot — how much time this
+ * platform failed to deliver on schedule and the clock recovered. Reported by
+ * the panic dump (Art. 9): a clock that is behind is invisible without it. */
+volatile uint64_t KiCatchUpTicks;
+
+static uint64_t KiTicksElapsed(uint64_t elapsed, uint64_t rate)
+{
+    if (rate == 0)
+    {
+        return 1; /* before KiInitializeClock: the interrupt is all there is */
+    }
+    uint64_t ticks = elapsed / rate;
+    if (ticks == 0)
+    {
+        /* The interrupt beat the TSC to the millisecond. The two are
+         * calibrated against each other but not locked, so the LAPIC may
+         * arrive a few cycles early; an interrupt is worth at least the tick
+         * it was programmed for, and returning 0 would stall the clock — and
+         * with it the timer queue — for as long as the skew lasted. */
+        return 1;
+    }
+    if (ticks > KI_MAX_CATCHUP_TICKS)
+    {
+        /* A bound, not a policy: the only way to get here is a TSC that moved
+         * by more than a second's worth of cycles in one tick, which means the
+         * counter lied rather than that the platform stalled that long. Taking
+         * the bound makes the clock run slow and recover over the following
+         * ticks (the base below advances by whole ticks, so the remainder is
+         * still owed); trusting the reading would move the clock by years. */
+        return KI_MAX_CATCHUP_TICKS;
+    }
+    return ticks;
+}
+
 void KiUpdateClock(BOOLEAN interruptedUser)
 {
     ASSERT(KiIsDispatcherLockHeld()); /* interrupt context: IF is clear */
-    KeTickCount++;
-    KiInterruptTime += KI_100NS_PER_TICK;
-    /* Re-base the sub-tick interpolation on this tick. Taken here rather than
-     * at the interrupt's entry, so the fraction is measured from a point the
-     * clock has already accounted for: interrupt latency lands the base
-     * slightly LATE, which only makes a reading lag, never overshoot. */
-    KiTickTsc = KiReadTimestampCounter();
+    uint64_t now = KiReadTimestampCounter();
+    uint64_t rate = KiTscPerMillisecond;
+    uint64_t elapsed = now - KiTickTsc;
+    uint64_t ticks = KiTicksElapsed(elapsed, rate);
+    uint64_t advance = ticks * KI_100NS_PER_TICK;
+
+    KeTickCount += ticks;
+    KiInterruptTime += advance;
+    KiCatchUpTicks += ticks - 1;
+
+    /* Re-base the sub-tick interpolation by WHOLE ticks rather than onto
+     * `now`. The cycles left over — up to one tick's worth — are time that has
+     * genuinely passed and that no tick has accounted for yet, so they must
+     * stay in the fraction; assigning `now` here would round them away once
+     * per millisecond, which is the same leak in miniature that advancing by
+     * one tick per interrupt was in the large. When the bound in KiTicksElapsed
+     * capped the advance, the leftover exceeds a whole tick and the fraction
+     * saturates (KiTickFraction's clamp) until the following ticks catch up.
+     *
+     * THE BASE MUST NEVER PASS `now`. KiTickFraction subtracts it from a later
+     * TSC read as UNSIGNED, so a base in the future does not read as a small
+     * negative offset — it underflows to something enormous, trips the clamp,
+     * and pins the fraction at one tick short of the next tick for as long as
+     * the condition lasts. That is exactly what the "interrupt arrived early"
+     * case above produces if its invented tick is also allowed to advance the
+     * base: measured, as sem_ps/perf_counter and sem_ps/precise_time going red
+     * together while every other clock test stayed green. Charging a tick the
+     * TSC has not yet reached is the right answer for the CLOCK — an interrupt
+     * is worth at least its period — and the wrong answer for the BASE, so the
+     * two part company here. */
+    if (rate != 0 && ticks * rate <= elapsed)
+    {
+        KiTickTsc += ticks * rate;
+    }
+    else
+    {
+        KiTickTsc = now;
+    }
 
     /* CUI-6: whole-tick sampling accounting, NT's clock-interrupt shape —
      * the interrupted thread is charged the whole tick, kernel or user by
      * the interrupted CS; the idle thread's ticks (and any tick before the
      * scheduler exists) are idle time. One tick, one bucket: the invariant
-     * below is the subsystem's cheapest defence. */
+     * below is the subsystem's cheapest defence.
+     *
+     * Recovered ticks are charged the same way, all of them to the interrupted
+     * thread. Sampling has no better answer — nothing recorded who was running
+     * during time the platform never interrupted us for — and the alternative
+     * of leaving them uncharged would break the invariant, which is worth more
+     * than the precision it would buy. */
     PKTHREAD current = KiCurrentThread;
     if (current == 0 || KiThreadIsIdle(current))
     {
-        KiIdleTime100ns += KI_100NS_PER_TICK;
+        KiIdleTime100ns += advance;
     }
     else if (interruptedUser)
     {
-        current->userTime100ns += KI_100NS_PER_TICK;
-        KiTotalUserTime100ns += KI_100NS_PER_TICK;
+        current->userTime100ns += advance;
+        KiTotalUserTime100ns += advance;
     }
     else
     {
-        current->kernelTime100ns += KI_100NS_PER_TICK;
-        KiTotalKernelTime100ns += KI_100NS_PER_TICK;
+        current->kernelTime100ns += advance;
+        KiTotalKernelTime100ns += advance;
     }
     ASSERT(KiIdleTime100ns + KiTotalKernelTime100ns + KiTotalUserTime100ns == KiInterruptTime);
 

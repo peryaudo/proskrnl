@@ -604,6 +604,13 @@ static void KiTestMainThread(void *context)
     int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + cui8Failures +
                 condrvFailures + preventiveFailures + schedFailures + fatInteropFailures +
                 m7Failures + sessionFailures;
+    /* What the clock had to recover to stay honest over this boot (docs/22
+     * §4a). Not a verdict — no test in the guest can convict a clock that ran
+     * slow, every clock here having shared the error — but the measurement
+     * that says whether this platform delivers its interrupts on schedule, and
+     * the number to watch when a timing-sensitive test starts flaking. */
+    DbgPrint("clock: %lu ms uptime, %lu ms recovered from undelivered ticks\n",
+             (uint64_t)KeTickCount, (uint64_t)KiCatchUpTicks);
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)

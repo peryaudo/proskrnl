@@ -592,6 +592,13 @@ BOOLEAN KeSetTimerEx(PKTIMER timer, LARGE_INTEGER dueTime, LONG period, PKDPC dp
 BOOLEAN KeCancelTimer(PKTIMER timer);
 
 void KiInitializeTimerList(void);
+/* Re-base the sub-tick interpolation on now. KiInitializeClock calls this with
+ * interrupts still off, so the clock's first tick measures from the moment the
+ * clock started rather than from KiInitializeTimerList. */
+void KiResetTickBase(void);
+/* Ticks the clock recovered beyond one per interrupt since boot — time this
+ * platform failed to deliver on schedule (kernel/ke/timer.c KiTicksElapsed). */
+extern volatile uint64_t KiCatchUpTicks;
 /* Queue a timer at an absolute interrupt-time deadline / dequeue it. */
 void KiInsertTimer(PKTIMER timer, uint64_t dueInterruptTime);
 void KiRemoveTimer(PKTIMER timer);
