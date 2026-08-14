@@ -61,6 +61,26 @@ void PspInitializeSharedUserData(void)
      * turns on the per-tick mirror (kernel/ke/timer.c); the explicit seed
      * makes the fields nonzero before the first tick. */
     kusd->TickCountMultiplier = 1 << 24;
+
+    /* The performance counter's frequency, in the page as well as in the
+     * syscall's answer. NT's own conformance test asserts the two agree —
+     * third_party/wine dlls/ntdll/tests/time.c test_RtlQueryPerformanceCounter
+     * checks RtlQueryPerformanceFrequency() == user_shared_data->QpcFrequency —
+     * so leaving the field at its memset zero was a wrong answer sitting where
+     * a reader is entitled to look, not merely an unwritten one.
+     *
+     * QpcBypassEnabled stays 0, deliberately, and that is not an oversight to
+     * be cleaned up later. Setting it is a promise that user mode may compute
+     * the counter itself out of RDTSC and these fields instead of entering the
+     * kernel — and the PE-side ntdll we run has no such path: Wine's
+     * RtlQueryPerformanceCounter (dlls/ntdll/time.c) forwards to the syscall
+     * unconditionally, and its own test win_skips the bypass case under
+     * todo_wine. Giving it the path would mean changing PE-side observable
+     * behaviour in the fork, which Article 10 forbids; it is upstream work,
+     * and the test asserting it already lives upstream. So: publish the
+     * frequency, promise nothing about the bypass (docs/22 §4d). */
+    kusd->QpcFrequency = KI_PERFORMANCE_FREQUENCY;
+
     KiUserSharedData = kusd;
     KiSeedUserSharedDataTime();
 

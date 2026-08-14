@@ -3180,7 +3180,7 @@ NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER counter, PLARGE_INTEGER freque
     if (frequency != 0)
     {
         LARGE_INTEGER freq;
-        freq.QuadPart = 10000000; /* ticks per second for a 100 ns counter */
+        freq.QuadPart = KI_PERFORMANCE_FREQUENCY;
         memcpy(frequency, &freq, sizeof(freq));
     }
     return STATUS_SUCCESS;

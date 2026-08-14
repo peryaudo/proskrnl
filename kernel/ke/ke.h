@@ -566,6 +566,17 @@ LONG KeReleaseMutex(PRKMUTEX mutex, BOOLEAN wait);
 extern volatile uint64_t KeTickCount;
 #define KI_100NS_PER_TICK 10000ULL /* 1 ms tick */
 
+/* The performance counter's frequency: one count per 100 ns, so a count IS a
+ * FILETIME unit and the counter is just interrupt time under another name.
+ * This is the value Windows reports "when running under a hypervisor that
+ * implements the hypervisor version 1.0 interface (or always in some newer
+ * versions of Windows)" (learn.microsoft.com, "Acquiring high-resolution time
+ * stamps"), and the one the oracle hardcodes (third_party/wine
+ * dlls/ntdll/time.c TICKSPERSEC). Named once because two places answer it —
+ * NtQueryPerformanceCounter and KUSER_SHARED_DATA's QpcFrequency — and NT's
+ * own conformance test requires them to agree (Art. 11). */
+#define KI_PERFORMANCE_FREQUENCY 10000000LL
+
 ULONGLONG KeQueryInterruptTime(void);
 void KeQuerySystemTime(LARGE_INTEGER *time);
 
