@@ -39,7 +39,17 @@ behaviour, and never a change that masks a proskrnl divergence.
 The single pinned tree serves three roles at once, deliberately:
 
 1. **Oracle** — built as regular Linux Wine; `tests/run/run.sh oracle` and the
-   differential fuzzer run against it (Art. 6: it is the behavioral spec).
+   differential fuzzer run against it (Art. 6: it is the behavioral spec). "Regular" is
+   load-bearing and has cost the project twice: a Wine configured without a backend does
+   not fail, it answers *plausibly* without one. GUI-3 fixed the font half
+   (`--with-freetype` against the pinned FreeType — an oracle with no fonts silently
+   answered metric questions from nothing); the display half was fixed the same way, by
+   building `--with-x` and giving every leg that runs the oracle its own Xvfb at a fixed
+   geometry (`tests/run/run.sh start_xvfb`). Under the `--without-x` build that preceded
+   it, user32 refused every window and no oracle answer about a window existed at all.
+   The environment is pinned around it for the same reason — a created (never copied)
+   scratch wineprefix, `LC_ALL=C.UTF-8`, not root, one screen size — because each of
+   those, left to the host, changed an answer.
 2. **Userland source** — the same build's PE artifacts (`ntdll.dll`,
    `kernel32`/`kernelbase`) and `nls/` files are what `mkimage.sh` bakes onto proskrnl's
    boot volume (Makefile `WINFILES`).

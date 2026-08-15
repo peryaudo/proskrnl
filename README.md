@@ -117,13 +117,17 @@ with distro packages:
   through the xAPIC MMIO window, which every QEMU has, so `apt install
   qemu-system-x86` (8.2 on 24.04 LTS) runs the whole suite and the long source
   build is skipped.
-- **wine** — the ntapi oracle runtime, built (64-bit, no X) from the very
+- **wine** — the ntapi oracle runtime, built from the very
   same pinned tree `abi/` is generated from, so the oracle and the contract
   cannot version-diverge. Since GUI-3 it is also the **font-metrics oracle**:
   configured `--with-freetype --without-fontconfig` against the pinned
   `third_party/freetype`, so the oracle and the target answer font questions
   from the same FreeType and the same font set, and no host fonts can leak
-  into the spec.
+  into the spec. It is built `--with-x`, and every leg that runs it starts
+  its own **Xvfb** at a fixed geometry (`tests/run/run.sh`) — so the oracle
+  has the display driver a window question needs, and gets the same one on a
+  laptop and on a headless CI runner. The X development packages and `xvfb`
+  are in the apt list above for that reason.
 
 The first run takes a while if Wine has to build; re-runs skip finished work.
 Any distro QEMU works and is preferred over building one — the runner scripts
