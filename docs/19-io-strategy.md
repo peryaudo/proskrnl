@@ -81,22 +81,14 @@ driver and is preserved in history. What is measured today:
   `KeWaitForSingleObject`); other threads run while the device works. The §8.3 acceptance
   test (`progress_during_io`) is green, including under an absolute drive throttle.
 
-**What remains polled is the harvest itself.** No interrupt is negotiated at all
-(`drivers/virtio/pci.c`, `VioPciAcceptFeatures`: "a polling driver needs none of them");
-completions are discovered by calling `IoDrainDeviceCompletions` from exactly three kinds
-of place:
-
-- the **timer tick** (`kernel/ke/timer.c`, tail of `KiUpdateClock`) — which floors a
-  parked issuer's wake latency at up to one tick whenever compute-bound threads keep the
-  machine out of idle;
-- the **idle loop** (`kernel/ke/sched.c`) — which must not `hlt` while a transfer is in
-  flight, because no completion interrupt exists to cut a `hlt` short, so it spins
-  `sti; pause`, burning the CPU for the full duration of every transfer the machine is
-  otherwise idle for;
-- **thread-context waiters** (the pre-park spin, the post-park poll-home, and the
-  submit-side full-ring retries).
-
-The first two are the costs §11 exists to delete.
+**The harvest is now interrupt-driven too (§11, built).** The polled harvest this
+section previously measured — a tick-tail drain flooring a parked issuer's wake at up to
+a millisecond, and an idle loop that had to spin `sti; pause` instead of `hlt` while a
+transfer was in flight because no completion interrupt existed to cut a `hlt` short —
+is deleted. Completions are discovered at the blk MSI-X ISR (`kernel/ke/irq.c`,
+`BLK_VECTOR`) and by **thread-context waiters** (the pre-park spin, the post-park
+poll-home, and the submit-side full-ring retries); idle `hlt`s unconditionally. The
+delivery and idle-sleep verdicts (§11e) gate both properties in `tests/kmt/cui8_async.c`.
 
 ## 3. The gaps, and the consumer that convicts each
 
@@ -107,7 +99,7 @@ The first two are the costs §11 exists to delete.
 | `FileCompletionInformation` (port↔file association) | `BindIoCompletionCallback` consumers — **not baked**; the threadpool drives ports directly via `NtSetIoCompletion` | refuses loudly (G12); hook point is `IopPostCompletionPacket` (Art. 11) |
 | Directory-watch buffering across the re-arm window | winetest change pairs parked on it | deviation recorded (`docs/03` CUI-5) |
 | Cancellation beyond npfs | a console read that a caller wants to cancel — no baked caller yet | condrv/serial/`\Device\Input*` waits stay uncancellable (`docs/03` CUI-5) |
-| Interrupt-driven device completion | the idle loop cannot `hlt` with I/O in flight; parked issuers wake on the next tick, not on completion | designed (§11); §5b's deferral is discharged |
+| Interrupt-driven device completion | the idle loop could not `hlt` with I/O in flight; parked issuers woke on the next tick, not on completion | **built** (§11): blk MSI-X → the same drain; verdicts §11e |
 
 Note the shape: **only the first two rows are blocking anything.** The rest are recorded,
 loud, and waiting for a consumer, which is the Article 5 steady state and not debt.

@@ -546,18 +546,22 @@ void KiAssertNoObligations(const char *where);
  * prohibition (kernel/mm/pool.c, kernel/mm/phys.c). Defined in sched.c. */
 extern BOOLEAN KiInCompletionDrain;
 
-/* CUI-8 (docs/19 §5b): the device-completion drain upcall, implemented in
- * kernel/io/file.c beside the transport it drains. Called with the
- * dispatcher lock held — the tick holds it implicitly (KiUpdateClock),
- * idle runs with interrupts off (KiIdleLoop) — and from thread-context
- * waiters that acquire it. Returns the number of requests still in flight
- * after the harvest, which is idle's poll-versus-hlt decision. */
+/* The device-completion drain upcall (CUI-8, docs/19 §5b/§11), implemented
+ * in kernel/io/file.c beside the transport it drains. Called with the
+ * dispatcher lock held: the blk completion ISR holds it by arriving
+ * (kernel/ke/irq.c — the lock IS interrupt-disable, docs/18 §6d), and
+ * thread-context waiters acquire it. Returns the number of requests still
+ * in flight after the harvest. */
 ULONG IoDrainDeviceCompletions(void);
 
 /* Times the blk completion vector dispatched (kernel/ke/irq.c) — the
  * docs/19 §11e delivery verdict's raw number, exposed as a bare extern the
  * way Ke measurements are (KiTscPerMillisecond precedent). */
 extern uint64_t KiBlkInterruptCount;
+
+/* Times the idle loop reached hlt (kernel/ke/sched.c) — the docs/19 §11e
+ * idle-sleep verdict's raw number. */
+extern uint64_t KiIdleHltCount;
 
 void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit);
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait);

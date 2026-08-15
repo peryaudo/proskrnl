@@ -23,7 +23,7 @@ axes:
 |---|---|---|
 | SMP | multi-core, real spinlocks, per-CPU state | uniprocessor |
 | other threads run during I/O | sleeps on the disk interrupt | **spins**; the machine stops (§7) |
-| devices | interrupt-driven | polled throughout (`drivers/virtio/pci.c`: "a polling driver needs none of them") |
+| devices | interrupt-driven | blk interrupt-driven via MSI-X (`docs/19` §11); input/serial polled (§11f) |
 | FS crash consistency | write-ahead log + recovery | none; write-through, non-atomic rename (`docs/03` CUI-5) |
 | kernel preemption | yes | no; one preemption point at return to ring 3 (`kernel/ke/sched.c:222`, CUI-4) |
 
@@ -199,6 +199,13 @@ dispatcher state must either spin for the giant lock or defer its work to a flag
 lock-holder drains. Spinning is acceptable **only if nothing spins for I/O while holding
 the lock** — which is exactly §7. Decide the policy explicitly and assert it; this is the
 classic BKL-in-interrupt-context question and it will not resolve itself.
+
+The **uniprocessor half is now decided, stated, and asserted** at `docs/19` §11b: the blk
+completion ISR (`kernel/ke/irq.c`) holds the lock by arriving, readies and never switches,
+inside the no-block bracket. It is also the first concrete instance the SMP split must
+cover — when the lock stops being `cli`, that ISR is where the spin-versus-defer choice
+becomes real, and §7's precondition (nothing spins for I/O under the lock) is what makes
+spinning admissible for it.
 
 ### e. User-space concurrency gets exposed for the first time
 
@@ -392,7 +399,8 @@ join step 4's enumeration.
 2. **Per-CPU state** (§6a) — `KiPcr` array, `KiCurrentThread` retired, per-CPU TSS/GDT/idle.
 3. **AP bringup + IPI** (§6c).
 4. **TLB shootdown, broadcast form** (§6b).
-5. **Interrupt-versus-lock policy** (§6d), asserted.
+5. **Interrupt-versus-lock policy** (§6d) — the uniprocessor half is answered and
+   asserted (`docs/19` §11b); the SMP split's half remains.
 6. **Test legs and instruments** (§8), in the same milestone, not after: `-smp 4` including
    the GUI legs, seeded schedule replay, schedule fuzz, the parallelism verdict, and the
    `kernel/init/verify.c` premise audit.

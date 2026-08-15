@@ -1,13 +1,14 @@
 /* drivers/virtio/virtqueue.c — one polled split virtqueue (see virtio.h).
  *
  * Spec: virtio 1.2 cs01 §2.7 (split virtqueues), §2.7.13 (supplying
- * buffers + barriers), §2.7.14 (receiving used buffers). Polling only —
- * no interrupts, no VIRTQ_AVAIL_F_NO_INTERRUPT games; we always notify
- * and always poll (Art. 3: the simplest correct thing). Submission and
- * harvest are decoupled (CUI-8, docs/19 §5a): chains go out through
- * VioSubmitChain without waiting and come back through VioHarvestUsed in
- * whatever order the device finishes them, so the free list is a real
- * terminated list, not a contiguous prefix.
+ * buffers + barriers), §2.7.14 (receiving used buffers). The suppression
+ * flags stay zero and VIRTIO_F_EVENT_IDX unnegotiated (docs/19 §11c): we
+ * always notify, and the device may interrupt per completion — blk's
+ * harvest runs at its MSI-X ISR, input's at its consumer's poll (docs/19
+ * §11f). Submission and harvest are decoupled (CUI-8, docs/19 §5a):
+ * chains go out through VioSubmitChain without waiting and come back
+ * through VioHarvestUsed in whatever order the device finishes them, so
+ * the free list is a real terminated list, not a contiguous prefix.
  */
 #include "drivers/virtio/virtio.h"
 #include "kernel/mm/phys.h"

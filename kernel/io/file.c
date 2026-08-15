@@ -379,11 +379,12 @@ PIO_DEVICE IoPublishDevice(const WCHAR *name, const IO_VFS_OPS *ops, PVOID conte
 
 static PIO_DEVICE IopBootVolumeDevice;
 
-/* CUI-8 (docs/19 §5b): the one completion-drain authority the tick, idle,
- * and every thread-context waiter call (contract in ke.h — dispatcher lock
- * held). The KiInCompletionDrain bracket is docs/20 R2's arming: any
- * allocator call the drain ever grows asserts immediately instead of
- * corrupting a free list once in a thousand boots. */
+/* The one completion-drain authority (CUI-8, docs/19 §5b/§11) the blk
+ * completion ISR and every thread-context waiter call (contract in ke.h —
+ * dispatcher lock held; the ISR holds it by arriving, docs/18 §6d). The
+ * KiInCompletionDrain bracket is docs/20 R2's arming: any allocator call
+ * the drain ever grows asserts immediately instead of corrupting a free
+ * list once in a thousand boots. */
 ULONG IoDrainDeviceCompletions(void)
 {
     if (!VioBlkIsPresent())
@@ -393,7 +394,7 @@ ULONG IoDrainDeviceCompletions(void)
     /* Two prohibitions, deliberately separate: KiInCompletionDrain forbids
      * ALLOCATION (docs/20 R2, asserted in mm), the no-block region forbids
      * PARKING (issue #96 A, asserted at every blocking primitive). The drain
-     * is reached from the tick, from idle, and from thread-context awaiters,
+     * is reached from the completion ISR and from thread-context awaiters,
      * so the region must nest — it counts. */
     KiEnterNoBlockRegion("completion drain");
     KiInCompletionDrain = TRUE;

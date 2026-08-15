@@ -179,7 +179,9 @@ BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device)
 {
     /* Step 4 (write half): accept VERSION_1 and nothing else. Every
      * device-specific feature — blk's RO/FLUSH/topology, input's unused
-     * bits — is left unnegotiated; a polling driver needs none of them. */
+     * bits — is left unnegotiated on its own Art. 3 grounds (no consumer
+     * convicts one; MSI-X is a PCI capability, not a feature bit, and
+     * docs/19 §11c keeps EVENT_IDX deliberately off). */
     device->commonCfg->driverFeatureSelect = 0;
     device->commonCfg->driverFeature = 0;
     device->commonCfg->driverFeatureSelect = 1;
