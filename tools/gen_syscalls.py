@@ -304,6 +304,344 @@ BANNER = """\
 """
 
 # ---------------------------------------------------------------------------
+# The pointer-torture matrix (issue #32 A1, tests/ntapi/syscall/ptr_torture.c).
+#
+# The argument SHAPE of every implemented service, extracted from the pinned
+# Wine tree's own prototypes, so a hostile-pointer sweep over the whole
+# syscall surface is complete BY CONSTRUCTION rather than by whoever
+# remembered to write a case. The defect it hunts is the one the differential
+# harness structurally cannot reach: the oracle answers "what is the right
+# semantics for a well-formed call", and has nothing whatever to say about a
+# service handed a kernel address — Wine is not a kernel and has no ring
+# boundary. So the verdict changes from MATCHES to SURVIVES AND REFUSES
+# LOUDLY, and the enumeration has to come from somewhere other than a test
+# author's memory. It comes from here.
+#
+# Same reasoning as G4 for constants: the shape is EXTRACTED, never retyped,
+# and the extraction is the reason a service added tomorrow is swept the day
+# it lands. `IMPLEMENTED` above is the enrolment list; nothing else opts in.
+#
+# The classification is by TYPE SPELLING, and every spelling is listed
+# explicitly below: a prototype carrying a spelling this file has never seen
+# makes the generator REFUSE, naming the type. Guessing from a leading `P`
+# would misfile PROCESSINFOCLASS and POWER_INFORMATION_LEVEL as pointers, and
+# a matrix that silently tortures the wrong argument is worse than one that
+# stops and asks (Art. 4's rule applied to shapes instead of numbers).
+
+# Kind letters, as the generated table spells them. The driver
+# (tests/ntapi/syscall/ptr_torture.c) defines what each one is fed.
+#   S  scalar          - a value; tortured with saturated lengths
+#   H  handle          - tortured only by the pass baseline (invalid / live),
+#                        never with a hostile POINTER, so a NULL that means
+#                        "the current process" cannot make the sweep shoot
+#                        the runner it is running in
+#   P  pointer         - the main event: every hostile address in turn
+#   U  PUNICODE_STRING - a pointer, plus the counted-string interior
+#                        (hostile Buffer behind a well-formed descriptor)
+#   O  POBJECT_ATTRIBUTES - a pointer, plus the interior (hostile ObjectName,
+#                        lying Length)
+#   F  callback        - a ring-3 routine the kernel stores and never
+#                        dereferences; always NULL, so the sweep cannot end up
+#                        asking a thread to jump into a hostile address
+SCALAR_TYPES = {
+    "ACCESS_MASK", "BOOL", "BOOLEAN", "DWORD", "EVENT_TYPE", "EXECUTION_STATE",
+    "LANGID", "LCID", "LONG", "NTSTATUS", "RTL_ATOM", "SECTION_INHERIT",
+    "SECURITY_INFORMATION", "SHUTDOWN_ACTION", "SIZE_T", "TIMER_TYPE",
+    "TOKEN_TYPE", "ULONG", "ULONG_PTR", "WAIT_TYPE", "int",
+}
+
+# An INFORMATION CLASS is a scalar the sweep holds STILL, and this is the one
+# place the matrix deliberately looks away.
+#
+# A class selects WHICH of a service's bodies runs, so saturating it does not
+# ask a harder question about the same code — it asks for a body that does not
+# exist, and the answer to that is STATUS_NOT_IMPLEMENTED, which a ring-3
+# caller turns into a panic (Art. 12 / G12, kernel/syscall/table.c). The
+# machine halts on the first unbuilt class in the first enum and the remaining
+# ~190 services are never swept at all. The class space IS a real backlog and
+# deserves a real instrument — but a different one: it enumerates a CONTRACT
+# (what each class must answer, against the oracle), which is issue #32's 2.1,
+# not a liveness sweep that has to survive in order to finish.
+#
+# So a class argument is pinned to a value the kernel builds and the sweep
+# tortures the POINTERS around it — which is what reaches the copy paths at
+# all. Each value is that class's basic/first case; the comment names the
+# enumerator so the number is checkable against the pinned Wine headers rather
+# than taken on faith (G4's habit, even though a test input is not a contract
+# constant). A value the kernel does NOT build announces itself immediately —
+# the sweep panics on that service — so these cannot rot silently.
+CLASS_TYPES = {
+    "ATOM_INFORMATION_CLASS": (0, "AtomBasicInformation"),
+    "EVENT_INFORMATION_CLASS": (0, "EventBasicInformation"),
+    "FILE_INFORMATION_CLASS": (4, "FileBasicInformation"),
+    "FS_INFORMATION_CLASS": (1, "FileFsVolumeInformation"),
+    "IO_COMPLETION_INFORMATION_CLASS": (0, "IoCompletionBasicInformation"),
+    "JOBOBJECTINFOCLASS": (1, "JobObjectBasicAccountingInformation"),
+    "KEY_INFORMATION_CLASS": (0, "KeyBasicInformation"),
+    "KEY_VALUE_INFORMATION_CLASS": (0, "KeyValueBasicInformation"),
+    "MEMORY_INFORMATION_CLASS": (0, "MemoryBasicInformation"),
+    "MUTANT_INFORMATION_CLASS": (0, "MutantBasicInformation"),
+    "OBJECT_INFORMATION_CLASS": (0, "ObjectBasicInformation"),
+    "POWER_INFORMATION_LEVEL": (11, "ProcessorInformation"),
+    "PROCESSINFOCLASS": (0, "ProcessBasicInformation"),
+    "SECTION_INFORMATION_CLASS": (0, "SectionBasicInformation"),
+    "SEMAPHORE_INFORMATION_CLASS": (0, "SemaphoreBasicInformation"),
+    "SYSTEM_INFORMATION_CLASS": (0, "SystemBasicInformation"),
+    "THREADINFOCLASS": (0, "ThreadBasicInformation"),
+    "TIMER_INFORMATION_CLASS": (0, "TimerBasicInformation"),
+    "TOKEN_INFORMATION_CLASS": (1, "TokenUser"),
+    "VIRTUAL_MEMORY_INFORMATION_CLASS": (0, "VmPrefetchInformation"),
+}
+
+# Pointer typedefs that hide their pointer-ness behind a P/LP prefix (a
+# spelling ending in `*` needs no table).
+POINTER_TYPES = {
+    "LPCVOID", "PBOOLEAN", "PCONTEXT", "PDIRECTORY_BASIC_INFORMATION",
+    "PDWORD", "PGENERIC_MAPPING", "PHANDLE", "PIO_STATUS_BLOCK",
+    "PKEY_MULTIPLE_VALUE_INFORMATION", "PLARGE_INTEGER", "PLONG", "PLUID",
+    "PMEMORY_RANGE_ENTRY", "PPRIVILEGE_SET", "PSECURITY_DESCRIPTOR",
+    "PTOKEN_GROUPS", "PTOKEN_PRIVILEGES", "PULONG", "PULONG_PTR", "PVOID",
+}
+STRING_TYPES = {"PUNICODE_STRING", "UNICODE_STRING"}
+OBJATTR_TYPES = {"POBJECT_ATTRIBUTES", "OBJECT_ATTRIBUTES"}
+CALLBACK_TYPES = {
+    "PIO_APC_ROUTINE", "PNTAPCFUNC", "PRTL_THREAD_START_ROUTINE",
+    "PTIMER_APC_ROUTINE",
+}
+
+# Services the sweep must NOT call at all, each with the reason it is out.
+# This is the ONLY judgment in the matrix, and it is deliberately about the
+# sweep's own survival, never about whether a service is likely to be buggy:
+# a sweep that terminates itself, or parks forever, reports nothing about the
+# 200 services it never reached. Enrolment is the default — a service added
+# to IMPLEMENTED tomorrow is swept tomorrow — so this list can only shrink a
+# run that has already been reasoned about, and the generated table names
+# every exclusion so a reader of the test output sees what was not asked.
+TORTURE_EXCLUDE = {
+    "NtContinue": "transfers control to a caller-supplied context; never returns",
+    "NtContinueEx": "transfers control to a caller-supplied context; never returns",
+    "NtCallbackReturn": "unwinds a user callback frame the sweep is not inside",
+    "NtRaiseException": "raises into the sweep's own thread; never returns normally",
+    "NtTerminateProcess": "a NULL handle means the CURRENT process — it would kill the sweep",
+    "NtTerminateThread": "a NULL handle means the CURRENT thread — it would kill the sweep",
+    "NtShutdownSystem": "powers the machine off, taking every later case with it",
+    "NtSetSystemTime": "moves the wall clock under every test that runs after this one",
+    "NtSetSystemInformation": "writes machine-global state the rest of the leg reads",
+    "NtWaitForAlertByThreadId": "a NULL timeout parks forever and nothing here alerts",
+}
+
+# Services swept only with the INVALID-handle baseline: the second pass hands
+# every handle argument a live, signalled event, and for these that is the
+# difference between a call that returns and a leg that hangs. Reaching the
+# pointer paths behind the handle check is exactly what pass 2 is for, so an
+# entry here is a coverage loss, not a free choice — the reason has to be
+# "this parks", never "this looked risky".
+TORTURE_NO_LIVE_HANDLE = {
+    "NtWaitForSingleObject": "a live non-signalled handle + NULL timeout parks forever",
+    "NtWaitForMultipleObjects": "a live non-signalled handle + NULL timeout parks forever",
+    "NtSignalAndWaitForSingleObject": "the wait half parks forever on a NULL timeout",
+    "NtWaitForKeyedEvent": "parks until a matching release that never comes",
+    "NtReleaseKeyedEvent": "parks until a matching wait that never comes",
+    "NtRemoveIoCompletion": "an empty port + NULL timeout parks forever",
+    "NtRemoveIoCompletionEx": "an empty port + NULL timeout parks forever",
+    "NtLockFile": "a conflicting lock without FailImmediately parks forever",
+}
+
+# The LEDGER: services the sweep cannot reach today because an ORDINARY,
+# well-formed argument already lands in an unbuilt case — a
+# STATUS_NOT_IMPLEMENTED, which for a ring-3 caller is a panic (Art. 12), so
+# the sweep would take the machine down before it ever got to a hostile
+# pointer. Each entry is a REAL DEFECT this matrix found and did not fix, in
+# the class issue #32 calls latent: a hole no consumer has walked into yet.
+#
+# It is a ledger and not an exclusion list, and the difference is the point.
+# An exclusion says "not this one, ever"; a ledger entry says "this is owed",
+# names what is unbuilt, and is printed by every run of the test so the debt
+# cannot go quiet. Removing an entry is what "fixed" looks like — and if the
+# fix is wrong, the sweep panics the moment the entry comes off.
+#
+# Nothing may be parked here to make a run green. The only admissible reason
+# is the one above: a well-formed call reaches unbuilt code, and building it
+# is a milestone's work rather than this instrument's.
+# name -> (axis, reason). The axis is how much of the sweep the debt costs:
+# "*" drops the service entirely; otherwise it names KIND LETTERS whose
+# arguments keep their baseline instead of being tortured ("S" = the
+# saturated-scalar axis, "O" = the OBJECT_ATTRIBUTES argument, ...), and a
+# letter followed by "+" parks only that descriptor's INTERIORS while the
+# hostile-ADDRESS sweep over it still runs.
+#
+# Always take the NARROWEST axis that clears the panic. Parking a service
+# outright to dodge one saturated flag word throws away every pointer
+# argument it has, and parking a descriptor outright to dodge its interiors
+# stops the matrix checking that argument for the very defect it exists to
+# find.
+TORTURE_PARKED = {
+    "NtLockFile": (
+        "*",
+        "a non-NULL IoStatusBlock, ApcRoutine or Key is unbuilt "
+        "(kernel/io/lock.c), and every real caller passes an IOSB",
+    ),
+    "NtUnlockFile": (
+        "*",
+        "the keyed form (a non-NULL Key) is unbuilt (kernel/io/lock.c)",
+    ),
+    "NtCreateUserProcess": (
+        "S",
+        "a process-creation flag outside the three built ones is unbuilt "
+        "(kernel/ps/process.c), so a saturated flag word refuses as unbuilt",
+    ),
+    "NtQueueApcThreadEx2": (
+        "*",
+        "a non-NULL ApcReserve handle is unbuilt (kernel/ps/thread.c), and "
+        "the sweep has no NULL handle to offer - NULL names the caller itself "
+        "for other services",
+    ),
+    "NtOpenProcess": (
+        "O+",
+        "a named open - any non-NULL ObjectName - is unbuilt "
+        "(kernel/ps/process.c); only the attribute INTERIORS are parked, the "
+        "block pointer itself is still swept",
+    ),
+}
+
+# (service, argument index) -> (value, enumerator). CLASS_TYPES picks one
+# value per class TYPE, and one type can serve two services that build
+# different halves of it: THREADINFOCLASS's basic class is queryable but not
+# settable, so NtSetInformationThread needs its own. Only a service the sweep
+# convicted belongs here — the panic IS the evidence.
+CLASS_OVERRIDE = {
+    ("NtSetInformationThread", 1): (2, "ThreadPriority"),
+    ("NtSetInformationObject", 1): (4, "ObjectHandleFlagInformation"),
+    ("NtSetInformationJobObject", 1): (2, "JobObjectBasicLimitInformation"),
+    ("NtSetInformationToken", 1): (6, "TokenDefaultDacl"),
+}
+
+
+def parse_wine_prototypes(root: Path):
+    """{name: [type spelling, ...]} for every Nt* prototype in the pinned
+    Wine's winternl.h — the same header abi/ is generated from."""
+    src = (root / "third_party/wine/include/winternl.h").read_text()
+    protos = {}
+    for match in re.finditer(
+        r"^NTSYSAPI\s+[A-Za-z_0-9 ]+?\s+WINAPI\s+(Nt\w+)\s*\(([^;]*)\);", src, re.M
+    ):
+        args = [a.strip() for a in match.group(2).split(",")]
+        if len(args) == 1 and args[0].lower() in ("void", ""):
+            args = []
+        protos[match.group(1)] = args
+    if len(protos) < 200:
+        sys.exit(f"gen_syscalls: winternl.h prototype extraction looks wrong ({len(protos)})")
+    return protos
+
+
+def argument_kind(name: str, index: int, spelling: str) -> str:
+    """One kind TOKEN for one prototype argument, by type spelling only: a
+    kind letter, and for a class argument the baseline value after it."""
+    # Wine spells a few arguments with a parameter NAME ("HANDLE ThreadHandle");
+    # drop it, and the const/whitespace noise with it.
+    text = re.sub(r"\s+", " ", spelling.replace("const", " ")).strip()
+    text = re.sub(r"\s*\*", "*", text)
+    if " " in text and not text.endswith("*"):
+        text = text.split(" ")[0]
+    base = text.rstrip("*")
+    pointer = text.endswith("*")
+    if base in STRING_TYPES:
+        return "U" if pointer or base == "PUNICODE_STRING" else "S"
+    if base in OBJATTR_TYPES:
+        return "O" if pointer or base == "POBJECT_ATTRIBUTES" else "S"
+    if base in CALLBACK_TYPES:
+        return "F"
+    if pointer or base in POINTER_TYPES or base in ("void", "VOID"):
+        return "P"
+    if base == "HANDLE":
+        return "H"
+    if base in CLASS_TYPES:
+        value = CLASS_OVERRIDE.get((name, index), CLASS_TYPES[base])[0]
+        return f"C{value}"
+    if base in SCALAR_TYPES:
+        return "S"
+    sys.exit(
+        f"gen_syscalls: {name} argument {index} has an unclassified type "
+        f"'{spelling}'. Add the spelling to one of the *_TYPES sets in "
+        f"tools/gen_syscalls.py (never guess from the prefix — see the "
+        f"pointer-torture comment there)."
+    )
+
+
+def gen_torture_matrix(wine_syscalls) -> str:
+    argc_by_name = {name: argc for _sid, name, argc in wine_syscalls}
+    protos = parse_wine_prototypes(Path(__file__).resolve().parent.parent)
+    rows, excluded, parked = [], [], []
+    for name in IMPLEMENTED:
+        if name not in protos:
+            sys.exit(f"gen_syscalls: no winternl.h prototype for {name}")
+        args = protos[name]
+        # The two extractions are independent (the syscall id table's stack
+        # byte count vs. the header's prototype), so their disagreement is a
+        # pin bump that moved one and not the other — and the matrix would
+        # then torture an argument the service does not have.
+        if len(args) != argc_by_name[name]:
+            sys.exit(
+                f"gen_syscalls: {name} has {len(args)} prototype arguments but "
+                f"{argc_by_name[name]} syscall-table slots"
+            )
+        if name in TORTURE_EXCLUDE:
+            excluded.append((name, TORTURE_EXCLUDE[name]))
+            continue
+        if name in TORTURE_PARKED and TORTURE_PARKED[name][0] == "*":
+            parked.append((name, TORTURE_PARKED[name][1]))
+            continue
+        kinds = " ".join(argument_kind(name, i, a) for i, a in enumerate(args))
+        if name in TORTURE_PARKED:  # a narrower axis: keep the rest of the sweep
+            axis, reason = TORTURE_PARKED[name]
+            parked.append((name, reason))
+            for letter in axis.replace("+", ""):
+                kinds = kinds.replace(letter, letter.lower())
+            if "+" in axis:  # interiors only: the address sweep survives
+                kinds = kinds.replace(axis[axis.index("+") - 1].lower(),
+                                      axis[axis.index("+") - 1].lower() + "+")
+        live = "0" if name in TORTURE_NO_LIVE_HANDLE else "1"
+        rows.append(f'KI_TORTURE({name}, {len(args)}, "{kinds}", {live})')
+    stale = sorted(
+        (set(TORTURE_EXCLUDE) | set(TORTURE_NO_LIVE_HANDLE) | set(TORTURE_PARKED))
+        - set(IMPLEMENTED)
+    )
+    if stale:
+        sys.exit(f"gen_syscalls: torture exclusions name unimplemented services: {stale}")
+    noLive = [(n, r) for n, r in sorted(TORTURE_NO_LIVE_HANDLE.items())]
+    return (
+        BANNER.format(name="tests/ntapi/syscall/torture_matrix.inc")
+        + "/* The argument SHAPE of every implemented service, for the\n"
+        + " * pointer-torture sweep (issue #32 A1, ptr_torture.c). X-macros:\n"
+        + " *\n"
+        + " *   KI_TORTURE(name, argc, kinds, liveHandlePass)\n"
+        + " *   KI_TORTURE_EXCLUDED(name, reason)      not called at all\n"
+        + " *   KI_TORTURE_NO_LIVE(name, reason)       invalid-handle pass only\n"
+        + " *   KI_TORTURE_PARKED(name, reason)        owed: an ordinary call\n"
+        + " *                                          already reaches unbuilt code\n"
+        + " *\n"
+        + " * kinds is one space-separated token per argument, in order:\n"
+        + " *   S scalar   H handle   P pointer   U PUNICODE_STRING\n"
+        + " *   O POBJECT_ATTRIBUTES  F ring-3 callback\n"
+        + " *   C<n> information class, held at <n> (never tortured; the\n"
+        + " *        generator's CLASS_TYPES says why)\n"
+        + " *   a LOWERCASE letter is that kind with its torture axis PARKED\n"
+        + " *   (the argument still takes its baseline); a trailing + parks\n"
+        + " *   only the descriptor INTERIORS, keeping the address sweep\n"
+        + " *\n"
+        + " * Extracted from the pinned Wine's winternl.h prototypes and\n"
+        + " * cross-checked against the syscall table's own argument counts. */\n"
+        + "\n".join(rows)
+        + "\n\n/* Swept by nobody: calling these would end the sweep. */\n"
+        + "\n".join(f'KI_TORTURE_EXCLUDED({name}, "{reason}")' for name, reason in excluded)
+        + "\n\n/* Invalid-handle pass only (a live handle parks them). */\n"
+        + "\n".join(f'KI_TORTURE_NO_LIVE({name}, "{reason}")' for name, reason in noLive)
+        + "\n\n/* The ledger: found by this matrix, not yet built. */\n"
+        + "\n".join(f'KI_TORTURE_PARKED({name}, "{reason}")' for name, reason in parked)
+        + "\n"
+    )
+
+# ---------------------------------------------------------------------------
 # Differential-fuzzer op model (docs/08 "Differential fuzzing", tests/fuzz/).
 #
 # One model, two generated consumers — tests/fuzz/gen/fuzz_model.h (the C
@@ -1066,6 +1404,7 @@ def main() -> None:
         (root / "abi/syscall_numbers.h", gen_numbers(wine_syscalls)),
         (root / "kernel/syscall/table.inc", gen_table_inc(wine_syscalls)),
         (root / "tests/ntapi/syscall/syscall_stubs.S", gen_stubs(wine_syscalls)),
+        (root / "tests/ntapi/syscall/torture_matrix.inc", gen_torture_matrix(wine_syscalls)),
         (root / "tests/fuzz/gen/fuzz_model.h", gen_fuzz_model_h()),
         (root / "tests/fuzz/gen/fuzz_model.py", gen_fuzz_model_py()),
     ]:

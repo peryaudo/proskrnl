@@ -206,6 +206,7 @@ tests/
     ntapi.h              # the harness API (this doc)
     ntapi.c              # freestanding harness impl + the ntapi_start entry
     syscall/             # generated raw-syscall stubs (tests/boot flat clients only)
+                         #   + the generated pointer-torture matrix (docs/08)
     sem_wait/            # dispatcher/wait semantics
     sem_ob/              # object-manager semantics
     sem_mm/              # virtual memory semantics
@@ -228,8 +229,25 @@ lists every subtest of ntdll, kernel32, msvcrt, ucrtbase and programs/cmd — th
 surface — so the leg measures the frontier rather than the part already crossed; advapi32 and
 user32 are out (`docs/03` "M10 winetest notes").
 
-(`tests/ntapi/syscall/` is no longer part of the ntapi build; the generated stubs remain
-for the M4/M5-era flat boot modules under `tests/boot/`.)
+(`tests/ntapi/syscall/`'s generated STUBS are no longer part of the ntapi build; they
+remain for the M4/M5-era flat boot modules under `tests/boot/`. The directory does hold one
+ordinary ntapi test — `ptr_torture.c`, over the generated `torture_matrix.inc` — because
+that is where the generator writes.)
+
+### A third disposition: proskrnl-only, by construction
+
+`todo_proskrnl` and `beyond_oracle` both assume the oracle is being ASKED something. One
+test is not asking: `syscall/ptr_torture.c` (docs/08, "The pointer-torture matrix") sweeps
+every service with hostile pointers and grades survival, and Wine — no ring boundary, no
+kernel — has nothing to say about a kernel address. It therefore probes
+`ntapi_ctx.on_proskrnl` and `skip()`s the whole body on the oracle leg, with the reason in
+the skip text.
+
+This is not an escape hatch and it does not weaken Art. 5: nothing there pins a boundary
+SEMANTICS. A test that asserts what a status IS still measures the oracle first, or cites
+a Microsoft contract in a `beyond_oracle` block. The distinction is whether a runner that
+is not a kernel could be the authority for the question — for liveness under a hostile
+ring-3 argument, it cannot be.
 
 ---
 
