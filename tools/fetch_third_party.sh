@@ -151,20 +151,23 @@ declare -A MARKER=(
 COMPONENTS=(limine qemu-build wine freetype)
 
 # A wine tree built before GUI-3 has every marker above and still lacks the
-# font backend. setup_linux.sh would catch that and rebuild from source —
-# correct, but hours; re-restoring from the cache is minutes, and the
-# tarball overlays the stale tree completely. Same truthful marker
-# setup_linux.sh uses: configure writes SONAME_LIBFREETYPE exactly when the
-# backend is on (and errors out when it is wanted but missing).
+# font backend; one built before the X switch has every marker and still
+# lacks a display driver. setup_linux.sh would catch either and rebuild from
+# source — correct, but hours; re-restoring from the cache is minutes, and
+# the tarball overlays the stale tree completely. Same truthful markers
+# setup_linux.sh uses: configure writes SONAME_LIBFREETYPE / SONAME_LIBX11
+# exactly when that backend is on (and errors out when it is wanted but
+# missing), so neither define can be true of a tree that lacks the thing.
 WineTreeIsStale() {
-    [[ -f third_party/wine/include/config.h ]] &&
-        ! grep -q '^#define SONAME_LIBFREETYPE ' third_party/wine/include/config.h
+    [[ -f third_party/wine/include/config.h ]] || return 1
+    ! grep -q '^#define SONAME_LIBFREETYPE ' third_party/wine/include/config.h ||
+        ! grep -q '^#define SONAME_LIBX11 ' third_party/wine/include/config.h
 }
 
 missing=()
 for c in "${COMPONENTS[@]}"; do
     if [[ "$c" == wine ]] && [[ -e "${MARKER[$c]}" ]] && WineTreeIsStale; then
-        echo "== wine: present but built without the font backend — restoring =="
+        echo "== wine: present but built without the font backend or a display — restoring =="
         missing+=("$c")
     elif [[ -e "${MARKER[$c]}" ]]; then
         echo "== $c: already present — skipping =="
@@ -220,7 +223,7 @@ for a in json.load(sys.stdin).get("assets", []):
 # (test.yml pins ubuntu-24.04). The publish step uploads the per-key
 # distro.txt LAST, so its presence also proves the key's asset set is
 # complete — treat its absence as a miss, and a different distro as fatal.
-distro_url="$(awk -F'\t' -v n="tp-v6-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+distro_url="$(awk -F'\t' -v n="tp-v7-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
 if [[ -z "$distro_url" ]]; then
     echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
     echo "  Either the pins were just bumped and CI on main has not" >&2
@@ -241,7 +244,7 @@ fi
 echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
-    prefix="tp-v6-$KEY-$c.tar.zst.part"
+    prefix="tp-v7-$KEY-$c.tar.zst.part"
     parts="$(grep "^$prefix" <<<"$assets" || true)"
     if [[ -z "$parts" ]]; then
         echo "fetch_third_party: no '$prefix*' assets for the current pins." >&2

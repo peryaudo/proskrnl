@@ -47,6 +47,25 @@ if [[ "$(id -u)" -ne 0 ]]; then
     SUDO="sudo"
 fi
 
+# The oracle wine is built --with-x (see WINE_CONFIGURE below), and wine's
+# configure AUTODETECTS every X extension one header at a time: which of them
+# it finds is written into the generated include/config.h, so the set of X
+# development packages on the box IS part of the oracle's contract. Naming the
+# whole set explicitly — rather than letting whatever a distro image happens
+# to preinstall decide — is the same rule --without-fontconfig follows: an
+# oracle whose config.h depends on which machine built it is not a spec.
+# xvfb is the runtime half: the display every oracle leg runs on
+# (tests/run/run.sh start_xvfb), pinned to one geometry.
+#
+# Each package answers a named configure check in third_party/wine/configure.ac
+# ("Check for X cursor", "Check for X input extension", ...); dropping one
+# silently turns that extension off in winex11.drv.
+X11_PACKAGES=(
+    xvfb
+    libx11-dev libxext-dev libxrender-dev libxrandr-dev libxinerama-dev
+    libxcomposite-dev libxfixes-dev libxcursor-dev libxi-dev libxxf86vm-dev
+)
+
 echo "== apt packages =="
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \
@@ -55,7 +74,8 @@ $SUDO apt-get install -y --no-install-recommends \
     ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
     libgtk-3-dev bzip2 \
     flex bison python3-venv \
-    gcc libc6-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+    gcc libc6-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+    "${X11_PACKAGES[@]}"
 
 # Bring every third_party submodule to its pinned gitlink, one at a time so
 # a single broken tree cannot strand the rest (an empty clone with an unborn
@@ -144,7 +164,27 @@ WINE_FT_ENV=(
 # x86_64 host a non-empty --enable-archs alone keeps the host build 64-bit
 # (configure.ac's -m32 fallback tests `x"$enable_archs" = x`), so --enable-win64
 # is subsumed. The i386 PE side needs the i686 mingw cross from the apt list.
-WINE_CONFIGURE=(--enable-archs=i386,x86_64 --without-x --with-freetype --without-fontconfig)
+#
+# --with-x (was --without-x through GUI-6): under the null display driver
+# user32 refuses every window ("The graphics driver is missing"), so the
+# oracle could not answer a single question about a window — no oracle half
+# for user32:msg, none for any tests/ntapi case that would need a desktop,
+# and the font-metrics oracle answered from a Wine whose USER half was a
+# stub. An oracle that cannot run the code the kernel runs is not a spec, so
+# the display driver joins the font backend: winex11.drv against an Xvfb
+# display the runner starts (tests/run/run.sh start_xvfb), pinned to one
+# geometry and one DPI so it is reproducible on a laptop and on a headless
+# CI runner alike. X11_PACKAGES above pins what configure may detect.
+#
+# --without-opengl is explicit for the same reason --without-fontconfig is:
+# configure's OpenGL probe lives INSIDE the X block (configure.ac, "Check for
+# the presence of OpenGL"), so enabling X is what first exposes it to host
+# variance — a box with libgl-dev would get an oracle with a different
+# config.h than one without. No oracle leg draws through GL, and the pinned
+# tree answered `#undef SONAME_LIBGL` before this change too, so pinning it
+# off keeps the oracle's GL surface exactly where it already was.
+WINE_CONFIGURE=(--enable-archs=i386,x86_64 --with-x --without-opengl
+                --with-freetype --without-fontconfig)
 
 # A box provisioned before GUI-3 carries a --without-freetype wine, and the
 # two "already built — skipping" guards below would serve it forever. wine's
@@ -171,7 +211,18 @@ if [[ $wineStale -eq 0 && -f third_party/wine/Makefile ]] &&
     echo "== wine: pre-WOW64 (x86_64-only) build found — reconfiguring =="
 fi
 
-echo "== wine: the ntapi + font-metrics oracle (x86_64 + i386 PE, no X) =="
+# Third time, same trap: a box provisioned before the X switch above carries a
+# --without-x wine, whose USER half refuses every window. configure records
+# the X11 client library it will dlopen as SONAME_LIBX11 (and ERRORS OUT when
+# X is wanted but missing, WINE_ERROR_WITH(x) in configure.ac), so that define
+# is a truthful "this tree has a display driver" marker.
+if [[ $wineStale -eq 0 && -f third_party/wine/include/config.h ]] &&
+    ! grep -q '^#define SONAME_LIBX11 ' third_party/wine/include/config.h; then
+    wineStale=1
+    echo "== wine: pre-X (--without-x) build found — reconfiguring =="
+fi
+
+echo "== wine: the ntapi + font-metrics oracle (x86_64 + i386 PE, X11) =="
 if [[ $wineStale -eq 0 && ( -x third_party/wine/wine64 || -x third_party/wine/wine ) ]]; then
     echo "   already built — skipping"
 else

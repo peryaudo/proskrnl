@@ -164,6 +164,26 @@ and the same typo rule applies (the error lists all 83 known pairs). This is the
 work a red pair without paying for the whole sweep: the manifest lists the entire non-GUI
 surface, so an unfiltered run is long by design.
 
+### The oracle runs on a display the runner owns (`start_xvfb`)
+
+The pinned Wine is built `--with-x`, so its display driver is `winex11.drv` — and that
+driver is `dlopen`'d and fail-soft exactly like the font backend: with no X connection
+user32 falls back to the null driver, which *refuses* every window rather than failing.
+An oracle in that state answers plausibly and is wrong about everything windowed, which
+is why the runner owns the display instead of borrowing one:
+
+- **One `Xvfb` per `run.sh` invocation**, started for every mode that runs host Wine
+  (`RUNS_WINE`) and killed with the leg. `-displayfd` lets the server pick a free display
+  number, so concurrent legs (`make fulltest` runs eight at once) never fight over `:0`.
+- **Fixed geometry, `$XVFB_SCREEN`, default `1280x800x24`** — proskrnl's own scanout size,
+  so the oracle's screen metrics are the *target's* rather than merely constant. A
+  developer's 4K HiDPI screen never enters an answer, because `$DISPLAY` is overwritten,
+  not inherited.
+- **A missing display is refused, not worked around.** The generated wine wrapper
+  (`build/tests/wine-fonts`) exits non-zero when `$DISPLAY` is empty, and `start_xvfb`
+  refuses a pinned tree whose `config.h` has no `SONAME_LIBX11`. Both failures name
+  themselves; neither can be answered from the null driver by accident.
+
 ### The oracle leg is fanned out (`ORACLE_JOBS`)
 
 The oracle leg is one short-lived process per case and nothing else, so it runs
