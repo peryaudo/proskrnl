@@ -478,6 +478,15 @@ delivery verdict (§11e) and, at runtime, the existing 10 s park panic — loudl
 - **Negative paths by inspection + assert**, since QEMU always offers MSI-X: the
   `NO_VECTOR` readback refusal and the absent-capability refusal are G12-loud code paths
   reviewed against §4.1.4.3, each with an `ASSERT`/`DbgPrint` naming itself.
+- **Tests that observe a parked window from another thread need the window held.** The
+  ISR completes a park at device speed, so "the issuer is parked and I can look" stopped
+  being a consequence of `VioBlkSetAwaitSpinBound(0)` alone — the cancel test rode the
+  old tick-drain latency and became a hang-shaped race under TCG. The fix is another
+  §8.1-class knob, not a tolerance: `VioBlkSetCompletionHold` defers the harvest so the
+  window is a controlled state again (the driver's own forward-progress paths — submit
+  retries, the terminating thread's poll-home — bypass it, so it can never wedge the
+  machine), and the watcher pumps completions manually until the span it wants to cancel
+  into appears.
 
 ### f. What this deliberately does not do
 

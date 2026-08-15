@@ -5,8 +5,10 @@
  * semantic test because it is behaviourally the old kernel. These cases
  * measure the MACHINE, from kernel mode where the in-flight window can be
  * held open deterministically (VioBlkSetAwaitSpinBound(0) forces every
- * await to park, so "a transfer is in flight and the issuer is parked" is
- * a controlled state, not a race):
+ * await to park, and — where a test must OBSERVE the parked window from
+ * another thread — VioBlkSetCompletionHold keeps it parked against the
+ * completion ISR, so "a transfer is in flight and the issuer is parked"
+ * is a controlled state, not a race):
  *
  *   - progress: a counter thread observably advances while another
  *     thread's cold cache fill is parked on the device — the property the
@@ -284,13 +286,20 @@ static void test_cui8_cancel_in_flight(void)
     }
 
     cui8_cancel_status = STATUS_PENDING;
-    /* The reader's fill parks on every batch; the configured bound comes
-     * back afterwards (blk.h — never the compile-time default). */
+    /* The reader's fill parks on every batch (bound 0) and STAYS parked
+     * under the completion hold: the ISR completes a park at device speed,
+     * so without the hold the whole read can finish before this thread
+     * ever observes the span — the in-flight window must be a controlled
+     * state, not a race against the device (blk.h; docs/19 §11e). The
+     * configured bound comes back afterwards (blk.h — never the
+     * compile-time default). */
     ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
+    VioBlkSetCompletionHold(TRUE);
     PKTHREAD reader = KiCreateThread(8, cui8_cancel_reader, 0);
     ok(reader != 0, "reader thread");
     if (reader == 0)
     {
+        VioBlkSetCompletionHold(FALSE);
         VioBlkSetAwaitSpinBound(savedSpins);
         cui8_delete_file(WSTR("\\??\\C:\\cui8cxl.bin"));
         return; /* the FAIL is recorded; don't turn it into a NULL deref */
@@ -299,7 +308,10 @@ static void test_cui8_cancel_in_flight(void)
     /* Wait for the reader to be provably inside its marked I/O span (set
      * by rw.c before the fill can park), then land the cancel — the same
      * mark-and-wake NtCancelSynchronousIoFile performs, driven at the
-     * mechanism level (the boundary form is pinned by cancel_data_io.c). */
+     * mechanism level (the boundary form is pinned by cancel_data_io.c).
+     * Pre-span I/O (the open's directory lookup) parks under the hold
+     * too, so pump it forward manually — and stop pumping the moment the
+     * span appears, which pins the reader parked inside it. */
     int sawSpan = 0;
     for (uint64_t spins = 0; spins < 1000000000ULL; spins++)
     {
@@ -308,6 +320,7 @@ static void test_cui8_cancel_in_flight(void)
             sawSpan = 1;
             break;
         }
+        VioBlkPumpCompletions();
         KiYield();
     }
     ok(sawSpan, "reader reached its synchronous-I/O span");
@@ -316,6 +329,9 @@ static void test_cui8_cancel_in_flight(void)
         reader->syncIoCancelled = TRUE;
         KeSetEvent(&reader->syncIoCancelEvent, 0, FALSE);
     }
+    /* Release the hold (harvests inline): the parked fill wakes, observes
+     * the landed cancel at its next gated step, and answers CANCELLED. */
+    VioBlkSetCompletionHold(FALSE);
     VioBlkSetAwaitSpinBound(savedSpins);
 
     NTSTATUS join = KeWaitForSingleObject(reader, Executive, 0, FALSE, 0);

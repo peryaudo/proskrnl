@@ -97,6 +97,20 @@ void VioBlkResetDepthStats(void);
 #define VIO_BLK_AWAIT_SPINS 4096
 ULONG VioBlkSetAwaitSpinBound(ULONG spins);
 
+/* Test/stress instrumentation, same knob class (docs/19 §8.1): while held,
+ * VioBlkDrain defers harvesting, so a parked issuer PROVABLY stays parked —
+ * the in-flight window is a controlled state again, which the completion
+ * ISR otherwise closes at device speed (a cancel test that rode the old
+ * tick-drain latency became a race, docs/19 §11e). The driver's own
+ * forward-progress paths (submit-side retries, the terminating thread's
+ * poll-home) bypass the hold, so it can never wedge the driver — and
+ * releasing it harvests inline, because no further MSI is owed for entries
+ * published while held. VioBlkPumpCompletions is the watcher's manual
+ * harvest for advancing an issuer through pre-window I/O while the hold is
+ * up. Nothing outside tests may touch either. */
+void VioBlkSetCompletionHold(BOOLEAN hold);
+void VioBlkPumpCompletions(void);
+
 /* Probe PCI bus 0, bring the device up per the virtio 1.2 cs01 §3.1.1
  * initialization sequence, and set up the request queue. Returns TRUE when
  * a disk is ready; FALSE when no virtio-blk function exists. */
