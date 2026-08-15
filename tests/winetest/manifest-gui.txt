@@ -2,18 +2,31 @@
 # gate: Wine's own user32:msg, whole-module, on proskrnl over the full GUI
 # stack (win32u + wineserver-lite + winefb).
 #
-# There is NO oracle half for this manifest, by measurement, not by choice:
-# the pinned oracle is --without-x (GUI-3 made it the FONT oracle, nothing
-# more), and under its null display driver user32 refuses every window
-# ("The graphics driver is missing"), msg.c fails its very first
-# CreateWindow and then hangs forever in test_SendMessage_other_thread's
-# INFINITE wait. The spec authority for this gate is therefore msg.c's own
-# ok()/todo_wine assertions — winetest is third-party, Windows-verified
-# spec (docs/08), and todo_wine evaluates on proskrnl exactly as on Wine
-# (docs/03 "M10 winetest notes"). The verdict is budget-ratcheted against
-# tests/winetest/msg-budget.txt: the accepted failure count only ever goes
-# DOWN, and the milestone's end state is 0. docs/03 "GUI-5 winetest notes"
-# records the whole policy.
+# There IS an oracle half, and there was not until the oracle got a display.
+# Through GUI-6 the pinned wine was built --without-x, and under its null
+# display driver user32 refuses every window ("The graphics driver is
+# missing"): msg.c failed its very first CreateWindow and then hung forever
+# in test_SendMessage_other_thread's INFINITE wait, so the recorded oracle
+# baseline was `cannot run`, not a count. The oracle is now --with-x on an
+# Xvfb the runner starts (tools/setup_linux.sh, tests/run/run.sh
+# start_xvfb), and run.sh guiwtest runs THIS pair on both sides.
+#
+# The oracle half is not the spec authority and the switch did not make it
+# one — an X11 message environment is no more "what NT does" than nulldrv
+# was. The spec is still msg.c's own ok()/todo_wine assertions: winetest is
+# third-party, Windows-verified spec (docs/08), and todo_wine evaluates on
+# proskrnl exactly as on Wine (docs/03 "M10 winetest notes"). What the
+# oracle half buys is a SECOND RUN of the same code — the same unmodified
+# user32/gdi32/comctl32 above the same win32u, with only the display driver
+# and what is under it different — so that the kernel half's number has
+# something to be a number ABOUT.
+#
+# Each half ratchets against its OWN file, and the numbers are not
+# comparable: msg-budget.txt is a ceiling over proskrnl's divergences plus a
+# machine-speed band, msg-budget-oracle.txt one over unmodified Wine running
+# its own suite (measured: 1, always msg.c:5730's stale todo_wine). Both only
+# ever go DOWN, and the kernel half's end state is 0. docs/03 "GUI-5 winetest
+# notes" records the whole policy.
 #
 # <exe>:<subtest>[:<timeout_s>] — the third field is the per-pair timeout
 # (kernel/init/main.c KiWtestParseManifest); one whole msg run outlasts the
