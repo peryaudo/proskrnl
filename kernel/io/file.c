@@ -734,12 +734,33 @@ NTSTATUS NtOpenFile(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
  * One pair of helpers so that the previousMode dance and the obligation
  * ledger (issue #96 B) are stated once instead of at four call sites. */
 static NTSTATUS IopOpenTransientFile(PHANDLE handle, ACCESS_MASK access,
-                                     POBJECT_ATTRIBUTES attributes, PIO_STATUS_BLOCK iosb,
-                                     ULONG fileAttributes, ULONG sharing, ULONG disposition,
-                                     ULONG options)
+                                     POBJECT_ATTRIBUTES attributes, KPROCESSOR_MODE attributesMode,
+                                     PIO_STATUS_BLOCK iosb, ULONG fileAttributes, ULONG sharing,
+                                     ULONG disposition, ULONG options)
 {
     PKTHREAD thread = KeGetCurrentThread();
     KPROCESSOR_MODE saved = thread->previousMode;
+    /* The HANDLE is kernel-internal; the NAME usually is not. Three of the
+     * four callers hand this their own caller's OBJECT_ATTRIBUTES, and the
+     * elevation below switches off every probe under IopCreateFile (probes
+     * are previous-mode aware — kernel/syscall/uaccess.h), so without this
+     * the block, the UNICODE_STRING inside it and that string's Buffer are
+     * all read at ring 0 with nothing checked: ring 3 halts the machine with
+     * a misaligned name pointer, because a UBSan trap is a #UD and the
+     * service's fault-recovery frame only catches page faults. So the block
+     * is validated HERE, while previousMode is still the caller's, and
+     * `attributesMode` is how a caller with a kernel-built block
+     * (IopProbeTargetPath) says the question does not apply to it. Pinned by
+     * tests/ntapi/sem_file/hostile_name.c; found by the pointer-torture
+     * matrix (issue #32 A1). */
+    if (attributesMode != KernelMode)
+    {
+        NTSTATUS probeStatus = ObProbeObjectAttributes(attributes);
+        if (!NT_SUCCESS(probeStatus))
+        {
+            return probeStatus;
+        }
+    }
     thread->previousMode = KernelMode; /* the handle is kernel-internal */
     NTSTATUS status = IopCreateFile(handle, access, attributes, iosb, fileAttributes, sharing,
                                     disposition, options);
@@ -771,7 +792,7 @@ NTSTATUS NtDeleteFile(POBJECT_ATTRIBUTES attributes)
     HANDLE handle;
     IO_STATUS_BLOCK iosb;
     NTSTATUS status = IopOpenTransientFile(
-        &handle, GENERIC_READ | GENERIC_WRITE | DELETE, attributes, &iosb, 0,
+        &handle, GENERIC_READ | GENERIC_WRITE | DELETE, attributes, ExGetPreviousMode(), &iosb, 0,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_DELETE_ON_CLOSE);
     if (NT_SUCCESS(status))
     {
@@ -792,7 +813,7 @@ NTSTATUS IopProbeTargetPath(POBJECT_ATTRIBUTES attributes)
     HANDLE handle;
     IO_STATUS_BLOCK iosb;
     NTSTATUS status =
-        IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, attributes, &iosb, 0,
+        IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, attributes, KernelMode, &iosb, 0,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (NT_SUCCESS(status))
     {
@@ -819,7 +840,7 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
     KPROCESSOR_MODE saved = thread->previousMode;
     status =
         IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
-                             &iosb, FILE_ATTRIBUTE_NORMAL,
+                             ExGetPreviousMode(), &iosb, FILE_ATTRIBUTE_NORMAL,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (!NT_SUCCESS(status))
     {
@@ -881,7 +902,7 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
     KPROCESSOR_MODE saved = thread->previousMode;
     status =
         IopOpenTransientFile(&handle, FILE_READ_ATTRIBUTES, (POBJECT_ATTRIBUTES)(uintptr_t)attr,
-                             &iosb, FILE_ATTRIBUTE_NORMAL,
+                             ExGetPreviousMode(), &iosb, FILE_ATTRIBUTE_NORMAL,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, 0);
     if (!NT_SUCCESS(status))
     {
