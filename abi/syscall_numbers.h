@@ -213,6 +213,11 @@
 #define NTSYS_NtSetSystemTime 0x00f4
 #define NTSYS_NtSetSystemInformation 0x00f3
 #define NTSYS_NtShutdownSystem 0x00f8
+#define NTSYS_NtQueryLicenseValue 0x00c9
+#define NTSYS_NtSetLdtEntries 0x00f1
+#define NTSYS_NtCreateDebugObject 0x00a6
+#define NTSYS_NtDebugActiveProcess 0x0090
+#define NTSYS_NtRemoveProcessDebug 0x00da
 
 /* One past the highest Wine 64-bit syscall id. */
 #define NTSYS_SYSCALL_LIMIT 0x0108
