@@ -339,10 +339,11 @@ void KiInitializeClock(void)
      *
      * Verified on a KVM host, which is where the reported path first executed
      * at all — the pinned QEMU under TCG stops at basic leaf 0x0D and answers
-     * nothing (issue #176). On a Ryzen 5950X under
-     * CPU_EXTRA=migratable=off,+invtsc (tools/qemu.sh; invtsc is what makes
-     * QEMU publish the leaf at all — target/i386/kvm/kvm.c gates it on
-     * tsc_is_stable_and_known), leaf 0x40000010 reported tsc=3399997
+     * nothing (issue #176). Every KVM run takes the reported path now:
+     * tools/qemu.sh passes -cpu host,+invtsc, which is what makes QEMU publish
+     * the leaf at all (target/i386/kvm/kvm.c gates it on
+     * tsc_is_stable_and_known). On a Ryzen 5950X leaf 0x40000010 reported
+     * tsc=3399997
      * cycles/ms and lapic=62500 ticks/ms where the gate measured 3400965 and
      * 62541 — 0.03% and 0.07% apart, with the reported LAPIC rate landing
      * exactly on QEMU's KVM_APIC_BUS_FREQUENCY / 16. The two sources agree,

@@ -7,9 +7,11 @@
 # Silicon the x86-64 guest runs under TCG emulation (no HVF) — slower, correct.
 #
 # ACCEL=kvm|tcg forces the accelerator; the default is KVM when /dev/kvm is
-# usable, else TCG. KVM changes no guest-observable semantics the tests
-# grep for (the verdict still comes off the same serial log) — it only stops
-# emulating every guest instruction in software.
+# usable, else TCG. No verdict depends on which one runs — every leg's answer
+# still comes off the same serial log — but the two are NOT the same machine:
+# the CPU model differs with the accelerator (see +invtsc below), and the
+# kernel calibrates its clock from a different source under each. ACCEL=tcg is
+# therefore how you reproduce CI's configuration on a box that has KVM.
 set -uo pipefail
 
 IMG="${1:?usage: qemu.sh <hdd> | qemu.sh --print-accel}"
@@ -64,18 +66,42 @@ ACCEL="${ACCEL:-$(find_accel)}"
 
 # `qemu.sh --print-accel` runs the probe above and prints nothing else, so a
 # log can RECORD which accelerator a host actually got. The fallback to TCG
-# is silent by design (it must be: an accelerator is not guest-observable —
-# the verdict still comes off the same serial log), but silent is also how a
-# CI runner that quietly lost /dev/kvm looks exactly like a CI runner that
-# got slower for no reason. Every leg here redirects qemu.sh's stderr to
-# /dev/null, so the answer has to be askable on its own.
+# stays silent — no verdict turns on it, and a host with no KVM has no second
+# option to offer — but silent is how a CI runner that quietly lost /dev/kvm
+# looks exactly like a CI runner that got slower for no reason, and it now
+# also changes the CPU model and with it the clock source. Every leg here
+# redirects qemu.sh's stderr to /dev/null, so the answer has to be askable on
+# its own; the kernel's own boot line names the clock source it ended up with,
+# which is the other half of the same question.
 if [[ "$IMG" == "--print-accel" ]]; then
     echo "$ACCEL"
     exit 0
 fi
+# +invtsc under KVM: tell the guest its TSC is invariant, which is what makes
+# QEMU publish the hypervisor timing leaf (CPUID 0x40000010, TSC kHz + APIC bus
+# kHz). The kernel asks for that leaf before it will fall back to measuring
+# against the PIT (arch/x86_64/lapic.c KiQueryReportedRates), and the pinned
+# QEMU writes it only under KVM and only when the guest TSC is stable AND known
+# — target/i386/kvm/kvm.c tsc_is_stable_and_known, i.e. invariant-TSC exposed
+# or an explicit tsc-freq. Plain -cpu host is neither, so before this every KVM
+# run measured, and the reported path was reachable only by hand (issue #176).
+#
+# It is a DEFAULT rather than a probe because a path nothing runs is a path
+# that rots: CI has no KVM and takes the PIT gate regardless, so leaving this
+# opt-in left the exact-rate path unexercised everywhere. The kernel prints
+# both the reported and the measured rate with an agreement verdict on every
+# boot, so a machine where the two part company says so in its own log.
+#
+# Not migratable=off: invtsc IS non-migratable, but an EXPLICITLY requested
+# feature is accepted anyway (that property only filters the host model's
+# implicit set). On a host CPU without invariant TSC, QEMU warns
+# ("host doesn't support requested feature") and carries on with the PIT gate
+# — fatal only under -cpu ...,enforce=on, which nothing here sets (pinned tree
+# target/i386/cpu.c: x86_cpu_filter_features at 8172, "enforce" default false
+# at 8845).
 case "$ACCEL" in
 kvm)
-    CPU_MODEL=host
+    CPU_MODEL=host,+invtsc
     ;;
 tcg)
     CPU_MODEL=max
@@ -85,23 +111,10 @@ tcg)
     exit 1
     ;;
 esac
-# CPU_EXTRA="<prop>[,<prop>...]" appends properties to the -cpu model, for
-# exercising a kernel path the default model leaves unreachable. Nothing in
-# the tree sets it; it exists so a path like that is REPRODUCIBLE rather than
-# recorded as prose in someone's PR.
-#
-# The case it was added for: the TSC frequency-discovery path
-# (arch/x86_64/lapic.c KiQueryReportedRates) only runs when the platform
-# publishes CPUID leaf 0x40000010, and the pinned QEMU writes that leaf under
-# KVM only and only when the guest TSC is stable AND known
-# (target/i386/kvm/kvm.c tsc_is_stable_and_known, i.e. invariant-TSC exposed
-# or an explicit tsc-freq) — plain -cpu host is neither, so every default run
-# measures against the PIT instead. Issue #176:
-#
-#   CPU_EXTRA=migratable=off,+invtsc tests/run/run.sh proskrnl
-#
-# (invtsc is not migratable, hence migratable=off; on a host CPU that lacks
-# it QEMU warns and continues, so this is a probe, not a portable default.)
+# CPU_EXTRA="<prop>[,<prop>...]" appends further properties to the -cpu model,
+# for exercising a kernel path the default model leaves unreachable — the way
+# +invtsc above was reached before it became the default. Nothing in the tree
+# sets it.
 if [[ -n "${CPU_EXTRA:-}" ]]; then
     CPU_MODEL="$CPU_MODEL,$CPU_EXTRA"
 fi
