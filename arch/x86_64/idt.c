@@ -8,6 +8,7 @@
  * type/attribute byte (0x8E = present, DPL 0, 64-bit interrupt gate). */
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/lapic.h"
 #include "kernel/init/panic.h"
 
 typedef struct
@@ -94,6 +95,11 @@ void KiInitializeIdt(void)
      * silent triple-fault reset — no dump at all. #DF always pushes error
      * code 0 (SDM Vol. 3A §6.15), so trap.S's vector-8 stub already fits. */
     KiSetInterruptGateIst(8, KiTrapThunkTable[8], KI_IST_DOUBLE_FAULT);
+    /* The virtio-blk completion vector (docs/19 §11d.5): its gate exists
+     * from IDT bring-up, BEFORE Io can set MSI-X Enable (IoInitializeTransport
+     * runs after KiInitializeIdt, kernel/init/main.c order), so no window
+     * exists where the device's message targets a zeroed descriptor. */
+    KiSetInterruptGate(BLK_VECTOR, KiTrapThunkTable[BLK_VECTOR]);
 
     KDESCRIPTOR descriptor = {(uint16_t)(sizeof(KiIdt) - 1), (uint64_t)(uintptr_t)KiIdt};
     __asm__ volatile("lidt %0" : : "m"(descriptor));

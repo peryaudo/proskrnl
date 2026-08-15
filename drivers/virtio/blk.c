@@ -2,13 +2,14 @@
  * (see blk.h, virtio.h).
  *
  * Written from the OASIS virtio 1.2 cs01 specification (sections cited
- * inline) against the pinned third_party/qemu device model. Polling, no
- * MSI-X, one request queue, up to VIO_BLK_MAX_INFLIGHT requests in flight
- * (CUI-8, docs/19 §5a): each request owns a control slot (header + status)
- * out of one shared frame, and the head-descriptor cookie map routes each
- * used-ring completion back to its request — VioBlkDrain is the single
- * harvest authority (Art. 11), whether called from a thread-context poll
- * or (CUI-8's later drain points) the tick and idle paths.
+ * inline) against the pinned third_party/qemu device model. One request
+ * queue, MSI-X-signalled (docs/19 §11a: entry 0 -> BLK_VECTOR), up to
+ * VIO_BLK_MAX_INFLIGHT requests in flight (CUI-8, docs/19 §5a): each
+ * request owns a control slot (header + status) out of one shared frame,
+ * and the head-descriptor cookie map routes each used-ring completion back
+ * to its request — VioBlkDrain is the single harvest authority (Art. 11),
+ * whether called from the completion ISR, a thread-context poll, or the
+ * tick and idle paths.
  *
  * MMIO note: the virtio BARs live outside the Limine memmap, so their
  * frames are mapped explicitly into a dedicated kernel VA window. This
@@ -18,6 +19,7 @@
 #include "drivers/virtio/blk.h"
 #include "drivers/virtio/virtio.h"
 #include "drivers/pci.h"
+#include "arch/x86_64/lapic.h" /* BLK_VECTOR */
 #include "arch/x86_64/mmu.h"
 #include "kernel/ob/ob.h" /* KPROCESSOR_MODE enum for the await park */
 #include "kernel/mm/phys.h"
@@ -120,6 +122,18 @@ BOOLEAN VioBlkInitialize(void)
 
     /* Step 7: virtqueue 0, the request queue ("0 requestq1", §5.2.2). */
     if (!VioPciSetupQueue(&VioBlkDevice, &VioBlkQueue, 0))
+    {
+        return FALSE;
+    }
+
+    /* Completion signalling (docs/19 §11a): MSI-X entry 0 carries the
+     * request queue's used-ring notifications to BLK_VECTOR, whose arm in
+     * KiDispatchInterrupt runs the same VioBlkDrain harvest. Before
+     * DRIVER_OK — with Enable clear the device would signal INTx, which
+     * nothing here can see. A refusal is loud (G12): no silent fall-back
+     * to polling (docs/19 §11d.4). */
+    if (!VioPciSetupMsix(&VioBlkDevice, 0, BLK_VECTOR) ||
+        !VioPciSetQueueVector(&VioBlkDevice, 0, 0))
     {
         return FALSE;
     }

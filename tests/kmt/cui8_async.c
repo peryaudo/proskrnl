@@ -230,7 +230,7 @@ static void test_cui8_irq_delivery(void)
        (unsigned long)bytes);
     /* The machine-readable delivery count (docs/19 §11e). */
     DbgPrint("[KTEST] blk irq count=%lu\n", (unsigned long)delivered);
-    todo_kmt ok(delivered != 0, "ISR-path harvests occurred during the parked fill");
+    ok(delivered != 0, "ISR-path harvests occurred during the parked fill");
     cui8_delete_file(WSTR("\\??\\C:\\cui8irq.bin"));
 }
 

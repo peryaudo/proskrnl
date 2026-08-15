@@ -17,6 +17,7 @@
  */
 #include "drivers/virtio/virtio.h"
 #include "drivers/pci.h"
+#include "arch/x86_64/lapic.h" /* KI_MSI_MESSAGE_* (SDM Vol. 3A §11.11) */
 #include "arch/x86_64/mmu.h"
 #include "kernel/mm/phys.h"
 #include "kernel/lib/dbgprint.h"
@@ -53,21 +54,21 @@ static void *VioMapMmio(uint64_t physical, uint64_t length)
 static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
                                uint32_t *notifyMultiplierOut, uint32_t *lengthOut)
 {
-    if ((KiPciReadConfig16(f, PCI_CONFIG_STATUS) & PCI_STATUS_CAPABILITIES_LIST) == 0)
+    /* The walk itself is KiPciFindCapability (drivers/pci.c) — the tree's
+     * one walker (Art. 11); this layer keeps only the virtio-specific
+     * cfg_type/BAR/length interpretation. The outer loop stays bounded:
+     * the walker bounds each resume, but a hostile 64-cycle of MATCHING
+     * vendor caps whose cfg_type never fits would otherwise spin here
+     * forever (docs/review-2026-07 §4). */
+    uint8_t offset = 0;
+    for (unsigned link = 0; link < 64; link++)
     {
-        return 0;
-    }
-    /* Capabilities pointer: low two bits reserved (PCI 3.0 §6.7). */
-    uint8_t offset = KiPciReadConfig8(f, PCI_CONFIG_CAP_POINTER) & 0xFC;
-    /* The list is device-supplied and a cyclic cap_next hung the boot
-     * forever (docs/review-2026-07 §4). Config space is 256 bytes and every
-     * capability is at least 4 of them, so 64 links is the most a
-     * well-formed list can have (PCI 3.0 §6.7). */
-    for (unsigned link = 0; offset != 0 && link < 64; link++)
-    {
-        uint8_t id = KiPciReadConfig8(f, offset);
-        if (id == VIRTIO_PCI_CAP_VNDR_ID &&
-            KiPciReadConfig8(f, (uint8_t)(offset + VIRTIO_PCI_CAP_OFF_CFG_TYPE)) == wantedType)
+        offset = KiPciFindCapability(f, PCI_CAP_ID_VENDOR, offset);
+        if (offset == 0)
+        {
+            return 0;
+        }
+        if (KiPciReadConfig8(f, (uint8_t)(offset + VIRTIO_PCI_CAP_OFF_CFG_TYPE)) == wantedType)
         {
             uint8_t bar = KiPciReadConfig8(f, (uint8_t)(offset + VIRTIO_PCI_CAP_OFF_BAR));
             uint32_t barOffset =
@@ -101,7 +102,6 @@ static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
             }
             return VioMapMmio(barBase + barOffset, length);
         }
-        offset = KiPciReadConfig8(f, (uint8_t)(offset + 1)) & 0xFC;
     }
     return 0;
 }
@@ -229,6 +229,72 @@ BOOLEAN VioPciSetupQueue(VIO_PCI_DEVICE *device, VIO_VIRTQUEUE *queue, uint16_t 
     }
     queue->notify = (volatile uint16_t *)(device->notifyBase + notifyOffset);
     device->commonCfg->queueEnable = 1;
+    return TRUE;
+}
+
+BOOLEAN VioPciSetupMsix(VIO_PCI_DEVICE *device, uint16_t msixEntry, uint8_t vector)
+{
+    const KI_PCI_FUNCTION *f = &device->function;
+    uint8_t cap = KiPciFindCapability(f, PCI_CAP_ID_MSIX, 0);
+    if (cap == 0)
+    {
+        DbgPrint("%s: no MSI-X capability\n", device->name);
+        VioPciSetFailed(device);
+        return FALSE;
+    }
+    uint16_t control = KiPciReadConfig16(f, (uint8_t)(cap + PCI_MSIX_CAP_OFF_MESSAGE_CONTROL));
+    uint16_t tableSize = (uint16_t)((control & PCI_MSIX_CONTROL_TABLE_SIZE_MASK) + 1);
+    /* Table location (PCI 3.0 §6.8.2): BIR in bits 2:0, offset above. The
+     * BIR is device-supplied — same bound as VioFindCapability's BAR check. */
+    uint32_t table = KiPciReadConfig32(f, (uint8_t)(cap + PCI_MSIX_CAP_OFF_TABLE));
+    uint8_t bir = (uint8_t)(table & PCI_MSIX_TABLE_BIR_MASK);
+    uint32_t tableOffset = table & ~(uint32_t)PCI_MSIX_TABLE_BIR_MASK;
+    uint64_t barBase = bir < 6 ? KiPciReadMemoryBar(f, bir) : 0;
+    if (msixEntry >= tableSize || barBase == 0)
+    {
+        DbgPrint("%s: MSI-X table unusable (entry %u of %u, BIR %u)\n", device->name, msixEntry,
+                 tableSize, bir);
+        VioPciSetFailed(device);
+        return FALSE;
+    }
+    device->msixTable = VioMapMmio(barBase + tableOffset, (uint64_t)tableSize * 16);
+
+    /* Program under mask (PCI 3.0 §6.8.3.5): Enable + Function Mask first,
+     * so no entry can fire half-written; entries also reset per-entry
+     * masked (§6.8.2, QEMU msix_mask_all). Only Enable and Function Mask
+     * are config-writable (QEMU hw/pci/msix.c wmask), so the 16-bit RMW
+     * cannot disturb the neighbouring read-only bytes. */
+    KiPciWriteConfig16(
+        f, (uint8_t)(cap + PCI_MSIX_CAP_OFF_MESSAGE_CONTROL),
+        (uint16_t)(control | PCI_MSIX_CONTROL_ENABLE | PCI_MSIX_CONTROL_FUNCTION_MASK));
+    volatile KI_MSIX_TABLE_ENTRY *entry = &device->msixTable[msixEntry];
+    entry->addressLow = KI_MSI_MESSAGE_ADDRESS; /* SDM Vol. 3A §11.11.1 */
+    entry->addressHigh = 0;
+    entry->data = KI_MSI_MESSAGE_DATA(vector); /* SDM Vol. 3A §11.11.2 */
+    entry->vectorControl = 0;                  /* unmask LAST: address/data are now valid */
+    KiPciWriteConfig16(
+        f, (uint8_t)(cap + PCI_MSIX_CAP_OFF_MESSAGE_CONTROL),
+        (uint16_t)((control | PCI_MSIX_CONTROL_ENABLE) & ~PCI_MSIX_CONTROL_FUNCTION_MASK));
+
+    /* Nothing consumes config-change interrupts (§4.1.4.3 config_msix_vector). */
+    device->commonCfg->configMsixVector = VIRTIO_MSI_NO_VECTOR;
+    return TRUE;
+}
+
+BOOLEAN VioPciSetQueueVector(VIO_PCI_DEVICE *device, uint16_t queueIndex, uint16_t msixEntry)
+{
+    /* queue_msix_vector applies to the selected queue (§4.1.4.3); the
+     * device answers NO_VECTOR when it cannot seat the mapping
+     * (§4.1.4.3.2), and a driver that skips the readback ships §11d.4's
+     * masked regression — completions routed to INTx no one can see. */
+    device->commonCfg->queueSelect = queueIndex;
+    device->commonCfg->queueMsixVector = msixEntry;
+    if (device->commonCfg->queueMsixVector != msixEntry)
+    {
+        DbgPrint("%s: queue %u refused MSI-X entry %u\n", device->name, queueIndex, msixEntry);
+        VioPciSetFailed(device);
+        return FALSE;
+    }
     return TRUE;
 }
 

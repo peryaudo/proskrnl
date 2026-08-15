@@ -5,13 +5,15 @@
  * below — with the pinned third_party/qemu as the runtime cross-check
  * (docs/09 Art. 4 / gate G8). Provenance: public spec only (docs/11).
  *
- * Scope: exactly what a polling, uniprocessor, no-MSI-X driver needs — the
- * split virtqueue, the common/notify/device config capabilities, and the
- * status/feature handshake. No interrupts, ever (docs/19 §5b): chains are
- * submitted without waiting (VioSubmitChain) and completions harvested off
- * the used ring (VioHarvestUsed) from the block driver's drain points —
- * tick, idle, or a thread-context poll — so more than one request can be
- * in flight (CUI-8, docs/19 §5a) while the transport stays polled.
+ * Scope: exactly what this uniprocessor driver stack needs — the split
+ * virtqueue, the common/notify/device config capabilities, the
+ * status/feature handshake, and MSI-X signalling for blk's request queue
+ * (docs/19 §11a). Chains are submitted without waiting (VioSubmitChain)
+ * and completions harvested off the used ring (VioHarvestUsed) by the one
+ * drain authority, which the blk completion ISR now drives (docs/19 §11b);
+ * more than one request stays in flight (CUI-8, docs/19 §5a). virtio-input
+ * keeps the poll-and-nap shape — no vector, no suppression negotiation
+ * (docs/19 §11f).
  */
 #ifndef PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
 #define PROSKRNL_DRIVERS_VIRTIO_VIRTIO_H
@@ -137,6 +139,11 @@ _Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, queueNotifyOff) == 0x1E,
 _Static_assert(offsetof(VIRTIO_PCI_COMMON_CFG, queueDevice) == 0x30,
                "common cfg layout (virtio 1.2 cs01 §4.1.4.3)");
 
+/* "No vector": the config/queue msix_vector fields' null value, and the
+ * device's refusal answer on the mandated readback (virtio 1.2 cs01
+ * §4.1.4.3 / §4.1.4.3.2). */
+#define VIRTIO_MSI_NO_VECTOR 0xFFFF
+
 /* --- one polled split virtqueue (virtqueue.c) ------------------------------ */
 
 /* Free-list terminator. Internal to the driver, not a spec value: the spec's
@@ -224,12 +231,13 @@ typedef struct
 {
     KI_PCI_FUNCTION function;
     VIRTIO_PCI_COMMON_CFG *commonCfg;
-    volatile uint8_t *deviceCfg;  /* §4.1.4.6 device-specific config */
-    volatile uint8_t *notifyBase; /* §4.1.4.4 notify structure */
-    uint32_t notifyMultiplier;    /* §4.1.4.4 notify_off_multiplier */
-    uint32_t notifyLength;        /* bytes the notify capability described */
-    uint32_t deviceFeaturesLow;   /* offered bits 0..31, as read */
-    const char *name;             /* "virtio-blk"; log prefix only */
+    volatile uint8_t *deviceCfg;             /* §4.1.4.6 device-specific config */
+    volatile uint8_t *notifyBase;            /* §4.1.4.4 notify structure */
+    uint32_t notifyMultiplier;               /* §4.1.4.4 notify_off_multiplier */
+    uint32_t notifyLength;                   /* bytes the notify capability described */
+    uint32_t deviceFeaturesLow;              /* offered bits 0..31, as read */
+    volatile KI_MSIX_TABLE_ENTRY *msixTable; /* mapped by VioPciSetupMsix, else 0 */
+    const char *name;                        /* "virtio-blk"; log prefix only */
 } VIO_PCI_DEVICE;
 
 /* §3.1.1 steps 1-4 (read half): find the function, enable MMIO decoding and
@@ -251,6 +259,21 @@ BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device);
 /* §3.1.1 step 7 for one queue: select it, size the rings, publish the three
  * area addresses, resolve the notify address (§4.1.4.4), enable. */
 BOOLEAN VioPciSetupQueue(VIO_PCI_DEVICE *device, VIO_VIRTQUEUE *queue, uint16_t queueIndex);
+
+/* Enable MSI-X and aim table entry `msixEntry` at `vector` on the LAPIC
+ * (docs/19 §11a): find the standard capability, map the table BAR through
+ * the shared MMIO window, program under mask (PCI 3.0 §6.8.3.5), leave
+ * Enable set with the function unmasked, and park config_msix_vector at
+ * NO_VECTOR. Must run before VioPciSetDriverOk: with Enable clear the
+ * device signals INTx, which this kernel cannot see. Refusal is loud
+ * (VioPciSetFailed) — a silent fall-back to polling is a masked
+ * regression (docs/19 §11d.4). */
+BOOLEAN VioPciSetupMsix(VIO_PCI_DEVICE *device, uint16_t msixEntry, uint8_t vector);
+
+/* Route queue `queueIndex`'s used-ring notifications to MSI-X table entry
+ * `msixEntry` (virtio 1.2 cs01 §4.1.4.3), checking the NO_VECTOR readback
+ * the spec mandates (§4.1.4.3.2). Loud refusal, as above. */
+BOOLEAN VioPciSetQueueVector(VIO_PCI_DEVICE *device, uint16_t queueIndex, uint16_t msixEntry);
 
 /* §3.1.1 step 8: the device is live. */
 void VioPciSetDriverOk(VIO_PCI_DEVICE *device);

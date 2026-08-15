@@ -69,6 +69,7 @@ KiTrap\num:
     KI_TRAP_ERR   30
     KI_TRAP_NOERR 31
     KI_TRAP_NOERR 32          /* LAPIC timer IRQ (M1) */
+    KI_TRAP_NOERR 33          /* virtio-blk MSI-X completion (docs/19 §11) */
 
 KiTrapCommon:
     /* From ring 3 (M4): GS still holds the user TEB base; swap to the KPCR.
@@ -151,4 +152,4 @@ KiTrapThunkTable:
     .quad KiTrap8,  KiTrap9,  KiTrap10, KiTrap11, KiTrap12, KiTrap13, KiTrap14, KiTrap15
     .quad KiTrap16, KiTrap17, KiTrap18, KiTrap19, KiTrap20, KiTrap21, KiTrap22, KiTrap23
     .quad KiTrap24, KiTrap25, KiTrap26, KiTrap27, KiTrap28, KiTrap29, KiTrap30, KiTrap31
-    .quad KiTrap32
+    .quad KiTrap32, KiTrap33
