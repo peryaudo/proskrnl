@@ -195,8 +195,12 @@ start_xvfb() {
     mkdir -p "$BUILD"
     # -displayfd lets the SERVER pick a free display number and tell us which
     # (over fd 3, here a file): two runs on one box — the fulltest legs, a
-    # developer beside a CI-like sweep — must not fight over :0.
-    local fdfile="$BUILD/xvfb.display"
+    # developer beside a CI-like sweep — must not fight over :0. The handoff
+    # file is per-PROCESS for the same reason the display number is per-server:
+    # `make fulltest` gives each leg its own build/ (a view), but two legs run
+    # by hand in ONE tree would otherwise share this path and could read each
+    # other's number.
+    local fdfile="$BUILD/xvfb.$$.display"
     : > "$fdfile"
     Xvfb -displayfd 3 -screen 0 "$XVFB_SCREEN" -dpi 96 -nolisten tcp -noreset \
         3>"$fdfile" >/dev/null 2>&1 &
@@ -209,9 +213,15 @@ start_xvfb() {
         sleep 0.1
         waited=$(( waited + 1 ))
     done
+    rm -f "$fdfile"
     if [[ -z "$num" ]]; then
+        # KILL BEFORE CLEARING: a server that started but had not written its
+        # number inside the window above is alive and holding a display, and
+        # clearing $XVFB_PID first is precisely what would make the EXIT trap's
+        # stop_xvfb unable to reap it — leaking the thing that function exists
+        # to prevent.
+        stop_xvfb
         echo "run.sh: Xvfb failed to start a $XVFB_SCREEN display." >&2
-        XVFB_PID=""
         exit 2
     fi
     export DISPLAY=":$num"
@@ -275,8 +285,8 @@ export LC_ALL
 # mode usually runs.
 RUNS_ORACLE=0
 case "$MODE" in
-    oracle|fuzz) RUNS_ORACLE=1 ;;
-    winetest)    [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_ORACLE=1 ;;
+    oracle|fuzz|guiwtest) RUNS_ORACLE=1 ;;
+    winetest)             [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_ORACLE=1 ;;
 esac
 
 # The same question one layer wider: which modes run wine ON THE HOST at all,
@@ -1104,10 +1114,23 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
     local budgetfile="$ROOT/tests/winetest/msg-budget-oracle.txt"
     local olog="$BUILD/wtests/user32_test.msg.oracle.log"
     local rc=0 failures budget
-    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]')"
+    # `|| true` for the reason the kernel half's verdict grep needs one: under
+    # `set -o pipefail` an absent or comment-only budget file fails the
+    # pipeline and `set -e` kills the leg BEFORE the message below can say so.
+    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
     if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
         echo "== guiwtest-oracle: msg-budget-oracle.txt holds no number ==" >&2
         return 2
+    fi
+    # A tree built before the GUI-5 test target has no user32_test.exe (the
+    # stale-cache case the third_party cache's v5 bump exists for). Without
+    # this the run produces no summary line and the branch below reports "the
+    # msg run never finished" — the --without-x hang's signature — for a file
+    # that was simply not there.
+    if [[ ! -f "$exe" ]]; then
+        echo "== guiwtest-oracle: FAIL (no $exe — the pinned tree's user32 test" \
+             "module is not built; run tools/setup_linux.sh) ==" >&2
+        return 1
     fi
     mkdir -p "$BUILD/wtests"
     # A scratch cwd, like the CUI oracle half: msg.c writes nothing, but the
