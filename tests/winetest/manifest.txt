@@ -127,14 +127,40 @@ ntdll_test.exe:error
 #     fatal crash in that tail is gone, and the ORACLE now runs to a summary
 #     with FOUR failures:
 #
-#       - exception.c:6357/:6361 RegisterClassA/CreateWindowA -> 0x78 under
-#         --without-x (`nodrv_CreateWindow` in the log), and :6198/:6204
-#         behind them (KiUserCallbackDispatcher never found, because the
-#         window it needs was never created).
+#       - exception.c:6357/:6361 RegisterClassA/CreateWindowA -> 0x78, and
+#         :6198/:6204 behind them (KiUserCallbackDispatcher never found,
+#         because the window it needs was never created).
 #
-#     So the remaining oracle gap is DISPLAY-ONLY, and re-opening that half
-#     is a decision about the ORACLE BUILD (give the leg a display), not a
-#     kernel change.
+#     THAT DIAGNOSIS BLAMED THE WRONG THING, and the fix for what it blamed
+#     is what proved it. This block used to read "-> 0x78 under --without-x
+#     (`nodrv_CreateWindow` in the log)" and concluded "the remaining oracle
+#     gap is DISPLAY-ONLY, and re-opening that half is a decision about the
+#     ORACLE BUILD (give the leg a display)". The oracle now HAS a display
+#     (--with-x on the runner's Xvfb, tools/setup_linux.sh + tests/run/run.sh
+#     start_xvfb) and the four did not move. Measured on that oracle, same
+#     display, same prefix:
+#
+#       - the PINNED TREE's own ntdll_test.exe (which imports the real
+#         user32) runs the whole module GREEN: 5915 tests executed, 65
+#         marked as todo, 0 failures, exit 0;
+#       - the CUI gate's own standalone binary (Makefile `wtests`,
+#         build/wtests/ntdll_test.exe) still answers 4 -- the same four --
+#         at 5395 tests executed.
+#
+#     The difference between the two binaries is tests/winetest/glue/
+#     user32_stubs.c: the standalone link stands user32 in with stubs that
+#     return ERROR_CALL_NOT_IMPLEMENTED (0x78) BY DESIGN, because user32 is
+#     the GUI path and is constitutionally off the CUI image (Art. 7). The
+#     0x78 was ours all along; nodrv would have produced the same number,
+#     which is how it got read as nodrv's.
+#
+#     So the remaining oracle gap is NOT a decision about the oracle build --
+#     it is the CUI gate's own stub policy, working exactly as its header
+#     says it should ("a subtest whose assertions need a real window/
+#     winstation fails IDENTICALLY under the oracle and on proskrnl and stays
+#     off the manifest"). Re-opening this half would mean putting a real
+#     user32 on the CUI image, which Art. 7 answers no. The pair stays parked
+#     on the proskrnl-side defects below, which are the real work item.
 #
 #     The proskrnl side is now the larger half, and it is a REAL defect with
 #     nothing to do with WOW64 — recorded here so it is not mistaken for

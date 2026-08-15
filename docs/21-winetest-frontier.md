@@ -1259,6 +1259,20 @@ is built `--enable-win64`, so `test_debug_registers_wow64` and
 category (b) with no TODO: re-opening it is a decision about the oracle
 BUILD, not a kernel change.
 
+**Correction, measured when the oracle got a display.** The `syswow64` half of
+that was right and the WOW64 milestone fixed it. The display half was not: the
+oracle is now `--with-x` on the runner's Xvfb, and the two `0x78`s did not
+move. On that oracle the *pinned tree's own* `ntdll_test.exe` runs the module
+green (5915 tests, 0 failures), while the CUI gate's standalone binary still
+answers four — the difference being `tests/winetest/glue/user32_stubs.c`,
+which returns `ERROR_CALL_NOT_IMPLEMENTED` (`0x78`) for every window entity by
+design, because user32 is off the CUI image (Art. 7). `nodrv_CreateWindow`
+sets the same error, which is how our own stub's number was read as the
+display driver's. So this pair is not gated on the oracle build at all;
+`manifest.txt`'s block carries the corrected triage. **The shape is §4 trap
+2's again — a symptom attributed to the first plausible cause in the log,
+where two causes produce the identical number.**
+
 That also disposes of the `RIP=0` hypothesis this item was built on — not by
 refuting it, but by removing the only evidence for it. Worth noting anyway
 that `ContextFlags` selectivity **is** implemented on both directions
