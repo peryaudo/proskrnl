@@ -81,7 +81,6 @@ static int cui8_build_cold_file(const WCHAR *path)
     return status == STATUS_SUCCESS;
 }
 
-
 /* Give the working file's clusters back to the volume. The kmt suites share
  * one FAT volume with everything that boots after them — on the fatstress
  * nearfull leg that is a churn whose early mkdirs are entitled to the ~150
@@ -205,6 +204,36 @@ static void test_cui8_depth(void)
     cui8_delete_file(WSTR("\\??\\C:\\cui8dpth.bin"));
 }
 
+/* --- the interrupt-delivery verdict (docs/19 §11e) ------------------------- */
+
+static void test_cui8_irq_delivery(void)
+{
+    if (!cui8_build_cold_file(WSTR("\\??\\C:\\cui8irq.bin")))
+    {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8irq.bin"));
+        return;
+    }
+
+    /* Every await parks (the configured bound comes back afterwards —
+     * blk.h), so completion discovery cannot ride a thread-context spin:
+     * the wake must come from an asynchronous harvest, and the counter
+     * says which kind. Zero here on a polled kernel is the recorded red
+     * this verdict exists to flip (docs/19 §11g.1/2). */
+    ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
+    uint64_t before = KiBlkInterruptCount;
+    ULONG_PTR bytes = 0;
+    NTSTATUS status = cui8_cold_read(WSTR("\\??\\C:\\cui8irq.bin"), &bytes);
+    uint64_t delivered = KiBlkInterruptCount - before;
+    VioBlkSetAwaitSpinBound(savedSpins);
+
+    ok(status == STATUS_SUCCESS && bytes == CUI8_FILE_BYTES, "cold read %#x/%lu", (unsigned)status,
+       (unsigned long)bytes);
+    /* The machine-readable delivery count (docs/19 §11e). */
+    DbgPrint("[KTEST] blk irq count=%lu\n", (unsigned long)delivered);
+    todo_kmt ok(delivered != 0, "ISR-path harvests occurred during the parked fill");
+    cui8_delete_file(WSTR("\\??\\C:\\cui8irq.bin"));
+}
+
 /* --- cancellation of a parked fill (docs/19 §9.9) -------------------------- */
 
 static volatile NTSTATUS cui8_cancel_status;
@@ -279,6 +308,7 @@ int kmt_run_cui8(void)
     DbgPrint("kmt: CUI-8 async suite\n");
     KMT_RUN(test_cui8_progress_during_io);
     KMT_RUN(test_cui8_depth);
+    KMT_RUN(test_cui8_irq_delivery);
     KMT_RUN(test_cui8_cancel_in_flight);
     return kmt_failures - before;
 }

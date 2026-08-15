@@ -554,6 +554,11 @@ extern BOOLEAN KiInCompletionDrain;
  * after the harvest, which is idle's poll-versus-hlt decision. */
 ULONG IoDrainDeviceCompletions(void);
 
+/* Times the blk completion vector dispatched (kernel/ke/irq.c) — the
+ * docs/19 §11e delivery verdict's raw number, exposed as a bare extern the
+ * way Ke measurements are (KiTscPerMillisecond precedent). */
+extern uint64_t KiBlkInterruptCount;
+
 void KeInitializeSemaphore(PRKSEMAPHORE semaphore, LONG count, LONG limit);
 LONG KeReleaseSemaphore(PRKSEMAPHORE semaphore, KPRIORITY increment, LONG count, BOOLEAN wait);
 

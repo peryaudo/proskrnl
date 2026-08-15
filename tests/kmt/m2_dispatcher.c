@@ -19,6 +19,7 @@
 #include "kernel/lib/string.h"
 
 int kmt_failures;
+int kmt_todo;
 
 /* Relative NT timeout: `ms` milliseconds as negative 100 ns units. */
 static LARGE_INTEGER rel_ms(int ms)
@@ -515,7 +516,6 @@ static void test_thread_join(void)
     ok(status == STATUS_SUCCESS, "second join: got %#x", (unsigned)status);
     KiDeleteThread(worker);
 }
-
 
 /* --- the kernel-mode deadlock detector's walk ----------------------------- */
 

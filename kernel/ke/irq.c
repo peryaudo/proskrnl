@@ -10,6 +10,11 @@
 #include "kernel/init/panic.h"
 #include "arch/x86_64/lapic.h"
 
+/* Delivery counter for the blk completion vector (docs/19 §11e: the win is
+ * a verdict, not an inference — tests/kmt/cui8_async.c asserts it moved).
+ * Honest zero until the ISR arm lands: no deliveries exist. */
+uint64_t KiBlkInterruptCount;
+
 void KiDispatchInterrupt(uint64_t vector, BOOLEAN interruptedUser)
 {
     /* Interrupt context is the archetypal non-blocking region (issue #96 A;

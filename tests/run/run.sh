@@ -1782,7 +1782,7 @@ cui8() {
     # same verdict is the knob working, not a determinism violation. (The
     # sched lines arrived after this filter was written and CI had not reached
     # this leg since, so the mismatch showed up the first time it ran.)
-    local detFilter='blk depth|timer PASS|sweep PASS|cui8 stress knob|^\[KTEST\] sched '
+    local detFilter='blk depth|blk irq|timer PASS|sweep PASS|cui8 stress knob|^\[KTEST\] sched '
     local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
     rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
