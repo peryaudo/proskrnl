@@ -1813,6 +1813,30 @@ gen-license:
 gen-timezones:
 	python3 tools/gen_timezones.py
 
+# The generated-source gate (Art. 4 / G4): every checked-in file above must be
+# byte-identical to what its generator produces from the CURRENT pin.
+#
+# WHY IT IS A GATE AND NOT A CONVENTION. `abi/` and the syscall number space
+# are checked in, so nothing in a build notices them being wrong: a hand-typed
+# constant (G4's forbidden move) compiles, and a Wine pin bump that nobody
+# re-ran `make gen-abi` after compiles too — and then the kernel is speaking a
+# contract the ORACLE no longer speaks, which surfaces as a mystery divergence
+# somewhere far from the edit. This target asks each generator instead of a
+# reviewer. It was not hypothetical: five rows of kernel/syscall/table.inc had
+# been hand-edited past tools/gen_syscalls.py's IMPLEMENTED list by the time
+# it was written.
+#
+# The three DATA generators are already re-checked by $(IMG)'s stamp rules
+# above; they are repeated here because this target is what the style shard
+# runs, and that shard builds no image (it needs the pinned wine SOURCE only —
+# headers, NLS, INF, .rgs — never a wine BUILD).
+gen-check:
+	python3 tools/gen_abi.py --check
+	python3 tools/gen_syscalls.py --check
+	python3 tools/gen_upcase.py --check
+	python3 tools/gen_license.py --check
+	python3 tools/gen_timezones.py --check
+
 # Enforce the docs/15 house style — the one style gate, `make format`.
 #
 # Three passes, in this order: the blocking frontier (G14), clang-format for
@@ -1850,7 +1874,7 @@ frontier:
 frontier-check:
 	python3 tools/blocking_frontier.py --check
 
-.PHONY: all test run clean format gen-abi gen-nls frontier frontier-check
+.PHONY: all test run clean format gen-abi gen-nls gen-check frontier frontier-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)
