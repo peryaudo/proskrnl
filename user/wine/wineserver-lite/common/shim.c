@@ -1155,6 +1155,9 @@ DECL_HANDLER(get_process_idle_event)
             wine_server_obj_handle( dup_sync_handle( target->idle_sync, caller->handle ) );
 }
 
+/* Defined with the reap, where the reason it exists is written out. */
+static void prsk_hold_thread_desktops_open( struct thread *thread );
+
 /* Run one request on behalf of `client`'s thread `tid`. This is the whole
  * server side of a call, and BOTH modes reach the state machine through it:
  * the in-process build calls it directly (user/wine/wineserver-lite/client/call.c), the
@@ -1210,6 +1213,14 @@ unsigned int prsk_server_dispatch( struct prsk_client *client, DWORD tid,
     ret = dispatch_request( info, thread );
     if (defaultDesktop) thread->process->desktop = defaultDesktop;
     if (!ret && req < prsk_req_count) fixup_request( info, req, thread );
+    /* The other half of the hold (prsk_hold_desktops_open): a request can
+     * move a thread off a desktop too (set_thread_desktop), which arms the
+     * same close. That mover leaves the calling thread ON a desktop of the
+     * same winstation, so the sweep below reaches the desktop it just left.
+     * Unconditional rather than keyed on the request name -- the arm is
+     * inside the pinned server, and a name list here would be a second
+     * authority on which requests reach it (Art. 11). */
+    prsk_hold_thread_desktops_open( thread );
     server_unlock();
     return ret;
 }
@@ -1283,6 +1294,79 @@ static void prsk_expose_reaped_desktop( struct thread *thread )
         prsk_log( "[KTEST] wineserver-lite: reap expose failed (tid=%u)\n", (unsigned)thread->id );
 }
 
+/* wineserver closes an IDLE desktop: one second after the last user that is
+ * not the desktop window's owner leaves, close_desktop_timeout unlinks the
+ * desktop and posts WM_CLOSE to its top window, which is explorer's cue to
+ * leave its message loop and exit (server/winstation.c remove_desktop_user
+ * arms it, close_desktop_timeout fires it).
+ *
+ * That decision reads desktop->users, and HERE that count is short by every
+ * child a connected client has already spawned but that has not yet
+ * ATTACHED: the oracle counts a child from `new_process` -- its server
+ * creates the process, so it is a desktop user before it runs a single
+ * instruction -- while wineserver-lite learns of one only when the child's
+ * win32u connects (docs/03 "the connect step is now run at attach").
+ *
+ * GUI-6 is exactly that shape: explorer creates the desktop, spawns the
+ * file window with CreateProcessW, and is momentarily its own only user. On
+ * a boot where that child needs more than a second to reach the server --
+ * a cold image, a slow host -- the desktop closed under the live session:
+ * explorer took the WM_CLOSE, posted itself a quit and exited 0, and the
+ * golden never matched. Deterministic on a slow box, invisible on a fast
+ * one, and the exit status said nothing (docs/03 "GUI-6 notes").
+ *
+ * Neither half of the oracle's arrangement is reachable from here. The
+ * count cannot be repaired: desktop->users is raised per THREAD
+ * (add_desktop_thread), so minting the child's client record early -- which
+ * this file already does elsewhere -- would not raise it, and a thread
+ * record for a thread that does not exist yet is an entity NT has no name
+ * for (Art. 2). Nor can the decision be corrected where it is made:
+ * remove_desktop_user is a static in the pinned tree, and editing it is
+ * editing a file the ORACLE executes, which is the one thing Art. 10
+ * forbids. What is left is to not act on the answer.
+ *
+ * So the decision built on the short count is not made: a desktop here
+ * lives as long as the session that created it. Nothing on any image wants
+ * the other behavior -- smss owns the session's lifetime, no user can
+ * reopen a desktop that closed itself, and every image's desktop belongs to
+ * the leg that created it. Swept across the winstation rather than one
+ * desktop, because the arming site is inside the pinned server and
+ * reachable from more than one caller; the sweep cannot miss one the way a
+ * per-caller hook can. Said out loud on serial, because every cancel is a
+ * moment where this count and the oracle's disagree, and a silent one would
+ * be the next invisible symptom (Art. 12). */
+static void prsk_hold_desktops_open( struct desktop *desktop )
+{
+    struct desktop *other;
+
+    LIST_FOR_EACH_ENTRY( other, &desktop->winstation->desktops, struct desktop, entry )
+    {
+        if (!other->close_timeout) continue;
+        remove_timeout_user( other->close_timeout );
+        other->close_timeout = NULL;
+        prsk_log( "[KTEST] wineserver-lite: held a desktop open (its idle close was armed)\n" );
+    }
+}
+
+/* The same hold, reached through a thread. Answering nothing when the
+ * lookup fails misses no arm: this IS release_thread_desktop's own lookup
+ * (get_desktop_obj on thread->desktop, server/winstation.c), so a thread
+ * whose desktop does not resolve here does not resolve there either, and
+ * the arm never ran. The error is cleared rather than left for the caller's
+ * reply. */
+static void prsk_hold_thread_desktops_open( struct thread *thread )
+{
+    struct desktop *desktop = get_thread_desktop( thread, 0 );
+
+    if (!desktop)
+    {
+        clear_error();
+        return;
+    }
+    prsk_hold_desktops_open( desktop );
+    release_object( desktop );
+}
+
 /* Retire one thread's records, in wineserver's own order
  * (server/thread.c cleanup_thread): clipboard first, then the windows it
  * owns, then its message queue, then its hold on the desktop. Doing it in a
@@ -1292,6 +1376,7 @@ static void reap_thread_locked( struct prsk_thread_record *record )
     struct thread *thread = record->thread;
     struct thread *previous = current;
     int shows = prsk_thread_shows_toplevels( thread );
+    struct desktop *desktop;
 
     /* The teardown helpers read `current` (they set errors and touch the
      * calling thread's desktop), so bind the thread being reaped. */
@@ -1313,7 +1398,17 @@ static void reap_thread_locked( struct prsk_thread_record *record )
      * 0; it counts temporary desktop references) skipped the removal, and a
      * freed thread stayed linked on desktop->threads for the next reap's
      * remove_desktop_thread to walk into. */
+    desktop = get_thread_desktop( thread, 0 );
+    if (!desktop) clear_error();
     release_thread_desktop( thread, 1 );
+    /* The reap IS a departure from the desktop, so the arm above may have
+     * just happened; the desktop was taken before it, while the thread
+     * still had one to resolve. */
+    if (desktop)
+    {
+        prsk_hold_desktops_open( desktop );
+        release_object( desktop );
+    }
     current = previous == thread ? NULL : previous;
 
     list_remove( &thread->proc_entry );
