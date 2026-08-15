@@ -188,10 +188,11 @@ static BOOLEAN VioBlkCompletionHold;
  * requests: result store, completed flag, event — nothing else. No
  * allocation, no user memory (docs/20 R2; IoDrainDeviceCompletions arms the
  * assert). Called with the dispatcher lock held everywhere — the completion
- * ISR holds it by arriving (IF off, docs/18 §6d), thread-context waiters
- * acquire it — so a completion cannot interleave with a submit's
- * bookkeeping. The KeSetEvent wake is the same edge the tick's timer
- * expiry already drives (KiWaitTest readies, never switches). */
+ * ISR holds it by arriving (IF off, docs/18 §6d), the tick's latency-bound
+ * backstop holds it implicitly, thread-context waiters acquire it — so a
+ * completion cannot interleave with a submit's bookkeeping. The KeSetEvent
+ * wake is the same edge the tick's timer expiry already drives (KiWaitTest
+ * readies, never switches). */
 static void VioBlkHarvestLocked(void)
 {
     uint16_t head;
