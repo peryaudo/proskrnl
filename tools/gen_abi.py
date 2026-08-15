@@ -3421,9 +3421,16 @@ def main() -> None:
     root = Path(__file__).resolve().parent.parent
     parser.add_argument("--wine", type=Path, default=root / "third_party/wine")
     parser.add_argument("--out", type=Path, default=root / "abi")
+    # `--check` is what makes the generated contract checkABLE rather than
+    # merely regenerable: abi/ is checked in, so a hand-edit (G4's forbidden
+    # move) or a Wine pin bump that nobody re-ran the generator after both
+    # leave the tree readable and wrong. It writes nothing and fails naming
+    # every file that differs, which is what the style gate runs.
+    parser.add_argument("--check", action="store_true", help="fail if the output is stale")
     args = parser.parse_args()
 
     args.out.mkdir(exist_ok=True)
+    stale = []
     for name, text in [
         ("ntdef.h", gen_ntdef(args.wine)),
         ("ntstatus.h", gen_ntstatus(args.wine)),
@@ -3441,8 +3448,21 @@ def main() -> None:
         ("ntregapi.h", gen_ntregapi(args.wine)),
         ("ntseapi.h", gen_ntseapi(args.wine)),
     ]:
-        (args.out / name).write_text(text)
+        path = args.out / name
+        if args.check:
+            if not path.exists() or path.read_text() != text:
+                stale.append(path)
+            continue
+        path.write_text(text)
         print(f"gen_abi: wrote abi/{name}")
+
+    if args.check:
+        if stale:
+            sys.exit(
+                "gen_abi: stale (run: python3 tools/gen_abi.py)\n"
+                + "\n".join(f"  {p}" for p in stale)
+            )
+        print("gen_abi: abi/ is up to date with the pinned Wine headers")
 
 
 if __name__ == "__main__":
