@@ -3205,18 +3205,49 @@ The trophy gate (`tests/run/run.sh guiwtest`) runs the pinned tree's own
 the same kernel wtest runner as the CUI manifest (`tests/winetest/manifest-gui.txt`, with
 the manifest's new optional per-pair timeout field).
 
-- **There is no oracle leg, by measurement.** The pinned oracle is `--without-x` (GUI-3
-  made it the *font* oracle, deliberately nothing more). Under its null display driver
-  user32 refuses every window ("The graphics driver is missing", `nodrv_CreateWindow`),
-  msg.c fails its first `CreateWindow` and then hangs forever in
+- **There is an oracle leg since the oracle got a display — and this note used to say the
+  opposite.** Through GUI-6 the pinned oracle was `--without-x`, and under its null display
+  driver user32 refuses every window ("The graphics driver is missing",
+  `nodrv_CreateWindow`): msg.c failed its first `CreateWindow` and then hung forever in
   `test_SendMessage_other_thread` (an INFINITE wait on a thread whose window never
-  existed). The recorded oracle baseline is therefore *cannot run*, not a failure count.
-  The spec authority for this gate is msg.c's own `ok()`/`todo_wine` assertions — winetest
-  is third-party, Windows-verified spec (docs/08), and `todo_wine` evaluates on proskrnl
-  exactly as on Wine (the M10 finding: `winetest_platform_is_wine` is TRUE here).
-  Building an X/Xvfb oracle was considered and rejected: an X11-driver-driven message
-  environment is no more "the spec" for a winefb target than nulldrv is, and it would
-  drag X into a tree that deliberately has none.
+  existed), so the recorded oracle baseline was *cannot run*, not a failure count. This
+  entry then rejected building one: "an X11-driver-driven message environment is no more
+  'the spec' for a winefb target than nulldrv is, and it would drag X into a tree that
+  deliberately has none." **The premise is still true and the conclusion was wrong**, on
+  two counts. The X oracle was never going to be the spec and is not being asked to be —
+  the spec is still msg.c's own `ok()`/`todo_wine` assertions (winetest is third-party,
+  Windows-verified spec, docs/08, and `todo_wine` evaluates on proskrnl exactly as on Wine:
+  the M10 finding that `winetest_platform_is_wine` is TRUE here). What it is, is the only
+  available SECOND RUN of the same code: the same unmodified user32/gdi32/comctl32 PE
+  binaries above the same win32u, with only the display driver and everything under it
+  different (winex11.drv on Xvfb vs. winefb.drv on `\Device\Fb0` over our own kernel). A
+  divergence between the halves is localized to that seam by construction, and without one
+  "17 failures" and "17 failures of ours" were the same sentence. The second count is that
+  the cost was mispriced: "drag X into a tree that deliberately has none" describes the
+  TARGET, and the oracle is a host program, not the target — and the same argument, made
+  one milestone earlier about fonts, is what GUI-3 had to reverse to stop the oracle
+  answering metric questions from no font backend at all (docs/06 "One tree, three roles").
+- **The two halves are graded against different files, deliberately.** The oracle half
+  (`guiwtest_oracle`) ratchets against `tests/winetest/msg-budget-oracle.txt`, the kernel
+  half against `msg-budget.txt`, and the numbers are not comparable: the second is a
+  ceiling over *our* divergences plus a machine-speed band, the first a ceiling over
+  unmodified Wine running its own suite, where nothing is ours and every unit is either a
+  stale tag in the suite or a harness fault. **Measured, the oracle answers 1** — three
+  consecutive runs, byte-identical (32082 tests executed, 234 marked as todo, 3 skipped,
+  1 failure, ~83 s), and the one is always `msg.c:5730`, `ShowWindow(SW_SHOWMAXIMIZED)`
+  succeeding inside a `todo_wine` block. That is Wine's stale tag, not a divergence of
+  ours — and it is the first thing the new half paid for, because `msg-budget.txt`'s
+  stable list attributes one of *proskrnl's* 17 to that same tag and had no way to prove
+  it. The kernel budget is unchanged by this (proskrnl fails it too, so the ceiling still
+  has to cover it); what changed is that the entry now has a measurement behind it instead
+  of an argument.
+- **The count is read from winetest's summary line, cross-checked against the exit
+  status.** msg spawns ~21 children and each prints its own summary; the parent's is the
+  last (it waits on them) and its count is also its exit status, so the leg parses the
+  last line and fails loudly if the two disagree rather than grading either. That check
+  exists because the first draft of the parser matched `failures)` and silently read a
+  *child's* zero — the parent's line says "1 failure", singular. A number nobody
+  cross-checked is how a gate reports green for a run it never read.
 - **The verdict is a budget ratchet** (`tests/winetest/msg-budget.txt`): the leg reads the
   kernel's own verdict line off serial (winetest's text reaches the console through an
   80-column screen diff that mangles it; the NT exit status carries the full failure count)

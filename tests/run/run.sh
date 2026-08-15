@@ -278,6 +278,7 @@ case "$MODE" in
     oracle|fuzz) RUNS_ORACLE=1 ;;
     winetest)    [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_ORACLE=1 ;;
 esac
+
 # The same question one layer wider: which modes run wine ON THE HOST at all,
 # and therefore need the display start_xvfb owns. It is a superset of the
 # oracle modes — firstboot's registry differential and the compositor unit
@@ -287,7 +288,7 @@ esac
 # forgetting one is a named failure, not a quiet second oracle.
 RUNS_WINE=0
 case "$MODE" in
-    oracle|fuzz|firstboot|winefbunit) RUNS_WINE=1 ;;
+    oracle|fuzz|firstboot|winefbunit|guiwtest) RUNS_WINE=1 ;;
     winetest) [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_WINE=1 ;;
 esac
 if [[ "$(id -u)" -eq 0 && -z "${ORACLE_ALLOW_ROOT:-}" ]]; then
@@ -1060,22 +1061,115 @@ winetest() {
     return $((fails > 0 ? 1 : 0))
 }
 
+# The oracle half of the trophy gate: the SAME user32_test.exe, the same msg
+# module, under the pinned wine on the runner's own display (start_xvfb).
+#
+# It exists because the leg's number needs a reference. proskrnl's failure
+# count is graded against a budget, and a budget is only as honest as what it
+# is a budget FOR: without this half, an assertion that fails on unmodified
+# Wine in this environment and an assertion that fails because of the kernel
+# are the same number. With it, the two are separable — the oracle answers
+# from the same unmodified user32/gdi32/comctl32 PE binaries the target runs,
+# above the same win32u, with only the display driver and everything under it
+# different (winex11.drv on X vs. winefb.drv on \Device\Fb0 over our own
+# kernel). A divergence between the two halves is therefore localized to that
+# seam by construction.
+#
+# It is NOT the spec authority, and the switch to --with-x did not make it
+# one: an X11 message environment is no more "what NT does" than nulldrv was
+# (the point docs/03 "GUI-5 winetest notes" made when it rejected an X
+# oracle). The spec stays msg.c's own ok()/todo_wine assertions. What the X
+# oracle buys is the thing a --without-x wine could not give at any price: a
+# SECOND run of the same code, so a number has something to be compared with.
+#
+# Ratcheted like the kernel half, against its own file
+# (tests/winetest/msg-budget-oracle.txt) rather than demanded green: measured,
+# unmodified Wine does not answer this module with zero. It answers ONE, in
+# every run, and the one is msg.c:5730 succeeding inside a todo_wine block —
+# a stale tag in Wine's own suite, not a divergence of ours (the budget file
+# names it). A ceiling of one is what that fact looks like written down; it
+# only ever ratchets DOWN, and a Wine pin that fixes the tag is what moves it.
+#
+# The count is read from winetest's own summary line rather than the exit
+# status, because a shell sees an exit code modulo 256 and a failure count
+# does not clip — but the two ARE cross-checked below, and that check exists
+# because the first draft of this parser was wrong in a way nothing else
+# would have caught: this module spawns ~21 children, each printing its own
+# "17 tests executed (… 0 failures)" summary, and the parent's line says "1
+# failure" — SINGULAR. A `failures\)` match therefore skipped the parent and
+# silently read a child's zero. The parent's line is the LAST one (it waits
+# on its children before printing), and its count is also its exit status.
+guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
+    local exe="$1"
+    local budgetfile="$ROOT/tests/winetest/msg-budget-oracle.txt"
+    local olog="$BUILD/wtests/user32_test.msg.oracle.log"
+    local rc=0 failures budget
+    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]')"
+    if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
+        echo "== guiwtest-oracle: msg-budget-oracle.txt holds no number ==" >&2
+        return 2
+    fi
+    mkdir -p "$BUILD/wtests"
+    # A scratch cwd, like the CUI oracle half: msg.c writes nothing, but the
+    # rule that an oracle never runs in $ROOT is the harness's, not the
+    # test's. The cap is a BACKSTOP against a wedged run eating the CI job,
+    # not a budget — the run takes minutes.
+    (cd "$BUILD/wtests" && timeout -s KILL "${GUIWTEST_ORACLE_TIMEOUT:-1800}" \
+        "$WINE" "$exe" msg) >"$olog" 2>&1 || rc=$?
+    failures="$(grep -oE '[0-9]+ (failure|failures)\)' "$olog" | tail -1 | grep -oE '^[0-9]+' || true)"
+    if [[ -z "$failures" ]]; then
+        # No summary line at all: the module never finished. That is exactly
+        # the --without-x oracle's own failure mode (it hung in
+        # test_SendMessage_other_thread on a window that was never created),
+        # so it is named rather than folded into a count — a run that did not
+        # run is not a measurement.
+        echo "== guiwtest-oracle: FAIL (no winetest summary — the msg run never" \
+             "finished, exit=$rc; see $olog) =="
+        return 1
+    fi
+    # The cross-check the comment above promises. Below 255 the exit status IS
+    # the count, so a disagreement means the runner misread one of the two and
+    # neither number may be graded — it is reported as a broken measurement
+    # rather than resolved in favour of whichever is smaller.
+    if (( rc < 255 && rc != failures )); then
+        echo "== guiwtest-oracle: FAIL (the run exited $rc but its summary line" \
+             "says $failures — the runner cannot tell what the oracle answered;" \
+             "see $olog) =="
+        return 1
+    fi
+    echo "[KTEST] guiwtest-oracle user32:msg failures=$failures budget=$budget"
+    if (( failures > budget )); then
+        echo "== guiwtest-oracle: FAIL ($failures failures against a budget of" \
+             "$budget on unmodified Wine; see $olog) =="
+        return 1
+    fi
+    if (( failures < budget )); then
+        echo "== guiwtest-oracle: PASS — and $failures < budget $budget:" \
+             "ratchet msg-budget-oracle.txt down =="
+    else
+        echo "== guiwtest-oracle: PASS ($failures failures, at budget) =="
+    fi
+    return 0
+}
+
 # GUI-5's trophy gate (docs/02 "the real trophy: run Wine's
 # user32/tests/msg.c"): the pinned tree's own user32_test.exe, whole msg
 # module, over the full GUI stack — win32u, wineserver-lite, winefb, the
 # windowed message machinery — swept by the same kernel wtest runner the
 # CUI manifest uses (per-pair timeout via the manifest's third field).
 #
-# PROSKRNL-ONLY, by measurement (tests/winetest/manifest-gui.txt has the
-# full finding): the --without-x oracle cannot host msg.c at all — its null
-# display driver refuses every window and the suite hangs. The spec is
-# msg.c's own ok()/todo_wine assertions (third-party, Windows-verified;
-# todo_wine applies identically on proskrnl). The verdict is a BUDGET
-# RATCHET: tests/winetest/msg-budget.txt holds the currently-accepted
-# failure count, parsed against winetest's own summary line (the exit code
-# clips at 255 and the count does not); more failures than the budget is a
-# regression and fails the leg, fewer is a note to ratchet the file down in
-# the commit that earned it. 0 is the milestone's end state.
+# TWO HALVES since the oracle gained a display driver: guiwtest_oracle above
+# runs the same binary under the pinned wine on Xvfb (it was PROSKRNL-ONLY
+# while the oracle was --without-x — under the null display driver user32
+# refuses every window and the suite hangs; tests/winetest/manifest-gui.txt
+# has that finding). The spec is still msg.c's own ok()/todo_wine assertions
+# (third-party, Windows-verified; todo_wine applies identically on proskrnl).
+# The verdict is a BUDGET RATCHET: tests/winetest/msg-budget.txt holds the
+# currently-accepted failure count, parsed against winetest's own summary
+# line (the exit code clips at 255 and the count does not); more failures
+# than the budget is a regression and fails the leg, fewer is a note to
+# ratchet the file down in the commit that earned it. 0 is the milestone's
+# end state.
 guiwtest() {
     local manifest="$ROOT/tests/winetest/manifest-gui.txt"
     local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
@@ -1085,6 +1179,14 @@ guiwtest() {
         echo "== guiwtest: msg-budget.txt holds no number ==" >&2
         return 2
     fi
+    local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
+
+    # --- oracle half first (minutes), then the kernel half (an hour under
+    # TCG). Its verdict does not gate the kernel half: a red leg must not
+    # hide the leg behind it, and the number the ratchet wants is measured
+    # either way. Both are folded into the leg's exit status at the end.
+    local oracleFail=0
+    guiwtest_oracle "$testexe" || oracleFail=1
 
     local kernel img
     kernel="$ROOT/build/proskrnl"
@@ -1119,7 +1221,7 @@ guiwtest() {
     specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
     specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
     specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-    specs+=("win:$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe=wtests/user32_test.exe")
+    specs+=("win:$testexe=wtests/user32_test.exe")
     specs+=("win:$manifest=wtests/manifest.txt")
 
     SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
@@ -1178,6 +1280,13 @@ guiwtest() {
         echo "== guiwtest: PASS — and $failures < budget $budget: ratchet msg-budget.txt down =="
     else
         echo "== guiwtest: PASS ($failures failures, at budget) =="
+    fi
+    # The kernel half passed; the leg has not until both halves have. Every
+    # `return 1` above already fails it, so this is the only path where the
+    # oracle's verdict can still decide.
+    if (( oracleFail )); then
+        echo "== guiwtest: FAIL (the kernel half passed, the ORACLE half did not) =="
+        return 1
     fi
     return 0
 }

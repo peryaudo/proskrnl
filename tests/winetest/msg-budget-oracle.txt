@@ -1,0 +1,32 @@
+# The ORACLE half of the guiwtest ratchet (tests/run/run.sh guiwtest_oracle):
+# the failure count Wine's own user32:msg reaches on the PINNED WINE ITSELF,
+# on the runner's Xvfb. Same rule as the kernel half's msg-budget.txt — the
+# number only ever goes DOWN, in the same commit as whatever earned it, and a
+# run above it fails the leg.
+#
+# It is a separate file, and a separate number, because it grades a different
+# thing. msg-budget.txt is a ceiling over proskrnl's divergences plus a
+# machine-speed band. This one is a ceiling over UNMODIFIED WINE running its
+# own suite: nothing here is a divergence of ours, so every unit of it is
+# either a stale tag in the suite or a harness fault, and both want naming.
+#
+#   1  first measurement (the display switch: --with-x + Xvfb). Three
+#      consecutive runs, byte-identical: 32082 tests executed, 234 marked as
+#      todo, 3 skipped, 1 failure, ~83 s.
+#
+# The one is msg.c:5730:
+#
+#   Test succeeded inside todo block: ShowWindow(SW_SHOWMAXIMIZED):overlapped:
+#   35: marked "todo_wine" but succeeds
+#
+# — a todo_wine tag that is stale in this environment, which winetest counts
+# as a failure. It is Wine's, not ours, and that is exactly the kind of fact
+# the oracle half was added to establish: msg-budget.txt's stable list
+# attributes one of proskrnl's failures to this same tag, and until there was
+# an oracle half, "our 17" and "17" were the same sentence.
+#
+# What moves this number is a wine pin that deletes the tag (or a WM/geometry
+# change that makes SW_SHOWMAXIMIZED behave as the tag expects). Do not
+# ratchet it against a measurement taken on a differently-configured display:
+# the leg pins the screen (1280x800x24) for that reason.
+1

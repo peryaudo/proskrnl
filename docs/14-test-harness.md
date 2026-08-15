@@ -184,6 +184,9 @@ is why the runner owns the display instead of borrowing one:
   refuses a pinned tree whose `config.h` has no `SONAME_LIBX11`. Both failures name
   themselves; neither can be answered from the null driver by accident.
 
+This is what makes a GUI winetest gate two-sided at all — `run.sh guiwtest` runs Wine's
+own `user32:msg` under the oracle as well as on proskrnl (docs/03 "GUI-5 winetest notes").
+
 ### The oracle leg is fanned out (`ORACLE_JOBS`)
 
 The oracle leg is one short-lived process per case and nothing else, so it runs
