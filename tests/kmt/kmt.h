@@ -7,6 +7,7 @@
  *
  * Verdicts use the fixed machine-greppable prefixes (docs/08):
  *   [ASSERT] file:line: ...        one failed assertion
+ *   [TODO]   file:line: ...        an expected failure inside todo_kmt
  *   [KTEST] <name> PASS|FAIL       one test function's verdict
  */
 #ifndef PROSKRNL_TESTS_KMT_KMT_H
@@ -15,18 +16,43 @@
 #include "kernel/lib/dbgprint.h"
 
 extern int kmt_failures; /* total across the run */
+extern int kmt_todo;     /* todo_kmt nesting depth */
 
 #define ok(condition, ...)                                                                         \
     do                                                                                             \
     {                                                                                              \
         if (!(condition))                                                                          \
         {                                                                                          \
+            if (kmt_todo)                                                                          \
+            {                                                                                      \
+                DbgPrint("[TODO] %s:%d: ", __FILE__, __LINE__);                                    \
+            }                                                                                      \
+            else                                                                                   \
+            {                                                                                      \
+                kmt_failures++;                                                                    \
+                DbgPrint("[ASSERT] %s:%d: ", __FILE__, __LINE__);                                  \
+            }                                                                                      \
+            DbgPrint(__VA_ARGS__);                                                                 \
+            DbgPrint("\n");                                                                        \
+        }                                                                                          \
+        else if (kmt_todo)                                                                         \
+        {                                                                                          \
             kmt_failures++;                                                                        \
-            DbgPrint("[ASSERT] %s:%d: ", __FILE__, __LINE__);                                      \
+            DbgPrint("[ASSERT] %s:%d: todo succeeded, remove the tag: ", __FILE__, __LINE__);      \
             DbgPrint(__VA_ARGS__);                                                                 \
             DbgPrint("\n");                                                                        \
         }                                                                                          \
     } while (0)
+
+/*
+ * todo_kmt { ... } — assertions expected to fail on today's kernel, kept
+ * green-suite so the commit that pins them precedes the commit that turns
+ * them on (Art. 5 shape under G13's every-commit-green rule). Mirrors
+ * tests/ntapi/ntapi.h todo_proskrnl: a failure inside is expected (logged
+ * [TODO], not counted); an ok() that unexpectedly PASSES is a counted
+ * failure — the commit that builds the behaviour must delete the tag.
+ */
+#define todo_kmt for (kmt_todo++; kmt_todo; kmt_todo--)
 
 /* Run one test function, printing its own [KTEST] verdict line. */
 #define KMT_RUN(test_fn)                                                                           \
