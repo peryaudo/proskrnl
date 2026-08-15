@@ -335,12 +335,23 @@ build_helper_dll() {   # echoes the .dll path
 # fails to compile silently re-ran the PREVIOUS build's .exe and printed
 # green. That is the same fabricated-plausible-answer failure Art. 12 forbids
 # in the kernel, in the harness that judges it.
+#
+# The staleness test covers the harness AND the test's own bucket — every .h
+# and .inc beside it. A bucket's util.h is included by every test in it, and
+# tests/ntapi/syscall/torture_matrix.inc is GENERATED (gen_syscalls.py), so
+# without this a regenerated matrix or an edited util.h re-runs the previous
+# build's .exe and reports its verdict as this one's. Measured, not
+# hypothetical: a stale ptr_torture.exe reported a panic that the current
+# generated table no longer produces.
 build_test() {   # $1 = .c path; echoes the .exe path
-    local src="$1" name exe
+    local src="$1" name exe dep stale=0
     name="$(basename "${src%.c}")"
     exe="$BUILD/ntapi/$name.exe"
-    if [[ ! -f "$exe" || "$src" -nt "$exe" || "$NTAPI/ntapi.c" -nt "$exe" || \
-          "$NTAPI/ntapi.h" -nt "$exe" ]]; then
+    for dep in "$src" "$NTAPI/ntapi.c" "$NTAPI/ntapi.h" \
+               "$(dirname "$src")"/*.h "$(dirname "$src")"/*.inc; do
+        [[ -f "$dep" && "$dep" -nt "$exe" ]] && stale=1
+    done
+    if [[ ! -f "$exe" || "$stale" -eq 1 ]]; then
         rm -f "$exe"
         if ! "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
             -Wl,--entry=ntapi_start "$src" "$NTAPI/ntapi.c" \
