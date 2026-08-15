@@ -132,6 +132,63 @@ already in the `known_divergences.txt` baseline — minimizes the program and em
 Art. 6 a new divergence is dispositioned by a `tests/ntapi/` conviction or a cited baseline
 entry, never silence.
 
+## The pointer-torture matrix (where the oracle has nothing to say)
+
+Differential fuzzing above triangulates *semantics*, and it can only ask questions the
+oracle can answer. Wine is not a kernel: it has no ring boundary, so there is no oracle
+for "what should `NtQueryEvent` do when handed a kernel address" — and that quadrant is
+where the largest defect class lives. The verdict rule has to change from **matches** to
+**survives and refuses loudly**, and once it does, no oracle is needed at all: it is a
+liveness property.
+
+**Implemented at `tests/ntapi/syscall/ptr_torture.c`** (issue #32 A1), generated from
+`tools/gen_syscalls.py`. The generator reads the pinned Wine's own prototypes for every
+service in `IMPLEMENTED`, classifies each argument by *type spelling only* — pointer,
+counted string, `OBJECT_ATTRIBUTES`, handle, scalar, information class, ring-3 callback —
+and emits `tests/ntapi/syscall/torture_matrix.inc`. The test then calls **every** service
+with each pointer argument set in turn to NULL, `0x1`, a kernel address, a non-canonical
+address, a reserved-but-uncommitted page, a `PAGE_NOACCESS` page, a read-only page, the
+last eight bytes of a page whose successor refuses, and the first address above the user
+limit — plus, for the counted-string and attribute kinds, a *well-formed descriptor with
+a hostile interior* (the shape a service walks into after validating the outside), and
+for scalars the saturated lengths. It runs on proskrnl only; the oracle leg skips it,
+because measuring a usermode library's behaviour on garbage is not evidence about the
+kernel.
+
+Three graders, and the first is the weakest: the test itself only sees that the call
+returned and did not answer `STATUS_NOT_IMPLEMENTED` (Art. 12). **`uacheck.sh` is what
+convicts a missing probe** — a service that reaches a user address with no live probe
+behind it names itself on serial, and the recovery frame's `STATUS_ACCESS_VIOLATION`
+(indistinguishable from a correct refusal) no longer hides it. The boot is the third: a
+panic or a park takes the leg down. A1 generates the hostile calls; A3 grades them.
+
+Why generated rather than written: the finding that prompted it was *"exactly one site
+probes"* out of ~25 — an unwritten policy applied wherever someone remembered. A
+hand-written suite is written by the same memory that missed the probes and has the same
+holes in the same places. Table-driven from the syscall list, coverage is a property of
+code generation exactly as `abi/` makes constant correctness one (G4), and **a service
+added tomorrow is swept the day it lands**. Its first run convicted three ring-3-reachable
+machine halts — two missing `OBJECT_ATTRIBUTES` probes (one of them behind a
+previousMode elevation that switched every probe below it off) and one `&user->member`
+address computation that is undefined before any probe can run, all three of them UBSan
+traps, i.e. `#UD`, i.e. exactly the fault the service dispatcher's recovery frame cannot
+convert into a status.
+
+Three lists are printed by every run rather than kept quiet: services never called (they
+terminate the caller, transfer control, or power the machine off), services swept with
+invalid handles only (a live handle parks them), and **the ledger** — services whose
+*ordinary* arguments already reach unbuilt code, so the sweep cannot get as far as a
+hostile one. A ledger entry is a real latent defect this instrument found and did not fix;
+removing one is what "fixed" looks like, and if the fix is wrong the sweep panics the
+moment the entry comes off. Nothing may be parked there to make a run green.
+
+Information-class arguments are the one thing the matrix deliberately holds still. A class
+selects *which* body runs, so saturating it asks for a body that does not exist — the
+answer to which is `STATUS_NOT_IMPLEMENTED`, a panic, on the first unbuilt class of the
+first enum, with the remaining ~190 services never swept. The class space is a real
+backlog and deserves its own instrument (a contract enumeration, issue #32's 2.1); it is
+not a liveness sweep's job.
+
 ## The FAT on-disk format has its own oracles
 
 The same triangulation principle applies below the `Nt*` boundary: the FAT32 volume the
