@@ -177,6 +177,13 @@ uint64_t VioBlkSectorCount(void)
 
 /* --- submit / await / drain ------------------------------------------------- */
 
+/* Test instrumentation (blk.h): while TRUE, VioBlkDrain defers harvesting
+ * so a parked issuer provably stays parked — the docs/19 §8.1 knob class,
+ * needed because the ISR closed the tick-latency window the cancel test
+ * used to ride. The driver's own forward-progress paths (submit retries,
+ * the terminating thread's poll-home) bypass it via VioBlkHarvestLocked. */
+static BOOLEAN VioBlkCompletionHold;
+
 /* Harvest every completion the device has published and complete the owning
  * requests: result store, completed flag, event — nothing else. No
  * allocation, no user memory (docs/20 R2; IoDrainDeviceCompletions arms the
@@ -185,7 +192,7 @@ uint64_t VioBlkSectorCount(void)
  * acquire it — so a completion cannot interleave with a submit's
  * bookkeeping. The KeSetEvent wake is the same edge the tick's timer
  * expiry already drives (KiWaitTest readies, never switches). */
-void VioBlkDrain(void)
+static void VioBlkHarvestLocked(void)
 {
     uint16_t head;
     uint32_t length;
@@ -203,6 +210,37 @@ void VioBlkDrain(void)
         request->completed = TRUE; /* the owner may reuse the request now */
         KeSetEvent(&request->done, 0, FALSE);
     }
+}
+
+void VioBlkDrain(void)
+{
+    if (VioBlkCompletionHold)
+    {
+        return; /* held: the ISR EOIs and the completions wait in the used ring */
+    }
+    VioBlkHarvestLocked();
+}
+
+void VioBlkSetCompletionHold(BOOLEAN hold)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    VioBlkCompletionHold = hold;
+    if (!hold)
+    {
+        /* Harvest is pull-based, so nothing was lost while held — but no
+         * further MSI is owed for entries already published, so the
+         * release itself must harvest or the parked issuers stay parked
+         * into the 10 s panic. */
+        VioBlkHarvestLocked();
+    }
+    KiReleaseDispatcherLock(flags);
+}
+
+void VioBlkPumpCompletions(void)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    VioBlkHarvestLocked();
+    KiReleaseDispatcherLock(flags);
 }
 
 ULONG VioBlkInFlightCount(void)
@@ -274,7 +312,7 @@ static NTSTATUS VioBlkSubmitLocked(VIO_BLK_REQUEST *request)
         {
             KiPanic("virtio-blk: submit stalled (no control slot freed)");
         }
-        VioBlkDrain(); /* all slots in flight: harvest and retry */
+        VioBlkHarvestLocked(); /* all slots in flight: harvest and retry (bypasses any hold) */
         __asm__ volatile("pause");
     }
     VIO_BLK_CONTROL_SLOT *slot = &VioBlkControl[slotIndex];
@@ -300,7 +338,7 @@ static NTSTATUS VioBlkSubmitLocked(VIO_BLK_REQUEST *request)
         {
             KiPanic("virtio-blk: submit stalled (ring full)");
         }
-        VioBlkDrain(); /* ring full: harvest and retry */
+        VioBlkHarvestLocked(); /* ring full: harvest and retry (bypasses any hold) */
         __asm__ volatile("pause");
     }
     request->descHead = head;
@@ -425,7 +463,7 @@ NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request)
             KiPanic("virtio-blk: request timed out");
         }
         uint64_t flags = KiAcquireDispatcherLock();
-        VioBlkDrain();
+        VioBlkHarvestLocked(); /* R4 forward progress: bypasses any test hold */
         KiReleaseDispatcherLock(flags);
         __asm__ volatile("pause");
     }
