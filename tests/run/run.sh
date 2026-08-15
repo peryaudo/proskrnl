@@ -2995,13 +2995,38 @@ gui6() {
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
+    # smss says so when explorer exits. Every wait below has to end on it:
+    # a dead desktop prints no further marker, so without this the leg
+    # reports the marker it was still waiting for -- "the explorer browser
+    # window never flushed" -- for a desktop that died a minute earlier.
+    # That is exactly how the GUI-6 desktop close read (docs/03 "GUI-6
+    # notes (the desktop's lifetime)"): explorer exited 0, smss named it on
+    # the very next line, and the leg said something else.
+    desktop_died() { grep -qaE '\[KTEST\] gui6 FAIL' "$log" 2>/dev/null; }
+
+    # 0 the marker arrived, 1 the deadline (or QEMU) ended it, 2 the desktop
+    # died -- which names itself and is never the caller's missing marker.
     await() {
         local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
         while ((SECONDS < deadline)); do
             grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            desktop_died && return 2
             kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
             sleep 1
         done
+        return 1
+    }
+    # Wait, or fail by the true reason: the death when there was one, the
+    # caller's missing marker otherwise.
+    await_or_fail() {
+        local status=0
+        await "$1" || status=$?
+        ((status == 0)) && return 0
+        if ((status == 2)); then
+            gui6_fail "explorer exited (the [KTEST] gui6 FAIL line names the status)"
+        else
+            gui6_fail "$2"
+        fi
         return 1
     }
     gui6_fail() {
@@ -3012,38 +3037,30 @@ gui6() {
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
 
-    if ! await '\[KTEST\] gui3 server READY'; then
-        gui6_fail "wineserver-lite never published its transport"; return 1
-    fi
+    await_or_fail '\[KTEST\] gui3 server READY' \
+        "wineserver-lite never published its transport" || return 1
     # The probe's own answer: mis-baked image (no explorer) is named, not
     # diagnosed from which desktop arrangement limped further.
-    if ! await '\[KTEST\] wineserver-lite: explorer\.exe present'; then
-        gui6_fail "the server never saw explorer.exe on the image"; return 1
-    fi
+    await_or_fail '\[KTEST\] wineserver-lite: explorer\.exe present' \
+        "the server never saw explorer.exe on the image" || return 1
     # Firstboot can auto-launch an explorer of its own (wineboot's rundll32
     # creates windows; win32u answers with the stock launch), and its
     # Default-desktop paint satisfies the generic markers below — so anchor
     # the SESSION phase first or the polls bless/match a firstboot frame.
-    if ! await '\[KTEST\] firstboot PASS'; then
-        gui6_fail "firstboot never completed"; return 1
-    fi
+    await_or_fail '\[KTEST\] firstboot PASS' "firstboot never completed" || return 1
     # Printed from EXPLORER's process: winefb's pSetDesktopWindow sized the
     # desktop window, so explorer owns it and the fixtures stayed off.
-    if ! await '\[KTEST\] gui2 desktop w='; then
-        gui6_fail "explorer never created the desktop window"; return 1
-    fi
+    await_or_fail '\[KTEST\] gui2 desktop w=' \
+        "explorer never created the desktop window" || return 1
     # The browser window's own first flush — the one surface unique to the
     # session desktop (the firstboot explorer shows no browser), and the
     # last paint of the arrangement, so polling starts at a frame that can
     # only still be missing the taskbar button repaint.
-    if ! await '\[KTEST\] gui2 window rect=0,0,640x480 flush=1'; then
-        gui6_fail "the explorer browser window never flushed"; return 1
-    fi
+    await_or_fail '\[KTEST\] gui2 window rect=0,0,640x480 flush=1' \
+        "the explorer browser window never flushed" || return 1
 
-    # smss says so when explorer exits — a dead desktop is a perfectly
-    # SETTLED frame, so both loops below must refuse it by name rather than
-    # bless or match a corpse.
-    desktop_died() { grep -qaE '\[KTEST\] gui6 FAIL' "$log" 2>/dev/null; }
+    # The same death check guards both loops below: a dead desktop is a
+    # perfectly SETTLED frame, so neither may bless or match a corpse.
 
     if [ -n "${GUI6_BLESS:-}" ]; then
         # Settled-frame rule: two consecutive identical dumps, then bless.
