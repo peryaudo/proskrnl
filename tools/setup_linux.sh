@@ -60,6 +60,19 @@ fi
 # Each package answers a named configure check in third_party/wine/configure.ac
 # ("Check for X cursor", "Check for X input extension", ...); dropping one
 # silently turns that extension off in winex11.drv.
+#
+# What this pins is what the box MUST have, not everything configure could
+# find: two X-gated probes stay unpinned and are named here rather than
+# claimed away. `xkbregistry` (configure.ac, gated on have_x) decides whether
+# winex11's keyboard.c enumerates layouts from the host's xkeyboard-config
+# database — pinning it ON would make the oracle's layout list depend on host
+# DATA, which is worse than leaving it off, and it IS off here: neither
+# ubuntu-24.04's default set nor libgtk-3-dev (installed above) brings
+# libxkbregistry-dev, and the built tree answers `#undef
+# SONAME_LIBXKBREGISTRY`. The wayland driver probes are the same shape and
+# equally off (`#undef HAVE_LIBWAYLAND_EGL`). A box that installs either by
+# hand gets a different config.h; if that ever stops being hypothetical, the
+# fix is another explicit --without-, the way --without-opengl below was.
 X11_PACKAGES=(
     xvfb
     libx11-dev libxext-dev libxrender-dev libxrandr-dev libxinerama-dev
