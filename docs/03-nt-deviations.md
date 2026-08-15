@@ -3384,6 +3384,57 @@ compat-mode exception delivery, `ProcessWow64Information`). No `Nt*` semantics c
 32→64 transition ("Heaven's Gate") is entirely user-mode; the kernel never sees a 32-bit
 syscall. See `docs/02` §WOW64.
 
+## GUI-6 notes (the desktop's lifetime)
+
+**A desktop of this session is never idle-closed, because `desktop->users` cannot count a
+child that has not attached yet.** wineserver closes an idle desktop: one second after the
+last user that is not the desktop window's owner leaves, `close_desktop_timeout` unlinks the
+desktop and posts `WM_CLOSE` to its top window, which is explorer's cue to leave its message
+loop and exit (`server/winstation.c` — `remove_desktop_user` arms it, the timeout fires it).
+The decision reads `desktop->users`, and here that count is short by every child a connected
+client has already spawned but that has not yet **attached**: the oracle counts a child from
+`new_process` — its server *creates* the process, so it is a desktop user before the child
+runs an instruction — while wineserver-lite learns of one only when the child's win32u
+connects (the attach-time connect above, "the connect step is now run at attach").
+
+GUI-6 is exactly that shape: explorer creates the desktop, spawns the file window with
+`CreateProcessW`, and is momentarily its own only user. On a boot where that child needs more
+than a second to reach the server — a cold image whose `wineboot --init` just ran, a slow
+host — the desktop closed under the live session: explorer took the `WM_CLOSE`, posted itself
+a quit, and exited **0**, so the leg's only symptom was that the browser window never flushed
+and the golden never matched. Deterministic on a slow box, invisible on a fast one, which is
+how it survived CI: the child won the one-second race there every time.
+
+**Neither half of the oracle's arrangement is reachable from this side of the seam.** The
+count cannot be repaired: `desktop->users` is raised per *thread* (`add_desktop_thread`), so
+minting the child's client record early — which `shim.c` already does for a not-yet-attached
+child — would not raise it, and a thread record for a thread that does not exist yet is an
+entity NT has no name for (Art. 2). Nor can the decision be corrected where it is made:
+`remove_desktop_user` is a static in the pinned tree, and editing it is editing a file the
+*oracle* executes, which is exactly what Art. 10 forbids. What is left is to not act on the
+answer.
+
+So the decision built on the short count is not made — `shim.c prsk_hold_desktops_open`
+cancels an armed close, and says so on serial (every cancel is a moment where this count and
+the oracle's disagree; a silent one would be the next invisible symptom, Art. 12). It runs
+after a reap (a reap *is* a departure from a desktop) and after any dispatched request
+(`set_thread_desktop` moves a thread off one). Those two cover every arm: the reap's lookup
+*is* `release_thread_desktop`'s own (`get_desktop_obj` on `thread->desktop`), so a thread whose
+desktop does not resolve for the hold did not resolve for the arm either; and `set_thread_desktop`
+leaves the caller on a desktop of the same winstation, which the sweep walks. A desktop here
+therefore lives as long as the session that created it. Nothing on any image wants the other
+behavior: smss owns the session's lifetime, no user can reopen a desktop that closed itself,
+and every image's desktop belongs to the leg that created it. The sweep is across the
+winstation's desktops rather than one desktop by name, because the arming site is inside the
+pinned server and reachable from more than one caller — a sweep cannot miss a caller the way a
+per-caller hook can (Art. 11).
+
+One consequence, named rather than discovered later: `close_desktop_timeout` also
+`unlink_named_object`s the desktop, so a desktop that would have become unopenable by name
+stays openable. Nothing reaches it — the arm needs a top window (`get_top_window_owner`), which
+the temp desktops `msg.c`'s `run_in_temp_desktop` creates never have, so those are not even
+armed.
+
 ## WOW64 notes — what "purely additive" turned out to mean (Art. 7)
 
 The plan called WOW64 "purely additive" and `docs/02` still calls it removable. That is
