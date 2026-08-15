@@ -6,6 +6,20 @@
 
 #define TIMER_VECTOR 32
 
+/* virtio-blk completion vector (docs/19 §11a): the next free vector above
+ * the timer — Intel SDM Vol. 3A §6.2 reserves vectors 0-31 for exceptions.
+ * Edge-delivered by MSI-X straight to the LAPIC; no IOAPIC, no sharing. */
+#define BLK_VECTOR 33
+
+/* MSI message address/data (Intel SDM Vol. 3A §11.11.1 / §11.11.2):
+ * address 0xFEE00000 targets the LAPIC, destination ID 0 in bits 19:12
+ * (the BSP — the only CPU, docs/18), RH=DM=0 physical destination; data is
+ * the vector number with fixed delivery mode (bits 10:8 = 0) and edge
+ * trigger (bit 15 = 0). Cross-check: pinned QEMU hw/pci/msix.c delivers
+ * the entry's address/data verbatim via msi_send_message. */
+#define KI_MSI_MESSAGE_ADDRESS      0xFEE00000u
+#define KI_MSI_MESSAGE_DATA(vector) ((uint32_t)(vector))
+
 /* Put the LAPIC in xAPIC mode and map its register window, mask the legacy
  * 8259 PIC, calibrate the LAPIC timer against the PIT, start it periodic at
  * 1 ms, and enable interrupts. The tick lands in kernel/ke/timer.c

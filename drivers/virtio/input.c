@@ -11,11 +11,12 @@
  * by the device's own EV_BITS config, never by PCI enumeration order. Only
  * the eventq on both: devices we read, never ones we talk back to.
  *
- * No interrupt. The kernel has no device-IRQ path at all (kernel/ke/irq.c
- * panics on any vector but the clock), and the established shape for an
- * input stream here is the one CondrvSerialRead already uses -- drain what
- * is there, else nap a millisecond and look again (Art. 3: the simplest
- * correct thing). The used ring IS the buffer: QEMU's eventq holds 64
+ * No interrupt, deliberately (docs/19 §11f): blk owns the tree's one
+ * device vector, and a 1 kHz input poll is not a cost the way a
+ * per-transfer busy-spin was — the established shape for an input stream
+ * here is the one CondrvSerialRead already uses -- drain what is there,
+ * else nap a millisecond and look again (Art. 3: the simplest correct
+ * thing). The used ring IS the buffer: QEMU's eventq holds 64
  * entries, which is ~16 keystrokes of press/release/SYN backlog while
  * nobody is reading, so a second ring inside the kernel would buy only a
  * larger number.

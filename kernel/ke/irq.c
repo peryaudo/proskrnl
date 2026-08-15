@@ -1,8 +1,9 @@
 /* kernel/ke/irq.c — interrupt dispatch (M2).
  *
  * No IRQL, no DPCs (docs/03): a plain top half. The trap path (panic.c) sends
- * every vector >= 32 here; the clock tick advances time and readies threads
- * but never context-switches — under Art. 3 switches happen only at explicit
+ * every vector >= 32 here; both device-facing vectors — the clock tick and
+ * the blk completion MSI (docs/19 §11b) — advance state and ready threads
+ * but never context-switch — under Art. 3 switches happen only at explicit
  * waits and yields, so returning from the interrupt resumes the interrupted
  * thread unconditionally.
  */
@@ -28,6 +29,20 @@ void KiDispatchInterrupt(uint64_t vector, BOOLEAN interruptedUser)
     if (vector == TIMER_VECTOR)
     {
         KiUpdateClock(interruptedUser);
+        KiEndOfInterrupt();
+        KiLeaveNoBlockRegion();
+        return;
+    }
+    if (vector == BLK_VECTOR)
+    {
+        /* The blk completion ISR (docs/19 §11b): the existing drain, at a
+         * new entry — harvest, store, wake, nothing else (docs/20 R2). No
+         * lock acquire: the dispatcher lock IS interrupt-disable (docs/18
+         * §6d), so this ISR holds it by arriving and every lock hold
+         * excludes it by construction — the explicit uniprocessor
+         * interrupt-versus-lock policy, asserted by the no-block bracket. */
+        KiBlkInterruptCount++;
+        IoDrainDeviceCompletions();
         KiEndOfInterrupt();
         KiLeaveNoBlockRegion();
         return;

@@ -83,6 +83,30 @@ int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, un
     return 0;
 }
 
+uint8_t KiPciFindCapability(const KI_PCI_FUNCTION *f, uint8_t capabilityId, uint8_t previous)
+{
+    if ((KiPciReadConfig16(f, PCI_CONFIG_STATUS) & PCI_STATUS_CAPABILITIES_LIST) == 0)
+    {
+        return 0;
+    }
+    /* Capabilities pointer / cap_next: low two bits reserved (PCI 3.0 §6.7). */
+    uint8_t offset = previous == 0 ? (KiPciReadConfig8(f, PCI_CONFIG_CAP_POINTER) & 0xFC)
+                                   : (KiPciReadConfig8(f, (uint8_t)(previous + 1)) & 0xFC);
+    /* The list is device-supplied and a cyclic cap_next hung the boot
+     * forever (docs/review-2026-07 §4). Config space is 256 bytes and every
+     * capability is at least 4 of them, so 64 links is the most a
+     * well-formed list can have (PCI 3.0 §6.7). */
+    for (unsigned link = 0; offset != 0 && link < 64; link++)
+    {
+        if (KiPciReadConfig8(f, offset) == capabilityId)
+        {
+            return offset;
+        }
+        offset = KiPciReadConfig8(f, (uint8_t)(offset + 1)) & 0xFC;
+    }
+    return 0;
+}
+
 uint64_t KiPciReadMemoryBar(const KI_PCI_FUNCTION *f, uint8_t barIndex)
 {
     uint8_t offset = (uint8_t)(PCI_CONFIG_BAR0 + barIndex * 4);
