@@ -25,6 +25,7 @@ Generated files (never edit by hand; `make gen-abi` runs this):
                                          NT-x64-convention syscall out)
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -1050,8 +1051,17 @@ def gen_fuzz_model_py() -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    # Same contract as gen_abi.py's --check, for the same reason: every file
+    # below is checked in, so nothing in a build notices one of them being
+    # hand-edited or left behind by a Wine pin bump. --check writes nothing
+    # and names every file that differs.
+    parser.add_argument("--check", action="store_true", help="fail if the output is stale")
+    args = parser.parse_args()
+
     root = Path(__file__).resolve().parent.parent
     wine_syscalls = parse_wine_syscalls(root)
+    stale = []
     for path, text in [
         (root / "abi/syscall_numbers.h", gen_numbers(wine_syscalls)),
         (root / "kernel/syscall/table.inc", gen_table_inc(wine_syscalls)),
@@ -1059,9 +1069,21 @@ def main() -> None:
         (root / "tests/fuzz/gen/fuzz_model.h", gen_fuzz_model_h()),
         (root / "tests/fuzz/gen/fuzz_model.py", gen_fuzz_model_py()),
     ]:
+        if args.check:
+            if not path.exists() or path.read_text() != text:
+                stale.append(path)
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         print(f"gen_syscalls: wrote {path.relative_to(root)}")
+
+    if args.check:
+        if stale:
+            sys.exit(
+                "gen_syscalls: stale (run: python3 tools/gen_syscalls.py)\n"
+                + "\n".join(f"  {p.relative_to(root)}" for p in stale)
+            )
+        print("gen_syscalls: the syscall number space is up to date with the pin")
 
 
 if __name__ == "__main__":
