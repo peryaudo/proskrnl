@@ -215,6 +215,20 @@ rather than a new source of flakes:
 - **The log is replayed in source order.** Each case's whole output is captured to
   `build/tests/ntapi/out/<name>` and `cat` back in the order `all_tests` produced, so the
   transcript and the `[KTEST]` grading are byte-for-byte what a sequential run printed.
+- **Cases the oracle answers WRONGLY are parked, by name** (`$ORACLE_PARKED_CASES`,
+  currently `thread_skip_flags`). This is the third and rarest reason a case moves: not
+  "the oracle cannot answer" (that is `beyond_oracle`, whose contract forbids this use)
+  and not "proskrnl diverges" (`todo_proskrnl`), but *the pinned Wine returns a wrong
+  answer, intermittently*. A spec that is right most of the time is not a spec, and a leg
+  that re-runs until green is worse than one that says so. Only the **oracle sweep** skips
+  it — loudly, with a printed line — and naming the case explicitly still runs it, so the
+  evidence for un-parking is one command away; the **proskrnl leg is untouched** and still
+  gates every assertion. The entry must name the mechanism *in the pinned tree's own
+  source* and show a trace, never just a failure rate: `thread_skip_flags`'s entry quotes
+  the `+server` trace where `new_thread` replies `INVALID_CID` while carrying the valid tid
+  and handle of the thread it did create, because a dying thread's last fd message reached
+  `server/request.c` `receive_fd()` after its sender was gone and that path returns without
+  `clear_error()`. Un-park when the pin carries a fix.
 
 `ORACLE_JOBS=1` is the strictly sequential run: the fallback where `nproc` is missing, and
 what to set when a case is suspected of depending on its neighbours.

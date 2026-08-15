@@ -2,6 +2,17 @@
  * sem_ps/thread_skip_flags.c — NtCreateThreadEx's two "skip" flags land in the
  * new thread's TEB before it runs.
  *
+ * ITS ORACLE HALF IS PARKED (tests/run/run.sh ORACLE_PARKED_CASES, which
+ * carries the trace and the full triage). Nothing about the case is wrong and
+ * nothing about the kernel's half changed: the pinned Wine loses a race in
+ * wineserver's receive_fd() when this case's create/terminate/create pattern
+ * makes a dying thread's last fd message arrive after its sender is gone, and
+ * hands the NEXT request a stale STATUS_INVALID_CID — on a reply that already
+ * carries the valid tid and handle of a thread it did create. ~6% per run
+ * locally, twice out of two on a hosted CI runner, with or without a display.
+ * The proskrnl leg still gates every assertion below; only the oracle sweep
+ * skips it, and only until the pin carries a fix.
+ *
  * THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH (0x2) and
  * THREAD_CREATE_FLAGS_SKIP_LOADER_INIT (0x20) are not kernel behaviour in
  * themselves: the kernel records each in SameTebFlags and it is the LOADER,
