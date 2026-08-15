@@ -234,6 +234,37 @@ static void test_cui8_irq_delivery(void)
     cui8_delete_file(WSTR("\\??\\C:\\cui8irq.bin"));
 }
 
+/* --- the idle-sleep verdict (docs/19 §11e) --------------------------------- */
+
+static void test_cui8_idle_sleep(void)
+{
+    if (!cui8_build_cold_file(WSTR("\\??\\C:\\cui8hlt.bin")))
+    {
+        cui8_delete_file(WSTR("\\??\\C:\\cui8hlt.bin"));
+        return;
+    }
+
+    /* Every await parks and this suite thread is the only other runnable
+     * context, so idle runs during the fill and must reach hlt — the
+     * busy-poll arm that used to keep it out of hlt while transfers were
+     * in flight is gone (docs/19 §11c), and this delta going to zero is
+     * how a quietly reintroduced one turns red. Wake attribution is not
+     * observable from a counter and is not claimed (§11e). */
+    ULONG savedSpins = VioBlkSetAwaitSpinBound(0);
+    uint64_t before = KiIdleHltCount;
+    ULONG_PTR bytes = 0;
+    NTSTATUS status = cui8_cold_read(WSTR("\\??\\C:\\cui8hlt.bin"), &bytes);
+    uint64_t delta = KiIdleHltCount - before;
+    VioBlkSetAwaitSpinBound(savedSpins);
+
+    ok(status == STATUS_SUCCESS && bytes == CUI8_FILE_BYTES, "cold read %#x/%lu", (unsigned)status,
+       (unsigned long)bytes);
+    /* The machine-readable idle-sleep count (docs/19 §11e). */
+    DbgPrint("[KTEST] blk idle hlt=%lu\n", (unsigned long)delta);
+    ok(delta > 0, "idle reached hlt while the only runnable work was a parked fill");
+    cui8_delete_file(WSTR("\\??\\C:\\cui8hlt.bin"));
+}
+
 /* --- cancellation of a parked fill (docs/19 §9.9) -------------------------- */
 
 static volatile NTSTATUS cui8_cancel_status;
@@ -309,6 +340,7 @@ int kmt_run_cui8(void)
     KMT_RUN(test_cui8_progress_during_io);
     KMT_RUN(test_cui8_depth);
     KMT_RUN(test_cui8_irq_delivery);
+    KMT_RUN(test_cui8_idle_sleep);
     KMT_RUN(test_cui8_cancel_in_flight);
     return kmt_failures - before;
 }

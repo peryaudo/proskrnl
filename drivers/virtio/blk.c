@@ -8,8 +8,7 @@
  * request owns a control slot (header + status) out of one shared frame,
  * and the head-descriptor cookie map routes each used-ring completion back
  * to its request — VioBlkDrain is the single harvest authority (Art. 11),
- * whether called from the completion ISR, a thread-context poll, or the
- * tick and idle paths.
+ * whether called from the completion ISR or a thread-context poll.
  *
  * MMIO note: the virtio BARs live outside the Limine memmap, so their
  * frames are mapped explicitly into a dedicated kernel VA window. This
@@ -181,11 +180,11 @@ uint64_t VioBlkSectorCount(void)
 /* Harvest every completion the device has published and complete the owning
  * requests: result store, completed flag, event — nothing else. No
  * allocation, no user memory (docs/20 R2; IoDrainDeviceCompletions arms the
- * assert). Called with the dispatcher lock held everywhere — the tick holds
- * it implicitly, idle runs interrupts-off, thread-context waiters acquire
- * it — so a completion cannot interleave with a submit's bookkeeping. The
- * KeSetEvent wake is the same edge the tick's timer expiry already drives
- * (KiWaitTest readies, never switches). */
+ * assert). Called with the dispatcher lock held everywhere — the completion
+ * ISR holds it by arriving (IF off, docs/18 §6d), thread-context waiters
+ * acquire it — so a completion cannot interleave with a submit's
+ * bookkeeping. The KeSetEvent wake is the same edge the tick's timer
+ * expiry already drives (KiWaitTest readies, never switches). */
 void VioBlkDrain(void)
 {
     uint16_t head;
@@ -401,8 +400,9 @@ NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request)
     }
 
     /* The park (docs/19 §5c): the issuer blocks and other threads run while
-     * the device works; the tick/idle drain sets the event. The 10 s bound
-     * keeps a wedged device as loud as the old spin's panic. */
+     * the device works; the completion ISR's drain sets the event (docs/19
+     * §11b). The 10 s bound keeps a wedged device — or a dead interrupt
+     * path (§11d.4) — as loud as the old spin's panic. */
     if (!request->completed)
     {
         LARGE_INTEGER timeout;

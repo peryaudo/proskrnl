@@ -27,6 +27,11 @@ PKTHREAD KiCurrentThread;
  * asserted against in the allocators. */
 BOOLEAN KiInCompletionDrain;
 
+/* Times the idle loop reached hlt (docs/19 §11e: the idle-sleep verdict's
+ * raw number — a quietly reintroduced poll arm keeps idle out of hlt
+ * during in-flight windows and zeroes the kmt test's delta). */
+uint64_t KiIdleHltCount;
+
 /* Non-blocking regions (issue #96 A; contract in ke.h). */
 ULONG KiNoBlockDepth;
 const char *KiNoBlockReason = "";
@@ -451,34 +456,23 @@ __attribute__((noreturn)) void KiIdleLoop(void)
     for (;;)
     {
         __asm__ volatile("cli");
-        /* CUI-8 (docs/19 §5b): harvest device completions before the ready
-         * check, so a drain-readied thread is swapped to immediately. */
-        ULONG inFlight = IoDrainDeviceCompletions();
         if (KiReadySummary != 0)
         {
             KiIdleThread.state = KI_THREAD_STATE_READY;
             KiSwapToNext();
-            /* Back from running other threads: the pre-swap inFlight is
-             * stale — the thread that just ran may have submitted a batch
-             * and parked, and falling through to its == 0 answer would hlt
-             * with transfers in flight (up to a full tick of added latency,
-             * on EVERY await in the stress configuration). Re-drain and
-             * re-sample instead. */
             continue;
         }
         /* Idle is the one context guaranteed to see every other thread at a
          * blocking point: sweep the executive's cross-references here
          * (throttled inside; interrupts are already off = lock held). */
         KiVerifyKernelStateIdle();
-        if (inFlight != 0)
-        {
-            /* Transfers in flight: poll, don't hlt. No completion interrupt
-             * exists to cut a hlt short (docs/19 §5b — no interrupt path),
-             * so sleeping here would tax every transfer with up to a full
-             * tick of latency; sti-pause still lets the tick preempt. */
-            __asm__ volatile("sti; pause");
-            continue;
-        }
+        /* hlt unconditionally, transfers in flight or not: the blk
+         * completion MSI ends a hlt like any other interrupt (docs/19
+         * §11c) — the sti;pause poll arm that used to sit here existed
+         * only because no such interrupt did, and keeping any poll here
+         * would mask a dead ISR at tick latency (§11d.4). The counter is
+         * the §11e idle-sleep verdict's raw number. */
+        KiIdleHltCount++;
         /* sti;hlt back-to-back: an interrupt arriving in between still wakes
          * the hlt (sti takes effect after the next instruction). */
         __asm__ volatile("sti; hlt");
