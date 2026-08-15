@@ -365,6 +365,55 @@ oracle_is_serial() {   # $1 = test base name
     done
     return 1
 }
+
+# Cases whose ORACLE half is PARKED on a named bug in the pinned Wine — where
+# the oracle does not merely fail to answer (that is `beyond_oracle`, and its
+# contract forbids this use) but answers WRONGLY and intermittently. A spec
+# that is right most of the time is not a spec, and a leg that re-rolls it
+# until green is worse than one that says so. The proskrnl leg is UNAFFECTED:
+# it sweeps every case in the image, so the kernel's half stays gated.
+#
+#   thread_skip_flags   sem_ps/thread_skip_flags.c creates a suspended thread,
+#           terminates it, closes it, and immediately creates the next — four
+#           times. On the oracle that pattern loses a race inside wineserver
+#           roughly 6% of the time per run (measured: 29 failures / 480 runs
+#           with a display, 28 / 480 without, so it is not the X switch), and
+#           on a hosted CI runner it lost it twice out of two.
+#
+#           CONVICTED, not guessed (+server trace, one failing run):
+#
+#             01b0: new_thread( ..., flags=00000023, request_fd=9, ... )
+#             01bc: *fd* 14 <- 33 bad thread id
+#             01b0: new_thread() = INVALID_CID { tid=01c0, handle=0034 }
+#
+#           The reply carries a VALID tid and handle — the thread was created.
+#           The error is stale: the dying thread's last fd message reaches
+#           server/request.c receive_fd() after its sender is gone,
+#           get_thread_from_id() sets STATUS_INVALID_CID for the failed
+#           lookup, and that path logs "bad thread id", closes the fd and
+#           returns WITHOUT clear_error() — so the error rides out on the
+#           reply of whatever request was being handled. NtCreateThreadEx
+#           hands STATUS_INVALID_CID to a caller whose thread exists, and
+#           leaks it.
+#
+#           This is an upstream wineserver bug, not a boundary question, and
+#           fixing it is a Wine-fork change outside the unixlib seam (G9) —
+#           a separate decision from this list. Un-park the moment the pin
+#           carries a fix: the case is right and the kernel passes it.
+#
+# Add a name here only with that shape of reason: the oracle must be WRONG,
+# the mechanism named in the pinned tree's own source, and the evidence a
+# trace rather than a failure rate. A case that is merely flaky belongs in
+# neither list — find out why first.
+ORACLE_PARKED_CASES="thread_skip_flags"
+
+oracle_is_parked() {   # $1 = test base name
+    local name
+    for name in $ORACLE_PARKED_CASES; do
+        [[ "$1" == "$name" ]] && return 0
+    done
+    return 1
+}
 CFLAGS_COMMON="-std=c11 -O1 -g -Wall -Wextra -I$ROOT -I$NTAPI"
 
 # The pinned Wine import libraries the test .exes link against (built by
@@ -654,6 +703,16 @@ oracle() {
 
     local srcs=() par=() ser=() src
     while read -r src; do
+        # A parked case is dropped from the SWEEP but never from the runner:
+        # naming it explicitly (`run.sh oracle thread_skip_flags`) runs it, so
+        # the evidence for un-parking is one command away. Announced, never
+        # silent — a case that vanished quietly is how a sweep starts reading
+        # green for the wrong reason.
+        if (( ${#SUBTESTS[@]} == 0 )) && oracle_is_parked "$(basename "${src%.c}")"; then
+            echo "== oracle: $(basename "${src%.c}") PARKED — the pinned Wine answers it" \
+                 "wrongly (see ORACLE_PARKED_CASES); the proskrnl leg still gates it =="
+            continue
+        fi
         srcs+=("$src")
         if oracle_is_serial "$(basename "${src%.c}")"; then ser+=("$src"); else par+=("$src"); fi
     done < <(all_tests)
