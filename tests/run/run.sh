@@ -1143,8 +1143,16 @@ guiwtest() {
     # zero failures, `FAIL (exit=0xN)` carries winetest's failure count as
     # the exit status (a full 32-bit value — NT exit codes do not clip at
     # 255). A timeout/create failure has no count and always fails the leg.
+    #
+    # `|| true` is load-bearing, not defensive: this script runs under
+    # `set -o pipefail`, so a grep that matches NOTHING fails the whole
+    # pipeline, the assignment inherits that status, and `set -e` kills the
+    # leg on the spot. The no-verdict branch below — the one that names a
+    # hung, panicked or timed-out boot — was therefore unreachable: the leg
+    # exited 1 having printed nothing about why, which is the single worst
+    # moment to say nothing. Found by tracing a deliberately truncated run.
     local verdict failures
-    verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1)"
+    verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1 || true)"
     if [[ -z "$verdict" ]]; then
         echo "== guiwtest: FAIL (no kernel verdict — hung, panicked or timed out; see $log) =="
         return 1
