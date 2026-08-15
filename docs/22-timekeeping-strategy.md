@@ -171,18 +171,24 @@ CPU model, and its hypervisor timing leaf is written on the KVM path only
 `tsc_is_stable_and_known()` (invariant TSC exposed, or an explicit `tsc-freq`), on
 `vmware_cpuid_freq` (default on) and `expose_kvm`, and on the KVM signature leaf not having
 been displaced by Hyper-V enlightenments — so `-accel kvm -cpu host` still measures, and
-`-cpu host,migratable=off,+invtsc` is what makes the leaf appear. `tools/qemu.sh` takes it
-as `CPU_EXTRA=migratable=off,+invtsc`, so the run is repeatable rather than a remembered
-command line. With it, on a Ryzen 5950X:
-leaf `0x40000010` reports 3399997 TSC cycles/ms and 62500 LAPIC ticks/ms where the gate
-measures 3400965 and 62541 — 0.03% and 0.07% apart, the reported LAPIC rate landing exactly
-on QEMU's `KVM_APIC_BUS_FREQUENCY / 16`. Full suite green with the reported rates driving
-the clock. Two things follow, and both matter more than the agreement itself: the reported
-path is reachable and exact where it is reachable (so the order above stands), and the
-platform this kernel is normally tested on will not reach it (so the maximum-leaf guards
-around the *unreachable* sources are load-bearing rather than tidy — an ungated leaf-0x15
-read answers a confident 68 kHz on a 2.8 GHz machine, and a kernel that believes reported
-rates would adopt it).
+`+invtsc` is what makes the leaf appear. `tools/qemu.sh` therefore passes
+`-cpu host,+invtsc` on every KVM run: an exact rate is the point of §4b, and a path only a
+remembered command line reaches is a path that rots (CI has no KVM and takes the gate
+regardless, so leaving it opt-in left the reported path unexercised everywhere). On a Ryzen
+5950X leaf `0x40000010` reports 3399997 TSC cycles/ms and 62500 LAPIC ticks/ms where the
+gate measures 3400965 and 62541 — 0.03% and 0.07% apart, the reported LAPIC rate landing
+exactly on QEMU's `KVM_APIC_BUS_FREQUENCY / 16`. Full suite green with the reported rates
+driving the clock. Two things follow, and both matter more than the agreement itself: the
+reported path is reachable and exact where it is reachable (so the order above stands), and
+the platform CI tests on will not reach it (so the maximum-leaf guards around the sources
+that stay *unreachable* are load-bearing rather than tidy — an ungated leaf-0x15 read
+answers a confident 68 kHz on a 2.8 GHz machine, and a kernel that believes reported rates
+would adopt it).
+
+The cost of the default is that a KVM dev box and a TCG CI runner no longer calibrate the
+same way, which is a real loss for reproducing a CI timing failure — mitigated by the boot
+log naming the source on both, and by `ACCEL=tcg` reproducing CI's configuration exactly
+when that is what a bisect needs.
 
 **Why not a second timer device at boot.** Linux's slow path cross-checks the PIT against
 HPET or the ACPI PM timer and demands 10% agreement, and NT *"uses multiple hardware
