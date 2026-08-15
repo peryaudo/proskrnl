@@ -33,7 +33,12 @@ stated as hard gates.
 
 - **G4 — Generated contract.** No hand-typed or model-recalled numeric constants in `abi/`.
   All generated from Wine headers via `tools/gen_abi.py`; layouts carry `static_assert`
-  offsets. (Art. 4)
+  offsets. Mechanically checked: **`make gen-check`** (run by the CI style shard) re-runs
+  every generator against the current pin — `gen_abi`, `gen_syscalls`, `gen_upcase`,
+  `gen_license`, `gen_timezones` — and fails naming any checked-in output that differs. So
+  a hand-edit to a generated file is not a style nit that review might miss: it is red. A
+  generated file whose *content* needs to change is changed in its GENERATOR (for
+  `gen_syscalls`, the `IMPLEMENTED` list) and regenerated in the same commit. (Art. 4)
 
 - **G5 — Test first.** A boundary behaviour needs a `tests/ntapi/` test green on the
   Wine/Windows oracle *before* the kernel implements it, and green on proskrnl before the

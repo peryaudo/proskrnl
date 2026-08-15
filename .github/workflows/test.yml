@@ -48,12 +48,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The non-semantic gates, all three of them `make format` (docs/15): the
-  # blocking frontier (G14), clang-format's layout, and clang-tidy's naming +
-  # correctness lints. No QEMU and no Wine — clang-tidy needs only the two
-  # header-only submodules the kernel compiles against — so this shard skips
-  # `setup` and the third_party cache entirely and answers in ~2 minutes while
-  # the boot shards are still restoring.
+  # The non-semantic gates: `make format` (docs/15) — the blocking frontier
+  # (G14), clang-format's layout, clang-tidy's naming + correctness lints —
+  # and `make gen-check`, the generated-source gate (Art. 4 / G4). No QEMU and
+  # no Wine BUILD: clang-tidy needs the two header-only submodules the kernel
+  # compiles against, and the generators need the pinned wine SOURCE (headers,
+  # NLS, INF, .rgs), all of which a shallow submodule checkout gives. So this
+  # shard still skips `setup` and the third_party cache entirely and answers
+  # in minutes while the boot shards are still restoring.
   #
   # `make format` REWRITES source, which is exactly what makes it checkable
   # here: run it on a clean checkout and the tree must come back byte
@@ -71,6 +73,24 @@ jobs:
       # (only third_party/wine needs the ssh rewrite), and neither is built.
       - name: Fetch the header-only submodules
         run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm
+
+      # `make gen-check` reads the pinned Wine tree's SOURCE — include/*.h,
+      # dlls/ntdll/ntsyscalls.h, nls/l_intl.nls, loader/wine.inf,
+      # dlls/kernelbase/kernelbase.rgs — and builds none of it, so a shallow
+      # checkout is the whole cost. .gitmodules pins it by SSH URL and the
+      # runner has no key, hence the same HTTPS rewrite the third-party
+      # composite action uses.
+      - name: Fetch the pinned Wine source (generators read it; nothing builds it)
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 third_party/wine
+
+      # Art. 4 / G4: abi/, the syscall number space and the three generated
+      # data tables must match what their generators produce from THIS pin.
+      # Ahead of `make format` because it is seconds, and a stale abi/ makes
+      # every verdict behind it suspect.
+      - name: make gen-check (G4 — the generated sources match the pin)
+        run: make gen-check
 
       # Same packages tools/setup_linux.sh installs, minus everything that is
       # only there to build QEMU/Wine. clang-tidy is NOT preinstalled on the
