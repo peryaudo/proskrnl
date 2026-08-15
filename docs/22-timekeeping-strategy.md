@@ -163,6 +163,26 @@ are available, disagreeing by more than a fixed band is a panic or a loud serial
 a silent preference. That is Linux's 500 ppm warning, and it is the only cross-check we can
 afford without a second timer device.
 
+**What it took to execute the reported path at all, and what it then said (issue #176).**
+Under TCG nothing answers: the pinned QEMU caps the basic CPUID maximum at 0x0D for every
+CPU model, and its hypervisor timing leaf is written on the KVM path only
+(`target/i386/kvm/kvm.c`). KVM alone is not enough either — that leaf is gated on
+`tsc_is_stable_and_known()` (invariant TSC exposed, or an explicit `tsc-freq`), on
+`vmware_cpuid_freq` (default on) and `expose_kvm`, and on the KVM signature leaf not having
+been displaced by Hyper-V enlightenments — so `-accel kvm -cpu host` still measures, and
+`-cpu host,migratable=off,+invtsc` is what makes the leaf appear. `tools/qemu.sh` takes it
+as `CPU_EXTRA=migratable=off,+invtsc`, so the run is repeatable rather than a remembered
+command line. With it, on a Ryzen 5950X:
+leaf `0x40000010` reports 3399997 TSC cycles/ms and 62500 LAPIC ticks/ms where the gate
+measures 3400965 and 62541 — 0.03% and 0.07% apart, the reported LAPIC rate landing exactly
+on QEMU's `KVM_APIC_BUS_FREQUENCY / 16`. Full suite green with the reported rates driving
+the clock. Two things follow, and both matter more than the agreement itself: the reported
+path is reachable and exact where it is reachable (so the order above stands), and the
+platform this kernel is normally tested on will not reach it (so the maximum-leaf guards
+around the *unreachable* sources are load-bearing rather than tidy — an ungated leaf-0x15
+read answers a confident 68 kHz on a 2.8 GHz machine, and a kernel that believes reported
+rates would adopt it).
+
 **Why not a second timer device at boot.** Linux's slow path cross-checks the PIT against
 HPET or the ACPI PM timer and demands 10% agreement, and NT *"uses multiple hardware
 timers to detect the frequency offset"*. The equivalent here would mean bringing up HPET or
@@ -262,8 +282,12 @@ Each item has to close on a differential or a pinned measurement, not on an infe
   loaded interval and asserts they track within a band. This is the test that would have
   caught the current defect, and it is green on the oracle by construction (Wine's QPC goes
   through `clock_gettime`, i.e. the vDSO, i.e. a free-running counter).
-- **§4b** — a boot-time `[KTEST]` line reporting the source chosen and the two frequencies,
-  so a regression shows as a changed source rather than as drift nobody notices.
+- **§4b** — a boot line reporting the source chosen and, whenever both numbers exist, the
+  gate's own measurement beside it with an agreement verdict, so a regression shows as a
+  changed source or a changed verdict rather than as drift nobody notices. Deliberately
+  *not* a `[KTEST]` line: that prefix is a machine verdict the runner counts, and there is
+  nothing here to fail — a machine on which no source answers is a legitimate machine
+  (it is the one CI runs on), so a suite verdict would have to pass on every outcome.
 - **§4c** — a delta histogram over back-to-back QPC reads: mass at zero and a single spike
   is the staircase signature; a smooth spread is the correct one. Also the cheapest way to
   demonstrate that the current implementation is *not* staircased, which is worth pinning

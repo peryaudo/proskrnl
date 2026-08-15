@@ -75,16 +75,37 @@ if [[ "$IMG" == "--print-accel" ]]; then
 fi
 case "$ACCEL" in
 kvm)
-    ACCEL_ARGS=(-accel kvm -cpu host)
+    CPU_MODEL=host
     ;;
 tcg)
-    ACCEL_ARGS=(-accel tcg -cpu max)
+    CPU_MODEL=max
     ;;
 *)
     echo "qemu.sh: ACCEL='$ACCEL' is not one of kvm|tcg" >&2
     exit 1
     ;;
 esac
+# CPU_EXTRA="<prop>[,<prop>...]" appends properties to the -cpu model, for
+# exercising a kernel path the default model leaves unreachable. Nothing in
+# the tree sets it; it exists so a path like that is REPRODUCIBLE rather than
+# recorded as prose in someone's PR.
+#
+# The case it was added for: the TSC frequency-discovery path
+# (arch/x86_64/lapic.c KiQueryReportedRates) only runs when the platform
+# publishes CPUID leaf 0x40000010, and the pinned QEMU writes that leaf under
+# KVM only and only when the guest TSC is stable AND known
+# (target/i386/kvm/kvm.c tsc_is_stable_and_known, i.e. invariant-TSC exposed
+# or an explicit tsc-freq) — plain -cpu host is neither, so every default run
+# measures against the PIT instead. Issue #176:
+#
+#   CPU_EXTRA=migratable=off,+invtsc tests/run/run.sh proskrnl
+#
+# (invtsc is not migratable, hence migratable=off; on a host CPU that lacks
+# it QEMU warns and continues, so this is a probe, not a portable default.)
+if [[ -n "${CPU_EXTRA:-}" ]]; then
+    CPU_MODEL="$CPU_MODEL,$CPU_EXTRA"
+fi
+ACCEL_ARGS=(-accel "$ACCEL" -cpu "$CPU_MODEL")
 # Sized for a virgin full image under TCG on a modest container (the CUI-1
 # firstboot INF pass alone is minutes there): a green boot exits through
 # isa-debug-exit the moment it is done, so a large default only delays how

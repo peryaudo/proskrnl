@@ -32,6 +32,8 @@
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/mmu.h"
 #include "kernel/init/panic.h"
+#include "kernel/lib/dbgprint.h"
+#include "kernel/ke/ke.h"
 
 #include <stdint.h>
 
@@ -117,6 +119,139 @@ static void KiEnableXApic(void)
 
 uint64_t KiTscPerMillisecond;
 
+/* The LAPIC timer's divide configuration, written to LAPIC_TMR_DIV as 0x3
+ * (Intel SDM Vol. 3A, "Divide Configuration Register"). One name for it,
+ * because the calibration and the arming below must not drift apart, and
+ * because a bus frequency reported in kHz has to be divided by exactly this
+ * to become a timer tick rate. */
+#define KI_LAPIC_TIMER_DIVISOR 16
+#define KI_LAPIC_TMR_DIV_BY_16 0x3
+
+/* CPUID leaves that REPORT a frequency instead of making us measure one.
+ *
+ * 0x15 (TSC/core-crystal ratio: EAX = denominator, EBX = numerator, ECX =
+ * crystal Hz) and 0x16 (EAX = processor base frequency in MHz) are Intel SDM
+ * Vol. 2A, CPUID — the same table kernel/ps/query.c already reads 0x16 from.
+ *
+ * EVERY read below is gated on the maximum leaf the CPU advertises, and that
+ * guard is load-bearing rather than tidy: CPUID with a leaf above the maximum
+ * returns the HIGHEST supported leaf's registers, not zero (SDM Vol. 2A,
+ * "INPUT EAX = Value Outside of Recognized Range"). Measured on the pinned
+ * QEMU under TCG, which caps the basic maximum at 0x0D for every CPU model:
+ * an ungated leaf-0x15 read on -cpu Skylake-Client-v4 answers
+ * EAX=7 EBX=0x240 ECX=0x340, which the ratio below would turn into a
+ * confident 68 kHz TSC. A guard that looks like defensive programming is the
+ * only thing standing between this function and a clock two thousand times
+ * too slow.
+ *
+ * 0x40000010 is NOT in the SDM: it is the hypervisor timing leaf, originally
+ * VMware's and now answered by several hypervisors, EAX = TSC kHz and EBX =
+ * APIC bus kHz. Verified against the pinned QEMU tree, target/i386/kvm/kvm.c
+ * (`c->function = KVM_CPUID_SIGNATURE | 0x10; c->eax = env->tsc_khz;
+ * c->ebx = env->apic_bus_freq / 1000;`), with the intent stated at
+ * target/i386/cpu.h `vmware_cpuid_freq` — "the guest OS in CPUID page
+ * 0x40000010, the same way that VMWare does". Re-check there, not from memory.
+ * The hypervisor-present bit gating it is CPUID.1:ECX[31], SDM Vol. 2A. */
+#define KI_CPUID_LEAF_TSC_RATIO   0x15U
+#define KI_CPUID_LEAF_CPU_FREQ    0x16U
+#define KI_CPUID_LEAF_HV_MAX      0x40000000U
+#define KI_CPUID_LEAF_HV_TIMING   0x40000010U
+#define KI_CPUID_1_ECX_HYPERVISOR (1U << 31)
+
+/* What the platform says about its own clocks, as opposed to what a busy-wait
+ * measures. Either field is 0 when the source cannot answer it — never a
+ * plausible stand-in (G12): a zero here means "ask the next source", and if
+ * none answers the PIT gate runs. */
+typedef struct
+{
+    uint64_t tscPerMs;       /* TSC cycles in 1 ms */
+    uint32_t apicTicksPerMs; /* LAPIC timer ticks in 1 ms, after the divisor */
+    const char *source;      /* for the boot line; 0 when nothing answered */
+} KI_REPORTED_RATES;
+
+/* Ask the platform for the two rates, most trustworthy source first. This is
+ * the order Linux uses and for its reason: a reported frequency is exact,
+ * where a gate against an emulated PIT measures the emulation as much as the
+ * clock. The gate remains as the last resort (KiInitializeClock). */
+static KI_REPORTED_RATES KiQueryReportedRates(void)
+{
+    KI_REPORTED_RATES rates = {0, 0, 0};
+    uint32_t regs[4];
+
+    /* 1. The hypervisor, when there is one. It is the only source here that
+     *    can also name the APIC bus, and it is the source that matters on the
+     *    platform we actually run on. */
+    KiCpuid(1, 0, regs);
+    if ((regs[2] & KI_CPUID_1_ECX_HYPERVISOR) != 0)
+    {
+        KiCpuid(KI_CPUID_LEAF_HV_MAX, 0, regs);
+        if (regs[0] >= KI_CPUID_LEAF_HV_TIMING)
+        {
+            KiCpuid(KI_CPUID_LEAF_HV_TIMING, 0, regs);
+            /* kHz is cycles per millisecond, which is the unit we want, so
+             * the "conversion" is the identity — stated because a stray
+             * factor of 1000 here would be invisible. */
+            if (regs[0] != 0)
+            {
+                rates.tscPerMs = regs[0];
+                rates.source = "hypervisor leaf 0x40000010";
+            }
+            if (rates.tscPerMs != 0)
+            {
+                if (regs[1] != 0)
+                {
+                    rates.apicTicksPerMs = regs[1] / KI_LAPIC_TIMER_DIVISOR;
+                }
+                return rates;
+            }
+            /* EBX deliberately unread when EAX said nothing. The two numbers
+             * are one source's testimony, and KiInitializeClock adopts them
+             * together on one verdict; carrying the bus rate forward into a
+             * fall-through to CPUID would mix two sources under a check that
+             * only examined one of them. QEMU writes both or neither, so this
+             * is unreachable there — which is exactly why it is worth closing
+             * rather than relying on. */
+        }
+    }
+
+    /* 2. CPUID 0x15, the architectural ratio. Only exact when the crystal
+     *    frequency (ECX) is also reported; the SDM allows it to be 0, and
+     *    guessing a crystal from a model number is the kind of table we have
+     *    no way to verify (G8). */
+    KiCpuid(0, 0, regs);
+    uint32_t maxLeaf = regs[0];
+    if (maxLeaf >= KI_CPUID_LEAF_TSC_RATIO)
+    {
+        KiCpuid(KI_CPUID_LEAF_TSC_RATIO, 0, regs);
+        uint32_t denominator = regs[0], numerator = regs[1], crystalHz = regs[2];
+        if (denominator != 0 && numerator != 0 && crystalHz != 0)
+        {
+            /* TSC Hz = crystal * numerator / denominator, then Hz -> per ms.
+             * 64-bit throughout: crystal * numerator overflows 32 bits. */
+            uint64_t tscHz = ((uint64_t)crystalHz * numerator) / denominator;
+            rates.tscPerMs = tscHz / 1000;
+            rates.source = "CPUID leaf 0x15";
+            return rates;
+        }
+    }
+
+    /* 3. CPUID 0x16's nominal base frequency. Coarser — it is the ADVERTISED
+     *    frequency in whole MHz, not a measured one — but it is still the
+     *    platform's own number rather than our busy-wait's. */
+    if (maxLeaf >= KI_CPUID_LEAF_CPU_FREQ)
+    {
+        KiCpuid(KI_CPUID_LEAF_CPU_FREQ, 0, regs);
+        if (regs[0] != 0)
+        {
+            rates.tscPerMs = (uint64_t)regs[0] * 1000; /* MHz -> cycles per ms */
+            rates.source = "CPUID leaf 0x16";
+            return rates;
+        }
+    }
+
+    return rates;
+}
+
 /* Count LAPIC timer ticks (divide-by-16) across one 10 ms PIT gate, and count
  * TSC cycles across the same gate into *tscPerMs — one measurement, two
  * consumers, so the interpolation kernel/ke/timer.c does between ticks is
@@ -140,7 +275,7 @@ static uint32_t KiCalibrateApicTimer(uint64_t *tscPerMs)
      * expired early. Small (<0.1%) but one-directional, which is what makes
      * it worth fixing rather than tolerating (docs/review-2026-07 §8). */
     KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT & 0xFF);
-    KiApicWrite(LAPIC_TMR_DIV, 0x3); /* divide by 16 */
+    KiApicWrite(LAPIC_TMR_DIV, KI_LAPIC_TMR_DIV_BY_16);
     KiApicWrite(LAPIC_LVT_TMR, LAPIC_TMR_MASKED | TIMER_VECTOR);
     KiApicWrite(LAPIC_TMR_INIT, 0xFFFFFFFFU);
     KiOutByte(PIT_CHANNEL2, PIT_10MS_COUNT >> 8);
@@ -155,6 +290,15 @@ static uint32_t KiCalibrateApicTimer(uint64_t *tscPerMs)
     KiApicWrite(LAPIC_TMR_INIT, 0); /* stop */
     *tscPerMs = (tscEnd - tscStart) / 10;
     return (0xFFFFFFFFU - remaining) / 10; /* ticks per 1 ms */
+}
+
+/* Do two rates for the same clock describe the same machine? Within 1%, in
+ * either direction, with no assumption about which of the two is larger. */
+static BOOLEAN KiRatesAgree(uint64_t a, uint64_t b)
+{
+    uint64_t low = a < b ? a : b;
+    uint64_t high = a < b ? b : a;
+    return high - low <= low / 100;
 }
 
 void KiInitializeClock(void)
@@ -177,8 +321,97 @@ void KiInitializeClock(void)
 
     KiSetInterruptGate(TIMER_VECTOR, KiTrapThunkTable[TIMER_VECTOR]);
 
-    uint64_t tscPerMs = 0;
-    uint32_t ticksPerMs = KiCalibrateApicTimer(&tscPerMs);
+    /* Measure ALWAYS, ask as well, and believe the answer when one comes back
+     * (docs/22 §4b — this is Linux's order and its reason: a reported
+     * frequency is exact, where a gate against an EMULATED PIT measures the
+     * emulation as much as the clock).
+     *
+     * The gate runs unconditionally even so, for two reasons that outlive the
+     * preference: it is the only thing that can name the LAPIC's own tick rate
+     * when the platform will not, and running it every boot is what makes the
+     * cross-check below exist on every boot. It costs 10 ms once.
+     *
+     * Believing a reported rate is only safe because of the maximum-leaf
+     * guards in KiQueryReportedRates, and that dependency is worth naming
+     * here: an UNGATED leaf-0x15 read answers a confident 68 kHz on a 2.8 GHz
+     * machine (the measurement is in that function's comment), and this code
+     * would now adopt it. The guards are the thing standing between the two.
+     *
+     * Verified on a KVM host, which is where the reported path first executed
+     * at all — the pinned QEMU under TCG stops at basic leaf 0x0D and answers
+     * nothing (issue #176). On a Ryzen 5950X under
+     * CPU_EXTRA=migratable=off,+invtsc (tools/qemu.sh; invtsc is what makes
+     * QEMU publish the leaf at all — target/i386/kvm/kvm.c gates it on
+     * tsc_is_stable_and_known), leaf 0x40000010 reported tsc=3399997
+     * cycles/ms and lapic=62500 ticks/ms where the gate measured 3400965 and
+     * 62541 — 0.03% and 0.07% apart, with the reported LAPIC rate landing
+     * exactly on QEMU's KVM_APIC_BUS_FREQUENCY / 16. The two sources agree,
+     * and the exact one is the reported one. */
+    uint64_t measuredTscPerMs = 0;
+    uint32_t measuredTicksPerMs = KiCalibrateApicTimer(&measuredTscPerMs);
+    KI_REPORTED_RATES reported = KiQueryReportedRates();
+
+    uint64_t tscPerMs = measuredTscPerMs;
+    uint32_t ticksPerMs = measuredTicksPerMs;
+    const char *source = "measured against the PIT";
+
+    if (reported.tscPerMs != 0)
+    {
+        tscPerMs = reported.tscPerMs;
+        source = reported.source;
+        /* The APIC bus rate rides along: the two numbers are one source's
+         * testimony, adopted together (KiQueryReportedRates says so on the
+         * other side of the seam).
+         *
+         * Only the hypervisor leaf names it, so the CPUID sources leave the
+         * pair MIXED — a reported TSC rate against a measured LAPIC rate,
+         * with nothing bounding their ratio, which is the ratio the sub-tick
+         * interpolation in kernel/ke/timer.c runs on. That is intended and
+         * costs little: an error in the ratio is bounded by the gate's own
+         * error against the reported rate (a few hundred ppm of I/O timing
+         * noise, and the cross-check below prints it either way), and it
+         * shows up as a slightly-off sawtooth WITHIN a tick, never as
+         * accumulating time — since §4a made the TSC, not the tick, decide
+         * how far the clock moves. */
+        if (reported.apicTicksPerMs != 0)
+        {
+            ticksPerMs = reported.apicTicksPerMs;
+        }
+    }
+
+    DbgPrint("KiInitializeClock: tsc=%llu cycles/ms lapic=%lu ticks/ms (%s)\n",
+             (unsigned long long)tscPerMs, (unsigned long)ticksPerMs, source);
+
+    /* The cross-check, printed on every boot that has both numbers rather
+     * than only when it fails: a preference for one source over another must
+     * not be a SILENT preference (docs/22 §4b), and a regression here shows up
+     * as a changed source or a changed verdict in the boot log rather than as
+     * drift nobody notices (§6). This is the only cross-check available
+     * without bringing up a second timer device that no other consumer wants.
+     *
+     * A disagreement is a log line and not a panic because neither source can
+     * convict the other: 1% is a wide band for two descriptions of one clock —
+     * the gate's own error is a few hundred ppm of I/O timing noise, and a
+     * mis-derived frequency misses by a factor rather than by a percent — so
+     * anything outside it means one of the two is describing a different
+     * machine, and this code has no way to say which. Under Article 9 the
+     * dump is the debugger, so it says so where a human will read it. */
+    if (reported.tscPerMs != 0 && measuredTscPerMs != 0)
+    {
+        /* A rate the gate did not produce is NOT a disagreement — a dead
+         * LAPIC timer under a live TSC would otherwise print "more than 1%
+         * apart" when the truth is that one side said nothing. */
+        BOOLEAN agrees = KiRatesAgree(reported.tscPerMs, measuredTscPerMs) &&
+                         (reported.apicTicksPerMs == 0 || measuredTicksPerMs == 0 ||
+                          KiRatesAgree(reported.apicTicksPerMs, measuredTicksPerMs));
+        DbgPrint("KiInitializeClock: the PIT gate measured tsc=%llu cycles/ms lapic=%lu "
+                 "ticks/ms -- %s\n",
+                 (unsigned long long)measuredTscPerMs, (unsigned long)measuredTicksPerMs,
+                 agrees ? "agrees with the reported rate within 1%"
+                        : "MORE THAN 1% FROM THE REPORTED RATE, which is what the clock is "
+                          "running on");
+    }
+
     if (ticksPerMs == 0)
     {
         KiPanic("KiInitializeClock: LAPIC timer calibration failed");
@@ -194,7 +427,7 @@ void KiInitializeClock(void)
     }
     KiTscPerMillisecond = tscPerMs;
 
-    KiApicWrite(LAPIC_TMR_DIV, 0x3);
+    KiApicWrite(LAPIC_TMR_DIV, KI_LAPIC_TMR_DIV_BY_16);
     KiApicWrite(LAPIC_LVT_TMR, TIMER_VECTOR | LAPIC_TMR_PERIODIC);
     KiApicWrite(LAPIC_TMR_INIT, ticksPerMs); /* 1 ms period */
 
