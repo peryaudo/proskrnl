@@ -1,7 +1,6 @@
 ---
 name: log-hack
 description: Append the next HACK-NNN entry to docs/10-hacks-ledger.md for a deliberate NT-absent addition (a new device or new process at the outside of the boundary). Use when introducing something NT does not have, per Constitution Article 2.
-disable-model-invocation: true
 ---
 
 # log-hack
