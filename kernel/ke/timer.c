@@ -417,6 +417,19 @@ void KiUpdateClock(BOOLEAN interruptedUser)
         timer->header.signalState = 1;
         KiWaitTest(&timer->header);
     }
+
+    /* The guest-clocked completion-latency BOUND (docs/19 §11c): the blk
+     * MSI is the primary harvest (microseconds), but its injection rides
+     * the host's scheduling of the emulator's main loop, which a contended
+     * host can lag arbitrarily in guest-relative time — measured: Wine's
+     * one-second empty-desktop close (server/winstation.c) beat a client's
+     * I/O-parked startup on the CI runner, killing the gui6 session
+     * desktop. The tick is guest time, so draining here restores the 1 ms
+     * ceiling those user-space timeouts implicitly price in. A dead ISR is
+     * still loud: the §11e delivery verdict gates on ISR-path harvests,
+     * not on this backstop's absence. Idempotent when the ISR already
+     * harvested; respects the §8.1 completion hold (VioBlkDrain). */
+    IoDrainDeviceCompletions();
 }
 
 void KeInitializeTimerEx(PKTIMER timer, TIMER_TYPE type)

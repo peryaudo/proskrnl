@@ -71,9 +71,10 @@ NTSTATUS VioBlkSubmitBatch(VIO_BLK_REQUEST *requests, ULONG count, ULONG *submit
 
 /* Harvest every published completion. THE single harvest authority
  * (Art. 11); every drain point funnels here. Call with the dispatcher lock
- * held (the completion ISR holds it by arriving; thread context acquires
- * it) — preferably through Io's IoDrainDeviceCompletions, which brackets
- * the docs/20 R2 allocator prohibition. */
+ * held (the completion ISR holds it by arriving; the tick backstop holds
+ * it implicitly; thread context acquires it) — preferably through Io's
+ * IoDrainDeviceCompletions, which brackets the docs/20 R2 allocator
+ * prohibition. */
 void VioBlkDrain(void);
 
 /* Requests currently in flight (submitted, not yet harvested). */

@@ -549,9 +549,10 @@ extern BOOLEAN KiInCompletionDrain;
 /* The device-completion drain upcall (CUI-8, docs/19 §5b/§11), implemented
  * in kernel/io/file.c beside the transport it drains. Called with the
  * dispatcher lock held: the blk completion ISR holds it by arriving
- * (kernel/ke/irq.c — the lock IS interrupt-disable, docs/18 §6d), and
- * thread-context waiters acquire it. Returns the number of requests still
- * in flight after the harvest. */
+ * (kernel/ke/irq.c — the lock IS interrupt-disable, docs/18 §6d), the tick
+ * holds it implicitly (KiUpdateClock — the guest-clocked latency bound,
+ * docs/19 §11c), and thread-context waiters acquire it. Returns the number
+ * of requests still in flight after the harvest. */
 ULONG IoDrainDeviceCompletions(void);
 
 /* Times the blk completion vector dispatched (kernel/ke/irq.c) — the

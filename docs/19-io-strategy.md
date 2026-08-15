@@ -81,14 +81,14 @@ driver and is preserved in history. What is measured today:
   `KeWaitForSingleObject`); other threads run while the device works. The §8.3 acceptance
   test (`progress_during_io`) is green, including under an absolute drive throttle.
 
-**The harvest is now interrupt-driven too (§11, built).** The polled harvest this
-section previously measured — a tick-tail drain flooring a parked issuer's wake at up to
-a millisecond, and an idle loop that had to spin `sti; pause` instead of `hlt` while a
-transfer was in flight because no completion interrupt existed to cut a `hlt` short —
-is deleted. Completions are discovered at the blk MSI-X ISR (`kernel/ke/irq.c`,
-`BLK_VECTOR`) and by **thread-context waiters** (the pre-park spin, the post-park
-poll-home, and the submit-side full-ring retries); idle `hlt`s unconditionally. The
-delivery and idle-sleep verdicts (§11e) gate both properties in `tests/kmt/cui8_async.c`.
+**The harvest is now interrupt-driven (§11, built).** Completions are discovered at the
+blk MSI-X ISR (`kernel/ke/irq.c`, `BLK_VECTOR`) — the primary path, microseconds — with
+the tick-tail drain retained as the **guest-clocked 1 ms latency bound** (§11c: MSI
+injection is host-scheduled and can lag arbitrarily in guest time on a contended host),
+and by **thread-context waiters** (the pre-park spin, the post-park poll-home, and the
+submit-side full-ring retries). The idle loop's `sti; pause` busy-spin is deleted — idle
+`hlt`s unconditionally, a completion interrupt ends the `hlt`. The delivery and
+idle-sleep verdicts (§11e) gate both properties in `tests/kmt/cui8_async.c`.
 
 ## 3. The gaps, and the consumer that convicts each
 
@@ -378,15 +378,21 @@ rather than re-deriving the answer.
 **Deleted, once the interrupt is proven live (§11e):**
 
 - the idle loop's `sti; pause` arm — idle becomes `sti; hlt` unconditionally, because a
-  completion now cuts `hlt` short like any other interrupt;
-- the tick-tail `IoDrainDeviceCompletions()` call in `KiUpdateClock` — the tick goes back
-  to time and timers.
+  completion now cuts `hlt` short like any other interrupt.
 
-Deleting them is not housekeeping; it is the **§8.4 discipline applied to this change**.
-A kernel that wires the interrupt but keeps the polling backstops passes every test even
-if the interrupt never fires once — the correct-but-inert failure shape again. The
-backstops go away so that the interrupt path is load-bearing, and a broken one fails the
-delivery verdict (§11e) and, at runtime, the existing 10 s park panic — loudly.
+**Retained after being deleted and convicted: the tick-tail drain, as the guest-clocked
+latency bound.** The first cut deleted the tick-tail `IoDrainDeviceCompletions()` too,
+reasoning that any surviving poll masks a dead ISR (the §8.4 correct-but-inert shape).
+CI convicted the deletion within a day: MSI *injection* rides the host's scheduling of
+the emulator's main loop, so on a contended host a completion interrupt can lag
+arbitrarily in **guest-relative** time — and the gui6 session desktop died reproducibly
+because Wine's one-second empty-desktop close (`server/winstation.c`, a guest-clocked
+timeout) beat the browser explorer's I/O-parked startup on the CI runner. The tick is
+guest time; draining at its tail restores the 1 ms guest-time ceiling that user-space
+timeouts implicitly price in, on any host. The masking argument is answered by the
+delivery verdict instead: a dead ISR fails the CI-gated `blk irq` line (§11e), not the
+backstop's absence — and the tick drain is idempotent when the ISR already harvested,
+and respects the §8.1 completion hold.
 
 **Stays, deliberately:**
 
@@ -511,6 +517,8 @@ these is a separate change against the same seam if a consumer ever convicts it.
    arm, with the stale comments they carried (`sched.c`, `virtio.h`, `virtqueue.c`,
    `pci.c` "a polling driver needs none of them"); docs/18 §6d and docs/20 §6 rows
    updated to point here. The four cui8 stages and the idle-sleep verdict prove the
-   interrupt is now load-bearing.
+   interrupt is now load-bearing. *(As built, this step over-deleted: the tick-tail
+   drain came back in its own commit as the guest-clocked latency bound after CI
+   convicted its absence — §11c tells that story.)*
 4. **README status line** per the milestone rule, if this is judged milestone-worthy;
    otherwise the docs/19 §2/§3 rows above are the record.
