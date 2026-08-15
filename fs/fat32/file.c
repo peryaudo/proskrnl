@@ -63,8 +63,14 @@ typedef struct
 
 static NTSTATUS FatBatchFlush(FAT_IO_BATCH *batch)
 {
-    NTSTATUS status = STATUS_SUCCESS;
-    for (ULONG i = 0; i < batch->count; i++)
+    /* The staged batch goes in flight under ONE lock hold (docs/19
+     * §11d.7): submits interleaved with asynchronous harvests would let
+     * the depth verdict measure harvest timing instead of the issuer. A
+     * refusal stops the submitting, and only the submitted prefix is
+     * awaited — the rest never reached the device. */
+    ULONG submitted = 0;
+    NTSTATUS status = VioBlkSubmitBatch(batch->requests, batch->count, &submitted);
+    for (ULONG i = 0; i < submitted; i++)
     {
         NTSTATUS one = VioBlkAwait(&batch->requests[i]);
         if (NT_SUCCESS(status) && !NT_SUCCESS(one))
@@ -79,24 +85,27 @@ static NTSTATUS FatBatchFlush(FAT_IO_BATCH *batch)
 static NTSTATUS FatBatchTransfer(FAT_IO_BATCH *batch, BOOLEAN isWrite, PFAT_VOLUME volume,
                                  uint64_t sector, uint32_t sectorCount, uint64_t physical)
 {
-    NTSTATUS status;
     if (batch->count == VIO_BLK_MAX_INFLIGHT)
     {
-        status = FatBatchFlush(batch);
+        NTSTATUS status = FatBatchFlush(batch);
         if (!NT_SUCCESS(status))
         {
             return status;
         }
     }
+    /* Stage only — the device sees the whole batch at the flush. */
     VIO_BLK_REQUEST *request = &batch->requests[batch->count];
     uint64_t lba = volume->partitionFirstLba + sector;
-    status = isWrite ? VioBlkSubmitWrite(request, lba, sectorCount, physical)
-                     : VioBlkSubmitRead(request, lba, sectorCount, physical);
-    if (NT_SUCCESS(status))
+    if (isWrite)
     {
-        batch->count++;
+        VioBlkPrepareWrite(request, lba, sectorCount, physical);
     }
-    return status;
+    else
+    {
+        VioBlkPrepareRead(request, lba, sectorCount, physical);
+    }
+    batch->count++;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS FatEnsureCache(PFAT_FCB fcb)
