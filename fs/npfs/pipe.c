@@ -1379,6 +1379,18 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     {
         return status;
     }
+    /* The name is the caller's, and reading it is the first thing below.
+     * The shared probe is the one authority for the question (G11) and the
+     * Io create path already asks it (kernel/io/file.c IopCreateFile); this
+     * site did not, so a misaligned block reached a ring-0 load and tripped
+     * a UBSan trap — a #UD, which the dispatcher's fault-recovery frame
+     * cannot convert into a status. Found by the pointer-torture matrix
+     * (issue #32 A1); pinned by tests/ntapi/sem_pipe/pipe_hostile_name.c. */
+    status = ObProbeObjectAttributes(attributes);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
     if (attributes == 0 || attributes->ObjectName == 0)
     {
         return STATUS_OBJECT_PATH_SYNTAX_BAD;
