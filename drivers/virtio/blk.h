@@ -55,6 +55,20 @@ NTSTATUS VioBlkSubmitWrite(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_
                            uint64_t physical);
 NTSTATUS VioBlkAwait(VIO_BLK_REQUEST *request);
 
+/* Batch shape (docs/19 §11d.7): stage parameters into caller-owned
+ * requests with the Prepare pair (no device interaction), then put the
+ * whole batch in flight under ONE dispatcher-lock hold with SubmitBatch —
+ * atomic against every asynchronous harvest, so the observed in-flight
+ * depth is the issuer's, not the harvest timing's. Stops at the first
+ * refusal: *submittedOut requests (a prefix) are in flight and MUST each
+ * be awaited (docs/20 R4); the refused one and the rest are untouched.
+ * count is capped at VIO_BLK_MAX_INFLIGHT. */
+void VioBlkPrepareRead(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                       uint64_t physical);
+void VioBlkPrepareWrite(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                        uint64_t physical);
+NTSTATUS VioBlkSubmitBatch(VIO_BLK_REQUEST *requests, ULONG count, ULONG *submittedOut);
+
 /* Harvest every published completion. THE single harvest authority
  * (Art. 11); every drain point funnels here. Call with the dispatcher lock
  * held (the tick holds it implicitly; idle runs with interrupts off; thread

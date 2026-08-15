@@ -211,9 +211,16 @@ void VioBlkResetDepthStats(void)
     VioBlkDepthSamples = 0;
 }
 
-static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
+/* One submission, dispatcher lock HELD by the caller: claim-fill-submit-
+ * register under one hold (docs/20 F2) — an asynchronous drain must not
+ * observe a submitted chain whose cookie is not yet in the map, and the
+ * free lists it splices are the ones VioSubmitChain consumes. The
+ * exhausted-retry drains inline under the same hold — progress comes from
+ * the device, not from another thread. */
+static NTSTATUS VioBlkSubmitLocked(VIO_BLK_REQUEST *request)
 {
     ASSERT(VioBlkPresent);
+    ASSERT(KiIsDispatcherLockHeld());
     ASSERT(request->sectorCount != 0);
     /* Widen before multiplying: sectorCount is uint32_t, so a 32-bit product
      * would wrap (0x800000 sectors passed the old bound). One page per
@@ -230,13 +237,6 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
     request->completed = FALSE;
     request->result = STATUS_PENDING;
     KeInitializeEvent(&request->done, NotificationEvent, FALSE);
-
-    /* Claim-fill-submit-register is ONE lock hold (docs/20 F2): the tick
-     * drain must not observe a submitted chain whose cookie is not yet in
-     * the map, and the free lists it splices are the ones VioSubmitChain
-     * consumes. The exhausted-retry drains inline under the same hold —
-     * progress comes from the device, not from another thread. */
-    uint64_t flags = KiAcquireDispatcherLock();
 
     /* The submit-side retry loops are bounded like VioBlkAwait's poll: a
      * wedged device that never completes anything would otherwise freeze
@@ -302,9 +302,59 @@ static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
     }
     VioBlkDepthSampleSum += VioBlkInFlight;
     VioBlkDepthSamples++;
-
-    KiReleaseDispatcherLock(flags);
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS VioBlkSubmitPrepared(VIO_BLK_REQUEST *request)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    NTSTATUS status = VioBlkSubmitLocked(request);
+    KiReleaseDispatcherLock(flags);
+    return status;
+}
+
+void VioBlkPrepareRead(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                       uint64_t physical)
+{
+    request->type = VIO_BLK_T_IN;
+    request->sectorLba = sectorLba;
+    request->sectorCount = sectorCount;
+    request->dataPhysical = physical;
+}
+
+void VioBlkPrepareWrite(VIO_BLK_REQUEST *request, uint64_t sectorLba, uint32_t sectorCount,
+                        uint64_t physical)
+{
+    request->type = VIO_BLK_T_OUT;
+    request->sectorLba = sectorLba;
+    request->sectorCount = sectorCount;
+    request->dataPhysical = physical;
+}
+
+NTSTATUS VioBlkSubmitBatch(VIO_BLK_REQUEST *requests, ULONG count, ULONG *submittedOut)
+{
+    /* The WHOLE batch is one lock hold (docs/19 §11d.7): an asynchronous
+     * harvest between two submits of one batch would shrink the observed
+     * depth below what the issuer actually put in flight, so the depth
+     * verdict measures the harvest's luck instead of the driver. Under one
+     * hold the batch is atomic against every drain but its own inline
+     * exhausted-retries. Bounded: count <= VIO_BLK_MAX_INFLIGHT slots. */
+    ASSERT(count <= VIO_BLK_MAX_INFLIGHT);
+    uint64_t flags = KiAcquireDispatcherLock();
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG submitted = 0;
+    while (submitted < count)
+    {
+        status = VioBlkSubmitLocked(&requests[submitted]);
+        if (!NT_SUCCESS(status))
+        {
+            break; /* the refused request is NOT in flight; earlier ones are */
+        }
+        submitted++;
+    }
+    KiReleaseDispatcherLock(flags);
+    *submittedOut = submitted;
+    return status;
 }
 
 /* Pre-park drain-spin bound (default VIO_BLK_AWAIT_SPINS, blk.h). An
