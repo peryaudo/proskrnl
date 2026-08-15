@@ -1826,15 +1826,23 @@ gen-timezones:
 # been hand-edited past tools/gen_syscalls.py's IMPLEMENTED list by the time
 # it was written.
 #
-# The three DATA generators are already re-checked by $(IMG)'s stamp rules
-# above; they are repeated here because this target is what the style shard
-# runs, and that shard builds no image (it needs the pinned wine SOURCE only —
-# headers, NLS, INF, .rgs — never a wine BUILD).
+# SCOPE: the generators whose inputs are TRACKED FILES of the pinned tree —
+# include/*.h, dlls/ntdll/ntsyscalls.h, nls/l_intl.nls,
+# dlls/kernelbase/kernelbase.rgs. That is what lets the style shard run this
+# against a shallow submodule checkout, building no image and no wine.
+#
+# gen_license is deliberately NOT here: its input, loader/wine.inf, is a
+# CONFIGURE PRODUCT of the wine tree (the tracked file is wine.inf.in), so on
+# an unconfigured checkout it does not exist and this target would be gating
+# on tree state rather than on the contract. It keeps the $(LICENSE_CHECK)
+# stamp rule above, which every image-building shard takes — so it is still
+# checked mechanically, just not here. The other two data generators keep
+# their stamp rules too; running them here as well is free and moves their
+# verdict minutes earlier.
 gen-check:
 	python3 tools/gen_abi.py --check
 	python3 tools/gen_syscalls.py --check
 	python3 tools/gen_upcase.py --check
-	python3 tools/gen_license.py --check
 	python3 tools/gen_timezones.py --check
 
 # Enforce the docs/15 house style — the one style gate, `make format`.
