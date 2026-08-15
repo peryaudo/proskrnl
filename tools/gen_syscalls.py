@@ -261,6 +261,17 @@ IMPLEMENTED = [
     "NtSetSystemTime",
     "NtSetSystemInformation",
     "NtShutdownSystem",
+    # The CUI winetest frontier (docs/21 W12): ntdll:reg's named license
+    # lookup, answered out of the seeded key (kernel/cm/registry.c).
+    "NtQueryLicenseValue",
+    # WOW64 (docs/02): the per-process LDT (kernel/ps/ldt.c) and the
+    # debugger-ATTACH corner ADR 0011's WOW64 amendment re-opened —
+    # DebugActiveProcess/Stop and nothing else (kernel/ps/debug.c; the rest
+    # of the debug-object family keeps its loud refusal).
+    "NtSetLdtEntries",
+    "NtCreateDebugObject",
+    "NtDebugActiveProcess",
+    "NtRemoveProcessDebug",
 ]
 
 

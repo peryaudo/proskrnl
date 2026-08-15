@@ -2498,6 +2498,63 @@ NtShutdownSystem:
     syscall
     ret
 
+    .global NtQueryLicenseValue
+NtQueryLicenseValue:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xc9, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtSetLdtEntries
+NtSetLdtEntries:
+    sub $0x78, %rsp
+    mov %r8, 0x28(%rsp)
+    mov %r9, 0x30(%rsp)
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xf1, %eax
+    syscall
+    add $0x78, %rsp
+    ret
+
+    .global NtCreateDebugObject
+NtCreateDebugObject:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xa6, %eax
+    syscall
+    ret
+
+    .global NtDebugActiveProcess
+NtDebugActiveProcess:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0x90, %eax
+    syscall
+    ret
+
+    .global NtRemoveProcessDebug
+NtRemoveProcessDebug:
+    mov %rcx, %r9
+    mov %rdx, %r8
+    mov %rsi, %rdx
+    mov %rdi, %r10
+    mov $0xda, %eax
+    syscall
+    ret
+
 #ifdef __ELF__
     .section .note.GNU-stack, "", @progbits
 #endif
