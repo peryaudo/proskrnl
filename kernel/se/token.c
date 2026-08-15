@@ -1138,6 +1138,24 @@ NTSTATUS NtAdjustPrivilegesToken(HANDLE tokenHandle, BOOLEAN disableAll, TOKEN_P
     if (!disableAll)
     {
         ULONG count;
+        /* Ahead of the capture, not inside it. `&newState->PrivilegeCount`
+         * is address arithmetic on the caller's pointer, and it is already
+         * undefined before KiCopyFromUser gets to validate anything: NULL
+         * makes it a null member access and 0x1 makes it a misaligned one,
+         * both of which this kernel builds as traps — a #UD, i.e. a machine
+         * halt from an unprivileged caller, and one the dispatcher's
+         * fault-recovery frame cannot convert (it catches page faults).
+         * Probing the header FIRST answers NULL, misalignment and an
+         * unmapped page in the one call, and every arithmetic below it is
+         * then on a pointer known good. NewState is optional only under
+         * DisableAllPrivileges, which is the arm above. Found by the
+         * pointer-torture matrix (issue #32 A1); pinned by
+         * tests/ntapi/sem_se/se_adjust_hostile.c. */
+        status = KiProbeForRead(newState, headerLength, sizeof(ULONG));
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
         status = KiCopyFromUser(&count, &newState->PrivilegeCount, sizeof(count));
         if (!NT_SUCCESS(status))
         {
