@@ -11,7 +11,8 @@ resource inside kernelbase itself (dlls/kernelbase/kernelbase.rgs, named by
 dlls/kernelbase/kernelbase.rc) and is applied at `wineboot --init` by
 dlls/setupapi/fakedll.c `register_resource`.
 
-proskrnl has no prefix and no wineboot on the hermetic images, so CmInitialize
+proskrnl has no prefix, and the fake-dll pass that applies this resource is
+dropped from the baked wine.inf (tools/filter_inf.py), so CmInitialize
 (kernel/cm/registry.c) seeds the same payload — the Session Manager /
 LicenseInformation precedent — and it is PARSED out of the pin rather than
 transcribed, for the reason gen_license.py records: a hand-copied subset is a

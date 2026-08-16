@@ -5,8 +5,9 @@ NtQueryLicenseValue is a named lookup in ONE key,
 `HKLM\\Software\\Wine\\LicenseInformation` (the oracle names it literally:
 `dlls/ntdll/unix/registry.c` NtQueryLicenseValue). On the oracle that key is
 prefix furniture, written by `loader/wine.inf`'s `[LicenseInformation]`
-section at `wineboot --init` time. proskrnl has no prefix and no wineboot on
-the hermetic images, so the same payload is seeded by the kernel
+section at `wineboot --init` time. proskrnl has no prefix, and the images that
+carry no Wine userland have no wineboot either, so the same payload is seeded
+by the kernel
 (kernel/cm/registry.c, the Session Manager / time-zone precedent) — and a
 differential gate whose two legs disagree about that key measures the
 environment rather than the boundary. ntdll:reg measured exactly that: 12
