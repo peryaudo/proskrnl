@@ -743,6 +743,24 @@ boundary symbols winebuild would have emitted supplied by
   the page cache holds every MB-scale test binary's pages for the whole
   sweep. A per-process page leak was ruled out empirically (one
   child-spawning pair run ten times in one boot).
+- **And it is the SAME machine `make run` boots — amended.** The leg's
+  image was assembled from its own hand-written list (the run.sh proskrnl
+  set: ten DLLs, smss, conhost, cmd) and had drifted into a shorter machine
+  than the product's: no `wineboot.exe`, so smss skipped firstboot and the
+  sweep ran against a registry that had never seen `wine.inf`'s
+  machine-state payload; no SCM (`services`/`rpcss`/`sc`); no
+  `setupapi`/`cfgmgr32`/`ws2_32`/`secur32`/`userenv`/`hid` beside test
+  binaries that import them. A differential leg can only spend such a
+  difference as a divergence — the win.ini finding below is one that was
+  chased down to exactly this cause — so the image now bakes the Makefile's
+  own `$(WINFILES)` (read through `make print-winfiles`; one list, one
+  authority, Art. 11) plus this leg's own payload: the wtest binaries and
+  manifest, the full nls set, tzres, the .ini furniture, and the WOW64 guest
+  set `ntdll:wow64` spawns children out of.
+  `[SystemIni]` remains the one part of `wineboot --init` no proskrnl image
+  gets — `tools/filter_inf.py` drops `UpdateInis=` (its failure on absent
+  source media would abort the AddReg pass behind it) — so
+  `tools/gen_sysini.py` still stages `win.ini`/`system.ini` here.
 - **`PEB->NtGlobalFlag` is stamped by the KERNEL** (`kernel/ps/peb.c`):
   Session Manager `GlobalFlag` default, image-basename "Image File
   Execution Options" override, `PROCESS_PARAMS_IMAGE_KEY_MISSING` mirrored

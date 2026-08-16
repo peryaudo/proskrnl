@@ -266,6 +266,13 @@ lists every subtest of ntdll, kernel32, msvcrt, ucrtbase and programs/cmd — th
 surface — so the leg measures the frontier rather than the part already crossed; advapi32 and
 user32 are out (`docs/03` "M10 winetest notes").
 
+Its image is the **full CUI machine `make run` boots** — the Makefile's own `$(WINFILES)`,
+read by the leg through `make print-winfiles` instead of re-listed in `run.sh` (one list, one
+authority), so `wineboot --init` runs at firstboot and the sweep meets `wine.inf`'s
+machine-state registry payload, the SCM binaries and the WOW64 payload the product has —
+plus what only this leg needs: the wtest binaries and manifest under `C:\wtests`, the full NLS
+set, `tzres.dll` and the `win.ini`/`system.ini` furniture (`tools/gen_sysini.py`).
+
 (`tests/ntapi/syscall/`'s generated STUBS are no longer part of the ntapi build; they
 remain for the M4/M5-era flat boot modules under `tests/boot/`. The directory does hold one
 ordinary ntapi test — `ptr_torture.c`, over the generated `torture_matrix.inc` — because

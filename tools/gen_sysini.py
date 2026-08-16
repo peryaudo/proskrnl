@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Generate the %windir% .ini furniture wineboot would have written.
 
-A proskrnl image that carries the Wine PE stack but NOT wineboot.exe (the
-hermetic ntapi/wtest images — user/smss/smss.c skips firstboot when
-wineboot.exe is absent) never gets the `wineboot --init` pass, so
-C:\\windows\\win.ini and C:\\windows\\system.ini do not exist on it. The
+No proskrnl image gets `[SystemIni]`. On the hermetic ntapi image nothing
+runs it at all — user/smss/smss.c skips firstboot when wineboot.exe is
+absent — and on an image that DOES run `wineboot --init` (the `make run` set,
+which the winetest leg bakes too) the baked wine.inf is the registry-only
+filter, whose `UpdateInis=` lines tools/filter_inf.py drops so that their
+failure on absent source media cannot abort the AddReg pass behind them. So
+C:\\windows\\win.ini and C:\\windows\\system.ini do not exist on either. The
 pinned oracle runs in a wineprefix where they DO, and a differential gate
 whose two legs disagree about the environment measures the environment
 rather than the boundary (tests/winetest/manifest.txt's header records the

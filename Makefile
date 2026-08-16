@@ -710,6 +710,27 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(CONHOST)=windows/system32/conhost.exe \
             win:$(M9SMOKE)=m9_smoke.exe
 
+# The same CUI userland, reachable from a provisioner OUTSIDE this Makefile:
+# tests/run/run.sh's winetest leg bakes its own image (the manifest it runs
+# is generated per run, so the recipe cannot be a plain target), and used to
+# carry its own hand-written list of the DLLs it wanted. Two lists of the
+# same userland is how the winetest image drifted into a SHORTER machine than
+# the one `make run` boots — no wineboot.exe, so no firstboot and none of
+# wine.inf's machine-state payload; no SCM, no setupapi/ws2_32/secur32/…
+# — and a differential leg whose image is not the product's measures the
+# difference (Art. 11 "one authority", the reason this is not a second list).
+#
+# `winfiles` builds the payload; `print-winfiles` prints the specs, and
+# prints NOTHING else, so a caller can read it with $( ). The paths are
+# relative to this directory, as everything in $(WINFILES) is — the caller
+# prefixes them (run.sh does).
+.PHONY: winfiles print-winfiles
+winfiles: $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+          $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+
+print-winfiles:
+	@printf '%s\n' $(WINFILES)
+
 # kernel/lib/upcase.h is checked in (see `gen-nls`), so nothing in the build
 # would notice it drifting from the pin it was generated out of. This is what
 # notices: it re-runs only when the pinned table, the generator or the output
