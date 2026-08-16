@@ -25,9 +25,10 @@ static int SessionFlowM8(int registryOk)
     int failures = registryOk ? 0 : 1;
     static const WCHAR path[] = WSTR("\\??\\C:\\hello.exe");
 
-    /* The hermetic test images carry the windows/ tree but not hello.exe;
-     * skip cleanly there. The `make test` image ships it (Makefile
-     * WINFILES), so a load failure on it IS a FAIL, not a skip. */
+    /* An image without the windows/ tree carries no hello.exe either; skip
+     * cleanly there. Every image baked from Makefile $(WINFILES) ships it —
+     * `make test`, and the ntapi/wtest gate images since they are baked from
+     * that same list — so a load failure on it IS a FAIL, not a skip. */
     NTSTATUS probe;
     if (!SmssFileExists(path, &probe))
     {

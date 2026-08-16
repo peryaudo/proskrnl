@@ -831,25 +831,33 @@ proskrnl() {
     for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
-    # The Wine PE userland the tests run on (the same files Makefile WINFILES
-    # bakes for `make test`): the debug-STRIPPED staging copies — with no COW
-    # and no eviction, the -g mingw builds' DWARF triples every mapped image
-    # copy (see Makefile winestrip).
-    make -C "$ROOT" winestrip >/dev/null
-    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-               cryptbase; do
-        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
-    done
-    # The session manager drives the sweep (it is what enumerates C:\ntapi
-    # and spawns each test through NtCreateUserProcess).
-    make -C "$ROOT" build/modules/smss.exe >/dev/null
-    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
+    # The machine the tests run on is the machine `make run` boots: the
+    # Makefile's own $(WINFILES), read from it rather than re-listed here
+    # (Makefile `print-winfiles`, and the winetest leg reads the same list).
+    # This leg's own list had been ten DLLs, smss and the nls subset — no
+    # wineboot.exe, so smss skipped firstboot (user/smss/smss.c) and every
+    # ntapi pin was measured against a registry that had never seen
+    # wine.inf's machine-state payload, on a volume with no SCM and none of
+    # setupapi/cfgmgr32/ws2_32/secur32/userenv/hid. A pin taken on a machine
+    # the product does not have is pinning the harness.
+    # $(WINFILES) carries the debug-STRIPPED staging copies of the DLLs (with
+    # no COW and no eviction the -g mingw builds' DWARF triples every mapped
+    # image copy — Makefile winestrip), smss (which drives the sweep: it is
+    # what enumerates C:\ntapi and spawns each test through
+    # NtCreateUserProcess), conhost, and the nls subset.
+    make -C "$ROOT" winfiles >/dev/null || exit 1
+    local winspec winfiles=()
+    while IFS= read -r winspec; do
+        [[ -n "$winspec" ]] || continue
+        winfiles+=("win:$ROOT/${winspec#win:}")   # $(WINFILES) paths are $ROOT-relative
+    done < <(make -s -C "$ROOT" print-winfiles)
+    if (( ${#winfiles[@]} < 20 )); then
+        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
+             "userland is not that short; the image would be missing most of it" >&2
+        exit 2
+    fi
+    specs+=("${winfiles[@]}")
     specs+=("win:$(build_helper_dll)=ntapi/prshelper.dll")
-    for nls in locale l_intl c_1252 c_437 c_20127 sortdefault normnfc normnfd normnfkc normnfkd \
-               normidna; do
-        [[ -f "$ROOT/third_party/wine/nls/$nls.nls" ]] && \
-            specs+=("win:$ROOT/third_party/wine/nls/$nls.nls=windows/system32/$nls.nls")
-    done
     while read -r src; do
         local name exe
         name="$(basename "${src%.c}")"

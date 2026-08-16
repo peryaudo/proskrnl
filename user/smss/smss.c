@@ -289,7 +289,9 @@ static int SmssRegistryReachable(void)
 /* CUI-1 firstboot: run `wineboot --init` (firstboot.c) so wine.inf's
  * machine-state registry payload is applied before anything else uses the
  * hive. Probe/skip on the image content: images without wineboot.exe — the
- * hermetic ntapi image — skip silently. wineboot's own
+ * driver/filesystem images, which carry no Wine userland at all — skip
+ * silently; every image with the CUI userland runs it, because every one of
+ * them is baked from the same Makefile $(WINFILES). wineboot's own
  * .update-timestamp freshness check makes non-first boots near-instant. */
 static int SmssRunFirstboot(void)
 {

@@ -114,9 +114,11 @@ tests/run/run.sh prebuild   # build every test .exe and run NOTHING — a build 
                             # mingw compiles paid once, fanned out, instead of per leg
 ```
 
-Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image
-carries the Wine PE userland (`windows/system32`: ntdll/kernel32/kernelbase + NLS tables)
-plus every test under `C:\ntapi\` and `smss.exe`; the session manager's sweep
+Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image is the
+full CUI machine `make run` boots — the Makefile's own `$(WINFILES)`, read through
+`make print-winfiles` rather than re-listed in `run.sh`, so `wineboot --init` runs at
+firstboot here too and a pin is taken against the machine the product has — plus every test
+under `C:\ntapi\`, the helper DLL and the WOW64 payload; the session manager's sweep
 (`user/smss/session.c`) runs whatever is there — **the image, not a baked-in list,
 decides what runs** — and ends with
 `[KTEST] ntapi done tests=<n> failures=<n>`, the boot's stop condition. Both modes collect
