@@ -622,7 +622,32 @@ kernel32_test.exe:comm
 # kernel32_test.exe:debugger
 kernel32_test.exe:directory
 kernel32_test.exe:drive
-kernel32_test.exe:environ
+# RED AND FIXABLE — and newly visible, not newly broken. 1 failure:
+#     environ.c:74 `Failed to get user profile dir, error 2`
+#     (ERROR_FILE_NOT_FOUND), in test_Predefined. The pair was GREEN while
+#     the leg baked its own short DLL list, because that list had no
+#     userenv.dll: the test resolves GetUserProfileDirectoryA by
+#     GetProcAddress and SKIPS the whole check when the DLL is absent. The
+#     image is the `make run` machine now (docs/03 "M10 winetest notes"),
+#     userenv.dll is on it as it is on the product, and the check runs.
+#     THE CAUSE is machine state no proskrnl image has: userenv's
+#     GetUserProfileDirectoryW reads
+#     HKLM\Software\Microsoft\Windows NT\CurrentVersion\ProfileList
+#     "ProfilesDirectory", and on the oracle's prefix that value (and the
+#     per-SID "ProfileImagePath" beside it) is written during
+#     `wineboot --init` by SHELL32 — wineboot's update_user_profile calls
+#     SHGetSpecialFolderPathW, and shell32's _SHGetProfilesValue writes the
+#     C:\users default on first query. shell32 is the GUI stack (Art. 7),
+#     off every CUI image, so firstboot runs here and that half of it does
+#     not. proskrnl is internally consistent about it — the default
+#     environment (kernel/ps/peb.c) has no USERPROFILE either — so the fix
+#     is a user profile, not a patch to this one value: seed ProfileList
+#     (ProfilesDirectory + ProfileImagePath for the fixed Se identity),
+#     create C:\users\<name>, and add USERPROFILE to the default
+#     environment. That is kernel/Cm work with its own G5 pin, so the pair
+#     is parked rather than left red.
+# TODO: Implement
+# kernel32_test.exe:environ
 kernel32_test.exe:fiber
 # PARTLY FIXED, FIXABLE. 38 failures, down from a re-measured 164 — and both
 #     numbers are counted, not carried over. The block this replaces said 152,
