@@ -2035,6 +2035,39 @@ cui7() {
     return 0
 }
 
+# The comparable form of a boot's [KTEST] lines for the determinism stages
+# below: the filtered lines, with IDENTITY VALUES neutralized.
+#
+# A determinism verdict is about what the kernel DECIDED, and an identity —
+# a pid, a handle value, a cookie — is minted from a counter, so it says
+# only how many were minted before it. The ntapi image runs `wineboot
+# --init` at firstboot (it is the `make run` image now), firstboot's
+# transient rundll32 children are not all reaped at a fixed point, and so
+# hello.exe's deliberate access violation — kernel/ps/usermode.c names every
+# exception it hands to user mode, pid included — reported `pid=336` on one
+# boot and `pid=340` on the next. Everything else about the line, the code,
+# the rip and the faulting address, matched: the kernel decided the same
+# thing about the same instruction both times.
+#
+# So the pid is REWRITTEN rather than the line DROPPED: dropping it would
+# also stop the gate noticing an access violation that happens on one boot
+# and not the other, which is exactly the kind of divergence this stage
+# exists to catch.
+cui8_det_lines() {   # $1 = serial log, $2 = the drop-this-line filter
+    grep -aE '^\[KTEST\] ' "$1" 2>/dev/null | grep -vE "$2" | sed -E 's/pid=[0-9]+/pid=<pid>/g' || true
+}
+
+# ...and the diff itself, in the leg's own output. The two .txt files are
+# named in the FAIL line, but this leg's child boots run with their output
+# discarded and CI's log artifact collects *.log — so on a hosted runner the
+# only record of WHICH line diverged was a path to a file nobody could open,
+# and reproducing the leg locally was the only way to read it. Bounded, so a
+# wholesale mismatch (an empty side, say) does not bury the verdict.
+cui8_det_diff() {   # $1, $2 = the two extracted verdict files
+    echo "    --- the diverging verdict lines (first 20) ---"
+    diff "$1" "$2" 2>/dev/null | head -20 | sed 's/^/    /' || true
+}
+
 # The CUI-8 acceptance leg (docs/19 §8, docs/02 "Done when"): (a) the kmt
 # machine verdicts off the standard boot — progress while a fill is parked,
 # the committed depth floor, in-flight cancellation; (b) the boundary
@@ -2133,15 +2166,16 @@ cui8() {
     rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-1-serial.log" 2>/dev/null || true
-    grep -E '^\[KTEST\] ' "$sublog" 2>/dev/null | grep -vE "$detFilter" > "$BUILD/cui8-det-1.txt" || true
+    cui8_det_lines "$sublog" "$detFilter" > "$BUILD/cui8-det-1.txt"
     rm -f "$sublog"
     "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-2-serial.log" 2>/dev/null || true
-    grep -E '^\[KTEST\] ' "$sublog" 2>/dev/null | grep -vE "$detFilter" > "$BUILD/cui8-det-2.txt" || true
+    cui8_det_lines "$sublog" "$detFilter" > "$BUILD/cui8-det-2.txt"
     if [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
         echo "[KTEST] cui8-determinism PASS ($(wc -l < "$BUILD/cui8-det-1.txt") verdict lines)"
     else
         echo "[KTEST] cui8-determinism FAIL (diff $BUILD/cui8-det-1.txt $BUILD/cui8-det-2.txt)"
+        cui8_det_diff "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"
         fails=$((fails + 1))
     fi
 
@@ -2154,11 +2188,12 @@ cui8() {
         echo "[KTEST] cui8-stress FAIL (knob never armed; see $BUILD/cui8-stress-serial.log)"
         fails=$((fails + 1))
     else
-        grep -E '^\[KTEST\] ' "$sublog" | grep -vE "$detFilter" > "$BUILD/cui8-det-stress.txt" || true
+        cui8_det_lines "$sublog" "$detFilter" > "$BUILD/cui8-det-stress.txt"
         if cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-stress.txt"; then
             echo "[KTEST] cui8-stress PASS (park-on-every-await verdicts identical)"
         else
             echo "[KTEST] cui8-stress FAIL (diff $BUILD/cui8-det-1.txt $BUILD/cui8-det-stress.txt)"
+            cui8_det_diff "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-stress.txt"
             fails=$((fails + 1))
         fi
     fi
