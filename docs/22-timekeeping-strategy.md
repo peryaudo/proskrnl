@@ -1,8 +1,9 @@
 # 22 — Timekeeping Strategy
 
 Like `docs/19` and unlike `docs/17`/`docs/18`, this document is **not** an argument for
-amending the constitution. Article 3 mandates a uniprocessor, one pool, no COW, no
-eviction; it says nothing about how time is measured, and the list is closed. Everything
+amending the constitution. Article 3 mandates a uniprocessor, one pool and no eviction —
+and, until its CUI-9 amendment, no COW; it says nothing about how time is measured, and
+the list is closed. Everything
 here is ordinary Article 1 work: `NtQueryPerformanceCounter`, `NtQuerySystemTime` and
 KUSER_SHARED_DATA are boundary surface, their accuracy is user-observable, and an
 inaccurate clock is a wrong answer rather than a slow one. Nothing below is justified on

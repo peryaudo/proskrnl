@@ -3,8 +3,10 @@
  * The observable contract is that a bad user pointer surfaces as
  * STATUS_ACCESS_VIOLATION, never as a kernel fault. Under Art. 3 the probe
  * CAN be a page-table walk instead of a fault-trapping copy: commit maps
- * pages immediately (no demand paging, no COW), so present <=> accessible at
- * the moment of the walk.
+ * pages immediately (no demand paging), so present <=> accessible at the
+ * moment of the walk — and a present-but-unwritable page under a write probe
+ * resolves through the one write-fault authority (CUI-7 watch marks, CUI-9
+ * COW copies: MiResolveWriteFault, called from the probe loop in uaccess.c).
  *
  * That "at the moment of the walk" is the whole caveat, and since M7 brought
  * multi-threaded processes it is a live one: a service that probes, blocks

@@ -322,9 +322,11 @@ static void MiProtectToPteBits(ULONG protect, int *present, int *writable, int *
     /* A guard page is committed but mapped not-present so the first touch
      * traps (mm/fault.c clears the guard and remaps). */
     *present = bits != PAGE_NOACCESS && (protect & PAGE_GUARD) == 0;
-    /* The WRITECOPY flavours appear on image views only (M5); every mapping
-     * is already a private full copy (Art. 3: no COW), so they are plain
-     * writable here — only the reported protection keeps the NT name. */
+    /* The WRITECOPY flavours are protection-writable: a data view's eager
+     * private copy is plainly so, and a master-bound image page is held
+     * hardware-read-only by MipVadPageHwWritable's ownership gate until the
+     * COW copy opens it (CUI-9, docs/17 §6B) — the reported protection
+     * keeps the NT name either way. */
     *writable = bits == PAGE_READWRITE || bits == PAGE_EXECUTE_READWRITE ||
                 bits == PAGE_WRITECOPY || bits == PAGE_EXECUTE_WRITECOPY;
     *executable = bits == PAGE_EXECUTE || bits == PAGE_EXECUTE_READ ||
@@ -3083,7 +3085,8 @@ NTSTATUS NtQueryVirtualMemory(HANDLE process, LPCVOID address,
 /* Change the protection of a committed run and report the previous protection
  * (M7: ntdll's loader flips .text/.data protection during import fixups). The
  * range must lie inside one VAD and be fully committed — the reprotect reuses
- * the same frames (no COW, Art. 3), only rewriting the PTE bits. */
+ * the same frames, only rewriting the PTE bits (through MipVadPageHwWritable,
+ * so a still-shared master page stays read-only until a store COWs it). */
 NTSTATUS MiProtectVirtualMemory(PMI_ADDRESS_SPACE space, uint64_t *baseInOut, uint64_t *sizeInOut,
                                 ULONG newProtect, ULONG *oldProtectOut)
 {

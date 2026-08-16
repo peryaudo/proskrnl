@@ -12,7 +12,7 @@ Record a deliberate NT-absent addition in `docs/10-hacks-ledger.md`. Per Article
 ## Steps
 
 1. Read `docs/10-hacks-ledger.md`. Note the format block and the highest existing `HACK-NNN`. The new number is that + 1 (zero-padded to 3 digits).
-2. First confirm it actually *is* a hack, not a mislabeled one. It is **not** a hack (do not add an entry) if it is a real NT mechanism (WOW64, conhost/condrv, smss-equivalent, section objects/APCs/handles, shared-section transport) or an Article-3 simplification (no COW, one lock, etc.) — those go in `docs/03-nt-deviations.md`, not here. If it's one of these, say so and stop.
+2. First confirm it actually *is* a hack, not a mislabeled one. It is **not** a hack (do not add an entry) if it is a real NT mechanism (WOW64, conhost/condrv, smss-equivalent, section objects/APCs/handles, shared-section transport) or an Article-3 simplification (one lock, no eviction, etc.) — those go in `docs/03-nt-deviations.md`, not here. If it's one of these, say so and stop.
 3. Verify it lives only in **new files at the outside of the boundary**. If it mutates existing `Nt*`/kernel/Wine code, it violates Article 2 — flag that and stop.
 4. Append an entry in the exact ledger format:
 

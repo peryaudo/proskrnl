@@ -20,9 +20,11 @@
  *    (mm/pagecache.h) — the same frames NtReadFile/NtWriteFile copy through
  *    (M6), so mapped-view/read-write consistency is structural.
  *  - SEC_IMAGE sections parse the PE up front (pecoff.h) from a contiguous
- *    raw-bytes snapshot; each map is a full private copy (Art. 3) with
- *    relocations applied when the preferred base is taken
- *    (STATUS_IMAGE_NOT_AT_BASE) and per-PE-section page protection.
+ *    raw-bytes snapshot; views bind to a shared, once-relocated master
+ *    (CUI-9 — docs/17, docs/03 "CUI-9 COW notes") with per-PE-section page
+ *    protection: clean pages map the master's frames hardware-read-only,
+ *    the first store faults a private copy (mm/fault.c), and a taken
+ *    preferred base reports STATUS_IMAGE_NOT_AT_BASE.
  */
 #ifndef PROSKRNL_KERNEL_MM_SECTION_H
 #define PROSKRNL_KERNEL_MM_SECTION_H

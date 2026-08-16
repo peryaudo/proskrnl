@@ -292,7 +292,8 @@ ledger entry and no retirement condition:
 
 ## Simplifications are not hacks either
 
-The Article 3 mandates (no COW, no eviction, one lock, uniprocessor) are **deviations from
+The Article 3 mandates (no eviction, one lock, uniprocessor — and, until the CUI-9
+amendment, no COW) are **deviations from
 NT's implementation, not from its observable semantics.** They belong in
 `docs/03-nt-deviations.md`, not here — a hack adds an NT-absent entity; a simplification
 removes an unobservable optimization.

@@ -1,6 +1,7 @@
 # ADR 0005 — "Stupidly correct" internals
 
-**Status:** Accepted
+**Status:** Accepted; the no-COW clause was amended at CUI-9 for `SEC_IMAGE` sections
+(measured functional ceiling — `docs/17-cow-strategy.md`, `docs/03` "CUI-9 COW notes")
 
 ## Context
 Every genuinely hard bug in Mm and Ke is a **concurrency or optimization** bug — COW,

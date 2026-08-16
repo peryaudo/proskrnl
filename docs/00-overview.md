@@ -35,7 +35,7 @@ The result is a chimera: **an NT skeleton with Unix-teaching-kernel viscera.**
 |---|---|---|
 | **Ke** | unified waitable objects, APC delivery, alertable waits | scheduler internals, no IRQL, no DPC-as-contract |
 | **Ob** | handles, `OBJECT_ATTRIBUTES`, `\Device`/`\??` namespace | table structure, no 3-level tables, no pushlocks |
-| **Mm** | section objects, reserve/commit, guard pages, protection | everything else — unified page cache, no eviction, no COW (initially) |
+| **Mm** | section objects, reserve/commit, guard pages, protection | everything else — unified page cache, no eviction; COW for image sections only (CUI-9, `docs/17`) |
 | **Ps** | PEB/TEB/params layout, user-mode return protocol | EPROCESS/ETHREAD internal layout (nobody reads it) |
 | **Io** | async completion protocol (IOSB, APC/event/port) | no IRP, no driver stack — a VFS-style internal interface |
 | **Cm** | `NtCreateKey` semantics, information classes | hive format (our own), no transactions/notifications |

@@ -1186,11 +1186,13 @@ tests pass, then it corrupts silently under Wine's real load. Design before
 writing.
 
 - **Art. 3.** Commit-on-demand is *not* a mandate violation — the mandates
-  are no COW, no eviction, one dispatcher lock/uniprocessor, one pool, and
-  the list is closed. Fault-time commit of a reserved page is none of
-  those. But it *touches the fault path*, which is where a COW or eviction
-  reflex will try to enter. `docs/17` §10 is the only door for COW and it
-  is a commit of its own.
+  are no eviction, one dispatcher lock/uniprocessor, one pool (the no-COW
+  clause was amended at CUI-9, image sections only), and the list is
+  closed. Fault-time commit of a reserved page is none of those. But it
+  *touches the fault path*, which is where an eviction reflex — or COW
+  beyond its amended image-only scope — will try to enter. `docs/17` §10
+  was COW's only door and CUI-9 took it as a commit of its own; §10 step 6
+  is the only door left (file-backed data writecopy).
 - **G12.** Partial placeholder support that silently succeeds where it
   should split is `1d6dafd` (`NtResumeThread` as a no-op success). The
   built half refuses `STATUS_CONFLICTING_ADDRESSES` for every extent it
@@ -2038,7 +2040,9 @@ for revisiting. One is not.
 
 Otherwise:
 
-- **No COW is needed.** `docs/17` §10's entry conditions are not touched.
+- **No COW work is needed.** Image-section COW is built (CUI-9); nothing
+  here touches `docs/17` §10 step 6's one remaining door (file-backed data
+  writecopy).
 - **No SMP is needed.** `docs/18` §13's four gates are not touched. Nothing
   in the backlog is a throughput problem. The nearest thing is
   `kernel32:virtual`'s 285-second runtime, and slowness only becomes a
