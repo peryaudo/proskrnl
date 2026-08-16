@@ -1592,7 +1592,18 @@ tornwrite() {
 
     rm -f "$logbin"
     truncate -s 64M "$logbin"
-    WRITE_LOG="$logbin" LOG="$serial" PASS_RE="\[KTEST\] module /torn_workload.bin PASS" \
+    # The verdict-killer's line must be the END OF THE BOOT, not the
+    # workload's own PASS: the kernel keeps running (and writing) for the
+    # kill's grace period, so killing on the module line leaves the image
+    # frozen mid-write inside a LATER kmt suite — the fatcheck below then
+    # reads a power-loss state (a half-built file's over-long chain, a FAT
+    # mirror written on one copy) and calls the volume dirty, and the
+    # completeness bracket can catch a write that was in flight when
+    # QEMU died. `[KTEST] sweep PASS` is kernel/init/main.c's last line
+    # before KiQemuExit, after which nothing touches the disk, so the image
+    # this leg checks is the volume the machine actually left behind. The
+    # workload's own verdict is the grep below, unchanged.
+    WRITE_LOG="$logbin" LOG="$serial" PASS_RE="\[KTEST\] sweep PASS" \
         TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q '\[KTEST\] module /torn_workload.bin PASS' "$serial"; then
         echo "== tornwrite: FAIL (the workload run itself went red; see $serial) =="
