@@ -229,8 +229,9 @@ DLL per process. The Article 3 "no COW" mandate was lifted the way
 pinned 512M boot — ≈5.9 MB per resident process, the machine refusing at
 **70** processes), the amendment as its own commit (`docs/03` "CUI-9 COW
 notes"), the oracle pins before any kernel code. One `MI_IMAGE_MASTER`
-per `(file, base)` — the `IO_FCB` is the identity, the base is in the
-key because its fixups differ — holds relocated frames built once;
+per image identity (the `IO_FCB`; the base stays OUT of the key — the
+master relocates once and stamps its `ImageBase`, so ntdll fixes up a
+view placed elsewhere, `docs/17` §6F) holds relocated frames built once;
 views map them outright, hardware-read-only even where the recorded
 protection is writecopy, and the first store resolves through the ONE
 write-fault authority (the CUI-7 write-watch resolver, extended to

@@ -29,7 +29,9 @@ existing `Nt*` or Wine PE code. Every such addition is logged in
 
 The following are **mandates**, not choices, for the initial implementation:
 
-- **No copy-on-write.** Private/image mappings copy fully on map.
+- **No copy-on-write** *(amended at CUI-9 — see the table below)*. Private mappings and
+  file-backed data writecopy still copy fully on map; `SEC_IMAGE` views bind to a shared,
+  once-relocated master and copy on write (`docs/03` "CUI-9 COW notes").
 - **No eviction. Immediate writeback.** The page cache never pages out.
 - **One dispatcher lock. Uniprocessor. No kernel preemption.** Context switches occur only
   at explicit waits and at user-mode return.

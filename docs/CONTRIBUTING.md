@@ -23,13 +23,15 @@ stated as hard gates.
   processes at the *outside* of the boundary, each logged in `docs/10-hacks-ledger.md`.
   (Art. 2)
 
-- **G3 — Stupidly correct.** No COW, no eviction, immediate writeback, one dispatcher lock,
-  uniprocessor, no kernel preemption, one pool. Any exception must be justified in
+- **G3 — Stupidly correct.** No eviction, immediate writeback, one dispatcher lock,
+  uniprocessor, no kernel preemption, one pool; no COW outside CUI-9's image-section
+  amendment (shared masters + COW for `SEC_IMAGE` only — private/data mappings still copy
+  eagerly, `docs/03` "CUI-9 COW notes"). Any exception must be justified in
   `docs/03-nt-deviations.md` against *user-observable semantics*, never performance. The
   list is closed: **synchronous I/O is not on it** (`docs/19-io-strategy.md` §1), so do not
   cite Art. 3 for inline completion. Lifting a mandate is a commit of its own and only
-  through the entry conditions its strategy document names — COW: `docs/17` §10;
-  uniprocessor: `docs/18` §13. (Art. 3)
+  through the entry conditions its strategy document names — COW: `docs/17` §10 (taken at
+  CUI-9); uniprocessor: `docs/18` §13. (Art. 3)
 
 - **G4 — Generated contract.** No hand-typed or model-recalled numeric constants in `abi/`.
   All generated from Wine headers via `tools/gen_abi.py`; layouts carry `static_assert`

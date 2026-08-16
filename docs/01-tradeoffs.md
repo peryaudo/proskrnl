@@ -68,6 +68,14 @@ mode**, i.e. it is a performance concern, not a contract. We sell semantics, not
 This is also our defence against being unable to review the hardest code: **a bug that
 cannot exist does not need to be reviewed** (see `docs/09-constitution.md`, `docs/12`).
 
+**Amended at CUI-9 (COW only):** the RAM half of this trade stopped being unobservable —
+eager per-process copies of the baked DLL set became a measured functional ceiling
+(70 resident processes at 512 MB, refusing to ring 3 as `STATUS_NO_MEMORY` — `docs/17`
+§1), which is a semantic, not a performance concern. The no-COW clause was lifted for
+`SEC_IMAGE` sections alone: shared once-relocated masters plus a copy-on-write fault arm
+(`docs/03` "CUI-9 COW notes"). Private mappings and file-backed data writecopy still copy
+eagerly, and every other clause of T4 stands.
+
 ## T5 — Route (a) for GUI: keep a stripped wineserver as a user-mode desktop server
 
 **Give up:** having the desktop state (window tree, Z-order, focus, input queue) inside

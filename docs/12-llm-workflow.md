@@ -21,7 +21,9 @@ tracks the same axis used throughout these docs: **oracle presence + failure vis
 
 - **`mm/{section,fault,pagecache}.c`** — the top danger zone. Plausible code, unit tests
   pass, then it corrupts silently under Wine's real load. *This is where Article 3 saves
-  the project*: with no COW/eviction/locking, the hard bugs cannot form.
+  the project*: with no eviction and no fine-grained locking, the hard bugs cannot form —
+  and the one lifted mandate, CUI-9's image-section COW, entered only behind `docs/17`'s
+  enumerated hazard list, oracle pins and machine-verdict counters.
 - **`ke/{wait,apc}.c`** — subtly wrong yet still runs; surfaces as "calc occasionally
   hangs" months later, with a multi-month latency.
 - **`ps/usermode.c`** — assembly + stack-layout exactness; the model lies in the details.
