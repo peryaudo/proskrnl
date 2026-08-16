@@ -1030,24 +1030,47 @@ winetest() {
         } > "$baked"
     fi
     make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
-    make -C "$ROOT" build/modules/cmd.exe build/modules/conhost.exe \
-        build/modules/smss.exe >/dev/null
+    make -C "$ROOT" winfiles build/modules/cmd.exe >/dev/null
 
-    # The Wine PE userland (the run.sh proskrnl set) + conhost (winetest
-    # processes run on the console) + cmd.exe (%COMSPEC%, the cmd tests'
-    # subject) + the test binaries and the manifest under C:\wtests. The M5
-    # seed modules keep the in-kernel M6 suite green on this image too, and
-    # the FULL nls set goes in — the CRT/codepage subtests exercise every
-    # codepage the oracle has (a missing c_932.nls reads as a divergence).
+    # The image is the FULL CUI machine `make run` boots — the Makefile's own
+    # $(WINFILES), read from it rather than re-listed here (Makefile
+    # `print-winfiles`; the drift that motivated it is written up there) —
+    # plus what only this leg needs: the test binaries and the manifest under
+    # C:\wtests, the full nls set, tzres and the .ini furniture below. Its
+    # own list had been the run.sh proskrnl set: ten DLLs, smss and conhost,
+    # and no wineboot.exe — so smss skipped firstboot (user/smss/smss.c) and
+    # the sweep ran on a machine whose registry had never seen wine.inf's
+    # payload, with no SCM, no setupapi/ws2_32/secur32/userenv/hid beside the
+    # test binaries that import them, and none of the WOW64 host trio the
+    # Makefile stages. Every one of those is a difference between the gate's
+    # machine and the product's, and a differential leg can only spend such a
+    # difference as a divergence.
+    #
+    # $(WINFILES) already carries smss, conhost and the nls subset; cmd.exe
+    # is added the way the `make run` image adds it (%COMSPEC%, and the cmd
+    # tests' own subject). The M5 seed modules keep the in-kernel M6 suite
+    # green on this image too, and the FULL nls set goes in on top of the
+    # subset — the CRT/codepage subtests exercise every codepage the oracle
+    # has (a missing c_932.nls reads as a divergence).
     local specs=()
     for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
         [[ -f "$seed" ]] && specs+=("$seed=initrd")
     done
-    make -C "$ROOT" winestrip >/dev/null
-    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-               cryptbase; do
-        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
-    done
+    # A make that fails here would hand the loop an EMPTY list and bake the
+    # short machine again silently — the exact failure this reading of
+    # $(WINFILES) exists to end — so the count is checked, not assumed.
+    local winspec winfiles=()
+    while IFS= read -r winspec; do
+        [[ -n "$winspec" ]] || continue
+        winfiles+=("win:$ROOT/${winspec#win:}")   # $(WINFILES) paths are $ROOT-relative
+    done < <(make -s -C "$ROOT" print-winfiles)
+    if (( ${#winfiles[@]} < 20 )); then
+        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
+             "userland is not that short; the image would be missing most of it" >&2
+        exit 2
+    fi
+    specs+=("${winfiles[@]}")
+    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
     local nlsfile
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
         specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
@@ -1066,9 +1089,13 @@ winetest() {
     # `winestrip` to remove.
     specs+=("win:$ROOT/third_party/wine/dlls/tzres/x86_64-windows/tzres.dll=windows/system32/tzres.dll")
     # %windir%\{win,system}.ini, for the same reason the nls set goes in.
-    # This image carries no wineboot.exe, so smss skips firstboot
-    # (user/smss/smss.c) and the `wineboot --init` pass that writes them
-    # never runs — while the ORACLE leg runs in a wineprefix where it did.
+    # This image DOES run firstboot now (wineboot.exe is in $(WINFILES)), and
+    # that still does not write them: the baked wine.inf is the registry-only
+    # filter (tools/filter_inf.py), which drops `UpdateInis=` because
+    # SetupInstallFromInfSectionW runs it BEFORE the AddReg pass and its
+    # failure would take the whole machine-state payload down with it — so
+    # [SystemIni] is the one part of wineboot's work no proskrnl image gets,
+    # while the ORACLE leg runs in a wineprefix that has it.
     # Measured: without win.ini, kernel32:profile's NULL-filename cases
     # (profile.c:95/:101, which read win.ini through GetPrivateProfileIntA,
     # and :229's todo_wine on GetLastError) diverge on the file's absence
@@ -1086,9 +1113,6 @@ winetest() {
     for inifile in "$BUILD/wtests/sysini"/*.ini; do
         specs+=("win:$inifile=windows/$(basename "$inifile")")
     done
-    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
-    specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
-    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
     # Only the exes the (possibly filtered) manifest names — an unfiltered run
     # bakes all five, a subset bakes just what it will run, which is the ntapi
     # leg's property too: a subset's image is as short as the subset.
