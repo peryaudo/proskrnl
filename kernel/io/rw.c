@@ -61,9 +61,13 @@ void IopPostRequestPacket(PFILE_OBJECT file, PKAPC apc, PVOID apcContext, BOOLEA
 
 NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
                              PVOID apcContext, NTSTATUS status, ULONG_PTR information,
-                             BOOLEAN reportsPending)
+                             BOOLEAN reportsPending, PS_IO_CHARGE charge)
 {
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
+    /* The issuer's IO_COUNTERS, charged where the operation ENDS rather
+     * than where it started: only here is the byte count known. An inline
+     * completion runs on the issuing thread, so the process is this one. */
+    PsChargeIoCounters(KeGetCurrentThread()->process, charge, (uint64_t)information);
     /* An inline completion deliberately does NOT re-signal the FILE OBJECT,
      * and that is a collision rather than an omission. NT counts no
      * outstanding requests: ANY completion on the handle puts it back up, so
@@ -288,7 +292,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
                                       .apcContext = apcContext,
                                       .userBuffer = buffer,
                                       .kernelBuffer = bounce,
-                                      .bufferLength = length};
+                                      .bufferLength = length,
+                                      .charge = PsIoChargeRead};
         ULONG_PTR transferred = 0;
         IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred, &request);
@@ -340,7 +345,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         {
             status =
                 IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
-                                    /* reportsPending */ FALSE);
+                                    /* reportsPending */ FALSE, PsIoChargeRead);
         }
         else
         {
@@ -392,7 +397,8 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         /* Reading at (or past) EOF completes with STATUS_END_OF_FILE — and
          * the IOSB carries it (pinned read_write.c). */
         status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_END_OF_FILE, 0,
-                                     IopWillReportPending(file, STATUS_END_OF_FILE, FALSE));
+                                     IopWillReportPending(file, STATUS_END_OF_FILE, FALSE),
+                                     PsIoChargeRead);
         status = IopAsyncReturnShape(file, status, FALSE);
         ObDereferenceObject(file);
         return status;
@@ -426,9 +432,9 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         KiReleaseEventGate(&file->syncIoLock);
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
-    status =
-        IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS,
-                            (ULONG_PTR)bytes, IopWillReportPending(file, STATUS_SUCCESS, FALSE));
+    status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS,
+                                 (ULONG_PTR)bytes,
+                                 IopWillReportPending(file, STATUS_SUCCESS, FALSE), PsIoChargeRead);
     status = IopAsyncReturnShape(file, status, FALSE);
     ObDereferenceObject(file);
     return status;
@@ -520,7 +526,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         {
             status =
                 IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
-                                    /* reportsPending */ FALSE);
+                                    /* reportsPending */ FALSE, PsIoChargeWrite);
         }
         else
         {
@@ -646,7 +652,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         syncLocked = FALSE; /* NOLINT(clang-analyzer-deadcode.DeadStores) */
     }
     status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, STATUS_SUCCESS, length,
-                                 IopWillReportPending(file, STATUS_SUCCESS, TRUE));
+                                 IopWillReportPending(file, STATUS_SUCCESS, TRUE), PsIoChargeWrite);
     status = IopAsyncReturnShape(file, status, TRUE);
     ObDereferenceObject(file);
     return status;
@@ -982,6 +988,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             }
         }
         status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, length);
+        PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeWrite, length);
         goto out; /* gather returns the final status (oracle shape) */
     }
 
@@ -1019,6 +1026,9 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
         total = avail;
     }
     IopCompleteRequest(iosb, event, finalStatus, (ULONG_PTR)total);
+    /* One operation whatever the segment count — a scatter/gather IS one
+     * request, and the segments are its buffer list (kernel/ps/ps.h). */
+    PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeRead, total);
     status = STATUS_PENDING; /* scatter always answers PENDING (oracle shape) */
 
 out:

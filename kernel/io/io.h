@@ -458,6 +458,11 @@ typedef struct IOP_PENDING_REQUEST
     LIST_ENTRY queueEntry; /* for a device that queues several pending
                             * requests of one kind (npfs's listen
                             * queue); unused when a device holds one */
+
+    /* The IO_COUNTERS pair this request charges `owner` when it completes,
+     * captured at issue from IO_CONTROL_CONTEXT.charge (vfs.h says why it
+     * has to travel with the request). */
+    PS_IO_CHARGE charge;
 } IOP_PENDING_REQUEST, *PIOP_PENDING_REQUEST;
 
 /* Build a pending request in the ISSUER's context (references the event, the
@@ -483,10 +488,15 @@ NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request
  * `reportsPending` says whether this call will answer STATUS_PENDING to its
  * caller, which only the caller knows: the device paths return the status
  * unchanged, while the disk paths run it through IopAsyncReturnShape
- * afterwards. It is the axis FILE_SKIP_COMPLETION_PORT_ON_SUCCESS turns on. */
+ * afterwards. It is the axis FILE_SKIP_COMPLETION_PORT_ON_SUCCESS turns on.
+ *
+ * `charge` is the fourth effect: an operation that completes here is one
+ * operation on the ISSUER's IO_COUNTERS, which is this thread's process
+ * (an inline completion never crosses a process). The pended twin charges
+ * the same way from IopCompletePendingRequest. */
 NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
                              PVOID apcContext, NTSTATUS status, ULONG_PTR information,
-                             BOOLEAN reportsPending);
+                             BOOLEAN reportsPending, PS_IO_CHARGE charge);
 
 /* Just the completion-PACKET leg of that tail, for the pended path, which
  * writes the IOSB and signals the event by itself (kernel/io/async.c). Both

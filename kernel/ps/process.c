@@ -1263,6 +1263,46 @@ __attribute__((noreturn)) void PspExitCurrentProcess(NTSTATUS exitStatus)
     PspExitCurrentThread(exitStatus); /* never returns */
 }
 
+/* --- I/O accounting --------------------------------------------------------- */
+
+/* The single writer of EPROCESS.ioCounters (ps.h). Both readers —
+ * ProcessIoCounters and SystemProcessInformation's IoCounters — restate this
+ * one tally, and both charging sites (the inline completion tail in
+ * kernel/io/rw.c and the pending one in kernel/io/async.c) come through here,
+ * so "what counts as an operation" is written once.
+ *
+ * A plain read-modify-write needs no lock under Art. 3: one CPU, no kernel
+ * preemption, and neither caller parks between the load and the store. It
+ * becomes an interlocked pair the day docs/18's SMP exit is taken. */
+void PsChargeIoCounters(PEPROCESS process, PS_IO_CHARGE kind, uint64_t bytes)
+{
+    if (process == 0)
+    {
+        /* Boot I/O that predates the Ps subsystem: CmInitialize reads the
+         * hive through NtReadFile (kernel/cm/hive.c) before
+         * PsInitializeProcessSubsystem mints the system process, so the
+         * boot thread has no process yet. There is nothing to charge and
+         * nothing that could observe it — every reader of these counters is
+         * a ring-3 query. */
+        return;
+    }
+    switch (kind)
+    {
+    case PsIoChargeRead:
+        process->ioCounters.ReadOperationCount++;
+        process->ioCounters.ReadTransferCount += bytes;
+        break;
+    case PsIoChargeWrite:
+        process->ioCounters.WriteOperationCount++;
+        process->ioCounters.WriteTransferCount += bytes;
+        break;
+    case PsIoChargeOther:
+        process->ioCounters.OtherOperationCount++;
+        process->ioCounters.OtherTransferCount += bytes;
+        break;
+    }
+}
+
 /* --- the Nt* surface -------------------------------------------------------- */
 
 /* Find a live process by its unique id (CLIENT_ID.UniqueProcess); lock held.

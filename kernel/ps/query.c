@@ -147,6 +147,46 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
                                                               : STATUS_SUCCESS;
         break;
     }
+    case ProcessIoCounters:
+    {
+        /* The process's own I/O tally (EPROCESS.ioCounters, charged by
+         * PsChargeIoCounters). Length protocol from the oracle
+         * (dlls/ntdll/unix/process.c ProcessIoCounters): a buffer SHORTER
+         * than IO_COUNTERS is refused with STATUS_INFO_LENGTH_MISMATCH, an
+         * exact one succeeds, and a LONGER one is filled but still answers
+         * STATUS_INFO_LENGTH_MISMATCH; returnLength is sizeof(IO_COUNTERS)
+         * in every case. What the counters CONTAIN is beyond that oracle —
+         * the pinned Wine memsets them to zero behind a "FIXME: real data"
+         * — so the values follow the contract Microsoft documents for
+         * IO_COUNTERS / GetProcessIoCounters instead: the read, write and
+         * other operations the process has performed, and their bytes.
+         * Pinned by sem_ps/io_counters.c (its beyond_oracle block carries
+         * the citation). taskmgr.exe is the consumer: perfdata.c calls
+         * GetProcessIoCounters for every process it lists, and an unbuilt
+         * class there took the whole applet down. */
+        if (length < sizeof(IO_COUNTERS))
+        {
+            if (returnLength != 0)
+            {
+                *returnLength = sizeof(IO_COUNTERS);
+            }
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            break;
+        }
+        status = KiProbeForWrite(buffer, sizeof(IO_COUNTERS), sizeof(uint64_t));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+        IO_COUNTERS counters = process->ioCounters;
+        memcpy(buffer, &counters, sizeof(counters));
+        if (returnLength != 0)
+        {
+            *returnLength = sizeof(counters);
+        }
+        status = (length > sizeof(IO_COUNTERS)) ? STATUS_INFO_LENGTH_MISMATCH : STATUS_SUCCESS;
+        break;
+    }
     case ProcessTimes:
     {
         /* CUI-6 (sem_ps/times): exact-length protocol as
@@ -1053,6 +1093,10 @@ static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *e
     entry->ParentProcessId = (HANDLE)(uintptr_t)process->parentProcessId;
     entry->HandleCount = process->handleTable.inUse;
     entry->SessionId = 1; /* the one interactive session (peb.c) */
+    /* The same tally ProcessIoCounters reports, not a second one (Art. 11):
+     * taskmgr reads the per-process class, kernel32's toolhelp readers walk
+     * this snapshot, and two derivations of one fact drift. */
+    entry->ioCounters = process->ioCounters;
     entry->dwBasePriority = process->mainThread != 0 ? process->mainThread->priority : 8;
 
     ULONG threadIndex = 0;

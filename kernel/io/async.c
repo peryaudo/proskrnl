@@ -132,6 +132,9 @@ NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request
     pending->userBuffer = request->userBuffer;
     pending->kernelBuffer = request->kernelBuffer;
     pending->bufferLength = request->bufferLength;
+    /* Which IO_COUNTERS pair this will charge `owner` when it completes —
+     * captured here because the completer no longer knows the verb. */
+    pending->charge = request->charge;
     /* A request is now OUTSTANDING on this handle, so the file object is
      * busy until it completes — unconditionally, event or not. */
     IopMarkRequestOutstanding(file);
@@ -191,6 +194,19 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
          * to report a status to. */
         MiCopyToUserRangeChecked(&request->owner->addressSpace,
                                  (uint64_t)(uintptr_t)request->userIosb, &iosb, sizeof(iosb));
+    }
+    /* The owner's IO_COUNTERS, charged at the same point the inline tail
+     * charges (kernel/io/rw.c IopCompleteTransfer) and against the same
+     * process: the ISSUER, which is `owner` rather than whoever is
+     * completing — a peer's write, a cancel, the handle's cleanup.
+     *
+     * Only a request that COMPLETED is an operation. The inline tail is
+     * reached on success alone (its callers branch away from it on a
+     * refusal), so a cancelled park charging one here would make the two
+     * tails disagree about what an operation is. */
+    if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
+    {
+        PsChargeIoCounters(request->owner, request->charge, (uint64_t)information);
     }
     /* The event when there was one, the FILE OBJECT otherwise — never both,
      * through the one authority that states it (io.h

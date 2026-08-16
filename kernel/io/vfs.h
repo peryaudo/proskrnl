@@ -16,6 +16,7 @@
 #include "abi/ntioapi.h"
 #include "kernel/lib/list.h"
 #include "kernel/mm/pagecache.h"
+#include "kernel/ps/ps.h" /* PS_IO_CHARGE (the completion's IO_COUNTERS leg) */
 
 struct FILE_OBJECT; /* kernel/io/io.h */
 struct IO_DEVICE;   /* kernel/io/io.h */
@@ -78,6 +79,14 @@ typedef struct IO_CONTROL_CONTEXT
      * Set by IopPreparePendingRequest itself, never by the device — so a
      * device cannot park a request and forget to say so. FALSE in, always. */
     BOOLEAN pended;
+
+    /* Which IO_COUNTERS pair this request charges its issuer when it
+     * completes (kernel/ps/ps.h PsChargeIoCounters). Carried here because
+     * the charge lands in IopCompletePendingRequest, in a context that no
+     * longer knows which verb parked — the same reason apcContext is
+     * carried. PsIoChargeRead is the zero value, so the read path (which
+     * is the only one that pends with a data leg today) needs no store. */
+    PS_IO_CHARGE charge;
 } IO_CONTROL_CONTEXT;
 
 /* NT share-mode accounting state (the SHARE_ACCESS concept, kept internal).
