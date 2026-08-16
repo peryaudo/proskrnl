@@ -2589,6 +2589,44 @@ blocking point in the Io layer a place the previous request's state can leak int
 the flush was the first blocking pipe operation whose wrapper had no span, and
 nothing in the type system said so.
 
+## `ProcessIoCounters`: what proskrnl counts as an I/O operation
+
+`NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by
+`PsChargeIoCounters` (`kernel/ps/process.c`) — the single writer, read by both this class
+and `SystemProcessInformation`'s `IoCounters` field. taskmgr is the consumer that forced
+it: `programs/taskmgr/perfdata.c` calls `GetProcessIoCounters` once per process per refresh,
+so an unbuilt class there panicked the boot (Art. 12 dialed to fatal).
+
+The **shape** is the oracle's (`dlls/ntdll/unix/process.c`): short buffer refused, exact
+buffer filled, oversized buffer filled *and* `STATUS_INFO_LENGTH_MISMATCH`, `returnLength`
+always `sizeof(IO_COUNTERS)`. The **values** are not — the pinned Wine memsets them to zero
+behind a `FIXME : real data`, so it is unbuilt for this and has nothing to say (Art. 12);
+the contract used instead is Microsoft's own documentation of `IO_COUNTERS` /
+`GetProcessIoCounters`, pinned in the `beyond_oracle` block of
+`tests/ntapi/sem_file/io_counters.c`.
+
+The deviation worth stating is **which requests are charged**. NT counts every IRP a
+process issues: reads, writes, and "other" — which for NT includes device and filesystem
+control, but also the query/set-information, flush and lock verbs. proskrnl charges at the
+two places a request can END (`IopCompleteTransfer`, the inline tail, and
+`IopCompletePendingRequest`, the pended one), and only for the verbs that carry a data or
+control payload:
+
+| verb | counter |
+|---|---|
+| `NtReadFile`, `NtReadFileScatter` | Read |
+| `NtWriteFile`, `NtWriteFileGather` | Write |
+| `NtDeviceIoControlFile`, `NtFsControlFile` | Other |
+
+Everything else — `NtQueryInformationFile`, `NtSetInformationFile`, `NtQueryDirectoryFile`,
+`NtFlushBuffersFile`, `NtLockFile` — completes without charging, so proskrnl's "other"
+totals run below NT's for the same workload. Nothing at the boundary pins an absolute
+total (no test can: the number is a property of the machine and of every DLL the process
+loaded), and the documented meaning of each counter — one operation, its bytes — holds
+exactly for the verbs above. A scatter/gather is ONE operation whatever its segment count,
+which is what makes it one request rather than one per page. Charging the remaining verbs
+is a strictly additive change if a consumer ever needs them.
+
 ## Deliberate simplifications under the "stupidly correct" mandate (T4)
 
 These are deviations from NT's *implementation*, never from its *observable semantics*:

@@ -182,7 +182,31 @@ typedef struct EPROCESS
      * and stored for the same reason: proskrnl boosts nothing, but a query
      * that ignored the set would make the class disagree with itself. */
     BOOLEAN priorityBoostDisabled;
+    /* The process's own I/O tally, reported verbatim by
+     * ProcessIoCounters and by SystemProcessInformation's IoCounters
+     * (one field, both readers — Art. 11). Charged by PsChargeIoCounters
+     * from the two places an I/O request can END: the inline completion
+     * tail and the pending one (kernel/io/rw.c, kernel/io/async.c). NT
+     * counts real work here, so proskrnl does too — a hardwired zero is
+     * the fabricated answer G12 forbids, and taskmgr's per-process I/O
+     * columns are the consumer that reads it. */
+    IO_COUNTERS ioCounters;
 } EPROCESS, *PEPROCESS;
+
+/* Which counter pair a completed request charges. The names are NT's own
+ * split of IO_COUNTERS (read / write / everything else); "other" is what a
+ * device- or filesystem-control request costs, which is how NT classifies
+ * an IRP that is neither IRP_MJ_READ nor IRP_MJ_WRITE. */
+typedef enum PS_IO_CHARGE
+{
+    PsIoChargeRead,
+    PsIoChargeWrite,
+    PsIoChargeOther
+} PS_IO_CHARGE;
+
+/* Charge one COMPLETED request to `process` (never 0): one operation, plus
+ * the bytes its IOSB reported. The single writer of EPROCESS.ioCounters. */
+void PsChargeIoCounters(PEPROCESS process, PS_IO_CHARGE kind, uint64_t bytes);
 
 /* One user thread's Ps-level state, hung off KTHREAD via a parallel object.
  * ETHREAD internal layout is entirely ours (docs/05: "nobody reads it"). */

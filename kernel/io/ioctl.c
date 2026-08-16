@@ -106,8 +106,11 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
         return status;
     }
 
-    IO_CONTROL_CONTEXT request = {
-        .eventHandle = event, .userIosb = iosb, .apcBlock = apcBlock, .apcContext = apcContext};
+    IO_CONTROL_CONTEXT request = {.eventHandle = event,
+                                  .userIosb = iosb,
+                                  .apcBlock = apcBlock,
+                                  .apcContext = apcContext,
+                                  .charge = PsIoChargeOther};
     /* The remaining members — the CUI-8 data legs and `pended` — are zeroed
      * by the designated initializer above; an ioctl carries no data leg (its
      * output travels in outBounce) and `pended` is the engine's answer. */
@@ -162,7 +165,7 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * the caller never sees STATUS_PENDING from here — the pended case
          * returned above. Pinned by sem_pipe/completion_packet.c. */
         status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, information,
-                                     /* reportsPending */ FALSE);
+                                     /* reportsPending */ FALSE, PsIoChargeOther);
     }
     else
     {
