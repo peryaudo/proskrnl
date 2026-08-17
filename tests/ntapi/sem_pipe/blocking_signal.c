@@ -325,15 +325,35 @@ static void test_failed_read_states(void)
     NtClose(client);
 }
 
+/* The completion routine of the case below. Its context is a counter of its
+ * own, because a request a broken kernel leaves parked can deliver late. */
+static volatile LONG failedReadApcCalls;
+static VOID NTAPI failed_read_apc(PVOID ctx, PIO_STATUS_BLOCK iosb, ULONG reserved)
+{
+    (void)ctx;
+    (void)iosb;
+    (void)reserved;
+    failedReadApcCalls++;
+}
+
 /* Case 6: a request that PARKS and then fails — the peer closes under it.
  * Here the handle really was cleared, so what the failing completion does
- * with it is a second, independent measurement from case 5's. */
+ * with it is a second, independent measurement from case 5's.
+ *
+ * The COMPLETION ROUTINE is the third thing inside the same guard and is
+ * measured here for that reason: async_set_result queues APC_USER, posts the
+ * packet and signals all under `async->pending || !NT_ERROR( status )`
+ * (server/async.c), so a QUEUED request that FAILS runs the routine — with an
+ * IOSB nobody wrote, since the failing tail leaves the caller's block alone.
+ * A request refused above the queue runs nothing (sem_pipe/listen_apc.c), so
+ * the two arms of a failure differ and only a case can say which is which. */
 static void test_parked_then_failed_read(void)
 {
     IO_STATUS_BLOCK iosb;
     HANDLE server = NULL, client = NULL;
     SAMPLER *job;
-    char buffer[16];
+    static char buffer[16];
+    LARGE_INTEGER zero;
     NTSTATUS status;
 
     if (!make_pair(W("\\??\\pipe\\prstest_blksig6"), &server, &client))
@@ -342,13 +362,25 @@ static void test_parked_then_failed_read(void)
     job = start_sampler(server, client, NULL, SamplerClose);
     ok(job->thread != NULL, "CreateThread");
 
+    failedReadApcCalls = 0;
     poison_iosb(&iosb);
-    status = pipe_read(client, buffer, sizeof(buffer), &iosb);
+    status =
+        NtReadFile(client, NULL, failed_read_apc, NULL, &iosb, buffer, sizeof(buffer), NULL, NULL);
     ok(status == STATUS_PIPE_BROKEN, "parked read broken by the peer -> %08lx",
        (unsigned long)status);
     ok(iosb.Status == (NTSTATUS)IOSB_POISON_STATUS, "a failed read wrote the IOSB (%08lx)",
        (unsigned long)iosb.Status);
     ok(is_signaled(client), "a parked read that failed left the handle unsignalled");
+
+    /* The routine is a user APC, so it has not run when the syscall returns
+     * (the ordering sem_pipe/alertable_park.c case 3 pins); this is the next
+     * alertable point. */
+    ok(failedReadApcCalls == 0, "the completion routine ran before an alertable point (%ld)",
+       (long)failedReadApcCalls);
+    zero.QuadPart = 0;
+    NtDelayExecution(TRUE, &zero);
+    ok(failedReadApcCalls == 1, "the completion routine ran %ld times for a failed parked read",
+       (long)failedReadApcCalls);
 
     ok(finish_sampler(job), "the sampler finished");
     ok(!job->sawWatchedSignaled, "the handle was signalled while a blocking read was parked");
