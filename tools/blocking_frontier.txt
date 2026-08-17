@@ -3,6 +3,7 @@
 # (issue #96 A). A diff that adds a row here is widening the
 # blocking frontier: say so, and re-check docs/20's tables
 # (sec.8.4 - a new blocking point re-opens every STILL-TRUE row).
+NetdThreadMain
 NtAccessCheck
 NtAdjustGroupsToken
 NtAdjustPrivilegesToken

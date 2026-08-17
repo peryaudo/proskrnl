@@ -2746,6 +2746,11 @@ static const struct
 } CmpQemuBootFlags[] = {
     {"opt/org.proskrnl/interactive", WSTR("Interactive"), 0},
     {"opt/org.proskrnl/panic_not_implemented", WSTR("PanicOnNotImplemented"), 1},
+    /* Net-1 (docs/24 §6b/§4b): the host port the harness's TCP echo server
+     * listens on (0 = no echo leg), and the static-configuration fallback
+     * knob (skip DHCP, use slirp's fixed client address; off by default). */
+    {"opt/org.proskrnl/netecho", WSTR("NetEchoPort"), 0},
+    {"opt/org.proskrnl/netstatic", WSTR("NetStatic"), 0},
 };
 
 /* Parse a fw_cfg blob as a decimal ULONG. The blob carries no terminator

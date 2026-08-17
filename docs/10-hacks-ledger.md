@@ -185,7 +185,9 @@ the two runners by construction.
 ## HACK-006: `\Registry\Machine\Hardware\qemu` (the QEMU boot flags)
 
 ```
-Status:     active (two values: "Interactive", "PanicOnNotImplemented")
+Status:     active (four values: "Interactive", "PanicOnNotImplemented", and since
+            Net-1 "NetEchoPort" and "NetStatic" — the harness echo server's host
+            port and the skip-DHCP static-address fallback, docs/24 §6b/§4b)
 Introduced: (this change — moving the boot switches off the image)
 Not in NT:  NT builds HKLM\HARDWARE at boot from firmware, and boot options arrive from
             the loader as HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions. NT has
@@ -203,7 +205,9 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             (kernel/init/main.c KiIsInteractiveBoot and
             KiConfigurePanicOnNotImplemented, user/smss/smss.c
             SmssIsInteractiveBoot) ; tools/qemu.sh (GUEST_INTERACTIVE,
-            PANIC_NOTIMPL)
+            PANIC_NOTIMPL, NET_ECHO_PORT) ; the Net-1 consumers
+            (tests/kmt/net_smoke.c NetEchoPort, drivers/net/netd.c
+            NetStatic)
 Retirement: when proskrnl boots something other than QEMU often enough to want a real
             boot-options channel — at which point the values move to SystemStartOptions
             parsed from a Limine cmdline, and the readers change but the callers do not.

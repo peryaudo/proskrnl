@@ -49,9 +49,15 @@
  * headerless-num_buffers shape is legacy-only (§5.1.6.1; pinned QEMU
  * hw/net/virtio-net.c virtio_net_set_mrg_rx_bufs: version_1 =>
  * guest_hdr_len = sizeof(virtio_net_hdr_mrg_rxbuf) regardless of
- * MRG_RXBUF) — and without MRG_RXBUF the device sets it to 1 (§5.1.6.4).
- * Getting this wrong shifts every frame by two bytes, so both facts are
- * asserted. */
+ * MRG_RXBUF). Getting the size wrong shifts every frame by two bytes, so
+ * it is pinned by the static_assert. The field's VALUE is another story,
+ * measured against the cross-check device model: §5.1.6.4.1 says the
+ * device sets it to 1 without MRG_RXBUF, but the pinned QEMU's
+ * receive_header (hw/net/virtio-net.c) writes only the 10-byte
+ * virtio_net_hdr prefix in that path and never touches bytes 10..11 —
+ * the field reads back as stale buffer memory. So this driver skips the
+ * 12 bytes and never reads any of them; nothing in the header matters
+ * without an offload negotiated. */
 typedef struct
 {
     uint8_t flags;       /* §5.1.6: VIRTIO_NET_HDR_F_*; 0 — no offloads */
@@ -317,10 +323,12 @@ int VioNetPopReceivedFrame(void *frame, uint32_t *lengthOut)
     VioNetStagedCount--;
 
     /* The device fills the header and at least an Ethernet header behind
-     * it, or the wire format is broken — not a condition to paper over. */
+     * it, or the wire format is broken — not a condition to paper over.
+     * The header's CONTENT is deliberately never read (struct comment
+     * above: the pinned QEMU leaves num_buffers unwritten in the
+     * no-MRG_RXBUF path, and no offload is negotiated that would make any
+     * other field meaningful). */
     ASSERT(staged.length >= sizeof(VIO_NET_HEADER));
-    const VIO_NET_HEADER *header = (const VIO_NET_HEADER *)VioNetRxBuffer[staged.slot];
-    ASSERT(header->numBuffers == 1); /* §5.1.6.4: no MRG_RXBUF => 1 */
 
     uint32_t frameLength = staged.length - sizeof(VIO_NET_HEADER);
     if (frameLength > VIO_NET_MAX_FRAME)

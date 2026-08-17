@@ -82,6 +82,13 @@ BASELINE = os.path.join(ROOT, "tools", "blocking_frontier.txt")
 # exactly what the NT department naming (docs/15) is for.
 ENTRY_PREFIXES = ("Nt", "Zw")
 
+# Kernel service threads are entry points too: their bodies are reached from
+# nothing this tool can see (KiCreateThread takes a pointer), so each one is
+# named here explicitly and audited like an Nt* row — a service thread that
+# can park is a blocking point exactly the way a syscall is (G14; netd is
+# the first, Net-1 — docs/24 §4b).
+KERNEL_THREAD_ENTRIES = ("NetdThreadMain",)
+
 C_KEYWORDS = {
     "if", "while", "for", "switch", "return", "sizeof", "do", "else", "case",
     "defined", "typedef", "struct", "union", "enum", "static", "const",
@@ -244,7 +251,9 @@ def format_path(graph, path):
 
 
 def entry_frontier(parent):
-    return sorted(f for f in parent if f.startswith(ENTRY_PREFIXES))
+    return sorted(
+        f for f in parent if f.startswith(ENTRY_PREFIXES) or f in KERNEL_THREAD_ENTRIES
+    )
 
 
 def read_baseline():
