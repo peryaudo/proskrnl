@@ -1784,15 +1784,71 @@ single handle gate cannot answer them both. The class also demands **no
 access** (`get_handle_fd_obj(..., 0)`), which is what makes `pipe.c:1015`'s
 `SYNCHRONIZE`-only client a success rather than an `ACCESS_DENIED`.
 
-**What the pair is now: a WEDGE, and the verdict does not move.** It traces
-`pipe.c:3187: starting alertable tests` and then makes no progress until the
-harness's 5-minute timeout, with the event ring holding nothing but idle swaps.
-`FAIL (timeout)` with zero failures reads exactly as the panic did, so the
-colour is unchanged — but the stopping point moved from `pipe.c:1015` to
-`pipe.c:3187`, past the whole of `test_pipe_with_data_state`. The manifest
-block has the next item; note that **which park wedges has not been measured**,
-only where the trace stops, and the block deliberately records the code-read
-suspect as a suspect (§4 trap 4, again).
+**The `:3187` wedge is DONE, and the code-read suspect the last revision
+refused to record as a finding turned out to be right.** It was a
+`FSCTL_PIPE_LISTEN` parked on a `FILE_SYNCHRONOUS_IO_ALERT` handle with a user
+APC already queued: proskrnl folded `ALERT` into `NONALERT` everywhere below
+`FileModeInformation`, so `IoWaitCancellable` waited non-alertably for both and
+a listen with no client coming never returned. The pair runs **five functions
+further** — through `test_alertable`, `test_nonalertable`, `test_cancelio` and
+into `test_cancelsynchronousio` — and goes **0 → 1** failed assertion. Landed in
+`kernel/{ke/ke.h,io/{async,ioctl,rw,file}.c}` + `fs/npfs/pipe.c`, pinned by
+`tests/ntapi/sem_pipe/alertable_park.c`; `docs/03`
+"`FILE_SYNCHRONOUS_IO_ALERT`: the park is alertable".
+
+**Recording the suspect as a suspect was still the right call, and measuring it
+was still cheap** — but it is worth noting which way it went: §4 trap 4 says
+the loudest failure is usually the consequence, and here the code-read
+prediction was simply correct. The rule is not "predictions are wrong", it is
+"a prediction is not a measurement"; three minutes of two runners is what
+converted it, and it also found two things the prediction did not contain.
+
+Three things worth carrying:
+
+- **The oracle states the whole rule in one argument, and the exception is a
+  SERVICE not a handle.** `server_read_file`, `server_write_file` and
+  `server_ioctl_file` all pass `options & FILE_SYNCHRONOUS_IO_ALERT` to
+  `wait_async` (`dlls/ntdll/unix/file.c:5746/:5781/:5823`), but
+  `NtFlushBuffersFileEx` passes a literal `FALSE` (`:6876`) — so a flush blocks
+  through a queued APC whatever the handle says. The first draft made the flush
+  alertable on the strength of "it is the handle's rule"; that is W4d's lesson
+  in reverse, and it is stated at the flush site rather than as a rule about
+  the layer.
+- **An INTERRUPTED request completes NOTHING, and returns an NT_SUCCESS
+  status.** The oracle's async is still QUEUED — only the client stopped
+  waiting — so no IOSB is written, no completion routine runs and no event is
+  signalled; the call returns `STATUS_USER_APC`. Because that is an
+  `NT_SUCCESS` value, it is carried as an engine FLAG (`KTHREAD.syncIoAlerted`,
+  set at the one place a park happens) and never read off a device's return —
+  W4c's `STATUS_PENDING` lesson applied before it could be paid twice. Windows
+  CANCELS instead and answers `STATUS_CANCELLED`, which the winetest marks
+  `todo_wine`: **matching NT here would score a failure for being closer to
+  NT**, which is Art. 6 with teeth.
+- **npfs was a second `FILE_OBJECT` construction site and it had ALREADY
+  drifted.** `NtCreateNamedPipeFile`'s comment says it builds the object
+  "exactly as `IopCreateFile` does"; it set `synchronousIo` and nothing else,
+  so every pipe handle reported a zero `FileModeInformation` whatever it was
+  opened with, its `syncIoLock` was never initialised, and the bit this item
+  keys on was invisible. Both sites go through `IopCaptureCreateOptions` now.
+  Art. 11's "parallel paths drift even while currently equivalent" was not a
+  prediction here — **a comment claiming two paths agree is the tell**, and
+  only a test that needed one of the dropped bits found it.
+
+**What the pair is now: one real failure, then a NEW wedge three functions on,
+and the verdict still does not move.** `pipe.c:725` wants
+`STATUS_ACCESS_VIOLATION` from `NtCancelSynchronousIoFile(GetCurrentThread(),
+NULL, (IO_STATUS_BLOCK *)0xdeadbeef)` and gets `STATUS_DATATYPE_MISALIGNMENT`,
+because `KiProbeForWrite` tests alignment before accessibility — a probe-ORDER
+item, not a pipe one. The wedge is `pipe.c:747`, `while
+((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0) Sleep(1);`: a spin
+waiting for a blocking LISTEN to take the pipe HANDLE down. W4d built that rule
+for `rw.c`'s transfers and this item deliberately stopped at the EVENT half for
+ioctls (reset at issue, measured from a worker mid-park), leaving the
+file-object half unbuilt — so the spin never ends. **That is the pair's next
+item**, it wants its own pin because the pended and refused arms of the service
+owe the handle an answer too, and `kernel/io/ioctl.c` names the convicting line
+at the site rather than calling the gap a scoping judgement. `1` is still a
+LOWER BOUND (§4 trap 2): the pair prints no summary line on either side.
 
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
