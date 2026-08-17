@@ -257,7 +257,10 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
      * not the completing context (the peer's write, a cancel, the handle's
      * cleanup), and a caller that unmapped its own buffer while the read was
      * parked gets no bytes rather than a halted kernel. */
-    if (request->kernelBuffer != 0 && information != 0)
+    /* userBuffer != 0 too (Net-2): a pended WRITE's request carries the
+     * bounce for the device to drain but no destination — a send's
+     * completion copies nothing back. */
+    if (request->kernelBuffer != 0 && request->userBuffer != 0 && information != 0)
     {
         ULONG bytes =
             information < request->bufferLength ? (ULONG)information : request->bufferLength;

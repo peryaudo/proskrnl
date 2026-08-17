@@ -113,6 +113,7 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
                                   .userBuffer = output,
                                   .kernelBuffer = outBounce,
                                   .bufferLength = outputLength,
+                                  .userInput = input,
                                   .charge = PsIoChargeOther};
     /* The CUI-8 data legs are the OUTPUT buffer and its bounce, because a verb
      * that PENDS still owes its caller a reply: FSCTL_PIPE_TRANSCEIVE parks for

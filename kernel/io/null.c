@@ -99,10 +99,11 @@ static NTSTATUS IopNullRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG
 /* Consumed whole: a short write would make callers retry against a device
  * that can never make progress. */
 static NTSTATUS IopNullWrite(PFILE_OBJECT file, const void *buffer, ULONG length,
-                             ULONG_PTR *infoOut)
+                             ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
     (void)file;
     (void)buffer;
+    (void)request;
     *infoOut = length;
     return STATUS_SUCCESS;
 }

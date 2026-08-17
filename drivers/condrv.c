@@ -173,9 +173,10 @@ static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, 
 }
 
 static NTSTATUS CondrvSerialWrite(PFILE_OBJECT file, const void *buffer, ULONG length,
-                                  ULONG_PTR *infoOut)
+                                  ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
     (void)file;
+    (void)request;
     const unsigned char *in = buffer;
     for (ULONG i = 0; i < length; i++)
     {
@@ -691,8 +692,9 @@ static NTSTATUS CondrvConsoleRead(PFILE_OBJECT file, void *buffer, ULONG length,
 }
 
 static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG length,
-                                   ULONG_PTR *infoOut)
+                                   ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
+    (void)request;
     PCONDRV_OPEN open = file->fsContext;
     switch (open->kind)
     {
