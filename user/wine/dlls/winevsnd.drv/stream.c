@@ -100,6 +100,7 @@ static int dev_streams;
 static BOOL dev_started;
 static HANDLE feeder_thread;
 static BOOL feeder_quit;
+static BOOL feeder_stopping;
 static UINT64 underrun_count;
 
 /* The AUD-2 verdict channel: the WASAPI half of tests/run/run.sh audio reads
@@ -448,7 +449,10 @@ static void feeder_start(void)
 {
     LONG priority = THREAD_PRIORITY_TIME_CRITICAL;
 
-    if (feeder_thread) return;
+    /* Refused while a stop is joining the old feeder: resetting feeder_quit
+     * here would resurrect it and wedge the joiner (the release path
+     * restarts the feeder after the join if streams arrived meanwhile). */
+    if (feeder_thread || feeder_stopping) return;
     feeder_quit = FALSE;
     if (RtlCreateUserThread(NtCurrentProcess(), NULL, FALSE, 0, 0, 0,
                             (PRTL_THREAD_START_ROUTINE)feeder_proc, NULL, &feeder_thread, NULL))
@@ -469,11 +473,16 @@ static void feeder_stop(void)
 
     if (!thread) return;
     feeder_quit = TRUE;
+    feeder_stopping = TRUE;
     feeder_thread = NULL;
     vsnd_drop_lock();
     NtWaitForSingleObject(thread, FALSE, NULL);
     NtClose(thread);
     vsnd_take_lock();
+    feeder_stopping = FALSE;
+    /* A create_stream that landed while the lock was dropped found
+     * feeder_start refused; it left dev_streams > 0 -- start its feeder. */
+    if (dev_streams > 0) feeder_start();
 }
 
 /* ---- the entries --------------------------------------------------------- */
@@ -690,7 +699,9 @@ NTSTATUS vsnd_release_stream(void *args)
     if (!dev_streams)
     {
         feeder_stop();
-        dev_release();
+        /* Re-checked after the join dropped the lock: a concurrent
+         * create_stream may hold the device again. */
+        if (!dev_streams) dev_release();
     }
     vsnd_drop_lock();
 
