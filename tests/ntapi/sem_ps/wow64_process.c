@@ -81,6 +81,8 @@
 #define PARAMS32_CMDLINE     0x040
 #define PARAMS32_ENVIRONMENT 0x048
 #define PARAMS32_ENV_SIZE    0x290
+#define PARAMS32_GROUP_ID    0x29c
+#define PARAMS32_FLAGS       0x008
 #define PARAMS32_READ_SIZE   0x2a4
 
 /* wine/include/winternl.h PEB / RTL_USER_PROCESS_PARAMETERS (x64 offsets),
@@ -97,7 +99,9 @@
 #define PARAMS64_IMAGE_PATH   0x060
 #define PARAMS64_CMDLINE      0x070
 #define PARAMS64_ENV_SIZE     0x3f0
-#define PARAMS64_READ_SIZE    0x3f8
+#define PARAMS64_GROUP_ID     0x408
+#define PARAMS64_FLAGS        0x008
+#define PARAMS64_READ_SIZE    0x410
 
 #define FOUR_GB ((ULONG64)1 << 32)
 
@@ -336,6 +340,20 @@ START_TEST(wow64_process)
        "EnvironmentSize %lx / %llx", (unsigned long)rd32(params32_block, PARAMS32_ENV_SIZE),
        (unsigned long long)rd64(params64_block, PARAMS64_ENV_SIZE));
     ok(rd32(params32_block, PARAMS32_ENVIRONMENT) != 0, "no 32-bit environment");
+    /* The two scalars build_wow64_parameters copies out of the FINISHED
+     * 64-bit block rather than re-deriving: `wow64_params->Flags =
+     * params->Flags` (so the 32-bit block carries the normalized bit the
+     * guest's RtlNormalizeProcessParams tests) and `wow64_params->
+     * ProcessGroupId = params->ProcessGroupId` (the console group a 32-bit
+     * app's GenerateConsoleCtrlEvent addresses). Both are compared against
+     * the 64-bit block, because "the same value" IS the contract — a
+     * plausible 0 in either is a real Flags word and a real group id. */
+    ok(rd32(params32_block, PARAMS32_FLAGS) == rd32(params64_block, PARAMS64_FLAGS),
+       "params Flags %lx / %lx", (unsigned long)rd32(params32_block, PARAMS32_FLAGS),
+       (unsigned long)rd32(params64_block, PARAMS64_FLAGS));
+    ok(rd32(params32_block, PARAMS32_GROUP_ID) == rd32(params64_block, PARAMS64_GROUP_ID),
+       "params ProcessGroupId %lx / %lx", (unsigned long)rd32(params32_block, PARAMS32_GROUP_ID),
+       (unsigned long)rd32(params64_block, PARAMS64_GROUP_ID));
 
     /* --- the image facts: a PE32 section, entry under 4GB ---------------- */
     ps_section_image_info image_info;
