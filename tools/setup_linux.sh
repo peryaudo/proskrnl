@@ -79,6 +79,15 @@ X11_PACKAGES=(
     libxcomposite-dev libxfixes-dev libxcursor-dev libxi-dev libxxf86vm-dev
 )
 
+# AUD-2 (docs/23 §6b): the oracle's audio backend. libpulse-dev answers
+# configure's pulse probe (--with-pulse below errors out without it — the
+# same truthful WINE_ERROR_WITH gate as freetype and X), and pulseaudio is
+# the per-leg null-sink daemon tests/run/run.sh start_pulse owns, the audio
+# Xvfb. Never a borrowed session daemon.
+AUDIO_PACKAGES=(
+    pulseaudio libpulse-dev
+)
+
 echo "== apt packages =="
 $SUDO apt-get update -qq
 $SUDO apt-get install -y --no-install-recommends \
@@ -88,7 +97,7 @@ $SUDO apt-get install -y --no-install-recommends \
     libgtk-3-dev libslirp-dev bzip2 \
     flex bison python3-venv \
     gcc libc6-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-    "${X11_PACKAGES[@]}"
+    "${X11_PACKAGES[@]}" "${AUDIO_PACKAGES[@]}"
 
 # Bring every third_party submodule to its pinned gitlink, one at a time so
 # a single broken tree cannot strand the rest (an empty clone with an unborn
@@ -218,8 +227,13 @@ WINE_FT_ENV=(
 # config.h than one without. No oracle leg draws through GL, and the pinned
 # tree answered `#undef SONAME_LIBGL` before this change too, so pinning it
 # off keeps the oracle's GL surface exactly where it already was.
+# --with-pulse (AUD-2, docs/23 §6b): the oracle's audio backend, bought the
+# way fonts and the display were. Explicit rather than autodetect so a box
+# without libpulse-dev errors out at configure instead of shipping an oracle
+# whose mmdevapi enumerates zero endpoints and turns every audio pair into a
+# skip that counts as green.
 WINE_CONFIGURE=(--enable-archs=i386,x86_64 --with-x --without-opengl
-                --with-freetype --without-fontconfig)
+                --with-freetype --without-fontconfig --with-pulse)
 
 # A box provisioned before GUI-3 carries a --without-freetype wine, and the
 # two "already built — skipping" guards below would serve it forever. wine's
@@ -257,6 +271,18 @@ if [[ $wineStale -eq 0 && -f third_party/wine/include/config.h ]] &&
     echo "== wine: pre-X (--without-x) build found — reconfiguring =="
 fi
 
+# Fourth time, same trap: a box provisioned before AUD-2 carries a
+# --without-pulse wine whose mmdevapi enumerates zero endpoints, so every
+# audio pair skips and counts as green. configure writes the pulse client
+# libraries into the generated Makefile's PULSE_LIBS exactly when the
+# backend is on (and errors out when it is wanted but missing), so that
+# assignment is a truthful "this tree has an audio backend" marker.
+if [[ $wineStale -eq 0 && -f third_party/wine/Makefile ]] &&
+    ! grep -q '^PULSE_LIBS *=.*-lpulse' third_party/wine/Makefile; then
+    wineStale=1
+    echo "== wine: pre-audio (--without-pulse) build found — reconfiguring =="
+fi
+
 echo "== wine: the ntapi + font-metrics oracle (x86_64 + i386 PE, X11) =="
 if [[ $wineStale -eq 0 && ( -x third_party/wine/wine64 || -x third_party/wine/wine ) ]]; then
     echo "   already built — skipping"
@@ -281,9 +307,10 @@ fi
 # — so re-configuring with tests enabled is incremental over the build above.
 # Only the five in-scope CUI test directories are built; note a bare `make`
 # in third_party/wine after this point would build every test module.
-echo "== wine: the CUI test modules (the winetest gate) + user32 (the GUI-5 msg gate) =="
+echo "== wine: the CUI test modules (the winetest gate) + user32 (the GUI-5 msg gate) + audio =="
 if [[ $wineStale -eq 0 && -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe &&
-      -f third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe ]]; then
+      -f third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe &&
+      -f third_party/wine/dlls/mmdevapi/tests/x86_64-windows/mmdevapi_test.exe ]]; then
     echo "   already built — skipping"
 else
     (cd third_party/wine &&
@@ -291,7 +318,8 @@ else
     LD_LIBRARY_PATH="$FT_NATIVE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         make -C third_party/wine -j"$JOBS" \
         dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
-        dlls/ucrtbase/tests/all programs/cmd/tests/all dlls/user32/tests/all
+        dlls/ucrtbase/tests/all programs/cmd/tests/all dlls/user32/tests/all \
+        dlls/mmdevapi/tests/all dlls/winmm/tests/all
 fi
 
 echo

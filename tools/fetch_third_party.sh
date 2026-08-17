@@ -161,7 +161,8 @@ COMPONENTS=(limine qemu-build wine freetype)
 WineTreeIsStale() {
     [[ -f third_party/wine/include/config.h ]] || return 1
     ! grep -q '^#define SONAME_LIBFREETYPE ' third_party/wine/include/config.h ||
-        ! grep -q '^#define SONAME_LIBX11 ' third_party/wine/include/config.h
+        ! grep -q '^#define SONAME_LIBX11 ' third_party/wine/include/config.h ||
+        ! grep -q '^PULSE_LIBS *=.*-lpulse' third_party/wine/Makefile
 }
 
 # The qemu twin (Net-1): a build restored from a pre-slirp cache has the
@@ -236,7 +237,7 @@ for a in json.load(sys.stdin).get("assets", []):
 # (test.yml pins ubuntu-24.04). The publish step uploads the per-key
 # distro.txt LAST, so its presence also proves the key's asset set is
 # complete — treat its absence as a miss, and a different distro as fatal.
-distro_url="$(awk -F'\t' -v n="tp-v8-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+distro_url="$(awk -F'\t' -v n="tp-v9-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
 if [[ -z "$distro_url" ]]; then
     echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
     echo "  Either the pins were just bumped and CI on main has not" >&2
@@ -257,7 +258,7 @@ fi
 echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
-    prefix="tp-v8-$KEY-$c.tar.zst.part"
+    prefix="tp-v9-$KEY-$c.tar.zst.part"
     parts="$(grep "^$prefix" <<<"$assets" || true)"
     if [[ -z "$parts" ]]; then
         echo "fetch_third_party: no '$prefix*' assets for the current pins." >&2
