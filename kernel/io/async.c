@@ -200,11 +200,11 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
      * process: the ISSUER, which is `owner` rather than whoever is
      * completing — a peer's write, a cancel, the handle's cleanup.
      *
-     * Only a request that COMPLETED is an operation. The inline tail is
-     * reached on success alone (its callers branch away from it on a
-     * refusal), so a cancelled park charging one here would make the two
-     * tails disagree about what an operation is. */
-    if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
+     * Only a request that COMPLETED is an operation, and WHICH statuses
+     * those are is io.h's predicate rather than a second opinion here — the
+     * two tails disagreed about STATUS_END_OF_FILE while this arm spelled
+     * the rule for itself. */
+    if (IopChargesIoCounters(status))
     {
         PsChargeIoCounters(request->owner, request->charge, (uint64_t)information);
     }

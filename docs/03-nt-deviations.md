@@ -2634,10 +2634,11 @@ the contract used instead is Microsoft's own documentation of `IO_COUNTERS` /
 
 The deviation worth stating is **which requests are charged**. NT counts every IRP a
 process issues: reads, writes, and "other" — which for NT includes device and filesystem
-control, but also the query/set-information, flush and lock verbs. proskrnl charges at the
-two places a request can END (`IopCompleteTransfer`, the inline tail, and
-`IopCompletePendingRequest`, the pended one), and only for the verbs that carry a data or
-control payload:
+control, but also the query/set-information, flush and lock verbs. proskrnl charges only for
+the verbs that carry a data or control payload, at the four sites a charged request can end
+— `IopCompleteTransfer` (the inline tail), `IopCompletePendingRequest` (the pended one), and
+the two scatter/gather completions in `IopSegmentedTransfer`, which write the IOSB
+themselves:
 
 | verb | counter |
 |---|---|
@@ -2647,7 +2648,16 @@ control payload:
 
 Everything else — `NtQueryInformationFile`, `NtSetInformationFile`, `NtQueryDirectoryFile`,
 `NtFlushBuffersFile`, `NtLockFile` — completes without charging, so proskrnl's "other"
-totals run below NT's for the same workload. Nothing at the boundary pins an absolute
+totals run below NT's for the same workload.
+
+**Which statuses charge** is one predicate, `IopChargesIoCounters` (`kernel/io/io.h`), asked
+by all four sites: a request counts once it has COMPLETED with a transfer decided — success,
+`STATUS_BUFFER_OVERFLOW`, or `STATUS_END_OF_FILE` (a read that found nothing is still a read
+the device performed; it contributes zero bytes). A cancelled park never completed one and
+charges nothing. It is a shared predicate rather than a rule spelled at each site because
+the two tails did drift: the pended one filtered on `NT_SUCCESS` while the inline one
+charged `STATUS_END_OF_FILE`, so an EOF read counted or not depending on which path served
+it. Nothing at the boundary pins an absolute
 total (no test can: the number is a property of the machine and of every DLL the process
 loaded), and the documented meaning of each counter — one operation, its bytes — holds
 exactly for the verbs above. A scatter/gather is ONE operation whatever its segment count,

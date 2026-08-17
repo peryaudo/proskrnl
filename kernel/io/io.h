@@ -494,6 +494,22 @@ NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request
  * operation on the ISSUER's IO_COUNTERS, which is this thread's process
  * (an inline completion never crosses a process). The pended twin charges
  * the same way from IopCompletePendingRequest. */
+/* Does a completion with this final status count as an I/O OPERATION on the
+ * issuer's IO_COUNTERS? One predicate for every charging site (Art. 11): the
+ * inline tail, the pended tail (kernel/io/async.c) and the two scatter/gather
+ * completions all ask it, so they cannot disagree about what an operation is
+ * — which they did when the pended tail filtered on NT_SUCCESS alone while
+ * the inline one charged STATUS_END_OF_FILE.
+ *
+ * A request counts once it has COMPLETED with a transfer decided: success,
+ * the short-buffer overflow, and end-of-file (a read that found nothing is
+ * still a read the device performed — NT counts the IRP, and the byte count
+ * it contributes is simply zero). A CANCELLED park never completed one. */
+static inline BOOLEAN IopChargesIoCounters(NTSTATUS status)
+{
+    return NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW || status == STATUS_END_OF_FILE;
+}
+
 NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE event, PKAPC apc,
                              PVOID apcContext, NTSTATUS status, ULONG_PTR information,
                              BOOLEAN reportsPending, PS_IO_CHARGE charge);
