@@ -522,6 +522,26 @@ an in-kernel TCP echo against the harness completes, and the `filter-dump` pcap 
 networking's screendump — shows our MAC and the exchange as content assertions,
 never timing.
 
+*(Outcome: complete. lwIP STABLE-2_2_1 admitted as the second-ever third-party
+component in the kernel image (docs/11 amended; provenance recorded); `abi/afd.h` +
+`abi/nsi.h` generated ahead of their Net-2 consumer; slirp bought with the tp-v8
+cache bump and the netsmoke gate; `drivers/virtio/net.c` negotiates `VERSION_1 +
+F_MAC` only, no vector, `VioNetDrain` pure harvest-store-wake off the tick tail;
+netd drives the NO_SYS mainloop and its park is the frontier's first
+kernel-thread row (docs/20 §12 records the §8.4 re-check). The lease lands in
+`Tcpip\Parameters\Interfaces\<adapter>` via the ordinary NtSetValueKey path and the
+kmt suite reads it back green. Three facts were learned by measurement and are
+commented where they live: lwIP needs `MEM_ALIGNMENT 8` and
+`IPV6_FRAG_COPYHEADER 1` on x86_64, and the pinned QEMU never writes the
+virtio-net header's `num_buffers` in the no-MRG_RXBUF path — the spec's
+device-MUST is not what the cross-check device model does, so the driver reads no
+header field at all. The docs/24 §7 throughput record: the 1 ms harvest bounds
+receive at the posted ring — 64 one-page buffers per tick, ~775 Mbit/s at full
+MTU as the structural ceiling, far above the acceptance path's needs; a wall-clock
+number under TCG would be a host-scheduling artifact (docs/19 §11c), so the
+ceiling is recorded from the committed buffer counts and the escape stays docs/24
+§4a's named MSI-X change.)*
+
 ## Net-2 — `\Device\Afd`: the boundary Wine's ws2_32 issues
 `abi/afd.h` generated from the pinned tree's `wine/afd.h` (G4) — the 7 native +
 105 `IOCTL_AFD_WINE_*` codes and the C_ASSERT-mirrored struct layouts.

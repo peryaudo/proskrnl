@@ -130,7 +130,8 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 # this list — that is a choice about the machine, not about a leg.
 unset WINEPREFIX LOG PASS_RE TIMEOUT GRACE MEM GUI_DEADLINE \
       QMP_SOCK SERIAL_SOCK WRITE_LOG DRIVE_THROTTLE EXTRA_DEVICES \
-      INTERACTIVE GUI_DISPLAY WTEST_NO_ORACLE FONTDIFF_REFRESH
+      INTERACTIVE GUI_DISPLAY WTEST_NO_ORACLE FONTDIFF_REFRESH \
+      NET_PCAP NET_ECHO_PORT
 
 NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 
@@ -148,7 +149,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # schedule is already within a third of the best any width could do.
 ALL_LEGS=(guiwtest winetest wow64gui winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui audio procs files console boot
-          cui6 oracle wow64 fatstress fuzz fatinterop frontier)
+          cui6 net oracle wow64 fatstress fuzz fatinterop frontier)
 
 usage() {
     cat >&2 <<EOF

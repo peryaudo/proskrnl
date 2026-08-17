@@ -170,6 +170,29 @@ local macOS Wine.
 
 ## Status
 
+**Net-1 complete** — the wire is up (`docs/02` "Networking path"; the
+design is `docs/24`). The pinned lwIP (STABLE-2_2_1, the second
+third-party component ever linked into the kernel image, admitted under
+`docs/11`'s four conditions) runs in NO_SYS mainloop mode over a new
+`drivers/virtio/net.c` — VERSION_1 + F_MAC only, no offloads, no MSI-X
+vector, `VioNetDrain` a pure harvest-store-wake arm of the one drain
+authority off the tick tail. The netd kernel thread drives the stack;
+its park is the blocking frontier's first kernel-thread row (G14, with
+`docs/20` §12's re-check). DHCP binds against slirp — bought for the
+pinned QEMU with the tp-v8 cache bump and gated by netsmoke — and the
+lease lands in the `Tcpip\Parameters\Interfaces\<adapter>` values real
+Windows uses, written through the ordinary `NtSetValueKey` path, nothing
+baked. `tests/run/run.sh net` is the acceptance: `[KTEST] net dhcp`
+carries the address, the in-kernel TCP echo completes against the
+harness, and the filter-dump pcap — networking's screendump — holds our
+MAC, the DISCOVER/REQUEST exchange, and the echo payload both ways as
+content assertions, never timing. Couldn't be achieved within the
+milestone: nothing ring-3-visible speaks sockets yet — that is Net-2's
+`\Device\Afd` (its `abi/afd.h`/`abi/nsi.h` contract is already
+generated), and name resolution + the off-the-shelf HTTPS fetch are
+Net-3's. What's next: Net-2 — `sem_net` pins on the oracle first, then
+`drivers/afd.c` over lwIP's raw API on the CUI-8 pending engine.
+
 **AUD-1 complete** — the first milestone of the opt-in audio path
 (`docs/23`). The kernel grew its third HACK-shaped device family:
 `\Device\Snd<n>`, one node per PCM stream the virtio-snd device reports,
@@ -192,7 +215,8 @@ in ring 0. Next: AUD-2 — the oracle grows a PulseAudio backend, the
 mmdevapi seam commit lands on `proskrnl-target`, and `winevsnd.drv`
 takes the WASAPI render pairs green on both runners.
 
-**WOW64 complete** — the previous milestone (`docs/02`). An
+**WOW64 complete** — the last milestone of the original plan
+(`docs/02`). An
 unmodified 32-bit Win32 CUI binary runs: `tests/cui/hello32.c` is an
 ordinary i686 mingw console program over the same Wine import libraries
 the 64-bit clients use, and nothing in it knows it is a guest — every
