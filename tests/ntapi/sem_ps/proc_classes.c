@@ -28,6 +28,7 @@
 #define PS_ProcessPriorityClass            ((PROCESSINFOCLASS)18)
 #define PS_ProcessHandleCount              ((PROCESSINFOCLASS)20)
 #define PS_ProcessImageFileName            ((PROCESSINFOCLASS)27)
+#define PS_ProcessImageFileNameWin32       ((PROCESSINFOCLASS)43)
 #define PS_ThreadQuerySetWin32StartAddress ((THREADINFOCLASS)9)
 
 /* wine/include/winternl.h PROCESS_PRIORITY_CLASS + PROCESS_PRIOCLASS_*. */
@@ -167,6 +168,56 @@ START_TEST(proc_classes)
            "NT \\??\\ form");
         ok(ends_with_insensitive(str->Buffer, str->Length / sizeof(WCHAR), L"proc_classes.exe"),
            "path names this image");
+    }
+
+    /* --- ProcessImageFileNameWin32 (AUD-2) --------------------------------- */
+    /* The class-27 protocol with the NT prefix stripped: the pinned server
+     * answers the same name and skips a leading \??\ for the win32 form
+     * (dlls/ntdll/unix/process.c ProcessImageFileNameWin32 shares class
+     * 27's fill; server/process.c get_process_image_name, req->win32).
+     * Consumed by mmdevapi's audio-session machinery, which is how the
+     * winetest render pair found it unbuilt (AUD-2 notes). */
+    {
+        char raw[sizeof(UNICODE_STRING) + 512 * sizeof(WCHAR)];
+        char rawNt[sizeof(UNICODE_STRING) + 512 * sizeof(WCHAR)];
+        UNICODE_STRING *str = (UNICODE_STRING *)raw;
+        UNICODE_STRING *strNt = (UNICODE_STRING *)rawNt;
+        retlen = 0;
+        status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessImageFileNameWin32, raw,
+                                           sizeof(UNICODE_STRING), &retlen);
+        ok(status == STATUS_INFO_LENGTH_MISMATCH, "short win32 image name -> %08lx",
+           (unsigned long)status);
+        ok(retlen > sizeof(UNICODE_STRING), "short win32 image name retlen %lu",
+           (unsigned long)retlen);
+
+        memset(raw, 0, sizeof(raw));
+        retlen = 0;
+        status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessImageFileNameWin32, raw,
+                                           sizeof(raw), &retlen);
+        ok(status == STATUS_SUCCESS, "win32 image name -> %08lx", (unsigned long)status);
+        ok(str->Length > 0, "win32 image name nonempty");
+        ok(str->Buffer == (PWSTR)(str + 1), "win32 buffer embedded after the struct");
+        ok(str->MaximumLength == str->Length + sizeof(WCHAR), "win32 max length %u vs %u",
+           str->MaximumLength, str->Length);
+        ok(str->Buffer[str->Length / sizeof(WCHAR)] == 0, "win32 NUL terminated");
+        ok(!(str->Length >= 4 * sizeof(WCHAR) && str->Buffer[0] == '\\' &&
+             str->Buffer[1] == '?'),
+           "win32 form carries no \\??\\ prefix");
+        ok(ends_with_insensitive(str->Buffer, str->Length / sizeof(WCHAR), L"proc_classes.exe"),
+           "win32 path names this image");
+
+        /* Same name as the NT form, minus exactly its \??\ prefix. */
+        memset(rawNt, 0, sizeof(rawNt));
+        status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessImageFileName, rawNt,
+                                           sizeof(rawNt), NULL);
+        ok(status == STATUS_SUCCESS, "nt image name re-query -> %08lx", (unsigned long)status);
+        if (status == STATUS_SUCCESS && strNt->Length >= 4 * sizeof(WCHAR))
+        {
+            ok(strNt->Length == str->Length + 4 * sizeof(WCHAR),
+               "win32 length %u is nt length %u minus the prefix", str->Length, strNt->Length);
+            ok(memcmp(strNt->Buffer + 4, str->Buffer, str->Length) == 0,
+               "win32 name is the nt name past the prefix");
+        }
     }
 
     /* --- ThreadQuerySetWin32StartAddress ----------------------------------- */
