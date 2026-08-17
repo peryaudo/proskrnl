@@ -3005,7 +3005,12 @@ NTSTATUS NtQuerySystemInformationEx(SYSTEM_INFORMATION_CLASS infoClass, PVOID qu
 
 NTSTATUS NtQuerySystemTime(PLARGE_INTEGER time)
 {
-    NTSTATUS status = KiProbeForWrite(time, sizeof(LARGE_INTEGER), sizeof(uint64_t));
+    /* Alignment 1 for the same reason as NtQueryPerformanceCounter above:
+     * the WOW64 thunk forwards the caller's 4-aligned pointer untranslated
+     * (dlls/wow64/system.c wow64_NtQuerySystemTime); pinned by
+     * sem_ps/misaligned_out. The staged-local + memcpy shape below already
+     * never dereferences the user address at ring 0. */
+    NTSTATUS status = KiProbeForWrite(time, sizeof(LARGE_INTEGER), 1);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -3253,10 +3258,18 @@ NTSTATUS NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(ULONG direction, 
 
 NTSTATUS NtQueryPerformanceCounter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency)
 {
-    NTSTATUS status = KiProbeForWrite(counter, sizeof(LARGE_INTEGER), sizeof(uint64_t));
+    /* Alignment 1, not 8: a WOW64 caller's output LARGE_INTEGER is an i386
+     * stack local at addr % 8 == 4, and the pinned Wine forwards the 32-bit
+     * pointer untranslated (dlls/wow64/sync.c wow64_NtQueryPerformanceCounter
+     * — the write-side twin of the KiCaptureTimeout rule). Pinned by
+     * sem_ps/misaligned_out. The value is staged in an aligned local below
+     * and leaves through memcpy, so no ring-0 code dereferences the user
+     * address. 1 is knowingly wider than the pin (the oracle checks no
+     * alignment at all, so it cannot say what 1-mod-4 should do). */
+    NTSTATUS status = KiProbeForWrite(counter, sizeof(LARGE_INTEGER), 1);
     if (NT_SUCCESS(status) && frequency != 0)
     {
-        status = KiProbeForWrite(frequency, sizeof(LARGE_INTEGER), sizeof(uint64_t));
+        status = KiProbeForWrite(frequency, sizeof(LARGE_INTEGER), 1);
     }
     if (!NT_SUCCESS(status))
     {
