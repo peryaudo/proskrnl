@@ -157,7 +157,16 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         needed = sizeof(FILE_END_OF_FILE_INFORMATION);
         break;
     case FileNameInformation:
-        needed = (ULONG)offsetof(FILE_NAME_INFORMATION, FileName);
+        /* The WHOLE struct — the count plus its `WCHAR FileName[1]` tail,
+         * padded to 8 — not the offset of the tail. The pinned Wine's floor
+         * is its table's own `sizeof(FILE_NAME_INFORMATION)` entry
+         * (dlls/ntdll/unix/file.c NtQueryInformationFile, info_sizes[]), and
+         * the two spellings differ for exactly the buffers 4..7 bytes long:
+         * an offsetof floor accepts four bytes, writes the count into them
+         * and reports STATUS_BUFFER_OVERFLOW where the oracle reports
+         * STATUS_INFO_LENGTH_MISMATCH. Pinned by
+         * sem_file/name_info_length.c. */
+        needed = sizeof(FILE_NAME_INFORMATION);
         break;
     case FileAllInformation:
         needed = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation.FileName);

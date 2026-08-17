@@ -3014,6 +3014,23 @@ was already measured was the refusal, and the pin that measured it
 all of this — the suppression is tested inside the one transition every producer goes
 through (`IopFileSignalSuppressed`).
 
+## `FileNameInformation`'s length floor is the whole struct
+
+`NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than
+`sizeof(FILE_NAME_INFORMATION)` — **8** bytes, the `ULONG` count plus its
+`WCHAR FileName[1]` tail — not shorter than the tail's offset. The floor is ntdll's own
+table entry (`dlls/ntdll/unix/file.c` `NtQueryInformationFile`, `info_sizes[]`), which
+sits above the handle and therefore above every device: a pipe end and a FAT file answer
+the ladder identically. Pinned by `tests/ntapi/sem_file/name_info_length.c`.
+
+The two spellings differ for exactly the buffers 4..7 bytes long, and they differ in
+STATUS, not in how much they copy: an `offsetof` floor accepts four bytes, writes the
+count into them and reports `STATUS_BUFFER_OVERFLOW` where the oracle reports
+`STATUS_INFO_LENGTH_MISMATCH` and leaves the caller's buffer alone. `ntdll:pipe:1987` is
+the consumer. At the floor exactly, the class succeeds into an overflow: the count is
+reported in full, one `WCHAR` of name fits, and `Information` counts the 8 bytes consumed
+rather than the bytes owed.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by
