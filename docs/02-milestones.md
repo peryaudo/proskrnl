@@ -563,6 +563,21 @@ parked with signatures — and the `[KTEST] net` line reports pended completions
 drop/retransmit counters as numbers (docs/24 §6e: loopback-only and inline-only
 implementations both pass every semantic test, so the win is a verdict).
 
+*(Outcome: complete, with one honest residue. `drivers/afd.c` serves the pinned
+surface over lwIP's raw API on the CUI-8 engine; `tests/ntapi/sem_net/` (eleven
+suites) is green on both runners; the readiness machine, sockopt set, cancels
+(thread-exit included) and the frontier-declared synchronous wait all landed
+(docs/20 §13). The stack now boots on every image — loopback needs no NIC. The
+parity round against `ws2_32:afd` run raw on proskrnl fixed what sem_net had not
+pinned (poll teardown shapes, WRITE hysteresis, the loopback OOB sidechannel, a
+minimal AF_INET6 bind surface, one Ob attribute-report shim — docs/03 "Net-2
+notes"), leaving every boundary row green. The residue: `ws2_32:afd` is parked,
+not active — the suite's own `gethostbyname("")` dies on the dormant resolver
+unixlib, which is Net-3's `WS_CALL` seam, so the pair un-parks there;
+`ws2_32:sock` crashes the same way at startup and parks with family triage;
+`protocol` is Net-3's by design. The stats line carries
+pended/syncparks/refused/rexmit with a pended>0 floor on the full ntapi leg.)*
+
 ## Net-3 — resolution + the acceptance fetch
 Name resolution never crosses the NT boundary (ws2_32's own five-entry unixlib), so
 it gets the milestone's one fork seam: a level-1-dormant `WS_CALL` leg on
