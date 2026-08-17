@@ -1098,6 +1098,38 @@ static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *e
      * this snapshot, and two derivations of one fact drift. */
     entry->ioCounters = process->ioCounters;
     entry->dwBasePriority = process->mainThread != 0 ? process->mainThread->priority : 8;
+    /* The times and the memory figures, from the SAME two authorities the
+     * per-process classes answer from — ProcessTimes' exited-totals-plus-live
+     * -threads sum, and MiQueryVmCounters (Art. 11 again: this snapshot
+     * RESTATES those classes, it does not compute a second opinion). Left
+     * zero until now, which taskmgr's Processes tab showed as "0 K" and
+     * "0:00:00" in every row: the columns are read from this snapshot, not
+     * from the per-process classes.
+     *
+     * The thread sum runs under the dispatcher lock this whole fill already
+     * holds, so a thread mid-exit is counted exactly once — the reason
+     * ProcessTimes takes the lock too. */
+    entry->CreationTime = process->createTime;
+    uint64_t kernel100ns = process->exitedKernelTime100ns;
+    uint64_t user100ns = process->exitedUserTime100ns;
+    for (PLIST_ENTRY p = process->threadListHead.Flink; p != &process->threadListHead; p = p->Flink)
+    {
+        PKTHREAD tcb = CONTAINING_RECORD(p, ETHREAD, threadListEntry)->tcb;
+        kernel100ns += tcb->kernelTime100ns;
+        user100ns += tcb->userTime100ns;
+    }
+    entry->KernelTime.QuadPart = (LONGLONG)kernel100ns;
+    entry->UserTime.QuadPart = (LONGLONG)user100ns;
+    uint64_t reserved = 0;
+    uint64_t committed = 0;
+    MiQueryVmCounters(&process->addressSpace, &reserved, &committed);
+    entry->vmCounters.PeakVirtualSize = reserved;
+    entry->vmCounters.VirtualSize = reserved;
+    entry->vmCounters.PeakWorkingSetSize = committed;
+    entry->vmCounters.WorkingSetSize = committed;
+    entry->vmCounters.PagefileUsage = committed;
+    entry->vmCounters.PeakPagefileUsage = committed;
+    entry->vmCounters.PrivateUsage = committed;
 
     ULONG threadIndex = 0;
     for (PLIST_ENTRY p = process->threadListHead.Flink;
