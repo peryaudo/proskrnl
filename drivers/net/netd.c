@@ -55,17 +55,29 @@ static BOOLEAN NetdDhcpBoundOnce;
 static volatile BOOLEAN NetdLeaseDirty;
 static ULONG NetdRxPbufDrops; /* pbuf pool exhausted at input: loud, counted */
 
+/* The mainloop's park target — netd's own (Net-2): the drain wakes it
+ * through VioNetSetWakeEvent when a NIC exists, and any syscall-context
+ * lwIP caller wakes it through NetdWake so queued output (loopback frames
+ * included) gets serviced promptly on an image with no NIC at all. */
+static KEVENT NetdWorkEvent;
+
+void NetdWake(void)
+{
+    KeSetEvent(&NetdWorkEvent, 0, FALSE);
+}
+
 /* The invariant flag (header comment). volatile: read/written across the
- * two entry contexts. */
+ * two entry contexts. Non-static since Net-2: the AFD device is the
+ * second syscall-context entry seam and asserts through these. */
 static volatile BOOLEAN NetdInsideLwip;
 
-static void NetdEnterLwip(void)
+void NetdEnterLwip(void)
 {
     ASSERT(!NetdInsideLwip);
     NetdInsideLwip = TRUE;
 }
 
-static void NetdLeaveLwip(void)
+void NetdLeaveLwip(void)
 {
     ASSERT(NetdInsideLwip);
     NetdInsideLwip = FALSE;
@@ -346,16 +358,16 @@ static void NetdThreadMain(void *context)
                 timeout.QuadPart = -(LONGLONG)sleepMs * 10000;
                 timeoutArg = &timeout;
             }
-            KeWaitForSingleObject(VioNetWorkEvent(), Executive, KernelMode, FALSE, timeoutArg);
+            KeWaitForSingleObject(&NetdWorkEvent, Executive, KernelMode, FALSE, timeoutArg);
         }
         /* Clear BEFORE consuming: a frame the drain stages after the pop
          * loop below re-sets the event and the next lap sees it. */
-        KeClearEvent(VioNetWorkEvent());
+        KeClearEvent(&NetdWorkEvent);
 
         NetdEnterLwip();
         unsigned char frame[VIO_NET_MAX_FRAME];
         uint32_t length;
-        while (VioNetPopReceivedFrame(frame, &length))
+        while (NetdUp && VioNetPopReceivedFrame(frame, &length))
         {
             /* pbuf allocation happens here, in thread context, from the
              * static pools — the drain allocated nothing (docs/24 §4a).
@@ -396,57 +408,66 @@ BOOLEAN NetIsUp(void)
 
 void NetInitialize(void)
 {
-    if (!VioNetIsPresent())
-    {
-        return; /* no NIC, no stack: every leg but net boots exactly as before */
-    }
-    NetdFormatAdapterKeyName();
+    /* Net-2: the stack (loopback interface included) comes up on EVERY
+     * image — \Device\Afd serves 127.0.0.1 sockets with no NIC at all
+     * (docs/24 §5: the boundary is device-free over loopback). Only the
+     * ethernet netif, DHCP, and the lease depend on the probed NIC. */
+    KeInitializeEvent(&NetdWorkEvent, NotificationEvent, FALSE);
 
+    BOOLEAN wire = VioNetIsPresent();
     NetdEnterLwip();
-    lwip_init();
-    if (netif_add(&NetdNetif, 0, 0, 0, 0, NetdNetifInit, netif_input) == 0)
+    lwip_init(); /* LWIP_HAVE_LOOPIF: the 127.0.0.1 loop netif is born here */
+    if (wire && netif_add(&NetdNetif, 0, 0, 0, 0, NetdNetifInit, netif_input) == 0)
     {
-        NetdLeaveLwip();
-        DbgPrint("netd: netif_add failed; stack not started\n");
-        return;
+        DbgPrint("netd: netif_add failed; wire not started\n");
+        wire = FALSE;
     }
-    netif_set_default(&NetdNetif);
-    netif_set_status_callback(&NetdNetif, NetdStatusCallback);
-    /* Dual-stack from day one (docs/24 §5): the v6 link-local address
-     * exercises the compiled-in v6 core; the v6 SOCKET surface stays
-     * staged until its own pins exist. */
-    netif_create_ip6_linklocal_address(&NetdNetif, 1);
-    netif_set_up(&NetdNetif);
+    if (wire)
+    {
+        netif_set_default(&NetdNetif);
+        netif_set_status_callback(&NetdNetif, NetdStatusCallback);
+        /* Dual-stack from day one (docs/24 §5): the v6 link-local address
+         * exercises the compiled-in v6 core; the v6 SOCKET surface stays
+         * staged until its own pins exist. */
+        netif_create_ip6_linklocal_address(&NetdNetif, 1);
+        netif_set_up(&NetdNetif);
 
-    /* The static-configuration fallback knob (docs/24 §4b), off by
-     * default: a leg that wants no DHCP dependency passes
-     * -fw_cfg opt/org.proskrnl/netstatic and gets slirp's own fixed
-     * client address — 10.0.2.15/24, gateway 10.0.2.2 (pinned QEMU
-     * docs/system/devices/net.rst, "Using the user mode network
-     * stack") — with no lease and no Dhcp* registry values. */
-    NetdStaticConfig = CmQueryQemuBootFlag(WSTR("NetStatic"), 0) != 0;
-    if (NetdStaticConfig)
-    {
-        ip4_addr_t address, netmask, gateway;
-        IP4_ADDR(&address, 10, 0, 2, 15);
-        IP4_ADDR(&netmask, 255, 255, 255, 0);
-        IP4_ADDR(&gateway, 10, 0, 2, 2);
-        netif_set_addr(&NetdNetif, &address, &netmask, &gateway);
-        DbgPrint("[KTEST] net static 10.0.2.15\n");
-    }
-    else
-    {
-        dhcp_start(&NetdNetif);
+        /* The static-configuration fallback knob (docs/24 §4b), off by
+         * default: a leg that wants no DHCP dependency passes
+         * -fw_cfg opt/org.proskrnl/netstatic and gets slirp's own fixed
+         * client address — 10.0.2.15/24, gateway 10.0.2.2 (pinned QEMU
+         * docs/system/devices/net.rst, "Using the user mode network
+         * stack") — with no lease and no Dhcp* registry values. */
+        NetdStaticConfig = CmQueryQemuBootFlag(WSTR("NetStatic"), 0) != 0;
+        if (NetdStaticConfig)
+        {
+            ip4_addr_t address, netmask, gateway;
+            IP4_ADDR(&address, 10, 0, 2, 15);
+            IP4_ADDR(&netmask, 255, 255, 255, 0);
+            IP4_ADDR(&gateway, 10, 0, 2, 2);
+            netif_set_addr(&NetdNetif, &address, &netmask, &gateway);
+            DbgPrint("[KTEST] net static 10.0.2.15\n");
+        }
+        else
+        {
+            dhcp_start(&NetdNetif);
+        }
     }
     NetdLeaveLwip();
 
-    VioNetSetReceiveConsumerLive(TRUE);
+    if (wire)
+    {
+        NetdFormatAdapterKeyName();
+        VioNetSetWakeEvent(&NetdWorkEvent);
+        VioNetSetReceiveConsumerLive(TRUE);
+        NetdUp = TRUE;
+    }
     if (KiCreateThread(8, NetdThreadMain, 0) == 0)
     {
         KiPanic("netd: thread creation failed");
     }
-    NetdUp = TRUE;
-    DbgPrint("netd: stack up (%s)\n", NetdStaticConfig ? "static" : "dhcp");
+    DbgPrint("netd: stack up (%s)\n",
+             !wire ? "loopback only" : (NetdStaticConfig ? "static" : "dhcp"));
 }
 
 /* --- the kmt echo (docs/24 §6b) ---------------------------------------------- */

@@ -128,7 +128,7 @@ static uint32_t VioNetStagedHead; /* oldest staged entry */
 static uint32_t VioNetStagedCount;
 
 static BOOLEAN VioNetConsumerLive;
-static KEVENT VioNetEvent;
+static PKEVENT VioNetWakeEvent; /* netd's, registered at its bring-up */
 
 static VIO_NET_STATS VioNetStats;
 
@@ -198,8 +198,6 @@ BOOLEAN VioNetInitialize(void)
         VioPostReceiveBuffer(&VioNetRxQueue, slot, VioNetRxBufferPhysical[slot], PAGE_SIZE);
     }
 
-    KeInitializeEvent(&VioNetEvent, NotificationEvent, FALSE);
-
     /* Step 8: DRIVER_OK, then the deferred buffer-available notify
      * (§3.1.1 step 8; VioPostReceiveBuffer never notifies on its own). */
     VioPciSetDriverOk(&VioNetDevice);
@@ -232,10 +230,10 @@ const uint8_t *VioNetMacAddress(void)
     return VioNetMac;
 }
 
-PKEVENT VioNetWorkEvent(void)
+void VioNetSetWakeEvent(PKEVENT event)
 {
     ASSERT(VioNetPresent);
-    return &VioNetEvent;
+    VioNetWakeEvent = event;
 }
 
 void VioNetSetReceiveConsumerLive(BOOLEAN live)
@@ -299,11 +297,11 @@ void VioNetDrain(void)
         work = 1;
     }
 
-    if (work)
+    if (work && VioNetWakeEvent != 0)
     {
         /* The same edge the tick's timer expiry already drives: KiWaitTest
          * readies the parked netd thread, never switches (docs/18 §6d). */
-        KeSetEvent(&VioNetEvent, 0, FALSE);
+        KeSetEvent(VioNetWakeEvent, 0, FALSE);
     }
 }
 
