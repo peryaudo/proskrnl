@@ -588,35 +588,76 @@ ntdll_test.exe:path
 #     moved — so nothing was hiding behind the eight (docs/21 §4 trap 2 does
 #     not apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 60 (56 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 56,
+#     THE RELATIVE-ROOT CREATE AND OPEN ARE NOW BUILT: 60 -> 37, the 23 at
+#     :2842-:2936, and the diagnosis above was right — one cause, 23
+#     consequences. Two rules, both read off the oracle and both about WHICH
+#     ROOT a call accepts rather than about npfs:
+#       * an EMPTY name makes an UNNAMED pipe, and the root only has to
+#         EXIST. server/object.c create_named_object's empty-name arm
+#         allocates an unlinked object and never reads the parent, so
+#         DECL_HANDLER(create_named_pipe)'s `get_handle_obj( process,
+#         rootdir, 0, NULL )` is any type with no access — an EVENT handle is
+#         a legal root — and only a handle naming nothing is refused. No root
+#         at all is STATUS_OBJECT_PATH_SYNTAX_BAD, and FILE_OPEN of an empty
+#         name resolves to the ROOT ITSELF and type-checks it, which no root
+#         ever passes: STATUS_OBJECT_TYPE_MISMATCH.
+#       * a NAMED create's root must reach the pipe DEVICE's own flat
+#         namespace, and that is decided in the LINK (named_pipe_link_name
+#         folds the device's root directory onto the device and refuses every
+#         other parent with STATUS_OBJECT_NAME_INVALID) — so the name lands
+#         in the device's namespace whatever the root was, which is why
+#         "test3\pipe" is one KEY rather than a path and is then openable by
+#         its absolute name.
+#       The unnamed pipe's client end is reachable only through its SERVER
+#       END's handle with an empty name (pipe_server_lookup_name resolves it
+#       to the end, whose open_file tail-calls the same named_pipe_open_file
+#       a by-name open reaches), and the client end is not a root in turn —
+#       no_lookup_name's two arms give OBJECT_TYPE_MISMATCH for an empty name
+#       and OBJECT_NAME_NOT_FOUND for a non-empty one. Landed in
+#       fs/npfs/pipe.c + kernel/io/file.c, pinned by
+#       tests/ntapi/sem_pipe/pipe_root.c; docs/21 W11, docs/03 "What ROOT a
+#       named-pipe create and a pipe-relative open accept".
+#       2377 tests executed, 31 todo markers and 0 flaky before and after, and
+#       a line-by-line histogram diff shows exactly those 23 lines removed
+#       with no other line moved — nothing was hiding behind them (docs/21 §4
+#       trap 2 does not apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 37 (33 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 33,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
 #     and docs/21 §4 trap 4 says the loudest is usually the consequence:
-#       - 27  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
-#             = 35, the largest cluster, and now MEASURED per line rather than
-#             read off the oracle. It is the `\Device\NamedPipe` device-root
-#             surface in THREE separable items, not one:
-#               * 25 at :2842-:2936 are ONE cause, and it is a name-resolution
-#                 question rather than an npfs one: NtCreateNamedPipeFile
-#                 resolves its OBJECT_ATTRIBUTES through ObpLookupParseObject
-#                 alone (fs/npfs/pipe.c), so a RootDirectory naming a FILE is
-#                 STATUS_OBJECT_TYPE_MISMATCH where IopCreateFile has taken a
-#                 relative FILE root since M6. :2842 (create an UNNAMED pipe
-#                 with an empty name under a `\Device\NamedPipe\` handle) and
-#                 :2932 (a pipe whose name has a component separator in it,
-#                 "test3\pipe", under the same handle) both answer 0xc0000024,
-#                 and everything downstream — the type/name queries, the
-#                 client opens relative to the PIPE handle, the write/read
-#                 pairs, :2936's CreateFileA — is failing on the null handles
-#                 those two never returned. docs/21 §4 trap 4: the loudest 23
-#                 are the consequence.
-#               * :2810 is the same refusal one line earlier, with the OPPOSITE
-#                 expectation: a NAMED create under the DEVICE handle (no
-#                 trailing backslash) must be STATUS_OBJECT_NAME_INVALID, so
-#                 the item is not "accept a file root" but "accept it and then
-#                 tell the device from its directory".
+#       -  4  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
+#             = 12, still the `\Device\NamedPipe` device-root surface and now
+#             THREE items with nothing shared between them:
+#               * :2810 is the ONE assertion that separates the device from
+#                 its root directory, and its failure MODE changed with the
+#                 item above rather than its count: a NAMED create relative to
+#                 a handle on `\Device\NamedPipe` (no trailing backslash) must
+#                 be STATUS_OBJECT_NAME_INVALID, and proskrnl now answers
+#                 SUCCESS where it used to answer 0xc0000024 — i.e. it
+#                 accepts where NT refuses, having previously refused
+#                 everything. Both roots open through NpfsVfsCreate's root arm
+#                 and carry no pipe state, so nothing downstream can tell them
+#                 apart; ObpLookupName hands the FS an empty remainder for
+#                 both. That is docs/21 W7's parser question — the same one
+#                 `\??\C:` vs `\??\C:\` asks, and W7's `\\.\c:` blocker — so
+#                 the two are ONE item and neither is an npfs one.
+#               * :2849 and :2881 are NtQueryObject(ObjectNameInformation) on
+#                 an unnamed pipe end, which must be STATUS_OBJECT_PATH_INVALID
+#                 (server/named_pipe.c named_pipe_get_full_name, whose
+#                 default_get_full_name returns NULL for an object with no
+#                 name). proskrnl answers SUCCESS with an EMPTY name — and the
+#                 subject is every FILE handle, not pipes: IoFileObjectType has
+#                 no OBJECT_TYPE.queryName hook (kernel/ob/ob.h), so Ob's
+#                 generic namespace walk finds no name for any file object and
+#                 reports every one of them as nameless. That is Art. 12's
+#                 fabricated-plausible answer with no stub in it, the same
+#                 shape W12's ObjectNameInformation-on-a-key finding had, and
+#                 the fix is that document's third hook applied to the fourth
+#                 type. NOT scoped with the item above on purpose: it changes
+#                 what every file handle answers.
 #               * the :2751 eight are FOUR rules asked twice, once through
 #                 `\Device\NamedPipe` and once through `\Device\NamedPipe\`,
 #                 whose ioctl ladders differ only in FSCTL_PIPE_WAIT

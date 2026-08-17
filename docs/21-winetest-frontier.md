@@ -2141,6 +2141,70 @@ the work is "tell the device from its directory" and not merely "accept a file
 root" — and the nine-assertion device-root ioctl ladder (`:2751`×8 plus
 `:2787`). The manifest block has all three with their statuses.
 
+**THE RELATIVE-ROOT CREATE AND OPEN ARE DONE** (`ntdll:pipe` 60 → **37**), and
+this is the rare entry where the previous revision's triage was right in every
+particular: one cause, 23 consequences, and the histogram diff removes exactly
+those 23 lines with nothing else moved. `NtCreateNamedPipeFile` takes a relative
+root now, and `NpfsVfsCreate` takes one that names a pipe END. Landed in
+`fs/npfs/pipe.c` + `kernel/io/file.c`, pinned by
+`tests/ntapi/sem_pipe/pipe_root.c`; the table is in `docs/03` "What ROOT a
+named-pipe create and a pipe-relative open accept".
+
+Four things worth carrying, and the first is the one that makes the item bigger
+than "accept a File root":
+
+- **The oracle decides the two names in two different PLACES, and that is the
+  content.** An EMPTY name is decided in the handler — "pipes need a root
+  directory even without a name" — where the root is resolved with
+  `get_handle_obj( process, rootdir, 0, NULL )` (any type, no access) and then
+  never read, because `create_named_object`'s empty-name arm allocates an
+  UNLINKED object. A NAMED create is decided in the LINK, `named_pipe_link_name`,
+  which folds the device's root directory onto the device and refuses every
+  other parent. So the same call has **an any-root rule and a one-root rule**
+  depending on a field that is not the root, and an implementation with one gate
+  over both answers half the matrix wrongly whichever gate it picks. `pipe_root.c`
+  walks it: an event is a legal root for the unnamed create and
+  `STATUS_OBJECT_NAME_INVALID` for the named one.
+- **`STATUS_OBJECT_TYPE_MISMATCH` is the answer to THREE unrelated questions
+  here**, which is why the pin measures each through its own root: `FILE_OPEN`
+  of an empty name (the root resolves to itself and is not a `named_pipe`), an
+  `NtCreateFile` empty-name open under the device's root directory
+  (`named_pipe_dir_open_file`'s `if (dir->fd) return no_open_file(...)` — it is
+  already a file object), and an empty-name open under a CLIENT end
+  (`no_lookup_name`'s NULL arm). The fourth arm of that last function gives
+  `STATUS_OBJECT_NAME_NOT_FOUND` for a NON-empty name, so one oracle function
+  produces two statuses and only a pin that asks both can tell an
+  implementation that returns one for the whole end.
+- **The unnamed pipe is reachable only through its own server end, and that is
+  what forced the Art. 11 split.** `pipe_server_open_file` is a bare tail call
+  onto `named_pipe_open_file`, so the by-name client open and the by-end one are
+  the same function on the oracle; `NpfsAttachClient` is the one transcription
+  both proskrnl callers use. Writing the by-end arm as its own attach loop would
+  have been shorter and would have drifted at the first change to the listener
+  search — which is the failure mode Art. 11 names, arriving here as "the pipe
+  the winetest reads from is the one nothing can look up".
+- **The failure MODE of `:2810` changed and its count did not**, and saying so
+  is the honest half of this entry. proskrnl used to refuse every File root, so
+  the one assertion that wants a refusal passed by accident of a wrong rule;
+  it now accepts where NT refuses. Telling `\Device\NamedPipe` from
+  `\Device\NamedPipe\` needs `ObpLookupName` to report the trailing separator it
+  currently swallows — which is **the same change W7's `\\.\c:` is blocked on**,
+  so those two are one `kernel/ob` item and neither is an npfs one.
+
+**Two items are left in this cluster and neither is npfs's.** `:2810` is the
+parser item above. `:2849`/`:2881` are `NtQueryObject(ObjectNameInformation)` on
+an unnamed pipe end, which owes `STATUS_OBJECT_PATH_INVALID`
+(`named_pipe_get_full_name` refusing when `default_get_full_name` finds no name)
+and answers SUCCESS with an EMPTY name — **for every FILE handle in the system,
+not just this one**, because `IoFileObjectType` has no `OBJECT_TYPE.queryName`
+hook and Ob's generic walk finds no name for an object that was never linked
+into the namespace. That is the same defect W12 convicted for registry keys,
+one type over, and it is deliberately not scoped with this item: the fix changes
+what a FAT file, a console handle and a device handle all answer.
+
+**Nothing was hiding behind the 23** — 2377 tests executed, 31 todo markers and
+0 flaky before and after — so `§4` trap 2 does not apply here.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
