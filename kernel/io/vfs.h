@@ -72,6 +72,15 @@ typedef struct IO_CONTROL_CONTEXT
     PVOID kernelBuffer;
     ULONG bufferLength;
 
+    /* Net-2: the caller's RAW input pointer, as passed to
+     * NtDeviceIoControlFile — alongside the bounced copy, not instead of
+     * it. One consumer: IOCTL_AFD_GET_EVENTS, whose convention (Wine's,
+     * inherited from its server protocol) is that the input POINTER is the
+     * event HANDLE and the input length is 0 — so there are no bytes to
+     * bounce and the pointer itself is the parameter. Zero for the
+     * transfer paths. */
+    PVOID userInput;
+
     /* The one OUT field, and the reason the whole struct is non-const: DID
      * this operation park an IOP_PENDING_REQUEST? NT answers the same
      * question with a FLAG on the IRP (`IoMarkIrpPending`) rather than with
@@ -358,9 +367,17 @@ typedef struct IO_VFS_OPS
     (struct FILE_OBJECT *file, void *buffer, ULONG length, ULONG_PTR *infoOut,
      struct IO_CONTROL_CONTEXT *request);
 
-    /* Write `length` bytes; may block on quota. *infoOut = bytes written. */
+    /* Write `length` bytes; may block on quota. *infoOut = bytes written.
+     *
+     * Net-2: on an ASYNCHRONOUS handle a device may instead PEND, exactly
+     * as Read may — park an IOP_PENDING_REQUEST built from `request` and
+     * answer STATUS_PENDING (a socket send against a full window). The
+     * request's kernelBuffer leg carries the bounce (ownership passes on
+     * pend, the Read rule); its userBuffer leg is 0 — a write completion
+     * copies nothing back. A device that never pends ignores `request`. */
     NTSTATUS(*Write)
-    (struct FILE_OBJECT *file, const void *buffer, ULONG length, ULONG_PTR *infoOut);
+    (struct FILE_OBJECT *file, const void *buffer, ULONG length, ULONG_PTR *infoOut,
+     struct IO_CONTROL_CONTEXT *request);
 
     /* NtFlushBuffersFile on a stream device. There is no cache to push, so
      * this is not a writeback: for a pipe it is the NT promise that the

@@ -176,8 +176,10 @@ static NTSTATUS SndDeviceControl(PFILE_OBJECT file, ULONG code, const void *inpu
 
 /* Blocking write of exactly one period; the buffer is the Io layer's pool
  * bounce (kernel/io/rw.c), copied into a driver-owned DMA frame below. */
-static NTSTATUS SndWrite(PFILE_OBJECT file, const void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS SndWrite(PFILE_OBJECT file, const void *buffer, ULONG length, ULONG_PTR *infoOut,
+                         IO_CONTROL_CONTEXT *request)
 {
+    (void)request;
     SND_STREAM *stream = SndStreamFromFile(file);
     NTSTATUS status = VioSndWritePeriod(stream->streamId, buffer, length);
     *infoOut = NT_SUCCESS(status) ? length : 0;

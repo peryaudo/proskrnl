@@ -695,8 +695,10 @@ static NTSTATUS NpfsCheckWritableState(PNPFS_END end)
     }
 }
 
-static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, ULONG_PTR *infoOut,
+                          IO_CONTROL_CONTEXT *request)
 {
+    (void)request; /* npfs writes block on quota, never pend (docs/03) */
     PNPFS_END end = file->fsContext;
     PNPFS_QUEUE queue = NpfsOutgoingQueue(end);
 

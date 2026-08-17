@@ -582,6 +582,18 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             }
             memcpy(bounce, buffer, length); /* probed above */
         }
+        /* Net-2: what the device needs to PEND instead of parking this
+         * thread (vfs.h) — the Read shape with the data legs write-shaped:
+         * the bounce rides kernelBuffer (ownership passes on pend, freeing
+         * skipped only there) and userBuffer stays 0, since a write
+         * completion copies nothing back. */
+        IO_CONTROL_CONTEXT request = {.eventHandle = event,
+                                      .userIosb = iosb,
+                                      .apcBlock = apcBlock,
+                                      .apcContext = apcContext,
+                                      .kernelBuffer = bounce,
+                                      .bufferLength = length,
+                                      .charge = PsIoChargeWrite};
         ULONG_PTR transferred = 0;
         /* The read path's reasoning, in the direction that blocks on quota. */
         IOP_BLOCKING_REQUEST blocking;
@@ -599,10 +611,22 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             goto abandon;
         }
         IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
-        status = file->device->ops->Write(file, bounce, length, &transferred);
+        status = file->device->ops->Write(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
         BOOLEAN parked = IoSyncIoParked();
         eventSettled = TRUE;
+        if (request.pended)
+        {
+            /* The request owns the bounce and the APC block now (the Read
+             * branch's rule, stated there). No IopEndBlockingRequest either:
+             * the handle was taken down by IopPreparePendingRequest and it is
+             * the COMPLETION that puts it back (kernel/io/async.c
+             * IopCompletePendingRequest), from whatever context ends the
+             * park. */
+            ASSERT(status == STATUS_PENDING);
+            ObDereferenceObject(file);
+            return STATUS_PENDING;
+        }
         if (bounce != 0)
         {
             MiFreePool(bounce);
