@@ -1691,3 +1691,40 @@ winmm_test.exe:wave:600
 #     MCI_PLAY-on-avi blocks). A pair red with zero proskrnl involvement
 #     cannot convict the kernel (Art. 6).
 # winmm_test.exe:mci
+
+# --- ws2_32 (third_party/wine/dlls/ws2_32/tests) — Net-2 -------------------
+# The binary carries glue stand-ins for user32 (Art. 7: GUI off the CUI
+# image) and iphlpapi (the NSI surface is Net-3's): subtests leaning on a
+# message pump or adapter tables fail IDENTICALLY on both runners.
+#
+# ALL THREE PAIRS ARE PARKED ON ONE CAUSE — the resolver. ws2_32's
+# gethostbyname/getaddrinfo ride its five-entry unixlib, which on proskrnl
+# is dormant until Net-3's WS_CALL fork seam + wsresolv.dll land (docs/24
+# §6d) — today the call lands on a null unix-call pointer and the process
+# dies rip=0.
+#
+# 1. RED AND FIXABLE — afd: measured 2026-08-17 on proskrnl GREEN through
+#    afd.c:2212 with 0 failures (every boundary row Net-2 built:
+#    open/bind/poll incl. exclusive+close shapes, recv incl. the loopback
+#    OOB sidechannel, event-select/get-events, read/write; the todo_wine
+#    rows all behave), then CRASHES at test_bind's gethostbyname("")
+#    (afd.c:2229) — the Net-3 seam above, nothing in \Device\Afd.
+#    Oracle-side: green modulo host IPv6 (the v6 test_bind block needs a
+#    ::1 the measuring container lacked; CI hosts carry it).
+#    # TODO: Implement (Net-3: the resolver seam un-parks this pair)
+# ws2_32_test.exe:afd:600
+# 1. RED AND FIXABLE — sock: crashes at startup in the suite's own Init()
+#    resolver call, before ANY row runs (same Net-3 seam; measured
+#    2026-08-17, exit c0000005 rip=0). Behind the crash the known
+#    families each have an owner: WSAAsyncSelect/message-pump rows
+#    (user32 glue — GUI-era), urgent-data rows beyond the loopback
+#    sidechannel (docs/03 "Net-2 urgent data"), AF_INET6 data-path rows
+#    (docs/03 "Net-2 staged AF_INET6"), adapter-table rows (iphlpapi
+#    glue — Net-3), and the sockopt tail beyond the Net-2 set.
+#    # TODO: Implement (Net-3 first; re-measure and re-triage after)
+# ws2_32_test.exe:sock:900
+# 2. NOT REACHABLE UNDER THE SCOPE (Net-2): protocol.c IS the resolver
+#    suite — getaddrinfo/gethostbyname/WSALookupService over the seam
+#    Net-3 builds (docs/24 §6d says protocol enters at Net-3). No TODO
+#    here; the Net-3 milestone carries it.
+# ws2_32_test.exe:protocol
