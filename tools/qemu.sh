@@ -293,6 +293,16 @@ if [[ -n "${EXTRA_DEVICES:-}" ]]; then
     done
 fi
 
+# AUD-1: AUDIODEV="<spec>" appends one -audiodev — the backend an
+# EXTRA_DEVICES sound device names by id. The audio leg passes the wav
+# backend (pinned tree audio/wavaudio.c), which records what the guest
+# plays into a host WAV file: the audio analog of the QMP screendump
+# (docs/23 §6a). No other leg grows an audio backend it does not use.
+AUDIODEV_ARGS=()
+if [[ -n "${AUDIODEV:-}" ]]; then
+    AUDIODEV_ARGS=(-audiodev "$AUDIODEV")
+fi
+
 if [[ -n "${WRITE_LOG:-}" ]]; then
     # cache.no-flush=on = the DRIVE_CACHE rationale above in blockdev syntax
     # (qapi/block-core.json BlockdevCacheOptions); the log's ground truth is
@@ -326,6 +336,7 @@ fi
     "${MON_ARGS[@]}" \
     "${SERIAL_ARGS[@]}" \
     ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
+    ${AUDIODEV_ARGS[@]+"${AUDIODEV_ARGS[@]}"} \
     ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     "${DRIVE_ARGS[@]}" &

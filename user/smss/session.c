@@ -652,6 +652,15 @@ static const GUI_LEG SessionGuiLegs[] = {
      .tag = "gui",
      .foregroundName = "gui_smoke.exe"},
 
+    /* AUD-1 (docs/02 "a guest client plays a deterministic S16 pattern"):
+     * aud_smoke.exe negotiates \Device\Snd0 and plays through blocking
+     * period writes, then parks -- the host reads the recorded WAV back.
+     * Written never to return, so returning is the verdict. */
+    {.probe = WSTR("\\??\\C:\\aud_smoke.exe"),
+     .foreground = WSTR("\\??\\C:\\aud_smoke.exe"),
+     .tag = "audio",
+     .foregroundName = "aud_smoke.exe"},
+
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
      * window is closed (the harness's Alt+F4 probe) or when the app dies --
