@@ -52,6 +52,48 @@ static const BOOLEAN *PspProcessorFeatures(void)
 
 /* --- process information -------------------------------------------------- */
 
+/* A process's accumulated kernel/user time: the exited threads' totals plus
+ * every live thread's counters. ONE derivation (Art. 11) — ProcessTimes and
+ * SystemProcessInformation's per-entry times both report this, and two
+ * summation loops would drift the moment either grew a term. The dispatcher
+ * lock must be HELD: it is what makes a thread mid-exit counted exactly once,
+ * and the two callers hold it over different spans. */
+static void PspSumProcessTimes(PEPROCESS process, uint64_t *kernel100nsOut, uint64_t *user100nsOut)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    uint64_t kernel100ns = process->exitedKernelTime100ns;
+    uint64_t user100ns = process->exitedUserTime100ns;
+    for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
+         entry = entry->Flink)
+    {
+        PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
+        kernel100ns += tcb->kernelTime100ns;
+        user100ns += tcb->userTime100ns;
+    }
+    *kernel100nsOut = kernel100ns;
+    *user100nsOut = user100ns;
+}
+
+/* A process's VM_COUNTERS_EX, likewise once (Art. 11): ProcessVmCounters and
+ * SystemProcessInformation's per-entry copy are the same seven fields over
+ * the same two quantities. With no paging and no COW (Art. 3) every
+ * committed page is resident, so committed IS the working set and the
+ * pagefile usage, and reserved is VirtualSize. */
+static void PspFillVmCounters(PEPROCESS process, VM_COUNTERS_EX *info)
+{
+    uint64_t reserved = 0;
+    uint64_t committed = 0;
+    MiQueryVmCounters(&process->addressSpace, &reserved, &committed);
+    memset(info, 0, sizeof(*info));
+    info->PeakVirtualSize = reserved;
+    info->VirtualSize = reserved;
+    info->PeakWorkingSetSize = committed;
+    info->WorkingSetSize = committed;
+    info->PagefileUsage = committed;
+    info->PeakPagefileUsage = committed;
+    info->PrivateUsage = committed;
+}
+
 NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClass, PVOID buffer,
                                    ULONG length, PULONG returnLength)
 {
@@ -160,7 +202,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
          * — so the values follow the contract Microsoft documents for
          * IO_COUNTERS / GetProcessIoCounters instead: the read, write and
          * other operations the process has performed, and their bytes.
-         * Pinned by sem_ps/io_counters.c (its beyond_oracle block carries
+         * Pinned by sem_file/io_counters.c (its beyond_oracle block carries
          * the citation). taskmgr.exe is the consumer: perfdata.c calls
          * GetProcessIoCounters for every process it lists, and an unbuilt
          * class there took the whole applet down. */
@@ -210,18 +252,12 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         }
         KERNEL_USER_TIMES times;
         memset(&times, 0, sizeof(times));
+        uint64_t kernel100ns = 0;
+        uint64_t user100ns = 0;
         uint64_t flags = KiAcquireDispatcherLock();
         times.CreateTime = process->createTime;
         times.ExitTime = process->exitTime;
-        uint64_t kernel100ns = process->exitedKernelTime100ns;
-        uint64_t user100ns = process->exitedUserTime100ns;
-        for (PLIST_ENTRY entry = process->threadListHead.Flink; entry != &process->threadListHead;
-             entry = entry->Flink)
-        {
-            PKTHREAD tcb = CONTAINING_RECORD(entry, ETHREAD, threadListEntry)->tcb;
-            kernel100ns += tcb->kernelTime100ns;
-            user100ns += tcb->userTime100ns;
-        }
+        PspSumProcessTimes(process, &kernel100ns, &user100ns);
         KiReleaseDispatcherLock(flags);
         times.KernelTime.QuadPart = (LONGLONG)kernel100ns;
         times.UserTime.QuadPart = (LONGLONG)user100ns;
@@ -378,18 +414,8 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         {
             break;
         }
-        uint64_t reserved = 0;
-        uint64_t committed = 0;
-        MiQueryVmCounters(&process->addressSpace, &reserved, &committed);
         VM_COUNTERS_EX info;
-        memset(&info, 0, sizeof(info));
-        info.PeakVirtualSize = reserved;
-        info.VirtualSize = reserved;
-        info.PeakWorkingSetSize = committed;
-        info.WorkingSetSize = committed;
-        info.PagefileUsage = committed;
-        info.PeakPagefileUsage = committed;
-        info.PrivateUsage = committed;
+        PspFillVmCounters(process, &info);
         memcpy(buffer, &info, copyLength);
         if (returnLength != 0)
         {
@@ -1110,26 +1136,12 @@ static void PspFillProcessEntry(PEPROCESS process, SYSTEM_PROCESS_INFORMATION *e
      * holds, so a thread mid-exit is counted exactly once — the reason
      * ProcessTimes takes the lock too. */
     entry->CreationTime = process->createTime;
-    uint64_t kernel100ns = process->exitedKernelTime100ns;
-    uint64_t user100ns = process->exitedUserTime100ns;
-    for (PLIST_ENTRY p = process->threadListHead.Flink; p != &process->threadListHead; p = p->Flink)
-    {
-        PKTHREAD tcb = CONTAINING_RECORD(p, ETHREAD, threadListEntry)->tcb;
-        kernel100ns += tcb->kernelTime100ns;
-        user100ns += tcb->userTime100ns;
-    }
+    uint64_t kernel100ns = 0;
+    uint64_t user100ns = 0;
+    PspSumProcessTimes(process, &kernel100ns, &user100ns);
     entry->KernelTime.QuadPart = (LONGLONG)kernel100ns;
     entry->UserTime.QuadPart = (LONGLONG)user100ns;
-    uint64_t reserved = 0;
-    uint64_t committed = 0;
-    MiQueryVmCounters(&process->addressSpace, &reserved, &committed);
-    entry->vmCounters.PeakVirtualSize = reserved;
-    entry->vmCounters.VirtualSize = reserved;
-    entry->vmCounters.PeakWorkingSetSize = committed;
-    entry->vmCounters.WorkingSetSize = committed;
-    entry->vmCounters.PagefileUsage = committed;
-    entry->vmCounters.PeakPagefileUsage = committed;
-    entry->vmCounters.PrivateUsage = committed;
+    PspFillVmCounters(process, &entry->vmCounters);
 
     ULONG threadIndex = 0;
     for (PLIST_ENTRY p = process->threadListHead.Flink;
