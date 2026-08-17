@@ -235,6 +235,78 @@ stop_xvfb() {
     XVFB_PID=""
 }
 
+# The oracle's AUDIO backend — the audio Xvfb (docs/23 §6b, the third
+# instance of the docs/06 trap after fonts and the display). The pinned wine
+# is built --with-pulse, and winepulse.drv is dlopen'd and FAIL-SOFT exactly
+# like the font and display backends: with no PulseAudio server mmdevapi
+# loads no driver, enumerates ZERO endpoints, and every audio test skips —
+# an answer that is not the oracle's. So the runner OWNS a server: ONE
+# PulseAudio per invocation with a single null sink at the target's own
+# format (48 kHz stereo — what winevsnd reports as the mix format), never a
+# borrowed session daemon. A run on a desktop with a sound card and a run on
+# a headless CI runner then ask the same oracle the same question.
+PULSE_PID=""
+PULSE_DIR=""
+
+start_pulse() {
+    [[ -n "$PULSE_PID" ]] && return 0
+    # The pinned tree must actually HAVE the audio backend — the same
+    # truthful-marker refusal as start_xvfb's SONAME_LIBX11 check: configure
+    # records the client library in the generated Makefile's PULSE_LIBS
+    # exactly when the backend is on (and errors out when it is wanted but
+    # missing), so a tree restored from a pre-audio cache is refused by name
+    # here rather than diagnosed from every audio pair skipping.
+    local mkf="$ROOT/third_party/wine/Makefile"
+    if [[ "$WINE" == "$BUILD/wine-fonts" && -f "$mkf" ]] &&
+        ! grep -q '^PULSE_LIBS *=.*-lpulse' "$mkf"; then
+        echo "run.sh: the pinned wine was built --without-pulse — its mmdevapi" >&2
+        echo "        enumerates no endpoint, so it cannot be the audio oracle." >&2
+        echo "        Rebuild it: tools/setup_linux.sh (it detects and reconfigures this)." >&2
+        exit 2
+    fi
+    if ! command -v pulseaudio >/dev/null 2>&1; then
+        echo "run.sh: pulseaudio is not installed — the oracle has no audio server." >&2
+        echo "        Install it with the rest of the toolchain: tools/setup_linux.sh" >&2
+        exit 2
+    fi
+    PULSE_DIR="$BUILD/pulse.$$"
+    rm -rf "$PULSE_DIR"
+    mkdir -p "$PULSE_DIR/runtime"
+    # -n --daemonize=no: no default config, no forking — the runner owns the
+    # process the way it owns Xvfb. The runtime/state paths are pinned under
+    # build/ so the daemon neither reads nor writes the developer's
+    # ~/.config/pulse, and the client socket is addressed absolutely via
+    # PULSE_SERVER, so no XDG discovery happens on either side.
+    env PULSE_RUNTIME_PATH="$PULSE_DIR/runtime" PULSE_STATE_PATH="$PULSE_DIR/state" \
+        pulseaudio -n --daemonize=no --exit-idle-time=-1 --fail=true \
+        --load="module-native-protocol-unix auth-anonymous=1 socket=$PULSE_DIR/native" \
+        --load="module-null-sink sink_name=oracle rate=48000 channels=2" \
+        >"$PULSE_DIR/daemon.log" 2>&1 &
+    PULSE_PID=$!
+    local waited=0
+    while (( waited < 300 )); do
+        [[ -S "$PULSE_DIR/native" ]] && break
+        kill -0 "$PULSE_PID" 2>/dev/null || break
+        sleep 0.1
+        waited=$(( waited + 1 ))
+    done
+    if [[ ! -S "$PULSE_DIR/native" ]]; then
+        # Kill before clearing, for the reason start_xvfb spells out.
+        stop_pulse
+        echo "run.sh: pulseaudio failed to start (see $PULSE_DIR/daemon.log)." >&2
+        exit 2
+    fi
+    export PULSE_SERVER="unix:$PULSE_DIR/native"
+    echo "== oracle audio: pulseaudio $PULSE_SERVER (null sink, 48 kHz stereo) =="
+}
+
+stop_pulse() {
+    [[ -n "$PULSE_PID" ]] || return 0
+    kill "$PULSE_PID" 2>/dev/null || true
+    wait "$PULSE_PID" 2>/dev/null || true
+    PULSE_PID=""
+}
+
 # Oracle runs get a scratch prefix under build/ (created by wine on first
 # use): the M8 sem_reg tests write real registry keys, and they must land in
 # a disposable registry, never the developer's ~/.wine. $WINEPREFIX overrides.
@@ -601,6 +673,26 @@ oracle_fontdiff() {
     return 0
 }
 
+# docs/23 §6b: the audiosmoke pin — the fontsmoke recipe applied to sound.
+# The pulse backend is dlopen'd and FAIL-SOFT like the font and display
+# backends: with no server mmdevapi enumerates zero endpoints and every
+# audio pair SKIPS, which counts as green. Ask the oracle for a render
+# endpoint and check it answers (tests/audio/audiosmoke.c). Oracle-only:
+# it links ole32, which the proskrnl ntapi image does not carry.
+oracle_audiosmoke() {
+    local audexe audout
+    audexe="$BUILD/ntapi/audiosmoke.exe"
+    if [[ ! -f "$audexe" || "$ROOT/tests/audio/audiosmoke.c" -nt "$audexe" || \
+          "$NTAPI/ntapi.c" -nt "$audexe" ]]; then
+        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+            -Wl,--entry=ntapi_start "$ROOT/tests/audio/audiosmoke.c" "$NTAPI/ntapi.c" \
+            "${WINE_LIBS[@]}" "$WINE_PE/ole32/x86_64-windows/libole32.a" -lgcc -o "$audexe" >&2
+    fi
+    audout="$("$WINE" "$audexe" 2>&1 || true)"
+    echo "$audout"
+    echo "$audout" | tr -d '\r' | grep -qE '^\[KTEST\] audiosmoke PASS$'
+}
+
 # One oracle case, start to finish: build it, run it, and leave EVERYTHING it
 # printed in $ORACLE_OUT/<name>. Nothing is echoed here — the log is replayed
 # in source order after the workers finish (below), so a parallel run reads
@@ -697,7 +789,7 @@ prebuild() {
 # ORACLE_JOBS=1 restores the strictly sequential run, in the base prefix
 # alone, exactly as before.
 oracle() {
-    check_subtests cmd-standalone fontsmoke fontdiff
+    check_subtests cmd-standalone fontsmoke fontdiff audiosmoke
     mkdir -p "$BUILD/ntapi"
     build_helper_dll >/dev/null
 
@@ -769,6 +861,7 @@ oracle() {
     selected cmd-standalone && { oracle_cmd_standalone || fails=$((fails+1)); }
     selected fontsmoke     && { oracle_fontsmoke     || fails=$((fails+1)); }
     selected fontdiff      && { oracle_fontdiff      || fails=$((fails+1)); }
+    selected audiosmoke    && { oracle_audiosmoke    || fails=$((fails+1)); }
 
     echo "== oracle: $fails failing =="
     return $(( fails > 0 ? 1 : 0 ))
@@ -3477,8 +3570,10 @@ mkdir -p "$BUILD"
 uacheck_sweep() {
     local status=$?
     # The oracle's display goes first: it outlives nothing, and a leaked Xvfb
-    # would hold a display number for the next run to trip over.
+    # would hold a display number for the next run to trip over. Its audio
+    # server goes with it, for the same reason.
     stop_xvfb
+    stop_pulse
     # Swept even on a red leg: a leg that failed for its own reason may also
     # have swallowed a kernel fault, and that is the finding worth keeping.
     "$ROOT/tests/run/uacheck.sh" --since "$UACHECK_MARKER" "$ROOT/build" || status=1
@@ -3490,7 +3585,7 @@ trap uacheck_sweep EXIT
 # never leaves a server behind, and once for the whole invocation rather than
 # per leg: every oracle process in this run then shares one screen, exactly as
 # a developer's would.
-(( RUNS_WINE )) && start_xvfb
+(( RUNS_WINE )) && { start_xvfb; start_pulse; }
 
 case "$MODE" in
     oracle)   oracle ;;
