@@ -92,7 +92,7 @@ static void PspWow64SetString32(UNICODE_STRING32 *field, const UNICODE_STRING *s
 }
 
 static NTSTATUS PspWow64BuildParameters32(PEPROCESS process, const PSP_CAPTURED_PARAMS *captured,
-                                          uint64_t *paramsOut)
+                                          const PSP_PEB64_FACTS *facts, uint64_t *paramsOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
@@ -145,8 +145,24 @@ static NTSTATUS PspWow64BuildParameters32(PEPROCESS process, const PSP_CAPTURED_
     RTL_USER_PROCESS_PARAMETERS32 *params = (RTL_USER_PROCESS_PARAMETERS32 *)scratch;
     params->AllocationSize = (ULONG)regionSize;
     params->Size = (ULONG)structSize;
-    params->Flags = captured->header.Flags;
+    /* The FINISHED 64-bit block's Flags, not the caller's raw ones: the
+     * oracle copies this field out of the block it has already normalized
+     * (`wow64_params->Flags = params->Flags`, build_wow64_parameters), so the
+     * PROCESS_PARAMS_FLAG_NORMALIZED bit and load_global_options's
+     * image-key-missing bit are part of it. A 32-bit block that lost the
+     * normalized bit tells the guest's RtlNormalizeProcessParams that every
+     * Buffer is an OFFSET, and it re-bases each one — turning the strings
+     * ntdll:wow64 checks lie inside the block into wild pointers. */
+    params->Flags = facts->parameterFlags;
     params->DebugFlags = captured->header.DebugFlags;
+    /* The console process group. Dropping it is the Art. 12 shape: a
+     * plausible 0, which is a REAL group id, so the guest's
+     * GetConsoleProcessList reports the wrong group instead of failing.
+     * Copied by the oracle for the same reason
+     * (`wow64_params->ProcessGroupId = params->ProcessGroupId`); the source
+     * is the captured header, which is also where the 64-bit block's copy
+     * comes from. */
+    params->ProcessGroupId = captured->header.ProcessGroupId;
     params->ConsoleFlags = captured->header.ConsoleFlags;
     params->dwX = captured->header.dwX;
     params->dwY = captured->header.dwY;
@@ -194,7 +210,12 @@ static NTSTATUS PspWow64BuildParameters32(PEPROCESS process, const PSP_CAPTURED_
         memcpy(scratch + heapOffset, captured->environment, captured->environmentSize);
     }
     params->Environment = (ULONG)(paramsVa + heapOffset);
-    params->EnvironmentSize = (ULONG)environmentBytes;
+    /* The 64-bit block's OWN value, not a second reading of the same
+     * environment: `wow64_params->EnvironmentSize = params->EnvironmentSize`
+     * (build_wow64_parameters), and ntdll:wow64's test_wow64_params compares
+     * the two fields directly — so the number here is whatever the 64-bit
+     * builder rounded to, never a re-derivation that agrees only by luck. */
+    params->EnvironmentSize = facts->environmentSize;
 
     MiCopyToUserRange(space, paramsVa, scratch, regionSize);
     MiFreePool(scratch);
@@ -208,7 +229,7 @@ static NTSTATUS PspWow64BuildParameters32(PEPROCESS process, const PSP_CAPTURED_
  * two are adjacent by contract, not by convenience. Both live inside the
  * PEB's existing 4-page block. */
 NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
-                            const PSP_CAPTURED_PARAMS *captured, ULONG globalFlag)
+                            const PSP_CAPTURED_PARAMS *captured, const PSP_PEB64_FACTS *facts)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
     uint64_t peb32Va = process->pebBase + PAGE_SIZE;
@@ -216,7 +237,7 @@ NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
                    "PEB32 + WOW64INFO must fit the PEB block's tail");
 
     uint64_t params32Va = 0;
-    NTSTATUS status = PspWow64BuildParameters32(process, captured, &params32Va);
+    NTSTATUS status = PspWow64BuildParameters32(process, captured, facts, &params32Va);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -230,7 +251,7 @@ NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
     memset(peb32, 0, sizeof(PEB32));
     peb32->ImageBaseAddress = (ULONG)imageBase;
     peb32->ProcessParameters = (ULONG)params32Va;
-    peb32->NtGlobalFlag = globalFlag;
+    peb32->NtGlobalFlag = facts->globalFlag;
     peb32->NumberOfProcessors = KE_NUMBER_PROCESSORS;
     /* The reported OS version. NOT independent values: they are the same
      * four kernel/ps/peb.c writes into the 64-bit PEB, and a guest that
@@ -428,9 +449,21 @@ NTSTATUS PspWow64FillInitBlock(PEPROCESS process, uint64_t hostBlockVa, uint64_t
     PMI_ADDRESS_SPACE space = &process->addressSpace;
     uint64_t base = process->ntdll32Base;
 
+    /* The block is FILLED, not replaced. `version` belongs to the 64-bit
+     * ntdll's own static initializer — `SYSTEM_DLL_INIT_BLOCK
+     * LdrSystemDllInitBlock = { 0xf0 };` (third_party/wine dlls/ntdll/
+     * loader.c) — and load_ntdll_wow64_functions only assigns the handle and
+     * the p* entry points on top of it, then memcpys the WHOLE block into the
+     * guest's copy. So the version the guest reads is the version the host
+     * ntdll was compiled with; synthesizing one from sizeof() here published
+     * a number no build of ntdll ever declares. Starting from the host block
+     * keeps whatever the pinned tree ships, without the kernel knowing it. */
     SYSTEM_DLL_INIT_BLOCK block;
     memset(&block, 0, sizeof(block));
-    block.version = sizeof(block);
+    if (hostBlockVa != 0)
+    {
+        MiCopyFromUserRange(space, &block, hostBlockVa, sizeof(block));
+    }
     block.ntdll_handle = base;
     block.pLdrInitializeThunk = base + rvas->ldrInitializeThunk;
     block.pKiUserExceptionDispatcher = base + rvas->kiUserExceptionDispatcher;

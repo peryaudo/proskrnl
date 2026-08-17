@@ -489,18 +489,21 @@ ULONG PspQueryGlobalFlag(const PSP_CAPTURED_PARAMS *captured, BOOLEAN *imageKeyF
 #define PSP_ROUND16(x) (((uint64_t)(x) + 15) & ~15ULL)
 
 NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured,
-                     ULONG *globalFlagOut)
+                     PSP_PEB64_FACTS *factsOut)
 {
     PMI_ADDRESS_SPACE space = &process->addressSpace;
 
     BOOLEAN imageKeyFound = FALSE;
     ULONG globalFlag = PspQueryGlobalFlag(captured, &imageKeyFound);
-    /* Handed back so a WOW64 process's PEB32 carries the SAME value rather
-     * than re-deriving it (and re-walking the registry) — ps.h says the two
-     * must agree, and two evaluation sites is how they stop agreeing. */
-    if (globalFlagOut != 0)
+    if (factsOut != 0)
     {
-        *globalFlagOut = globalFlag;
+        /* Handed back so a WOW64 process's PEB32 carries the SAME values
+         * rather than re-deriving them (and re-walking the registry) — ps.h
+         * says the two must agree, and two evaluation sites is how they stop
+         * agreeing. The other two fields are filled where they are decided,
+         * below. */
+        memset(factsOut, 0, sizeof(*factsOut));
+        factsOut->globalFlag = globalFlag;
     }
 
     /* --- RTL_USER_PROCESS_PARAMETERS -------------------------------------- */
@@ -572,6 +575,11 @@ NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_P
         params->Flags |= PROCESS_PARAMS_IMAGE_KEY_MISSING;
     }
     params->EnvironmentSize = PSP_ROUND16(environmentBytes);
+    if (factsOut != 0)
+    {
+        factsOut->parameterFlags = params->Flags;
+        factsOut->environmentSize = (ULONG)params->EnvironmentSize;
+    }
 
     UNICODE_STRING *fields[PSP_PARAM_COUNT];
     fields[PSP_PARAM_CURRENT_DIRECTORY] = &params->CurrentDirectory.DosPath;

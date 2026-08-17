@@ -3710,3 +3710,23 @@ and an unset starting state — while the self half is what `tests/cui/hello32.c
 `wow64gui` leg exercise, by running a real guest through exception and APC returns. The
 same arm also stopped rewriting the staged context's `ContextFlags`, which the oracle never
 touches on a set.
+
+The last of the audit is a second assumption, symmetrical to the first: **"the 32-bit
+mirror can re-derive what the 64-bit block decided."** It cannot, and the oracle never
+tries — `build_wow64_parameters` and `init_peb` copy the FINISHED 64-bit block field by
+field, so anything the 64-bit builder computed is carried, not recomputed. `PspBuildPeb`
+now hands its decisions back in a `PSP_PEB64_FACTS` and `kernel/ps/wow64.c` mirrors them.
+What had drifted: `Flags` (the 32-bit block lost `PROCESS_PARAMS_FLAG_NORMALIZED`, which
+is what tells the guest's `RtlNormalizeProcessParams` the string `Buffer`s are pointers and
+not offsets to re-base), `EnvironmentSize` (re-derived from the same environment, agreeing
+only when the rounding happened to be a no-op, while `ntdll:wow64` compares the two fields
+directly), and `ProcessGroupId` (dropped entirely — a plausible 0 that is also a real
+console group, the Art. 12 shape). Pinned by `sem_ps/wow64_process.c`.
+
+One more of the same kind: **`LdrSystemDllInitBlock.version` was synthesized from
+`sizeof()`.** It belongs to the 64-bit ntdll's own static initializer
+(`SYSTEM_DLL_INIT_BLOCK LdrSystemDllInitBlock = { 0xf0 };`, `dlls/ntdll/loader.c`), and
+`load_ntdll_wow64_functions` only assigns the handle and the entry points on top of it
+before memcpying the whole block into the guest's copy. `PspWow64FillInitBlock` starts
+from the host block instead of a zeroed local now, so the version the guest reads is the
+one the pinned ntdll declares and the kernel never has to know it.
