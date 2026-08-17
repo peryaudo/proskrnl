@@ -565,29 +565,87 @@ ntdll_test.exe:path
 #     :2069x8 removed with no other line moved — nothing was hiding behind
 #     the twelve.
 #
-#     WHAT IS LEFT, per-line histogram of the 68 (64 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 64,
+#     A COMPLETION PORT AND A COMPLETION APC ROUTINE ARE NOW MUTUALLY
+#     EXCLUSIVE: 68 -> 60, the eight at :3094. test_async_cancel_on_handle_close
+#     issues NtReadFile with an ApcRoutine on a handle bound to an I/O
+#     completion port and wants STATUS_INVALID_PARAMETER; proskrnl accepted the
+#     pair and answered 0x103. The rule is create_async's last statement
+#     (server/async.c: `if (async->completion && data->apc)`), and its POSITION
+#     is the content — the caller's event has already been reset above the
+#     guard, the file object has NOT been cleared because that is queue_async's
+#     below it, and the refusal precedes every verb, so an FSCTL_PIPE_PEEK that
+#     would never have queued is refused just the same. Its reach is the
+#     requests the SERVER queues, not the syscall's arguments: a regular disk
+#     file's read never reaches wineserver (ntdll pread()s it), so the same
+#     combination is admitted there and ntdll resolves it the other way with
+#     `cvalue = apc ? 0 : apc_user` — the APC runs, no packet is posted — which
+#     is why the refusal lives in rw.c's DEVICE branch, ioctl.c and notify.c's
+#     watch arm rather than in NtReadFile. Landed in kernel/io/{async,rw,ioctl,
+#     notify}.c, pinned by tests/ntapi/sem_port/port_apc.c; docs/21 W11,
+#     docs/03 "A completion PORT and a completion APC ROUTINE".
+#     2377 tests executed, 31 todo markers and 0 skipped before and after, and
+#     a line-by-line histogram diff shows only :3094 removed with no other line
+#     moved — so nothing was hiding behind the eight (docs/21 §4 trap 2 does
+#     not apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 60 (56 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 56,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
 #     and docs/21 §4 trap 4 says the loudest is usually the consequence:
 #       - 27  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
-#             = 35, the largest cluster. The `\Device\NamedPipe` device-root
-#             surface: creating and opening a pipe by an EMPTY relative name,
-#             and the root's own fsctls (:2787 FSCTL_PIPE_WAIT must be
-#             ILLEGAL_FUNCTION there). The :2751 eight are FOUR rules asked
-#             twice, once through `\Device\NamedPipe` and once through
-#             `\Device\NamedPipe\`, whose ioctl ladders differ only in
-#             FSCTL_PIPE_WAIT (named_pipe_dir_ioctl falls through to
-#             named_pipe_device_ioctl for everything else): DISCONNECT and
-#             TRANSCEIVE are PIPE_DISCONNECTED there, IMPERSONATE is
-#             ILLEGAL_FUNCTION, QUERY_CLIENT_PROCESS is INVALID_PARAMETER, and
-#             the four npfs already answers correctly are the NOT_SUPPORTED
-#             ones. Read off the oracle, NOT measured per line.
-#       - 13  test_async_cancel_on_handle_close (:3094x8, :3114x4, :3111x1) —
-#             what a CLOSE does to a pended request's completion packet.
+#             = 35, the largest cluster, and now MEASURED per line rather than
+#             read off the oracle. It is the `\Device\NamedPipe` device-root
+#             surface in THREE separable items, not one:
+#               * 25 at :2842-:2936 are ONE cause, and it is a name-resolution
+#                 question rather than an npfs one: NtCreateNamedPipeFile
+#                 resolves its OBJECT_ATTRIBUTES through ObpLookupParseObject
+#                 alone (fs/npfs/pipe.c), so a RootDirectory naming a FILE is
+#                 STATUS_OBJECT_TYPE_MISMATCH where IopCreateFile has taken a
+#                 relative FILE root since M6. :2842 (create an UNNAMED pipe
+#                 with an empty name under a `\Device\NamedPipe\` handle) and
+#                 :2932 (a pipe whose name has a component separator in it,
+#                 "test3\pipe", under the same handle) both answer 0xc0000024,
+#                 and everything downstream — the type/name queries, the
+#                 client opens relative to the PIPE handle, the write/read
+#                 pairs, :2936's CreateFileA — is failing on the null handles
+#                 those two never returned. docs/21 §4 trap 4: the loudest 23
+#                 are the consequence.
+#               * :2810 is the same refusal one line earlier, with the OPPOSITE
+#                 expectation: a NAMED create under the DEVICE handle (no
+#                 trailing backslash) must be STATUS_OBJECT_NAME_INVALID, so
+#                 the item is not "accept a file root" but "accept it and then
+#                 tell the device from its directory".
+#               * the :2751 eight are FOUR rules asked twice, once through
+#                 `\Device\NamedPipe` and once through `\Device\NamedPipe\`,
+#                 whose ioctl ladders differ only in FSCTL_PIPE_WAIT
+#                 (named_pipe_dir_ioctl falls through to
+#                 named_pipe_device_ioctl for everything else): DISCONNECT and
+#                 TRANSCEIVE are PIPE_DISCONNECTED there, IMPERSONATE is
+#                 ILLEGAL_FUNCTION, QUERY_CLIENT_PROCESS is INVALID_PARAMETER
+#                 (proskrnl answers 0xc00000bb for it), and the four npfs
+#                 already answers correctly are the NOT_SUPPORTED ones. :2787
+#                 (FSCTL_PIPE_WAIT on the DEVICE must be ILLEGAL_FUNCTION,
+#                 where on the directory it is OBJECT_NAME_NOT_FOUND — which
+#                 already passes) is the ninth of that item.
+#       -  5  test_async_cancel_on_handle_close (:3114x4, :3111x1) — what a
+#             CLOSE does to a pended request's completion packet. All five
+#             carry the context `other_process 1, i 5` and that is the whole
+#             residue: of the sixteen rows the test runs, exactly one reaches
+#             test_queued_completion (`other_process && apc_context &&
+#             !event`, which only i=5 satisfies) — a read pended with an
+#             ApcContext and no event, whose handle is DUPLICATED into a child
+#             and then closed here. The test wants a STATUS_CANCELLED packet;
+#             proskrnl queues none (:3114 `NtRemoveIoCompletion returned 102`,
+#             and the value/Status/Information rows behind it are that
+#             timeout's consequences). The other fifteen rows pass, and :3111
+#             is a succeeded-todo in the same row: it asks that the IOSB be
+#             left untouched, which the oracle fails and proskrnl does not, so
+#             it cannot go green while proskrnl is the more NT-correct runner.
+#             NOT diagnosed further.
 #       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
-#             pipe handle. Now the third cluster.
+#             pipe handle. Now the SECOND cluster.
 #       -  5  test_pipe_local_info (:2356-:2369) — FilePipeLocalInformation's
 #             NamedPipeType/Configuration/MaximumInstances/InboundQuota/
 #             OutboundQuota reported as 0 on a CLIENT whose server has closed.
