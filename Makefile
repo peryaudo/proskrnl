@@ -130,6 +130,7 @@ CSRC := kernel/init/main.c \
         drivers/virtio/blk.c \
         drivers/virtio/input.c \
         drivers/virtio/snd.c \
+        drivers/virtio/net.c \
         drivers/condrv.c \
         drivers/fb.c \
         drivers/hid.c \
@@ -155,6 +156,7 @@ CSRC := kernel/init/main.c \
         tests/kmt/m5_section.c \
         tests/kmt/m6_io.c \
         tests/kmt/m6_blk.c \
+        tests/kmt/net_smoke.c \
         tests/kmt/cui8_async.c \
         tests/kmt/cui9_cow.c \
         tests/kmt/condrv_unwind.c \

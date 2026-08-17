@@ -627,7 +627,7 @@ BOOLEAN VioSndInitialize(void)
     {
         return FALSE;
     }
-    if (!VioPciAcceptFeatures(&VioSndDevice))
+    if (!VioPciAcceptFeatures(&VioSndDevice, 0))
     {
         return FALSE;
     }

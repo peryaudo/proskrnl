@@ -105,7 +105,7 @@ static BOOLEAN VioInputSetupInstance(VIO_INPUT_INSTANCE *input, unsigned instanc
     {
         return FALSE;
     }
-    if (!VioPciAcceptFeatures(&input->device))
+    if (!VioPciAcceptFeatures(&input->device, 0))
     {
         return FALSE;
     }

@@ -175,15 +175,18 @@ BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, con
     return TRUE;
 }
 
-BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device)
+BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device, uint32_t acceptedLowBits)
 {
-    /* Step 4 (write half): accept VERSION_1 and nothing else. Every
-     * device-specific feature — blk's RO/FLUSH/topology, input's unused
-     * bits — is left unnegotiated on its own Art. 3 grounds (no consumer
-     * convicts one; MSI-X is a PCI capability, not a feature bit, and
-     * docs/19 §11c keeps EVENT_IDX deliberately off). */
+    /* Step 4 (write half): accept VERSION_1 plus the caller's low bits and
+     * nothing else. Every unnamed device-specific feature — blk's
+     * RO/FLUSH/topology, input's unused bits, net's offload family — is
+     * left unnegotiated on its own Art. 3 grounds (no consumer convicts
+     * one; MSI-X is a PCI capability, not a feature bit, and docs/19 §11c
+     * keeps EVENT_IDX deliberately off). Masked against the offer: a
+     * driver must not accept a feature the device did not offer (§3.1.1
+     * step 4), and the caller checks the offer itself before asking. */
     device->commonCfg->driverFeatureSelect = 0;
-    device->commonCfg->driverFeature = 0;
+    device->commonCfg->driverFeature = acceptedLowBits & device->deviceFeaturesLow;
     device->commonCfg->driverFeatureSelect = 1;
     device->commonCfg->driverFeature = 1u << (VIRTIO_F_VERSION_1 - 32);
 
