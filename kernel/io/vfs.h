@@ -46,7 +46,9 @@ typedef struct IO_CONTROL_CONTEXT
      * syscall's arguments. */
     PVOID apcContext;
 
-    /* CUI-8: the DATA legs, for a transfer that pends (the npfs read).
+    /* CUI-8: the DATA legs, for a verb that pends with a REPLY outstanding —
+     * the npfs read (kernel/io/rw.c) and FSCTL_PIPE_TRANSCEIVE, whose reply is
+     * the ioctl's output buffer (kernel/io/ioctl.c).
      * `userBuffer` is the caller's buffer VA in the OWNING process — it is
      * not valid in the completer's context, so the completion copies through
      * MiCopyToUserRangeChecked exactly as it does for the IOSB;
@@ -56,8 +58,15 @@ typedef struct IO_CONTROL_CONTEXT
      * OWNERSHIP, and it is the apcBlock rule above word for word: a device
      * that PENDS hands the bounce to IopPreparePendingRequest and never
      * touches it again (the request frees it), a device that completes
-     * inline leaves it alone and the Io layer frees it. Zero for a verb with
-     * no data leg. */
+     * inline leaves it alone and the Io layer frees it.
+     *
+     * Zero when the ENTRY POINT has no reply to place (a watch, a write). Not
+     * "zero unless this verb uses them": ioctl.c fills them for EVERY verb,
+     * because the engine cannot know which one will pend and a device that had
+     * to say so could forget — the same argument `pended` itself makes. What
+     * decides how much is placed is the count the device reports at
+     * completion, so a verb that completes with `information == 0` (every
+     * pended FSCTL_PIPE_LISTEN) places nothing whatever these hold. */
     PVOID userBuffer;
     PVOID kernelBuffer;
     ULONG bufferLength;
@@ -84,8 +93,9 @@ typedef struct IO_CONTROL_CONTEXT
      * completes (kernel/ps/ps.h PsChargeIoCounters). Carried here because
      * the charge lands in IopCompletePendingRequest, in a context that no
      * longer knows which verb parked — the same reason apcContext is
-     * carried. PsIoChargeRead is the zero value, so the read path (which
-     * is the only one that pends with a data leg today) needs no store. */
+     * carried. PsIoChargeRead is the zero value, so the read path needs no
+     * store; the ioctl path — which also pends with a data leg, for
+     * FSCTL_PIPE_TRANSCEIVE — states PsIoChargeOther explicitly. */
     PS_IO_CHARGE charge;
 } IO_CONTROL_CONTEXT;
 

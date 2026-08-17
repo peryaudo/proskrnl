@@ -110,10 +110,20 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
                                   .userIosb = iosb,
                                   .apcBlock = apcBlock,
                                   .apcContext = apcContext,
+                                  .userBuffer = output,
+                                  .kernelBuffer = outBounce,
+                                  .bufferLength = outputLength,
                                   .charge = PsIoChargeOther};
-    /* The remaining members — the CUI-8 data legs and `pended` — are zeroed
-     * by the designated initializer above; an ioctl carries no data leg (its
-     * output travels in outBounce) and `pended` is the engine's answer. */
+    /* The CUI-8 data legs are the OUTPUT buffer and its bounce, because a verb
+     * that PENDS still owes its caller a reply: FSCTL_PIPE_TRANSCEIVE parks for
+     * the peer's message and the bytes are placed at completion, from a context
+     * that is not this address space (kernel/io/async.c
+     * IopCompletePendingRequest). They are the same pair rw.c's transfers hand
+     * over and they carry the same ownership rule — the bounce belongs to the
+     * request once, and only once, `pended` comes back TRUE, which is why the
+     * free below is skipped exactly there. An ioctl that completes inline
+     * ignores them and copies out through `copyOut` as it always did.
+     * `pended` itself is the engine's answer, zeroed by the initializer. */
     ULONG_PTR information = 0;
     /* The signalled-state legs of a request that may PARK, through the same
      * engine the transfer paths use (kernel/io/async.c) — the caller's event
@@ -160,10 +170,16 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     }
     if (inBounce != 0)
     {
+        /* The INPUT bounce is never the request's: a verb that pends has
+         * already consumed it (FSCTL_PIPE_TRANSCEIVE queues its message before
+         * it parks), so nothing after this point can read it. */
         MiFreePool(inBounce);
     }
-    if (outBounce != 0)
+    if (outBounce != 0 && !request.pended)
     {
+        /* The OUTPUT bounce moved INTO the request when the verb parked, and
+         * IopCompletePendingRequest is what frees it — exactly the rw.c rule
+         * for the same buffer. */
         MiFreePool(outBounce);
     }
     if (alerted)
@@ -257,11 +273,12 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * this is the one path where the request neither pended nor completed.
          *
          * Reaching here after a device PREPARED a pending request would
-         * double-free, since the request owns the same block — so that is an
-         * invariant, not a coincidence: a device that calls
-         * IopPreparePendingRequest must return STATUS_PENDING. npfs is the
-         * only DeviceControl that pends and it does exactly that
-         * (fs/npfs/pipe.c NpfsListen). */
+         * double-free — the request owns the same APC block, and since this
+         * item, the same output bounce — so that is an invariant, not a
+         * coincidence: a device that calls IopPreparePendingRequest must return
+         * STATUS_PENDING. npfs is the only DeviceControl that pends, and both
+         * of its pending verbs do exactly that (fs/npfs/pipe.c NpfsListen and
+         * NpfsTransceive, the latter through NpfsAwaitRead). */
         IopEndFailedRequestApc(apcBlock, parked);
     }
     ObDereferenceObject(file);
