@@ -2421,21 +2421,47 @@ NTSTATUS NtSetInformationThread(HANDLE threadHandle, THREADINFOCLASS infoClass, 
                     memcpy(context.ExtendedRegisters, wanted.ExtendedRegisters,
                            sizeof(context.ExtendedRegisters));
                 }
-                /* The context is now the guest's whole state, so the
-                 * "re-derive it from scratch" request the CPU area may be
-                 * carrying is satisfied and must be cleared — otherwise
-                 * wow64cpu resets the very state just written
-                 * (WOW64_CPURESERVED_FLAG_RESET_STATE, dlls/wow64cpu). */
-                context.ContextFlags = CONTEXT_I386_ALL;
                 MiCopyToUserRange(&target->process->addressSpace, contextVa, &context,
                                   sizeof(context));
-                WOW64_CPURESERVED reserved;
-                if (MiCopyFromUserRange(&target->process->addressSpace, &reserved, cpuArea,
-                                        sizeof(reserved)) == sizeof(reserved))
+                /* A control-register write on the CALLER'S OWN thread raises
+                 * the reset-state flag. The flag is wow64cpu's one signal
+                 * that the guest state it is about to resume was rewritten
+                 * under it: `btrl $0,-4(%r13)` reads-and-clears it on the way
+                 * out of every syscall thunk and takes the full iretq restore
+                 * when it was set, the short `ljmp` (Eip/SegCs/Esp only) when
+                 * it was not (third_party/wine dlls/wow64cpu/cpu.c,
+                 * syscall_32to64 and unix_call_32to64). So wow64cpu is the
+                 * consumer that clears it, and the setter is exactly this
+                 * class: `cpu->Flags |= WOW64_CPURESERVED_FLAG_RESET_STATE`
+                 * under the CONTEXT_I386_CONTROL arm of
+                 * set_thread_wow64_context (dlls/ntdll/unix/signal_x86_64.c).
+                 *
+                 * Clearing it instead — which this did, on the plausible
+                 * reading that a fresh context has nothing left to reset —
+                 * left every guest exception return, APC return and
+                 * NtContinue resuming through the short path: new Eip and
+                 * Esp, but the caller's EFlags, Ecx, Edx, SegSs and data
+                 * selectors silently dropped.
+                 *
+                 * SELF ONLY, and that is measured rather than inferred
+                 * (sem_ps/wow64_thread_context.c). The oracle's arm reads
+                 * `get_thread_data()` — the CALLING thread — for both the CPU
+                 * area it writes and the flag it raises, and a non-self target
+                 * never reaches it: the `if (!self)` gate above it hands the
+                 * context to the server and returns. A thread that is not
+                 * running is not sitting in a wow64cpu thunk return, so there
+                 * is no resume for the flag to describe; raising it there is
+                 * as much a divergence as clearing it here was. */
+                if (target == self && (flags & CONTEXT_I386_CONTROL) == CONTEXT_I386_CONTROL)
                 {
-                    reserved.Flags &= ~(USHORT)WOW64_CPURESERVED_FLAG_RESET_STATE;
-                    MiCopyToUserRange(&target->process->addressSpace, cpuArea, &reserved,
-                                      sizeof(reserved));
+                    WOW64_CPURESERVED reserved;
+                    if (MiCopyFromUserRange(&target->process->addressSpace, &reserved, cpuArea,
+                                            sizeof(reserved)) == sizeof(reserved))
+                    {
+                        reserved.Flags |= (USHORT)WOW64_CPURESERVED_FLAG_RESET_STATE;
+                        MiCopyToUserRange(&target->process->addressSpace, cpuArea, &reserved,
+                                          sizeof(reserved));
+                    }
                 }
             }
         }

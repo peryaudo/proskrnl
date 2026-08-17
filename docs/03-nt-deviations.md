@@ -3728,3 +3728,29 @@ for alignment 1 (an odd buffer misaligns every unit of the path), and `NtQueryOb
 `ObjectNameInformation` / `ObjectTypeInformation` stored an 8-byte `Buffer` pointer at
 offset 8 of a buffer probed for alignment 4. Both stage their headers now; the registry
 half is pinned by `tests/ntapi/sem_reg/key_name_unaligned.c`.
+
+Outside the alignment pattern, the audit found the CPU area's reset-state flag being
+CLEARED where the oracle raises it. `WOW64_CPURESERVED_FLAG_RESET_STATE` is wow64cpu's only
+signal that the guest state it is about to resume was rewritten under it: every syscall
+thunk ends in `btrl $0,-4(%r13); jc ...` — read-and-clear, full `iretq` restore when it was
+set, a short `Eip`/`SegCs`/`Esp`-only `ljmp` when it was not (`dlls/wow64cpu/cpu.c`).
+wow64cpu is therefore the CONSUMER that clears it, and the setter is
+`NtSetInformationThread(ThreadWow64Context)` under its `CONTEXT_I386_CONTROL` arm
+(`set_thread_wow64_context`, `dlls/ntdll/unix/signal_x86_64.c`). Clearing it instead — on
+the plausible reading that a freshly written context has nothing left to reset — left every
+guest exception return, APC return and `NtContinue` resuming through the short path,
+silently dropping the caller's `EFlags`, `Ecx`, `Edx`, `SegSs` and data selectors.
+
+**The raise is SELF-only, and that qualifier is the oracle's answer rather than a reading
+of it — the first version of this fix raised it on any target, and the pin caught it.**
+Every pointer in that arm comes from `get_thread_data()`, i.e. the CALLING thread: the CPU
+area it writes and the flag it raises are the caller's own, and a non-self target never
+reaches the arm at all, because the `if (!self)` gate above it hands the context to the
+server and returns. A thread that is not running is not sitting in a wow64cpu thunk return,
+so there is no resume for the flag to describe.
+`tests/ntapi/sem_ps/wow64_thread_context.c` pins the cross-thread half in BOTH directions —
+"untouched" is distinguishable from "written to that value" only by asserting from a set
+and an unset starting state — while the self half is what `tests/cui/hello32.c` and the
+`wow64gui` leg exercise, by running a real guest through exception and APC returns. The
+same arm also stopped rewriting the staged context's `ContextFlags`, which the oracle never
+touches on a set.
