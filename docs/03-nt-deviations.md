@@ -5126,22 +5126,50 @@ and in the oracle's own refusal shape — never `STATUS_NOT_IMPLEMENTED` (Art. 1
 armed panic stays the enforcement for a silent stub; this is an implemented refusal,
 not a stub). Each verb leaves the tail by the ordinary G5 route: pin first, then build.
 
-### Urgent data (TCP OOB) is out of scope
+### Urgent data (TCP OOB): the loopback sidechannel
 
-lwIP implements no TCP urgent pointer, so `AFD_MSG_OOB` receives answer
-`STATUS_INVALID_PARAMETER` and `SIOCATMARK` rides the unbuilt tail. The flag
-VALIDATION (exactly one of `AFD_MSG_OOB`/`AFD_MSG_NOT_OOB`, both-or-neither refusing
-`STATUS_INVALID_PARAMETER`) is NT surface and is pinned + implemented. Real NT
-consumers of OOB data are effectively extinct (telnet-era); ws2_32's own tests carry
-`todo_wine` on the delivery cases, so even the oracle does not serve them.
+lwIP implements no TCP urgent pointer, so wire-peer OOB stays unbuilt
+(`SIOCATMARK` rides the unbuilt tail; an OOB send whose peer is remote refuses
+`STATUS_INVALID_PARAMETER`). But a LOOPBACK connection's both ends are this
+driver's, so the one urgent byte NT semantics carry travels beside the stream:
+`WINE_SENDMSG` with `MSG_OOB` finds the peer socket by its port pair and lands
+the byte in its OOB slot (or, under `SO_OOBINLINE`, folds it into the stream),
+raising the `AFD_POLL_OOB`/`READ` edge; `WINE_RECVMSG` with `MSG_OOB` collects
+it. The `IOCTL_AFD_RECV` flavor of OOB receive deliberately keeps the ORACLE's
+refusal (its server path is unbuilt too — `ws2_32:afd` carries those delivery
+rows as `todo_wine`, and matching the oracle keeps the todo discipline
+intact). The flag VALIDATION (exactly one of `AFD_MSG_OOB`/`AFD_MSG_NOT_OOB`)
+is pinned + implemented.
 
-### AF_INET6 is staged, not absent
+### AF_INET6: create/bind/name exist, the data path is staged
 
-The v6 core is compiled into lwIP (dual-stack from day one, docs/24 §5) and the v6
-link-local address is configured on the wire netif, but the SOCKET surface refuses at
-`IOCTL_AFD_WINE_CREATE` (`STATUS_NOT_SUPPORTED`) until its own `sem_net` pins exist.
-The oracle creates v6 sockets today, so `ws2_32:sock`'s v6 cases park in the winetest
-manifest with this note as their signature.
+The v6 core is compiled into lwIP (dual-stack from day one, docs/24 §5).
+`IOCTL_AFD_WINE_CREATE` accepts `AF_INET6` and the bind/getsockname surface
+speaks `sockaddr_in6` (28 bytes, `::1` on the loop interface) — `ws2_32:afd`'s
+`test_bind` v6 block is the consumer. Everything deeper (v6 connect/data,
+`IPV6_*` options, `V6ONLY`) stays staged until its own pins exist;
+`ws2_32:sock`'s v6 data rows park in the winetest manifest with this note as
+their signature.
+
+### Oracle-parity shapes measured off ws2_32:afd (Art. 6: the Wine answer is the spec)
+
+- A SOCKET handle's `NtQueryObject(ObjectBasicInformation).Attributes` reports
+  without `OBJ_INHERIT` (the pinned Wine loses it there and the test carries
+  NT's answer as `todo_wine`); the REPORT only — the stored attribute, and
+  handle inheritance with it, is intact (`kernel/ob/handle.c`'s one shim).
+- Closing a polled socket completes a poll WATCHING it with `AFD_POLL_CLOSE`
+  and `STATUS_SUCCESS`; closing a poll's ISSUING handle while it watches
+  another socket tears the poll down with the output buffer UNTOUCHED and
+  `Information` 0 (`STATUS_HANDLES_CLOSED`, the close-teardown status the
+  RECV sweep already carries). Real NT lets such a poll run to its timeout —
+  the test's `todo_wine` rows make Wine's early teardown the spec.
+- An ACCEPTED socket's re-`connect()` answers `STATUS_SUCCESS` as a no-op
+  (only a `connect()`ed socket's re-connect refuses
+  `STATUS_CONNECTION_ACTIVE`), and a datagram `connect()` fixes the default
+  peer inline with no `CONNECT` edge.
+- `AFD_POLL_WRITE` behaves with hysteresis: a filled send window drops it and
+  a congested loopback peer (receive ring half-full) keeps it down; a
+  send-shutdown or a reset does NOT drop it.
 
 ### Close-cancel completes with STATUS_HANDLES_CLOSED (the oracle's own answer)
 

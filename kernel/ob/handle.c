@@ -9,6 +9,7 @@
  * incoming handle are ignored, as NT ignores its tag bits.
  */
 #include "kernel/ob/ob.h"
+#include "drivers/afd.h" /* the Net-2 socket-handle report shim */
 #include "kernel/ps/ps.h"
 #include "kernel/mm/pool.h"
 #include "kernel/syscall/uaccess.h"
@@ -978,6 +979,15 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         OBJECT_BASIC_INFORMATION info;
         memset(&info, 0, sizeof(info));
         info.Attributes = entry->attributes;
+        /* Net-2 oracle parity (Art. 6; docs/03 "Net-2 notes"): the pinned
+         * Wine reports a SOCKET handle's attributes without OBJ_INHERIT
+         * (ws2_32:afd test_open_device carries the NT truth as todo_wine,
+         * so the Wine answer is the spec here). The REPORT only — the
+         * stored attribute, and inheritance with it, is untouched. */
+        if (AfdIsSocketFile(entry->body))
+        {
+            info.Attributes &= ~(ULONG)OBJ_INHERIT;
+        }
         info.GrantedAccess = entry->grantedAccess;
         info.HandleCount = (ULONG)header->handleCount;
         info.PointerCount = (ULONG)header->pointerCount;

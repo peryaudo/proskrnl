@@ -27,4 +27,14 @@ void AfdCancelThreadIo(struct KTHREAD *thread);
 void AfdPollTick(void);
 ULONG AfdNextPollDelayMs(void);
 
+/* The docs/24 §6e verdict numbers for the [KTEST] net stats line
+ * (drivers/net/netd.c NetPrintKtestStats): requests that genuinely
+ * parked, synchronous-handle park laps, and default-arm refusals. */
+void AfdQueryStats(ULONG *pendedOut, ULONG *syncParksOut, ULONG *refusedOut);
+
+/* Is this Ob body a FILE_OBJECT open on \Device\Afd? — for the one
+ * oracle-parity shim in NtQueryObject (socket handles report their
+ * attributes without OBJ_INHERIT there; inheritance itself is intact). */
+BOOLEAN AfdIsSocketFile(PVOID body);
+
 #endif /* PROSKRNL_DRIVERS_AFD_H */
