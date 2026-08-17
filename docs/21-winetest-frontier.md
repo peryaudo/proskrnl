@@ -2072,6 +2072,75 @@ line-by-line histogram diff shows only `:1450`/`:1456`/`:1457`/`:1458` and
 `:2069`×8 removed with no other line moved — so `§4` trap 2 does not apply here
 and nothing was hiding behind the twelve.
 
+**The PORT-versus-APC refusal is DONE** (`ntdll:pipe` 68 → **60**, the eight at
+`:3094`), and it is the first item in this section whose subject is not npfs at
+all: it is the one refusal the whole asynchronous surface makes about its own
+arguments. A handle bound to an I/O completion port and a call carrying an
+`ApcRoutine` are `STATUS_INVALID_PARAMETER` — `create_async`'s last statement
+(`server/async.c`, `if (async->completion && data->apc)`), landed as
+`IopPortApcConflict` (`kernel/io/{io.h,async.c}`) and pinned by
+`tests/ntapi/sem_port/port_apc.c`; the table is in `docs/03` "A completion PORT
+and a completion APC ROUTINE are mutually exclusive".
+
+Four things worth carrying, and the first two are the ones an implementation
+written from the status alone gets wrong:
+
+- **Its REACH is the requests the SERVER queues, not the syscall's arguments,
+  and the oracle serves the other arm ITSELF.** A regular disk file's transfer
+  never reaches wineserver (`dlls/ntdll/unix/file.c` `NtReadFile` `pread()`s it
+  locally), so the same combination is *admitted* there and ntdll resolves the
+  conflict the other way — `cvalue = apc ? 0 : (ULONG_PTR)apc_user`, the APC
+  runs and no packet is posted, which `IopPostRequestPacket` has implemented
+  since CUI-8. So the refusal belongs to `rw.c`'s DEVICE branch, `ioctl.c` and
+  `notify.c`'s watch arm; hoisted into `NtReadFile` it passes every pipe case
+  in the pin and refuses a disk read the oracle serves. The pin measures the
+  disk arm for exactly that reason — **a rule whose two arms disagree is one
+  the pin has to walk, not one it may reason about** (§4 trap 4's smaller
+  sibling, and the same argument `map_ex.c` made for
+  `MEM_EXTENDED_PARAMETER_EC_CODE`).
+- **WHERE it sits is as measurable as what it answers, and proskrnl had merged
+  the two statements it sits between.** The oracle resets the caller's EVENT
+  above the guard and clears the FILE OBJECT below it, in `queue_async` — so a
+  refused request leaves the event DOWN and the handle UP.
+  `IopBeginBlockingRequest` is where W4d merged those two on purpose, which is
+  what made the placement obvious rather than delicate: the refusal goes
+  *inside* that function, between its halves, and needs no
+  `IopEndBlockingRequest` to put anything back. **A merge that was chosen for
+  one item paid for itself in the next one**, which is the opposite of the usual
+  outcome for a merge.
+- **The rule is about the ROUTINE, never the CONTEXT**, and the context is what
+  every overlapped Win32 caller passes — it IS the packet's value. An
+  implementation keyed on `apcContext` refuses the ordinary case and passes
+  nothing but the winetest's own rows, since `test_async_cancel_on_handle_close`
+  varies both.
+- **It precedes every verb**, because it is made when the request is CREATED.
+  `FSCTL_PIPE_PEEK` is answered inline and never queues, and it is refused just
+  the same — which is the case that says the guard belongs at the issue point
+  and not in a device.
+
+**The pair's executed count is unchanged at 2377, with 31 todo markers and 0
+skipped before and after**, and a line-by-line histogram diff shows only `:3094`
+removed with no other line moved — so `§4` trap 2 does not apply and nothing was
+hiding behind the eight.
+
+**And the pair's LARGEST cluster is now measured per line rather than read off
+the oracle, which is worth more than the eight.** The manifest called
+`test_empty_name`'s 35 one item, "the `\Device\NamedPipe` device-root surface".
+It is three, and the biggest of them is a NAME-RESOLUTION item rather than an
+npfs one: **25 of the 35 are consequences of `NtCreateNamedPipeFile` refusing a
+`RootDirectory` that names a FILE**. It resolves its attributes through
+`ObpLookupParseObject` alone (`fs/npfs/pipe.c`) where `IopCreateFile` has taken
+a relative FILE root since M6, so `:2842` (an UNNAMED pipe created with an empty
+name under a `\Device\NamedPipe\` handle) and `:2932` (a pipe whose name carries
+a separator, `"test3\pipe"`, under the same handle) both answer
+`STATUS_OBJECT_TYPE_MISMATCH`, and the 23 assertions behind them are querying,
+opening, writing and reading the null handles those two never returned. §4 trap
+4 again. The other two items are `:2810` — the same call one line earlier, where
+a NAMED create under the DEVICE handle must be `STATUS_OBJECT_NAME_INVALID`, so
+the work is "tell the device from its directory" and not merely "accept a file
+root" — and the nine-assertion device-root ioctl ladder (`:2751`×8 plus
+`:2787`). The manifest block has all three with their statuses.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
