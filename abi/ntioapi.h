@@ -469,6 +469,7 @@ typedef struct {
 #define FILE_DEVICE_SERIAL_PORT 0x0000001b
 #define FILE_DEVICE_VIDEO 0x00000023
 #define FILE_DEVICE_NULL 0x00000015
+#define FILE_DEVICE_SOUND 0x0000001d
 
 /* FileFsAttributeInformation.FileSystemAttributes bits, extracted
  * from wine/include/winnt.h. */

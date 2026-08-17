@@ -1167,6 +1167,10 @@ def gen_ntioapi(wine: Path) -> str:
             # \Device\Null (kernel/io/null.c): FileFsDeviceInformation's
             # answer for the bit bucket, and what GetFileType switches on.
             "FILE_DEVICE_NULL",
+            # AUD-1: \Device\Snd<n> (HACK-007) answers FileFsDeviceInformation
+            # with FILE_DEVICE_SOUND, which is also the CTL_CODE device field
+            # of its PCM ioctls (drivers/sndproto.h).
+            "FILE_DEVICE_SOUND",
         ],
     )
     # FileFsAttributeInformation.FileSystemAttributes bits: the kernel's FAT32
