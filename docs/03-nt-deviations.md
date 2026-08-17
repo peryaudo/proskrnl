@@ -4895,3 +4895,42 @@ One more of the same kind: **`LdrSystemDllInitBlock.version` was synthesized fro
 before memcpying the whole block into the guest's copy. `PspWow64FillInitBlock` starts
 from the host block instead of a zeroed local now, so the version the guest reads is the
 one the pinned ntdll declares and the kernel never has to know it.
+
+## AUD-2 notes (single-process audio)
+
+**A second process's `IAudioClient::Initialize` answers `AUDCLNT_E_DEVICE_IN_USE`; Windows
+shared mode admits N processes.** NT mixes shared-mode render streams in audiodg — a
+process; Wine delegates the same mixing to the host sound server. proskrnl has neither,
+and virtio-snd advertises exactly one output stream, so the AUD-2 stack opens
+`\Device\Snd0` EXCLUSIVELY per process (the Io share engine, no private flag —
+`drivers/sndproto.h`), mixes that process's own shared-mode streams in the winevsnd
+feeder, and surfaces a competing process's `STATUS_SHARING_VIOLATION` as
+`AUDCLNT_E_DEVICE_IN_USE` (`user/wine/dlls/winevsnd.drv/stream.c dev_acquire`). The
+status is a real WASAPI status produced in circumstances Windows would not produce it —
+exactly the class of divergence this file records.
+
+Justified against consumers, never performance (Art. 3's rule applied to a deviation
+that is not even Art. 3's): no baked scenario plays audio from two processes at once —
+the render winetest pairs, the audio leg's clients and the GUI images are all
+one-audio-process boots. In-process concurrency, which is what Wine's own render tests
+exercise, is real (the feeder mixes all of its process's streams).
+
+Two subtler shapes fall out of the same exclusivity and are part of this entry:
+
+- **Endpoint enumeration while another process holds the stream**: the busy node answers
+  `STATUS_SHARING_VIOLATION` to the enumeration probe, and with no handle there is no
+  `PCM_INFO` to relay, so the endpoint is skipped (named on serial) rather than listed
+  under a fabricated direction (Art. 12). Windows would list the endpoint. Same
+  convicting consumer, same exit.
+- **The device stays STARTed (playing the feeder's silence) from a process's first
+  `Start` until its last stream is released** — inaudible on the null/wav backends and
+  unobservable through any `Nt*` boundary, noted for the WAV artifact's sake (leading /
+  trailing silence, which `tests/audio/check_audio.py` already must not assert).
+
+**The named exit is audiodg-lite (HACK-008, reserved in `docs/10`), not a wider share
+mask:** a user-mode mixer process owning the device, clients reaching it over shared
+sections + kernel events — the GUI-3 transport recipe, and NT's own architecture adopted
+rather than invented (the conhost argument, `docs/23` §4d). The convicting consumer is a
+baked scenario in which two processes must be audible at once — a shell beep while an
+app plays, or a second audio app on a GUI image. When one exists, HACK-008 is built and
+this entry retires; until then the deviation stands recorded.
