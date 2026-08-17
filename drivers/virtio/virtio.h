@@ -93,6 +93,7 @@ typedef struct
  * third_party/qemu include/standard-headers/linux/virtio_ids.h. */
 #define VIRTIO_DEVICE_TYPE_BLK   2  /* §5.2 */
 #define VIRTIO_DEVICE_TYPE_INPUT 18 /* §5.8 */
+#define VIRTIO_DEVICE_TYPE_SND   25 /* §5.14 */
 
 /* Vendor-specific capability layout (virtio 1.2 cs01 §4.1.4); cap_vndr is
  * PCI capability ID 0x09 (PCI Local Bus Spec 3.0 §6.7 vendor-specific). */
