@@ -397,17 +397,52 @@ ntdll_test.exe:path
 #     for the rest of the function. Read as five separate assertions they look
 #     like a query bug; there is none (docs/21 §4 trap 4).
 #
-#     WHAT IS LEFT:
-#       - PANIC at NtQueryInformationFile class 8 (FileAccessInformation),
-#         from test_file_access at pipe.c:1015 — unchanged, in the same place,
-#         with ZERO failed assertions ahead of it now. Everything past it —
-#         the rest of test_pipe_with_data_state, test_readfileex, the
-#         impersonation tests — has still never run, so 0 is a lower bound and
-#         is the SAME lower bound the 12 was (docs/21 §4 trap 2). That is also
-#         why "nothing was hiding behind the 12" is not claimed here: the pair
-#         prints no summary line, so there is no executed count on either side
-#         of the change to compare, only the per-line histogram — which lost
-#         exactly those 12 lines and gained none.
+#     FileAccessInformation (CLASS 8) IS NOW BUILT and the PANIC IS GONE:
+#     test_filepipeinfo runs to its end, and with it the whole of
+#     test_pipe_with_data_state — still ZERO failed assertions. The class is
+#     one ACCESS_MASK and both halves of it are counter-intuitive: the value
+#     is the access of the HANDLE ENTRY (server/fd.c
+#     default_fd_get_file_info's get_handle_access, i.e. the caller's own
+#     handle-table word — a weakened duplicate reports the weaker mask, and a
+#     zero-access duplicate reports zero and still SUCCEEDS), and the class's
+#     info_sizes[] entry is 0, so its length check sits BELOW the handle
+#     lookup where every table-driven class's sits above it. Landed in
+#     kernel/io/query.c (+ IopReferenceFileByHandle gaining Ob's optional
+#     OBJECT_HANDLE_INFORMATION out-parameter, so the entry's word comes from
+#     the one resolver), pinned by tests/ntapi/sem_file/access_info.c;
+#     docs/21 W11, docs/03 "FileAccessInformation (class 8) asks Ob".
+#     This block's own estimate of the item was WRONG in the way docs/21 §4
+#     trap 4 keeps being wrong: docs/21 called it "a small one — the class
+#     reports the granted access of the handle, which FILE_OBJECT.grantedAccess
+#     already holds". The first clause held; the second is false, and an
+#     implementation that took the advice passes every winetest assertion in
+#     this pair and answers the create's mask through every duplicate.
+#
+#     WHAT IS LEFT: a WEDGE, one function further on.
+#       - The pair now traces "pipe.c:3187: starting alertable tests" and then
+#         makes no further progress until the harness's 5-minute timeout; the
+#         event ring at the kill holds nothing but idle swaps, i.e. one parked
+#         thread and nothing running. Verdict FAIL (timeout) with 0 failed
+#         assertions — the SAME verdict the panic produced, which is why the
+#         pair's colour does not move even though the panic is gone.
+#       - The measured facts are exactly those two: the last trace printed is
+#         :3187, and no assertion has failed up to it. WHICH park it is has
+#         NOT been measured. Reading test_alertable (pipe.c:457) makes a
+#         FSCTL_PIPE_LISTEN parked on a FILE_SYNCHRONOUS_IO_ALERT handle with
+#         a user APC already queued the obvious suspect — the test expects the
+#         alertable park to be broken by the APC — but that is a prediction
+#         from the code and this block will not record it as a finding
+#         (docs/21 §4 trap 4). Two runners and a throwaway probe settle it in
+#         three minutes; do that first.
+#       - Everything past the wedge (test_nonalertable, test_cancelio,
+#         test_cancelsynchronousio, the read_pipe_test matrix, the
+#         impersonation tests) has still never run, so 0 remains a LOWER BOUND
+#         and is the same lower bound it was under the panic (docs/21 §4 trap
+#         2). Nothing is claimed here about what is hiding behind it: the pair
+#         still prints no summary line, so there is no executed count on
+#         either side of this change to compare — only the per-line histogram,
+#         which was empty before and is empty after, and the stopping point,
+#         which moved from pipe.c:1015 to pipe.c:3187.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port

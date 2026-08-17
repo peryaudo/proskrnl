@@ -1747,13 +1747,52 @@ whole query. No winetest assertion reaches it; it was found by reading the
 oracle's arm for the rule the SET side was being written against, and pinned
 because it was found, not because anything failed.
 
-**What the pair is now**: zero failed assertions and the SAME panic at
-`NtQueryInformationFile` class 8 (`FileAccessInformation`), from
-`test_file_access` at `pipe.c:1015`. The verdict does not move — a stopped pair
-with zero is still `FAIL` — and 0 is a lower bound exactly as the 12 was (§4
-trap 2). Class 8 is the next item in this pair and it is a small one: the class
-reports the granted access of the handle, which `FILE_OBJECT.grantedAccess`
-already holds.
+**`FileAccessInformation` (class 8) is DONE and the PANIC IS GONE.**
+`test_filepipeinfo` runs to its end and `ntdll:pipe` now stops five test
+functions later, still with **zero** failed assertions. Landed in
+`kernel/io/query.c`, pinned by `tests/ntapi/sem_file/access_info.c`; the table
+is in `docs/03` "`FileAccessInformation` (class 8) asks Ob".
+
+**This document called the item "a small one: the class reports the granted
+access of the handle, which `FILE_OBJECT.grantedAccess` already holds", and the
+second clause is false.** It is the *handle entry's* access — `entry->access`,
+read by `get_handle_access` (`server/fd.c` `default_fd_get_file_info`) — and
+`FILE_OBJECT.grantedAccess` is the OPEN's. A weakened `NtDuplicateObject`
+duplicate names the same file object through a smaller mask and reports the
+smaller mask; a duplicate made with an access of **zero** is a legal handle,
+reports zero, and the query still succeeds. **An implementation that took this
+document's advice passes every winetest assertion in the pair** — every handle
+`ntdll:pipe` queries is the original open — and answers the create's mask
+through every duplicate. It is the fifth item here whose real content was
+*which* object a question is asked of rather than what the answer is, and the
+second time in this section specifically (`FilePipeInformation`'s SET ladder
+read `grantedAccess` where the oracle reads `entry->access`, and gate-check
+caught it there; here the estimate had written the same error down as the
+plan). `IopReferenceFileByHandle` grew Ob's own optional
+`OBJECT_HANDLE_INFORMATION` out-parameter, so the entry's word comes from the
+one resolver and `FileAllInformation` reports the same word from the same
+place.
+
+**The other half is an ORDER, and it is the inverse of every class this file
+already had.** `info_sizes[FileAccessInformation]` is 0
+(`dlls/ntdll/unix/file.c`), so ntdll makes NO length check and the size guard
+lives inside the fd op, *below* the handle lookup — a too-short buffer through
+a handle that names nothing reports the HANDLE, where `FilePipeInformation`
+with the same two mistakes reports the LENGTH. Both are measured in one place
+in the pin, because an implementation with a single length gate ahead of a
+single handle gate cannot answer them both. The class also demands **no
+access** (`get_handle_fd_obj(..., 0)`), which is what makes `pipe.c:1015`'s
+`SYNCHRONIZE`-only client a success rather than an `ACCESS_DENIED`.
+
+**What the pair is now: a WEDGE, and the verdict does not move.** It traces
+`pipe.c:3187: starting alertable tests` and then makes no progress until the
+harness's 5-minute timeout, with the event ring holding nothing but idle swaps.
+`FAIL (timeout)` with zero failures reads exactly as the panic did, so the
+colour is unchanged — but the stopping point moved from `pipe.c:1015` to
+`pipe.c:3187`, past the whole of `test_pipe_with_data_state`. The manifest
+block has the next item; note that **which park wedges has not been measured**,
+only where the trace stops, and the block deliberately records the code-read
+suspect as a suspect (§4 trap 4, again).
 
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
