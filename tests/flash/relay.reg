@@ -1,0 +1,4 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\Debug]
+"RelayInclude"="winmm.*;kernel32.QueryPerformanceCounter;kernel32.QueryPerformanceFrequency;kernel32.timeGetTime;kernel32.timeSetEvent;kernel32.timeKillEvent;kernel32.timeBeginPeriod;kernel32.timeGetDevCaps"

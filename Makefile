@@ -1557,6 +1557,16 @@ ifneq ($(FLASHPRESENT),)
 FLASH_DLLS := $(foreach d,$(FLASH_DLL_NAMES),$(WINESTRIP32)/$(d).dll)
 $(foreach d,$(FLASH_DLL_NAMES),$(eval $(call FLASH_STRIP32_RULE,$(d))))
 FLASHFILES += $(foreach d,$(FLASH_DLL_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll)
+# The tests/flash liveness fixtures (tools/gen_swf.py — one color per second
+# of movie time, at a frame rate straddling the projector scheduler's 50 ms
+# timeSetEvent threshold) plus the RelayInclude seed for winmm relay tracing.
+# Ride the same guard: only useful with the projector present.
+FLASH_FIXTURES := $(BUILD)/flash/fixture30.swf $(BUILD)/flash/fixture10.swf
+$(BUILD)/flash/fixture%.swf: tools/gen_swf.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_swf.py $@ $*
+FLASHFILES += $(foreach f,$(FLASH_FIXTURES),win:$(f)=$(notdir $(f))) \
+              win:tests/flash/relay.reg=relay.reg
 endif
 
 GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
@@ -1585,7 +1595,8 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS)
+        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) \
+        tests/flash/relay.reg
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
 
 gui5con-img: $(IMG_GUI5CON)
