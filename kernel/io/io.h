@@ -497,9 +497,15 @@ typedef struct IOP_PENDING_REQUEST
      *    MiCopyToUserRangeChecked, the same checked copy the IOSB uses and
      *    for the same reason (the owner may have freed it while parked).
      *
-     * Zero for a request with no data leg (every pended listen and watch).
-     * The FS fills kernelBuffer at completion and reports the count as the
-     * completion's `information`; nothing past that count is copied. */
+     * Zero for a request whose ENTRY POINT has no reply to place (every pended
+     * watch). NOT zero for every pended listen: `kernel/io/ioctl.c` attaches
+     * the caller's output buffer to every ioctl, because the engine cannot know
+     * which verb will pend and a device that had to say so could forget — so a
+     * FSCTL_PIPE_LISTEN issued with a non-empty output buffer carries these
+     * too. What decides how much is PLACED is the count the FS reports at
+     * completion: it fills kernelBuffer, reports the count as the completion's
+     * `information`, and nothing past that count is copied — so a listen, which
+     * completes with 0 in every one of its three paths, places nothing. */
     PVOID userBuffer;
     PVOID kernelBuffer;
     ULONG bufferLength;

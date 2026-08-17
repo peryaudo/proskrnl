@@ -3162,6 +3162,102 @@ overflow. That is `ntdll:pipe`'s one remaining `:2205` (`in client state 4`), ta
 `sem_pipe/pipe_file_info.c` already tags, so both report themselves the day the reference
 is held.
 
+## What `FSCTL_PIPE_TRANSCEIVE` writes, and what it refuses
+
+One message out and one message back, in one verb, on one end — the transaction
+`TransactNamedPipe` is. The whole thing is `server/named_pipe.c`
+`pipe_end_transceive`, reached through `pipe_end_ioctl` from **both** ends' ioctl
+handlers, so unlike `FSCTL_PIPE_LISTEN` and `FSCTL_PIPE_DISCONNECT` it is a verb
+a client has too. Transcribed into `fs/npfs/pipe.c` `NpfsTransceive` and pinned
+by `tests/ntapi/sem_pipe/transceive.c`; it takes `ntdll:pipe` from **80** failed
+assertions to **68** (`pipe.c:2069`×8 in `test_pipe_state`, `:1450`/`:1456`/
+`:1457`/`:1458` in `test_transceive`).
+
+| this end | answer |
+| --- | --- |
+| orphaned (a server disconnected it) | `STATUS_PIPE_DISCONNECTED` |
+| `FILE_PIPE_LISTENING_STATE` | `STATUS_INVALID_PIPE_STATE` |
+| `FILE_PIPE_DISCONNECTED_STATE`, not orphaned (the disconnecting SERVER) | `STATUS_INVALID_PIPE_STATE` |
+| `FILE_PIPE_CLOSING_STATE` (the peer closed) | `STATUS_INVALID_PIPE_STATE` |
+| connected, read mode is `FILE_PIPE_BYTE_STREAM_MODE` | `STATUS_INVALID_READ_MODE` |
+| connected, message mode, bytes already buffered here | `STATUS_PIPE_BUSY` |
+| connected, message mode, nothing buffered | the input is queued to the peer, and the verb waits for the reply |
+
+**The state question is "is there a connection", and its two answers split the
+ends.** `if (!pipe_end->connection) set_error( pipe_end->pipe ?
+STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED )` — and `connection` is
+NULL in every state but `CONNECTED`, so three different situations collapse onto
+the STATE complaint and only the client a server threw out reports the
+disconnection. That is `FSCTL_PIPE_PEEK`'s split one table up, asked by the same
+`end->orphaned` and asked FIRST for the same reason (proskrnl's state word
+belongs to the INSTANCE, so a re-listened instance moves back to `CONNECTED`
+under an end that was orphaned off it).
+
+**The read-mode refusal is about the END, not the pipe.** The oracle reads
+`pipe_end->flags & NAMED_PIPE_MESSAGE_STREAM_READ`, which is what
+`FilePipeInformation` writes — so a message-TYPE pipe whose end is SET back to
+byte mode refuses, and moves back the moment the mode does. A byte-TYPE pipe can
+never carry the flag (`NpfsSetPipeInfo` refuses the combination, as the oracle
+does at create and at set), which is why the append can assume a message-type
+pipe. The guard sits BELOW the state question and ABOVE the busy one: a listening
+byte-mode end reports its state, a connected byte-mode end with data queued
+reports its mode.
+
+**`STATUS_PIPE_BUSY` is total: nothing is written.** A reader that already has
+buffered bytes cannot transact, and the input is not queued to the peer either.
+This is the rung an implementation built as "call the write path, then call the
+read path" cannot have, because such an implementation would answer the caller
+out of the bytes that were already there.
+
+**The write half NEVER blocks, and that is a difference rather than a note.**
+The oracle says so where it does it — *"transaction never blocks on write, so
+just queue a message without async"* — so `NpfsTransceive` calls
+`NpfsAppendBuffer` directly and not `NpfsWrite`: an ordinary `NtWriteFile` past
+the peer's quota parks its caller (and still does), while a transceive of the
+same bytes over the same full queue is accepted on the spot and waits only for
+its reply.
+
+**The read half is the end's ordinary read machinery, minus exactly one rung.**
+Both `pipe_end_read` and `pipe_end_transceive` end in
+`queue_async( &pipe_end->read_q, async )`, so the two share one queue and are
+served in issue order — a read issued behind a parked transceive cannot take the
+first reply. `NpfsAwaitRead` is that shared body (the state ladder, the park, the
+pend, the drain), with `honourCompletionMode` as the one parameter, because
+`pipe_end_read` opens with a `NAMED_PIPE_NONBLOCKING_MODE` arm that
+`pipe_end_transceive` has none of: **a NOWAIT-mode end refuses a read with
+`STATUS_PIPE_EMPTY` and PENDS a transceive**, in the same state, back to back.
+An implementation that tail-calls its own read path answers `STATUS_PIPE_EMPTY`
+there.
+
+What that NOWAIT arm asks about is BUFFERED DATA and not outstanding requests,
+and the oracle had to say so: the pin's first draft expected a read issued behind
+a parked transceive to pend, and it is refused exactly as it would be with
+nothing outstanding (`list_empty( &pipe_end->message_queue )` is the whole test).
+
+**The reply is framed as a MESSAGE**, so a reply longer than the caller's output
+buffer completes `STATUS_BUFFER_OVERFLOW` with the tail still queued as the same
+message — `NpfsReadDrain`'s existing rule, reached with the ioctl's output buffer
+in place of a read's.
+
+**`FSCTL_PIPE_TRANSCEIVE`'s pended arm is what gave `kernel/io/ioctl.c` its data
+legs.** An ioctl that parks still owes its caller a reply, so the OUTPUT buffer
+and its pool bounce now travel in the `IO_CONTROL_CONTEXT` exactly as a
+transfer's do (`kernel/io/rw.c`), with the same ownership rule — the bounce
+belongs to the request once `pended` comes back TRUE, and
+`IopCompletePendingRequest` is what frees it and what places the bytes in the
+owner's address space. The INPUT bounce is never the request's: a verb that pends
+has already consumed it.
+
+**Two things deliberately NOT built with it.** The verb's embedded access
+(`(code >> 14) & (FILE_READ_DATA | FILE_WRITE_DATA)`, which the oracle demands in
+`DECL_HANDLER(ioctl)`) is a rule about the ENGINE owed by every verb including
+`FSCTL_PIPE_PEEK`'s `FILE_READ_DATA`, and `kernel/io/ioctl.c` asks Ob for no
+access on any of them — so it is one item and not half of this one. And the
+`\Device\NamedPipe` ROOT answers this verb `STATUS_PIPE_DISCONNECTED`
+(`named_pipe_device_ioctl`), which is a fact about the root rather than about the
+verb: the root arm still refuses loudly and `ntdll:pipe`'s `:2751` cluster still
+convicts it.
+
 ## `FileNameInformation`'s length floor is the whole struct
 
 `NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than

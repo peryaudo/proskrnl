@@ -396,11 +396,28 @@ static void NpfsServiceInstance(PNPFS_INSTANCE instance)
     }
 }
 
-static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
-                         IO_CONTROL_CONTEXT *request)
+/* Take the next thing this end can read, waiting for it if there is nothing
+ * yet: the shared body of NtReadFile's device arm and of FSCTL_PIPE_TRANSCEIVE's
+ * read half, which the oracle reaches through one queue
+ * (`queue_async( &pipe_end->read_q, async )` in both pipe_end_read and
+ * pipe_end_transceive — so an ordering between the two is observable, pinned by
+ * sem_pipe/transceive.c §7).
+ *
+ * `honourCompletionMode` is the ONLY difference between the two callers, and it
+ * is the oracle's: pipe_end_read opens with
+ *
+ *     if ((pipe_end->flags & NAMED_PIPE_NONBLOCKING_MODE) &&
+ *         list_empty( &pipe_end->message_queue )) { set_error( STATUS_PIPE_EMPTY ); return; }
+ *
+ * and pipe_end_transceive has no counterpart, so a NOWAIT-mode end refuses a
+ * read and PENDS a transceive in the same breath (transceive.c §6). One
+ * parameter rather than two loops, because everything else here — the state
+ * ladder, the park, the pend, the drain — is one rule with two callers
+ * (Art. 11). */
+static NTSTATUS NpfsAwaitRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                              IO_CONTROL_CONTEXT *request, BOOLEAN honourCompletionMode)
 {
     PNPFS_END end = file->fsContext;
-
     for (;;)
     {
         NTSTATUS status = NpfsReadReady(end, !IsListEmpty(&end->pendingReadHead));
@@ -414,7 +431,7 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
         }
         /* Nothing to report yet, so what happens next is the ISSUER's
          * property, not the stream's. */
-        if (end->completionMode == FILE_PIPE_COMPLETE_OPERATION)
+        if (honourCompletionMode && end->completionMode == FILE_PIPE_COMPLETE_OPERATION)
         {
             return STATUS_PIPE_EMPTY; /* PIPE_NOWAIT: never waits, never pends */
         }
@@ -447,6 +464,13 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
             return waitStatus; /* CUI-4: foreign terminate breaks the read park */
         }
     }
+}
+
+static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                         IO_CONTROL_CONTEXT *request)
+{
+    return NpfsAwaitRead(file, buffer, length, infoOut, request,
+                         /* honourCompletionMode */ TRUE);
 }
 
 /* NtFlushBuffersFile on a pipe end (kernel/io/rw.c IopFlushBuffers): park
@@ -988,6 +1012,97 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
     return messageLength > copied ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
 }
 
+/* FSCTL_PIPE_TRANSCEIVE — one message out and one message back, in one verb,
+ * on one end. Transcribed from wine/server/named_pipe.c pipe_end_transceive
+ * and pinned by sem_pipe/transceive.c; the table is in docs/03 "What
+ * FSCTL_PIPE_TRANSCEIVE writes, and what it refuses". Unlike LISTEN and
+ * DISCONNECT it is a verb BOTH ends have — pipe_end_ioctl is reached from
+ * pipe_server_ioctl's and pipe_client_ioctl's default arms alike.
+ *
+ * Four rules, and the refusals are three of them:
+ *
+ *   - the state question is `if (!pipe_end->connection)`, whose two answers
+ *     split the ends exactly as FSCTL_PIPE_PEEK's ladder does:
+ *     `pipe_end->pipe ? STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED`.
+ *     `connection` is NULL in every state but CONNECTED, so LISTENING, CLOSING
+ *     and a DISCONNECTED *server* all report the STATE, and only the client a
+ *     server threw out reports the disconnection. `end->orphaned` is that one
+ *     end (NpfsPeek's comment makes the same identification, and asks it FIRST
+ *     for the same reason: proskrnl's state word belongs to the INSTANCE);
+ *
+ *   - the reader must be in MESSAGE read mode
+ *     (`pipe_end->flags & NAMED_PIPE_MESSAGE_STREAM_READ`) — a mode of the END,
+ *     which FilePipeInformation moves, and not the pipe's type. A byte-TYPE
+ *     pipe can never carry it (NpfsSetPipeInfo refuses the combination), so the
+ *     append below is always onto a message-type pipe;
+ *
+ *   - a reader that ALREADY has buffered bytes is STATUS_PIPE_BUSY, and the
+ *     refusal is total: nothing is written. That is the one an implementation
+ *     built as "call the write path, then call the read path" never makes,
+ *     because such an implementation would answer out of the buffered bytes;
+ *
+ *   - and THE WRITE HALF NEVER BLOCKS. The oracle says so where it does it —
+ *     "transaction never blocks on write, so just queue a message without
+ *     async" — so this is NpfsAppendBuffer directly and not NpfsWrite: an
+ *     ordinary write past the peer's quota parks its caller, and a transceive
+ *     of the same bytes over the same full queue is accepted on the spot
+ *     (transceive.c §5).
+ *
+ * The read half is the end's ordinary read machinery with the ONE difference
+ * NpfsAwaitRead takes as a parameter, so a transceive and a read queue
+ * together and are served in issue order.
+ *
+ * The `\Device\NamedPipe` ROOT answers this verb STATUS_PIPE_DISCONNECTED
+ * (named_pipe_device_ioctl), which is a fact about the ROOT rather than about
+ * the verb and belongs to that separate item: the root arm below still refuses
+ * loudly, and ntdll:pipe's :2751 cluster still convicts it. */
+static NTSTATUS NpfsTransceive(PNPFS_END end, PFILE_OBJECT file, const void *input,
+                               ULONG inputLength, void *output, ULONG outputLength,
+                               ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
+{
+    if (end->orphaned)
+    {
+        return STATUS_PIPE_DISCONNECTED;
+    }
+    if (end->instance->state != FILE_PIPE_CONNECTED_STATE)
+    {
+        return STATUS_INVALID_PIPE_STATE;
+    }
+    if (end->readMode != FILE_PIPE_MESSAGE_MODE)
+    {
+        return STATUS_INVALID_READ_MODE;
+    }
+    if (!IsListEmpty(&NpfsIncomingQueue(end)->bufferList))
+    {
+        return STATUS_PIPE_BUSY;
+    }
+
+    NTSTATUS status = NpfsAppendBuffer(end->instance, NpfsOutgoingQueue(end), input, inputLength);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    /* The append can satisfy a read parked on the PEER, which is the only thing
+     * it can move — nothing it does puts bytes in THIS end's queue, so the wait
+     * below is what the reply arrives through.
+     *
+     * KNOWN AND UNPINNED, the same shape NpfsWrite's interrupted-stream comment
+     * records and reachable only under pool exhaustion: the message is ALREADY
+     * the peer's, so a request the wait below cannot even build
+     * (IopPreparePendingRequest -> STATUS_INSUFFICIENT_RESOURCES) reports a
+     * failure whose caller was told nothing was written — the exact inverse of
+     * the STATUS_PIPE_BUSY guarantee above. The oracle cannot reach it: its
+     * async exists before the handler runs (create_request_async), so the only
+     * allocation inside pipe_end_transceive is queue_message's, which fails
+     * BEFORE anything is queued and answers inline exactly as this does. Fixing
+     * it means allocating the park before the append, which would then owe an
+     * unwind for the append's own failure; recorded rather than guessed at,
+     * because what NT reports for a half-committed transaction has not been
+     * measured on either runner. */
+    return NpfsAwaitRead(file, output, outputLength, infoOut, request,
+                         /* honourCompletionMode */ FALSE);
+}
+
 static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                   ULONG inputLength, void *output, ULONG outputLength,
                                   ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
@@ -1012,8 +1127,6 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
             return STATUS_NOT_SUPPORTED;
         }
     }
-    (void)input;
-    (void)inputLength;
     switch (code)
     {
     case FSCTL_PIPE_LISTEN:
@@ -1022,8 +1135,11 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
         return NpfsDisconnect(end);
     case FSCTL_PIPE_PEEK:
         return NpfsPeek(end, output, outputLength, infoOut);
+    case FSCTL_PIPE_TRANSCEIVE:
+        return NpfsTransceive(end, file, input, inputLength, output, outputLength, infoOut,
+                              request);
     default:
-        /* Unbuilt verbs (TRANSCEIVE/IMPERSONATE/... — and WAIT, which an
+        /* Unbuilt verbs (IMPERSONATE/ASSIGN_EVENT/... — and WAIT, which an
          * instance handle answers NOT_SUPPORTED, pinned pipe_wait.c) are
          * refused loudly, never faked (docs/03). */
         DbgPrint("npfs: unimplemented fsctl %#lx\n", (unsigned long)code);
