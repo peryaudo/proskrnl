@@ -985,6 +985,33 @@ $(AUDSMOKE): tests/audio/aud_smoke.c drivers/sndproto.h $(WINE_PE_DLLS)
 	    tests/audio/aud_smoke.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# winevsnd.drv (AUD-2, docs/23 §4b): the PE mmdevapi driver — the winefb
+# recipe as a STANDALONE DLL, because mmdevapi's seam LdrLoadDll's it by
+# name and resolves its one exported table. Compiled against the pinned
+# tree's own headers plus dlls/mmdevapi (the unixlib contract it
+# implements) and -I. for drivers/sndproto.h (the HACK-007 wire contract);
+# linked above ntdll ONLY — a driver loaded into every audio process must
+# not drag kernel32 in below kernel32's own initializers.
+VSND_DIR := user/wine/dlls/winevsnd.drv
+VSND_SRCS := $(wildcard $(VSND_DIR)/*.c)
+VSND_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
+               -D__WINESRC__ -DWINE_NO_LONG_TYPES -D__USE_MINGW_ANSI_STDIO=0 \
+               -I$(VSND_DIR) -I. -Ithird_party/wine/dlls/mmdevapi \
+               -Ithird_party/wine/include
+WINEVSND := $(BUILD)/modules/winevsnd.drv
+$(WINEVSND): $(VSND_SRCS) $(VSND_DIR)/winevsnd.h drivers/sndproto.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(VSND_CFLAGS) -shared -nostdlib -nostartfiles \
+	    -Wl,--entry=DllMainCRTStartup $(VSND_SRCS) \
+	    tests/winetest/glue/crt_sections.c \
+	    -Wl,--start-group \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    -Wl,--end-group -lgcc -o $@
+
+winevsnd: $(WINEVSND)
+.PHONY: winevsnd
+
 # The AUD-1 image (tests/run/run.sh audio): the standard image plus
 # aud_smoke.exe, whose presence makes smss run it as the session's
 # foreground (user/smss/session.c). The virtio-snd device and the wav
