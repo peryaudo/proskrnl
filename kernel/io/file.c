@@ -554,6 +554,37 @@ static void IopWriteCreateIosb(PIO_STATUS_BLOCK iosb, NTSTATUS status, ULONG_PTR
     }
 }
 
+/* Resolve an OBJECT_ATTRIBUTES.RootDirectory that names an open FILE into the
+ * (root, device) pair a relative name is resolved against, with the device
+ * reference the caller then owns.
+ *
+ * One statement of the pair because the ownership is the whole content: the
+ * root's reference keeps the FILE_OBJECT alive for the Create call that reads
+ * it, and the device's is what moves into the new FILE_OBJECT. Two entry
+ * points take a relative root — IopCreateFile below and
+ * NtCreateNamedPipeFile (fs/npfs/pipe.c) — and their LADDERS around this
+ * differ (which roots are legal, and what an absolute name under one
+ * answers), so what is shared is this step and not the ladder.
+ *
+ * A root that is not a File is reported as ObReferenceObjectByHandle reports
+ * it; the callers decide what that means. */
+NTSTATUS IopReferenceRelativeRoot(HANDLE rootDirectory, PFILE_OBJECT *rootOut,
+                                  PIO_DEVICE *deviceOut)
+{
+    PVOID rootBody;
+    NTSTATUS status = ObReferenceObjectByHandle(rootDirectory, 0, &IoFileObjectType,
+                                                ExGetPreviousMode(), &rootBody, 0);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    PFILE_OBJECT root = rootBody;
+    *rootOut = root;
+    *deviceOut = root->device;
+    ObfReferenceObject(root->device);
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
                               POBJECT_ATTRIBUTES attributes, PIO_STATUS_BLOCK iosb,
                               ULONG fileAttributes, ULONG shareAccess, ULONG disposition,
@@ -606,14 +637,9 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
 
     if (attributes->RootDirectory != 0)
     {
-        PVOID rootBody;
-        status = ObReferenceObjectByHandle(attributes->RootDirectory, 0, &IoFileObjectType,
-                                           ExGetPreviousMode(), &rootBody, 0);
+        status = IopReferenceRelativeRoot(attributes->RootDirectory, &relativeTo, &device);
         if (NT_SUCCESS(status))
         {
-            relativeTo = rootBody;
-            device = relativeTo->device;
-            ObfReferenceObject(device);
             fsPath = *attributes->ObjectName;
             /* An ABSOLUTE name under a RootDirectory handle is
              * STATUS_INVALID_PARAMETER, not a syntax error. The two are easy

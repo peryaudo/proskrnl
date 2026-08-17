@@ -221,6 +221,23 @@ static PNPFS_PIPE NpfsFindPipe(const UNICODE_STRING *name)
     return 0;
 }
 
+/* Retire a pipe whose last instance is gone. One authority for it because
+ * there are two ways to reach the state — the last server end's cleanup, and
+ * a create that could not finish — and the two things that vary are the
+ * pipe's own: an UNNAMED pipe is on no list (its entry is a self-loop, which
+ * RemoveEntryList handles) and owns no name buffer (and MiFreePool refuses a
+ * null pointer). */
+static void NpfsFreePipe(PNPFS_PIPE pipe)
+{
+    ASSERT(pipe->instanceCount == 0);
+    RemoveEntryList(&pipe->listEntry);
+    if (pipe->name.Buffer != 0)
+    {
+        MiFreePool(pipe->name.Buffer);
+    }
+    MiFreePool(pipe);
+}
+
 /* An end whose instance was disconnected/relinked out from under it (or the
  * whole-instance disconnect state) answers PIPE_DISCONNECTED to data ops. */
 static BOOLEAN NpfsEndDisconnected(PNPFS_END end)
@@ -1387,6 +1404,25 @@ static NTSTATUS NpfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, 
         return STATUS_BUFFER_OVERFLOW;
     }
     PNPFS_PIPE pipe = end->instance->pipe;
+    /* An UNNAMED pipe has no name to report, and the oracle spells that in
+     * the SAME guard as the orphaned end's — one guard, two conditions, one
+     * status (wine server/named_pipe.c pipe_end_get_file_info's
+     * FileNameInformation arm: `if (!pipe || !(name = get_object_name(
+     * &pipe->obj, &name_len ))) { set_error( STATUS_PIPE_DISCONNECTED );
+     * return; }`). Reporting the bare "\" here instead would be a fabricated
+     * name for a pipe that has none (Art. 12). Pinned by
+     * sem_pipe/pipe_root.c §2.
+     *
+     * The SECOND disjunct only. The first — pipe == 0, a client that outlived
+     * its server — still falls through below, and that is the older lifetime
+     * residual (docs/03 "A pipe end's own file information"; tagged
+     * todo_proskrnl in sem_pipe/{peek_state,pipe_file_info}.c). The oracle's
+     * guard is quoted whole because the two will be one statement here the
+     * day that item lands. */
+    if (pipe != 0 && pipe->name.Length == 0)
+    {
+        return STATUS_PIPE_DISCONNECTED;
+    }
     ULONG nameBytes = pipe != 0 ? pipe->name.Length : 0;
     ULONG full = (ULONG)sizeof(WCHAR) + nameBytes; /* "\" + name */
     *lengthOut = full;
@@ -1401,42 +1437,16 @@ static NTSTATUS NpfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, 
 
 /* --- open/close lifecycle --------------------------------------------------- */
 
-/* The client-side NtCreateFile path: attach to a listening instance. */
-static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
-                              PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
-                              ULONG fileAttributes, ULONG disposition, ULONG options,
-                              ULONG_PTR *information)
+/* Attach a CLIENT end to a listening instance of `pipe`.
+ *
+ * The one transcription of the oracle's named_pipe_open_file
+ * (wine server/named_pipe.c), and it has two callers because the oracle's
+ * does: an open BY NAME reaches it through the device's namespace, and an
+ * open relative to a SERVER END reaches it through pipe_server_open_file,
+ * which is a bare tail call onto the same function. A pipe with no name is
+ * reachable ONLY the second way, so the two must not drift (Art. 11). */
+static NTSTATUS NpfsAttachClient(PNPFS_PIPE pipe, PFILE_OBJECT file, ULONG_PTR *information)
 {
-    (void)device;
-    (void)relativeTo;
-    (void)grantedAccess; /* the RAW request is what this FS's rule reads:
-                          * file->desiredAccess, below */
-    (void)shareAccess;
-    (void)fileAttributes;
-    (void)options;
-    if (path->Length == 0)
-    {
-        /* The device ROOT open ("\??\PIPE\") — the WaitNamedPipe handle
-         * (kernelbase/sync.c WaitNamedPipeW; wineserver models it as the
-         * named-pipe directory object). fsContext == 0 marks it; the
-         * directory shape keeps NtRead/WriteFile off it (kernel/io/rw.c). */
-        file->fsContext = 0;
-        file->fcb = &NpfsRootFcb;
-        file->isDirectory = TRUE;
-        *information = FILE_OPENED;
-        return STATUS_SUCCESS;
-    }
-    if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF && disposition != FILE_CREATE)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    PNPFS_PIPE pipe = NpfsFindPipe(path);
-    if (pipe == 0)
-    {
-        return STATUS_OBJECT_NAME_NOT_FOUND;
-    }
-
     PNPFS_INSTANCE instance = 0;
     for (PLIST_ENTRY entry = pipe->instanceList.Flink; entry != &pipe->instanceList;
          entry = entry->Flink)
@@ -1520,6 +1530,88 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
     return STATUS_SUCCESS;
 }
 
+/* The client-side NtCreateFile path.
+ *
+ * THREE roots reach this FS, and the oracle gives each its own lookup_name
+ * (wine server/named_pipe.c), which is what decides the ladder below:
+ *
+ *   the device's root DIRECTORY (`relativeTo` with no pipe state, or no root
+ *     at all): named_pipe_dir_lookup_name forwards a non-empty name to the
+ *     device's flat namespace, and answers an EMPTY one with the directory
+ *     itself — whose open_file then refuses, because it has already been
+ *     turned into a file object (`if (dir->fd) return no_open_file(...)`);
+ *   a SERVER end: pipe_server_lookup_name refuses a non-empty name outright
+ *     — an end has no namespace to hold one — and resolves an empty name to
+ *     the end, whose open_file IS the client open. This is the only way to
+ *     reach a pipe that has no name;
+ *   a CLIENT end: no_lookup_name, whose two arms give two statuses. A NULL
+ *     name (the empty case) sets STATUS_OBJECT_TYPE_MISMATCH itself; a
+ *     non-empty one returns without an error and leaves the name unconsumed,
+ *     which open_named_object reports as STATUS_OBJECT_NAME_NOT_FOUND.
+ *
+ * Pinned by sem_pipe/pipe_root.c. */
+static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
+                              PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
+                              ULONG fileAttributes, ULONG disposition, ULONG options,
+                              ULONG_PTR *information)
+{
+    (void)device;
+    (void)grantedAccess; /* the RAW request is what this FS's rule reads:
+                          * file->desiredAccess, in NpfsAttachClient */
+    (void)shareAccess;
+    (void)fileAttributes;
+    (void)options;
+
+    PNPFS_END rootEnd = relativeTo != 0 ? relativeTo->fsContext : 0;
+    if (rootEnd != 0)
+    {
+        if (!rootEnd->isServer)
+        {
+            return path->Length != 0 ? STATUS_OBJECT_NAME_NOT_FOUND : STATUS_OBJECT_TYPE_MISMATCH;
+        }
+        if (path->Length != 0)
+        {
+            return STATUS_OBJECT_NAME_INVALID;
+        }
+        /* A server end keeps its pipe until its OWN handle closes (only the
+         * client's is dropped, by FSCTL_PIPE_DISCONNECT) — and that handle is
+         * the root being used here, so the state cannot exist. Asserted
+         * rather than given a fabricated status (Art. 12). */
+        ASSERT(rootEnd->instance->pipe != 0);
+        return NpfsAttachClient(rootEnd->instance->pipe, file, information);
+    }
+    if (path->Length == 0)
+    {
+        if (relativeTo != 0)
+        {
+            /* An empty name under the device's root DIRECTORY handle: the
+             * lookup resolves to that already-opened root, which refuses to
+             * be opened a second time. Not a second root handle. */
+            return STATUS_OBJECT_TYPE_MISMATCH;
+        }
+        /* The device ROOT open ("\??\PIPE\") — the WaitNamedPipe handle
+         * (kernelbase/sync.c WaitNamedPipeW; wineserver models it as the
+         * named-pipe directory object). fsContext == 0 marks it; the
+         * directory shape keeps NtRead/WriteFile off it (kernel/io/rw.c). */
+        file->fsContext = 0;
+        file->fcb = &NpfsRootFcb;
+        file->isDirectory = TRUE;
+        *information = FILE_OPENED;
+        return STATUS_SUCCESS;
+    }
+    if (disposition != FILE_OPEN && disposition != FILE_OPEN_IF && disposition != FILE_CREATE)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PNPFS_PIPE pipe = NpfsFindPipe(path);
+    if (pipe == 0)
+    {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    return NpfsAttachClient(pipe, file, information);
+}
+
 static void NpfsVfsCleanup(PFILE_OBJECT file)
 {
     PNPFS_END end = file->fsContext;
@@ -1573,9 +1665,7 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
             instance->pipe = 0;
             if (pipe->instanceCount == 0)
             {
-                RemoveEntryList(&pipe->listEntry);
-                MiFreePool(pipe->name.Buffer);
-                MiFreePool(pipe);
+                NpfsFreePipe(pipe);
             }
         }
     }
@@ -1762,40 +1852,150 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         }
     }
 
-    /* Resolve \??\pipe\<name> (or \Device\NamedPipe\<name>) to OUR device. */
+    /* Resolve the name to OUR device — three shapes, and the oracle decides
+     * them in two different places, which is what makes the ladder look
+     * lopsided.
+     *
+     * An EMPTY name is decided in the HANDLER: "pipes need a root directory
+     * even without a name" (wine server/named_pipe.c
+     * DECL_HANDLER(create_named_pipe)), so a root is REQUIRED and then merely
+     * has to resolve — `get_handle_obj( process, rootdir, 0, NULL )`, any
+     * type, no access — because server/object.c create_named_object's
+     * empty-name arm allocates an UNLINKED object and never reads the parent.
+     * An event handle is therefore a legal root, and only a handle naming
+     * nothing is refused.
+     *
+     * A NAMED create is decided in the LINK: named_pipe_link_name folds the
+     * device's root directory onto the device and refuses every other parent
+     * with STATUS_OBJECT_NAME_INVALID. So the name always lands in the
+     * device's own flat namespace whatever the root was — which is why a
+     * separator in it is a character rather than a path — and a root that
+     * cannot reach that namespace is a NAME error rather than a handle or
+     * type one.
+     *
+     * Pinned by sem_pipe/pipe_root.c. What is NOT distinguished here is the
+     * device FILE (`\Device\NamedPipe`) from its root DIRECTORY
+     * (`\Device\NamedPipe\`): both open through NpfsVfsCreate's root arm and
+     * carry no pipe state, so a named create under the former is accepted
+     * where the oracle refuses it. That is docs/21 W7's parser question —
+     * the same one `\??\C:` vs `\??\C:\` asks — and it is the pair's :2810. */
     PVOID deviceBody;
     UNICODE_STRING fsPath;
     PWSTR reparseBuffer = 0;
-    status =
-        ObpLookupParseObject(attributes, &IoDeviceType, 0, &deviceBody, &fsPath, &reparseBuffer);
-    if (!NT_SUCCESS(status))
+    PIO_DEVICE device = 0;
+    PFILE_OBJECT relativeRoot = 0;
+    BOOLEAN unnamed = attributes->ObjectName->Length == 0;
+
+    if (unnamed)
     {
-        return status;
+        if (attributes->RootDirectory == 0)
+        {
+            return STATUS_OBJECT_PATH_SYNTAX_BAD;
+        }
+        PVOID rootBody;
+        status = ObReferenceObjectByHandle(attributes->RootDirectory, 0, 0, ExGetPreviousMode(),
+                                           &rootBody, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        ObDereferenceObject(rootBody); /* resolved and dropped, as the oracle does */
+        fsPath.Buffer = 0;
+        fsPath.Length = 0;
+        fsPath.MaximumLength = 0;
+        device = NpfsDevice;
+        ObfReferenceObject(device);
     }
-    PIO_DEVICE device = deviceBody;
-    if (device->ops != &NpfsVfsOps || fsPath.Length == 0)
+    else if (attributes->RootDirectory != 0)
     {
-        status = STATUS_OBJECT_NAME_INVALID;
-        goto out_device;
+        /* THREE refusals in the oracle's order, and the order is separable
+         * from all three: the HANDLE is resolved above everything
+         * (server/request.c get_req_object_attributes, whose get_handle_obj
+         * failure returns before create_named_object is called); then
+         * lookup_named_object's FIRST guard refuses an ABSOLUTE name under
+         * ANY root that resolved; and only then does named_pipe_link_name ask
+         * whether this root reaches the pipe namespace. Asking about the root
+         * first passes every row where it IS the pipe device and answers
+         * STATUS_OBJECT_NAME_INVALID for the rest, where the oracle answers
+         * the syntax error. Pinned by sem_pipe/pipe_root.c §4's last block.
+         *
+         * A root that names something other than a File resolves fine on the
+         * oracle (get_handle_obj is untyped) and is refused one frame later
+         * by the link, so STATUS_OBJECT_TYPE_MISMATCH here is not a failure —
+         * it is "this root exists and does not reach the device". */
+        status = IopReferenceRelativeRoot(attributes->RootDirectory, &relativeRoot, &device);
+        if (!NT_SUCCESS(status) && status != STATUS_OBJECT_TYPE_MISMATCH)
+        {
+            return status;
+        }
+        BOOLEAN reachesDevice =
+            relativeRoot != 0 && device->ops == &NpfsVfsOps && relativeRoot->fsContext == 0;
+        if (relativeRoot != 0)
+        {
+            ObDereferenceObject(relativeRoot);
+            relativeRoot = 0;
+        }
+        /* Aliases the caller's buffer, as the ObpLookupParseObject arm below
+         * has always done. Safe because nothing between here and the memcpy
+         * into `nameCopy` parks — the reason kernel/io/file.c's own create
+         * captures to pool first (docs/20 R3a) is that it hands the path to a
+         * filesystem that walks it across parks, and npfs does not. A park
+         * added to this ladder makes the capture mandatory. */
+        fsPath = *attributes->ObjectName;
+        if (fsPath.Length >= sizeof(WCHAR) && fsPath.Buffer[0] == '\\')
+        {
+            /* ...and it is a SYNTAX error, not the STATUS_INVALID_PARAMETER
+             * NtCreateFile gives for the same mistake — that one is ntdll's
+             * own check on a path this call never goes through. */
+            status = STATUS_OBJECT_PATH_SYNTAX_BAD;
+            goto out_device;
+        }
+        if (!reachesDevice)
+        {
+            status = STATUS_OBJECT_NAME_INVALID;
+            goto out_device;
+        }
+    }
+    else
+    {
+        status = ObpLookupParseObject(attributes, &IoDeviceType, 0, &deviceBody, &fsPath,
+                                      &reparseBuffer);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        device = deviceBody;
+        if (device->ops != &NpfsVfsOps || fsPath.Length == 0)
+        {
+            status = STATUS_OBJECT_NAME_INVALID;
+            goto out_device;
+        }
     }
 
-    /* Find-or-create the pipe, then add an instance under its limit. */
-    PNPFS_PIPE pipe = NpfsFindPipe(&fsPath);
+    /* Find-or-create the pipe, then add an instance under its limit. An
+     * unnamed one is never FOUND — it is in no namespace, so every create
+     * mints a fresh one and a FILE_OPEN of it cannot exist. */
+    PNPFS_PIPE pipe = unnamed ? 0 : NpfsFindPipe(&fsPath);
     ULONG_PTR information = FILE_OPENED;
     if (pipe == 0 && disposition == FILE_OPEN)
     {
         /* Only FILE_CREATE and FILE_OPEN_IF may MINT a pipe; FILE_OPEN opens
          * an existing one or nothing (the oracle's disposition switch:
          * FILE_OPEN takes open_named_object, the other two
-         * create_named_object). */
-        status = STATUS_OBJECT_NAME_NOT_FOUND;
+         * create_named_object).
+         *
+         * With no name, open_named_object resolves to the ROOT ITSELF —
+         * lookup_named_object's `if (!name_tmp.len) ptr = NULL` case — and
+         * then type-checks it against named_pipe_ops, which no root ever is.
+         * So the answer is the TYPE mismatch rather than a missing name. */
+        status = unnamed ? STATUS_OBJECT_TYPE_MISMATCH : STATUS_OBJECT_NAME_NOT_FOUND;
         goto out_device;
     }
     if (pipe == 0)
     {
         pipe = MiAllocatePool(sizeof(NPFS_PIPE));
-        WCHAR *nameCopy = pipe != 0 ? MiAllocatePool(fsPath.Length) : 0;
-        if (pipe == 0 || nameCopy == 0)
+        WCHAR *nameCopy = (pipe != 0 && fsPath.Length != 0) ? MiAllocatePool(fsPath.Length) : 0;
+        if (pipe == 0 || (fsPath.Length != 0 && nameCopy == 0))
         {
             if (pipe != 0)
             {
@@ -1805,7 +2005,10 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
             goto out_device;
         }
         memset(pipe, 0, sizeof(*pipe));
-        memcpy(nameCopy, fsPath.Buffer, fsPath.Length);
+        if (nameCopy != 0)
+        {
+            memcpy(nameCopy, fsPath.Buffer, fsPath.Length);
+        }
         pipe->name.Buffer = nameCopy;
         pipe->name.Length = fsPath.Length;
         pipe->name.MaximumLength = fsPath.Length;
@@ -1816,7 +2019,15 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         pipe->outQuota = outboundQuota != 0 ? outboundQuota : 4096;
         pipe->defaultTimeout = defaultTimeout;
         InitializeListHead(&pipe->instanceList);
-        InsertTailList(&NpfsPipeList, &pipe->listEntry);
+        /* An UNNAMED pipe joins no namespace: nothing may ever FIND it, and
+         * its only door is a client open relative to this server end
+         * (NpfsVfsCreate). Its list entry is still a valid self-loop so the
+         * one teardown path can remove it unconditionally. */
+        InitializeListHead(&pipe->listEntry);
+        if (!unnamed)
+        {
+            InsertTailList(&NpfsPipeList, &pipe->listEntry);
+        }
         information = FILE_CREATED;
     }
     else if (pipe->instanceCount >= pipe->maxInstances)
@@ -1917,9 +2128,7 @@ out_empty_pipe:
      * OBJECT_NAME_NOT_FOUND. */
     if (information == FILE_CREATED && pipe->instanceCount == 0)
     {
-        RemoveEntryList(&pipe->listEntry);
-        MiFreePool(pipe->name.Buffer);
-        MiFreePool(pipe);
+        NpfsFreePipe(pipe);
     }
 out_device:
     if (device != 0)

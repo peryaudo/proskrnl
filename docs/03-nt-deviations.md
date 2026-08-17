@@ -3339,6 +3339,138 @@ oracle answers it is the spec (Art. 6). If a consumer ever convicts the disk
 arm, it is a new item with its own pin — not a widening of this one on the
 strength of symmetry.
 
+## What ROOT a named-pipe create and a pipe-relative open accept
+
+`NtCreateNamedPipeFile` and `NtCreateFile` both take an
+`OBJECT_ATTRIBUTES.RootDirectory`, and for the pipe device the answer is decided
+in two different places in the oracle — which is why the ladder in
+`fs/npfs/pipe.c` looks lopsided and why a single "does the root resolve" test
+gets it wrong. Pinned by `tests/ntapi/sem_pipe/pipe_root.c`; it takes
+`ntdll:pipe` from **60** failed assertions to **37** (`pipe.c:2842`-`:2936`,
+`test_empty_name`).
+
+**An EMPTY name is decided in the HANDLER, and the root goes unread.**
+`server/named_pipe.c` `DECL_HANDLER(create_named_pipe)`:
+
+```c
+if (!name.len)  /* pipes need a root directory even without a name */
+{
+    if (!objattr->rootdir) { set_error( STATUS_OBJECT_PATH_SYNTAX_BAD ); return; }
+    if (!(root = get_handle_obj( current->process, objattr->rootdir, 0, NULL ))) return;
+}
+```
+
+`get_handle_obj` with a NULL ops table and an access of 0 is *any object, no
+rights*, and `server/object.c` `create_named_object`'s empty-name arm then
+allocates the pipe with `alloc_object( ops )` and never touches `parent`. So an
+**event handle is a legal root for an unnamed pipe**, and the only refusals are
+a missing root (`STATUS_OBJECT_PATH_SYNTAX_BAD`) and a handle naming nothing
+(`STATUS_INVALID_HANDLE` — the handle's fault, not the name's).
+
+| root, with an empty name | answer |
+|---|---|
+| none | `STATUS_OBJECT_PATH_SYNTAX_BAD` |
+| a closed/bogus handle | `STATUS_INVALID_HANDLE` |
+| an event, a pipe end, the pipe device's root directory | an UNNAMED pipe, `FILE_CREATED` |
+| any of those, with `FILE_OPEN` | `STATUS_OBJECT_TYPE_MISMATCH` |
+
+The `FILE_OPEN` row is the one that reads as a bug and is not: `open_named_object`
+resolves an empty name to the **root itself** (`lookup_named_object`'s
+`if (!name_tmp.len) ptr = NULL`, which every `lookup_name` answers with "myself")
+and then type-checks it against `named_pipe_ops`, which no root ever is. So
+"open the unnamed pipe" is not a request that can exist, and the status is about
+the ROOT's type rather than about a missing name.
+
+**A NAMED create is decided in the LINK**, `server/named_pipe.c`
+`named_pipe_link_name`:
+
+```c
+if (parent->ops == &named_pipe_dir_ops) parent = &((struct named_pipe_device_file *)parent)->device->obj;
+if (parent->ops != &named_pipe_device_ops) { set_error( STATUS_OBJECT_NAME_INVALID ); return 0; }
+namespace_add( ((struct named_pipe_device *)parent)->pipes, name );
+```
+
+The device's root DIRECTORY is folded onto the device and every other parent is
+`STATUS_OBJECT_NAME_INVALID`. Two consequences that a status table does not show:
+
+- **the name always lands in the DEVICE's flat namespace, whatever root was
+  used** — so a pipe created relative to the root directory is openable by its
+  absolute `\??\pipe\<name>` afterwards, and a **component separator in the name
+  is a character rather than a path**: `"test3\pipe"` is one key
+  (`find_object` hashes the whole remaining name, `named_pipe_device_lookup_name`);
+- **a root that is not a File at all gets the NAME error, not a type error.**
+  The handler resolves it as any object and the refusal happens one frame later
+  in the link, so an event and a FAT directory answer identically. `kernel/io`'s
+  `IopReferenceRelativeRoot` reports `STATUS_OBJECT_TYPE_MISMATCH` for the first,
+  and npfs maps exactly that one status onto `STATUS_OBJECT_NAME_INVALID`.
+
+**The three refusals are ORDERED, and the order is separable from all three.**
+The handle is resolved above everything (`server/request.c`
+`get_req_object_attributes`, whose `get_handle_obj` failure returns before
+`create_named_object` is called), so a root naming nothing is
+`STATUS_INVALID_HANDLE` whatever the name is. Then `lookup_named_object`'s
+**first** guard refuses an **absolute** name under *any* root that resolved —
+`if (root) { if (name_tmp.len && name_tmp.str[0] == '\\') set_error(
+STATUS_OBJECT_PATH_SYNTAX_BAD ); }` — which fires before `lookup_name` and
+before `named_pipe_link_name`. Only then does the link ask whether this root
+reaches the pipe namespace. A ladder that asks about the ROOT first passes every
+row where the root *is* the pipe device and answers `STATUS_OBJECT_NAME_INVALID`
+for an absolute name under an event, a disk directory or a pipe end, where the
+oracle answers the syntax error; `sem_pipe/pipe_root.c` walks all four roots
+with the same absolute name for exactly that reason, and gate-check found the
+order wrong on the first draft. The syntax error is also not the
+`STATUS_INVALID_PARAMETER` `NtCreateFile` gives for the identical mistake — that
+one is ntdll's own check on a path this call never goes through (see "An
+ABSOLUTE name under a RootDirectory handle").
+
+**The pipe-relative OPEN is the third root, and it is how an unnamed pipe is
+reachable at all.** `pipe_server_lookup_name` refuses a non-empty name
+(`STATUS_OBJECT_NAME_INVALID` — an end has no namespace to hold one) and
+resolves an empty name to the end itself, whose `pipe_server_open_file` is a
+bare tail call onto `named_pipe_open_file` — the same function a by-name client
+open reaches. So a second such open answers `STATUS_PIPE_NOT_AVAILABLE` exactly
+as a busy pipe's by-name open does, and `NpfsAttachClient` (`fs/npfs/pipe.c`) is
+the one transcription both callers use (Art. 11). The CLIENT end is not a root
+in turn: `pipe_client_ops` carries `no_lookup_name`, whose two arms give two
+statuses — an empty name sets `STATUS_OBJECT_TYPE_MISMATCH` itself, a non-empty
+one returns with no error and leaves the name unconsumed, which
+`open_named_object` reports as `STATUS_OBJECT_NAME_NOT_FOUND`.
+
+An empty name under the device's root DIRECTORY handle is
+`STATUS_OBJECT_TYPE_MISMATCH` too, for a third reason:
+`named_pipe_dir_open_file` opens with `if (dir->fd) return no_open_file(...)`,
+and the root handle in hand has already been turned into a file object. It does
+**not** produce a second root handle.
+
+**An unnamed pipe has no name to report, and says so through the orphan's
+status.** `pipe_end_get_file_info`'s `FileNameInformation` arm is
+`if (!pipe || !(name = get_object_name( &pipe->obj, &name_len )))
+{ set_error( STATUS_PIPE_DISCONNECTED ); return; }` — one guard, two conditions,
+so a pipe that never had a name answers what an end whose pipe was taken away
+answers. `NpfsQueryName` implements the second disjunct; reporting the bare
+`"\"` there would be a fabricated name (Art. 12).
+
+**Only the second.** The first — a CLIENT end that outlived its server, where
+proskrnl drops `NPFS_INSTANCE.pipe` and the oracle's client holds its own
+reference until destroy — still falls through to a bare `"\"`, and that is the
+older lifetime residual recorded under "A pipe end's own file information"
+(tagged `todo_proskrnl` in `sem_pipe/peek_state.c` and
+`sem_pipe/pipe_file_info.c`, `ntdll:pipe`'s `:2356`-`:2369` plus `:2205`). The
+guard is quoted whole above because the two halves are one statement in the
+oracle and will be one here the day that item lands; today one of them is built.
+
+**DEVIATION — the device and its root directory are not distinguished.**
+`\Device\NamedPipe` opened without a trailing separator is a
+`named_pipe_device_file` on the oracle and `\Device\NamedPipe\` is a
+`named_pipe_dir`; only the second is folded onto the device by
+`named_pipe_link_name`, so a NAMED create relative to the first is
+`STATUS_OBJECT_NAME_INVALID` and proskrnl answers `STATUS_SUCCESS`. Both open
+through `NpfsVfsCreate`'s root arm and carry no pipe state, because
+`ObpLookupName` hands the parse object an empty remainder for both spellings —
+the same thing that keeps `\??\C:` from being told from `\??\C:\` (`docs/21` W7,
+the `\\.\c:` blocker). It is one item and it belongs to `kernel/ob`, not to
+npfs. The consumer is `ntdll:pipe:2810`.
+
 ## `FileNameInformation`'s length floor is the whole struct
 
 `NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than
