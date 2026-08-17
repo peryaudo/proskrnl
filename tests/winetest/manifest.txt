@@ -537,8 +537,36 @@ ntdll_test.exe:path
 #     and after, and a line-by-line histogram diff shows only :1197/:1199/
 #     :2055 removed and :2205 dropping 10 -> 1.
 #
-#     WHAT IS LEFT, per-line histogram of the 80 (76 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 76,
+#     FSCTL_PIPE_TRANSCEIVE IS NOW BUILT: 80 -> 68, and all twelve are one
+#     function (fs/npfs/pipe.c NpfsTransceive) transcribed from
+#     server/named_pipe.c pipe_end_transceive. Eleven of the twelve are
+#     REFUSALS and the verb's own round trip is the other one: the state
+#     question is `if (!pipe_end->connection)` answering
+#     `pipe_end->pipe ? INVALID_PIPE_STATE : PIPE_DISCONNECTED`, i.e.
+#     FSCTL_PIPE_PEEK's split asked through the same end->orphaned, so
+#     LISTENING, CLOSING and a DISCONNECTED *server* all report the STATE and
+#     only the client a server threw out reports the disconnection. Then
+#     STATUS_INVALID_READ_MODE for an end not in MESSAGE read mode (a mode of
+#     the END, which FilePipeInformation moves — not the pipe's type), then
+#     STATUS_PIPE_BUSY for a reader that already has buffered bytes, which is
+#     TOTAL: the input is not written either. The write half NEVER blocks
+#     (the oracle's own "transaction never blocks on write, so just queue a
+#     message without async"), so it is NpfsAppendBuffer and not NpfsWrite;
+#     the read half is the end's ordinary read machinery through one shared
+#     NpfsAwaitRead, minus exactly one rung — pipe_end_read's
+#     NONBLOCKING arm has no counterpart here, so a NOWAIT-mode end refuses a
+#     read with PIPE_EMPTY and PENDS a transceive in the same state. That
+#     pended arm is what gave kernel/io/ioctl.c its CUI-8 data legs (an ioctl
+#     that parks still owes its caller a reply). Landed in fs/npfs/pipe.c +
+#     kernel/io/ioctl.c, pinned by tests/ntapi/sem_pipe/transceive.c; docs/21
+#     W11, docs/03 "What FSCTL_PIPE_TRANSCEIVE writes, and what it refuses".
+#     The executed count is unchanged at 2377 and the todo markers at 31, and
+#     a line-by-line histogram diff shows only :1450/:1456/:1457/:1458 and
+#     :2069x8 removed with no other line moved — nothing was hiding behind
+#     the twelve.
+#
+#     WHAT IS LEFT, per-line histogram of the 68 (64 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 64,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
@@ -547,18 +575,19 @@ ntdll_test.exe:path
 #             = 35, the largest cluster. The `\Device\NamedPipe` device-root
 #             surface: creating and opening a pipe by an EMPTY relative name,
 #             and the root's own fsctls (:2787 FSCTL_PIPE_WAIT must be
-#             ILLEGAL_FUNCTION there).
+#             ILLEGAL_FUNCTION there). The :2751 eight are FOUR rules asked
+#             twice, once through `\Device\NamedPipe` and once through
+#             `\Device\NamedPipe\`, whose ioctl ladders differ only in
+#             FSCTL_PIPE_WAIT (named_pipe_dir_ioctl falls through to
+#             named_pipe_device_ioctl for everything else): DISCONNECT and
+#             TRANSCEIVE are PIPE_DISCONNECTED there, IMPERSONATE is
+#             ILLEGAL_FUNCTION, QUERY_CLIENT_PROCESS is INVALID_PARAMETER, and
+#             the four npfs already answers correctly are the NOT_SUPPORTED
+#             ones. Read off the oracle, NOT measured per line.
 #       - 13  test_async_cancel_on_handle_close (:3094x8, :3114x4, :3111x1) —
 #             what a CLOSE does to a pended request's completion packet.
-#       - 12  FSCTL_PIPE_TRANSCEIVE, which npfs does not implement and
-#             refuses loudly: :2069x8 in test_pipe_state and
-#             :1450/:1456/:1457/:1458 in test_transceive. Now the second
-#             cluster and the only one of these whose subject is a whole
-#             unbuilt verb; the state ladder above already answers what
-#             test_pipe_state asks of it (INVALID_PIPE_STATE in the CLOSING
-#             state, the state's own status elsewhere).
 #       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
-#             pipe handle.
+#             pipe handle. Now the third cluster.
 #       -  5  test_pipe_local_info (:2356-:2369) — FilePipeLocalInformation's
 #             NamedPipeType/Configuration/MaximumInstances/InboundQuota/
 #             OutboundQuota reported as 0 on a CLIENT whose server has closed.
