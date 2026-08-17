@@ -86,6 +86,10 @@ struct vsnd_stream
     double src_frac;         /* feeder resampler position, [0,1) */
     float vols[2];
     BOOL started;
+    BOOL ever_started;       /* event pacing begins at first Start and never
+                              * stops again (render.c: "Still receiving
+                              * events!" after Stop/Reset -- the winepulse
+                              * timer-loop shape) */
     HANDLE event;
 };
 
@@ -402,6 +406,11 @@ static NTSTATUS WINAPI feeder_proc(void *arg)
 
         if (!any || !dev_started)
         {
+            /* Idle tick: no mixing, but the event cadence keeps running for
+             * every stream that has ever started (see ever_started). */
+            for (s = streams; s; s = s->next)
+                if (s->ever_started && s->event)
+                    NtSetEvent(s->event, NULL);
             vsnd_drop_lock();
             delay.QuadPart = -(LONGLONG)VSND_DEF_PERIOD;   /* one period */
             NtDelayExecution(FALSE, &delay);
@@ -437,7 +446,7 @@ static NTSTATUS WINAPI feeder_proc(void *arg)
 
         vsnd_take_lock();
         for (s = streams; s; s = s->next)
-            if (s->started && s->flow == eRender && s->event)
+            if (s->ever_started && s->event)
                 NtSetEvent(s->event, NULL);
         vsnd_drop_lock();
     }
@@ -525,7 +534,17 @@ NTSTATUS vsnd_get_endpoint_ids(void *args)
 
     vsnd_take_lock();
     probe_nodes();
-    node = params->flow == eRender ? dev_node : cap_node;
+    node = params->flow == eRender ? dev_node : -1;
+    if (params->flow == eCapture && cap_node >= 0)
+    {
+        /* AUD-3 is unbuilt: an endpoint whose every Initialize refuses is a
+         * half-truth Wine's own tests treat as a usable device (render.c's
+         * session blocks call through the interface a refused GetService
+         * never produced). Withholding it is the truthful answer -- the
+         * capture PATH does not exist yet -- and named here per Art. 12. */
+        vsnd_report("winevsnd: capture node Snd%u withheld from enumeration (AUD-3 unbuilt)\n",
+                    cap_node);
+    }
     vsnd_drop_lock();
 
     if (node >= 0)
@@ -573,7 +592,14 @@ NTSTATUS vsnd_get_endpoint_ids(void *args)
 static HRESULT parse_format(const WAVEFORMATEX *fmt, enum sample_kind *kind)
 {
     if (!fmt) return E_POINTER;
-    if (!fmt->nChannels || fmt->nChannels > 2 || !fmt->nSamplesPerSec)
+    /* Up to 32 channels, PulseAudio's own ceiling (PA_CHANNELS_MAX) and so
+     * the winepulse acceptance set the oracle pins: the winmm wave pair
+     * opens 4- and 8-channel extensible formats, and mmdevapi's spatial
+     * stream multiplexes its 12 static objects as a 12-channel float
+     * stream. The feeder mixes the FRONT PAIR and drops the rest -- a
+     * downmix policy above the boundary, stated here rather than hidden
+     * (docs/23 s5). */
+    if (!fmt->nChannels || fmt->nChannels > 32 || !fmt->nSamplesPerSec)
         return AUDCLNT_E_UNSUPPORTED_FORMAT;
 
     switch (fmt->wFormatTag)
@@ -732,6 +758,7 @@ NTSTATUS vsnd_start(void *args)
         dev_started = TRUE;
     }
     stream->started = TRUE;
+    stream->ever_started = TRUE;
     return unlock_result(&params->result, S_OK);
 }
 

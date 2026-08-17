@@ -1016,11 +1016,24 @@ winevsnd: $(WINEVSND)
 # winmm above, msacm32 (winmm's format-conversion import) and oleaut32
 # (mmdevapi's import) beside. Stripped like every baked dll. ole32/combase/
 # coml2/user32/gdi32 are already in the CUI + GUI strip sets.
-WINESTRIP_AUDIO_NAMES := mmdevapi winmm msacm32 oleaut32
+WINESTRIP_AUDIO_NAMES := mmdevapi winmm msacm32 oleaut32 dsound quartz msvfw32 mcicda
 WINESTRIP_AUDIO_DLLS := $(foreach d,$(WINESTRIP_AUDIO_NAMES),$(WINESTRIP)/$(d).dll)
 # oleaut32's strip rule is already eval'd with the applet set below; one
 # rule per dll (make warns on a duplicate).
 $(foreach d,$(filter-out oleaut32,$(WINESTRIP_AUDIO_NAMES)),$(eval $(call WINESTRIP_RULE,$(d))))
+
+# The ACM codec modules winmm's PlaySound decodes through (all pure PE in
+# the pinned tree; their drivers32 registry aliases ride wine.inf's kept
+# AddReg payload — only the files were missing). Same strip treatment,
+# their own suffix.
+WINESTRIP_ACM_NAMES := imaadp32 msadp32 msg711 msgsm32 l3codeca
+define WINESTRIP_ACM_RULE
+$(WINESTRIP)/$(1).acm: $(WINE_PE)/$(1).acm/x86_64-windows/$(1).acm
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach d,$(WINESTRIP_ACM_NAMES),$(eval $(call WINESTRIP_ACM_RULE,$(d))))
+WINESTRIP_ACM_FILES := $(foreach d,$(WINESTRIP_ACM_NAMES),$(WINESTRIP)/$(d).acm)
 
 winestrip-audio: $(WINESTRIP_AUDIO_DLLS)
 .PHONY: winestrip-audio
@@ -1037,7 +1050,7 @@ winestrip-audio: $(WINESTRIP_AUDIO_DLLS)
 WINE_INF_AUDIO := $(BUILD)/wine-proskrnl-audio.inf
 $(WINE_INF_AUDIO): third_party/wine/loader/wine.inf tools/filter_inf.py
 	@mkdir -p $(dir $@)
-	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll \
+	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll,dsound.dll \
 	    third_party/wine/loader/wine.inf $@
 
 # Everything an audio-capable image adds on top of the CUI + GUI payloads:
@@ -1046,12 +1059,13 @@ $(WINE_INF_AUDIO): third_party/wine/loader/wine.inf tools/filter_inf.py
 # gui5con conhost precedent). run.sh audio (WASAPI half) and the winetest
 # audio image both take this one list (Art. 11: one spelling).
 AUDIOFILES := $(foreach d,$(WINESTRIP_AUDIO_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+              $(foreach d,$(WINESTRIP_ACM_NAMES),win:$(WINESTRIP)/$(d).acm=windows/system32/$(d).acm) \
               win:$(WINEVSND)=windows/system32/winevsnd.drv \
               win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll \
               win:$(WINESTRIP)/shlwapi.dll=windows/system32/shlwapi.dll \
               win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll \
               win:$(WINE_INF_AUDIO)=windows/inf/wine.inf
-AUDIO_PAYLOAD := $(WINESTRIP_AUDIO_DLLS) $(WINEVSND) $(WINESTRIP)/atl100.dll \
+AUDIO_PAYLOAD := $(WINESTRIP_AUDIO_DLLS) $(WINESTRIP_ACM_FILES) $(WINEVSND) $(WINESTRIP)/atl100.dll \
                  $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll $(WINE_INF_AUDIO)
 
 audio-payload: $(AUDIO_PAYLOAD)
