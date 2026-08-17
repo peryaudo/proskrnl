@@ -148,28 +148,42 @@ static unsigned int slot_call( unsigned int index, enum prsk_slot_op op,
 static unsigned int claim_slot(void)
 {
     unsigned int *slot = prsk_thread_slot();
-    unsigned int i;
+    unsigned int i, attempt;
 
     if (!slot) return 0;
     if (*slot) return *slot;
 
-    for (i = 0; i < PRSK_SLOT_COUNT; i++)
+    /* A full ring is usually not full: threads that died without a DETACH
+     * (every WOW64 thread does -- see gc_request in transport.h) still hold
+     * their slots. Ask the server to sweep the dead and retry; the loud
+     * refusal below is only for a ring 64 LIVE threads hold. */
+    for (attempt = 0; attempt < 20; attempt++)
     {
-        LONG expected = PRSK_SLOT_FREE;
-        if (!__atomic_compare_exchange_n( &ring->slots[i].state, &expected, PRSK_SLOT_IDLE, FALSE,
-                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
-            continue;
-        ring->slots[i].pid = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess );
-        ring->slots[i].tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
-        if (done_event( i ) && !slot_call( i, PRSK_OP_ATTACH, NULL ))
+        for (i = 0; i < PRSK_SLOT_COUNT; i++)
         {
-            *slot = i + 1;
-            return *slot;
+            LONG expected = PRSK_SLOT_FREE;
+            if (!__atomic_compare_exchange_n( &ring->slots[i].state, &expected, PRSK_SLOT_IDLE,
+                                              FALSE, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+                continue;
+            ring->slots[i].pid = HandleToULong( NtCurrentTeb()->ClientId.UniqueProcess );
+            ring->slots[i].tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+            if (done_event( i ) && !slot_call( i, PRSK_OP_ATTACH, NULL ))
+            {
+                *slot = i + 1;
+                return *slot;
+            }
+            ring->slots[i].pid = 0;
+            ring->slots[i].tid = 0;
+            __atomic_store_n( &ring->slots[i].state, PRSK_SLOT_FREE, __ATOMIC_RELEASE );
+            return 0;
         }
-        ring->slots[i].pid = 0;
-        ring->slots[i].tid = 0;
-        __atomic_store_n( &ring->slots[i].state, PRSK_SLOT_FREE, __ATOMIC_RELEASE );
-        return 0;
+        {
+            LARGE_INTEGER delay;
+            __atomic_store_n( &ring->gc_request, 1, __ATOMIC_RELEASE );
+            NtSetEvent( doorbell, NULL );
+            delay.QuadPart = -500000ll; /* 50 ms for the server's sweep */
+            NtDelayExecution( FALSE, &delay );
+        }
     }
     /* Art. 12: say which limit was hit, do not silently share a slot. */
     prsk_log( "[KTEST] wineserver-lite: all %d transport slots are claimed\n", PRSK_SLOT_COUNT );

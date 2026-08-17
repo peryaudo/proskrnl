@@ -181,8 +181,35 @@ static struct client_slot *client_for_pid( unsigned int pid )
 static void drop_client( unsigned int index )
 {
     unsigned int last = client_count - 1;
+    unsigned int pid = client_slots[index].pid;
+    unsigned int i, reclaimed = 0;
 
-    prsk_log( "[KTEST] gui3 client gone pid=%u\n", client_slots[index].pid );
+    prsk_log( "[KTEST] gui3 client gone pid=%u\n", pid );
+    /* Free the dead process's transport slots. The client-side release
+     * (prsk_client_thread_detach) only runs on DLL_THREAD_DETACH, which
+     * normal process exit never delivers -- LdrShutdownProcess sends only
+     * PROCESS_DETACH -- so without this sweep every exited GUI process
+     * leaked one slot per calling thread until the 65th claim refused
+     * (the SAFlashPlayer relaunch-after-playback bug: an audio-triggered
+     * storm of short-lived COM processes drained all 64). Safe here: this
+     * wait is the only authority on client death, the serve loop is
+     * single-threaded, and no thread of the dead process can touch its
+     * slots again. pid is zeroed BEFORE the release store publishes FREE,
+     * exactly as the client-side release orders it, so a concurrent
+     * claimer that wins the FREE->IDLE CAS never sees the stale owner. */
+    for (i = 0; i < PRSK_SLOT_COUNT; i++)
+    {
+        struct prsk_slot *slot = &ring->slots[i];
+
+        if ((unsigned int)slot->pid != pid) continue;
+        if (__atomic_load_n( &slot->state, __ATOMIC_ACQUIRE ) == PRSK_SLOT_FREE) continue;
+        slot->pid = 0;
+        slot->tid = 0;
+        __atomic_store_n( &slot->state, PRSK_SLOT_FREE, __ATOMIC_RELEASE );
+        reclaimed++;
+    }
+    if (reclaimed)
+        prsk_log( "[KTEST] gui3 reclaimed %u transport slot(s) from pid=%u\n", reclaimed, pid );
     /* The reap closes the RECORD's handle. For a record minted before its
      * transport attach (get_process_idle_event), that is the mint-time
      * duplicate, not this slot's own NtOpenProcess handle -- the two alias
@@ -194,6 +221,66 @@ static void drop_client( unsigned int index )
     prsk_reap_client( client_slots[index].client ); /* closes the record's handle */
     client_slots[index] = client_slots[last];
     client_count--;
+}
+
+/* A slot claimer found the ring full and asked for a sweep (gc_request in
+ * transport.h): free every claimed slot whose thread is dead. A thread is
+ * dead when its id no longer resolves (STATUS_INVALID_CID), when the id
+ * resolves into a DIFFERENT process (the dead thread's id was recycled --
+ * the recycler claims its own slot, never this one), or when the thread
+ * object is signalled. Its server records are reaped now, exactly as a
+ * DETACH would have; a live thread's slot is never touched. Runs on the
+ * serve thread between dispatches, so no call is in flight on a swept
+ * slot from the server's side, and the claiming thread being dead is what
+ * guarantees none is in flight from the client's. */
+static void gc_dead_thread_slots(void)
+{
+    unsigned int i, reclaimed = 0;
+
+    for (i = 0; i < PRSK_SLOT_COUNT; i++)
+    {
+        struct prsk_slot *slot = &ring->slots[i];
+        OBJECT_ATTRIBUTES attr;
+        CLIENT_ID id;
+        THREAD_BASIC_INFORMATION tbi;
+        LARGE_INTEGER zero;
+        HANDLE thread = NULL;
+        unsigned int pid, tid, dead = 0;
+
+        if (__atomic_load_n( &slot->state, __ATOMIC_ACQUIRE ) == PRSK_SLOT_FREE) continue;
+        pid = slot->pid;
+        tid = slot->tid;
+        /* tid 0 is a claim in flight: the claimer won the FREE->IDLE CAS
+         * but has not written its ids yet. Not dead -- do not steal it. */
+        if (!tid) continue;
+
+        InitializeObjectAttributes( &attr, NULL, 0, NULL, NULL );
+        id.UniqueProcess = 0;
+        id.UniqueThread = ULongToHandle( tid );
+        if (NtOpenThread( &thread, SYNCHRONIZE | THREAD_QUERY_LIMITED_INFORMATION, &attr, &id ))
+            dead = 1;
+        else
+        {
+            if (!NtQueryInformationThread( thread, ThreadBasicInformation, &tbi, sizeof(tbi),
+                                           NULL ) &&
+                HandleToULong( tbi.ClientId.UniqueProcess ) != pid )
+                dead = 1;
+            zero.QuadPart = 0;
+            if (!dead && NtWaitForSingleObject( thread, FALSE, &zero ) == STATUS_WAIT_0) dead = 1;
+            NtClose( thread );
+        }
+        if (!dead) continue;
+
+        {
+            struct client_slot *owner = client_for_pid( pid );
+            if (owner) prsk_reap_thread( owner->client, tid );
+        }
+        slot->pid = 0;
+        slot->tid = 0;
+        __atomic_store_n( &slot->state, PRSK_SLOT_FREE, __ATOMIC_RELEASE );
+        reclaimed++;
+    }
+    prsk_log( "[KTEST] gui3 slot sweep reclaimed %u dead-thread slot(s)\n", reclaimed );
 }
 
 /* Serve every slot that has a published request. Rescanned in full after
@@ -276,6 +363,8 @@ static void serve_forever(void)
         status = NtWaitForMultipleObjects( count, waits, WaitAny, FALSE, NULL );
         if (status == STATUS_WAIT_0)
         {
+            if (__atomic_exchange_n( &ring->gc_request, 0, __ATOMIC_ACQ_REL ))
+                gc_dead_thread_slots();
             serve_ready_slots();
             continue;
         }
