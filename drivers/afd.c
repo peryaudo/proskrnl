@@ -209,9 +209,20 @@ typedef struct AFD_SOCKET
     /* The synchronous-handle park target (the frontier row): every
      * readiness edge sets it; the blocking read/write loop consumes it. */
     KEVENT syncWait;
+
+    /* The thread-exit sweep's walk (AfdCancelThreadIo): every
+     * FILE_OBJECT-backed socket is on AfdSocketList from create/mint to
+     * Close. Accept-queue shells never join — they can hold no parked
+     * request. */
+    LIST_ENTRY allSocketsEntry;
 } AFD_SOCKET, *PAFD_SOCKET;
 
 static PIO_DEVICE AfdDevice;
+
+/* Every live FILE_OBJECT-backed socket, for the thread-exit sweep. Walked
+ * and mutated from syscall/thread context only — atomic under the
+ * no-preemption model like the rest of AFD state. */
+static LIST_ENTRY AfdSocketList;
 
 /* --- err_t -> NTSTATUS ------------------------------------------------------ *
  * Statuses chosen to survive ws2_32's NtStatusToWSAError mapping
@@ -483,10 +494,12 @@ static NTSTATUS AfdMintSocketHandle(PAFD_SOCKET sock, PEPROCESS owner, ACCESS_MA
     if (!NT_SUCCESS(status))
     {
         sock->file = 0;
+        file->fsContext = 0;       /* the caller still owns (and frees) the shell */
         ObDereferenceObject(file); /* runs the delete path; Cleanup never ran
                                     * and nothing pends on a fresh mint */
         return status;
     }
+    InsertTailList(&AfdSocketList, &sock->allSocketsEntry);
     ObDereferenceObject(file); /* the handle's reference remains */
     return status;
 }
@@ -1725,6 +1738,7 @@ static NTSTATUS AfdVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE
     file->fsContext = sock;
     file->fcb = &sock->fcb;
     file->isDirectory = FALSE;
+    InsertTailList(&AfdSocketList, &sock->allSocketsEntry);
     *information = FILE_OPENED;
     return STATUS_SUCCESS;
 }
@@ -1843,6 +1857,7 @@ static void AfdVfsClose(PFILE_OBJECT file)
     {
         return;
     }
+    RemoveEntryList(&sock->allSocketsEntry);
     while (!IsListEmpty(&sock->dgramQueue))
     {
         PLIST_ENTRY entry = RemoveHeadList(&sock->dgramQueue);
@@ -2247,8 +2262,30 @@ static const IO_VFS_OPS AfdOps = {
     .CancelPending = AfdVfsCancelPending,
 };
 
+/* The thread-exit sweep (kernel/ps/thread.c PspExitCurrentThread): a dying
+ * thread's parked SOCKET I/O completes STATUS_CANCELLED — pinned
+ * sem_net/afd_cancel_close.c, the ws2_32:afd test_async_thread_termination
+ * contract ("asyncs without completion port are always cancelled on thread
+ * exit"). Per-DEVICE deliberately: npfs keeps its measured don't-sweep
+ * behavior (docs/03 "CUI-3 SCM notes"), so the sweep lives here rather
+ * than in the engine. */
+void AfdCancelThreadIo(struct KTHREAD *thread)
+{
+    if (AfdSocketList.Flink == 0)
+    {
+        return; /* before AfdInitialize: nothing exists to sweep */
+    }
+    IOP_CANCEL_FILTER byIssuer = {.issuer = thread};
+    for (PLIST_ENTRY entry = AfdSocketList.Flink; entry != &AfdSocketList; entry = entry->Flink)
+    {
+        PAFD_SOCKET sock = CONTAINING_RECORD(entry, AFD_SOCKET, allSocketsEntry);
+        AfdSweepRequests(sock, &byIssuer, STATUS_CANCELLED);
+    }
+}
+
 void AfdInitialize(void)
 {
+    InitializeListHead(&AfdSocketList);
     /* FILE_DEVICE_NAMED_PIPE, not NETWORK: sockets report the pipe device
      * type (measured on the oracle; sem_net/afd_open.c) — which is what
      * makes kernelbase's GetFileType answer FILE_TYPE_PIPE for them. */

@@ -25,6 +25,7 @@
 #include "kernel/syscall/uaccess.h"
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
+#include "drivers/afd.h" /* Net-2: the thread-exit socket I/O sweep */
 #include "kernel/init/trace.h"
 #include "kernel/lib/dbgprint.h"
 #include "arch/x86_64/mmu.h"
@@ -305,6 +306,13 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
     PEPROCESS process = tcb->process;
 
     PspReapExitedThreads(); /* earlier exits are TERMINATED by now */
+
+    /* Net-2: a dying thread's parked SOCKET I/O is cancelled — the pinned
+     * per-device contract (drivers/afd.c AfdCancelThreadIo says why it is
+     * AFD's and not the engine's: npfs measurably does NOT sweep). Before
+     * the retire, in ordinary thread context, so the completions' IOSB
+     * writes and event signals run like any cancel's. */
+    AfdCancelThreadIo(tcb);
 
     /* The last thread's exit is the process's exit: close handles (in thread
      * context, before the address space is torn down) and signal the process
