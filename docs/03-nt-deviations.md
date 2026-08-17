@@ -3720,3 +3720,11 @@ only ever the probe: `ProcessTimes`, `ProcessIoCounters`,
 caller outright. `NtQueryTimer` had the same shape (`TIMER_BASIC_INFORMATION` opens with a
 `LARGE_INTEGER`). All six probe for alignment 1 now; pinned by
 `tests/ntapi/sem_ps/query_unaligned_out.c`.
+
+Two sites in the same class are not WOW64-reachable and were fixed anyway, because each
+one's own probe already admitted the alignment it then violated: `NtQueryKey`'s
+`KeyNameInformation` wrote the key path through a `WCHAR *` derived from a buffer probed
+for alignment 1 (an odd buffer misaligns every unit of the path), and `NtQueryObject`'s
+`ObjectNameInformation` / `ObjectTypeInformation` stored an 8-byte `Buffer` pointer at
+offset 8 of a buffer probed for alignment 4. Both stage their headers now; the registry
+half is pinned by `tests/ntapi/sem_reg/key_name_unaligned.c`.
