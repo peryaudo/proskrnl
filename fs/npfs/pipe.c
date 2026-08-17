@@ -875,6 +875,24 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
     return STATUS_SUCCESS;
 }
 
+/* FSCTL_PIPE_PEEK, transcribed from wine/server/named_pipe.c pipe_end_peek
+ * and pinned by sem_pipe/peek_state.c. Three of its rules read as bugs:
+ *
+ *   - the LENGTH floor is decided above the state, so a short buffer on a
+ *     listening pipe reports the length and not the state;
+ *   - CLOSING is not BROKEN while there is something left to read. The
+ *     oracle's `if (!list_empty( &pipe_end->message_queue )) break;` makes
+ *     the QUEUE the discriminator, not the state word, so one handle
+ *     answers SUCCESS and then STATUS_PIPE_BROKEN across the read that
+ *     empties it;
+ *   - a DISCONNECTED end answers `pipe_end->pipe ? STATUS_INVALID_PIPE_STATE
+ *     : STATUS_PIPE_DISCONNECTED`, and FSCTL_PIPE_DISCONNECT drops the pipe
+ *     for the CLIENT only — so the SERVER that did the disconnecting
+ *     complains about its STATE where its client reports a disconnection.
+ *     `end->orphaned` is that end (the reading NpfsFlush's comment above
+ *     makes the same identification), and it is asked FIRST because
+ *     proskrnl's state word belongs to the INSTANCE: a re-listened instance
+ *     moves back to CONNECTED under an end that was orphaned off it. */
 static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_PTR *infoOut)
 {
     PNPFS_INSTANCE instance = end->instance;
@@ -884,31 +902,68 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
-    if (NpfsEndDisconnected(end))
+    if (end->orphaned)
     {
         return STATUS_PIPE_DISCONNECTED;
+    }
+    switch (instance->state)
+    {
+    case FILE_PIPE_CONNECTED_STATE:
+        break;
+    case FILE_PIPE_CLOSING_STATE:
+        if (IsListEmpty(&queue->bufferList))
+        {
+            return STATUS_PIPE_BROKEN;
+        }
+        break;
+    default:
+        return STATUS_INVALID_PIPE_STATE;
+    }
+
+    /* How much comes back is the caller's room, bounded by what is queued —
+     * and, on a MESSAGE-TYPE pipe, by the FIRST message. The type is the
+     * PIPE's (`pipe_end->pipe->message_mode`, fixed at create); this end's
+     * read mode does not appear in the oracle's function at all, so a
+     * message-type pipe read in byte mode still truncates and still
+     * overflows. A byte-type pipe never overflows however much it leaves
+     * behind — the 1-byte PeekNamedPipe poll asks for exactly that
+     * (docs/review-2026-07 §9).
+     *
+     * `instance->pipe` is 0 for an end whose SERVER handle closed, so a
+     * client outliving its server forgets the type and reports a byte
+     * pipe's answers. Older lifetime gap, tagged todo_proskrnl in
+     * sem_pipe/peek_state.c and sem_pipe/pipe_file_info.c (docs/03). */
+    ULONG available = queue->bytesAvailable;
+    ULONG capacity = outputLength - fixed;
+    ULONG messageLength = 0;
+    if (capacity > available)
+    {
+        capacity = available;
+    }
+    if (available != 0 && instance->pipe != 0 && instance->pipe->pipeType == FILE_PIPE_TYPE_MESSAGE)
+    {
+        PNPFS_BUFFER first = CONTAINING_RECORD(queue->bufferList.Flink, NPFS_BUFFER, listEntry);
+        messageLength = first->length - first->consumed;
+        if (capacity > messageLength)
+        {
+            capacity = messageLength;
+        }
     }
 
     FILE_PIPE_PEEK_BUFFER *peek = output;
     memset(peek, 0, fixed);
     peek->NamedPipeState = instance->state;
-    peek->ReadDataAvailable = queue->bytesAvailable;
-    if (instance->pipe != 0 && instance->pipe->pipeType == FILE_PIPE_TYPE_MESSAGE)
-    {
-        for (PLIST_ENTRY entry = queue->bufferList.Flink; entry != &queue->bufferList;
-             entry = entry->Flink)
-        {
-            peek->NumberOfMessages++;
-        }
-        if (!IsListEmpty(&queue->bufferList))
-        {
-            PNPFS_BUFFER first = CONTAINING_RECORD(queue->bufferList.Flink, NPFS_BUFFER, listEntry);
-            peek->MessageLength = first->length - first->consumed;
-        }
-    }
+    peek->ReadDataAvailable = available;
+    /* NumberOfMessages is the oracle's literal 0 under its own FIXME, and
+     * the oracle is the spec where it answers at all (Art. 6) — the same
+     * trade FileStandardInformation's DeletePending records
+     * (sem_pipe/pipe_file_info.c). Nothing in the boundary reads it:
+     * PeekNamedPipe reports MessageLength and drops this field. */
+    peek->MessageLength = messageLength;
 
-    /* Preview without consuming: copy from the head of the stream. */
-    ULONG capacity = outputLength - fixed;
+    /* Preview without consuming: copy from the head of the stream. The
+     * bound above already stops a message-type reply at the first message,
+     * so this loop crosses buffers only for a byte pipe. */
     ULONG copied = 0;
     for (PLIST_ENTRY entry = queue->bufferList.Flink;
          entry != &queue->bufferList && copied < capacity; entry = entry->Flink)
@@ -921,21 +976,16 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
         }
         memcpy(peek->Data + copied, chunk->data + chunk->consumed, take);
         copied += take;
-        if (end->readMode == FILE_PIPE_MESSAGE_MODE)
-        {
-            break; /* preview stops at the first message */
-        }
     }
     *infoOut = fixed + copied;
-    /* Only a truncated MESSAGE overflows. On a byte-mode read there is no
-     * message to truncate, so leaving data behind is ordinary -- reporting
-     * STATUS_BUFFER_OVERFLOW whenever anything remained made the normal
-     * 1-byte PeekNamedPipe poll fail (docs/review-2026-07 §9). */
-    if (end->readMode == FILE_PIPE_MESSAGE_MODE && copied < queue->bytesAvailable)
-    {
-        return STATUS_BUFFER_OVERFLOW;
-    }
-    return STATUS_SUCCESS;
+    /* The oracle's status compares against the CLAMPED reply size, and this
+     * one compares against what was actually copied. The two are the same
+     * number only while the queue's bytesAvailable equals the sum of its
+     * buffers' unread bytes — an invariant the append and drain paths keep,
+     * and which this line silently makes load-bearing for a STATUS rather
+     * than only for a byte count. Asserted where it is used. */
+    ASSERT(copied == capacity);
+    return messageLength > copied ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
 }
 
 static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,

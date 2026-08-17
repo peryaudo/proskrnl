@@ -3089,6 +3089,79 @@ describes a pipe that is no longer there. Tagged `todo_proskrnl` in
 lifetime is fixed; `ntdll:pipe`'s five remaining `test_pipe_local_info` failures
 (`:2356`-`:2369`) are the same gap.
 
+## What `FSCTL_PIPE_PEEK` answers, by state and by the PIPE's type
+
+The whole verb is `server/named_pipe.c` `pipe_end_peek`, twenty lines that decide four
+things in an order none of them follows from the verb's name. Transcribed into
+`fs/npfs/pipe.c` `NpfsPeek` and pinned by `tests/ntapi/sem_pipe/peek_state.c`; it takes
+`ntdll:pipe` from **99** failed assertions to **80** (`pipe.c:2055`×6, `:2205` 10→1,
+`:1197`/`:1199`×2 each).
+
+| this end | queue | answer |
+| --- | --- | --- |
+| buffer shorter than `offsetof(FILE_PIPE_PEEK_BUFFER, Data)` | any | `STATUS_INFO_LENGTH_MISMATCH` |
+| orphaned (a server disconnected it) | any | `STATUS_PIPE_DISCONNECTED` |
+| `FILE_PIPE_LISTENING_STATE` | any | `STATUS_INVALID_PIPE_STATE` |
+| `FILE_PIPE_DISCONNECTED_STATE`, not orphaned (the disconnecting SERVER) | any | `STATUS_INVALID_PIPE_STATE` |
+| `FILE_PIPE_CLOSING_STATE` | empty | `STATUS_PIPE_BROKEN` |
+| `FILE_PIPE_CLOSING_STATE` | has data | the fill below |
+| `FILE_PIPE_CONNECTED_STATE` | any | the fill below |
+
+**The LENGTH floor is decided above the state.** A four-byte reply buffer on a listening
+pipe reports the length, not the state — the two guards are one `if` apart in the oracle
+and an implementation that validates the object before the arguments answers the state.
+
+**`CLOSING` is not `BROKEN` while there is anything left to read.** The oracle's arm is
+`if (!list_empty( &pipe_end->message_queue )) break;`, so the QUEUE is the discriminator
+and the state word alone is not: one handle answers `STATUS_SUCCESS` and then
+`STATUS_PIPE_BROKEN` across the single read that empties it, with nothing else having
+moved. `sem_pipe/peek_state.c` §1 measures exactly that pair, because "CLOSING means the
+peer is gone" passes every other row of this table.
+
+**A DISCONNECTED end's answer depends on WHICH end it is.** The oracle writes
+`pipe_end->pipe ? STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED`, and
+`FSCTL_PIPE_DISCONNECT` drops the pipe reference for the CLIENT only (`pipe_server_ioctl`:
+`release_object( ...connection->pipe ); ...connection->pipe = NULL`) — so the server that
+did the disconnecting complains about its STATE and its client reports a disconnection.
+proskrnl's `end->orphaned` is that end (the same identification `NpfsFlush` already makes),
+and it is asked FIRST rather than folded into the switch, because proskrnl's state word
+belongs to the INSTANCE where the oracle's belongs to the END: a re-listened instance
+moves back to `FILE_PIPE_CONNECTED_STATE` under an end that was orphaned off it, and only
+the per-end fact still says what that end is.
+
+**The fill, and the axis its `STATUS_BUFFER_OVERFLOW` is keyed on.** `ReadDataAvailable`
+is every unread byte on this end's incoming queue; `MessageLength` is the FIRST message's
+remaining bytes and is written **only for a `FILE_PIPE_TYPE_MESSAGE` pipe**; the payload
+is the caller's room bounded by what is queued and, on a message-type pipe, by that first
+message; and the status is `message_length > reply_size`. So:
+
+- **the type is the PIPE's, not the end's read mode.** `pipe_end->pipe->message_mode` is
+  fixed at create and the end's `FILE_PIPE_*_MODE` does not appear in the function at all,
+  so a message-type pipe read through a BYTE-mode end still truncates and still overflows
+  — which is what `ntdll:pipe:1197` asks and what keying the rule on the read mode gets
+  wrong. A byte-type pipe never overflows however much it leaves behind, which is the
+  1-byte `PeekNamedPipe` poll's whole shape (`docs/review-2026-07` §9);
+- **the overflow is about the first MESSAGE, not about `avail`.** Two ten-byte messages
+  queued and room for both is a `STATUS_SUCCESS` carrying **one** of them; room for none
+  of the first is an overflow even though the fixed part fitted. An implementation that
+  copies across the queue up to the caller's capacity — right for a byte pipe — reports
+  twenty bytes and no overflow.
+
+**`NumberOfMessages` is a literal 0 in every reply.** The oracle hardwires it under a
+FIXME of its own, and where the oracle answers at all it is the spec (Art. 6) — the same
+trade `FileStandardInformation`'s `DeletePending` records above. Nothing on the boundary
+reads it: `PeekNamedPipe` hands back `MessageLength` and drops this field. proskrnl used
+to return a real count, which was more NT-correct and unmeasurable by anything in the
+baked stack.
+
+**One residual, and it is the lifetime gap recorded above rather than a peek rule.**
+`instance->pipe` is 0 for an end whose SERVER handle closed, so a client outliving its
+server forgets the pipe's TYPE and answers a byte pipe's `MessageLength` 0 and no
+overflow. That is `ntdll:pipe`'s one remaining `:2205` (`in client state 4`), tagged
+`todo_proskrnl` in `sem_pipe/peek_state.c` §4 beside the `AllocationSize` case
+`sem_pipe/pipe_file_info.c` already tags, so both report themselves the day the reference
+is held.
+
 ## `FileNameInformation`'s length floor is the whole struct
 
 `NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than
