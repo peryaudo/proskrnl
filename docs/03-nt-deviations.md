@@ -873,13 +873,17 @@ boundary symbols winebuild would have emitted supplied by
   being UNIMPLEMENTED is not a reason — an unbuilt syscall makes the pair
   FAIL, which is the signal the sweep exists to produce. Only two things
   disqualify a pair:
-  - *(a) proskrnl will never implement the surface*, by a decision recorded
-    elsewhere. `ntdll:alpc` (the LPC/ALPC surface stays unbuilt because the
-    local-RPC transport is npfs — "CUI-3 SCM notes" above) and
-    `kernel32:debugger` (debug objects, ADR 0011). Both are GREEN on the
+  - *(a) proskrnl does not implement the surface the pair needs*, by a
+    decision or a backlog recorded elsewhere. `ntdll:alpc` (the LPC/ALPC
+    surface stays unbuilt because the local-RPC transport is npfs — "CUI-3
+    SCM notes" above) and `kernel32:debugger` (the debug event queue —
+    once ADR 0011's permanent refusal, now backlog since that ADR was
+    deprecated, so
+    this pair parks as a *pending* consumer, not a disqualified one, and
+    un-parks when the queue lands). Both are GREEN on the
     oracle and both panic on proskrnl's first missing syscall, which is the
     armed-panic contract working rather than a defect to chase. Leaving
-    them in would make the gate permanently red on purpose.
+    them in would make the gate red on purpose.
     `ntdll:wow64` joins them as the milestone case: WOW64 is planned but
     later (docs/02), and the oracle is red on it anyway (4 failures).
   - *(b) the ORACLE cannot serve as the spec.* `ntdll:om` (the oracle
@@ -1988,11 +1992,18 @@ The tree's KASAN is pool-only (`kernel/mm/kasan.h`); COW's fresh frames are whol
 pages written through the HHDM, outside the shadow. Recorded so docs/17 §6's
 checklist item is visibly discharged rather than silently dropped.
 
-## Debug objects are out of scope (permanent; ADR 0011)
+## Debug objects: attach is built, the event queue is unbuilt (ADR 0011 deprecated)
+
+**Read this section through its note at the bottom.** The reasoning below is
+CUI-4's, and its conclusion — that the family is *permanently* out of scope — no
+longer holds: attach was carved out at WOW64, and post-CUI-9 the event queue is
+in scope and unbuilt. **ADR 0011 is deprecated**, not a live decision; this
+section is where the subject lives now. The original argument is kept in full
+rather than rewritten, because how it failed is the useful part.
 
 The `NtCreateDebugObject` family — `NtDebugActiveProcess`, `NtDebugContinue`,
 `NtRemoveProcessDebug`, `NtWaitForDebugEvent`, `NtSetInformationDebugObject` — was
-CUI-4's stretch goal; it was not taken, and it is now ruled **permanently out of
+CUI-4's stretch goal; it was not taken, and it was ruled **permanently out of
 scope** rather than deferred (the fixed decision: `docs/adr/0011-no-debug-objects.md`;
 this entry is its expanded reasoning):
 
@@ -2019,6 +2030,39 @@ this entry is its expanded reasoning):
 - If a future milestone ever revisits this (e.g. a DWARF-native debugger as its
   own consumer), it re-enters through the front door: an oracle-green `tests/ntapi`
   pin first (Art. 5), and this entry is amended — not silently contradicted.
+
+**What is actually true now (ADR 0011 deprecated, post-CUI-9).** Attach is
+**built** — `NtCreateDebugObject`, `NtDebugActiveProcess`, `NtRemoveProcessDebug`
+and the `BeingDebugged` flag they move, pinned by
+`tests/ntapi/sem_ps/debug_attach.c` (the WOW64 carve-out). The **event queue** —
+`NtWaitForDebugEvent`, `NtDebugContinue`, `NtSetInformationDebugObject`,
+`DEBUG_PROCESS` at create — is **unbuilt, in scope**: it still refuses loudly and
+is not scheduled, but it is backlog, not exclusion.
+
+Both bullets above failed on measurement rather than on argument, which is why
+they are kept. "No baked consumer" was falsified twice — `ntdll:wow64` at WOW64,
+then `kernel32_test.exe:debugger`, parked in `tests/winetest/manifest.txt` citing
+this entry and green on the oracle. The symbol-toolchain bullet is about a
+debugger *ecosystem*, not about whether the three syscalls have an observable
+contract at the boundary. And the pinned Wine tree implements all three through
+wineserver (`unix/sync.c` `wait_debug_event` / `set_debug_obj_info`,
+`unix/process.c` `continue_debug_event`), so an Art. 5 pin is available before
+any kernel code (`docs/16`).
+
+**The constraint that survives is G11, not scope** — this is the part of the old
+ADR worth keeping, and it lives here now rather than there. The event queue is a
+scheduling contract: every debuggee thread blocks until a debugger answers.
+Building it must extend the dispatcher's own wait/wake — one stop/continue
+authority, never a parallel scheduler — with each new parking point declared in
+`tools/blocking_frontier.txt` in the same commit (G14), which re-opens
+`docs/20` §8.4's checklist for it. That is a constraint on *how*, not a decision
+about *whether*.
+
+Unchanged and still out of scope: the kernel-debug control pair
+(`NtSystemDebugControl`, `NtSetDebugFilterState`). Not debug-object surface, no
+consumer, and Wine stubs both — one fabricating `STATUS_SUCCESS`, the other a
+hardwired `STATUS_DEBUGGER_INACTIVE` — so there is no oracle either way
+(`docs/16`). That exclusion never rested on the reasoning above.
 
 The full accounting of which missing syscalls are out of scope vs. planned is
 `docs/16-syscall-status.md`.

@@ -57,7 +57,8 @@ bump; re-run the count then.
 **The WOW64 milestone closed four ids**, each because a gate consumer
 depended on it and for no other reason: `NtCreateDebugObject`,
 `NtDebugActiveProcess` and `NtRemoveProcessDebug` (ADR 0011's attach-only
-amendment — the event queue stays refused), and `NtSetLdtEntries`, whose
+amendment — the event queue still refuses, and since that ADR was deprecated
+it does so as unbuilt work, `docs/03` "Debug objects"), and `NtSetLdtEntries`, whose
 per-process LDT was built because `STATUS_NOT_IMPLEMENTED` is never an
 answer proskrnl may give and the winetest's sweep reaches it.
 
@@ -129,20 +130,22 @@ makes about them: they are unbuilt, not excluded.
 | `NtOpenKeyTransacted` | `unix/registry.c` — forwards to `NtOpenKeyTransactedEx` | semi-stub: the transaction handle is ignored |
 | `NtOpenKeyTransactedEx` | `unix/registry.c` — FIXME "semi-stub", then a real `NtOpenKeyEx` | semi-stub: the transaction handle is ignored, so the oracle's behaviour is plain `NtOpenKeyEx` |
 
-Two of these rows cross a decision recorded elsewhere, and moving the row does
-**not** overturn it — building them would need the ADR amended first, in its own
-commit:
+Two of these rows cross a decision recorded elsewhere:
 
-- The three debug-queue ids are ADR 0011's refused half (`docs/03` "Debug
-  objects"). ADR 0011's argument is not "Wine can't do this" — it is that a
-  queue makes every debuggee thread block until a debugger answers, i.e. a
-  second stop/continue authority beside the dispatcher (Art. 11), for a
-  consumer that does not exist. That argument is untouched by this
-  re-derivation. What this table corrects is the *reason* the ids were filed
-  under: they were listed as if unimplementable, when in fact they are
-  implemented upstream and refused here by design.
+- The three debug-queue ids were ADR 0011's permanently-refused half. **That
+  ADR is now deprecated** (post-CUI-9) and the queue is in-scope unbuilt work —
+  the subject lives in `docs/03` "Debug objects" now. It went on the evidence that the "no baked consumer" leg was
+  falsified twice (`ntdll:wow64` at WOW64; then `kernel32_test.exe:debugger`,
+  parked in `tests/winetest/manifest.txt` citing the ADR itself and green on
+  the oracle) and that the symbol-toolchain leg was never an argument about the
+  boundary. What survives is a G11 constraint, not a scope veto: the queue's
+  blocking legs must be dispatcher waits — one stop/continue authority, not a
+  parallel scheduler — with each new parking point declared in
+  `tools/blocking_frontier.txt` in the same commit (G14).
 - `NtCreateToken` mints an identity, and CUI-2 fixed proskrnl on exactly one.
   Wine implements it, so it is buildable; it is not wanted until something asks.
+  Unlike the debug queue, no ADR was withdrawn here — CUI-2's single identity
+  stands, and building this id would need that revisited first.
 
 ### Permanently out of scope — 47
 

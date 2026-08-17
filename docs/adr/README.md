@@ -16,7 +16,7 @@ the durable record behind `docs/01-tradeoffs.md`.
 | [0008](0008-wine-desktop-first.md) | Wine's desktop before the ReactOS shell | Accepted |
 | [0009](0009-make-federated-build.md) | Plain Make; foreign builds stay native (federated superbuild) | Accepted |
 | [0010](0010-limine-boot.md) | Boot with Limine, not Multiboot2/GRUB | Accepted |
-| [0011](0011-no-debug-objects.md) | Debug objects are not supported | Accepted |
+| [0011](0011-no-debug-objects.md) | Debug objects are not supported | **Deprecated** — attach built, event queue in scope (`docs/16`) |
 
 Each ADR is deliberately short. The reasoning is expanded in the numbered `docs/` files;
 the ADR fixes the decision and its main consequences so they are not silently reopened.

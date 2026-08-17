@@ -1,7 +1,26 @@
 # ADR 0011 — Debug objects are not supported
 
-**Status:** Accepted (post-CUI-4); **amended at the WOW64 milestone** —
-attach only (see "Amendment" below)
+**Status: DEPRECATED (post-CUI-9).** Not a live decision — kept for the record.
+Debug objects are not out of scope: attach is **built** (Amendment 1, WOW64) and
+the event queue is **unbuilt work, in scope** (`docs/16` "In scope, unbuilt").
+The whole document below, Amendment 1 included, is history; nothing in it binds a
+future change. The filename is kept for link stability.
+
+Why it was deprecated rather than amended a second time: both legs of its Context
+have since been measured false. "No baked consumer" was falsified twice —
+`ntdll:wow64` at WOW64 (which is why Amendment 1 exists), then
+`kernel32_test.exe:debugger`, parked in `tests/winetest/manifest.txt` citing this
+ADR and green on the oracle. And the symbol-toolchain leg argues about a debugger
+*ecosystem*, not about whether these ids have an observable contract at the
+boundary, which is the only question Art. 1 asks. With both legs gone there is no
+decision left to amend.
+
+One thing here is still true and outlived the ADR, so it has been moved somewhere
+live (`docs/03` "Debug objects"): the event queue is a scheduling contract — every
+debuggee thread blocking until a debugger answers — so building it must extend the
+dispatcher's own wait/wake rather than add a second stop/continue authority (G11),
+declaring each new parking point in `tools/blocking_frontier.txt` (G14). That is a
+constraint on *how*, not a decision about *whether*.
 
 ## Context
 The `NtCreateDebugObject` family (`NtDebugActiveProcess`, `NtWaitForDebugEvent`,
@@ -32,7 +51,7 @@ syscalls (plus the kernel-debug control pair `NtSystemDebugControl` /
   through the front door: an oracle-green `tests/ntapi` pin first (Art. 5), and an
   amendment here — never a silent contradiction.
 
-## Amendment (WOW64 milestone) — attach, and only attach
+## Amendment 1 (WOW64 milestone) — attach, and only attach
 
 The reopening condition above was met, through the front door and in the order
 it specifies.
@@ -73,5 +92,6 @@ queue rather than the whole family; the rest of it stands unchanged, reopening
 condition included. Nothing here makes proskrnl debuggable: a process that
 attaches learns only that `BeingDebugged` is set, and receives no events.
 
-Expanded reasoning: `docs/03-nt-deviations.md` "Debug objects are out of scope";
-the measured surface accounting: `docs/16-syscall-status.md`.
+*(End of the historical record. What is true today is the Status note at the top:
+attach built, event queue unbuilt and in scope — `docs/03` "Debug objects" and
+`docs/16-syscall-status.md`.)*
