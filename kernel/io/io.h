@@ -375,6 +375,14 @@ void IopAbandonRequest(HANDLE eventHandle);
  * this rather than transcribing it twice). See kernel/io/file.c. */
 void IopCaptureCreateOptions(struct FILE_OBJECT *file, ULONG options);
 
+/* ...and the same two entry points' other shared step: a RootDirectory that
+ * names an open FILE, resolved into the (root, device) pair a relative name
+ * is resolved against. The device reference is the caller's to move into the
+ * new FILE_OBJECT or to drop; the root's is the caller's to drop. See
+ * kernel/io/file.c for why the LADDER around it is not shared. */
+NTSTATUS IopReferenceRelativeRoot(HANDLE rootDirectory, PFILE_OBJECT *rootOut,
+                                  PIO_DEVICE *deviceOut);
+
 /* The two bare transitions on a caller's completion-event HANDLE, through
  * the one IopReferenceCompletionEvent authority and with the same
  * discard-the-failure rule IopCompleteRequest has. They exist because a
