@@ -337,11 +337,24 @@ typedef struct IO_VFS_OPS
 
     /* FilePipeInformation / FilePipeLocalInformation (query), and
      * FilePipeInformation (set) — kernel/io/query.c routes the classes here
-     * so the shapes stay next to the pipe state that fills them. */
+     * so the shapes stay next to the pipe state that fills them.
+     *
+     * The set direction is handed the caller's HANDLE as well as the file
+     * object, and that is not redundancy: its access requirement depends on
+     * WHICH END this is (a server end owes FILE_WRITE_ATTRIBUTES, a client
+     * end owes nothing — docs/03 "The FilePipeInformation SET ladder"), so it
+     * cannot be expressed as the class's required access at the one
+     * IopReferenceFileByHandle above. The FS learns the end from the file
+     * object and then asks Ob for the bit, rather than reading an access word
+     * off the file object: FILE_OBJECT.grantedAccess is the access of the
+     * ORIGINAL OPEN and a duplicate can carry less (kernel/ob/handle.c
+     * NtDuplicateObject grants the specific bits verbatim), while the rule is
+     * about the handle in the caller's hand. */
     NTSTATUS(*QueryPipeInfo)
     (struct FILE_OBJECT *file, FILE_INFORMATION_CLASS informationClass, void *buffer, ULONG length,
      ULONG_PTR *infoOut);
-    NTSTATUS (*SetPipeInfo)(struct FILE_OBJECT *file, const FILE_PIPE_INFORMATION *info);
+    NTSTATUS(*SetPipeInfo)
+    (struct FILE_OBJECT *file, HANDLE handle, const FILE_PIPE_INFORMATION *info);
 } IO_VFS_OPS;
 /* NOLINTEND(readability-identifier-naming) */
 

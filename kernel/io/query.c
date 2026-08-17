@@ -776,7 +776,10 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         requiredAccess = 0;
         break;
     case FilePipeInformation:
-        needed = sizeof(FILE_PIPE_INFORMATION); /* M9: read/completion mode */
+        /* M9: read/completion mode. Both of this class's argument checks run
+         * ABOVE the handle and neither is the shared INFO_LENGTH_MISMATCH, so
+         * `needed` is 0 and the block below owns them — see it for why. */
+        needed = 0;
         requiredAccess = 0;
         break;
     default:
@@ -792,6 +795,41 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     if (length < needed)
     {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    /* FilePipeInformation's two argument checks live in the pinned oracle's
+     * NTDLL (dlls/ntdll/unix/file.c NtSetInformationFile, case
+     * FilePipeInformation), above the set_named_pipe_info server call — so
+     * above the handle entirely, which is measurable and is measured
+     * (sem_pipe/pipe_mode_set.c: an out-of-range value on a handle that names
+     * no pipe reports the value, not the handle).
+     *
+     * Neither is the shared refusal it looks like:
+     *
+     *   - a SHORT buffer is STATUS_INVALID_PARAMETER_3, not the
+     *     INFO_LENGTH_MISMATCH the QUERY direction gives for the very same
+     *     class. The query side is table-driven (the oracle's info_sizes[]);
+     *     this side is hand-written per class, and the two disagree. Same
+     *     shape as FileCompletionInformation below;
+     *   - the value bound is `(CompletionMode | ReadMode) & ~1`, i.e. every
+     *     bit above the low one is out of range — not "greater than 1".
+     *
+     * Captured ONCE here and handed to the class arm below, so the values the
+     * range check accepted are the values the device stores: read twice, a
+     * caller could pass the check and then have the second read see an
+     * out-of-range word. */
+    FILE_PIPE_INFORMATION pipeInfo;
+    if (informationClass == FilePipeInformation)
+    {
+        if (length < sizeof(pipeInfo))
+        {
+            return STATUS_INVALID_PARAMETER_3;
+        }
+        memcpy(&pipeInfo, buffer, sizeof(pipeInfo)); /* caller-aligned buffer */
+        if (((pipeInfo.CompletionMode | pipeInfo.ReadMode) & ~1u) != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
     }
 
     PFILE_OBJECT file;
@@ -964,15 +1002,14 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     }
     case FilePipeInformation:
     {
-        /* M9: per-end read/completion mode (sem_pipe pins the switch). */
+        /* M9: per-end read/completion mode (sem_pipe pins the switch). The
+         * values were captured and range-checked above the handle. */
         if (file->device->ops->SetPipeInfo == 0)
         {
             status = STATUS_INVALID_PARAMETER;
             break;
         }
-        FILE_PIPE_INFORMATION pipeInfo;
-        memcpy(&pipeInfo, buffer, sizeof(pipeInfo));
-        status = file->device->ops->SetPipeInfo(file, &pipeInfo);
+        status = file->device->ops->SetPipeInfo(file, handle, &pipeInfo);
         break;
     }
     default:

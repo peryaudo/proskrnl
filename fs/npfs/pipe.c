@@ -980,6 +980,21 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
     }
     PNPFS_INSTANCE instance = end->instance;
 
+    /* An end the server DISCONNECTED out from under has no pipe to describe,
+     * and BOTH classes say so rather than describing the wreckage: the
+     * oracle's `if (!pipe) { set_error( STATUS_PIPE_DISCONNECTED ); return; }`
+     * appears once per arm in server/named_pipe.c pipe_end_get_file_info,
+     * below each arm's access and length guards. `!pipe` is this end's
+     * orphaned bit — the same identification NpfsFlush's comment already
+     * makes for this quantity. FilePipeLocalInformation is the one that reads
+     * as a judgement call, because it HAS a NamedPipeState field to report the
+     * disconnect in; the oracle refuses anyway, and only a query on an
+     * orphaned end can see it (pinned sem_pipe/pipe_mode_set.c). */
+    if (end->orphaned)
+    {
+        return STATUS_PIPE_DISCONNECTED;
+    }
+
     /* The class's fixed size was checked by NtQueryInformationFile before the
      * handle was even resolved (kernel/io/query.c, the oracle's own ordering —
      * pinned sem_pipe/create_refusals.c), so the length is a precondition
@@ -1013,7 +1028,15 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
         info.InboundQuota = pipe->inQuota;
         info.OutboundQuota = pipe->outQuota;
     }
-    info.NamedPipeState = end->orphaned ? FILE_PIPE_DISCONNECTED_STATE : instance->state;
+    /* The orphaned end returned above, so this field needs no term for it — a
+     * DISCONNECTED state reaching this line belongs to the SERVER that did the
+     * disconnecting, which keeps its pipe. That says nothing about the six
+     * fields the `if (pipe != 0)` above fills: proskrnl drops instance->pipe
+     * when the SERVER's handle closes, where the oracle's client holds its own
+     * reference to the named pipe until destroy, so a client outliving its
+     * server reports zeros there where the oracle reports the real values.
+     * Separate, older gap; nothing convicts it yet (docs/03). */
+    info.NamedPipeState = instance->state;
     info.NamedPipeEnd = end->isServer ? FILE_PIPE_SERVER_END : FILE_PIPE_CLIENT_END;
     info.ReadDataAvailable = NpfsIncomingQueue(end)->bytesAvailable;
     PNPFS_QUEUE outgoing = NpfsOutgoingQueue(end);
@@ -1024,12 +1047,66 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, const FILE_PIPE_INFORMATION *info)
+static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, HANDLE handle, const FILE_PIPE_INFORMATION *info)
 {
     PNPFS_END end = file->fsContext;
     if (end == 0)
     {
-        return STATUS_INVALID_DEVICE_REQUEST; /* the root is not a pipe end */
+        /* The npfs ROOT is not a pipe end, and the oracle reports that as a
+         * TYPE mismatch rather than as a device refusal: its root opens as a
+         * named_pipe_device_file, which matches neither pipe_server_ops nor
+         * pipe_client_ops, so both of the handler's lookups leave on the type
+         * and the answer is the one any non-pipe handle gets. Pinned by
+         * sem_pipe/pipe_mode_set.c. (The QUERY direction reaches a different
+         * oracle path for this handle and is not measured here; it still
+         * answers STATUS_INVALID_DEVICE_REQUEST above.) */
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    /* The SERVER end demands FILE_WRITE_ATTRIBUTES on the handle and the
+     * CLIENT end demands NOTHING, which is not a rule anyone wrote down — it
+     * falls out of how the oracle's handler finds the end (wine
+     * server/named_pipe.c DECL_HANDLER(set_named_pipe_info)):
+     *
+     *     pipe_end = get_handle_obj( ..., FILE_WRITE_ATTRIBUTES, &pipe_server_ops );
+     *     if (!pipe_end) {
+     *         if (get_error() != STATUS_OBJECT_TYPE_MISMATCH) return;
+     *         clear_error();
+     *         pipe_end = get_handle_obj( ..., 0, &pipe_client_ops );
+     *
+     * get_handle_obj tests the TYPE before the access (server/handle.c), so a
+     * client handle leaves the first lookup on the type — its access word
+     * never examined — and the retry asks for none. A server handle matches
+     * the type, fails the access, and that ACCESS_DENIED is returned rather
+     * than retried.
+     *
+     * That is why the requirement cannot be the class's required access at
+     * kernel/io/query.c's one reference: which end this is is not knowable
+     * before the file object is resolved. What it IS is a question about the
+     * caller's HANDLE, so it is asked by resolving that handle a second time
+     * with the bit — Ob's own check site decides it (G10), and the answer is
+     * Ob's own STATUS_ACCESS_DENIED. Reading FILE_OBJECT.grantedAccess instead
+     * would answer a different question: that word is the access of the
+     * original OPEN, and NtDuplicateObject can hand out a handle to the same
+     * file object carrying less (kernel/ob/handle.c grants the specific bits
+     * verbatim). Both halves pinned by sem_pipe/pipe_mode_set.c — a client
+     * opened without the bit, and a duplicate weakened to drop it. */
+    if (end->isServer)
+    {
+        PFILE_OBJECT entitled;
+        NTSTATUS access = IopReferenceFileByHandle(handle, FILE_WRITE_ATTRIBUTES, &entitled);
+        if (!NT_SUCCESS(access))
+        {
+            return access;
+        }
+        ASSERT(entitled == file); /* the same handle names the same file object */
+        ObDereferenceObject(entitled);
+    }
+    /* Then the disconnect, above the mode rule and for a reason beyond the
+     * oracle's ordering: an end with no pipe has no pipe TYPE to compare the
+     * read mode against. */
+    if (end->orphaned)
+    {
+        return STATUS_PIPE_DISCONNECTED;
     }
     /* A BYTE-type pipe may not be put into message READ mode. The oracle
      * refuses it at set-info as well as at create (wine
@@ -1042,6 +1119,9 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, const FILE_PIPE_INFORMATION *
     {
         return STATUS_INVALID_PARAMETER;
     }
+    /* `pipe_end->flags = req->flags` — the two fields are REPLACED together.
+     * The neighbouring FileIoCompletionNotificationInformation accumulates;
+     * nothing here does, and neither field can be left alone. */
     end->readMode = info->ReadMode;
     end->completionMode = info->CompletionMode;
     return STATUS_SUCCESS;

@@ -2700,6 +2700,101 @@ blocking point in the Io layer a place the previous request's state can leak int
 the flush was the first blocking pipe operation whose wrapper had no span, and
 nothing in the type system said so.
 
+## The `FilePipeInformation` SET ladder, and where each rung lives
+
+The class is two `ULONG`s — `ReadMode` and `CompletionMode` — and every one of the
+twelve assertions `ntdll:pipe`'s `test_filepipeinfo` was failing (`:886-:989`) was a
+guard that was missing or in the wrong PLACE. The ladder is split across the two
+halves of the oracle, and the split is what decides which mistake gets reported:
+
+| the caller's mistake | answer | decided in |
+|---|---|---|
+| buffer shorter than the class | `STATUS_INVALID_PARAMETER_3` | ntdll |
+| any bit above the low one set in either field | `STATUS_INVALID_PARAMETER` | ntdll |
+| handle names no pipe end (the npfs ROOT included) | `STATUS_OBJECT_TYPE_MISMATCH` | server |
+| SERVER end, handle without `FILE_WRITE_ATTRIBUTES` | `STATUS_ACCESS_DENIED` | server |
+| CLIENT end, handle without `FILE_WRITE_ATTRIBUTES` | **succeeds** | server |
+| end a server DISCONNECTED out from under | `STATUS_PIPE_DISCONNECTED` | server |
+| message read mode on a BYTE-type pipe | `STATUS_INVALID_PARAMETER` | server |
+
+`dlls/ntdll/unix/file.c` `NtSetInformationFile`'s `case FilePipeInformation` owns the
+first two; `server/named_pipe.c` `DECL_HANDLER(set_named_pipe_info)` owns the rest.
+Landed in `kernel/io/query.c` (the two argument checks, above the handle) and
+`fs/npfs/pipe.c` `NpfsSetPipeInfo` (the three the pipe object decides), pinned by
+`tests/ntapi/sem_pipe/pipe_mode_set.c`.
+
+Five things in that table are not derivable from the class's name, and each is a way
+an implementation reaching for the tidy rule diverges while passing most of the pair:
+
+- **The first two rungs run above the HANDLE**, because they are in ntdll and the
+  handle only exists on the server side. So an out-of-range value passed through a
+  handle that names nothing reports the *value*. proskrnl owns both halves at this
+  seam (`docs/16`'s "replacing a layer means inheriting what that layer did"), so the
+  ordering has to be reproduced rather than inherited.
+- **A short buffer is `STATUS_INVALID_PARAMETER_3`, not the `INFO_LENGTH_MISMATCH`
+  the QUERY direction gives for the very same class.** The query side is table-driven
+  (`info_sizes[]`) and the set side is hand-written per class; the two disagree, and
+  proskrnl's shared `needed`/`INFO_LENGTH_MISMATCH` path was the wrong one to be on.
+  `FileCompletionInformation` already carried the same exception.
+- **The value bound is `(CompletionMode | ReadMode) & ~1`, not "greater than 1".**
+  Written as a `> 1` test on a signed field, `0x80000000` is admitted.
+- **The SERVER end demands `FILE_WRITE_ATTRIBUTES` and the CLIENT end demands
+  NOTHING**, and that asymmetry is nobody's stated rule — it falls out of how the
+  handler finds the end. It looks the handle up as a server end *with* the access,
+  and only a `STATUS_OBJECT_TYPE_MISMATCH` makes it retry as a client end with an
+  access of **0**. `get_handle_obj` tests the type before the access
+  (`server/handle.c`), so a client handle leaves the first lookup on the type with
+  its access word never examined. This is why the check cannot be the class's
+  required access in `kernel/io/query.c`, the way the query direction's
+  `FILE_READ_ATTRIBUTES` is: which end this is is not knowable before the file object
+  is resolved. npfs therefore learns the end from the file object and then resolves
+  the caller's HANDLE a second time asking for the bit, so **Ob's one check site
+  decides it** and the refusal is Ob's own. Reading `FILE_OBJECT.grantedAccess`
+  instead answers a different question — that word is the access of the original
+  OPEN, and `NtDuplicateObject` hands out handles to the same file object carrying
+  less — which is why the pin weakens a duplicate as well as opening a weak client.
+  The `SetPipeInfo` vfs slot takes the handle for exactly this reason.
+- **The disconnect sits above the mode rule**, and it has to: an end with no pipe has
+  no pipe TYPE to compare a message read mode against. `!pipe_end->pipe` is this
+  end's orphaned bit — the same identification "What a pipe's `NtFlushBuffersFile`
+  waits for" already makes for this quantity, and with the same consequence that the
+  server's own end is unaffected by its own disconnect.
+
+**The root row is narrower than it reads, and the difference is recorded rather than
+closed.** `\??\pipe\` opens as the oracle's `named_pipe_device_file`, matching neither
+ops table, so both of the set handler's lookups leave on the type. The SET direction
+now answers that; the QUERY direction reaches a different oracle path for the same
+handle, is not measured, and still answers `STATUS_INVALID_DEVICE_REQUEST`.
+
+**Two things about `end->orphaned` that the rungs above now depend on**, neither
+convicted by anything today and both left as they are (Art. 5):
+
+- proskrnl drops `NPFS_INSTANCE.pipe` when the SERVER end's handle CLOSES, where the
+  oracle's client holds its own reference to the named pipe object until destroy. So a
+  client outliving its server reads `FilePipeLocalInformation` as a success with zeroed
+  `NamedPipeType` / `NamedPipeConfiguration` / `MaximumInstances` / quotas, where the
+  oracle reports the real values. Older than this item and untouched by it.
+- `NpfsDisconnect` orphans the client in `CLOSING_STATE` as well as in
+  `CONNECTED_STATE`, where the oracle's `FILE_PIPE_CLOSING_STATE` arm breaks without
+  clearing `connection->pipe`. In this tree `clientEnd` is already 0 in that state, so
+  the two agree — but that is an inference, not a measurement.
+
+**The QUERY direction carries the disconnect rule too, in both pipe classes**, and
+`FilePipeLocalInformation` is the one that reads as a judgement call: it *has* a
+`NamedPipeState` field, so answering `FILE_PIPE_DISCONNECTED_STATE` in it is the
+plausible thing to do, and proskrnl did exactly that. The oracle refuses the whole
+query (`pipe_end_get_file_info`, one `if (!pipe)` per arm, below each arm's access and
+length guards). Only a query on an orphaned end can see it, and no winetest assertion
+does; the pin does.
+
+**Five of the twelve winetest assertions were CONSEQUENCES, and reading them as
+findings points at a subsystem with nothing wrong with it.** `:888`, `:896`, `:907`,
+`:918` and `:936` are all `Unexpected CompletionMode` out of the test's
+`check_pipe_handle_state` helper — i.e. the QUERY direction reporting a wrong value.
+The query was correct throughout: a set the kernel should have refused had really
+changed the server end's mode, so every later read-back of that end was right about a
+state that should never have existed (`docs/21` §4 trap 4).
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by
