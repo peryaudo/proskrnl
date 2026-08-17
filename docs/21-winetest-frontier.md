@@ -1896,6 +1896,61 @@ NULL, (IO_STATUS_BLOCK *)0xdeadbeef)` and gets `STATUS_DATATYPE_MISALIGNMENT`,
 because `KiProbeForWrite` tests alignment before accessibility — a probe-ORDER
 item, not a pipe one.
 
+**THE PIPE'S OWN FILE INFORMATION IS DONE** (`ntdll:pipe` 123 → **99**), and
+the size of it is the finding: 24 assertions across four test functions came
+out of one `NpfsGetInfo` that returned zeros, plus one constant. The oracle
+routes the UNIVERSAL classes to the pipe device — a pipe end has no unix fd
+(`alloc_pseudo_fd`), so `server_get_unix_fd` answers `STATUS_BAD_DEVICE_TYPE`
+and ntdll hands the whole class to `server/named_pipe.c`
+`pipe_end_get_file_info` instead of to its own `fstat`. Landed in
+`fs/npfs/pipe.c` + `kernel/io/query.c`, pinned by
+`tests/ntapi/sem_pipe/pipe_file_info.c` and
+`tests/ntapi/sem_file/name_info_length.c`; `docs/03` "A pipe end's own file
+information" and "`FileNameInformation`'s length floor".
+
+Four things worth carrying:
+
+- **The two numbers answer different questions and the winetest asks in the
+  one state where that shows.** `AllocationSize` is `outsize + insize` — a
+  CAPACITY, the same at both ends and unmoved by traffic — while `EndOfFile`
+  is `pipe_end_get_avail( pipe_end )`, so the two ends of one pipe disagree
+  the moment either writes. An implementation reading the first as "how much
+  is buffered" passes an empty pipe and fails `:2160` in every state that has
+  data. The pin writes in one direction only, and gives the two quotas
+  different values, so neither a swap nor a sum can pass by accident.
+- **A universal class cannot state a required access that only one device
+  has, and that is where the FILE_READ_ATTRIBUTES demand had to go.** The
+  oracle's arm opens with `get_handle_access( ... ) & FILE_READ_ATTRIBUTES`,
+  and no other backend demands anything for `FileStandardInformation` because
+  every other backend answers it inside ntdll. `kernel/io/query.c` cannot know
+  which device a handle names before Ob resolves it, so the bit is asked by
+  resolving that handle a SECOND time — the shape `NpfsSetPipeInfo` already
+  uses for its own server/client asymmetry, which keeps the decision at Ob's
+  one check site (G10). The order is measurable and is pinned: an orphaned end
+  held through an unentitled handle reports ACCESS_DENIED for
+  `FileStandardInformation` and PIPE_DISCONNECTED for `FileNameInformation`,
+  because only the first arm has an access guard.
+- **The orphan's refusal is ONE statement because the oracle's is too.**
+  *Every* arm of `pipe_end_get_file_info` carries the same `if (!pipe)`. Put
+  in `NpfsGetInfo` — which every class reading this backend's facts comes
+  through — `FileNameInformation` inherits it (`:2181`, `:2447`) with no
+  second transcription, and so would any class added later.
+- **The count moved DOWN in two places and both are the item working.** 2386
+  → 2376 executed and 33 → 31 todo markers are exactly the two
+  DISCONNECTED-client calls no longer running
+  `test_pipe_with_data_state`'s `if (!status)` block (5 `ok()`s each, one of
+  them the `:2165` todo) against a query that should have refused. Nothing was
+  hidden behind them, and a line-by-line histogram diff shows only the six
+  fixed lines removed.
+
+**One residual is recorded rather than fixed, and it is older than this item.**
+proskrnl drops `NPFS_INSTANCE.pipe` when the SERVER's handle closes, where the
+oracle's client holds its own reference until destroy — so a CLIENT that
+outlives its server describes a pipe that is no longer there (zeros). That is
+`ntdll:pipe`'s remaining `test_pipe_local_info` five (`:2356`-`:2369`), it is a
+LIFETIME question and not a fill, and it is tagged `todo_proskrnl` in the pin so
+it reports itself the day it is fixed.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
