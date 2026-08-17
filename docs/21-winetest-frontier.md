@@ -1951,6 +1951,60 @@ outlives its server describes a pipe that is no longer there (zeros). That is
 LIFETIME question and not a fill, and it is tagged `todo_proskrnl` in the pin so
 it reports itself the day it is fixed.
 
+**`FSCTL_PIPE_PEEK`'s STATE LADDER is DONE** (`ntdll:pipe` 99 → **80**), and the
+manifest block had it filed as two items in two clusters — "the peek state
+matrix" under `test_pipe_with_data_state` and "peek's `STATUS_BUFFER_OVERFLOW`"
+under `read_pipe_test` — where it is one function. `NpfsPeek` is now
+`server/named_pipe.c` `pipe_end_peek` transcribed whole; pinned by
+`tests/ntapi/sem_pipe/peek_state.c`, table in `docs/03` "What `FSCTL_PIPE_PEEK`
+answers, by state and by the PIPE's type".
+
+Three things worth carrying, and two of them are shapes this document has
+already paid for:
+
+- **The overflow's axis is the PIPE's TYPE, and proskrnl had keyed it on the
+  reading END's MODE.** `pipe_end->pipe->message_mode` is fixed at create;
+  `FILE_PIPE_*_MODE` does not appear in the oracle's function at all. The two
+  agree on every pipe whose type and read mode match — which is every pipe the
+  older pin `sem_pipe/byte_mode.c` builds and every one the earlier winetest
+  clusters reach — and part only for a MESSAGE-type pipe read in BYTE mode,
+  which is exactly what `read_pipe_test` builds at `:1197`. **The discriminating
+  case is one no rule ABOUT the reply's size can produce**; it comes out of
+  asking which object the oracle asks. Fifth instance in this document of
+  "*which* object a question is asked of", after `FileAccessInformation`'s
+  `entry->access`, `FilePipeInformation`'s SET ladder, and the two before them.
+- **The ladder's CLOSING arm asks about DATA, and its DISCONNECTED arm asks
+  which END.** `if (!list_empty( &pipe_end->message_queue )) break;` makes the
+  QUEUE the discriminator rather than the state word, so one handle answers
+  `STATUS_SUCCESS` and then `STATUS_PIPE_BROKEN` across the single read that
+  empties it — the pin measures that pair through one handle because "CLOSING
+  means the peer is gone" passes every other row. And
+  `pipe_end->pipe ? INVALID_PIPE_STATE : PIPE_DISCONNECTED` splits the
+  disconnecting SERVER from its client, which proskrnl had folded into one
+  answer through `NpfsEndDisconnected`. **The per-end fact had to be asked
+  FIRST rather than folded into the switch**, because proskrnl's state word
+  belongs to the INSTANCE where the oracle's belongs to the END: a re-listened
+  instance moves back to CONNECTED under an end that was orphaned off it.
+- **`NumberOfMessages` moved from a real count to the oracle's literal 0**,
+  which is the rarer direction and is the same trade `DeletePending` already
+  records. The oracle hardwires it under a FIXME; where the oracle answers at
+  all it is the spec (Art. 6), and nothing on the boundary reads the field —
+  `PeekNamedPipe` reports `MessageLength` and drops it. Pinned with two
+  messages queued, which is the one state a real count would show in.
+
+**The executed count rose 2376 → 2377 and the +1 is the item, counted per
+line**: `test_pipe_state`'s `if (!status)` block ran 8 times and now runs 4
+(four peeks correctly stopped succeeding), while `test_pipe_with_data_state`'s
+`if (status == STATUS_BUFFER_OVERFLOW)` block ran 0 times and now runs 5. Todo
+markers 31 before and after, so `§4` trap 2 does not apply here.
+
+**The one assertion this item could not reach is the lifetime residual above**,
+and finding that out was the useful half of scoping it: `:2205`'s last failure
+is `in client state 4`, a CLOSING client whose `instance->pipe` is already gone,
+so it forgets the pipe's TYPE and gives a byte pipe's answers. That makes the
+lifetime item **six** assertions rather than five, and it now has a
+`todo_proskrnl` case in two pins instead of one.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
