@@ -8,4 +8,12 @@
  * not). Boot-time panic on failure, the IoPublishDevice rule. */
 void AfdInitialize(void);
 
+/* The thread-exit sweep (kernel/ps/thread.c): cancel-complete
+ * (STATUS_CANCELLED) every parked socket request `thread` issued. AFD
+ * only — npfs deliberately keeps its don't-sweep behavior (docs/03
+ * "CUI-3 SCM notes"); the pinned contract is per-device. Safe before
+ * AfdInitialize (no-op). */
+struct KTHREAD;
+void AfdCancelThreadIo(struct KTHREAD *thread);
+
 #endif /* PROSKRNL_DRIVERS_AFD_H */
