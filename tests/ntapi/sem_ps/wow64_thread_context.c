@@ -98,6 +98,11 @@ typedef struct
 #define WOW_TEB_OFFSET    0x2000
 #define WOW_PEB_OFFSET    0x1000
 
+/* TEB64.TlsSlots (winternl.h TEB offset comment) and the slot the CPU area
+ * is published in (winternl.h WOW64_TLS_CPURESERVED). */
+#define TEB64_TLS_SLOTS            0x1480
+#define WOW64_TLS_CPURESERVED_SLOT 1
+
 /* THREAD_BASIC_INFORMATION, as the pinned tree spells it; mingw's omits it
  * from winternl.h (the wow64_process.c / thread_info_sweep mirror). */
 typedef struct
@@ -225,6 +230,69 @@ START_TEST(wow64_thread_context)
      * so they must survive the call untouched. */
     status = NtSetInformationThread(pi.hThread, PS_ThreadWow64Context, &set, sizeof(set));
     ok(status == STATUS_SUCCESS, "ThreadWow64Context set(CONTROL) -> %08lx", (unsigned long)status);
+
+    /* WOW64_CPURESERVED_FLAG_RESET_STATE is wow64cpu's only signal that the
+     * guest state it is about to resume was rewritten under it: every
+     * syscall thunk ends in `btrl $0,-4(%r13); jc ...` — read-and-clear, full
+     * iretq restore when it was set, a short Eip/SegCs/Esp-only ljmp when it
+     * was not (third_party/wine dlls/wow64cpu/cpu.c, syscall_32to64 and
+     * unix_call_32to64). wow64cpu is the CONSUMER that clears it.
+     *
+     * The setter is the CONTEXT_I386_CONTROL arm of set_thread_wow64_context
+     * — and it is SELF-ONLY, which is what this arm measures. Every pointer
+     * in that arm comes from `get_thread_data()`, the CALLING thread: the CPU
+     * area it writes and the `cpu->Flags |= ...` it raises are the caller's
+     * own. A non-self target never reaches it, because the `if (!self)` gate
+     * above hands the context to the server and returns
+     * (dlls/ntdll/unix/signal_x86_64.c).
+     *
+     * So the pin for a CROSS-THREAD set is that the target's flag is left
+     * exactly as it was, and it is asserted in BOTH directions, because one
+     * direction alone cannot tell "untouched" from "written to that value":
+     * a kernel that CLEARS it fails the first arm, one that RAISES it fails
+     * the second. (A 64-bit test cannot reach the self path at all — it has
+     * no CPU area of its own; tests/cui/hello32.c and the wow64gui leg are
+     * what exercise it, by running a real guest through exception and APC
+     * returns.) */
+    ULONG64 cpu_area = 0;
+    ok(ReadProcessMemory(pi.hProcess,
+                         (void *)((ULONG_PTR)thread_info.TebBaseAddress + TEB64_TLS_SLOTS +
+                                  WOW64_TLS_CPURESERVED_SLOT * sizeof(ULONG64)),
+                         &cpu_area, sizeof(cpu_area), &res) &&
+           res == sizeof(cpu_area),
+       "CPU area slot read %Iu", (ULONG_PTR)res);
+    ok(cpu_area != 0, "no CPU area in TEB64.TlsSlots[1]");
+    if (cpu_area != 0)
+    {
+        USHORT reserved[2] = {0, 0};
+        ok(ReadProcessMemory(pi.hProcess, (void *)(ULONG_PTR)cpu_area, reserved, sizeof(reserved),
+                             &res) &&
+               res == sizeof(reserved),
+           "WOW64_CPURESERVED read %Iu", (ULONG_PTR)res);
+        ok(reserved[1] == 0x014c, "WOW64_CPURESERVED.Machine %x (not IMAGE_FILE_MACHINE_I386)",
+           reserved[1]);
+        ok((reserved[0] & 1) == 0,
+           "WOW64_CPURESERVED.Flags %x gained RESET_STATE from a cross-thread CONTROL set",
+           reserved[0]);
+
+        /* The other direction: raise it from here, repeat the set, and it
+         * must survive. */
+        USHORT raised[2] = {(USHORT)(reserved[0] | 1), reserved[1]};
+        ok(WriteProcessMemory(pi.hProcess, (void *)(ULONG_PTR)cpu_area, raised, sizeof(raised),
+                              &res) &&
+               res == sizeof(raised),
+           "WOW64_CPURESERVED write %Iu", (ULONG_PTR)res);
+        status = NtSetInformationThread(pi.hThread, PS_ThreadWow64Context, &set, sizeof(set));
+        ok(status == STATUS_SUCCESS, "ThreadWow64Context set(CONTROL) again -> %08lx",
+           (unsigned long)status);
+        ok(ReadProcessMemory(pi.hProcess, (void *)(ULONG_PTR)cpu_area, reserved, sizeof(reserved),
+                             &res) &&
+               res == sizeof(reserved),
+           "WOW64_CPURESERVED re-read %Iu", (ULONG_PTR)res);
+        ok((reserved[0] & 1) != 0,
+           "WOW64_CPURESERVED.Flags %x lost RESET_STATE to a cross-thread CONTROL set",
+           reserved[0]);
+    }
 
     I386_CONTEXT_PIN after;
     memset(&after, 0, sizeof(after));
