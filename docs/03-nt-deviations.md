@@ -2810,6 +2810,33 @@ own name and takes it from the owning process instead. That is the same answer f
 case the boundary can distinguish, since a process's window stations live in its session's
 directory; making the name query answer full paths is NT-correct and unbuilt.
 
+**A fault inside win32u is contained at the boundary Wine has and this build does not.**
+On Wine every `NtUser*`/`NtGdi*` call crosses a syscall, and a fault taken past it does not
+reach the caller: ntdll's unix half catches it and makes the *call* return the exception code
+(`dlls/ntdll/unix/signal_x86_64.c handle_syscall_fault` — `RAX_sig = rec->ExceptionCode;
+RIP_sig = __wine_syscall_dispatcher_return`). That containment is observable, not internal:
+
+    GetClassLongPtrW( GetDesktopWindow(), GCLP_HICONSM )
+
+faults inside win32u **on the pinned oracle too** — the desktop window belongs to no process,
+so `dlls/win32u/class.c get_class_ptr` hands back the `OBJ_OTHER_PROCESS` sentinel and
+`get_class_long_size` dereferences it whenever the class carries no small icon — and the
+oracle answers the caller `0xc0000005` and keeps running (measured, two processes and one).
+In-process, the same fault killed the process. taskmgr found it: its application page asks
+every top-level window for a small icon, and conhost registers a plain `WNDCLASSW` with none.
+
+`user/wine/dlls/win32u/glue.c` rebuilds the containment as a vectored handler rather than as a
+wrapper around each of the ~483 exports, because the frame to return to is derivable: unwind
+from the fault until the return address leaves win32u, and that frame is the one Wine's
+dispatcher would have returned to. It is deliberately narrow — an access violation only, whose
+faulting instruction is inside win32u itself (a fault in a user-mode callback runs in
+user32/the app and is left to the SEH chain that owns it), and it declines if the unwind
+cannot land outside win32u, so a containment that cannot name its destination never happens.
+Every contained fault is still reported on serial: it is a defect somewhere in win32u, just
+not the caller's death. Pinned by `tests/gui/gui3a.c` ("win32u fault contained"), whose
+verdict is SURVIVAL and not the value — the value is Wine's bug leaking its exception code,
+and it becomes a real handle the day upstream fixes it.
+
 **Security is the kernel's, not a second engine's.** The in-process server's
 `check_object_access` succeeds, `sd_is_valid` checks only that a descriptor is big enough to
 be one, and the token queries answer "no token". proskrnl's Se department already decides

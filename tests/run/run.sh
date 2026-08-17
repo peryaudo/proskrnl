@@ -2423,6 +2423,13 @@ gui3() {
     if ! await '\[KTEST\] gui3 server READY'; then
         gui3_fail "wineserver-lite never published its transport"; return 1
     fi
+    # A's fault-containment probe, before its ready marker: a win32u fault
+    # that escapes into the caller kills A silently, and the next await would
+    # then blame B for a death that was A's. Gated by name so the regression
+    # is the missing LINE, not a timeout somewhere downstream.
+    if ! await '\[KTEST\] gui3 win32u fault contained PASS'; then
+        gui3_fail "a fault inside win32u reached its caller (glue.c containment)"; return 1
+    fi
     if ! await '\[KTEST\] gui3 verdict (PASS|FAIL)'; then
         gui3_fail "the second GUI process never reached a verdict"; return 1
     fi

@@ -521,7 +521,99 @@ char *prsk_dlerror(void)
     return (char *)"not available in this build";
 }
 
-/* --- 8. the DLL entry ------------------------------------------------------
+/* --- 8. the syscall boundary's fault containment ---------------------------
+ *
+ * On Wine, every NtUser / NtGdi call crosses a SYSCALL, and a fault taken on
+ * the far side of one does NOT reach the caller: ntdll's unix half catches it
+ * and makes the syscall RETURN the exception code, leaving user mode to carry
+ * on (dlls/ntdll/unix/signal_x86_64.c handle_syscall_fault, the
+ * `RAX_sig = rec->ExceptionCode; RIP_sig = __wine_syscall_dispatcher_return`
+ * arm). That containment is part of the boundary's observable behaviour, not
+ * an implementation detail of it — measured, not assumed:
+ *
+ *     GetClassLongPtrW( other_process_window, GCLP_HICONSM )
+ *
+ * faults inside win32u on the pinned Wine too (dlls/win32u/class.c
+ * get_class_long_size dereferences OBJ_OTHER_PROCESS — the (void *)1 sentinel
+ * get_class_ptr returns for a window this process does not own — whenever the
+ * class supplied no small icon of its own), and the oracle answers the caller
+ * 0xc0000005 and keeps running. GUI-2 put win32u IN PROCESS (docs/03), so
+ * there is no syscall frame to unwind to and the same fault killed the
+ * process instead. taskmgr is the consumer that found it: its application
+ * page asks every top-level window for a small icon, conhost registers a
+ * plain WNDCLASSW with none, and taskmgr died on the query.
+ *
+ * The containment is rebuilt here rather than as a wrapper around each of the
+ * ~483 exports, because the frame to return to is DERIVABLE: unwind from the
+ * fault until the return address leaves this DLL, and that frame is the
+ * caller Wine's dispatcher would have returned to. One handler, no per-call
+ * cost, and the same three effects Wine's arm has — the caller's Rip, its Rsp
+ * and the exception code in Rax.
+ *
+ * Deliberately narrow, so it contains a defect rather than hiding a class of
+ * them:
+ *   - only an ACCESS VIOLATION, and only one whose faulting instruction is
+ *     inside win32u itself. A fault in a user-mode CALLBACK (win32u calls
+ *     back into user32's window procs, which run on this same stack) is not
+ *     ours and is left to the SEH chain that owns it;
+ *   - the unwind must actually LAND outside this DLL, or the handler declines
+ *     and the process dies exactly as before. A containment that cannot name
+ *     where it is returning to would be the fabricated plausible answer
+ *     Art. 12 forbids.
+ */
+
+static const IMAGE_DOS_HEADER *prsk_win32u_image;   /* this DLL's mapped base */
+static ULONG_PTR prsk_win32u_image_end;
+
+static BOOL prsk_inside_win32u( ULONG_PTR pc )
+{
+    return prsk_win32u_image != NULL && pc >= (ULONG_PTR)prsk_win32u_image &&
+           pc < prsk_win32u_image_end;
+}
+
+static LONG CALLBACK prsk_contain_win32u_fault( EXCEPTION_POINTERS *info )
+{
+    CONTEXT context = *info->ContextRecord;
+    unsigned int depth;
+
+    if (info->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    if (!prsk_inside_win32u( context.Rip )) return EXCEPTION_CONTINUE_SEARCH;
+
+    /* Up the stack until the return address is somebody else's. The bound is
+     * a runaway guard: win32u's own call chains are deep but finite, and a
+     * table-less frame makes RtlVirtualUnwind report a leaf forever. */
+    for (depth = 0; depth < 64 && prsk_inside_win32u( context.Rip ); depth++)
+    {
+        RUNTIME_FUNCTION *function;
+        ULONG_PTR image_base, establisher = 0;
+        void *handler_data;
+
+        function = RtlLookupFunctionEntry( context.Rip, &image_base, NULL );
+        if (!function) break;   /* no unwind data: decline rather than guess */
+        RtlVirtualUnwind( UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
+                          &handler_data, &establisher, NULL );
+        if (!context.Rip) break;
+    }
+    if (prsk_inside_win32u( context.Rip ) || !context.Rip)
+    {
+        ERR( "access violation at %p inside win32u, and no caller frame outside it\n",
+             (void *)info->ExceptionRecord->ExceptionAddress );
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /* The oracle's three effects: the caller resumes with the exception code
+     * as the call's return value. Loud, because a contained fault is still a
+     * defect somewhere in win32u — it just is not the caller's death. */
+    ERR( "access violation at %p inside win32u; returning %#x to the caller at %p "
+         "(the syscall-boundary contract, dlls/ntdll/unix/signal_x86_64.c handle_syscall_fault)\n",
+         (void *)info->ExceptionRecord->ExceptionAddress,
+         (unsigned int)info->ExceptionRecord->ExceptionCode, (void *)context.Rip );
+    context.Rax = info->ExceptionRecord->ExceptionCode;
+    *info->ContextRecord = context;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+/* --- 9. the DLL entry ------------------------------------------------------
  *
  * Not winecrt0's DllMainCRTStartup: that one runs the C++ static-init
  * sections and calls DisableThreadLibraryCalls, neither of which this DLL
@@ -542,6 +634,18 @@ BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved 
         /* Before anything else in this DLL folds case (the transport's own
          * name lookups included): see prsk_init_nls_case_tables. */
         prsk_init_nls_case_tables();
+        /* Before the first NtUser / NtGdi call can be made, so no window of
+         * this DLL's life is uncontained (section 8 above). `instance` IS the
+         * mapped base; the size comes from the header it points at. */
+        prsk_win32u_image = (const IMAGE_DOS_HEADER *)instance;
+        if (prsk_win32u_image != NULL)
+        {
+            const IMAGE_NT_HEADERS *nt =
+                (const IMAGE_NT_HEADERS *)((const char *)instance + prsk_win32u_image->e_lfanew);
+            prsk_win32u_image_end =
+                (ULONG_PTR)instance + nt->OptionalHeader.SizeOfImage;
+            RtlAddVectoredExceptionHandler( TRUE, prsk_contain_win32u_fault );
+        }
         if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
         winefb_init();
     }
