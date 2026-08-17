@@ -285,11 +285,67 @@ something else is not a channel, and the failure will surface somewhere with
 no visible connection to the change.**
 
 **What is deliberately NOT built** (Art. 5 — no consumer convicts it): an
-asynchronous WRITE over quota still parks its caller, and a BLOCKING request
-does not clear the file object. The second one is measured and is
-`ntdll:pipe`'s largest remaining cluster (`:1740`/`:1742`/`:1753`, 10) plus
-the two-assertion todo floor at `:1829` that it would *turn into passes* —
-so it is a 12-assertion item in one step, and the obvious next one here.
+asynchronous WRITE over quota still parks its caller.
+
+**W4d — the BLOCKING request's signalled state is DONE** (`ntdll:pipe` 23 →
+**12**), and this document's estimate was right for once: it predicted 12 in
+one step and the step was 13, because `:1678` came with it instead of staying
+a cost. A request that PARKS ITS CALLER owes the caller's event and the file
+object exactly what a pended one does — the oracle queues a blocking async
+through the same code, and `async->blocking = !is_fd_overlapped( fd )`
+(`server/async.c` `create_async`) decides only how the CALLER waits. So the
+event is reset at issue, the handle goes down for the duration, and exactly
+one of the two goes back up at the end (`kernel/io/async.c`
+`IopBeginBlockingRequest` / `IopEndBlockingRequest`, driven from `rw.c`'s
+device branch and its flush; pinned by
+`tests/ntapi/sem_pipe/blocking_signal.c`).
+
+Four things worth carrying:
+
+- **The one-assertion "deliberate cost" at `:1678` was not a cost, it was an
+  UNDECLARED exception charged to every other device.** condrv borrows the
+  file object as its own readiness signal, so the Io layer paid for that by
+  never re-signalling ANY file object on an inline completion. Saying it out
+  loud instead — `FILE_OBJECT.deviceManagedSignal`, tested inside the one
+  transition every producer already goes through (`IopFileSignalSuppressed`,
+  which `FILE_SKIP_SET_EVENT_ON_HANDLE` was already using) — removed the
+  exception and the assertion together. **A deviation whose reason is one
+  device is a property OF THAT DEVICE; recording it as a rule about the
+  layer makes every other consumer pay.** The `todo_proskrnl` in
+  `sem_pipe/pended_read.c` reported "unexpectedly passed" the moment it
+  landed, which is the whole reason it was a tag and not a dropped case.
+- **`:1753` is a blocking FLUSH, not a read**, and the manifest block had
+  guessed a write. `NtFlushBuffersFile` has no event parameter at all, so it
+  can only ever take the file-object arm — which is why the rule had to live
+  in an engine both `rw.c`'s transfers and its flush could call rather than
+  in the transfer tail.
+- **"Did it park" is a real question with a cheap engine answer.** The three
+  outcomes differ only for a FAILING request: one that was QUEUED reaches the
+  oracle's signal block even when it fails (`async->pending ||
+  !NT_ERROR(status)`) and takes the same event-or-handle arm a success takes
+  — *a failing read signals the caller's event* — while one refused above
+  `queue_async` reaches nothing and leaves the handle as it found it. Both
+  measured (`blocking_signal.c` cases 5–7, and the first draft pinned neither).
+  `KTHREAD.syncIoParked` is set by `IoWaitCancellable`, the one place the Io
+  layer's own blocking park happens, so no device has to remember to say so —
+  the same argument `IO_CONTROL_CONTEXT.pended` made for the pended half.
+- **The event reset and the handle clear are separate statements in the
+  oracle and are merged here on purpose**, and that merge is where BOTH of
+  gate-check's findings landed. `create_async` resets the event a frame above
+  `pipe_end_read`'s state checks; `queue_async` clears the fd below them. The
+  split shows only for a request the device refuses without parking, and
+  `IopRequestRefused` restores the handle for exactly that — one place rather
+  than a boundary every device has to know. **"Restores" is the load-bearing
+  word and the first draft wrote "signals"**: a handle can already be DOWN
+  when the refused request arrives (the previous read completed through an
+  event), and every case measuring a refusal against a fresh, born-signalled
+  handle passes either spelling. The other finding is the same shape one
+  direction over — the WRITE tail's unconditional `IopAbandonRequest` reset
+  the event `IopRequestFailedParked` had just set, so reads got the rule and
+  writes got its inverse, with no case in the pin on the write side at all.
+  **Both were found by reading the diff against its own stated rule, not by a
+  failing assertion**, which is now the fourth item in this document with that
+  provenance; each has a case in `blocking_signal.c` now.
 
 **The methodological lesson, third instance of §4 trap 4 in this item.** A
 predicted cause written from the code was checked, built, and turned out to

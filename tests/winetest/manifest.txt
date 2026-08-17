@@ -350,29 +350,34 @@ ntdll_test.exe:path
 #     one is past pipe.c:1578, where nothing had ever executed. It ends in a
 #     PANIC now instead of a timeout, so 23 is a lower bound too.
 #
+#     THE BLOCKING REQUEST'S SIGNALLED STATE IS NOW BUILT: 23 -> 12, and it
+#     was the 13 this block predicted, exactly — :1678, :1740 x2, :1742 x4,
+#     :1753 x4 and the two todo_wine successes at :1829, all in one step. A
+#     request that PARKS ITS CALLER owes the caller's event and the file object
+#     what a pended one does; the oracle queues a blocking async through the
+#     same code, and `async->blocking = !is_fd_overlapped(fd)` decides only how
+#     the CALLER waits (server/async.c create_async). So the event is reset at
+#     issue, the handle goes down for the duration, and exactly one of the two
+#     goes back up at the end — kernel/io/{async,rw}.c
+#     IopBeginBlockingRequest/IopEndBlockingRequest, pinned by
+#     tests/ntapi/sem_pipe/blocking_signal.c.
+#     :1753 is a blocking FLUSH rather than a read (:1850 and :1877, one per
+#     options run) — the same rule through NtFlushBuffersFile, which has no
+#     event parameter and can therefore only ever take the file-object arm.
+#     :1678 came with it and was NOT a separate item, which is the part worth
+#     carrying: it used to be a DELIBERATE cost, because condrv BORROWS the
+#     file object as its own readiness signal and a completion-side re-signal
+#     spins conhost's poll loop (measured on kernel32:virtual, docs/03). The
+#     borrowing is DECLARED now (FILE_OBJECT.deviceManagedSignal, honoured
+#     inside the one transition every producer goes through) instead of being
+#     paid for by every other device, so the cost is gone rather than traded.
+#     Whether anything was hiding behind the 13 is NOT knowable here and this
+#     block does not claim it: the pair panics before its summary line, so
+#     there is no executed count on either side of the change to compare —
+#     only the per-line failure histogram, which lost exactly those 13 lines
+#     and gained none. The pair stops in the same place.
+#
 #     WHAT IS LEFT, in execution order:
-#       -  1  :1678, and it is a DELIBERATE cost rather than a gap. NT counts
-#         no outstanding requests, so ANY completion on a handle re-signals the
-#         file object — here a write on the end whose read is parked. proskrnl
-#         does not, because condrv BORROWS the file object as its own
-#         device-managed readiness signal (CondrvSignalServer, cleared by
-#         CondrvServerRead when the queue empties), so completing that read
-#         re-signals conhost's park the instant it is taken and its poll loop
-#         spins. Measured, on kernel32:virtual: it stopped finishing the todo
-#         block at virtual.c:4341 inside 300 s. Costs 1 assertion; the exit is
-#         an event of condrv's own (docs/03 "CUI-8 async notes").
-#       - 10  test_blocking's handle state — :1740 x2, :1742 x4, :1753 x4, all
-#         "client is signaled" / "event is signaled". ONE cause: a BLOCKING
-#         request does not clear the file object here. The oracle queues a
-#         blocking async like any other (server/async.c queue_async), so its
-#         handle goes down for the duration of a SYNCHRONOUS read; proskrnl
-#         parks the thread and leaves the object signalled. Same subject as the
-#         pended-read rule above, one case short of it.
-#       -  2  :1829, and it is a FLOOR of the same absence: a todo_wine that
-#         proskrnl PASSES ("client is not signaled" after a blocking read with
-#         an event), because Wine leaves the handle down and NT does not.
-#         Building the item above turns these two into passes, so the pair's
-#         count moves by 12 in one step or not at all.
 #       - 12  test_pipe_state, :886-:989 — FilePipeInformation's ACCESS and
 #         RANGE rules: the set needs FILE_WRITE_ATTRIBUTES (ACCESS_DENIED
 #         without it, on the server end), a ReadMode of 1 on a byte pipe is
@@ -381,7 +386,8 @@ ntdll_test.exe:path
 #       - PANIC at NtQueryInformationFile class 8 (FileAccessInformation),
 #         from test_file_access at pipe.c:1015. Unbuilt; everything past it —
 #         the rest of test_pipe_with_data_state, test_readfileex, the
-#         impersonation tests — has never run.
+#         impersonation tests — has never run, so 12 is a lower bound
+#         (docs/21 §4 trap 2).
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
