@@ -135,4 +135,10 @@
  * (docs/24 §6e). LWIP_ASSERT stays active — it lands in KiPanic
  * (arch/cc.h), loud beats wrong (Art. 12). LWIP_DEBUG stays off. */
 
+/* Net-2: the MIB2 counter block is the RETRANSMIT source —
+ * lwip_stats.mib2.tcpretranssegs feeds the [KTEST] net stats rexmit
+ * number (docs/24 §6e: the win is a verdict, and a loopback-only
+ * implementation shows its hand in the drop/retransmit counters). */
+#define MIB2_STATS 1
+
 #endif /* PROSKRNL_DRIVERS_NET_PORT_LWIPOPTS_H */
