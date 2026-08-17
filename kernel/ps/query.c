@@ -215,7 +215,16 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
             status = STATUS_INFO_LENGTH_MISMATCH;
             break;
         }
-        status = KiProbeForWrite(buffer, sizeof(IO_COUNTERS), sizeof(uint64_t));
+        /* Alignment 1, not 8: the WOW64 thunk forwards the caller's own
+         * pointer untranslated for this class — the switch arm is a bare
+         * `return NtQueryInformationProcess( handle, class, ptr, len, retlen )`
+         * under a `FIXME: check buffer alignment` (third_party/wine
+         * dlls/wow64/process.c) — and an i386 caller's stack struct is
+         * 4-aligned. The fill below stages in a local and copies out as
+         * bytes, so refusing here would be the divergence
+         * sem_ps/misaligned_out.c already pinned for the time queries.
+         */
+        status = KiProbeForWrite(buffer, sizeof(IO_COUNTERS), 1);
         if (!NT_SUCCESS(status))
         {
             break;
@@ -245,7 +254,8 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
             status = STATUS_INFO_LENGTH_MISMATCH;
             break;
         }
-        status = KiProbeForWrite(buffer, sizeof(KERNEL_USER_TIMES), sizeof(uint64_t));
+        /* Alignment 1, for the reason ProcessIoCounters' probe gives. */
+        status = KiProbeForWrite(buffer, sizeof(KERNEL_USER_TIMES), 1);
         if (!NT_SUCCESS(status))
         {
             break;
@@ -1774,8 +1784,11 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
             }
             return STATUS_INFO_LENGTH_MISMATCH;
         }
-        NTSTATUS perfStatus = KiProbeForWrite(
-            buffer, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION), sizeof(uint64_t));
+        /* Alignment 1: this class is one of the ones wow64_NtQuerySystemInformation
+         * forwards untranslated (dlls/wow64/system.c), so a 32-bit caller's
+         * 4-aligned array reaches here as-is; the fill stages and copies out. */
+        NTSTATUS perfStatus =
+            KiProbeForWrite(buffer, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION), 1);
         if (!NT_SUCCESS(perfStatus))
         {
             return perfStatus;
@@ -1980,8 +1993,7 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
             }
             return STATUS_INFO_LENGTH_MISMATCH;
         }
-        NTSTATUS status =
-            KiProbeForWrite(buffer, sizeof(SYSTEM_PERFORMANCE_INFORMATION), sizeof(uint64_t));
+        NTSTATUS status = KiProbeForWrite(buffer, sizeof(SYSTEM_PERFORMANCE_INFORMATION), 1);
         if (!NT_SUCCESS(status))
         {
             return status;
@@ -2284,7 +2296,10 @@ NTSTATUS NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS infoClass, PVOID buff
         {
             return STATUS_BUFFER_TOO_SMALL;
         }
-        NTSTATUS status = KiProbeForWrite(buffer, needed, sizeof(uint64_t));
+        /* Alignment 1: forwarded untranslated by wow64_NtQuerySystemInformation
+         * (dlls/wow64/system.c lists it as `ULONG64[]` and passes the pointer
+         * straight down), and an i386 caller's ULONG64 array is 4-aligned. */
+        NTSTATUS status = KiProbeForWrite(buffer, needed, 1);
         if (!NT_SUCCESS(status))
         {
             return status;

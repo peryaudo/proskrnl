@@ -687,7 +687,13 @@ NTSTATUS NtQueryTimer(HANDLE handle, TIMER_INFORMATION_CLASS informationClass, P
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
-    NTSTATUS probe = KiProbeForWrite(buffer, sizeof(TIMER_BASIC_INFORMATION), sizeof(uint64_t));
+    /* Alignment 1, not 8. wow64_NtQueryTimer forwards the caller's pointer
+     * untranslated (third_party/wine dlls/wow64/sync.c), and an i386 caller's
+     * stack TIMER_BASIC_INFORMATION leads with a 4-aligned LARGE_INTEGER —
+     * the same shape the deadline capture two hundred lines above accepts,
+     * and refusing it is the same divergence. The fill below stages in a
+     * local and copies out as bytes. */
+    NTSTATUS probe = KiProbeForWrite(buffer, sizeof(TIMER_BASIC_INFORMATION), 1);
     if (NT_SUCCESS(probe) && returnLength != 0)
     {
         probe = KiProbeForWrite(returnLength, sizeof(ULONG), sizeof(ULONG));
