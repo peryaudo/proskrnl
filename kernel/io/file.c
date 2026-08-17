@@ -18,6 +18,7 @@
 #include "drivers/virtio/blk.h"
 #include "drivers/virtio/input.h"
 #include "drivers/virtio/snd.h"
+#include "drivers/virtio/net.h"
 #include "fs/fat32/fat.h"
 
 /* --- object types ----------------------------------------------------------- */
@@ -391,7 +392,7 @@ ULONG IoDrainDeviceCompletions(void)
 {
     BOOLEAN blkPresent = VioBlkIsPresent();
     BOOLEAN sndPresent = VioSndIsPresent();
-    if (!blkPresent && !sndPresent)
+    if (!blkPresent && !sndPresent && !VioNetIsPresent())
     {
         return 0;
     }
@@ -413,6 +414,10 @@ ULONG IoDrainDeviceCompletions(void)
     {
         VioSndDrain();
     }
+    /* Net-1 (docs/24 §4a): the net arm of the same one authority —
+     * harvest-store-wake against the tick tail's 1 ms bound (docs/19
+     * §11f: no MSI-X vector for net; the escape stays named there). */
+    VioNetDrain();
     KiInCompletionDrain = FALSE;
     KiLeaveNoBlockRegion();
     return (blkPresent ? VioBlkInFlightCount() : 0) + (sndPresent ? VioSndInFlightCount() : 0);
@@ -437,6 +442,14 @@ void IoInitializeTransport(void)
     if (!VioSndInitialize())
     {
         DbgPrint("io: no sound device; \\Device\\Snd* disabled\n");
+    }
+    /* Net-1: the NIC probe joins blk and input here because the virtio BAR
+     * map and every DMA allocation must precede MiFreezeKernelPml4
+     * (docs/24 §4a); bring-up — lwIP, netd, DHCP — is deliberately later
+     * (NetInitialize). Absent on every image but the net leg's. */
+    if (!VioNetInitialize())
+    {
+        DbgPrint("io: no network device\n");
     }
 }
 

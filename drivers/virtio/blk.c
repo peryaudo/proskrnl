@@ -114,7 +114,7 @@ BOOLEAN VioBlkInitialize(void)
         VioPciSetFailed(&VioBlkDevice);
         return FALSE;
     }
-    if (!VioPciAcceptFeatures(&VioBlkDevice))
+    if (!VioPciAcceptFeatures(&VioBlkDevice, 0))
     {
         return FALSE;
     }

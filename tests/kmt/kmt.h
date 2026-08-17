@@ -123,6 +123,13 @@ int kmt_run_fat_churn(void);
  * exists (the run.sh audio leg); silently absent everywhere else. */
 int kmt_run_snd(void);
 
+/* The Net-1 device verdicts (tests/kmt/net_smoke.c): the [KTEST] net mac
+ * serial<->pcap anchor, one broadcast smoke frame on the wire, the
+ * transmit completion round trip through the tick-tail drain — and, once
+ * the stack is up (drivers/net/), DHCP/echo/lease. Runs only when a NIC
+ * exists (the run.sh net leg's boot); silently absent everywhere else. */
+int kmt_run_net(void);
+
 /* The issue #96 preventive-mechanism guards (tests/kmt/preventive.c): the
  * non-blocking-region depth and the release-obligation ledger are balanced
  * across every representative gated FS verb, including its error paths.

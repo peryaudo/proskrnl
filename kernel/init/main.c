@@ -574,6 +574,11 @@ static void KiTestMainThread(void *context)
      * own [KTEST] SND verdict when it runs; absence is silent. */
     fatInteropFailures += kmt_run_snd();
 
+    /* The Net-1 device verdicts (tests/kmt/net_smoke.c): only when a NIC
+     * exists (the run.sh net leg boots with -netdev user + virtio-net-pci);
+     * prints its own [KTEST] verdicts. Absence is silent. */
+    fatInteropFailures += kmt_run_net();
+
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is
      * the milestone's acceptance artifact. The Wine bring-up half — the

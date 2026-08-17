@@ -91,9 +91,12 @@ typedef struct
 /* Virtio device types (§5, "Device Types"); the modern PCI device id is
  * VIRTIO_PCI_DEVICE_ID_MODERN_BASE + type (§4.1.2). Cross-check:
  * third_party/qemu include/standard-headers/linux/virtio_ids.h. */
+#define VIRTIO_DEVICE_TYPE_NET   1  /* §5.1 */
 #define VIRTIO_DEVICE_TYPE_BLK   2  /* §5.2 */
 #define VIRTIO_DEVICE_TYPE_INPUT 18 /* §5.8 */
 #define VIRTIO_DEVICE_TYPE_SND   25 /* §5.14 */
+
+#define VIRTIO_PCI_DEVICE_ID_NET_TRANSITIONAL 0x1000 /* §4.1.2.1 */
 
 /* Vendor-specific capability layout (virtio 1.2 cs01 §4.1.4); cap_vndr is
  * PCI capability ID 0x09 (PCI Local Bus Spec 3.0 §6.7 vendor-specific). */
@@ -253,9 +256,13 @@ typedef struct
 BOOLEAN VioPciSetupModernDevice(uint8_t deviceType, uint16_t transitionalId, const char *name,
                                 unsigned instance, VIO_PCI_DEVICE *out);
 
-/* §3.1.1 step 4 (write half) plus steps 5-6: accept VERSION_1 and nothing
- * else, set FEATURES_OK, and confirm the readback. */
-BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device);
+/* §3.1.1 step 4 (write half) plus steps 5-6: accept VERSION_1 plus the
+ * caller's device-specific low bits (masked against what the device
+ * offered), set FEATURES_OK, and confirm the readback. blk and input pass
+ * 0 — every device-specific feature off, each on its own Art. 3 grounds;
+ * net passes VIRTIO_NET_F_MAC and nothing else (docs/24 §4a). One
+ * negotiation authority either way (Art. 11). */
+BOOLEAN VioPciAcceptFeatures(VIO_PCI_DEVICE *device, uint32_t acceptedLowBits);
 
 /* §3.1.1 step 7 for one queue: select it, size the rings, publish the three
  * area addresses, resolve the notify address (§4.1.4.4), enable. */
