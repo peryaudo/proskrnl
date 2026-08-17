@@ -170,6 +170,38 @@ local macOS Wine.
 
 ## Status
 
+**Net-2 complete** — `\Device\Afd`, the socket boundary Wine's ws2_32
+issues (`docs/02` "Net-2"; the design is `docs/24` §5). The stack and its
+netd thread now come up on every image (loopback needs no NIC), and
+`drivers/afd.c` serves the AFD surface over lwIP's raw API in condrv's
+device shape: create/bind/listen/connect/accept (the ULONG-handle-mint in
+the accept issuer's table), scatter send/recv with the UDP datagram
+rules, `NtReadFile`/`NtWriteFile` on socket handles, the 13-bit readiness
+machine (poll + exclusive displacement, event-select/get-events with the
+event-as-input-pointer *sic* convention, the FIONBIO interlock), the
+Net-2 sockopt set, and waitable socket handles — pending riding the CUI-8
+engine exactly as `kernel/io/io.h` promised, with `CancelPending`,
+close-cancels and thread-exit cancels, and the cancellable
+synchronous-handle wait as the frontier's second Net entry (`docs/20`
+§13). Semantics were pinned first (G5) by `tests/ntapi/sem_net/` — eleven
+suites, loopback-only and device-free, green on both runners — then
+hardened against `ws2_32:afd` run raw on proskrnl (the parity round:
+poll teardown shapes, WRITE hysteresis, the loopback OOB sidechannel,
+minimal AF_INET6 bind surface — `docs/03` "Net-2 notes"). Unbuilt verbs
+refuse loudly in the oracle-pinned inline shape, named on serial (G12),
+and the `[KTEST] net` stats line now carries pended/refused/retransmit
+numbers with a pended>0 floor on the full ntapi leg (docs/24 §6e: the
+win is a verdict). Couldn't be achieved within the milestone:
+`ws2_32:afd` is *parked, not active* in the winetest manifest — the
+boundary rows are all green on proskrnl, but the suite's own
+`gethostbyname("")` dies on the dormant resolver unixlib, which is
+exactly Net-3's `WS_CALL` fork seam; `ws2_32:sock` crashes the same way
+at startup and is parked with its family triage; TCP urgent data beyond
+the loopback sidechannel and the v6 data path are recorded `docs/03`
+scope cuts. What's next: Net-3 — the resolver seam (`WS_CALL` +
+`wsresolv.dll`), minimal `\Device\Nsi`, and the off-the-shelf HTTPS
+fetch.
+
 **Net-1 complete** — the wire is up (`docs/02` "Networking path"; the
 design is `docs/24`). The pinned lwIP (STABLE-2_2_1, the second
 third-party component ever linked into the kernel image, admitted under
