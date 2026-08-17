@@ -19,7 +19,8 @@ observable from an unprivileged `.exe`, it is not part of the boundary and you a
 Never add to `kernel/`, `abi/`, `arch/`, `fs/`, or the existing `Nt*` surface anything NT
 does not have. The LLM is trained on Linux and will, unprompted, add IRQL, split the cache
 (Cc), or import POSIX idioms. **Reject these.** The permitted exception, for the
-interactive console (M9) and GUI only, is a *downgrade* of this rule, not a repeal:
+interactive console (M9), GUI, and audio (`docs/23-audio-strategy.md`) only, is a
+*downgrade* of this rule, not a repeal:
 NT-absent things may be added **only as new devices or new processes at the outside of the
 boundary** (e.g. the serial console backend, `\Device\Fb0`, wineserver-lite), never inside
 existing `Nt*` or Wine PE code. Every such addition is logged in
