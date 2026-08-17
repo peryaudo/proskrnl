@@ -3673,3 +3673,41 @@ harmless — the only 64-bit code in such a process is the `wow64*` thunk set, w
 folds case. proskrnl puts one more 64-bit DLL there, so `win32u` installs the case tables
 itself when nobody else has (idempotent; a no-op in a 64-bit process, where the PEB field
 it publishes is already set).
+
+## WOW64 audit notes — the second pass (the misalignment frontier)
+
+The WOW64 GUI notes above close with three defects that a 32-bit window found; none of
+them was 32-bit *in nature*, and that is the point. A WOW64 caller is the tree's only
+routine source of an input the 64-bit surface had quietly assumed away, so an audit of the
+WOW64 path is largely an audit of that one assumption. It is written down here rather than
+left to be re-derived by whoever hits the next instance.
+
+**The assumption — "the caller's output buffer is naturally aligned."** It is not, and the
+oracle is explicit about who forwards what: `dlls/wow64/*.c` translates a struct whose
+32-bit and 64-bit layouts differ, and passes the pointer STRAIGHT DOWN when they agree.
+The pass-through set is a fact of the pinned tree, enumerable with one grep, and every
+member of it reaches a 64-bit kernel at i386's 4-byte alignment. Two consequences, and the
+tree had both:
+
+- a kernel that stores through a struct pointer into that buffer performs an 8-byte store
+  at a 4-mod-8 address — undefined in C and a UBSan `#UD` here (the crash class);
+- a kernel that PROBES that buffer for 8-byte alignment answers
+  `STATUS_DATATYPE_MISALIGNMENT` where the oracle answers the value, and Wine's PE callers
+  do not check the status (the silent-garbage class — this is what stalled
+  SAFlashPlayer.exe, `sem_ps/misaligned_out.c`).
+
+So the rule for anything the thunks forward untranslated is now uniform and stated once:
+**probe for alignment 1, stage the fill in an aligned local, copy out as bytes.**
+Alignment 1 rather than 4 is deliberate and follows `KiCaptureTimeout`'s reasoning: the
+pinned Wine checks no alignment at all, so 1 is the only answer this side has evidence
+for, and narrowing it needs a measurement on Windows rather than a recollection.
+
+The file surface is the first application. `NtQueryInformationFile` filled every one of
+its fixed classes through a struct pointer aimed at the caller's buffer — the same defect
+`IopFillDirEntry` and the volume classes already had fixed — and `FileNameInformation`
+went further, handing the FS backend the caller's buffer to write `WCHAR`s into directly.
+Both now stage: the fixed classes into a union, the name into an aligned local (with a
+pool fallback for a path longer than it) copied out as bytes. The npfs pipe classes stage
+for the same reason. `NtQueryAttributesFile` / `NtQueryFullAttributesFile` already staged
+their fills but probed for 8-byte alignment, which refused the ordinary i386 caller
+outright; both probe for 1 now. Pinned by `tests/ntapi/sem_file/info_unaligned_buffer.c`.

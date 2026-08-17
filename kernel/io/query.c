@@ -52,25 +52,70 @@ static void IopFillStandard(const IO_FILE_INFO *raw, PIO_FCB fcb, FILE_STANDARD_
 }
 
 /* Fill a FILE_NAME_INFORMATION-shaped blob; *writtenOut counts bytes
- * consumed in `buffer`. STATUS_BUFFER_OVERFLOW when the name is cut. */
+ * consumed in `buffer`. STATUS_BUFFER_OVERFLOW when the name is cut.
+ *
+ * `buffer` is the CALLER's, at the caller's alignment (the probe asks for 1),
+ * so neither the ULONG length field nor the WCHARs behind it may be stored
+ * through a struct pointer into it — the dir-entry serializer above says why
+ * at length. The name is built in an aligned kernel staging buffer and copied
+ * out as bytes; the 260-WCHAR local covers every path this FS can produce
+ * (fs/fat32 walks at most 64 components) and the pool fallback keeps a longer
+ * one from being silently cut by the STAGING rather than by the caller's
+ * capacity. */
 static NTSTATUS IopFillName(PFILE_OBJECT file, void *buffer, ULONG capacity, ULONG *writtenOut)
 {
-    FILE_NAME_INFORMATION *out = buffer;
     ULONG fixed = (ULONG)offsetof(FILE_NAME_INFORMATION, FileName);
     if (capacity < fixed)
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
+    ULONG nameCapacity = capacity - fixed;
+    WCHAR inlineName[260];
+    WCHAR *staging = inlineName;
+    ULONG stagingBytes = sizeof(inlineName);
+    if (nameCapacity < stagingBytes)
+    {
+        stagingBytes = nameCapacity;
+    }
     ULONG nameBytes = 0;
-    NTSTATUS status =
-        file->device->ops->QueryName(file, out->FileName, capacity - fixed, &nameBytes);
+    NTSTATUS status = file->device->ops->QueryName(file, staging, stagingBytes, &nameBytes);
     if (!NT_SUCCESS(status) && status != STATUS_BUFFER_OVERFLOW)
     {
         return status;
     }
-    out->FileNameLength = nameBytes;
-    *writtenOut = fixed + (nameBytes <= capacity - fixed ? nameBytes : capacity - fixed);
-    return status;
+    /* A name longer than the local AND than what the local could hold for the
+     * caller: re-ask into a pool buffer, so the bytes handed back are the
+     * caller's capacity worth of the REAL name. */
+    WCHAR *pooled = 0;
+    if (nameBytes > stagingBytes && nameCapacity > stagingBytes)
+    {
+        ULONG wanted = nameBytes < nameCapacity ? nameBytes : nameCapacity;
+        pooled = MiAllocatePool(wanted);
+        if (pooled == 0)
+        {
+            return STATUS_NO_MEMORY;
+        }
+        staging = pooled;
+        stagingBytes = wanted;
+        status = file->device->ops->QueryName(file, staging, stagingBytes, &nameBytes);
+        if (!NT_SUCCESS(status) && status != STATUS_BUFFER_OVERFLOW)
+        {
+            MiFreePool(pooled);
+            return status;
+        }
+    }
+
+    ULONG copy = nameBytes <= stagingBytes ? nameBytes : stagingBytes;
+    ULONG header = nameBytes; /* FileNameLength always reports the FULL name */
+    memcpy((char *)buffer + offsetof(FILE_NAME_INFORMATION, FileNameLength), &header,
+           sizeof(header));
+    memcpy((char *)buffer + fixed, staging, copy);
+    if (pooled != 0)
+    {
+        MiFreePool(pooled);
+    }
+    *writtenOut = fixed + copy;
+    return nameBytes <= nameCapacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
 
 NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG length,
@@ -180,10 +225,11 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
      * established; pinned sem_file/async_inline.c). */
     if (informationClass == FileModeInformation)
     {
-        FILE_MODE_INFORMATION *out = buffer;
-        out->Mode = IopFileMode(file);
+        FILE_MODE_INFORMATION mode;
+        mode.Mode = IopFileMode(file);
+        memcpy(buffer, &mode, sizeof(mode)); /* caller-aligned buffer */
         iosb->Status = STATUS_SUCCESS;
-        iosb->Information = sizeof(*out);
+        iosb->Information = sizeof(mode);
         ObDereferenceObject(file);
         return STATUS_SUCCESS;
     }
@@ -195,10 +241,11 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
      * carry their own word. */
     if (informationClass == FileIoCompletionNotificationInformation)
     {
-        FILE_IO_COMPLETION_NOTIFICATION_INFORMATION *out = buffer;
-        out->Flags = file->completionFlags;
+        FILE_IO_COMPLETION_NOTIFICATION_INFORMATION notification;
+        notification.Flags = file->completionFlags;
+        memcpy(buffer, &notification, sizeof(notification)); /* caller-aligned buffer */
         iosb->Status = STATUS_SUCCESS;
-        iosb->Information = sizeof(*out);
+        iosb->Information = sizeof(notification);
         ObDereferenceObject(file);
         return STATUS_SUCCESS;
     }
@@ -252,20 +299,41 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     }
 
     ULONG_PTR information = needed;
+    /* Every fixed-size class below is built HERE, in an aligned local, and
+     * copied out as bytes at the end. `buffer` carries the caller's own
+     * alignment (the probe asks for 1, as NtQueryDirectoryFile's does and for
+     * the same reason): a WOW64 caller's i386 stack struct is 4-aligned, so a
+     * `FILE_BASIC_INFORMATION *out = buffer; out->CreationTime = ...` is an
+     * 8-byte store at a 4-mod-8 address — undefined in C and a UBSan #UD in
+     * this build. The classes with variable tails (FileName*, FileAll) copy
+     * their own bytes and set `staged` to 0 to say so. */
+    union
+    {
+        FILE_BASIC_INFORMATION basic;
+        FILE_STANDARD_INFORMATION standard;
+        FILE_POSITION_INFORMATION position;
+        FILE_INTERNAL_INFORMATION internal;
+        FILE_ID_INFORMATION id;
+        FILE_END_OF_FILE_INFORMATION endOfFile;
+        FILE_NETWORK_OPEN_INFORMATION networkOpen;
+        FILE_ATTRIBUTE_TAG_INFORMATION attributeTag;
+    } staged;
+    ULONG stagedBytes = 0;
+    memset(&staged, 0, sizeof(staged));
     switch (informationClass)
     {
     case FileBasicInformation:
-        IopFillBasic(&raw, buffer);
+        IopFillBasic(&raw, &staged.basic);
+        stagedBytes = sizeof(staged.basic);
         break;
     case FileStandardInformation:
-        IopFillStandard(&raw, file->fcb, buffer);
+        IopFillStandard(&raw, file->fcb, &staged.standard);
+        stagedBytes = sizeof(staged.standard);
         break;
     case FilePositionInformation:
-    {
-        FILE_POSITION_INFORMATION *out = buffer;
-        out->CurrentByteOffset = file->currentByteOffset;
+        staged.position.CurrentByteOffset = file->currentByteOffset;
+        stagedBytes = sizeof(staged.position);
         break;
-    }
     case FileInternalInformation:
     {
         /* A backend without a per-file identity (devices, pipes; also the
@@ -283,8 +351,8 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
             ObDereferenceObject(file);
             return STATUS_NOT_IMPLEMENTED;
         }
-        FILE_INTERNAL_INFORMATION *out = buffer;
-        out->IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        staged.internal.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        stagedBytes = sizeof(staged.internal);
         break;
     }
     case FileIdInformation:
@@ -326,16 +394,14 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
             ObDereferenceObject(file);
             return status;
         }
-        FILE_ID_INFORMATION *out = buffer;
-        out->VolumeSerialNumber = facts.serialNumber;
-        /* Zero FIRST, then the low half: the upper eight bytes of the
-         * 128-bit id carry nothing on a volume whose ids are 64 bits, and
-         * they must be WRITTEN rather than left as the caller's bytes —
-         * ntdll:file's test_file_id_information poisons the buffer with
-         * 0x11 and checks the poison is gone. */
-        memset(&out->FileId, 0, sizeof(out->FileId));
+        staged.id.VolumeSerialNumber = facts.serialNumber;
+        /* The staged copy is already zeroed, which is what makes the upper
+         * eight bytes of the 128-bit id WRITTEN rather than left as the
+         * caller's bytes — ntdll:file's test_file_id_information poisons the
+         * buffer with 0x11 and checks the poison is gone. */
         uint64_t low = raw.fileId;
-        memcpy(&out->FileId, &low, sizeof(low));
+        memcpy(&staged.id.FileId, &low, sizeof(low));
+        stagedBytes = sizeof(staged.id);
         break;
     }
     case FileEndOfFileInformation:
@@ -344,8 +410,8 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
          * FileStandardInformation reports, which is how the pinned Wine
          * answers it (dlls/ntdll/unix/file.c fills it from the same fstat).
          * ntdll's actctx.c asks it of every manifest file it maps. */
-        FILE_END_OF_FILE_INFORMATION *out = buffer;
-        out->EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
+        staged.endOfFile.EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
+        stagedBytes = sizeof(staged.endOfFile);
         break;
     }
     case FileNetworkOpenInformation:
@@ -353,15 +419,14 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         /* CUI-5: the by-handle sibling of NtQueryFullAttributesFile — the
          * same times/sizes/attributes facts (pinned Wine fill_file_info;
          * sem_file/info_classes holds it to the basic/standard answers). */
-        FILE_NETWORK_OPEN_INFORMATION *out = buffer;
-        memset(out, 0, sizeof(*out));
-        out->CreationTime = raw.creationTime;
-        out->LastAccessTime = raw.lastAccessTime;
-        out->LastWriteTime = raw.lastWriteTime;
-        out->ChangeTime = raw.lastWriteTime;
-        out->AllocationSize.QuadPart = (LONGLONG)raw.allocationSize;
-        out->EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
-        out->FileAttributes = raw.fileAttributes;
+        staged.networkOpen.CreationTime = raw.creationTime;
+        staged.networkOpen.LastAccessTime = raw.lastAccessTime;
+        staged.networkOpen.LastWriteTime = raw.lastWriteTime;
+        staged.networkOpen.ChangeTime = raw.lastWriteTime;
+        staged.networkOpen.AllocationSize.QuadPart = (LONGLONG)raw.allocationSize;
+        staged.networkOpen.EndOfFile.QuadPart = (LONGLONG)raw.endOfFile;
+        staged.networkOpen.FileAttributes = raw.fileAttributes;
+        stagedBytes = sizeof(staged.networkOpen);
         break;
     }
     case FileAttributeTagInformation:
@@ -369,9 +434,9 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         /* CUI-5: GetFileInformationByHandleEx(FileAttributeTagInfo) and
          * GetVolumePathNameW's reparse-point walk. No reparse points exist
          * on FAT; the pinned Wine answers tag 0 for a plain file too. */
-        FILE_ATTRIBUTE_TAG_INFORMATION *out = buffer;
-        out->FileAttributes = raw.fileAttributes;
-        out->ReparseTag = 0;
+        staged.attributeTag.FileAttributes = raw.fileAttributes;
+        staged.attributeTag.ReparseTag = 0;
+        stagedBytes = sizeof(staged.attributeTag);
         break;
     }
     case FileStreamInformation:
@@ -392,15 +457,18 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     }
     case FileAllInformation:
     {
-        FILE_ALL_INFORMATION *out = buffer;
-        memset(out, 0, offsetof(FILE_ALL_INFORMATION, NameInformation));
-        IopFillBasic(&raw, &out->BasicInformation);
-        IopFillStandard(&raw, file->fcb, &out->StandardInformation);
-        out->InternalInformation.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
-        out->PositionInformation.CurrentByteOffset = file->currentByteOffset;
-        out->AccessInformation.AccessFlags = file->grantedAccess;
-        out->ModeInformation.Mode = IopFileMode(file);
+        /* The five leading classes in one struct, staged for the same reason
+         * as each of them on its own, then the name behind them. */
+        FILE_ALL_INFORMATION all;
         ULONG nameOffset = (ULONG)offsetof(FILE_ALL_INFORMATION, NameInformation);
+        memset(&all, 0, nameOffset);
+        IopFillBasic(&raw, &all.BasicInformation);
+        IopFillStandard(&raw, file->fcb, &all.StandardInformation);
+        all.InternalInformation.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
+        all.PositionInformation.CurrentByteOffset = file->currentByteOffset;
+        all.AccessInformation.AccessFlags = file->grantedAccess;
+        all.ModeInformation.Mode = IopFileMode(file);
+        memcpy(buffer, &all, nameOffset);
         ULONG written = 0;
         status = IopFillName(file, (char *)buffer + nameOffset, length - nameOffset, &written);
         information = nameOffset + written;
@@ -410,6 +478,10 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         break;
     }
 
+    if (stagedBytes != 0)
+    {
+        memcpy(buffer, &staged, stagedBytes);
+    }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {
         iosb->Status = status;

@@ -830,7 +830,16 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(info, sizeof(*info), sizeof(uint64_t));
+    /* Alignment 1, not 8. The WOW64 thunk hands the caller's 32-bit pointer
+     * straight down (`return NtQueryAttributesFile( attr, info )` after only
+     * the OBJECT_ATTRIBUTES conversion — third_party/wine dlls/wow64/file.c
+     * wow64_NtQueryAttributesFile), and an i386 caller's stack
+     * FILE_BASIC_INFORMATION is 4-aligned, so refusing a 4-mod-8 output is a
+     * STATUS_DATATYPE_MISALIGNMENT the oracle never answers — the same
+     * divergence sem_ps/misaligned_out.c pinned for the time queries. The
+     * fill below already stages in a local and copies out as bytes, so
+     * nothing here dereferences the caller's pointer at width. */
+    NTSTATUS status = KiProbeForWrite(info, sizeof(*info), 1);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -893,7 +902,8 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(info, sizeof(*info), sizeof(uint64_t));
+    /* Alignment 1, for the reason NtQueryAttributesFile's probe gives. */
+    NTSTATUS status = KiProbeForWrite(info, sizeof(*info), 1);
     if (!NT_SUCCESS(status))
     {
         return status;

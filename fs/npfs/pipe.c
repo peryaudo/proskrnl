@@ -984,37 +984,43 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
      * handle was even resolved (kernel/io/query.c, the oracle's own ordering —
      * pinned sem_pipe/create_refusals.c), so the length is a precondition
      * here, not a case to answer. */
+    /* Staged in an aligned local and copied out as bytes: `buffer` is the
+     * caller's, at the caller's alignment (kernel/io/query.c probes it for 1),
+     * and a struct-pointer store into a 1- or 2-mod-4 buffer is undefined in C
+     * and a UBSan #UD in this build. */
     if (informationClass == FilePipeInformation)
     {
         ASSERT(length >= sizeof(FILE_PIPE_INFORMATION));
-        FILE_PIPE_INFORMATION *info = buffer;
-        info->ReadMode = end->readMode;
-        info->CompletionMode = end->completionMode;
-        *infoOut = sizeof(*info);
+        FILE_PIPE_INFORMATION info;
+        info.ReadMode = end->readMode;
+        info.CompletionMode = end->completionMode;
+        memcpy(buffer, &info, sizeof(info));
+        *infoOut = sizeof(info);
         return STATUS_SUCCESS;
     }
 
     ASSERT(informationClass == FilePipeLocalInformation);
     ASSERT(length >= sizeof(FILE_PIPE_LOCAL_INFORMATION));
-    FILE_PIPE_LOCAL_INFORMATION *info = buffer;
-    memset(info, 0, sizeof(*info));
+    FILE_PIPE_LOCAL_INFORMATION info;
+    memset(&info, 0, sizeof(info));
     PNPFS_PIPE pipe = instance->pipe;
     if (pipe != 0)
     {
-        info->NamedPipeType = pipe->pipeType;
-        info->NamedPipeConfiguration = NpfsConfigurationFromShare(pipe->sharing);
-        info->MaximumInstances = pipe->maxInstances;
-        info->CurrentInstances = pipe->instanceCount;
-        info->InboundQuota = pipe->inQuota;
-        info->OutboundQuota = pipe->outQuota;
+        info.NamedPipeType = pipe->pipeType;
+        info.NamedPipeConfiguration = NpfsConfigurationFromShare(pipe->sharing);
+        info.MaximumInstances = pipe->maxInstances;
+        info.CurrentInstances = pipe->instanceCount;
+        info.InboundQuota = pipe->inQuota;
+        info.OutboundQuota = pipe->outQuota;
     }
-    info->NamedPipeState = end->orphaned ? FILE_PIPE_DISCONNECTED_STATE : instance->state;
-    info->NamedPipeEnd = end->isServer ? FILE_PIPE_SERVER_END : FILE_PIPE_CLIENT_END;
-    info->ReadDataAvailable = NpfsIncomingQueue(end)->bytesAvailable;
+    info.NamedPipeState = end->orphaned ? FILE_PIPE_DISCONNECTED_STATE : instance->state;
+    info.NamedPipeEnd = end->isServer ? FILE_PIPE_SERVER_END : FILE_PIPE_CLIENT_END;
+    info.ReadDataAvailable = NpfsIncomingQueue(end)->bytesAvailable;
     PNPFS_QUEUE outgoing = NpfsOutgoingQueue(end);
-    info->WriteQuotaAvailable =
+    info.WriteQuotaAvailable =
         outgoing->quota > outgoing->bytesAvailable ? outgoing->quota - outgoing->bytesAvailable : 0;
-    *infoOut = sizeof(*info);
+    memcpy(buffer, &info, sizeof(info));
+    *infoOut = sizeof(info);
     return STATUS_SUCCESS;
 }
 
