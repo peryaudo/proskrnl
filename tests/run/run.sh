@@ -1067,6 +1067,16 @@ bake_audio_image() {   # $1 = image path; $2.. = extra specs
     for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
         specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
     done
+    # %windir%\{win,system}.ini, the CUI wtest image's reason plus one of
+    # this image's own: system.ini's [drivers32] carries the msacm codec
+    # aliases (wine.inf writes them through UpdateInis, which the baked inf
+    # drops), and without them PlaySound cannot find a decoder for any
+    # non-PCM wav (winmm:wave measured 7 failures on exactly that).
+    python3 "$ROOT/tools/gen_sysini.py" "$BUILD/wtests/sysini" >/dev/null
+    local inifile
+    for inifile in "$BUILD/wtests/sysini"/*.ini; do
+        specs+=("win:$inifile=windows/$(basename "$inifile")")
+    done
     # The audio payload, read from the Makefile's one list rather than
     # re-spelled here (the print-winfiles drift lesson).
     local audiospec audiofiles=()
