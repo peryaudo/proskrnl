@@ -624,14 +624,24 @@ void NetPrintKtestStats(void)
 {
     VIO_NET_STATS stats;
     VioNetQueryStats(&stats);
+    ULONG pended = 0;
+    ULONG syncParks = 0;
+    ULONG refused = 0;
+    AfdQueryStats(&pended, &syncParks, &refused);
     /* The docs/24 §6e discipline: the win is a verdict — counters as
-     * numbers, floors where they make sense (the leg asserts rx/tx > 0),
-     * recorded facts where they do not (drops, high-water marks). */
+     * numbers, floors where they make sense (the net leg asserts
+     * rx/tx > 0, excluding a loopback-only implementation; the proskrnl
+     * ntapi leg asserts pended > 0, excluding an inline-only one — both
+     * inert shapes pass every semantic test), recorded facts where they
+     * do not (drops, retransmits, high-water marks). rexmit is lwIP's
+     * own MIB2 count (lwipopts.h MIB2_STATS). */
     DbgPrint("[KTEST] net stats rx=%lu tx=%lu rxdrops=%lu txdrops=%lu staged_hw=%lu "
-             "pbufdrops=%lu heap_hw=%lu pbufpool_hw=%lu\n",
+             "pbufdrops=%lu heap_hw=%lu pbufpool_hw=%lu pended=%lu syncparks=%lu refused=%lu "
+             "rexmit=%lu\n",
              (unsigned long)stats.rxFrames, (unsigned long)stats.txFrames,
              (unsigned long)stats.rxStagedDrops, (unsigned long)stats.txSlotDrops,
              (unsigned long)stats.rxStagedHighWater, (unsigned long)NetdRxPbufDrops,
-             (unsigned long)lwip_stats.mem.max,
-             (unsigned long)lwip_stats.memp[MEMP_PBUF_POOL]->max);
+             (unsigned long)lwip_stats.mem.max, (unsigned long)lwip_stats.memp[MEMP_PBUF_POOL]->max,
+             (unsigned long)pended, (unsigned long)syncParks, (unsigned long)refused,
+             (unsigned long)lwip_stats.mib2.tcpretranssegs);
 }

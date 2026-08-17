@@ -984,6 +984,21 @@ proskrnl() {
     # The external FAT oracle on the mutated image (docs/08): the kernel's
     # writes must parse under implementations that have never met fs/fat32/.
     "$ROOT/tests/run/fatcheck.sh" verify "proskrnl$tag" "$img" || fails=$((fails + 1))
+    # Net-2 (docs/24 §6e): the FULL sweep must have genuinely PENDED socket
+    # requests — an inline-only \Device\Afd passes every semantic test, so
+    # the win is this number. Subset runs may select no sem_net test and
+    # are exempt; the gate is the unfiltered leg.
+    if (( ${#SUBTESTS[@]} == 0 )); then
+        local netstats pended
+        netstats="$(grep -aE '^\[KTEST\] net stats ' "$log" | tail -1 | tr -d '\r' || true)"
+        pended="$(sed -nE 's/.* pended=([0-9]+).*/\1/p' <<<"$netstats")"
+        if [[ -z "$pended" || "$pended" -eq 0 ]]; then
+            echo "[KTEST] net-pended FAIL (no pended completions: '$netstats')"
+            fails=$((fails + 1))
+        else
+            echo "[KTEST] net-pended PASS ($netstats)"
+        fi
+    fi
     echo "== proskrnl: $fails failing =="
     return $((fails > 0 ? 1 : 0))
 }

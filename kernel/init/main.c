@@ -612,6 +612,13 @@ static void KiTestMainThread(void *context)
      * (kernel/init/verify.c), so each exited test still gets audited. */
     int sessionFailures = KiRunSessionManager(abiFailures);
 
+    /* Net-2 (docs/24 §6e): the stats line after the session's ntapi sweep,
+     * so the sweep's socket traffic is in the numbers — the proskrnl leg
+     * asserts pended > 0 here (an inline-only implementation would pass
+     * every semantic test and show 0). The net leg prints its own copy
+     * earlier (kmt_run_net) and its checker reads the FIRST line. */
+    NetPrintKtestStats();
+
     /* The whole run swept clean: every sweep either passed or panicked, so
      * reaching this line IS the verdict (plus the idle-loop sweeps that ran
      * whenever the machine went quiet). */
