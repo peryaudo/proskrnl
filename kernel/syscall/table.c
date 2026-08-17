@@ -207,6 +207,13 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
         thread->previousMode = KernelMode;
     }
 
+    /* The return, beside the entry the ring already records: "which call
+     * answered DIFFERENTLY" is what a divergence hunt needs, and the entry
+     * alone cannot say. arg2 carries the thread so interleaved calls from
+     * different threads pair up. */
+    KiTraceEvent(KiTraceSyscallRet, number, (uint64_t)(uint32_t)status,
+                 (uint64_t)(uintptr_t)thread);
+
     /* Deliver the NTSTATUS in eax on the iretq return — unless a service that
      * manages its own return register (NtContinue, NtRaiseException) already
      * rewrote the frame's rax. */

@@ -22,6 +22,7 @@ typedef enum
     KiTraceThreadExit,   /* arg0=thread */
     KiTraceUserFault,    /* arg0=vector, arg1=user RIP, arg2=CR2 (0 if not #PF) */
     KiTraceProcessExit,  /* arg0=process, arg1=exit NTSTATUS */
+    KiTraceSyscallRet,   /* arg0=number, arg1=returned NTSTATUS, arg2=thread */
 } KI_TRACE_TYPE;
 
 /* Record one event. Takes the dispatcher lock itself (reentrant-safe: the

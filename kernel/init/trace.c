@@ -5,11 +5,19 @@
 #include "kernel/lib/dbgprint.h"
 #include "kernel/syscall/syscall.h"
 
-#define KI_TRACE_RING_SIZE 64 /* power of two; ~2.5 KiB of static data */
+#include "arch/x86_64/lapic.h"
+
+/* 256 slots: the ring now records syscall RETURNS as well as entries, so 64
+ * covered only ~32 calls of lead-up — too short to show what preceded a
+ * wedge. ~12 KiB of static data. */
+#define KI_TRACE_RING_SIZE 256 /* power of two */
 
 typedef struct
 {
     uint64_t tick; /* KeTickCount at the event, ms since boot */
+    uint64_t tsc;  /* KiReadTimestampCounter() at the event: a lazy-init race
+                    * resolves in microseconds, so every relevant event lands
+                    * on ONE tick and only the TSC can show the ordering */
     uint32_t type; /* KI_TRACE_TYPE */
     uint64_t arg0;
     uint64_t arg1;
@@ -24,6 +32,7 @@ void KiTraceEvent(KI_TRACE_TYPE type, uint64_t arg0, uint64_t arg1, uint64_t arg
     uint64_t flags = KiAcquireDispatcherLock();
     KI_TRACE_EVENT *slot = &KiTraceRing[KiTraceNext % KI_TRACE_RING_SIZE];
     slot->tick = KeTickCount;
+    slot->tsc = KiReadTimestampCounter();
     slot->type = (uint32_t)type;
     slot->arg0 = arg0;
     slot->arg1 = arg1;
@@ -40,38 +49,46 @@ void KiDumpTraceRing(void)
         /* KiTraceNext % SIZE is the oldest slot once the ring has wrapped;
          * before that the tail slots are still KiTraceNone and are skipped. */
         const KI_TRACE_EVENT *event = &KiTraceRing[(KiTraceNext + index) % KI_TRACE_RING_SIZE];
+        if (event->type == KiTraceNone)
+        {
+            continue;
+        }
+        /* tsc beside tick: consecutive events routinely share a tick, and
+         * the ordering question this ring answers (which of two lazy inits
+         * ran first) lives in the microseconds the tick cannot show. */
+        DbgPrint("[TRACE]   tick=%lu tsc=%lu ", event->tick, event->tsc);
         switch (event->type)
         {
-        case KiTraceNone:
-            break;
         case KiTraceSyscall:
-            DbgPrint("[TRACE]   tick=%lu syscall num=%#lx (%s) a0=%#lx a1=%#lx\n", event->tick,
-                     event->arg0, KiSystemCallName(event->arg0), event->arg1, event->arg2);
+            DbgPrint("syscall num=%#lx (%s) a0=%#lx a1=%#lx\n", event->arg0,
+                     KiSystemCallName(event->arg0), event->arg1, event->arg2);
+            break;
+        case KiTraceSyscallRet:
+            DbgPrint("sysret num=%#lx (%s) status=%#x thread=%#lx\n", event->arg0,
+                     KiSystemCallName(event->arg0), (unsigned)event->arg1, event->arg2);
             break;
         case KiTraceSwap:
-            DbgPrint("[TRACE]   tick=%lu swap old=%#lx new=%#lx\n", event->tick, event->arg0,
-                     event->arg1);
+            DbgPrint("swap old=%#lx new=%#lx\n", event->arg0, event->arg1);
             break;
         case KiTraceThreadCreate:
-            DbgPrint("[TRACE]   tick=%lu thread-create thread=%#lx start=%#lx process=%#lx\n",
-                     event->tick, event->arg0, event->arg1, event->arg2);
+            DbgPrint("thread-create thread=%#lx start=%#lx process=%#lx\n", event->arg0,
+                     event->arg1, event->arg2);
             break;
         case KiTraceThreadExit:
-            DbgPrint("[TRACE]   tick=%lu thread-exit thread=%#lx\n", event->tick, event->arg0);
+            DbgPrint("thread-exit thread=%#lx\n", event->arg0);
             break;
         case KiTraceUserFault:
             /* %#018lx: user addresses keep the dump's fixed width so the
              * display-time symbolizer (tools/symbolize.py) recognizes them. */
-            DbgPrint("[TRACE]   tick=%lu userfault vector=%lu rip=%#018lx cr2=%#018lx\n",
-                     event->tick, event->arg0, event->arg1, event->arg2);
+            DbgPrint("userfault vector=%lu rip=%#018lx cr2=%#018lx\n", event->arg0, event->arg1,
+                     event->arg2);
             break;
         case KiTraceProcessExit:
-            DbgPrint("[TRACE]   tick=%lu process-exit process=%#lx status=%#x\n", event->tick,
-                     event->arg0, (unsigned)event->arg1);
+            DbgPrint("process-exit process=%#lx status=%#x\n", event->arg0, (unsigned)event->arg1);
             break;
         default:
-            DbgPrint("[TRACE]   tick=%lu type=%u a0=%#lx a1=%#lx a2=%#lx\n", event->tick,
-                     event->type, event->arg0, event->arg1, event->arg2);
+            DbgPrint("type=%u a0=%#lx a1=%#lx a2=%#lx\n", event->type, event->arg0, event->arg1,
+                     event->arg2);
             break;
         }
     }
