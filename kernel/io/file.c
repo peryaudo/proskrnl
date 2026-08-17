@@ -285,6 +285,11 @@ NTSTATUS IopValidateEventHandle(HANDLE eventHandle)
  * is discarded for the same reason it is at completion. */
 void IopAbandonRequest(HANDLE eventHandle)
 {
+    IopResetRequestEvent(eventHandle);
+}
+
+void IopResetRequestEvent(HANDLE eventHandle)
+{
     if (eventHandle == 0)
     {
         return;
@@ -293,6 +298,20 @@ void IopAbandonRequest(HANDLE eventHandle)
     if (NT_SUCCESS(IopReferenceCompletionEvent(eventHandle, &eventBody)))
     {
         KeResetEvent(eventBody);
+        ObDereferenceObject(eventBody);
+    }
+}
+
+void IopSetRequestEvent(HANDLE eventHandle)
+{
+    if (eventHandle == 0)
+    {
+        return;
+    }
+    PVOID eventBody;
+    if (NT_SUCCESS(IopReferenceCompletionEvent(eventHandle, &eventBody)))
+    {
+        KeSetEvent(eventBody, 0, FALSE);
         ObDereferenceObject(eventBody);
     }
 }
@@ -324,26 +343,16 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
          * every caller's cleanup (issue #96 C). */
         KiWriteUser(&iosbToken, iosb, &final, sizeof(final));
     }
-    if (eventHandle != 0)
-    {
-        PVOID eventBody;
-        /* A failure to signal the event is DISCARDED, and the operation's
-         * own status is returned. That is the oracle's behaviour --
-         * third_party/wine dlls/ntdll/unix/file.c spells it
-         * `if (event) NtSetEvent( event, NULL );` at every completion, with
-         * no test of the result -- and it is also the only answer that can
-         * be honest: by the time this runs the transfer HAS happened, so
-         * reporting STATUS_INVALID_HANDLE would tell the caller nothing
-         * occurred while the bytes were already gone
-         * (docs/review-2026-07 §7). Services whose oracle refuses a bad
-         * event handle do so BEFORE any work, through
-         * IopValidateEventHandle. */
-        if (NT_SUCCESS(IopReferenceCompletionEvent(eventHandle, &eventBody)))
-        {
-            KeSetEvent(eventBody, 0, FALSE);
-            ObDereferenceObject(eventBody);
-        }
-    }
+    /* A failure to signal the event is DISCARDED, and the operation's own
+     * status is returned. That is the oracle's behaviour -- third_party/wine
+     * dlls/ntdll/unix/file.c spells it `if (event) NtSetEvent( event, NULL );`
+     * at every completion, with no test of the result -- and it is also the
+     * only answer that can be honest: by the time this runs the transfer HAS
+     * happened, so reporting STATUS_INVALID_HANDLE would tell the caller
+     * nothing occurred while the bytes were already gone
+     * (docs/review-2026-07 §7). Services whose oracle refuses a bad event
+     * handle do so BEFORE any work, through IopValidateEventHandle. */
+    IopSetRequestEvent(eventHandle);
     return status;
 }
 

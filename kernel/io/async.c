@@ -26,24 +26,26 @@
 #include "kernel/lib/string.h"
 #include "kernel/init/panic.h"
 
-/* FILE_SKIP_SET_EVENT_ON_HANDLE freezes the file object's signalled state
- * in BOTH directions, and the guard sits here rather than at the two call
- * sites for the same reason the oracle puts it inside `set_fd_signaled`
- * (server/fd.c: `if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE)
- * return;`) — every producer of the transition inherits it instead of
- * remembering it. The caller's own EVENT is unaffected: the flag is about
- * the handle, and the oracle's event signal does not go through this path
- * at all.
+/* "The Io layer does not own this file object's signalled state." Two
+ * reasons, and both belong in the transition rather than at its call sites —
+ * the oracle puts the first one inside `set_fd_signaled` itself (server/fd.c:
+ * `if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE) return;`) so that
+ * every producer inherits it instead of remembering it.
  *
- * Every producer that goes through HERE, which is not quite every producer:
- * condrv writes its server handle's `header` directly, as a device-managed
- * readiness bit rather than as an I/O completion (drivers/condrv.c
- * CondrvSignalServer), so the freeze would not reach a console handle. No
- * caller sets the flag on one, and the exit is the same one docs/03 names —
- * give condrv an event of its own. */
-static BOOLEAN IopFileSignalFrozen(PFILE_OBJECT file)
+ *  1. FILE_SKIP_SET_EVENT_ON_HANDLE freezes the state in BOTH directions,
+ *     for the handle's whole life. The caller's own EVENT is unaffected: the
+ *     flag is about the handle, and the oracle's event signal does not go
+ *     through this path at all.
+ *  2. The DEVICE drives `header` itself (io.h deviceManagedSignal) — condrv,
+ *     whose server handle is conhost's wait handle. This used to be an
+ *     unwritten exception that the Io layer paid for by never re-signalling a
+ *     file object on an inline completion AT ALL; stating it here is what
+ *     lets every other device get the NT rule.
+ */
+static BOOLEAN IopFileSignalSuppressed(PFILE_OBJECT file)
 {
-    return (file->completionFlags & FILE_SKIP_SET_EVENT_ON_HANDLE) != 0;
+    return (file->completionFlags & FILE_SKIP_SET_EVENT_ON_HANDLE) != 0 ||
+           file->deviceManagedSignal;
 }
 
 void IopSignalRequestCompletion(PKEVENT event, PFILE_OBJECT file)
@@ -52,7 +54,7 @@ void IopSignalRequestCompletion(PKEVENT event, PFILE_OBJECT file)
     {
         KeSetEvent(event, 0, FALSE);
     }
-    else if (file != 0 && !IopFileSignalFrozen(file))
+    else if (file != 0 && !IopFileSignalSuppressed(file))
     {
         KeSetEvent(&file->header, 0, FALSE);
     }
@@ -60,9 +62,59 @@ void IopSignalRequestCompletion(PKEVENT event, PFILE_OBJECT file)
 
 void IopMarkRequestOutstanding(PFILE_OBJECT file)
 {
-    if (file != 0 && !IopFileSignalFrozen(file))
+    if (file != 0 && !IopFileSignalSuppressed(file))
     {
         KeClearEvent(&file->header);
+    }
+}
+
+void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, HANDLE eventHandle)
+{
+    request->file = file;
+    request->eventHandle = eventHandle;
+    /* Read BEFORE the clear: IopRequestRefused restores this, and "was it up"
+     * is not recoverable afterwards. A suppressed handle (io.h
+     * deviceManagedSignal / FILE_SKIP_SET_EVENT_ON_HANDLE) is never touched
+     * by either half, so the value is unused there rather than wrong. */
+    request->handleWasSignalled = file != 0 && KeReadStateEvent(&file->header) != 0;
+    IopResetRequestEvent(eventHandle);
+    IopMarkRequestOutstanding(file);
+}
+
+void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME outcome)
+{
+    switch (outcome)
+    {
+    case IopRequestCompleted:
+        /* The EVENT arm was taken by IopCompleteRequest, which had to write
+         * the IOSB first; only the file-object arm is left. */
+        if (request->eventHandle == 0)
+        {
+            IopSignalRequestCompletion(0, request->file);
+        }
+        break;
+    case IopRequestFailedParked:
+        /* Same exclusivity, no IOSB: a queued request that fails still
+         * reaches the oracle's signal block. */
+        if (request->eventHandle != 0)
+        {
+            IopSetRequestEvent(request->eventHandle);
+        }
+        else
+        {
+            IopSignalRequestCompletion(0, request->file);
+        }
+        break;
+    case IopRequestRefused:
+        /* The oracle's refusal is above queue_async, so the handle is exactly
+         * as the caller found it — which is NOT the same as signalled: a read
+         * that completed through an event left it down, and a refusal that
+         * followed must leave it there. The event stays reset. */
+        if (request->handleWasSignalled)
+        {
+            IopSignalRequestCompletion(0, request->file);
+        }
+        break;
     }
 }
 
@@ -377,11 +429,17 @@ BOOLEAN IoSyncIoCancelled(void)
     return self->syncIoActive && self->syncIoCancelled;
 }
 
+BOOLEAN IoSyncIoParked(void)
+{
+    return KeGetCurrentThread()->syncIoParked;
+}
+
 void IopEnterSyncIo(void *userIosb)
 {
     PKTHREAD self = KeGetCurrentThread();
     self->syncIoUserIosb = userIosb;
     self->syncIoCancelled = FALSE;
+    self->syncIoParked = FALSE;
     KeClearEvent(&self->syncIoCancelEvent);
     self->syncIoActive = TRUE;
     /* An unclosed span leaves the thread advertising a cancellable request
@@ -404,6 +462,10 @@ void IopLeaveSyncIo(void)
 NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout)
 {
     PKTHREAD self = KeGetCurrentThread();
+    /* The one place the Io layer's own blocking park happens, so the one
+     * place that can answer "was this request queued" for the completion
+     * (io.h IoSyncIoParked). */
+    self->syncIoParked = TRUE;
     void *objects[2] = {event, &self->syncIoCancelEvent};
     NTSTATUS status =
         KeWaitForMultipleObjects(2, objects, WaitAny, Executive, KernelMode, FALSE, timeout, 0);
