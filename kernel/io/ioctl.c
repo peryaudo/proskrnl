@@ -237,16 +237,23 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * The FLAG, not the status (vfs.h): STATUS_PENDING is also a legal
          * FINAL answer from a device — condrv's read path returns exactly
          * that — and a verb that answered it without parking would have its
-         * APC block leaked here. No ioctl verb does today; keying on the
-         * flag means none ever can.
+         * APC block leaked here.
          *
          * No IopEndBlockingRequest either: the handle was taken down by
          * IopPreparePendingRequest and it is the COMPLETION that puts it back
          * (kernel/io/async.c IopCompletePendingRequest), from whatever context
-         * ends the park. */
-        ASSERT(status == STATUS_PENDING);
+         * ends the park.
+         *
+         * Returned AS THE DEVICE ANSWERED, not forced to STATUS_PENDING
+         * (Net-2): a device may prepare a request and COMPLETE it before
+         * returning — AFD's IOCTL_AFD_WINE_COMPLETE_ASYNC must deliver the
+         * caller-supplied status through the IOSB/packet/APC legs (which
+         * only the pended tail serves for an error status) while RETURNING
+         * that status inline (pinned sem_net/afd_refusal.c). Either way the
+         * request owns the bounce and the APC block, and this frame owns
+         * nothing. A genuine park still answers STATUS_PENDING. */
         ObDereferenceObject(file);
-        return STATUS_PENDING;
+        return status;
     }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {
@@ -300,10 +307,12 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * Reaching here after a device PREPARED a pending request would
          * double-free — the request owns the same APC block, and since this
          * item, the same output bounce — so that is an invariant, not a
-         * coincidence: a device that calls IopPreparePendingRequest must return
-         * STATUS_PENDING. npfs is the only DeviceControl that pends, and both
-         * of its pending verbs do exactly that (fs/npfs/pipe.c NpfsListen and
-         * NpfsTransceive, the latter through NpfsAwaitRead). */
+         * coincidence: a device that calls IopPreparePendingRequest must
+         * answer with `pended` TRUE — npfs's two pending verbs return
+         * STATUS_PENDING (fs/npfs/pipe.c NpfsListen and NpfsTransceive, the
+         * latter through NpfsAwaitRead), and AFD's prepare-and-complete
+         * verbs return the completed status (drivers/afd.c
+         * AfdRefuseWithIosb) — so this arm never sees a prepared request. */
         IopEndFailedRequestApc(apcBlock, parked);
     }
     ObDereferenceObject(file);

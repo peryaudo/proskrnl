@@ -5108,3 +5108,45 @@ rather than invented (the conhost argument, `docs/23` §4d). The convicting cons
 baked scenario in which two processes must be audible at once — a shell beep while an
 app plays, or a second audio app on a GUI image. When one exists, HACK-008 is built and
 this entry retires; until then the deviation stands recorded.
+
+## Net-2 notes (\Device\Afd)
+
+### The unbuilt-verb tail answers the unknown-code shape
+
+The oracle's raw boundary refuses an ioctl `\Device\Afd` does not know INLINE with
+`STATUS_NOT_SUPPORTED` and the IOSB untouched (measured — ws2_32's own WSAIoctl never
+even forwards an unknown code; its overlapped pend-then-refuse is fabricated PE-side
+with `IOCTL_AFD_WINE_COMPLETE_ASYNC`; pinned `sem_net/afd_refusal.c`). proskrnl's
+`drivers/afd.c` default arm answers exactly that shape — and it is also the answer for
+every verb the oracle implements that Net-2 has not built (`WINE_TRANSMIT`, the
+`IP_*`/`IPV6_*` option tail, `MESSAGE_SELECT`, `KEEPALIVE_VALS`, `SIOCATMARK`, …), each
+named loudly on serial (`afd: unimplemented ioctl`). That tail is the deviation: where
+the oracle serves the verb and proskrnl refuses, the refusal is at least loud, specific
+and in the oracle's own refusal shape — never `STATUS_NOT_IMPLEMENTED` (Art. 12: the
+armed panic stays the enforcement for a silent stub; this is an implemented refusal,
+not a stub). Each verb leaves the tail by the ordinary G5 route: pin first, then build.
+
+### Urgent data (TCP OOB) is out of scope
+
+lwIP implements no TCP urgent pointer, so `AFD_MSG_OOB` receives answer
+`STATUS_INVALID_PARAMETER` and `SIOCATMARK` rides the unbuilt tail. The flag
+VALIDATION (exactly one of `AFD_MSG_OOB`/`AFD_MSG_NOT_OOB`, both-or-neither refusing
+`STATUS_INVALID_PARAMETER`) is NT surface and is pinned + implemented. Real NT
+consumers of OOB data are effectively extinct (telnet-era); ws2_32's own tests carry
+`todo_wine` on the delivery cases, so even the oracle does not serve them.
+
+### AF_INET6 is staged, not absent
+
+The v6 core is compiled into lwIP (dual-stack from day one, docs/24 §5) and the v6
+link-local address is configured on the wire netif, but the SOCKET surface refuses at
+`IOCTL_AFD_WINE_CREATE` (`STATUS_NOT_SUPPORTED`) until its own `sem_net` pins exist.
+The oracle creates v6 sockets today, so `ws2_32:sock`'s v6 cases park in the winetest
+manifest with this note as their signature.
+
+### Close-cancel completes with STATUS_HANDLES_CLOSED (the oracle's own answer)
+
+Not a deviation from the oracle — recorded because it IS one from real NT, inherited
+deliberately: NT completes I/O parked on a closing socket handle with
+`STATUS_CANCELLED`; the pinned Wine answers `STATUS_HANDLES_CLOSED`
+(`ws2_32:afd test_recv` carries the NT value as `todo_wine`, so the Wine answer is
+the spec here — Art. 6). Pinned by `sem_net/afd_cancel_close.c`.

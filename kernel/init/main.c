@@ -30,6 +30,7 @@
 #include "kernel/cm/cm.h"
 #include "kernel/syscall/syscall.h"
 #include "fs/npfs/npfs.h"
+#include "drivers/afd.h"
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
@@ -464,6 +465,10 @@ static void KiTestMainThread(void *context)
      * loopback interface is \Device\Afd's device-free substrate); only
      * the ethernet netif and DHCP need the NIC. */
     NetInitialize();
+
+    /* Net-2: \Device\Afd — the socket boundary ws2_32 issues, over the
+     * stack brought up above (loopback works with no NIC at all). */
+    AfdInitialize();
 
     /* The interactive boot (make run) skips the kernel test suites: the
      * serial console belongs to a human — the session manager runs
