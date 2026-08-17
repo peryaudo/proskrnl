@@ -2005,6 +2005,73 @@ so it forgets the pipe's TYPE and gives a byte pipe's answers. That makes the
 lifetime item **six** assertions rather than five, and it now has a
 `todo_proskrnl` case in two pins instead of one.
 
+**`FSCTL_PIPE_TRANSCEIVE` is DONE** (`ntdll:pipe` 80 → **68**), and it is the
+first item in this section whose subject was a whole UNBUILT VERB rather than a
+rule inside a built one — `npfs` refused it `STATUS_NOT_SUPPORTED` and named
+itself on serial, which is exactly what Art. 12's loud refusal is for: the
+manifest block could point at the verb and the twelve assertions it owed.
+`NpfsTransceive` is `server/named_pipe.c` `pipe_end_transceive` transcribed
+whole; pinned by `tests/ntapi/sem_pipe/transceive.c`, table in `docs/03` "What
+`FSCTL_PIPE_TRANSCEIVE` writes, and what it refuses".
+
+Four things worth carrying, and the first two are shapes this document has paid
+for before:
+
+- **Eleven of the twelve assertions are REFUSALS, and the verb's own work is
+  one.** `test_pipe_state`'s eight are the state ladder
+  (`pipe_end->pipe ? STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED`,
+  the same split `FSCTL_PIPE_PEEK`'s ladder makes and asked through the same
+  `end->orphaned`), and `test_transceive`'s four are the round trip. So the
+  cluster was mostly a LADDER wearing a verb's name — which is why it landed in
+  one session where a "whole unbuilt verb" reads like several.
+- **The discriminating case is one no winetest assertion asks for, and it is
+  the one that decides the implementation's SHAPE.** `pipe_end_read` opens with
+  a `NAMED_PIPE_NONBLOCKING_MODE` arm answering `STATUS_PIPE_EMPTY`;
+  `pipe_end_transceive` has no counterpart. So a NOWAIT-mode end refuses a read
+  and PENDS a transceive in the same state, and an implementation that
+  tail-calls its own read path — the obvious one, and the one that reuses the
+  most code — fails exactly that and nothing else. `NpfsAwaitRead` takes it as
+  its single parameter rather than growing a second loop (Art. 11), which is
+  also what makes the two share one request queue: both oracle paths end in
+  `queue_async( &pipe_end->read_q, async )`, so a read issued behind a parked
+  transceive cannot take the first reply.
+- **The oracle refuted the pin's account of that same NOWAIT arm.** The first
+  draft expected the read BEHIND a parked transceive to pend "because the
+  transceive is ahead of it"; it is refused exactly as it would be with nothing
+  outstanding, because the arm tests `list_empty( &pipe_end->message_queue )` —
+  BUFFERED DATA, never outstanding requests. The queue-order claim was true and
+  belonged in its own case on a handle where nothing refuses; measuring the two
+  in one place would have passed a kernel that had neither rule.
+- **The pended arm is what finally gave `kernel/io/ioctl.c` its DATA LEGS**, and
+  the comment it replaces was an accurate statement that had become false: "an
+  ioctl carries no data leg (its output travels in outBounce)". True while no
+  ioctl could park with a reply outstanding, and this is the verb that can — so
+  the output buffer and its bounce now travel in the `IO_CONTROL_CONTEXT`
+  exactly as `rw.c`'s transfers' do, with the same ownership rule and the same
+  single completer. `kernel/io/io.h`'s `IOP_PENDING_REQUEST` comment expected the
+  legs' next consumer to be "a future genuinely pended DATA transfer (Net-1's
+  AFD is the expected consumer)"; it is an FSCTL instead, which is `docs/19`
+  §5d's point rather than a miss — the ownership rule was made
+  device-independent precisely so a verb nobody listed inherits it. **Three more
+  comments in `vfs.h`, `io.h` and `ioctl.c` naming "the npfs read" as the only
+  data-leg consumer were true when written and are false after this diff**, and
+  gate-check found all three rather than a test: they are corrected in the same
+  commit, which is this bullet's own defect class applied to itself.
+
+The write half is the one place it deliberately does NOT reuse the neighbouring
+path: `NpfsAppendBuffer` directly rather than `NpfsWrite`, because the oracle
+says *"transaction never blocks on write, so just queue a message without
+async"* — an ordinary write past the peer's quota parks its caller and a
+transceive of the same bytes over the same full queue does not. That is measured
+(`transceive.c` §5), and it is the one case whose failure mode is a HANG rather
+than an assertion, which is why it runs on an asynchronous handle and asserts the
+one answer a parked writer cannot give.
+
+**The pair's executed count is unchanged at 2377 with 31 todo markers**, and a
+line-by-line histogram diff shows only `:1450`/`:1456`/`:1457`/`:1458` and
+`:2069`×8 removed with no other line moved — so `§4` trap 2 does not apply here
+and nothing was hiding behind the twelve.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
