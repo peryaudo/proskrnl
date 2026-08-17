@@ -115,6 +115,10 @@ void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME o
             IopSignalRequestCompletion(0, request->file);
         }
         break;
+    case IopRequestInterrupted:
+        /* Nothing: the request is still outstanding as far as the device is
+         * concerned, and the caller merely stopped waiting for it (io.h). */
+        break;
     }
 }
 
@@ -434,12 +438,27 @@ BOOLEAN IoSyncIoParked(void)
     return KeGetCurrentThread()->syncIoParked;
 }
 
-void IopEnterSyncIo(void *userIosb)
+BOOLEAN IoSyncIoAlerted(void)
+{
+    return KeGetCurrentThread()->syncIoAlerted;
+}
+
+void IopEnterSyncIo(PFILE_OBJECT file, void *userIosb)
 {
     PKTHREAD self = KeGetCurrentThread();
     self->syncIoUserIosb = userIosb;
     self->syncIoCancelled = FALSE;
     self->syncIoParked = FALSE;
+    /* The handle's word, read ONCE per request at the one place the span is
+     * opened — the oracle asks the same question once per call, off the
+     * create options it kept (dlls/ntdll/unix/file.c: `options &
+     * FILE_SYNCHRONOUS_IO_ALERT` handed to wait_async by server_read_file,
+     * server_write_file and server_ioctl_file). A 0 `file` means "this
+     * service waits non-alertably whatever the handle says", which is the
+     * FLUSH — NtFlushBuffersFileEx passes a literal FALSE (rw.c says so at
+     * the site). */
+    self->syncIoAlertable = file != 0 && (file->modeFlags & FILE_SYNCHRONOUS_IO_ALERT) != 0;
+    self->syncIoAlerted = FALSE;
     KeClearEvent(&self->syncIoCancelEvent);
     self->syncIoActive = TRUE;
     /* An unclosed span leaves the thread advertising a cancellable request
@@ -467,11 +486,20 @@ NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout)
      * (io.h IoSyncIoParked). */
     self->syncIoParked = TRUE;
     void *objects[2] = {event, &self->syncIoCancelEvent};
-    NTSTATUS status =
-        KeWaitForMultipleObjects(2, objects, WaitAny, Executive, KernelMode, FALSE, timeout, 0);
+    NTSTATUS status = KeWaitForMultipleObjects(2, objects, WaitAny, Executive, KernelMode,
+                                               self->syncIoAlertable, timeout, 0);
     if (self->syncIoCancelled)
     {
+        /* A landed cancel outranks an alert that arrived with it: the cancel
+         * writes the caller's IOSB and the alert writes nothing, so reporting
+         * the alert would lose a completion the canceller was promised. */
         return STATUS_CANCELLED;
+    }
+    if (status == STATUS_USER_APC || status == STATUS_ALERTED)
+    {
+        /* Recorded here, not inferred from the status by the tails (io.h
+         * IoSyncIoAlerted): STATUS_USER_APC is an NT_SUCCESS value. */
+        self->syncIoAlerted = TRUE;
     }
     return status;
 }

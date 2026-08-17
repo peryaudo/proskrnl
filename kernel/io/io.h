@@ -61,9 +61,13 @@ extern OBJECT_TYPE IoFileObjectType;
  *
  * NOT every service that can park: kernel/io/ioctl.c's verbs park too
  * (FSCTL_PIPE_WAIT, a blocking listen) and take no Begin/End pair, where the
- * oracle queues those asyncs like any other. Unpinned gap rather than a
- * measured divergence — no winetest assertion samples a handle under a parked
- * ioctl — and the fix is to wrap ioctl.c's device call the same way.
+ * oracle queues those asyncs like any other. It resets the caller's EVENT at
+ * issue and stops there, so the handle half is a MEASURED gap, not an unpinned
+ * one: ntdll:pipe:747 spins `while (WaitForSingleObject(ctx.pipe, 0) ==
+ * WAIT_OBJECT_0) Sleep(1)` waiting for a blocking listen to take the handle
+ * down, and wedges. The fix is to wrap ioctl.c's device call the same way, and
+ * it wants its own pin — the pended and refused arms owe the handle an answer
+ * this file object's rules do not yet state for that service (docs/21 W11).
  *
  * Two things about it that read as bugs and are the contract: exactly ONE
  * of the caller's event and this object is signalled at completion, so a
@@ -647,20 +651,30 @@ void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *
  *                 broken pipe): `async->pending` is still 0 there, so the
  *                 signal block is skipped entirely — the handle keeps
  *                 whatever state it had and the event stays reset.
+ *   Interrupted   a user APC broke the ALERTABLE park of a
+ *                 FILE_SYNCHRONOUS_IO_ALERT handle (io.h IoSyncIoAlerted).
+ *                 The oracle's async is still QUEUED — only the client
+ *                 stopped waiting — so async_set_result has not run and
+ *                 nothing moves: the handle stays down and the event stays
+ *                 reset, exactly as the issue left them. It is a named arm
+ *                 rather than a fall-through because "do nothing" is the
+ *                 measurement here, not an omission.
  */
 typedef enum
 {
     IopRequestCompleted,
     IopRequestFailedParked,
-    IopRequestRefused
+    IopRequestRefused,
+    IopRequestInterrupted
 } IOP_BLOCKING_OUTCOME;
 
 void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME outcome);
 
 /* CUI-5 NtCancelSynchronousIoFile (kernel/io/async.c): mark the current
  * thread's in-flight synchronous I/O around a potentially-blocking device
- * op, and the cancellable park npfs's blocking waits use. */
-void IopEnterSyncIo(void *userIosb);
+ * op, and the cancellable park npfs's blocking waits use. `file` is what
+ * decides whether that park is ALERTABLE (io.h IoSyncIoAlerted). */
+void IopEnterSyncIo(struct FILE_OBJECT *file, void *userIosb);
 void IopLeaveSyncIo(void);
 NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
 
@@ -669,6 +683,20 @@ NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
  * IoWaitCancellable) — which is the only thing separating IopRequestRefused
  * from IopRequestFailedParked. */
 BOOLEAN IoSyncIoParked(void);
+
+/* Was that park broken by a user APC or an alert, rather than by the thing
+ * it was waiting for? Only a FILE_SYNCHRONOUS_IO_ALERT handle can answer
+ * TRUE (ke.h syncIoAlertable). The request then completed NOTHING — the
+ * caller merely stopped waiting — so its tail must write no IOSB, fire no
+ * completion routine and signal nothing; the syscall returns the wait's own
+ * STATUS_USER_APC / STATUS_ALERTED.
+ *
+ * A FLAG, never the status: STATUS_USER_APC is an NT_SUCCESS value, so a
+ * tail that read it off the device's return would be one producer's word for
+ * two things — the mistake `IO_CONTROL_CONTEXT.pended` was introduced to
+ * stop STATUS_PENDING making (docs/21 W4c). Pinned by
+ * sem_pipe/alertable_park.c. */
+BOOLEAN IoSyncIoAlerted(void);
 
 /* CUI-8 (docs/19 §9.9): has the current thread's marked synchronous I/O
  * been cancelled? The data path's loops poll this between transfers: a

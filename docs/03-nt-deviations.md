@@ -2873,6 +2873,86 @@ two bits inside class 8 would put a second, narrower statement of "what a handle
 is" beside `ObpCreateHandleInTable`'s (Art. 11) and would leave `NtQueryObject` still
 reporting them.
 
+## `FILE_SYNCHRONOUS_IO_ALERT`: the park is alertable, and an interrupted request completes nothing
+
+`FILE_SYNCHRONOUS_IO_NONALERT` and `FILE_SYNCHRONOUS_IO_ALERT` had been folded together
+everywhere below `FileModeInformation`: both meant "this handle blocks its caller", and
+`IoWaitCancellable` waited non-alertably for both. The oracle keeps them apart in one
+argument, repeated identically in `server_read_file`, `server_write_file` and
+`server_ioctl_file` (`dlls/ntdll/unix/file.c:5746/:5781/:5823`):
+
+```c
+if (wait_handle) status = wait_async( wait_handle, (options & FILE_SYNCHRONOUS_IO_ALERT) );
+```
+
+so a queued user APC breaks the park of every synchronous request on an ALERT handle and
+none on a NONALERT one. `NtFlushBuffersFileEx` is the oracle's own exception and passes a
+literal `FALSE` (`:6876`), so a flush blocks through a queued APC whatever the handle
+says — stated at that service in `kernel/io/rw.c` rather than as a rule about the layer,
+which is `docs/21` W4d's lesson about where a one-service exception belongs. `KTHREAD.syncIoAlertable` carries the handle's answer into the
+one place the Io layer parks, and `syncIoAlerted` carries the outcome back out
+(`kernel/io/async.c`; pinned by `tests/ntapi/sem_pipe/alertable_park.c`).
+
+**What an interrupted request leaves behind is the half that does not follow from "the
+wait was alertable", and it is the whole of the deviation risk.** The oracle's async is
+still QUEUED in the server — only the *client* stopped waiting — so `async_set_result`
+has not run: no IOSB is written, the completion routine does not fire, the caller's event
+stays down and the file object stays as the issue left it. The syscall returns the wait's
+own `STATUS_USER_APC`. Windows differs here and the difference is deliberate: NT
+*cancels* the request and answers `STATUS_CANCELLED`, which `ntdll:pipe`'s
+`test_alertable` records as `todo_wine`. Art. 6 makes the pinned oracle the spec, and
+matching NT instead would flip that todo to an unexpected pass — i.e. score a failure for
+being closer to NT.
+
+**`STATUS_USER_APC` is an `NT_SUCCESS` value, so it is carried as a FLAG and never read
+off a device's return.** That is `docs/21` W4c's lesson applied before it could be paid
+again: `STATUS_PENDING` was already a final status for one device, and reading it as a
+channel leaked conhost's bounce buffer on every idle poll. The engine sets the flag at
+the one place a park is created, so no device can be interrupted and forget to say so.
+
+**The divergence that outlives the call, and it is the opposite of the oracle's.** Above
+describes the state at the moment the caller returns, where the two agree. They part
+afterwards: the oracle's async is still live, so when the thing it was waiting for finally
+arrives — a client connects, the peer writes — it completes for real, writing the caller's
+IOSB, signalling the event and firing the completion routine *after the call that issued
+it has returned*. proskrnl's blocking park is a THREAD park with no queue entry behind it,
+so an interrupted request ceases to exist: the IOSB is never written, the routine never
+runs, and (for a transfer, which cleared it at issue) the FILE OBJECT stays non-signalled
+for good. Windows is on proskrnl's side of this — it cancels rather than leaving the IRP
+queued — so the divergence is from the *oracle's* known-imperfect half, which is why
+`test_alertable`'s status assertion is `todo_wine` in the first place. The practical
+consequence is only visible to a caller that keeps the IOSB alive and re-reads it later;
+`tests/ntapi/sem_pipe/alertable_park.c` has to make every IOSB a per-case `static` for
+exactly that reason, since on the ORACLE the rescue's connect writes into it.
+
+**A partially-committed stream write reports nothing, and that is unpinned.** `NpfsWrite`
+chunks a byte-stream write across quota and re-parks; broken mid-way, it returns the
+wait's status with bytes already in the peer's queue and no IOSB to say how many, so a
+retrying caller duplicates them. The shape pre-dates this item — the CANCEL path has
+always had it — and the alertable park only made it reachable without a canceller. Left
+as it is rather than guessed at: what NT reports for an interrupted partial stream write
+has not been measured on either runner, and inventing a count is Art. 12's fabricated
+answer. Named at the site (`fs/npfs/pipe.c` `NpfsWrite`).
+
+**Two things this did NOT build, both deliberate and both recorded rather than hidden.**
+An ioctl resets the caller's event at issue (measured from a worker thread mid-park) but
+does not clear the FILE OBJECT the way `rw.c`'s transfers do — `ntdll:pipe:747` convicts
+that gap and it is the pair's next item (`docs/21` W11), wanting its own pin because the
+pended and refused arms owe the handle an answer too. And an ALERT handle whose park is
+broken while a *cancel* has also landed reports `STATUS_CANCELLED`: the cancel writes the
+caller's IOSB and the alert writes nothing, so reporting the alert would lose a
+completion the canceller was promised.
+
+**The find under the find: npfs was a second FILE_OBJECT construction site and it had
+already drifted.** `NtCreateNamedPipeFile` says it builds the object "exactly as
+`IopCreateFile` does" and set `synchronousIo` alone — so every pipe handle reported a
+zero `FileModeInformation` whatever it was opened with, its `syncIoLock` was never
+initialised, and `FILE_SYNCHRONOUS_IO_ALERT` was invisible to the park that this item
+keys on. Both sites now go through `IopCaptureCreateOptions` (`kernel/io/file.c`).
+Art. 11's "parallel paths drift even while currently equivalent" was not a prediction
+here; the drift was already shipped, and only a test that needed one of the dropped bits
+found it.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by

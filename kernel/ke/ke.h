@@ -300,6 +300,18 @@ struct KTHREAD
      * the same reason IO_CONTROL_CONTEXT.pended is set by the engine: a
      * device that has to remember to say so eventually forgets. */
     BOOLEAN syncIoParked;
+    /* Is that park ALERTABLE, and did an alert end it? The handle decides:
+     * FILE_SYNCHRONOUS_IO_ALERT makes every synchronous request on it wait
+     * alertably (dlls/ntdll/unix/file.c passes `options &
+     * FILE_SYNCHRONOUS_IO_ALERT` to wait_async from server_read_file,
+     * server_write_file and server_ioctl_file — the FLUSH is the oracle's own
+     * exception and passes FALSE), so a queued user APC breaks the park and
+     * NOTHING completes. Both are set by the engine — IopEnterSyncIo reads the
+     * FILE_OBJECT once, IoWaitCancellable records the outcome — for the same
+     * reason syncIoParked is: a device that has to remember to say so
+     * eventually forgets. Pinned by sem_pipe/alertable_park.c. */
+    BOOLEAN syncIoAlertable;
+    BOOLEAN syncIoAlerted;
     KEVENT syncIoCancelEvent;
 
     /* M7: a user thread's initial ring-3 register state (NtCreateThreadEx /
