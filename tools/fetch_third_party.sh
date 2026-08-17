@@ -164,10 +164,23 @@ WineTreeIsStale() {
         ! grep -q '^#define SONAME_LIBX11 ' third_party/wine/include/config.h
 }
 
+# The qemu twin (Net-1): a build restored from a pre-slirp cache has the
+# marker binary and still cannot serve -netdev user, and setup_linux.sh's
+# reconfigure-in-place is a source rebuild — hours where a re-restore is
+# minutes. Truthful marker again: the binary itself is asked.
+QemuTreeIsStale() {
+    [[ -x third_party/qemu/build/qemu-system-x86_64 ]] || return 1
+    ! third_party/qemu/build/qemu-system-x86_64 -netdev help 2>/dev/null |
+        grep -qx user
+}
+
 missing=()
 for c in "${COMPONENTS[@]}"; do
     if [[ "$c" == wine ]] && [[ -e "${MARKER[$c]}" ]] && WineTreeIsStale; then
         echo "== wine: present but built without the font backend or a display — restoring =="
+        missing+=("$c")
+    elif [[ "$c" == qemu-build ]] && [[ -e "${MARKER[$c]}" ]] && QemuTreeIsStale; then
+        echo "== qemu-build: present but built without slirp (-netdev user) — restoring =="
         missing+=("$c")
     elif [[ -e "${MARKER[$c]}" ]]; then
         echo "== $c: already present — skipping =="
@@ -223,7 +236,7 @@ for a in json.load(sys.stdin).get("assets", []):
 # (test.yml pins ubuntu-24.04). The publish step uploads the per-key
 # distro.txt LAST, so its presence also proves the key's asset set is
 # complete — treat its absence as a miss, and a different distro as fatal.
-distro_url="$(awk -F'\t' -v n="tp-v7-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
+distro_url="$(awk -F'\t' -v n="tp-v8-$KEY-distro.txt" '$1 == n { print $2 }' <<<"$assets")"
 if [[ -z "$distro_url" ]]; then
     echo "fetch_third_party: no complete asset set for the current pins ($KEY)." >&2
     echo "  Either the pins were just bumped and CI on main has not" >&2
@@ -244,7 +257,7 @@ fi
 echo "== distro match: $build_distro =="
 
 for c in "${missing[@]}"; do
-    prefix="tp-v7-$KEY-$c.tar.zst.part"
+    prefix="tp-v8-$KEY-$c.tar.zst.part"
     parts="$(grep "^$prefix" <<<"$assets" || true)"
     if [[ -z "$parts" ]]; then
         echo "fetch_third_party: no '$prefix*' assets for the current pins." >&2
