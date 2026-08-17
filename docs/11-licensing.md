@@ -13,12 +13,13 @@ root `LICENSE`.
 | Wine PE DLLs, wineserver-lite | Wine | **LGPL-2.1** |
 | ReactOS shell (optional GUI-7), its INF data | ReactOS | **GPL-2.0** |
 | `third_party/flanterm` (the boot console's glyph renderer) | Flanterm | **BSD-2-Clause** |
+| `third_party/lwip` (the TCP/IP protocol engine) | lwIP | **BSD-3-Clause** |
 
 ## Third-party code inside the kernel image
 
 The default is that no third-party code is linked into the kernel: everything under
-`third_party/` is either build/run tooling or user-mode. Flanterm is the one exception,
-and it sets the rule for any future one — a third-party component may be **linked into
+`third_party/` is either build/run tooling or user-mode. Flanterm was the first exception,
+and it set the rule for any future one — a third-party component may be **linked into
 the GPL-2.0 kernel image** only when all of these hold:
 
 - its license is **permissive and GPL-2.0-compatible** (BSD-2-Clause here) — never a
@@ -45,8 +46,14 @@ And to `kernel/cm/timezones.h`, the time-zone table generated from the WINE_REGI
 resource in the pinned `dlls/kernelbase/kernelbase.rgs`, for the same reason again:
 `GetTimeZoneInformationForYear` resolves a caller-named zone out of that key, and the one
 hand-copied row it used to hold was a divergence (docs/21 W13).
-The four conditions above still govern anything that links third-party **code**; nothing
-but Flanterm does.
+The four conditions above still govern anything that links third-party **code**; only
+Flanterm and lwIP do. lwIP is the second admission (Net-1, argued in `docs/24` §3): the
+wire protocols' hard parts are behavior no boundary test of ours can convict — the
+adoption buys two decades of deployment-conviction we cannot manufacture, and a
+hand-written TCP is `docs/12`'s worst failure mode plus trap 1 below in its purest form.
+Its port layer (`drivers/net/port/` — `lwipopts.h`, `arch/cc.h`, the `sys_now` shim) is
+lwIP's own documented user-supplied configuration surface, not a patch: the submodule
+carries zero local commits.
 
 ## Route (a) and the kernel image
 
