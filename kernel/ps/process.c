@@ -968,14 +968,15 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         status = PspMapSharedUserData(process);
     }
-    ULONG globalFlag = 0;
+    PSP_PEB64_FACTS pebFacts;
+    memset(&pebFacts, 0, sizeof(pebFacts));
     if (NT_SUCCESS(status))
     {
-        status = PspBuildPeb(process, imageBase, params, &globalFlag);
+        status = PspBuildPeb(process, imageBase, params, &pebFacts);
     }
     if (NT_SUCCESS(status) && isWow64)
     {
-        status = PspWow64BuildPeb32(process, imageBase, params, globalFlag);
+        status = PspWow64BuildPeb32(process, imageBase, params, &pebFacts);
     }
     uint64_t tebBase = 0;
     /* One GLOBAL id serves the TEB's ClientId and the ETHREAD below — NT's

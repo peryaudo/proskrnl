@@ -485,14 +485,27 @@ NTSTATUS PspMapSharedUserData(PEPROCESS process);
  * timer tick fields are refreshed lazily on read paths that need them. */
 void PspInitializeSharedUserData(void);
 
+/* What the 64-bit PEB build DECIDED, handed back so the 32-bit mirror copies
+ * it instead of re-deriving it. The oracle's PEB32 is built from the finished
+ * 64-bit block, field by field (third_party/wine dlls/ntdll/unix/env.c
+ * init_peb / build_wow64_parameters), so every value here has exactly one
+ * evaluation site — which is the whole reason it is a return value and not a
+ * rule repeated in wow64.c (Art. 11). */
+typedef struct PSP_PEB64_FACTS
+{
+    ULONG globalFlag;      /* PEB.NtGlobalFlag */
+    ULONG parameterFlags;  /* RTL_USER_PROCESS_PARAMETERS.Flags, as written */
+    ULONG environmentSize; /* .EnvironmentSize, as written */
+} PSP_PEB64_FACTS;
+
 /* Build the PEB + RTL_USER_PROCESS_PARAMETERS in `process`'s address space
  * (user allocations, VAD-tracked). On success process->pebBase is set and the
  * per-thread TEB's Peb pointer can be wired. `imageBase` is the mapped main
  * image, from a captured params block (M10) whose header scalars —
  * ConsoleHandle/hStd* included — are written through verbatim. Does not
- * take ownership of `captured`. */
+ * take ownership of `captured`. `factsOut` may be 0. */
 NTSTATUS PspBuildPeb(PEPROCESS process, uint64_t imageBase, const PSP_CAPTURED_PARAMS *captured,
-                     ULONG *globalFlagOut);
+                     PSP_PEB64_FACTS *factsOut);
 
 /* Allocate + initialize a TEB for a thread: a full user page, NT_TIB filled
  * (stack bounds, Self), Peb wired, ClientId set. Returns the user VA.
@@ -545,7 +558,7 @@ const WCHAR *PspWow64Ntdll32Path(void);
 uint64_t PspWow64HostStackSize(void);
 uint64_t PspWow64SpaceLimit(USHORT imageCharacteristics);
 NTSTATUS PspWow64BuildPeb32(PEPROCESS process, uint64_t imageBase,
-                            const PSP_CAPTURED_PARAMS *captured, ULONG globalFlag);
+                            const PSP_CAPTURED_PARAMS *captured, const PSP_PEB64_FACTS *facts);
 NTSTATUS PspWow64BuildTeb32(PEPROCESS process, uint64_t tebVa, uint64_t uniqueProcessId,
                             uint64_t uniqueThreadId, uint64_t guestStackBase,
                             uint64_t guestStackLimit, uint64_t guestStackAllocation);
