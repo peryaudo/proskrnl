@@ -2263,6 +2263,127 @@ cui9() {
     return 0
 }
 
+# The Net-1 acceptance (docs/02 "Net-1 Done when"; docs/24 §6b): the wire
+# proven without AFD existing. The standard test image boots with a slirp
+# NIC, a filter-dump pcap — networking's screendump: QEMU's own device
+# model records every frame, so the wire convicts the kernel's account of
+# itself (Art. 6) — and the port of a host-loopback echo server carried in
+# over fw_cfg. The guest's kmt suite reports the MAC, binds DHCP, writes
+# the lease, and drives an in-kernel TCP echo through lwIP's raw API; the
+# leg then asserts the serial<->wire cross-checks as CONTENT, never
+# timing (docs/19 §11c): our MAC as Ethernet source, the DISCOVER/REQUEST
+# exchange, the ACK's yiaddr equal to the serial-reported lease, and the
+# echo payload in both directions.
+#
+# Gate zero is netsmoke (docs/24 §6c, the fontsmoke lesson): a QEMU
+# without slirp FAILS the leg loudly — a silently absent backend would
+# turn every later verdict false.
+net() {
+    if ! "$ROOT/tools/qemu.sh" --probe-slirp; then
+        echo "[KTEST] netsmoke FAIL — this QEMU offers no '-netdev user' (slirp)."
+        echo "        Re-run tools/setup_linux.sh: the pinned build configures --enable-slirp"
+        echo "        (libslirp-dev), and a slirp-less tree is detected as stale there."
+        return 1
+    fi
+    echo "[KTEST] netsmoke PASS"
+    make -C "$ROOT" >/dev/null || exit 1
+
+    # The echo server: host loopback, ephemeral port, killed with the leg.
+    local portfile="$BUILD/netecho.port"
+    rm -f "$portfile"
+    python3 "$ROOT/tests/run/netecho.py" "$portfile" &
+    local echopid=$!
+    # shellcheck disable=SC2064
+    trap "kill $echopid 2>/dev/null" RETURN
+    local waited=0
+    while [[ ! -s "$portfile" ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+        if [[ "$waited" -gt 100 ]]; then
+            echo "== net: FAIL (echo server never bound) =="
+            return 1
+        fi
+    done
+    local echoport
+    echoport="$(cat "$portfile")"
+
+    # The boot. TCG on a loaded runner makes DHCP+echo slow, never
+    # different (every in-guest bound is guest-clocked); an EMPTY serial
+    # log is the launch-infra flake, retried once (the cui8 pattern).
+    local pcap="$BUILD/net.pcap" netlog="$BUILD/net-serial.log"
+    local attempt
+    for attempt in 1 2; do
+        rm -f "$pcap"
+        NET_PCAP="$pcap" NET_ECHO_PORT="$echoport" LOG="$netlog" \
+            TIMEOUT="${TIMEOUT:-900}" \
+            "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" \
+            >"$BUILD/net-qemu.log" 2>&1 || true
+        [[ -s "$netlog" ]] && break
+        echo "net: empty serial log (attempt $attempt); see $BUILD/net-qemu.log" >&2
+    done
+
+    local fails=0
+    # (a) DHCP bound, and the serial line carries the address (docs/02:
+    # "[KTEST] net dhcp carries the address").
+    local dhcpline addr
+    dhcpline="$(grep -E '^\[KTEST\] net dhcp ' "$netlog" | head -1 | tr -d '\r' || true)"
+    addr="$(sed -nE 's/^\[KTEST\] net dhcp ([0-9.]+).*/\1/p' <<<"$dhcpline")"
+    if [[ -n "$addr" ]]; then
+        echo "[KTEST] net-dhcp PASS ($dhcpline)"
+    else
+        echo "[KTEST] net-dhcp FAIL (no '[KTEST] net dhcp' line; see $netlog)"
+        fails=$((fails + 1))
+    fi
+    # (b) the in-kernel verdicts: lease readback and the echo round trip.
+    local verdict
+    for verdict in 'net lease PASS' 'net echo PASS'; do
+        if grep -q "\[KTEST\] $verdict" "$netlog"; then
+            echo "[KTEST] ${verdict// PASS/} PASS"
+        else
+            echo "[KTEST] ${verdict// PASS/} FAIL (see $netlog)"
+            fails=$((fails + 1))
+        fi
+    done
+    # (c) the stats line rides the leg output — recorded facts with two
+    # floors (frames actually moved both ways; docs/24 §6e).
+    local statsline
+    statsline="$(grep -E '^\[KTEST\] net stats ' "$netlog" | head -1 | tr -d '\r' || true)"
+    if [[ -n "$statsline" ]]; then
+        echo "$statsline"
+        local rx tx
+        rx="$(sed -nE 's/.* rx=([0-9]+).*/\1/p' <<<"$statsline")"
+        tx="$(sed -nE 's/.* tx=([0-9]+).*/\1/p' <<<"$statsline")"
+        if [[ -z "$rx" || -z "$tx" || "$rx" -eq 0 || "$tx" -eq 0 ]]; then
+            echo "[KTEST] net-stats FAIL (rx/tx floor: '$statsline')"
+            fails=$((fails + 1))
+        fi
+    else
+        echo "[KTEST] net-stats FAIL (no stats line; see $netlog)"
+        fails=$((fails + 1))
+    fi
+    # (d) the pcap content assertions, cross-checked against the serial
+    # report (the MAC and the lease address both appear in the wire's own
+    # record, or one of the two is lying).
+    local mac
+    mac="$(sed -nE 's/^\[KTEST\] net mac ([0-9a-f:]+).*/\1/p' "$netlog" | head -1 | tr -d '\r')"
+    if [[ -z "$mac" || -z "$addr" ]]; then
+        echo "[KTEST] net-pcap FAIL (no serial mac/addr to cross-check)"
+        fails=$((fails + 1))
+    elif python3 "$ROOT/tests/run/netpcap.py" "$pcap" --src-mac "$mac" \
+            --dhcp-yiaddr "$addr" --payload "proskrnl-net-echo-payload"; then
+        echo "[KTEST] net-pcap PASS"
+    else
+        echo "[KTEST] net-pcap FAIL (pcap: $pcap)"
+        fails=$((fails + 1))
+    fi
+    if [[ "$fails" -ne 0 ]]; then
+        echo "== net: FAIL ($fails failing) =="
+        return 1
+    fi
+    echo "== net: PASS =="
+    return 0
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -3388,6 +3509,7 @@ case "$MODE" in
     cui7)     cui7 ;;
     cui8)     cui8 ;;
     cui9)     cui9 ;;
+    net)      net ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
@@ -3402,7 +3524,7 @@ case "$MODE" in
     gui6)     gui6 ;;
     winefbunit) winefbunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

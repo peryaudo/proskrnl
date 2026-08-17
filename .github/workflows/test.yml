@@ -69,10 +69,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # limine.h and flanterm's headers are #included by kernel/init; without
-      # them clang-tidy cannot parse those TUs. Both are https in .gitmodules
-      # (only third_party/wine needs the ssh rewrite), and neither is built.
+      # them clang-tidy cannot parse those TUs. lwIP's headers are the same
+      # dependency one tree over (Net-1): drivers/net/netd.c includes them,
+      # so the tidy pass over drivers/net/ cannot parse without the
+      # submodule. All are https in .gitmodules (only third_party/wine
+      # needs the ssh rewrite), and none is built here.
       - name: Fetch the header-only submodules
-        run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm
+        run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm third_party/lwip
 
       # `make gen-check` reads TRACKED files of the pinned Wine tree —
       # include/*.h, dlls/ntdll/ntsyscalls.h, nls/l_intl.nls,
@@ -291,6 +294,10 @@ jobs:
       - name: CUI-9 image-master sharing + COW resident-process ceiling (tests/run/run.sh cui9)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh cui9
+
+      - name: Net-1 DHCP + in-kernel echo + pcap content (tests/run/run.sh net)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh net
 
       - uses: ./.github/actions/serial-logs
         if: failure()
