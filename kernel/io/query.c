@@ -1855,14 +1855,23 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
-        FILE_FS_VOLUME_INFORMATION *out = buffer;
+        /* Filled in a local and copied as bytes: the buffer is the caller's
+         * and carries the caller's alignment — every WOW64 caller's is
+         * 4-aligned (wow64_NtQueryVolumeInformationFile passes it through
+         * untranslated), and a store through a struct pointer would inherit
+         * that on the LARGE_INTEGER. Same defect class as IopFillDirEntry;
+         * pinned by sem_file/volume_unaligned.c. */
+        FILE_FS_VOLUME_INFORMATION out;
         ULONG room = length - (ULONG)offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel);
         ULONG labelBytes = facts.labelLength < room ? facts.labelLength : room;
-        out->VolumeCreationTime.QuadPart = 0; /* pinned Wine reports 0 */
-        out->VolumeSerialNumber = facts.serialNumber;
-        out->VolumeLabelLength = labelBytes;
-        out->SupportsObjects = facts.supportsObjects;
-        memcpy(out->VolumeLabel, facts.label, labelBytes);
+        memset(&out, 0, sizeof(out));
+        out.VolumeCreationTime.QuadPart = 0; /* pinned Wine reports 0 */
+        out.VolumeSerialNumber = facts.serialNumber;
+        out.VolumeLabelLength = labelBytes;
+        out.SupportsObjects = facts.supportsObjects;
+        memcpy(buffer, &out, offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel));
+        memcpy((char *)buffer + offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel), facts.label,
+               labelBytes);
         information = offsetof(FILE_FS_VOLUME_INFORMATION, VolumeLabel) + labelBytes;
         break;
     }
@@ -1893,11 +1902,14 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
-        FILE_FS_SIZE_INFORMATION *out = buffer;
-        out->TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
-        out->AvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
-        out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
-        out->BytesPerSector = facts.bytesPerSector;
+        /* Local + memcpy: the caller's buffer carries the caller's
+         * alignment (volume class above). */
+        FILE_FS_SIZE_INFORMATION out;
+        out.TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
+        out.AvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out.SectorsPerAllocationUnit = facts.sectorsPerUnit;
+        out.BytesPerSector = facts.bytesPerSector;
+        memcpy(buffer, &out, sizeof(out));
         information = sizeof(FILE_FS_SIZE_INFORMATION);
         break;
     }
@@ -1933,12 +1945,15 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
-        FILE_FS_FULL_SIZE_INFORMATION *out = buffer;
-        out->TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
-        out->CallerAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
-        out->ActualAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
-        out->SectorsPerAllocationUnit = facts.sectorsPerUnit;
-        out->BytesPerSector = facts.bytesPerSector;
+        /* Local + memcpy: the caller's buffer carries the caller's
+         * alignment (volume class above). */
+        FILE_FS_FULL_SIZE_INFORMATION out;
+        out.TotalAllocationUnits.QuadPart = (LONGLONG)facts.totalUnits;
+        out.CallerAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out.ActualAvailableAllocationUnits.QuadPart = (LONGLONG)facts.freeUnits;
+        out.SectorsPerAllocationUnit = facts.sectorsPerUnit;
+        out.BytesPerSector = facts.bytesPerSector;
+        memcpy(buffer, &out, sizeof(out));
         information = sizeof(FILE_FS_FULL_SIZE_INFORMATION);
         break;
     }
@@ -1969,13 +1984,18 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         {
             break;
         }
-        FILE_FS_ATTRIBUTE_INFORMATION *out = buffer;
+        /* Local + memcpy: the caller's buffer carries the caller's
+         * alignment (volume class above). */
+        FILE_FS_ATTRIBUTE_INFORMATION out;
         ULONG room = length - (ULONG)offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName);
         ULONG nameBytes = facts.fsNameLength < room ? facts.fsNameLength : room;
-        out->FileSystemAttributes = facts.fsAttributes;
-        out->MaximumComponentNameLength = facts.maxComponentLength;
-        out->FileSystemNameLength = nameBytes;
-        memcpy(out->FileSystemName, facts.fsName, nameBytes);
+        memset(&out, 0, sizeof(out));
+        out.FileSystemAttributes = facts.fsAttributes;
+        out.MaximumComponentNameLength = facts.maxComponentLength;
+        out.FileSystemNameLength = nameBytes;
+        memcpy(buffer, &out, offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName));
+        memcpy((char *)buffer + offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName),
+               facts.fsName, nameBytes);
         information = offsetof(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName) + nameBytes;
         break;
     }
