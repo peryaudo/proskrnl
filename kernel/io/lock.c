@@ -173,7 +173,7 @@ NTSTATUS NtLockFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apcC
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -247,7 +247,7 @@ NTSTATUS NtUnlockFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteO
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;

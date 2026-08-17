@@ -163,7 +163,7 @@ static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed
         return status;
     }
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, needed, &file);
+    status = IopReferenceFileByHandle(handle, needed, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -728,7 +728,7 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
         return status;
     }
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -899,7 +899,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, isWrite ? FILE_WRITE_DATA : FILE_READ_DATA, &file);
+    status = IopReferenceFileByHandle(handle, isWrite ? FILE_WRITE_DATA : FILE_READ_DATA, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;

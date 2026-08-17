@@ -318,8 +318,17 @@ void IopReleaseAllLocks(PIO_FCB fcb, PFILE_OBJECT owner);
 
 /* --- helpers shared across the io department ------------------------------- */
 
-/* Resolve a file handle with an access check. Caller dereferences. */
-NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut);
+/* Resolve a file handle with an access check. Caller dereferences.
+ *
+ * `handleInformation` is optional and carries Ob's facts about the HANDLE
+ * ENTRY, which are not the file object's: several handles can name one file
+ * object and NtDuplicateObject grants specific bits verbatim, so the entry's
+ * GrantedAccess and the FILE_OBJECT's differ whenever a duplicate was
+ * weakened. FileAccessInformation reports the entry's word and is the only
+ * caller that wants it (kernel/io/query.c); the shape is
+ * ObReferenceObjectByHandle's own, so nothing here re-derives it. */
+NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut,
+                                  POBJECT_HANDLE_INFORMATION handleInformation);
 
 /* Attribute-only internal open of a rename/link target: SUCCESS when the
  * target exists or only its leaf is missing, the open's failure otherwise

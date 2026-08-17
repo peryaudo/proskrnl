@@ -231,11 +231,12 @@ void IoRemoveShareAccess(ACCESS_MASK desiredAccess, ULONG shareAccess, PIO_FCB f
 
 /* --- helpers ---------------------------------------------------------------- */
 
-NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut)
+NTSTATUS IopReferenceFileByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PFILE_OBJECT *fileOut,
+                                  POBJECT_HANDLE_INFORMATION handleInformation)
 {
     PVOID body;
     NTSTATUS status = ObReferenceObjectByHandle(handle, desiredAccess, &IoFileObjectType,
-                                                ExGetPreviousMode(), &body, 0);
+                                                ExGetPreviousMode(), &body, handleInformation);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -908,7 +909,7 @@ NTSTATUS NtQueryAttributesFile(const OBJECT_ATTRIBUTES *attr, FILE_BASIC_INFORMA
      * (docs/18 §13) and this outlives it. */
     PFILE_OBJECT file;
     thread->previousMode = KernelMode;
-    NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file);
+    NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file, 0);
     thread->previousMode = saved;
     if (!NT_SUCCESS(refStatus))
     {
@@ -971,7 +972,7 @@ NTSTATUS NtQueryFullAttributesFile(const OBJECT_ATTRIBUTES *attr,
      * (docs/18 §13) and this outlives it. */
     PFILE_OBJECT file;
     thread->previousMode = KernelMode;
-    NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file);
+    NTSTATUS refStatus = IopReferenceFileByHandle(handle, 0, &file, 0);
     thread->previousMode = saved;
     if (!NT_SUCCESS(refStatus))
     {
@@ -1051,7 +1052,7 @@ NTSTATUS IopBuildSectionBacking(HANDLE fileHandle, ULONG sectionAttributes, ULON
 {
     ACCESS_MASK needed = IopSectionFileAccess(sectionAttributes, pageProtection);
     PFILE_OBJECT file;
-    NTSTATUS status = IopReferenceFileByHandle(fileHandle, needed, &file);
+    NTSTATUS status = IopReferenceFileByHandle(fileHandle, needed, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1268,7 +1269,7 @@ NTSTATUS IoEnumerateDirectory(const WCHAR *ntPath,
     if (NT_SUCCESS(status))
     {
         PFILE_OBJECT file;
-        status = IopReferenceFileByHandle(handle, 0, &file);
+        status = IopReferenceFileByHandle(handle, 0, &file, 0);
         if (NT_SUCCESS(status))
         {
             if (file->device->ops->ReadDirectory == 0)

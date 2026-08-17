@@ -46,7 +46,7 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;

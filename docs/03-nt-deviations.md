@@ -2795,6 +2795,84 @@ The query was correct throughout: a set the kernel should have refused had reall
 changed the server end's mode, so every later read-back of that end was right about a
 state that should never have existed (`docs/21` §4 trap 4).
 
+## `FileAccessInformation` (class 8) asks Ob, and its length check is BELOW the handle
+
+The class is one `ACCESS_MASK` and neither half of it follows from the name.
+
+**The value is the HANDLE ENTRY's access, not the file object's.** The oracle answers
+`info.AccessFlags = get_handle_access( current->process, handle )` (`server/fd.c`
+`default_fd_get_file_info`), which reads `entry->access` — the word in the caller's own
+handle table slot. `NtDuplicateObject` grants specific bits verbatim, so a weakened
+duplicate names the same `FILE_OBJECT` through a smaller mask and reports the smaller
+mask; a duplicate made with an access of **zero** is a legal handle and reports zero,
+and the query still succeeds. `FILE_OBJECT.grantedAccess` is the OPEN's word and would
+answer the create's mask for every handle that ever named the file. This is the same
+distinction the `FilePipeInformation` SET ladder pays one section above — *"the access"
+is ambiguous whenever more than one handle can name one object* — and `docs/21` W11's
+own estimate ("the granted access of the handle, which `FILE_OBJECT.grantedAccess`
+already holds") got the second clause wrong. `IopReferenceFileByHandle` grew Ob's
+optional `OBJECT_HANDLE_INFORMATION` out-parameter for it, so the entry's word comes
+from the one resolver rather than from a second lookup.
+
+**The class demands no access at all.** `DECL_HANDLER(get_file_info)` resolves the fd
+with a mask of 0, so a `SYNCHRONIZE`-only handle reads its own word back — which is
+exactly what `ntdll:pipe`'s `_test_file_access(hClient, SYNCHRONIZE)` asserts, and what
+separates this class from the two pipe classes in the same handler (`FILE_READ_ATTRIBUTES`).
+
+**The length check runs BELOW the handle lookup, which is the inverse of every
+table-driven class.** `info_sizes[FileAccessInformation]` is 0 (`dlls/ntdll/unix/file.c`
+`NtQueryInformationFile`), so ntdll makes no length check and hands the call straight to
+`server_get_file_info`; the size guard lives inside the fd op, under the handle. So:
+
+| the caller's mistake | answer |
+|---|---|
+| handle names an object with no fd (a process, an event) | `STATUS_OBJECT_TYPE_MISMATCH` |
+| handle names nothing | `STATUS_INVALID_HANDLE` |
+| either of the above **with** a buffer shorter than 4 bytes | still the HANDLE's status |
+| valid handle, buffer shorter than 4 bytes | `STATUS_INFO_LENGTH_MISMATCH`, buffer untouched |
+| valid handle, buffer longer than 4 bytes | success; `Information` is 4 and the tail is untouched |
+
+`FilePipeInformation` through the same junk handle with the same short buffer reports
+the LENGTH, because its `info_sizes[]` entry is non-zero and that check sits in ntdll.
+Two classes of one syscall, two orders — an implementation with a single length gate
+ahead of a single handle gate cannot answer both. `kernel/io/query.c` gives class 8
+`needed = 0` in the size switch for exactly this reason and checks the length after the
+reference; pinned by `tests/ntapi/sem_file/access_info.c`.
+
+**One place proskrnl answers where the oracle does not.** `FileAllInformation`'s
+`AccessInformation.AccessFlags` is a hardwired 0 with a `FIXME` in the pinned Wine
+(`dlls/ntdll/unix/file.c`), as `ModeInformation.Mode` beside it is; proskrnl fills both,
+and class 8 and `FileAllInformation` report the **same** word from the same place
+(Art. 11). The oracle cannot refute the value, so the agreement is pinned against
+Microsoft's own contract instead — `FILE_ACCESS_INFORMATION.AccessFlags` is "the access
+rights that are granted for this handle" and `FILE_ALL_INFORMATION.AccessInformation` is
+that same structure — in a `beyond_oracle` block of `sem_file/access_info.c` §7, queried
+through a WEAKENED DUPLICATE, which is the only handle that can tell one answer from
+two.
+
+Two things here are deliberately NOT pinned.
+
+**Whether a FAILING `NtQueryInformationFile` writes the caller's IOSB.** The oracle
+writes `io->Status` on nearly every return from the syscall (`return io->Status = ...`,
+and `server_get_file_info` assigns both fields unconditionally); proskrnl writes the
+block only on success. That is a whole-syscall convention with a dozen classes inside
+it, not this class's rule, and adopting it for class 8 alone would make one syscall
+answer two ways.
+
+**The RESERVED access bits.** `get_handle_access` returns `entry->access & ~RESERVED_ALL`
+and `alloc_handle` strips the same two bits on the way in (`server/handle.c`:
+`RESERVED_SHIFT` 26, i.e. bits 26–27), because the oracle *stores its handle flags there*
+— `HANDLE_FLAG_INHERIT` and `HANDLE_FLAG_PROTECT_FROM_CLOSE` live inside the access word.
+proskrnl keeps handle attributes in their own field, so it has nothing to steal and
+nothing to strip: `ObpCreateHandleInTable` stores the granted mask verbatim. A caller
+that duplicates a handle asking for `0x0C000000` therefore reads those bits back through
+class 8 (and through `NtQueryObject(ObjectBasicInformation)`, which has reported them
+since long before this class existed — so the divergence is Ob's and pre-dates it, not
+this class's to fix). Filed as issue #199 rather than masked here, because masking
+two bits inside class 8 would put a second, narrower statement of "what a handle's access
+is" beside `ObpCreateHandleInTable`'s (Art. 11) and would leave `NtQueryObject` still
+reporting them.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by
