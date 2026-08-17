@@ -115,25 +115,28 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
      * by the designated initializer above; an ioctl carries no data leg (its
      * output travels in outBounce) and `pended` is the engine's answer. */
     ULONG_PTR information = 0;
-    /* The caller's event goes DOWN before the verb runs, not at completion:
-     * the oracle resets it in create_async (server/async.c), a frame above
-     * the queue, so a caller that pre-signalled it sees it clear for the
-     * whole request. Measured from a worker thread while a listen was parked
-     * (sem_pipe/alertable_park.c case 2), which is the only sample that can
-     * tell "reset at issue" from "reset on the way out". Through the one
-     * authority for the request event (kernel/io/file.c), the same call
-     * IopAbandonRequest and IopBeginBlockingRequest make.
+    /* The signalled-state legs of a request that may PARK, through the same
+     * engine the transfer paths use (kernel/io/async.c) — the caller's event
+     * DOWN before the verb runs, and the FILE OBJECT down at the park.
      *
-     * The other half of the oracle's issue — clearing the FILE OBJECT, which
-     * rw.c's transfers do through IopBeginBlockingRequest — is NOT done here,
-     * and that is a KNOWN GAP rather than a scoping judgement: ntdll:pipe's
-     * test_cancelsynchronousio spins `while (WaitForSingleObject(ctx.pipe, 0)
-     * == WAIT_OBJECT_0) Sleep(1)` (dlls/ntdll/tests/pipe.c:747) waiting for a
-     * blocking LISTEN to take the handle down, and hangs on that loop today.
-     * It is the pair's next item (docs/21 W11) and wants its own pin, because
-     * the pended and refused arms of this service have to answer for the
-     * handle too and only a case can say what each owes. */
-    IopResetRequestEvent(event);
+     * IopClearAtPark, where rw.c's transfers say IopClearAtIssue, and the
+     * difference is the oracle's not a preference: an ioctl's verb is decided
+     * ABOVE `queue_async` (server/named_pipe.c pipe_server_ioctl refuses
+     * FSCTL_PIPE_LISTEN with STATUS_PIPE_CONNECTED before it, and
+     * FSCTL_PIPE_PEEK never queues at all), while pipe_end_read queues every
+     * request it SERVES — its own state refusals return above the queue too,
+     * but it has no arm that answers a caller without queueing.
+     * Measured both ways in sem_pipe/ioctl_signal.c: an
+     * inline peek carrying an event leaves the handle UP, and a refused
+     * listen leaves it exactly as it found it, neither of which a clear at
+     * issue can do.
+     *
+     * Where the event's reset is measured: from a worker while a listen was
+     * parked (sem_pipe/alertable_park.c case 2, ioctl_signal.c case 2), which
+     * is the only sample that can tell "reset at issue" from "reset on the
+     * way out". */
+    IOP_BLOCKING_REQUEST blocking;
+    IopBeginBlockingRequest(&blocking, file, event, IopClearAtPark);
     IopEnterSyncIo(file, iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
                                               outputLength, &information, &request);
@@ -141,6 +144,11 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     /* A user APC broke an alertable park (io.h IoSyncIoAlerted): the verb
      * completed nothing, so nothing below it may run. */
     BOOLEAN alerted = IoSyncIoAlerted();
+    /* Did the verb reach the park — i.e. would the oracle have QUEUED it —
+     * which is the only thing separating IopRequestRefused from
+     * IopRequestFailedParked (io.h IoSyncIoParked). Read before anything
+     * below can open a new span. */
+    BOOLEAN parked = IoSyncIoParked();
     /* IOSB Information is not always an output-payload count (a console
      * WRITE_FILE reports bytes CONSUMED); copy back only what the output
      * buffer can hold. */
@@ -170,6 +178,10 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * two branches are exclusive; the assert convicts the day one is. */
         ASSERT(!request.pended);
         ASSERT(status == STATUS_USER_APC || status == STATUS_ALERTED);
+        /* The handle stays DOWN: the oracle's async is still queued and only
+         * the client stopped waiting, so async_set_result never runs (io.h
+         * IopRequestInterrupted). */
+        IopEndBlockingRequest(&blocking, IopRequestInterrupted);
         IopQueueCompletionApc(0, apcBlock);
         ObDereferenceObject(file);
         return status;
@@ -185,7 +197,12 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * FINAL answer from a device — condrv's read path returns exactly
          * that — and a verb that answered it without parking would have its
          * APC block leaked here. No ioctl verb does today; keying on the
-         * flag means none ever can. */
+         * flag means none ever can.
+         *
+         * No IopEndBlockingRequest either: the handle was taken down by
+         * IopPreparePendingRequest and it is the COMPLETION that puts it back
+         * (kernel/io/async.c IopCompletePendingRequest), from whatever context
+         * ends the park. */
         ASSERT(status == STATUS_PENDING);
         ObDereferenceObject(file);
         return STATUS_PENDING;
@@ -204,22 +221,40 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * returned above. Pinned by sem_pipe/completion_packet.c. */
         status = IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, information,
                                      /* reportsPending */ FALSE, PsIoChargeOther);
+        /* IopCompleteTransfer took the EVENT arm of "exactly one"; this takes
+         * the FILE-OBJECT arm when there was no event. An ioctl that completed
+         * INLINE never cleared the handle, and signalling it here is still
+         * right: the oracle's guard is `async->pending || !NT_ERROR( status )`
+         * (server/async.c), so a success reaches the signal block whether or
+         * not it was ever queued (sem_pipe/ioctl_signal.c case 5b). */
+        IopEndBlockingRequest(&blocking, IopRequestCompleted);
     }
     else
     {
-        /* The caller's event still goes DOWN, through the same authority the
-         * transfer paths use (IopAbandonRequest, kernel/io/file.c): a caller
-         * that pre-signalled it sees it clear even though nothing completed
-         * and the IOSB was never written. Measured on an immediate
-         * STATUS_PIPE_CONNECTED listen — sem_pipe/ioctl_event.c — and
-         * convicted by ntdll:pipe:413, which reads the event and the IOSB
-         * together and so cannot be satisfied by the status alone. */
-        IopAbandonRequest(event);
-        /* A refusal that never wrote the IOSB completes nothing, so the
-         * routine must NOT run — measured: an immediate STATUS_PIPE_CONNECTED
-         * listen leaves the caller's IOSB poison intact and never calls back
-         * (sem_pipe/listen_apc.c). Free the block rather than leak it; this
-         * is the one path where the request neither pended nor completed.
+        /* The caller's event stays DOWN where the issue put it: a caller that
+         * pre-signalled it sees it clear even though nothing completed and the
+         * IOSB was never written (convicted by ntdll:pipe:413, which reads the
+         * event and the IOSB together and so cannot be satisfied by the status
+         * alone; measured on an immediate STATUS_PIPE_CONNECTED listen,
+         * sem_pipe/ioctl_event.c).
+         *
+         * Which arm depends on whether the verb was QUEUED, and only the
+         * engine knows: a listen refused above the queue reaches nothing and
+         * leaves both the event and the handle exactly as it found them, while
+         * one CANCELLED mid-park still reaches async_set_result and signals
+         * the caller's event — or, with no event, puts the handle back up.
+         * That second case is ntdll:pipe's test_cancelsynchronousio
+         * (sem_pipe/ioctl_signal.c cases 6 and 7). */
+        IopEndBlockingRequest(&blocking, parked ? IopRequestFailedParked : IopRequestRefused);
+        /* The completion ROUTINE splits on the same question, because the
+         * oracle decides all three inside one guard (io.h
+         * IopEndFailedRequestApc): a refusal that never wrote the IOSB runs
+         * nothing — measured on an immediate STATUS_PIPE_CONNECTED listen,
+         * which leaves the caller's IOSB poison intact and never calls back
+         * (sem_pipe/listen_apc.c) — while a listen CANCELLED mid-park does run
+         * it, with that same untouched IOSB as its argument
+         * (sem_pipe/ioctl_signal.c case 6). Either way the block leaves here;
+         * this is the one path where the request neither pended nor completed.
          *
          * Reaching here after a device PREPARED a pending request would
          * double-free, since the request owns the same block — so that is an
@@ -227,7 +262,7 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
          * IopPreparePendingRequest must return STATUS_PENDING. npfs is the
          * only DeviceControl that pends and it does exactly that
          * (fs/npfs/pipe.c NpfsListen). */
-        IopQueueCompletionApc(0, apcBlock);
+        IopEndFailedRequestApc(apcBlock, parked);
     }
     ObDereferenceObject(file);
     return status;

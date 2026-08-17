@@ -576,6 +576,13 @@ NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, PKAPC *apcOut);
 void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc);
 
+/* The completion ROUTINE's arm of a request that FAILED, `parked` being
+ * IoSyncIoParked's answer — i.e. the same discriminator IopEndBlockingRequest
+ * uses for the event and the handle, because the oracle decides all three
+ * inside one guard (kernel/io/async.c says where). One statement for both
+ * tails: a queued-and-failed request runs its routine, a refusal does not. */
+void IopEndFailedRequestApc(PKAPC apc, BOOLEAN parked);
+
 /* The completion SIGNAL leg of an operation that PENDED, one authority
  * (Art. 11 — the pended-request engine and the directory-watch engine both
  * owe it and stated it separately before): NT signals the caller's EVENT
@@ -613,22 +620,55 @@ void IopMarkRequestOutstanding(struct FILE_OBJECT *file);
  *
  * Begin is create_async's event reset plus queue_async's clear. The two are
  * separate statements in the oracle — the reset a frame above the device's
- * state checks, the clear below them — and are merged here deliberately: the
- * split is observable only for a request the DEVICE refuses without ever
- * parking, and IopRequestRefused below RESTORES the handle to what Begin
- * found for exactly that case, rather than teaching every device where the
- * boundary is. Restores, not signals: a handle can already be down when the
- * refused request arrives (the previous request completed through an event),
- * and the oracle leaves it down. */
+ * state checks, the clear below them — and WHERE the second one lands is the
+ * caller's to say, because it depends on where that service's verb sits
+ * relative to `queue_async`:
+ *
+ *   IopClearAtIssue   the FS queues every request it SERVES, so the two
+ *                     statements coincide. pipe_end_read and pipe_end_write
+ *                     (server/named_pipe.c) end in `queue_async` on every path
+ *                     that is not an outright refusal, and let the reselect
+ *                     satisfy it — so a transfer that completes inline has
+ *                     been queued too. The only case the merge can then get
+ *                     wrong is a request the DEVICE refuses without ever
+ *                     parking, and IopRequestRefused below
+ *                     RESTORES the handle to what Begin found for exactly
+ *                     that — rather than teaching every device where the
+ *                     boundary is. Restores, not signals: a handle can
+ *                     already be down when the refused request arrives (the
+ *                     previous request completed through an event), and the
+ *                     oracle leaves it down.
+ *   IopClearAtPark    the verb can be answered ABOVE the queue, so only a
+ *                     request that really parks may clear the handle. An
+ *                     IOCTL is this shape: pipe_server_ioctl's
+ *                     FSCTL_PIPE_LISTEN arm returns STATUS_PIPE_CONNECTED /
+ *                     _CLOSING / _LISTENING before `queue_async( &server->
+ *                     listen_q, async )`, and FSCTL_PIPE_PEEK is answered
+ *                     inline and never queues at all. The clear is then made
+ *                     by the ENGINE at the one place a blocking park happens
+ *                     (IoWaitCancellable, through ke.h syncIoParkFile) and by
+ *                     IopPreparePendingRequest for the pended arm — never by
+ *                     a device. Measured, not reasoned: an inline
+ *                     FSCTL_PIPE_PEEK carrying an event leaves the handle UP
+ *                     on the oracle, which clearing at issue cannot do
+ *                     (sem_pipe/ioctl_signal.c case 5).
+ */
+typedef enum
+{
+    IopClearAtIssue,
+    IopClearAtPark
+} IOP_BLOCKING_CLEAR;
+
 typedef struct IOP_BLOCKING_REQUEST
 {
     struct FILE_OBJECT *file;
     HANDLE eventHandle;
     BOOLEAN handleWasSignalled;
+    BOOLEAN clearedAtIssue;
 } IOP_BLOCKING_REQUEST;
 
 void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *file,
-                             HANDLE eventHandle);
+                             HANDLE eventHandle, IOP_BLOCKING_CLEAR when);
 
 /* How a blocking request ended, which is what decides the signal. The three
  * arms are the pinned oracle's, measured rather than reasoned about:
@@ -650,7 +690,9 @@ void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *
  *   Refused       the device answered above the queue (a read on an already
  *                 broken pipe): `async->pending` is still 0 there, so the
  *                 signal block is skipped entirely — the handle keeps
- *                 whatever state it had and the event stays reset.
+ *                 whatever state it had and the event stays reset. Under
+ *                 IopClearAtPark nothing was cleared, so this arm has nothing
+ *                 to put back and does not touch the handle at all.
  *   Interrupted   a user APC broke the ALERTABLE park of a
  *                 FILE_SYNCHRONOUS_IO_ALERT handle (io.h IoSyncIoAlerted).
  *                 The oracle's async is still QUEUED — only the client
