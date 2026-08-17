@@ -305,7 +305,7 @@ jobs:
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 110   # eight boots under TCG; was 90 with seven before GUI-6
+    timeout-minutes: 125   # nine boots under TCG; was 110 with eight before AUD-1
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -321,6 +321,18 @@ jobs:
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
+
+      # AUD-1: the verdict is a recording — the audio analog of GUI-1's
+      # screendump. The guest plays a deterministic S16 pattern through
+      # \Device\Snd0 and the harness finds it sample-exact in the WAV that
+      # QEMU's wav audiodev recorded (docs/23 §6a). Rides this shard because
+      # it is the same virgin-image full-firstboot boot the GUI legs pay.
+      - name: AUD-1 sample-exact playback in a recorded WAV (tests/run/run.sh audio)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh audio
+        env:
+          TIMEOUT: "1200"
+          AUDIO_DEADLINE: "900"
 
       # GUI-2: winemine.exe on the scanout — unmodified user32/gdi32/comctl32
       # and winemine over the PE build of win32u, painting through winefb.drv.

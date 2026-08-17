@@ -2361,6 +2361,90 @@ gui() {
     return 0
 }
 
+# AUD-1 (docs/02 "a guest client plays a deterministic S16 pattern and the
+# harness finds it sample-exact in the WAV that QEMU's -audiodev wav
+# recorded"; docs/23 §6a). The gui() shape with the WAV as the screendump:
+# boot the audio image with a virtio-snd device backed by the wav audiodev,
+# wait for the kmt SND suite's verdict (the device contract) and the
+# client's play verdict, end the guest over QMP so the recording closes
+# cleanly, and check the WAV against what the guest said it played.
+#
+# The audiodev is pinned to exactly what the client negotiates (s16, 48 kHz,
+# stereo) so QEMU's mixeng conversion is the identity and the span is
+# sample-exact — the wav backend refuses float and 32-bit formats, which is
+# why the verdict path is S16 end-to-end (docs/23 §6a).
+#
+# No oracle leg, for the same reason gui() has none — \Device\Snd0 is a
+# HACK device NT does not have (HACK-007; docs/23 §6e). What stands in for
+# the oracle is QEMU: the WAV is written by its audio backend from what its
+# device model consumed, neither of which the kernel controls (Art. 6).
+audio() {
+    make -C "$ROOT" audio-img >/dev/null
+    local img="$ROOT/build/proskrnl-audio.hdd"
+    local dir="$ROOT/build/tests"
+    local sock="$dir/audio.sock" log="$dir/audio.log" wav="$dir/audio.wav"
+    mkdir -p "$dir"
+    # The gui() rationale: a previous run's markers or recording must not
+    # satisfy any await or check below.
+    rm -f "$sock" "$wav" "$log"
+
+    # The guest never powers itself off (the client parks so the host owns
+    # the recording's tail), so this leg always ends the guest itself. The
+    # budget is gui()'s, for gui()'s reason: a virgin image puts the verdict
+    # behind the whole firstboot INF pass.
+    QMP_SOCK="$sock" LOG="$log" \
+        EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
+        AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${AUDIO_DEADLINE:-600}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    audio_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== audio: FAIL ($1; see $log) =="
+        return 1
+    }
+
+    # The kmt SND suite runs on this boot (the device exists here and
+    # nowhere else) and reports before smss starts the client; its verdict
+    # is grepped HERE because kmtcheck.sh deliberately covers only the
+    # standard image (tests/run/kmtcheck.sh SCOPE).
+    if ! await '\[KTEST\] SND (PASS|FAIL)'; then
+        audio_fail "the kmt SND suite never reported"; return 1
+    fi
+    if ! await '\[KTEST\] audio (PASS|FAIL)'; then
+        audio_fail "no client verdict"; return 1
+    fi
+
+    # End the guest CLEANLY before reading the WAV: the wav backend patches
+    # the RIFF sizes at teardown (the checker still reads the data chunk to
+    # EOF, because the grace-kill can outrun this quit).
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! grep -qE '\[KTEST\] SND PASS' "$log"; then
+        echo "== audio: FAIL (kmt SND suite; see $log) =="; return 1
+    fi
+    if ! grep -qE '\[KTEST\] audio PASS' "$log"; then
+        echo "== audio: FAIL (client half; see $log) =="; return 1
+    fi
+    if ! python3 "$ROOT/tests/audio/check_audio.py" --log "$log" --wav "$wav"; then
+        echo "== audio: FAIL (recording does not contain what the guest played) =="; return 1
+    fi
+    echo "== audio: PASS (device contract + sample-exact playback in the recorded WAV) =="
+    return 0
+}
+
 # GUI-2 (docs/02 "winemine.exe appears on screen"). Same shape as gui()
 # above: boot the gui2 image with a QMP socket and a virtio keyboard, wait
 # for winefb.drv to report the scanout and then a painted window,
@@ -3308,6 +3392,7 @@ case "$MODE" in
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
     gui)      gui ;;
+    audio)    audio ;;
     gui2)     gui2 ;;
     gui3)     gui3 ;;
     gui4)     gui4 ;;
@@ -3317,7 +3402,7 @@ case "$MODE" in
     gui6)     gui6 ;;
     winefbunit) winefbunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

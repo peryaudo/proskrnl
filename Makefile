@@ -921,6 +921,34 @@ $(IMG_GUI): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(GUISMO
 gui-img: $(IMG_GUI)
 .PHONY: gui-img
 
+# The AUD-1 acceptance client (docs/02 "a guest client plays a deterministic
+# S16 pattern and the harness finds it sample-exact in the WAV"). ntdll
+# only — it talks to \Device\Snd0 through the Nt* surface directly (the
+# GUISMOKE recipe). -I. for the drivers/sndproto.h contract.
+AUDSMOKE := $(BUILD)/modules/aud_smoke.exe
+$(AUDSMOKE): tests/audio/aud_smoke.c drivers/sndproto.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=aud_start \
+	    tests/audio/aud_smoke.c \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
+# The AUD-1 image (tests/run/run.sh audio): the standard image plus
+# aud_smoke.exe, whose presence makes smss run it as the session's
+# foreground (user/smss/session.c). The virtio-snd device and the wav
+# audiodev are the LEG's, not the image's — one image, run-time devices,
+# the HACK-006 spirit.
+IMG_AUDIO := $(BUILD)/proskrnl-audio.hdd
+$(IMG_AUDIO): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(AUDSMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	tools/mkimage.sh $(KERNEL) $(IMG_AUDIO) $(MODULE_SPECS) $(WINFILES) \
+	    win:$(AUDSMOKE)=aud_smoke.exe
+
+audio-img: $(IMG_AUDIO)
+.PHONY: audio-img
+
 # ---------------------------------------------------------------------------
 # GUI-2 (docs/02, docs/07 route (a)): win32u as a PE, plus winefb.drv.
 #
