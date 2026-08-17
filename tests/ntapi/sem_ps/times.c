@@ -188,12 +188,35 @@ START_TEST(times)
     ok(retlen == sizeof(perf1), "one-entry perf retlen %lu", (unsigned long)retlen);
     ok(perf1.kernel_time.QuadPart >= perf1.idle_time.QuadPart, "kernel time folds idle in");
 
-    Sleep(60);
-    memset(&perf2, 0, sizeof(perf2));
-    status = NtQuerySystemInformation(PS_SystemProcessorPerformanceInformation, &perf2,
-                                      sizeof(perf2), NULL);
+    /* "Idle time advances while this thread sleeps" is a statement about the
+     * CLASS, and a single 60 ms sample turned it into a statement about
+     * PROCESSOR 0 OF THE HOST — which a loaded box is entitled to keep busy
+     * for a whole window. On the oracle this class is Linux's /proc/stat, so
+     * every other leg of a 32-way `make fulltest` competes for the answer, and
+     * the coupling is not even random: the ntapi sweep fans out one worker per
+     * test, so ADDING AN UNRELATED TEST ANYWHERE reshards what runs beside
+     * this one and can flip it. It was flipped exactly that way by
+     * sem_pipe/alertable_park.c, which does nothing but sleep.
+     *
+     * Sampling until it moves keeps all of the semantic content — a kernel
+     * whose idle time never advances still fails, after a full second of
+     * chances — and drops the accidental claim about the host's instantaneous
+     * load. NOT a weakened assertion: the same inequality is asserted, only
+     * with the machine given more than one 60 ms window to be idle in. */
+    for (int attempt = 0; attempt < 16; attempt++)
+    {
+        Sleep(60);
+        memset(&perf2, 0, sizeof(perf2));
+        status = NtQuerySystemInformation(PS_SystemProcessorPerformanceInformation, &perf2,
+                                          sizeof(perf2), NULL);
+        if (!NT_SUCCESS(status) || perf2.idle_time.QuadPart > perf1.idle_time.QuadPart)
+        {
+            break;
+        }
+    }
     ok(status == STATUS_SUCCESS, "perf again -> %08lx", (unsigned long)status);
-    ok(perf2.idle_time.QuadPart > perf1.idle_time.QuadPart, "idle time grew across a sleep");
+    ok(perf2.idle_time.QuadPart > perf1.idle_time.QuadPart,
+       "idle time never grew across 16 sleeps");
     ok(perf2.kernel_time.QuadPart >= perf1.kernel_time.QuadPart &&
            perf2.user_time.QuadPart >= perf1.user_time.QuadPart,
        "perf counters nondecreasing");
