@@ -209,12 +209,22 @@ static void probe_nodes(void)
             vsnd_report("winevsnd: \\Device\\Snd%u is held elsewhere - not enumerated\n", node);
             continue;
         }
-        if (status) continue;
-        if (!dev_ioctl(handle, IOCTL_PRSSND_INFO, NULL, 0, &info, sizeof(info)))
+        if (status)
+        {
+            /* Loud, named: a node that exists but refuses the probe for an
+             * unexpected reason must not silently shrink the endpoint list
+             * (Art. 12). */
+            vsnd_report("winevsnd: \\Device\\Snd%u probe open failed (%08x)\n", node, (UINT)status);
+            continue;
+        }
+        status = dev_ioctl(handle, IOCTL_PRSSND_INFO, NULL, 0, &info, sizeof(info));
+        if (!status)
         {
             if (info.direction == SND_D_OUTPUT && dev_node < 0) dev_node = node;
             if (info.direction == SND_D_INPUT && cap_node < 0) cap_node = node;
         }
+        else
+            vsnd_report("winevsnd: \\Device\\Snd%u INFO refused (%08x)\n", node, (UINT)status);
         NtClose(handle);
     }
     nodes_probed = TRUE;
