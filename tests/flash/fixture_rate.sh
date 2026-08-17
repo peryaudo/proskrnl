@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# fixture_rate.sh [N] [FIXTURE] [kvm|tcg] [WINEDEBUG] — run a gen_swf.py
+# fixture in the standalone Flash projector ON PROSKRNL and print each
+# trial's progress curve.
+#
+# The proskrnl half of the tests/flash differential (the oracle half is
+# oracle_fixture.sh). Each trial boots a fresh copy of the gui5con image,
+# clicks the console window, optionally sets WINEDEBUG (relay tracing needs
+# c:\relay.reg imported first — the trial does that with regedit /S whenever
+# a WINEDEBUG value is given), launches
+#   c:\SAFlashPlayer.exe c:\<FIXTURE>.swf
+# and screendumps at t=2,5,10,20,26,30s after launch. check_fixture.py maps
+# each dump to a palette index = seconds of movie progress (the fixture
+# shows one color per second for 16s and LOOPS — see gen_swf.py on why no
+# ActionStop). Verdicts, off the last two dumps (4s apart, loop period 16s,
+# so a live loop can never repeat an index across them):
+#   PLAYED      — the index is still changing at t=26..30s.
+#   FROZEN(i)   — the index pinned at i; an NMI is injected so the serial
+#                 log ends with the all-threads dump.
+#   NOSTART     — no palette color ever dominated any dump (movie never
+#                 rendered frame 1); NMI-dumped too.
+#
+# Trials run SEQUENTIALLY on purpose (freeze_rate.sh explains: parallel boots
+# load the host and bias the race). Prereqs: make gui5con-img with the
+# fixtures present (build/flash/*.swf are baked when SAFlashPlayer.exe is).
+set -uo pipefail
+N="${1:-3}"
+FIXTURE="${2:-fixture30}"
+ACCELSEL="${3:-kvm}"
+WDBG="${4:-}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+OUT="$ROOT/build/flash-fixture/$FIXTURE"
+IMG="$ROOT/build/proskrnl-gui5con.hdd"
+[ -f "$IMG" ] || { echo "build gui5con-img first"; exit 1; }
+
+run_trial() {
+    local t="$1" DIR="$OUT/t$t"
+    rm -rf "$DIR"; mkdir -p "$DIR"
+    cp "$IMG" "$DIR/img.hdd"
+    local sock log="$DIR/serial.log"
+    sock=$(mktemp -u /tmp/flashfx-XXXXXX.sock)
+    ACCEL="$ACCELSEL" QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
+        EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+        MEM=1536M TIMEOUT=1200 PASS_RE='PRSK-FLASH-NEVER' \
+        "$ROOT/tools/qemu.sh" "$DIR/img.hdd" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+    fail() {
+        echo "trial$t: ERROR ($1)"
+        qmp quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        return 1
+    }
+    await() {
+        local deadline=$((SECONDS + 300))
+        while ((SECONDS < deadline)); do
+            grep -qE "$1" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    await 'starting cmd\.exe' || { fail "cmd never started"; return; }
+    await '\[KTEST\] gui2 input READY' || { fail "no keyboard reader"; return; }
+    await '\[KTEST\] gui4 mouse READY' || { fail "no pointer reader"; return; }
+    local located="" deadline=$((SECONDS + 300))
+    while ((SECONDS < deadline)); do
+        qmp screendump "$DIR/boot.ppm" >/dev/null 2>&1 || true
+        if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
+                --log "$log" --ppm "$DIR/boot.ppm" 2>/dev/null); then break; fi
+        located=""
+        kill -0 "$qemu_wrapper" 2>/dev/null || { fail "QEMU died"; return; }
+        sleep 3
+    done
+    [ -n "$located" ] || { fail "no console window"; return; }
+    local cx cy w h maxx maxy
+    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
+    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
+    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    px() { echo $(( ($1 * maxx + w - 2) / (w - 1) )); }
+    py() { echo $(( ($1 * maxy + h - 2) / (h - 1) )); }
+    qmp absmove "$(px "$cx")" "$(py "$cy")" >/dev/null
+    sleep 1
+    qmp button left down >/dev/null && qmp button left up >/dev/null
+    sleep 2
+    if [ -n "$WDBG" ]; then
+        qmp type "regedit /S c:\\relay.reg
+" >/dev/null
+        sleep 3
+        qmp type "set WINEDEBUG=$WDBG
+" >/dev/null
+        sleep 1
+    fi
+    qmp type "c:\\SAFlashPlayer.exe c:\\$FIXTURE.swf
+" >/dev/null
+    local launched=$SECONDS curve="" idx="" last="" prev="" at2="" at10=""
+    for tp in 2 5 10 20 26 30 45 60; do
+        while ((SECONDS - launched < tp)); do sleep 1; done
+        qmp screendump "$DIR/f$tp.ppm" >/dev/null 2>&1 || true
+        idx=$(python3 "$ROOT/tests/flash/check_fixture.py" "$DIR/f$tp.ppm" \
+              2>/dev/null | sed -E 's/^idx=([0-9a-z]+).*/\1/') || idx=none
+        curve="$curve t=${tp}s:idx=$idx"
+        prev="$last"
+        last="$idx"
+        [ "$tp" = 2 ] && at2="$idx"
+        [ "$tp" = 10 ] && at10="$idx"
+        kill -0 "$qemu_wrapper" 2>/dev/null || { fail "QEMU died mid-wait"; return; }
+    done
+    # A live loop steps one index per second, so across the 45->60s gap a
+    # healthy run never repeats, and across 2->10s it must have moved.
+    # "Moved eventually but not in the early window" is a CRAWL — the
+    # deterministic ~14x-slow pacing measured on proskrnl — kept distinct
+    # from PLAYED (oracle speed) and FROZEN (pinned).
+    local verdict
+    if [ "$last" = "none" ] && [ "$prev" = "none" ]; then
+        verdict="NOSTART"
+    elif [ "$last" = "$prev" ]; then
+        verdict="FROZEN($last)"
+    elif [ "$at2" = "$at10" ]; then
+        verdict="CRAWL($last)"
+    else
+        verdict="PLAYED"
+    fi
+    if [ "$verdict" != "PLAYED" ]; then
+        python3 - "$sock" <<EOF
+import sys
+sys.path.insert(0, '$ROOT/tests/gui')
+from qmpctl import Qmp
+Qmp(sys.argv[1]).execute('inject-nmi')
+EOF
+        sleep 3
+    fi
+    echo "trial$t: $verdict --$curve (dump in $DIR/serial.log)"
+    qmp quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    rm -f "$DIR/img.hdd" "$sock"
+}
+
+played=0 froze=0 crawled=0 errs=0
+for t in $(seq 1 "$N"); do
+    verdict=$(run_trial "$t")
+    echo "$verdict"
+    case "$verdict" in
+    *PLAYED*) played=$((played + 1)) ;;
+    *CRAWL*) crawled=$((crawled + 1)) ;;
+    *FROZEN*|*NOSTART*) froze=$((froze + 1)) ;;
+    *) errs=$((errs + 1)) ;;
+    esac
+done
+echo "$FIXTURE: $played played, $crawled crawled, $froze frozen, $errs errors"
