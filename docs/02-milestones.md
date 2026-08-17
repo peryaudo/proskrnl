@@ -490,26 +490,78 @@ amendment was justified on.
 
 ## Networking path (independent of the CUI path; formerly CUI-5)
 
-## Net-1 — sockets: virtio-net + `\Device\Afd`
-The one genuinely new subsystem and the largest single item post-M10 (2–3× a CUI
-consolidation milestone) — moved off the CUI path because it is new capability, not
-consolidation, and nothing on CUI-5…CUI-7 depends on it (nor it on them). Its
-prerequisites are **CUI-1's clock and CUI-8's overlapping I/O** — the latter is not
-optional plumbing but the reason the milestone is buildable at all: an AFD
-`accept`/`recv` may never complete, so the polled-synchronous transfer model every
-device uses today deadlocks by construction (`docs/19` §4).
-virtio-net over the existing virtio-pci transport (spec-cited per constant, like
-virtio-blk); a deliberately dumb TCP/UDP stack (Article 3: correctness only, no
-performance work); the AFD ioctl surface Wine's PE ws2_32 issues via
-`NtDeviceIoControlFile`, generated into `abi/` from the pinned tree's `wine/afd.h`.
-Requires CUI-1's real clock: TLS certificate validation (`notBefore`/`notAfter`) is the
-test that finally *convicts* a fake SystemTime — a frozen 2026 base date rejects every
-newer certificate. **Scope note (record in `docs/03`):** acceptance uses an app with
-*bundled* TLS (off-the-shelf python/git/curl ship OpenSSL) — Windows-native schannel
-stays out of scope, because its protocol engine is GnuTLS behind the unixlib seam
-(null-dispatched on proskrnl), while raw bcrypt works as-is (the pinned tree vendors
-SymCrypt PE-side, `libs/symcrypt`).
-**Done when:** an off-the-shelf tool completes an HTTPS fetch over virtio-net.
+> The one genuinely new subsystem and the largest single item post-M10 (2–3× a CUI
+> consolidation milestone) — moved off the CUI path because it is new capability, not
+> consolidation. `docs/24-networking-strategy.md` is the design; the entries below
+> are the contract. Gate zero, before any code: the **lwIP admission** under
+> `docs/11`'s third-party-in-the-kernel-image conditions (the second ever, after
+> Flanterm) — its own commit carrying the submodule pin, the provenance entry, and
+> the `docs/11` amendment, argued in docs/24 §3. Prerequisites unchanged:
+> **CUI-1's clock** (the TLS conviction) and **CUI-8's overlapping I/O** — the
+> latter not optional plumbing but the reason the path is buildable at all: an AFD
+> `accept`/`recv` may never complete, so the polled-synchronous transfer model
+> deadlocks by construction (`docs/19` §4). No Article 2 amendment is needed —
+> `\Device\Afd` and `\Device\Nsi` are NT-present, and no new device or process
+> appears (contrast the audio path). References to "Net-1" in `docs/18`/`19`/`20`
+> and `kernel/io/io.h` predate this split and read as the path.
+
+## Net-1 — the wire: virtio-net + lwIP up
+`drivers/virtio/net.c` over the existing virtio-pci transport (spec-cited per
+constant, like virtio-blk; minimal negotiation — MAC only, no offloads, no
+`MRG_RXBUF`/`CTRL_VQ`); no MSI-X vector (`docs/19` §11f precedent — the tick tail's
+1 ms bound; the escape stays named); `VioNetDrain` joins `IoDrainDeviceCompletions`
+as pure harvest-store-wake. The pinned lwIP (`third_party/lwip`, `NO_SYS`
+mainloop mode — Article 3's machine, docs/24 §3c) with static pools, driven by the
+**netd** kernel thread whose park joins `tools/blocking_frontier.txt` in the same
+commit (G14); DHCP configures the interface and the lease lands in the
+`Tcpip\Parameters\Interfaces` registry values Windows uses — nothing baked. The
+harness buys slirp for the pinned QEMU (setup_linux + cache bump + netsmoke —
+today's build has none, measured) and gains the `run.sh net` leg.
+**Done when:** the leg boots, DHCP binds (`[KTEST] net dhcp` carries the address),
+an in-kernel TCP echo against the harness completes, and the `filter-dump` pcap —
+networking's screendump — shows our MAC and the exchange as content assertions,
+never timing.
+
+## Net-2 — `\Device\Afd`: the boundary Wine's ws2_32 issues
+`abi/afd.h` generated from the pinned tree's `wine/afd.h` (G4) — the 7 native +
+105 `IOCTL_AFD_WINE_*` codes and the C_ASSERT-mirrored struct layouts.
+`drivers/afd.c` publishes `\Device\Afd` (trailing-name swallow, per-open socket
+state, condrv's shape) over lwIP's raw API: pending rides the CUI-8 engine's data
+legs exactly as `kernel/io/io.h` has promised since CUI-8; `CancelPending`,
+close-cancels, thread-exit cancels, waitable socket handles from day one; the
+13-bit readiness machine serves poll (+exclusive), event-select/get-events (the
+event-as-input-pointer *sic* convention included), and the FIONBIO interlock;
+`NtReadFile`/`NtWriteFile` work on socket handles; the synchronous-handle wait is
+cancellable and frontier-declared. Semantics pinned by `tests/ntapi/sem_net/` on
+the oracle first (G5), over loopback both sides — deterministic, device-free;
+unbuilt verbs refuse loudly with the oracle-pinned unknown-code shape (G12), and
+`server/sock.c` is never read as reference — the oracle is measured from outside
+(docs/24 §1b).
+**Done when:** `sem_net` is green on both runners; `ws2_32:afd` and `ws2_32:sock`
+are in the winetest manifest under its discipline — afd active-green, red pairs
+parked with signatures — and the `[KTEST] net` line reports pended completions and
+drop/retransmit counters as numbers (docs/24 §6e: loopback-only and inline-only
+implementations both pass every semantic test, so the win is a verdict).
+
+## Net-3 — resolution + the acceptance fetch
+Name resolution never crosses the NT boundary (ws2_32's own five-entry unixlib), so
+it gets the milestone's one fork seam: a level-1-dormant `WS_CALL` leg on
+`proskrnl-target` (conhost recipe; pin bump carries the hack-meter delta) loading
+superproject `wsresolv.dll` — numeric paths, the `hosts` file, and a minimal DNS
+client over ws2_32's own UDP sockets against the servers the Net-1 lease wrote to
+the registry. `\Device\Nsi` minimal (the two table verbs `GetAdaptersAddresses`
+reads, answered from lwIP netif state; the rest refuses loudly); the
+`drivers/etc` files ride the image. **Scope note (record in `docs/03`):**
+acceptance uses an app with *bundled* TLS (off-the-shelf python/git/curl ship
+OpenSSL) — Windows-native schannel stays out of scope, because its protocol engine
+is GnuTLS behind the unixlib seam (null-dispatched on proskrnl), while raw bcrypt
+works as-is (the pinned tree vendors SymCrypt PE-side, `libs/symcrypt`). TLS
+certificate validation (`notBefore`/`notAfter`) is the test that finally *convicts*
+a fake SystemTime — a frozen base date rejects every newer certificate, which is
+why CUI-1's RTC is a hard prerequisite.
+**Done when:** an off-the-shelf tool completes an HTTPS fetch over virtio-net —
+content-hash and exit-code verdicts — with `ws2_32:protocol` triaged and the
+`docs/03` records (schannel scope, TCP urgent data, staged AF_INET6) landed.
 
 ---
 
