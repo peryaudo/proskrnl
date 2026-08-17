@@ -1,9 +1,26 @@
 # 16 — Syscall status (the boundary, measured)
 
-A snapshot of the `Nt*` surface, id counts re-derived at **CUI-9**: the buildable
-surface is **complete** — every id either has a kernel service or is missing by
-decision, not debt. The one remaining build plan on the boundary is `docs/02` Net-1
-(sockets, a new subsystem).
+A snapshot of the `Nt*` surface, id counts re-derived at **CUI-9**: every id
+either has a kernel service, is in scope and unbuilt, or is missing by decision.
+Alongside `docs/02` Net-1 (sockets, a new subsystem), the build plan on the
+boundary is the **ten in-scope ids** below.
+
+**The in/out-of-scope line was re-drawn against the oracle.** It used to be drawn
+purely on "does a baked CUI consumer reach this id" (Art. 1). That test is still
+what decides *when* an id gets built, but it is not what decides whether the id
+is buildable at all: the second, independent question is whether the pinned Wine
+tree implements the id **for real** on its unix side. Where it does, there is an
+oracle to pin against (G5) and a known-good shape to reproduce; where Wine itself
+answers with a FIXME stub — `STATUS_NOT_IMPLEMENTED`, or worse a fabricated
+`STATUS_SUCCESS` — there is nothing to measure a proskrnl implementation
+*against*, and G12 says an oracle answering `STATUS_NOT_IMPLEMENTED` is unbuilt,
+not authoritative. Re-derived on that criterion, **ten of the previous 57 are in
+scope**: Wine implements them, mostly straight through wineserver, so they are
+unbuilt work rather than permanent exclusions. The other 47 stay out of scope —
+in every one of those cases Wine is a stub too, so "out of scope" now rests on
+two independent legs instead of one. None of the ten has a baked consumer today,
+so none is urgent, and each still refuses loudly (`KI_SYSCALL_MISSING`) until it
+is built.
 
 The id tally moved by ONE after CUI-9, and how it went unnoticed is the reason
 the re-derivation recipe below says never to trust the prose: `NtQueryLicenseValue`
@@ -34,8 +51,8 @@ bump; re-run the count then.
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
 | Implemented (`KI_SYSCALL` rows) | **207** |
 | Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **57** |
-| …of the missing: permanently out of scope (below) | **57** |
-| …of the missing: to be built | **0** |
+| …of the missing: permanently out of scope (below) | **47** |
+| …of the missing: in scope, to be built (Wine implements them) | **10** |
 
 **The WOW64 milestone closed four ids**, each because a gate consumer
 depended on it and for no other reason: `NtCreateDebugObject`,
@@ -67,27 +84,91 @@ exactly the one class the baked stack issues.
 
 ## The 57 missing syscalls by area
 
-Every one is a decision, not debt. ★ = a live caller exists in the
+47 are decisions; 10 are unbuilt work. ★ = a live caller exists in the
 currently-baked CUI userland (ntdll PE side, kernelbase, kernel32, advapi32)
-— none of the remaining ids carries one on a real path.
+— none of the 57 carries one on a real path, in scope or out.
 
-### Permanently out of scope — 57
+**How to re-derive the in/out line:** for each `KI_SYSCALL_MISSING` name, find
+its unix-side definition in the pinned tree
+(`^NTSTATUS\s+WINAPI\s+<name>\s*\(` across `third_party/wine/dlls/ntdll/unix/*.c`)
+and read the body. Three outcomes, and only the first is in scope:
+
+1. **Real** — the body issues a `SERVER_START_REQ` (or genuinely delegates to an
+   id we already implement). Wine can answer, so it is an oracle.
+2. **Stub** — the body is a `FIXME(... "stub")` returning `STATUS_NOT_IMPLEMENTED`,
+   or fabricating `STATUS_SUCCESS` / a fixed status over an untouched output
+   buffer. Not an oracle either way (G12): a refusal is unbuilt, and a fabricated
+   success is the exact failure mode G12 exists to forbid — pinning against it
+   would be pinning a lie.
+3. **No entry point at all** — the name is `SYSCALL_STUB(...)` in
+   `dlls/ntdll/unix/syscall.c` (via `ALL_SYSCALL_STUBS`), which raises rather
+   than dispatching. There is no Wine implementation to read.
+
+A "semi-stub" — Wine's own FIXME wording for a body that does the real work but
+ignores one argument — counts as case 1 for the part it implements, and the
+ignored argument is named in the row.
+
+### In scope, unbuilt — 10
+
+Wine implements these for real, so each has an oracle to pin against (G5) before
+a kernel service exists. **None has a baked consumer**, so none is scheduled;
+Art. 1 still decides *when*, and until then each keeps its loud
+`KI_SYSCALL_MISSING` row (G12). What changed is only the claim this document
+makes about them: they are unbuilt, not excluded.
+
+| id | Wine unix-side implementation | note |
+|---|---|---|
+| `NtWaitForDebugEvent` | `unix/sync.c` — `wait_debug_event` server request, full `DBGUI_WAIT_STATE_CHANGE` marshalling | debug event queue |
+| `NtDebugContinue` | `unix/process.c` — `continue_debug_event` server request | debug event queue |
+| `NtSetInformationDebugObject` | `unix/sync.c` — validates the class/length, then `set_debug_obj_info` | debug event queue |
+| `NtCreateToken` | `unix/security.c` — marshals user/groups/privs/DACL into `create_token` | conflicts with CUI-2's one fixed identity; buildable, not wanted yet |
+| `NtCreateMailslotFile` | `unix/file.c` — `create_mailslot` server request | needs a mailslot device; no baked consumer |
+| `NtAllocateReserveObject` | `unix/server.c` — `allocate_reserve_object` server request | pairs with `NtQueueApcThreadEx2`'s reserve arm, itself a partial service below |
+| `NtQueueApcThreadEx` | `unix/thread.c` — unpacks the flag bits folded into the reserve handle, then calls `NtQueueApcThreadEx2` | the delegate is already implemented; this is the legacy calling form over it |
+| `NtAlpcCreatePort` | `unix/alpc.c` — validates port attributes, then `alpc_create_port` | the ONE ALPC id Wine implements; every other ALPC/LPC id is a stub, so a port that can be created and never used is of no use on its own |
+| `NtOpenKeyTransacted` | `unix/registry.c` — forwards to `NtOpenKeyTransactedEx` | semi-stub: the transaction handle is ignored |
+| `NtOpenKeyTransactedEx` | `unix/registry.c` — FIXME "semi-stub", then a real `NtOpenKeyEx` | semi-stub: the transaction handle is ignored, so the oracle's behaviour is plain `NtOpenKeyEx` |
+
+Two of these rows cross a decision recorded elsewhere, and moving the row does
+**not** overturn it — building them would need the ADR amended first, in its own
+commit:
+
+- The three debug-queue ids are ADR 0011's refused half (`docs/03` "Debug
+  objects"). ADR 0011's argument is not "Wine can't do this" — it is that a
+  queue makes every debuggee thread block until a debugger answers, i.e. a
+  second stop/continue authority beside the dispatcher (Art. 11), for a
+  consumer that does not exist. That argument is untouched by this
+  re-derivation. What this table corrects is the *reason* the ids were filed
+  under: they were listed as if unimplementable, when in fact they are
+  implemented upstream and refused here by design.
+- `NtCreateToken` mints an identity, and CUI-2 fixed proskrnl on exactly one.
+  Wine implements it, so it is buildable; it is not wanted until something asks.
+
+### Permanently out of scope — 47
 
 Never implemented, and that is correct under Art. 1 (boundary only — no baked
-consumer) and G12 (they refuse loudly forever, they don't fake success):
+consumer) and G12 (they refuse loudly forever, they don't fake success). **Every
+one of the 47 is also a stub in the pinned Wine tree** — no oracle to pin
+against, so the exclusion rests on two independent legs. The `wine` column
+records which stub shape (case 2 or case 3 above), because the two fail
+differently: a `STATUS_NOT_IMPLEMENTED` stub is honest, while a fabricating one
+would silently pass a test written against it.
 
-| group | count | ids | why |
-|---|---|---|---|
-| LPC + ALPC | 20 | `NtAcceptConnectPort` `NtCompleteConnectPort` `NtConnectPort` `NtSecureConnectPort` `NtListenPort` `NtCreatePort` `NtImpersonateClientOfPort` `NtReplyPort` `NtReplyWaitReceivePort` `NtReplyWaitReceivePortEx` `NtRequestWaitReplyPort` `NtReadRequestData` `NtWriteRequestData` `NtRegisterThreadTerminatePort` `NtAlpcCreatePort` `NtAlpcConnectPort` `NtAlpcAcceptConnectPort` `NtAlpcDisconnectPort` `NtAlpcSendWaitReceivePort` `NtAlpcImpersonateClientOfPort` | Wine's local RPC is named pipes over M9's npfs, never ALPC (`docs/03` "CUI-3 SCM notes") |
-| Debug objects — the EVENT QUEUE half | 3 | `NtDebugContinue` `NtWaitForDebugEvent` `NtSetInformationDebugObject` | ADR 0011 as amended at WOW64: attach is built (the other three ids, below the line), the queue is not. A queue is a scheduling contract — every debuggee thread blocking until a debugger answers — i.e. a second stop/continue authority beside the dispatcher (Art. 11), for a consumer that does not exist. Native Windows debuggers also expect PDB symbol flow where proskrnl's toolchain is DWARF end-to-end (`docs/03` "Debug objects") |
-| KTM + transacted registry | 6 | `NtCreateTransaction` `NtCommitTransaction` `NtRollbackTransaction` `NtCreateKeyTransacted` `NtOpenKeyTransacted` `NtOpenKeyTransactedEx` | ktmw32 is not baked; no CUI consumer |
-| Driver / platform machinery | 4 | `NtLoadDriver` `NtUnloadDriver` `NtCreatePagingFile` `NtMapUserPhysicalPagesScatter` | no Windows driver ABI, no paging (Art. 3), no AWE. `NtSetLdtEntries` LEFT this row at WOW64: `ntdll:wow64` sets two descriptors and reads them back, so the LDT is built (`kernel/ps/ldt.c`) |
-| Audit + token minting | 6 | `NtAccessCheckAndAuditAlarm` `NtAccessCheckByTypeAndAuditAlarm` `NtCloseObjectAuditAlarm` `NtCreateToken` `NtCreateLowBoxToken` `NtCompareTokens` | one fixed identity (CUI-2), no audit subsystem, no AppContainer |
-| Superseded / legacy forms | 6 | `NtCreateProcessEx` `NtCreateThread` `NtWaitForMultipleObjects32` `NtWorkerFactoryWorkerReady` `NtAllocateReserveObject` `NtQueueApcThreadEx` | Wine uses `NtCreateUserProcess`/`NtCreateThreadEx`/`NtQueueApcThreadEx2`; thread pool is user-mode in Wine |
-| No consumer in the baked stack | 12 | `NtTraceEvent` `NtTraceControl` `NtSetIntervalProfile` `NtSystemDebugControl` `NtSetDebugFilterState` `NtQuerySystemEnvironmentValue` `NtQuerySystemEnvironmentValueEx` `NtApphelpCacheControl` `NtInitiatePowerAction` `NtCreateMailslotFile` `NtAllocateUuids` `NtRaiseHardError` | ETW, profiling, kernel-debug control, UEFI variables, apphelp, slc, powrprof, mailslots — none reachable from a baked CUI binary's real path |
+| group | count | ids | why | wine |
+|---|---|---|---|---|
+| LPC + ALPC | 19 | `NtAcceptConnectPort` `NtCompleteConnectPort` `NtConnectPort` `NtSecureConnectPort` `NtListenPort` `NtCreatePort` `NtImpersonateClientOfPort` `NtReplyPort` `NtReplyWaitReceivePort` `NtReplyWaitReceivePortEx` `NtRequestWaitReplyPort` `NtReadRequestData` `NtWriteRequestData` `NtRegisterThreadTerminatePort` `NtAlpcConnectPort` `NtAlpcAcceptConnectPort` `NtAlpcDisconnectPort` `NtAlpcSendWaitReceivePort` `NtAlpcImpersonateClientOfPort` | Wine's local RPC is named pipes over M9's npfs, never ALPC (`docs/03` "CUI-3 SCM notes") | all 19 are FIXME stubs returning `STATUS_NOT_IMPLEMENTED` (`unix/sync.c`, `unix/alpc.c`). `NtAlpcCreatePort` LEFT this row — Wine implements it, so it moved above |
+| KTM + transacted registry | 4 | `NtCreateTransaction` `NtCommitTransaction` `NtRollbackTransaction` `NtCreateKeyTransacted` | ktmw32 is not baked; no CUI consumer | `NtCreateKeyTransacted` refuses; the other three **fabricate** (`unix/sync.c`: success plus a hardwired handle value `1`, success, and a bare `STATUS_ACCESS_VIOLATION`). The transacted *open* pair left this row — semi-stubs that do real work, above |
+| Driver / platform machinery | 4 | `NtLoadDriver` `NtUnloadDriver` `NtCreatePagingFile` `NtMapUserPhysicalPagesScatter` | no Windows driver ABI, no paging (Art. 3), no AWE. `NtSetLdtEntries` LEFT this row at WOW64: `ntdll:wow64` sets two descriptors and reads them back, so the LDT is built (`kernel/ps/ldt.c`) | the two driver ids refuse (`unix/system.c`); `NtCreatePagingFile` fabricates success (`unix/virtual.c`); `NtMapUserPhysicalPagesScatter` has no entry point (`SYSCALL_STUB`) |
+| Audit + token minting | 5 | `NtAccessCheckAndAuditAlarm` `NtAccessCheckByTypeAndAuditAlarm` `NtCloseObjectAuditAlarm` `NtCreateLowBoxToken` `NtCompareTokens` | one fixed identity (CUI-2), no audit subsystem, no AppContainer | the alarms and `NtCompareTokens` refuse (`unix/security.c`, `unix/server.c`); `NtCreateLowBoxToken` fabricates success over a NULL handle. `NtCreateToken` LEFT this row — Wine implements it, above |
+| Superseded / legacy forms | 4 | `NtCreateProcessEx` `NtCreateThread` `NtWaitForMultipleObjects32` `NtWorkerFactoryWorkerReady` | Wine uses `NtCreateUserProcess`/`NtCreateThreadEx`/`NtQueueApcThreadEx2`; thread pool is user-mode in Wine | `NtCreateProcessEx` and `NtWaitForMultipleObjects32` have no entry point (`SYSCALL_STUB`); the other two refuse (`unix/thread.c`). `NtAllocateReserveObject` and `NtQueueApcThreadEx` LEFT this row — both implemented upstream, above |
+| No consumer in the baked stack | 11 | `NtTraceEvent` `NtTraceControl` `NtSetIntervalProfile` `NtSystemDebugControl` `NtSetDebugFilterState` `NtQuerySystemEnvironmentValue` `NtQuerySystemEnvironmentValueEx` `NtApphelpCacheControl` `NtInitiatePowerAction` `NtAllocateUuids` `NtRaiseHardError` | ETW, profiling, kernel-debug control, UEFI variables, apphelp, slc, powrprof — none reachable from a baked CUI binary's real path | `NtTraceEvent` and `NtApphelpCacheControl` have no entry point (`SYSCALL_STUB`); the environment pair, `NtInitiatePowerAction` and `NtRaiseHardError` refuse; `NtTraceControl`, `NtSetIntervalProfile`, `NtSetDebugFilterState` fabricate success, `NtAllocateUuids` fabricates it over four untouched output buffers, and `NtSystemDebugControl` answers a fixed `STATUS_DEBUGGER_INACTIVE`. `NtCreateMailslotFile` LEFT this row — Wine implements it, above |
 
-An id in this table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out of
-scope" means we never *implement* it, not that it ever fakes success.
+An id in either table still gets its loud `KI_SYSCALL_MISSING` row (G12) — "out
+of scope" means we never *implement* it, and "in scope" means not yet; neither
+ever fakes success. The `wine` column is also a standing reminder of why the
+oracle leg matters: ten of the 47 answer a *fabricated* status — eight of them a
+fabricated `STATUS_SUCCESS` — so a `tests/ntapi/` case written against Wine for
+one of those would go green against nothing at all.
 
 ## Partial services (implemented ids that refuse the case real apps ask for)
 
