@@ -1522,6 +1522,43 @@ SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll $(WINE_INF_SHELL)
 # the ^C acceptance's interruptible program (the CUI-4 actor, now
 # interrupted through the window's own keyboard path instead of the serial
 # hack).
+#
+# LOCAL (uncommitted): the standalone Flash projector + a movie ride along in
+# the image ROOT, so `make rungui` can launch C:\SAFlashPlayer.exe. The
+# sources are untracked files in the repo root; each is dropped from the
+# image when absent, so the target still builds on a clean tree.
+#
+# The projector is a PE32 (COFF machine 0x14c), so it runs ONLY through the
+# WOW64 shelf above — which is why this rides on the wow64-enabled gui5con
+# image and not on GUI-2's. Its import table names 13 DLLs; the 32-bit
+# mirror ($(WOW64_GUI_NAMES)) already stages nine, and the four it adds
+# (crypt32, wininet, winmm, wsock32) pull the closure below. Staged under
+# the same $(FLASHPRESENT) guard as the sources, so a tree without them
+# builds the tracked image unchanged.
+FLASHSRC := SAFlashPlayer.exe troubled_windows.swf
+FLASHPRESENT := $(wildcard $(FLASHSRC))
+FLASH_DLL_NAMES := crypt32 wininet winmm wsock32 \
+                   bcrypt ncrypt msacm32 iphlpapi dnsapi nsi
+FLASHFILES := $(foreach f,$(FLASHPRESENT),win:$(f)=$(f))
+# Stripped by the mingw cross's own objcopy, not $(OBJCOPY): llvm-objcopy
+# (checked at 22.1.8) refuses the pinned tree's bcrypt.dll — "invalid
+# SymbolTableIndex" — on BOTH arches, alone among all 620 i386 dlls. GNU
+# objcopy strips the same file to a sound image (62 exports, reloc directory
+# unchanged), so the divergence is llvm's. Confined to this local block; the
+# tracked $(WINESTRIP32_RULE) keeps $(OBJCOPY), and if bcrypt ever joins the
+# tracked shelf this is the thing that will bite it.
+FLASH_OBJCOPY := $(MINGW32:%-gcc=%-objcopy)
+define FLASH_STRIP32_RULE
+$(WINESTRIP32)/$(1).dll: $(WINE_PE)/$(1)/i386-windows/$(1).dll
+	@mkdir -p $$(dir $$@)
+	$$(FLASH_OBJCOPY) --strip-debug $$< $$@
+endef
+ifneq ($(FLASHPRESENT),)
+FLASH_DLLS := $(foreach d,$(FLASH_DLL_NAMES),$(WINESTRIP32)/$(d).dll)
+$(foreach d,$(FLASH_DLL_NAMES),$(eval $(call FLASH_STRIP32_RULE,$(d))))
+FLASHFILES += $(foreach d,$(FLASH_DLL_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll)
+endif
+
 GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
              $(FONTFILES) \
@@ -1531,7 +1568,8 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(LOOPER)=looper.exe \
              $(APPLETFILES) \
              $(SHELLFILES) \
-             $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES)
+             $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) \
+             $(FLASHFILES)
 
 # 128 MiB rather than the default 64: this is the one image carrying both
 # bitnesses of the whole shelf, and the 32-bit half does not fit in what the
@@ -1547,7 +1585,7 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
+        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS)
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
 
 gui5con-img: $(IMG_GUI5CON)
