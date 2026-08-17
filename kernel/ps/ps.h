@@ -185,8 +185,10 @@ typedef struct EPROCESS
     /* The process's own I/O tally, reported verbatim by
      * ProcessIoCounters and by SystemProcessInformation's IoCounters
      * (one field, both readers — Art. 11). Charged by PsChargeIoCounters
-     * from the two places an I/O request can END: the inline completion
-     * tail and the pending one (kernel/io/rw.c, kernel/io/async.c). NT
+     * from every site a charged request can END — kernel/io/rw.c's inline
+     * tail and its two scatter/gather completions, kernel/io/async.c's
+     * pended tail — all of them filtered by the one predicate
+     * IopChargesIoCounters (kernel/io/io.h). NT
      * counts real work here, so proskrnl does too — a hardwired zero is
      * the fabricated answer G12 forbids, and taskmgr's per-process I/O
      * columns are the consumer that reads it. */

@@ -66,8 +66,12 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
     NTSTATUS final = IopCompleteRequest(iosb, event, status, information);
     /* The issuer's IO_COUNTERS, charged where the operation ENDS rather
      * than where it started: only here is the byte count known. An inline
-     * completion runs on the issuing thread, so the process is this one. */
-    PsChargeIoCounters(KeGetCurrentThread()->process, charge, (uint64_t)information);
+     * completion runs on the issuing thread, so the process is this one.
+     * The predicate is io.h's, shared with the pended tail. */
+    if (IopChargesIoCounters(status))
+    {
+        PsChargeIoCounters(KeGetCurrentThread()->process, charge, (uint64_t)information);
+    }
     /* An inline completion deliberately does NOT re-signal the FILE OBJECT,
      * and that is a collision rather than an omission. NT counts no
      * outstanding requests: ANY completion on the handle puts it back up, so
@@ -988,7 +992,10 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
             }
         }
         status = IopCompleteRequest(iosb, event, STATUS_SUCCESS, length);
-        PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeWrite, length);
+        if (IopChargesIoCounters(STATUS_SUCCESS))
+        {
+            PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeWrite, length);
+        }
         goto out; /* gather returns the final status (oracle shape) */
     }
 
@@ -1027,8 +1034,13 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     }
     IopCompleteRequest(iosb, event, finalStatus, (ULONG_PTR)total);
     /* One operation whatever the segment count — a scatter/gather IS one
-     * request, and the segments are its buffer list (kernel/ps/ps.h). */
-    PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeRead, total);
+     * request, and the segments are its buffer list (kernel/ps/ps.h). A
+     * scatter that found only EOF still charges one read of zero bytes,
+     * which is what IopChargesIoCounters says everywhere else. */
+    if (IopChargesIoCounters(finalStatus))
+    {
+        PsChargeIoCounters(KeGetCurrentThread()->process, PsIoChargeRead, total);
+    }
     status = STATUS_PENDING; /* scatter always answers PENDING (oracle shape) */
 
 out:
