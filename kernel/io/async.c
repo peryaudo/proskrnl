@@ -68,8 +68,16 @@ void IopMarkRequestOutstanding(PFILE_OBJECT file)
     }
 }
 
-void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, HANDLE eventHandle,
-                             IOP_BLOCKING_CLEAR when)
+BOOLEAN IopPortApcConflict(PFILE_OBJECT file, PIO_APC_ROUTINE apcRoutine)
+{
+    /* The rule and its citation are in io.h — one statement, applied at each
+     * service's own issue point. */
+    return file != 0 && file->completionPort != 0 && apcRoutine != 0;
+}
+
+NTSTATUS IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file,
+                                 HANDLE eventHandle, PIO_APC_ROUTINE apcRoutine,
+                                 IOP_BLOCKING_CLEAR when)
 {
     request->file = file;
     request->eventHandle = eventHandle;
@@ -80,6 +88,13 @@ void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, H
      * by either half, so the value is unused there rather than wrong. */
     request->handleWasSignalled = file != 0 && KeReadStateEvent(&file->header) != 0;
     IopResetRequestEvent(eventHandle);
+    /* create_async's last statement, in create_async's place: the event above
+     * is already down and the handle below has not been touched, which is
+     * exactly what the oracle leaves behind (io.h IopPortApcConflict). */
+    if (IopPortApcConflict(file, apcRoutine))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
     if (request->clearedAtIssue)
     {
         IopMarkRequestOutstanding(file);
@@ -93,6 +108,7 @@ void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, H
          * for the arm that pends instead. */
         KeGetCurrentThread()->syncIoParkFile = file;
     }
+    return STATUS_SUCCESS;
 }
 
 void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME outcome)

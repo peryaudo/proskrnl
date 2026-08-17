@@ -146,7 +146,31 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
      * is the only sample that can tell "reset at issue" from "reset on the
      * way out". */
     IOP_BLOCKING_REQUEST blocking;
-    IopBeginBlockingRequest(&blocking, file, event, IopClearAtPark);
+    status = IopBeginBlockingRequest(&blocking, file, event, apc, IopClearAtPark);
+    if (!NT_SUCCESS(status))
+    {
+        /* A port-bound handle carrying an ApcRoutine (io.h
+         * IopPortApcConflict). The refusal is made where the request is
+         * CREATED, so it precedes every verb — an FSCTL_PIPE_PEEK that would
+         * have been answered inline and never queued is refused just the
+         * same. Nothing was issued: the event is down from the reset above,
+         * the handle was never cleared (IopClearAtPark), the IOSB is
+         * untouched and the completion routine must not run. */
+        if (inBounce != 0)
+        {
+            MiFreePool(inBounce);
+        }
+        if (outBounce != 0)
+        {
+            MiFreePool(outBounce);
+        }
+        if (apcBlock != 0)
+        {
+            MiFreePool(apcBlock);
+        }
+        ObDereferenceObject(file);
+        return status;
+    }
     IopEnterSyncIo(file, iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
                                               outputLength, &information, &request);

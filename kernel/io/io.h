@@ -673,8 +673,60 @@ typedef struct IOP_BLOCKING_REQUEST
     BOOLEAN clearedAtIssue;
 } IOP_BLOCKING_REQUEST;
 
-void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *file,
-                             HANDLE eventHandle, IOP_BLOCKING_CLEAR when);
+/* create_async's LAST statement, and the one refusal the whole async surface
+ * makes about its own arguments (third_party/wine server/async.c):
+ *
+ *     if (event) reset_event( event );
+ *
+ *     if (async->completion && data->apc)
+ *     {
+ *         release_object( async );
+ *         set_error( STATUS_INVALID_PARAMETER );
+ *         return NULL;
+ *     }
+ *
+ * — a completion PORT and a completion APC ROUTINE are alternatives, and
+ * asking for both is malformed rather than "post one and run the other".
+ * `async->completion` is `fd_get_completion( fd, ... )`, i.e. the port bound
+ * to the handle; `data->apc` is the ROUTINE, never the context — an
+ * ApcContext with no routine IS the packet's value and every overlapped Win32
+ * caller passes one.
+ *
+ * Where it sits is as measurable as what it answers, and both halves are
+ * pinned by tests/ntapi/sem_port/port_apc.c:
+ *
+ *   - the caller's EVENT is already RESET when the refusal is made, because
+ *     the reset is the statement above the guard. Callers must therefore ask
+ *     this question at their own issue point — after IopBeginBlockingRequest
+ *     has reset the event, or after the watch arm has cleared its own — not
+ *     on the way in;
+ *   - the FILE OBJECT is NOT cleared, because the clear belongs to
+ *     `queue_async` and the refusal returns above it. proskrnl merges the two
+ *     into IopBeginBlockingRequest, which is why the refusal is made INSIDE
+ *     that function, between its two halves;
+ *   - and the request is never issued: no IOSB write, no packet, no APC.
+ *
+ * Its REACH is the requests the server queues, not the syscall's arguments. A
+ * regular DISK file's transfer never reaches wineserver at all
+ * (dlls/ntdll/unix/file.c NtReadFile pread()s it locally), so the same
+ * combination is admitted there and ntdll resolves it the other way instead,
+ * with `cvalue = apc ? 0 : (ULONG_PTR)apc_user` — the APC runs and no packet
+ * is posted, which IopPostRequestPacket already implements (kernel/io/rw.c).
+ * So this refusal belongs to the DEVICE branch and to the watch arm, and
+ * hoisting it into NtReadFile would refuse a disk read the oracle serves.
+ *
+ * ntdll:pipe's test_async_cancel_on_handle_close (pipe.c:3094) is the
+ * winetest consumer. */
+BOOLEAN IopPortApcConflict(struct FILE_OBJECT *file, PIO_APC_ROUTINE apcRoutine);
+
+/* Answers STATUS_INVALID_PARAMETER for IopPortApcConflict above — with the
+ * event reset and nothing else done, so a refused caller unwinds its own
+ * allocations and needs no IopEndBlockingRequest. `apcRoutine` is the
+ * caller's own argument; the services with no such parameter (the flush)
+ * pass 0 and cannot be refused. */
+NTSTATUS IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *file,
+                                 HANDLE eventHandle, PIO_APC_ROUTINE apcRoutine,
+                                 IOP_BLOCKING_CLEAR when);
 
 /* How a blocking request ended, which is what decides the signal. The three
  * arms are the pinned oracle's, measured rather than reasoned about:
