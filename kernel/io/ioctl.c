@@ -115,16 +115,38 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
      * by the designated initializer above; an ioctl carries no data leg (its
      * output travels in outBounce) and `pended` is the engine's answer. */
     ULONG_PTR information = 0;
-    IopEnterSyncIo(iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
+    /* The caller's event goes DOWN before the verb runs, not at completion:
+     * the oracle resets it in create_async (server/async.c), a frame above
+     * the queue, so a caller that pre-signalled it sees it clear for the
+     * whole request. Measured from a worker thread while a listen was parked
+     * (sem_pipe/alertable_park.c case 2), which is the only sample that can
+     * tell "reset at issue" from "reset on the way out". Through the one
+     * authority for the request event (kernel/io/file.c), the same call
+     * IopAbandonRequest and IopBeginBlockingRequest make.
+     *
+     * The other half of the oracle's issue — clearing the FILE OBJECT, which
+     * rw.c's transfers do through IopBeginBlockingRequest — is NOT done here,
+     * and that is a KNOWN GAP rather than a scoping judgement: ntdll:pipe's
+     * test_cancelsynchronousio spins `while (WaitForSingleObject(ctx.pipe, 0)
+     * == WAIT_OBJECT_0) Sleep(1)` (dlls/ntdll/tests/pipe.c:747) waiting for a
+     * blocking LISTEN to take the handle down, and hangs on that loop today.
+     * It is the pair's next item (docs/21 W11) and wants its own pin, because
+     * the pended and refused arms of this service have to answer for the
+     * handle too and only a case can say what each owes. */
+    IopResetRequestEvent(event);
+    IopEnterSyncIo(file, iosb); /* CUI-5: a blocking verb (FSCTL_PIPE_WAIT) is cancellable */
     status = file->device->ops->DeviceControl(file, code, inBounce, inputLength, outBounce,
                                               outputLength, &information, &request);
     IopLeaveSyncIo();
+    /* A user APC broke an alertable park (io.h IoSyncIoAlerted): the verb
+     * completed nothing, so nothing below it may run. */
+    BOOLEAN alerted = IoSyncIoAlerted();
     /* IOSB Information is not always an output-payload count (a console
      * WRITE_FILE reports bytes CONSUMED); copy back only what the output
      * buffer can hold. */
     ULONG copyOut = information > outputLength ? outputLength : (ULONG)information;
-    if ((NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) && status != STATUS_PENDING &&
-        copyOut != 0)
+    if (!alerted && (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW) &&
+        status != STATUS_PENDING && copyOut != 0)
     {
         memcpy(output, outBounce, copyOut); /* probed above */
     }
@@ -135,6 +157,22 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     if (outBounce != 0)
     {
         MiFreePool(outBounce);
+    }
+    if (alerted)
+    {
+        /* Neither completed nor pended: the caller's IOSB keeps whatever it
+         * held, the event stays as the reset above left it, and the
+         * completion routine must NOT run — the same "no IOSB write, no APC"
+         * invariant the refusal arm below states, reached for a different
+         * reason. The status is the wait's own, returned unchanged.
+         *
+         * A device that PENDED cannot also have parked this thread, so the
+         * two branches are exclusive; the assert convicts the day one is. */
+        ASSERT(!request.pended);
+        ASSERT(status == STATUS_USER_APC || status == STATUS_ALERTED);
+        IopQueueCompletionApc(0, apcBlock);
+        ObDereferenceObject(file);
+        return status;
     }
     if (request.pended)
     {

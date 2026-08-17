@@ -298,10 +298,28 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
          * same two things again for the pended case and is idempotent. */
         IOP_BLOCKING_REQUEST blocking;
         IopBeginBlockingRequest(&blocking, file, event);
-        IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
+        IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
         BOOLEAN parked = IoSyncIoParked();
+        BOOLEAN alerted = IoSyncIoAlerted();
+        if (alerted)
+        {
+            /* A user APC broke the ALERTABLE park a FILE_SYNCHRONOUS_IO_ALERT
+             * handle asks for (io.h IoSyncIoAlerted): the read completed
+             * nothing, so no bytes are placed, no IOSB is written, the
+             * completion routine does not fire, and the event and the handle
+             * stay exactly as the issue left them. `abandon` is the existing
+             * no-IOSB-write tail and does not touch the caller's event.
+             * Pinned by sem_pipe/alertable_park.c case 4. */
+            ASSERT(!request.pended);
+            if (bounce != 0)
+            {
+                MiFreePool(bounce);
+            }
+            IopEndBlockingRequest(&blocking, IopRequestInterrupted);
+            goto abandon;
+        }
         if (request.pended)
         {
             /* The request owns the bounce and the APC block now, and it will
@@ -398,9 +416,17 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
      * STATUS_CANCELLED from GetCache with the IOSB untouched — the same
      * shape as npfs's cancelled reads (pinned sem_pipe/cancel_sync.c;
      * sem_file/cancel_data_io.c holds the race-tolerant boundary). */
-    IopEnterSyncIo(iosb);
+    IopEnterSyncIo(file, iosb);
     status = file->device->ops->GetCache(file, &cache);
     IopLeaveSyncIo();
+    /* The DATA path's ladder tests NT_SUCCESS, and STATUS_USER_APC is an
+     * NT_SUCCESS value — so if a cache park ever became alertable this would
+     * fall through with `cache` uninitialised. Nothing here can alert today
+     * (only npfs reaches IoWaitCancellable, and fat32's fill does not), which
+     * is exactly why the assert is here rather than a branch: it convicts the
+     * day that changes instead of letting the ladder read one status as two
+     * things (io.h IoSyncIoAlerted). */
+    ASSERT(!IoSyncIoAlerted());
     if (!NT_SUCCESS(status))
     {
         goto abandon;
@@ -542,7 +568,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         /* The read path's reasoning, in the direction that blocks on quota. */
         IOP_BLOCKING_REQUEST blocking;
         IopBeginBlockingRequest(&blocking, file, event);
-        IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
+        IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Write(file, bounce, length, &transferred);
         IopLeaveSyncIo();
         BOOLEAN parked = IoSyncIoParked();
@@ -550,6 +576,16 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         if (bounce != 0)
         {
             MiFreePool(bounce);
+        }
+        if (IoSyncIoAlerted())
+        {
+            /* The read branch's rule, one direction over (io.h
+             * IoSyncIoAlerted). `eventSettled` above is what keeps `abandon`
+             * from resetting an event this arm is required to leave alone —
+             * it is already down from the issue, and the write path's tail
+             * would otherwise be the one place the two directions disagreed. */
+            IopEndBlockingRequest(&blocking, IopRequestInterrupted);
+            goto abandon;
         }
         if (NT_SUCCESS(status))
         {
@@ -603,8 +639,16 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
      * IOSB untouched, the cancel_data_io.c boundary). The cache write and
      * its writeback are one durability unit: once the cache is modified
      * the operation is too late to cancel (fs/fat32 FatWritebackRange). */
-    IopEnterSyncIo(iosb);
+    IopEnterSyncIo(file, iosb);
     status = file->device->ops->GetCache(file, &cache);
+    /* The DATA path's ladder tests NT_SUCCESS, and STATUS_USER_APC is an
+     * NT_SUCCESS value — so if a cache park ever became alertable this would
+     * fall through with `cache` uninitialised. Nothing here can alert today
+     * (only npfs reaches IoWaitCancellable, and fat32's fill does not), which
+     * is exactly why the assert is here rather than a branch: it convicts the
+     * day that changes instead of letting the ladder read one status as two
+     * things (io.h IoSyncIoAlerted). */
+    ASSERT(!IoSyncIoAlerted());
     if (!NT_SUCCESS(status))
     {
         goto abandonSyncIo;
@@ -770,7 +814,17 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
              * test_blocking samples it at pipe.c:1753. */
             IOP_BLOCKING_REQUEST blocking;
             IopBeginBlockingRequest(&blocking, file, 0);
-            IopEnterSyncIo(iosb);
+            /* NO file, deliberately: the alertable park is the HANDLE's rule
+             * everywhere except here, and a flush is the one service the
+             * oracle exempts — NtFlushBuffersFileEx passes a literal FALSE to
+             * wait_async (dlls/ntdll/unix/file.c:6876) where the read, write
+             * and ioctl paths all pass `options & FILE_SYNCHRONOUS_IO_ALERT`.
+             * So a flush on a FILE_SYNCHRONOUS_IO_ALERT handle blocks through
+             * a queued user APC, and passing `file` here would make it the
+             * only place proskrnl alerted where the oracle does not. Stated at
+             * the service that owns the exception rather than as a rule about
+             * the layer (docs/21 W4d). */
+            IopEnterSyncIo(0, iosb);
             status = file->device->ops->Flush(file);
             IopLeaveSyncIo();
             IopEndBlockingRequest(&blocking, NT_SUCCESS(status) ? IopRequestCompleted

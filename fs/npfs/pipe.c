@@ -637,7 +637,20 @@ static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, U
             status = NpfsWait(&queue->spaceEvent);
             if (status != STATUS_SUCCESS)
             {
-                return status; /* CUI-4: foreign terminate breaks the write park */
+                /* CUI-4: a foreign terminate breaks the write park. So does a
+                 * cancel, and — since the ALERT park landed — a user APC.
+                 *
+                 * KNOWN AND UNPINNED: `written` bytes are already in the
+                 * peer's queue and this exit reports none of them, because
+                 * the Io layer writes no IOSB for a request that was
+                 * cancelled or interrupted. A caller that retries duplicates
+                 * them. The shape pre-dates the alertable park (the cancel
+                 * path has always had it) and the APC only made it reachable
+                 * without a canceller; recorded in docs/03 rather than fixed
+                 * here, because what NT reports for a partially-committed
+                 * interrupted stream write has not been measured on either
+                 * runner and guessing it is Art. 12's fabricated answer. */
+                return status;
             }
             continue;
         }
