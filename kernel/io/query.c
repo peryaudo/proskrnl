@@ -303,6 +303,60 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         return STATUS_SUCCESS;
     }
 
+    /* FileStandardInformation is a UNIVERSAL class whose PIPE END arm carries
+     * the same FILE_READ_ATTRIBUTES demand the two pipe classes do (wine
+     * server/named_pipe.c pipe_end_get_file_info, the arm's first guard) —
+     * and no other backend demands anything for it, because on the oracle
+     * every other backend answers it out of an fstat in ntdll with no server
+     * call at all.
+     *
+     * So it cannot be the class's required access at the one reference above:
+     * WHICH DEVICE this is is not knowable before the file object is
+     * resolved. What it IS is a question about the caller's HANDLE, so it is
+     * asked the way NpfsSetPipeInfo already asks its own — by resolving that
+     * handle a second time with the bit, which puts the decision at Ob's one
+     * check site (G10) rather than open-coding a mask test on the entry word
+     * this function already holds, and makes the answer Ob's own
+     * STATUS_ACCESS_DENIED. (The word IS the right one either way —
+     * handleInformation.GrantedAccess is `get_handle_access( process, handle
+     * )`, as the FileAccessInformation arm above says; what a second
+     * reference buys is that access is decided in one place and not two.)
+     *
+     * The demand is a PIPE END's, not the pipe device's, and the two are
+     * separable: the `\Device\NamedPipe` root opens on the same device ops,
+     * and the oracle's root is a named_pipe_device_file whose fd ops are
+     * default_fd_get_file_info (server/fd.c) — no access guard at all, so a
+     * root handle with no FILE_READ_ATTRIBUTES must answer whatever an
+     * entitled one answers. `isDirectory` is the Io layer's own statement of
+     * that split, set by the root arm of NpfsVfsCreate and already
+     * load-bearing for it in kernel/io/rw.c (which keeps NtRead/WriteFile off
+     * the root by the same test).
+     *
+     * It sits HERE, above the device query, because the oracle's guard sits
+     * above that arm's `if (!pipe)` — an orphaned end with an unentitled
+     * handle reports the ACCESS failure, not the disconnect. Pinned by
+     * sem_pipe/pipe_file_info.c, root handle included. */
+    if (informationClass == FileStandardInformation && file->device->ops->QueryPipeInfo != 0 &&
+        !file->isDirectory)
+    {
+        PFILE_OBJECT entitled;
+        NTSTATUS entitlement = IopReferenceFileByHandle(handle, FILE_READ_ATTRIBUTES, &entitled, 0);
+        if (!NT_SUCCESS(entitlement))
+        {
+            ObDereferenceObject(file);
+            return entitlement;
+        }
+        /* A CLOSE racing this window makes the reference FAIL, which the arm
+         * above returns rather than asserting (the rule kernel/io/file.c's
+         * transient-handle comment states). What is asserted is the identity:
+         * a successful second resolution of the same handle value naming a
+         * DIFFERENT file object would mean the access was checked against
+         * something other than the object queried. Same shape and same
+         * assertion as NpfsSetPipeInfo's own double lookup. */
+        ASSERT(entitled == file);
+        ObDereferenceObject(entitled);
+    }
+
     /* M9: the pipe classes route to the pipe FS before any GetInfo — a
      * non-pipe file has no pipe view at all. */
     if (informationClass == FilePipeInformation || informationClass == FilePipeLocalInformation)

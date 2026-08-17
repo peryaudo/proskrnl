@@ -3014,6 +3014,81 @@ was already measured was the refusal, and the pin that measured it
 all of this — the suppression is tested inside the one transition every producer goes
 through (`IopFileSignalSuppressed`).
 
+## A pipe end's own file information, and the orphan's refusal
+
+`NtQueryInformationFile(FileStandardInformation)` on a named-pipe end reports the pipe's
+capacity and this end's readable bytes, not zeros. The oracle answers the class from
+`server/named_pipe.c` `pipe_end_get_file_info` — a pipe end has no unix fd (the server
+hands it an `alloc_pseudo_fd`), so `server_get_unix_fd` says `STATUS_BAD_DEVICE_TYPE` and
+ntdll routes the WHOLE class to the server rather than to its own `fstat`. Pinned by
+`tests/ntapi/sem_pipe/pipe_file_info.c`; it takes `ntdll:pipe` from **123** failed
+assertions to **99**.
+
+**The two numbers answer different questions, and the winetest asks in the one state
+where that shows.** `AllocationSize` is `pipe->outsize + pipe->insize` — the pipe's pair
+of quotas, the same at both ends and *unmoved by traffic* — while `EndOfFile` is
+`pipe_end_get_avail( pipe_end )`, what THIS end can read right now, so the two ends of one
+pipe disagree about it the moment either writes. An implementation that reports "how much
+is buffered" for the first passes an empty pipe and fails `pipe.c:2160` in every state
+that has data. Both come out of `NpfsGetInfo` through the raw `IO_FILE_INFO` shape
+`IopFillStandard` already reads, so the class stays one fill for every backend; the
+available-bytes quantity is reached through `NpfsIncomingQueue`, the same helper
+`FilePipeLocalInformation`'s `ReadDataAvailable` uses (Art. 11).
+
+**`DeletePending` is 0 and `NumberOfLinks` is 1.** Both carry a `/* FIXME */` in the
+oracle and NT is documented to report a pipe's delete as pending (the winetest wraps that
+assertion in `todo_wine`), but the oracle is the spec here (Art. 6) and 0 is what it
+answers — matching NT would score a failure for being closer to NT, the same shape as
+`kernel32:volume:186`.
+
+**The class's FILE_READ_ATTRIBUTES demand could not be stated where the other pipe
+classes' is.** The arm's first guard is
+`get_handle_access( current->process, handle ) & FILE_READ_ATTRIBUTES`, and no other
+backend demands anything for `FileStandardInformation`, because on the oracle every other
+backend answers it out of ntdll's `fstat` with no server call at all. So it is not the
+CLASS's required access — `kernel/io/query.c` cannot know which device a handle names
+before Ob has resolved it — and it is asked the way `NpfsSetPipeInfo` already asks its
+own: by resolving the same handle a second time with the bit, which leaves the decision at
+Ob's one check site (G10) rather than open-coding a mask test on the entry word the
+function already holds, and makes the answer Ob's own `STATUS_ACCESS_DENIED`.
+
+**And the demand is a pipe END's, not the pipe DEVICE's.** The `\Device\NamedPipe` root
+opens on the same device ops, and the oracle's root is a `named_pipe_device_file` whose fd
+ops are `default_fd_get_file_info` — no access guard anywhere in it — so a root handle
+without the bit must answer whatever an entitled one answers. Keyed on "this device has
+pipes" the check fires on the root too; it is keyed on `FILE_OBJECT.isDirectory`, the Io
+layer's own statement of the split, which `kernel/io/rw.c` already uses to keep
+`NtRead`/`NtWriteFile` off that same root. The pin measures the root as an EQUALITY
+between an entitled and an unentitled handle rather than by naming a status, because the
+oracle refuses the class there and an unbuilt oracle is not authoritative (Art. 12).
+
+**The orphan's refusal is one statement, and it is wider here than the oracle's.**
+An end the server DISCONNECTED out from under has `pipe_end->pipe == NULL` (the
+`FSCTL_PIPE_DISCONNECT` arm clears the CLIENT's; the disconnecting server keeps its own),
+and every arm `pipe_end_get_file_info` IMPLEMENTS carries the same `if (!pipe)` —
+`FileStandardInformation`, `FileNameInformation` and the two pipe classes. Stated once in
+`NpfsGetInfo`, `FileNameInformation` inherits it (`pipe.c:2181`, `:2447`) with no second
+transcription — and so do the classes the oracle's handler does *not* implement
+(`FileBasic`/`Position`/`Internal`/`EndOfFile`/`NetworkOpen`/`AttributeTag`/`All`), which
+now answer `STATUS_PIPE_DISCONNECTED` for an orphaned end where they used to answer
+success with a zeroed struct. **That widening is deliberate and nothing convicts either
+answer**: those classes are unbuilt on the oracle for a pipe end whether it is orphaned or
+not (`default_fd_get_file_info`'s `default:` arm), so there is no measurement to match, and
+a zeroed struct is a description of a pipe that is gone. The ORDER between the two
+refusals is observable and IS pinned: an orphaned end held through a handle with no
+`FILE_READ_ATTRIBUTES` reports the ACCESS failure for `FileStandardInformation` and the
+DISCONNECT for `FileNameInformation`, because only the first arm has an access guard.
+
+**Recorded residual, and it is older than this change.** proskrnl drops
+`NPFS_INSTANCE.pipe` when the SERVER's handle closes, where the oracle's client holds its
+own reference to the named pipe until destroy. So a CLIENT that outlives its server — the
+`FILE_PIPE_CLOSING_STATE` end — reports `AllocationSize` 0 and zeroed quotas where the
+oracle reports the pipe's real numbers. It is not orphaned, so it does not refuse; it
+describes a pipe that is no longer there. Tagged `todo_proskrnl` in
+`sem_pipe/pipe_file_info.c` rather than left out, so it reports itself the day the
+lifetime is fixed; `ntdll:pipe`'s five remaining `test_pipe_local_info` failures
+(`:2356`-`:2369`) are the same gap.
+
 ## `FileNameInformation`'s length floor is the whole struct
 
 `NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than
