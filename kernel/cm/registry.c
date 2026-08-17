@@ -1030,8 +1030,38 @@ static NTSTATUS CmpFillKeyInfo(const CMP_KEY_NODE *node, KEY_INFORMATION_CLASS i
          * #UD with the buffer register zero. Pinned by
          * tests/ntapi/sem_reg/query_key_sizing.c. */
         ULONG capacity = length > fixed ? (length - fixed) / sizeof(WCHAR) : 0;
-        WCHAR *nameOut = capacity != 0 ? (WCHAR *)(out + fixed) : 0;
-        ULONG nameBytes = CmpBuildPath(node, 0, nameOut, capacity);
+        /* The path is built in an ALIGNED staging buffer and copied out as
+         * bytes, never written through a `WCHAR *` into the caller's buffer.
+         * `out` carries the caller's own alignment — the probe asks for 1,
+         * and wow64_NtQueryKey/NtEnumerateKey forward a 32-bit caller's
+         * pointer untranslated (third_party/wine dlls/wow64/registry.c) — so
+         * `(WCHAR *)(out + 4)` is a 2-byte store at an odd address whenever
+         * the caller's buffer is odd: undefined in C and a UBSan #UD here.
+         * Every other field of every class in this file is already staged;
+         * this was the one that reached past its own local. */
+        ULONG nameBytes = CmpBuildPath(node, 0, 0, 0);
+        ULONG copy = nameBytes < capacity * sizeof(WCHAR) ? nameBytes : capacity * sizeof(WCHAR);
+        if (copy != 0)
+        {
+            WCHAR inlinePath[260];
+            WCHAR *staging = inlinePath;
+            WCHAR *pooled = 0;
+            if (copy > sizeof(inlinePath))
+            {
+                pooled = MiAllocatePool(copy);
+                if (pooled == 0)
+                {
+                    return STATUS_INSUFFICIENT_RESOURCES;
+                }
+                staging = pooled;
+            }
+            CmpBuildPath(node, 0, staging, copy / sizeof(WCHAR));
+            memcpy(out + fixed, staging, copy);
+            if (pooled != 0)
+            {
+                MiFreePool(pooled);
+            }
+        }
         KEY_NAME_INFORMATION info;
         info.NameLength = nameBytes;
         memcpy(out, &info, length < fixed ? length : fixed);

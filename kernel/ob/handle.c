@@ -954,14 +954,17 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         {
             return status;
         }
-        OBJECT_NAME_INFORMATION *info = buffer;
-        if (nameBytes == 0)
+        /* The header is staged and copied out as bytes. The probe above asks
+         * for 4-byte alignment, so a caller's 4-mod-8 buffer is ACCEPTED —
+         * and `info->Name.Buffer` is an 8-byte store at offset 8, i.e. at a
+         * 4-mod-8 address, which is undefined in C and a UBSan #UD in this
+         * build. (The name body behind it is WCHARs at a 4-aligned offset,
+         * which the same probe already guarantees is 2-aligned.) */
+        OBJECT_NAME_INFORMATION staged;
+        memset(&staged, 0, sizeof(staged));
+        if (nameBytes != 0)
         {
-            memset(info, 0, sizeof(*info));
-        }
-        else
-        {
-            WCHAR *nameOut = (WCHAR *)(info + 1);
+            WCHAR *nameOut = (WCHAR *)((char *)buffer + sizeof(OBJECT_NAME_INFORMATION));
             if (header->type->queryName != 0)
             {
                 USHORT writtenBytes = nameBytes;
@@ -977,10 +980,11 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
                 ObpWriteFullName(header, nameOut);
             }
             nameOut[nameBytes / sizeof(WCHAR)] = 0;
-            info->Name.Buffer = nameOut;
-            info->Name.Length = nameBytes;
-            info->Name.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+            staged.Name.Buffer = nameOut;
+            staged.Name.Length = nameBytes;
+            staged.Name.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
         }
+        memcpy(buffer, &staged, sizeof(staged));
         if (returnLength != 0)
         {
             memcpy(returnLength, &needed, sizeof(needed));
@@ -1005,20 +1009,22 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
         {
             return status;
         }
-        OBJECT_TYPE_INFORMATION *info = buffer;
-        memset(info, 0, sizeof(*info));
-        WCHAR *nameOut = (WCHAR *)(info + 1);
+        /* Staged for the reason ObjectNameInformation's header is. */
+        OBJECT_TYPE_INFORMATION staged;
+        memset(&staged, 0, sizeof(staged));
+        WCHAR *nameOut = (WCHAR *)((char *)buffer + sizeof(OBJECT_TYPE_INFORMATION));
         for (ULONG i = 0; i < nameChars; i++)
         {
             nameOut[i] = (WCHAR)(unsigned char)header->type->name[i];
         }
         nameOut[nameChars] = 0;
-        info->TypeName.Buffer = nameOut;
-        info->TypeName.Length = (USHORT)nameBytes;
-        info->TypeName.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        staged.TypeName.Buffer = nameOut;
+        staged.TypeName.Length = (USHORT)nameBytes;
+        staged.TypeName.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
+        memcpy(buffer, &staged, sizeof(staged));
         if (returnLength != 0)
         {
-            ULONG used = (ULONG)sizeof(*info) + info->TypeName.MaximumLength;
+            ULONG used = (ULONG)sizeof(staged) + staged.TypeName.MaximumLength;
             memcpy(returnLength, &used, sizeof(used));
         }
         return STATUS_SUCCESS;
