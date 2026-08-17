@@ -3,6 +3,8 @@
 #ifndef PROSKRNL_DRIVERS_AFD_H
 #define PROSKRNL_DRIVERS_AFD_H
 
+#include "abi/ntdef.h"
+
 /* Publish \Device\Afd (kernel/init/main.c, after NetInitialize — the
  * device serves loopback sockets over the always-on lwIP stack, NIC or
  * not). Boot-time panic on failure, the IoPublishDevice rule. */
@@ -15,5 +17,14 @@ void AfdInitialize(void);
  * AfdInitialize (no-op). */
 struct KTHREAD;
 void AfdCancelThreadIo(struct KTHREAD *thread);
+
+/* The parked-poll expiry (drivers/net/netd.c's mainloop): AfdPollTick
+ * completes every poll whose deadline passed (STATUS_TIMEOUT);
+ * AfdNextPollDelayMs is the milliseconds until the nearest deadline
+ * (0 = due now, 0xffffffff = none), folded into netd's park timeout so
+ * an expiry never waits for unrelated traffic. Both safe before
+ * AfdInitialize (no-ops). */
+void AfdPollTick(void);
+ULONG AfdNextPollDelayMs(void);
 
 #endif /* PROSKRNL_DRIVERS_AFD_H */

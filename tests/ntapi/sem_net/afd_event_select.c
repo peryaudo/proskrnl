@@ -110,13 +110,14 @@ static void test_events_latch(void)
     ok(status == STATUS_SUCCESS, "second get-events -> %08lx", (unsigned long)status);
     ok(events.flags == 0, "second flags %#x", events.flags);
 
-    /* A fresh edge re-raises: the peer's send lands READ. */
+    /* A fresh edge re-raises: the peer's send lands READ. Reset first so
+     * the wait below really waits for the EDGE (the arm's own firing left
+     * the manual-reset event set) — the delivery is asynchronous on both
+     * runners and the event is the signal ws2_32 itself waits on. */
+    ResetEvent(event);
     status = afd_send_wait(server, "x", 1, NULL);
     ok(status == STATUS_SUCCESS, "send -> %08lx", (unsigned long)status);
-    /* Same-thread determinism: the edge is delivered by netd/wineserver
-     * asynchronously — poll the latch through the EVENT, which is the
-     * signal ws2_32 itself waits on. */
-    ok(wait_done(event) || is_signaled(event), "the event never re-fired");
+    ok(wait_done(event), "the event never re-fired");
     status = get_events(client, NULL, &events);
     ok(status == STATUS_SUCCESS, "read get-events -> %08lx", (unsigned long)status);
     ok((events.flags & AFD_POLL_READ) != 0, "read flags %#x", events.flags);
