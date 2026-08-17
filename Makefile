@@ -1565,8 +1565,9 @@ FLASH_FIXTURES := $(BUILD)/flash/fixture30.swf $(BUILD)/flash/fixture10.swf
 $(BUILD)/flash/fixture%.swf: tools/gen_swf.py
 	@mkdir -p $(dir $@)
 	python3 tools/gen_swf.py $@ $*
+FLASH_REG := tests/flash/relay.reg
 FLASHFILES += $(foreach f,$(FLASH_FIXTURES),win:$(f)=$(notdir $(f))) \
-              win:tests/flash/relay.reg=relay.reg
+              win:$(FLASH_REG)=relay.reg
 endif
 
 GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
@@ -1595,8 +1596,7 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
         $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) \
-        tests/flash/relay.reg
+        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
 
 gui5con-img: $(IMG_GUI5CON)

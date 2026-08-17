@@ -10,3 +10,8 @@ __pycache__/
 
 # CUI-1 oracle: x86_64 Wine worktree built for the Rosetta oracle (not tracked)
 third_party/wine-x86_64/
+# The flash payload is deliberately untracked: Adobe's projector and a
+# third-party movie are not redistributable. The Makefile block above
+# gui5con-img stages them only when present.
+/SAFlashPlayer.exe
+/troubled_windows.swf
