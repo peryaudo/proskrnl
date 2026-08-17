@@ -318,6 +318,32 @@ unbuilt capture path refuse loudly (Art. 12): the missing `Read` op makes the
 Io layer refuse rather than fabricate silence, and unknown ioctls name
 themselves on serial with `STATUS_NOT_IMPLEMENTED`.
 
+## HACK-008: audiodg-lite (the user-mode audio mixer process) — RESERVED, UNBUILT
+
+```
+Status:     reserved (AUD-2; nothing exists). The number is claimed so the
+            docs/03 "single-process audio" deviation can name its exit
+            precisely, the way docs/07 named audiodg-lite before any code.
+Introduced: — (unbuilt; this entry is the reservation, not an introduction)
+Not in NT:  the PROCESS is real NT — audiodg.exe is exactly Windows's
+            shared-mode mixer — but proskrnl's would be a new NT-absent
+            process at the outside of the boundary in the Article 2 sense
+            (a lite reimplementation over shared sections + kernel events,
+            the GUI-3 transport recipe), hence a ledger entry.
+Reason:     AUD-2 ships single-process audio: \Device\Snd0 opens exclusive
+            per process and a second process's IAudioClient::Initialize
+            answers AUDCLNT_E_DEVICE_IN_USE (docs/03 "AUD-2 notes";
+            docs/23 §4d). The moment a consumer convicts that — a baked
+            scenario in which two processes must be audible at once — the
+            NT-shaped fix is this process, never a wider share mask on the
+            device node.
+Scope:      (when built) a user/audiodg-lite/ process owning \Device\Snd*;
+            winevsnd.drv becomes its client over shared sections + events.
+Retirement: subsumes into a real audiodg if one is ever wanted; retired
+            entirely if the audio path is ever removed (Art. 7 — the whole
+            audio stack is subtractable).
+```
+
 ## Non-hacks (recorded here to prevent re-litigation)
 
 These are sometimes *mistaken* for hacks but are real NT mechanisms, so they carry **no**

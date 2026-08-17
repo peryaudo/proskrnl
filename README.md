@@ -193,6 +193,34 @@ generated), and name resolution + the off-the-shelf HTTPS fetch are
 Net-3's. What's next: Net-2 — `sem_net` pins on the oracle first, then
 `drivers/afd.c` over lwIP's raw API on the CUI-8 pending engine.
 
+**AUD-2 complete** — WASAPI render through the unmodified Wine PE audio
+stack. The oracle bought its audio backend first (`--with-pulse` + the
+runner-owned per-leg null-sink daemon + the audiosmoke pin — the
+fonts/display lesson a third time, tp-v9), then the mmdevapi seam landed
+on `proskrnl-target` (three dispatch surfaces, level-1 dormant behind a
+latch that flips only on the kernel's own refusal of the wine-unixlib
+`NtQueryVirtualMemory` class — behaviour only a missing unixlib
+produces, the conhost probe's shape; hack meter 439→504), and
+`user/wine/dlls/winevsnd.drv` — superproject PE code, zero fork lines —
+implements the 37-entry unixlib surface over `\Device\Snd0`: endpoints
+from the nodes' own INFO claims, float32 mix format over the S16 device,
+the TIME_CRITICAL feeder whose blocking period write is the clock,
+software session volumes, silence-on-underrun with the miss counted, the
+period-granularity padding/position staircase. mmdevapi's COM class
+registers through Wine's own registrar (`filter_inf.py --add-register` +
+atl100) and smss seeds `Drivers\Audio=vsnd` natively, gated on the driver
+being on the image. `tests/run/run.sh audio` now has a WASAPI half —
+the same seeded pattern, sample-exact in the recorded WAV through the
+whole stack (symmetric 1/32768 scaling makes S16 round-trip bit-exact),
+with `[KTEST] audio PASS underruns=<n>` carrying the measured count —
+and the audio winetest pairs entered `manifest.txt` under the (c)
+amendment, booting their own audio image. Couldn't be achieved within
+the milestone: cross-process playback deliberately refuses
+(`AUDCLNT_E_DEVICE_IN_USE`, the docs/03 deviation; audiodg-lite is
+HACK-008, reserved), capture is unbuilt, and `winmm:mci` is parked on the
+pinned oracle's own failure. What's next: AUD-3 — rxq, the capture node,
+the `get_capture_buffer` legs.
+
 **AUD-1 complete** — the first milestone of the opt-in audio path
 (`docs/23`). The kernel grew its third HACK-shaped device family:
 `\Device\Snd<n>`, one node per PCM stream the virtio-snd device reports,
