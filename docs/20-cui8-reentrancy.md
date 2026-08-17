@@ -440,3 +440,37 @@ scan sees). The §5 STILL-TRUE table was re-walked against it:
   interleave inside it. That comment is also the docs/18 §5 audit row for CUI-10.
 - **Net-2 will re-open this section again** for the second frontier entry docs/24
   promises (the cancellable synchronous-socket-handle wait); it is not Net-1's.
+
+## 13. Net-2 re-check — the synchronous socket wait (the §8.4 checklist, re-opened)
+
+Net-2 adds the second frontier entry §12 promised: `drivers/afd.c`'s
+synchronous-handle data path (`AfdVfsRead`/`AfdVfsWrite` on a
+`FILE_SYNCHRONOUS_IO_*` socket) loops on **`IoWaitCancellable`** against the
+socket's wake event — the npfs blocking-wait shape, inside the `IopEnterSyncIo`
+span rw.c already wraps around the ops, cancellable by
+`NtCancelSynchronousIoFile` (pinned `sem_net/afd_read_write.c`,
+`sem_net/afd_cancel_close.c`). No new `tools/blocking_frontier.txt` row: the
+reachable ring-3 entries (`NtReadFile`/`NtWriteFile`/`NtDeviceIoControlFile`)
+have carried rows since CUI-8 — what widened is which DEVICE can park under
+them, which is this section. The §5 STILL-TRUE table was re-walked:
+
+- **Every §5 row stands.** The park sits between lwIP seam entries, never
+  inside one (no code path blocks while inside the stack — netd.c's invariant,
+  asserted); the wait touches no Ob/Ps/Cm/Mm structure. AFD state mutated
+  around the park is re-derived after every wake (the loop re-reads ring/state
+  from the top), so a peer's progress across the park is the wakeup, not a
+  hazard.
+- **The §6 drain rules are untouched**: AFD never runs in drain context; its
+  completions ride lwIP callbacks on netd (thread context) and the CUI-8
+  pended engine, whose completion path (`IopCompletePendingRequest`) performs
+  no waits.
+- **The single-threading invariant extends, stated in drivers/afd.c's header**:
+  AFD socket state joins lwIP itself in the two-context regime (syscall-context
+  verbs bracketed by `NetdEnterLwip`/`NetdLeaveLwip`, netd callbacks inside the
+  stack), atomic under the no-preemption model. This is the docs/18 §5 audit
+  row's newest instance; CUI-10's giant lock preserves it verbatim.
+- **Ownership across the park** follows io.h §5d unchanged: everything a parked
+  AFD request needs lives in its `IOP_PENDING_REQUEST` (owner process, file,
+  issuer, event — all referenced); the synchronous loop itself owns nothing
+  across the wait but its stack frame, and a cancel unwinds it with the IOSB
+  untouched (rw.c's abandon path).
