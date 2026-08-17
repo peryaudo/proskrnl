@@ -63,6 +63,7 @@ BLOCKING_SEEDS = (
 MUST_NOT_BLOCK = {
     "IoDrainDeviceCompletions": "docs/20 R2: the drain harvests and wakes, nothing else",
     "VioBlkDrain": "docs/20 R2: drain context, reachable from the timer tick",
+    "VioSndDrain": "docs/20 R2: drain context, reachable from the timer tick",
     "KiUpdateClock": "interrupt context: the tick readies threads, never switches",
     "KiDispatchInterrupt": "interrupt context",
     "KiVerifyKernelStateIdle": "the idle consistency sweep runs with the lock held",

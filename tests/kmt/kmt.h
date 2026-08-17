@@ -117,6 +117,12 @@ int kmt_run_fat_interop(void);
  * images); silently absent everywhere else. */
 int kmt_run_fat_churn(void);
 
+/* The \Device\Snd* device-contract smoke (tests/kmt/snd.c; AUD-1,
+ * HACK-007): control-verb round trips, a written period completing, the
+ * full-buffer park actually parking. Runs only when a virtio-snd device
+ * exists (the run.sh audio leg); silently absent everywhere else. */
+int kmt_run_snd(void);
+
 /* The issue #96 preventive-mechanism guards (tests/kmt/preventive.c): the
  * non-blocking-region depth and the release-obligation ledger are balanced
  * across every representative gated FS verb, including its error paths.

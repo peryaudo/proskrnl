@@ -268,6 +268,52 @@ remaining image variations want their own look.
 
 ---
 
+## HACK-007: `\Device\Snd*` (the PCM stream devices)
+
+```
+Status:     active (AUD-1: virtio-snd controlq + txq, render path only;
+            eventq unpopulated, rxq unconfigured until AUD-3; one node per
+            PCM stream the device reports, direction the stream's own
+            PCM_INFO claim; blocking writes of exactly period_bytes, parked
+            on the CUI-8 engine when the device buffer is full; exclusive
+            open per stream through the Io share engine; no MSI-X — harvest
+            joins IoDrainDeviceCompletions off the tick tail)
+Introduced: AUD-1
+Not in NT:  NT reaches audio entirely through user-mode WASAPI (mmdevapi)
+            over audiodg — a mixing service process — and the
+            kernel-streaming stack (ks.sys/portcls) only that service talks
+            to. No Nt* call in the boundary sense carries PCM; an ordinary
+            app never issues a KS ioctl itself.
+Reason:     Wine's mmdevapi is PE code down to one unixlib seam, so the
+            kernel owes audio no new Nt* surface — but it does owe a PCM
+            transport below that seam (docs/23 §1), reached through the
+            existing NtCreateFile / NtDeviceIoControlFile / NtWriteFile
+            surface. The \Device\Fb0 / \Device\Input0 shape, applied to
+            sound.
+Scope:      drivers/snd.c ; drivers/snd.h ; drivers/sndproto.h ;
+            drivers/virtio/snd.c ; drivers/virtio/snd.h ;
+            kernel/io/file.c (the init call + the drain's snd arm) ;
+            kernel/init/main.c (the SndInitialize call) ;
+            user/wine/dlls/winevsnd.drv (AUD-2)
+Retirement: if a KS/portcls-shaped audio stack is ever built below a real
+            audio-driver model.
+```
+
+The wire contract (`drivers/sndproto.h`) mirrors the virtio control verbs
+one-to-one and relays payloads untranslated: the stream's `PCM_INFO` verbatim,
+`SET_PARAMS` forwarded with the device's own status deciding, plus one query
+the wire needs and virtio answers implicitly — `POSITION`, bytes counted at
+tx-completion harvest. **No format translation, no resampling, no mixing, no
+volume in the kernel**: all of that is policy, and policy lives above the
+boundary (the keyboard-layout argument from HACK-002, applied to PCM). Which
+node renders and which captures is the device's own claim per stream, never
+PCI enumeration order. The write path is blocking-only and the pacing clock
+emerges from tx completion — no timer invented; the new park is declared in
+`tools/blocking_frontier.txt`'s machinery (G14). Unbuilt verbs and the
+unbuilt capture path refuse loudly (Art. 12): the missing `Read` op makes the
+Io layer refuse rather than fabricate silence, and unknown ioctls name
+themselves on serial with `STATUS_NOT_IMPLEMENTED`.
+
 ## Non-hacks (recorded here to prevent re-litigation)
 
 These are sometimes *mistaken* for hacks but are real NT mechanisms, so they carry **no**

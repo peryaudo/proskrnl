@@ -33,6 +33,7 @@
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
+#include "drivers/snd.h"
 #include "drivers/virtio/blk.h"
 #include "kernel/init/bootvid.h"
 #include "kernel/init/panic.h"
@@ -438,6 +439,10 @@ static void KiTestMainThread(void *context)
      * means no device published -- an open then fails honestly. */
     HidInitialize();
 
+    /* AUD-1: \Device\Snd* over virtio-snd (HACK-007). Same rule: no sound
+     * device, no nodes, and an open fails honestly. */
+    SndInitialize();
+
     /* M8: bring up the registry — \Registry + the SYSTEM hive from the boot
      * volume (an absent/invalid hive starts empty: first boot). Needs the
      * volume above and a thread with a handle table for the hive file I/O. */
@@ -563,6 +568,11 @@ static void KiTestMainThread(void *context)
      * with C:\churn.cfg (run.sh fatstress); prints its own churn-seed /
      * churn-verify verdict. Absence is silent. */
     fatInteropFailures += kmt_run_fat_churn();
+
+    /* The \Device\Snd* contract smoke (tests/kmt/snd.c): only on boots
+     * whose QEMU carries a virtio-snd device (run.sh audio). Prints its
+     * own [KTEST] SND verdict when it runs; absence is silent. */
+    fatInteropFailures += kmt_run_snd();
 
     /* M7: NtCreateUserProcess-shaped process lifecycle + the user-mode return
      * protocol, driven by a real PE client (the mountain — docs/02). This is

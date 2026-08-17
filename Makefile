@@ -129,9 +129,11 @@ CSRC := kernel/init/main.c \
         drivers/virtio/virtqueue.c \
         drivers/virtio/blk.c \
         drivers/virtio/input.c \
+        drivers/virtio/snd.c \
         drivers/condrv.c \
         drivers/fb.c \
         drivers/hid.c \
+        drivers/snd.c \
         fs/fat32/fat.c \
         fs/fat32/dir.c \
         fs/fat32/file.c \
@@ -159,7 +161,8 @@ CSRC := kernel/init/main.c \
         tests/kmt/preventive.c \
         tests/kmt/sched_explore.c \
         tests/kmt/fat_interop.c \
-        tests/kmt/fat_churn.c
+        tests/kmt/fat_churn.c \
+        tests/kmt/snd.c
 ASRC := arch/x86_64/trap.S \
         arch/x86_64/ctxswitch.S \
         kernel/syscall/entry.S \

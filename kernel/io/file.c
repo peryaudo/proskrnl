@@ -17,6 +17,7 @@
 #include "kernel/ke/ke.h"
 #include "drivers/virtio/blk.h"
 #include "drivers/virtio/input.h"
+#include "drivers/virtio/snd.h"
 #include "fs/fat32/fat.h"
 
 /* --- object types ----------------------------------------------------------- */
@@ -388,7 +389,9 @@ static PIO_DEVICE IopBootVolumeDevice;
  * thousand boots. */
 ULONG IoDrainDeviceCompletions(void)
 {
-    if (!VioBlkIsPresent())
+    BOOLEAN blkPresent = VioBlkIsPresent();
+    BOOLEAN sndPresent = VioSndIsPresent();
+    if (!blkPresent && !sndPresent)
     {
         return 0;
     }
@@ -396,13 +399,23 @@ ULONG IoDrainDeviceCompletions(void)
      * ALLOCATION (docs/20 R2, asserted in mm), the no-block region forbids
      * PARKING (issue #96 A, asserted at every blocking primitive). The drain
      * is reached from the completion ISR, from the tick, and from
-     * thread-context awaiters, so the region must nest — it counts. */
+     * thread-context awaiters, so the region must nest — it counts. The snd
+     * arm EXTENDS this one authority rather than adding a second harvest
+     * path (Art. 11; docs/23 §4a) — its tick-tail call is what bounds a
+     * period completion at 1 ms without an MSI-X vector (docs/19 §11f). */
     KiEnterNoBlockRegion("completion drain");
     KiInCompletionDrain = TRUE;
-    VioBlkDrain();
+    if (blkPresent)
+    {
+        VioBlkDrain();
+    }
+    if (sndPresent)
+    {
+        VioSndDrain();
+    }
     KiInCompletionDrain = FALSE;
     KiLeaveNoBlockRegion();
-    return VioBlkInFlightCount();
+    return (blkPresent ? VioBlkInFlightCount() : 0) + (sndPresent ? VioSndInFlightCount() : 0);
 }
 
 void IoInitializeTransport(void)
@@ -417,6 +430,13 @@ void IoInitializeTransport(void)
     if (!VioInputInitialize())
     {
         DbgPrint("io: no input device; \\Device\\Input0 disabled\n");
+    }
+    /* AUD-1: the PCM transport behind \Device\Snd* (HACK-007). Absent on
+     * every run but the audio leg's -- drivers/snd.c then publishes no
+     * device at all. */
+    if (!VioSndInitialize())
+    {
+        DbgPrint("io: no sound device; \\Device\\Snd* disabled\n");
     }
 }
 
