@@ -85,7 +85,7 @@ $SUDO apt-get install -y --no-install-recommends \
     clang lld llvm clang-format clang-tidy make git ca-certificates python3 \
     gdisk mtools dosfstools \
     ninja-build meson pkg-config libglib2.0-dev libpixman-1-dev \
-    libgtk-3-dev bzip2 \
+    libgtk-3-dev libslirp-dev bzip2 \
     flex bison python3-venv \
     gcc libc6-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
     "${X11_PACKAGES[@]}"
@@ -129,22 +129,44 @@ echo "== freetype: the PE static library + the native one (font backends) =="
 tools/build_freetype.sh
 
 echo "== qemu: x86_64-softmmu =="
-if [[ -x third_party/qemu/build/qemu-system-x86_64 ]]; then
+# Net-1 needs the slirp backend (-netdev user) for the net legs. The skip
+# guard below asks the finished binary itself rather than trusting its
+# existence: a tree built before the --enable-slirp flag joined the
+# configure (or restored from a pre-slirp cache) satisfies an existence
+# check forever — the tp-v2 GTK lesson, .github/actions/third-party — so a
+# slirp-less in-tree build is stale and reconfigures in place.
+QemuTreeIsStale() {
+    [[ -x third_party/qemu/build/qemu-system-x86_64 ]] || return 1
+    third_party/qemu/build/qemu-system-x86_64 -netdev help 2>/dev/null |
+        grep -qx user && return 1
+    return 0
+}
+if [[ -x third_party/qemu/build/qemu-system-x86_64 ]] && ! QemuTreeIsStale; then
     echo "   already built — skipping"
-elif command -v qemu-system-x86_64 >/dev/null 2>&1; then
+elif [[ ! -x third_party/qemu/build/qemu-system-x86_64 ]] &&
+    command -v qemu-system-x86_64 >/dev/null 2>&1; then
     # No version floor since the kernel's clock moved to the xAPIC MMIO window
     # (arch/x86_64/lapic.c): a distro qemu-system-x86_64 runs the tests, so the
     # long source build is only for hosts that have none. tools/qemu.sh still
-    # prefers an in-tree build when one exists.
+    # prefers an in-tree build when one exists. (A distro build almost always
+    # carries slirp; the runner's netsmoke check asserts it before any net leg
+    # is judged, so a bare one fails loudly there, not silently.)
     echo "   $(qemu-system-x86_64 --version | head -1) on PATH — skipping the source build"
 else
+    if QemuTreeIsStale; then
+        echo "   in-tree build has no slirp (-netdev user) — reconfiguring"
+    fi
     mkdir -p third_party/qemu/build
     # --enable-gtk (not autodetect) so `make rungui` deterministically gets a
     # host window; libgtk-3-dev is in the apt list above. The headless test
     # legs never open a display, so nothing else changes.
+    # --enable-slirp (not autodetect, docs/24 §6c) so the net legs' user-mode
+    # backend deterministically exists: libslirp-dev is in the apt list above,
+    # and a box without it must fail HERE, at configure, not later as a
+    # false leg verdict.
     (cd third_party/qemu/build &&
         ../configure --target-list=x86_64-softmmu --disable-docs --disable-user \
-            --enable-gtk)
+            --enable-gtk --enable-slirp)
     make -C third_party/qemu/build -j"$JOBS"
 fi
 

@@ -77,6 +77,17 @@ if [[ "$IMG" == "--print-accel" ]]; then
     echo "$ACCEL"
     exit 0
 fi
+# `qemu.sh --probe-slirp` answers whether THIS qemu can serve `-netdev user`
+# (slirp compiled in) and prints/does nothing else. The runner's netsmoke
+# check (tests/run/run.sh) asks it before any net leg is judged: an
+# environment that silently lacks its backend turns every verdict false —
+# the fontsmoke/audiosmoke lesson (docs/24 §6c). Asking `-netdev help` asks
+# the binary itself, the same truthful marker setup_linux.sh and
+# fetch_third_party.sh use.
+if [[ "$IMG" == "--probe-slirp" ]]; then
+    "$QEMU" -netdev help 2>/dev/null | grep -qx user
+    exit $?
+fi
 # +invtsc under KVM: tell the guest its TSC is invariant, which is what makes
 # QEMU publish the hypervisor timing leaf (CPUID 0x40000010, TSC kHz + APIC bus
 # kHz). The kernel asks for that leaf before it will fall back to measuring
@@ -281,6 +292,27 @@ else
     MON_ARGS=(-monitor none)
 fi
 
+# Net-1 (tests/run/run.sh net): NET_PCAP=<path> gives the guest a NIC and
+# writes everything on its wire to a host pcap — networking's screendump
+# (docs/24 §6b): QEMU's own device model records the frames, not anything
+# the kernel says about itself (Art. 6). `-netdev user` is slirp's
+# user-mode backend (pinned tree docs/system/devices/net.rst "Using the
+# user mode network stack": guest 10.0.2.0/24, host at 10.0.2.2, built-in
+# DHCP server); virtio-net-pci is the device the driver binds
+# (drivers/virtio/net.c); filter-dump is the pcap tap (pinned tree
+# net/dump.c, qapi/net.json).
+# NET_ECHO_PORT=<port> tells the GUEST which host port the harness's TCP
+# echo server listens on, over fw_cfg like the boot flags above.
+NET_ARGS=()
+if [[ -n "${NET_PCAP:-}" ]]; then
+    NET_ARGS=(-netdev user,id=net0
+              -device virtio-net-pci,netdev=net0
+              -object "filter-dump,id=netdump,netdev=net0,file=$NET_PCAP")
+fi
+if [[ -n "${NET_ECHO_PORT:-}" ]]; then
+    FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/netecho,string=$NET_ECHO_PORT")
+fi
+
 # EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui
 # leg adds virtio-keyboard-pci this way so no other leg grows a device it
 # does not use. Word-split on spaces: a spec may carry comma-separated
@@ -337,6 +369,7 @@ fi
     "${SERIAL_ARGS[@]}" \
     ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
     ${AUDIODEV_ARGS[@]+"${AUDIODEV_ARGS[@]}"} \
+    ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
     ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     "${DRIVE_ARGS[@]}" &
