@@ -297,7 +297,19 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
          * restores — and above IopPreparePendingRequest, which does the
          * same two things again for the pended case and is idempotent. */
         IOP_BLOCKING_REQUEST blocking;
-        IopBeginBlockingRequest(&blocking, file, event, IopClearAtIssue);
+        status = IopBeginBlockingRequest(&blocking, file, event, apc, IopClearAtIssue);
+        if (!NT_SUCCESS(status))
+        {
+            /* A port-bound handle carrying an ApcRoutine: refused with the
+             * event already down and the handle untouched (io.h
+             * IopPortApcConflict). Nothing was issued, so `abandon` — which
+             * frees the APC block and writes no IOSB — is the whole unwind. */
+            if (bounce != 0)
+            {
+                MiFreePool(bounce);
+            }
+            goto abandon;
+        }
         IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
@@ -573,7 +585,19 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         ULONG_PTR transferred = 0;
         /* The read path's reasoning, in the direction that blocks on quota. */
         IOP_BLOCKING_REQUEST blocking;
-        IopBeginBlockingRequest(&blocking, file, event, IopClearAtIssue);
+        status = IopBeginBlockingRequest(&blocking, file, event, apc, IopClearAtIssue);
+        if (!NT_SUCCESS(status))
+        {
+            /* The read branch's refusal, one direction over (io.h
+             * IopPortApcConflict). `eventSettled` because the reset the
+             * refusal owes has already been made, above the guard. */
+            if (bounce != 0)
+            {
+                MiFreePool(bounce);
+            }
+            eventSettled = TRUE;
+            goto abandon;
+        }
         IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Write(file, bounce, length, &transferred);
         IopLeaveSyncIo();
@@ -823,7 +847,10 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
              * take the FILE-OBJECT arm of "exactly one" (io.h). ntdll:pipe's
              * test_blocking samples it at pipe.c:1753. */
             IOP_BLOCKING_REQUEST blocking;
-            IopBeginBlockingRequest(&blocking, file, 0, IopClearAtIssue);
+            /* NtFlushBuffersFile has no ApcRoutine parameter, so the
+             * port/APC refusal (io.h IopPortApcConflict) cannot fire here and
+             * the status is void by construction rather than ignored. */
+            (void)IopBeginBlockingRequest(&blocking, file, 0, 0, IopClearAtIssue);
             /* NO file, deliberately: the alertable park is the HANDLE's rule
              * everywhere except here, and a flush is the one service the
              * oracle exempts — NtFlushBuffersFileEx passes a literal FALSE to

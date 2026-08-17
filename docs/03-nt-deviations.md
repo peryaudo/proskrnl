@@ -3258,6 +3258,87 @@ access on any of them — so it is one item and not half of this one. And the
 verb: the root arm still refuses loudly and `ntdll:pipe`'s `:2751` cluster still
 convicts it.
 
+## A completion PORT and a completion APC ROUTINE are mutually exclusive
+
+`NtReadFile` / `NtWriteFile` / `NtDeviceIoControlFile` / `NtFsControlFile` /
+`NtNotifyChangeDirectoryFile` refuse `STATUS_INVALID_PARAMETER` when the handle
+is bound to an I/O completion port **and** the call carries an `ApcRoutine`. It
+is the last statement of the one function every asynchronous request is created
+by (`third_party/wine` `server/async.c` `create_async`):
+
+```c
+if (event) reset_event( event );
+
+if (async->completion && data->apc)
+{
+    release_object( async );
+    set_error( STATUS_INVALID_PARAMETER );
+    return NULL;
+}
+```
+
+`async->completion` is `fd_get_completion( fd, &async->comp_key )`, i.e. the
+port bound to the handle; `data->apc` is the **routine**. Landed as
+`IopPortApcConflict` (`kernel/io/io.h`, `kernel/io/async.c`), applied inside
+`IopBeginBlockingRequest` for the transfer and ioctl paths and at the watch
+arm's own issue point in `kernel/io/notify.c`; pinned by
+`tests/ntapi/sem_port/port_apc.c`. It takes `ntdll:pipe` from **68** failed
+assertions to **60** (`pipe.c:3094`×8, `test_async_cancel_on_handle_close`).
+
+**Not the ApcCONTEXT.** With a NULL routine the context IS the completion
+packet's value, and every overlapped Win32 caller passes one (the `OVERLAPPED`
+pointer). An implementation keyed on the context refuses the ordinary case.
+
+**Where it sits is as measurable as what it answers**, and both halves are
+pinned:
+
+- **the caller's EVENT is already RESET when the refusal is made** — the reset
+  is the statement *above* the guard — so a request that was never issued still
+  takes the caller's pre-signalled event down;
+- **the FILE OBJECT is not cleared**, because the clear belongs to
+  `queue_async` (`set_fd_signaled( async->fd, 0 )`) and the refusal returns
+  above it. proskrnl merges those two statements into `IopBeginBlockingRequest`
+  (see "An IOCTL clears the handle at its PARK"), which is exactly why the
+  refusal is made *inside* that function, between its two halves, and needs no
+  `IopEndBlockingRequest` to put anything back;
+- **it precedes every verb.** The refusal is made when the request is CREATED,
+  so `FSCTL_PIPE_PEEK` — answered inline, never queued — is refused just the
+  same;
+- **the handle and its access are decided first** (`get_handle_fd_obj( ...,
+  FILE_READ_DATA )` in `DECL_HANDLER(read)`, `server/fd.c`), so a read through
+  a duplicate that dropped `FILE_READ_DATA` reports `STATUS_ACCESS_DENIED` and
+  never reaches this rule.
+
+**Its reach is the requests the SERVER queues, not the syscall's arguments, and
+that is the part an implementation reaching for the tidy rule gets wrong.** A
+regular disk file's transfer never reaches wineserver at all —
+`dlls/ntdll/unix/file.c` `NtReadFile` `pread()`s it locally — so the same
+combination is *admitted* on a disk handle, where ntdll resolves the conflict
+the other way instead: `cvalue = apc ? 0 : (ULONG_PTR)apc_user`, so the APC runs
+and no packet is posted. proskrnl has had that half since CUI-8
+(`IopPostRequestPacket`, `kernel/io/rw.c`), so no double report was ever
+possible; what was missing is only the refusal. Hoisting it into `NtReadFile`
+would refuse a disk read the oracle serves, and passes every pipe case in the
+pin — which is why `sem_port/port_apc.c` measures the disk arm too.
+
+**The known EDGE of that argument, stated so it is not rediscovered as a bug.**
+`NtFsControlFile` has a second locally-served family: `FSCTL_IS_VOLUME_MOUNTED`,
+`FSCTL_LOCK_VOLUME`, `FSCTL_UNLOCK_VOLUME`, `FSCTL_GET_RETRIEVAL_POINTERS`,
+`FSCTL_GET_OBJECT_ID` and `FSCTL_SET_SPARSE` are answered inside ntdll and
+finished by `file_complete_async`, which runs the APC and posts nothing — so the
+oracle admits the pair for those six exactly as it does for a disk read, while
+`kernel/io/ioctl.c` refuses uniformly. It is unreachable rather than divergent
+today, and doubly so: proskrnl implements none of the six, and an FSCTL on a
+disk-file handle answers `STATUS_INVALID_DEVICE_REQUEST` above this refusal
+because `fs/fat32` has no `DeviceControl` op at all. The day one of them is
+built, its pin owns this row.
+
+Whether NT draws the line in the same place is not established here and nothing
+in the tree measures it: the pinned oracle answers both arms, and where the
+oracle answers it is the spec (Art. 6). If a consumer ever convicts the disk
+arm, it is a new item with its own pin — not a widening of this one on the
+strength of symmetry.
+
 ## `FileNameInformation`'s length floor is the whole struct
 
 `NtQueryInformationFile(FileNameInformation)` refuses a buffer shorter than

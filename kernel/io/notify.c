@@ -517,6 +517,30 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
         watch->event = eventBody;
         KeClearEvent(watch->event);
     }
+    /* create_async's last statement, at this arm's own issue point — BELOW
+     * the event reset above and ABOVE the queue below, which is where the
+     * oracle makes it: read_directory_changes creates its async through the
+     * same create_async every transfer does (server/change.c). A port-bound
+     * directory handle carrying an ApcRoutine is refused with the event down
+     * and the file object untouched (io.h IopPortApcConflict). */
+    if (IopPortApcConflict(file, apcRoutine))
+    {
+        if (watch->event != 0)
+        {
+            ObDereferenceObject(watch->event);
+        }
+        if (watch->apcBlock != 0)
+        {
+            MiFreePool(watch->apcBlock);
+        }
+        if (pathCopy != 0)
+        {
+            MiFreePool(pathCopy);
+        }
+        MiFreePool(watch);
+        ObDereferenceObject(file);
+        return STATUS_INVALID_PARAMETER;
+    }
     watch->owner = KeGetCurrentThread()->process;
     ObfReferenceObject(watch->owner);
     watch->issuer = KeGetCurrentThread();
