@@ -661,6 +661,15 @@ static const GUI_LEG SessionGuiLegs[] = {
      .tag = "audio",
      .foregroundName = "aud_smoke.exe"},
 
+    /* AUD-2 (docs/02 "winevsnd.drv: WASAPI render"): the same pattern
+     * through the whole PE audio stack — CoCreateInstance -> IAudioClient
+     * over mmdevapi + winevsnd.drv — with the underrun count on its
+     * verdict line. Written never to return, so returning is the verdict. */
+    {.probe = WSTR("\\??\\C:\\wasapi_smoke.exe"),
+     .foreground = WSTR("\\??\\C:\\wasapi_smoke.exe"),
+     .tag = "audio",
+     .foregroundName = "wasapi_smoke.exe"},
+
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
      * window is closed (the harness's Alt+F4 probe) or when the app dies --

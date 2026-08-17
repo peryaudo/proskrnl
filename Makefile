@@ -1012,6 +1012,71 @@ $(WINEVSND): $(VSND_SRCS) $(VSND_DIR)/winevsnd.h drivers/sndproto.h $(WINE_PE_DL
 winevsnd: $(WINEVSND)
 .PHONY: winevsnd
 
+# The audio DLL set (AUD-2): mmdevapi (WASAPI itself) and what rides it —
+# winmm above, msacm32 (winmm's format-conversion import) and oleaut32
+# (mmdevapi's import) beside. Stripped like every baked dll. ole32/combase/
+# coml2/user32/gdi32 are already in the CUI + GUI strip sets.
+WINESTRIP_AUDIO_NAMES := mmdevapi winmm msacm32 oleaut32
+WINESTRIP_AUDIO_DLLS := $(foreach d,$(WINESTRIP_AUDIO_NAMES),$(WINESTRIP)/$(d).dll)
+# oleaut32's strip rule is already eval'd with the applet set below; one
+# rule per dll (make warns on a duplicate).
+$(foreach d,$(filter-out oleaut32,$(WINESTRIP_AUDIO_NAMES)),$(eval $(call WINESTRIP_RULE,$(d))))
+
+winestrip-audio: $(WINESTRIP_AUDIO_DLLS)
+.PHONY: winestrip-audio
+
+# The audio images' wine.inf: registry-only PLUS self-registration, with
+# mmdevapi injected into [RegisterDllsSection] — CoCreateInstance of the
+# MMDeviceEnumerator needs its CLSID in the hive, which a real prefix gets
+# from the fake-dll registrar this filter drops, and mmdevapi is not in
+# wine.inf's own RegisterDlls list. Registration then runs mmdevapi's OWN
+# DllRegisterServer through Wine's own registrar (setupapi + atl100 — the
+# GUI-6 shell recipe), never a hand-typed CLSID seed (Art. 11 / G8). Of the
+# section's entries, exactly shell32 (when baked) and mmdevapi resolve on an
+# audio image; the rest fail LoadLibrary and are skipped one by one.
+WINE_INF_AUDIO := $(BUILD)/wine-proskrnl-audio.inf
+$(WINE_INF_AUDIO): third_party/wine/loader/wine.inf tools/filter_inf.py
+	@mkdir -p $(dir $@)
+	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll \
+	    third_party/wine/loader/wine.inf $@
+
+# Everything an audio-capable image adds on top of the CUI + GUI payloads:
+# the audio DLL set, the driver, the registrar, and the registering inf
+# (overriding $(WINFILES)'s registry-only copy by mcopy -o ordering — the
+# gui5con conhost precedent). run.sh audio (WASAPI half) and the winetest
+# audio image both take this one list (Art. 11: one spelling).
+AUDIOFILES := $(foreach d,$(WINESTRIP_AUDIO_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+              win:$(WINEVSND)=windows/system32/winevsnd.drv \
+              win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll \
+              win:$(WINESTRIP)/shlwapi.dll=windows/system32/shlwapi.dll \
+              win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll \
+              win:$(WINE_INF_AUDIO)=windows/inf/wine.inf
+AUDIO_PAYLOAD := $(WINESTRIP_AUDIO_DLLS) $(WINEVSND) $(WINESTRIP)/atl100.dll \
+                 $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll $(WINE_INF_AUDIO)
+
+audio-payload: $(AUDIO_PAYLOAD)
+.PHONY: audio-payload
+
+print-audiofiles:
+	@printf '%s\n' $(AUDIOFILES)
+.PHONY: print-audiofiles
+
+# The AUD-2 acceptance client (tests/run/run.sh audio, WASAPI half): the
+# same freestanding shape as aud_smoke.exe, but importing ole32 — it plays
+# the same pattern through CoCreateInstance -> IAudioClient ->
+# IAudioRenderClient over the whole PE audio stack.
+WASAPISMOKE := $(BUILD)/modules/wasapi_smoke.exe
+$(WASAPISMOKE): tests/audio/wasapi_smoke.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=wasapi_start \
+	    tests/audio/wasapi_smoke.c \
+	    $(WINE_PE)/ole32/x86_64-windows/libole32.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+wasapi-smoke: $(WASAPISMOKE)
+.PHONY: wasapi-smoke
+
 # The AUD-1 image (tests/run/run.sh audio): the standard image plus
 # aud_smoke.exe, whose presence makes smss run it as the session's
 # foreground (user/smss/session.c). The virtio-snd device and the wav

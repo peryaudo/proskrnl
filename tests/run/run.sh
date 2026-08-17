@@ -1012,6 +1012,78 @@ wtest_matches() {   # $1 = pattern, $2 = exe, $3 = subtest
     return 1
 }
 
+# Which pairs boot the audio image rather than the CUI one (docs/23 §6c):
+# the audio test modules import user32/ole32/winmm for REAL (message
+# windows, COM apartments), so their pairs cannot run on the CUI machine —
+# the manifest header's audio amendment to rule (c).
+wtest_is_audio() {   # $1 = exe
+    case "$1" in
+        mmdevapi_test.exe|winmm_test.exe) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The audio-capable guest (AUD-2): the winetest CUI machine plus the GUI
+# stack the audio DLLs import plus `make print-audiofiles` — the audio DLL
+# set, winevsnd.drv, atl100 and the registering wine.inf (which overrides
+# $(WINFILES)'s registry-only copy by mcopy -o ordering). One bake
+# authority shared by the audio leg's WASAPI half and the winetest audio
+# partition (Art. 11).
+bake_audio_image() {   # $1 = image path; $2.. = extra specs
+    local img="$1"; shift
+    local kernel="$ROOT/build/proskrnl"
+    make -C "$ROOT" >/dev/null || exit 1
+    make -C "$ROOT" winfiles winestrip winestrip-gui winestrip-audio audio-payload \
+        win32u wineserver-lite build/modules/cmd.exe >/dev/null || exit 1
+
+    local specs=() seed
+    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
+        [[ -f "$seed" ]] && specs+=("$seed=initrd")
+    done
+    local winspec winfiles=()
+    while IFS= read -r winspec; do
+        [[ -n "$winspec" ]] || continue
+        winfiles+=("win:$ROOT/${winspec#win:}")
+    done < <(make -s -C "$ROOT" print-winfiles)
+    if (( ${#winfiles[@]} < 20 )); then
+        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
+             "userland is not that short; the image would be missing most of it" >&2
+        exit 2
+    fi
+    specs+=("${winfiles[@]}")
+    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
+    # The GUI stack the audio DLLs sit on (the guiwtest set).
+    local dll
+    for dll in user32 gdi32 comctl32 imm32 ole32 combase coml2; do
+        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
+    done
+    specs+=("win:$ROOT/build/modules/win32u.dll=windows/system32/win32u.dll")
+    specs+=("win:$ROOT/build/modules/wineserver-lite.exe=windows/system32/wineserver-lite.exe")
+    local fontfile
+    for fontfile in "$ROOT"/third_party/wine/fonts/*.ttf "$ROOT"/third_party/wine/fonts/*.fon; do
+        specs+=("win:$fontfile=windows/fonts/$(basename "$fontfile")")
+    done
+    local nlsfile
+    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
+        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
+    done
+    # The audio payload, read from the Makefile's one list rather than
+    # re-spelled here (the print-winfiles drift lesson).
+    local audiospec audiofiles=()
+    while IFS= read -r audiospec; do
+        [[ -n "$audiospec" ]] || continue
+        audiofiles+=("win:$ROOT/${audiospec#win:}")
+    done < <(make -s -C "$ROOT" print-audiofiles)
+    if (( ${#audiofiles[@]} < 4 )); then
+        echo "run.sh: 'make print-audiofiles' listed ${#audiofiles[@]} files — the audio" \
+             "payload is not that short" >&2
+        exit 2
+    fi
+    specs+=("${audiofiles[@]}")
+    specs+=("$@")
+    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+}
+
 # The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
 # own test suite"): the manifest of <test_exe>:<subtest> pairs
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
@@ -1114,22 +1186,40 @@ winetest() {
     fi
 
     # --- proskrnl leg (the REGRESSION gate) ---
-    # A subset boots its OWN image (the proskrnl leg's rule): the gate's
-    # wtest.hdd must never be left holding a partial manifest, where a later
-    # run — or a human reading the file — would take it for the full sweep.
-    local kernel img baked
+    # The pairs PARTITION by exe onto two guests (docs/23 §6c): the audio
+    # modules boot the audio-capable image (bake_audio_image) with the
+    # virtio-snd device on the QEMU command line; every other pair boots the
+    # CUI machine exactly as before. Each image gets a manifest filtered to
+    # ITS pairs — a pair must never be swept on an image that cannot host
+    # its imports — and a subset run boots its OWN images (the proskrnl
+    # leg's rule): the gate's wtest.hdd must never be left holding a
+    # partial manifest, where a later run — or a human reading the file —
+    # would take it for the full sweep.
+    local kernel img imgAudio baked bakedAudio
     kernel="$ROOT/build/proskrnl"
+    local w cuiIdx=() audIdx=()
+    for ((w = 0; w < ${#wtestKeys[@]}; w++)); do
+        if wtest_is_audio "${wtestExes[w]}"; then audIdx+=("$w"); else cuiIdx+=("$w"); fi
+    done
     img="$ROOT/build/tests/wtest.hdd"
-    baked="$manifest"
+    imgAudio="$ROOT/build/tests/wtest-audio.hdd"
     if (( ${#SUBTESTS[@]} )); then
         img="$ROOT/build/tests/wtest-subset.hdd"
-        baked="$BUILD/wtests/manifest-subset.txt"
-        {
-            echo "# GENERATED by tests/run/run.sh winetest ${SUBTESTS[*]} — a SUBSET of"
-            echo "# tests/winetest/manifest.txt, baked for iteration. Never a verdict."
-            printf '%s\n' "${wtestLines[@]}"
-        } > "$baked"
+        imgAudio="$ROOT/build/tests/wtest-audio-subset.hdd"
     fi
+    mkdir -p "$BUILD/wtests"
+    baked="$BUILD/wtests/manifest-cui.txt"
+    bakedAudio="$BUILD/wtests/manifest-audio.txt"
+    {
+        echo "# GENERATED by tests/run/run.sh winetest — the CUI-image half of"
+        echo "# tests/winetest/manifest.txt (the audio pairs boot their own image)."
+        for w in ${cuiIdx[@]+"${cuiIdx[@]}"}; do printf '%s\n' "${wtestLines[$w]}"; done
+    } > "$baked"
+    {
+        echo "# GENERATED by tests/run/run.sh winetest — the audio-image half of"
+        echo "# tests/winetest/manifest.txt (docs/23 §6c)."
+        for w in ${audIdx[@]+"${audIdx[@]}"}; do printf '%s\n' "${wtestLines[$w]}"; done
+    } > "$bakedAudio"
     make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
     make -C "$ROOT" winfiles build/modules/cmd.exe >/dev/null
 
@@ -1214,12 +1304,13 @@ winetest() {
     for inifile in "$BUILD/wtests/sysini"/*.ini; do
         specs+=("win:$inifile=windows/$(basename "$inifile")")
     done
-    # Only the exes the (possibly filtered) manifest names — an unfiltered run
-    # bakes all five, a subset bakes just what it will run, which is the ntapi
-    # leg's property too: a subset's image is as short as the subset.
+    # Only the exes THIS image's manifest names — an unfiltered run bakes
+    # all five CUI modules, a subset bakes just what it will run, which is
+    # the ntapi leg's property too: a subset's image is as short as the
+    # subset. The audio exes ride the audio image below, never this one.
     local bakedExes=" "
-    for ((i = 0; i < ${#wtestExes[@]}; i++)); do
-        [[ "$bakedExes" == *" ${wtestExes[i]} "* ]] || bakedExes+="${wtestExes[i]} "
+    for w in ${cuiIdx[@]+"${cuiIdx[@]}"}; do
+        [[ "$bakedExes" == *" ${wtestExes[$w]} "* ]] || bakedExes+="${wtestExes[$w]} "
     done
     # shellcheck disable=SC2086  -- deliberate split on a list we just built
     for exe in $bakedExes; do
@@ -1234,17 +1325,43 @@ winetest() {
     # 1 GiB of guest RAM: no eviction (Art. 3) means the page cache holds
     # every test binary's pages for the whole sweep — memory is provisioned,
     # not managed.
-    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
-
     local log="$ROOT/build/tests/wtest-serial.log"
-    if (( ${#SUBTESTS[@]} )); then log="$ROOT/build/tests/wtest-subset-serial.log"; fi
-    LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
-        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    local logAudio="$ROOT/build/tests/wtest-audio-serial.log"
+    if (( ${#SUBTESTS[@]} )); then
+        log="$ROOT/build/tests/wtest-subset-serial.log"
+        logAudio="$ROOT/build/tests/wtest-audio-subset-serial.log"
+    fi
+    if (( ${#cuiIdx[@]} )); then
+        SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+        LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
+            "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    fi
+
+    if (( ${#audIdx[@]} )); then
+        # The audio guest: virtio-snd backed by the null audiodev — the
+        # pairs assert the WASAPI clocks and shapes, not the recording (the
+        # WAV verdict is the audio leg's, §6a). Its manifest and exes ride
+        # as extra specs on the shared bake.
+        local audioSpecs=("win:$bakedAudio=wtests/manifest.txt")
+        local exe2 bakedAudioExes=" "
+        for w in "${audIdx[@]}"; do
+            exe2="${wtestExes[$w]}"
+            [[ "$bakedAudioExes" == *" $exe2 "* ]] && continue
+            bakedAudioExes+="$exe2 "
+            audioSpecs+=("win:$ROOT/build/wtests/$exe2=wtests/$exe2")
+        done
+        bake_audio_image "$imgAudio" "${audioSpecs[@]}"
+        LOG="$logAudio" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
+            EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" AUDIODEV="none,id=snd0" \
+            "$ROOT/tools/qemu.sh" "$imgAudio" >/dev/null 2>&1 || true
+    fi
 
     # No ^ anchor: conhost cursor escapes may share the verdict's line (the
-    # run.sh console precedent).
+    # run.sh console precedent). Each pair is graded from ITS image's log.
+    local vlog
     for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
-        if grep -qF "[KTEST] wtest ${wtestKeys[i]} PASS" "$log" 2>/dev/null; then
+        if wtest_is_audio "${wtestExes[i]}"; then vlog="$logAudio"; else vlog="$log"; fi
+        if grep -qF "[KTEST] wtest ${wtestKeys[i]} PASS" "$vlog" 2>/dev/null; then
             echo "[KTEST] wtest ${wtestKeys[i]} PASS"
         else
             echo "[KTEST] wtest ${wtestKeys[i]} FAIL"
@@ -2655,7 +2772,40 @@ audio() {
     if ! python3 "$ROOT/tests/audio/check_audio.py" --log "$log" --wav "$wav"; then
         echo "== audio: FAIL (recording does not contain what the guest played) =="; return 1
     fi
-    echo "== audio: PASS (device contract + sample-exact playback in the recorded WAV) =="
+
+    # --- the WASAPI half (AUD-2, docs/23 §6c): the SAME pattern through the
+    # whole PE audio stack — the mmdevapi seam, winevsnd.drv, the feeder —
+    # recorded by the same wav audiodev and checked by the same
+    # property-based reader. The verdict line carries the driver's underrun
+    # counter as a NUMBER (docs/19 §8.4's rule): 0 on an unloaded host, the
+    # measured glitch count on a starved TCG runner — reported either way,
+    # asserted never (docs/23 §6d).
+    make -C "$ROOT" wasapi-smoke >/dev/null
+    local img2="$dir/wasapi.hdd"
+    bake_audio_image "$img2" "win:$ROOT/build/modules/wasapi_smoke.exe=wasapi_smoke.exe"
+    sock="$dir/wasapi.sock" log="$dir/wasapi.log" wav="$dir/wasapi.wav"
+    rm -f "$sock" "$wav" "$log"
+    QMP_SOCK="$sock" LOG="$log" \
+        EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
+        AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        "$ROOT/tools/qemu.sh" "$img2" >/dev/null 2>&1 &
+    qemu_wrapper=$!
+    if ! await '\[KTEST\] audio (PASS|FAIL)'; then
+        audio_fail "no WASAPI client verdict"; return 1
+    fi
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] audio PASS underruns=[0-9]+' "$log"; then
+        echo "== audio: FAIL (WASAPI half: no PASS carrying an underrun count; see $log) =="
+        return 1
+    fi
+    if ! python3 "$ROOT/tests/audio/check_audio.py" --log "$log" --wav "$wav"; then
+        echo "== audio: FAIL (WASAPI recording does not contain what the guest played) =="
+        return 1
+    fi
+    echo "== audio: PASS (device contract + sample-exact playback, direct and via WASAPI," \
+         "$(grep -oE 'underruns=[0-9]+' "$log" | tail -1)) =="
     return 0
 }
 
