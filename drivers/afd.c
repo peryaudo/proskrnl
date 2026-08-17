@@ -88,7 +88,20 @@ typedef struct AFD_SOCKADDR_IN
 } AFD_SOCKADDR_IN;
 _Static_assert(sizeof(AFD_SOCKADDR_IN) == 16, "Win32 sockaddr_in is 16 bytes");
 
+/* Win32 sockaddr_in6 (re-verify against wine/include/ws2ipdef.h struct
+ * WS(sockaddr_in6): 2+2+4+16+4). */
+typedef struct AFD_SOCKADDR_IN6
+{
+    USHORT family;
+    USHORT port;    /* network byte order */
+    ULONG flowinfo; /* reported 0 (pinned by ws2_32:afd test_bind) */
+    UCHAR address[16];
+    ULONG scope;
+} AFD_SOCKADDR_IN6;
+_Static_assert(sizeof(AFD_SOCKADDR_IN6) == 28, "Win32 sockaddr_in6 is 28 bytes");
+
 #define AFD_AF_INET     2
+#define AFD_AF_INET6    23
 #define AFD_SOCK_STREAM 1
 #define AFD_SOCK_DGRAM  2
 
@@ -154,7 +167,7 @@ typedef struct AFD_DGRAM
 /* The receive ring: sized to hold everything lwIP can have in flight
  * (TCP_WND) plus a full extra window so tcp_recved backpressure engages
  * before the ring can overflow — an ASSERT, not a drop, guards it. */
-#define AFD_RING_CAPACITY (4 * TCP_WND)
+#define AFD_RING_CAPACITY (2 * TCP_WND)
 /* UDP queue bound: datagrams past this many buffered bytes are dropped
  * (datagram semantics; loud, counted). */
 #define AFD_DGRAM_CAPACITY 65536
@@ -219,8 +232,27 @@ typedef struct AFD_SOCKET
     NTSTATUS statusPerBit[AFD_POLL_BIT_COUNT];
     PKEVENT selectEvent; /* referenced body, or 0 (no selection) */
     int selectMask;
-    BOOLEAN nonBlocking; /* FIONBIO / implicit via event select */
-    BOOLEAN resetLatch;  /* an RST arrived (AFD_POLL_RESET's level) */
+    BOOLEAN nonBlocking;         /* FIONBIO / implicit via event select */
+    BOOLEAN resetLatch;          /* an RST arrived (AFD_POLL_RESET's level) */
+    BOOLEAN connectedViaConnect; /* connect()ed, not accept()ed: only this
+                                  * re-connect refuses CONNECTION_ACTIVE
+                                  * (measured — ws2_32:afd re-connects an
+                                  * accepted socket and expects success) */
+
+    /* The loopback OOB sidechannel (docs/03 "Net-2 urgent data"): lwIP
+     * carries no TCP urgent pointer, but every loopback connection's BOTH
+     * ends are this driver's, so the one urgent byte NT semantics carry
+     * travels beside the stream to the peer socket found by port pair.
+     * Wire peers have no sidechannel and keep the refusal. */
+    UCHAR oobByte;
+    BOOLEAN oobValid;
+
+    /* The MAIN parked poll on this socket (the first entry's socket of a
+     * poll that arrived when no main existed): the exclusive-displacement
+     * anchor (ws2_32:afd test_poll_exclusive's model, measured — a new
+     * exclusive poll terminates the main iff the main is exclusive, and
+     * only a poll arriving while no main exists becomes main). */
+    struct AFD_POLL_WAIT *mainPoll;
 
     /* The sockopt store (the get-as-output/set-as-input verbs). The
      * knobs lwIP carries are applied (nodelay, keepalive, reuse,
@@ -284,6 +316,14 @@ static LIST_ENTRY AfdSocketList;
  * expired by netd's tick (AfdPollTick). */
 static LIST_ENTRY AfdPollList;
 
+/* The docs/24 §6e verdict numbers ([KTEST] net stats): an inline-only
+ * implementation would leave pended/syncparks at 0, a loopback-only one
+ * shows nothing on the wire counters beside these — both inert shapes
+ * pass every semantic test, so the run.sh legs assert the numbers. */
+static ULONG AfdStatPended;    /* requests that genuinely parked */
+static ULONG AfdStatSyncParks; /* synchronous-handle IoWaitCancellable laps */
+static ULONG AfdStatRefused;   /* default-arm refusals (unbuilt/unknown verbs) */
+
 /* --- err_t -> NTSTATUS ------------------------------------------------------ *
  * Statuses chosen to survive ws2_32's NtStatusToWSAError mapping
  * (dlls/ws2_32/socket.c) and pinned per case in tests/ntapi/sem_net/. */
@@ -343,6 +383,32 @@ static void AfdFillSockaddr(AFD_SOCKADDR_IN *out, const ip_addr_t *address, USHO
     out->family = AFD_AF_INET;
     out->port = AfdSwap16(hostPort);
     out->address = ip_addr_isany(address) ? 0 : ip_addr_get_ip4_u32(address);
+}
+
+/* The caller-shaped name for either family: 16 bytes (v4) or 28 (v6)
+ * written to `out`, the size returned. lwIP stores v6 address words in
+ * network order, so the 16 bytes copy straight through. */
+static ULONG AfdNameSize(int family)
+{
+    return family == AFD_AF_INET6 ? sizeof(AFD_SOCKADDR_IN6) : sizeof(AFD_SOCKADDR_IN);
+}
+
+static ULONG AfdFillName(int family, void *out, const ip_addr_t *address, USHORT hostPort)
+{
+    if (family == AFD_AF_INET6)
+    {
+        AFD_SOCKADDR_IN6 *name = out;
+        memset(name, 0, sizeof(*name));
+        name->family = AFD_AF_INET6;
+        name->port = AfdSwap16(hostPort);
+        if (IP_IS_V6(address))
+        {
+            memcpy(name->address, &ip_2_ip6(address)->addr[0], 16);
+        }
+        return sizeof(*name);
+    }
+    AfdFillSockaddr(out, address, hostPort);
+    return sizeof(AFD_SOCKADDR_IN);
 }
 
 /* --- the receive ring ------------------------------------------------------- */
@@ -495,6 +561,7 @@ static NTSTATUS AfdParkRequest(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_C
         sock->connectRequest = request;
         break;
     }
+    AfdStatPended++;
     *out = request;
     return STATUS_SUCCESS;
 }
@@ -584,6 +651,7 @@ static void AfdCompleteRecvLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
 static void AfdContinueSendLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
 static void AfdCompleteAcceptLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
 static void AfdEvaluatePolls(void);
+static struct AFD_SOCKET *AfdFindLoopbackPeer(struct AFD_SOCKET *sock);
 
 /* One EDGE: latch the bit (and its status word), fire the armed select
  * event when the mask covers it. The GET_EVENTS latch consumes bits; the
@@ -634,10 +702,31 @@ static int AfdPollLevel(PAFD_SOCKET sock)
     if (sock->connected)
     {
         level |= AFD_POLL_CONNECT;
-        if (sock->pcb.tcp != 0 && tcp_sndbuf(sock->pcb.tcp) != 0 && !sock->shutdownSend)
+        /* WRITE stays up after a send-shutdown and after a reset (the pcb
+         * is gone then) — measured; a filled window drops it, and a
+         * congested loopback PEER (its receive ring half-full) keeps it
+         * down even once lwIP's own send buffer recovers — the visible
+         * NT shape, where a receiver that stops draining parks the
+         * sender's writability (measured against ws2_32:afd's
+         * window-fill rows). */
+        BOOLEAN writable =
+            sock->pcb.tcp == 0 || 2 * (ULONG)tcp_sndbuf(sock->pcb.tcp) >= TCP_SND_BUF;
+        if (writable && sock->pcb.tcp != 0)
+        {
+            PAFD_SOCKET peer = AfdFindLoopbackPeer(sock);
+            if (peer != 0 && 2 * peer->ringCount >= AFD_RING_CAPACITY)
+            {
+                writable = FALSE;
+            }
+        }
+        if (writable)
         {
             level |= AFD_POLL_WRITE;
         }
+    }
+    if (sock->oobValid)
+    {
+        level |= AFD_POLL_OOB;
     }
     if (sock->peerClosed)
     {
@@ -664,6 +753,24 @@ static void AfdCompletePoll(PAFD_POLL_WAIT wait, NTSTATUS status, BOOLEAN report
     ULONG ready = 0;
 
     RemoveEntryList(&wait->listEntry);
+    if (wait->entries[0].sock->mainPoll == wait)
+    {
+        wait->entries[0].sock->mainPoll = 0;
+    }
+    if (!NT_SUCCESS(status) && status != STATUS_TIMEOUT)
+    {
+        /* A cancelled/torn-down poll reports Information 0 and leaves the
+         * caller's buffer UNTOUCHED (measured — ws2_32:afd reads stale
+         * output after closing the issuing handle of a poll watching
+         * another socket). */
+        for (ULONG i = 0; i < wait->count; i++)
+        {
+            ObDereferenceObject(wait->entries[i].file);
+        }
+        IopCompletePendingRequest(wait->pending, status, 0);
+        MiFreePool(wait);
+        return;
+    }
     memset(out, 0, sizeof(*out));
     out->timeout = wait->inputTimeout;
     out->exclusive = wait->exclusive;
@@ -674,6 +781,17 @@ static void AfdCompletePoll(PAFD_POLL_WAIT wait, NTSTATUS status, BOOLEAN report
             int flags = AfdPollLevel(wait->entries[i].sock);
             int visible = (flags & wait->entries[i].mask) | (flags & AFD_POLL_CLOSE);
             if (visible == 0)
+            {
+                continue;
+            }
+            /* A socket listed twice reports once (measured: the duplicate
+             * two-entry poll completes with count 1). */
+            BOOLEAN duplicate = FALSE;
+            for (ULONG j = 0; j < i && !duplicate; j++)
+            {
+                duplicate = wait->entries[j].sock == wait->entries[i].sock;
+            }
+            if (duplicate)
             {
                 continue;
             }
@@ -874,6 +992,12 @@ static void AfdWireTcpCallbacks(PAFD_SOCKET sock)
     tcp_recv(sock->pcb.tcp, AfdTcpRecvCallback);
     tcp_sent(sock->pcb.tcp, AfdTcpSentCallback);
     tcp_err(sock->pcb.tcp, AfdTcpErrCallback);
+    /* Nagle off by default (an internal choice, not boundary semantics):
+     * lwIP's delayed ACK holds a Nagle-blocked second small send for up
+     * to a TCP timer lap, and winetest's 200 ms completion waits measure
+     * that as a hang — NT's loopback has no such stall. SET_TCP_NODELAY
+     * still toggles it for callers who opt in. */
+    tcp_nagle_disable(sock->pcb.tcp);
 }
 
 static err_t AfdTcpAcceptCallback(void *arg, struct tcp_pcb *newPcb, err_t err)
@@ -955,45 +1079,59 @@ static void AfdUdpRecvCallback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
 /* --- parked-request completion (inside the seam) ---------------------------- */
 
+/* Pop and deliver ONE datagram into `pending`'s owner through the segs —
+ * the one truncation/address authority for the parked and inline paths
+ * alike (caller guaranteed the queue is non-empty). */
+static NTSTATUS AfdDeliverDgram(PAFD_SOCKET sock, PIOP_PENDING_REQUEST pending, const AFD_SEG *segs,
+                                ULONG segCount, uint64_t addrPtr, uint64_t addrLenPtr,
+                                ULONG *deliveredOut)
+{
+    ASSERT(!IsListEmpty(&sock->dgramQueue));
+    AFD_DGRAM *dgram = CONTAINING_RECORD(sock->dgramQueue.Flink, AFD_DGRAM, entry);
+    RemoveEntryList(&dgram->entry);
+    sock->dgramBytes -= dgram->length;
+    ULONG capacity = 0;
+    for (ULONG i = 0; i < segCount; i++)
+    {
+        capacity += segs[i].length;
+    }
+    ULONG deliver = dgram->length < capacity ? dgram->length : capacity;
+    ULONG at = 0;
+    for (ULONG i = 0; i < segCount && at < deliver; i++)
+    {
+        ULONG take = segs[i].length;
+        if (take > deliver - at)
+        {
+            take = deliver - at;
+        }
+        AfdCopyToOwner(pending, segs[i].base, dgram->data + at, take);
+        at += take;
+    }
+    if (addrPtr != 0)
+    {
+        AfdCopyToOwner(pending, addrPtr, &dgram->from, sizeof(dgram->from));
+        if (addrLenPtr != 0)
+        {
+            int addrLen = sizeof(dgram->from);
+            AfdCopyToOwner(pending, addrLenPtr, &addrLen, sizeof(addrLen));
+        }
+    }
+    NTSTATUS status = dgram->length > capacity ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+    MiFreePool(dgram);
+    *deliveredOut = deliver;
+    return status;
+}
+
 /* One TCP/UDP recv completion against the CURRENT state; the caller
  * guaranteed AfdRecvSatisfiable. */
 static void AfdCompleteRecvLocked(PAFD_SOCKET sock, PAFD_REQUEST request)
 {
     if (sock->type == AFD_SOCK_DGRAM)
     {
-        ASSERT(!IsListEmpty(&sock->dgramQueue));
-        AFD_DGRAM *dgram = CONTAINING_RECORD(sock->dgramQueue.Flink, AFD_DGRAM, entry);
-        RemoveEntryList(&dgram->entry);
-        sock->dgramBytes -= dgram->length;
-        ULONG capacity = 0;
-        for (ULONG i = 0; i < request->segCount; i++)
-        {
-            capacity += request->segs[i].length;
-        }
-        ULONG deliver = dgram->length < capacity ? dgram->length : capacity;
-        ULONG at = 0;
-        for (ULONG i = 0; i < request->segCount && at < deliver; i++)
-        {
-            ULONG take = request->segs[i].length;
-            if (take > deliver - at)
-            {
-                take = deliver - at;
-            }
-            AfdCopyToOwner(request->pending, request->segs[i].base, dgram->data + at, take);
-            at += take;
-        }
-        if (request->addrPtr != 0)
-        {
-            AfdCopyToOwner(request->pending, request->addrPtr, &dgram->from, sizeof(dgram->from));
-            if (request->addrLenPtr != 0)
-            {
-                int addrLen = sizeof(dgram->from);
-                AfdCopyToOwner(request->pending, request->addrLenPtr, &addrLen, sizeof(addrLen));
-            }
-        }
-        NTSTATUS status = dgram->length > capacity ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
-        MiFreePool(dgram);
-        AfdCompleteRequest(request, status, deliver);
+        ULONG delivered = 0;
+        NTSTATUS status = AfdDeliverDgram(sock, request->pending, request->segs, request->segCount,
+                                          request->addrPtr, request->addrLenPtr, &delivered);
+        AfdCompleteRequest(request, status, delivered);
         return;
     }
 
@@ -1173,12 +1311,25 @@ static NTSTATUS AfdCaptureSegments(uint64_t buffersPtr, ULONG count, AFD_SEG **s
 }
 
 /* Validate + convert a caller sockaddr (already bounced to kernel). */
-static NTSTATUS AfdReadSockaddr(const void *addr, ULONG length, ip_addr_t *addressOut,
+static NTSTATUS AfdReadSockaddr(int family, const void *addr, ULONG length, ip_addr_t *addressOut,
                                 u16_t *portOut)
 {
     if (length < 2)
     {
         return STATUS_INVALID_PARAMETER; /* cuts into the header */
+    }
+    if (family == AFD_AF_INET6)
+    {
+        const AFD_SOCKADDR_IN6 *in = addr;
+        if (length < sizeof(AFD_SOCKADDR_IN6) || in->family != AFD_AF_INET6)
+        {
+            return STATUS_INVALID_ADDRESS;
+        }
+        ip_addr_t v6 = IPADDR6_INIT(0, 0, 0, 0);
+        memcpy(&ip_2_ip6(&v6)->addr[0], in->address, 16);
+        *addressOut = v6;
+        *portOut = AfdSwap16(in->port);
+        return STATUS_SUCCESS;
     }
     const AFD_SOCKADDR_IN *in = addr;
     if (length < sizeof(AFD_SOCKADDR_IN) || in->family != AFD_AF_INET)
@@ -1201,7 +1352,18 @@ static BOOLEAN AfdAddressIsLocal(const ip_addr_t *address)
     struct netif *netif;
     NETIF_FOREACH(netif)
     {
-        if (ip_addr_eq(netif_ip_addr4(netif), address))
+        if (IP_IS_V6(address))
+        {
+            for (int i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++)
+            {
+                if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i)) &&
+                    ip6_addr_eq(netif_ip6_addr(netif, i), ip_2_ip6(address)))
+                {
+                    return TRUE;
+                }
+            }
+        }
+        else if (ip_addr_eq(netif_ip_addr4(netif), address))
         {
             return TRUE;
         }
@@ -1214,10 +1376,13 @@ static BOOLEAN AfdAddressIsLocal(const ip_addr_t *address)
  * when NtCancelSynchronousIoFile landed. */
 static NTSTATUS AfdWaitReadable(PAFD_SOCKET sock)
 {
+    AfdStatSyncParks++;
     return IoWaitCancellable(&sock->syncWait, 0);
 }
 
 /* --- the verbs -------------------------------------------------------------- */
+
+static NTSTATUS AfdRefuseWithIosb(PFILE_OBJECT file, IO_CONTROL_CONTEXT *context, NTSTATUS status);
 
 static NTSTATUS AfdCreateSocket(PFILE_OBJECT file, PAFD_SOCKET sock, const void *input,
                                 ULONG inputLength)
@@ -1231,11 +1396,13 @@ static NTSTATUS AfdCreateSocket(PFILE_OBJECT file, PAFD_SOCKET sock, const void 
         return STATUS_INVALID_PARAMETER;
     }
     const struct afd_create_params *params = input;
-    if (params->family != AFD_AF_INET)
+    if (params->family != AFD_AF_INET && params->family != AFD_AF_INET6)
     {
-        /* The staged surface: AF_INET6 (and everything else) refuses until
-         * its own pins exist — a real caller's refusal, so a specific
-         * status, recorded in docs/03 ("Net-2 staged AF_INET6"). */
+        /* The staged surface: everything but AF_INET and dual-stacked
+         * AF_INET6 refuses — a real caller's refusal, so a specific
+         * status (docs/03 "Net-2 staged AF_INET6": the v6 DATA surface is
+         * the staged part; create/bind/name exist because ws2_32:afd's
+         * test_bind exercises them). */
         return STATUS_NOT_SUPPORTED;
     }
     if (params->type != AFD_SOCK_STREAM && params->type != AFD_SOCK_DGRAM)
@@ -1254,10 +1421,11 @@ static NTSTATUS AfdCreateSocket(PFILE_OBJECT file, PAFD_SOCKET sock, const void 
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     }
+    u8_t ipType = params->family == AFD_AF_INET6 ? IPADDR_TYPE_V6 : IPADDR_TYPE_V4;
     NetdEnterLwip();
     if (sock->type == AFD_SOCK_STREAM)
     {
-        sock->pcb.tcp = tcp_new();
+        sock->pcb.tcp = tcp_new_ip_type(ipType);
         if (sock->pcb.tcp != 0)
         {
             AfdWireTcpCallbacks(sock);
@@ -1265,7 +1433,7 @@ static NTSTATUS AfdCreateSocket(PFILE_OBJECT file, PAFD_SOCKET sock, const void 
     }
     else
     {
-        sock->pcb.udp = udp_new();
+        sock->pcb.udp = udp_new_ip_type(ipType);
         if (sock->pcb.udp != 0)
         {
             udp_recv(sock->pcb.udp, AfdUdpRecvCallback, sock);
@@ -1281,8 +1449,9 @@ static NTSTATUS AfdCreateSocket(PFILE_OBJECT file, PAFD_SOCKET sock, const void 
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS AfdBind(PAFD_SOCKET sock, const void *input, ULONG inputLength, void *output,
-                        ULONG outputLength, ULONG_PTR *infoOut)
+static NTSTATUS AfdBind(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
+                        const void *input, ULONG inputLength, void *output, ULONG outputLength,
+                        ULONG_PTR *infoOut)
 {
     if (!sock->created)
     {
@@ -1294,15 +1463,15 @@ static NTSTATUS AfdBind(PAFD_SOCKET sock, const void *input, ULONG inputLength, 
     }
     ip_addr_t address;
     u16_t port;
-    NTSTATUS status = AfdReadSockaddr((const UCHAR *)input + sizeof(int), inputLength - sizeof(int),
-                                      &address, &port);
+    NTSTATUS status = AfdReadSockaddr(sock->family, (const UCHAR *)input + sizeof(int),
+                                      inputLength - sizeof(int), &address, &port);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
     /* The output must hold the materialized name (the pinned
      * INVALID_PARAMETER when it cannot). */
-    if (outputLength < sizeof(AFD_SOCKADDR_IN))
+    if (outputLength < AfdNameSize(sock->family))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -1315,7 +1484,10 @@ static NTSTATUS AfdBind(PAFD_SOCKET sock, const void *input, ULONG inputLength, 
     if (!AfdAddressIsLocal(&address))
     {
         NetdLeaveLwip();
-        return STATUS_INVALID_ADDRESS_COMPONENT;
+        /* A RUNTIME bind failure (unlike the validation refusals above)
+         * delivers through the IOSB and the event (measured — ws2_32:afd
+         * test_bind reads io.Status for it). */
+        return AfdRefuseWithIosb(file, context, STATUS_INVALID_ADDRESS_COMPONENT);
     }
     err_t err;
     u16_t boundPort;
@@ -1335,18 +1507,19 @@ static NTSTATUS AfdBind(PAFD_SOCKET sock, const void *input, ULONG inputLength, 
     NetdLeaveLwip();
     if (err != ERR_OK)
     {
-        return AfdStatusFromLwip(err); /* ERR_USE -> SHARING_VIOLATION (pin) */
+        /* ERR_USE -> SHARING_VIOLATION (pin), through the IOSB like every
+         * runtime bind outcome. */
+        return AfdRefuseWithIosb(file, context, AfdStatusFromLwip(err));
     }
     sock->bound = TRUE;
     /* An ANY bind reports the loopback-or-wildcard it got; the pinned
-     * cases bind 127.0.0.1 and read it back. */
-    AFD_SOCKADDR_IN *name = output;
-    AfdFillSockaddr(name, &boundAddress, boundPort);
+     * cases bind the loopback and read it back — report the address the
+     * caller ASKED for when lwIP stored the wildcard. */
     if (ip_addr_isany_val(boundAddress) && !ip_addr_isany(&address))
     {
-        name->address = ip_addr_get_ip4_u32(&address);
+        boundAddress = address;
     }
-    *infoOut = sizeof(*name);
+    *infoOut = AfdFillName(sock->family, output, &boundAddress, boundPort);
     return STATUS_SUCCESS;
 }
 
@@ -1394,19 +1567,22 @@ static NTSTATUS AfdGetSockName(PAFD_SOCKET sock, void *output, ULONG outputLengt
     {
         return STATUS_INVALID_PARAMETER; /* state before length (pinned) */
     }
-    if (outputLength < sizeof(AFD_SOCKADDR_IN))
+    if (outputLength < AfdNameSize(sock->family))
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    AFD_SOCKADDR_IN name;
+    AFD_SOCKADDR_IN6 name; /* big enough for either family */
+    ULONG size;
     NetdEnterLwip();
     if (sock->type == AFD_SOCK_STREAM && sock->pcb.tcp != 0)
     {
-        AfdFillSockaddr(&name, &sock->pcb.tcp->local_ip, sock->pcb.tcp->local_port);
+        size =
+            AfdFillName(sock->family, &name, &sock->pcb.tcp->local_ip, sock->pcb.tcp->local_port);
     }
     else if (sock->type == AFD_SOCK_DGRAM && sock->pcb.udp != 0)
     {
-        AfdFillSockaddr(&name, &sock->pcb.udp->local_ip, sock->pcb.udp->local_port);
+        size =
+            AfdFillName(sock->family, &name, &sock->pcb.udp->local_ip, sock->pcb.udp->local_port);
     }
     else
     {
@@ -1414,8 +1590,8 @@ static NTSTATUS AfdGetSockName(PAFD_SOCKET sock, void *output, ULONG outputLengt
         return STATUS_INVALID_PARAMETER;
     }
     NetdLeaveLwip();
-    memcpy(output, &name, sizeof(name));
-    *infoOut = sizeof(name);
+    memcpy(output, &name, size);
+    *infoOut = size;
     return STATUS_SUCCESS;
 }
 
@@ -1426,28 +1602,29 @@ static NTSTATUS AfdGetPeerName(PAFD_SOCKET sock, void *output, ULONG outputLengt
     {
         return STATUS_INVALID_CONNECTION;
     }
-    if (outputLength < sizeof(AFD_SOCKADDR_IN))
+    if (outputLength < AfdNameSize(sock->family))
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    AFD_SOCKADDR_IN name;
+    AFD_SOCKADDR_IN6 name; /* big enough for either family */
+    ULONG size;
     NetdEnterLwip();
     if (sock->type != AFD_SOCK_STREAM || sock->pcb.tcp == 0)
     {
         NetdLeaveLwip();
         return STATUS_INVALID_CONNECTION;
     }
-    AfdFillSockaddr(&name, &sock->pcb.tcp->remote_ip, sock->pcb.tcp->remote_port);
+    size = AfdFillName(sock->family, &name, &sock->pcb.tcp->remote_ip, sock->pcb.tcp->remote_port);
     NetdLeaveLwip();
-    memcpy(output, &name, sizeof(name));
-    *infoOut = sizeof(name);
+    memcpy(output, &name, size);
+    *infoOut = size;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS AfdConnect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
                            const void *input, ULONG inputLength)
 {
-    if (!sock->created || sock->type != AFD_SOCK_STREAM)
+    if (!sock->created)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -1461,13 +1638,47 @@ static NTSTATUS AfdConnect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (sock->connected || sock->connecting)
+    if (sock->type == AFD_SOCK_DGRAM)
+    {
+        /* A datagram connect just fixes the default peer — inline, no
+         * CONNECT edge (measured: ws2_32:afd polls CONNECT across a UDP
+         * connect and expects no completion). */
+        ip_addr_t address;
+        u16_t port;
+        NTSTATUS status =
+            AfdReadSockaddr(sock->family, params + 1, (ULONG)params->addr_len, &address, &port);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        err_t err;
+        NetdEnterLwip();
+        err = udp_connect(sock->pcb.udp, &address, port);
+        NetdLeaveLwip();
+        if (err != ERR_OK)
+        {
+            return AfdStatusFromLwip(err);
+        }
+        sock->connected = TRUE;
+        sock->connectedViaConnect = TRUE;
+        sock->bound = TRUE; /* udp_connect auto-binds */
+        return STATUS_SUCCESS;
+    }
+    if (sock->connecting || (sock->connected && sock->connectedViaConnect))
     {
         return STATUS_CONNECTION_ACTIVE;
     }
+    if (sock->connected)
+    {
+        /* An ACCEPTED socket's re-connect answers success as a no-op
+         * (measured — ws2_32:afd calls connect() on the accepted end and
+         * expects 0, with no CONNECT edge raised). */
+        return STATUS_SUCCESS;
+    }
     ip_addr_t address;
     u16_t port;
-    NTSTATUS status = AfdReadSockaddr(params + 1, (ULONG)params->addr_len, &address, &port);
+    NTSTATUS status =
+        AfdReadSockaddr(sock->family, params + 1, (ULONG)params->addr_len, &address, &port);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1478,6 +1689,7 @@ static NTSTATUS AfdConnect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
     if (sock->nonBlocking)
     {
         sock->connecting = TRUE;
+        sock->connectedViaConnect = TRUE;
         sock->soError = 0;
         NetdEnterLwip();
         err_t err = tcp_connect(sock->pcb.tcp, &address, port, AfdTcpConnectedCallback);
@@ -1498,6 +1710,7 @@ static NTSTATUS AfdConnect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
         return status;
     }
     sock->connecting = TRUE;
+    sock->connectedViaConnect = TRUE;
     sock->soError = 0;
     NetdEnterLwip();
     err_t err = tcp_connect(sock->pcb.tcp, &address, port, AfdTcpConnectedCallback);
@@ -1586,10 +1799,18 @@ static NTSTATUS AfdRecvCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
     if (sock->type == AFD_SOCK_DGRAM && !IsListEmpty(&sock->dgramQueue) &&
         (msgFlags & AFD_MSG_PEEK) == 0)
     {
-        /* Complete through the parked path against a temporary request so
-         * datagram truncation stays in one place: park then satisfy. */
+        /* Inline delivery — the short-buffer BUFFER_OVERFLOW must be the
+         * RETURN status too (measured: ws2_32:afd's inline UDP short read
+         * asserts the return value, not just the IOSB). */
+        IOP_PENDING_REQUEST inlineShape = {.owner = KeGetCurrentThread()->process,
+                                           .kernelIosb = ExGetPreviousMode() == KernelMode};
+        ULONG delivered = 0;
+        NTSTATUS status =
+            AfdDeliverDgram(sock, &inlineShape, segs, segCount, addrPtr, addrLenPtr, &delivered);
         NetdLeaveLwip();
-        goto park;
+        MiFreePool(segs);
+        *infoOut = delivered;
+        return status;
     }
     if (sock->type == AFD_SOCK_STREAM && (sock->peerClosed || sock->soError != 0))
     {
@@ -1601,7 +1822,6 @@ static NTSTATUS AfdRecvCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
     }
     NetdLeaveLwip();
 
-park:;
     PAFD_REQUEST request = 0;
     NTSTATUS status = AfdParkRequest(sock, file, context, AfdReqRecv, &request);
     if (!NT_SUCCESS(status))
@@ -1645,7 +1865,13 @@ static NTSTATUS AfdRecvIoctl(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CON
     }
     if ((params->msg_flags & AFD_MSG_OOB) != 0)
     {
-        return STATUS_INVALID_PARAMETER; /* no urgent data on this stack */
+        /* The RECV ioctl's OOB arm answers the ORACLE's refusal — its
+         * server path is unbuilt there too (ws2_32:afd carries the
+         * delivery rows as todo_wine), and matching the oracle keeps the
+         * todo discipline intact. The urgent byte is served through
+         * WINE_RECVMSG's MSG_OOB instead (the path ws2_32's recv() takes;
+         * loopback sidechannel, docs/03 "Net-2 urgent data"). */
+        return STATUS_INVALID_PARAMETER;
     }
     AFD_SEG *segs = 0;
     NTSTATUS status =
@@ -1670,6 +1896,50 @@ static NTSTATUS AfdRecvMsg(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
         return STATUS_INVALID_PARAMETER;
     }
     const struct afd_recvmsg_params *params = input;
+    /* The caller's flags word sits BEHIND ws_flags_ptr (WSARecv's in/out
+     * flags). WS_MSG_OOB (0x1, wine/include/winsock2.h — G8) routes the
+     * urgent byte from the loopback sidechannel, exactly as the RECV
+     * ioctl's AFD_MSG_OOB does. */
+    unsigned int wsFlags = 0;
+    if (params->ws_flags_ptr != 0)
+    {
+        NTSTATUS status =
+            KiProbeForRead((const void *)(uintptr_t)params->ws_flags_ptr, sizeof(wsFlags), 1);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        wsFlags = *(const unsigned int *)(uintptr_t)params->ws_flags_ptr;
+    }
+    if ((wsFlags & 0x1) != 0)
+    {
+        if (sock->type != AFD_SOCK_STREAM || !sock->oobValid || sock->optOobinline != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        AFD_SEG *oobSegs = 0;
+        NTSTATUS status = AfdCaptureSegments(params->buffers_ptr, params->count, &oobSegs);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (oobSegs[0].length == 0)
+        {
+            MiFreePool(oobSegs);
+            return STATUS_BUFFER_OVERFLOW;
+        }
+        status = KiProbeForWrite((void *)(uintptr_t)oobSegs[0].base, 1, 1);
+        if (!NT_SUCCESS(status))
+        {
+            MiFreePool(oobSegs);
+            return status;
+        }
+        *(UCHAR *)(uintptr_t)oobSegs[0].base = sock->oobByte;
+        sock->oobValid = FALSE;
+        MiFreePool(oobSegs);
+        *infoOut = 1;
+        return STATUS_SUCCESS;
+    }
     AFD_SEG *segs = 0;
     NTSTATUS status = AfdCaptureSegments(params->buffers_ptr, params->count, &segs);
     if (!NT_SUCCESS(status))
@@ -1726,6 +1996,32 @@ static NTSTATUS AfdGatherSend(uint64_t buffersPtr, ULONG count, UCHAR **dataOut,
     *dataOut = data;
     *lengthOut = (ULONG)total;
     return STATUS_SUCCESS;
+}
+
+/* The loopback peer of a connected TCP socket, found by its port pair —
+ * deterministic exactly because both ends of a loopback connection are
+ * this driver's (the OOB sidechannel; wire peers answer 0). Inside the
+ * seam. */
+static PAFD_SOCKET AfdFindLoopbackPeer(PAFD_SOCKET sock)
+{
+    if (sock->type != AFD_SOCK_STREAM || sock->pcb.tcp == 0 || !sock->connected ||
+        AfdSocketList.Flink == 0)
+    {
+        return 0;
+    }
+    u16_t localPort = sock->pcb.tcp->local_port;
+    u16_t remotePort = sock->pcb.tcp->remote_port;
+    for (PLIST_ENTRY entry = AfdSocketList.Flink; entry != &AfdSocketList; entry = entry->Flink)
+    {
+        PAFD_SOCKET peer = CONTAINING_RECORD(entry, AFD_SOCKET, allSocketsEntry);
+        if (peer != sock && peer->type == AFD_SOCK_STREAM && peer->pcb.tcp != 0 &&
+            peer->connected && peer->pcb.tcp->local_port == remotePort &&
+            peer->pcb.tcp->remote_port == localPort)
+        {
+            return peer;
+        }
+    }
+    return 0;
 }
 
 /* The SEND core shared by WINE_SENDMSG and ops->Write: `data` is pool the
@@ -1898,6 +2194,56 @@ static NTSTATUS AfdSendMsg(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+    /* WS_MSG_OOB (0x1 — wine/include/winsock2.h WS_MSG_OOB, G8): the
+     * urgent byte rides the loopback sidechannel to the peer socket; a
+     * wire peer has none and keeps the refusal (docs/03 "Net-2 urgent
+     * data"). The LAST byte is the urgent one (the TCP rule); anything
+     * before it goes in-band. */
+    if ((params->ws_flags & 0x1) != 0 && sock->type == AFD_SOCK_STREAM)
+    {
+        if (length == 0)
+        {
+            MiFreePool(data);
+            *infoOut = 0;
+            return STATUS_SUCCESS;
+        }
+        NetdEnterLwip();
+        PAFD_SOCKET peer = AfdFindLoopbackPeer(sock);
+        if (peer == 0)
+        {
+            NetdLeaveLwip();
+            MiFreePool(data);
+            return STATUS_INVALID_PARAMETER;
+        }
+        ULONG inband = length - 1;
+        if (AfdRingSpace(peer) < length)
+        {
+            NetdLeaveLwip();
+            MiFreePool(data);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        if (peer->optOobinline != 0)
+        {
+            AfdRingPush(peer, data, length); /* urgent folds into the stream */
+            AfdRaiseEvent(peer, AFD_POLL_BIT_READ, STATUS_SUCCESS);
+        }
+        else
+        {
+            if (inband != 0)
+            {
+                AfdRingPush(peer, data, inband);
+                AfdRaiseEvent(peer, AFD_POLL_BIT_READ, STATUS_SUCCESS);
+            }
+            peer->oobByte = data[length - 1];
+            peer->oobValid = TRUE;
+            AfdRaiseEvent(peer, AFD_POLL_BIT_OOB, STATUS_SUCCESS);
+        }
+        AfdSocketReady(peer);
+        NetdLeaveLwip();
+        MiFreePool(data);
+        *infoOut = length;
+        return STATUS_SUCCESS;
     }
     return AfdSendCommon(sock, file, context, data, length, toPtr, infoOut);
 }
@@ -2162,23 +2508,15 @@ static NTSTATUS AfdPoll(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT 
         return STATUS_SUCCESS;
     }
 
-    /* The park. Exclusive displacement first (pinned afd_poll.c): a new
-     * EXCLUSIVE poll terminates the oldest parked poll on the same
-     * issuing handle iff that main poll is itself exclusive. */
-    if (in->exclusive)
+    /* The park. Exclusive displacement first (pinned afd_poll.c, and
+     * ws2_32:afd test_poll_exclusive's fuller model): the MAIN poll lives
+     * on the first entry's SOCKET — a new exclusive poll terminates it
+     * iff it is itself exclusive, and a poll becomes main only when none
+     * exists at its arrival. */
+    PAFD_SOCKET anchor = wait->entries[0].sock;
+    if (in->exclusive && anchor->mainPoll != 0 && anchor->mainPoll->exclusive)
     {
-        for (PLIST_ENTRY entry = AfdPollList.Flink; entry != &AfdPollList; entry = entry->Flink)
-        {
-            PAFD_POLL_WAIT main = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
-            if (main->issuingFile == file)
-            {
-                if (main->exclusive)
-                {
-                    AfdCompletePoll(main, STATUS_SUCCESS, FALSE);
-                }
-                break; /* only the main (oldest) poll is considered */
-            }
-        }
+        AfdCompletePoll(anchor->mainPoll, STATUS_SUCCESS, FALSE);
     }
     NTSTATUS status = IopPreparePendingRequest(file, context, &wait->pending);
     if (!NT_SUCCESS(status))
@@ -2206,6 +2544,11 @@ static NTSTATUS AfdPoll(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT 
         wait->deadline = in->timeout; /* absolute NT time */
     }
     InsertTailList(&AfdPollList, &wait->listEntry);
+    if (anchor->mainPoll == 0)
+    {
+        anchor->mainPoll = wait;
+    }
+    AfdStatPended++;
     NetdWake(); /* re-derive the netd park deadline for the expiry sweep */
     return STATUS_PENDING;
 }
@@ -2460,8 +2803,14 @@ static void AfdVfsCleanup(PFILE_OBJECT file)
     {
         return;
     }
-    /* Every park dies with the handle — STATUS_HANDLES_CLOSED, the
-     * oracle's close-completion status (pinned afd_cancel_close.c). An
+    /* Polls WATCHING this socket complete FIRST, with AFD_POLL_CLOSE and
+     * STATUS_SUCCESS (measured: closing a polled socket reports CLOSE,
+     * whether or not it was asked for) — before the HANDLES_CLOSED sweep
+     * below can eat a poll that watches its own issuing socket. */
+    sock->dead = TRUE;
+    AfdEvaluatePolls();
+    /* Every remaining park dies with the handle — STATUS_HANDLES_CLOSED,
+     * the oracle's close-completion status (pinned afd_cancel_close.c). An
      * all-zero filter matches every request (io.h). */
     IOP_CANCEL_FILTER all = {0};
     AfdSweepRequests(sock, &all, STATUS_HANDLES_CLOSED);
@@ -2526,11 +2875,6 @@ static void AfdVfsCleanup(PFILE_OBJECT file)
         sock->selectEvent = 0;
         sock->selectMask = 0;
     }
-    sock->dead = TRUE;
-    /* Polls WATCHING this socket see the close: AFD_POLL_CLOSE is
-     * reported whether or not it was asked for (pinned afd_poll.c via
-     * the level function). */
-    AfdEvaluatePolls();
 }
 
 static void AfdVfsClose(PFILE_OBJECT file)
@@ -2768,6 +3112,7 @@ static NTSTATUS AfdVfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length,
         {
             return AfdStatusFromLwip(err);
         }
+        AfdStatSyncParks++;
         NTSTATUS wait = IoWaitCancellable(&sock->syncWait, 0);
         if (wait == STATUS_CANCELLED)
         {
@@ -2807,7 +3152,7 @@ static NTSTATUS AfdDeviceControl(PFILE_OBJECT file, ULONG code, const void *inpu
         return STATUS_SUCCESS;
     }
     case IOCTL_AFD_BIND:
-        return AfdBind(sock, input, inputLength, output, outputLength, infoOut);
+        return AfdBind(sock, file, request, input, inputLength, output, outputLength, infoOut);
     case IOCTL_AFD_LISTEN:
         return AfdListen(sock, input, inputLength);
     case IOCTL_AFD_GETSOCKNAME:
@@ -3132,7 +3477,27 @@ static NTSTATUS AfdDeviceControl(PFILE_OBJECT file, ULONG code, const void *inpu
      * the unknown-code shape (where the oracle implements the verb) is
      * the recorded docs/03 divergence "Net-2 unbuilt verb tail". */
     DbgPrint("afd: unimplemented ioctl %08lx\n", (unsigned long)code);
+    AfdStatRefused++;
     return STATUS_NOT_SUPPORTED;
+}
+
+/* Is this Ob body a FILE_OBJECT open on \Device\Afd? (kernel/ob/handle.c's
+ * NtQueryObject asks, to reproduce the oracle's socket-handle attribute
+ * report — docs/03 "Net-2 notes".) */
+BOOLEAN AfdIsSocketFile(PVOID body)
+{
+    if (AfdDevice == 0 || body == 0 || ObpGetHeader(body)->type != &IoFileObjectType)
+    {
+        return FALSE;
+    }
+    return ((PFILE_OBJECT)body)->device == AfdDevice;
+}
+
+void AfdQueryStats(ULONG *pendedOut, ULONG *syncParksOut, ULONG *refusedOut)
+{
+    *pendedOut = AfdStatPended;
+    *syncParksOut = AfdStatSyncParks;
+    *refusedOut = AfdStatRefused;
 }
 
 static const IO_VFS_OPS AfdOps = {
