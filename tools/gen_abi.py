@@ -1195,6 +1195,8 @@ def gen_ntioapi(wine: Path) -> str:
             "FILE_WRITE_ACCESS",
             "FILE_DEVICE_NAMED_PIPE",
             "FILE_DEVICE_CONSOLE",
+            "FILE_DEVICE_BEEP",
+            "FILE_DEVICE_NETWORK",
             "FSCTL_PIPE_DISCONNECT",
             "FSCTL_PIPE_LISTEN",
             "FSCTL_PIPE_PEEK",
@@ -1728,6 +1730,281 @@ _Static_assert(offsetof(struct condrv_ctrl_event, group_id) == 4, "condrv_ctrl_e
         + "\n\n"
         + asserts
         + "\n#endif /* PROSKRNL_ABI_NTCONDRV_H */\n"
+    )
+
+
+# Net-1..Net-2 (docs/24 §4d): the \Device\Afd ioctl dialect Wine's PE ws2_32
+# speaks — both code families as closed-form values, the AFD_POLL_* readiness
+# bits, and the parameter-struct layouts, the header's own C_ASSERTs mirrored.
+# wine/afd.h is a header and is the generated contract's source (docs/24 §1b);
+# server/sock.c is the oracle's internals and is never read.
+def gen_afd(wine: Path) -> str:
+    afd = (wine / "include/wine/afd.h").read_text()
+    ws2def = (wine / "include/ws2def.h").read_text()
+    winsock2 = (wine / "include/winsock2.h").read_text()
+
+    # The seven native-compatible codes (FILE_DEVICE_BEEP-based, like real
+    # afd.sys), in header order.
+    native_ioctls = extract_defines(
+        afd,
+        "wine/afd.h",
+        [
+            "IOCTL_AFD_BIND",
+            "IOCTL_AFD_LISTEN",
+            "IOCTL_AFD_RECV",
+            "IOCTL_AFD_POLL",
+            "IOCTL_AFD_GETSOCKNAME",
+            "IOCTL_AFD_EVENT_SELECT",
+            "IOCTL_AFD_GET_EVENTS",
+        ],
+    )
+
+    # The Wine-private family: every IOCTL_AFD_WINE_* the header defines, in
+    # header order, discovered rather than listed so a pin bump that grows the
+    # family cannot silently leave the contract partial. The count is the
+    # docs/24 §1a measurement (function numbers 200..304, contiguous); a bump
+    # that changes it should be seen, not absorbed.
+    wine_code_names = re.findall(r"^#define\s+(IOCTL_AFD_WINE_\w+)\s", afd, re.M)
+    if len(wine_code_names) != 105:
+        sys.exit(
+            f"gen_abi: wine/afd.h defines {len(wine_code_names)} IOCTL_AFD_WINE_* codes "
+            "(expected 105 — docs/24 §1a; re-measure after a pin bump)"
+        )
+    wine_ioc = extract_defines(afd, "wine/afd.h", ["WINE_AFD_IOC(x)"])
+    wine_ioctls = extract_defines(afd, "wine/afd.h", wine_code_names)
+
+    poll_bit_enum = extract_plain_enum(afd, "afd_poll_bit")
+    poll_bits = extract_defines(
+        afd,
+        "wine/afd.h",
+        [
+            "AFD_POLL_READ",
+            "AFD_POLL_OOB",
+            "AFD_POLL_WRITE",
+            "AFD_POLL_HUP",
+            "AFD_POLL_RESET",
+            "AFD_POLL_CLOSE",
+            "AFD_POLL_CONNECT",
+            "AFD_POLL_ACCEPT",
+            "AFD_POLL_CONNECT_ERR",
+            "AFD_POLL_UNK1",
+            "AFD_POLL_UNK2",
+        ],
+    )
+    recv_flags = extract_defines(
+        afd,
+        "wine/afd.h",
+        [
+            "AFD_RECV_FORCE_ASYNC",
+            "AFD_MSG_NOT_OOB",
+            "AFD_MSG_OOB",
+            "AFD_MSG_PEEK",
+            "AFD_MSG_WAITALL",
+        ],
+    )
+
+    # struct WS(sockaddr) is kept verbatim, spelling included: the scaffold's
+    # `WS(x)` expands it to `struct sockaddr` exactly as ws2_32's own build
+    # does without USE_WS_PREFIX.
+    match = re.search(
+        r"typedef struct WS\(sockaddr\)\s*\{([^{}]*?)\}\s*(SOCKADDR[^;{}]*)\s*;", ws2def
+    )
+    if not match:
+        sys.exit("gen_abi: struct WS(sockaddr) not found in ws2def.h")
+    sockaddr = "typedef struct WS(sockaddr)\n{" + match.group(1) + "} " + match.group(2).strip() + ";"
+    socket_typedef = extract_typedef_line(winsock2, "winsock2.h", "SOCKET")
+    wsabuf = extract_struct(ws2def, "_WSABUF", "WSABUF")
+
+    # The parameter/result shapes, in header order. The three poll-params
+    # variants sit inside the header's own `#pragma pack(push,4)` bracket,
+    # reproduced around them below.
+    packed_structs = "\n\n".join(
+        [
+            extract_plain_struct(afd, "afd_poll_params"),
+            extract_plain_struct(afd, "afd_poll_params_64"),
+            extract_plain_struct(afd, "afd_poll_params_32"),
+        ]
+    )
+    structs_before_poll = "\n\n".join(
+        [
+            extract_plain_struct(afd, "afd_wsabuf_32"),
+            extract_plain_struct(afd, "afd_bind_params"),
+            extract_plain_struct(afd, "afd_listen_params"),
+            extract_plain_struct(afd, "afd_recv_params"),
+            extract_plain_struct(afd, "afd_recv_params_32"),
+        ]
+    )
+    structs_after_poll = "\n\n".join(
+        [
+            extract_plain_struct(afd, "afd_event_select_params"),
+            extract_plain_struct(afd, "afd_event_select_params_64"),
+            extract_plain_struct(afd, "afd_event_select_params_32"),
+            extract_plain_struct(afd, "afd_get_events_params"),
+            extract_plain_struct(afd, "afd_iovec"),
+            extract_plain_struct(afd, "afd_create_params"),
+            extract_plain_struct(afd, "afd_accept_into_params"),
+            extract_plain_struct(afd, "afd_connect_params"),
+            extract_plain_struct(afd, "afd_recvmsg_params"),
+            extract_plain_struct(afd, "afd_sendmsg_params"),
+            extract_plain_struct(afd, "afd_transmit_params"),
+            extract_plain_struct(afd, "afd_message_select_params"),
+            extract_plain_struct(afd, "afd_get_info_params"),
+        ]
+    )
+
+    # The header's own layout pins, verbatim (the C_ASSERT macro is scaffolded
+    # onto _Static_assert below).
+    c_asserts = re.findall(r"^C_ASSERT\([^\n]*\);$", afd, re.M)
+    if len(c_asserts) != 11:
+        sys.exit(
+            f"gen_abi: wine/afd.h carries {len(c_asserts)} C_ASSERTs (expected 11; "
+            "re-measure after a pin bump)"
+        )
+
+    scaffold = """\
+/* Win32 alias scaffold for the extracted structs/macros; sizes pinned.
+ * WS() is wine's optional-prefix wrapper (wine/afd.h) expanded the way
+ * ws2_32's own build does without USE_WS_PREFIX. */
+#define WS(x) x
+#define C_ASSERT(e) _Static_assert(e, #e)
+typedef unsigned int UINT;
+typedef ULONGLONG UINT_PTR;
+_Static_assert(sizeof(UINT) == 4, "Win32: UINT is 4 bytes");
+_Static_assert(sizeof(UINT_PTR) == 8, "x86_64: UINT_PTR is pointer-sized");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/afd.h",
+            source="wine/include/{wine/afd.h,ws2def.h,winsock2.h}",
+        )
+        + "#ifndef PROSKRNL_ABI_AFD_H\n"
+        + "#define PROSKRNL_ABI_AFD_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* CTL_CODE, FILE_DEVICE_BEEP, FILE_DEVICE_NETWORK */\n\n'
+        + scaffold
+        + "\n/* Extracted verbatim from wine/include/winsock2.h / ws2def.h. */\n"
+        + socket_typedef
+        + "\n\n"
+        + sockaddr
+        + "\n\n"
+        + wsabuf
+        + "\n\n/* The seven native-compatible codes (FILE_DEVICE_BEEP-based like real\n"
+        + " * afd.sys), extracted from wine/include/wine/afd.h. */\n"
+        + native_ioctls
+        + "\n\n/* The 13-bit readiness state (IOCTL_AFD_GET_EVENTS has space for 13\n"
+        + " * events), extracted from wine/include/wine/afd.h. */\n"
+        + poll_bit_enum
+        + "\n\n"
+        + poll_bits
+        + "\n\n"
+        + recv_flags
+        + "\n\n/* The Wine-private family, function numbers 200..304, extracted from\n"
+        + " * wine/include/wine/afd.h. */\n"
+        + wine_ioc
+        + "\n\n"
+        + wine_ioctls
+        + "\n\n/* The ioctl parameter/result shapes, extracted verbatim from\n"
+        + " * wine/include/wine/afd.h (the _32 variants are the shapes a WOW64\n"
+        + " * ws2_32 issues). */\n"
+        + structs_before_poll
+        + "\n\n#pragma pack(push,4)\n"
+        + packed_structs
+        + "\n#pragma pack(pop)\n\n"
+        + structs_after_poll
+        + "\n\n/* The header's own layout pins, verbatim. */\n"
+        + "\n".join(c_asserts)
+        + "\n\n#endif /* PROSKRNL_ABI_AFD_H */\n"
+    )
+
+
+# Net-1..Net-3 (docs/24 §4d/§4e): the \Device\Nsi dialect — the five
+# IOCTL_NSIPROXY_WINE_* codes, the module-id shape, the request structs of the
+# verbs a consumer reaches, and the table ids. The row layouts
+# (nsi_ndis_ifinfo_*, nsi_ip_unicast_*) generate when \Device\Nsi is built and
+# consumes them; nsiproxy_icmp_echo stays unextracted with the ICMP surface
+# (docs/24 §5 — it refuses loudly, and its SOCKADDR_INET dependency would drag
+# the ws2ipdef union tree in ahead of any consumer).
+def gen_nsi(wine: Path) -> str:
+    nsi = (wine / "include/wine/nsi.h").read_text()
+    netiodef = (wine / "include/netiodef.h").read_text()
+
+    ioctls = extract_defines(
+        nsi,
+        "wine/nsi.h",
+        [
+            "IOCTL_NSIPROXY_WINE_ENUMERATE_ALL",
+            "IOCTL_NSIPROXY_WINE_GET_ALL_PARAMETERS",
+            "IOCTL_NSIPROXY_WINE_GET_PARAMETER",
+            "IOCTL_NSIPROXY_WINE_ICMP_ECHO",
+            "IOCTL_NSIPROXY_WINE_CHANGE_NOTIFICATION",
+        ],
+    )
+    param_types = extract_defines(
+        nsi,
+        "wine/nsi.h",
+        ["NSI_PARAM_TYPE_RW", "NSI_PARAM_TYPE_DYNAMIC", "NSI_PARAM_TYPE_STATIC"],
+    )
+    tables = extract_defines(
+        nsi,
+        "wine/nsi.h",
+        [
+            "NSI_NDIS_IFINFO_TABLE",
+            "NSI_NDIS_INDEX_LUID_TABLE",
+            "NSI_IP_COMPARTMENT_TABLE",
+            "NSI_IP_ICMPSTATS_TABLE",
+            "NSI_IP_IPSTATS_TABLE",
+            "NSI_IP_INTERFACE_TABLE",
+            "NSI_IP_UNICAST_TABLE",
+            "NSI_IP_NEIGHBOUR_TABLE",
+            "NSI_IP_FORWARD_TABLE",
+        ],
+    )
+
+    moduleid_type = extract_enum(netiodef, "_NPI_MODULEID_TYPE", "NPI_MODULEID_TYPE")
+    moduleid = extract_struct(netiodef, "_NPI_MODULEID", "NPI_MODULEID")
+
+    structs = "\n\n".join(
+        [
+            extract_plain_struct(nsi, "nsiproxy_enumerate_all"),
+            extract_plain_struct(nsi, "nsiproxy_get_all_parameters"),
+            extract_plain_struct(nsi, "nsiproxy_get_parameter"),
+            extract_plain_struct(nsi, "nsiproxy_request_notification"),
+        ]
+    )
+
+    scaffold = """\
+/* Win32 alias scaffold for the extracted structs; sizes pinned. */
+typedef unsigned int UINT;
+_Static_assert(sizeof(UINT) == 4, "Win32: UINT is 4 bytes");
+"""
+
+    return (
+        BANNER.format(
+            name="abi/nsi.h",
+            source="wine/include/{wine/nsi.h,netiodef.h}",
+        )
+        + "#ifndef PROSKRNL_ABI_NSI_H\n"
+        + "#define PROSKRNL_ABI_NSI_H\n\n"
+        + '#include "abi/ntdef.h"\n'
+        + '#include "abi/ntioapi.h" /* CTL_CODE, FILE_DEVICE_NETWORK */\n'
+        + '#include "abi/ntpebteb.h" /* GUID */\n'
+        + '#include "abi/ntseapi.h" /* LUID */\n\n'
+        + scaffold
+        + "\n/* Extracted verbatim from wine/include/netiodef.h. */\n"
+        + moduleid_type
+        + "\n\n"
+        + moduleid
+        + "\n\n/* The Nsi ioctl surface, extracted from wine/include/wine/nsi.h. */\n"
+        + ioctls
+        + "\n\n"
+        + param_types
+        + "\n\n/* The NSI table ids the consumers name, extracted from\n"
+        + " * wine/include/wine/nsi.h. */\n"
+        + tables
+        + "\n\n/* The request shapes, extracted verbatim from wine/include/wine/nsi.h. */\n"
+        + structs
+        + "\n\n#endif /* PROSKRNL_ABI_NSI_H */\n"
     )
 
 
@@ -3443,6 +3720,8 @@ def main() -> None:
         ("ntimage.h", gen_ntimage(args.wine)),
         ("ntioapi.h", gen_ntioapi(args.wine)),
         ("ntcondrv.h", gen_ntcondrv(args.wine)),
+        ("afd.h", gen_afd(args.wine)),
+        ("nsi.h", gen_nsi(args.wine)),
         ("ntmountmgr.h", gen_ntmountmgr(args.wine)),
         ("ntcontext.h", gen_ntcontext(args.wine)),
         ("ntpsapi.h", gen_ntpsapi(args.wine)),
