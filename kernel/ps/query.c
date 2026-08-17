@@ -337,13 +337,28 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         break;
     }
     case ProcessImageFileName:
+    case ProcessImageFileNameWin32:
     {
         /* CUI-6 (sem_ps/proc_classes): UNICODE_STRING + embedded
          * NUL-terminated buffer, NT (\??\) form; min-size refusal reports
          * header + name (dlls/ntdll/unix/process.c). Boot/flat processes
-         * with no NT path answer an empty string. */
+         * with no NT path answer an empty string. AUD-2: the Win32 class
+         * shares the fill and drops exactly the NT prefix, the pinned
+         * server's shape (server/process.c get_process_image_name skips a
+         * leading \??\ for req->win32; consumed by mmdevapi's
+         * audio-session machinery). */
+        ULONG skipBytes = 0;
+        if (infoClass == ProcessImageFileNameWin32)
+        {
+            static const WCHAR ntPrefix[] = {'\\', '?', '?', '\\'};
+            if (process->imageNtPath.Length >= sizeof(ntPrefix) &&
+                memcmp(process->imageNtPath.Buffer, ntPrefix, sizeof(ntPrefix)) == 0)
+            {
+                skipBytes = sizeof(ntPrefix);
+            }
+        }
         ULONG minSize = sizeof(UNICODE_STRING) + sizeof(WCHAR);
-        ULONG nameBytes = process->imageNtPath.Length;
+        ULONG nameBytes = process->imageNtPath.Length - skipBytes;
         if (length < minSize + nameBytes)
         {
             if (returnLength != 0)
@@ -366,7 +381,7 @@ NTSTATUS NtQueryInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoCl
         memcpy(buffer, &header, sizeof(header));
         if (nameBytes != 0)
         {
-            memcpy(userBuffer, process->imageNtPath.Buffer, nameBytes);
+            memcpy(userBuffer, (const char *)process->imageNtPath.Buffer + skipBytes, nameBytes);
         }
         WCHAR nul = 0;
         memcpy(userBuffer + nameBytes / sizeof(WCHAR), &nul, sizeof(nul));
