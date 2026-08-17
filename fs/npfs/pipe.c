@@ -1140,12 +1140,69 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, HANDLE handle, const FILE_PIP
     return STATUS_SUCCESS;
 }
 
+/* The two size-shaped facts a pipe end HAS, reported through the raw shape
+ * kernel/io/query.c's IopFillStandard already reads — so
+ * FileStandardInformation stays one fill for every backend rather than
+ * growing a pipe arm of its own (Art. 11).
+ *
+ * The oracle's FileStandardInformation arm for a pipe end (wine
+ * server/named_pipe.c pipe_end_get_file_info) is
+ *
+ *     if (!pipe) { set_error( STATUS_PIPE_DISCONNECTED ); return; }
+ *     std_info->AllocationSize.QuadPart = pipe->outsize + pipe->insize;
+ *     std_info->EndOfFile.QuadPart      = pipe_end_get_avail( pipe_end );
+ *
+ * and the two numbers answer different questions: the ALLOCATION is the
+ * pipe's pair of quotas, the same at both ends and unmoved by traffic, while
+ * the END OF FILE is what THIS end can read right now, so the two ends of one
+ * pipe disagree about it. ReadDataAvailable is that same quantity, and both
+ * classes reach it through NpfsIncomingQueue. Pinned by
+ * sem_pipe/pipe_file_info.c.
+ *
+ * The remaining fields stay zero: a pipe has no on-disk times, no attributes
+ * and no per-file identity (FileInternalInformation refuses loudly on the
+ * fileId 0, kernel/io/query.c). */
 static NTSTATUS NpfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
 {
-    (void)file;
-    /* Pipes have no on-disk facts; zeros keep the mechanical query classes
-     * (FileBasicInformation etc.) harmless. */
     memset(info, 0, sizeof(*info));
+    PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        /* The `\Device\NamedPipe` ROOT, unchanged by this item and not
+         * pinned: the oracle's root is a named_pipe_device_file whose fd ops
+         * are default_fd_get_file_info (server/fd.c), which has no arm for
+         * any of these classes, so it is UNBUILT there and has nothing to say
+         * about the zeros (Art. 12 — an oracle answering
+         * STATUS_NOT_IMPLEMENTED is not authoritative). What the pin DOES
+         * measure about the root is that its answer is the same with and
+         * without FILE_READ_ATTRIBUTES. */
+        return STATUS_SUCCESS;
+    }
+    /* An end the server DISCONNECTED out from under has no pipe to describe,
+     * and says so rather than describing the wreckage — the same `if (!pipe)`
+     * the two pipe classes answer one function up, and the reason
+     * FileNameInformation refuses too: EVERY arm the oracle's handler
+     * implements carries the identical guard, the name one as
+     * `if (!pipe || !(name = get_object_name(...)))`.
+     *
+     * Stated here it reaches the classes the oracle's handler does NOT
+     * implement as well (FileBasic/Position/Internal/EndOfFile/NetworkOpen/
+     * AttributeTag/All), because every class reading this backend's facts
+     * comes through GetInfo. Those are unbuilt on the oracle for a pipe end
+     * whether or not it is orphaned, so nothing convicts either answer; the
+     * widening is deliberate and recorded (docs/03 "A pipe end's own file
+     * information"), and it replaces a zeroed struct that was a fabricated
+     * description of a pipe that is gone. */
+    if (end->orphaned)
+    {
+        return STATUS_PIPE_DISCONNECTED;
+    }
+    PNPFS_PIPE pipe = end->instance->pipe;
+    if (pipe != 0)
+    {
+        info->allocationSize = (uint64_t)pipe->inQuota + pipe->outQuota;
+    }
+    info->endOfFile = NpfsIncomingQueue(end)->bytesAvailable;
     return STATUS_SUCCESS;
 }
 
