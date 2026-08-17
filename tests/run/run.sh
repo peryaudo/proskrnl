@@ -2379,6 +2379,28 @@ gui() {
 # made it a test of a superseded arrangement as much as of the applet; what
 # it uniquely convicts -- a STOCK unmodified Wine app reaching the scanout --
 # is unchanged, and now says something about the system that ships.
+# Every gui leg's last check: how many faults did win32u CONTAIN?
+#
+# user/wine/dlls/win32u/glue.c returns the exception code to the caller for an
+# access violation taken inside win32u, which is what Wine's syscall boundary
+# does (docs/03 "GUI-2 notes"). That containment is load-bearing and also
+# dangerous: a proskrnl divergence that shows up as an AV inside win32u would
+# be swallowed into a 0xc0000005 return, and a leg whose verdict is "a window
+# appeared" could stay green over it — the fabricated-plausible-answer shape
+# Art. 6 exists to prevent. So the COUNT is pinned per leg: every leg expects
+# zero, except gui3, whose client deliberately triggers one to prove the
+# containment works at all. A new contained fault fails the leg that found it,
+# by name, with the serial line quoted.
+assert_contained_faults() {   # $1 = log, $2 = expected count, $3 = leg name
+    local seen
+    seen=$(grep -c 'prsk_contain_win32u_fault' "$1" 2>/dev/null || true)
+    [[ "$seen" == "$2" ]] && return 0
+    echo "== $3: FAIL (win32u contained $seen faults, expected $2 -- a contained fault is"
+    echo "   still a defect, it is just not the caller's death; see $1) =="
+    grep 'prsk_contain_win32u_fault' "$1" 2>/dev/null | sort -u | head -5
+    return 1
+}
+
 gui2() {
     make -C "$ROOT" gui2-img >/dev/null
     local img="$ROOT/build/proskrnl-gui2.hdd"
@@ -2445,6 +2467,7 @@ gui2() {
         echo "== gui2: FAIL (the screendump does not show what the guest painted) =="
         return 1
     fi
+    assert_contained_faults "$log" 0 gui2 || return 1
     echo "== gui2: PASS (winemine.exe on screen) =="
     return 0
 }
@@ -2515,6 +2538,7 @@ gui3() {
         echo "== gui3: FAIL (behaviour or pixels; see $log) =="
         return 1
     fi
+    assert_contained_faults "$log" 1 gui3 || return 1
     echo "== gui3: PASS (two GUI processes over wineserver-lite) =="
     return 0
 }
@@ -2672,6 +2696,7 @@ gui4() {
         echo "== gui4: FAIL (behaviour or pixels; see $log) =="
         return 1
     fi
+    assert_contained_faults "$log" 0 gui4 || return 1
     echo "== gui4: PASS (grabbed, moved, clicked -- the compositor holds) =="
     return 0
 }
@@ -2767,6 +2792,7 @@ gui5() {
         echo "== gui5: FAIL (behaviour, pixels or metrics; see $log) =="
         return 1
     fi
+    assert_contained_faults "$log" 0 gui5 || return 1
     echo "== gui5: PASS (clipboard, hooks, AttachThreadInput, font differential) =="
     return 0
 }
@@ -2918,6 +2944,7 @@ gui5con() {
         echo "== gui5con: FAIL (window pixels; see $log) =="
         return 1
     fi
+    assert_contained_faults "$log" 0 gui5con || return 1
     echo "== gui5con: PASS (windowed conhost: typed, ^C-interrupted, files proven) =="
     return 0
 }
@@ -3032,6 +3059,7 @@ wow64gui() {
         echo "== wow64gui: FAIL (the 32-bit window's verdict; see $log) =="
         return 1
     fi
+    assert_contained_faults "$log" 0 wow64gui || return 1
     echo "== wow64gui: PASS (a 32-bit GUI app ran on the shared desktop) =="
     return 0
 }
@@ -3198,6 +3226,7 @@ gui6() {
 
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
+    assert_contained_faults "$log" 0 gui6 || return 1
     echo "== gui6: PASS (the desktop matches tests/gui/golden/desktop.ppm) =="
     return 0
 }
