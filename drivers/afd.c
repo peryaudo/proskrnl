@@ -222,6 +222,26 @@ typedef struct AFD_SOCKET
     BOOLEAN nonBlocking; /* FIONBIO / implicit via event select */
     BOOLEAN resetLatch;  /* an RST arrived (AFD_POLL_RESET's level) */
 
+    /* The sockopt store (the get-as-output/set-as-input verbs). The
+     * knobs lwIP carries are applied (nodelay, keepalive, reuse,
+     * broadcast, linger-zero's abortive close); the rest are recorded
+     * and reported truthfully — a caller reading its own option back
+     * gets what was STORED, never a fabricated default (Art. 12's
+     * spirit; pinned afd_sockopt.c). */
+    int optKeepalive;
+    int optOobinline;
+    int optReuseaddr;
+    int optExclusiveaddruse;
+    int optBroadcast;
+    int optNodelay;
+    int optRcvbuf;
+    int optSndbuf;
+    int optRcvtimeoMs;
+    int optSndtimeoMs;
+    USHORT lingerOnoff;
+    USHORT lingerSeconds;
+    LARGE_INTEGER connectStamp; /* NT time at connect; 0 = never connected */
+
     /* The thread-exit sweep's walk (AfdCancelThreadIo): every
      * FILE_OBJECT-backed socket is on AfdSocketList from create/mint to
      * Close. Accept-queue shells never join — they can hold no parked
@@ -837,6 +857,7 @@ static err_t AfdTcpConnectedCallback(void *arg, struct tcp_pcb *pcb, err_t err)
     sock->connecting = FALSE;
     sock->connected = TRUE;
     sock->bound = TRUE; /* tcp_connect auto-binds */
+    KeQuerySystemTime(&sock->connectStamp);
     AfdRaiseEvent(sock, AFD_POLL_BIT_CONNECT, STATUS_SUCCESS);
     AfdRaiseEvent(sock, AFD_POLL_BIT_WRITE, STATUS_SUCCESS);
     if (sock->connectRequest != 0)
@@ -884,6 +905,7 @@ static err_t AfdTcpAcceptCallback(void *arg, struct tcp_pcb *newPcb, err_t err)
     sock->connected = TRUE;
     sock->pcb.tcp = newPcb;
     AfdWireTcpCallbacks(sock);
+    KeQuerySystemTime(&sock->connectStamp);
     /* An ACCEPTED socket's pending edge is WRITE alone — CONNECT is the
      * connect()or's edge (measured: ws2_32:afd test_get_events reads
      * WRITE, not WRITE|CONNECT, on the accepted end). */
@@ -2246,6 +2268,69 @@ void AfdPollTick(void)
     }
 }
 
+/* --- the sockopt verbs (one get/set pair per option) ------------------------ */
+
+/* One int-valued GET: state before length (the GETSOCKNAME order). */
+static NTSTATUS AfdOptGetInt(PAFD_SOCKET sock, void *output, ULONG outputLength, int value,
+                             ULONG_PTR *infoOut)
+{
+    if (!sock->created)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (output == 0 || outputLength < sizeof(int))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *(int *)output = value;
+    *infoOut = sizeof(int);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS AfdOptReadInt(PAFD_SOCKET sock, const void *input, ULONG inputLength, int *valueOut)
+{
+    if (!sock->created)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (input == 0 || inputLength < sizeof(int))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *valueOut = *(const int *)input;
+    return STATUS_SUCCESS;
+}
+
+/* Fold a boolean option into the live pcb's so_options bit (inside the
+ * seam); a socket whose pcb is already gone keeps the stored value. */
+static void AfdApplySoOption(PAFD_SOCKET sock, u8_t optionBit, int on)
+{
+    NetdEnterLwip();
+    if (sock->type == AFD_SOCK_STREAM && sock->pcb.tcp != 0)
+    {
+        if (on)
+        {
+            ip_set_option(sock->pcb.tcp, optionBit);
+        }
+        else
+        {
+            ip_reset_option(sock->pcb.tcp, optionBit);
+        }
+    }
+    else if (sock->type == AFD_SOCK_DGRAM && sock->pcb.udp != 0)
+    {
+        if (on)
+        {
+            ip_set_option(sock->pcb.udp, optionBit);
+        }
+        else
+        {
+            ip_reset_option(sock->pcb.udp, optionBit);
+        }
+    }
+    NetdLeaveLwip();
+}
+
 /* IOCTL_AFD_WINE_COMPLETE_ASYNC: complete THIS call with the
  * caller-supplied status through the full async legs — ws2_32's
  * fabrication verb (and its is-this-a-socket probe). The pended tail is
@@ -2415,7 +2500,13 @@ static void AfdVfsCleanup(PFILE_OBJECT file)
                 tcp_sent(sock->pcb.tcp, 0);
                 tcp_err(sock->pcb.tcp, 0);
             }
-            if (tcp_close(sock->pcb.tcp) != ERR_OK)
+            if (sock->lingerOnoff != 0 && sock->lingerSeconds == 0)
+            {
+                /* Linger-zero: the ABORTIVE close — RST, not FIN (the
+                 * peer sees AFD_POLL_RESET; pinned afd_sockopt.c). */
+                tcp_abort(sock->pcb.tcp);
+            }
+            else if (tcp_close(sock->pcb.tcp) != ERR_OK)
             {
                 tcp_abort(sock->pcb.tcp);
             }
@@ -2815,24 +2906,217 @@ static NTSTATUS AfdDeviceControl(PFILE_OBJECT file, ULONG code, const void *inpu
         return STATUS_SUCCESS;
     }
     case IOCTL_AFD_WINE_GET_SO_ERROR:
+        /* SO_ERROR is a WSA-error-valued option; Net-2 pins only the
+         * no-error answer (afd_sockopt.c) — an NTSTATUS-to-WSA table
+         * lands when a consumer pins the error case. */
+        return AfdOptGetInt(sock, output, outputLength, 0, infoOut);
+    case IOCTL_AFD_WINE_GET_SO_KEEPALIVE:
+        return AfdOptGetInt(sock, output, outputLength, sock->optKeepalive, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_KEEPALIVE:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        sock->optKeepalive = value;
+        AfdApplySoOption(sock, SOF_KEEPALIVE, value);
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_SO_OOBINLINE:
+        return AfdOptGetInt(sock, output, outputLength, sock->optOobinline, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_OOBINLINE:
+    {
+        /* Stored and reported; OOB data itself is out of scope (docs/03
+         * "Net-2 urgent data"). */
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (NT_SUCCESS(status))
+        {
+            sock->optOobinline = value;
+        }
+        return status;
+    }
+    case IOCTL_AFD_WINE_GET_SO_REUSEADDR:
+        return AfdOptGetInt(sock, output, outputLength, sock->optReuseaddr, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_REUSEADDR:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (value != 0 && sock->optExclusiveaddruse != 0)
+        {
+            return STATUS_INVALID_PARAMETER; /* mutually exclusive (pinned) */
+        }
+        sock->optReuseaddr = value;
+        AfdApplySoOption(sock, SOF_REUSEADDR, value);
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_SO_EXCLUSIVEADDRUSE:
+        return AfdOptGetInt(sock, output, outputLength, sock->optExclusiveaddruse, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_EXCLUSIVEADDRUSE:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (value != 0 && sock->optReuseaddr != 0)
+        {
+            return STATUS_INVALID_PARAMETER; /* the pinned direction */
+        }
+        sock->optExclusiveaddruse = value;
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_SO_BROADCAST:
+        return AfdOptGetInt(sock, output, outputLength, sock->optBroadcast, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_BROADCAST:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        sock->optBroadcast = value;
+        AfdApplySoOption(sock, SOF_BROADCAST, value);
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_TCP_NODELAY:
+        return AfdOptGetInt(sock, output, outputLength, sock->optNodelay, infoOut);
+    case IOCTL_AFD_WINE_SET_TCP_NODELAY:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        sock->optNodelay = value;
+        NetdEnterLwip();
+        if (sock->type == AFD_SOCK_STREAM && sock->pcb.tcp != 0)
+        {
+            if (value)
+            {
+                tcp_nagle_disable(sock->pcb.tcp);
+            }
+            else
+            {
+                tcp_nagle_enable(sock->pcb.tcp);
+            }
+        }
+        NetdLeaveLwip();
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_SO_RCVBUF:
+        return AfdOptGetInt(sock, output, outputLength,
+                            sock->optRcvbuf != 0 ? sock->optRcvbuf : (int)AFD_RING_CAPACITY,
+                            infoOut);
+    case IOCTL_AFD_WINE_SET_SO_RCVBUF:
+    {
+        /* Recorded and reported; the ring's actual capacity is fixed
+         * (TCP_WND bounds what lwIP buffers regardless). */
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (NT_SUCCESS(status))
+        {
+            sock->optRcvbuf = value;
+        }
+        return status;
+    }
+    case IOCTL_AFD_WINE_GET_SO_SNDBUF:
+        return AfdOptGetInt(sock, output, outputLength,
+                            sock->optSndbuf != 0 ? sock->optSndbuf : (int)TCP_SND_BUF, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_SNDBUF:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (NT_SUCCESS(status))
+        {
+            sock->optSndbuf = value;
+        }
+        return status;
+    }
+    case IOCTL_AFD_WINE_GET_SO_RCVTIMEO:
+        return AfdOptGetInt(sock, output, outputLength, sock->optRcvtimeoMs, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_RCVTIMEO:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (NT_SUCCESS(status))
+        {
+            sock->optRcvtimeoMs = value;
+        }
+        return status;
+    }
+    case IOCTL_AFD_WINE_GET_SO_SNDTIMEO:
+        return AfdOptGetInt(sock, output, outputLength, sock->optSndtimeoMs, infoOut);
+    case IOCTL_AFD_WINE_SET_SO_SNDTIMEO:
+    {
+        int value;
+        NTSTATUS status = AfdOptReadInt(sock, input, inputLength, &value);
+        if (NT_SUCCESS(status))
+        {
+            sock->optSndtimeoMs = value;
+        }
+        return status;
+    }
+    case IOCTL_AFD_WINE_GET_SO_LINGER:
     {
         if (!sock->created)
         {
             return STATUS_INVALID_PARAMETER;
         }
-        if (outputLength < sizeof(int))
+        if (output == 0 || outputLength < 4)
         {
             return STATUS_INVALID_PARAMETER;
         }
-        /* The WSA error latch: reported once, then cleared (the SO_ERROR
-         * contract); 0 when nothing failed. Mapping to WSA numbers is
-         * ws2_32's own NtStatusToWSAError — this boundary reports the
-         * NTSTATUS... no: SO_ERROR is a WSA-error-valued option and the
-         * server reports it as such. Net-2 pins only the no-error case;
-         * the mapped table lands with the sockopt commit. */
-        *(int *)output = 0;
-        *infoOut = sizeof(int);
-        return sock->soError == 0 ? STATUS_SUCCESS : STATUS_SUCCESS;
+        USHORT *out16 = output;
+        out16[0] = sock->lingerOnoff;
+        out16[1] = sock->lingerSeconds;
+        *infoOut = 4;
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_SET_SO_LINGER:
+    {
+        if (!sock->created)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (input == 0 || inputLength < 4)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        const USHORT *in16 = input;
+        sock->lingerOnoff = in16[0];
+        sock->lingerSeconds = in16[1];
+        return STATUS_SUCCESS;
+    }
+    case IOCTL_AFD_WINE_GET_SO_CONNECT_TIME:
+    {
+        if (!sock->created)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (output == 0 || outputLength < sizeof(unsigned int))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        unsigned int seconds = 0xffffffffu; /* not connected */
+        if (sock->connected && sock->connectStamp.QuadPart != 0)
+        {
+            LARGE_INTEGER now;
+            KeQuerySystemTime(&now);
+            seconds = (unsigned int)((now.QuadPart - sock->connectStamp.QuadPart) / 10000000LL);
+        }
+        *(unsigned int *)output = seconds;
+        *infoOut = sizeof(unsigned int);
+        return STATUS_SUCCESS;
     }
     case IOCTL_AFD_WINE_COMPLETE_ASYNC:
         return AfdCompleteAsync(sock, file, request, input, inputLength);
