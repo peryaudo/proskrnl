@@ -377,17 +377,37 @@ ntdll_test.exe:path
 #     only the per-line failure histogram, which lost exactly those 13 lines
 #     and gained none. The pair stops in the same place.
 #
-#     WHAT IS LEFT, in execution order:
-#       - 12  test_pipe_state, :886-:989 — FilePipeInformation's ACCESS and
-#         RANGE rules: the set needs FILE_WRITE_ATTRIBUTES (ACCESS_DENIED
-#         without it, on the server end), a ReadMode of 1 on a byte pipe is
-#         INVALID_PARAMETER for the client, and values outside 0-1 are refused.
-#         Its own item, nothing to do with pending.
+#     FilePipeInformation's SET LADDER IS NOW BUILT: 12 -> 0, and every one of
+#     the twelve was a guard that was missing or in the wrong PLACE. The
+#     ladder is split across the two halves of the oracle and that split is
+#     what decides which mistake gets reported — LENGTH, then RANGE (both in
+#     dlls/ntdll/unix/file.c, above the server call and therefore above the
+#     handle), then the HANDLE, then DISCONNECTED, then the byte-pipe rule
+#     (server/named_pipe.c set_named_pipe_info). proskrnl had only the last of
+#     the five. Landed in kernel/io/query.c + fs/npfs/pipe.c, pinned by
+#     tests/ntapi/sem_pipe/pipe_mode_set.c; docs/21 W11, docs/03 "The
+#     FilePipeInformation SET ladder".
+#     :886/:894/:941 were the SERVER end's FILE_WRITE_ATTRIBUTES (the CLIENT
+#     end needs no access at all — an asymmetry that falls out of the
+#     handler's two-lookup retry, not out of any rule); :926/:931/:984/:989
+#     were the range bound `(CompletionMode | ReadMode) & ~1`; and the five
+#     "Unexpected CompletionMode" lines at :888/:896/:907/:918/:936 were
+#     CONSEQUENCES of the first — a wrongly-accepted set really changed the
+#     server end's mode, so the state the test read back afterwards was wrong
+#     for the rest of the function. Read as five separate assertions they look
+#     like a query bug; there is none (docs/21 §4 trap 4).
+#
+#     WHAT IS LEFT:
 #       - PANIC at NtQueryInformationFile class 8 (FileAccessInformation),
-#         from test_file_access at pipe.c:1015. Unbuilt; everything past it —
+#         from test_file_access at pipe.c:1015 — unchanged, in the same place,
+#         with ZERO failed assertions ahead of it now. Everything past it —
 #         the rest of test_pipe_with_data_state, test_readfileex, the
-#         impersonation tests — has never run, so 12 is a lower bound
-#         (docs/21 §4 trap 2).
+#         impersonation tests — has still never run, so 0 is a lower bound and
+#         is the SAME lower bound the 12 was (docs/21 §4 trap 2). That is also
+#         why "nothing was hiding behind the 12" is not claimed here: the pair
+#         prints no summary line, so there is no executed count on either side
+#         of the change to compare, only the per-line histogram — which lost
+#         exactly those 12 lines and gained none.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port

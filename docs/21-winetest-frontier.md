@@ -1680,6 +1680,81 @@ gets attributed to the cause that happens to be nearby. Which server's
 traces unconditionally), and the manifest block says so rather than guessing
 again.
 
+**The `FilePipeInformation` SET LADDER is DONE** (`ntdll:pipe` 12 → **0**
+inside its measured prefix), and it is the third item in this document whose
+whole content was ORDER rather than value — after W11's own create refusals and
+W5's `NtProtectVirtualMemory` ladder. The class is two `ULONG`s; proskrnl had
+one of the five rungs. `docs/03` "The `FilePipeInformation` SET ladder" has the
+table; four things belong here:
+
+- **The ladder is SPLIT across the two halves of the oracle, and the split is
+  the content.** Length and range are decided in `dlls/ntdll/unix/file.c`,
+  above the `set_named_pipe_info` call and therefore above the handle; the
+  handle, the access, the disconnect and the byte-pipe rule are decided in
+  `server/named_pipe.c`. An out-of-range value passed through a handle that
+  names no pipe reports the *value*, which no implementation that validates
+  after resolving the object can answer. **This is W12's "replacing a layer
+  means inheriting what that layer did", fourth instance** — and the sharpest
+  one yet, because what proskrnl inherited is not a behaviour but a POSITION.
+- **The SERVER end's `FILE_WRITE_ATTRIBUTES` is nobody's stated rule; it falls
+  out of the handler's two-lookup retry.** The end is looked up as a server
+  *with* the access, and only `STATUS_OBJECT_TYPE_MISMATCH` makes it retry as a
+  client with an access of **0** — and `get_handle_obj` tests the type before
+  the access, so a client handle never has its access word examined at all. So
+  the check cannot be the class's required access in `kernel/io/query.c` the
+  way the query direction's `FILE_READ_ATTRIBUTES` is: which end this is is not
+  knowable before the file object is resolved. **A rule read off a data-flow
+  accident rather than off a guard is one a status table can never show**, and
+  the winetest cannot show it either — every client handle it uses carries
+  `GENERIC_READ | GENERIC_WRITE`, so only a pin that opens a client without the
+  bit discriminates.
+- **The first implementation asked the wrong OBJECT the right question, and
+  gate-check caught it rather than a test.** It read
+  `FILE_OBJECT.grantedAccess`, which is the access of the original OPEN — while
+  the oracle reads `entry->access`, the access of the HANDLE IN THE CALLER'S
+  HAND. `NtDuplicateObject` grants specific bits verbatim, so a duplicate that
+  drops `FILE_WRITE_ATTRIBUTES` names the same file object through a weaker
+  handle and separates the two. **Every case in the pin was green either way**,
+  because every handle in it was the original open; the fix is to resolve the
+  handle a second time asking for the bit, so Ob's one check site decides it
+  (G10), and the pin now weakens a duplicate to measure it. The generalisable
+  tell is that *"the access" is ambiguous whenever more than one handle can name
+  one object*, and a file object is exactly such a thing.
+- **Five of the twelve were CONSEQUENCES in a subsystem with nothing wrong with
+  it** (§4 trap 4 again). `:888/:896/:907/:918/:936` are all
+  `Unexpected CompletionMode` out of `check_pipe_handle_state`, i.e. the QUERY
+  direction reporting a wrong value — and the query was right throughout. A set
+  that should have been refused had really changed the server end's mode, so
+  every later read-back was accurate about a state that should never have
+  existed. The manifest block had already grouped them correctly as one item;
+  what it could not say is that only three of the twelve name the defect.
+- **The pin was oracle-green on the first run, which is exactly when W16's
+  reachability lesson applies.** A `PROBE` print in the two helpers every case
+  goes through — three minutes, thrown away afterwards — showed all 29
+  set/query calls executing with the four distinct statuses, which is what
+  makes "green on the oracle" mean something for a file whose cases are all
+  straight-line. It also caught a weak assertion the run could not: the
+  "server end unmoved by the client's set" case had both ends at `(1, 1)`, so
+  it would have passed a kernel that stored the mode on the shared instance
+  instead of on the end. The server is created byte-read-mode on a
+  message-type pipe now, so the two states differ.
+
+**And the QUERY direction owed the disconnect rule too**, in both pipe classes.
+`FilePipeLocalInformation` is the one that reads as a judgement call — it *has*
+a `NamedPipeState` field, so reporting `FILE_PIPE_DISCONNECTED_STATE` in it is
+the plausible answer, and that is what proskrnl did. The oracle refuses the
+whole query. No winetest assertion reaches it; it was found by reading the
+oracle's arm for the rule the SET side was being written against, and pinned
+because it was found, not because anything failed.
+
+**What the pair is now**: zero failed assertions and the SAME panic at
+`NtQueryInformationFile` class 8 (`FileAccessInformation`), from
+`test_file_access` at `pipe.c:1015`. The verdict does not move — a stopped pair
+with zero is still `FAIL` — and 0 is a lower bound exactly as the 12 was (§4
+trap 2). Class 8 is the next item in this pair and it is a small one: the class
+reports the granted access of the handle, which `FILE_OBJECT.grantedAccess`
+already holds.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
