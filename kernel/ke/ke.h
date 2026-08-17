@@ -287,6 +287,19 @@ struct KTHREAD
     void *syncIoUserIosb;    /* the op's user IOSB VA, the cancel filter key */
     BOOLEAN syncIoActive;    /* inside a cancellable synchronous op */
     BOOLEAN syncIoCancelled; /* a canceller marked this op */
+    /* Did the current span ENTER the Io layer's cancellable wait? Set by
+     * IoWaitCancellable on the way in — before the wait, so a wait that
+     * returns at once still counts — and cleared by IopEnterSyncIo. It stands
+     * for the oracle's "was this async QUEUED", which decides what a FAILING
+     * blocking request owes the caller's event and the file object
+     * (kernel/io/async.c IopEndBlockingRequest; pinned
+     * sem_pipe/blocking_signal.c). The two coincide because npfs reaches the
+     * wait only when its condition is unmet, exactly where the server would
+     * have queued — that is an npfs property, not a promise of this field.
+     * Recorded by the ENGINE at the one place a cancellable park happens, for
+     * the same reason IO_CONTROL_CONTEXT.pended is set by the engine: a
+     * device that has to remember to say so eventually forgets. */
+    BOOLEAN syncIoParked;
     KEVENT syncIoCancelEvent;
 
     /* M7: a user thread's initial ring-3 register state (NtCreateThreadEx /

@@ -398,17 +398,18 @@ static void test_nowait_mode_refuses_rather_than_pends(void)
  * them — and it is the case a queue keyed on the HANDLE rather than on the
  * pipe END would get wrong by completing the read with the writer's bytes.
  *
- * It also carries the ONE divergence this whole item accepted, tagged
- * rather than dropped. NT re-signals the FILE OBJECT on ANY completion (it
- * counts no outstanding requests — `async_set_result`'s `else if
- * (async->fd) set_fd_signaled( async->fd, 1 )`), and proskrnl does not,
- * because condrv borrows the file object as its own device-managed
- * readiness signal and a completion-side re-signal spins conhost's poll
- * loop (docs/03 "CUI-8 async notes"; ntdll:pipe:1678 is its one failure).
- * The todo_proskrnl below is what makes that a recorded divergence instead
- * of an untested hole: it must keep passing on the oracle, and the day
- * condrv gets an event of its own it will report "unexpectedly passed"
- * rather than going quietly stale. */
+ * The last assertion used to be the ONE divergence this item accepted, and
+ * it is a plain assertion now. NT re-signals the FILE OBJECT on ANY
+ * completion (it counts no outstanding requests — `async_set_result`'s
+ * `else if (async->fd) set_fd_signaled( async->fd, 1 )`), and proskrnl did
+ * not, because condrv borrows the file object as its own readiness signal
+ * and a completion-side re-signal spins conhost's poll loop. The borrowing
+ * is now DECLARED (io.h deviceManagedSignal) instead of paid for by every
+ * other device, so the write below takes the ordinary blocking-request
+ * completion path and puts the handle back up with the read still parked —
+ * which is exactly what ntdll:pipe:1678 asks for. The todo_proskrnl tag
+ * reported "unexpectedly passed" the moment that landed, which is the whole
+ * reason it was a tag rather than a dropped case. */
 static void test_a_write_does_not_disturb_a_parked_read(void)
 {
     IO_STATUS_BLOCK readIosb, writeIosb;
@@ -433,10 +434,7 @@ static void test_a_write_does_not_disturb_a_parked_read(void)
        (unsigned long long)writeIosb.Information);
     ok(readIosb.Status == IOSB_POISON_STATUS, "the parked read was completed by the write: %08lx",
        (unsigned long)readIosb.Status);
-    todo_proskrnl
-    {
-        ok(is_signaled(server), "an inline completion did not re-signal the handle");
-    }
+    ok(is_signaled(server), "an inline completion did not re-signal the handle");
 
     NtClose(client);
     NtClose(server);

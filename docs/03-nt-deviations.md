@@ -1721,24 +1721,64 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   and is the contract: a read that pended WITH an event leaves the handle
   unsignalled through its own completion. `ntdll:pipe` measures it
   (`pipe.c:1607-:1617`); pinned by `sem_pipe/pended_read.c`.
-  **An INLINE completion does NOT re-signal the object, and NT's does.**
-  NT counts no outstanding requests, so any completion on a handle puts it
-  back up — `ntdll:pipe` pends a read on a client end, writes one byte on
-  that same end, and requires the handle signalled with the read still
-  parked (`pipe.c:1678`). proskrnl deliberately does not, because **condrv
-  borrows the file object as its own device-managed readiness signal**
-  (`drivers/condrv.c` `CondrvSignalServer`; `CondrvServerRead` CLEARS it
-  when the request queue empties). Re-signalling from `IopCompleteTransfer`
-  runs on that very read, so conhost's park is re-signalled the instant it
-  is taken and its poll loop spins — measured: `kernel32:virtual` went from
-  reaching `virtual.c:1465` to not finishing the todo block at `:4341`
-  inside 300 s. Cost: one assertion. Escalation: give condrv an event of its
-  own instead of borrowing `header`, then restore the tail's signal.
-  **Still missing, measured:** a BLOCKING request does not clear the object.
-  The oracle queues a blocking async too, so `ntdll:pipe`'s `test_blocking`
-  requires the handle to be unsignalled while a synchronous read is parked
-  (`pipe.c:1740`/`:1742`/`:1753`) — and the same absence makes proskrnl PASS
-  the `todo_wine` at `:1829`, i.e. scores a failure for being closer to NT.
+- **A BLOCKING request owes the same two things** (`kernel/io/async.c`
+  `IopBeginBlockingRequest` / `IopEndBlockingRequest`, driven from
+  `kernel/io/rw.c`'s device branch and its flush) — a pin, not a deviation;
+  the condrv exemption it rests on has its own bullet below.
+  The oracle queues a blocking async through exactly the same code and
+  `async->blocking = !is_fd_overlapped( fd )` (`create_async`) decides only
+  how the CALLER waits, so a synchronous pipe read resets the caller's event
+  at issue, takes the handle down for the duration, and puts exactly one of
+  the two back up. `NtFlushBuffersFile` is in scope for the same reason and
+  can only ever take the file-object arm (it has no event parameter).
+  Pinned by `sem_pipe/blocking_signal.c`; `ntdll:pipe`'s `test_blocking` is
+  the winetest consumer (`pipe.c:1740`/`:1742`/`:1753`, and the `todo_wine`
+  at `:1829` that a kernel which never clears the handle PASSES).
+
+  Two parts of it are not derivable from the rule's statement, and both were
+  got wrong in a first draft that no winetest assertion could convict:
+
+  - **What a FAILING request owes depends on whether it was QUEUED.** One
+    that parked reaches `async_set_result`'s signal block even though it
+    failed (`async->pending || !NT_ERROR( status )`) and takes the same
+    event-or-handle arm a success takes — *so a failing read SIGNALS the
+    caller's event*, the opposite of the direct-fd path's
+    `if (status != STATUS_PENDING && event) NtResetEvent`. One the device
+    refused above `queue_async` reaches nothing: the handle keeps whatever
+    state it had and the event stays reset. `KTHREAD.syncIoParked`, set by
+    `IoWaitCancellable`, is the engine's own answer — set where the park
+    happens, so no device has to remember to report it (the argument
+    `IO_CONTROL_CONTEXT.pended` already makes below). The WRITE direction
+    carries the same rule and reached it through a different tail, whose
+    unconditional `IopAbandonRequest` reset the event the engine had just
+    set; `eventSettled` (`kernel/io/rw.c`) is what stops that, and
+    `blocking_signal.c`'s quota-blocked write is what convicts it.
+  - **The event reset and the handle clear are merged at issue**, where the
+    oracle has them a frame apart (`create_async` above the device's state
+    checks, `queue_async` below them). The split is observable only for the
+    refusal case, and `IopRequestRefused` RESTORES the handle to what
+    `IopBeginBlockingRequest` found — which is not the same as signalling it:
+    a read that completed through an event left the handle DOWN, and a
+    refusal that follows must leave it there. Measuring the refusal against a
+    fresh (born-signalled) handle cannot tell the two apart, which is why
+    `blocking_signal.c` has a case that refuses on a handle already down.
+- **condrv's file objects are EXEMPT from the signalled-state rule**
+  (`FILE_OBJECT.deviceManagedSignal`, honoured in `kernel/io/async.c`
+  `IopFileSignalSuppressed`) — a deviation, and it is the residue of a larger
+  one. NT counts no outstanding requests, so ANY completion on a handle puts
+  it back up; proskrnl used to skip that for EVERY device, because **condrv
+  borrows the file object as its own readiness signal** (`drivers/condrv.c`
+  `CondrvSignalServer`; `CondrvServerRead` CLEARS it when the request queue
+  empties) and re-signalling on the very read that drained the queue re-arms
+  conhost's park and spins its poll loop — measured, at the cost of
+  `kernel32:virtual`'s run. Declaring the borrowing on the FILE_OBJECT instead
+  narrows the deviation to condrv's own three opens and lets every other
+  device have the NT rule; `ntdll:pipe:1678`, the one assertion the old form
+  cost, passes. Nothing pins the exemption, because nothing but conhost holds
+  a console server handle and the input/output opens' `header` is managed by
+  nobody at all (they stay permanently signalled, as before this change).
+  **Escalation is unchanged and now smaller**: give condrv an event of its
+  own and delete the field.
 - **"The device pended" is a FLAG, not a status** (`kernel/io/vfs.h`
   `IO_CONTROL_CONTEXT.pended`, set by `IopPreparePendingRequest` itself) —
   NT's `IoMarkIrpPending`, and for NT's reason. `STATUS_PENDING` as a
@@ -1759,7 +1799,7 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   consumer unmaps a buffer under a pended read; recorded so the answer is a
   decision rather than an accident.
 - **`FILE_SKIP_SET_EVENT_ON_HANDLE` FREEZES the file object's signalled
-  state** (`kernel/io/async.c` `IopFileSignalFrozen`) — a pin, and it
+  state** (`kernel/io/async.c` `IopFileSignalSuppressed`) — a pin, and it
   supersedes this document's earlier "stored and reported back, unbuilt".
   The oracle puts the guard inside the transition (`server/fd.c`
   `set_fd_signaled`: `if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE)

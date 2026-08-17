@@ -246,7 +246,7 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
   `FILE_SKIP_SET_EVENT_ON_HANDLE` is **honoured** too, since CUI-8's pended
   reads gave the file object's signalled state something to say: setting the
   bit clears the handle once and freezes it there for good (the guard lives
-  inside the transition, `kernel/io/async.c` `IopFileSignalFrozen`, exactly
+  inside the transition, `kernel/io/async.c` `IopFileSignalSuppressed`, exactly
   where `server/fd.c` `set_fd_signaled` keeps it). Pinned by
   `tests/ntapi/sem_pipe/pended_read.c`; `ntdll:pipe` `pipe.c:1680-:1702` is
   the winetest consumer.

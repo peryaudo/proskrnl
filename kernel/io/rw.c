@@ -72,22 +72,15 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
     {
         PsChargeIoCounters(KeGetCurrentThread()->process, charge, (uint64_t)information);
     }
-    /* An inline completion deliberately does NOT re-signal the FILE OBJECT,
-     * and that is a collision rather than an omission. NT counts no
-     * outstanding requests: ANY completion on the handle puts it back up, so
-     * ntdll:pipe pends a read on a client end, writes one byte on that same
-     * end, and requires the handle signalled with the read still parked
-     * (pipe.c:1678 — one failure, and it is the whole cost).
-     *
-     * Doing it here costs far more than it buys, measured: condrv OWNS
-     * `header` on its server handle as a device-managed readiness signal
-     * (drivers/condrv.c CondrvSignalServer), and CondrvServerRead CLEARS it
-     * the moment the request queue empties — on the very read this tail then
-     * completes. So conhost's park was re-signalled the instant it was taken
-     * and its poll loop spun: kernel32:virtual went from reaching
-     * virtual.c:1465 to not finishing the todo block at :4341 inside 300 s.
-     * The exit is to give condrv an event of its own instead of borrowing
-     * the file object's; docs/03 "CUI-8 async notes" carries it. */
+    /* This tail does NOT touch the FILE OBJECT, and that is a division of
+     * labour rather than an omission: the signalled state belongs to the
+     * DEVICE branch's IopBeginBlockingRequest/IopEndBlockingRequest pair,
+     * which is the only caller whose request can park and therefore the only
+     * one whose handle state is observable. The seekable path below reaches
+     * here too, and there the oracle leaves a synchronous transfer's fd alone
+     * (dlls/ntdll/unix/file.c never queues an async for one), so hoisting the
+     * signal into this function would state the rule for a caller that does
+     * not owe it. */
     /* FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, and its axis is the one thing
      * about it worth reading twice: the packet is skipped only when the call
      * did NOT report STATUS_PENDING to its caller. A request that pends
@@ -299,9 +292,16 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
                                       .bufferLength = length,
                                       .charge = PsIoChargeRead};
         ULONG_PTR transferred = 0;
+        /* The signalled-state legs of a request that may PARK (io.h). Above
+         * the op because a device's own refusal is what IopRequestRefused
+         * restores — and above IopPreparePendingRequest, which does the
+         * same two things again for the pended case and is idempotent. */
+        IOP_BLOCKING_REQUEST blocking;
+        IopBeginBlockingRequest(&blocking, file, event);
         IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
+        BOOLEAN parked = IoSyncIoParked();
         if (request.pended)
         {
             /* The request owns the bounce and the APC block now, and it will
@@ -350,9 +350,11 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
             status =
                 IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
                                     /* reportsPending */ FALSE, PsIoChargeRead);
+            IopEndBlockingRequest(&blocking, IopRequestCompleted);
         }
         else
         {
+            IopEndBlockingRequest(&blocking, parked ? IopRequestFailedParked : IopRequestRefused);
             goto abandon;
         }
         /* The DEVICE path returns this status unchanged — there is no
@@ -483,6 +485,11 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
      * clear — so the clear stays even where nothing reads the flag
      * again (the NOLINTs mark those). */
     BOOLEAN syncLocked = FALSE;
+    /* Set once IopEndBlockingRequest has had the last word on the caller's
+     * event: the device branch's FailedParked arm SETS it, and `abandon`'s
+     * unconditional reset below would silently undo that (the read branch has
+     * no reset, so the two directions would disagree about one rule). */
+    BOOLEAN eventSettled = FALSE;
     /* The access gate is NOT plain FILE_WRITE_DATA: an APPEND-ONLY handle
      * (FILE_APPEND_DATA without WRITE_DATA — kernelbase's append-mode
      * loggers) writes too, forced to EOF below (pinned sem_file/append.c). */
@@ -532,9 +539,14 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             memcpy(bounce, buffer, length); /* probed above */
         }
         ULONG_PTR transferred = 0;
+        /* The read path's reasoning, in the direction that blocks on quota. */
+        IOP_BLOCKING_REQUEST blocking;
+        IopBeginBlockingRequest(&blocking, file, event);
         IopEnterSyncIo(iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Write(file, bounce, length, &transferred);
         IopLeaveSyncIo();
+        BOOLEAN parked = IoSyncIoParked();
+        eventSettled = TRUE;
         if (bounce != 0)
         {
             MiFreePool(bounce);
@@ -544,9 +556,11 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
             status =
                 IopCompleteTransfer(file, iosb, event, apcBlock, apcContext, status, transferred,
                                     /* reportsPending */ FALSE, PsIoChargeWrite);
+            IopEndBlockingRequest(&blocking, IopRequestCompleted);
         }
         else
         {
+            IopEndBlockingRequest(&blocking, parked ? IopRequestFailedParked : IopRequestRefused);
             goto abandon;
         }
         /* The DEVICE path returns this status unchanged — there is no
@@ -681,8 +695,15 @@ abandon:
      * The caller's event is RESET, though — the oracle's NtWriteFile does
      * that for every non-pending failure past the handle resolution
      * (dlls/ntdll/unix/file.c err:), and a caller that pre-signalled it
-     * reads the event and the IOSB together. */
-    IopAbandonRequest(event);
+     * reads the event and the IOSB together.
+     *
+     * Not when the DEVICE branch already answered for the event: a write that
+     * parked and then failed reaches the server's signal block and SETS it
+     * (io.h IopRequestFailedParked), and this reset would undo that. */
+    if (!eventSettled)
+    {
+        IopAbandonRequest(event);
+    }
     if (syncLocked)
     {
         KiReleaseEventGate(&file->syncIoLock);
@@ -744,9 +765,17 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
              * 1)) and cancel_sync matches every blocking async of the target
              * thread, so both halves are observable; pinned by
              * sem_pipe/flush_buffers.c. */
+            /* A flush has no event parameter at all, so it can only ever
+             * take the FILE-OBJECT arm of "exactly one" (io.h). ntdll:pipe's
+             * test_blocking samples it at pipe.c:1753. */
+            IOP_BLOCKING_REQUEST blocking;
+            IopBeginBlockingRequest(&blocking, file, 0);
             IopEnterSyncIo(iosb);
             status = file->device->ops->Flush(file);
             IopLeaveSyncIo();
+            IopEndBlockingRequest(&blocking, NT_SUCCESS(status) ? IopRequestCompleted
+                                             : IoSyncIoParked() ? IopRequestFailedParked
+                                                                : IopRequestRefused);
         }
         else
         {

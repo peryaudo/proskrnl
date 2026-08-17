@@ -614,6 +614,14 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
     file->fsContext = open;
     file->fcb = &CondrvConsoleFcb;
     file->isDirectory = FALSE;
+    /* This device drives `header` itself, so the Io layer must leave it alone
+     * (kernel/io/io.h deviceManagedSignal). The server handle is the reason —
+     * it IS conhost's wait handle, and an I/O completion that re-signals it
+     * re-arms conhost's park on the very read that drained the queue. The
+     * input/output opens are marked too, deliberately: nothing manages their
+     * `header` at all today, so leaving them born-signalled is the state this
+     * change is not making a claim about. */
+    file->deviceManagedSignal = TRUE;
     if (kind == CondrvOpenServer)
     {
         CondrvConsole.serverFile = file;

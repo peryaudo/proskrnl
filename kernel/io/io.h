@@ -49,21 +49,27 @@ extern OBJECT_TYPE IoFileObjectType;
 /* Body of an Ob "File" object: one open of one file. NT's FILE_OBJECT
  * concept; internal layout ours (docs/03). File handles are waitable — NT
  * signals the file object at I/O completion and leaves it UNSIGNALLED while
- * a request is outstanding. The object is born signalled; the two services
- * that genuinely PEND clear it and put it back through the one engine that
- * states the rule (kernel/io/async.c IopMarkRequestOutstanding /
- * IopSignalRequestCompletion): NtNotifyChangeDirectoryFile (ntdll:change
- * waits on the DIRECTORY HANDLE and requires a timeout, change.c:106/:112/
- * :143; pinned sem_file/dir_handle_signal.c) and the CUI-8 npfs pended read
- * (pinned sem_pipe/pended_read.c).
+ * a request is outstanding. The object is born signalled; four services clear
+ * it and put it back through the one engine that states the rule
+ * (kernel/io/async.c IopMarkRequestOutstanding / IopSignalRequestCompletion):
+ * NtNotifyChangeDirectoryFile (ntdll:change waits on the DIRECTORY HANDLE and
+ * requires a timeout, change.c:106/:112/:143; pinned
+ * sem_file/dir_handle_signal.c), the CUI-8 npfs pended read (pinned
+ * sem_pipe/pended_read.c), and — through IopBeginBlockingRequest /
+ * IopEndBlockingRequest — the BLOCKING device transfer and the blocking flush
+ * (pinned sem_pipe/blocking_signal.c).
+ *
+ * NOT every service that can park: kernel/io/ioctl.c's verbs park too
+ * (FSCTL_PIPE_WAIT, a blocking listen) and take no Begin/End pair, where the
+ * oracle queues those asyncs like any other. Unpinned gap rather than a
+ * measured divergence — no winetest assertion samples a handle under a parked
+ * ioctl — and the fix is to wrap ioctl.c's device call the same way.
  *
  * Two things about it that read as bugs and are the contract: exactly ONE
  * of the caller's event and this object is signalled at completion, so a
  * request that pended with an event leaves the object down; and there is no
  * outstanding-request count anywhere, so an unrelated inline completion on
- * the handle re-signals it with the pended request still parked. What a
- * BLOCKING request does is the known gap — the oracle clears the object for
- * one of those too, and proskrnl does not (docs/03 "CUI-8 async notes").
+ * the handle re-signals it with the pended request still parked.
  *
  * Spelled KEVENT rather than a bare DISPATCHER_HEADER so the clear and the
  * signal go through the Ke event engine that already owns those two
@@ -138,6 +144,23 @@ typedef struct FILE_OBJECT
      * own mode back gets the truth about what was RECORDED rather than a
      * claim that it took effect. docs/16 carries the split. */
     ULONG completionFlags;
+
+    /* This DEVICE drives `header` itself, so the Io layer's own
+     * outstanding/completion transitions must not touch it (kernel/io/async.c
+     * IopFileSignalSuppressed, the same predicate
+     * FILE_SKIP_SET_EVENT_ON_HANDLE goes through).
+     *
+     * condrv is the one setter and the reason the field exists: its server
+     * handle IS conhost's wait handle, signalled while requests are queued
+     * and cleared by CondrvServerRead when the queue empties
+     * (drivers/condrv.c CondrvSignalServer). An I/O completion that
+     * re-signals it re-arms conhost's park on the very read that just
+     * drained the queue, and its poll loop spins — measured, at the cost of
+     * kernel32:virtual's run (docs/03 "CUI-8 async notes"). Saying so here
+     * is what lets every other device get the NT rule; the exit is still to
+     * give condrv an event of its own and delete this field. */
+    BOOLEAN deviceManagedSignal;
+
     LARGE_INTEGER currentByteOffset;
 
     /* M10 change-notify: the completion FILTER is established by the FIRST
@@ -333,6 +356,14 @@ NTSTATUS IopValidateEventHandle(HANDLE eventHandle);
 /* Failure path twin: reset the caller's event, leave the IOSB alone.
  * See kernel/io/file.c for why the two move together. */
 void IopAbandonRequest(HANDLE eventHandle);
+
+/* The two bare transitions on a caller's completion-event HANDLE, through
+ * the one IopReferenceCompletionEvent authority and with the same
+ * discard-the-failure rule IopCompleteRequest has. They exist because a
+ * blocking request's ISSUE and its FAILING completion move the event without
+ * touching the IOSB, which is the one thing IopCompleteRequest cannot do. */
+void IopResetRequestEvent(HANDLE eventHandle);
+void IopSetRequestEvent(HANDLE eventHandle);
 
 NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS status,
                             ULONG_PTR information);
@@ -551,12 +582,79 @@ void IopSignalRequestCompletion(PKEVENT event, struct FILE_OBJECT *file);
  * and by the watch arm for its own engine. */
 void IopMarkRequestOutstanding(struct FILE_OBJECT *file);
 
+/* --- the BLOCKING twin of the two calls above (M10) ------------------------
+ *
+ * A request that PARKS ITS CALLER owes the caller's event and the file object
+ * exactly what a pended one does: the oracle queues a blocking async through
+ * the very same code, and `async->blocking = !is_fd_overlapped( fd )`
+ * (server/async.c create_async) decides only how the CALLER waits. So a
+ * synchronous pipe read takes the handle down for the duration and puts
+ * exactly one of the two back up at the end. Pinned by
+ * sem_pipe/blocking_signal.c; ntdll:pipe's test_blocking is the winetest
+ * consumer.
+ *
+ * Begin is create_async's event reset plus queue_async's clear. The two are
+ * separate statements in the oracle — the reset a frame above the device's
+ * state checks, the clear below them — and are merged here deliberately: the
+ * split is observable only for a request the DEVICE refuses without ever
+ * parking, and IopRequestRefused below RESTORES the handle to what Begin
+ * found for exactly that case, rather than teaching every device where the
+ * boundary is. Restores, not signals: a handle can already be down when the
+ * refused request arrives (the previous request completed through an event),
+ * and the oracle leaves it down. */
+typedef struct IOP_BLOCKING_REQUEST
+{
+    struct FILE_OBJECT *file;
+    HANDLE eventHandle;
+    BOOLEAN handleWasSignalled;
+} IOP_BLOCKING_REQUEST;
+
+void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, struct FILE_OBJECT *file,
+                             HANDLE eventHandle);
+
+/* How a blocking request ended, which is what decides the signal. The three
+ * arms are the pinned oracle's, measured rather than reasoned about:
+ *
+ *   Completed     the IOSB is written; the event, when there was one, has
+ *                 already been set by IopCompleteRequest, so only the
+ *                 FILE-OBJECT arm of "exactly one" is left to take.
+ *   FailedParked  it was queued and then failed (a peer closing under a
+ *                 parked read or a quota-blocked write). server/async.c
+ *                 async_set_result's guard is
+ *                 `async->pending || !NT_ERROR( status )`, so a QUEUED
+ *                 request reaches the signal block even when it fails — and
+ *                 takes the same event-or-handle arm a success takes. A
+ *                 failing request therefore SIGNALS the caller's event,
+ *                 which is the opposite of what the direct-fd path does and
+ *                 is why this arm is not IopAbandonRequest. The caller must
+ *                 not reset the event afterwards; this call is the last word
+ *                 on it.
+ *   Refused       the device answered above the queue (a read on an already
+ *                 broken pipe): `async->pending` is still 0 there, so the
+ *                 signal block is skipped entirely — the handle keeps
+ *                 whatever state it had and the event stays reset.
+ */
+typedef enum
+{
+    IopRequestCompleted,
+    IopRequestFailedParked,
+    IopRequestRefused
+} IOP_BLOCKING_OUTCOME;
+
+void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME outcome);
+
 /* CUI-5 NtCancelSynchronousIoFile (kernel/io/async.c): mark the current
  * thread's in-flight synchronous I/O around a potentially-blocking device
  * op, and the cancellable park npfs's blocking waits use. */
 void IopEnterSyncIo(void *userIosb);
 void IopLeaveSyncIo(void);
 NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout);
+
+/* Did the current thread's marked span actually PARK? The engine's own
+ * answer to "was this request queued" (KTHREAD.syncIoParked, set by
+ * IoWaitCancellable) — which is the only thing separating IopRequestRefused
+ * from IopRequestFailedParked. */
+BOOLEAN IoSyncIoParked(void);
 
 /* CUI-8 (docs/19 §9.9): has the current thread's marked synchronous I/O
  * been cancelled? The data path's loops poll this between transfers: a
