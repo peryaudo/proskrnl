@@ -67,6 +67,17 @@
 #       failures downstream of it convict nothing — a pair that ALSO fails
 #       for a kernel reason stays in and stays red.
 #
+#       AUD-2 AMENDMENT (docs/23 §6c): the AUDIO modules (mmdevapi_test.exe,
+#       winmm_test.exe) are the exception to (c)'s "belongs in
+#       manifest-gui.txt". Their pairs live in THIS manifest — the audio
+#       milestones' done-when counts against it — but the runner partitions
+#       them onto their own audio image (run.sh wtest_is_audio /
+#       bake_audio_image: the CUI machine + the GUI stack the audio DLLs
+#       import + the audio payload + the virtio-snd device on the QEMU
+#       command line). The CUI wtest image stays byte-identical to the
+#       pre-audio one (G7); a pair from any other module never boots the
+#       audio image.
+#
 # Every oracle-side measurement below was taken as an ORDINARY USER under a
 # UTF-8 locale, which the runner now enforces (tests/run/run.sh): before that
 # it ran as root under C/POSIX, and eight pairs looked oracle-red that were
@@ -1565,3 +1576,40 @@ ucrtbase_test.exe:thread
 #     nowhere in it.
 # cmd.exe_test.exe:batch
 cmd.exe_test.exe:directory
+
+
+# --- mmdevapi (third_party/wine/dlls/mmdevapi/tests) — the audio image ------
+# AUD-2 (docs/23 §6c). These pairs boot the AUDIO image (see the (c)
+# amendment in the header): the CUI machine + the GUI stack the audio DLLs
+# import + winevsnd.drv over \Device\Snd* + the virtio-snd device on the
+# QEMU command line. Every pair measured on the ORACLE with the §6b pulse
+# backend up (G5's spec half): 0 failures each except where noted. All
+# parked here pending the driver + image commits of this series; the
+# activation commit re-measures both runners and uncomments what is green.
+# 1. Oracle-green; awaiting the proskrnl audio image + winevsnd.drv.
+# # TODO: Implement
+# mmdevapi_test.exe:capture
+# mmdevapi_test.exe:dependency
+# mmdevapi_test.exe:mmdevenum
+# mmdevapi_test.exe:propstore
+# mmdevapi_test.exe:render
+# mmdevapi_test.exe:spatialaudio
+
+# --- winmm (third_party/wine/dlls/winmm/tests) — the audio image ------------
+# 1. Oracle-green; awaiting the proskrnl audio image + winevsnd.drv.
+# # TODO: Implement
+# winmm_test.exe:capture
+# winmm_test.exe:generated
+# winmm_test.exe:joystick
+# winmm_test.exe:mcicda
+# winmm_test.exe:midi
+# winmm_test.exe:mixer
+# winmm_test.exe:mmio
+# winmm_test.exe:timer
+# winmm_test.exe:wave
+# (b) mci fails on the pinned ORACLE itself: 274 failures out of 749 (the
+#     MCIQTZ/video half needs winegstreamer and a rendering topology the
+#     null-sink oracle does not carry — mci.c's video-window and
+#     MCI_PLAY-on-avi blocks). A pair red with zero proskrnl involvement
+#     cannot convict the kernel (Art. 6).
+# winmm_test.exe:mci
