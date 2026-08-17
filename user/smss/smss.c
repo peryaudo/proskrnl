@@ -335,13 +335,69 @@ static int SmssRunFirstboot(void)
  * with /desktop=shell,WxH and needs no routing values -- and writing them
  * there would hand firstboot's transient rundll32 children a desktop
  * auto-launch of their own, changing what its golden pinned. */
+/* Write one REG_SZ under \Registry\User\<sid> -- the fixed Se identity
+ * (kernel/se/token.c); the skeleton root exists from boot
+ * (kernel/cm/registry.c). NtCreateKey creates one level, so the subkey path
+ * is walked and each component created -- the parents may not exist on a
+ * virgin hive. Shared by the shell desktop routing and the audio driver
+ * seed below (one spelling, Art. 11). Returns the failing status or 0. */
+static NTSTATUS SmssWriteUserValue(const WCHAR *subkey, const WCHAR *valueNameStr,
+                                   const WCHAR *value)
+{
+    WCHAR path[128];
+    unsigned int n = 0;
+    const WCHAR *prefix = WSTR("\\Registry\\User\\S-1-5-21-0-0-0-1000\\");
+    while (prefix[n] != 0)
+    {
+        path[n] = prefix[n];
+        n++;
+    }
+    for (unsigned int j = 0;; j++)
+    {
+        WCHAR c = subkey[j];
+        if (c != 0 && c != '\\')
+        {
+            path[n++] = c;
+            continue;
+        }
+        path[n] = 0;
+
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE key = 0;
+        ULONG disposition = 0;
+        SmssInitUnicodeString(&name, path);
+        attr.Length = sizeof(attr);
+        attr.RootDirectory = 0;
+        attr.ObjectName = &name;
+        attr.Attributes = OBJ_CASE_INSENSITIVE;
+        attr.SecurityDescriptor = 0;
+        attr.SecurityQualityOfService = 0;
+        NTSTATUS status = NtCreateKey(&key, KEY_ALL_ACCESS, &attr, 0, 0, 0, &disposition);
+        if (status != STATUS_SUCCESS)
+            return status;
+        if (c == 0)
+        {
+            UNICODE_STRING valueName;
+            SmssInitUnicodeString(&valueName, valueNameStr);
+            unsigned int chars = 0;
+            while (value[chars] != 0)
+                chars++;
+            status = NtSetValueKey(key, &valueName, 0, REG_SZ, (void *)value,
+                                   (chars + 1) * sizeof(WCHAR));
+            NtClose(key);
+            return status;
+        }
+        NtClose(key);
+        path[n++] = '\\';
+    }
+}
+
 static void SmssShellDesktopConfig(void)
 {
     static const struct
     {
-        const WCHAR *key; /* under \Registry\User\<sid> -- the fixed Se
-                           * identity (kernel/se/token.c); the skeleton root
-                           * exists from boot (kernel/cm/registry.c) */
+        const WCHAR *key;
         const WCHAR *name;
         const WCHAR *value;
     } values[] = {
@@ -356,65 +412,38 @@ static void SmssShellDesktopConfig(void)
 
     for (unsigned int i = 0; i < sizeof(values) / sizeof(values[0]); i++)
     {
-        WCHAR path[128];
-        unsigned int n = 0;
-        const WCHAR *prefix = WSTR("\\Registry\\User\\S-1-5-21-0-0-0-1000\\");
-        while (prefix[n] != 0)
+        NTSTATUS status = SmssWriteUserValue(values[i].key, values[i].name, values[i].value);
+        if (status != STATUS_SUCCESS)
         {
-            path[n] = prefix[n];
-            n++;
-        }
-        /* NtCreateKey creates one level, so walk the subkey path and create
-         * each component -- the parents may not exist on a virgin hive. */
-        for (unsigned int j = 0;; j++)
-        {
-            WCHAR c = values[i].key[j];
-            if (c != 0 && c != '\\')
-            {
-                path[n++] = c;
-                continue;
-            }
-            path[n] = 0;
-
-            UNICODE_STRING name;
-            OBJECT_ATTRIBUTES attr;
-            HANDLE key = 0;
-            ULONG disposition = 0;
-            SmssInitUnicodeString(&name, path);
-            attr.Length = sizeof(attr);
-            attr.RootDirectory = 0;
-            attr.ObjectName = &name;
-            attr.Attributes = OBJ_CASE_INSENSITIVE;
-            attr.SecurityDescriptor = 0;
-            attr.SecurityQualityOfService = 0;
-            NTSTATUS status = NtCreateKey(&key, KEY_ALL_ACCESS, &attr, 0, 0, 0, &disposition);
-            if (status != STATUS_SUCCESS)
-            {
-                SmssPrintf("[KTEST] shellcfg FAIL (create=%x)\n", SMSS_HEX(status));
-                return;
-            }
-            if (c == 0)
-            {
-                UNICODE_STRING valueName;
-                SmssInitUnicodeString(&valueName, values[i].name);
-                unsigned int chars = 0;
-                while (values[i].value[chars] != 0)
-                    chars++;
-                status = NtSetValueKey(key, &valueName, 0, REG_SZ, (void *)values[i].value,
-                                       (chars + 1) * sizeof(WCHAR));
-                NtClose(key);
-                if (status != STATUS_SUCCESS)
-                {
-                    SmssPrintf("[KTEST] shellcfg FAIL (set=%x)\n", SMSS_HEX(status));
-                    return;
-                }
-                break;
-            }
-            NtClose(key);
-            path[n++] = '\\';
+            SmssPrintf("[KTEST] shellcfg FAIL (write=%x)\n", SMSS_HEX(status));
+            return;
         }
     }
     SmssSay("[KTEST] shellcfg PASS\n");
+}
+
+/* AUD-2 (docs/23 §4c): select winevsnd as mmdevapi's driver by the registry
+ * mechanism mmdevapi already reads (HKCU Software\Wine\Drivers, value
+ * "Audio" -- dlls/mmdevapi/main.c init_driver). Gated on the driver
+ * actually being on the image: with the value absent mmdevapi walks its
+ * default list (pulse,alsa,oss,coreaudio), none of which the image
+ * carries, and honestly enumerates zero endpoints -- a machine with no
+ * sound device, which is what an image without winevsnd.drv is. Written by
+ * smss with native Nt* calls before any audio client, the shell desktop
+ * routing's precedent. */
+static void SmssAudioDriverConfig(void)
+{
+    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\winevsnd.drv"), 0))
+        return;
+
+    NTSTATUS status =
+        SmssWriteUserValue(WSTR("Software\\Wine\\Drivers"), WSTR("Audio"), WSTR("vsnd"));
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] audiocfg FAIL (write=%x)\n", SMSS_HEX(status));
+        return;
+    }
+    SmssSay("[KTEST] audiocfg PASS\n");
 }
 
 void SmssStart(void *pebArg)
@@ -435,6 +464,7 @@ void SmssStart(void *pebArg)
      * firstboot. */
     SmssStartWineServer();
     SmssShellDesktopConfig();
+    SmssAudioDriverConfig();
     SmssStartConhost();
 
     int failures = SmssRunFirstboot();

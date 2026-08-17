@@ -25,7 +25,8 @@ builder - the oracle keeps consuming its own full wine.inf, and no Wine byte
 changes (docs/03 CUI-1 notes). Everything else - AddReg/DelReg (the ~500-line
 machine-state payload) and the .Services sections - is kept.
 
-Usage: filter_inf.py [--keep NAME[,NAME...]] <wine.inf> <output.inf>
+Usage: filter_inf.py [--keep NAME[,NAME...]] [--add-register DLL[,DLL...]]
+       <wine.inf> <output.inf>
 
 --keep exempts directive families from the drop list. The registry
 differential's oracle leg (tests/run/run.sh firstboot) uses
@@ -33,6 +34,15 @@ differential's oracle leg (tests/run/run.sh firstboot) uses
 prefix WITHOUT fake dlls cannot launch any non-bootstrap process (the
 initial process's null dll-load-path never falls back to builtins), while
 the directive writes no registry - so keeping it changes no compared state.
+
+--add-register appends `11,,<dll>,1` entries to [RegisterDllsSection] (with
+--keep RegisterDlls so the directive survives). AUD-2's audio images need
+mmdevapi's COM classes in the hive, and mmdevapi is NOT in wine.inf's own
+RegisterDlls list - in a real prefix its CLSID lands via the fake-dll
+registrar (WINE_REGISTRY resources), a path this filter drops. Injecting
+the entry runs the DLL's own DllRegisterServer through Wine's own
+registrar at firstboot (setupapi + atl100, the GUI-6 shell recipe) - one
+authority, never a hand-typed CLSID seed (Art. 11 / gate G8).
 """
 
 import re
@@ -58,20 +68,55 @@ def filter_inf(text: str, dropped=DROPPED) -> str:
     return "".join(out)
 
 
+def add_register(text: str, dlls) -> str:
+    """Append 11,,<dll>,1 lines to [RegisterDllsSection] (11 = system32)."""
+    out = []
+    in_section = False
+    added = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_section and not added:
+                sys.exit("filter_inf: [RegisterDllsSection] vanished mid-file")
+            if in_section:
+                in_section = False
+            if stripped.lower() == "[registerdllssection]":
+                in_section = True
+                out.append(line)
+                for dll in dlls:
+                    out.append(f"11,,{dll},1\r\n" if line.endswith("\r\n") else f"11,,{dll},1\n")
+                added = True
+                continue
+        out.append(line)
+    if not added:
+        sys.exit("filter_inf: no [RegisterDllsSection] to --add-register into")
+    return "".join(out)
+
+
 def main() -> None:
     args = sys.argv[1:]
     directives = DROPPED
-    if args and args[0] == "--keep":
-        exempt = {name.lower() for name in args[1].split(",")}
-        directives = tuple(d for d in DROPPED if d.lower() not in exempt)
+    registered = ()
+    while args and args[0] in ("--keep", "--add-register"):
+        if args[0] == "--keep":
+            exempt = {name.lower() for name in args[1].split(",")}
+            directives = tuple(d for d in DROPPED if d.lower() not in exempt)
+        else:
+            registered = tuple(args[1].split(","))
         args = args[2:]
     if len(args) != 2:
-        sys.exit("usage: filter_inf.py [--keep NAME[,NAME...]] <wine.inf> <output.inf>")
+        sys.exit("usage: filter_inf.py [--keep NAME[,NAME...]] "
+                 "[--add-register DLL[,DLL...]] <wine.inf> <output.inf>")
+    if registered and "registerdlls" not in {d.lower() for d in DROPPED} - {d.lower() for d in directives}:
+        sys.exit("filter_inf: --add-register needs --keep RegisterDlls "
+                 "(the injected entries would be dropped)")
     source, destination = args[0], args[1]
     # wine.inf is plain ASCII/UTF-8; keep bytes as-is via latin-1 round-trip.
     with open(source, encoding="latin-1", newline="") as handle:
         text = handle.read()
     filtered = filter_inf(text, directives)
+    if registered:
+        filtered = add_register(filtered, registered)
     kept = sum(1 for l in filtered.splitlines() if l.strip())
     dropped = sum(1 for l in text.splitlines() if l.strip()) - kept
     with open(destination, "w", encoding="latin-1", newline="") as handle:
