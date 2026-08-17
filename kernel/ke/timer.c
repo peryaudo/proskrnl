@@ -14,6 +14,8 @@
  */
 #include "kernel/ke/ke.h"
 #include "kernel/init/panic.h"
+#include "kernel/lib/dbgprint.h"
+#include "kernel/syscall/syscall.h"
 #include "arch/x86_64/lapic.h"
 
 #include "abi/ntkeapi.h"
@@ -196,6 +198,28 @@ uint64_t KiComputeDueTime(PLARGE_INTEGER timeout)
 {
     if (timeout->QuadPart < 0)
     {
+        /* Diagnostic, not an invariant: a multi-hour RELATIVE timeout is
+         * legal NT, but in this machine's baked workload it has only ever
+         * been the product of a caller's unit confusion (a QPC-tick count
+         * armed as milliseconds reads as ~5 days). One rate-limited serial
+         * line moves that smoking gun from "inferred days later from a
+         * parked thread" to "logged at arm time with the caller's ring-3
+         * RIP". Never an ASSERT — asserting a heuristic is what Art. 6/G12
+         * forbid. Threshold 1 h in 100 ns units. */
+        static uint32_t KiSuspectTimeoutBudget = 64;
+        uint64_t relative100ns = 0 - (uint64_t)timeout->QuadPart;
+        if (relative100ns > 36000000000ULL && KiSuspectTimeoutBudget != 0)
+        {
+            KiSuspectTimeoutBudget--;
+            PKTHREAD thread = KeGetCurrentThread();
+            uint64_t userRip = (thread != 0 && thread->trapFrame != 0) ? thread->trapFrame->rip : 0;
+            DbgPrint("[SUSPECT] relative timeout %lu ms rip=%#018lx syscall=%s raw=%#lx\n",
+                     relative100ns / 10000, userRip,
+                     (thread != 0 && thread->lastSyscall != ~(uint64_t)0)
+                         ? KiSystemCallName(thread->lastSyscall)
+                         : "-",
+                     (uint64_t)timeout->QuadPart);
+        }
         /* Relative: unsigned negation avoids UB on the most-negative value.
          *
          * Deliberately the TICK, not the sub-tick reading KiTickFraction
