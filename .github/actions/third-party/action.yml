@@ -114,7 +114,14 @@ runs:
     # fetch_third_party.sh gained the truthful PULSE_LIBS marker, but only
     # this prefix bump forces the one rebuild+republish.
     #
-    # Kept in lockstep with the tp-v9 release assets: if only one door
+    # v10: the same failure mode, network edition (Net-2). The build set
+    # grows dlls/ws2_32/tests (the socket winetest gate, the v5 user32
+    # precedent). Every v9 entry is a tree without ws2_32_test.exe that
+    # satisfies setup_linux.sh's skip guard only through the new staleness
+    # probe; the prefix bump is what forces the one incremental
+    # build+republish instead of a per-shard top-up.
+    #
+    # Kept in lockstep with the tp-v10 release assets: if only one door
     # moved, the stale oracle would come back in through the other.
     - name: Restore third_party builds
       id: tp-cache
@@ -126,7 +133,7 @@ runs:
           third_party/wine
           third_party/freetype/x86_64-windows
           third_party/freetype/x86_64-linux
-        key: third-party-v9-${{ steps.pins.outputs.key }}
+        key: third-party-v10-${{ steps.pins.outputs.key }}
 
     # Second-chance restore: the Actions cache evicts (7 days unused, 10 GB
     # repo budget) far more eagerly than the release-cache assets the
@@ -194,7 +201,7 @@ runs:
           third_party/wine
           third_party/freetype/x86_64-windows
           third_party/freetype/x86_64-linux
-        key: third-party-v9-${{ steps.pins.outputs.key }}
+        key: third-party-v10-${{ steps.pins.outputs.key }}
 
     # Mirror the finished builds to the rolling `third-party-cache`
     # prerelease so ephemeral containers outside Actions (Claude Code on
@@ -242,7 +249,7 @@ runs:
         # v9: and now the audio backend (--with-pulse + the mmdevapi/winmm
         # test modules, AUD-2). Same argument again.
         existing="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-        if grep -qx "tp-v9-$KEY-distro.txt" <<<"$existing"; then
+        if grep -qx "tp-v10-$KEY-distro.txt" <<<"$existing"; then
           echo "assets for key $KEY already published — skipping"
           exit 0
         fi
@@ -251,7 +258,7 @@ runs:
         # The tarballs hold binaries linked against this runner's glibc;
         # fetch_third_party.sh refuses to restore onto a different distro
         # release, so record which one built them.
-        (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v9-$KEY-distro.txt"
+        (. /etc/os-release && echo "$ID-$VERSION_ID") > "$pack/tp-v10-$KEY-distro.txt"
         # Assets over GitHub's 2 GiB per-asset limit are split; the fetch
         # side concatenates partNN in order.
         # freetype packs BOTH build outputs (PE static library + the native
@@ -262,15 +269,15 @@ runs:
                     "freetype:third_party/freetype/x86_64-windows third_party/freetype/x86_64-linux"; do
           name="${spec%%:*}"; paths="${spec#*:}"
           tar -C "$GITHUB_WORKSPACE" --zstd -cf - $paths \
-            | split -b 1900m -d -a 2 - "$pack/tp-v9-$KEY-$name.tar.zst.part"
+            | split -b 1900m -d -a 2 - "$pack/tp-v10-$KEY-$name.tar.zst.part"
         done
-        gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v9-"$KEY"-*.part* --clobber
-        gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v9-$KEY-distro.txt" --clobber
+        gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack"/tp-v10-"$KEY"-*.part* --clobber
+        gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pack/tp-v10-$KEY-distro.txt" --clobber
         # Prune stale keys only after the new key uploaded whole, so a
         # failed upload never leaves the release empty.
         for a in $existing; do
           case "$a" in
-            tp-v9-"$KEY"-*) ;;
+            tp-v10-"$KEY"-*) ;;
             *) gh release delete-asset "$tag" "$a" -R "$GITHUB_REPOSITORY" -y ;;
           esac
         done

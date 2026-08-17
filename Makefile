@@ -1921,6 +1921,14 @@ WT_WINMM_D := third_party/wine/dlls/winmm/tests/x86_64-windows
 WT_WINMM_OBJS := $(addprefix $(WT_WINMM_D)/, capture.o generated.o joystick.o mci.o mcicda.o \
     midi.o mixer.o mmio.o timer.o wave.o testlist.o)
 
+# Net-2: ws2_32's boundary tests. IMPORTS = iphlpapi ws2_32 user32 —
+# ws2_32.dll is real (baked since M10's winestrip set); user32 and iphlpapi
+# are stood in by the glue stubs (Art. 7: neither GUI nor the Net-3 NSI
+# surface belongs on the CUI image), so their subtests fail identically on
+# both runners and park in the manifest.
+WT_WS2_32_D := third_party/wine/dlls/ws2_32/tests/x86_64-windows
+WT_WS2_32_OBJS := $(addprefix $(WT_WS2_32_D)/, afd.o protocol.o sock.o testlist.o)
+
 # The helper DLLs the .spec SOURCES build are reached through a RESOURCE, not
 # an import: ntdll:thread, kernel32:actctx and ucrtbase:thread each call
 # extract_resource()/FindResourceA(NULL, "<name>.dll", "TESTDLL") to write the
@@ -1996,8 +2004,16 @@ $(WTESTS)/winmm_test.exe: $(WT_WINMM_OBJS) third_party/wine/dlls/winmm/tests/rsr
 	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    -Wl,--end-group -lgcc -o $@
 
+$(WTESTS)/ws2_32_test.exe: $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c \
+        tests/winetest/glue/iphlpapi_stubs.c $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_LINK) $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c \
+	    tests/winetest/glue/iphlpapi_stubs.c $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WINE_PE)/ws2_32/x86_64-windows/libws2_32.a \
+	    $(WT_LIBS) -Wl,--end-group -lgcc -o $@
+
 wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_test.exe \
-    $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe \
+    $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe $(WTESTS)/ws2_32_test.exe \
     $(WTESTS)/mmdevapi_test.exe $(WTESTS)/winmm_test.exe
 .PHONY: wtests
 

@@ -310,7 +310,8 @@ fi
 echo "== wine: the CUI test modules (the winetest gate) + user32 (the GUI-5 msg gate) + audio =="
 if [[ $wineStale -eq 0 && -f third_party/wine/dlls/ntdll/tests/x86_64-windows/ntdll_test.exe &&
       -f third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe &&
-      -f third_party/wine/dlls/mmdevapi/tests/x86_64-windows/mmdevapi_test.exe ]]; then
+      -f third_party/wine/dlls/mmdevapi/tests/x86_64-windows/mmdevapi_test.exe &&
+      -f third_party/wine/dlls/ws2_32/tests/x86_64-windows/ws2_32_test.exe ]]; then
     echo "   already built — skipping"
 else
     (cd third_party/wine &&
@@ -319,7 +320,8 @@ else
         make -C third_party/wine -j"$JOBS" \
         dlls/ntdll/tests/all dlls/kernel32/tests/all dlls/msvcrt/tests/all \
         dlls/ucrtbase/tests/all programs/cmd/tests/all dlls/user32/tests/all \
-        dlls/mmdevapi/tests/all dlls/winmm/tests/all
+        dlls/mmdevapi/tests/all dlls/winmm/tests/all \
+        dlls/ws2_32/tests/all
 fi
 
 echo

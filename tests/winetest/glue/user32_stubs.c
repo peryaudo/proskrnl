@@ -329,6 +329,73 @@ int WINAPIV wsprintfW(WCHAR *buffer, const WCHAR *format, ...)
     return n < 0 ? 0 : n;
 }
 
+/* ---- Net-2 additions: the ws2_32 tests' message-pump imports -------------- */
+
+HICON WINAPI LoadIconA(HINSTANCE instance, LPCSTR name)
+{
+    (void)instance;
+    (void)name;
+    set_not_implemented();
+    return NULL;
+}
+
+HCURSOR WINAPI LoadCursorA(HINSTANCE instance, LPCSTR name)
+{
+    (void)instance;
+    (void)name;
+    set_not_implemented();
+    return NULL;
+}
+
+BOOL WINAPI GetMessageA(MSG *msg, HWND window, UINT first, UINT last)
+{
+    (void)msg;
+    (void)window;
+    (void)first;
+    (void)last;
+    set_not_implemented();
+    return -1; /* GetMessage's error answer */
+}
+
+BOOL WINAPI PeekMessageA(MSG *msg, HWND window, UINT first, UINT last, UINT remove)
+{
+    (void)msg;
+    (void)window;
+    (void)first;
+    (void)last;
+    (void)remove;
+    set_not_implemented();
+    return FALSE;
+}
+
+BOOL WINAPI TranslateMessage(const MSG *msg)
+{
+    (void)msg;
+    set_not_implemented();
+    return FALSE;
+}
+
+LRESULT WINAPI DispatchMessageA(const MSG *msg)
+{
+    (void)msg;
+    set_not_implemented();
+    return 0;
+}
+
+DWORD WINAPI MsgWaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL waitAll,
+                                       DWORD timeout, DWORD wakeMask)
+{
+    /* No message queue exists here; a caller mixing handles and messages
+     * gets the plain wait so handle-driven subtests still progress. */
+    (void)wakeMask;
+    if (count == 0)
+    {
+        Sleep(timeout == INFINITE ? 0 : timeout);
+        return WAIT_TIMEOUT;
+    }
+    return WaitForMultipleObjects(count, handles, waitAll, timeout);
+}
+
 /* ---- dllimport indirection ----------------------------------------------- */
 
 /* The test objects were compiled with winuser.h's dllimport declarations, so
@@ -371,3 +438,11 @@ BOOL(WINAPI *__imp_AttachThreadInput)(DWORD, DWORD, BOOL) = AttachThreadInput;
 DWORD(WINAPI *__imp_WaitForInputIdle)(HANDLE, DWORD) = WaitForInputIdle;
 LPWSTR(WINAPI *__imp_CharLowerW)(LPWSTR) = CharLowerW;
 int(WINAPIV *__imp_wsprintfW)(WCHAR *, const WCHAR *, ...) = wsprintfW;
+HICON(WINAPI *__imp_LoadIconA)(HINSTANCE, LPCSTR) = LoadIconA;
+HCURSOR(WINAPI *__imp_LoadCursorA)(HINSTANCE, LPCSTR) = LoadCursorA;
+BOOL(WINAPI *__imp_GetMessageA)(MSG *, HWND, UINT, UINT) = GetMessageA;
+BOOL(WINAPI *__imp_PeekMessageA)(MSG *, HWND, UINT, UINT, UINT) = PeekMessageA;
+BOOL(WINAPI *__imp_TranslateMessage)(const MSG *) = TranslateMessage;
+LRESULT(WINAPI *__imp_DispatchMessageA)(const MSG *) = DispatchMessageA;
+DWORD(WINAPI *__imp_MsgWaitForMultipleObjects)
+(DWORD, const HANDLE *, BOOL, DWORD, DWORD) = MsgWaitForMultipleObjects;
