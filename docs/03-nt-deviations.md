@@ -2934,12 +2934,10 @@ as it is rather than guessed at: what NT reports for an interrupted partial stre
 has not been measured on either runner, and inventing a count is Art. 12's fabricated
 answer. Named at the site (`fs/npfs/pipe.c` `NpfsWrite`).
 
-**Two things this did NOT build, both deliberate and both recorded rather than hidden.**
-An ioctl resets the caller's event at issue (measured from a worker thread mid-park) but
-does not clear the FILE OBJECT the way `rw.c`'s transfers do — `ntdll:pipe:747` convicts
-that gap and it is the pair's next item (`docs/21` W11), wanting its own pin because the
-pended and refused arms owe the handle an answer too. And an ALERT handle whose park is
-broken while a *cancel* has also landed reports `STATUS_CANCELLED`: the cancel writes the
+**One thing this did NOT build, deliberate and recorded rather than hidden** (the
+file-object half of the ioctl's signalled state, which was the other one, is built — see
+"An IOCTL clears the handle at its PARK" below). An ALERT handle whose park is broken
+while a *cancel* has also landed reports `STATUS_CANCELLED`: the cancel writes the
 caller's IOSB and the alert writes nothing, so reporting the alert would lose a
 completion the canceller was promised.
 
@@ -2952,6 +2950,69 @@ keys on. Both sites now go through `IopCaptureCreateOptions` (`kernel/io/file.c`
 Art. 11's "parallel paths drift even while currently equivalent" was not a prediction
 here; the drift was already shipped, and only a test that needed one of the dropped bits
 found it.
+
+## An IOCTL clears the handle at its PARK, where a transfer clears it at issue
+
+`NtDeviceIoControlFile` / `NtFsControlFile` now owe the FILE OBJECT's signalled state the
+same two transitions a read does (`docs/03` "What a BLOCKING request owes" is stated in
+`kernel/io/io.h` above `IOP_BLOCKING_REQUEST`): down while the request is outstanding,
+and back up at the end unless the caller supplied an event, which takes the signal
+instead. `ntdll:pipe`'s `test_cancelsynchronousio` is the consumer — `pipe.c:747` spins
+
+```c
+while ((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0) Sleep(1);
+```
+
+waiting for a blocking `FSCTL_PIPE_LISTEN` to take the pipe handle down, and the pair
+wedged there for as long as nothing did. Pinned by `tests/ntapi/sem_pipe/ioctl_signal.c`.
+
+**WHERE the clear happens is the whole content, and the oracle refuted the obvious
+transcription.** `rw.c`'s transfers merge the oracle's two issue-time statements —
+`create_async`'s event reset and `queue_async`'s `set_fd_signaled( async->fd, 0 )` — into
+one call at issue, and restore the handle if the device refuses without parking. That is
+correct for a TRANSFER because `pipe_end_read` and `pipe_end_write`
+(`third_party/wine` `server/named_pipe.c`) queue every request they SERVE — their state
+refusals return above the queue like the ioctl's, but neither has an arm that answers a
+caller *without* queueing — so for a served transfer "issued" and "queued" are the same
+instant. An IOCTL is not that shape:
+`pipe_server_ioctl`'s `FSCTL_PIPE_LISTEN` arm answers `STATUS_PIPE_CONNECTED` /
+`_CLOSING` / `_LISTENING` **above** `queue_async( &server->listen_q, async )`, and
+`FSCTL_PIPE_PEEK` is answered inline and never queues at all. Two measured consequences,
+neither of which a clear-at-issue can produce:
+
+| ioctl | event? | handle before | handle after, on the oracle |
+|---|---|---|---|
+| `FSCTL_PIPE_PEEK` (inline success) | yes | up | **up** — the event takes the signal and nothing ever cleared the handle |
+| `FSCTL_PIPE_PEEK` (inline success) | no | down | **up** — `async_set_result`'s guard is `async->pending \|\| !NT_ERROR( status )`, so a success reaches the signal block whether or not it was queued |
+| `FSCTL_PIPE_LISTEN` refused (`STATUS_PIPE_CONNECTED`) | either | either | **unchanged** — the refusal returns above the queue, so the signal block is skipped |
+| `FSCTL_PIPE_LISTEN` parked then cancelled | no | down | **up** — it WAS queued, so `async->pending` is 1 and the failure still signals |
+| `FSCTL_PIPE_LISTEN` parked then cancelled | yes | down | **stays down**; the event goes up instead |
+
+So the timing is the caller's to state (`IOP_BLOCKING_CLEAR`: `IopClearAtIssue` for the
+transfer paths, `IopClearAtPark` for the ioctl), and the clear itself is made by the
+ENGINE at the one place a blocking park happens — `IoWaitCancellable`, through
+`KTHREAD.syncIoParkFile` — or by `IopPreparePendingRequest` for the arm that pends
+instead. No device is told where the boundary is, for the same reason
+`IO_CONTROL_CONTEXT.pended` and `KTHREAD.syncIoParked` are engine-set: a device that has
+to remember eventually forgets.
+
+**The COMPLETION ROUTINE splits on the same question, and both tails had it wrong.**
+`async_set_result` queues `APC_USER`, posts the completion packet and signals the event or
+the fd *inside one guard* — `if (async->pending || !NT_ERROR( status ))` — so a request
+that was QUEUED and then failed runs its routine, with an IOSB nobody wrote as its only
+argument, while one refused above the queue runs nothing. `rw.c`'s device branch and
+`ioctl.c` both freed the block on every failure, so a cancelled blocking listen and a
+parked read broken by its peer silently dropped a callback the oracle delivers. Stated
+once (`IopEndFailedRequestApc`, `kernel/io/async.c`) and measured on both tails
+(`sem_pipe/blocking_signal.c` case 6, `sem_pipe/ioctl_signal.c` case 6). **Found by
+gate-check reading the new two-armed branch, not by a failing assertion** — the arm that
+was already measured was the refusal, and the pin that measured it
+(`sem_pipe/listen_apc.c`) reads as coverage of the whole failure path.
+
+**What did NOT change:** `condrv` still owns its own file object's signalled state
+(`FILE_OBJECT.deviceManagedSignal`), so conhost's server-fetch ioctls are untouched by
+all of this — the suppression is tested inside the one transition every producer goes
+through (`IopFileSignalSuppressed`).
 
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 

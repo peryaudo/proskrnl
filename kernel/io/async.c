@@ -68,17 +68,31 @@ void IopMarkRequestOutstanding(PFILE_OBJECT file)
     }
 }
 
-void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, HANDLE eventHandle)
+void IopBeginBlockingRequest(IOP_BLOCKING_REQUEST *request, PFILE_OBJECT file, HANDLE eventHandle,
+                             IOP_BLOCKING_CLEAR when)
 {
     request->file = file;
     request->eventHandle = eventHandle;
+    request->clearedAtIssue = when == IopClearAtIssue;
     /* Read BEFORE the clear: IopRequestRefused restores this, and "was it up"
      * is not recoverable afterwards. A suppressed handle (io.h
      * deviceManagedSignal / FILE_SKIP_SET_EVENT_ON_HANDLE) is never touched
      * by either half, so the value is unused there rather than wrong. */
     request->handleWasSignalled = file != 0 && KeReadStateEvent(&file->header) != 0;
     IopResetRequestEvent(eventHandle);
-    IopMarkRequestOutstanding(file);
+    if (request->clearedAtIssue)
+    {
+        IopMarkRequestOutstanding(file);
+    }
+    else
+    {
+        /* The clear waits for the park, which is the oracle's own position
+         * (io.h). Handed to the ENGINE rather than to the device:
+         * IoWaitCancellable is the one place the Io layer's blocking park
+         * happens, and IopPreparePendingRequest already does the same thing
+         * for the arm that pends instead. */
+        KeGetCurrentThread()->syncIoParkFile = file;
+    }
 }
 
 void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME outcome)
@@ -109,8 +123,13 @@ void IopEndBlockingRequest(IOP_BLOCKING_REQUEST *request, IOP_BLOCKING_OUTCOME o
         /* The oracle's refusal is above queue_async, so the handle is exactly
          * as the caller found it — which is NOT the same as signalled: a read
          * that completed through an event left it down, and a refusal that
-         * followed must leave it there. The event stays reset. */
-        if (request->handleWasSignalled)
+         * followed must leave it there. The event stays reset.
+         *
+         * Only an AtIssue request has anything to put back: an AtPark one
+         * that never reached its park never cleared the handle, and
+         * re-signalling it here would be this arm's own defect one direction
+         * over (io.h). */
+        if (request->clearedAtIssue && request->handleWasSignalled)
         {
             IopSignalRequestCompletion(0, request->file);
         }
@@ -413,6 +432,24 @@ NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
     return STATUS_SUCCESS;
 }
 
+void IopEndFailedRequestApc(PKAPC apc, BOOLEAN parked)
+{
+    /* The completion ROUTINE's arm of a FAILED request, which is decided by
+     * the same question IopEndBlockingRequest answers for the event and the
+     * handle: server/async.c's async_set_result queues APC_USER, posts the
+     * packet and signals all inside one guard, `async->pending ||
+     * !NT_ERROR( status )`. So a request that was QUEUED runs its routine even
+     * though it failed — with an IOSB nobody wrote, because the failing tail
+     * leaves the caller's block alone — while one refused above the queue runs
+     * nothing (sem_pipe/listen_apc.c). Measured on both tails
+     * (sem_pipe/blocking_signal.c case 6, sem_pipe/ioctl_signal.c case 6).
+     *
+     * Queued to THIS thread: a blocking request's failure is reported on the
+     * caller's own return, so the issuer is the current thread by
+     * construction. */
+    IopQueueCompletionApc(parked ? KeGetCurrentThread() : 0, apc);
+}
+
 void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc)
 {
     if (apc == 0)
@@ -473,6 +510,13 @@ void IopLeaveSyncIo(void)
     KiPopObligation(KI_OBLIGATION_SYNC_IO, self->syncIoUserIosb);
     self->syncIoActive = FALSE;
     self->syncIoUserIosb = 0;
+    /* The span ends here on EVERY path, which is what makes this the one
+     * place that can retire the park's file object: the arm that PENDS
+     * returns without an IopEndBlockingRequest at all, so clearing it there
+     * would leave a stale pointer for this thread's next request to unsignal
+     * (ke.h syncIoParkFile). Not a reference — the caller holds the file
+     * object for the whole span. */
+    self->syncIoParkFile = 0;
 }
 
 /* A cancellable park for blocking device waits (npfs): the device's wake
@@ -485,6 +529,14 @@ NTSTATUS IoWaitCancellable(PKEVENT event, PLARGE_INTEGER timeout)
      * place that can answer "was this request queued" for the completion
      * (io.h IoSyncIoParked). */
     self->syncIoParked = TRUE;
+    /* …and therefore the one place an IopClearAtPark request's handle can go
+     * down at the oracle's own position — `queue_async` is reached only when
+     * the verb could not be answered above it (io.h). Idempotent, so npfs's
+     * listen loop re-entering the park costs nothing. */
+    if (self->syncIoParkFile != 0)
+    {
+        IopMarkRequestOutstanding(self->syncIoParkFile);
+    }
     void *objects[2] = {event, &self->syncIoCancelEvent};
     NTSTATUS status = KeWaitForMultipleObjects(2, objects, WaitAny, Executive, KernelMode,
                                                self->syncIoAlertable, timeout, 0);

@@ -300,6 +300,25 @@ struct KTHREAD
      * the same reason IO_CONTROL_CONTEXT.pended is set by the engine: a
      * device that has to remember to say so eventually forgets. */
     BOOLEAN syncIoParked;
+    /* The FILE OBJECT this span's PARK owes an unsignal to, or 0. The oracle
+     * takes the handle down inside `queue_async` (server/async.c), so a
+     * service whose verb can be answered ABOVE that queue — an IOCTL, where
+     * pipe_server_ioctl's LISTEN arm returns STATUS_PIPE_CONNECTED before
+     * queueing and pipe_end_peek never queues at all — must clear it at the
+     * PARK rather than at issue. Set by IopBeginBlockingRequest for those
+     * services (io.h IopClearAtPark), read by IoWaitCancellable, cleared by
+     * IopLeaveSyncIo at the end of the span. The transfer paths do not use it:
+     * they queue every request they serve, so clearing at issue is the same
+     * statement there.
+     *
+     * The clear reaches the handle only for a device that parks through
+     * IoWaitCancellable — which is npfs, the only device whose ioctls park —
+     * exactly as syncIoParked above stands for "was this async QUEUED" only
+     * because npfs waits where the server would have queued. A device that
+     * blocked by some other route would neither take its handle down nor be
+     * reported as parked; that is a property of today's devices, not a promise
+     * of these two fields. */
+    void *syncIoParkFile;
     /* Is that park ALERTABLE, and did an alert end it? The handle decides:
      * FILE_SYNCHRONOUS_IO_ALERT makes every synchronous request on it wait
      * alertably (dlls/ntdll/unix/file.c passes `options &

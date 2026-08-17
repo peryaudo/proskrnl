@@ -297,7 +297,7 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
          * restores — and above IopPreparePendingRequest, which does the
          * same two things again for the pended case and is idempotent. */
         IOP_BLOCKING_REQUEST blocking;
-        IopBeginBlockingRequest(&blocking, file, event);
+        IopBeginBlockingRequest(&blocking, file, event, IopClearAtIssue);
         IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Read(file, bounce, length, &transferred, &request);
         IopLeaveSyncIo();
@@ -373,6 +373,12 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         else
         {
             IopEndBlockingRequest(&blocking, parked ? IopRequestFailedParked : IopRequestRefused);
+            /* Disposed HERE rather than at `abandon`, for the same reason the
+             * event is: a request that was QUEUED and then failed still runs
+             * its completion routine (io.h IopEndFailedRequestApc), and
+             * `abandon`'s unconditional free would silently drop it. */
+            IopEndFailedRequestApc(apcBlock, parked);
+            apcBlock = 0;
             goto abandon;
         }
         /* The DEVICE path returns this status unchanged — there is no
@@ -567,7 +573,7 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         ULONG_PTR transferred = 0;
         /* The read path's reasoning, in the direction that blocks on quota. */
         IOP_BLOCKING_REQUEST blocking;
-        IopBeginBlockingRequest(&blocking, file, event);
+        IopBeginBlockingRequest(&blocking, file, event, IopClearAtIssue);
         IopEnterSyncIo(file, iosb); /* CUI-5: cancellable while parked in the op */
         status = file->device->ops->Write(file, bounce, length, &transferred);
         IopLeaveSyncIo();
@@ -597,6 +603,10 @@ NTSTATUS NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc
         else
         {
             IopEndBlockingRequest(&blocking, parked ? IopRequestFailedParked : IopRequestRefused);
+            /* The read branch's rule, one direction over (io.h
+             * IopEndFailedRequestApc). */
+            IopEndFailedRequestApc(apcBlock, parked);
+            apcBlock = 0;
             goto abandon;
         }
         /* The DEVICE path returns this status unchanged — there is no
@@ -813,7 +823,7 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
              * take the FILE-OBJECT arm of "exactly one" (io.h). ntdll:pipe's
              * test_blocking samples it at pipe.c:1753. */
             IOP_BLOCKING_REQUEST blocking;
-            IopBeginBlockingRequest(&blocking, file, 0);
+            IopBeginBlockingRequest(&blocking, file, 0, IopClearAtIssue);
             /* NO file, deliberately: the alertable park is the HANDLE's rule
              * everywhere except here, and a flush is the one service the
              * oracle exempts — NtFlushBuffersFileEx passes a literal FALSE to
