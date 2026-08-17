@@ -510,43 +510,74 @@ ntdll_test.exe:path
 #     line-by-line diff of the histogram shows only :1987/:2151/:2160/:2163/
 #     :2181/:2447 removed and no other line moved.
 #
-#     WHAT IS LEFT, per-line histogram of the 99 (95 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 95,
+#     FSCTL_PIPE_PEEK'S STATE LADDER AND ITS OVERFLOW AXIS ARE NOW BUILT:
+#     99 -> 80, and the whole 19 is one function (fs/npfs/pipe.c NpfsPeek)
+#     transcribed from server/named_pipe.c pipe_end_peek. Four rules, three
+#     of which read as bugs. The LENGTH floor is decided above the state, so
+#     a short buffer on a listening pipe reports the length. CLOSING is NOT
+#     BROKEN while anything is still queued — the oracle's discriminator is
+#     `if (!list_empty( &pipe_end->message_queue )) break;`, so one handle
+#     answers SUCCESS and then STATUS_PIPE_BROKEN across the one read that
+#     empties it. A DISCONNECTED end answers `pipe_end->pipe ?
+#     INVALID_PIPE_STATE : PIPE_DISCONNECTED`, and DISCONNECT drops the pipe
+#     for the CLIENT only — so the disconnecting SERVER complains about its
+#     STATE where its client reports a disconnection, which proskrnl had
+#     folded into one answer. And the BUFFER_OVERFLOW is keyed on the PIPE's
+#     FILE_PIPE_TYPE_MESSAGE, not on the reading end's read mode (the end's
+#     mode does not appear in the oracle's function at all) and is about the
+#     FIRST MESSAGE rather than about the whole queue: two messages queued
+#     with room for both is a SUCCESS carrying one. Landed in fs/npfs/pipe.c,
+#     pinned by tests/ntapi/sem_pipe/peek_state.c; docs/21 W11, docs/03 "What
+#     FSCTL_PIPE_PEEK answers, by state and by the PIPE's type".
+#     The executed count rises 2376 -> 2377 and that +1 is exactly this item,
+#     counted per line: test_pipe_state's `if (!status)` block at :2058 ran 8
+#     times and now runs 4 (four of its peeks correctly stopped succeeding),
+#     while test_pipe_with_data_state's `if (status == BUFFER_OVERFLOW)`
+#     block at :2208 ran 0 times and now runs 5. Todo markers are 31 before
+#     and after, and a line-by-line histogram diff shows only :1197/:1199/
+#     :2055 removed and :2205 dropping 10 -> 1.
+#
+#     WHAT IS LEFT, per-line histogram of the 80 (76 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 76,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
-#     grouped by test function; NONE of them is diagnosed, and docs/21 §4 trap
-#     4 says the loudest is usually the consequence:
+#     grouped by test function; except where marked DIAGNOSED none of them is,
+#     and docs/21 §4 trap 4 says the loudest is usually the consequence:
 #       - 27  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
 #             = 35, the largest cluster. The `\Device\NamedPipe` device-root
 #             surface: creating and opening a pipe by an EMPTY relative name,
 #             and the root's own fsctls (:2787 FSCTL_PIPE_WAIT must be
 #             ILLEGAL_FUNCTION there).
-#       - 14  test_pipe_state (:2069x8 FSCTL_PIPE_TRANSCEIVE, unimplemented in
-#             npfs and refused loudly; :2055x6 the peek state matrix).
 #       - 13  test_async_cancel_on_handle_close (:3094x8, :3114x4, :3111x1) —
 #             what a CLOSE does to a pended request's completion packet.
-#       - 11  test_pipe_with_data_state (:2205x10, :2185x1). What is left of
-#             it is ONE subject, FSCTL_PIPE_PEEK's STATE MATRIX: :2205 wants
-#             INVALID_PIPE_STATE / PIPE_DISCONNECTED / BUFFER_OVERFLOW by
-#             state and gets 0. :2185 is a succeeded-todo — the oracle refuses
-#             FileNameInformation on a CLOSING client because the pipe object
-#             was unlinked (its own `/* FIXME: We should be able to return on
-#             unlinked pipe */`) and proskrnl answers the name, so this one
-#             cannot go green while proskrnl is the more NT-correct runner.
+#       - 12  FSCTL_PIPE_TRANSCEIVE, which npfs does not implement and
+#             refuses loudly: :2069x8 in test_pipe_state and
+#             :1450/:1456/:1457/:1458 in test_transceive. Now the second
+#             cluster and the only one of these whose subject is a whole
+#             unbuilt verb; the state ladder above already answers what
+#             test_pipe_state asks of it (INVALID_PIPE_STATE in the CLOSING
+#             state, the state's own status elsewhere).
 #       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
 #             pipe handle.
 #       -  5  test_pipe_local_info (:2356-:2369) — FilePipeLocalInformation's
 #             NamedPipeType/Configuration/MaximumInstances/InboundQuota/
 #             OutboundQuota reported as 0 on a CLIENT whose server has closed.
-#             DIAGNOSED, and it is a LIFETIME question rather than a fill:
-#             proskrnl drops NPFS_INSTANCE.pipe when the server's handle
-#             closes, where the oracle's client holds its own reference until
-#             destroy. Same gap, tagged todo_proskrnl in
-#             sem_pipe/pipe_file_info.c; docs/03 "A pipe end's own file
-#             information".
-#       -  4  test_transceive (:1450/:1456/:1457/:1458) and 4 read_pipe_test
-#             (:1197x2/:1199x2) — TRANSCEIVE again, and peek's
-#             STATUS_BUFFER_OVERFLOW.
+#       -  1  test_pipe_with_data_state :2205, `in client state 4`. SAME
+#             CAUSE as the five above and DIAGNOSED: it is a LIFETIME
+#             question rather than a fill. proskrnl drops NPFS_INSTANCE.pipe
+#             when the server's handle closes, where the oracle's client
+#             holds its own reference until destroy, so a client outliving
+#             its server forgets the pipe's TYPE and gives a byte pipe's
+#             answers. Six assertions on one fix; tagged todo_proskrnl in
+#             sem_pipe/peek_state.c and sem_pipe/pipe_file_info.c so both
+#             report themselves the day it lands. docs/03 "A pipe end's own
+#             file information".
+#       -  1  test_pipe_with_data_state :2185, a succeeded-todo — the oracle
+#             refuses FileNameInformation on a CLOSING client because the
+#             pipe object was unlinked (its own `/* FIXME: We should be able
+#             to return on unlinked pipe */`) and proskrnl answers the name,
+#             so this one cannot go green while proskrnl is the more
+#             NT-correct runner.
 #       -  2  subtest_pipe_name (:2969, succeeded-todo).
 #       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
 #             (IO_STATUS_BLOCK *)0xdeadbeef) must answer
