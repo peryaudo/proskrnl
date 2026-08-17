@@ -131,6 +131,7 @@ CSRC := kernel/init/main.c \
         drivers/virtio/input.c \
         drivers/virtio/snd.c \
         drivers/virtio/net.c \
+        drivers/net/netd.c \
         drivers/condrv.c \
         drivers/fb.c \
         drivers/hid.c \
@@ -177,7 +178,49 @@ ASRC := arch/x86_64/trap.S \
 FLANTERM_SRC := third_party/flanterm/src/flanterm.c \
                 third_party/flanterm/src/flanterm_backends/fb.c
 
-OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(FLANTERM_SRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
+# The pinned lwIP protocol engine (Net-1, docs/24 §3): the second and only
+# other third_party code linked into the kernel image (docs/11). Same
+# arrangement as Flanterm — out of CSRC so clang-tidy's docs/15 naming rules
+# never touch upstream, sanitizers stop at our own TUs — plus the port layer
+# (drivers/net/port/: lwipopts.h, arch/cc.h, sys_arch.c, the hosted-header
+# shims), which follows lwIP's own naming and stays out of CSRC with it.
+# The file list is exactly what lwipopts.h compiles: NO_SYS raw API, DHCP
+# without ACD, DNS bookkeeping, dual-stack, no sockets/netconn/altcp/ppp.
+LWIP_SRC := third_party/lwip/src/core/init.c \
+            third_party/lwip/src/core/def.c \
+            third_party/lwip/src/core/dns.c \
+            third_party/lwip/src/core/inet_chksum.c \
+            third_party/lwip/src/core/ip.c \
+            third_party/lwip/src/core/mem.c \
+            third_party/lwip/src/core/memp.c \
+            third_party/lwip/src/core/netif.c \
+            third_party/lwip/src/core/pbuf.c \
+            third_party/lwip/src/core/raw.c \
+            third_party/lwip/src/core/stats.c \
+            third_party/lwip/src/core/sys.c \
+            third_party/lwip/src/core/tcp.c \
+            third_party/lwip/src/core/tcp_in.c \
+            third_party/lwip/src/core/tcp_out.c \
+            third_party/lwip/src/core/timeouts.c \
+            third_party/lwip/src/core/udp.c \
+            third_party/lwip/src/core/ipv4/dhcp.c \
+            third_party/lwip/src/core/ipv4/etharp.c \
+            third_party/lwip/src/core/ipv4/icmp.c \
+            third_party/lwip/src/core/ipv4/ip4.c \
+            third_party/lwip/src/core/ipv4/ip4_addr.c \
+            third_party/lwip/src/core/ipv4/ip4_frag.c \
+            third_party/lwip/src/core/ipv6/ethip6.c \
+            third_party/lwip/src/core/ipv6/icmp6.c \
+            third_party/lwip/src/core/ipv6/ip6.c \
+            third_party/lwip/src/core/ipv6/ip6_addr.c \
+            third_party/lwip/src/core/ipv6/ip6_frag.c \
+            third_party/lwip/src/core/ipv6/mld6.c \
+            third_party/lwip/src/core/ipv6/nd6.c \
+            third_party/lwip/src/netif/ethernet.c \
+            drivers/net/port/sys_arch.c
+
+OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(FLANTERM_SRC:%.c=$(BUILD)/%.o) \
+        $(LWIP_SRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(BUILD)/%.o)
 
 # Sanitizers are for code we can fix. A UBSan trap or a KASAN report raised
 # from inside vendored code would kill the machine in the one component whose
@@ -185,6 +228,13 @@ OBJ  := $(CSRC:%.c=$(BUILD)/%.o) $(FLANTERM_SRC:%.c=$(BUILD)/%.o) $(ASRC:%.S=$(B
 # do not patch third_party (docs/11) — so the checks stop at our own TUs.
 $(BUILD)/third_party/flanterm/%.o: CFLAGS += -fno-sanitize=undefined
 $(BUILD)/third_party/flanterm/%.o: KASAN_FLAGS :=
+
+# lwIP's headers and the port's shims resolve through these two roots, for
+# the upstream TUs, the port, and our own drivers/net/ code alike.
+LWIP_INCLUDES := -Ithird_party/lwip/src/include -Idrivers/net/port
+$(BUILD)/third_party/lwip/%.o: CFLAGS += $(LWIP_INCLUDES) -fno-sanitize=undefined
+$(BUILD)/third_party/lwip/%.o: KASAN_FLAGS :=
+$(BUILD)/drivers/net/%.o: CFLAGS += $(LWIP_INCLUDES)
 
 # --- M4 user-mode flat binaries (boot modules) ---------------------------
 # Freestanding ring-3 clients (docs/02: "the test client is a flat binary").
@@ -1971,7 +2021,8 @@ FORMAT_SRC = $(shell find kernel arch drivers fs user/smss -name '*.[ch]')
 format: frontier-check
 	@echo "clang-format: $(words $(FORMAT_SRC)) files"
 	@$(CLANG_FORMAT) -i $(FORMAT_SRC)
-	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS)" $(CSRC)
+	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS)" $(filter-out drivers/net/%,$(CSRC))
+	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS) $(LWIP_INCLUDES)" $(filter drivers/net/%,$(CSRC))
 	@tools/tidy.sh $(CLANG_TIDY) "$(SMSS_TIDY_FLAGS)" $(wildcard user/smss/*.c)
 
 # The blocking frontier (issue #96 A, the static half): which code can park is

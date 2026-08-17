@@ -411,3 +411,32 @@ asked of every path that touches a caller pointer or drops a reference.
   speculatively: an uncensused site that a real execution reaches turns its leg red and
   names the rip. What stays owed is the sites no execution reaches yet — the census
   finds those, and this finds the rest the day they matter.
+
+## 12. Net-1 re-check — netd's park (the §8.4 checklist, re-opened)
+
+Net-1 adds the milestone's first new blocking point since this document's rules were
+mechanized: **`NetdThreadMain`** (drivers/net/netd.c), the lwIP mainloop parking on
+the virtio-net work event with a timeout from `sys_timeouts_sleeptime()`. The row is
+in `tools/blocking_frontier.txt` (G14; the tool grew a `KERNEL_THREAD_ENTRIES` set
+because a kernel service thread's body is reached through a pointer no ring-3 prefix
+scan sees). The §5 STILL-TRUE table was re-walked against it:
+
+- **Every §5 row stands unchanged.** netd is an ordinary kernel thread parking at an
+  ordinary `KeWaitForSingleObject`; it mutates no Ob/Ps/Cm/Mm structure between
+  blocking points that the table's claims cover. Its one cross-department write —
+  the DHCP lease through `NtCreateKey`/`NtSetValueKey` — runs in plain thread
+  context under Cm's own `CmpHiveMutex` row (§5, "already a real lock"), outside
+  lwIP (the status callback only latches a flag; the write happens after the
+  mainloop leaves the stack).
+- **The §6 drain rules hold by construction.** `VioNetDrain` is in the tool's
+  MUST_NOT_BLOCK set beside `VioBlkDrain`: harvest-store-wake only, no allocation
+  (`KiInCompletionDrain` asserts it), no lwIP entry — protocol input runs on netd,
+  in thread context, from lwIP's static pools (docs/24 §4a/§3c).
+- **The one genuinely new invariant is lwIP's single-threading** (docs/24 §4b),
+  stated and asserted in drivers/net/netd.c (`NetdInsideLwip` at every entry seam):
+  lwIP is entered from netd and from kernel-thread callers (the kmt echo; Net-2's
+  AFD verbs next), never from drain/interrupt context, and no code path blocks
+  while inside the stack — so under the no-preemption model the two contexts never
+  interleave inside it. That comment is also the docs/18 §5 audit row for CUI-10.
+- **Net-2 will re-open this section again** for the second frontier entry docs/24
+  promises (the cancellable synchronous-socket-handle wait); it is not Net-1's.

@@ -33,6 +33,7 @@
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
+#include "drivers/net/netd.h"
 #include "drivers/snd.h"
 #include "drivers/virtio/blk.h"
 #include "kernel/init/bootvid.h"
@@ -454,6 +455,13 @@ static void KiTestMainThread(void *context)
      * volume, mounted above). */
     KiConfigurePanicOnNotImplemented();
     KiConfigureCui8Stress();
+
+    /* Net-1: lwIP + the netd mainloop over the NIC IoInitializeTransport
+     * probed pre-freeze. Deliberately here — after the boot volume and the
+     * registry (the DHCP lease is written through the ordinary NtSetValueKey
+     * path) and before anything that might want the wire (docs/24 §4b).
+     * Quietly does nothing when no NIC exists: every leg but net. */
+    NetInitialize();
 
     /* The interactive boot (make run) skips the kernel test suites: the
      * serial console belongs to a human — the session manager runs
