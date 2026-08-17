@@ -55,11 +55,43 @@ typedef struct
     ULONG HandleCount;
     ULONG SessionId;
     ULONG_PTR UniqueProcessKey;
-    /* VM_COUNTERS_EX (0x30) + IO_COUNTERS (0x30) precede the thread array;
-     * we only reach the header fields above, and the array via ti offset. */
-    BYTE vmAndIo[0x60];
+    /* VM_COUNTERS_EX (0x30) + IO_COUNTERS (0x30) precede the thread array.
+     * Named rather than an opaque 0x60 blob since the kernel fills them:
+     * the shapes are wine/include/winternl.h's VM_COUNTERS_EX and winnt.h's
+     * IO_COUNTERS, and the compile-time check below is that the pair still
+     * lands the thread array where the record's layout says (offset 0x100,
+     * abi/ntpsapi.h's static_assert on the kernel side). */
+    struct
+    {
+        SIZE_T PeakVirtualSize;
+        SIZE_T VirtualSize;
+        ULONG  PageFaultCount;
+        SIZE_T PeakWorkingSetSize;
+        SIZE_T WorkingSetSize;
+        SIZE_T QuotaPeakPagedPoolUsage;
+        SIZE_T QuotaPagedPoolUsage;
+        SIZE_T QuotaPeakNonPagedPoolUsage;
+        SIZE_T QuotaNonPagedPoolUsage;
+        SIZE_T PagefileUsage;
+        SIZE_T PeakPagefileUsage;
+        SIZE_T PrivateUsage;
+    } vmCounters;
+    IO_COUNTERS ioCounters;
     ps_system_thread_info ti[1];
 } ps_system_process_info;
+
+_Static_assert(__builtin_offsetof(ps_system_process_info, ti) == 0x100,
+               "SYSTEM_PROCESS_INFORMATION thread array offset (x64)");
+
+/* mingw's winternl.h spells KERNEL_USER_TIMES' members FILETIME; declare the
+ * named layout, byte-identical to wine/include/winternl.h. */
+typedef struct
+{
+    LARGE_INTEGER CreateTime;
+    LARGE_INTEGER ExitTime;
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+} ps_kernel_user_times;
 
 /* mingw's winternl.h names PROCESS_BASIC_INFORMATION's parent field
  * "Reserved3"; declare the named layout, byte-identical to
@@ -140,6 +172,43 @@ START_TEST(system_processes)
              * oracle test is one) genuinely answers 0 on both sides. The
              * pinned nonzero contract is the spawned-child check after the
              * walk. */
+            /* The row's TIMES and MEMORY are the same facts the per-process
+             * classes answer, and the snapshot is where taskmgr's Processes
+             * tab reads them — so a kernel that filled the record but left
+             * these zero would satisfy every assertion above and still show
+             * a machine where nothing has ever run.
+             *
+             * CreationTime is pinned by EQUALITY rather than by being
+             * nonzero, which is the deterministic half: both readers take it
+             * from one stamp (the oracle's is the server's start_time, for
+             * ProcessTimes at dlls/ntdll/unix/process.c and for this record
+             * at unix/system.c get_system_process_info), so they cannot
+             * differ. The CPU times can only be compared as MONOTONIC — the
+             * two queries are separated in time, and a process that has used
+             * less than a tick legitimately reports zero on either. */
+            ps_kernel_user_times times;
+            status = NtQueryInformationProcess(NtCurrentProcess(), ProcessTimes, &times,
+                                               sizeof(times), NULL);
+            ok(status == STATUS_SUCCESS, "self ProcessTimes -> %08lx", (unsigned long)status);
+            ok(entry->CreationTime.QuadPart == times.CreateTime.QuadPart,
+               "row CreationTime %lld != ProcessTimes CreateTime %lld",
+               (long long)entry->CreationTime.QuadPart, (long long)times.CreateTime.QuadPart);
+            ok(entry->CreationTime.QuadPart != 0, "row CreationTime is zero");
+            ok(entry->KernelTime.QuadPart + entry->UserTime.QuadPart <=
+                   times.KernelTime.QuadPart + times.UserTime.QuadPart,
+               "row CPU time %lld ran ahead of the later ProcessTimes %lld",
+               (long long)(entry->KernelTime.QuadPart + entry->UserTime.QuadPart),
+               (long long)(times.KernelTime.QuadPart + times.UserTime.QuadPart));
+
+            /* A live process occupies memory; VirtualSize is the reservation
+             * the working set sits inside, so it can never be the smaller of
+             * the two. Nothing pins an amount — that is the machine's. */
+            ok(entry->vmCounters.WorkingSetSize != 0, "row WorkingSetSize is zero");
+            ok(entry->vmCounters.VirtualSize >= entry->vmCounters.WorkingSetSize,
+               "row VirtualSize %lu < WorkingSetSize %lu",
+               (unsigned long)entry->vmCounters.VirtualSize,
+               (unsigned long)entry->vmCounters.WorkingSetSize);
+
             ps_process_basic_information pbi;
             status = NtQueryInformationProcess(NtCurrentProcess(), PS_ProcessBasicInformation, &pbi,
                                                sizeof(pbi), NULL);
