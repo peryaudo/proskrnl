@@ -170,7 +170,29 @@ local macOS Wine.
 
 ## Status
 
-**WOW64 complete** — the last planned milestone (`docs/02`). An
+**AUD-1 complete** — the first milestone of the opt-in audio path
+(`docs/23`). The kernel grew its third HACK-shaped device family:
+`\Device\Snd<n>`, one node per PCM stream the virtio-snd device reports,
+direction the stream's own `PCM_INFO` claim (HACK-007), behind the
+one-line Article 2 amendment extending the console/GUI exception to
+audio. The wire contract mirrors the six virtio control verbs plus
+`POSITION`; `NtWriteFile` of exactly `period_bytes` rides one txq chain
+and parks on the CUI-8 engine when the device buffer is full — the
+pacing clock is tx completion, no timer invented — and harvest joined
+`IoDrainDeviceCompletions` off the tick tail, so snd has no MSI-X
+vector (docs/19 §11f). No format translation, resampling, mixing, or
+volume in the kernel, ever. `tests/run/run.sh audio` is the acceptance:
+the guest plays a seeded S16 pattern into QEMU's wav audiodev and the
+harness finds every sample of it, exact and contiguous, in the recorded
+WAV — the audio analog of the GUI screendump. eventq/rxq are
+deliberately unconsumed (capture is AUD-3), and a capture read refuses
+honestly — which convicted a pre-existing Io bug: `NtReadFile` on a
+device with neither `Read` nor `GetCache` called through a NULL pointer
+in ring 0. Next: AUD-2 — the oracle grows a PulseAudio backend, the
+mmdevapi seam commit lands on `proskrnl-target`, and `winevsnd.drv`
+takes the WASAPI render pairs green on both runners.
+
+**WOW64 complete** — the previous milestone (`docs/02`). An
 unmodified 32-bit Win32 CUI binary runs: `tests/cui/hello32.c` is an
 ordinary i686 mingw console program over the same Wine import libraries
 the 64-bit clients use, and nothing in it knows it is a guest — every
