@@ -361,6 +361,19 @@ NTSTATUS NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apcC
         return status;
     }
 
+    /* Falling out of the device branch above means ops->Read is absent; a
+     * device that also has no GetCache cannot be read at all, and calling
+     * through the NULL pointer below would be a ring-0 fault — the write
+     * path's twin (its comment names HidInputOps; the read-side shape with
+     * NEITHER op is AUD-1's \Device\Snd0, whose render stream carries
+     * output only until AUD-3 builds capture). STATUS_INVALID_DEVICE_REQUEST
+     * is NT's answer for a major function the device does not implement. */
+    if (file->device->ops->GetCache == 0)
+    {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        goto abandon;
+    }
+
     /* NT serializes I/O on a synchronous handle with the file-object lock
      * (io.h syncIoLock): once the fill below can park, two threads sharing
      * one sync handle otherwise both capture the same position and both
