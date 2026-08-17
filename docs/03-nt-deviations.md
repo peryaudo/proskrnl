@@ -3667,3 +3667,12 @@ pool fallback for a path longer than it) copied out as bytes. The npfs pipe clas
 for the same reason. `NtQueryAttributesFile` / `NtQueryFullAttributesFile` already staged
 their fills but probed for 8-byte alignment, which refused the ordinary i386 caller
 outright; both probe for 1 now. Pinned by `tests/ntapi/sem_file/info_unaligned_buffer.c`.
+
+The process and system query surfaces are the second application, and there the defect was
+only ever the probe: `ProcessTimes`, `ProcessIoCounters`,
+`SystemPerformanceInformation`, `SystemProcessorPerformanceInformation` and
+`SystemProcessorIdleCycleTimeInformation` all staged their fills already but demanded
+8-byte alignment of an output the thunks forward untranslated, refusing the ordinary i386
+caller outright. `NtQueryTimer` had the same shape (`TIMER_BASIC_INFORMATION` opens with a
+`LARGE_INTEGER`). All six probe for alignment 1 now; pinned by
+`tests/ntapi/sem_ps/query_unaligned_out.c`.
