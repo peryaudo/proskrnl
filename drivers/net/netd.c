@@ -25,6 +25,7 @@
  * audit re-checks when that day comes.
  */
 #include "drivers/net/netd.h"
+#include "drivers/afd.h" /* Net-2: the parked-poll deadline + expiry tick */
 #include "drivers/virtio/net.h"
 #include "kernel/ke/ke.h"
 #include "kernel/ob/ob.h" /* KPROCESSOR_MODE */
@@ -346,6 +347,16 @@ static void NetdThreadMain(void *context)
         u32_t sleepMs = sys_timeouts_sleeptime();
         NetdLeaveLwip();
 
+        /* Net-2: the nearest parked AFD poll deadline bounds the park
+         * too, so an IOCTL_AFD_POLL timeout fires without waiting for
+         * unrelated traffic (drivers/afd.c AfdPollTick below). */
+        ULONG pollMs = AfdNextPollDelayMs();
+        if (pollMs != 0xffffffffu &&
+            (sleepMs == SYS_TIMEOUTS_SLEEPTIME_INFINITE || pollMs < sleepMs))
+        {
+            sleepMs = pollMs;
+        }
+
         /* The park — netd's declared blocking point (G14; the frontier
          * row). Timeout from lwIP's own next-due timer, so protocol time
          * (DHCP retransmits, TCP timers) advances with no work event. */
@@ -389,8 +400,10 @@ static void NetdThreadMain(void *context)
         netif_poll_all(); /* the loopback interface's queued frames */
         NetdLeaveLwip();
 
-        /* Outside the stack: the lease write parks (registry/hive I/O),
-         * and no code path blocks while inside lwIP. */
+        /* Outside the stack (completions touch no pcb): expire due AFD
+         * polls, then the lease write, which parks (registry/hive I/O) —
+         * no code path blocks while inside lwIP. */
+        AfdPollTick();
         if (NetdLeaseDirty)
         {
             NetdLeaseDirty = FALSE;

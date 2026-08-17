@@ -210,6 +210,18 @@ typedef struct AFD_SOCKET
      * readiness edge sets it; the blocking read/write loop consumes it. */
     KEVENT syncWait;
 
+    /* The 13-bit readiness machine (commit 7). pendingEvents is the EDGE
+     * latch WSAEventSelect/GET_EVENTS consume (reported once); the
+     * per-bit statuses persist past consumption (the CONNECT_ERR latch —
+     * pinned afd_event_select.c). POLL reads LEVEL state instead
+     * (AfdPollLevel), plus the CLOSE/RESET/CONNECT_ERR latches. */
+    ULONG pendingEvents;
+    NTSTATUS statusPerBit[AFD_POLL_BIT_COUNT];
+    PKEVENT selectEvent; /* referenced body, or 0 (no selection) */
+    int selectMask;
+    BOOLEAN nonBlocking; /* FIONBIO / implicit via event select */
+    BOOLEAN resetLatch;  /* an RST arrived (AFD_POLL_RESET's level) */
+
     /* The thread-exit sweep's walk (AfdCancelThreadIo): every
      * FILE_OBJECT-backed socket is on AfdSocketList from create/mint to
      * Close. Accept-queue shells never join — they can hold no parked
@@ -217,12 +229,40 @@ typedef struct AFD_SOCKET
     LIST_ENTRY allSocketsEntry;
 } AFD_SOCKET, *PAFD_SOCKET;
 
+/* One parked IOCTL_AFD_POLL: the engine request plus the resolved,
+ * REFERENCED entry sockets (io.h §5d: resolved at issue in the issuer's
+ * context). On AfdPollList until its single completer AfdCompletePoll
+ * unlinks it — satisfied, expired, displaced, cancelled or closed. */
+typedef struct AFD_POLL_ENTRY
+{
+    PFILE_OBJECT file; /* referenced */
+    PAFD_SOCKET sock;
+    ULONG_PTR handleValue; /* echoed back in the output */
+    int mask;
+} AFD_POLL_ENTRY;
+
+typedef struct AFD_POLL_WAIT
+{
+    LIST_ENTRY listEntry;
+    PIOP_PENDING_REQUEST pending;
+    PFILE_OBJECT issuingFile; /* == pending->file; the exclusive key */
+    LONGLONG inputTimeout;    /* echoed */
+    LONGLONG deadline;        /* absolute NT time; INT64_MAX = never */
+    BOOLEAN exclusive;
+    ULONG count;
+    AFD_POLL_ENTRY entries[];
+} AFD_POLL_WAIT, *PAFD_POLL_WAIT;
+
 static PIO_DEVICE AfdDevice;
 
 /* Every live FILE_OBJECT-backed socket, for the thread-exit sweep. Walked
  * and mutated from syscall/thread context only — atomic under the
  * no-preemption model like the rest of AFD state. */
 static LIST_ENTRY AfdSocketList;
+
+/* Every parked poll, oldest first. Evaluated on each readiness edge and
+ * expired by netd's tick (AfdPollTick). */
+static LIST_ENTRY AfdPollList;
 
 /* --- err_t -> NTSTATUS ------------------------------------------------------ *
  * Statuses chosen to survive ws2_32's NtStatusToWSAError mapping
@@ -518,12 +558,149 @@ static PAFD_SOCKET AfdClaimQueuedConnection(PAFD_SOCKET listener)
  * The one edge authority (Art. 11): called after every state change from
  * BOTH contexts — lwIP callbacks on netd, verb tails in syscall context —
  * with the caller inside the lwIP seam whenever a live pcb is touched.
- * Completes every parked request the new state satisfies, then wakes the
- * synchronous-handle park. Commit 7 grows the 13-bit poll/event-select
- * machine here. */
+ * Completes every parked request the new state satisfies, re-evaluates
+ * every parked poll, then wakes the synchronous-handle park. */
 static void AfdCompleteRecvLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
 static void AfdContinueSendLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
 static void AfdCompleteAcceptLocked(PAFD_SOCKET sock, PAFD_REQUEST request);
+static void AfdEvaluatePolls(void);
+
+/* One EDGE: latch the bit (and its status word), fire the armed select
+ * event when the mask covers it. The GET_EVENTS latch consumes bits; the
+ * statuses persist (pinned afd_event_select.c). */
+static void AfdRaiseEvent(PAFD_SOCKET sock, ULONG bit, NTSTATUS bitStatus)
+{
+    sock->pendingEvents |= 1u << bit;
+    if (bitStatus != STATUS_SUCCESS)
+    {
+        sock->statusPerBit[bit] = bitStatus;
+    }
+    if (sock->selectEvent != 0 && (sock->selectMask & (1 << bit)) != 0)
+    {
+        KeSetEvent(sock->selectEvent, 0, FALSE);
+    }
+}
+
+/* The LEVEL state IOCTL_AFD_POLL reads (masked by each entry; CLOSE is
+ * reported mask or not — ws2_32:afd test_poll's own comment). */
+static int AfdPollLevel(PAFD_SOCKET sock)
+{
+    int level = 0;
+    if (sock->dead)
+    {
+        return AFD_POLL_CLOSE;
+    }
+    if (sock->type == AFD_SOCK_DGRAM)
+    {
+        if (!IsListEmpty(&sock->dgramQueue))
+        {
+            level |= AFD_POLL_READ;
+        }
+        level |= AFD_POLL_WRITE; /* a datagram socket can always send */
+        return level;
+    }
+    if (sock->ringCount != 0)
+    {
+        level |= AFD_POLL_READ;
+    }
+    if (sock->listening)
+    {
+        if (!IsListEmpty(&sock->acceptQueue))
+        {
+            level |= AFD_POLL_ACCEPT;
+        }
+        return level;
+    }
+    if (sock->connected)
+    {
+        level |= AFD_POLL_CONNECT;
+        if (sock->pcb.tcp != 0 && tcp_sndbuf(sock->pcb.tcp) != 0 && !sock->shutdownSend)
+        {
+            level |= AFD_POLL_WRITE;
+        }
+    }
+    if (sock->peerClosed)
+    {
+        level |= AFD_POLL_HUP;
+    }
+    if (sock->resetLatch)
+    {
+        level |= AFD_POLL_RESET;
+    }
+    if (sock->statusPerBit[AFD_POLL_BIT_CONNECT_ERR] != 0)
+    {
+        level |= AFD_POLL_CONNECT_ERR;
+    }
+    return level;
+}
+
+/* The single poll completer: unlink, write the packed output into the
+ * request's kernel bounce (the engine copies it — information > 0
+ * always: the params HEAD travels even for a timeout), release the entry
+ * references, complete, free. */
+static void AfdCompletePoll(PAFD_POLL_WAIT wait, NTSTATUS status, BOOLEAN reportReady)
+{
+    struct afd_poll_params *out = wait->pending->kernelBuffer;
+    ULONG ready = 0;
+
+    RemoveEntryList(&wait->listEntry);
+    memset(out, 0, sizeof(*out));
+    out->timeout = wait->inputTimeout;
+    out->exclusive = wait->exclusive;
+    if (reportReady)
+    {
+        for (ULONG i = 0; i < wait->count; i++)
+        {
+            int flags = AfdPollLevel(wait->entries[i].sock);
+            int visible = (flags & wait->entries[i].mask) | (flags & AFD_POLL_CLOSE);
+            if (visible == 0)
+            {
+                continue;
+            }
+            struct afd_poll_socket *slot = &out->sockets[ready];
+            slot->socket = wait->entries[i].handleValue;
+            slot->flags = visible;
+            slot->status = (visible & AFD_POLL_CONNECT_ERR) != 0
+                               ? wait->entries[i].sock->statusPerBit[AFD_POLL_BIT_CONNECT_ERR]
+                               : 0;
+            ready++;
+        }
+    }
+    out->count = ready;
+    for (ULONG i = 0; i < wait->count; i++)
+    {
+        ObDereferenceObject(wait->entries[i].file);
+    }
+    IopCompletePendingRequest(wait->pending, status,
+                              offsetof(struct afd_poll_params, sockets) +
+                                  ready * sizeof(struct afd_poll_socket));
+    MiFreePool(wait);
+}
+
+/* Re-evaluate every parked poll against current levels. Cheap at this
+ * kernel's scale; called from every readiness edge. */
+static void AfdEvaluatePolls(void)
+{
+    PLIST_ENTRY entry = AfdPollList.Flink;
+    while (entry != 0 && entry != &AfdPollList)
+    {
+        PAFD_POLL_WAIT wait = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
+        entry = entry->Flink;
+        BOOLEAN ready = FALSE;
+        for (ULONG i = 0; i < wait->count && !ready; i++)
+        {
+            int flags = AfdPollLevel(wait->entries[i].sock);
+            if (((flags & wait->entries[i].mask) | (flags & AFD_POLL_CLOSE)) != 0)
+            {
+                ready = TRUE;
+            }
+        }
+        if (ready)
+        {
+            AfdCompletePoll(wait, STATUS_SUCCESS, TRUE);
+        }
+    }
+}
 
 static BOOLEAN AfdRecvSatisfiable(PAFD_SOCKET sock)
 {
@@ -557,6 +734,7 @@ static void AfdSocketReady(PAFD_SOCKET sock)
         PAFD_REQUEST request = CONTAINING_RECORD(sock->acceptRequests.Flink, AFD_REQUEST, entry);
         AfdCompleteAcceptLocked(sock, request);
     }
+    AfdEvaluatePolls();
     KeSetEvent(&sock->syncWait, 0, FALSE);
 }
 
@@ -577,6 +755,7 @@ static err_t AfdTcpRecvCallback(void *arg, struct tcp_pcb *pcb, struct pbuf *p, 
     if (p == 0)
     {
         sock->peerClosed = TRUE; /* orderly FIN */
+        AfdRaiseEvent(sock, AFD_POLL_BIT_HUP, STATUS_SUCCESS);
         AfdSocketReady(sock);
         return ERR_OK;
     }
@@ -596,6 +775,7 @@ static err_t AfdTcpRecvCallback(void *arg, struct tcp_pcb *pcb, struct pbuf *p, 
      * which is the backpressure that bounds the ring. */
     (void)pcb;
     pbuf_free(p);
+    AfdRaiseEvent(sock, AFD_POLL_BIT_READ, STATUS_SUCCESS);
     AfdSocketReady(sock);
     return ERR_OK;
 }
@@ -607,6 +787,7 @@ static err_t AfdTcpSentCallback(void *arg, struct tcp_pcb *pcb, u16_t length)
     (void)length;
     if (sock != 0)
     {
+        AfdRaiseEvent(sock, AFD_POLL_BIT_WRITE, STATUS_SUCCESS);
         AfdSocketReady(sock);
     }
     return ERR_OK;
@@ -629,6 +810,12 @@ static void AfdTcpErrCallback(void *arg, err_t err)
          * segment was (the dead-port pin). */
         status = STATUS_CONNECTION_REFUSED;
         sock->connecting = FALSE;
+        AfdRaiseEvent(sock, AFD_POLL_BIT_CONNECT_ERR, status);
+    }
+    else
+    {
+        sock->resetLatch = TRUE;
+        AfdRaiseEvent(sock, AFD_POLL_BIT_RESET, STATUS_SUCCESS);
     }
     sock->soError = status;
     if (sock->connectRequest != 0)
@@ -650,6 +837,8 @@ static err_t AfdTcpConnectedCallback(void *arg, struct tcp_pcb *pcb, err_t err)
     sock->connecting = FALSE;
     sock->connected = TRUE;
     sock->bound = TRUE; /* tcp_connect auto-binds */
+    AfdRaiseEvent(sock, AFD_POLL_BIT_CONNECT, STATUS_SUCCESS);
+    AfdRaiseEvent(sock, AFD_POLL_BIT_WRITE, STATUS_SUCCESS);
     if (sock->connectRequest != 0)
     {
         AfdCompleteRequest(sock->connectRequest, STATUS_SUCCESS, 0);
@@ -695,7 +884,12 @@ static err_t AfdTcpAcceptCallback(void *arg, struct tcp_pcb *newPcb, err_t err)
     sock->connected = TRUE;
     sock->pcb.tcp = newPcb;
     AfdWireTcpCallbacks(sock);
+    /* An ACCEPTED socket's pending edge is WRITE alone — CONNECT is the
+     * connect()or's edge (measured: ws2_32:afd test_get_events reads
+     * WRITE, not WRITE|CONNECT, on the accepted end). */
+    AfdRaiseEvent(sock, AFD_POLL_BIT_WRITE, STATUS_SUCCESS);
     InsertTailList(&listener->acceptQueue, &sock->acceptEntry);
+    AfdRaiseEvent(listener, AFD_POLL_BIT_ACCEPT, STATUS_SUCCESS);
     AfdSocketReady(listener);
     return ERR_OK;
 }
@@ -733,6 +927,7 @@ static void AfdUdpRecvCallback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     pbuf_free(p);
     InsertTailList(&sock->dgramQueue, &dgram->entry);
     sock->dgramBytes += dgram->length;
+    AfdRaiseEvent(sock, AFD_POLL_BIT_READ, STATUS_SUCCESS);
     AfdSocketReady(sock);
 }
 
@@ -1256,6 +1451,24 @@ static NTSTATUS AfdConnect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
         return status;
     }
 
+    /* Nonblocking: initiate and answer would-block inline; the outcome
+     * arrives as the CONNECT/CONNECT_ERR edge (WSAEventSelect's shape). */
+    if (sock->nonBlocking)
+    {
+        sock->connecting = TRUE;
+        sock->soError = 0;
+        NetdEnterLwip();
+        err_t err = tcp_connect(sock->pcb.tcp, &address, port, AfdTcpConnectedCallback);
+        NetdLeaveLwip();
+        NetdWake();
+        if (err != ERR_OK)
+        {
+            sock->connecting = FALSE;
+            return AfdStatusFromLwip(err);
+        }
+        return STATUS_DEVICE_NOT_READY;
+    }
+
     PAFD_REQUEST request = 0;
     status = AfdParkRequest(sock, file, context, AfdReqConnect, &request);
     if (!NT_SUCCESS(status))
@@ -1309,8 +1522,8 @@ static NTSTATUS AfdAccept(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEX
  * satisfy inline when possible, park otherwise. `context` may be 0 for a
  * probe-only caller (none today). */
 static NTSTATUS AfdRecvCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
-                              AFD_SEG *segs, ULONG segCount, ULONG msgFlags, uint64_t addrPtr,
-                              uint64_t addrLenPtr, ULONG_PTR *infoOut)
+                              AFD_SEG *segs, ULONG segCount, ULONG msgFlags, BOOLEAN forceAsync,
+                              uint64_t addrPtr, uint64_t addrLenPtr, ULONG_PTR *infoOut)
 {
     if (sock->shutdownRecv)
     {
@@ -1321,6 +1534,14 @@ static NTSTATUS AfdRecvCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
     {
         MiFreePool(segs);
         return STATUS_INVALID_CONNECTION;
+    }
+    /* Nonblocking: an unsatisfiable recv answers would-block INLINE, IOSB
+     * untouched — unless AFD_RECV_FORCE_ASYNC/force_async overrides
+     * (pinned afd_nonblock.c). */
+    if (sock->nonBlocking && !forceAsync && !AfdRecvSatisfiable(sock))
+    {
+        MiFreePool(segs);
+        return STATUS_DEVICE_NOT_READY;
     }
 
     /* Inline when satisfiable NOW (the non-PENDING return is the caller's
@@ -1411,8 +1632,8 @@ static NTSTATUS AfdRecvIoctl(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CON
     {
         return status;
     }
-    return AfdRecvCommon(sock, file, context, segs, params->count, (ULONG)params->msg_flags, 0, 0,
-                         infoOut);
+    return AfdRecvCommon(sock, file, context, segs, params->count, (ULONG)params->msg_flags,
+                         (params->recv_flags & AFD_RECV_FORCE_ASYNC) != 0, 0, 0, infoOut);
 }
 
 static NTSTATUS AfdRecvMsg(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
@@ -1434,7 +1655,7 @@ static NTSTATUS AfdRecvMsg(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTE
         return status;
     }
     return AfdRecvCommon(sock, file, context, segs, params->count, AFD_MSG_NOT_OOB,
-                         params->addr_ptr, params->addr_len_ptr, infoOut);
+                         params->force_async != 0, params->addr_ptr, params->addr_len_ptr, infoOut);
 }
 
 /* Gather a caller's WSABUF payload into one pool run (issuer context). */
@@ -1599,6 +1820,18 @@ static NTSTATUS AfdSendCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
         MiFreePool(data);
         return AfdStatusFromLwip(err);
     }
+    /* Nonblocking: report the partial inline, or would-block when
+     * nothing at all fit. */
+    if (sock->nonBlocking)
+    {
+        MiFreePool(data);
+        if (done != 0)
+        {
+            *infoOut = done;
+            return STATUS_SUCCESS;
+        }
+        return STATUS_DEVICE_NOT_READY;
+    }
     /* Window full: park the whole run (dataDone tracks progress). */
     PAFD_REQUEST request = 0;
     NTSTATUS status = AfdParkRequest(sock, file, context, AfdReqSend, &request);
@@ -1684,6 +1917,333 @@ static NTSTATUS AfdShutdown(PAFD_SOCKET sock, const void *input, ULONG inputLeng
     sock->shutdownRecv = sock->shutdownRecv || shutRx;
     sock->shutdownSend = sock->shutdownSend || shutTx;
     return STATUS_SUCCESS;
+}
+
+/* Refuse WITH the IOSB written ({status, 0}) — the EVENT_SELECT family's
+ * refusal shape (measured: those verbs write their IOSB where the RECV
+ * family's refusals leave it poisoned; pinned afd_event_select.c). The
+ * pended tail delivers the write; the return is the status inline. */
+static NTSTATUS AfdRefuseWithIosb(PFILE_OBJECT file, IO_CONTROL_CONTEXT *context, NTSTATUS status)
+{
+    PIOP_PENDING_REQUEST pending = 0;
+    NTSTATUS prepared = IopPreparePendingRequest(file, context, &pending);
+    if (!NT_SUCCESS(prepared))
+    {
+        return prepared;
+    }
+    IopCompletePendingRequest(pending, status, 0);
+    return status;
+}
+
+static NTSTATUS AfdEventSelect(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
+                               const void *input, ULONG inputLength)
+{
+    if (!sock->created)
+    {
+        return AfdRefuseWithIosb(file, context, STATUS_INVALID_PARAMETER);
+    }
+    if (input == 0 || inputLength < sizeof(struct afd_event_select_params))
+    {
+        return AfdRefuseWithIosb(file, context, STATUS_INVALID_PARAMETER);
+    }
+    const struct afd_event_select_params *params = input;
+    if (params->event == 0 && params->mask != 0)
+    {
+        return AfdRefuseWithIosb(file, context, STATUS_INVALID_PARAMETER);
+    }
+
+    PKEVENT eventBody = 0;
+    if (params->event != 0)
+    {
+        PVOID body;
+        NTSTATUS status = ObReferenceObjectByHandle(params->event, EVENT_MODIFY_STATE,
+                                                    &ObpEventType, ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return AfdRefuseWithIosb(file, context, status);
+        }
+        eventBody = body;
+    }
+    if (sock->selectEvent != 0)
+    {
+        ObDereferenceObject(sock->selectEvent);
+    }
+    sock->selectEvent = eventBody;
+    sock->selectMask = eventBody != 0 ? params->mask : 0;
+    if (eventBody != 0)
+    {
+        /* WSAEventSelect implies nonblocking (ws2_32's own contract; the
+         * FIONBIO interlock below is its other half). */
+        sock->nonBlocking = TRUE;
+        if ((sock->pendingEvents & (ULONG)sock->selectMask) != 0)
+        {
+            KeSetEvent(sock->selectEvent, 0, FALSE);
+        }
+    }
+    return STATUS_SUCCESS; /* inline success writes the IOSB (ioctl.c tail) */
+}
+
+static NTSTATUS AfdGetEvents(PAFD_SOCKET sock, IO_CONTROL_CONTEXT *context, void *output,
+                             ULONG outputLength, ULONG_PTR *infoOut)
+{
+    if (!sock->created)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (output == 0 || outputLength < sizeof(struct afd_get_events_params))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* The sic convention: the raw INPUT POINTER is an event HANDLE (length
+     * 0 — nothing to bounce) to reset atomically with the report. */
+    if (context->userInput != 0)
+    {
+        PVOID body;
+        NTSTATUS status = ObReferenceObjectByHandle((HANDLE)context->userInput, EVENT_MODIFY_STATE,
+                                                    &ObpEventType, ExGetPreviousMode(), &body, 0);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        KeClearEvent((PKEVENT)body);
+        ObDereferenceObject(body);
+    }
+    struct afd_get_events_params *out = output;
+    memset(out, 0, sizeof(*out));
+    out->flags = (int)(sock->pendingEvents & (ULONG)sock->selectMask);
+    sock->pendingEvents &= ~(ULONG)out->flags; /* reported once (the latch) */
+    for (ULONG i = 0; i < AFD_POLL_BIT_COUNT; i++)
+    {
+        out->status[i] = sock->statusPerBit[i]; /* persists past the latch */
+    }
+    *infoOut = sizeof(*out);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS AfdFionbio(PAFD_SOCKET sock, const void *input, ULONG inputLength)
+{
+    if (!sock->created)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (input == 0 || inputLength < sizeof(int))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    int on = *(const int *)input;
+    if (on == 0 && sock->selectMask != 0)
+    {
+        /* The interlock (pinned afd_nonblock.c): a socket cannot leave
+         * nonblocking mode while an event mask is armed. */
+        return STATUS_INVALID_PARAMETER;
+    }
+    sock->nonBlocking = on != 0;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS AfdPoll(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CONTEXT *context,
+                        const void *input, ULONG inputLength, void *output, ULONG outputLength,
+                        ULONG_PTR *infoOut)
+{
+    (void)sock; /* a bare device handle may poll (pinned) */
+    if (input == 0 || output == 0 || inputLength < offsetof(struct afd_poll_params, sockets) ||
+        outputLength < inputLength)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const struct afd_poll_params *in = input;
+    ULONG count = in->count;
+    if (count == 0 || count > 64 ||
+        inputLength <
+            offsetof(struct afd_poll_params, sockets) + count * sizeof(struct afd_poll_socket))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* Resolve every entry in the ISSUER's context (io.h §5d). */
+    PAFD_POLL_WAIT wait = MiAllocatePool(sizeof(AFD_POLL_WAIT) + count * sizeof(AFD_POLL_ENTRY));
+    if (wait == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    memset(wait, 0, sizeof(AFD_POLL_WAIT) + count * sizeof(AFD_POLL_ENTRY));
+    wait->inputTimeout = in->timeout;
+    wait->exclusive = in->exclusive;
+    wait->count = count;
+    for (ULONG i = 0; i < count; i++)
+    {
+        PFILE_OBJECT entryFile;
+        NTSTATUS status =
+            IopReferenceFileByHandle((HANDLE)(ULONG_PTR)in->sockets[i].socket, 0, &entryFile, 0);
+        if (NT_SUCCESS(status) && (entryFile->device != AfdDevice || AfdFromFile(entryFile) == 0 ||
+                                   !AfdFromFile(entryFile)->created))
+        {
+            ObDereferenceObject(entryFile);
+            status = STATUS_INVALID_HANDLE;
+        }
+        if (!NT_SUCCESS(status))
+        {
+            for (ULONG j = 0; j < i; j++)
+            {
+                ObDereferenceObject(wait->entries[j].file);
+            }
+            MiFreePool(wait);
+            return status == STATUS_INVALID_HANDLE ? STATUS_INVALID_HANDLE : status;
+        }
+        wait->entries[i].file = entryFile;
+        wait->entries[i].sock = AfdFromFile(entryFile);
+        wait->entries[i].handleValue = in->sockets[i].socket;
+        wait->entries[i].mask = in->sockets[i].flags;
+    }
+
+    /* Ready now — or a zero-timeout snapshot: answer inline through the
+     * ordinary output bounce. */
+    ULONG ready = 0;
+    for (ULONG i = 0; i < count; i++)
+    {
+        int flags = AfdPollLevel(wait->entries[i].sock);
+        if (((flags & wait->entries[i].mask) | (flags & AFD_POLL_CLOSE)) != 0)
+        {
+            ready++;
+        }
+    }
+    if (ready != 0 || in->timeout == 0)
+    {
+        struct afd_poll_params *out = output;
+        ULONG at = 0;
+        memset(out, 0, offsetof(struct afd_poll_params, sockets));
+        out->timeout = in->timeout;
+        out->exclusive = in->exclusive;
+        for (ULONG i = 0; i < count; i++)
+        {
+            int flags = AfdPollLevel(wait->entries[i].sock);
+            int visible = (flags & wait->entries[i].mask) | (flags & AFD_POLL_CLOSE);
+            if (visible == 0)
+            {
+                continue;
+            }
+            struct afd_poll_socket *slot = &out->sockets[at];
+            slot->socket = wait->entries[i].handleValue;
+            slot->flags = visible;
+            slot->status = (visible & AFD_POLL_CONNECT_ERR) != 0
+                               ? wait->entries[i].sock->statusPerBit[AFD_POLL_BIT_CONNECT_ERR]
+                               : 0;
+            at++;
+        }
+        out->count = at;
+        for (ULONG i = 0; i < count; i++)
+        {
+            ObDereferenceObject(wait->entries[i].file);
+        }
+        MiFreePool(wait);
+        *infoOut = offsetof(struct afd_poll_params, sockets) + at * sizeof(struct afd_poll_socket);
+        return STATUS_SUCCESS;
+    }
+
+    /* The park. Exclusive displacement first (pinned afd_poll.c): a new
+     * EXCLUSIVE poll terminates the oldest parked poll on the same
+     * issuing handle iff that main poll is itself exclusive. */
+    if (in->exclusive)
+    {
+        for (PLIST_ENTRY entry = AfdPollList.Flink; entry != &AfdPollList; entry = entry->Flink)
+        {
+            PAFD_POLL_WAIT main = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
+            if (main->issuingFile == file)
+            {
+                if (main->exclusive)
+                {
+                    AfdCompletePoll(main, STATUS_SUCCESS, FALSE);
+                }
+                break; /* only the main (oldest) poll is considered */
+            }
+        }
+    }
+    NTSTATUS status = IopPreparePendingRequest(file, context, &wait->pending);
+    if (!NT_SUCCESS(status))
+    {
+        for (ULONG i = 0; i < count; i++)
+        {
+            ObDereferenceObject(wait->entries[i].file);
+        }
+        MiFreePool(wait);
+        return status;
+    }
+    wait->issuingFile = wait->pending->file;
+    if (in->timeout == 0x7fffffffffffffffLL)
+    {
+        wait->deadline = 0x7fffffffffffffffLL;
+    }
+    else if (in->timeout < 0)
+    {
+        LARGE_INTEGER now;
+        KeQuerySystemTime(&now);
+        wait->deadline = now.QuadPart + (-in->timeout);
+    }
+    else
+    {
+        wait->deadline = in->timeout; /* absolute NT time */
+    }
+    InsertTailList(&AfdPollList, &wait->listEntry);
+    NetdWake(); /* re-derive the netd park deadline for the expiry sweep */
+    return STATUS_PENDING;
+}
+
+/* --- the poll expiry tick (netd's mainloop) --------------------------------- */
+
+/* Milliseconds until the nearest parked-poll deadline (0 = one is already
+ * due; the netd park bounds itself with this beside lwIP's own timers).
+ * 0xffffffff = nothing parked with a finite deadline. */
+ULONG AfdNextPollDelayMs(void)
+{
+    if (AfdPollList.Flink == 0 || IsListEmpty(&AfdPollList))
+    {
+        return 0xffffffffu;
+    }
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    LONGLONG nearest = 0x7fffffffffffffffLL;
+    for (PLIST_ENTRY entry = AfdPollList.Flink; entry != &AfdPollList; entry = entry->Flink)
+    {
+        PAFD_POLL_WAIT wait = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
+        if (wait->deadline < nearest)
+        {
+            nearest = wait->deadline;
+        }
+    }
+    if (nearest == 0x7fffffffffffffffLL)
+    {
+        return 0xffffffffu;
+    }
+    if (nearest <= now.QuadPart)
+    {
+        return 0;
+    }
+    LONGLONG delta100ns = nearest - now.QuadPart;
+    ULONGLONG ms = (ULONGLONG)delta100ns / 10000u;
+    return ms >= 0xffffffffu ? 0xfffffffeu : (ULONG)(ms + 1);
+}
+
+/* Complete every parked poll whose deadline has passed (STATUS_TIMEOUT,
+ * the empty head — pinned afd_poll.c). Thread context (netd's mainloop,
+ * outside the lwIP seam). */
+void AfdPollTick(void)
+{
+    if (AfdPollList.Flink == 0 || IsListEmpty(&AfdPollList))
+    {
+        return;
+    }
+    LARGE_INTEGER now;
+    KeQuerySystemTime(&now);
+    PLIST_ENTRY entry = AfdPollList.Flink;
+    while (entry != &AfdPollList)
+    {
+        PAFD_POLL_WAIT wait = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
+        entry = entry->Flink;
+        if (wait->deadline != 0x7fffffffffffffffLL && wait->deadline <= now.QuadPart)
+        {
+            AfdCompletePoll(wait, STATUS_TIMEOUT, FALSE);
+        }
+    }
 }
 
 /* IOCTL_AFD_WINE_COMPLETE_ASYNC: complete THIS call with the
@@ -1773,6 +2333,28 @@ static ULONG AfdSweepRequests(PAFD_SOCKET sock, const IOP_CANCEL_FILTER *filter,
         AfdCompleteRequest(sock->connectRequest, status, 0);
         cancelled++;
     }
+    /* Parked polls ISSUED on this socket's file (they may WATCH any
+     * socket — the issuing handle is the cancel scope, like every other
+     * request). */
+    if (sock->file != 0 && AfdPollList.Flink != 0)
+    {
+        PLIST_ENTRY entry = AfdPollList.Flink;
+        while (entry != &AfdPollList)
+        {
+            PAFD_POLL_WAIT wait = CONTAINING_RECORD(entry, AFD_POLL_WAIT, listEntry);
+            entry = entry->Flink;
+            if (wait->issuingFile != sock->file)
+            {
+                continue;
+            }
+            if (!IopCancelFilterMatches(wait->pending, filter))
+            {
+                continue;
+            }
+            AfdCompletePoll(wait, status, FALSE);
+            cancelled++;
+        }
+    }
     return cancelled;
 }
 
@@ -1847,7 +2429,17 @@ static void AfdVfsCleanup(PFILE_OBJECT file)
     }
     NetdLeaveLwip();
     NetdWake(); /* let the close handshake flow */
+    if (sock->selectEvent != 0)
+    {
+        ObDereferenceObject(sock->selectEvent);
+        sock->selectEvent = 0;
+        sock->selectMask = 0;
+    }
     sock->dead = TRUE;
+    /* Polls WATCHING this socket see the close: AFD_POLL_CLOSE is
+     * reported whether or not it was asked for (pinned afd_poll.c via
+     * the level function). */
+    AfdEvaluatePolls();
 }
 
 static void AfdVfsClose(PFILE_OBJECT file)
@@ -2166,6 +2758,14 @@ static NTSTATUS AfdDeviceControl(PFILE_OBJECT file, ULONG code, const void *inpu
         ObDereferenceObject(acceptorFile);
         return status;
     }
+    case IOCTL_AFD_POLL:
+        return AfdPoll(sock, file, request, input, inputLength, output, outputLength, infoOut);
+    case IOCTL_AFD_EVENT_SELECT:
+        return AfdEventSelect(sock, file, request, input, inputLength);
+    case IOCTL_AFD_GET_EVENTS:
+        return AfdGetEvents(sock, request, output, outputLength, infoOut);
+    case IOCTL_AFD_WINE_FIONBIO:
+        return AfdFionbio(sock, input, inputLength);
     case IOCTL_AFD_RECV:
         return AfdRecvIoctl(sock, file, request, input, inputLength, infoOut);
     case IOCTL_AFD_WINE_RECVMSG:
@@ -2286,6 +2886,7 @@ void AfdCancelThreadIo(struct KTHREAD *thread)
 void AfdInitialize(void)
 {
     InitializeListHead(&AfdSocketList);
+    InitializeListHead(&AfdPollList);
     /* FILE_DEVICE_NAMED_PIPE, not NETWORK: sockets report the pipe device
      * type (measured on the oracle; sem_net/afd_open.c) — which is what
      * makes kernelbase's GetFileType answer FILE_TYPE_PIPE for them. */
