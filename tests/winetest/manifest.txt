@@ -1578,35 +1578,41 @@ ucrtbase_test.exe:thread
 cmd.exe_test.exe:directory
 
 
+
 # --- mmdevapi (third_party/wine/dlls/mmdevapi/tests) — the audio image ------
 # AUD-2 (docs/23 §6c). These pairs boot the AUDIO image (see the (c)
 # amendment in the header): the CUI machine + the GUI stack the audio DLLs
 # import + winevsnd.drv over \Device\Snd* + the virtio-snd device on the
-# QEMU command line. Every pair measured on the ORACLE with the §6b pulse
-# backend up (G5's spec half): 0 failures each except where noted. All
-# parked here pending the driver + image commits of this series; the
-# activation commit re-measures both runners and uncomments what is green.
-# 1. Oracle-green; awaiting the proskrnl audio image + winevsnd.drv.
-# # TODO: Implement
-# mmdevapi_test.exe:capture
-# mmdevapi_test.exe:dependency
-# mmdevapi_test.exe:mmdevenum
-# mmdevapi_test.exe:propstore
-# mmdevapi_test.exe:render
-# mmdevapi_test.exe:spatialaudio
+# QEMU command line. Measured green on BOTH runners at activation: the
+# oracle under the §6b pulse backend (0 failures per pair), proskrnl on
+# the audio image (the AUD-2 series' activation measurement). capture and
+# spatialaudio pass by their own skip/withhold paths — the capture
+# endpoint is deliberately absent until AUD-3 builds capture, so their
+# capture-side cases skip the way a capture-less Windows box skips them.
+mmdevapi_test.exe:capture
+mmdevapi_test.exe:dependency
+mmdevapi_test.exe:mmdevenum
+mmdevapi_test.exe:propstore
+mmdevapi_test.exe:render:600
+mmdevapi_test.exe:spatialaudio
 
 # --- winmm (third_party/wine/dlls/winmm/tests) — the audio image ------------
-# 1. Oracle-green; awaiting the proskrnl audio image + winevsnd.drv.
+# Same discipline, same measurement.
+winmm_test.exe:capture
+winmm_test.exe:generated
+winmm_test.exe:mcicda
+winmm_test.exe:midi
+winmm_test.exe:mixer
+winmm_test.exe:mmio
+winmm_test.exe:timer
+winmm_test.exe:wave:600
+# 1. Dies with EXCEPTION_WINE_STUB (0x80000100): the joystick surface
+#    reaches a stubbed entry in the baked DLL set. Its subject is game
+#    hardware, not audio — no joystick device class exists on proskrnl and
+#    none is planned by the audio path; unparking needs whichever milestone
+#    first bakes a game-controller stack (dinput and a device below it).
 # # TODO: Implement
-# winmm_test.exe:capture
-# winmm_test.exe:generated
 # winmm_test.exe:joystick
-# winmm_test.exe:mcicda
-# winmm_test.exe:midi
-# winmm_test.exe:mixer
-# winmm_test.exe:mmio
-# winmm_test.exe:timer
-# winmm_test.exe:wave
 # (b) mci fails on the pinned ORACLE itself: 274 failures out of 749 (the
 #     MCIQTZ/video half needs winegstreamer and a rendering topology the
 #     null-sink oracle does not carry — mci.c's video-window and
