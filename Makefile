@@ -1801,6 +1801,17 @@ WT_UCRTBASE_OBJS := $(addprefix $(WT_UCRTBASE_D)/, cpp.o environ.o file.o misc.o
     scanf.o string.o thread.o testlist.o)
 WT_CMD_D := third_party/wine/programs/cmd/tests/x86_64-windows
 WT_CMD_OBJS := $(addprefix $(WT_CMD_D)/, batch.o directory.o testlist.o)
+# The audio modules (AUD-2, docs/23 §6c). Unlike the CUI five these link the
+# REAL user32/ole32 import libs (their tests genuinely use them: message
+# windows, COM apartments), so their pairs run on the audio wtest image
+# (GUI stack + audio payload), never the CUI one — the manifest header's
+# audio amendment.
+WT_MMDEVAPI_D := third_party/wine/dlls/mmdevapi/tests/x86_64-windows
+WT_MMDEVAPI_OBJS := $(addprefix $(WT_MMDEVAPI_D)/, capture.o dependency.o mmdevenum.o \
+    propstore.o render.o spatialaudio.o testlist.o)
+WT_WINMM_D := third_party/wine/dlls/winmm/tests/x86_64-windows
+WT_WINMM_OBJS := $(addprefix $(WT_WINMM_D)/, capture.o generated.o joystick.o mci.o mcicda.o \
+    midi.o mixer.o mmio.o timer.o wave.o testlist.o)
 
 # The helper DLLs the .spec SOURCES build are reached through a RESOURCE, not
 # an import: ntdll:thread, kernel32:actctx and ucrtbase:thread each call
@@ -1815,6 +1826,7 @@ WT_KERNEL32_RES := third_party/wine/dlls/kernel32/tests/resource.res \
 WT_UCRTBASE_RES := $(WT_UCRTBASE_D)/threaddll.dll.res
 
 $(WT_NTDLL_OBJS) $(WT_KERNEL32_OBJS) $(WT_MSVCRT_OBJS) $(WT_UCRTBASE_OBJS) $(WT_CMD_OBJS) \
+$(WT_MMDEVAPI_OBJS) $(WT_WINMM_OBJS) third_party/wine/dlls/winmm/tests/rsrc.res \
 $(WT_NTDLL_RES) $(WT_KERNEL32_RES) $(WT_UCRTBASE_RES):
 	@echo "error: $@ missing - build the pinned Wine test modules first (tools/setup_linux.sh)" >&2
 	@exit 1
@@ -1856,8 +1868,29 @@ $(WTESTS)/cmd.exe_test.exe: $(WT_CMD_OBJS) third_party/wine/programs/cmd/tests/r
 	$(WT_LINK) $(WT_CMD_OBJS) $(WTESTS)/cmd_rsrc.res.o $(WT_GLUE) \
 	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) -Wl,--end-group -lgcc -o $@
 
+$(WTESTS)/mmdevapi_test.exe: $(WT_MMDEVAPI_OBJS) $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_LINK) $(WT_MMDEVAPI_OBJS) $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) \
+	    $(WINE_PE)/ole32/x86_64-windows/libole32.a \
+	    $(WINE_PE)/version/x86_64-windows/libversion.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
+	    $(WINE_PE)/winmm/x86_64-windows/libwinmm.a \
+	    -Wl,--end-group -lgcc -o $@
+
+$(WTESTS)/winmm_test.exe: $(WT_WINMM_OBJS) third_party/wine/dlls/winmm/tests/rsrc.res $(WT_GLUE)
+	@mkdir -p $(dir $@)
+	$(WT_RES) third_party/wine/dlls/winmm/tests/rsrc.res $(WTESTS)/winmm_rsrc.res.o
+	$(WT_LINK) $(WT_WINMM_OBJS) $(WTESTS)/winmm_rsrc.res.o $(WT_GLUE) \
+	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WT_LIBS) \
+	    $(WINE_PE)/winmm/x86_64-windows/libwinmm.a \
+	    $(WINE_PE)/ole32/x86_64-windows/libole32.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
+	    -Wl,--end-group -lgcc -o $@
+
 wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_test.exe \
-    $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe
+    $(WTESTS)/ucrtbase_test.exe $(WTESTS)/cmd.exe_test.exe \
+    $(WTESTS)/mmdevapi_test.exe $(WTESTS)/winmm_test.exe
 .PHONY: wtests
 
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
