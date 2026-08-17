@@ -115,12 +115,22 @@ struct prsk_slot
 struct prsk_ring
 {
     volatile LONG    version;
+    /* A claimer that found every slot taken sets this and rings the
+     * doorbell: the server sweeps slots whose claiming THREAD is dead and
+     * frees them, then the claimer retries. Needed because a WOW64 process
+     * never delivers DLL_THREAD_DETACH to the 64-bit win32u (32-bit
+     * RtlExitUserThread runs only the 32-bit LdrShutdownThread before the
+     * NtTerminateThread syscall; wow64_NtTerminateThread forwards straight
+     * to the kernel), so every exited 32-bit GUI thread would otherwise
+     * hold its slot until process death -- SAFlashPlayer's audio-retry
+     * thread churn drained 58 of 64 slots in one playback. */
+    volatile LONG    gc_request;
     struct prsk_slot slots[PRSK_SLOT_COUNT];
 };
 
 /* Bumped only if the layout above changes incompatibly; both ends check it,
  * so a stale client meets a refusal rather than a silent misparse. */
-#define PRSK_RING_VERSION 1
+#define PRSK_RING_VERSION 2
 
 #endif /* PRSK_TRANSPORT_NAMES_ONLY */
 
