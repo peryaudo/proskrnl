@@ -366,6 +366,11 @@ NTSTATUS IopValidateEventHandle(HANDLE eventHandle);
  * See kernel/io/file.c for why the two move together. */
 void IopAbandonRequest(HANDLE eventHandle);
 
+/* Everything a FILE_OBJECT derives from the create OPTIONS word (Art. 11 —
+ * the two construction sites, IopCreateFile and NtCreateNamedPipeFile, share
+ * this rather than transcribing it twice). See kernel/io/file.c. */
+void IopCaptureCreateOptions(struct FILE_OBJECT *file, ULONG options);
+
 /* The two bare transitions on a caller's completion-event HANDLE, through
  * the one IopReferenceCompletionEvent authority and with the same
  * discard-the-failure rule IopCompleteRequest has. They exist because a
