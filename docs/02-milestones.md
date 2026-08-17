@@ -730,6 +730,44 @@ lives in atl100 — without both, shell32's CLSIDs never land and the file windo
 *Optional GUI-7:* the ReactOS shell (taskbar/Start menu/icons) — a separate integration
 effort with a two-upstream cost; see `docs/06`.
 
+## Audio path (opt-in, additive — see docs/23)
+
+Like the GUI path: outside the CUI core, subtractable, every NT-absent addition a
+ledger entry. `docs/23-audio-strategy.md` is the design; the entries below are the
+contract. Gate zero, before any code: the one-line Article 2 amendment extending the
+downgraded exception to audio (its own commit, argued in docs/23's preamble).
+
+## AUD-1 — the device: virtio-snd + `\Device\Snd*`
+`drivers/virtio/snd.c` + `drivers/snd.c` + `drivers/sndproto.h` (HACK-007): one
+device node per PCM stream, direction the stream's own claim; ioctls mirror the
+virtio control verbs verbatim; `NtWriteFile` of one period parks on the CUI-8 engine
+until the device returns the buffer; harvest joins `IoDrainDeviceCompletions` (no
+MSI-X — the tick tail's 1 ms bound against a 10 ms period, docs/19 §11f); the new
+park declared in `tools/blocking_frontier.txt` in the same commit (G14).
+**Done when:** `tests/run/run.sh audio` is green — a guest client plays a
+deterministic S16 pattern and the harness finds it sample-exact in the WAV that
+QEMU's `-audiodev wav` recorded (property-based on the span, never byte-golden).
+
+## AUD-2 — winevsnd.drv: WASAPI render
+The oracle grows its audio backend first (`--with-pulse` + a per-leg null-sink
+daemon + the audiosmoke pin — docs/23 §6b, the fonts/display lesson a third time).
+Then the mmdevapi seam commit on `proskrnl-target` (three dispatch sites, level-1
+dormant), and `user/wine/dlls/winevsnd.drv` as PE: endpoints, mix format, the
+feeder thread (in-process mixing, software volumes, silence on underrun), the
+period/padding/position clocks. Cross-process playback deliberately refuses
+(`AUDCLNT_E_DEVICE_IN_USE`, a recorded docs/03 deviation; audiodg-lite is its
+named, unbuilt exit — HACK-008, reserved).
+**Done when:** the render-side pairs (`mmdevapi:render` and kin, `winmm:wave`) are
+green on both runners under the manifest discipline, and the `[KTEST] audio` line
+reports the underrun count as a number, not an inference.
+
+## AUD-3 — capture
+rxq + the capture node + the `get_capture_buffer` legs; QEMU supplies silence at
+the correct cadence (no input backend exists), which the capture pairs' assertions
+mostly are — a content-asserting capture test is a known gap, named in docs/23 §7.
+**Done when:** `mmdevapi:capture` / `winmm:capture` triaged into the manifest,
+green or parked with signatures.
+
 ## WOW64 — 32-bit apps *(last, purely additive)* — **DONE**
 GDT compat-mode descriptors; `NtCreateUserProcess` detects `IMAGE_FILE_MACHINE_I386` and
 marks a WOW64 process; restrict its address space to low memory; deliver compat-mode
