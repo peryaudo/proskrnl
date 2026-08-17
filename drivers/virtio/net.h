@@ -48,8 +48,11 @@ void VioNetDrain(void);
  * are exhausted is what a NIC with no reader does. */
 void VioNetSetReceiveConsumerLive(BOOLEAN live);
 
-/* The work event VioNetDrain sets: the netd mainloop parks on it. */
-PKEVENT VioNetWorkEvent(void);
+/* The wake registration (netd's bring-up): the event VioNetDrain sets
+ * when a harvest staged work. netd owns the event (Net-2: the mainloop
+ * parks on it for loopback/AFD work too, NIC or not) and hands it down
+ * here; until registered the drain stages silently. */
+void VioNetSetWakeEvent(PKEVENT event);
 
 /* Pop one staged received frame into `frame` (at most VIO_NET_MAX_FRAME
  * bytes; *lengthOut = the frame's length, virtio-net header already

@@ -460,7 +460,9 @@ static void KiTestMainThread(void *context)
      * probed pre-freeze. Deliberately here — after the boot volume and the
      * registry (the DHCP lease is written through the ordinary NtSetValueKey
      * path) and before anything that might want the wire (docs/24 §4b).
-     * Quietly does nothing when no NIC exists: every leg but net. */
+     * Since Net-2 the stack and its thread come up on every image (the
+     * loopback interface is \Device\Afd's device-free substrate); only
+     * the ethernet netif and DHCP need the NIC. */
     NetInitialize();
 
     /* The interactive boot (make run) skips the kernel test suites: the

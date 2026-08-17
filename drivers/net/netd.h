@@ -12,11 +12,24 @@
 
 /* Bring-up (kernel/init/main.c, after CmInitialize and the boot-volume
  * mount — deliberately later than the pre-freeze device probe, docs/24
- * §4b): lwip_init, the ethernet netif over drivers/virtio/net.c, DHCP
- * (or the static fallback knob), and the netd thread. Quietly does
- * nothing when no NIC exists — every image but the net leg's. */
+ * §4b): lwip_init (the 127.0.0.1 loopback interface with it) and the
+ * netd thread on EVERY image — Net-2's \Device\Afd serves loopback
+ * sockets with no NIC. The ethernet netif over drivers/virtio/net.c and
+ * DHCP (or the static fallback knob) join only when the probe found a
+ * NIC; NetIsUp reports that wire, not the always-on stack. */
 void NetInitialize(void);
 BOOLEAN NetIsUp(void);
+
+/* Wake the netd mainloop out of its park (any context that queued lwIP
+ * work — the drain via VioNetSetWakeEvent, AFD verbs directly — so
+ * queued output and due timers get serviced promptly). */
+void NetdWake(void);
+
+/* The lwIP entry seam (netd.c's single-threading invariant, asserted):
+ * every syscall-context caller brackets its raw-API use with these —
+ * never from the drain or any interrupt path, never blocking inside. */
+void NetdEnterLwip(void);
+void NetdLeaveLwip(void);
 
 /* TRUE once a DHCP lease is bound (and its registry values written). */
 BOOLEAN NetDhcpBound(void);
