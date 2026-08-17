@@ -1647,8 +1647,11 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     device = 0;
     file->fsContext = end;
     file->fcb = &instance->header;
-    file->synchronousIo =
-        (options & (FILE_SYNCHRONOUS_IO_NONALERT | FILE_SYNCHRONOUS_IO_ALERT)) != 0;
+    /* Through the one authority for the options word (kernel/io/file.c), not
+     * a second transcription of it: this site used to set `synchronousIo`
+     * alone, which left FileModeInformation reporting 0 on every pipe handle
+     * and FILE_SYNCHRONOUS_IO_ALERT invisible to the park. */
+    IopCaptureCreateOptions(file, options);
     file->grantedAccess = ObpMapDesiredAccess(&IoFileObjectType, desiredAccess);
     file->desiredAccess = desiredAccess;
     file->shareAccess = sharing;

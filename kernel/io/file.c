@@ -289,6 +289,31 @@ void IopAbandonRequest(HANDLE eventHandle)
     IopResetRequestEvent(eventHandle);
 }
 
+/* Everything a FILE_OBJECT derives from the create OPTIONS word, in one
+ * place (Art. 11). There are two construction sites — IopCreateFile below
+ * and NtCreateNamedPipeFile (fs/npfs/pipe.c), whose comment says it builds
+ * the object "exactly as IopCreateFile does" — and the second one had
+ * drifted: it set `synchronousIo` and nothing else, so a pipe handle
+ * reported a zero FileModeInformation whatever it was opened with, its
+ * syncIoLock was never initialised, and FILE_SYNCHRONOUS_IO_ALERT could not
+ * be seen at all (the park is keyed on `modeFlags`, io.h IoSyncIoAlerted).
+ * Two paths that are only currently equivalent drift; this one already had. */
+void IopCaptureCreateOptions(PFILE_OBJECT file, ULONG options)
+{
+    file->synchronousIo =
+        (options & (FILE_SYNCHRONOUS_IO_NONALERT | FILE_SYNCHRONOUS_IO_ALERT)) != 0;
+    /* Born signalled: free until its first synchronous-I/O holder. */
+    KeInitializeEvent(&file->syncIoLock, SynchronizationEvent, TRUE);
+    file->deleteOnClose = (options & FILE_DELETE_ON_CLOSE) != 0;
+    file->nonBuffered = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
+    /* The FileModeInformation word: exactly the bits the pinned Wine's
+     * server masks in (third_party/wine server/fd.c
+     * default_fd_get_file_info; pinned sem_file/async_inline.c). */
+    file->modeFlags =
+        options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | FILE_NO_INTERMEDIATE_BUFFERING |
+                   FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
+}
+
 void IopResetRequestEvent(HANDLE eventHandle)
 {
     if (eventHandle == 0)
@@ -655,18 +680,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     KeInitializeEvent(&file->header, NotificationEvent, TRUE);
     file->device = device; /* the allocation's device reference moves in */
     device = 0;
-    file->synchronousIo =
-        (options & (FILE_SYNCHRONOUS_IO_NONALERT | FILE_SYNCHRONOUS_IO_ALERT)) != 0;
-    /* Born signalled: free until its first synchronous-I/O holder. */
-    KeInitializeEvent(&file->syncIoLock, SynchronizationEvent, TRUE);
-    file->deleteOnClose = (options & FILE_DELETE_ON_CLOSE) != 0;
-    file->nonBuffered = (options & FILE_NO_INTERMEDIATE_BUFFERING) != 0;
-    /* The FileModeInformation word: exactly the bits the pinned Wine's
-     * server masks in (third_party/wine server/fd.c
-     * default_fd_get_file_info; pinned sem_file/async_inline.c). */
-    file->modeFlags =
-        options & (FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | FILE_NO_INTERMEDIATE_BUFFERING |
-                   FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
+    IopCaptureCreateOptions(file, options);
     file->grantedAccess = granted;
     file->desiredAccess = desiredAccess;
     file->shareAccess = shareAccess;
