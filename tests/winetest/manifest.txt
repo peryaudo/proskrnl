@@ -418,31 +418,65 @@ ntdll_test.exe:path
 #     implementation that took the advice passes every winetest assertion in
 #     this pair and answers the create's mask through every duplicate.
 #
-#     WHAT IS LEFT: a WEDGE, one function further on.
-#       - The pair now traces "pipe.c:3187: starting alertable tests" and then
-#         makes no further progress until the harness's 5-minute timeout; the
-#         event ring at the kill holds nothing but idle swaps, i.e. one parked
-#         thread and nothing running. Verdict FAIL (timeout) with 0 failed
-#         assertions — the SAME verdict the panic produced, which is why the
-#         pair's colour does not move even though the panic is gone.
-#       - The measured facts are exactly those two: the last trace printed is
-#         :3187, and no assertion has failed up to it. WHICH park it is has
-#         NOT been measured. Reading test_alertable (pipe.c:457) makes a
-#         FSCTL_PIPE_LISTEN parked on a FILE_SYNCHRONOUS_IO_ALERT handle with
-#         a user APC already queued the obvious suspect — the test expects the
-#         alertable park to be broken by the APC — but that is a prediction
-#         from the code and this block will not record it as a finding
-#         (docs/21 §4 trap 4). Two runners and a throwaway probe settle it in
-#         three minutes; do that first.
-#       - Everything past the wedge (test_nonalertable, test_cancelio,
-#         test_cancelsynchronousio, the read_pipe_test matrix, the
-#         impersonation tests) has still never run, so 0 remains a LOWER BOUND
-#         and is the same lower bound it was under the panic (docs/21 §4 trap
-#         2). Nothing is claimed here about what is hiding behind it: the pair
-#         still prints no summary line, so there is no executed count on
-#         either side of this change to compare — only the per-line histogram,
-#         which was empty before and is empty after, and the stopping point,
-#         which moved from pipe.c:1015 to pipe.c:3187.
+#     THE ALERTABLE PARK IS NOW BUILT and the :3187 WEDGE IS GONE: the pair
+#     runs FIVE more functions — test_alertable, test_nonalertable,
+#     test_cancelio and into test_cancelsynchronousio — and reports 0 -> 1
+#     failed assertion. The 1 is docs/21 §4 trap 2's arithmetic and NOT a
+#     regression: it sits at pipe.c:725, three functions past where anything
+#     had ever executed, and the histogram before :3187 is still empty.
+#     The wedge was exactly what the block above declined to record as a
+#     finding, and measuring it first was still right: a FSCTL_PIPE_LISTEN
+#     parked on a FILE_SYNCHRONOUS_IO_ALERT handle with a user APC already
+#     queued. proskrnl folded ALERT into NONALERT below FileModeInformation,
+#     so IoWaitCancellable waited non-alertably for both and a listen with no
+#     client coming never returned. The oracle keeps them apart in ONE
+#     argument, repeated in server_read_file, server_write_file and
+#     server_ioctl_file (dlls/ntdll/unix/file.c:5746/:5781/:5823):
+#     `wait_async( wait_handle, (options & FILE_SYNCHRONOUS_IO_ALERT) )`.
+#     NtFlushBuffersFileEx is the oracle's own exception and passes FALSE
+#     (:6876), which the first draft got wrong in the other direction.
+#     Landed in kernel/{ke/ke.h,io/{async,ioctl,rw,file}.c} + fs/npfs/pipe.c,
+#     pinned by tests/ntapi/sem_pipe/alertable_park.c; docs/21 W11, docs/03
+#     "FILE_SYNCHRONOUS_IO_ALERT: the park is alertable".
+#     Two findings under it are worth more than the wedge:
+#       - an INTERRUPTED request completes NOTHING — no IOSB, no completion
+#         routine, no event signal — because the oracle's async is still
+#         QUEUED and only the client stopped waiting. It returns the wait's
+#         own STATUS_USER_APC, which is an NT_SUCCESS value, so it is carried
+#         as an engine FLAG and never read off a device's return (the
+#         STATUS_PENDING lesson, docs/21 W4c). Windows CANCELS instead and
+#         answers STATUS_CANCELLED; the test marks that todo_wine, so matching
+#         NT here would score a failure for being closer to NT.
+#       - npfs was a SECOND FILE_OBJECT construction site and had already
+#         drifted (Art. 11). NtCreateNamedPipeFile said it built the object
+#         "exactly as IopCreateFile does" and set synchronousIo alone, so
+#         every pipe handle reported a zero FileModeInformation whatever it
+#         was opened with and its syncIoLock was never initialised. Both sites
+#         go through IopCaptureCreateOptions now.
+#
+#     WHAT IS LEFT: one real failure, then a NEW wedge three functions on.
+#       - pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
+#         (IO_STATUS_BLOCK *)0xdeadbeef) must answer STATUS_ACCESS_VIOLATION;
+#         proskrnl answers 80000002 (STATUS_DATATYPE_MISALIGNMENT), because
+#         KiProbeForWrite tests alignment before accessibility and 0xdeadbeef
+#         is neither. A probe-ORDER question, not a pipe one, and it is the
+#         pair's smallest remaining item.
+#       - THE WEDGE is at pipe.c:747, in test_cancelsynchronousio:
+#         `while ((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0)
+#         Sleep(1);` — a spin waiting for a blocking LISTEN to take the pipe
+#         HANDLE down. W4d built that rule for rw.c's transfers
+#         (IopBeginBlockingRequest) and this item deliberately did not extend
+#         it to ioctl.c: the event half is done (reset at issue, measured from
+#         a worker mid-park) and the FILE-OBJECT half is not, so the spin never
+#         ends. kernel/io/ioctl.c says so at the site. That is the pair's next
+#         item and it wants its own pin, because the pended and refused arms
+#         of the service owe the handle an answer too.
+#       - Everything past :747 (the rest of test_cancelsynchronousio, the
+#         read_pipe_test matrix, the impersonation tests) has still never run,
+#         so 1 remains a LOWER BOUND (docs/21 §4 trap 2). The pair still prints
+#         no summary line, so there is no executed count on either side of this
+#         change to compare — only the per-line histogram and the stopping
+#         point, which moved from pipe.c:3187 to pipe.c:747.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
