@@ -303,11 +303,12 @@ argument: slowness having already stopped a suite from reaching a
 verdict.
 
 Either way, growing the winetest manifest as its parked blockers land
-(`docs/03` "M10 winetest notes"). Debug objects stay out of scope apart
-from the attach carve-out WOW64 needed: `NtCreateDebugObject`,
-`NtDebugActiveProcess`, `NtRemoveProcessDebug` and the `BeingDebugged`
-flag they move, with the event queue permanently refused (ADR 0011 and
-its WOW64 amendment).
+(`docs/03` "M10 winetest notes"). Debug objects: attach is built — the
+carve-out WOW64 needed, `NtCreateDebugObject`, `NtDebugActiveProcess`,
+`NtRemoveProcessDebug` and the `BeingDebugged` flag they move — while the
+event queue still refuses, now as unbuilt work rather than an exclusion
+(ADR 0011, now deprecated; `kernel32_test.exe:debugger` is the consumer
+waiting on it).
 
 ## Build instructions
 

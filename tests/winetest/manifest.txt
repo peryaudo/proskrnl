@@ -615,10 +615,17 @@ kernel32_test.exe:comm
 #     "Unable to open HKCU\Console, error 2" and fills the log with cursor
 #     escapes — measured, not assumed.
 # kernel32_test.exe:console
-# (a) Debug objects are out of scope permanently (ADR 0011, docs/03 "Debug
-#     objects are out of scope"): proskrnl panics on the first
-#     NtCreateDebugObject. Green on the oracle; unreachable here by
-#     decision, not by backlog.
+# (a) The debug-object EVENT QUEUE is unbuilt, so proskrnl panics as soon
+#     as the pair reaches it — via NtWaitForDebugEvent, or earlier at
+#     CreateProcess(DEBUG_PROCESS), which NtCreateUserProcess still
+#     refuses; which comes first is not re-measured here, only that both
+#     are queue surface. Green on the oracle. This block used to say
+#     "out of scope permanently, by decision, not by backlog" (ADR 0011) —
+#     that is withdrawn: ADR 0011 is DEPRECATED and the queue is in-scope
+#     unbuilt work, and this pair is the named consumer for it. The pair
+#     stays parked because the ids refuse, not because the surface is
+#     ruled out; un-park it when the queue lands. Attach itself IS built
+#     (Amendment 1), so NtCreateDebugObject is no longer where it dies.
 # kernel32_test.exe:debugger
 kernel32_test.exe:directory
 kernel32_test.exe:drive
@@ -743,8 +750,8 @@ kernel32_test.exe:heap
 #     Under Art. 6 that settles it: a pair whose oracle never reaches a
 #     verdict convicts nothing on either side, so the proskrnl half is
 #     unconvictable no matter what it does. For the record, what it does is
-#     panic at NtWaitForDebugEvent — the debug EVENT QUEUE, which ADR 0011's
-#     WOW64 amendment refuses permanently and on purpose — with real
+#     panic at NtWaitForDebugEvent — the debug EVENT QUEUE, unbuilt and
+#     refusing loudly (in scope, not excluded; ADR 0011 is deprecated) — with real
 #     failures at loader.c:4658-:4678 ahead of it. Neither observation is
 #     actionable while the oracle is silent.
 #
