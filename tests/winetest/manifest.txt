@@ -454,29 +454,73 @@ ntdll_test.exe:path
 #         was opened with and its syncIoLock was never initialised. Both sites
 #         go through IopCaptureCreateOptions now.
 #
-#     WHAT IS LEFT: one real failure, then a NEW wedge three functions on.
-#       - pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
-#         (IO_STATUS_BLOCK *)0xdeadbeef) must answer STATUS_ACCESS_VIOLATION;
-#         proskrnl answers 80000002 (STATUS_DATATYPE_MISALIGNMENT), because
-#         KiProbeForWrite tests alignment before accessibility and 0xdeadbeef
-#         is neither. A probe-ORDER question, not a pipe one, and it is the
-#         pair's smallest remaining item.
-#       - THE WEDGE is at pipe.c:747, in test_cancelsynchronousio:
-#         `while ((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0)
-#         Sleep(1);` — a spin waiting for a blocking LISTEN to take the pipe
-#         HANDLE down. W4d built that rule for rw.c's transfers
-#         (IopBeginBlockingRequest) and this item deliberately did not extend
-#         it to ioctl.c: the event half is done (reset at issue, measured from
-#         a worker mid-park) and the FILE-OBJECT half is not, so the spin never
-#         ends. kernel/io/ioctl.c says so at the site. That is the pair's next
-#         item and it wants its own pin, because the pended and refused arms
-#         of the service owe the handle an answer too.
-#       - Everything past :747 (the rest of test_cancelsynchronousio, the
-#         read_pipe_test matrix, the impersonation tests) has still never run,
-#         so 1 remains a LOWER BOUND (docs/21 §4 trap 2). The pair still prints
-#         no summary line, so there is no executed count on either side of this
-#         change to compare — only the per-line histogram and the stopping
-#         point, which moved from pipe.c:3187 to pipe.c:747.
+#     THE :747 WEDGE IS GONE AND THE PAIR IS MEASURED FOR THE FIRST TIME:
+#     1 -> 123 failures across 2386 tests executed (33 todo, 0 flaky, 0
+#     skipped), against the oracle's 2378/35/0. THE NUMBER WENT UP BECAUSE THE
+#     PAIR STOPPED STOPPING — this is docs/21 §4 trap 2's arithmetic, third
+#     time in this block: 1 was a lower bound over a prefix that ended three
+#     test functions into test_cancelsynchronousio, and every one of the 123 is
+#     past it or was already there. The pair now PRINTS ITS SUMMARY LINE, which
+#     no revision of this block has ever had, so from here the executed count
+#     is comparable; it also runs in ~11 s instead of eating the full 300 s
+#     timeout.
+#     The wedge was the FILE-OBJECT half of the blocking-request contract,
+#     missing on ioctl.c: pipe.c:747 spins `while ((ret =
+#     WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0) Sleep(1);` waiting
+#     for a blocking FSCTL_PIPE_LISTEN to take the pipe HANDLE down, and
+#     nothing took it down. Landed in kernel/io/{async,ioctl,rw}.c +
+#     kernel/ke/ke.h, pinned by tests/ntapi/sem_pipe/ioctl_signal.c; docs/21
+#     W11, docs/03 "An IOCTL clears the handle at its PARK".
+#     THE ORACLE REFUTED THE OBVIOUS TRANSCRIPTION, and that is the part worth
+#     carrying: rw.c's engine clears the handle at ISSUE and restores it if the
+#     device refuses, which is right for a TRANSFER because pipe_end_read
+#     queues every request it gets. An IOCTL's verb is decided ABOVE
+#     queue_async (server/named_pipe.c pipe_server_ioctl returns
+#     STATUS_PIPE_CONNECTED before it; FSCTL_PIPE_PEEK never queues at all), so
+#     an inline peek carrying an event leaves the handle UP on the oracle and a
+#     clear-at-issue cannot do that. The clear is now made by the ENGINE at the
+#     one place a blocking park happens (IoWaitCancellable) for the services
+#     that ask for IopClearAtPark — never by a device.
+#
+#     WHAT IS LEFT, per-line histogram of the 123 (119 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 119,
+#     and one that does not drop the console's redrawn first draft of a wrapped
+#     line double-counts — docs/21 W16). These are read off the assertions and
+#     grouped by test function; NONE of them is diagnosed, and docs/21 §4 trap
+#     4 says the loudest is usually the consequence:
+#       - 32  test_pipe_with_data_state (:2160x11, :2205x10, :2163x6, :2151x2,
+#             :2181x2, :2185x1). Two subjects visible: FSCTL_PIPE_PEEK's STATE
+#             MATRIX (:2205 wants INVALID_PIPE_STATE / PIPE_DISCONNECTED /
+#             BUFFER_OVERFLOW by state and gets 0), and FileStandardInformation
+#             on a pipe (:2160 AllocationSize must be InboundQuota +
+#             OutboundQuota, :2163 EndOfFile must be ReadDataAvailable; both
+#             report 0).
+#       - 27  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
+#             = 35, the largest cluster. The `\Device\NamedPipe` device-root
+#             surface: creating and opening a pipe by an EMPTY relative name,
+#             and the root's own fsctls (:2787 FSCTL_PIPE_WAIT must be
+#             ILLEGAL_FUNCTION there).
+#       - 14  test_pipe_state (:2069x8 FSCTL_PIPE_TRANSCEIVE, unimplemented in
+#             npfs and refused loudly; :2055x6 the same peek state matrix as
+#             :2205).
+#       - 13  test_async_cancel_on_handle_close (:3094x8, :3114x4, :3111x1) —
+#             what a CLOSE does to a pended request's completion packet.
+#       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
+#             pipe handle.
+#       -  5  test_pipe_local_info (:2356-:2369) — FilePipeLocalInformation
+#             fields on a pipe created with named quotas.
+#       -  4  test_transceive (:1450/:1456/:1457/:1458) and 4 read_pipe_test
+#             (:1197x2/:1199x2) — TRANSCEIVE again, and peek's
+#             STATUS_BUFFER_OVERFLOW.
+#       -  2  _test_file_name (:1987), 2 subtest_pipe_name (:2969,
+#             succeeded-todo), 1 test_file_info (:2447).
+#       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
+#             (IO_STATUS_BLOCK *)0xdeadbeef) must answer
+#             STATUS_ACCESS_VIOLATION; proskrnl answers 80000002
+#             (STATUS_DATATYPE_MISALIGNMENT), because KiProbeForWrite tests
+#             alignment before accessibility and 0xdeadbeef is neither. A
+#             probe-ORDER question, not a pipe one, and still the pair's
+#             smallest remaining item.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port

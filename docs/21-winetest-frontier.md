@@ -1834,21 +1834,67 @@ Three things worth carrying:
   prediction here — **a comment claiming two paths agree is the tell**, and
   only a test that needed one of the dropped bits found it.
 
-**What the pair is now: one real failure, then a NEW wedge three functions on,
-and the verdict still does not move.** `pipe.c:725` wants
+**The `:747` wedge is DONE, and `ntdll:pipe` is MEASURED for the first time:
+1 → 123 failures across 2386 tests executed** (33 todo, 0 flaky, 0 skipped),
+against the oracle's 2378/35/0. The wedge was `pipe.c:747`'s
+`while ((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0) Sleep(1);` —
+a spin waiting for a blocking `FSCTL_PIPE_LISTEN` to take the pipe HANDLE down,
+which nothing did, because W4d built the rule for `rw.c`'s transfers and the
+alertable item stopped at the EVENT half for ioctls. Landed in
+`kernel/io/{async,ioctl,rw}.c` + `kernel/ke/ke.h`, pinned by
+`tests/ntapi/sem_pipe/ioctl_signal.c`; `docs/03` "An IOCTL clears the handle at
+its PARK".
+
+**`1 → 123` is §4 trap 2's arithmetic and not a regression**, third instance in
+this document after `ntdll:virtual`'s 0 → 1199 and `kernel32:virtual`'s 4 → 96.
+The 1 was a lower bound over a prefix that ended three test functions into
+`test_cancelsynchronousio`. The pair now prints its SUMMARY LINE — which no
+revision of its block has ever had — so from here its executed count is
+comparable; it also runs in ~11 s instead of consuming the full 300 s timeout,
+which the sweep pays for on every run. The manifest block has the per-line
+histogram; the largest clusters are the `\Device\NamedPipe` device-root surface
+(35), `FSCTL_PIPE_PEEK`'s state matrix and `FileStandardInformation` on a pipe
+(32 + 6), and `FSCTL_PIPE_TRANSCEIVE`, which npfs refuses loudly (12).
+
+**The transferable half is that the obvious transcription was WRONG and the
+oracle said so before a line of kernel code existed.** rw.c's engine clears the
+handle at ISSUE and restores it if the device refuses — correct for a TRANSFER,
+because `pipe_end_read`/`pipe_end_write` queue every request they SERVE (their
+state refusals return above the queue too, but neither has an arm that answers a
+caller without queueing), so for a served transfer "issued" and "queued" are one
+instant. An IOCTL's verb is decided **above**
+`queue_async`: `pipe_server_ioctl` answers `STATUS_PIPE_CONNECTED` before it and
+`FSCTL_PIPE_PEEK` never queues at all. So an inline peek carrying an event
+leaves the handle UP on the oracle, which a clear-at-issue cannot do, and a
+refusal leaves it exactly as found whether it was up or down. The pin measured
+both before the implementation chose (`ioctl_signal.c` cases 3-5), and the
+timing is now the caller's to state (`IOP_BLOCKING_CLEAR`) with the clear itself
+made by the ENGINE at `IoWaitCancellable` — the same argument
+`IO_CONTROL_CONTEXT.pended` and `KTHREAD.syncIoParked` already make: a device
+that has to remember where the boundary is eventually forgets. **"Reuse the
+engine" and "reuse the engine's PARAMETERS" are different claims**, and only the
+second one was wrong.
+
+**And gate-check found a second defect in the branch this item created, which is
+the fourth entry in this document with that provenance.** The failure arm now
+splits on "was it queued" for the event and the handle — but both tails still
+FREED the completion routine's block on every failure, and the oracle decides
+all three inside *one* guard (`async->pending || !NT_ERROR( status )`). So a
+cancelled blocking listen, and a parked read broken by its peer, dropped a
+callback the oracle delivers — with an IOSB nobody wrote as its only argument,
+which is why the guess that it must be suppressed looks so reasonable. Stated
+once as `IopEndFailedRequestApc` and measured on both tails. The generalisable
+tell: **a pin that measured one arm of a branch reads as coverage of the
+branch** — `sem_pipe/listen_apc.c` had measured the REFUSAL and its citation sat
+at the site as though it covered the failure path. The pair is bit-for-bit the
+same across that second fix (123 failures / 2386 executed before and after), so
+nothing in `ntdll:pipe` can see it; it is pinned because it was found.
+
+The pair's smallest remaining item is unchanged: `pipe.c:725` wants
 `STATUS_ACCESS_VIOLATION` from `NtCancelSynchronousIoFile(GetCurrentThread(),
 NULL, (IO_STATUS_BLOCK *)0xdeadbeef)` and gets `STATUS_DATATYPE_MISALIGNMENT`,
 because `KiProbeForWrite` tests alignment before accessibility — a probe-ORDER
-item, not a pipe one. The wedge is `pipe.c:747`, `while
-((ret = WaitForSingleObject(ctx.pipe, 0)) == WAIT_OBJECT_0) Sleep(1);`: a spin
-waiting for a blocking LISTEN to take the pipe HANDLE down. W4d built that rule
-for `rw.c`'s transfers and this item deliberately stopped at the EVENT half for
-ioctls (reset at issue, measured from a worker mid-park), leaving the
-file-object half unbuilt — so the spin never ends. **That is the pair's next
-item**, it wants its own pin because the pended and refused arms of the service
-owe the handle an answer too, and `kernel/io/ioctl.c` names the convicting line
-at the site rather than calling the gap a scoping judgement. `1` is still a
-LOWER BOUND (§4 trap 2): the pair prints no summary line on either side.
+item, not a pipe one.
 
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
@@ -2322,9 +2368,11 @@ Pairs and framings that will consume effort and unblock nothing.
    module's tests where the oracle executes 30936, and its block read as a
    nearly-green pair with four small subjects left. Its panic is now gone
    (W5) and the count went **4 → 96** — the second pair in this document to
-   pay the trap in full, after `ntdll:virtual`'s 0 → 1199. Two for two:
-   assume a stopped pair's real count is an order of magnitude above what it
-   reports.
+   pay the trap in full, after `ntdll:virtual`'s 0 → 1199. **`ntdll:pipe` is
+   the third and it paid it as a WEDGE rather than a crash**: it stopped
+   spinning on `pipe.c:747` at 1 failed assertion and, with the spin ended
+   (W11), reports **123** across 2386 executed tests. Three for three: assume
+   a stopped pair's real count is an order of magnitude above what it reports.
 
 3. **A crash is usually a cascade, not the bug — and "zero failures before
    the crash" does not make it one.** `kernel32:volume` and
