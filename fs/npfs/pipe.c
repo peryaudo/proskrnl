@@ -1093,7 +1093,7 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, HANDLE handle, const FILE_PIP
     if (end->isServer)
     {
         PFILE_OBJECT entitled;
-        NTSTATUS access = IopReferenceFileByHandle(handle, FILE_WRITE_ATTRIBUTES, &entitled);
+        NTSTATUS access = IopReferenceFileByHandle(handle, FILE_WRITE_ATTRIBUTES, &entitled, 0);
         if (!NT_SUCCESS(access))
         {
             return access;

@@ -183,6 +183,17 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     case FileStreamInformation:
         needed = 0; /* refused below with the handle validated first */
         break;
+    case FileAccessInformation:
+        /* 0 on purpose, and it is the whole ordering rule: this class's
+         * info_sizes[] entry is 0 in the pinned Wine
+         * (dlls/ntdll/unix/file.c NtQueryInformationFile), so ntdll makes no
+         * length check at all and the check that exists runs inside the
+         * server, BELOW the handle lookup. A too-short buffer through a
+         * handle that names nothing therefore reports the HANDLE, where every
+         * table-driven class reports the length. Checked after the resolution
+         * below; pinned by sem_file/access_info.c. */
+        needed = 0;
+        break;
     default:
         /* An unbuilt class refuses loudly (Art. 12). The pinned Wine answers
          * STATUS_NOT_IMPLEMENTED here as well, which makes it unbuilt too —
@@ -212,10 +223,43 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
             ? FILE_READ_ATTRIBUTES
             : 0;
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, required, &file);
+    OBJECT_HANDLE_INFORMATION handleInformation;
+    status = IopReferenceFileByHandle(handle, required, &file, &handleInformation);
     if (!NT_SUCCESS(status))
     {
         return status;
+    }
+
+    /* FileAccessInformation is the HANDLE ENTRY's own fact — the one class
+     * here that asks Ob rather than the file object or its device. The value
+     * is `get_handle_access( current->process, handle )` (wine server/fd.c
+     * default_fd_get_file_info), i.e. the access of the handle IN THE
+     * CALLER'S HAND: NtDuplicateObject grants specific bits verbatim, so a
+     * weakened duplicate names this same FILE_OBJECT through a smaller mask
+     * and reports the smaller mask. FILE_OBJECT.grantedAccess is the OPEN's
+     * word and would answer the create's mask for every handle that ever
+     * named the file (the same distinction the FilePipeInformation SET ladder
+     * pays, docs/03).
+     *
+     * The class demands no access of its own — the oracle's handler resolves
+     * the fd with a mask of 0 — so a SYNCHRONIZE-only handle reads its own
+     * word back, which is what ntdll:pipe's test_file_access asks for. The
+     * length check is HERE rather than above, per the switch's note.
+     * Pinned by sem_file/access_info.c. */
+    if (informationClass == FileAccessInformation)
+    {
+        if (length < sizeof(FILE_ACCESS_INFORMATION))
+        {
+            ObDereferenceObject(file);
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        FILE_ACCESS_INFORMATION access;
+        access.AccessFlags = handleInformation.GrantedAccess;
+        memcpy(buffer, &access, sizeof(access)); /* caller-aligned buffer */
+        iosb->Status = STATUS_SUCCESS;
+        iosb->Information = sizeof(access);
+        ObDereferenceObject(file);
+        return STATUS_SUCCESS;
     }
 
     /* CUI-8: the mode is the FILE_OBJECT's own fact — no backend query, so
@@ -466,7 +510,12 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         IopFillStandard(&raw, file->fcb, &all.StandardInformation);
         all.InternalInformation.IndexNumber.QuadPart = (LONGLONG)raw.fileId;
         all.PositionInformation.CurrentByteOffset = file->currentByteOffset;
-        all.AccessInformation.AccessFlags = file->grantedAccess;
+        /* The same word class 8 reports, from the same place: the HANDLE
+         * entry's, not the open's (Art. 11 — one statement of "this handle's
+         * access"). The pinned Wine has nothing to say here, filling the
+         * field with a FIXME zero, so the two directions agreeing is
+         * proskrnl's own rule rather than a measured one. */
+        all.AccessInformation.AccessFlags = handleInformation.GrantedAccess;
         all.ModeInformation.Mode = IopFileMode(file);
         memcpy(buffer, &all, nameOffset);
         ULONG written = 0;
@@ -605,7 +654,7 @@ static NTSTATUS IopSetRenameInformation(HANDLE handle, const void *buffer, ULONG
     UNICODE_STRING fsPath;
     if (info->RootDirectory != 0)
     {
-        status = IopReferenceFileByHandle(info->RootDirectory, 0, &relativeTo);
+        status = IopReferenceFileByHandle(info->RootDirectory, 0, &relativeTo, 0);
         if (!NT_SUCCESS(status))
         {
             goto out;
@@ -646,7 +695,7 @@ static NTSTATUS IopSetRenameInformation(HANDLE handle, const void *buffer, ULONG
 
     /* Only now the handle (no specific access — server/fd.c
      * set_fd_name_info takes it with 0). */
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         goto out;
@@ -833,7 +882,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, requiredAccess, &file);
+    status = IopReferenceFileByHandle(handle, requiredAccess, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1683,7 +1732,7 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     }
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, FILE_LIST_DIRECTORY, &file);
+    status = IopReferenceFileByHandle(handle, FILE_LIST_DIRECTORY, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -1900,7 +1949,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     ULONG_PTR information = 0;
 
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(fileHandle, 0, &file);
+    status = IopReferenceFileByHandle(fileHandle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         /* Pinned Wine writes iosb.Status (and only Status) for a bad handle
@@ -2154,7 +2203,7 @@ NTSTATUS NtQueryEaFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer, ULONG
         }
     }
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, 0, &file);
+    status = IopReferenceFileByHandle(handle, 0, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -2222,7 +2271,7 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
      * (NtQueryVolumeInformationFile) keeps its zero-access reference,
      * because there the oracle IS built and uses 0. */
     PFILE_OBJECT file;
-    status = IopReferenceFileByHandle(handle, FILE_WRITE_DATA, &file);
+    status = IopReferenceFileByHandle(handle, FILE_WRITE_DATA, &file, 0);
     if (!NT_SUCCESS(status))
     {
         return status;
