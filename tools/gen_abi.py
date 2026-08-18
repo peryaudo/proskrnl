@@ -1202,6 +1202,8 @@ def gen_ntioapi(wine: Path) -> str:
             "FSCTL_PIPE_PEEK",
             "FSCTL_PIPE_TRANSCEIVE",
             "FSCTL_PIPE_WAIT",
+            "FSCTL_PIPE_IMPERSONATE",
+            "FSCTL_PIPE_QUERY_CLIENT_PROCESS",
         ],
     )
     # M10: completion-port surface (ntdll threadpool / CreateIoCompletionPort).
