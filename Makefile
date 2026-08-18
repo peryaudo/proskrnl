@@ -1031,6 +1031,56 @@ $(WINEVSND): $(VSND_SRCS) $(VSND_DIR)/winevsnd.h drivers/sndproto.h $(WINE_PE_DL
 winevsnd: $(WINEVSND)
 .PHONY: winevsnd
 
+# wsresolv.dll (Net-3, docs/24 Â§4f): the PE resolver behind ws2_32's
+# WS_CALL seam â the winevsnd recipe as a standalone DLL, LdrLoadDll'd by
+# name from the fork's one seam commit and dispatched through its exported
+# __wine_unix_call_funcs table. Compiled against the pinned tree's own
+# headers plus dlls/ws2_32 (the unixlib contract it implements); linked
+# above ntdll AND ws2_32 â the DNS client rides ws2_32's public UDP
+# surface, which never re-enters the resolver â and never kernel32 (the
+# winevsnd rule).
+WSRESOLV_DIR := user/wine/dlls/wsresolv
+WSRESOLV_SRCS := $(wildcard $(WSRESOLV_DIR)/*.c)
+WSRESOLV_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
+               -D__WINESRC__ -DWINE_NO_LONG_TYPES -D__USE_MINGW_ANSI_STDIO=0 \
+               -I$(WSRESOLV_DIR) -Ithird_party/wine/dlls/ws2_32 \
+               -Ithird_party/wine/include
+WSRESOLV := $(BUILD)/modules/wsresolv.dll
+$(WSRESOLV): $(WSRESOLV_SRCS) $(WSRESOLV_DIR)/wsresolv.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(WSRESOLV_CFLAGS) -shared -nostdlib -nostartfiles \
+	    -Wl,--entry=DllMainCRTStartup $(WSRESOLV_SRCS) \
+	    tests/winetest/glue/crt_sections.c \
+	    -Wl,--start-group \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
+	    $(WINE_PE)/ws2_32/x86_64-windows/libws2_32.a \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    -Wl,--end-group -lgcc -o $@
+
+wsresolv: $(WSRESOLV)
+.PHONY: wsresolv
+
+# The wsresolv unit corpus (tests/resolv/resolv_unit.c): dns.c driven
+# through its transport seam with canned/adversarial replies, the literal
+# parsers, and the registry-free packing paths — built against the REAL
+# wsresolv sources and run under the pinned wine by run.sh's resolvunit
+# leg (the winefb_unit precedent: a unit verdict on our code; the
+# ws2_32:protocol pair stays the boundary judge).
+RESOLV_UNIT := $(BUILD)/tests/resolv_unit.exe
+$(RESOLV_UNIT): tests/resolv/resolv_unit.c $(WSRESOLV_SRCS) $(WSRESOLV_DIR)/wsresolv.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(WSRESOLV_CFLAGS) -nostdlib -nostartfiles \
+	    -Wl,--entry=resolv_unit_start tests/resolv/resolv_unit.c $(WSRESOLV_SRCS) \
+	    tests/winetest/glue/crt_sections.c \
+	    -Wl,--start-group \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a \
+	    $(WINE_PE)/ws2_32/x86_64-windows/libws2_32.a \
+	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    -Wl,--end-group -lgcc -o $@
+
+resolv-unit: $(RESOLV_UNIT)
+.PHONY: resolv-unit
+
 # The audio DLL set (AUD-2): mmdevapi (WASAPI itself) and what rides it —
 # winmm above, msacm32 (winmm's format-conversion import) and oleaut32
 # (mmdevapi's import) beside. Stripped like every baked dll. ole32/combase/

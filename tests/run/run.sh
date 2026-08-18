@@ -370,7 +370,7 @@ esac
 # forgetting one is a named failure, not a quiet second oracle.
 RUNS_WINE=0
 case "$MODE" in
-    oracle|fuzz|firstboot|winefbunit|guiwtest) RUNS_WINE=1 ;;
+    oracle|fuzz|firstboot|winefbunit|resolvunit|guiwtest) RUNS_WINE=1 ;;
     winetest) [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_WINE=1 ;;
 esac
 if [[ "$(id -u)" -eq 0 && -z "${ORACLE_ALLOW_ROOT:-}" ]]; then
@@ -3792,6 +3792,24 @@ winefbunit() {
     return 0
 }
 
+# The wsresolv unit corpus (tests/resolv/resolv_unit.c, `make resolv-unit`):
+# the DNS parser under canned/adversarial replies through its transport
+# seam, the literal parsers, and the registry-free unixlib packing paths.
+# Hermetic — no prefix state and no network; the ws2_32:protocol pair is
+# the boundary judge above it.
+resolvunit() {
+    make -C "$ROOT" resolv-unit >/dev/null || { echo "== resolvunit: FAIL (build) =="; return 1; }
+    local out rc=0
+    out=$("$WINE" "$ROOT/build/tests/resolv_unit.exe" 2>/dev/null) || rc=$?
+    if [ "$rc" != 0 ] || ! grep -q "\[KTEST\] resolvunit PASS" <<<"$out"; then
+        echo "$out"
+        echo "== resolvunit: FAIL (exit=$rc) =="
+        return 1
+    fi
+    echo "== resolvunit: PASS (the DNS corpus and the packing paths) =="
+    return 0
+}
+
 # Every leg's serial logs are swept for unclaimed ring-0 faults on user
 # addresses before the leg reports (tests/run/uacheck.sh, issue #32 A3): the
 # recovery frame turns a missing probe into an ordinary-looking
@@ -3860,8 +3878,9 @@ case "$MODE" in
     wow64gui) wow64gui ;;
     gui6)     gui6 ;;
     winefbunit) winefbunit ;;
+    resolvunit) resolvunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
