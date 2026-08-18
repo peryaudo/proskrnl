@@ -21,9 +21,12 @@
  * Blocking-only, exclusive open per stream through the existing Io share
  * engine (G10/Art. 11 — no private flag). A render stream's NtWriteFile of
  * exactly period_bytes parks when the device buffer is full (drivers/
- * virtio/snd.c — THE park G14 declares); a capture stream has no Read op
- * until AUD-3 builds the rxq path, so the Io layer refuses reads with its
- * own status rather than fabricate silence (Art. 12).
+ * virtio/snd.c — THE park G14 declares); a capture stream's NtReadFile of
+ * exactly period_bytes parks until the device completes a captured period
+ * (AUD-3 — the mirror, reached through NtReadFile's existing frontier
+ * row). Cross-direction I/O — read on render, write on capture — has no
+ * op, so the Io layer refuses it with its own status rather than
+ * fabricate anything (Art. 12).
  */
 #include "drivers/snd.h"
 #include "drivers/sndproto.h"
@@ -186,6 +189,20 @@ static NTSTATUS SndWrite(PFILE_OBJECT file, const void *buffer, ULONG length, UL
     return status;
 }
 
+/* Blocking read of exactly one period into the Io layer's pool bounce;
+ * possibly short (0 included) — the device's own stop/release flush,
+ * relayed (sndproto.h). */
+static NTSTATUS SndRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PTR *infoOut,
+                        IO_CONTROL_CONTEXT *request)
+{
+    SND_STREAM *stream = SndStreamFromFile(file);
+    (void)request; /* the snd streams block rather than pend (docs/03 CUI-5) */
+    ULONG bytes = 0;
+    NTSTATUS status = VioSndReadPeriod(stream->streamId, buffer, length, &bytes);
+    *infoOut = NT_SUCCESS(status) ? bytes : 0;
+    return status;
+}
+
 /* A render stream: the control verbs plus the period write. No Read — the
  * stream carries output, and the missing op makes the Io layer refuse with
  * its own distinct status (Art. 12). */
@@ -199,15 +216,16 @@ static const IO_VFS_OPS SndRenderOps = {
     .DeviceControl = SndDeviceControl,
 };
 
-/* A capture stream: the control verbs only. No Write (wrong direction) and
- * no Read until AUD-3 builds the rxq path — both refusals are the Io
- * layer's own, never an accept-and-drop (Art. 12). */
+/* A capture stream: the control verbs plus the period read (AUD-3). No
+ * Write — wrong direction, and the missing op is the Io layer's own
+ * refusal, never an accept-and-drop (Art. 12). */
 static const IO_VFS_OPS SndCaptureOps = {
     .Create = SndCreate,
     .Cleanup = SndCleanup,
     .Close = SndClose,
     .GetInfo = SndGetInfo,
     .QueryName = SndQueryName,
+    .Read = SndRead,
     .DeviceControl = SndDeviceControl,
 };
 

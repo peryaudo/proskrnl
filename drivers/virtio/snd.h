@@ -1,9 +1,9 @@
 /* drivers/virtio/snd.h — virtio-snd: the PCM transport behind \Device\Snd*
  * (AUD-1, HACK-007; docs/23).
  *
- * controlq + txq only: the render path. eventq is left unpopulated (nothing
- * consumes jack/xrun events — no buffers are posted, no verb pretends to
- * deliver them) and rxq is AUD-3's (docs/23 §3, Art. 12). No MSI-X vector:
+ * controlq + txq (render, AUD-1) + rxq (capture, AUD-3). eventq is left
+ * unpopulated (nothing consumes jack/xrun events — no buffers are posted,
+ * no verb pretends to deliver them; docs/23 §3, Art. 12). No MSI-X vector:
  * harvest joins IoDrainDeviceCompletions and rides the tick tail's 1 ms
  * bound against a 10 ms period — docs/19 §11f is the controlling precedent
  * (poll-and-nap stays until a consumer convicts it).
@@ -40,8 +40,12 @@ const SND_PCM_INFO *VioSndStreamInfo(uint32_t streamId);
  * bounded drain-spin, then park on the request's event with the blk-shaped
  * 10 s wedge panic (QEMU serves the controlq synchronously at the notify).
  * The returned NTSTATUS is the device's own answer mapped per sndproto.h.
- * SET_PARAMS additionally (re)sizes the stream's period slots and PREPARE
- * zeroes the position counter. */
+ * SET_PARAMS additionally (re)sizes the stream's period slots; PREPARE
+ * zeroes the position counter and, on a capture stream, discards unread
+ * captured periods and posts the whole slot set as rx chains; RELEASE on a
+ * capture stream stops the repost flow first, so the device's flush
+ * (§5.14.6.6.5.1) unparks any reader with what was captured — possibly
+ * nothing — and nothing reposts into the released stream. */
 NTSTATUS VioSndSetParams(uint32_t streamId, const SND_PCM_SET_PARAMS *params);
 NTSTATUS VioSndPrepare(uint32_t streamId);
 NTSTATUS VioSndStart(uint32_t streamId);
@@ -64,24 +68,42 @@ BOOLEAN VioSndStreamParams(uint32_t streamId, uint32_t *periodBytesOut);
  * (docs/20 R4 is satisfied by ownership, not by awaiting). */
 NTSTATUS VioSndWritePeriod(uint32_t streamId, const void *buffer, ULONG length);
 
-/* Total payload bytes completed (consumed by the device) since the last
- * successful PREPARE, counted at tx harvest. */
+/* Blocking read of EXACTLY one period (docs/23 §4a: capture is the
+ * mirror): pops the oldest completed rx chain, copies the captured payload
+ * into the pool bounce, and reposts the slot while the stream stays
+ * prepared. *bytesOut may be SHORT — 0 included: the device's own
+ * stop/release flush, relayed rather than padded (Art. 12). When nothing
+ * has completed the caller PARKS on the stream's space event until the
+ * drain harvests a captured period — reached from NtReadFile, an existing
+ * blocking-frontier row (G14). After RELEASE, reads still deliver the
+ * completions the device's flush returned; once those drain (or before
+ * SET_PARAMS / PREPARE ever ran) reads refuse STATUS_INVALID_DEVICE_STATE:
+ * nothing is in flight and nothing will complete, so refusing beats a
+ * forever park. */
+NTSTATUS VioSndReadPeriod(uint32_t streamId, void *buffer, ULONG length, ULONG *bytesOut);
+
+/* Total payload bytes completed (consumed by the device on render,
+ * captured by it on capture) since the last successful PREPARE, counted at
+ * tx/rx harvest. */
 uint64_t VioSndPosition(uint32_t streamId);
 
-/* Harvest every published controlq/txq completion: status stores, position
- * accounting, event sets — nothing else (docs/20 R2). THE snd harvest arm
- * of the one drain authority (Art. 11); call with the dispatcher lock held,
- * preferably through IoDrainDeviceCompletions. */
+/* Harvest every published controlq/txq/rxq completion: status stores,
+ * position accounting, completed-period queueing, event sets — nothing
+ * else (docs/20 R2). THE snd harvest arm of the one drain authority
+ * (Art. 11); call with the dispatcher lock held, preferably through
+ * IoDrainDeviceCompletions. */
 void VioSndDrain(void);
 
-/* Requests in flight (control + tx periods, submitted, not yet harvested). */
+/* Requests in flight (control + tx/rx periods, submitted, not yet
+ * harvested). */
 ULONG VioSndInFlightCount(void);
 ULONG VioSndTxInFlightCount(uint32_t streamId);
+ULONG VioSndRxInFlightCount(uint32_t streamId);
 
 /* Test instrumentation, the VioBlkSetCompletionHold knob class (docs/19
- * §8.1): while held, VioSndDrain defers the TX harvest so a parked writer
- * provably stays parked; controlq harvest and the driver's own
- * forward-progress paths bypass it. Releasing harvests inline. Nothing
+ * §8.1): while held, VioSndDrain defers the TX and RX harvests so a parked
+ * writer/reader provably stays parked; controlq harvest and the driver's
+ * own forward-progress paths bypass it. Releasing harvests inline. Nothing
  * outside tests may touch either. */
 void VioSndSetCompletionHold(BOOLEAN hold);
 void VioSndPumpCompletions(void);
