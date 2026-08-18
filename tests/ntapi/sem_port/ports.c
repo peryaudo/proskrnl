@@ -45,6 +45,13 @@ NTSYSAPI DWORD NTAPI RtlQueueWorkItem(WORKERCALLBACKFUNC, PVOID, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtOpenIoCompletion(PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *);
 NTSYSAPI NTSTATUS NTAPI NtSetIoCompletionEx(HANDLE, HANDLE, ULONG_PTR, ULONG_PTR, NTSTATUS, SIZE_T);
 
+/* docs/21 W10: the reserve object NtSetIoCompletionEx's second argument
+ * actually names. wine/include/winternl.h MEMORY_RESERVE_OBJECT_TYPE,
+ * spelled as constants so this compiles against either header set. */
+NTSYSAPI NTSTATUS NTAPI NtAllocateReserveObject(PHANDLE, const OBJECT_ATTRIBUTES *, ULONG);
+#define RSV_USER_APC      0
+#define RSV_IO_COMPLETION 1
+
 static void init_name(UNICODE_STRING *name, OBJECT_ATTRIBUTES *attr, const void *wide)
 {
     const unsigned short *p = (const unsigned short *)wide;
@@ -167,16 +174,58 @@ START_TEST(ports)
                (unsigned long)status);
         }
 
-        /* NtSetIoCompletionEx: a NULL reserve handle refuses up front, and a
-         * bogus one must at least be a real handle (the pinned Wine's server
-         * resolves it — server/completion.c add_completion). A wrong-TYPE
-         * reserve is deliberately unpinned: reserve objects are permanently
-         * out of scope on proskrnl (docs/16 — NtAllocateReserveObject has no
-         * consumer), so proskrnl validates existence, not type. */
+        /* NtSetIoCompletionEx: a NULL reserve handle refuses up front
+         * (dlls/ntdll/unix/sync.c, before the request is even built) and a
+         * bogus one must be a real handle. The reserve is an
+         * IoCompletionReserve specifically — server/completion.c
+         * add_completion resolves it through get_completion_reserve_obj,
+         * whose ops argument makes any other object a type mismatch (docs/21
+         * W10 built the reserve objects; sem_ps/apc_reserve.c owns the APC
+         * half). */
         status = NtSetIoCompletionEx(opened, NULL, 1, 2, STATUS_SUCCESS, 3);
         ok(status == STATUS_INVALID_HANDLE, "set-ex NULL reserve -> %08lx", (unsigned long)status);
         status = NtSetIoCompletionEx(opened, (HANDLE)(ULONG_PTR)0xdead0, 1, 2, STATUS_SUCCESS, 3);
         ok(status == STATUS_INVALID_HANDLE, "set-ex bogus reserve -> %08lx", (unsigned long)status);
+
+        /* The PORT is resolved before the reserve, so a bad port beats a bad
+         * reserve (add_completion's get_completion_obj comes first). */
+        status = NtSetIoCompletionEx((HANDLE)(ULONG_PTR)0xdead0, (HANDLE)(ULONG_PTR)0xdead0, 1, 2,
+                                     STATUS_SUCCESS, 3);
+        ok(status == STATUS_INVALID_HANDLE, "set-ex both bogus -> %08lx", (unsigned long)status);
+
+        {
+            HANDLE reserve = NULL;
+            status = NtAllocateReserveObject(&reserve, NULL, RSV_USER_APC);
+            ok(status == STATUS_SUCCESS, "alloc user-apc reserve -> %08lx", (unsigned long)status);
+            status = NtSetIoCompletionEx(opened, reserve, 1, 2, STATUS_SUCCESS, 3);
+            ok(status == STATUS_OBJECT_TYPE_MISMATCH, "set-ex user-apc reserve -> %08lx",
+               (unsigned long)status);
+            NtClose(reserve);
+
+            /* ...and the right kind posts a packet like the plain set does. */
+            reserve = NULL;
+            status = NtAllocateReserveObject(&reserve, NULL, RSV_IO_COMPLETION);
+            ok(status == STATUS_SUCCESS, "alloc io-completion reserve -> %08lx",
+               (unsigned long)status);
+            status = NtSetIoCompletionEx(opened, reserve, 0x61, 0x62, STATUS_SUCCESS, 0x63);
+            ok(status == STATUS_SUCCESS, "set-ex with reserve -> %08lx", (unsigned long)status);
+            key = value = 0;
+            timeout.QuadPart = 0;
+            status = NtRemoveIoCompletion(named, &key, &value, &iosb, &timeout);
+            ok(status == STATUS_SUCCESS && key == 0x61 && value == 0x62 && iosb.Information == 0x63,
+               "reserve packet -> %08lx %lx/%lx/%lx", (unsigned long)status, (unsigned long)key,
+               (unsigned long)value, (unsigned long)iosb.Information);
+
+            /* A completion reserve is NOT consumed the way an APC reserve is:
+             * add_completion never binds it, so the same handle posts again. */
+            status = NtSetIoCompletionEx(opened, reserve, 0x64, 0x65, STATUS_SUCCESS, 0x66);
+            ok(status == STATUS_SUCCESS, "set-ex reserve reused -> %08lx", (unsigned long)status);
+            key = value = 0;
+            status = NtRemoveIoCompletion(named, &key, &value, &iosb, &timeout);
+            ok(status == STATUS_SUCCESS && key == 0x64, "reused reserve packet -> %08lx %lx",
+               (unsigned long)status, (unsigned long)key);
+            NtClose(reserve);
+        }
 
         NtClose(named);
         NtClose(opened);
