@@ -335,10 +335,52 @@ static void test_poll_exclusive_displacement(void)
     NtClose(s);
 }
 
+/* The peer's send-shutdown with data still QUEUED does not raise HUP —
+ * READ stands alone until the ring drains, and HUP arrives with the
+ * drain (the ws2_32:afd test_poll shape around its check_poll_todo:
+ * the pinned Wine reports READ|WRITE|CONNECT there, never HUP, and the
+ * todo_wine rows make that the spec — Art. 6). */
+static void test_halfclose_hup_after_drain(void)
+{
+    IO_STATUS_BLOCK iosb;
+    HANDLE client = NULL, server = NULL, event;
+    char buffer[8];
+    ULONG got = 0;
+    NTSTATUS status;
+
+    event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!tcp_pair(&client, &server))
+        return;
+
+    status = afd_send_wait(server, "data", 4, NULL);
+    ok(status == STATUS_SUCCESS, "send -> %08lx", (unsigned long)status);
+    CHECK_POLL(client, event, AFD_POLL_READ, AFD_POLL_READ);
+
+    {
+        int how = 1; /* SD_SEND */
+        status = NtDeviceIoControlFile(server, NULL, NULL, NULL, &iosb, IOCTL_AFD_WINE_SHUTDOWN,
+                                       &how, sizeof(how), NULL, 0);
+        ok(status == STATUS_SUCCESS, "shutdown -> %08lx", (unsigned long)status);
+    }
+
+    /* The FIN is behind the data: no HUP while the ring holds bytes. */
+    CHECK_POLL(client, event, ~0, AFD_POLL_WRITE | AFD_POLL_CONNECT | AFD_POLL_READ);
+
+    status = afd_recv_wait(client, buffer, sizeof(buffer), &got);
+    ok(status == STATUS_SUCCESS && got == 4, "drain -> %08lx/%lu", (unsigned long)status,
+       (unsigned long)got);
+    CHECK_POLL(client, event, ~0, AFD_POLL_WRITE | AFD_POLL_CONNECT | AFD_POLL_HUP);
+
+    NtClose(client);
+    NtClose(server);
+    CloseHandle(event);
+}
+
 START_TEST(afd_poll)
 {
     test_poll_validation();
     test_poll_snapshot_and_levels();
+    test_halfclose_hup_after_drain();
     test_poll_timeout_expiry();
     test_poll_exclusive_displacement();
 }

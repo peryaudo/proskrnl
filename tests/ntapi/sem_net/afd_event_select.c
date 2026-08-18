@@ -160,9 +160,58 @@ static void test_event_as_input_pointer_resets(void)
     CloseHandle(event);
 }
 
+/* Consuming SOME of the ring re-raises the READ edge (ws2_32's FD_READ
+ * re-enable: the ws2_32:afd test_read_write row — one byte read out of
+ * four leaves FD_READ reported again); draining it does not. */
+static void test_read_relatch(void)
+{
+    struct afd_get_events_params events;
+    IO_STATUS_BLOCK iosb;
+    HANDLE client = NULL, server = NULL, event;
+    char buffer[8];
+    ULONG got = 0;
+    NTSTATUS status;
+
+    event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!tcp_pair(&client, &server))
+        return;
+
+    status = event_select(client, event, AFD_POLL_READ, &iosb);
+    ok(status == STATUS_SUCCESS, "select -> %08lx", (unsigned long)status);
+
+    ResetEvent(event);
+    status = afd_send_wait(server, "data", 4, NULL);
+    ok(status == STATUS_SUCCESS, "send -> %08lx", (unsigned long)status);
+    ok(wait_done(event), "the event never fired");
+    status = get_events(client, NULL, &events);
+    ok(status == STATUS_SUCCESS, "get-events -> %08lx", (unsigned long)status);
+    ok((events.flags & AFD_POLL_READ) != 0, "read flags %#x", events.flags);
+
+    /* One byte out of four: READ re-latches. */
+    status = afd_recv_wait(client, buffer, 1, &got);
+    ok(status == STATUS_SUCCESS && got == 1, "partial recv -> %08lx/%lu", (unsigned long)status,
+       (unsigned long)got);
+    status = get_events(client, NULL, &events);
+    ok(status == STATUS_SUCCESS, "re-latch get-events -> %08lx", (unsigned long)status);
+    ok((events.flags & AFD_POLL_READ) != 0, "re-latched flags %#x", events.flags);
+
+    /* The rest: drained, no READ. */
+    status = afd_recv_wait(client, buffer, sizeof(buffer), &got);
+    ok(status == STATUS_SUCCESS && got == 3, "drain recv -> %08lx/%lu", (unsigned long)status,
+       (unsigned long)got);
+    status = get_events(client, NULL, &events);
+    ok(status == STATUS_SUCCESS, "drained get-events -> %08lx", (unsigned long)status);
+    ok((events.flags & AFD_POLL_READ) == 0, "drained flags %#x", events.flags);
+
+    NtClose(client);
+    NtClose(server);
+    CloseHandle(event);
+}
+
 START_TEST(afd_event_select)
 {
     test_event_select_validation();
     test_events_latch();
+    test_read_relatch();
     test_event_as_input_pointer_resets();
 }
