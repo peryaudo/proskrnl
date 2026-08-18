@@ -369,6 +369,11 @@ static void test_halfclose_hup_after_drain(void)
     status = afd_recv_wait(client, buffer, sizeof(buffer), &got);
     ok(status == STATUS_SUCCESS && got == 4, "drain -> %08lx/%lu", (unsigned long)status,
        (unsigned long)got);
+    /* PARK for the HUP edge first: the FIN may still be in flight behind
+     * the drained data on either runner, and a ~0-mask poll would answer
+     * the standing WRITE|CONNECT level before it lands (measured — the
+     * full-leg race this masked wait removes). */
+    CHECK_POLL(client, event, AFD_POLL_HUP, AFD_POLL_HUP);
     CHECK_POLL(client, event, ~0, AFD_POLL_WRITE | AFD_POLL_CONNECT | AFD_POLL_HUP);
 
     NtClose(client);
