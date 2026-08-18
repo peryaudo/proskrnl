@@ -275,13 +275,17 @@ remaining image variations want their own look.
 ## HACK-007: `\Device\Snd*` (the PCM stream devices)
 
 ```
-Status:     active (AUD-1: virtio-snd controlq + txq, render path only;
-            eventq unpopulated, rxq unconfigured until AUD-3; one node per
-            PCM stream the device reports, direction the stream's own
-            PCM_INFO claim; blocking writes of exactly period_bytes, parked
-            on the CUI-8 engine when the device buffer is full; exclusive
-            open per stream through the Io share engine; no MSI-X — harvest
-            joins IoDrainDeviceCompletions off the tick tail)
+Status:     active (AUD-1: virtio-snd controlq + txq, the render path;
+            AUD-3: rxq, the capture path — PREPARE posts the whole buffer
+            as rx chains, blocking reads of exactly period_bytes park until
+            a captured period completes, RELEASE's flush unparks the reader
+            with what was captured; eventq stays unpopulated — nothing
+            consumes jack/xrun events; one node per PCM stream the device
+            reports, direction the stream's own PCM_INFO claim; blocking
+            writes of exactly period_bytes, parked on the CUI-8 engine when
+            the device buffer is full; exclusive open per stream through
+            the Io share engine; no MSI-X — harvest joins
+            IoDrainDeviceCompletions off the tick tail)
 Introduced: AUD-1
 Not in NT:  NT reaches audio entirely through user-mode WASAPI (mmdevapi)
             over audiodg — a mixing service process — and the
@@ -313,10 +317,13 @@ boundary (the keyboard-layout argument from HACK-002, applied to PCM). Which
 node renders and which captures is the device's own claim per stream, never
 PCI enumeration order. The write path is blocking-only and the pacing clock
 emerges from tx completion — no timer invented; the new park is declared in
-`tools/blocking_frontier.txt`'s machinery (G14). Unbuilt verbs and the
-unbuilt capture path refuse loudly (Art. 12): the missing `Read` op makes the
-Io layer refuse rather than fabricate silence, and unknown ioctls name
-themselves on serial with `STATUS_NOT_IMPLEMENTED`.
+`tools/blocking_frontier.txt`'s machinery (G14). The capture path (AUD-3) is
+the mirror: `POSITION` counts bytes captured at rx harvest, the reader's
+pacing clock emerges from rx completion, a flushed period is relayed as the
+short (possibly empty) success it is — never padded to fabricated silence —
+and cross-direction I/O has no op, so the Io layer refuses it. Unbuilt verbs
+still refuse loudly (Art. 12): unknown ioctls name themselves on serial with
+`STATUS_NOT_IMPLEMENTED`.
 
 ## HACK-008: audiodg-lite (the user-mode audio mixer process) — RESERVED, UNBUILT
 

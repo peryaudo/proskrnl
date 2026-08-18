@@ -1,5 +1,5 @@
-/* tests/kmt/snd.c — the \Device\Snd* device-contract smoke (AUD-1,
- * HACK-007; docs/23 §6e).
+/* tests/kmt/snd.c — the \Device\Snd* device-contract smoke (AUD-1 render,
+ * AUD-3 capture; HACK-007; docs/23 §6e).
  *
  * The device contract (drivers/sndproto.h) is NT-absent, so no differential
  * oracle exists for it — like Fb0, its verdicts are kmt tests (control-verb
@@ -168,7 +168,7 @@ static void test_snd_refusals(void)
     status = snd_write(handle, period, sizeof(period));
     ok(status == STATUS_INVALID_DEVICE_STATE, "write before SET_PARAMS -> %#x", (unsigned)status);
 
-    /* No Read op on a render stream (rxq is AUD-3): the Io layer's own
+    /* No Read op on a render stream (wrong direction): the Io layer's own
      * refusal, never a fabricated zero-length success (Art. 12). */
     IO_STATUS_BLOCK iosb;
     status = NtReadFile(handle, 0, 0, 0, &iosb, period, sizeof(period), 0, 0);
@@ -364,6 +364,190 @@ static void test_snd_park_parks(void)
     NtClose(handle);
 }
 
+/* --- capture (AUD-3) --------------------------------------------------------
+ *
+ * Every case below stays inside the both-backend-deterministic envelope:
+ * before START the device holds every posted rx buffer (the voice is armed
+ * only at START), and RELEASE flushes them all back — true under the wav
+ * backend (which has NO input side: pinned tree audio/wavaudio.c has no
+ * in-voice, so rx buffers ONLY return at the RELEASE flush) and under the
+ * none backend alike. No case here waits for a STARTED capture period to
+ * fill — on a wav boot that would hang forever; the started-capture verdict
+ * is the run.sh audio capture leg's, on a none-backend boot (docs/23 §6a,
+ * §7 as corrected by AUD-3). */
+
+/* The capture stream, by the DEVICE's own direction claim — never "Snd1"
+ * (the HACK-002 rule). */
+static int snd_find_capture(uint32_t *idOut)
+{
+    for (uint32_t id = 0; id < VioSndStreamCount() && id < VIO_SND_MAX_STREAMS; id++)
+    {
+        if (VioSndStreamInfo(id)->direction == SND_D_INPUT)
+        {
+            *idOut = id;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const WCHAR *snd_device_path(uint32_t id)
+{
+    static const WCHAR paths[VIO_SND_MAX_STREAMS][14] = {
+        WSTR("\\Device\\Snd0"),
+        WSTR("\\Device\\Snd1"),
+        WSTR("\\Device\\Snd2"),
+        WSTR("\\Device\\Snd3"),
+    };
+    return paths[id];
+}
+
+static NTSTATUS snd_read(HANDLE handle, void *buffer, ULONG length, ULONG *bytesOut)
+{
+    IO_STATUS_BLOCK iosb;
+    iosb.Information = 0;
+    NTSTATUS status = NtReadFile(handle, 0, 0, 0, &iosb, buffer, length, 0, 0);
+    if (bytesOut != 0)
+    {
+        *bytesOut = (ULONG)iosb.Information;
+    }
+    return status;
+}
+
+static void test_snd_capture_refusals(void)
+{
+    uint32_t id;
+    if (!snd_find_capture(&id))
+    {
+        return; /* the device claims no capture stream; nothing to assert */
+    }
+
+    HANDLE handle = 0;
+    NTSTATUS status =
+        snd_open(snd_device_path(id), FILE_GENERIC_READ | FILE_GENERIC_WRITE, 0, &handle);
+    ok(status == STATUS_SUCCESS, "open capture %#x", (unsigned)status);
+    if (status != STATUS_SUCCESS)
+        return;
+
+    static char period[SND_TEST_PERIOD_BYTES];
+
+    /* A read before any SET_PARAMS has no period to size against. */
+    status = snd_read(handle, period, sizeof(period), 0);
+    ok(status == STATUS_INVALID_DEVICE_STATE, "read before SET_PARAMS -> %#x", (unsigned)status);
+
+    ok(snd_set_default_params(handle) == STATUS_SUCCESS, "SET_PARAMS");
+
+    /* Whole-period-or-refused, the write rule mirrored. */
+    status = snd_read(handle, period, SND_TEST_PERIOD_BYTES / 2, 0);
+    ok(status == STATUS_INVALID_PARAMETER, "half-period read -> %#x", (unsigned)status);
+
+    /* Sized but not prepared: nothing is posted, nothing will complete. */
+    status = snd_read(handle, period, sizeof(period), 0);
+    ok(status == STATUS_INVALID_DEVICE_STATE, "read before PREPARE -> %#x", (unsigned)status);
+
+    NtClose(handle);
+}
+
+/* --- the reader's park parks, and RELEASE's flush unparks it ---------------- */
+
+static volatile NTSTATUS snd_capture_status;
+static volatile ULONG snd_capture_bytes;
+static HANDLE snd_capture_handle;
+
+static void snd_capture_reader(void *context)
+{
+    (void)context;
+    static char period[SND_TEST_PERIOD_BYTES];
+    ULONG bytes = 0;
+    NTSTATUS status = snd_read(snd_capture_handle, period, sizeof(period), &bytes);
+    snd_capture_bytes = bytes;
+    snd_capture_status = status;
+}
+
+static void test_snd_capture_park_and_flush(void)
+{
+    uint32_t id;
+    if (!snd_find_capture(&id))
+    {
+        return;
+    }
+
+    HANDLE handle = 0;
+    NTSTATUS status =
+        snd_open(snd_device_path(id), FILE_GENERIC_READ | FILE_GENERIC_WRITE, 0, &handle);
+    ok(status == STATUS_SUCCESS, "open capture %#x", (unsigned)status);
+    if (status != STATUS_SUCCESS)
+        return;
+
+    ok(snd_set_default_params(handle) == STATUS_SUCCESS, "SET_PARAMS");
+    ok(snd_ioctl(handle, IOCTL_PRSSND_PREPARE, 0, 0, 0, 0) == STATUS_SUCCESS, "PREPARE");
+
+    /* PREPARE posted the whole buffer as rx chains. */
+    ok(VioSndRxInFlightCount(id) == SND_TEST_PERIODS, "rx posted (%lu in flight)",
+       (unsigned long)VioSndRxInFlightCount(id));
+
+    /* Deliberately NOT started: the device holds every rx buffer until
+     * START arms the voice (both backends), so "nothing has completed and
+     * the reader is parked" is a controlled state, not a race against
+     * host timers — the render park test's discipline mirrored. */
+    snd_capture_status = STATUS_PENDING;
+    snd_capture_bytes = 0xffffffff;
+    snd_capture_handle = handle;
+    PKTHREAD reader = KiCreateThread(8, snd_capture_reader, 0);
+    ok(reader != 0, "reader thread");
+    if (reader == 0)
+    {
+        NtClose(handle);
+        return;
+    }
+
+    /* 50 ms of naps is observation time, not a latency assertion. */
+    for (int naps = 0; naps < 50; naps++)
+    {
+        LARGE_INTEGER interval;
+        interval.QuadPart = -10000; /* 1 ms */
+        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    }
+    ok(snd_capture_status == STATUS_PENDING, "reader parked while nothing completes (%#x)",
+       (unsigned)snd_capture_status);
+    ok(VioSndRxInFlightCount(id) == SND_TEST_PERIODS, "still all in flight while parked");
+
+    /* RELEASE flushes every posted period back (§5.14.6.6.5.1); the
+     * tick-tail drain harvests, the space wake un-parks the reader, and
+     * the completion is honest: SUCCESS with the 0 bytes the device
+     * captured — never fabricated silence. */
+    ok(snd_ioctl(handle, IOCTL_PRSSND_RELEASE, 0, 0, 0, 0) == STATUS_SUCCESS, "RELEASE");
+    NTSTATUS join = KeWaitForSingleObject(reader, Executive, 0, FALSE, 0);
+    ok(join == STATUS_SUCCESS, "join %#x", (unsigned)join);
+    KiDeleteThread(reader);
+    ok(snd_capture_status == STATUS_SUCCESS, "parked read completed %#x",
+       (unsigned)snd_capture_status);
+    ok(snd_capture_bytes == 0, "flushed period is empty (%lu bytes)",
+       (unsigned long)snd_capture_bytes);
+
+    /* Position: nothing was captured, and the flush adds nothing. */
+    ok(snd_position(handle) == 0, "position after flush (%llu)",
+       (unsigned long long)snd_position(handle));
+
+    /* The remaining flushed completions still deliver (the device's final
+     * answers), then the released stream refuses — never a forever park
+     * (sndproto.h). */
+    static char period[SND_TEST_PERIOD_BYTES];
+    for (unsigned drain = 0; drain < SND_TEST_PERIODS - 1; drain++)
+    {
+        ULONG bytes = 0xffffffff;
+        status = snd_read(handle, period, sizeof(period), &bytes);
+        ok(status == STATUS_SUCCESS && bytes == 0, "flush drain %u -> %#x, %lu bytes", drain,
+           (unsigned)status, (unsigned long)bytes);
+    }
+    status = snd_read(handle, period, sizeof(period), 0);
+    ok(status == STATUS_INVALID_DEVICE_STATE, "read after flush drained -> %#x", (unsigned)status);
+    ok(VioSndRxInFlightCount(id) == 0, "nothing in flight after RELEASE (%lu)",
+       (unsigned long)VioSndRxInFlightCount(id));
+
+    NtClose(handle);
+}
+
 int kmt_run_snd(void)
 {
     if (!VioSndIsPresent())
@@ -377,6 +561,8 @@ int kmt_run_snd(void)
     KMT_RUN(test_snd_verb_roundtrip);
     KMT_RUN(test_snd_period_completes);
     KMT_RUN(test_snd_park_parks);
+    KMT_RUN(test_snd_capture_refusals);
+    KMT_RUN(test_snd_capture_park_and_flush);
     int failures = kmt_failures - before;
     DbgPrint(failures == 0 ? "[KTEST] SND PASS\n" : "[KTEST] SND FAIL failures=%d\n", failures);
     return failures;

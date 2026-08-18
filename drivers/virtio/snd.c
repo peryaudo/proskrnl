@@ -10,10 +10,13 @@
  * consumes controlq + txq: control verbs are synchronous round trips (QEMU
  * serves the controlq at the notify), and each written period rides one txq
  * chain out of a per-stream slot set — up to buffer_bytes / period_bytes in
- * flight, writer parked on the slot set running dry (docs/23 §4a). eventq
- * is left unpopulated and rxq unconfigured: nothing consumes jack/xrun
- * events and capture is AUD-3's, said out loud rather than left as a silent
- * gap (Art. 12; the input.c statusq precedent).
+ * flight, writer parked on the slot set running dry (docs/23 §4a). AUD-3
+ * consumes rxq as the mirror: PREPARE on a capture stream posts the whole
+ * slot set as rx chains, each completed (captured) period lands on a
+ * per-stream FIFO at harvest, and the reader parks on the same space event
+ * when nothing has completed yet. eventq is left unpopulated: nothing
+ * consumes jack/xrun events, said out loud rather than left as a silent gap
+ * (Art. 12; the input.c statusq precedent).
  *
  * No MSI-X vector, deliberately (docs/19 §11f; docs/23 §4a): harvest joins
  * IoDrainDeviceCompletions, whose tick-tail call gives a 1 ms guest-clocked
@@ -39,6 +42,7 @@
  * cross-check virtio_snd.h VIRTIO_SND_VQ_*). */
 #define VIO_SND_VQ_CONTROL 0
 #define VIO_SND_VQ_TX      2
+#define VIO_SND_VQ_RX      3
 
 /* Device configuration (§5.14.4 struct virtio_snd_config): le32 jacks at 0,
  * streams at 4, chmaps at 8. */
@@ -115,19 +119,22 @@ _Static_assert(sizeof(VIO_SND_PCM_STATUS) == 8,
 
 /* --- driver state ----------------------------------------------------------- */
 
-/* Per-period tx slot: the §5.14.6.8 device-readable xfer header and the
- * device-writable status footer live in a shared frame (32 bytes per slot,
- * the VIO_BLK_CONTROL_SLOT pattern); the payload owns a whole DMA frame,
- * which is why sndproto.h bounds period_bytes at PAGE_SIZE. */
-typedef struct VIO_SND_TX_SLOT
+/* Per-period slot, one per possible in-flight period, either direction:
+ * the §5.14.6.8 device-readable xfer header and the device-writable status
+ * footer live in a shared frame (32 bytes per slot, the VIO_BLK_CONTROL_SLOT
+ * pattern); the payload owns a whole DMA frame, which is why sndproto.h
+ * bounds period_bytes at PAGE_SIZE. A render stream's slots ride txq
+ * (payload device-readable), a capture stream's ride rxq (payload
+ * device-written); a stream is one direction, never both. */
+typedef struct VIO_SND_SLOT
 {
     struct VIO_SND_STREAM *stream;
-    uint64_t dataPhysical; /* one frame; 0 on a capture stream (no tx) */
+    uint64_t dataPhysical; /* one frame: the period payload, either direction */
     char *data;
-    uint32_t payloadBytes; /* this flight's period size */
+    uint32_t payloadBytes; /* tx: this flight's period size; rx: the harvested payload */
     BOOLEAN inFlight;
     uint8_t index; /* slot index within the stream, for the header frame */
-} VIO_SND_TX_SLOT;
+} VIO_SND_SLOT;
 
 typedef struct VIO_SND_STREAM
 {
@@ -137,23 +144,38 @@ typedef struct VIO_SND_STREAM
     uint32_t bufferBytes;
     uint32_t periodBytes;
     uint32_t slotCount; /* bufferBytes / periodBytes, capped at SND_MAX_PERIODS */
-    VIO_SND_TX_SLOT slots[SND_MAX_PERIODS];
+    VIO_SND_SLOT slots[SND_MAX_PERIODS];
     ULONG txInFlight;
-    uint64_t bytesCompleted; /* payload bytes the device consumed since PREPARE */
+    uint64_t bytesCompleted; /* payload bytes the device consumed/captured since PREPARE */
     uint64_t txErrors;
-    KEVENT space; /* set by the tx harvest; the writer's park (docs/23 §4a) */
+    KEVENT space; /* set by the tx/rx harvest; the writer's/reader's park (docs/23 §4a) */
+    /* Capture (SND_D_INPUT) only. rxPrepared gates the whole rx flow:
+     * PREPARE posts the slot set and raises it, RELEASE lowers it BEFORE
+     * the verb reaches the device so the flush completions never repost
+     * into a released stream. Completed periods queue on a FIFO in
+     * delivery order — capture order is the contract, so never a slot
+     * scan like the tx free-slot search (order is meaningless for tx). */
+    BOOLEAN rxPrepared;
+    ULONG rxInFlight;
+    VIO_SND_SLOT *rxDone[SND_MAX_PERIODS];
+    uint32_t rxDoneHead;
+    uint32_t rxDoneCount;
+    uint64_t rxErrors;
 } VIO_SND_STREAM;
 
 static BOOLEAN VioSndPresent;
 static VIO_PCI_DEVICE VioSndDevice;
 static VIO_VIRTQUEUE VioSndControlQueue;
 static VIO_VIRTQUEUE VioSndTxQueue;
+static VIO_VIRTQUEUE VioSndRxQueue;
 static uint32_t VioSndStreams;
 static VIO_SND_STREAM VioSndStreamTable[VIO_SND_MAX_STREAMS];
 
-/* head descriptor index -> in-flight tx slot (the §2.7.8 used id is the
- * chain head). Sized for the largest ring VioInitializeVirtqueue allows. */
-static VIO_SND_TX_SLOT *VioSndTxSlotByHead[256];
+/* head descriptor index -> in-flight slot (the §2.7.8 used id is the chain
+ * head), one map per data queue — head indexes are per-ring namespaces.
+ * Sized for the largest ring VioInitializeVirtqueue allows. */
+static VIO_SND_SLOT *VioSndTxSlotByHead[256];
+static VIO_SND_SLOT *VioSndRxSlotByHead[256];
 
 /* One shared frame of 32-byte header/footer regions: per stream, per slot —
  * xfer header at +0, status footer at +8 within each region. */
@@ -161,9 +183,9 @@ static VIO_SND_TX_SLOT *VioSndTxSlotByHead[256];
 #define VIO_SND_HDRSLOT_XFER_OFF   0
 #define VIO_SND_HDRSLOT_STATUS_OFF 8
 _Static_assert(VIO_SND_MAX_STREAMS *SND_MAX_PERIODS *VIO_SND_HDRSLOT_BYTES <= 4096,
-               "tx header/footer regions fit their one DMA frame");
-static uint64_t VioSndTxHdrPhysical;
-static char *VioSndTxHdr;
+               "xfer header/footer regions fit their one DMA frame");
+static uint64_t VioSndXferHdrPhysical;
+static char *VioSndXferHdr;
 
 /* The control round-trip state: one request in flight at a time, owned
  * through a real park-based gate rather than an ownership assert — unlike
@@ -216,7 +238,7 @@ static void VioSndHarvestTxLocked(void)
     uint32_t length;
     while (VioHarvestUsed(&VioSndTxQueue, &head, &length))
     {
-        VIO_SND_TX_SLOT *slot = VioSndTxSlotByHead[head];
+        VIO_SND_SLOT *slot = VioSndTxSlotByHead[head];
         ASSERT(slot != 0); /* every chain out has exactly one owner */
         ASSERT(slot->inFlight);
         VioSndTxSlotByHead[head] = 0;
@@ -225,7 +247,7 @@ static void VioSndHarvestTxLocked(void)
         ASSERT(stream->txInFlight != 0);
         stream->txInFlight--;
         const volatile VIO_SND_PCM_STATUS *status =
-            (const volatile VIO_SND_PCM_STATUS *)(VioSndTxHdr +
+            (const volatile VIO_SND_PCM_STATUS *)(VioSndXferHdr +
                                                   ((uint64_t)stream->id * SND_MAX_PERIODS +
                                                    slot->index) *
                                                       VIO_SND_HDRSLOT_BYTES +
@@ -246,12 +268,60 @@ static void VioSndHarvestTxLocked(void)
     }
 }
 
+static void VioSndHarvestRxLocked(void)
+{
+    uint16_t head;
+    uint32_t length;
+    while (VioHarvestUsed(&VioSndRxQueue, &head, &length))
+    {
+        VIO_SND_SLOT *slot = VioSndRxSlotByHead[head];
+        ASSERT(slot != 0);
+        ASSERT(slot->inFlight);
+        VioSndRxSlotByHead[head] = 0;
+        slot->inFlight = FALSE;
+        VIO_SND_STREAM *stream = slot->stream;
+        ASSERT(stream->rxInFlight != 0);
+        stream->rxInFlight--;
+        /* The used length is the device's own account: payload + the
+         * 8-byte status footer. The footer itself is NOT read here — the
+         * pinned model writes it immediately AFTER the payload rather than
+         * into the chain's last descriptor (hw/audio/virtio-snd.c
+         * return_rx_buffer: iov_from_buf at offset buffer->size), so on a
+         * short completion it lands mid-data-frame, possibly straddling
+         * segments — and it is always VIRTIO_SND_S_OK there anyway. A
+         * short or empty period is the device's stop/release flush fact,
+         * relayed as-is; only a used length no chain of ours can produce
+         * is an error, counted and said (Art. 12). */
+        uint32_t payload = 0;
+        if (length >= sizeof(VIO_SND_PCM_STATUS) &&
+            length - sizeof(VIO_SND_PCM_STATUS) <= stream->periodBytes)
+        {
+            payload = length - (uint32_t)sizeof(VIO_SND_PCM_STATUS);
+        }
+        else
+        {
+            stream->rxErrors++;
+            DbgPrint("virtio-snd: stream %lu rx used length %lu malformed\n",
+                     (unsigned long)stream->id, (unsigned long)length);
+        }
+        slot->payloadBytes = payload;
+        stream->bytesCompleted += payload;
+        /* Delivery order is capture order (§2.7.8 used-ring order; the
+         * model returns per-stream buffers FIFO): queue, never scan. */
+        ASSERT(stream->rxDoneCount < SND_MAX_PERIODS);
+        stream->rxDone[(stream->rxDoneHead + stream->rxDoneCount) % SND_MAX_PERIODS] = slot;
+        stream->rxDoneCount++;
+        KeSetEvent(&stream->space, 0, FALSE);
+    }
+}
+
 void VioSndDrain(void)
 {
     VioSndHarvestControlLocked();
     if (!VioSndCompletionHold)
     {
         VioSndHarvestTxLocked();
+        VioSndHarvestRxLocked();
     }
 }
 
@@ -262,9 +332,10 @@ void VioSndSetCompletionHold(BOOLEAN hold)
     if (!hold)
     {
         /* Harvest is pull-based, so nothing was lost while held — but the
-         * release itself must harvest or the parked writers stay parked
-         * (the VioBlkSetCompletionHold rationale). */
+         * release itself must harvest or the parked writers/readers stay
+         * parked (the VioBlkSetCompletionHold rationale). */
         VioSndHarvestTxLocked();
+        VioSndHarvestRxLocked();
     }
     KiReleaseDispatcherLock(flags);
 }
@@ -274,6 +345,7 @@ void VioSndPumpCompletions(void)
     uint64_t flags = KiAcquireDispatcherLock();
     VioSndHarvestControlLocked();
     VioSndHarvestTxLocked();
+    VioSndHarvestRxLocked();
     KiReleaseDispatcherLock(flags);
 }
 
@@ -282,7 +354,7 @@ ULONG VioSndInFlightCount(void)
     ULONG total = VioSndControlInFlight;
     for (uint32_t id = 0; id < VioSndStreams; id++)
     {
-        total += VioSndStreamTable[id].txInFlight;
+        total += VioSndStreamTable[id].txInFlight + VioSndStreamTable[id].rxInFlight;
     }
     return total;
 }
@@ -291,6 +363,12 @@ ULONG VioSndTxInFlightCount(uint32_t streamId)
 {
     ASSERT(streamId < VioSndStreams);
     return VioSndStreamTable[streamId].txInFlight;
+}
+
+ULONG VioSndRxInFlightCount(uint32_t streamId)
+{
+    ASSERT(streamId < VioSndStreams);
+    return VioSndStreamTable[streamId].rxInFlight;
 }
 
 /* --- the control round trip ------------------------------------------------- */
@@ -414,14 +492,72 @@ static NTSTATUS VioSndSimpleVerb(uint32_t code, uint32_t streamId)
     return VioSndStatusToNt(reply.code);
 }
 
+/* Post one rx chain for a capture slot: device-readable xfer header, then
+ * the device-writable data frame and status footer (§5.14.6.8 framing,
+ * §2.7.4.2 ordering; the tx chain with the payload's direction flipped).
+ * Dispatcher lock held. A refusal (ring out of descriptors) leaves the slot
+ * free and is said on serial: capture then simply runs with fewer periods
+ * in flight — the tx path's ring-exhaustion posture, not a wedge. */
+static BOOLEAN VioSndPostRxLocked(VIO_SND_STREAM *stream, VIO_SND_SLOT *slot)
+{
+    ASSERT(!slot->inFlight);
+    ASSERT(stream->rxPrepared);
+    uint64_t regionPhysical =
+        VioSndXferHdrPhysical +
+        ((uint64_t)stream->id * SND_MAX_PERIODS + slot->index) * VIO_SND_HDRSLOT_BYTES;
+    VIO_SND_PCM_XFER *xfer =
+        (VIO_SND_PCM_XFER *)(VioSndXferHdr +
+                             ((uint64_t)stream->id * SND_MAX_PERIODS + slot->index) *
+                                 VIO_SND_HDRSLOT_BYTES +
+                             VIO_SND_HDRSLOT_XFER_OFF);
+    xfer->streamId = stream->id;
+    VIO_SEGMENT segments[3] = {
+        {regionPhysical + VIO_SND_HDRSLOT_XFER_OFF, sizeof(VIO_SND_PCM_XFER), 0},
+        {slot->dataPhysical, stream->periodBytes, 1},
+        {regionPhysical + VIO_SND_HDRSLOT_STATUS_OFF, sizeof(VIO_SND_PCM_STATUS), 1},
+    };
+    uint16_t head;
+    if (!VioSubmitChain(&VioSndRxQueue, segments, 3, &head))
+    {
+        DbgPrint("virtio-snd: stream %lu rx post refused (ring full)\n", (unsigned long)stream->id);
+        return FALSE;
+    }
+    slot->inFlight = TRUE;
+    slot->payloadBytes = 0;
+    ASSERT(VioSndRxSlotByHead[head] == 0);
+    VioSndRxSlotByHead[head] = slot;
+    stream->rxInFlight++;
+    return TRUE;
+}
+
 NTSTATUS VioSndPrepare(uint32_t streamId)
 {
     NTSTATUS status = VioSndSimpleVerb(VIO_SND_R_PCM_PREPARE, streamId);
     if (NT_SUCCESS(status))
     {
-        /* The position counter restarts with the stream (sndproto.h). */
+        VIO_SND_STREAM *stream = &VioSndStreamTable[streamId];
         uint64_t flags = KiAcquireDispatcherLock();
-        VioSndStreamTable[streamId].bytesCompleted = 0;
+        /* The position counter restarts with the stream (sndproto.h). */
+        stream->bytesCompleted = 0;
+        if (stream->info.direction == SND_D_INPUT)
+        {
+            /* Unread captured periods from a prior cycle are discarded —
+             * PREPARE restarts the stream (sndproto.h) — and the whole
+             * slot set goes back out as rx chains: the device fills them
+             * from START on, and the completed set is the reader's flow.
+             * Slots still in flight (a prior cycle's, pre-RELEASE) are
+             * not double-posted. */
+            stream->rxDoneHead = 0;
+            stream->rxDoneCount = 0;
+            stream->rxPrepared = TRUE;
+            for (uint32_t index = 0; index < stream->slotCount; index++)
+            {
+                if (!stream->slots[index].inFlight)
+                {
+                    VioSndPostRxLocked(stream, &stream->slots[index]);
+                }
+            }
+        }
         KiReleaseDispatcherLock(flags);
     }
     return status;
@@ -439,6 +575,19 @@ NTSTATUS VioSndStop(uint32_t streamId)
 
 NTSTATUS VioSndRelease(uint32_t streamId)
 {
+    ASSERT(streamId < VioSndStreams);
+    VIO_SND_STREAM *stream = &VioSndStreamTable[streamId];
+    if (stream->info.direction == SND_D_INPUT)
+    {
+        /* Lowered BEFORE the device sees the verb: RELEASE makes the
+         * device flush every posted rx chain back (§5.14.6.6.5.1; the
+         * pinned model's virtio_snd_pcm_flush), and those completions
+         * unpark the reader with what was captured — possibly nothing —
+         * but must never be reposted into a released stream. */
+        uint64_t flags = KiAcquireDispatcherLock();
+        stream->rxPrepared = FALSE;
+        KiReleaseDispatcherLock(flags);
+    }
     return VioSndSimpleVerb(VIO_SND_R_PCM_RELEASE, streamId);
 }
 
@@ -530,7 +679,7 @@ NTSTATUS VioSndWritePeriod(uint32_t streamId, const void *buffer, ULONG length)
          * full scan below sets the event and the park falls straight
          * through — no lost wakeup. */
         KeClearEvent(&stream->space);
-        VIO_SND_TX_SLOT *slot = 0;
+        VIO_SND_SLOT *slot = 0;
         for (uint32_t index = 0; index < stream->slotCount; index++)
         {
             if (!stream->slots[index].inFlight)
@@ -547,10 +696,10 @@ NTSTATUS VioSndWritePeriod(uint32_t streamId, const void *buffer, ULONG length)
             memcpy(slot->data, buffer, length);
             slot->payloadBytes = length;
             uint64_t regionPhysical =
-                VioSndTxHdrPhysical +
+                VioSndXferHdrPhysical +
                 ((uint64_t)stream->id * SND_MAX_PERIODS + slot->index) * VIO_SND_HDRSLOT_BYTES;
             VIO_SND_PCM_XFER *xfer =
-                (VIO_SND_PCM_XFER *)(VioSndTxHdr +
+                (VIO_SND_PCM_XFER *)(VioSndXferHdr +
                                      ((uint64_t)stream->id * SND_MAX_PERIODS + slot->index) *
                                          VIO_SND_HDRSLOT_BYTES +
                                      VIO_SND_HDRSLOT_XFER_OFF);
@@ -584,6 +733,80 @@ NTSTATUS VioSndWritePeriod(uint32_t streamId, const void *buffer, ULONG length)
          * NT full-pipe shape. A refused park (terminating thread, CUI-4)
          * returns as-is: the in-flight periods live in driver-owned
          * frames, so the dying caller owes the device nothing (R4). */
+        NTSTATUS wait = KeWaitForSingleObject(&stream->space, Executive, KernelMode, FALSE, 0);
+        if (wait != STATUS_SUCCESS)
+        {
+            return wait;
+        }
+    }
+}
+
+NTSTATUS VioSndReadPeriod(uint32_t streamId, void *buffer, ULONG length, ULONG *bytesOut)
+{
+    ASSERT(VioSndPresent);
+    ASSERT(streamId < VioSndStreams);
+    VIO_SND_STREAM *stream = &VioSndStreamTable[streamId];
+    ASSERT(stream->info.direction == SND_D_INPUT); /* drivers/snd.c only wires Read there */
+
+    if (!stream->paramsValid)
+    {
+        return STATUS_INVALID_DEVICE_STATE; /* sndproto.h: no period to size against */
+    }
+    if (length != stream->periodBytes)
+    {
+        /* Exactly one period per call (sndproto.h) — the write rule
+         * mirrored, for the same reason: a silent partial read would
+         * drift the capture clock. */
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    for (;;)
+    {
+        uint64_t flags = KiAcquireDispatcherLock();
+        /* Clear-then-check under the lock, the write park's shape: a
+         * completion landing after the FIFO check sets the event and the
+         * park falls straight through — no lost wakeup. */
+        KeClearEvent(&stream->space);
+        if (stream->rxDoneCount != 0)
+        {
+            VIO_SND_SLOT *slot = stream->rxDone[stream->rxDoneHead];
+            stream->rxDoneHead = (stream->rxDoneHead + 1) % SND_MAX_PERIODS;
+            stream->rxDoneCount--;
+            uint32_t payload = slot->payloadBytes;
+            memcpy(buffer, slot->data, payload);
+            if (stream->rxPrepared)
+            {
+                /* The consumed slot goes straight back out — the reader's
+                 * pace is the repost pace, no timer invented. Skipped once
+                 * RELEASE lowered the gate (the flush already returned
+                 * this slot for the last time). */
+                VioSndPostRxLocked(stream, slot);
+            }
+            KiReleaseDispatcherLock(flags);
+            /* payload < periodBytes (0 included) is the device's own
+             * stop/release flush, relayed as a short success — never
+             * padded to a full period here (Art. 12: no fabricated
+             * silence in the kernel). */
+            *bytesOut = payload;
+            return STATUS_SUCCESS;
+        }
+        if (!stream->rxPrepared)
+        {
+            KiReleaseDispatcherLock(flags);
+            /* Released (or never prepared): nothing is in flight and
+             * nothing will ever complete — refusing beats a forever
+             * park (sndproto.h). */
+            return STATUS_INVALID_DEVICE_STATE;
+        }
+        KiReleaseDispatcherLock(flags);
+
+        /* The reader's park (docs/23 §4a: capture is the mirror): the
+         * pacing clock is the device completing a captured period. No
+         * timeout — a stopped stream legitimately holds its reader
+         * indefinitely, and RELEASE unparks it through the flush. A
+         * refused park (terminating thread, CUI-4) returns as-is: the
+         * posted chains live in driver-owned frames, so the dying caller
+         * owes the device nothing (docs/20 R4). */
         NTSTATUS wait = KeWaitForSingleObject(&stream->space, Executive, KernelMode, FALSE, 0);
         if (wait != STATUS_SUCCESS)
         {
@@ -646,30 +869,30 @@ BOOLEAN VioSndInitialize(void)
         streams = VIO_SND_MAX_STREAMS;
     }
 
-    /* §5.14.2 defines four virtqueues. We configure controlq and txq only:
+    /* §5.14.2 defines four virtqueues. We configure controlq, txq and rxq:
      * a driver uses the queues it configures. eventq gets no buffers —
-     * nothing consumes jack/xrun events — and rxq is AUD-3's capture path.
-     * Said out loud rather than left as a silent gap (Art. 12; the
-     * input.c statusq precedent). */
+     * nothing consumes jack/xrun events — said out loud rather than left
+     * as a silent gap (Art. 12; the input.c statusq precedent). */
     if (!VioPciSetupQueue(&VioSndDevice, &VioSndControlQueue, VIO_SND_VQ_CONTROL) ||
-        !VioPciSetupQueue(&VioSndDevice, &VioSndTxQueue, VIO_SND_VQ_TX))
+        !VioPciSetupQueue(&VioSndDevice, &VioSndTxQueue, VIO_SND_VQ_TX) ||
+        !VioPciSetupQueue(&VioSndDevice, &VioSndRxQueue, VIO_SND_VQ_RX))
     {
         return FALSE;
     }
-    DbgPrint("virtio-snd: eventq/rxq unconfigured -- no event/capture path (AUD-1 scope)\n");
+    DbgPrint("virtio-snd: eventq unconfigured -- nothing consumes jack/xrun events\n");
 
     /* DMA buffers before going live. */
     VioSndControlPhysical = MiAllocatePage();
-    VioSndTxHdrPhysical = MiAllocatePage();
-    if (VioSndControlPhysical == 0 || VioSndTxHdrPhysical == 0)
+    VioSndXferHdrPhysical = MiAllocatePage();
+    if (VioSndControlPhysical == 0 || VioSndXferHdrPhysical == 0)
     {
         VioPciSetFailed(&VioSndDevice);
         return FALSE;
     }
     VioSndControl = MiPhysicalToVirtual(VioSndControlPhysical);
-    VioSndTxHdr = MiPhysicalToVirtual(VioSndTxHdrPhysical);
+    VioSndXferHdr = MiPhysicalToVirtual(VioSndXferHdrPhysical);
     memset(VioSndControl, 0, PAGE_SIZE);
-    memset(VioSndTxHdr, 0, PAGE_SIZE);
+    memset(VioSndXferHdr, 0, PAGE_SIZE);
 
     KeInitializeEvent(&VioSndControlGate, SynchronizationEvent, TRUE);
     KeInitializeEvent(&VioSndControlDone, NotificationEvent, FALSE);
@@ -718,22 +941,21 @@ BOOLEAN VioSndInitialize(void)
             stream->slots[index].stream = stream;
             stream->slots[index].index = (uint8_t)index;
         }
-        if (stream->info.direction == SND_D_OUTPUT)
+        /* One frame per period slot, up front, either direction: the
+         * write path may not allocate (it runs under the dispatcher lock
+         * at submit), and neither may the rx repost (it runs under the
+         * lock at read-completion). */
+        for (uint32_t index = 0; index < SND_MAX_PERIODS; index++)
         {
-            /* One frame per period slot, up front: the write path may not
-             * allocate (it runs under the dispatcher lock at submit). */
-            for (uint32_t index = 0; index < SND_MAX_PERIODS; index++)
+            uint64_t physical = MiAllocatePage();
+            if (physical == 0)
             {
-                uint64_t physical = MiAllocatePage();
-                if (physical == 0)
-                {
-                    VioSndStreams = 0;
-                    VioPciSetFailed(&VioSndDevice);
-                    return FALSE;
-                }
-                stream->slots[index].dataPhysical = physical;
-                stream->slots[index].data = MiPhysicalToVirtual(physical);
+                VioSndStreams = 0;
+                VioPciSetFailed(&VioSndDevice);
+                return FALSE;
             }
+            stream->slots[index].dataPhysical = physical;
+            stream->slots[index].data = MiPhysicalToVirtual(physical);
         }
         DbgPrint("virtio-snd: stream %lu %s, ch %u-%u\n", (unsigned long)id,
                  stream->info.direction == SND_D_OUTPUT ? "output" : "input",
@@ -741,9 +963,9 @@ BOOLEAN VioSndInitialize(void)
     }
 
     VioSndPresent = TRUE;
-    DbgPrint("virtio-snd: %02x:%x id %04x, %lu streams, ctrl queue %u, tx queue %u\n",
+    DbgPrint("virtio-snd: %02x:%x id %04x, %lu streams, ctrl queue %u, tx queue %u, rx queue %u\n",
              VioSndDevice.function.device, VioSndDevice.function.function,
              VioSndDevice.function.deviceId, (unsigned long)streams, VioSndControlQueue.queueSize,
-             VioSndTxQueue.queueSize);
+             VioSndTxQueue.queueSize, VioSndRxQueue.queueSize);
     return TRUE;
 }

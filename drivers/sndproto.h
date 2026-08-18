@@ -52,10 +52,27 @@
  * S_IO_ERR -> STATUS_IO_DEVICE_ERROR. Unbuilt verbs refuse loudly with
  * STATUS_NOT_IMPLEMENTED and name themselves on serial (Art. 12).
  *
- * AUD-1 scope: render only (controlq + txq). A capture (direction INPUT)
- * stream's node answers INFO and the control verbs, but has no Read op
- * until AUD-3 builds the rxq path — the missing op makes the Io layer
- * refuse with its own status rather than fabricate silence (Art. 12).
+ * Contract, per capture (direction INPUT) stream — the mirror (AUD-3):
+ * the same verbs, and NtReadFile of exactly period_bytes in place of the
+ * write. PREPARE posts the whole buffer (buffer_bytes / period_bytes
+ * periods) to the device and discards any unread captured periods from a
+ * prior cycle; from START on the device fills a period at its own cadence
+ * and the read BLOCKS until one completes — the capture clock emerges
+ * from rx completion, no timer invented (docs/23 §4a). A completed read
+ * may be SHORT, 0 bytes included: that is the device's own stop/release
+ * flush of a partly-filled (or empty) period, relayed as a short success
+ * — the kernel never pads it to a full period (Art. 12: no fabricated
+ * silence). RELEASE makes the device flush every outstanding period back;
+ * reads still deliver those flushed completions (they are the device's
+ * final answers), and once they are drained — or before a successful
+ * SET_PARAMS + PREPARE ever ran — a read is STATUS_INVALID_DEVICE_STATE:
+ * nothing is in flight and nothing will complete, so refusing beats a
+ * forever park. A read whose
+ * length is not exactly period_bytes is STATUS_INVALID_PARAMETER, the
+ * write rule mirrored. POSITION reports bytes CAPTURED by the device.
+ * Cross-direction I/O (read on a render stream, write on a capture
+ * stream) has no op at all; the Io layer refuses it with its own
+ * STATUS_INVALID_DEVICE_REQUEST.
  *
  * Transport capacity, stated rather than discovered: the kernel driver
  * carries one period per DMA frame and at most SND_MAX_PERIODS periods in
