@@ -1886,6 +1886,7 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
 gui5con-img: $(IMG_GUI5CON)
 .PHONY: gui5con-img
 
+
 # ---------------------------------------------------------------------------
 # GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The payload is
 # the gui2 stack plus $(SHELLFILES) above (explorer + atl100 + the
@@ -2097,12 +2098,16 @@ $(WTESTS)/winmm_test.exe: $(WT_WINMM_OBJS) third_party/wine/dlls/winmm/tests/rsr
 	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    -Wl,--end-group -lgcc -o $@
 
-$(WTESTS)/ws2_32_test.exe: $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c \
-        tests/winetest/glue/iphlpapi_stubs.c $(WT_GLUE)
+# Net-3: iphlpapi is REAL now — the binary links the pinned import lib
+# (the DLL and its nsi/dnsapi deps ride every image since the resolver
+# furniture landed), so the adapter-table rows exercise \Device\Nsi
+# through the whole client instead of dying in a glue stub. user32 keeps
+# its stand-ins (Art. 7: GUI off the CUI image).
+$(WTESTS)/ws2_32_test.exe: $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c $(WT_GLUE)
 	@mkdir -p $(dir $@)
-	$(WT_LINK) $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c \
-	    tests/winetest/glue/iphlpapi_stubs.c $(WT_GLUE) \
+	$(WT_LINK) $(WT_WS2_32_OBJS) tests/winetest/glue/user32_stubs.c $(WT_GLUE) \
 	    -Wl,--start-group $(WT_CRT_MSVCRT) $(WINE_PE)/ws2_32/x86_64-windows/libws2_32.a \
+	    $(WINE_PE)/iphlpapi/x86_64-windows/libiphlpapi.a \
 	    $(WT_LIBS) -Wl,--end-group -lgcc -o $@
 
 wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_test.exe \

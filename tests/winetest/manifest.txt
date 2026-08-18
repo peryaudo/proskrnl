@@ -1773,39 +1773,50 @@ winmm_test.exe:wave:600
 #     cannot convict the kernel (Art. 6).
 # winmm_test.exe:mci
 
-# --- ws2_32 (third_party/wine/dlls/ws2_32/tests) — Net-2 -------------------
-# The binary carries glue stand-ins for user32 (Art. 7: GUI off the CUI
-# image) and iphlpapi (the NSI surface is Net-3's): subtests leaning on a
-# message pump or adapter tables fail IDENTICALLY on both runners.
+# --- ws2_32 (third_party/wine/dlls/ws2_32/tests) — Net-2/Net-3 -------------
+# The binary carries glue stand-ins for user32 only (Art. 7: GUI off the
+# CUI image); iphlpapi is REAL since Net-3 — the DLL and its nsi/dnsapi
+# deps ride every image, so the adapter-table rows exercise \Device\Nsi
+# through the whole client. Message-pump rows still fail IDENTICALLY on
+# both runners.
 #
-# ALL THREE PAIRS ARE PARKED ON ONE CAUSE — the resolver. ws2_32's
-# gethostbyname/getaddrinfo ride its five-entry unixlib, which on proskrnl
-# is dormant until Net-3's WS_CALL fork seam + wsresolv.dll land (docs/24
-# §6d) — today the call lands on a null unix-call pointer and the process
-# dies rip=0.
-#
-# 1. RED AND FIXABLE — afd: measured 2026-08-17 on proskrnl GREEN through
-#    afd.c:2212 with 0 failures (every boundary row Net-2 built:
-#    open/bind/poll incl. exclusive+close shapes, recv incl. the loopback
-#    OOB sidechannel, event-select/get-events, read/write; the todo_wine
-#    rows all behave), then CRASHES at test_bind's gethostbyname("")
-#    (afd.c:2229) — the Net-3 seam above, nothing in \Device\Afd.
-#    Oracle-side: green modulo host IPv6 (the v6 test_bind block needs a
-#    ::1 the measuring container lacked; CI hosts carry it).
-#    # TODO: Implement (Net-3: the resolver seam un-parks this pair)
-# ws2_32_test.exe:afd:600
-# 1. RED AND FIXABLE — sock: crashes at startup in the suite's own Init()
-#    resolver call, before ANY row runs (same Net-3 seam; measured
-#    2026-08-17, exit c0000005 rip=0). Behind the crash the known
-#    families each have an owner: WSAAsyncSelect/message-pump rows
-#    (user32 glue — GUI-era), urgent-data rows beyond the loopback
-#    sidechannel (docs/03 "Net-2 urgent data"), AF_INET6 data-path rows
-#    (docs/03 "Net-2 staged AF_INET6"), adapter-table rows (iphlpapi
-#    glue — Net-3), and the sockopt tail beyond the Net-2 set.
-#    # TODO: Implement (Net-3 first; re-measure and re-triage after)
+# afd — ACTIVE (Net-3). The resolver seam (WS_CALL + wsresolv.dll)
+# un-wedged the pair past its old gethostbyname("") crash, and the newly
+# reached rows' parity round (thread-exit port exemption, accept
+# synchronicity inheritance, ignored socket offsets, consume-edge
+# READ-relatch/deferred-HUP — docs/03 "Net-3 notes", each pinned in
+# sem_net first) took it to 0 failures on proskrnl (measured 2026-08-18:
+# 1334 tests, 31 todo, 0 failures). Oracle-side: green modulo host IPv6
+# (the v6 test_bind block needs a ::1 the measuring container lacked; CI
+# hosts carry it).
+ws2_32_test.exe:afd:600
+# 1. RED — sock (measured 2026-08-18, post-resolver): the startup crash
+#    is gone; the suite runs. The residual families each have an owner:
+#    WSAAsyncSelect/message-pump rows (user32 glue — the GUI winetest
+#    shelf), AF_INET6 data-path rows (docs/03 "Net-2 staged AF_INET6"),
+#    urgent-data rows beyond the loopback sidechannel (docs/03 "Net-2
+#    urgent data"), GetAdaptersAddresses' DNS legs (dnsapi's unixlib is
+#    dormant — a possible future seam, deliberately not taken at Net-3),
+#    and the sockopt tail beyond the Net-2 set (kernel half measured:
+#    the suite runs deep — 1542 failing rows across those families —
+#    then WEDGES past sock.c:5150's deferred-connect block into the
+#    pair's 900 s timeout). The ORACLE half itself is
+#    red on the measuring container (422 of 2.67M rows — the v6 and
+#    user32 families), so the pair cannot convict the kernel here
+#    (Art. 6); it unparks family by family as their owners land.
+#    # TODO: Implement (family by family; user32 rows need the GUI shelf)
 # ws2_32_test.exe:sock:900
-# 2. NOT REACHABLE UNDER THE SCOPE (Net-2): protocol.c IS the resolver
-#    suite — getaddrinfo/gethostbyname/WSALookupService over the seam
-#    Net-3 builds (docs/24 §6d says protocol enters at Net-3). No TODO
-#    here; the Net-3 milestone carries it.
-# ws2_32_test.exe:protocol
+# 2. RED — protocol (measured 2026-08-18, its first real measurement —
+#    "triaged" is Net-3's done-when word): the resolver surface itself is
+#    green on both runners (getaddrinfo/gethostby*/getservby*/
+#    getproto*/WSALookupService refusals, the GetAdaptersInfo/
+#    GetIpForwardTable rows over real iphlpapi). Two blockers park it:
+#    (a) the WSAAsyncGetXByY block needs a WINDOW and SPINS FOREVER under
+#    the user32 stand-ins — on BOTH runners (oracle measured 25+ min at
+#    100% CPU at protocol.c:563) — so the pair cannot even time out
+#    cleanly until the GUI winetest shelf carries it; (b) the IDN /
+#    GetAddrInfoExW rows resolve REAL public domains — the live internet
+#    is in the verdict path, non-hermetic by construction (guest DNS
+#    rides slirp to whatever resolver the runner has).
+#    # TODO: Implement (the GUI winetest shelf; an offline-DNS answerer)
+# ws2_32_test.exe:protocol:600
