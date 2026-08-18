@@ -1044,13 +1044,13 @@ $(WINEVSND): $(VSND_SRCS) $(VSND_DIR)/winevsnd.h drivers/sndproto.h $(WINE_PE_DL
 winevsnd: $(WINEVSND)
 .PHONY: winevsnd
 
-# wsresolv.dll (Net-3, docs/24 Â§4f): the PE resolver behind ws2_32's
-# WS_CALL seam â the winevsnd recipe as a standalone DLL, LdrLoadDll'd by
+# wsresolv.dll (Net-3, docs/24 §4f): the PE resolver behind ws2_32's
+# WS_CALL seam — the winevsnd recipe as a standalone DLL, LdrLoadDll'd by
 # name from the fork's one seam commit and dispatched through its exported
 # __wine_unix_call_funcs table. Compiled against the pinned tree's own
 # headers plus dlls/ws2_32 (the unixlib contract it implements); linked
-# above ntdll AND ws2_32 â the DNS client rides ws2_32's public UDP
-# surface, which never re-enters the resolver â and never kernel32 (the
+# above ntdll AND ws2_32 — the DNS client rides ws2_32's public UDP
+# surface, which never re-enters the resolver — and never kernel32 (the
 # winevsnd rule).
 WSRESOLV_DIR := user/wine/dlls/wsresolv
 WSRESOLV_SRCS := $(wildcard $(WSRESOLV_DIR)/*.c)
@@ -1888,14 +1888,14 @@ gui5con-img: $(IMG_GUI5CON)
 
 # ---------------------------------------------------------------------------
 # Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
-# virtio-net"; docs/24 Â§6f): the acceptance image. The CUI machine + the
+# virtio-net"; docs/24 §6f): the acceptance image. The CUI machine + the
 # GUI-2 DLL shelf (curl.exe imports user32) + the UNMODIFIED tool
 # (third_party/curlwin, tools/setup_linux.sh's pinned purchase) + the
 # api-set forwarder DLLs its UCRT imports name (generated from the
-# binary's OWN import table â tools/gen_apiset_forwarders.py; with no
+# binary's OWN import table — tools/gen_apiset_forwarders.py; with no
 # ApiSetMap the pinned loader falls back to these literal names). The
 # per-run job (curl config, test CA, the net3.test hosts row) is mcopy'd
-# in by the run.sh net3 leg â nothing per-run is baked here, and
+# in by the run.sh net3 leg — nothing per-run is baked here, and
 # C:\net3\job.txt is the smss probe, so this leg can never fire on
 # another image.
 NET3_CURL := third_party/curlwin/bin/curl.exe

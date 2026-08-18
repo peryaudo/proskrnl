@@ -324,9 +324,9 @@ else
         dlls/ws2_32/tests/all
 fi
 
-# --- Net-3: the acceptance tool (docs/24 Â§6f) ------------------------------
+# --- Net-3: the acceptance tool (docs/24 §6f) ------------------------------
 # An UNMODIFIED off-the-shelf bundled-TLS tool: the pinned curl-for-win
-# build (LibreSSL statically linked â the docs/02 scope note: bundled TLS,
+# build (LibreSSL statically linked — the docs/02 scope note: bundled TLS,
 # never schannel). Pinned by URL + sha256 the way every third_party
 # admission is pinned by a SHA; a hash mismatch is a hard stop, never a
 # silently different tool. The run.sh net3 leg REFUSES loudly when the
@@ -342,11 +342,10 @@ else
     echo "$NET3_CURL_SHA256  third_party/curlwin/curlwin.zip" | sha256sum -c - \
         || { echo "setup_linux: curl-for-win sha256 MISMATCH — refusing"; exit 1; }
     unzip -o -q third_party/curlwin/curlwin.zip -d third_party/curlwin
-    cp third_party/curlwin/curl-*/bin/curl.exe third_party/curlwin/bin_curl.exe 2>/dev/null || true
     mkdir -p third_party/curlwin/bin
     cp third_party/curlwin/curl-*/bin/curl.exe third_party/curlwin/bin/curl.exe
     cp third_party/curlwin/curl-*/COPYING.txt third_party/curlwin/COPYING.txt
-    rm -f third_party/curlwin/curlwin.zip third_party/curlwin/bin_curl.exe
+    rm -f third_party/curlwin/curlwin.zip
     echo "   installed third_party/curlwin/bin/curl.exe"
 fi
 
