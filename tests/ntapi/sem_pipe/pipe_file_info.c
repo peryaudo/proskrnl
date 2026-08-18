@@ -411,10 +411,9 @@ static void test_orphaned_end(void)
 
 /* §4 — a CLIENT whose server merely CLOSED (no disconnect) is not orphaned:
  * its pipe object is still there, so it still reports the pipe's capacity.
- * proskrnl drops the instance's pipe when the server's handle closes, where
- * the oracle's client holds its own reference until destroy — a separate,
- * older gap (docs/03 "A pipe end's own file information"), tagged rather
- * than dropped so it reports itself the day it is fixed. */
+ * The lifetime that makes that true — and the NAME the same close takes away
+ * — is sem_pipe/pipe_lifetime.c; the case is here because AllocationSize is
+ * this file's field. */
 static void test_closing_client(void)
 {
     IO_STATUS_BLOCK iosb;
@@ -441,11 +440,8 @@ static void test_closing_client(void)
     status = query_standard(client, &std, &iosb);
     ok(status == STATUS_SUCCESS, "standard info on a closing client -> %08lx",
        (unsigned long)status);
-    todo_proskrnl
-    {
-        ok(std.AllocationSize.QuadPart == (LONGLONG)(IN_QUOTA + OUT_QUOTA),
-           "closing-client AllocationSize %llu", (unsigned long long)std.AllocationSize.QuadPart);
-    }
+    ok(std.AllocationSize.QuadPart == (LONGLONG)(IN_QUOTA + OUT_QUOTA),
+       "closing-client AllocationSize %llu", (unsigned long long)std.AllocationSize.QuadPart);
     NtClose(client);
 }
 
