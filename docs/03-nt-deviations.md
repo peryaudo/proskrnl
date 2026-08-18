@@ -5492,3 +5492,27 @@ before the fix:
   is empty — real NT raises it immediately (`todo_wine` again; pinned
   `afd_event_select.c`, `afd_poll.c`; one consume-edge authority,
   `AfdConsumeEdges`).
+
+### The acceptance's TLS scope: bundled TLS, never schannel
+
+The Net-3 acceptance (docs/02; `tests/run/run.sh net3`) uses an app with
+BUNDLED TLS — the pinned curl-for-win build, LibreSSL statically linked
+(`tools/setup_linux.sh`, sha256-pinned). Windows-native schannel stays out of
+scope: its protocol engine is GnuTLS behind secur32's unixlib seam, which is
+null-dispatched on proskrnl (the boot's own
+`err:secur32:SECUR32_initSchannelSP no schannel support` line is that fact,
+loud). Raw bcrypt works as-is — the pinned tree vendors SymCrypt PE-side
+(`libs/symcrypt`), and `bcrypt.dll` rides the net3 image for LibreSSL's
+`BCryptGenRandom` entropy. The certificate chain the acceptance validates is
+the tool's own (`--cacert` against the harness's fresh CA, `notBefore` = the
+run's wall clock), which is what finally convicts a fake SystemTime — a
+frozen base date rejects every newer certificate (docs/22; CUI-1's RTC is
+the prerequisite that armed it).
+
+Two loader consequences ride the same image, recorded here because they are
+NT-shaped answers rather than hacks: the api-set forwarder DLLs
+(`tools/gen_apiset_forwarders.py` — with no `PEB.ApiSetMap` the pinned
+loader falls back to literal `api-ms-*` file names, and the generated
+forwarders make those names real, every export forwarding to ucrtbase), and
+the tool's measured import closure (normaliz, wldap32, bcrypt, ncrypt,
+crypt32 — crypt32 loading unixlib-less via the fork's existing commit).

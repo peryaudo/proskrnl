@@ -598,6 +598,35 @@ why CUI-1's RTC is a hard prerequisite.
 content-hash and exit-code verdicts — with `ws2_32:protocol` triaged and the
 `docs/03` records (schannel scope, TCP urgent data, staged AF_INET6) landed.
 
+*(Outcome: complete. The acceptance is real: UNMODIFIED curl.exe (the pinned
+curl-for-win build, LibreSSL statically linked — `tools/setup_linux.sh`'s
+sha256-pinned purchase) boots on `run.sh net3`'s image, resolves the harness's
+name through wsresolv's hosts path, and completes a TLS-1.3 HTTPS fetch over
+virtio-net through slirp against a fresh-CA server — exit-code and
+content-hash verdicts both green, the `notBefore`-vs-SystemTime conviction
+armed and passing. The seam landed exactly as docs/24 §4f drew it: ONE fork
+commit (the `WS_CALL` leg, level-1 dormant, hack meter 504→559 lines with the
+oracle re-run green on the pin), `wsresolv.dll` above it in the superproject
+(numeric/localhost/local-name/hosts/DNS order; the UDP-only DNS client
+convicted by the hermetic `tests/resolv` corpus through its transport seam),
+and the `drivers/etc` files as mkimage furniture. `\Device\Nsi` went beyond
+the sketch's two verbs because the pinned `GetAdaptersAddresses` was MEASURED
+to read more: enumerate-all over ndis-ifinfo + ip-unicast + ip-forward,
+get-all-parameters and get-parameter (the `ConvertInterfaceLuidToGuid` read),
+all from lwIP netif state under one identity authority (`NetAdapterGuid` —
+the registry key name and the reported `if_guid` are the same value); the
+rest refuses loudly (`sem_nsi`, eleven-case pin suite green on both runners;
+docs/03 "Net-3 notes"). The winetest triage: the resolver seam un-wedged
+`ws2_32:afd` past its parking crash into rows Net-2 never reached, and the
+parity round those rows convicted (thread-exit port exemption, accept
+synchronicity inheritance, ignored socket offsets, consume-edge
+READ-relatch/deferred-HUP) took the pair to 0 failures on proskrnl — ACTIVE,
+with the container-v6 oracle caveat recorded; `ws2_32:sock` and
+`ws2_32:protocol` stay parked with fresh signatures — protocol's
+WSAAsync block spins forever under the user32 stand-ins on BOTH runners and
+its IDN rows want the live internet; sock's residue is the same user32/v6
+families plus a long sockopt tail — each an owned frontier, not a wall.)*
+
 ---
 
 ## GUI path (opt-in, additive, route (a) — see docs/07)
