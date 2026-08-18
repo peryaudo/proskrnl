@@ -57,40 +57,12 @@ static NTSTATUS vsnd_main_loop_stop(void *args)
     return STATUS_SUCCESS;
 }
 
-/* AUD-3 (capture) and the deliberately-unbuilt surface (docs/23 §5). Loud,
- * named, and shaped as the REAL WASAPI refusal the caller's contract knows —
- * never STATUS_NOT_IMPLEMENTED through a path that asserts success. */
-static NTSTATUS vsnd_get_capture_buffer(void *args)
-{
-    struct get_capture_buffer_params *params = args;
-
-    vsnd_report("winevsnd: get_capture_buffer refused (capture is AUD-3, unbuilt)\n");
-    params->result = AUDCLNT_E_DEVICE_INVALIDATED;
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS vsnd_release_capture_buffer(void *args)
-{
-    struct release_capture_buffer_params *params = args;
-
-    vsnd_report("winevsnd: release_capture_buffer refused (capture is AUD-3, unbuilt)\n");
-    params->result = AUDCLNT_E_DEVICE_INVALIDATED;
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS vsnd_get_next_packet_size(void *args)
-{
-    struct get_next_packet_size_params *params = args;
-
-    /* Capture-only in mmdevapi's client (IAudioCaptureClient); render
-     * streams never reach it. AUD-3 builds the real answer. */
-    vsnd_report("winevsnd: get_next_packet_size refused (capture is AUD-3, unbuilt)\n");
-    *params->frames = 0;
-    params->result = AUDCLNT_E_DEVICE_INVALIDATED;
-    return STATUS_SUCCESS;
-}
-
-/* The oracle's own driverless path answers E_NOTIMPL for loopback capture
+/* The deliberately-unbuilt surface (docs/23 §5). Loud, named, and shaped
+ * as the REAL refusal the caller's contract knows — never
+ * STATUS_NOT_IMPLEMENTED through a path that asserts success. (The capture
+ * legs that stood here until AUD-3 live in stream.c now.)
+ *
+ * The oracle's own driverless path answers E_NOTIMPL for loopback capture
  * (mmdevapi client.c get_loopback_capture_device FIXME), and winepulse
  * answers E_NOTIMPL for set_sample_rate — matching the oracle's shape IS
  * the contract here (docs/23 §5: no loopback, no rate adjustment). */

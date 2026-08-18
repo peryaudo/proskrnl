@@ -5320,6 +5320,16 @@ Two subtler shapes fall out of the same exclusivity and are part of this entry:
   unobservable through any `Nt*` boundary, noted for the WAV artifact's sake (leading /
   trailing silence, which `tests/audio/check_audio.py` already must not assert).
 
+**AUD-3 extends the same deviation to capture, unchanged in shape**: the capture node
+opens exclusively per process too, a competing process's `STATUS_SHARING_VIOLATION`
+surfaces as the same `AUDCLNT_E_DEVICE_IN_USE`
+(`user/wine/dlls/winevsnd.drv/stream.c cap_acquire`), and Windows shared-mode capture
+admits N processes where this stack admits one. Same justification (no baked scenario
+captures from two processes at once — the capture pairs and the capture leg's client
+are one-audio-process boots), same convicting consumer class, same named exit below.
+The enumeration-while-held and stays-STARTed shapes above apply to the capture node
+verbatim.
+
 **The named exit is audiodg-lite (HACK-008, reserved in `docs/10`), not a wider share
 mask:** a user-mode mixer process owning the device, clients reaching it over shared
 sections + kernel events — the GUI-3 transport recipe, and NT's own architecture adopted
