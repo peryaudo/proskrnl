@@ -382,6 +382,11 @@ BOOLEAN IopCancelFilterMatches(const IOP_PENDING_REQUEST *request, const IOP_CAN
     {
         return FALSE;
     }
+    if (filter->exemptPortBoundApcNoEvent && request->portBoundAtIssue &&
+        request->apcContext != 0 && request->event == 0)
+    {
+        return FALSE;
+    }
     return TRUE;
 }
 

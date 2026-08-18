@@ -5444,3 +5444,51 @@ dad-Preferred unicast row, the 127.0.0.0/8 no-gateway route — is pinned by
 `tests/ntapi/sem_nsi/` on both runners. The ethernet row's `if_guid` is
 `NetAdapterGuid` — the same MAC-derived value that names the adapter's
 `Tcpip\Parameters\Interfaces` key (one identity authority, Art. 11).
+
+### The resolver (wsresolv): authored answers behind the WS_CALL seam
+
+ws2_32's five resolver entries are its own unixlib — never an `Nt*` surface — so
+on proskrnl they dispatch through PE `wsresolv.dll` (the fork's one Net-3 seam
+commit; `user/wine/dlls/wsresolv/`). The engine's order is numeric literals →
+localhost → the machine's registry names → `drivers\etc\hosts` → DNS, and the
+authored answers, each loud where it refuses:
+
+- **DNS is UDP-only** (RFC 1035 over ws2_32's own sockets, against the servers
+  the Net-1 lease wrote): a truncated (TC) reply answers `WSATRY_AGAIN` and
+  names itself on serial rather than retrying over TCP; no search-list
+  suffixing. The wire format is convicted by the hermetic `tests/resolv`
+  corpus (the run.sh `resolvunit` leg), not by live queries.
+- **Wire PTR is unbuilt**: `gethostbyaddr` and `getnameinfo(NI_NAMEREQD)`
+  serve hosts-file and local-machine reverse matches and refuse the rest
+  `WSAHOST_NOT_FOUND`, named on serial.
+- **The local machine's addresses** are the lease values the registry carries
+  (`DhcpIPAddress`) plus 127.0.0.1 — the same one lease authority netd wrote;
+  no second address database.
+- A **missing wsresolv.dll** degrades to per-entry failures
+  (`WSAHOST_NOT_FOUND`; `WSAENETDOWN` for gethostname) instead of the old
+  rip=0 fault on the NULL unix-call dispatcher.
+
+### Net-3 oracle-parity shapes measured off ws2_32:afd (Art. 6 — the Wine answer is the spec)
+
+The resolver seam un-wedged `ws2_32:afd` past its old crash, and the newly
+reached rows convicted four kernel behaviors, each pinned in `tests/ntapi/`
+before the fix:
+
+- **Thread exit spares port-bound asyncs**: a parked request with a completion
+  port bound, an ApcContext and no event survives its issuer's exit and
+  reports only through the port (`IOP_CANCEL_FILTER.exemptPortBoundApcNoEvent`;
+  pinned `afd_cancel_close.c`).
+- **An accepted socket inherits its listener's synchronicity**: minted from a
+  synchronous listener, `NtReadFile` on it blocks — FIONBIO nonblocking
+  included, which governs the recv verbs, not the file API (pinned
+  `afd_read_write.c`).
+- **Byte offsets on sockets are ignored, never validated**: negative offsets
+  read/write like NULL (real NT refuses `STATUS_INVALID_PARAMETER`; the suite
+  carries that as `todo_wine`, so Wine's accept-anything is the spec; pinned
+  `afd_read_write.c`).
+- **READ re-latches on a partial consume, and half-close HUP waits for the
+  drain**: consuming part of the ring re-raises the READ edge (ws2_32's
+  FD_READ re-enable); the peer's send-shutdown raises HUP only once the ring
+  is empty — real NT raises it immediately (`todo_wine` again; pinned
+  `afd_event_select.c`, `afd_poll.c`; one consume-edge authority,
+  `AfdConsumeEdges`).

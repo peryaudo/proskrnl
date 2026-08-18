@@ -632,6 +632,11 @@ typedef struct IOP_CANCEL_FILTER
      * of the REQUEST, so it belongs beside the other terms rather than in the
      * caller that happens to want it. */
     BOOLEAN portBoundApcNoEvent;
+    /* The thread-exit sweep's inverse of the same predicate: requests
+     * matching it are EXEMPT — they outlive their issuer and report
+     * through the port alone (drivers/afd.c AfdCancelThreadIo; pinned
+     * sem_net/afd_cancel_close.c test_thread_exit_port_exemption). */
+    BOOLEAN exemptPortBoundApcNoEvent;
 } IOP_CANCEL_FILTER;
 
 BOOLEAN IopCancelFilterMatches(const IOP_PENDING_REQUEST *request, const IOP_CANCEL_FILTER *filter);

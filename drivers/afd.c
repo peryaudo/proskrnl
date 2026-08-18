@@ -430,6 +430,8 @@ static void AfdRingPush(PAFD_SOCKET sock, const void *data, ULONG length)
     sock->ringCount += length;
 }
 
+static void AfdConsumeEdges(PAFD_SOCKET sock);
+
 /* Copy up to the segment list's total from the ring into the OWNER's
  * space; consumes unless `peek`. Returns bytes delivered. */
 static ULONG AfdRingConsume(PAFD_SOCKET sock, PIOP_PENDING_REQUEST pending, const AFD_SEG *segs,
@@ -472,8 +474,28 @@ static ULONG AfdRingConsume(PAFD_SOCKET sock, PIOP_PENDING_REQUEST pending, cons
          * seam (recvedOwed): this may run OUTSIDE the seam for an inline
          * verb, and tcp_recved is a raw-API call. */
         sock->recvedOwed += delivered;
+        AfdConsumeEdges(sock);
     }
     return delivered;
+}
+
+/* The edges a CONSUME leaves behind (ws2_32's re-enable semantics,
+ * pinned afd_event_select.c test_read_relatch and afd_poll.c
+ * test_halfclose_hup_after_drain): data still queued re-raises READ;
+ * a drain that exposes the peer's FIN raises the deferred HUP. One
+ * authority for both consume paths (the verbs' AfdRingConsume and
+ * AfdVfsRead's inline loop). */
+static void AfdRaiseEvent(PAFD_SOCKET sock, ULONG bit, NTSTATUS bitStatus);
+static void AfdConsumeEdges(PAFD_SOCKET sock)
+{
+    if (sock->ringCount != 0)
+    {
+        AfdRaiseEvent(sock, AFD_POLL_BIT_READ, STATUS_SUCCESS);
+    }
+    else if (sock->peerClosed)
+    {
+        AfdRaiseEvent(sock, AFD_POLL_BIT_HUP, STATUS_SUCCESS);
+    }
 }
 
 /* Fold the owed window back to lwIP. Call INSIDE the seam, with a live
@@ -597,7 +619,7 @@ static PAFD_SOCKET AfdAllocateSocket(void)
  * On success *handleOut is a handle in `owner`; the object's creation
  * reference has moved into it. */
 static NTSTATUS AfdMintSocketHandle(PAFD_SOCKET sock, PEPROCESS owner, ACCESS_MASK granted,
-                                    PHANDLE handleOut)
+                                    BOOLEAN synchronousIo, PHANDLE handleOut)
 {
     PVOID body;
     NTSTATUS status = ObpAllocateObject(&IoFileObjectType, sizeof(FILE_OBJECT), &body);
@@ -610,8 +632,14 @@ static NTSTATUS AfdMintSocketHandle(PAFD_SOCKET sock, PEPROCESS owner, ACCESS_MA
     ObfReferenceObject(AfdDevice);
     file->device = AfdDevice;
     KeInitializeEvent(&file->syncIoLock, SynchronizationEvent, TRUE);
-    file->synchronousIo = FALSE; /* accepted sockets are asynchronous (ws2_32
-                                  * wraps its own sync event around them) */
+    file->synchronousIo = synchronousIo; /* inherited from the LISTENER: an
+                                          * accept minted from a synchronous
+                                          * listener blocks NtReadFile the way
+                                          * the listener would — pinned
+                                          * sem_net/afd_read_write.c
+                                          * test_accepted_sync_read_blocks
+                                          * (the ws2_32:afd test_read_write
+                                          * shape) */
     file->grantedAccess = granted;
     file->desiredAccess = granted;
     file->fsContext = sock;
@@ -728,9 +756,9 @@ static int AfdPollLevel(PAFD_SOCKET sock)
     {
         level |= AFD_POLL_OOB;
     }
-    if (sock->peerClosed)
+    if (sock->peerClosed && sock->ringCount == 0)
     {
-        level |= AFD_POLL_HUP;
+        level |= AFD_POLL_HUP; /* deferred past queued data (the pin above) */
     }
     if (sock->resetLatch)
     {
@@ -893,7 +921,13 @@ static err_t AfdTcpRecvCallback(void *arg, struct tcp_pcb *pcb, struct pbuf *p, 
     if (p == 0)
     {
         sock->peerClosed = TRUE; /* orderly FIN */
-        AfdRaiseEvent(sock, AFD_POLL_BIT_HUP, STATUS_SUCCESS);
+        /* HUP waits for the drain when data is still queued (pinned
+         * afd_poll.c test_halfclose_hup_after_drain; AfdConsumeEdges
+         * raises it) — the pinned Wine reports READ alone until then. */
+        if (sock->ringCount == 0)
+        {
+            AfdRaiseEvent(sock, AFD_POLL_BIT_HUP, STATUS_SUCCESS);
+        }
         AfdSocketReady(sock);
         return ERR_OK;
     }
@@ -1253,8 +1287,8 @@ static void AfdCompleteAcceptLocked(PAFD_SOCKET listener, PAFD_REQUEST request)
     }
 
     HANDLE handle = 0;
-    NTSTATUS status =
-        AfdMintSocketHandle(sock, pending->owner, pending->file->grantedAccess, &handle);
+    NTSTATUS status = AfdMintSocketHandle(sock, pending->owner, pending->file->grantedAccess,
+                                          pending->file->synchronousIo, &handle);
     if (!NT_SUCCESS(status))
     {
         /* The owner is exiting or its table is full: the connection dies
@@ -2938,6 +2972,7 @@ static NTSTATUS AfdVfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_
             sock->ringHead = (sock->ringHead + take) % AFD_RING_CAPACITY;
             sock->ringCount -= take;
             sock->recvedOwed += take;
+            AfdConsumeEdges(sock);
             AfdFlushRecved(sock);
             NetdLeaveLwip();
             *infoOut = take;
@@ -3524,7 +3559,12 @@ void AfdCancelThreadIo(struct KTHREAD *thread)
     {
         return; /* before AfdInitialize: nothing exists to sweep */
     }
-    IOP_CANCEL_FILTER byIssuer = {.issuer = thread};
+    /* The exit sweeps everything EXCEPT the port-bound+ApcContext+no-event
+     * shape, which survives its issuer and reports only through the port
+     * (pinned sem_net/afd_cancel_close.c test_thread_exit_port_exemption —
+     * the ws2_32:afd "async is not cancelled if there is a completion
+     * port, completion key and no event" rows). */
+    IOP_CANCEL_FILTER byIssuer = {.issuer = thread, .exemptPortBoundApcNoEvent = TRUE};
     for (PLIST_ENTRY entry = AfdSocketList.Flink; entry != &AfdSocketList; entry = entry->Flink)
     {
         PAFD_SOCKET sock = CONTAINING_RECORD(entry, AFD_SOCKET, allSocketsEntry);

@@ -15,6 +15,7 @@
  * sem_mm/file_coherence stress test structural rather than lucky.
  */
 #include "kernel/io/io.h"
+#include "drivers/afd.h"
 #include "kernel/syscall/uaccess.h"
 #include "kernel/init/panic.h"
 #include "kernel/lib/string.h"
@@ -218,6 +219,14 @@ static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed
                     return STATUS_INVALID_PARAMETER;
                 }
                 offset = file->synchronousIo ? (uint64_t)file->currentByteOffset.QuadPart : 0;
+            }
+            else if (AfdIsSocketFile(file))
+            {
+                /* Sockets never validate offsets: any negative value
+                 * reads/writes like NULL (pinned sem_net/afd_read_write.c
+                 * test_offsets_ignored — the ws2_32:afd rows carry NT's
+                 * refusal as todo_wine, so accept-anything is the spec). */
+                offset = 0;
             }
             else
             {
