@@ -1445,12 +1445,15 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# RE-MEASURED after the SEC_* modifier flags landed: 25 -> 1, and the ONE
-#     that is left is the todo floor below. Every failing assertion this pair
-#     had that is real work is gone; the verdict line still reads
-#     FAIL (timeout) because the wedge is untouched and belongs to another
-#     item, so the pair stays parked. Do not read "1 failure" as "one item
-#     away from green" — see WHERE IT STOPS.
+# RE-MEASURED: 4 -> 1, and the ONE that is left is the todo floor below.
+#     Every failing assertion this pair has that is real work is gone for the
+#     SECOND time — the SEC_* modifier flags took it 25 -> 1, being measured
+#     past its wedge then put it back to 4, and the pseudo-handle duplication
+#     below takes it to 1 again. The verdict still reads
+#     FAIL (exit=0xc0000005) because the CRASH is untouched and belongs to
+#     another item, so the pair stays parked. Do not read "1 failure" as "one
+#     item away from green" — see WHERE IT STOPS. The history below is kept in
+#     order, oldest first.
 #
 #     WHAT WENT, AND IT WAS ONE CAUSE FOR ALL 24. server/mapping.c
 #     get_mapping_flags is twenty lines that decide three things at once, and
@@ -1494,7 +1497,26 @@ kernel32_test.exe:timer
 #     the trap-2 arithmetic again, not a regression — the 1 was everything a
 #     stopped pair had ever executed.
 #
-#     WHAT IS LEFT, summing to 4:
+#     THE THREE REAL FAILURES ARE GONE (4 -> 1), AND THE 1 IS THE FLOOR.
+#     :4549/:4571/:4572 were ONE cause and it was not test_far_regions and not
+#     a cross-process leg — this block said both and both were wrong. The
+#     failing call is test_ReadProcessMemory's opening
+#     DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+#     GetCurrentProcess(), &hproc, 0, FALSE, DUPLICATE_SAME_ACCESS), the
+#     documented way to turn a pseudo-handle into a real one, and every end of
+#     it names THIS process. NtDuplicateObject looked the SOURCE handle up in
+#     the source process's table only, where wineserver's get_handle_obj tries
+#     get_magic_handle FIRST (server/handle.c), so -1 was ERROR_INVALID_HANDLE
+#     and the two ReadProcessMemory assertions behind it read through the
+#     handle it never got. Fixed in kernel/ob/handle.c, pinned by
+#     tests/ntapi/sem_ob/dup_pseudo.c + one case in sem_ob/dup_cross_process.c
+#     (docs/21 W19, docs/03 "A magic pseudo-handle as a duplication SOURCE").
+#     Nothing was hiding behind the three: 142 todo markers, 1 skip and 1
+#     succeeded-todo before and after, and a per-line histogram diff removes
+#     exactly those three lines and moves no other (docs/21 §4 trap 2 does not
+#     apply here).
+#
+#     WHAT IS LEFT IS 1 FAILURE AND A CRASH, and the verdict does not move:
 #       -  1  :1465, THE FLOOR, unchanged: a todo_wine that proskrnl PASSES
 #         (NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must answer
 #         STATUS_SUCCESS, proskrnl does, the oracle does not) and winetest
@@ -1502,16 +1524,21 @@ kernel32_test.exe:timer
 #         while proskrnl is the more NT-correct of the two runners, exactly as
 #         kernel32:volume:186 cannot. Easy to miss when scanning for "Test
 #         failed": it prints as "Test succeeded inside todo block".
-#       -  3  :4549 DuplicateHandle -> 6 (ERROR_INVALID_HANDLE) and
-#         :4571/:4572 the ReadProcessMemory behind the handle it never got —
-#         test_far_regions' cross-process leg. ONE cause, and the third is
-#         plain fallout of the first.
-#       - then an unhandled 0xc0000005 in ntdll (RIP inside the PE, err=0x6, a
-#         WRITE fault on the user stack) after :4735's single-processor skip.
-#         Read it as a cascade until proved otherwise (docs/21 §4 trap 3): the
-#         DuplicateHandle failure is upstream of it and is the first thing to
-#         fix. And everything the fault cut off is unmeasured, so 4 is a lower
-#         bound like every count this block has carried.
+#       - then the same unhandled 0xc0000005, bit for bit, after :4735's
+#         single-processor skip. It is NOT the cascade this block guessed
+#         (docs/21 §4 trap 3 the other way round: the crash outlived the
+#         failures above it). DIAGNOSED, and it is the pair's next item:
+#         :4735 returns into test_stack_commit, which reserves 4 MiB, commits
+#         ONLY the top page as PAGE_GUARD, rewrites its own TEB
+#         DeallocationStack/StackBase/StackLimit at it and calls a function on
+#         it (virtual.c:2486-:2499). The oracle decides "is this a stack?"
+#         from the TEB (unix/virtual.c is_inside_thread_stack reads
+#         DeallocationStack..StackBase); kernel/mm/fault.c decides it from the
+#         kernel's own ETHREAD.stackAllocationBase/stackBase, which this
+#         synthetic stack is not inside. So the guard touch at 0x133ffd8 is
+#         answered STATUS_GUARD_PAGE_VIOLATION instead of growing the stack,
+#         and DELIVERING that exception writes one page below the guard
+#         (0x133ef40) and faults for real. Everything past it is unmeasured.
 #
 #     The measurement above used the 300 s per-pair timeout in the line below.
 #     The oracle leg is green: 30936 tests executed, 140 todo, 0 failures.

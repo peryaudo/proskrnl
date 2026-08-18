@@ -3015,6 +3015,70 @@ probed, and the manifest says so. It also is not free work: the oracle answers
 the fsctl for every file while NT on a FAT volume refuses it, which is the
 same decision `kernel32:volume:2022` is parked behind.
 
+### W19 — A pseudo-handle as a duplication SOURCE (**DONE — `kernel32:virtual` 4 → 1**)
+
+`kernel32:virtual`'s three real failures were one call, and the pair now has
+no failing assertion left that is not the todo floor. `NtDuplicateObject`
+looked its SOURCE handle up in the source process's TABLE and nowhere else,
+so `DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS)` — the documented
+way to turn a pseudo-handle into a real one, and the first line of
+`test_ReadProcessMemory` — was `ERROR_INVALID_HANDLE`, with the two
+`ReadProcessMemory` assertions behind it reading through the handle it never
+got. Fixed in `kernel/ob/handle.c`, pinned by `tests/ntapi/sem_ob/dup_pseudo.c`
+plus one case in `sem_ob/dup_cross_process.c`; `docs/03` "A magic pseudo-handle
+as a duplication SOURCE" has the four rules.
+
+Three things worth carrying:
+
+- **It is an Art. 11 defect with a completely ordinary tell: a second lookup
+  path.** `ObReferenceObjectByHandle` had resolved the magic handles since
+  CUI-2 and `NtDuplicateObject` called `ObpEntryInTable` directly, so the two
+  agreed about every handle that was in a table and about nothing else. The
+  server has exactly ONE such site (`get_magic_handle` inside
+  `get_handle_obj`), which is why the fix is to extract
+  `ObpReferencePseudoHandle` and have both ask it rather than to add the
+  range test twice. **The tell generalises: a syscall that reads a handle
+  TABLE rather than calling the resolver is a parallel path even when the
+  reason it does so is good** — here it was, the duplication genuinely needs
+  the source ENTRY's rights and attributes.
+- **What a pseudo source is WORTH is separate from what it names, and both
+  are synthesised.** No entry means no recorded rights, so the server invents
+  them: `map_access( obj, GENERIC_ALL )`, i.e. the type's whole mask, and no
+  attributes. That is the `DUPLICATE_SAME_ACCESS` value ONLY — an
+  implementation that stamped it onto every duplicate passes the winetest and
+  over-grants every specific-rights duplication, which is why the pin asks for
+  `PROCESS_VM_READ` alone and asserts it comes back holding exactly that.
+- **The magic handles resolve against the CALLER, not against the process the
+  caller named.** `get_magic_handle` takes no process argument. So
+  `NtDuplicateObject(childProcess, NtCurrentProcess(), …)` yields the CALLER's
+  process — measured on both runners rather than reasoned about, in the file
+  whose subject is already "which process does each end name".
+
+**The block's diagnosis was wrong twice and the count was right**, which is §4
+trap 4 in its cheapest form: it named `test_far_regions` and "the
+cross-process leg", and the failing function is `test_ReadProcessMemory` with
+all three ends of the call naming the caller's own process. Both readings came
+from the assertion TEXT ("DuplicateHandle failed 6"); one `grep` of the line
+number settled it. **Trap 3 also ran backwards here**: the block called the
+`0xc0000005` behind these three a cascade of them, and it is not — the crash
+is bit-for-bit unchanged with the three fixed.
+
+**The crash is diagnosed and is the pair's next item**, and it is `mm/`, not
+`ob/`. `:4735` returns into `test_stack_commit`, which reserves 4 MiB, commits
+only the top page `PAGE_GUARD`, **rewrites its own TEB**
+`DeallocationStack`/`StackBase`/`StackLimit` at it and runs a function on it
+(`virtual.c:2486-:2499`). The oracle decides "is this a stack?" from the TEB
+(`dlls/ntdll/unix/virtual.c` `is_inside_thread_stack` reads
+`DeallocationStack..StackBase`); `kernel/mm/fault.c` decides it from the
+kernel's own `ETHREAD.stackAllocationBase`/`stackBase`, which a stack user
+mode invented is not inside. So the guard touch answers
+`STATUS_GUARD_PAGE_VIOLATION` instead of growing, and DELIVERING that
+exception writes one page below the guard and faults for real. Whoever takes
+it should note that the two authorities disagree on purpose elsewhere —
+believing the TEB is believing user mode — so this is a decision about which
+one the growth path may trust, not a one-line swap.
+
 ---
 
 ## 3. What needs a constitutional amendment
