@@ -1003,20 +1003,26 @@ ntdll_test.exe:port
 ntdll_test.exe:rtlbitmap
 ntdll_test.exe:rtlstr
 ntdll_test.exe:string
-# RE-MEASURED, FIXABLE — and it WEDGES *after* reaching its own summary,
-#     which narrows it a long way. The pair prints
-#     "sync: 0 tests executed (0 marked as todo, 0 as flaky, 0 failures), 0
-#     skipped" — with one todo marker at sync.c:856 above it — and only THEN
-#     hangs to the per-pair timeout. So the subtest body runs to completion
-#     and nothing it asserts fails; what never finishes is the PROCESS, i.e.
-#     something is still parked at exit. Read the serial log first, then the
-#     thread list.
-#     NOT the same bug as ntdll:thread's wedge, which was measured and fixed
-#     this session (THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE); this pair is
-#     unchanged by that fix, so docs/21 §5's "the three wedges are probably
-#     one bug" is refuted for this pair.
-# TODO: Implement
-# ntdll_test.exe:sync
+# GREEN since docs/21 W10 gave the completion PORT its two wait channels:
+#     429 tests executed, 1 marked as todo, 0 failures — the SAME count as the
+#     oracle, so the green is not an early exit. The whole pair now runs in
+#     ~15 s where it used to burn the full 300 s timeout.
+#     The old block here read the wedge exactly backwards and is kept as a
+#     warning. It said the pair "prints its own summary ... so the subtest
+#     body runs to completion and nothing it asserts fails", on the strength
+#     of the line
+#         0188:sync: 0 tests executed (0 ... 0 failures), 0 skipped
+#     That line is NOT this subtest's summary. It is the SUBPROCESS
+#     test_tid_alert spawns at sync.c:853 ("%s %s subprocess"), whose
+#     START_TEST returns immediately on `argc > 2` — the oracle prints the
+#     same line, from a different pid, followed by the real summary from
+#     pid 0020. The main process never got past test_tid_alert's successor,
+#     test_completion_port_scheduling, and the seven tests already run were
+#     never counted because a process that does not exit never prints. So
+#     "0 failures" was a claim about a body that had not run: docs/21 §4
+#     trap 2, in the spelling where the stop is a WEDGE and the misreading
+#     came from an ambiguous pid on the summary line.
+ntdll_test.exe:sync
 # GREEN since docs/21 W10 built the reserve objects: 49 tests executed, 0
 #     failures, on BOTH runners — the same count on each, so the green is not
 #     an early exit. Kept as a note rather than deleted because the pair took
@@ -1029,18 +1035,40 @@ ntdll_test.exe:string
 #     so this is the unusual case where removing the stop reveals nothing
 #     behind it. The trap is still a prior, not a law.
 ntdll_test.exe:thread
-# RE-MEASURED, FIXABLE — the old block ("a HANG with no output at all, not
-#     one assertion runs") is STALE and was wrong about the shape. The pair
-#     runs a long way: two ntdll threadpool fixmes (tp_object_initialize:
-#     persistent threads, environment version 9999), then todo markers at
-#     threadpool.c:652 (TpSimpleTryPost) and :1622 ("expected that timers are
-#     merged"), and only then hangs to the per-pair timeout. No failed
-#     assertion, no unbuilt class, no user fault is named.
-#     Measured again after ntdll:thread's wedge was fixed this session and
-#     unchanged by it, so this is its own bug — the threadpool is PE-side in
-#     ntdll, and what fails underneath is still most likely the timer/wait/APC
-#     surface it is built on. Start at what runs after :1622.
-# TODO: Implement
+# (b) THE PROSKRNL LEG IS GREEN AND THE ORACLE IS NOT — the reason this pair
+#     is commented out has completely changed, so the old "TODO: Implement"
+#     is gone. The wedge is FIXED: ntdll's threadpool is built on the
+#     completion-port surface docs/21 W10 rebuilt (NtCreateIoCompletion +
+#     NtRemoveIoCompletion(Ex) + NtSetIoCompletion, dlls/ntdll/threadpool.c),
+#     and with the port's two wait channels separated the pair runs to its
+#     summary on proskrnl in ~30 s:
+#
+#         threadpool: 4721 tests executed (2 marked as todo, 0 as flaky,
+#                     0 failures), 0 skipped
+#
+#     The ORACLE reports 4721 executed, 1 todo, 1 FAILURE, and has done so
+#     on every run — three for three on this box, and it cannot be anything
+#     this tree did, because the oracle leg runs the test binary under the
+#     pinned Wine and executes no kernel code at all. Two things in it:
+#
+#       - threadpool.c:1622 "Test succeeded inside todo block: expected that
+#         timers are merged". The predicate is
+#         `info2.ticks >= info1.ticks - 50 && info2.ticks <= info1.ticks + 50`
+#         — a +-50 ms comparison of two timer callbacks' tick stamps. On this
+#         host the pinned Wine merges them, the todo_wine stops applying and
+#         the ok() underneath becomes a hard failure; on proskrnl they are
+#         not merged and the todo holds. That makes the pair's COLOUR a
+#         property of host scheduling, the same shape as ntdll:time above;
+#       - 0024:err:heap:validate_used_block "invalid block header", on every
+#         oracle run, at a different address each time. An oracle-side heap
+#         defect, unrelated to the assertion.
+#
+#     Under Art. 6 a pair whose oracle is red convicts nothing, so it cannot
+#     sit in a differential gate however green the proskrnl half is. Kept
+#     here rather than deleted because the proskrnl number IS the measurement
+#     and is worth having: 4721/0. Re-activating it is a decision about the
+#     ORACLE leg (tolerate a named host-timing subtest, or retry it), not a
+#     kernel change.
 # ntdll_test.exe:threadpool
 # ORACLE-FLAKY, NOT A KERNEL GAP — and the only entry here whose PROSKRNL
 #     leg is green. `wtest ntdll_test.exe:time PASS`; the ORACLE leg fails,
