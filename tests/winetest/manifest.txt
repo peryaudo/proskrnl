@@ -803,8 +803,28 @@ ntdll_test.exe:path
 #     moved — so nothing was hiding behind the five (docs/21 §4 trap 2 does not
 #     apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 5 (3 failed + 2 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 3,
+#     WHAT WENT SINCE THAT (docs/21 W11, the IOSB probe): :725, and it was
+#     never a pipe item. NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
+#     (IO_STATUS_BLOCK *)0xdeadbeef) must answer STATUS_ACCESS_VIOLATION and
+#     proskrnl answered 80000002 (STATUS_DATATYPE_MISALIGNMENT), because the
+#     caller's IO_STATUS_BLOCK was probed with an 8-byte alignment requirement
+#     and KiProbeForWrite tests alignment BEFORE accessibility — so an address
+#     that is neither reported the wrong one of the two. The block carries no
+#     alignment requirement at all (the oracle assigns through the caller's
+#     pointer and tests nothing first), which is the rule the output BUFFER
+#     already followed here. All 23 probe sites now go through IopProbeIosb /
+#     IopProbeIosbToken, and all 18 writer sites through IopWriteIosb /
+#     IopWriteIosbStatus, which write the two FIELDS as bytes — the probe alone
+#     turned a served call into a #UD panic, because a store through an
+#     IO_STATUS_BLOCK * inherits the caller's alignment. Pinned by
+#     tests/ntapi/sem_file/iosb_probe.c: oracle-green, and 35 of its assertions
+#     fail on the kernel this change removes. docs/03 "The IOSB's own probe".
+#     2378 tests executed, 33 todo markers and 0 flaky before and after, and a
+#     line-by-line histogram diff removes exactly :725 with no other line
+#     moved — nothing was hiding behind it (docs/21 §4 trap 2 does not apply).
+#
+#     WHAT IS LEFT, per-line histogram of the 4 (2 failed + 2 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 2,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
@@ -837,13 +857,8 @@ ntdll_test.exe:path
 #                 for the device root exactly as the oracle does, because it
 #                 composes the DIRECTORY's answer — the one spelling it has.
 #       -  2  subtest_pipe_name (:2969, succeeded-todo).
-#       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
-#             (IO_STATUS_BLOCK *)0xdeadbeef) must answer
-#             STATUS_ACCESS_VIOLATION; proskrnl answers 80000002
-#             (STATUS_DATATYPE_MISALIGNMENT), because KiProbeForWrite tests
-#             alignment before accessibility and 0xdeadbeef is neither. A
-#             probe-ORDER question, not a pipe one, and still the pair's
-#             smallest remaining item.
+#     So everything a KERNEL change can still reach in this pair is the one
+#     device-root parser item above, and it is shared with kernel32:volume.
 # TODO: Implement
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
