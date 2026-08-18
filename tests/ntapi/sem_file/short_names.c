@@ -16,9 +16,16 @@
  * volume actually stored. `longfilename.tmp` is `LONG~TIZ.TMP` on one and
  * `LONGFI~1.TMP` on the other. Every assertion here is therefore about a
  * PROPERTY — is it empty, is it 8.3-shaped, does it match the same entry —
- * and never about a string. The nine truth-table cells depend on the value,
- * so they can only ever be checked by the winetest pair itself; that
- * asymmetry is recorded in docs/21 rather than papered over here.
+ * and never about a string.
+ *
+ * ONE PROPERTY OF THE VALUE IS SHARED, AND SECTIONS 7-8 PIN IT. This file
+ * used to say the value-dependent truth-table cells "can only ever be
+ * checked by the winetest pair itself". That is too strong: the two runners
+ * generate completely different STRINGS but agree exactly on whether the
+ * generated name carries an EXTENSION, and that one bit is what decides
+ * every DOS_STAR cell — a short name with a dot can never be matched by a
+ * trailing `<`. Asserting the bit, and the mask answer it produces, is
+ * runner-independent; only the characters are not.
  *
  * The one exact rule that IS shared: a short name is reported only when the
  * long name is not already a legal 8.3 name. Both runners suppress it on
@@ -144,6 +151,54 @@ static unsigned count_under_mask(HANDLE dir, const WCHAR *maskText, unsigned mas
                                       FileBothDirectoryInformation, TRUE, NULL, FALSE);
     }
     return count;
+}
+
+/* Enumerate under `mask` and report whether `want` was among the entries. */
+static int mask_finds(HANDLE dir, const WCHAR *maskText, const WCHAR *want)
+{
+    IO_STATUS_BLOCK iosb;
+    UNICODE_STRING mask;
+    unsigned maskUnits = 0, wantUnits = 0;
+    NTSTATUS status;
+
+    while (maskText[maskUnits])
+        maskUnits++;
+    while (want[wantUnits])
+        wantUnits++;
+    mask.Buffer = (PWSTR)maskText;
+    mask.Length = (USHORT)(maskUnits * sizeof(WCHAR));
+    mask.MaximumLength = mask.Length;
+
+    status = NtQueryDirectoryFile(dir, NULL, NULL, NULL, &iosb, dirBuffer, sizeof(dirBuffer),
+                                  FileBothDirectoryInformation, TRUE, &mask, TRUE);
+    while (NT_SUCCESS(status))
+    {
+        FILE_BOTH_DIRECTORY_INFORMATION *entry = (FILE_BOTH_DIRECTORY_INFORMATION *)dirBuffer;
+        if (entry->FileNameLength == wantUnits * sizeof(WCHAR) &&
+            memcmp(entry->FileName, want, wantUnits * sizeof(WCHAR)) == 0)
+            return 1;
+        status = NtQueryDirectoryFile(dir, NULL, NULL, NULL, &iosb, dirBuffer, sizeof(dirBuffer),
+                                      FileBothDirectoryInformation, TRUE, NULL, FALSE);
+    }
+    return 0;
+}
+
+/* Does the reported short name carry an extension? The two ways there is no
+ * answer are kept apart, because they are different defects: -1 is "the entry
+ * reported no alias", -2 is "the entry was not listed at all". */
+static int short_name_has_dot(HANDLE dir, const WCHAR *want)
+{
+    WCHAR shortName[13];
+    USHORT bytes = short_name_of(dir, want, shortName);
+
+    if (bytes == 0xFFFF)
+        return -2;
+    if (bytes == 0)
+        return -1;
+    for (unsigned i = 0; i < bytes / sizeof(WCHAR); i++)
+        if (shortName[i] == '.')
+            return 1;
+    return 0;
 }
 
 static int same_name(const WCHAR *a, const WCHAR *b)
@@ -311,4 +366,88 @@ START_TEST(short_names)
     for (unsigned i = 0; i < 3; i++)
         scrub_file(dir, kNeedsShort[i]);
     NtClose(dir);
+
+    /* --- 7-8. WHICH LEADING RUN IS STRIPPED before the extension is picked -
+     * Its own directory, because the assertions below are about the whole
+     * result set under a mask and the fixture above would drown them.
+     *
+     * The subject: a name that is not 8.3-legal gets a generated alias, and
+     * the generator has to decide where the alias's extension separator is.
+     * Both runners strip a leading run of DOTS before looking for the last
+     * dot, so `.a`, `..a` and `.aaa` alias to a base with NO extension —
+     * which is the ONLY reason a trailing DOS_STAR can reach them, since
+     * their long names all still carry a dot. A leading SPACE is not part of
+     * that run: ` .a` keeps its `.a`, aliases WITH an extension, and is
+     * therefore invisible to the same mask.
+     *
+     * ` .a` versus `.a` is the entire content of the item. An implementation
+     * that strips leading dots AND spaces answers every other cell of
+     * kernel32:file's wildcard table correctly and gets ` .a` wrong in
+     * sixteen of them (file.c:3208, "found incorrectly ' .a'", missed none). */
+    {
+        static const WCHAR *const kDotted[] = {
+            W(".a"),   /* leading dots only: alias has no extension */
+            W("..a"),  /* a longer leading run, same answer */
+            W(".aaa"), /* and with a wider base */
+            W(".a.a"), /* an EMBEDDED dot survives the strip: alias has one */
+            W(" .a"),  /* the discriminator: a space is not a leading dot */
+        };
+        HANDLE dotDir = open_test_dir(W("\\??\\C:\\prstest\\shortdot"));
+
+        ok(dotDir != NULL, "dotted-name test dir");
+        if (dotDir == NULL)
+            return;
+        for (unsigned i = 0; i < 5; i++)
+            scrub_file(dotDir, kDotted[i]);
+        for (unsigned i = 0; i < 5; i++)
+        {
+            status = open_file(&scratch, dotDir, kDotted[i], FILE_GENERIC_WRITE | SYNCHRONIZE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE, 0, &iosb);
+            ok(status == STATUS_SUCCESS, "create dotted fixture #%u -> %08lx", i,
+               (unsigned long)status);
+            if (NT_SUCCESS(status))
+                NtClose(scratch);
+        }
+
+        /* 7. the mechanism: does the alias carry an extension at all. The
+         * message prints the raw answer because "no alias reported" (-1) and
+         * "entry not listed" (-2) are different defects from the wrong
+         * split, and asserting `== 0` cannot tell them apart on its own.
+         *
+         * This section must stay AHEAD of section 8: the mask a query binds
+         * lives on the HANDLE (docs/03, "NtQueryDirectoryFile mask
+         * binding"), so once section 8 has masked `dotDir` a NULL-mask
+         * enumeration here would silently reuse `a<` instead of listing
+         * everything. */
+        {
+            static const int kWantsDot[] = {0, 0, 0, 1, 1};
+            for (unsigned i = 0; i < 5; i++)
+            {
+                int has = short_name_has_dot(dotDir, kDotted[i]);
+                ok(has == kWantsDot[i], "dotted fixture #%u: alias-has-extension %d, wanted %d", i,
+                   has, kWantsDot[i]);
+            }
+        }
+
+        /* 8. the observable it decides. `<` alone is what kernelbase's
+         * fixup_mask emits for the DOS glob `*.` (dlls/kernelbase/file.c:
+         * strip the trailing dot, then rewrite the trailing `*`), so this is
+         * the shape every "list the extensionless files" call arrives as. */
+        ok(mask_finds(dotDir, W("<"), kDotted[0]), "`<` missed `.a`");
+        ok(mask_finds(dotDir, W("<"), kDotted[1]), "`<` missed `..a`");
+        ok(mask_finds(dotDir, W("<"), kDotted[2]), "`<` missed `.aaa`");
+        ok(!mask_finds(dotDir, W("<"), kDotted[3]), "`<` found `.a.a`");
+        ok(!mask_finds(dotDir, W("<"), kDotted[4]), "`<` found ` .a`");
+
+        /* The same split one character in, which is what `a*.` becomes. It
+         * is not redundant: it can only be answered through the alias, since
+         * no long name here begins with `a`. */
+        ok(mask_finds(dotDir, W("a<"), kDotted[0]), "`a<` missed `.a`");
+        ok(mask_finds(dotDir, W("a<"), kDotted[2]), "`a<` missed `.aaa`");
+        ok(!mask_finds(dotDir, W("a<"), kDotted[4]), "`a<` found ` .a`");
+
+        for (unsigned i = 0; i < 5; i++)
+            scrub_file(dotDir, kDotted[i]);
+        NtClose(dotDir);
+    }
 }
