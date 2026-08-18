@@ -2483,6 +2483,11 @@ NTPSAPI_FUNCTIONS = [
     # plus the APC/alert/no-power ids kernel32 forwards straight to ntdll.
     "NtQueueApcThreadEx2",
     "NtAlertResumeThread",
+    # docs/21 W10: the reserve-object surface ntdll:thread exercises —
+    # NtAllocateReserveObject mints the pre-allocation, NtQueueApcThreadEx is
+    # the legacy calling form that folds its flags into the reserve handle.
+    "NtAllocateReserveObject",
+    "NtQueueApcThreadEx",
     "NtFlushProcessWriteBuffers",
     "NtGetCurrentProcessorNumber",
     "NtSetThreadExecutionState",
@@ -2930,6 +2935,12 @@ def gen_ntpsapi(wine: Path) -> str:
     apc_flags = extract_enum(
         processthreadsapi, "_QUEUE_USER_APC_FLAGS", "QUEUE_USER_APC_FLAGS"
     )
+    # The reserve-object kinds NtAllocateReserveObject takes (winternl.h):
+    # a UserApcReserve pre-allocates one queued APC, an IoCompletionReserve
+    # one completion packet. Positional values, extracted never retyped.
+    reserve_enum = extract_enum(
+        winternl, "_MEMORY_RESERVE_OBJECT_TYPE", "MEMORY_RESERVE_OBJECT_TYPE"
+    )
     # CUI-3: the job-object contract services.exe exercises (winnt.h). The
     # completion messages are what the SCM's process monitor drains from the
     # associated port; the limit structs/flags are what it sets at startup.
@@ -3129,6 +3140,8 @@ _Static_assert(offsetof(NT_TIB, Self) == 48, "NT_TIB x64 layout");
         + execution_state
         + "\n\n"
         + apc_flags
+        + "\n\n"
+        + reserve_enum
         + "\n\n"
         + info_structs
         + "\n\n/* Layout pins, generated from the offset comments in the SAME Wine\n"

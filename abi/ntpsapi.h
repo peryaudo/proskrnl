@@ -861,6 +861,11 @@ typedef enum {
     QUEUE_USER_APC_CALLBACK_DATA_CONTEXT = 0x00010000,
 } QUEUE_USER_APC_FLAGS;
 
+typedef enum {
+    MemoryReserveObjectTypeUserApc,
+    MemoryReserveObjectTypeIoCompletion
+} MEMORY_RESERVE_OBJECT_TYPE, PMEMORY_RESERVE_OBJECT_TYPE;
+
 typedef struct {
     NTSTATUS  ExitStatus;
     PVOID     TebBaseAddress;
@@ -1775,6 +1780,8 @@ NTSTATUS NtTerminateJobObject(HANDLE,NTSTATUS);
 NTSTATUS NtIsProcessInJob(HANDLE,HANDLE);
 NTSTATUS NtQueueApcThreadEx2(HANDLE,HANDLE,ULONG,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
 NTSTATUS NtAlertResumeThread(HANDLE,PULONG);
+NTSTATUS NtAllocateReserveObject(HANDLE *handle,const OBJECT_ATTRIBUTES *attr,MEMORY_RESERVE_OBJECT_TYPE type);
+NTSTATUS NtQueueApcThreadEx(HANDLE,HANDLE,PNTAPCFUNC,ULONG_PTR,ULONG_PTR,ULONG_PTR);
 NTSTATUS NtFlushProcessWriteBuffers(void);
 ULONG NtGetCurrentProcessorNumber(void);
 NTSTATUS NtSetThreadExecutionState(EXECUTION_STATE,EXECUTION_STATE*);
