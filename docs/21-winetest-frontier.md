@@ -2205,6 +2205,57 @@ what a FAT file, a console handle and a device handle all answer.
 **Nothing was hiding behind the 23** — 2377 tests executed, 31 todo markers and
 0 flaky before and after — so `§4` trap 2 does not apply here.
 
+**THE DEVICE-ROOT FSCTL LADDER IS DONE** (`ntdll:pipe` 37 → **29**, the eight at
+`:2751`), and the first thing to record is that **the paragraph above said "two
+items are left in this cluster and neither is npfs's" and there were three, the
+largest of them npfs's.** The revision one step back had counted the ladder
+correctly — "the nine-assertion device-root ioctl ladder (`:2751`×8 plus
+`:2787`)" — and the sentence written after the relative-root item landed dropped
+it. Nothing measured changed in between; a summary was rewritten from the two
+items its author had just been thinking about. **A "what is left" sentence is a
+claim with a number in it, and it is one histogram away from being checked.**
+
+`NpfsDeviceControl`'s root arm is `server/named_pipe.c` `named_pipe_device_ioctl`
+transcribed whole; pinned by `tests/ntapi/sem_pipe/device_ioctl.c`, table in
+`docs/03` "What the named-pipe DEVICE ROOT answers to each pipe FSCTL".
+
+Three things worth carrying:
+
+- **The three answers do not collapse into "wrong object for this verb", and
+  that reading is what proskrnl had.** `STATUS_ILLEGAL_FUNCTION` is a statement
+  that the object does not HAVE the verb (LISTEN, IMPERSONATE);
+  `STATUS_PIPE_DISCONNECTED` is a STATE the device is not in (DISCONNECT,
+  TRANSCEIVE); `STATUS_INVALID_PARAMETER` is about the ARGUMENTS
+  (QUERY_CLIENT_PROCESS) and is decided above any look at them. One switch, three
+  kinds of sentence — which is only visible as a MATRIX. A status table shows the
+  values and hides that they are answers to different questions.
+- **`FSCTL_PIPE_PEEK` is the discriminating row and no winetest assertion
+  convicts it.** It is as much a per-instance verb as LISTEN, so
+  `ILLEGAL_FUNCTION` is what a ladder grouped by meaning gives, and proskrnl gave
+  it; the oracle never names PEEK in the switch, so it falls to
+  `default_fd_ioctl`'s unknown-verb default. `pipe.c:2721` asks exactly that call
+  and is `todo_wine` (it wants NT's `INVALID_PARAMETER`), so the row is pinned
+  because the oracle answers it — the same provenance as the four `docs/03` rules
+  in this section that came out of reading the oracle's arm rather than out of a
+  failing assertion.
+- **What is NOT transcribed is stated rather than absorbed.** The four verbs
+  `default_fd_ioctl` handles specially (`FSCTL_DISMOUNT_VOLUME` →
+  `STATUS_BAD_DEVICE_TYPE` off the pseudo fd, the three reparse ones →
+  `STATUS_OBJECT_TYPE_MISMATCH` for want of a `unix_name`) fold into the
+  `NOT_SUPPORTED` default, which keeps its serial line for exactly that reason.
+  A default arm that is simultaneously an implemented answer and an unbuilt
+  corner is the one place Art. 12's loud refusal earns its noise.
+
+**Two items are left in this cluster and neither is npfs's**, which is now a
+counted statement: `:2810` and `:2787` are one `kernel/ob` parser item (the
+device told from its root directory — `FSCTL_PIPE_WAIT` is the single arm where
+`named_pipe_dir_ioctl` does not tail-call the device's ladder), and
+`:2849`/`:2881` are the `ObjectNameInformation` item above.
+
+**Nothing was hiding behind the eight** — 2377 tests executed, 31 todo markers
+and 0 flaky before and after, and a line-by-line histogram diff removes exactly
+`:2751`×8 with no other line moved — so `§4` trap 2 does not apply here.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
