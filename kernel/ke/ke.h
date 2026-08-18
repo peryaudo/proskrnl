@@ -138,6 +138,12 @@ typedef struct KAPC
     uint64_t normalContext;   /* arg1 */
     uint64_t systemArgument1; /* arg2 */
     uint64_t systemArgument2; /* arg3 */
+    /* docs/21 W10: the UserApcReserve whose storage this block IS, or 0 for a
+     * pool block. Read only by KiFreeUserApc, which is what makes it a field
+     * rather than a caller's bookkeeping: the block outlives the queue call
+     * that made it, so whoever releases it must be able to ask where it came
+     * from. MiAllocatePool zeroes, so a pool block answers 0 by construction. */
+    PVOID reserveObject;
 } KAPC, *PKAPC;
 
 /* --- Threads ------------------------------------------------------------- */
@@ -699,19 +705,27 @@ BOOLEAN KiThreadIsIdle(PKTHREAD thread);
 
 /* --- apc.c (M7) ---------------------------------------------------------- */
 
-/* Queue a user APC to `thread` (takes the dispatcher lock). The APC block is
- * pool-owned; delivery/teardown frees it. Wakes an alertable wait.
+/* Queue a user APC to `thread` (takes the dispatcher lock). The queue owns
+ * the block; delivery/teardown releases it. Wakes an alertable wait.
  *
  * FALSE means the target is TERMINATED and could not accept it — the block
- * is freed here, and the caller owes its own boundary that refusal
+ * is released here, and the caller owes its own boundary that refusal
  * (NtQueueApcThread answers STATUS_UNSUCCESSFUL). `apc == 0` requests the
  * server's APC_NONE: the same acceptance test, nothing queued, nothing
  * woken. Both rules are the pinned server's queue_apc, cited in apc.c. */
 BOOLEAN KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc);
 
-/* Free every user APC still queued to an exiting thread (dispatcher lock
- * held). The queue owns those pool blocks and nothing else can release
- * them once the thread is gone. */
+/* THE one place a user-APC block is released, whatever its storage (Art. 11):
+ * a pool block goes back to the pool, a block that IS a UserApcReserve's
+ * pre-allocation goes back to the reserve, unbound. Every producer of a KAPC
+ * — Ps's queue, Io's completion routine, a reserve — reaches this, so no
+ * caller has to remember which kind it holds. `apc == 0` is a no-op (the
+ * server's APC_NONE never made a block). */
+void KiFreeUserApc(PKAPC apc);
+
+/* Release every user APC still queued to an exiting thread (dispatcher lock
+ * held). The queue owns those blocks and nothing else can release them once
+ * the thread is gone. */
 void KiDrainUserApcQueue(PKTHREAD thread);
 
 /* Does the current thread have a user APC (or a pending alert) to deliver on

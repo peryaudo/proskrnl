@@ -9,6 +9,7 @@ NtAdjustGroupsToken
 NtAdjustPrivilegesToken
 NtAlertResumeThread
 NtAlertThread
+NtAllocateReserveObject
 NtAllocateVirtualMemory
 NtAllocateVirtualMemoryEx
 NtAssignProcessToJobObject
@@ -120,6 +121,7 @@ NtQueryValueKey
 NtQueryVirtualMemory
 NtQueryVolumeInformationFile
 NtQueueApcThread
+NtQueueApcThreadEx
 NtQueueApcThreadEx2
 NtRaiseException
 NtReadFile

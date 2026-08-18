@@ -49,10 +49,10 @@ bump; re-run the count then.
 | | count |
 |---|---|
 | Wine x64 syscall ids (pinned tree, `dlls/ntdll/ntsyscalls.h`) | **264** |
-| Implemented (`KI_SYSCALL` rows) | **207** |
-| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **57** |
+| Implemented (`KI_SYSCALL` rows) | **209** |
+| Missing (`KI_SYSCALL_MISSING` → serial log + `STATUS_NOT_IMPLEMENTED`, G12) | **55** |
 | …of the missing: permanently out of scope (below) | **47** |
-| …of the missing: in scope, to be built (Wine implements them) | **10** |
+| …of the missing: in scope, to be built (Wine implements them) | **8** |
 
 **The WOW64 milestone closed four ids**, each because a gate consumer
 depended on it and for no other reason: `NtCreateDebugObject`,
@@ -109,7 +109,7 @@ A "semi-stub" — Wine's own FIXME wording for a body that does the real work bu
 ignores one argument — counts as case 1 for the part it implements, and the
 ignored argument is named in the row.
 
-### In scope, unbuilt — 10
+### In scope, unbuilt — 8
 
 Wine implements these for real, so each has an oracle to pin against (G5) before
 a kernel service exists. **None has a baked consumer**, so none is scheduled;
@@ -124,8 +124,6 @@ makes about them: they are unbuilt, not excluded.
 | `NtSetInformationDebugObject` | `unix/sync.c` — validates the class/length, then `set_debug_obj_info` | debug event queue |
 | `NtCreateToken` | `unix/security.c` — marshals user/groups/privs/DACL into `create_token` | conflicts with CUI-2's one fixed identity; buildable, not wanted yet |
 | `NtCreateMailslotFile` | `unix/file.c` — `create_mailslot` server request | needs a mailslot device; no baked consumer |
-| `NtAllocateReserveObject` | `unix/server.c` — `allocate_reserve_object` server request | pairs with `NtQueueApcThreadEx2`'s reserve arm, itself a partial service below |
-| `NtQueueApcThreadEx` | `unix/thread.c` — unpacks the flag bits folded into the reserve handle, then calls `NtQueueApcThreadEx2` | the delegate is already implemented; this is the legacy calling form over it |
 | `NtAlpcCreatePort` | `unix/alpc.c` — validates port attributes, then `alpc_create_port` | the ONE ALPC id Wine implements; every other ALPC/LPC id is a stub, so a port that can be created and never used is of no use on its own |
 | `NtOpenKeyTransacted` | `unix/registry.c` — forwards to `NtOpenKeyTransactedEx` | semi-stub: the transaction handle is ignored |
 | `NtOpenKeyTransactedEx` | `unix/registry.c` — FIXME "semi-stub", then a real `NtOpenKeyEx` | semi-stub: the transaction handle is ignored, so the oracle's behaviour is plain `NtOpenKeyEx` |
@@ -146,6 +144,16 @@ Two of these rows cross a decision recorded elsewhere:
   Wine implements it, so it is buildable; it is not wanted until something asks.
   Unlike the debug queue, no ADR was withdrawn here — CUI-2's single identity
   stands, and building this id would need that revisited first.
+
+**`NtAllocateReserveObject` and `NtQueueApcThreadEx` LEFT this table** (docs/21
+W10), and the reason is the one W8 flagged as a judgement call: this row's "no
+baked consumer" leg is falsified by the winetest gate itself.
+`dlls/ntdll/tests/thread.c` `test_NtQueueApcThreadEx` allocates a
+UserApcReserve and queues through it, so `ntdll:thread` stopped dead on the
+unbuilt id — and `docs/03`'s G5 policy for winetest makes that subtest an
+oracle-pinned differential test, i.e. a consumer. Third falsification of that
+leg after `ntdll:wow64` and `kernel32:debugger`; **the row is a statement about
+today's callers and the gate keeps turning it over.**
 
 ### Permanently out of scope — 47
 
@@ -273,7 +281,6 @@ volume behind them — pipes and the console (`kernel/io/query.c:1194`, `:1232`,
   `NtUnlockFile` — the keyed form (`kernel/io/lock.c:227`).
 - `NtSetTimer` — a timer APC routine; nothing on the CUI path arms one
   (`kernel/ob/sync.c:569`).
-- `NtQueueApcThreadEx2` — a non-NULL reserve handle (`kernel/ps/thread.c:790`).
 - `NtOpenProcess` — a named open, i.e. anything but the toolhelp path
   (`kernel/ps/process.c:1221`).
 - `NtCreateUserProcess` — any process flag beyond inherit-handles / suspended /

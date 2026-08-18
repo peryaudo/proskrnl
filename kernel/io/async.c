@@ -528,7 +528,7 @@ void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc)
     }
     if (issuer == 0 || issuer->terminating)
     {
-        MiFreePool(apc); /* the dying issuer's next edge is the reaper */
+        KiFreeUserApc(apc); /* the dying issuer's next edge is the reaper */
         return;
     }
     KiInsertQueueUserApc(issuer, apc);

@@ -89,6 +89,7 @@ CSRC := kernel/init/main.c \
         kernel/ob/namespace.c \
         kernel/ob/sync.c \
         kernel/ob/wait.c \
+        kernel/ob/reserve.c \
         kernel/mm/virtual.c \
         kernel/mm/section.c \
         kernel/mm/pecoff.c \

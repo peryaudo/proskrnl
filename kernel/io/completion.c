@@ -97,8 +97,12 @@ NTSTATUS IopPostCompletionPacket(PIO_COMPLETION port, ULONG_PTR key, ULONG_PTR v
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS packetStatus,
-                           SIZE_T information)
+/* THE post-by-handle path, shared by both entry points (Art. 11). The ORDER
+ * is the observable part and it is the server's: add_completion resolves the
+ * PORT first and the reserve second (server/completion.c), so two bad handles
+ * report the port's error. `reserveHandle == 0` is the plain form. */
+static NTSTATUS IopSetCompletionByHandle(HANDLE handle, HANDLE reserveHandle, ULONG_PTR key,
+                                         ULONG_PTR value, NTSTATUS packetStatus, SIZE_T information)
 {
     PVOID body;
     NTSTATUS status = ObReferenceObjectByHandle(handle, IO_COMPLETION_MODIFY_STATE,
@@ -107,9 +111,30 @@ NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTAT
     {
         return status;
     }
+    PVOID reserveBody = 0;
+    if (reserveHandle != 0)
+    {
+        status = ObReferenceObjectByHandle(reserveHandle, 0, &ObpIoCompletionReserveType,
+                                           ExGetPreviousMode(), &reserveBody, 0);
+        if (!NT_SUCCESS(status))
+        {
+            ObDereferenceObject(body);
+            return status;
+        }
+    }
     status = IopPostCompletionPacket(body, key, value, packetStatus, information);
+    if (reserveBody != 0)
+    {
+        ObDereferenceObject(reserveBody);
+    }
     ObDereferenceObject(body);
     return status;
+}
+
+NTSTATUS NtSetIoCompletion(HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS packetStatus,
+                           SIZE_T information)
+{
+    return IopSetCompletionByHandle(handle, 0, key, value, packetStatus, information);
 }
 
 /* CUI-5: open-by-name over the one Ob open engine (Art. 11), the
@@ -124,11 +149,13 @@ NTSTATUS NtOpenIoCompletion(PHANDLE handle, ACCESS_MASK access, const OBJECT_ATT
     return ObpOpenObjectByName(&IoCompletionType, attr, access, handle);
 }
 
-/* CUI-5: the reserve-object post. The pinned Wine's server refuses a NULL
- * reserve handle up front and resolves a non-NULL one before posting
- * (server/completion.c add_completion); reserve objects themselves are
- * permanently out of scope (docs/16 — NtAllocateReserveObject has no baked
- * consumer), so the resolution here is existence, not type. Pinned by
+/* CUI-5: the reserve-object post. A NULL reserve handle refuses before the
+ * request is even built (dlls/ntdll/unix/sync.c NtSetIoCompletionEx), and a
+ * non-NULL one must be an IoCompletionReserve specifically — the server
+ * resolves it through get_completion_reserve_obj, whose ops argument makes
+ * any other object a type mismatch (server/completion.c add_completion).
+ * docs/21 W10 built the reserve objects; the reserve is NOT consumed by the
+ * post (nothing binds it), so the same handle serves every packet. Pinned by
  * sem_port/ports.c. */
 NTSTATUS NtSetIoCompletionEx(HANDLE handle, HANDLE reserveHandle, ULONG_PTR key, ULONG_PTR value,
                              NTSTATUS packetStatus, SIZE_T information)
@@ -137,15 +164,7 @@ NTSTATUS NtSetIoCompletionEx(HANDLE handle, HANDLE reserveHandle, ULONG_PTR key,
     {
         return STATUS_INVALID_HANDLE;
     }
-    PVOID reserveBody;
-    NTSTATUS status =
-        ObReferenceObjectByHandle(reserveHandle, 0, 0, ExGetPreviousMode(), &reserveBody, 0);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-    ObDereferenceObject(reserveBody);
-    return NtSetIoCompletion(handle, key, value, packetStatus, information);
+    return IopSetCompletionByHandle(handle, reserveHandle, key, value, packetStatus, information);
 }
 
 /* Wait for one packet (bounded by `timeout`), pop it FIFO. */

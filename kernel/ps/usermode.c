@@ -516,7 +516,7 @@ void KiDeliverUserApc(PKTHREAD thread, PKTRAP_FRAME trapFrame)
     uint64_t arg1 = apc->normalContext;
     uint64_t arg2 = apc->systemArgument1;
     uint64_t arg3 = apc->systemArgument2;
-    MiFreePool(apc);
+    KiFreeUserApc(apc);
 
     if (process->userApcDispatcher == 0 || normalRoutine == 0)
     {

@@ -179,6 +179,8 @@
 #define NTSYS_NtOpenTimer 0x00bf
 #define NTSYS_NtSignalAndWaitForSingleObject 0x00f9
 #define NTSYS_NtQueueApcThreadEx2 0x00d4
+#define NTSYS_NtAllocateReserveObject 0x0069
+#define NTSYS_NtQueueApcThreadEx 0x00d3
 #define NTSYS_NtAlertResumeThread 0x0065
 #define NTSYS_NtSetInformationToken 0x00ec
 #define NTSYS_NtFilterToken 0x0097

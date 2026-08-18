@@ -931,9 +931,26 @@ NTSTATUS NtTerminateThread(HANDLE threadHandle, LONG exitStatus)
  * dlls/ntdll/unix/thread.c). The target handle needs THREAD_SET_CONTEXT —
  * the server's APC_USER gate (server/thread.c queue_apc), which
  * sem_ps/apc_ex pins. */
-static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,
-                                ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
+static NTSTATUS PspQueueUserApc(HANDLE threadHandle, HANDLE reserveHandle, PNTAPCFUNC apcRoutine,
+                                ULONG_PTR apcArgument1, ULONG_PTR apcArgument2,
+                                ULONG_PTR apcArgument3)
 {
+    /* The RESERVE comes first, and the order is observable: the server's
+     * APC_USER arm associates the reserve and only then calls
+     * get_thread_from_handle (server/thread.c DECL_HANDLER(queue_apc)), so a
+     * reserve that is already carrying an APC refuses even when the target
+     * handle names nothing (sem_ps/apc_reserve.c). A reserve-backed block
+     * needs no allocator — that is what the object is for. */
+    PKAPC apc = 0;
+    if (reserveHandle != 0)
+    {
+        NTSTATUS status = ObpAcquireApcReserve(reserveHandle, &apc);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+
     PKTHREAD target;
     PETHREAD threadObject = 0;
     if (threadHandle == NtCurrentThread())
@@ -947,6 +964,11 @@ static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULON
                                                     &PspThreadType, ExGetPreviousMode(), &body, 0);
         if (!NT_SUCCESS(status))
         {
+            /* The association dies with the block it was made for, exactly as
+             * the server's apc_destroy releases it when the handler drops the
+             * APC it never queued — so a refused queue leaves the reserve
+             * usable. */
+            KiFreeUserApc(apc);
             return status;
         }
         threadObject = body;
@@ -960,18 +982,26 @@ static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULON
      * having stored nothing (server/thread.c queue_apc + get_apc_queue).
      * Passing 0 through to Ke keeps the ONE acceptance rule — the
      * terminated-target test — in the one place that owns it, instead of
-     * spelling it a second time here. */
-    PKAPC apc = 0;
-    if (apcRoutine != 0)
+     * spelling it a second time here. A reserve associated for such a request
+     * is released with the block the server also throws away. */
+    if (apcRoutine == 0)
     {
-        apc = MiAllocatePool(sizeof(KAPC));
+        KiFreeUserApc(apc);
+        apc = 0;
+    }
+    else
+    {
         if (apc == 0)
         {
-            if (threadObject != 0)
+            apc = MiAllocatePool(sizeof(KAPC));
+            if (apc == 0)
             {
-                ObDereferenceObject(threadObject);
+                if (threadObject != 0)
+                {
+                    ObDereferenceObject(threadObject);
+                }
+                return STATUS_NO_MEMORY;
             }
-            return STATUS_NO_MEMORY;
         }
         apc->normalRoutine = (uint64_t)(uintptr_t)apcRoutine;
         apc->normalContext = apcArgument1;
@@ -996,27 +1026,42 @@ static NTSTATUS PspQueueUserApc(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULON
 NTSTATUS NtQueueApcThread(HANDLE threadHandle, PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1,
                           ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
 {
-    return PspQueueUserApc(threadHandle, apcRoutine, apcArgument1, apcArgument2, apcArgument3);
+    return PspQueueUserApc(threadHandle, 0, apcRoutine, apcArgument1, apcArgument2, apcArgument3);
 }
 
 /* CUI-6: QueueUserAPC2's back end. The flag bits change nothing at this
  * boundary — the pinned server carries SERVER_USER_APC_SPECIAL only to
  * refuse wow64 targets and delivery is identical (sem_ps/apc_ex pins it;
- * Art. 6: the oracle is the spec). Reserve objects do not exist
- * (NtAllocateReserveObject is permanently out of scope, docs/16), so a
- * non-NULL reserve handle refuses loudly (Art. 12) — no baked caller
- * passes one (kernelbase always sends NULL). */
+ * Art. 6: the oracle is the spec). The reserve handle names a UserApcReserve
+ * whose storage the queued APC becomes (docs/21 W10,
+ * sem_ps/apc_reserve.c). */
 NTSTATUS NtQueueApcThreadEx2(HANDLE threadHandle, HANDLE reserveHandle, ULONG flags,
                              PNTAPCFUNC apcRoutine, ULONG_PTR apcArgument1, ULONG_PTR apcArgument2,
                              ULONG_PTR apcArgument3)
 {
     (void)flags; /* accepted; unmapped bits are dropped exactly as the
                   * oracle's unix layer drops them */
-    if (reserveHandle != 0)
-    {
-        return STATUS_NOT_IMPLEMENTED;
-    }
-    return PspQueueUserApc(threadHandle, apcRoutine, apcArgument1, apcArgument2, apcArgument3);
+    return PspQueueUserApc(threadHandle, reserveHandle, apcRoutine, apcArgument1, apcArgument2,
+                           apcArgument3);
+}
+
+/* The LEGACY calling form over Ex2, and the whole of its difference is that
+ * its QUEUE_USER_APC_* flags ride in the low two bits of the reserve handle —
+ * `flags = (ULONG_PTR)reserve_handle & 3; reserve_handle &= ~3`
+ * (dlls/ntdll/unix/thread.c NtQueueApcThreadEx). That unpacking is BEHIND the
+ * syscall boundary, so it is the kernel's to do: PE-side ntdll is a thunk into
+ * syscall 0xd3. Two consequences the winetest reads back
+ * (dlls/ntdll/tests/thread.c test_NtQueueApcThreadEx, pinned by
+ * sem_ps/apc_reserve.c): QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC (1) leaves a
+ * NULL reserve behind and succeeds, while QUEUE_USER_APC_CALLBACK_DATA_CONTEXT
+ * (0x10000) survives the mask whole and is read as a handle naming nothing. */
+NTSTATUS NtQueueApcThreadEx(HANDLE threadHandle, HANDLE reserveHandle, PNTAPCFUNC apcRoutine,
+                            ULONG_PTR apcArgument1, ULONG_PTR apcArgument2, ULONG_PTR apcArgument3)
+{
+    ULONG flags = (ULONG)((ULONG_PTR)reserveHandle & 3);
+    reserveHandle = (HANDLE)((ULONG_PTR)reserveHandle & ~(ULONG_PTR)3);
+    return NtQueueApcThreadEx2(threadHandle, reserveHandle, flags, apcRoutine, apcArgument1,
+                               apcArgument2, apcArgument3);
 }
 
 NTSTATUS NtTestAlert(void)
