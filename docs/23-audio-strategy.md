@@ -308,10 +308,16 @@ golden-image pattern already governing GUI.
   dormant; the pin-bump PR carries the delta and the oracle-green proof. The driver
   itself adds zero fork lines (superproject code).
 - **Capture has no content source in CI.** The wav backend records output only;
-  with no input backend QEMU supplies silence at the correct cadence. Capture pairs
-  mostly assert cadence, not content, so AUD-3 is testable — but a content-asserting
-  capture test would need an audiodev that plays a file into the guest, which QEMU
-  does not offer today. Named now so it is not discovered as a surprise.
+  QEMU supplies silence at the correct cadence — *on a backend with an input side*
+  (`none`: audio/noaudio.c `no_read`), a correction AUD-3 measured: the wav backend
+  has **no input voices at all** (audio/wavaudio.c `max_voices_in = 0`), so on a wav
+  boot rx buffers return only at the RELEASE flush, and every capture-cadence verdict
+  lives on a `none`-audiodev boot. Capture pairs mostly assert cadence, not content,
+  so AUD-3 is testable — but a content-asserting capture test would need an audiodev
+  that plays a file into the guest, which QEMU does not offer today. Named now so it
+  is not discovered as a surprise. The §6d timing-honesty risk also landed exactly
+  once: `mmdevapi:capture`'s padding bounds starve on a TCG guest against
+  host-clocked delivery, parked with its signature in the manifest.
 - **Article 2.** The amendment could be refused; then nothing lands. The structure
   above (all-additive, ledger-logged, subtractable) is what makes accepting it cheap.
 

@@ -1710,16 +1710,36 @@ cmd.exe_test.exe:directory
 
 
 # --- mmdevapi (third_party/wine/dlls/mmdevapi/tests) — the audio image ------
-# AUD-2 (docs/23 §6c). These pairs boot the AUDIO image (see the (c)
-# amendment in the header): the CUI machine + the GUI stack the audio DLLs
-# import + winevsnd.drv over \Device\Snd* + the virtio-snd device on the
-# QEMU command line. Measured green on BOTH runners at activation: the
-# oracle under the §6b pulse backend (0 failures per pair), proskrnl on
-# the audio image (the AUD-2 series' activation measurement). capture and
-# spatialaudio pass by their own skip/withhold paths — the capture
-# endpoint is deliberately absent until AUD-3 builds capture, so their
-# capture-side cases skip the way a capture-less Windows box skips them.
-mmdevapi_test.exe:capture
+# AUD-2 render, AUD-3 capture (docs/23 §6c). These pairs boot the AUDIO
+# image (see the (c) amendment in the header): the CUI machine + the GUI
+# stack the audio DLLs import + winevsnd.drv over \Device\Snd* + the
+# virtio-snd device on the QEMU command line. Measured green on BOTH
+# runners at AUD-2 activation (oracle under the §6b pulse backend, 0
+# failures per pair) and RE-MEASURED at AUD-3, when the capture endpoint
+# began to exist: the capture-side cases that used to skip (the way a
+# capture-less Windows box skips them) now run against the real capture
+# path, and every pair below except mmdevapi:capture is green on both
+# runners with it (oracle 14/14, proskrnl 13/14, this TCG host).
+# (2) mmdevapi:capture is red on the TCG runner ONLY, on exactly the
+#     wall-clock-tight class docs/23 §6d predicted: capture.c:300 and :317
+#     assert GetCurrentPadding <= 2 * period right after draining N
+#     packets, and the measured paddings are 7200 and 19620 frames
+#     (period 480). The device delivers at HOST real time (QEMU's rate
+#     control runs on QEMU_CLOCK_VIRTUAL — audio/audio.c
+#     audio_rate_peek_bytes) while the pair's assert-heavy per-packet loop
+#     on a TCG-dilated uniprocessor guest consumes slower than real time,
+#     so padding accumulates no matter what the driver does — dropping
+#     deposits to keep it small would fabricate an empty ring. The same
+#     stack keeps pace with the same delivery when the consumer is lean:
+#     winmm:capture below is green (a full second recorded per format,
+#     dwBytesRecorded exact), and the run.sh audio capture halves drain at
+#     pace with zero backlog. Signature to re-check against: only
+#     capture.c padding asserts fail, both runners' other 13 pairs green.
+#     Unparks when a runner whose guest keeps real-time pace measures it
+#     (KVM — this container's /dev/kvm is a stub), or if QEMU ever offers
+#     a guest-clocked audio cadence; the constraint is the runner's clock
+#     honesty rule (docs/19 §11c), not a kernel gap, so no TODO.
+# mmdevapi_test.exe:capture
 mmdevapi_test.exe:dependency
 mmdevapi_test.exe:mmdevenum
 mmdevapi_test.exe:propstore
@@ -1727,7 +1747,10 @@ mmdevapi_test.exe:render:600
 mmdevapi_test.exe:spatialaudio
 
 # --- winmm (third_party/wine/dlls/winmm/tests) — the audio image ------------
-# Same discipline, same measurement.
+# Same discipline, same measurement. capture re-measured green on both
+# runners at AUD-3 with the real capture path under it (every waveIn
+# format records its exact second through winevsnd's deposit/resample
+# path).
 winmm_test.exe:capture
 winmm_test.exe:generated
 winmm_test.exe:mcicda
