@@ -5080,6 +5080,49 @@ for alignment 1 (an odd buffer misaligns every unit of the path), and `NtQueryOb
 offset 8 of a buffer probed for alignment 4. Both stage their headers now; the registry
 half is pinned by `tests/ntapi/sem_reg/key_name_unaligned.c`.
 
+### The IOSB's own probe — the operand every Io service shares (M10)
+
+The audit above swept output BUFFERS and stopped there, and the one operand it did not
+reach is the one every Io service has: the caller's `IO_STATUS_BLOCK`. All 23 probe sites
+demanded `sizeof(void *)` alignment of it. **The block has no alignment requirement**, by
+the same evidence the rule above rests on — the pinned Wine assigns the two fields through
+the caller's pointer and tests nothing first (`io_status->Status = status;`,
+`dlls/ntdll/unix/file.c` `NtCancelSynchronousIoFile`, and the same shape at every other
+entry point), so a misaligned but MAPPED block is served and only an inaccessible one
+refuses. `IopProbeIosb` / `IopProbeIosbToken` (`kernel/io/io.h`) are now the one statement
+of that, and `IopWriteIosb` / `IopWriteIosbStatus` the one statement of the copy-out.
+Pinned by `tests/ntapi/sem_file/iosb_probe.c`.
+
+Three things this one adds to the rule above rather than repeating:
+
+- **The alignment term was wrong by ORDERING, not merely superfluous, and a winetest is
+  what convicted it.** `KiProbeForWrite` tests alignment before accessibility, so an
+  address that is *neither* — `(IO_STATUS_BLOCK *)0xdeadbeef` — reported
+  `STATUS_DATATYPE_MISALIGNMENT` where NT reports `STATUS_ACCESS_VIOLATION`.
+  `third_party/wine` `dlls/ntdll/tests/pipe.c:725` asserts that unguarded, so it is
+  measured Windows behaviour and not merely the oracle's. Note what the *silent-garbage*
+  framing above would have missed: this instance is loud, and the caller reads the status.
+- **Two fixes make that address answer correctly, and only a mapped-AND-misaligned case
+  separates them** — dropping the requirement, or swapping the two tests. The oracle
+  serves the misaligned block, so the requirement goes; `iosb_probe.c` §2 is the case that
+  says so, and neither the winetest nor any refusal case can.
+- **Relaxing the probe without the copy-out is a kernel PANIC, not a divergence.**
+  Seventeen sites wrote the block as `iosb->Status = ...`, and the first proskrnl run of
+  the pin was a `#UD` inside `NtCancelSynchronousIoFile`, not a failed assertion. The
+  probe and the write are one rule and land together.
+
+`IopWriteIosbStatus` exists because a PARTIAL write is part of the contract, not as a
+convenience: `NtQueryVolumeInformationFile` writes `Status` and leaves `Information`
+untouched for a bad handle (the oracle's early `return io->Status = status;`), and a
+single two-field writer would have quietly widened it.
+
+**What this deliberately did NOT change**, so the next reader does not assume it did: the
+SET direction's short-buffer status. The oracle answers `STATUS_INVALID_PARAMETER_3` per
+class (`dlls/ntdll/unix/file.c:5245` and its neighbours) where `NtSetInformationFile` here
+answers `STATUS_INFO_LENGTH_MISMATCH` from the shared `needed` gate that the QUERY
+direction correctly uses. Measured while writing the pin above and filed as issue #219;
+it is about which status a class owes, not about the block.
+
 Outside the alignment pattern, the audit found the CPU area's reset-state flag being
 CLEARED where the oracle raises it. `WOW64_CPURESERVED_FLAG_RESET_STATE` is wow64cpu's only
 signal that the guest state it is about to resume was rewritten under it: every syscall

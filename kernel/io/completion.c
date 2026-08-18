@@ -182,7 +182,7 @@ NTSTATUS NtRemoveIoCompletion(HANDLE handle, PULONG_PTR keyOut, PULONG_PTR value
     }
     if (NT_SUCCESS(status))
     {
-        status = KiProbeForWrite(ioStatusBlock, sizeof(*ioStatusBlock), sizeof(void *));
+        status = IopProbeIosb(ioStatusBlock);
     }
     if (!NT_SUCCESS(status))
     {
@@ -209,8 +209,7 @@ NTSTATUS NtRemoveIoCompletion(HANDLE handle, PULONG_PTR keyOut, PULONG_PTR value
     {
         *keyOut = packet.key;
         *valueOut = packet.value;
-        ioStatusBlock->Status = packet.status;
-        ioStatusBlock->Information = packet.information;
+        IopWriteIosb(ioStatusBlock, packet.status, packet.information);
     }
     ObDereferenceObject(port);
     return status;
