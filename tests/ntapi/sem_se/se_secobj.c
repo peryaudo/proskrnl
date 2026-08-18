@@ -197,6 +197,47 @@ START_TEST(se_secobj)
         ok(memcmp(big_out + big->Dacl, big_acl, n) == 0, "big DACL came back changed");
     }
 
+    /* --- a CREATE-TIME descriptor takes the same defaulting a set does -----
+     *
+     * OBJECT_ATTRIBUTES.SecurityDescriptor is not stored as handed over: the
+     * oracle's object creation runs it through the very merge above with every
+     * info bit on (server/object.c create_object / create_named_object ->
+     * default_set_sd -> set_sd_defaults_from_token), so a create naming only a
+     * DACL comes back with the token's owner and primary group filled in. The
+     * discriminating case is exactly this one — an SD carrying every part is
+     * indistinguishable from a raw copy. */
+    {
+        HANDLE created = NULL;
+        static const WCHAR create_path[] = W("\\BaseNamedObjects\\sem_se_secobj_create");
+        BYTE create_sd[256];
+
+        at = sizeof(ACL);
+        at += put_ace(acl_buf + at, ACCESS_ALLOWED_ACE_TYPE, 0, EVENT_ALL_ACCESS, world.buf);
+        put_acl(acl_buf, at, 1);
+        build_sd(create_sd, NULL, NULL, 1, acl_buf, at);
+
+        init_attr(&attr, &name, create_path, sizeof(create_path) / sizeof(WCHAR) - 1);
+        attr.SecurityDescriptor = create_sd;
+        status = NtCreateEvent(&created, EVENT_ALL_ACCESS | READ_CONTROL, &attr, NotificationEvent,
+                               FALSE);
+        ok(status == STATUS_SUCCESS, "create with sd -> %08lx", (unsigned long)status);
+
+        memset(buf, 0xcc, sizeof(buf));
+        retlen = 0;
+        status = NtQuerySecurityObject(created,
+                                       OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                                           DACL_SECURITY_INFORMATION,
+                                       buf, sizeof(buf), &retlen);
+        ok(status == STATUS_SUCCESS, "query create-time sd -> %08lx", (unsigned long)status);
+        ok(sd->Owner != 0 && equal_sid(buf + sd->Owner, expect_owner.buf),
+           "create-time owner not defaulted from the token");
+        ok(sd->Group != 0 && equal_sid(buf + sd->Group, expect_owner.buf),
+           "create-time group not defaulted from the token");
+        ok(sd->Dacl != 0 && memcmp(buf + sd->Dacl, acl_buf, at) == 0,
+           "create-time DACL not the one given");
+        NtClose(created);
+    }
+
     NtClose(narrow);
     NtClose(event);
 }
