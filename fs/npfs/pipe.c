@@ -1851,6 +1851,7 @@ const IO_VFS_OPS NpfsVfsOps = {
     .Close = NpfsVfsClose,
     .GetInfo = NpfsGetInfo,
     .QueryName = NpfsQueryName,
+    .namedInObjectNamespace = TRUE,
     .Read = NpfsRead,
     .Write = NpfsWrite,
     .Flush = NpfsFlush,

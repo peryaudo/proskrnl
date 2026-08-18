@@ -3595,6 +3595,96 @@ the consumer. At the floor exactly, the class succeeds into an overflow: the cou
 reported in full, one `WCHAR` of name fits, and `Information` counts the 8 bytes consumed
 rather than the bytes owed.
 
+## What a FILE handle is called in the object namespace
+
+`NtQueryObject(ObjectNameInformation)` answered **success with an empty
+`UNICODE_STRING`** for every file handle in the system. A `FILE_OBJECT` is never
+linked into the Ob namespace — the **device** is, and everything past it belongs
+to that device — so the generic walk (`ObpFullNameLength` / `ObpWriteFullName`)
+found no name for any of them and reported every one as nameless. That is
+Art. 12's fabricated-plausible answer with no stub in it: a caller told a named
+pipe has no name cannot tell two pipes apart, and is not told that it cannot.
+It is the same defect `CmpQueryKeyObjectName` removed one type over, and
+`ntdll:pipe` `:2849`/`:2881` are the assertions that could see it.
+
+`IoFileObjectType` now carries the `queryName` hook, and the composition lives
+in **one** place (`kernel/io/file.c` `IopQueryFileObjectName`): the device
+object's own namespace name, plus the volume-relative path the filesystem's
+`IO_VFS_OPS.QueryName` already builds for `FileNameInformation`. A filesystem's
+only say is whether its files are in a namespace at all
+(`IO_VFS_OPS.namedInObjectNamespace`) — so no FS grows a second name source
+(Art. 11), and the two spellings of "what is this file called" cannot drift.
+That is the oracle's own shape, where the answer is per object type: an end
+defers to its pipe and the pipe walks to the device
+(`server/named_pipe.c` `pipe_end_get_full_name` → `named_pipe_get_full_name` →
+`default_get_full_name`), a disk file reports the name its fd captured
+(`server/fd.c` `default_fd_get_full_name`), and a console object has none at all
+(`server/object.c` `no_get_full_name`).
+
+Three rules came out of it and none follows from the class name:
+
+- **"No name at all" and "no name for THIS one" are different answers.** A
+  device that is not in a namespace answers SUCCESS with an empty string — the
+  oracle's `no_get_full_name` reply, which `server/handle.c`
+  `DECL_HANDLER(get_object_name)` turns into a zero-length one — while a pipe
+  that HAS a namespace and no name in it **refuses**, `STATUS_OBJECT_PATH_INVALID`.
+  So proskrnl's condrv, `\Device\Fb0` and the sound devices stay nameless on
+  purpose and match the oracle for doing so, and only `fat32` and `npfs` opt in.
+  The filesystem spells the same "no name" fact `STATUS_PIPE_DISCONNECTED`
+  through `FileNameInformation`, because that is what the oracle's *other* arm
+  says (`pipe_end_get_file_info`): one fact, two syscalls, two names for it.
+  **Two devices are a KNOWN REMAINING GAP rather than a measured answer**, and
+  the distinction matters because the comment beside them will be read as a
+  precedent: `\Device\Null` and `\Device\MountPointManager` still report the
+  empty name, while the oracle reports the device's own name for them
+  (`server/device.c` `device_file_get_full_name`; `dlls/ntdll/tests/om.c` pins
+  `\Device\Null` with no `todo_wine`, and `ntdll:om` is parked for an unrelated
+  oracle crash so nothing convicts it today). What keeps them out is mechanical
+  — their `QueryName` answers the ABSOLUTE device path where the composition
+  wants the volume-relative part — so opting them in means moving what
+  `FileNameInformation` reports for them, which is its own item with its own pin.
+- **The too-short status belongs to the TYPE, not to the query.** Every
+  file-ish `get_full_name` in the oracle sets `STATUS_BUFFER_OVERFLOW`
+  explicitly where the generic walk leaves `STATUS_INFO_LENGTH_MISMATCH`
+  (`default_fd_get_full_name`, `named_pipe_get_full_name`,
+  `named_pipe_dir_get_full_name`), so a registry key and a file answer
+  *differently* to the same mistake — `OBJECT_TYPE.nameTooShortStatus`. Only a
+  buffer between `sizeof(OBJECT_NAME_INFORMATION)` and the full size can see it:
+  below the struct the answer is `STATUS_INFO_LENGTH_MISMATCH` on both, forced
+  one layer up (`dlls/ntdll/unix/file.c` `NtQueryObject`).
+- **A name too long to be REPORTED is `STATUS_NAME_TOO_LONG`, refused below the
+  size protocol.** The class reports a `UNICODE_STRING`, whose `Length` and
+  `MaximumLength` are `USHORT`s, so a name past `0xfffc` bytes cannot be
+  described — and it is reachable, because a pipe's name is the caller's
+  `ObjectName` bounded by that same `USHORT`: 32760 characters relative to
+  `\Device\NamedPipe` composes to 65556. A **too-small** buffer is still
+  answered the ordinary way, `STATUS_BUFFER_OVERFLOW` carrying the whole 65574,
+  because that is what the oracle does and it is measurable. Only above it does
+  the oracle stop being a spec: it answers SUCCESS reporting `Length` 20 and
+  `MaximumLength` 22 — 65556 truncated into the `USHORT` by
+  `p->Name.Length = res` (`dlls/ntdll/unix/file.c` `NtQueryObject`) — which
+  names a *different* object. Repeating that is Art. 12's fabricated answer;
+  answering the length error instead would spin any caller that grows its buffer
+  and retries (that same file's `server_get_name_info` is such a loop). The
+  refusal is `kernel/ob/handle.c`'s, not the File type's, because it is a
+  property of the ANSWER's shape; `object_name.c` §7 pins the short-buffer half
+  against the oracle and the refusal in a `beyond_oracle` block.
+- **The name goes with the PIPE's name, which goes with the last INSTANCE.**
+  A client that outlives its server still reports the pipe's path while a second
+  instance is open, and refuses once the last one closes — the same lifetime
+  "How long a pipe outlives its NAME" states, asked through a different syscall.
+
+**One thing the two runners are allowed to disagree about, and it is deliberate:
+the PREFIX of a disk file's name.** The oracle reports the name its fd captured
+at open — `\??\C:\prstest\objname.txt`, the DOS-device spelling the caller used
+— because Wine's `C:` is a host directory and the server has nothing else to
+report. proskrnl composes its volume device object's name,
+`\Device\HarddiskVolume1\prstest\objname.txt`, which is what NT answers; tuning
+it to the `\??\` form would be tuning to a Wine artefact. So the pin asserts what
+is the same on both — the name ENDS with the file's path, a directory's name is
+its file's name minus the last component, and the whole length protocol — and
+says so rather than weakening. Pinned by `tests/ntapi/sem_pipe/object_name.c`.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by

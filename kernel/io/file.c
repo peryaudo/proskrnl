@@ -92,12 +92,98 @@ OBJECT_TYPE IoDeviceType = {
     .closeProcedure = 0,
 };
 
+/* IoFileObjectType.queryName: what NtQueryObject(ObjectNameInformation)
+ * reports for a FILE handle.
+ *
+ * A file object is never linked into the Ob namespace -- the DEVICE is, and
+ * everything past it belongs to that device -- so the generic walk finds no
+ * name for any of them and reports every one as nameless. That is Art. 12's
+ * fabricated answer with no stub in it (a caller told a named pipe has no name
+ * cannot tell two pipes apart, and is not told that it cannot), and it is the
+ * same defect CmpQueryKeyObjectName removed one type over.
+ *
+ * The name is composed here rather than by each filesystem, so there is ONE
+ * statement of "device plus volume-relative path" (Art. 11) and a device's
+ * only say is whether its files are in the namespace at all
+ * (IO_VFS_OPS.namedInObjectNamespace). That mirrors the oracle, where the
+ * answer is per object type: an end defers to its pipe and the pipe walks to
+ * the device (server/named_pipe.c pipe_end_get_full_name ->
+ * named_pipe_get_full_name -> default_get_full_name), a disk file reports the
+ * name its fd captured (server/fd.c default_fd_get_full_name), and a console
+ * object has none at all (no_get_full_name).
+ *
+ * A device that HAS a namespace but no path for THIS file refuses with
+ * STATUS_OBJECT_PATH_INVALID, which is what the oracle turns its own
+ * "no name" into on this query (named_pipe_get_full_name's `if (!(ret =
+ * default_get_full_name(...))) set_error( STATUS_OBJECT_PATH_INVALID )`) --
+ * the FS spells the same fact STATUS_PIPE_DISCONNECTED through
+ * FileNameInformation, because that is what the oracle's OTHER arm says
+ * (pipe_end_get_file_info). One fact, two syscalls, two names for it.
+ * Pinned by tests/ntapi/sem_pipe/object_name.c. */
+static NTSTATUS IopQueryFileObjectName(PVOID body, WCHAR *out, ULONG *nameBytes)
+{
+    PFILE_OBJECT file = body;
+    const IO_VFS_OPS *ops = file->device->ops;
+    if (!ops->namedInObjectNamespace)
+    {
+        *nameBytes = 0; /* nameless as a class, not nameless by accident */
+        return STATUS_SUCCESS;
+    }
+
+    USHORT deviceBytes = ObpFullNameLength(ObpGetHeader(file->device));
+    /* Every device this arm can reach was published by name (IoPublishDevice
+     * panics otherwise), so the walk cannot come back empty. */
+    ASSERT(deviceBytes != 0);
+
+    /* The measuring pass has no caller buffer, and QueryName reports the full
+     * length whatever it can store -- so it gets a staging buffer of its own,
+     * the same 260-WCHAR local kernel/io/query.c IopFillName measures into. */
+    WCHAR staging[260];
+    WCHAR *relativeOut = staging;
+    ULONG relativeCapacity = sizeof(staging);
+    if (out != 0)
+    {
+        ASSERT(*nameBytes >= deviceBytes);
+        relativeOut = out + deviceBytes / sizeof(WCHAR);
+        relativeCapacity = *nameBytes - deviceBytes;
+    }
+    ULONG relativeBytes = 0;
+    NTSTATUS status = ops->QueryName(file, relativeOut, relativeCapacity, &relativeBytes);
+    if (!NT_SUCCESS(status) && status != STATUS_BUFFER_OVERFLOW)
+    {
+        /* The device has a namespace and no path for THIS file. Every refusal
+         * QueryName can make today is that statement -- npfs's
+         * STATUS_PIPE_DISCONNECTED for an unnamed or unlinked pipe, fat32's
+         * STATUS_OBJECT_PATH_INVALID for a chain past 64 components -- and the
+         * object namespace has one name for it. */
+        return STATUS_OBJECT_PATH_INVALID;
+    }
+    /* The two passes must agree, and the second is the one with the caller's
+     * buffer: an overflow there would mean the length moved between them,
+     * which nothing can do (no blocking point separates the calls, Art. 3). */
+    ASSERT(out == 0 || status == STATUS_SUCCESS);
+
+    /* No ceiling here: a name too long to REPORT is the caller's contract with
+     * OBJECT_NAME_INFORMATION, refused once at kernel/ob/handle.c rather than
+     * per type. */
+    *nameBytes = (ULONG)deviceBytes + relativeBytes;
+    if (out != 0)
+    {
+        ObpWriteFullName(ObpGetHeader(file->device), out);
+    }
+    return STATUS_SUCCESS;
+}
+
 OBJECT_TYPE IoFileObjectType = {
     .name = "File",
     .validAccess = FILE_ALL_ACCESS,
     .waitable = TRUE, /* born signaled; see io.h */
     .deleteProcedure = IopDeleteFileObject,
     .closeProcedure = IopCloseFileObject,
+    .queryName = IopQueryFileObjectName,
+    /* Every file-ish get_full_name in the oracle sets this one explicitly
+     * where the generic walk leaves STATUS_INFO_LENGTH_MISMATCH (ob.h). */
+    .nameTooShortStatus = STATUS_BUFFER_OVERFLOW,
     /* The real NT generic mapping, as wineserver's file_type
      * (third_party/wine server/file.c). Without it a GENERIC_READ open fell
      * into the always-allow branch and was granted FILE_ALL_ACCESS — whose

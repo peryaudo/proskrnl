@@ -921,7 +921,7 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
          * leaf name apart (docs/review-2026-07 §9). */
         /* A type that keeps its own namespace answers for itself, and its
          * refusal precedes the sizing below (ob.h OBJECT_TYPE.queryName). */
-        USHORT nameBytes;
+        ULONG nameBytes;
         if (header->type->queryName != 0)
         {
             status = header->type->queryName(entry->body, 0, &nameBytes);
@@ -929,11 +929,10 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             {
                 return status;
             }
-            /* A hook that SUCCEEDS owes a name. Zero would fall through to the
-             * empty-UNICODE_STRING arm below — which is the fabricated answer
-             * this hook exists to remove (ob.h), and it would come back as a
-             * plain success. A type with nothing to report refuses instead. */
-            ASSERT(nameBytes != 0);
+            /* Zero falls through to the empty-UNICODE_STRING arm below, which
+             * is the answer for an object with no name AT ALL — the oracle's
+             * no_get_full_name reply (ob.h). "No name for THIS one" is a
+             * refusal, and arrives above. */
         }
         else
         {
@@ -947,7 +946,35 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             {
                 memcpy(returnLength, &needed, sizeof(needed));
             }
+            /* Which length error is the TYPE's to say, and only for a buffer
+             * that holds the fixed struct: below that the answer is forced
+             * from above (ob.h OBJECT_TYPE.nameTooShortStatus). */
+            if (length >= sizeof(OBJECT_NAME_INFORMATION) && header->type->nameTooShortStatus != 0)
+            {
+                return header->type->nameTooShortStatus;
+            }
             return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        /* The buffer is big enough and the ANSWER still may not be: the shape
+         * this class reports is a UNICODE_STRING, whose Length and
+         * MaximumLength are USHORTs, so a name past 0xfffc bytes cannot be
+         * described at all. It is reachable — a pipe's name is the caller's
+         * ObjectName, bounded only by that same USHORT, so a 32760-character
+         * name relative to \Device\NamedPipe composes past the ceiling.
+         *
+         * The refusal sits BELOW the size protocol on purpose, which is where
+         * the oracle can still be followed: a too-small buffer gets
+         * STATUS_BUFFER_OVERFLOW carrying the whole length, measured. Above it
+         * the oracle has no valid answer — `p->Name.Length = res` truncates the
+         * ULONG into the USHORT (dlls/ntdll/unix/file.c NtQueryObject), so a
+         * 65556-byte name comes back as a 20-byte one, i.e. as a DIFFERENT
+         * object's. Repeating that would be Art. 12's fabricated answer, and
+         * answering the length error instead would spin every caller that grows
+         * its buffer and retries (that file's own server_get_name_info is such
+         * a loop). Pinned by tests/ntapi/sem_pipe/object_name.c §7. */
+        if (nameBytes > 0xfffcu)
+        {
+            return STATUS_NAME_TOO_LONG;
         }
         status = KiProbeForWrite(buffer, needed, sizeof(ULONG));
         if (!NT_SUCCESS(status))
@@ -967,7 +994,7 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             WCHAR *nameOut = (WCHAR *)((char *)buffer + sizeof(OBJECT_NAME_INFORMATION));
             if (header->type->queryName != 0)
             {
-                USHORT writtenBytes = nameBytes;
+                ULONG writtenBytes = nameBytes;
                 status = header->type->queryName(entry->body, nameOut, &writtenBytes);
                 if (!NT_SUCCESS(status))
                 {
@@ -981,7 +1008,7 @@ NTSTATUS NtQueryObject(HANDLE handle, OBJECT_INFORMATION_CLASS infoClass, PVOID 
             }
             nameOut[nameBytes / sizeof(WCHAR)] = 0;
             staged.Name.Buffer = nameOut;
-            staged.Name.Length = nameBytes;
+            staged.Name.Length = (USHORT)nameBytes; /* guarded above */
             staged.Name.MaximumLength = (USHORT)(nameBytes + sizeof(WCHAR));
         }
         memcpy(buffer, &staged, sizeof(staged));

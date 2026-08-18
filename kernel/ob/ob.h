@@ -85,12 +85,36 @@ typedef struct OBJECT_TYPE
      * so the length cannot move; the second call's report is asserted equal.
      * A refusal from EITHER call is the caller's status, and it is taken
      * before the buffer-size protocol — a deleted key has no path, so its
-     * name query fails however big the buffer is. A hook that SUCCEEDS must
-     * report a non-zero length (asserted): zero is the empty-name answer this
-     * hook exists to stop, and reporting it would be a plain success carrying
-     * nothing. A type with nothing to say refuses. NULL = the Ob namespace
-     * walk (ObpFullNameLength / ObpWriteFullName). */
-    NTSTATUS (*queryName)(PVOID body, WCHAR *out, USHORT *nameBytes);
+     * name query fails however big the buffer is.
+     *
+     * A hook that succeeds reporting ZERO bytes says "objects of this kind
+     * have no name at all", and the caller then answers SUCCESS with an empty
+     * UNICODE_STRING. That is not the fabricated answer this hook exists to
+     * remove: it is a measured one, and whole classes of object really give it
+     * — every type carrying the oracle's `no_get_full_name` (server/object.c;
+     * the console objects are the live instance) returns NULL with no error
+     * set, and server/handle.c DECL_HANDLER(get_object_name) turns that into a
+     * zero-length reply. The distinction the hook has to keep is between "no
+     * name" and "no name FOR THIS ONE": a pipe with no name REFUSES. So a type
+     * whose objects are always named asserts the non-zero length itself
+     * (kernel/cm/registry.c CmpQueryKeyObjectName) rather than the caller
+     * asserting it for everyone. NULL = the Ob namespace walk
+     * (ObpFullNameLength / ObpWriteFullName). */
+    NTSTATUS (*queryName)(PVOID body, WCHAR *out, ULONG *nameBytes);
+
+    /* The status a buffer too small for that name gets — which is a property
+     * of WHICH get_full_name answered, not of the query. The generic walk
+     * leaves the length error to its caller (server/object.c
+     * default_get_full_name's `set_error( STATUS_INFO_LENGTH_MISMATCH )`),
+     * while every file-ish arm sets STATUS_BUFFER_OVERFLOW explicitly
+     * (server/fd.c default_fd_get_full_name, server/named_pipe.c
+     * named_pipe_get_full_name / named_pipe_device_get_full_name /
+     * named_pipe_dir_get_full_name). Only a buffer between the fixed struct's
+     * size and the full size can see it: shorter than the struct is
+     * STATUS_INFO_LENGTH_MISMATCH whatever the type says, because the layer
+     * above forces it (dlls/ntdll/unix/file.c NtQueryObject). 0 = the generic
+     * STATUS_INFO_LENGTH_MISMATCH. */
+    NTSTATUS nameTooShortStatus;
 
     /* CUI-6: the small per-type id SystemHandleInformation entries carry.
      * Types are C globals with no registry, so the id is minted lazily by

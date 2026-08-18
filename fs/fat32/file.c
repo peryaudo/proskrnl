@@ -1524,6 +1524,7 @@ const IO_VFS_OPS FatVfsOps = {
     .Rename = FatVfsRename,
     .ReadDirectory = FatVfsReadDirectory,
     .QueryName = FatVfsQueryName,
+    .namedInObjectNamespace = TRUE,
     .QueryVolumeInfo = FatVfsQueryVolumeInfo,
     .SetVolumeLabel = FatVfsSetVolumeLabel,
 };
