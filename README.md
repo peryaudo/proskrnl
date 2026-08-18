@@ -170,6 +170,44 @@ local macOS Wine.
 
 ## Status
 
+**AUD-3 complete** — capture, the audio path's last milestone (`docs/02`;
+the design is `docs/23` §4a "Capture is the mirror"). The kernel driver
+consumes rxq: PREPARE on a capture stream posts the whole slot set as rx
+chains, `NtReadFile` of exactly `period_bytes` parks until the device
+completes a captured period (the capture clock emerges from rx
+completion — reached through NtReadFile's existing blocking-frontier
+row), RELEASE's flush unparks the reader with what was captured, and the
+used length — not the status footer, which the pinned QEMU model writes
+immediately after the payload — carries the completion. A flushed short
+period relays as a short success, never padded to fabricated silence
+(Art. 12). winevsnd.drv grew its capture half (zero fork lines — the
+AUD-2 seam already dispatched the entries): the eCapture endpoint from
+the node's own INFO claim, a TIME_CRITICAL capture thread whose blocking
+read paces deposits into every started stream's ring at the stream's own
+rate/format, and winealsa's exact get/release_capture_buffer protocol.
+The capture thread keeps draining at pace while clients are stopped —
+stopping instead lets QEMU's rate control bank the gap and dump it as a
+burst at the next Start (measured; audio/audio.c audio_rate_peek_bytes).
+Capture exclusivity mirrors render's docs/03 deviation
+(AUDCLNT_E_DEVICE_IN_USE; audiodg-lite stays HACK-008, reserved).
+`tests/run/run.sh audio` grew two `none`-audiodev boots — the one
+backend with an input side; wav has none (audio/wavaudio.c
+max_voices_in=0), the docs/23 §7 cadence claim corrected — asserting
+silence content and exact accounting, never speed: the device-contract
+client ([KTEST] audio capture PASS periods=8 pos=18432) and the
+event-driven WASAPI client (packets=16 frames=7680). The winetest
+capture pairs re-measured with the endpoint real: oracle 14/14;
+proskrnl 13/14 — `winmm:capture` records every format's exact second,
+and `mmdevapi:capture` is parked with its signature (its padding <=
+2*period asserts starve on a TCG guest against host-clocked delivery,
+the docs/23 §6d class; unparks on a real-time-pace runner). Couldn't be
+achieved within the milestone: a content-asserting capture test (QEMU
+offers no input backend that plays a file — the docs/23 §7 gap stands),
+and mmdevapi:capture green under TCG. What's next: the audio path is
+done; the open frontier is Net-3 — the resolver seam (`WS_CALL` +
+`wsresolv.dll`), minimal `\Device\Nsi`, and the off-the-shelf HTTPS
+fetch.
+
 **Net-2 complete** — `\Device\Afd`, the socket boundary Wine's ws2_32
 issues (`docs/02` "Net-2"; the design is `docs/24` §5). The stack and its
 netd thread now come up on every image (loopback needs no NIC), and
