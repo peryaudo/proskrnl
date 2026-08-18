@@ -1502,14 +1502,19 @@ pairs.
 **I am explicitly unsure of this.** It is a pattern across three logs, not
 a diagnosis. Do not schedule the fix; schedule the triage.
 
-### W10 — The three wedges (**`ntdll:thread` is DONE and GREEN; the other two are NOT one bug**)
+### W10 — The three wedges (**all three are DONE; `ntdll:thread` and `ntdll:sync` are GREEN and in the gate, `ntdll:threadpool` is green on proskrnl and red on the ORACLE**)
 
 `ntdll:sync`, `ntdll:thread` and `ntdll:threadpool` all hung to their
-per-pair timeout. This item used to say "they are probably one bug and
-should be triaged together". **They were measured separately and that guess
-is refuted**: `ntdll:thread` took two unrelated fixes — the wedge, then the
-reserve objects behind the panic it uncovered — and is now GREEN, while the
-other two are unchanged by either.
+per-pair timeout, and this item used to say "they are probably one bug and
+should be triaged together". **The truth is 2 + 1, and neither the guess nor
+its refutation had it right.** `ntdll:thread` took two unrelated fixes — the
+wedge, then the reserve objects behind the panic it uncovered — and is GREEN.
+`ntdll:sync` and `ntdll:threadpool` turned out to share ONE cause, the
+completion port's wait contract; `sync` is GREEN, and `threadpool` runs to its
+summary on proskrnl with zero failures but cannot join the gate because the
+ORACLE fails it. An earlier revision recorded "measured separately, the
+one-bug guess is refuted" on the strength of `ntdll:thread`'s fix moving
+neither of the others — a true measurement of the wrong pairing.
 
 **`ntdll:thread`'s wedge — DONE.** It was
 `THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE` (0x40), and the shape is worth
@@ -1599,24 +1604,117 @@ nothing for it either — `struct reserve`'s `/* BYTE *memory */` is commented
 out), so the same handle posts every packet, and that is pinned rather than
 assumed.
 
-**The other two are still open, and each is now its own item.** Both were
-re-measured after the fix and neither moved:
+**`ntdll:sync`'s wedge is DONE and the pair is GREEN** — 429 tests executed,
+1 todo, 0 failures, the SAME count as the oracle, in 15 s where it used to
+burn the full 300 s. It was the completion PORT's wait contract, and it was
+**not** in `ke/` at all.
 
-- `ntdll:sync` prints its own summary — "0 tests executed … 0 failures" —
-  and only THEN hangs. The subtest body finishes; the PROCESS does not. That
-  is a much narrower question than "it wedges".
-- `ntdll:threadpool`'s old block ("a HANG with no output at all, not one
-  assertion runs") was **stale**: it reaches `threadpool.c:1622` with two
-  todo markers behind it before hanging.
+**This document and the manifest both had the shape exactly backwards, and
+that correction is worth more than the code.** Both said the pair "prints its
+own summary — 0 tests executed … 0 failures — and only THEN hangs. The subtest
+body finishes; the PROCESS does not." Every part of that is wrong. The line
 
-They remain disproportionately expensive — each costs its full per-pair
-timeout on every sweep — and `docs/03` records that the sweep ABORTS on
-timeout rather than running more pairs against a wedged console.
+```
+0188:sync: 0 tests executed (0 marked as todo, 0 as flaky, 0 failures), 0 skipped.
+```
+
+is the SUBPROCESS `test_tid_alert` spawns at `sync.c:853`, whose `START_TEST`
+returns on the first line for `argc > 2`. The oracle prints the identical line
+from its own child pid and then the real summary from the main one. The main
+process was wedged in `test_completion_port_scheduling` — the function
+immediately after `test_tid_alert` — with seven test bodies already run and
+uncounted, because a process that never exits never prints its summary.
+**"0 failures" was a claim about a body that had not run**: `§4` trap 2, in the
+spelling where the stop is a wedge and the misreading came from an ambiguous
+pid. The narrowing that came from it ("something is still parked at exit")
+pointed at process teardown, which is nowhere near the bug.
+
+**The bug was that a completion port had ONE wait channel where the server has
+two**, and they answer different questions:
+
+- the port HANDLE's signal state is `completion->sync`, an internal sync
+  created MANUAL-reset and clear (`create_internal_sync( 1, 0 )`,
+  `server/event.c`). `add_completion` signals it only for a packet that
+  survives the remover fan-out, `remove_completion` clears it when the queue
+  empties, `completion_close_handle` signals it on the last handle. So a
+  handle wait wakes EVERY waiter and **consumes nothing**;
+- a parked `NtRemoveIoCompletion(Ex)` is a `completion_wait` on
+  `completion->wait_queue`, pushed at the HEAD and served head-first, i.e.
+  **LIFO**, and it takes the packet **before** the handle's signal state ever
+  sees it.
+
+proskrnl had the port body begin with a `KSEMAPHORE` counting queued packets,
+with a comment saying "nothing on the CUI path waits on port handles". The
+winetest is exactly that consumer, and the semaphore is wrong for it in both
+directions: a handle wait **ate a packet**, and one packet woke exactly **one**
+of two handle waiters. `test_completion_port_scheduling`'s first three lines
+park both threads on the handle and post one packet, so the second thread never
+woke and the main thread's `WaitForSingleObject( p[1].test_ready, INFINITE )`
+was the hang. Rebuilt in `kernel/io/completion.c` as the server's two channels
+(`IOP_COMPLETION_WAITER` on the parked thread's own kernel stack, `queued` as
+the handle's notification event), pinned by `tests/ntapi/sem_port/port_wait.c`.
+
+Four things worth carrying:
+
+- **A wrong dispatcher object is an accepted-and-dropped INPUT one level up.**
+  The semaphore did not fabricate an answer and no status was wrong; what it
+  dropped was the distinction between "wake me when there is work" and "give me
+  the work". Same tell as the rest of that family (`docs/21` W5): a value
+  faithfully maintained, and the wrong consumer reading it.
+- **The comment WAS the bug report, and it had been true when written.**
+  "Nothing on the CUI path waits on port handles" was an accurate statement
+  about the consumers of the day, frozen into a data-structure choice. The
+  winetest gate became a consumer and nothing re-read the sentence. A comment
+  that justifies a shortcut by naming the callers is a claim with an expiry
+  date.
+- **The decision and the transition had to be one step**, which is the only
+  thing this item added outside `io/`. "Does a parked remover take this packet,
+  or does the port's handle go signalled?" is read from lock-guarded state, so
+  `KeSetEvent` — which acquires the lock itself — cannot be the transition.
+  `KiSetEventLocked` / `KiClearEventLocked` (`kernel/ke/event.c`) are the
+  lock-held halves, and `KeSetEvent`/`KeResetEvent` now go through them, so
+  there is still one statement of each transition (Art. 11).
+- **The waiter block lives on the parked thread's KERNEL STACK, and that is
+  what makes its ownership trivial** (G11): the parked syscall is already
+  holding the port reference that keeps the object alive around it, and the
+  block is unlinked under the dispatcher lock before the frame returns. The one
+  case that needs saying out loud is a hand-off that races the deadline — the
+  poster has already dequeued the packet, so `served` beats the wait's own
+  `STATUS_TIMEOUT` and the packet is not dropped.
+
+**`ntdll:threadpool`'s wedge went with it, and this document's "they are three
+separate bugs" is half wrong in the direction nobody checked.** ntdll's
+threadpool is built on exactly the completion-port surface this item rebuilt
+(`dlls/ntdll/threadpool.c` dispatches every `Tp*` through one
+`NtCreateIoCompletion` / `NtRemoveIoCompletion(Ex)` loop), and the pair was
+re-measured after the rebuild without any further work: it runs to its summary
+in ~30 s with **4721 tests executed, 2 todo, 0 failures**. So `ntdll:sync` and
+`ntdll:threadpool` WERE one bug; only `ntdll:thread` was separate. The lesson
+is not "the three-wedges guess was right after all" — it is that *the guess was
+never tested against the right pairing*, and the pair that shared a cause was
+the one nobody grouped with `sync`.
+
+**It still cannot join the gate, and the reason changed completely.** The
+ORACLE leg fails it, three runs for three, and the failure cannot be this
+tree's: the oracle leg runs the test binary under the pinned Wine and executes
+no kernel code. Two things in it — `threadpool.c:1622`'s "Test succeeded inside
+todo block", whose predicate is a ±50 ms comparison of two timer callbacks'
+tick stamps (host scheduling decides it, exactly `ntdll:time`'s shape), and an
+`err:heap:validate_used_block` on every run. Art. 6 says a red oracle convicts
+nothing, so the pair stays commented out — under the manifest's rule (b), with
+no `TODO: Implement`, and with the proskrnl number recorded because that
+number IS the measurement.
 
 **Art. 6 applies with full force**: `docs/12` names `ke/{wait,apc}.c` as
 the "subtly wrong yet still runs" zone with multi-month bug latency. A
 change that makes the hang stop is not a fix; only a differential test
 convicts.
+
+**One accepted-and-dropped input is left in this file and is deliberately NOT
+built here**: `NtRemoveIoCompletionEx`'s `alertable` is still `(void)alertable`.
+The server has a real arm for it (`remove_completion`'s `STATUS_USER_APC` when
+a user APC is queued and no packet is ready), no assertion in `ntdll:sync`
+reaches it, and it needs a pin of its own. It is a work item, not a residue.
 
 ### W11 — npfs (**DONE — `ntdll:pipe` is at its todo floor and is now category 2**)
 
@@ -3408,6 +3506,18 @@ Pairs and framings that will consume effort and unblock nothing.
    W20), so the rule of thumb is a prior and not a law — what does not change
    is that only removing the stop can tell you which case you are in.
 
+   **`ntdll:sync` is the nastiest spelling so far, because the pair APPEARED
+   to have reported** (W10). Its block read "prints its own summary — 0 tests
+   executed, 0 failures — and only then hangs", and concluded the body
+   finished and only the process was stuck. That summary line belonged to a
+   CHILD process the test spawns at `sync.c:853`, whose `START_TEST` returns
+   on its first line; the main process was wedged seven test bodies in, and a
+   process that never exits never prints. **Check the pid on a summary line
+   against the pid the rest of the run used**, and check the ORACLE's log for
+   the same subtest — it printed two summaries where proskrnl printed one,
+   which was the whole tell and cost three revisions of this document for want
+   of a `diff`.
+
 3. **A crash is usually a cascade, not the bug — and "zero failures before
    the crash" does not make it one.** `kernel32:volume` and
    `kernel32:resource` both `0xc0000005` *after* a run of `ok()` failures
@@ -3493,11 +3603,19 @@ Pairs and framings that will consume effort and unblock nothing.
 
 - **W9's shared cause** is a pattern across three logs, not a diagnosis.
 - ~~**The three wedges being one bug** (W10) is a guess from their shape.
-  They may be three.~~ **Measured and refuted.** `ntdll:thread`'s wedge was
+  They may be three.~~ ~~**Measured and refuted.** `ntdll:thread`'s wedge was
   `THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE`; fixing it left `ntdll:sync`
-  and `ntdll:threadpool` bit-for-bit where they were. Three shapes that all
-  end in a timeout are not evidence of one cause — the timeout is the
-  harness, not the bug.
+  and `ntdll:threadpool` bit-for-bit where they were.~~ **Settled, and it is
+  2 + 1.** The refutation above was a true measurement of the wrong pairing:
+  `ntdll:thread` really was its own bug, and the other two really did share
+  one — the completion port's wait contract, which fixed both in one commit
+  with no second measurement needed. So "three shapes that all end in a
+  timeout are not evidence of one cause" stands, and so does its converse:
+  **a refutation that only rules out ONE of the three pairings has not
+  refuted the guess.** What actually distinguishes them is what the pairs
+  are built ON — `ntdll:threadpool` dispatches every `Tp*` through the
+  completion-port loop `ntdll:sync` was wedged in — and that is readable
+  from the test's imports without running anything.
 - **The change-notify IOSB rule** (W4b) is measured on both sides but not
   explained: two oracle-green tests park a watch, cancel it and read the
   IOSB, and differ only in whether an event was supplied — one sees
@@ -3520,6 +3638,10 @@ Pairs and framings that will consume effort and unblock nothing.
 
 - `kernel/io/` — `ioctl.c` + `rw.c` + `async.c` (W4a, W4c), `query.c`,
   `mountmgr.c` (W7). (`notify.c` was W4b and is done.)
+- `kernel/io/completion.c` — W10's `ntdll:sync`/`ntdll:threadpool` cause, done.
+  The port's two wait channels are the server's two and must stay two; the
+  parked-remover block lives on the parked thread's own kernel stack. Its one
+  accepted-and-dropped input left is `NtRemoveIoCompletionEx`'s `alertable`.
 - `fs/npfs/pipe.c` — `NpfsRead` pends (W4c, done); `NpfsWrite` still blocks,
   and is the same shape if a consumer ever convicts it. **It grew the
   `IOP_PENDING_REQUEST` engine; do not add a second one.**
@@ -3528,7 +3650,11 @@ Pairs and framings that will consume effort and unblock nothing.
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — **danger zone**, but no longer
   a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
   dead half is re-parked.
-- `kernel/ke/{wait,apc}.c` — W10's two open wedges. **Danger zone.**
+- `kernel/ke/{wait,apc}.c` — **danger zone**, but no longer a W10 file: all
+  three wedges are closed and not one of them was here (`ps/thread.c`, then
+  `io/completion.c` for the other two). `event.c` gained W10's
+  `KiSetEventLocked`/`KiClearEventLocked`, the lock-held halves of the two
+  transitions.
   `apc.c` also holds `KiFreeUserApc`, the ONE release path for a user-APC
   block (W10's reserve half, done); `kernel/ob/reserve.c` is the other side of
   it. Do not free a `KAPC` with `MiFreePool` — a reserve-backed block is not a
