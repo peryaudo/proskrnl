@@ -1014,7 +1014,7 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     {
         /* Seeded/inherited handles must go before the table storage does
          * (ObpDeleteHandleTable asserts an empty table). */
-        ObpCloseAllHandles(&process->handleTable);
+        ObpCloseAllHandles(process, &process->handleTable);
         ObDereferenceObject(process); /* PspDeleteProcess unwinds the rest */
         goto out_params;
     }
@@ -1027,7 +1027,7 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     PKTHREAD main = KiCreateThreadSuspended(8, PspUserThreadStartup, 0, process, process->teb);
     if (main == 0)
     {
-        ObpCloseAllHandles(&process->handleTable);
+        ObpCloseAllHandles(process, &process->handleTable);
         ObDereferenceObject(process);
         status = STATUS_NO_MEMORY;
         goto out_params;
@@ -1052,7 +1052,7 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     if (!NT_SUCCESS(status))
     {
         KiDeleteThread(main);
-        ObpCloseAllHandles(&process->handleTable);
+        ObpCloseAllHandles(process, &process->handleTable);
         ObDereferenceObject(process);
         goto out_params;
     }

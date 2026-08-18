@@ -318,7 +318,7 @@ __attribute__((noreturn)) void PspExitCurrentThread(NTSTATUS exitStatus)
 
     if (remaining == 0)
     {
-        ObpCloseAllHandles(&process->handleTable);
+        ObpCloseAllHandles(process, &process->handleTable);
         process->exitStatus = exitStatus;
         KeQuerySystemTime(&process->exitTime); /* CUI-6 (sem_ps/times) */
         PspNotifyProcessExit(process);         /* CUI-3: the job's EXIT_PROCESS packets */

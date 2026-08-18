@@ -425,12 +425,42 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
     return STATUS_SUCCESS;
 }
 
-/* Close one table entry: retire a temporary object's name on the last
- * handle, then drop the handle's pointer reference. */
-static void ObpCloseHandleEntryIn(POBP_HANDLE_TABLE table, POBP_HANDLE_ENTRY entry)
+/* How many handles THIS table holds on `body`, counting the one about to be
+ * closed. wineserver counts the same way and in the same place
+ * (third_party/wine server/handle.c get_obj_handle_count, read by
+ * server/async.c async_close_obj_handle); NT hands the number to the close
+ * method as ProcessHandleCount. A linear walk, once per close of a type that
+ * has a hook — Art. 3's "stupidly correct": the alternative is a per-object
+ * per-process count with its own invariant to keep. */
+static ULONG ObpCountHandlesIn(POBP_HANDLE_TABLE table, PVOID body)
+{
+    ULONG count = 0;
+    for (ULONG index = 0; index < table->capacity; index++)
+    {
+        if (ObpHandleTableObjectAt(table, index) == body)
+        {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* Close one table entry: run the type's close hook, retire a temporary
+ * object's name on the last handle, then drop the handle's pointer reference.
+ * `process` owns `table`, which is not always the caller's process
+ * (DUPLICATE_CLOSE_SOURCE names the SOURCE's table). */
+static void ObpCloseHandleEntryIn(PEPROCESS process, POBP_HANDLE_TABLE table,
+                                  POBP_HANDLE_ENTRY entry)
 {
     PVOID body = entry->body;
     POBJECT_HEADER header = ObpGetHeader(body);
+
+    /* Both counts as NT's close method receives them: INCLUDING the handle
+     * being closed, so they are taken before the entry goes. The process
+     * count is only asked for a type that has a hook to tell. */
+    ULONG systemHandleCount = (ULONG)header->handleCount;
+    ULONG processHandleCount =
+        header->type->closeProcedure != 0 ? ObpCountHandlesIn(table, body) : 0;
 
     entry->body = 0;
     ASSERT(table->inUse > 0);
@@ -438,37 +468,36 @@ static void ObpCloseHandleEntryIn(POBP_HANDLE_TABLE table, POBP_HANDLE_ENTRY ent
 
     ASSERT(header->handleCount > 0);
     header->handleCount--;
-    if (header->handleCount == 0)
+    /* NT's CloseProcedure moment. It fires on EVERY close now, because the
+     * question "is this the last handle THIS PROCESS holds" has no other
+     * answer, and the Io layer owes a cancel sweep at exactly that instant
+     * (kernel/io/file.c). A hook that only wants the last-handle-in-the-system
+     * moment says so from its own first line; the ordering of everything
+     * around it is unchanged. */
+    if (header->type->closeProcedure != 0)
     {
-        /* NT's CloseProcedure moment: the last handle is gone but references
-         * may keep the object alive (M6 Io cleanup runs here — share-mode
-         * release and delete-on-close belong to handle lifetime, not object
-         * lifetime). */
-        if (header->type->closeProcedure != 0)
-        {
-            header->type->closeProcedure(body);
-        }
-        if (!header->permanent)
-        {
-            ObpUnlinkObjectName(header);
-        }
+        header->type->closeProcedure(process, body, processHandleCount, systemHandleCount);
+    }
+    if (header->handleCount == 0 && !header->permanent)
+    {
+        ObpUnlinkObjectName(header);
     }
     ObDereferenceObject(body);
 }
 
 static void ObpCloseHandleEntry(POBP_HANDLE_ENTRY entry)
 {
-    ObpCloseHandleEntryIn(ObpCurrentTable(), entry);
+    ObpCloseHandleEntryIn(KeGetCurrentThread()->process, ObpCurrentTable(), entry);
 }
 
-void ObpCloseAllHandles(POBP_HANDLE_TABLE table)
+void ObpCloseAllHandles(PEPROCESS process, POBP_HANDLE_TABLE table)
 {
     POBP_HANDLE_ENTRY entries = table->entries;
     for (ULONG index = 0; index < table->capacity && table->inUse > 0; index++)
     {
         if (entries[index].body != 0)
         {
-            ObpCloseHandleEntryIn(table, &entries[index]);
+            ObpCloseHandleEntryIn(process, table, &entries[index]);
         }
     }
     ASSERT(table->inUse == 0);
@@ -715,7 +744,7 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
         source = ObpEntryInTable(sourceTable, sourceHandle);
         if (source != 0)
         {
-            ObpCloseHandleEntryIn(sourceTable, source);
+            ObpCloseHandleEntryIn(sourceProc, sourceTable, source);
         }
     }
 

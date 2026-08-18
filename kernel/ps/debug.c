@@ -68,9 +68,18 @@ static void PspSetBeingDebugged(PEPROCESS process, BOOLEAN debugged)
  * own delete — the same seam the job type's KILL_ON_JOB_CLOSE uses
  * (kernel/ps/job.c PspCloseJob), so kill-on-close has one implementation
  * shape in the tree rather than two. */
-static void PspCloseDebugObject(PVOID body)
+static void PspCloseDebugObject(PEPROCESS process, PVOID body, ULONG processHandleCount,
+                                ULONG systemHandleCount)
 {
     PEDEBUGOBJECT debug = body;
+    /* The LAST handle in the system: this hook's subject is the debug
+     * object having no owner left, not one process letting go of it (ob.h). */
+    (void)process;
+    (void)processHandleCount;
+    if (systemHandleCount != 1)
+    {
+        return;
+    }
     /* The DETACH is unconditional; only the KILL is conditional. Getting
      * that split wrong leaves a live process permanently marked
      * BeingDebugged with no handle left that could ever clear it —

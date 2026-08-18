@@ -164,7 +164,8 @@ void CmpNotifyChange(PCMP_KEY_NODE node, ULONG change);
 /* CmpKeyType.closeProcedure: the arming open's last handle closed — fire the
  * body's accumulated events and free its record (wineserver
  * key_close_handle). */
-void CmpCloseKeyBody(PVOID bodyPointer);
+void CmpCloseKeyBody(struct EPROCESS *process, PVOID bodyPointer, ULONG processHandleCount,
+                     ULONG systemHandleCount);
 
 /* --- hive.c ----------------------------------------------------------------- */
 
