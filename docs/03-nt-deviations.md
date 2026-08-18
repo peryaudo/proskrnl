@@ -2669,7 +2669,7 @@ an implementation reaching for the obvious guard diverges:
   while the server — which merely has no connection any more — is a success. A
   kernel that asks one "is this end disconnected" question answers both the same
   way; proskrnl's `NpfsEndDisconnected` is exactly that question, which is why the
-  flush asks `end->orphaned` instead.
+  flush asks `end->pipe == 0` instead.
 - **No connection means nothing to wait for, buffered bytes or not.** A listening
   instance and a closed peer are both immediate successes. An implementation that
   waits on the QUEUE alone hangs on the second one forever.
@@ -2762,9 +2762,9 @@ an implementation reaching for the tidy rule diverges while passing most of the 
   The `SetPipeInfo` vfs slot takes the handle for exactly this reason.
 - **The disconnect sits above the mode rule**, and it has to: an end with no pipe has
   no pipe TYPE to compare a message read mode against. `!pipe_end->pipe` is this
-  end's orphaned bit — the same identification "What a pipe's `NtFlushBuffersFile`
-  waits for" already makes for this quantity, and with the same consequence that the
-  server's own end is unaffected by its own disconnect.
+  end's own `pipe` pointer — the same identification "What a pipe's
+  `NtFlushBuffersFile` waits for" already makes for this quantity, and with the same
+  consequence that the server's own end is unaffected by its own disconnect.
 
 **The root row is narrower than it reads, and the difference is recorded rather than
 closed.** `\??\pipe\` opens as the oracle's `named_pipe_device_file`, matching neither
@@ -2772,18 +2772,16 @@ ops table, so both of the set handler's lookups leave on the type. The SET direc
 now answers that; the QUERY direction reaches a different oracle path for the same
 handle, is not measured, and still answers `STATUS_INVALID_DEVICE_REQUEST`.
 
-**Two things about `end->orphaned` that the rungs above now depend on**, neither
-convicted by anything today and both left as they are (Art. 5):
+**One thing about the disconnected end that the rungs above depend on**, convicted by
+nothing today and left as it is (Art. 5): `NpfsDisconnect` takes the client's pipe in
+`CLOSING_STATE` as well as in `CONNECTED_STATE`, where the oracle's
+`FILE_PIPE_CLOSING_STATE` arm breaks without clearing `connection->pipe`. In this tree
+`clientEnd` is already 0 in that state, so the two agree — but that is an inference, not
+a measurement.
 
-- proskrnl drops `NPFS_INSTANCE.pipe` when the SERVER end's handle CLOSES, where the
-  oracle's client holds its own reference to the named pipe object until destroy. So a
-  client outliving its server reads `FilePipeLocalInformation` as a success with zeroed
-  `NamedPipeType` / `NamedPipeConfiguration` / `MaximumInstances` / quotas, where the
-  oracle reports the real values. Older than this item and untouched by it.
-- `NpfsDisconnect` orphans the client in `CLOSING_STATE` as well as in
-  `CONNECTED_STATE`, where the oracle's `FILE_PIPE_CLOSING_STATE` arm breaks without
-  clearing `connection->pipe`. In this tree `clientEnd` is already 0 in that state, so
-  the two agree — but that is an inference, not a measurement.
+(The other thing this list used to carry — a client that outlived its server reading
+`FilePipeLocalInformation` as zeros — is built; see "How long a pipe outlives its
+NAME".)
 
 **The QUERY direction carries the disconnect rule too, in both pipe classes**, and
 `FilePipeLocalInformation` is the one that reads as a judgement call: it *has* a
@@ -3085,15 +3083,75 @@ refusals is observable and IS pinned: an orphaned end held through a handle with
 `FILE_READ_ATTRIBUTES` reports the ACCESS failure for `FileStandardInformation` and the
 DISCONNECT for `FileNameInformation`, because only the first arm has an access guard.
 
-**Recorded residual, and it is older than this change.** proskrnl drops
-`NPFS_INSTANCE.pipe` when the SERVER's handle closes, where the oracle's client holds its
-own reference to the named pipe until destroy. So a CLIENT that outlives its server — the
-`FILE_PIPE_CLOSING_STATE` end — reports `AllocationSize` 0 and zeroed quotas where the
-oracle reports the pipe's real numbers. It is not orphaned, so it does not refuse; it
-describes a pipe that is no longer there. Tagged `todo_proskrnl` in
-`sem_pipe/pipe_file_info.c` rather than left out, so it reports itself the day the
-lifetime is fixed; `ntdll:pipe`'s five remaining `test_pipe_local_info` failures
-(`:2356`-`:2369`) are the same gap.
+**The residual this section used to record is built**, and it is its own rule: a client
+that outlives its server keeps the pipe and loses only its NAME. See "How long a pipe
+outlives its NAME" below.
+
+## How long a pipe outlives its NAME, and which end owns it
+
+Two lifetimes, and the oracle keeps them apart. The named-pipe OBJECT is referenced by
+EVERY end — `server/named_pipe.c` `init_pipe_end`'s
+`pipe_end->pipe = (struct named_pipe *)grab_object( pipe )`, released in
+`pipe_end_destroy` — while its NAME goes with the last INSTANCE, in
+`pipe_server_destroy`'s `if (!--pipe->instances) unlink_named_object( &pipe->obj )`.
+proskrnl had ONE lifetime: `NPFS_INSTANCE.pipe` was dropped and the whole `NPFS_PIPE`
+freed at the last server end's cleanup, so a client that outlived its server described a
+pipe that was no longer there — `NamedPipeType`, `NamedPipeConfiguration`,
+`MaximumInstances`, both quotas and `AllocationSize` all zero, and `FSCTL_PIPE_PEEK`
+giving a byte pipe's answers because the pipe's TYPE had gone with it.
+
+The pointer now lives on the END (`NPFS_END.pipe`, the oracle's own field) over a
+reference count, and the two teardowns are separate: `NpfsUnlinkPipe` when
+`instanceCount` reaches 0, `NpfsDereferencePipe` when an end goes.
+`ntdll:pipe` **29 → 22**. Pinned by `tests/ntapi/sem_pipe/pipe_lifetime.c`, with the
+consequences pinned where they show — `sem_pipe/peek_state.c` §4 (the type) and
+`sem_pipe/pipe_file_info.c` §4 (`AllocationSize`), both of which carried a
+`todo_proskrnl` for this and no longer do.
+
+**What the unlink takes is the NAME, and that is observable through a handle that keeps
+everything else.** `FileNameInformation`'s arm is
+`if (!pipe || !(name = get_object_name( &pipe->obj, &name_len )))` →
+`STATUS_PIPE_DISCONNECTED`, and `get_object_name` of an unlinked object is NULL. So one
+client handle answers `FilePipeLocalInformation` with the pipe's real numbers and refuses
+to report its name, in the same instant. `NpfsUnlinkPipe` frees the name buffer for
+exactly that reason, which makes `NpfsQueryName`'s guard the oracle's one guard over
+three states (no pipe, never named, unlinked) instead of the single disjunct it was.
+
+**TRADE — that one refusal moves proskrnl AWAY from NT, deliberately, and it is the
+`DeletePending` trade above a second time.** The oracle carries its own
+`/* FIXME: We should be able to return on unlinked pipe */` over that guard, and
+`ntdll:pipe:2185` wraps `ok(status == STATUS_SUCCESS)` in a `todo_wine_if` for exactly
+this row — i.e. real NT reports the name and Wine knows it. proskrnl reported the name
+before this change and reports `STATUS_PIPE_DISCONNECTED` after it, so **the pair's
+failure count fell by one for being FARTHER from NT on this line**, and that half of the
+`29 → 22` is a trade rather than a fix. It is made the way Art. 6 is applied everywhere
+else in this file — where the oracle answers at all it is the spec — and there is a
+second, harder reason it cannot go the other way: the "report the name" answer is
+**un-pinnable**. G5 wants an oracle-green case; the oracle refuses; and `beyond_oracle`
+is barred by its own definition (`tests/ntapi/ntapi.h`) for behaviour Wine DOES
+implement, which this arm is — a FIXME is an aspiration, not the `STATUS_NOT_IMPLEMENTED`
+that makes an oracle unbuilt. An answer no test may pin is an answer Art. 5 does not let
+this kernel build.
+
+**`CurrentInstances` is not a liveness bit and must not be keyed like one.** It is
+`pipe->instances`, which really did fall to zero when that server left, so the correct
+answer through a surviving client is five real values and a zero — which is what
+`ntdll:pipe:2358` (`CurrentInstances == 0` for a closing client) was passing on all along,
+for the wrong reason.
+
+**The unlink follows the INSTANCE COUNT, not "a server end closed".** With a second
+instance still open the name stays in the namespace: the client of the closed instance
+reports `CurrentInstances 1` and its own name, and a further open by that name still
+finds it. No winetest assertion reaches this; it is `sem_pipe/pipe_lifetime.c` §3, and an
+implementation that unlinked per server end passes every other case.
+
+**A DISCONNECT is still not a close.** `FSCTL_PIPE_DISCONNECT` drops the CLIENT's
+reference outright (`release_object( ...connection->pipe ); ...connection->pipe = NULL`),
+which is what every `if (!pipe)` in `pipe_end_get_file_info` refuses on — so that end
+describes nothing while a merely-orphaned-by-close client describes everything. Because
+the pointer moved onto the end, `end->pipe == 0` IS that condition: the `orphaned` bit it
+replaces was a second spelling of one fact, which is the shape Art. 11 warns about even
+while two statements agree.
 
 ## What `FSCTL_PIPE_PEEK` answers, by state and by the PIPE's type
 
@@ -3129,11 +3187,11 @@ peer is gone" passes every other row of this table.
 `FSCTL_PIPE_DISCONNECT` drops the pipe reference for the CLIENT only (`pipe_server_ioctl`:
 `release_object( ...connection->pipe ); ...connection->pipe = NULL`) — so the server that
 did the disconnecting complains about its STATE and its client reports a disconnection.
-proskrnl's `end->orphaned` is that end (the same identification `NpfsFlush` already makes),
-and it is asked FIRST rather than folded into the switch, because proskrnl's state word
-belongs to the INSTANCE where the oracle's belongs to the END: a re-listened instance
-moves back to `FILE_PIPE_CONNECTED_STATE` under an end that was orphaned off it, and only
-the per-end fact still says what that end is.
+proskrnl's `end->pipe == 0` is that end (the same identification `NpfsFlush` already
+makes, and the same field), and it is asked FIRST rather than folded into the switch,
+because proskrnl's state word belongs to the INSTANCE where the oracle's belongs to the
+END: a re-listened instance moves back to `FILE_PIPE_CONNECTED_STATE` under an end that
+was thrown out of it, and only the per-end fact still says what that end is.
 
 **The fill, and the axis its `STATUS_BUFFER_OVERFLOW` is keyed on.** `ReadDataAvailable`
 is every unread byte on this end's incoming queue; `MessageLength` is the FIRST message's
@@ -3160,13 +3218,11 @@ reads it: `PeekNamedPipe` hands back `MessageLength` and drops this field. prosk
 to return a real count, which was more NT-correct and unmeasurable by anything in the
 baked stack.
 
-**One residual, and it is the lifetime gap recorded above rather than a peek rule.**
-`instance->pipe` is 0 for an end whose SERVER handle closed, so a client outliving its
-server forgets the pipe's TYPE and answers a byte pipe's `MessageLength` 0 and no
-overflow. That is `ntdll:pipe`'s one remaining `:2205` (`in client state 4`), tagged
-`todo_proskrnl` in `sem_pipe/peek_state.c` §4 beside the `AllocationSize` case
-`sem_pipe/pipe_file_info.c` already tags, so both report themselves the day the reference
-is held.
+**The residual this section recorded is built.** A client whose SERVER handle closed used
+to forget the pipe's TYPE and answer a byte pipe's `MessageLength` 0 with no overflow —
+`ntdll:pipe`'s `:2205` (`in client state 4`). The end holds its own pipe now; see "How
+long a pipe outlives its NAME". `sem_pipe/peek_state.c` §4 is the case, without its
+`todo_proskrnl`.
 
 ## What `FSCTL_PIPE_TRANSCEIVE` writes, and what it refuses
 
@@ -3195,9 +3251,9 @@ STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED )` — and `connection` is
 NULL in every state but `CONNECTED`, so three different situations collapse onto
 the STATE complaint and only the client a server threw out reports the
 disconnection. That is `FSCTL_PIPE_PEEK`'s split one table up, asked by the same
-`end->orphaned` and asked FIRST for the same reason (proskrnl's state word
+`end->pipe == 0` and asked FIRST for the same reason (proskrnl's state word
 belongs to the INSTANCE, so a re-listened instance moves back to `CONNECTED`
-under an end that was orphaned off it).
+under an end that was thrown out of it).
 
 **The read-mode refusal is about the END, not the pipe.** The oracle reads
 `pipe_end->flags & NAMED_PIPE_MESSAGE_STREAM_READ`, which is what
@@ -3456,14 +3512,12 @@ so a pipe that never had a name answers what an end whose pipe was taken away
 answers. `NpfsQueryName` implements the second disjunct; reporting the bare
 `"\"` there would be a fabricated name (Art. 12).
 
-**Only the second.** The first — a CLIENT end that outlived its server, where
-proskrnl drops `NPFS_INSTANCE.pipe` and the oracle's client holds its own
-reference until destroy — still falls through to a bare `"\"`, and that is the
-older lifetime residual recorded under "A pipe end's own file information"
-(tagged `todo_proskrnl` in `sem_pipe/peek_state.c` and
-`sem_pipe/pipe_file_info.c`, `ntdll:pipe`'s `:2356`-`:2369` plus `:2205`). The
-guard is quoted whole above because the two halves are one statement in the
-oracle and will be one here the day that item lands; today one of them is built.
+**All of it, and a third state the oracle folds into the same guard.**
+`NpfsQueryName` asks `pipe == 0 || pipe->name.Length == 0`, which covers the end a
+disconnect threw out, a pipe that never had a name, and a pipe UNLINKED because
+its last instance closed — the oracle's `get_object_name` answers NULL for that
+one too. See "How long a pipe outlives its NAME"; the guard was one disjunct
+short until the pipe's lifetime and its name's were told apart.
 
 **DEVIATION — the device and its root directory are not distinguished.**
 `\Device\NamedPipe` opened without a trailing separator is a

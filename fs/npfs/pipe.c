@@ -54,9 +54,22 @@ typedef struct NPFS_QUEUE
 
 typedef struct NPFS_PIPE
 {
-    LIST_ENTRY listEntry; /* on NpfsPipeList */
-    UNICODE_STRING name;  /* pool copy, no leading backslash */
-    ULONG pipeType;       /* FILE_PIPE_TYPE_* */
+    LIST_ENTRY listEntry; /* on NpfsPipeList while LINKED; a self-loop after */
+
+    /* Pool copy, no leading backslash — and EMPTY once the pipe is unlinked,
+     * which is a state FileNameInformation reports (NpfsUnlinkPipe). */
+    UNICODE_STRING name;
+    ULONG pipeType; /* FILE_PIPE_TYPE_* */
+
+    /* NPFS_ENDs holding this pipe. The pipe is an OBJECT with its own
+     * lifetime, longer than its NAME's and longer than its instances': the
+     * oracle's every pipe_end grabs a reference (server/named_pipe.c
+     * init_pipe_end) and releases it at destroy, while the name goes with the
+     * last instance (pipe_server_destroy's unlink_named_object). The link is
+     * NOT one of these references — it is instanceCount's business — so the
+     * two teardowns are NpfsUnlinkPipe and NpfsDereferencePipe, in that
+     * order for any pipe that ever had an instance. */
+    LONG refCount;
 
     /* The create's SHARE mask, stored raw rather than as the
      * FILE_PIPE_{INBOUND,OUTBOUND,FULL_DUPLEX} it renders to. It is the fact
@@ -81,7 +94,6 @@ typedef struct NPFS_INSTANCE
 {
     IO_FCB header; /* embedded FIRST (kernel/io/vfs.h contract) */
     LIST_ENTRY listEntry;
-    PNPFS_PIPE pipe;            /* 0 once unlinked (server end closed) */
     ULONG state;                /* FILE_PIPE_*_STATE */
     struct NPFS_END *serverEnd; /* 0 after that end's cleanup */
     struct NPFS_END *clientEnd;
@@ -106,8 +118,17 @@ typedef struct NPFS_INSTANCE
 typedef struct NPFS_END
 {
     PNPFS_INSTANCE instance;
+
+    /* This end's own reference to the pipe (the oracle's `pipe_end->pipe`),
+     * dropped in exactly one place besides this end's own teardown:
+     * FSCTL_PIPE_DISCONNECT takes the CLIENT's. So `pipe == 0` IS "the server
+     * threw this end out from under itself", which is the quantity every arm
+     * of the oracle's handler asks about as `if (!pipe)` — one fact with one
+     * spelling rather than a pointer and a bit that must agree. A server end,
+     * and a client whose server merely CLOSED, both keep theirs. */
+    PNPFS_PIPE pipe;
+
     BOOLEAN isServer;
-    BOOLEAN orphaned;     /* disconnected out from under this end */
     ULONG readMode;       /* FILE_PIPE_{BYTE_STREAM,MESSAGE}_MODE */
     ULONG completionMode; /* FILE_PIPE_{QUEUE,COMPLETE}_OPERATION */
 
@@ -221,15 +242,14 @@ static PNPFS_PIPE NpfsFindPipe(const UNICODE_STRING *name)
     return 0;
 }
 
-/* Retire a pipe whose last instance is gone. One authority for it because
- * there are two ways to reach the state — the last server end's cleanup, and
- * a create that could not finish — and the two things that vary are the
- * pipe's own: an UNNAMED pipe is on no list (its entry is a self-loop, which
- * RemoveEntryList handles) and owns no name buffer (and MiFreePool refuses a
- * null pointer). */
+/* Retire a pipe nothing holds any more. The two things that vary are the
+ * pipe's own: an UNNAMED or already-unlinked pipe is on no list (its entry is
+ * a self-loop, which RemoveEntryList handles) and may own no name buffer (and
+ * MiFreePool refuses a null pointer). */
 static void NpfsFreePipe(PNPFS_PIPE pipe)
 {
     ASSERT(pipe->instanceCount == 0);
+    ASSERT(pipe->refCount == 0);
     RemoveEntryList(&pipe->listEntry);
     if (pipe->name.Buffer != 0)
     {
@@ -238,11 +258,58 @@ static void NpfsFreePipe(PNPFS_PIPE pipe)
     MiFreePool(pipe);
 }
 
+static PNPFS_PIPE NpfsReferencePipe(PNPFS_PIPE pipe)
+{
+    pipe->refCount++;
+    return pipe;
+}
+
+/* Drop one END's reference. Only the last one can retire the object, and by
+ * then the name is long gone: refCount 0 means no end is left, which means no
+ * instance is either (every live instance holds a server end until its
+ * cleanup, and that cleanup is what decrements instanceCount). */
+static void NpfsDereferencePipe(PNPFS_PIPE pipe)
+{
+    ASSERT(pipe->refCount > 0);
+    if (--pipe->refCount == 0)
+    {
+        ASSERT(pipe->instanceCount == 0);
+        NpfsFreePipe(pipe);
+    }
+}
+
+/* The pipe leaves the NAMESPACE: nothing may find it by name again, and it
+ * loses the name itself — the oracle's `unlink_named_object`, after which
+ * `get_object_name` answers NULL and FileNameInformation reports
+ * STATUS_PIPE_DISCONNECTED through a handle that still answers every other
+ * class (sem_pipe/pipe_lifetime.c §2). The OBJECT survives while any end
+ * still references it.
+ *
+ * One authority because there are two ways to reach the state: the last
+ * instance's cleanup, and a create that minted a pipe and could not finish. */
+static void NpfsUnlinkPipe(PNPFS_PIPE pipe)
+{
+    ASSERT(pipe->instanceCount == 0);
+    RemoveEntryList(&pipe->listEntry);
+    InitializeListHead(&pipe->listEntry);
+    if (pipe->name.Buffer != 0)
+    {
+        MiFreePool(pipe->name.Buffer);
+        pipe->name.Buffer = 0;
+    }
+    pipe->name.Length = 0;
+    pipe->name.MaximumLength = 0;
+    if (pipe->refCount == 0)
+    {
+        NpfsFreePipe(pipe);
+    }
+}
+
 /* An end whose instance was disconnected/relinked out from under it (or the
  * whole-instance disconnect state) answers PIPE_DISCONNECTED to data ops. */
 static BOOLEAN NpfsEndDisconnected(PNPFS_END end)
 {
-    return end->orphaned || end->instance->state == FILE_PIPE_DISCONNECTED_STATE;
+    return end->pipe == 0 || end->instance->state == FILE_PIPE_DISCONNECTED_STATE;
 }
 
 /* Render the pipe's share mask as the configuration FilePipeLocalInformation
@@ -502,8 +569,8 @@ static NTSTATUS NpfsRead(PFILE_OBJECT file, void *buffer, ULONG length, ULONG_PT
  *
  *   - the queue it waits on is the PEER's (this end's OUTGOING), so a flush
  *     never waits for data somebody sent US;
- *   - `!pipe_end->pipe` is exactly the end a server DISCONNECTED out from
- *     under, i.e. end->orphaned. The server's OWN end keeps its pipe, so the
+ *   - `!pipe_end->pipe` is exactly this end's own `pipe`, the one
+ *     FSCTL_PIPE_DISCONNECT drops. The server's OWN end keeps its pipe, so the
  *     same disconnect leaves it answering STATUS_SUCCESS while its client
  *     answers STATUS_PIPE_DISCONNECTED;
  *   - with no `connection` there is nothing to drain the queue, so a
@@ -545,7 +612,7 @@ static NTSTATUS NpfsFlush(PFILE_OBJECT file)
         {
             return STATUS_SUCCESS; /* a read emptied it: already completed */
         }
-        if (end->orphaned)
+        if (end->pipe == 0)
         {
             return STATUS_PIPE_DISCONNECTED;
         }
@@ -619,17 +686,19 @@ static NTSTATUS NpfsCheckWritableState(PNPFS_END end)
 static NTSTATUS NpfsWrite(PFILE_OBJECT file, const void *buffer, ULONG length, ULONG_PTR *infoOut)
 {
     PNPFS_END end = file->fsContext;
-    PNPFS_PIPE pipe = end->instance->pipe;
     PNPFS_QUEUE queue = NpfsOutgoingQueue(end);
-    ULONG pipeType = pipe != 0 ? pipe->pipeType : FILE_PIPE_TYPE_BYTE;
 
     NTSTATUS status = NpfsCheckWritableState(end);
     if (!NT_SUCCESS(status))
     {
         return status;
     }
-
-    if (pipeType == FILE_PIPE_TYPE_MESSAGE)
+    /* Below the state gate, which is what makes the pipe readable at all: an
+     * end with none is STATUS_PIPE_DISCONNECTED there. Read above it, this
+     * used to need a FILE_PIPE_TYPE_BYTE fallback — a fabricated type for a
+     * pipe that is not there (Art. 12), reached only on a path that then
+     * refused anyway. */
+    if (end->pipe->pipeType == FILE_PIPE_TYPE_MESSAGE)
     {
         /* A message is framed whole. Park until it fits under the quota —
          * or the queue is fully drained, which admits an oversized message
@@ -893,13 +962,18 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
     /* A listen can pend only in the listening state, which the guard above
      * rejects — nothing to cancel here. */
     ASSERT(IsListEmpty(&instance->pendingListenHead));
-    /* Unread bytes are DISCARDED (pinned) and the client end is orphaned. */
+    /* Unread bytes are DISCARDED (pinned), and the client loses its PIPE —
+     * the oracle's `release_object( server->pipe_end.connection->pipe );
+     * ...connection->pipe = NULL`. That is the whole of "orphaned": the end
+     * keeps its handle and its queues and stops belonging to a pipe, so every
+     * arm that asks `if (!pipe)` refuses it from here on. */
     NpfsFlushQueue(&instance->inbound);
     NpfsFlushQueue(&instance->outbound);
     PNPFS_END orphaned = instance->clientEnd;
     if (orphaned != 0)
     {
-        orphaned->orphaned = TRUE;
+        NpfsDereferencePipe(orphaned->pipe);
+        orphaned->pipe = 0;
         instance->clientEnd = 0;
     }
     instance->state = FILE_PIPE_DISCONNECTED_STATE;
@@ -930,10 +1004,9 @@ static NTSTATUS NpfsDisconnect(PNPFS_END end)
  *     : STATUS_PIPE_DISCONNECTED`, and FSCTL_PIPE_DISCONNECT drops the pipe
  *     for the CLIENT only — so the SERVER that did the disconnecting
  *     complains about its STATE where its client reports a disconnection.
- *     `end->orphaned` is that end (the reading NpfsFlush's comment above
- *     makes the same identification), and it is asked FIRST because
- *     proskrnl's state word belongs to the INSTANCE: a re-listened instance
- *     moves back to CONNECTED under an end that was orphaned off it. */
+ *     `end->pipe == 0` is that end, and it is asked FIRST because proskrnl's
+ *     state word belongs to the INSTANCE: a re-listened instance moves back
+ *     to CONNECTED under an end that was thrown out of it. */
 static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_PTR *infoOut)
 {
     PNPFS_INSTANCE instance = end->instance;
@@ -943,7 +1016,7 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
-    if (end->orphaned)
+    if (end->pipe == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
@@ -970,10 +1043,9 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
      * behind — the 1-byte PeekNamedPipe poll asks for exactly that
      * (docs/review-2026-07 §9).
      *
-     * `instance->pipe` is 0 for an end whose SERVER handle closed, so a
-     * client outliving its server forgets the type and reports a byte
-     * pipe's answers. Older lifetime gap, tagged todo_proskrnl in
-     * sem_pipe/peek_state.c and sem_pipe/pipe_file_info.c (docs/03). */
+     * A client whose SERVER merely CLOSED still has its pipe and so still
+     * knows the type; only the end a disconnect threw out has none, and that
+     * end returned above (sem_pipe/peek_state.c §4, pipe_lifetime.c §1). */
     ULONG available = queue->bytesAvailable;
     ULONG capacity = outputLength - fixed;
     ULONG messageLength = 0;
@@ -981,7 +1053,7 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
     {
         capacity = available;
     }
-    if (available != 0 && instance->pipe != 0 && instance->pipe->pipeType == FILE_PIPE_TYPE_MESSAGE)
+    if (available != 0 && end->pipe->pipeType == FILE_PIPE_TYPE_MESSAGE)
     {
         PNPFS_BUFFER first = CONTAINING_RECORD(queue->bufferList.Flink, NPFS_BUFFER, listEntry);
         messageLength = first->length - first->consumed;
@@ -1043,9 +1115,9 @@ static NTSTATUS NpfsPeek(PNPFS_END end, void *output, ULONG outputLength, ULONG_
  *     `pipe_end->pipe ? STATUS_INVALID_PIPE_STATE : STATUS_PIPE_DISCONNECTED`.
  *     `connection` is NULL in every state but CONNECTED, so LISTENING, CLOSING
  *     and a DISCONNECTED *server* all report the STATE, and only the client a
- *     server threw out reports the disconnection. `end->orphaned` is that one
- *     end (NpfsPeek's comment makes the same identification, and asks it FIRST
- *     for the same reason: proskrnl's state word belongs to the INSTANCE);
+ *     server threw out reports the disconnection. `end->pipe == 0` is that one
+ *     end here too, and it is asked FIRST for the same reason NpfsPeek gives:
+ *     proskrnl's state word belongs to the INSTANCE);
  *
  *   - the reader must be in MESSAGE read mode
  *     (`pipe_end->flags & NAMED_PIPE_MESSAGE_STREAM_READ`) — a mode of the END,
@@ -1077,7 +1149,7 @@ static NTSTATUS NpfsTransceive(PNPFS_END end, PFILE_OBJECT file, const void *inp
                                ULONG inputLength, void *output, ULONG outputLength,
                                ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
 {
-    if (end->orphaned)
+    if (end->pipe == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
@@ -1205,13 +1277,13 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
      * and BOTH classes say so rather than describing the wreckage: the
      * oracle's `if (!pipe) { set_error( STATUS_PIPE_DISCONNECTED ); return; }`
      * appears once per arm in server/named_pipe.c pipe_end_get_file_info,
-     * below each arm's access and length guards. `!pipe` is this end's
-     * orphaned bit — the same identification NpfsFlush's comment already
-     * makes for this quantity. FilePipeLocalInformation is the one that reads
-     * as a judgement call, because it HAS a NamedPipeState field to report the
-     * disconnect in; the oracle refuses anyway, and only a query on an
-     * orphaned end can see it (pinned sem_pipe/pipe_mode_set.c). */
-    if (end->orphaned)
+     * below each arm's access and length guards. `!pipe` is this end's own
+     * `pipe`, the same field and the same question.
+     * FilePipeLocalInformation is the one that reads as a judgement call,
+     * because it HAS a NamedPipeState field to report the disconnect in; the
+     * oracle refuses anyway, and only a query on a DISCONNECTED end can see it
+     * (pinned sem_pipe/pipe_mode_set.c, pipe_lifetime.c §4). */
+    if (end->pipe == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
@@ -1239,24 +1311,20 @@ static NTSTATUS NpfsQueryPipeInfo(PFILE_OBJECT file, FILE_INFORMATION_CLASS info
     ASSERT(length >= sizeof(FILE_PIPE_LOCAL_INFORMATION));
     FILE_PIPE_LOCAL_INFORMATION info;
     memset(&info, 0, sizeof(info));
-    PNPFS_PIPE pipe = instance->pipe;
-    if (pipe != 0)
-    {
-        info.NamedPipeType = pipe->pipeType;
-        info.NamedPipeConfiguration = NpfsConfigurationFromShare(pipe->sharing);
-        info.MaximumInstances = pipe->maxInstances;
-        info.CurrentInstances = pipe->instanceCount;
-        info.InboundQuota = pipe->inQuota;
-        info.OutboundQuota = pipe->outQuota;
-    }
-    /* The orphaned end returned above, so this field needs no term for it — a
-     * DISCONNECTED state reaching this line belongs to the SERVER that did the
-     * disconnecting, which keeps its pipe. That says nothing about the six
-     * fields the `if (pipe != 0)` above fills: proskrnl drops instance->pipe
-     * when the SERVER's handle closes, where the oracle's client holds its own
-     * reference to the named pipe until destroy, so a client outliving its
-     * server reports zeros there where the oracle reports the real values.
-     * Separate, older gap; nothing convicts it yet (docs/03). */
+    /* Six fields off the pipe, and this end holds it for as long as it lives —
+     * a client whose server has CLOSED still describes the pipe it belongs to.
+     * CurrentInstances is the odd one out and is not a liveness bit either: it
+     * is the instances' own count, which really did fall to zero when that
+     * server left (sem_pipe/pipe_lifetime.c §1). */
+    PNPFS_PIPE pipe = end->pipe;
+    info.NamedPipeType = pipe->pipeType;
+    info.NamedPipeConfiguration = NpfsConfigurationFromShare(pipe->sharing);
+    info.MaximumInstances = pipe->maxInstances;
+    info.CurrentInstances = pipe->instanceCount;
+    info.InboundQuota = pipe->inQuota;
+    info.OutboundQuota = pipe->outQuota;
+    /* A DISCONNECTED state reaching this line belongs to the SERVER that did
+     * the disconnecting, which keeps its pipe; its client returned above. */
     info.NamedPipeState = instance->state;
     info.NamedPipeEnd = end->isServer ? FILE_PIPE_SERVER_END : FILE_PIPE_CLIENT_END;
     info.ReadDataAvailable = NpfsIncomingQueue(end)->bytesAvailable;
@@ -1325,7 +1393,7 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, HANDLE handle, const FILE_PIP
     /* Then the disconnect, above the mode rule and for a reason beyond the
      * oracle's ordering: an end with no pipe has no pipe TYPE to compare the
      * read mode against. */
-    if (end->orphaned)
+    if (end->pipe == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
@@ -1335,8 +1403,7 @@ static NTSTATUS NpfsSetPipeInfo(PFILE_OBJECT file, HANDLE handle, const FILE_PIP
      * STATUS_INVALID_PARAMETER); accepting it made the read path fabricate
      * message framing at whatever quota boundary the data happened to land
      * on (docs/review-2026-07 §9). */
-    if (info->ReadMode == FILE_PIPE_MESSAGE_MODE && end->instance->pipe != 0 &&
-        end->instance->pipe->pipeType != FILE_PIPE_TYPE_MESSAGE)
+    if (info->ReadMode == FILE_PIPE_MESSAGE_MODE && end->pipe->pipeType != FILE_PIPE_TYPE_MESSAGE)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -1397,19 +1464,15 @@ static NTSTATUS NpfsGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
      * implement as well (FileBasic/Position/Internal/EndOfFile/NetworkOpen/
      * AttributeTag/All), because every class reading this backend's facts
      * comes through GetInfo. Those are unbuilt on the oracle for a pipe end
-     * whether or not it is orphaned, so nothing convicts either answer; the
+     * whether or not it has a pipe, so nothing convicts either answer; the
      * widening is deliberate and recorded (docs/03 "A pipe end's own file
      * information"), and it replaces a zeroed struct that was a fabricated
      * description of a pipe that is gone. */
-    if (end->orphaned)
+    if (end->pipe == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
-    PNPFS_PIPE pipe = end->instance->pipe;
-    if (pipe != 0)
-    {
-        info->allocationSize = (uint64_t)pipe->inQuota + pipe->outQuota;
-    }
+    info->allocationSize = (uint64_t)end->pipe->inQuota + end->pipe->outQuota;
     info->endOfFile = NpfsIncomingQueue(end)->bytesAvailable;
     return STATUS_SUCCESS;
 }
@@ -1428,34 +1491,29 @@ static NTSTATUS NpfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, 
         }
         return STATUS_BUFFER_OVERFLOW;
     }
-    PNPFS_PIPE pipe = end->instance->pipe;
-    /* An UNNAMED pipe has no name to report, and the oracle spells that in
-     * the SAME guard as the orphaned end's — one guard, two conditions, one
-     * status (wine server/named_pipe.c pipe_end_get_file_info's
-     * FileNameInformation arm: `if (!pipe || !(name = get_object_name(
-     * &pipe->obj, &name_len ))) { set_error( STATUS_PIPE_DISCONNECTED );
-     * return; }`). Reporting the bare "\" here instead would be a fabricated
-     * name for a pipe that has none (Art. 12). Pinned by
-     * sem_pipe/pipe_root.c §2.
-     *
-     * The SECOND disjunct only. The first — pipe == 0, a client that outlived
-     * its server — still falls through below, and that is the older lifetime
-     * residual (docs/03 "A pipe end's own file information"; tagged
-     * todo_proskrnl in sem_pipe/{peek_state,pipe_file_info}.c). The oracle's
-     * guard is quoted whole because the two will be one statement here the
-     * day that item lands. */
-    if (pipe != 0 && pipe->name.Length == 0)
+    PNPFS_PIPE pipe = end->pipe;
+    /* ONE guard over three states, exactly as the oracle spells it (wine
+     * server/named_pipe.c pipe_end_get_file_info's FileNameInformation arm:
+     * `if (!pipe || !(name = get_object_name( &pipe->obj, &name_len )))
+     * { set_error( STATUS_PIPE_DISCONNECTED ); return; }`) — an end a
+     * disconnect threw out, an UNNAMED pipe, and a pipe UNLINKED because its
+     * last instance closed, which loses its name the way the oracle's
+     * unlink_named_object does. Reporting the bare "\" for any of them would
+     * be a fabricated name for a pipe that has none (Art. 12). Pinned by
+     * sem_pipe/pipe_root.c §2 and sem_pipe/pipe_lifetime.c §2/§3, the last of
+     * which is what says the unlink follows the INSTANCE COUNT: a second live
+     * instance keeps the name, and this handle keeps reporting it. */
+    if (pipe == 0 || pipe->name.Length == 0)
     {
         return STATUS_PIPE_DISCONNECTED;
     }
-    ULONG nameBytes = pipe != 0 ? pipe->name.Length : 0;
-    ULONG full = (ULONG)sizeof(WCHAR) + nameBytes; /* "\" + name */
+    ULONG full = (ULONG)sizeof(WCHAR) + pipe->name.Length; /* "\" + name */
     *lengthOut = full;
     ULONG copy = full <= capacity ? full : capacity;
     if (copy >= sizeof(WCHAR))
     {
         buffer[0] = '\\';
-        memcpy(buffer + 1, pipe != 0 ? pipe->name.Buffer : 0, copy - sizeof(WCHAR));
+        memcpy(buffer + 1, pipe->name.Buffer, copy - sizeof(WCHAR));
     }
     return full <= capacity ? STATUS_SUCCESS : STATUS_BUFFER_OVERFLOW;
 }
@@ -1521,6 +1579,7 @@ static NTSTATUS NpfsAttachClient(PNPFS_PIPE pipe, PFILE_OBJECT file, ULONG_PTR *
     }
     memset(end, 0, sizeof(*end));
     end->instance = instance;
+    end->pipe = NpfsReferencePipe(pipe); /* the client's own, as init_pipe_end */
     end->isServer = FALSE;
     InitializeListHead(&end->pendingReadHead);
     end->readMode = FILE_PIPE_BYTE_STREAM_MODE; /* client default (pinned:
@@ -1598,12 +1657,13 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
         {
             return STATUS_OBJECT_NAME_INVALID;
         }
-        /* A server end keeps its pipe until its OWN handle closes (only the
-         * client's is dropped, by FSCTL_PIPE_DISCONNECT) — and that handle is
-         * the root being used here, so the state cannot exist. Asserted
-         * rather than given a fabricated status (Art. 12). */
-        ASSERT(rootEnd->instance->pipe != 0);
-        return NpfsAttachClient(rootEnd->instance->pipe, file, information);
+        /* Only a CLIENT ever loses its pipe (FSCTL_PIPE_DISCONNECT), and this
+         * root is a server end, so the state cannot exist. Asserted rather
+         * than given a fabricated status (Art. 12). The pipe may well be
+         * UNLINKED by now — a name is not what this door needs, which is how
+         * an unnamed pipe is reached at all. */
+        ASSERT(rootEnd->pipe != 0);
+        return NpfsAttachClient(rootEnd->pipe, file, information);
     }
     if (path->Length == 0)
     {
@@ -1662,7 +1722,7 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
 
     /* The peer sees a half-closed pipe: drains what is buffered, then
      * BROKEN on read / CLOSING on write (pinned sem_pipe/create_pipe). */
-    if (!end->orphaned && instance->state == FILE_PIPE_CONNECTED_STATE)
+    if (end->pipe != 0 && instance->state == FILE_PIPE_CONNECTED_STATE)
     {
         instance->state = FILE_PIPE_CLOSING_STATE;
     }
@@ -1680,18 +1740,16 @@ static void NpfsVfsCleanup(PFILE_OBJECT file)
         }
         instance->serverEnd = 0;
         /* The instance leaves the pipe's accounting when its server handle
-         * goes away; the pipe itself dies with its last instance. */
-        PNPFS_PIPE pipe = instance->pipe;
-        if (pipe != 0)
+         * goes away, and with the LAST instance the pipe leaves the namespace
+         * — but not the world. This end still holds it, and so may a client
+         * that outlived it: what such a client keeps is every fact about the
+         * pipe, and what it loses is the NAME (sem_pipe/pipe_lifetime.c). */
+        ASSERT(end->pipe != 0); /* only a CLIENT ever loses its pipe */
+        RemoveEntryList(&instance->listEntry);
+        ASSERT(end->pipe->instanceCount > 0);
+        if (--end->pipe->instanceCount == 0)
         {
-            RemoveEntryList(&instance->listEntry);
-            ASSERT(pipe->instanceCount > 0);
-            pipe->instanceCount--;
-            instance->pipe = 0;
-            if (pipe->instanceCount == 0)
-            {
-                NpfsFreePipe(pipe);
-            }
+            NpfsUnlinkPipe(end->pipe);
         }
     }
     else if (instance->clientEnd == end)
@@ -1726,6 +1784,14 @@ static void NpfsVfsClose(PFILE_OBJECT file)
      * handle guarantees the cleanup hook fired the ordinary way — so the
      * assert is placed to convict the day that stops being true. */
     ASSERT(IsListEmpty(&end->pendingReadHead));
+    /* The end's own reference goes with the end — pipe_end_destroy's
+     * `if (pipe_end->pipe) release_object( pipe_end->pipe )`. A disconnected
+     * client already gave its up (NpfsDisconnect), which is what the guard is
+     * for and the only reason it can be 0 here. */
+    if (end->pipe != 0)
+    {
+        NpfsDereferencePipe(end->pipe);
+    }
     MiFreePool(end);
     ASSERT(instance->endCount > 0);
     if (--instance->endCount == 0)
@@ -2086,7 +2152,6 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     }
     memset(instance, 0, sizeof(*instance));
     IopInitializeFcb(&instance->header);
-    instance->pipe = pipe;
     instance->state = FILE_PIPE_LISTENING_STATE;
     InitializeListHead(&instance->pendingListenHead);
     NpfsInitializeQueue(&instance->inbound, pipe->inQuota);
@@ -2094,6 +2159,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     KeInitializeEvent(&instance->connectEvent, NotificationEvent, FALSE);
     memset(end, 0, sizeof(*end));
     end->instance = instance;
+    end->pipe = NpfsReferencePipe(pipe); /* the server's own, as init_pipe_end */
     end->isServer = TRUE;
     InitializeListHead(&end->pendingReadHead);
     end->readMode = readMode & FILE_PIPE_MESSAGE_MODE;
@@ -2143,17 +2209,24 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     goto out;
 
 out_undo_instance:
+    /* This arm accounts for the pipe ITSELF and then skips out_empty_pipe:
+     * the end below holds the only reference a freshly minted pipe has, so
+     * dropping it can retire the object, and the guard there would then read
+     * a freed one. A pipe that was FOUND has another instance and another
+     * end, so neither count can reach zero here. */
     RemoveEntryList(&instance->listEntry);
     pipe->instanceCount--;
+    NpfsDereferencePipe(end->pipe);
     MiFreePool(end);
     MiFreePool(instance);
+    goto out_device;
 out_empty_pipe:
     /* A pipe this call just created must not linger with zero instances —
      * a later client would find it and see PIPE_NOT_AVAILABLE instead of
-     * OBJECT_NAME_NOT_FOUND. */
+     * OBJECT_NAME_NOT_FOUND. No end ever took it, so the unlink retires it. */
     if (information == FILE_CREATED && pipe->instanceCount == 0)
     {
-        NpfsFreePipe(pipe);
+        NpfsUnlinkPipe(pipe);
     }
 out_device:
     if (device != 0)
