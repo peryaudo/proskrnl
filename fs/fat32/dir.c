@@ -423,14 +423,27 @@ static NTSTATUS FatGenerateShortName(PFAT_FCB dir, const UNICODE_STRING *name,
     ULONG baseLength = 0, extLength = 0;
     ULONG units = name->Length / sizeof(WCHAR);
 
-    /* Leading dots and spaces are stripped before anything else, so `.a`
-     * yields the base "A" and NO extension rather than an empty base with
-     * the extension "A". Microsoft's 8.3-generation rules say to remove
-     * them, and the difference is observable: a short name carrying a dot
-     * cannot be matched by a DOS_STAR mask, which is what ntdll:directory's
-     * truth table checks for `.a`, `..a` and `.aa`. */
+    /* A leading run of DOTS is stripped before the extension separator is
+     * looked for, so `.a` yields the base "A" and NO extension rather than
+     * an empty base with the extension "A". The difference is observable:
+     * a short name carrying a dot cannot be matched by a DOS_STAR mask,
+     * which is what ntdll:directory's truth table checks for `.a`, `..a`
+     * and `.aa`.
+     *
+     * A leading SPACE is NOT part of that run, and the asymmetry is
+     * measured rather than reasoned: ` .a` keeps its `.a`, so its alias
+     * carries the extension `A` and the same DOS_STAR mask must not reach
+     * it. Spaces are still dropped from the base below, as illegal 8.3
+     * characters — what a leading space does not do is make the dot after
+     * it a LEADING dot. Stripping both is the whole of kernel32:file's
+     * sixteen wildcard failures at file.c:3208, every one of them "found
+     * incorrectly ' .a'" with nothing missed. Pinned by
+     * tests/ntapi/sem_file/short_names.c §7-8, which measures the same
+     * split on the oracle, whose hashed aliases keep the extension for
+     * ` .a` and drop it for `.a` (dlls/ntdll/unix/file.c
+     * hash_short_file_name: its leading-run loop tests '.' only). */
     ULONG start = 0;
-    while (start < units && (name->Buffer[start] == '.' || name->Buffer[start] == ' '))
+    while (start < units && name->Buffer[start] == '.')
     {
         start++;
     }

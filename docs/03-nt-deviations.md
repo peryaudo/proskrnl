@@ -76,7 +76,7 @@ correct by definition here, listed so nobody "fixes" them against Windows folklo
 | Byte-range lock conflict under FailImmediately | `STATUS_FILE_LOCK_CONFLICT` |
 | `FileEndOfFileInformation` through a handle without `FILE_WRITE_DATA` | shrink → `STATUS_INVALID_PARAMETER`, grow → `STATUS_INVALID_HANDLE` (fuzzer-found; artifacts of Wine's unix backend, pinned by `sem_file/info_classes`) |
 | `NtQueryDirectoryFile` mask binding | the mask binds to the handle; a NULL mask on a later call reuses the stored one; a first-scan empty result is `STATUS_NO_SUCH_FILE`, later ones `STATUS_NO_MORE_FILES` |
-| `FILE_BOTH_DIR_INFORMATION.ShortName` | left empty (Wine's unix backend reports none; not pinned by tests either way) |
+| `FILE_BOTH_DIR_INFORMATION.ShortName` | reported, and matched as a second leg by the mask — the *value* differs between the runners by construction (see "The 8.3 alias's leading run" below). This row used to say "left empty"; that was true before `IopFillShortName` and `sem_file/short_names.c`. |
 
 **NT behaviours the pinned Wine cannot express** (its unix backend under-implements them;
 proskrnl implements the NT form — unobservable by Wine's PE stack, which never relies on
@@ -103,6 +103,36 @@ them, and excluded from the differential fuzzer's op model):
   `NtFlushVirtualMemory` over the view's covered file range (CUI-7), and at file close —
   not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
   through immediately).
+
+### The 8.3 alias's leading run: dots are stripped, a space is not
+
+A name that is not already a legal 8.3 name gets a generated alias
+(`FatGenerateShortName`, `fs/fat32/dir.c`). The FAT specification (§7.4)
+licenses any unique legal 8.3 name, so the *string* is ours to pick and the
+two runners pick differently — the oracle hashes the long name into an
+eight-character base, FAT uses a numeric tail. **One bit of the value is
+nevertheless shared, and it is observable: whether the alias carries an
+EXTENSION.** A mask ending in DOS_STAR (`<`) can never match an alias that
+has a dot, and `<` is exactly what kernelbase's `fixup_mask` emits for the
+DOS glob `*.`, so this bit decides which files a "list the extensionless
+names" call returns.
+
+The rule both runners implement:
+
+- a **leading run of dots** is stripped before the last dot is looked for, so
+  `.a`, `..a` and `.aaa` alias to a base with **no** extension even though
+  their long names all carry a dot. This is the only reason `<` reaches them;
+- a **leading space is not part of that run**. ` .a` keeps its `.a`, aliases
+  *with* the extension `A`, and is invisible to the same mask. Spaces are
+  still dropped from the base as illegal 8.3 characters — what a leading
+  space does not do is make the dot after it a leading dot.
+
+The asymmetry is measured, not reasoned: the oracle's `hash_short_file_name`
+(`dlls/ntdll/unix/file.c`) advances its leading-run loop over `'.'` only, and
+`tests/ntapi/sem_file/short_names.c` §7-8 asserts the same split on both
+runners. Stripping dots *and* spaces — which proskrnl did until this item —
+answers every other cell of `kernel32:file`'s wildcard table correctly and
+gets ` .a` wrong in sixteen of them.
 
 ### Byte-range locks are tracked but not enforced against I/O
 
