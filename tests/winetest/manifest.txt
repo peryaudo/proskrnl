@@ -622,28 +622,64 @@ ntdll_test.exe:path
 #       with no other line moved — nothing was hiding behind them (docs/21 §4
 #       trap 2 does not apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 37 (33 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 33,
+#     THE DEVICE-ROOT FSCTL LADDER IS NOW BUILT: 37 -> 29, the eight at :2751
+#     (four rows, asked once through `\Device\NamedPipe` and once through
+#     `\Device\NamedPipe\`). The whole rule is one switch,
+#     server/named_pipe.c named_pipe_device_ioctl, and its three answers do
+#     NOT collapse into one "wrong object for this verb" — which is the
+#     reading proskrnl had, answering STATUS_ILLEGAL_FUNCTION or a loud
+#     STATUS_NOT_SUPPORTED to the lot:
+#       * LISTEN and IMPERSONATE are ILLEGAL_FUNCTION — verbs the device does
+#         not HAVE;
+#       * DISCONNECT and TRANSCEIVE are PIPE_DISCONNECTED — a STATE it is not
+#         in;
+#       * QUERY_CLIENT_PROCESS is INVALID_PARAMETER, decided above any look
+#         at the arguments (proskrnl answered 0xc00000bb);
+#       * everything else — FSCTL_PIPE_PEEK INCLUDED, which the switch never
+#         names — falls to default_fd_ioctl's own default (server/fd.c),
+#         NOT_SUPPORTED. PEEK is the discriminating row and no winetest
+#         assertion convicts it: :2721 asks the same call and is todo_wine
+#         (it wants NT's INVALID_PARAMETER), so it is pinned because the
+#         oracle answers it, not because anything failed.
+#       FSCTL_PIPE_WAIT is the one arm where the device and its root
+#       DIRECTORY part, and it is NOT built: see :2787 below.
+#       Landed in fs/npfs/pipe.c, pinned by
+#       tests/ntapi/sem_pipe/device_ioctl.c; docs/21 W11, docs/03 "What the
+#       named-pipe DEVICE ROOT answers to each pipe FSCTL".
+#       2377 tests executed, 31 todo markers and 0 flaky before and after, and
+#       a line-by-line histogram diff shows exactly those eight removed with
+#       no other line moved — nothing was hiding behind them (docs/21 §4
+#       trap 2 does not apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 29 (25 failed + 4 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 25,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
 #     and docs/21 §4 trap 4 says the loudest is usually the consequence:
-#       -  4  test_empty_name + 8 subtest_empty_name_pipe_operations (:2751x8)
-#             = 12, still the `\Device\NamedPipe` device-root surface and now
-#             THREE items with nothing shared between them:
-#               * :2810 is the ONE assertion that separates the device from
-#                 its root directory, and its failure MODE changed with the
-#                 item above rather than its count: a NAMED create relative to
-#                 a handle on `\Device\NamedPipe` (no trailing backslash) must
-#                 be STATUS_OBJECT_NAME_INVALID, and proskrnl now answers
-#                 SUCCESS where it used to answer 0xc0000024 — i.e. it
-#                 accepts where NT refuses, having previously refused
-#                 everything. Both roots open through NpfsVfsCreate's root arm
-#                 and carry no pipe state, so nothing downstream can tell them
-#                 apart; ObpLookupName hands the FS an empty remainder for
-#                 both. That is docs/21 W7's parser question — the same one
-#                 `\??\C:` vs `\??\C:\` asks, and W7's `\\.\c:` blocker — so
-#                 the two are ONE item and neither is an npfs one.
+#       -  4  test_empty_name — what is left of the `\Device\NamedPipe`
+#             device-root surface, and it is TWO items with nothing shared
+#             between them (the ioctl ladder that was the third is built):
+#               * :2810 and :2787 both need the device told from its root
+#                 DIRECTORY, and neither is an npfs item. :2810: a NAMED
+#                 create relative to a handle on `\Device\NamedPipe` (no
+#                 trailing backslash) must be STATUS_OBJECT_NAME_INVALID, and
+#                 proskrnl now answers SUCCESS where it used to answer
+#                 0xc0000024 — i.e. it accepts where NT refuses, having
+#                 previously refused everything (its failure MODE changed with
+#                 the relative-root item above rather than its count). :2787:
+#                 FSCTL_PIPE_WAIT on the DEVICE must be
+#                 STATUS_ILLEGAL_FUNCTION, where on the directory it is the
+#                 name lookup (OBJECT_NAME_NOT_FOUND for an absent pipe —
+#                 that half already passes); it is the ONE arm where
+#                 named_pipe_dir_ioctl does not tail-call
+#                 named_pipe_device_ioctl, and the rest of that ladder is
+#                 built (see above). Both roots open through NpfsVfsCreate's
+#                 root arm and carry no pipe state, so nothing downstream can
+#                 tell them apart; ObpLookupName hands the FS an empty
+#                 remainder for both. That is docs/21 W7's parser question —
+#                 the same one `\??\C:` vs `\??\C:\` asks, and W7's `\\.\c:`
+#                 blocker — so those two are ONE kernel/ob item.
 #               * :2849 and :2881 are NtQueryObject(ObjectNameInformation) on
 #                 an unnamed pipe end, which must be STATUS_OBJECT_PATH_INVALID
 #                 (server/named_pipe.c named_pipe_get_full_name, whose
@@ -658,18 +694,6 @@ ntdll_test.exe:path
 #                 the fix is that document's third hook applied to the fourth
 #                 type. NOT scoped with the item above on purpose: it changes
 #                 what every file handle answers.
-#               * the :2751 eight are FOUR rules asked twice, once through
-#                 `\Device\NamedPipe` and once through `\Device\NamedPipe\`,
-#                 whose ioctl ladders differ only in FSCTL_PIPE_WAIT
-#                 (named_pipe_dir_ioctl falls through to
-#                 named_pipe_device_ioctl for everything else): DISCONNECT and
-#                 TRANSCEIVE are PIPE_DISCONNECTED there, IMPERSONATE is
-#                 ILLEGAL_FUNCTION, QUERY_CLIENT_PROCESS is INVALID_PARAMETER
-#                 (proskrnl answers 0xc00000bb for it), and the four npfs
-#                 already answers correctly are the NOT_SUPPORTED ones. :2787
-#                 (FSCTL_PIPE_WAIT on the DEVICE must be ILLEGAL_FUNCTION,
-#                 where on the directory it is OBJECT_NAME_NOT_FOUND — which
-#                 already passes) is the ninth of that item.
 #       -  5  test_async_cancel_on_handle_close (:3114x4, :3111x1) — what a
 #             CLOSE does to a pended request's completion packet. All five
 #             carry the context `other_process 1, i 5` and that is the whole
