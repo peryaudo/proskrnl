@@ -988,6 +988,20 @@ $(AUDSMOKE): tests/audio/aud_smoke.c drivers/sndproto.h $(WINE_PE_DLLS)
 	    tests/audio/aud_smoke.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
+# The AUD-3 device-contract capture client (docs/02 "AUD-3 — capture"):
+# same recipe, pointed at the capture node, run on a `none`-audiodev boot
+# (the one backend with an input side — tests/run/run.sh audio).
+CAPSMOKE := $(BUILD)/modules/cap_smoke.exe
+$(CAPSMOKE): tests/audio/cap_smoke.c drivers/sndproto.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=cap_start \
+	    tests/audio/cap_smoke.c \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
+
+cap-smoke: $(CAPSMOKE)
+.PHONY: cap-smoke
+
 # winevsnd.drv (AUD-2, docs/23 §4b): the PE mmdevapi driver — the winefb
 # recipe as a STANDALONE DLL, because mmdevapi's seam LdrLoadDll's it by
 # name and resolves its one exported table. Compiled against the pinned

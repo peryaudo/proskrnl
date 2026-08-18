@@ -661,6 +661,15 @@ static const GUI_LEG SessionGuiLegs[] = {
      .tag = "audio",
      .foregroundName = "aud_smoke.exe"},
 
+    /* AUD-3 (docs/02 "AUD-3 — capture"): cap_smoke.exe finds the capture
+     * node by its own direction claim and blocking-reads silence periods
+     * from the `none` audiodev's cadence. Written never to return, so
+     * returning is the verdict. */
+    {.probe = WSTR("\\??\\C:\\cap_smoke.exe"),
+     .foreground = WSTR("\\??\\C:\\cap_smoke.exe"),
+     .tag = "audio",
+     .foregroundName = "cap_smoke.exe"},
+
     /* AUD-2 (docs/02 "winevsnd.drv: WASAPI render"): the same pattern
      * through the whole PE audio stack — CoCreateInstance -> IAudioClient
      * over mmdevapi + winevsnd.drv — with the underrun count on its

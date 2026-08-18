@@ -2829,8 +2829,49 @@ audio() {
         echo "== audio: FAIL (WASAPI recording does not contain what the guest played) =="
         return 1
     fi
+
+    # --- the capture half (AUD-3, docs/23 §4a "Capture is the mirror"): a
+    # third boot whose audiodev is `none` — the one backend WITH an input
+    # side, which supplies silence at the correct cadence (audio/noaudio.c
+    # no_read). The wav audiodev CANNOT carry this half: it has no input
+    # voices (audio/wavaudio.c max_voices_in = 0), so on the two boots
+    # above rx buffers would only ever return at the RELEASE flush — do
+    # not "simplify" this back onto a wav boot. cap_smoke.exe finds the
+    # capture node by its own direction claim and blocking-reads full
+    # periods of zeros; the verdict asserts content and accounting, never
+    # cadence speed (docs/19 §11c).
+    make -C "$ROOT" cap-smoke >/dev/null
+    local img3="$dir/capture.hdd"
+    bake_audio_image "$img3" "win:$ROOT/build/modules/cap_smoke.exe=cap_smoke.exe"
+    sock="$dir/capture.sock" log="$dir/capture.log"
+    rm -f "$sock" "$log"
+    QMP_SOCK="$sock" LOG="$log" \
+        EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
+        AUDIODEV="none,id=snd0" \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
+        "$ROOT/tools/qemu.sh" "$img3" >/dev/null 2>&1 &
+    qemu_wrapper=$!
+    # The kmt SND suite runs here too — same device, third backend shape —
+    # and its capture cases must hold under `none` exactly as under wav
+    # (the pre-START hold + RELEASE flush envelope is backend-agnostic).
+    if ! await '\[KTEST\] SND (PASS|FAIL)'; then
+        audio_fail "the kmt SND suite never reported (capture boot)"; return 1
+    fi
+    if ! await '\[KTEST\] audio capture (PASS|FAIL)'; then
+        audio_fail "no capture client verdict"; return 1
+    fi
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] SND PASS' "$log"; then
+        echo "== audio: FAIL (kmt SND suite on the capture boot; see $log) =="; return 1
+    fi
+    if ! grep -qE '\[KTEST\] audio capture PASS periods=[0-9]+ pos=[0-9]+' "$log"; then
+        echo "== audio: FAIL (capture half; see $log) =="; return 1
+    fi
+
     echo "== audio: PASS (device contract + sample-exact playback, direct and via WASAPI," \
-         "$(grep -oE 'underruns=[0-9]+' "$log" | tail -1)) =="
+         "$(grep -oE 'underruns=[0-9]+' "$dir/wasapi.log" | tail -1)," \
+         "$(grep -oE 'capture PASS periods=[0-9]+ pos=[0-9]+' "$log" | tail -1)) =="
     return 0
 }
 
