@@ -294,67 +294,60 @@ BOOLEAN ObpIsPseudoHandle(HANDLE handle)
     return (ULONG)(ULONG_PTR)handle >= 0xfffffffaU;
 }
 
-NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POBJECT_TYPE type,
-                                   KPROCESSOR_MODE accessMode, PVOID *body,
-                                   POBJECT_HANDLE_INFORMATION handleInformation)
+/* WHICH OBJECT each magic value names, referenced on the way out. Both the
+ * by-handle resolver below and NtDuplicateObject's SOURCE lookup ask this one
+ * function, because wineserver has exactly one such site too — get_magic_handle
+ * inside get_handle_obj (third_party/wine server/handle.c) — and a second
+ * transcription of the list is the parallel path G10 rejects.
+ *
+ * The comparisons are on the LOW 32 BITS for the same reason ObpIsPseudoHandle
+ * is: a handle value's meaningful part is 32 bits wide, and mixing a 32-bit
+ * predicate with 64-bit arms is how the two came to disagree about
+ * 0x00000000fffffffa.
+ *
+ * ONE of the server's arms is deliberately absent: it also maps 0x7fffffff to
+ * the current process, which is Wine's own spelling and not NT's. The range
+ * this file recognises is the oracle's PE-side one (`is_pseudo_handle`,
+ * dlls/ntdll/unix/sync.c — ob.h states why), and nothing in the stack sends
+ * 0x7fffffff down, so carrying it would be transcribing a quirk rather than a
+ * contract.
+ *
+ * Every arm names something of the CALLING thread's, and that is a rule and
+ * not an accident of where the function is called from: the server resolves a
+ * magic handle against `current` before it consults the process argument's
+ * table at all, so naming a FOREIGN process as a duplication's source does not
+ * make -1 mean that process (sem_ob/dup_cross_process pins it). */
+static NTSTATUS ObpReferencePseudoHandle(HANDLE handle, PVOID *body)
 {
-    /* CUI-2: the magic token pseudo-handles, resolved before the table
-     * exactly as wineserver's get_magic_handle (server/handle.c) resolves
-     * them — ~3 the process token, ~4 the thread token (none exists in
-     * CUI-2), ~5 the thread-effective token (falls back to the process
-     * token). Magic handles bypass the access check (get_handle_obj grabs
-     * without checking; get_handle_access reports all rights) but keep the
-     * type check. */
-    /* ONE range test, ObpIsPseudoHandle's, entered here so the predicate and
-     * the resolver cannot drift (Art. 11 — ob.h states the contract). The
-     * comparisons below are on the LOW 32 BITS for the same reason the
-     * predicate is: a handle value's meaningful part is 32 bits wide, and
-     * mixing a 32-bit predicate with 64-bit arms is how the two came to
-     * disagree about 0x00000000fffffffa. */
+    ASSERT(ObpIsPseudoHandle(handle));
     ULONG value = (ULONG)(ULONG_PTR)handle;
-    if (ObpIsPseudoHandle(handle))
+    PKTHREAD current = KeGetCurrentThread();
+    PVOID named = 0;
+    if (value >= (ULONG)-6 && value <= (ULONG)-4)
     {
-        if (value >= (ULONG)-6 && value <= (ULONG)-4)
+        /* CUI-6: -4 = process token, -5 = thread (impersonation) token,
+         * -6 = effective token (thread's if impersonating, else process's).
+         * The thread token is 0 unless SetThreadToken attached one, which is
+         * STATUS_INVALID_HANDLE for -5 and the fallback for -6. */
+        if (value == (ULONG)-4)
         {
-            /* CUI-6: -4 = process token, -5 = thread (impersonation) token,
-             * -6 = effective token (thread's if impersonating, else process's).
-             * The thread token is 0 unless SetThreadToken attached one, which is
-             * STATUS_INVALID_HANDLE for -5 and the fallback for -6. */
-            PVOID token = 0;
-            if (value == (ULONG)-4)
-            {
-                token = KeGetCurrentThread()->process->token;
-            }
-            else if (value == (ULONG)-5)
-            {
-                token = PsCurrentThreadImpersonationToken();
-            }
-            else /* -6: effective */
-            {
-                token = PsCurrentThreadImpersonationToken();
-                if (token == 0)
-                {
-                    token = KeGetCurrentThread()->process->token;
-                }
-            }
-            if (token == 0)
-            {
-                return STATUS_INVALID_HANDLE;
-            }
-            if (type != 0 && ObpGetHeader(token)->type != type)
-            {
-                return STATUS_OBJECT_TYPE_MISMATCH;
-            }
-            ObfReferenceObject(token);
-            *body = token;
-            if (handleInformation != 0)
-            {
-                handleInformation->HandleAttributes = 0;
-                handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
-            }
-            return STATUS_SUCCESS;
+            named = current->process->token;
         }
-
+        else if (value == (ULONG)-5)
+        {
+            named = PsCurrentThreadImpersonationToken();
+        }
+        else /* -6: effective */
+        {
+            named = PsCurrentThreadImpersonationToken();
+            if (named == 0)
+            {
+                named = current->process->token;
+            }
+        }
+    }
+    else if (value == (ULONG)-1)
+    {
         /* The CURRENT-process (-1) and CURRENT-thread (-2) pseudo-handles,
          * resolved here beside the token ones rather than at each call site.
          * NT treats them as real handles to the caller's own objects. The
@@ -364,42 +357,60 @@ NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POB
          * unresolved NtSuspendThread answered STATUS_INVALID_HANDLE — so the
          * thread never parked and five assertions failed behind it.
          *
-         * Like the token pseudo-handles above they bypass the ACCESS check (a
-         * caller always has full rights to itself) and keep the TYPE check, so
-         * asking for a thread with -1 is still an honest mismatch.
-         *
          * kernel/ps/ carries per-site `handle != NtCurrentThread()` dances
          * predating this; they are now redundant rather than wrong — they
          * short-circuit to the same object — and should be retired as their
          * classes are next touched rather than in a drive-by (G13). */
-        if (value == (ULONG)-1 || value == (ULONG)-2)
-        {
-            PKTHREAD current = KeGetCurrentThread();
-            PVOID self =
-                (value == (ULONG)-1) ? (PVOID)current->process : (PVOID)current->threadObject;
-            if (self == 0)
-            {
-                return STATUS_INVALID_HANDLE;
-            }
-            if (type != 0 && ObpGetHeader(self)->type != type)
-            {
-                return STATUS_OBJECT_TYPE_MISMATCH;
-            }
-            ObfReferenceObject(self);
-            *body = self;
-            if (handleInformation != 0)
-            {
-                handleInformation->HandleAttributes = 0;
-                handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
-            }
-            return STATUS_SUCCESS;
-        }
-        /* -3: inside the range and naming nothing. Nothing ever hands one out,
-         * so it is an invalid handle — said here rather than left to fall
-         * through to a table lookup that would reach the same answer by
-         * accident. kernel32:sync passes it to NtWaitForMultipleObjects among
-         * the six (sync.c's pseudohandles[2] = ~(ULONG_PTR)2). */
+        named = current->process;
+    }
+    else if (value == (ULONG)-2)
+    {
+        named = current->threadObject;
+    }
+    /* -3: inside the range and naming nothing. Nothing ever hands one out, so
+     * it is an invalid handle — said here rather than left to fall through to
+     * a table lookup that would reach the same answer by accident.
+     * kernel32:sync passes it to NtWaitForMultipleObjects among the six
+     * (sync.c's pseudohandles[2] = ~(ULONG_PTR)2). */
+    if (named == 0)
+    {
         return STATUS_INVALID_HANDLE;
+    }
+    ObfReferenceObject(named);
+    *body = named;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ObReferenceObjectByHandle(HANDLE handle, ACCESS_MASK desiredAccess, POBJECT_TYPE type,
+                                   KPROCESSOR_MODE accessMode, PVOID *body,
+                                   POBJECT_HANDLE_INFORMATION handleInformation)
+{
+    /* ONE range test, ObpIsPseudoHandle's, entered here so the predicate and
+     * the resolver cannot drift (Art. 11 — ob.h states the contract). Magic
+     * handles bypass the ACCESS check (get_handle_obj grabs without checking;
+     * get_handle_access reports all rights — a caller always has full rights
+     * to itself) and keep the TYPE check, so asking for a thread with -1 is
+     * still an honest mismatch. */
+    if (ObpIsPseudoHandle(handle))
+    {
+        PVOID self;
+        NTSTATUS status = ObpReferencePseudoHandle(handle, &self);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (type != 0 && ObpGetHeader(self)->type != type)
+        {
+            ObDereferenceObject(self);
+            return STATUS_OBJECT_TYPE_MISMATCH;
+        }
+        *body = self;
+        if (handleInformation != 0)
+        {
+            handleInformation->HandleAttributes = 0;
+            handleInformation->GrantedAccess = ~(ACCESS_MASK)0;
+        }
+        return STATUS_SUCCESS;
     }
 
     POBP_HANDLE_ENTRY entry = ObpEntryFromHandle(handle);
@@ -672,14 +683,51 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     }
 
     POBP_HANDLE_TABLE sourceTable = &sourceProc->handleTable;
-    POBP_HANDLE_ENTRY source = ObpEntryInTable(sourceTable, sourceHandle);
-    if (source == 0)
+    /* The SOURCE lookup is get_handle_obj's order (third_party/wine
+     * server/handle.c): the magic pseudo-handles FIRST, then the source
+     * process's table. Table-only is what refused
+     * DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), ...) — the
+     * documented way to turn a pseudo-handle into a real one, which
+     * kernel32:virtual's test_ReadProcessMemory opens with. Pinned by
+     * sem_ob/dup_pseudo. */
+    PVOID sourceBody = 0;
+    ACCESS_MASK sourceAccess;
+    ULONG sourceAttributes;
+    if (ObpIsPseudoHandle(sourceHandle))
     {
-        status = STATUS_INVALID_HANDLE;
-        goto release;
+        status = ObpReferencePseudoHandle(sourceHandle, &sourceBody);
+        if (!NT_SUCCESS(status))
+        {
+            goto release;
+        }
+        /* No entry means no RECORDED rights and no attributes, so the server
+         * synthesises both: "pseudo-handle, give it full access", spelled
+         * map_access( obj, GENERIC_ALL ) — which is this type's whole mask
+         * through the one mapping authority — and attributes taken from that
+         * mask's reserved bits, i.e. none. */
+        sourceAccess = ObpMapDesiredAccess(ObpGetHeader(sourceBody)->type, GENERIC_ALL);
+        sourceAttributes = 0;
+    }
+    else
+    {
+        POBP_HANDLE_ENTRY source = ObpEntryInTable(sourceTable, sourceHandle);
+        if (source == 0)
+        {
+            status = STATUS_INVALID_HANDLE;
+            goto release;
+        }
+        /* Hold the body for the rest of the call. The insert below takes its
+         * own reference on success, but it can allocate, and the source table
+         * belongs to a process whose OWN threads may close the handle — so
+         * this reference is what keeps the body alive between reading it here
+         * and the insert referencing it. */
+        sourceBody = source->body;
+        ObfReferenceObject(sourceBody);
+        sourceAccess = source->grantedAccess;
+        sourceAttributes = source->attributes;
     }
 
-    POBJECT_TYPE type = ObpGetHeader(source->body)->type;
+    POBJECT_TYPE type = ObpGetHeader(sourceBody)->type;
     /* Duplication maps generic wishes but grants SPECIFIC bits verbatim —
      * never filtered by the type's valid mask (Wine server/handle.c
      * duplicate_handle -> map_access keeps non-generic bits untouched;
@@ -689,7 +737,7 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     ACCESS_MASK granted;
     if (options & DUPLICATE_SAME_ACCESS)
     {
-        granted = source->grantedAccess;
+        granted = sourceAccess;
     }
     else
     {
@@ -709,7 +757,7 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
             granted |= ObpMapDesiredAccess(type, desiredAccess & generics);
         }
     }
-    ULONG newAttributes = (options & DUPLICATE_SAME_ATTRIBUTES) ? source->attributes : attributes;
+    ULONG newAttributes = (options & DUPLICATE_SAME_ATTRIBUTES) ? sourceAttributes : attributes;
 
     status = STATUS_SUCCESS;
     if (targetHandle != 0)
@@ -720,16 +768,8 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
         status = KiProbeForWrite(targetHandle, sizeof(*targetHandle), sizeof(*targetHandle));
         if (NT_SUCCESS(status))
         {
-            /* Hold the body across the insert. The insert takes its own
-             * reference on success, but it can allocate, and the source table
-             * now belongs to a process whose OWN threads may close the handle
-             * — so the transient reference is what keeps the body alive
-             * between reading it here and the insert referencing it. */
-            PVOID body = source->body;
-            ObfReferenceObject(body);
-            status = ObpCreateHandleInTable(&targetProc->handleTable, body, granted, newAttributes,
-                                            targetHandle);
-            ObDereferenceObject(body);
+            status = ObpCreateHandleInTable(&targetProc->handleTable, sourceBody, granted,
+                                            newAttributes, targetHandle);
         }
         if (!NT_SUCCESS(status))
         {
@@ -740,8 +780,12 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     {
         /* The source entry may have moved if the table grew (it can be the
          * same table as the target's): re-resolve. A source that vanished
-         * meanwhile is nothing left to close. */
-        source = ObpEntryInTable(sourceTable, sourceHandle);
+         * meanwhile — or that was never in the table, i.e. a pseudo-handle —
+         * is nothing left to close, which is both the server's answer (it
+         * closes unconditionally and DISCARDS the error) and NT's documented
+         * one ("calling the CloseHandle function with a pseudo handle has no
+         * effect", learn.microsoft.com GetCurrentProcess). */
+        POBP_HANDLE_ENTRY source = ObpEntryInTable(sourceTable, sourceHandle);
         if (source != 0)
         {
             ObpCloseHandleEntryIn(sourceProc, sourceTable, source);
@@ -749,6 +793,10 @@ NTSTATUS NtDuplicateObject(HANDLE sourceProcess, HANDLE sourceHandle, HANDLE tar
     }
 
 release:
+    if (sourceBody != 0)
+    {
+        ObDereferenceObject(sourceBody);
+    }
     if (targetReferenced)
     {
         ObDereferenceObject(targetProc);

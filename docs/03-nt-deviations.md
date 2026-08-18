@@ -2586,6 +2586,40 @@ because the cost of missing it is paid a long way from the syscall:
 Pinned by `tests/ntapi/sem_ob/out_handle.c`, whose last two cases are the entry points that
 must **not** clear.
 
+## A magic pseudo-handle as a duplication SOURCE
+
+`DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), …)` is the documented way to
+turn the current-process pseudo-handle into a real one, and the source handle in it is in
+nobody's handle table. A duplication that only knows how to look a handle up therefore
+refuses the one call every consumer makes — `kernel32:virtual`'s `test_ReadProcessMemory`
+opens with it, and `ERROR_INVALID_HANDLE` there took three assertions with it.
+
+Nothing deviates. It is recorded because three of its four rules are stated somewhere other
+than where they are needed, and each is invisible to a test that only checks the status:
+
+- **The lookup ORDER is the content.** `get_handle_obj` (`third_party/wine`
+  `server/handle.c`) tries `get_magic_handle` FIRST and the process's table second, so the
+  magic values never reach a table at all. `kernel/ob/handle.c` states the list once
+  (`ObpReferencePseudoHandle`) and both `ObReferenceObjectByHandle` and `NtDuplicateObject`
+  ask it, because the server has exactly one such site too.
+- **Every arm names something of the CALLING thread's, whatever process the caller named.**
+  `get_magic_handle` resolves against `current` and takes no process argument, so
+  `NtDuplicateObject(childProcess, NtCurrentProcess(), …)` yields a handle to the CALLER's
+  process, not the child's. Measured, not inferred (`sem_ob/dup_cross_process`).
+- **A pseudo source has no recorded rights, so the server SYNTHESIZES them**:
+  `map_access( obj, GENERIC_ALL )`, commented "pseudo-handle, give it full access". That is
+  the `DUPLICATE_SAME_ACCESS` value only — a duplication naming specific rights still gets
+  exactly those, because the access asked for is mapped independently. Its attributes come
+  out of the same mask's reserved bits, i.e. none, which is what `DUPLICATE_SAME_ATTRIBUTES`
+  copies when there is no entry to copy from.
+- **`DUPLICATE_CLOSE_SOURCE` has nothing to close and must not say so.** The server closes
+  unconditionally and DISCARDS the error (`dup_handle`: "close the handle no matter what
+  happened", with `close_handle`'s return value dropped), which agrees with what Microsoft
+  documents for a pseudo handle — "calling the CloseHandle function with a pseudo handle has
+  no effect" (learn.microsoft.com, `GetCurrentProcess`). So the duplication succeeds.
+
+Pinned by `tests/ntapi/sem_ob/dup_pseudo.c` and one case in `sem_ob/dup_cross_process.c`.
+
 ## What a live SECTION holds against a later OPEN
 
 NT models a section as a **pseudo-open of the file**, and the pinned oracle says so
