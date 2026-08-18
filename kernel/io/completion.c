@@ -8,10 +8,25 @@
  * on the pinned oracle (wineserver's completion object, server/completion.c).
  *
  * Shape (Art. 3 — stupidly correct): a FIFO packet list guarded by the one
- * dispatcher lock, with a counting semaphore carrying the wakeups; a
- * blocking remove is KeWaitForSingleObject on the semaphore. The port body
- * BEGINS with the KSEMAPHORE, so a handle wait on the port degenerates to a
- * semaphore wait — nothing on the CUI path waits on port handles.
+ * dispatcher lock, and the server's TWO wait channels kept apart, because
+ * they answer different questions and a caller can see the difference
+ * (ntdll:sync test_completion_port_scheduling; pinned by
+ * tests/ntapi/sem_port/port_wait.c):
+ *
+ *   - the port HANDLE's signal state is `queued`, the server's
+ *     `completion->sync` — created MANUAL-reset and clear
+ *     (`create_internal_sync( 1, 0 )`, server/event.c), set when a packet is
+ *     left UNCLAIMED, cleared when the queue empties, set on the last handle
+ *     close. A handle wait therefore wakes EVERY waiter and consumes
+ *     nothing.
+ *
+ *   - a parked NtRemoveIoCompletion(Ex) is the server's `completion_wait`:
+ *     an entry on `waiters`, pushed at the HEAD (remove_completion's
+ *     list_add_head) and served head-first by the poster (add_completion's
+ *     forward iteration), i.e. LIFO. A parked remover takes the packet
+ *     BEFORE the handle's signal state ever sees it.
+ *
+ * The body BEGINS with `queued`, so a handle wait on the port lands there.
  */
 #include "kernel/io/io.h"
 #include "kernel/ob/ob.h"
@@ -30,15 +45,36 @@ typedef struct IOP_COMPLETION_PACKET
     ULONG_PTR information;
 } IOP_COMPLETION_PACKET;
 
+/* One parked NtRemoveIoCompletion(Ex) — the server's `completion_wait`. It
+ * lives on the PARKED THREAD'S KERNEL STACK and is unlinked before that frame
+ * returns, so it needs no allocation and carries no lifetime rule of its own:
+ * the parked syscall is holding the port reference that keeps the object
+ * alive around it (G11). */
+typedef struct IOP_COMPLETION_WAITER
+{
+    LIST_ENTRY entry;
+    KEVENT wake; /* synchronization event, initially clear */
+    /* The poster's hand-off, valid iff `served` — and a VALUE copy, so its
+     * inherited `entry` links back into a pool block that is already freed.
+     * Only key/value/status/information are ever read from it. */
+    IOP_COMPLETION_PACKET packet;
+    BOOLEAN linked;    /* still on IO_COMPLETION.waiters */
+    BOOLEAN served;    /* a poster handed this waiter `packet` */
+    BOOLEAN abandoned; /* the port's last handle closed under it */
+} IOP_COMPLETION_WAITER;
+
 struct IO_COMPLETION
 {
-    KSEMAPHORE semaphore; /* count == queued packets; FIRST: handle waits land here */
-    LIST_ENTRY queue;     /* IOP_COMPLETION_PACKET FIFO, dispatcher-lock guarded */
+    KEVENT queued;      /* FIRST: handle waits land here (the server's `sync`) */
+    LIST_ENTRY queue;   /* IOP_COMPLETION_PACKET FIFO, dispatcher-lock guarded */
+    LIST_ENTRY waiters; /* IOP_COMPLETION_WAITER, MOST RECENTLY PARKED FIRST */
 };
 
 static void IopDeleteCompletion(PVOID body)
 {
     PIO_COMPLETION port = body;
+    /* Every parked remover holds a reference, so none can be left here. */
+    ASSERT(IsListEmpty(&port->waiters));
     while (!IsListEmpty(&port->queue))
     {
         PLIST_ENTRY head = RemoveHeadList(&port->queue);
@@ -46,11 +82,40 @@ static void IopDeleteCompletion(PVOID body)
     }
 }
 
+/* NT's OB_CLOSE_METHOD moment, and the server's `completion_close_handle`:
+ * only the LAST handle in the system does anything, and then every parked
+ * remover is abandoned (make_wait_abandoned -> STATUS_ABANDONED_WAIT_0) and
+ * the handle's own signal state goes up, so a thread waiting on the HANDLE
+ * comes back signalled rather than abandoned. */
+static void IopCloseCompletion(PEPROCESS process, PVOID body, ULONG processHandleCount,
+                               ULONG systemHandleCount)
+{
+    (void)process;
+    (void)processHandleCount;
+    if (systemHandleCount != 1)
+    {
+        return;
+    }
+    PIO_COMPLETION port = body;
+    uint64_t flags = KiAcquireDispatcherLock();
+    while (!IsListEmpty(&port->waiters))
+    {
+        PLIST_ENTRY head = RemoveHeadList(&port->waiters);
+        IOP_COMPLETION_WAITER *waiter = CONTAINING_RECORD(head, IOP_COMPLETION_WAITER, entry);
+        waiter->linked = FALSE;
+        waiter->abandoned = TRUE;
+        KiSetEventLocked(&waiter->wake);
+    }
+    KiSetEventLocked(&port->queued);
+    KiReleaseDispatcherLock(flags);
+}
+
 OBJECT_TYPE IoCompletionType = {
     .name = "IoCompletion",
     .validAccess = IO_COMPLETION_ALL_ACCESS,
     .waitable = TRUE,
     .deleteProcedure = IopDeleteCompletion,
+    .closeProcedure = IopCloseCompletion,
 };
 
 NTSTATUS NtCreateIoCompletion(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIBUTES attr,
@@ -68,10 +133,31 @@ NTSTATUS NtCreateIoCompletion(PHANDLE handle, ACCESS_MASK access, POBJECT_ATTRIB
     if (status == STATUS_SUCCESS)
     {
         PIO_COMPLETION port = body;
-        KeInitializeSemaphore(&port->semaphore, 0, 0x7fffffff);
+        KeInitializeEvent(&port->queued, NotificationEvent, FALSE);
         InitializeListHead(&port->queue);
+        InitializeListHead(&port->waiters);
     }
     return status;
+}
+
+/* Take the head packet, and drop the HANDLE's signal state when that empties
+ * the queue — the server's `if (list_empty( &completion->queue )) reset_sync(
+ * completion->sync )`. THE one dequeue site (Art. 11): the inline remove, the
+ * batch drain and the poster's hand-off to a parked remover all come here, so
+ * "signalled == an unclaimed packet is queued" is stated once. Returns the
+ * pool block, for the caller to free once the lock is down. */
+static IOP_COMPLETION_PACKET *IopTakePacketLocked(PIO_COMPLETION port)
+{
+    if (IsListEmpty(&port->queue))
+    {
+        return 0;
+    }
+    PLIST_ENTRY head = RemoveHeadList(&port->queue);
+    if (IsListEmpty(&port->queue))
+    {
+        KiClearEventLocked(&port->queued);
+    }
+    return CONTAINING_RECORD(head, IOP_COMPLETION_PACKET, entry);
 }
 
 /* The one packet-posting engine (G10): NtSetIoCompletion resolves the
@@ -90,10 +176,37 @@ NTSTATUS IopPostCompletionPacket(PIO_COMPLETION port, ULONG_PTR key, ULONG_PTR v
     packet->status = packetStatus;
     packet->information = information;
 
+    /* server/completion.c add_completion: the packet joins the queue, the
+     * parked removers get first refusal head-first, and the HANDLE's signal
+     * state is only touched by a packet none of them took ("if
+     * (!list_empty( &completion->queue )) signal_sync( completion->sync )").
+     * The decision and the transition are one step, which is why this holds
+     * the lock across both (ke/event.c KiSetEventLocked). */
+    IOP_COMPLETION_PACKET *handed = 0;
     uint64_t flags = KiAcquireDispatcherLock();
     InsertTailList(&port->queue, &packet->entry);
+    if (!IsListEmpty(&port->waiters))
+    {
+        PLIST_ENTRY head = RemoveHeadList(&port->waiters);
+        IOP_COMPLETION_WAITER *waiter = CONTAINING_RECORD(head, IOP_COMPLETION_WAITER, entry);
+        /* Whatever is at the HEAD of the queue, not necessarily the packet
+         * just posted — completion_wait_satisfied takes list_head() too. */
+        handed = IopTakePacketLocked(port);
+        ASSERT(handed != 0);
+        waiter->packet = *handed;
+        waiter->linked = FALSE;
+        waiter->served = TRUE;
+        KiSetEventLocked(&waiter->wake);
+    }
+    else
+    {
+        KiSetEventLocked(&port->queued);
+    }
     KiReleaseDispatcherLock(flags);
-    KeReleaseSemaphore(&port->semaphore, 0, 1, FALSE);
+    if (handed != 0)
+    {
+        MiFreePool(handed);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -167,24 +280,58 @@ NTSTATUS NtSetIoCompletionEx(HANDLE handle, HANDLE reserveHandle, ULONG_PTR key,
     return IopSetCompletionByHandle(handle, reserveHandle, key, value, packetStatus, information);
 }
 
-/* Wait for one packet (bounded by `timeout`), pop it FIFO. */
+/* Take one packet FIFO, parking (bounded by `timeout`) if there is none.
+ * Mirrors the server's remove_completion: the queue is checked first and the
+ * caller only joins `waiters` when it is empty, so a remover that never has
+ * to park never appears in the fan-out at all. */
 static NTSTATUS IopRemoveOnePacket(PIO_COMPLETION port, PLARGE_INTEGER timeout,
                                    IOP_COMPLETION_PACKET *packetOut)
 {
-    NTSTATUS status =
-        KeWaitForSingleObject(&port->semaphore, UserRequest, KernelMode, FALSE, timeout);
-    if (status != STATUS_SUCCESS)
-    {
-        return status; /* STATUS_TIMEOUT */
-    }
     uint64_t flags = KiAcquireDispatcherLock();
-    ASSERT(!IsListEmpty(&port->queue)); /* the semaphore counts the queue */
-    PLIST_ENTRY head = RemoveHeadList(&port->queue);
+    IOP_COMPLETION_PACKET *packet = IopTakePacketLocked(port);
+    if (packet != 0)
+    {
+        KiReleaseDispatcherLock(flags);
+        *packetOut = *packet;
+        MiFreePool(packet);
+        return STATUS_SUCCESS;
+    }
+    IOP_COMPLETION_WAITER waiter;
+    KeInitializeEvent(&waiter.wake, SynchronizationEvent, FALSE);
+    waiter.linked = TRUE;
+    waiter.served = FALSE;
+    waiter.abandoned = FALSE;
+    InsertHeadList(&port->waiters, &waiter.entry); /* LIFO: list_add_head */
     KiReleaseDispatcherLock(flags);
-    IOP_COMPLETION_PACKET *packet = CONTAINING_RECORD(head, IOP_COMPLETION_PACKET, entry);
-    *packetOut = *packet;
-    MiFreePool(packet);
-    return STATUS_SUCCESS;
+
+    NTSTATUS status = KeWaitForSingleObject(&waiter.wake, UserRequest, KernelMode, FALSE, timeout);
+
+    flags = KiAcquireDispatcherLock();
+    if (waiter.linked)
+    {
+        RemoveEntryList(&waiter.entry);
+        waiter.linked = FALSE;
+    }
+    KiReleaseDispatcherLock(flags);
+
+    /* A hand-off that raced the deadline still owns the packet: the poster
+     * already took it off the queue, so there is nothing to give it back to
+     * and the wait's own status cannot be the answer. */
+    if (waiter.served)
+    {
+        *packetOut = waiter.packet;
+        return STATUS_SUCCESS;
+    }
+    if (waiter.abandoned)
+    {
+        return STATUS_ABANDONED_WAIT_0;
+    }
+    /* `wake` starts clear and its only two setters — the poster's hand-off
+     * and the close — set their flag first, under the same lock. So a wait
+     * this reaches was NOT satisfied, and `packetOut` is untouched on
+     * purpose rather than by omission. */
+    ASSERT(status != STATUS_SUCCESS);
+    return status; /* STATUS_TIMEOUT */
 }
 
 NTSTATUS NtRemoveIoCompletion(HANDLE handle, PULONG_PTR keyOut, PULONG_PTR valueOut,

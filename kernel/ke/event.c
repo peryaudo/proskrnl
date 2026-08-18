@@ -25,6 +25,27 @@ void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state)
                                  state ? 1 : 0);
 }
 
+/* The two transitions, stated once, for a caller that is ALREADY holding the
+ * dispatcher lock — because it decided WHETHER to signal from state the lock
+ * guards, and dropping the lock to call KeSetEvent would split the decision
+ * from the transition (kernel/io/completion.c: "does a parked remover take
+ * this packet, or does the port's handle go signalled?" is one step, not
+ * two). Ki names: NT exports no lock-held form (docs/15). */
+void KiSetEventLocked(PRKEVENT event)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    KiAssertIsEvent(event);
+    event->header.signalState = 1;
+    KiWaitTest(&event->header);
+}
+
+void KiClearEventLocked(PRKEVENT event)
+{
+    ASSERT(KiIsDispatcherLockHeld());
+    KiAssertIsEvent(event);
+    event->header.signalState = 0;
+}
+
 /* The `wait` argument is NT's hint that the caller will immediately wait; it
  * only ever optimized lock hand-off, which one dispatcher lock makes moot. */
 LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait)
@@ -32,8 +53,7 @@ LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait)
     uint64_t flags = KiAcquireDispatcherLock();
     KiAssertIsEvent(event);
     LONG previous = event->header.signalState;
-    event->header.signalState = 1;
-    KiWaitTest(&event->header);
+    KiSetEventLocked(event);
     KiReleaseDispatcherLock(flags);
     return previous;
 }
@@ -58,7 +78,7 @@ LONG KeResetEvent(PRKEVENT event)
     uint64_t flags = KiAcquireDispatcherLock();
     KiAssertIsEvent(event);
     LONG previous = event->header.signalState;
-    event->header.signalState = 0;
+    KiClearEventLocked(event);
     KiReleaseDispatcherLock(flags);
     return previous;
 }
