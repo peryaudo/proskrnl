@@ -93,7 +93,7 @@ static void CmpDeleteKeyBody(PVOID bodyPointer)
 
 /* ObjectNameInformation for a key handle; defined below CmpBuildPath,
  * whose walk it is (ob.h OBJECT_TYPE.queryName). */
-static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nameBytes);
+static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, ULONG *nameBytes);
 
 OBJECT_TYPE CmpKeyType = {
     .name = "Key",
@@ -896,7 +896,7 @@ ULONG CmpBuildPath(const CMP_KEY_NODE *node, const CMP_KEY_NODE *relativeTo, WCH
  * anywhere, so it has no path -- while ObjectBasicInformation and
  * ObjectTypeInformation, which need neither, keep answering. Pinned by
  * sem_reg/key_object_name.c; ntdll:reg measures the pair at reg.c:854/:857. */
-static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nameBytes)
+static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, ULONG *nameBytes)
 {
     PCM_KEY_BODY body = bodyPointer;
     PCMP_KEY_NODE node = body->node;
@@ -907,9 +907,14 @@ static NTSTATUS CmpQueryKeyObjectName(PVOID bodyPointer, WCHAR *out, USHORT *nam
     }
     /* Measuring pass: capacity 0 writes nothing and never touches `out`. */
     ULONG required = CmpBuildPath(node, 0, out, out != 0 ? *nameBytes / sizeof(WCHAR) : 0);
-    /* A path cannot overflow the USHORT: CMP_HIVE_MAX_DEPTH (96) components of
-     * at most CMP_MAX_COMPONENT_BYTES each, plus a separator apiece. */
-    ASSERT(required <= 0xffffu);
+    /* A key path is always reportable: CMP_HIVE_MAX_DEPTH (96) components of at
+     * most CMP_MAX_COMPONENT_BYTES each, plus a separator apiece, cannot reach
+     * the UNICODE_STRING ceiling the caller enforces (ob.h). */
+    ASSERT(required <= 0xfffcu);
+    /* Every live key is named, so zero here would be the empty-name success
+     * this hook exists to remove -- and the generic arm no longer asserts it
+     * for every type, because a FILE really can be nameless (ob.h). */
+    ASSERT(required != 0);
     *nameBytes = (USHORT)required;
     return STATUS_SUCCESS;
 }

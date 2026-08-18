@@ -277,6 +277,30 @@ typedef struct IO_VFS_OPS
     NTSTATUS(*QueryName)
     (struct FILE_OBJECT *file, WCHAR *buffer, ULONG capacity, ULONG *lengthOut);
 
+    /* Are this device's files NAMED IN THE OBJECT NAMESPACE — i.e. does
+     * NtQueryObject(ObjectNameInformation) on one of its handles report
+     * `<this device's object name>` + `QueryName`, and refuse when QueryName
+     * has no path to give? kernel/io/file.c IopQueryFileObjectName is the one
+     * place that composition happens, so this is an opt-in and not a second
+     * name source (Art. 11).
+     *
+     * FALSE — the default — answers SUCCESS with an EMPTY name rather than a
+     * refusal, and for a STREAM device that is the oracle's own answer
+     * (server/object.c no_get_full_name, which every console object carries).
+     * It is NOT the oracle's answer for every device that declines: a Wine
+     * device file reports its device's name (server/device.c
+     * device_file_get_full_name, which dlls/ntdll/tests/om.c pins for
+     * \Device\Null with no todo_wine). \Device\Null and \Device\MountPointManager
+     * are exactly that case and still answer empty here — a KNOWN remaining gap,
+     * recorded in docs/03, not a measured answer.
+     *
+     * What keeps them out is mechanical: a device that opts in owes QueryName
+     * the VOLUME-RELATIVE form its contract above states, because the
+     * composition prepends the device's own name, and those two return their
+     * full device path there. Opting them in means changing that first, which
+     * moves what FileNameInformation reports for them and needs its own pin. */
+    BOOLEAN namedInObjectNamespace;
+
     /* The volume's identity and geometry, for the FileFsVolume/Size/
      * AttributeInformation classes. NULL = not a filesystem volume: those
      * classes are unbuilt for it and refuse with STATUS_NOT_IMPLEMENTED
