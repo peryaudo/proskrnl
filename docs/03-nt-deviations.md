@@ -772,10 +772,11 @@ boundary symbols winebuild would have emitted supplied by
   moves is `kernel32:environ`, and it moved because the sweep can now REACH a
   check it used to skip — `test_Predefined` resolves
   `GetUserProfileDirectoryA` out of `userenv.dll`, which the short list did
-  not bake. It fails on machine state no CUI image has (the `ProfileList`
+  not bake. It failed on machine state no CUI image has (the `ProfileList`
   values wineboot writes through *shell32*, which is off the image by Art. 7)
-  and is parked with that triage in `tests/winetest/manifest.txt` — a gap the
-  old image was hiding, not one this change introduced.
+  — a gap the old image was hiding, not one this change introduced. That state
+  is seeded now (the user-profile entry below) and the pair is GREEN and in the
+  gate.
 - **`PEB->NtGlobalFlag` is stamped by the KERNEL** (`kernel/ps/peb.c`):
   Session Manager `GlobalFlag` default, image-basename "Image File
   Execution Options" override, `PROCESS_PARAMS_IMAGE_KEY_MISSING` mirrored

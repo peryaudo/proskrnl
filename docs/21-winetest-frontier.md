@@ -2917,6 +2917,54 @@ markers where proskrnl is the more NT-correct of the two runners, which is the
 `ERROR_SHARING_VIOLATION`, a plain share-mode question with no section in it and the
 cheapest thing on the board; 5 are singletons.
 
+### W17 — The user profile (**DONE — `kernel32:environ` is GREEN**)
+
+`kernel32:environ` **1 → 0**, un-parked, in the gate. Its single failure was
+`environ.c:74`, `GetUserProfileDirectoryA` answering `ERROR_FILE_NOT_FOUND`,
+and the fix is furniture in the `win.ini` / time-zone / LicenseInformation
+line: `ProfileList\ProfilesDirectory` + a per-SID `ProfileImagePath` in
+`kernel/cm/registry.c`, `USERPROFILE` in `kernel/ps/peb.c`'s default
+environment, and `C:\users\wine` baked by `tools/mkimage.sh`. `docs/03` "The
+USER PROFILE is seeded" has the table; pinned by
+`tests/ntapi/sem_reg/user_profile.c`.
+
+Three things worth carrying:
+
+- **It is three statements of one fact, and any two of them are worse than
+  none.** userenv COMPOSES its answer (`ProfilesDirectory` + `\` + the account
+  name) and the winetest asserts that answer equals `%USERPROFILE%`, so
+  seeding the registry alone moves the failure from "no profile" to "the two
+  disagree" — same count, new triage block, no progress. The account name is
+  the third leg and it was already fixed: `LookupAccountSidW`'s RID-1000 arm
+  is `GetUserNameW`, which Wine implements as
+  `GetEnvironmentVariableW(L"WINEUSERNAME")` (`dlls/advapi32/advapi.c`), and
+  CUI-2 had put `WINEUSERNAME=wine` in that same default environment for the
+  same reason. **A furniture item's unit is the whole chain a consumer walks,
+  not the value the failure names.**
+- **The pin had to measure the RULE, not the path**, for the reason W5's
+  `shared_machine.c` did. The two runners disagree about the user name by
+  construction — the oracle's `WINEUSERNAME` comes from the host account
+  (`dlls/ntdll/unix/env.c`), proskrnl's is fixed — so `C:\users\wine` is a
+  pin on one developer's box. What holds on both is
+  `USERPROFILE == ProfilesDirectory\<name>`, which is exactly the equality
+  `environ.c:80` asserts through two different APIs. Measured on both runners:
+  the oracle composes `C:\users` + `tetsui`, proskrnl `C:\users` + `wine`, and
+  the SID naming the subkey is `S-1-5-21-0-0-0-1000` on both.
+- **§4 trap 2 with the good outcome, and it is worth stating.** `:74`'s
+  failure early-outs past `:78` and `:80`, so those two had never run. They
+  run now and pass: 430 executed / 1 failure / 3 skipped → **432 / 0 / 2**,
+  which is exactly the two assertions and the skip that reported them. Nothing
+  else was hiding.
+
+**What is deliberately NOT seeded**, and the reason is the LicenseInformation
+lesson pointing the other way: `Flags` beside `ProfileImagePath`, and
+`Public`/`ProgramData` beside `ProfilesDirectory`. The whole-section argument
+that generator applies is about a payload a consumer INDEXES by name; these are
+three values nobody in the baked stack reads, and the last two would also owe
+directories and the `ALLUSERSPROFILE`/`PUBLIC` variables the oracle mints from
+them (`add_registry_environment`) — i.e. seeding them describes folders that
+are not there. Art. 5: no consumer convicts them.
+
 ---
 
 ## 3. What needs a constitutional amendment
