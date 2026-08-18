@@ -350,7 +350,7 @@ static void test_client_end_needs_no_access(void)
 
 /* `if (!pipe_end->pipe) STATUS_PIPE_DISCONNECTED` — the end a server
  * DISCONNECTED out from under, and the same quantity NpfsFlush already reads
- * as end->orphaned. It sits ABOVE the byte-pipe rule, which is measurable:
+ * as end->pipe == 0. It sits ABOVE the byte-pipe rule, which is measurable:
  * a message read mode on a byte pipe's disconnected client reports the
  * disconnect, not the mode. (It has to be above it — with no pipe there is no
  * message_mode to test.) */
