@@ -29,6 +29,6 @@
 	shallow = true
 [submodule "third_party/lwip"]
 	path = third_party/lwip
-	url = https://git.savannah.nongnu.org/git/lwip.git
+	url = https://github.com/lwip-tcpip/lwip.git
 	shallow = true
 	ignore = dirty
