@@ -783,6 +783,16 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:third_party/wine/dlls/ws2_32/protocol=windows/system32/drivers/etc/protocol \
             win:third_party/wine/dlls/ws2_32/services=windows/system32/drivers/etc/services
 
+# Everything $(WINFILES) references that this Makefile BUILDS, as ONE
+# prerequisite list: every image target that passes $(WINFILES) to mkimage
+# depends on this, never on a hand-copied sublist. The sublists this
+# replaced had already drifted — none carried $(WSRESOLV), so a fresh
+# checkout (CI) baked images before the resolver was built and mkimage
+# failed with "win file missing". (The nls/etc/whoami entries are files of
+# the pinned submodule, present after checkout — not products, not listed.)
+WINFILES_DEPS := $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
+                 $(WINE_INF) $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+
 # The same CUI userland, reachable from a provisioner OUTSIDE this Makefile:
 # tests/run/run.sh's winetest leg bakes its own image (the manifest it runs
 # is generated per run, so the recipe cannot be a plain target), and used to
@@ -798,8 +808,7 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
 # relative to this directory, as everything in $(WINFILES) is — the caller
 # prefixes them (run.sh does).
 .PHONY: winfiles print-winfiles
-winfiles: $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-          $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+winfiles: $(WINFILES_DEPS)
 
 print-winfiles:
 	@printf '%s\n' $(WINFILES)
@@ -835,8 +844,7 @@ $(TIMEZONES_CHECK): kernel/cm/timezones.h tools/gen_timezones.py \
 	python3 tools/gen_timezones.py --check
 	@touch $@
 
-$(IMG): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-        $(WINE_INF) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(UPCASE_CHECK) \
+$(IMG): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(UPCASE_CHECK) \
         $(LICENSE_CHECK) $(TIMEZONES_CHECK) tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
@@ -918,12 +926,10 @@ $(MMCEILING): tests/cui/mmceiling.c
 WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 
 IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
-$(IMG_CONSOLE): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(M9ECHO) \
+$(IMG_CONSOLE): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(M9ECHO) \
         $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) $(TASKLIST) $(TASKKILL) \
         $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) $(REGTOOL) $(WATCHAPP) $(MMCEILING) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
-        arch/x86_64/limine.conf
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(M9ECHO)=m9_echo.exe \
 	    win:$(CMD)=windows/system32/cmd.exe \
@@ -951,9 +957,8 @@ console-img: $(IMG_CONSOLE)
 # no COW every wow64 child copies its images whole, and no other leg needs
 # to pay that.
 IMG_WOW64 := $(BUILD)/tests/wow64.hdd
-$(IMG_WOW64): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(CMD) $(HELLO32) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WOW64_PAYLOAD) \
+$(IMG_WOW64): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(CMD) $(HELLO32) \
+        $(WOW64_PAYLOAD) \
         tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_WOW64) $(MODULE_SPECS) $(WINFILES) $(WOW64FILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \
@@ -981,10 +986,8 @@ $(GUISMOKE): tests/gui/gui_smoke.c drivers/fbproto.h drivers/hidproto.h $(WINE_P
 # screendumps it and ends the guest over QMP. No Wine userland beyond ntdll
 # is involved, so this image boots in seconds.
 IMG_GUI := $(BUILD)/proskrnl-gui.hdd
-$(IMG_GUI): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(GUISMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
-        arch/x86_64/limine.conf
+$(IMG_GUI): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(GUISMOKE) \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(GUISMOKE)=gui_smoke.exe
 
@@ -1192,10 +1195,8 @@ wasapi-cap-smoke: $(WASAPICAPSMOKE)
 # audiodev are the LEG's, not the image's — one image, run-time devices,
 # the HACK-006 spirit.
 IMG_AUDIO := $(BUILD)/proskrnl-audio.hdd
-$(IMG_AUDIO): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(AUDSMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) tools/mkimage.sh \
-        arch/x86_64/limine.conf
+$(IMG_AUDIO): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(AUDSMOKE) \
+        tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_AUDIO) $(MODULE_SPECS) $(WINFILES) \
 	    win:$(AUDSMOKE)=aud_smoke.exe
 
@@ -1521,10 +1522,9 @@ GUI2FILES := win:$(WIN32U)=windows/system32/win32u.dll \
 # run purpose-built clients that report. It now convicts that over the
 # arrangement the system actually ships.
 IMG_GUI2 := $(BUILD)/proskrnl-gui2.hdd
-$(IMG_GUI2): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINEMINE) \
-        $(WINESERVER_LITE) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+$(IMG_GUI2): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINEMINE) \
+        $(WINESERVER_LITE) $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI2) $(MODULE_SPECS) $(WINFILES) $(GUI2FILES)
 
@@ -1565,10 +1565,10 @@ GUI3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(GUI3B)=gui3b.exe
 
 IMG_GUI3 := $(BUILD)/proskrnl-gui3.hdd
-$(IMG_GUI3): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_GUI3): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(GUI3A) $(GUI3B) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI3) $(MODULE_SPECS) $(WINFILES) $(GUI3FILES)
 
@@ -1598,10 +1598,10 @@ GUI4FILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(GUI4B)=gui4b.exe
 
 IMG_GUI4 := $(BUILD)/proskrnl-gui4.hdd
-$(IMG_GUI4): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_GUI4): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(GUI4A) $(GUI4B) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI4) $(MODULE_SPECS) $(WINFILES) $(GUI4FILES)
 
@@ -1640,10 +1640,10 @@ GUI5FILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(FONTDIFF)=fontdiff.exe
 
 IMG_GUI5 := $(BUILD)/proskrnl-gui5.hdd
-$(IMG_GUI5): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_GUI5): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(GUI5A) $(GUI5B) $(FONTDIFF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_GUI5) $(MODULE_SPECS) $(WINFILES) $(GUI5FILES)
 
@@ -1872,14 +1872,14 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
 # still starts at sector 4096, so the fixed offset every reader uses
 # (tests/run/run.sh, tools/qemu.sh) is unchanged.
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
-$(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_GUI5CON): $(KERNEL) $(WINFILES_DEPS) $(CONHOST_GUI) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(CMD) $(LOOPER) \
         $(SHELL_PAYLOAD) \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
 
@@ -1919,11 +1919,11 @@ NET3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
              win:$(NET3_CURL)=curl.exe
 
 IMG_NET3 := $(BUILD)/proskrnl-net3.hdd
-$(IMG_NET3): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_NET3): $(KERNEL) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(foreach d,$(NET3_DLL_NAMES),$(WINE_PE)/$(d)/x86_64-windows/$(d).dll) \
         $(WINESERVER_LITE) $(NET3_CURL) $(NET3_APISETS)/specs.txt \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_NET3) $(WINFILES) $(NET3FILES) \
 	    $$(cat $(NET3_APISETS)/specs.txt)
@@ -1985,14 +1985,14 @@ GUI6FILES := win:$(WIN32U)=windows/system32/win32u.dll \
 # 128 MiB like gui5con: shell32 and friends do not fit in what the base
 # payload leaves of 64. The ESP still starts at sector 4096 (fixed offset).
 IMG_GUI6 := $(BUILD)/proskrnl-gui6.hdd
-$(IMG_GUI6): $(KERNEL) $(MODULES) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+$(IMG_GUI6): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
+        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
         $(WINESERVER_LITE) $(SHELL_PAYLOAD) \
         $(WINESTRIP)/shell32.dll $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll \
         $(WINESTRIP)/oleaut32.dll $(WINESTRIP)/uxtheme.dll \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(GUI6_SHELF) $(BUILD)/gui6.flag \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI6) $(MODULE_SPECS) $(WINFILES) $(GUI6FILES)
 
@@ -2202,9 +2202,7 @@ test-hostqemu: $(IMG)
 # modules. Serial is your terminal: type at the prompt; `exit` powers the VM
 # off; Ctrl-A x kills QEMU.
 IMG_RUN := $(BUILD)/proskrnl-run.hdd
-$(IMG_RUN): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CMD) $(HELLOCRT) $(UPCASE) \
-        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) \
+$(IMG_RUN): $(KERNEL) $(WINFILES_DEPS) $(CMD) $(HELLOCRT) $(UPCASE) \
         tools/mkimage.sh arch/x86_64/limine.conf
 	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
 	    win:$(CMD)=windows/system32/cmd.exe \
