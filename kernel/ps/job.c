@@ -159,9 +159,17 @@ static NTSTATUS PspAddProcessToJob(PEJOB job, PEPROCESS process)
 /* Fires on the LAST HANDLE close (kernel/ob/handle.c), in thread context and
  * before the object's own delete: the JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
  * contract a build tool relies on to clean up its children. */
-static void PspCloseJob(PVOID body)
+static void PspCloseJob(PEPROCESS process, PVOID body, ULONG processHandleCount,
+                        ULONG systemHandleCount)
 {
     PEJOB job = body;
+    /* KILL_ON_JOB_CLOSE is about the last handle in the SYSTEM (ob.h). */
+    (void)process;
+    (void)processHandleCount;
+    if (systemHandleCount != 1)
+    {
+        return;
+    }
     if ((job->limitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0)
     {
         PspTerminateJobMembers(job, STATUS_SUCCESS);

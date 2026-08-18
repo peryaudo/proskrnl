@@ -92,9 +92,18 @@ void CmpNotifyChange(PCMP_KEY_NODE node, ULONG change)
     }
 }
 
-void CmpCloseKeyBody(PVOID bodyPointer)
+void CmpCloseKeyBody(struct EPROCESS *process, PVOID bodyPointer, ULONG processHandleCount,
+                     ULONG systemHandleCount)
 {
     PCM_KEY_BODY body = bodyPointer;
+    /* The arming open's LAST handle in the system — a second process
+     * letting go of a duplicate is not what fires a notification (ob.h). */
+    (void)process;
+    (void)processHandleCount;
+    if (systemHandleCount != 1)
+    {
+        return;
+    }
     if (body->node == 0)
     {
         return; /* creation failed before binding */

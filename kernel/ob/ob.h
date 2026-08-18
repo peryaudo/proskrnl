@@ -42,15 +42,32 @@ typedef struct
 
 /* --- The type system ------------------------------------------------------ */
 
+struct EPROCESS;
+
 typedef struct OBJECT_TYPE
 {
     const char *name;                    /* for panic dumps and asserts */
     ACCESS_MASK validAccess;             /* the type's *_ALL_ACCESS mask */
     BOOLEAN waitable;                    /* body begins with a DISPATCHER_HEADER */
     void (*deleteProcedure)(PVOID body); /* last ref dropped; may be 0 */
-    void (*closeProcedure)(PVOID body);  /* LAST handle closed (M6: Io cleanup —
-                                          * share release, delete-on-close);
-                                          * NT's CloseProcedure concept. May be 0. */
+
+    /* A HANDLE to this object is being closed. NT's OB_CLOSE_METHOD, and the
+     * signature is NT's for the reason the counts exist: it fires on EVERY
+     * close, and `processHandleCount` / `systemHandleCount` — both INCLUDING
+     * the handle being closed, as Microsoft's "ObjectCloseMethod routine"
+     * documents them — are how a type tells the last handle IN THIS PROCESS
+     * from the last handle in the system. NT's own IopCloseFile answers two
+     * different questions off exactly that pair, and so does this tree's
+     * (kernel/io/file.c).
+     *
+     * A type that only cares about the M6 cleanup moment (share release,
+     * delete-on-close) opens with `if (systemHandleCount != 1) return;`,
+     * which is the same statement the hook used to make by being called
+     * nowhere else. `grantedAccess`, NT's third argument, is not passed: no
+     * hook here reads it, and a parameter nobody reads is a claim nobody
+     * checks (G8's argument one level up). May be 0. */
+    void (*closeProcedure)(struct EPROCESS *process, PVOID body, ULONG processHandleCount,
+                           ULONG systemHandleCount);
     /* Optional NT GENERIC_MAPPING (all four set, or all zero). Zero keeps
      * the documented docs/03 over-grant (a generic wish = validAccess);
      * a type whose generic split is OBSERVABLE (keyed events: GENERIC_READ
@@ -256,8 +273,10 @@ typedef struct
 } OBP_HANDLE_TABLE, *POBP_HANDLE_TABLE;
 
 void ObpInitializeHandleTable(POBP_HANDLE_TABLE table);
-/* Close every live entry (process termination, in thread context). */
-void ObpCloseAllHandles(POBP_HANDLE_TABLE table);
+/* Close every live entry (process termination, in thread context). `process`
+ * is the table's owner — the one the close hook is told about, which is not
+ * always the caller's (kernel/ob/handle.c). */
+void ObpCloseAllHandles(struct EPROCESS *process, POBP_HANDLE_TABLE table);
 /* Free the (already emptied) table storage. */
 void ObpDeleteHandleTable(POBP_HANDLE_TABLE table);
 

@@ -586,6 +586,10 @@ NTSTATUS IopCompleteTransfer(PFILE_OBJECT file, PIO_STATUS_BLOCK iosb, HANDLE ev
 void IopPostRequestPacket(PFILE_OBJECT file, PKAPC apc, PVOID apcContext, BOOLEAN suppressed,
                           NTSTATUS status, ULONG_PTR information);
 
+/* The IRP_MJ_CLEANUP half of the close hook, reachable on its own for the one
+ * caller that owes it with no handle in existence (kernel/io/file.c). */
+void IopCleanupFileObject(PFILE_OBJECT file);
+
 NTSTATUS IopPrepareCompletionApc(PIO_APC_ROUTINE apcRoutine, PVOID apcContext,
                                  PIO_STATUS_BLOCK iosb, PKAPC *apcOut);
 void IopQueueCompletionApc(PKTHREAD issuer, PKAPC apc);

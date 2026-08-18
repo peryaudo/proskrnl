@@ -62,12 +62,14 @@ static void IopDeleteFileObject(PVOID body)
     }
 }
 
-static void IopCloseFileObject(PVOID body)
+/* NT's IRP_MJ_CLEANUP moment: the last HANDLE in the system is gone
+ * (references may remain — sections). Release this open's locks and share
+ * slots, then let the FS apply delete-on-close. Its own function because one
+ * caller reaches it WITHOUT a handle ever having existed (IopCreateFile's
+ * handle-allocation failure, below) — synthesising a count for that caller
+ * would be a lie about which moment it is. */
+void IopCleanupFileObject(PFILE_OBJECT file)
 {
-    /* NT's IRP_MJ_CLEANUP moment: the last HANDLE is gone (references may
-     * remain — sections). Release this open's locks and share slots, then
-     * let the FS apply delete-on-close. */
-    PFILE_OBJECT file = body;
     if (file->fsContext == 0)
     {
         return;
@@ -82,6 +84,21 @@ static void IopCloseFileObject(PVOID body)
         file->shareCounted = FALSE;
     }
     file->device->ops->Cleanup(file);
+}
+
+static void IopCloseFileObject(PEPROCESS process, PVOID body, ULONG processHandleCount,
+                               ULONG systemHandleCount)
+{
+    PFILE_OBJECT file = body;
+    /* The hook now fires on EVERY close (ob.h); this type's one subject so far
+     * is the last handle in the SYSTEM. */
+    (void)process;
+    (void)processHandleCount;
+    if (systemHandleCount != 1)
+    {
+        return;
+    }
+    IopCleanupFileObject(file);
 }
 
 OBJECT_TYPE IoDeviceType = {
@@ -836,20 +853,21 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     {
         /* The comment here used to say "close/cleanup run via the type
          * hooks". Only HALF of that was true: deleteProcedure runs on the
-         * last reference, but closeProcedure fires on handle count 1 -> 0
-         * and no handle was ever made -- so IoRemoveShareAccess,
+         * last reference, while the CLEANUP half is reached only through a
+         * handle close and no handle was ever made -- so IoRemoveShareAccess,
          * IopReleaseAllLocks and ops->Cleanup were all skipped, and the
          * FCB's share counts stayed inflated for its whole lifetime, i.e.
          * STATUS_SHARING_VIOLATION on every later open of that file
          * (docs/review-2026-07 §7). The create SUCCEEDED, so this open needs
-         * the cleanup half explicitly. */
-        IopCloseFileObject(file);
+         * the cleanup half explicitly, which is why IopCleanupFileObject is
+         * its own function rather than an arm of the hook. */
+        IopCleanupFileObject(file);
         ObDereferenceObject(file);
         IopWriteCreateIosb(iosb, status, 0);
         goto out;
     }
-    /* One handle now exists but closeProcedure fires only when handleCount
-     * returns to zero; drop the creator's reference. */
+    /* One handle now exists, and the CLEANUP arm of closeProcedure runs
+     * only when handleCount returns to zero; drop the creator's reference. */
     ObDereferenceObject(file);
     IopWriteCreateIosb(iosb, STATUS_SUCCESS, information);
     status = STATUS_SUCCESS;
