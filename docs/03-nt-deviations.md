@@ -3549,6 +3549,59 @@ oracle answers it is the spec (Art. 6). If a consumer ever convicts the disk
 arm, it is a new item with its own pin — not a widening of this one on the
 strength of symmetry.
 
+## A completion PORT has TWO wait channels, and they are not interchangeable
+
+Waiting on a port HANDLE and calling `NtRemoveIoCompletion` are different
+questions, and the pinned server answers them with two different objects
+(`third_party/wine` `server/completion.c`). proskrnl mirrors the split in
+`kernel/io/completion.c`; pinned by `tests/ntapi/sem_port/port_wait.c`.
+
+- **The HANDLE's signal state is `completion->sync`**, an internal sync created
+  MANUAL-reset and clear (`create_internal_sync( 1, 0 )`, `server/event.c`). It
+  means *an unclaimed packet is queued*: `add_completion` sets it only for a
+  packet that survives the remover fan-out, `remove_completion` clears it when
+  the queue empties, `completion_close_handle` sets it on the last handle. So a
+  handle wait **wakes every waiter and consumes nothing** — one packet and two
+  waiters wakes both, and the packet is still there afterwards for whoever
+  removes it.
+- **A parked `NtRemoveIoCompletion(Ex)` is a `completion_wait`** on
+  `completion->wait_queue`, pushed at the HEAD (`list_add_head`) and served
+  head-first by `add_completion`'s forward walk. Two consequences a tidier
+  implementation gets wrong: the fan-out is **LIFO**, so the most recently
+  parked remover takes the first packet; and a parked remover takes the packet
+  **before the handle's signal state ever sees it**, so a handle waiter on the
+  same port is not woken at all.
+- **Closing the LAST handle** abandons every parked remover with
+  `STATUS_ABANDONED_WAIT_0` and then signals the handle's state, so a thread
+  waiting on the HANDLE comes back `STATUS_SUCCESS` while a thread parked in a
+  remove comes back abandoned. It is NT's `OB_CLOSE_METHOD` moment
+  (`IopCloseCompletion`, opening with `if (systemHandleCount != 1) return;`).
+
+**The shape this replaced is worth naming, because it read as correct.** The
+port body used to begin with a `KSEMAPHORE` whose count was the queue depth,
+with a comment saying "nothing on the CUI path waits on port handles". That is
+one channel doing both jobs, and it is wrong in both directions: a handle wait
+**consumed** a packet, and one packet woke exactly **one** of two handle
+waiters. The comment had been true when written and nothing re-read it once the
+winetest gate became a consumer — `ntdll:sync`'s
+`test_completion_port_scheduling` parks two threads on the handle and posts one
+packet, so the second never woke and the pair burned its whole 300 s timeout
+(docs/21 W10).
+
+**The waiter block lives on the parked thread's own kernel stack.** It needs no
+allocation and no lifetime rule: the parked syscall holds the port reference
+that keeps the object alive around it, and the block is unlinked under the
+dispatcher lock before its frame returns. The one case worth stating is a
+hand-off that races the deadline — the poster has already dequeued the packet,
+so the hand-off beats the wait's own `STATUS_TIMEOUT` and nothing is dropped.
+
+**Deciding and signalling had to be one step**, which is the only thing this
+touched outside `io/`. "Does a parked remover take this packet, or does the
+port's handle go signalled?" is read from state the dispatcher lock guards, and
+`KeSetEvent` acquires that lock itself. `KiSetEventLocked` / `KiClearEventLocked`
+(`kernel/ke/event.c`) are the lock-held halves; `KeSetEvent` and `KeResetEvent`
+now go through them, so each transition is still stated once (Art. 11).
+
 ## What ROOT a named-pipe create and a pipe-relative open accept
 
 `NtCreateNamedPipeFile` and `NtCreateFile` both take an

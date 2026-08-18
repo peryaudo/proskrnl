@@ -514,6 +514,10 @@ NTSTATUS KeDelayExecutionThread(KPROCESSOR_MODE waitMode, BOOLEAN alertable,
 
 void KeInitializeEvent(PRKEVENT event, EVENT_TYPE type, BOOLEAN state);
 LONG KeSetEvent(PRKEVENT event, KPRIORITY increment, BOOLEAN wait);
+/* The lock-held halves of set/clear, for a caller whose DECISION to signal
+ * comes from state the dispatcher lock guards (event.c says why). */
+void KiSetEventLocked(PRKEVENT event);
+void KiClearEventLocked(PRKEVENT event);
 LONG KiPulseEvent(PRKEVENT event); /* release current waiters, end unsignalled */
 /* The processor count, and the ONE place it is stated (Art. 11). Art. 3
  * mandates uniprocessor, so this is 1 — a fact about the machine, not a
