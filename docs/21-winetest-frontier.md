@@ -1944,6 +1944,7 @@ Four things worth carrying:
   fixed lines removed.
 
 **One residual is recorded rather than fixed, and it is older than this item.**
+(SUPERSEDED — it is fixed; see "THE PIPE'S OWN LIFETIME IS DONE" below.)
 proskrnl drops `NPFS_INSTANCE.pipe` when the SERVER's handle closes, where the
 oracle's client holds its own reference until destroy — so a CLIENT that
 outlives its server describes a pipe that is no longer there (zeros). That is
@@ -1998,8 +1999,9 @@ line**: `test_pipe_state`'s `if (!status)` block ran 8 times and now runs 4
 `if (status == STATUS_BUFFER_OVERFLOW)` block ran 0 times and now runs 5. Todo
 markers 31 before and after, so `§4` trap 2 does not apply here.
 
-**The one assertion this item could not reach is the lifetime residual above**,
-and finding that out was the useful half of scoping it: `:2205`'s last failure
+**The one assertion this item could not reach is the lifetime residual above**
+(SUPERSEDED — that item is DONE below), and finding that out was the useful
+half of scoping it: `:2205`'s last failure
 is `in client state 4`, a CLOSING client whose `instance->pipe` is already gone,
 so it forgets the pipe's TYPE and gives a byte pipe's answers. That makes the
 lifetime item **six** assertions rather than five, and it now has a
@@ -2255,6 +2257,83 @@ device told from its root directory — `FSCTL_PIPE_WAIT` is the single arm wher
 **Nothing was hiding behind the eight** — 2377 tests executed, 31 todo markers
 and 0 flaky before and after, and a line-by-line histogram diff removes exactly
 `:2751`×8 with no other line moved — so `§4` trap 2 does not apply here.
+
+**THE PIPE'S OWN LIFETIME IS DONE** (`ntdll:pipe` 29 → **22**), and the finding
+is that a pipe has TWO lifetimes where proskrnl had one. The OBJECT is
+referenced by every END (`server/named_pipe.c` `init_pipe_end`'s `grab_object`,
+released in `pipe_end_destroy`); the NAME goes with the last INSTANCE
+(`pipe_server_destroy`'s `if (!--pipe->instances) unlink_named_object`).
+proskrnl freed the whole `NPFS_PIPE` at the last server end's cleanup, so a
+client that outlived its server described a pipe that was gone — zeroed type,
+configuration, instance limit, quotas and `AllocationSize`, and a byte pipe's
+peek because the TYPE had gone too. The pointer moved onto the end
+(`NPFS_END.pipe`, over a reference count) with the two teardowns separated:
+`NpfsUnlinkPipe` at `instanceCount` 0, `NpfsDereferencePipe` per end. Landed in
+`fs/npfs/pipe.c`, pinned by `tests/ntapi/sem_pipe/pipe_lifetime.c`; `docs/03`
+"How long a pipe outlives its NAME".
+
+Four things worth carrying:
+
+- **Six of the seven are a fix and the seventh is a TRADE, and the honest half
+  of this entry is saying which.** The manifest scoped this at six assertions;
+  it moved seven. The extra one is `:2185`, filed as "cannot go green while
+  proskrnl is the more NT-correct runner" — and that note was RIGHT. The oracle
+  refuses `FileNameInformation` on a closing client under its own
+  `/* FIXME: We should be able to return on unlinked pipe */`, the winetest
+  wraps the `STATUS_SUCCESS` assertion in a `todo_wine_if` because real NT
+  reports the name, and proskrnl reported it. Adopting the oracle's refusal
+  moved that line FARTHER from NT and took a failure off the count for doing
+  so. It is the same trade `docs/03` records for `DeletePending` and this
+  document records for `STATUS_USER_APC` (Art. 6 with teeth), and it is forced
+  besides: the "report the name" answer is un-pinnable — the oracle refuses, so
+  no G5 case can be green on it, and `beyond_oracle` is barred by its own
+  definition for behaviour Wine DOES implement. **What the old block missed was
+  not the ceiling, it was the CAUSE**: `:2185` is the NAME half of the very
+  lifetime the other six are the OBJECT half of, so it belonged in this
+  cluster whatever was then done about it. A "cannot go green" note is a
+  verdict on the answer and never an excuse to stop asking what produces it.
+- **A second field saying the same thing as a pointer is Art. 11's hazard
+  before it is a bug.** `NPFS_END.orphaned` was a bit meaning exactly
+  `pipe_end->pipe == NULL`, kept beside a pipe pointer that lived one level up
+  on the INSTANCE — three `docs/03` sections said so in prose. Moving the
+  pointer to the end deleted the bit, and every `if (!pipe)` the oracle's
+  handler makes is now that one field. Nothing was broken by the duplication;
+  it simply made a lifetime question unaskable, which is the failure mode
+  "parallel paths drift even while currently equivalent" describes for state
+  rather than for code.
+- **`CurrentInstances` is the one field that must NOT follow the object**, and
+  the winetest was passing it for the wrong reason. It is `pipe->instances`,
+  which really does fall to zero when the last server leaves, so a surviving
+  client owes five real values and a zero — an implementation that keyed all
+  six on one liveness bit answers all six the same way, and a zeroed struct
+  passed `:2358` while failing the five beside it.
+- **The unlink follows the INSTANCE COUNT, not "a server end closed", and no
+  winetest assertion reaches that.** With a second instance open the name stays
+  in the namespace, the client of the closed instance reports
+  `CurrentInstances 1` and its own name, and a further open by that name still
+  connects. `pipe_lifetime.c` §3 is the case; §2 is its complement, where the
+  same handle reports the pipe's quotas and refuses its name in the same
+  instant, and an implementation that merely stopped FREEING the pipe hands a
+  later client the dead one.
+
+**The two counts that moved are accounted for per line, and one of them is the
+trade rather than the item.** 2377 → 2378 executed is
+`test_pipe_with_data_state`'s `if (status == STATUS_BUFFER_OVERFLOW)` inner
+`ok()` now RUNNING for the closing client — the peek used to answer `SUCCESS` —
+and it passes. 31 → 32 todo markers is `:2185` moving from "succeeded inside
+todo", which counts as a failure, to a todo that fails as expected: that is the
+`todo_wine` trade above, so **read the pair as 29 → 23 on the fix and one more
+off the top for matching the oracle where it differs from NT**. A line-by-line
+histogram diff removes exactly
+`:2185`/`:2205`/`:2356`/`:2357`/`:2359`/`:2366`/`:2369` with no other line moved.
+
+**What is left is four items and the largest of them is now `test_security_info`
+(10), which is UNTRIAGED.** The oracle serves it off the PIPE object
+(`pipe_end_get_sd`: `if (pipe_end->pipe) return default_get_sd(
+&pipe_end->pipe->obj )`), so it is a `Se` question asked through a pipe handle
+rather than an npfs one — but which of the ten are causes and which are
+consequences has not been measured, and this document is not going to guess
+(§4 trap 4).
 
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 

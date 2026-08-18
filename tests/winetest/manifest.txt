@@ -651,8 +651,48 @@ ntdll_test.exe:path
 #       no other line moved — nothing was hiding behind them (docs/21 §4
 #       trap 2 does not apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 29 (25 failed + 4 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 25,
+#     THE PIPE'S OWN LIFETIME IS NOW BUILT: 29 -> 22. SIX of those seven are
+#     the fix and the seventh is a TRADE, so read it as 29 -> 23 on the item
+#     plus one more off the top for matching the oracle where it differs from
+#     NT. The previous revision's diagnosis was right in every particular — one
+#     cause, six named consequences — and its "cannot go green while proskrnl
+#     is the more NT-correct runner" note on :2185 was right too: the oracle
+#     refuses FileNameInformation on a closing client under its own
+#     `/* FIXME: We should be able to return on unlinked pipe */`, the winetest
+#     wraps the SUCCESS assertion in todo_wine_if because real NT reports the
+#     name, and proskrnl reported it. Adopting the oracle's refusal moves that
+#     line FARTHER from NT and takes a failure off the count for doing so —
+#     the same trade docs/03 records for DeletePending, and forced besides,
+#     because "report the name" is un-pinnable (the oracle refuses, so no G5
+#     case can be green on it, and beyond_oracle is barred for behaviour Wine
+#     DOES implement). What the old block missed was not the ceiling but the
+#     CAUSE: :2185 is the NAME half of the very lifetime the other six are the
+#     OBJECT half of.
+#     The oracle's pipe has two: every END references the object
+#     (init_pipe_end's grab_object, released in pipe_end_destroy), while the
+#     NAME goes with the last INSTANCE (pipe_server_destroy's
+#     `if (!--pipe->instances) unlink_named_object`). proskrnl freed the whole
+#     NPFS_PIPE at the last server end's cleanup, so a client that outlived its
+#     server described a pipe that was gone. The pointer moved onto the END
+#     (NPFS_END.pipe, over a reference count) and the two teardowns are now
+#     separate — NpfsUnlinkPipe at instanceCount 0, NpfsDereferencePipe per
+#     end. That also collapses `end->orphaned` into `end->pipe == 0`, which is
+#     the quantity every `if (!pipe)` in the oracle's handler asks about.
+#     Landed in fs/npfs/pipe.c, pinned by tests/ntapi/sem_pipe/pipe_lifetime.c
+#     (and the todo_proskrnl tags in sem_pipe/{peek_state,pipe_file_info}.c are
+#     gone); docs/21 W11, docs/03 "How long a pipe outlives its NAME".
+#     THE EXECUTED COUNT ROSE 2377 -> 2378 and the todo markers 31 -> 32, both
+#     accounted for per line: the +1 executed is test_pipe_with_data_state's
+#     `if (status == STATUS_BUFFER_OVERFLOW)` inner ok() now RUNNING for the
+#     closing client (the peek used to answer SUCCESS), and it passes; the +1
+#     todo is :2185 moving from "succeeded inside todo" — which counts as a
+#     failure — to a todo that fails as expected, i.e. the trade above and not
+#     the item. A line-by-line histogram diff shows exactly
+#     :2185/:2205/:2356/:2357/:2359/:2366/:2369 removed and no other line
+#     moved.
+#
+#     WHAT IS LEFT, per-line histogram of the 22 (19 failed + 3 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 19,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
@@ -710,26 +750,13 @@ ntdll_test.exe:path
 #             it cannot go green while proskrnl is the more NT-correct runner.
 #             NOT diagnosed further.
 #       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
-#             pipe handle. Now the SECOND cluster.
-#       -  5  test_pipe_local_info (:2356-:2369) — FilePipeLocalInformation's
-#             NamedPipeType/Configuration/MaximumInstances/InboundQuota/
-#             OutboundQuota reported as 0 on a CLIENT whose server has closed.
-#       -  1  test_pipe_with_data_state :2205, `in client state 4`. SAME
-#             CAUSE as the five above and DIAGNOSED: it is a LIFETIME
-#             question rather than a fill. proskrnl drops NPFS_INSTANCE.pipe
-#             when the server's handle closes, where the oracle's client
-#             holds its own reference until destroy, so a client outliving
-#             its server forgets the pipe's TYPE and gives a byte pipe's
-#             answers. Six assertions on one fix; tagged todo_proskrnl in
-#             sem_pipe/peek_state.c and sem_pipe/pipe_file_info.c so both
-#             report themselves the day it lands. docs/03 "A pipe end's own
-#             file information".
-#       -  1  test_pipe_with_data_state :2185, a succeeded-todo — the oracle
-#             refuses FileNameInformation on a CLOSING client because the
-#             pipe object was unlinked (its own `/* FIXME: We should be able
-#             to return on unlinked pipe */`) and proskrnl answers the name,
-#             so this one cannot go green while proskrnl is the more
-#             NT-correct runner.
+#             pipe handle. Now the LARGEST cluster, and UNTRIAGED. The oracle
+#             serves it off the PIPE object (server/named_pipe.c
+#             pipe_end_get_sd: `if (pipe_end->pipe) return default_get_sd(
+#             &pipe_end->pipe->obj )`, STATUS_PIPE_DISCONNECTED otherwise), so
+#             it is a Se question asked through a pipe handle rather than an
+#             npfs one — but which of the ten are causes and which are
+#             consequences has NOT been measured.
 #       -  2  subtest_pipe_name (:2969, succeeded-todo).
 #       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
 #             (IO_STATUS_BLOCK *)0xdeadbeef) must answer
