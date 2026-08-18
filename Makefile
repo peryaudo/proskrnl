@@ -134,6 +134,7 @@ CSRC := kernel/init/main.c \
         drivers/virtio/net.c \
         drivers/net/netd.c \
         drivers/afd.c \
+        drivers/nsi.c \
         drivers/condrv.c \
         drivers/fb.c \
         drivers/hid.c \
@@ -238,6 +239,7 @@ $(BUILD)/third_party/lwip/%.o: CFLAGS += $(LWIP_INCLUDES) -fno-sanitize=undefine
 $(BUILD)/third_party/lwip/%.o: KASAN_FLAGS :=
 $(BUILD)/drivers/net/%.o: CFLAGS += $(LWIP_INCLUDES)
 $(BUILD)/drivers/afd.o: CFLAGS += $(LWIP_INCLUDES)
+$(BUILD)/drivers/nsi.o: CFLAGS += $(LWIP_INCLUDES)
 
 # --- M4 user-mode flat binaries (boot modules) ---------------------------
 # Freestanding ring-3 clients (docs/02: "the test client is a flat binary").
@@ -2207,8 +2209,8 @@ FORMAT_SRC = $(shell find kernel arch drivers fs user/smss -name '*.[ch]')
 format: frontier-check
 	@echo "clang-format: $(words $(FORMAT_SRC)) files"
 	@$(CLANG_FORMAT) -i $(FORMAT_SRC)
-	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS)" $(filter-out drivers/net/% drivers/afd.c,$(CSRC))
-	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS) $(LWIP_INCLUDES)" $(filter drivers/net/% drivers/afd.c,$(CSRC))
+	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS)" $(filter-out drivers/net/% drivers/afd.c drivers/nsi.c,$(CSRC))
+	@tools/tidy.sh $(CLANG_TIDY) "$(CFLAGS) $(LWIP_INCLUDES)" $(filter drivers/net/% drivers/afd.c drivers/nsi.c,$(CSRC))
 	@tools/tidy.sh $(CLANG_TIDY) "$(SMSS_TIDY_FLAGS)" $(wildcard user/smss/*.c)
 
 # The blocking frontier (issue #96 A, the static half): which code can park is

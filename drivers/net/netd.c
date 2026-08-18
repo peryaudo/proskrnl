@@ -130,23 +130,59 @@ static void NetdStatusCallback(struct netif *netif)
  * adapter; this kernel derives one deterministically from the device's
  * MAC (the node field carries it, v1-GUID style). Internal decision —
  * the *name* of an adapter key is machine state no oracle pins, only the
- * value names under it are (below). */
+ * value names under it are (below).
+ *
+ * ONE authority for the identity (Art. 11): NetAdapterGuid mints the
+ * GUID, and both spellings — the registry key name here and the ifinfo
+ * if_guid \Device\Nsi reports (drivers/nsi.c) — are that one value, so
+ * a consumer joining GetAdaptersAddresses' AdapterName against
+ * Tcpip\Parameters\Interfaces\<guid> lands on the same key. */
 static WCHAR NetdAdapterKeyName[40];
+
+void NetAdapterGuid(GUID *out)
+{
+    const uint8_t *mac = VioNetMacAddress();
+    out->Data1 = 0x50524f53; /* "PROS" */
+    out->Data2 = 0x4b52;     /* "KR" */
+    out->Data3 = 0x4e4c;     /* "NL" */
+    out->Data4[0] = 0x80;
+    out->Data4[1] = 0x00;
+    for (ULONG i = 0; i < VIO_NET_MAC_BYTES; i++)
+    {
+        out->Data4[2 + i] = mac[i];
+    }
+}
 
 static void NetdFormatAdapterKeyName(void)
 {
     static const WCHAR hex[] = WSTR("0123456789abcdef");
-    const uint8_t *mac = VioNetMacAddress();
-    static const WCHAR prefix[] = WSTR("{50524f53-4b52-4e4c-8000-");
+    GUID guid;
+    NetAdapterGuid(&guid);
     ULONG at = 0;
-    for (ULONG i = 0; prefix[i] != 0; i++)
+    NetdAdapterKeyName[at++] = '{';
+    for (int shift = 28; shift >= 0; shift -= 4)
     {
-        NetdAdapterKeyName[at++] = prefix[i];
+        NetdAdapterKeyName[at++] = hex[(guid.Data1 >> shift) & 0xF];
     }
-    for (ULONG i = 0; i < VIO_NET_MAC_BYTES; i++)
+    NetdAdapterKeyName[at++] = '-';
+    for (int shift = 12; shift >= 0; shift -= 4)
     {
-        NetdAdapterKeyName[at++] = hex[mac[i] >> 4];
-        NetdAdapterKeyName[at++] = hex[mac[i] & 0xF];
+        NetdAdapterKeyName[at++] = hex[(guid.Data2 >> shift) & 0xF];
+    }
+    NetdAdapterKeyName[at++] = '-';
+    for (int shift = 12; shift >= 0; shift -= 4)
+    {
+        NetdAdapterKeyName[at++] = hex[(guid.Data3 >> shift) & 0xF];
+    }
+    NetdAdapterKeyName[at++] = '-';
+    for (ULONG i = 0; i < 8; i++)
+    {
+        if (i == 2)
+        {
+            NetdAdapterKeyName[at++] = '-';
+        }
+        NetdAdapterKeyName[at++] = hex[guid.Data4[i] >> 4];
+        NetdAdapterKeyName[at++] = hex[guid.Data4[i] & 0xF];
     }
     NetdAdapterKeyName[at++] = '}';
     NetdAdapterKeyName[at] = 0;

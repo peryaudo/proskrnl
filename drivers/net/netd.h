@@ -9,6 +9,7 @@
 #define PROSKRNL_DRIVERS_NET_NETD_H
 
 #include "abi/ntdef.h"
+#include "abi/ntpebteb.h" /* GUID (the adapter identity, below) */
 
 /* Bring-up (kernel/init/main.c, after CmInitialize and the boot-volume
  * mount — deliberately later than the pre-freeze device probe, docs/24
@@ -42,6 +43,12 @@ void NetBoundAddressString(char out[16]);
  * \Registry\Machine\System\CurrentControlSet\Services\Tcpip\Parameters\Interfaces,
  * for the kmt lease check. Valid once NetIsUp(). */
 PCWSTR NetAdapterKeyName(void);
+
+/* The ONE adapter identity behind that key name (Art. 11): the
+ * MAC-derived GUID. \Device\Nsi reports it as the ethernet ifinfo row's
+ * if_guid so GetAdaptersAddresses' AdapterName and the registry key are
+ * the same value. Valid once NetIsUp(). */
+void NetAdapterGuid(GUID *out);
 
 /* The Net-1 in-kernel TCP echo (docs/24 §6b): connect to the harness's
  * echo server on slirp's host alias, send `payload`, wait for it to come
