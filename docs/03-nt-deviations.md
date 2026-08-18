@@ -2361,6 +2361,62 @@ reserve is subtracted from the low address space permanently. That mechanism is 
 the code and is consistent with the arithmetic; which sweep index moved was not measured.
 The leak itself is issue #152 — a real defect, not a property of the `ZeroBits` rule.
 
+## Which region the guard-page fault path GROWS, and the guarantee it does not honour
+
+A guard-page touch has two answers — GROW (clear the guard, commit a fresh guard one page
+down, publish the new `NT_TIB.StackLimit`) or REFUSE (clear the guard, raise
+`STATUS_GUARD_PAGE_VIOLATION`) — and which one a page gets turns on a single question: is
+this address inside THIS THREAD'S STACK. **The TEB answers it, and nothing else does.**
+`is_inside_thread_stack` (`dlls/ntdll/unix/virtual.c`) reads `DeallocationStack` and
+`Tib.StackBase` out of the TEB and tests `ptr > start && ptr <= end` against the fault
+address rounded down to its page; `MiHandleUserFault` does the same, through
+`MipReadUserPointer` on the FAULTING thread's TEB. Pinned by
+`tests/ntapi/sem_mm/teb_stack_growth.c` (`docs/21` W20).
+
+Nothing deviates, and the reason it is written down is that the obvious alternative looks
+better and is wrong. The kernel knows where it put every stack
+(`ETHREAD.stackAllocationBase`/`stackBase`), and answering from that record agrees with the
+oracle for every stack the kernel made — while refusing every stack USER MODE made. User
+mode makes them: `SwitchToFiber` swaps these three fields on every switch
+(`dlls/kernelbase/thread.c`), and `kernel32:virtual`'s `test_stack_commit` reserves 4 MiB,
+commits one `PAGE_GUARD` page at the top, points the TEB at it and runs a function there.
+
+**Believing the TEB grants nothing, which is what makes it safe to believe.** The whole
+action is committing one page of the caller's own address space and writing the caller's own
+TEB — both things the caller can do for itself with `NtAllocateVirtualMemory`. So this is not
+the kernel trusting user mode about a privilege; it is the kernel letting a process define
+its own stack, which is the only definition NT has.
+
+Two edges come with it, both pinned because an implementation gets them wrong by writing the
+tidier half-open range:
+
+- the LOW edge is exclusive — `DeallocationStack`'s own page is *not* inside the stack, so a
+  guard there is refused rather than grown (it is also what makes the new guard's placement
+  total: `page > start` and both page-aligned means `page - PAGE_SIZE` is never below the
+  reservation);
+- the HIGH edge is INCLUSIVE — a fault page at `StackBase` itself, one page above the last
+  byte the stack can hold, still grows.
+
+**What is deliberately not built is the guaranteed space.** The oracle's `grow_thread_stack`
+splits on `page >= start + page_size + max(TEB.GuaranteedStackBytes, 2 * page_size)`: above
+that it pushes the next guard, and below it commits the whole guarantee in one go, sets
+`StackLimit` to `start + page_size` and returns **`STATUS_STACK_OVERFLOW`**. proskrnl always
+takes the first arm: the guard walks all the way down and the reserve then runs out as an
+ordinary access violation. Two consequences to expect, since the arm's absence is visible
+before the death — the last guard is committed **at `DeallocationStack`'s own page**, where
+the oracle leaves page zero `MEM_RESERVE` for good (`sem_ps/teb_stack.c` asserts that state
+for a live thread's stack, and no thread has ever grown that far), and the growth into the
+guarantee says so on serial rather than diverging quietly (`[USERFAULT] stack growth …
+inside the guaranteed space`; the printed bound is the FLOOR of the oracle's split, so a
+thread that called `SetThreadStackGuarantee` crosses earlier and silently). This is
+measured, not assumed: the pin's first draft used a
+region small enough that its touch landed inside the guarantee, and the oracle answered
+`STATUS_STACK_OVERFLOW` where the draft expected silent growth. The pin's cases now sit well
+clear of that floor and count the code separately so they cannot drift back into it. Nothing
+in the CUI frontier convicts the arm (`test_stack_commit` stops four pages above the base,
+one page above where the guarantee begins), so it stays unbuilt under Art. 5 rather than
+being written blind.
+
 ## What a FAILED `NtProtectVirtualMemory` answers
 
 `NtProtectVirtualMemory` writes `PAGE_NOACCESS` into the caller's `*old_prot` on **every**
