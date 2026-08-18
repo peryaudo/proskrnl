@@ -1921,15 +1921,19 @@ _Static_assert(sizeof(UINT_PTR) == 8, "x86_64: UINT_PTR is pointer-sized");
 
 
 # Net-1..Net-3 (docs/24 §4d/§4e): the \Device\Nsi dialect — the five
-# IOCTL_NSIPROXY_WINE_* codes, the module-id shape, the request structs of the
-# verbs a consumer reaches, and the table ids. The row layouts
-# (nsi_ndis_ifinfo_*, nsi_ip_unicast_*) generate when \Device\Nsi is built and
-# consumes them; nsiproxy_icmp_echo stays unextracted with the ICMP surface
-# (docs/24 §5 — it refuses loudly, and its SOCKADDR_INET dependency would drag
-# the ws2ipdef union tree in ahead of any consumer).
+# IOCTL_NSIPROXY_WINE_* codes, the module-id shape and the NPI_MS_* module
+# ids, the request structs of the verbs a consumer reaches, the table ids,
+# and the row layouts of the tables the Net-3 device serves (ndis ifinfo,
+# ip unicast, ip forward — the set the pinned GetAdaptersAddresses reads).
+# nsiproxy_icmp_echo stays unextracted with the ICMP surface (docs/24 §5 —
+# it refuses loudly, and its SOCKADDR_INET dependency would drag the
+# ws2ipdef union tree in ahead of any consumer).
 def gen_nsi(wine: Path) -> str:
     nsi = (wine / "include/wine/nsi.h").read_text()
     netiodef = (wine / "include/netiodef.h").read_text()
+    ifdef = (wine / "include/ifdef.h").read_text()
+    inaddr = (wine / "include/inaddr.h").read_text()
+    in6addr = (wine / "include/in6addr.h").read_text()
 
     ioctls = extract_defines(
         nsi,
@@ -1975,19 +1979,117 @@ def gen_nsi(wine: Path) -> str:
         ]
     )
 
+    # The NPI_MS_* module ids: the DEFINE_NPI_MS_MODULEID payload is parsed
+    # out of netiodef.h rather than retyped (G4). The macro line carries the
+    # GUID prefix (0xeb004a00 + n) and the fixed trailing bytes.
+    ms_macro = re.search(
+        r"#define DEFINE_NPI_MS_MODULEID\(name, n\) DEFINE_NPI_GUID_MODULEID\(name, "
+        r"(0x[0-9a-fA-F]+) \+ \(n\), (0x[0-9a-fA-F]+), (0x[0-9a-fA-F]+), \\\n\s*"
+        r"((?:0x[0-9a-fA-F]+,? ?)+)\)",
+        netiodef,
+    )
+    if not ms_macro:
+        sys.exit("gen_abi: DEFINE_NPI_MS_MODULEID payload not found in netiodef.h")
+    ms_ids = re.findall(r"DEFINE_NPI_MS_MODULEID\(\s*(NPI_MS_\w+),\s*(0x[0-9a-fA-F]+)\s*\);",
+                        netiodef)
+    wanted = {"NPI_MS_IPV4_MODULEID", "NPI_MS_IPV6_MODULEID", "NPI_MS_NDIS_MODULEID"}
+    if not wanted <= {name for name, _ in ms_ids}:
+        sys.exit("gen_abi: NPI_MS_* module ids missing from netiodef.h")
+    tail_bytes = ms_macro.group(4).rstrip(", ")
+    moduleid_defs = (
+        "/* The NPI_MS_* module ids, values parsed from netiodef.h's\n"
+        " * DEFINE_NPI_MS_MODULEID lines. */\n"
+        "#define NPI_MS_MODULEID_INIT(n)                                           \\\n"
+        "    {                                                                     \\\n"
+        "        sizeof(NPI_MODULEID), MIT_GUID,                                   \\\n"
+        "        {                                                                 \\\n"
+        f"            {{ {ms_macro.group(1)} + (n), {ms_macro.group(2)}, {ms_macro.group(3)}, "
+        f"{{ {tail_bytes} }} }}                                                    \\\n"
+        "        }                                                                 \\\n"
+        "    }\n"
+        + "".join(
+            f"#define {name}_INIT NPI_MS_MODULEID_INIT({num})\n"
+            for name, num in ms_ids
+            if name in wanted
+        )
+    )
+
+    # The scaffold types the row layouts stand on, extracted from the same
+    # pinned tree (ifdef.h / inaddr.h / in6addr.h).
+    if_defines = extract_defines(
+        ifdef, "ifdef.h", ["IF_MAX_STRING_SIZE", "IF_MAX_PHYS_ADDRESS_LENGTH"]
+    )
+    net_luid = extract_union(ifdef, "_NET_LUID_LH", "NET_LUID_LH")
+    counted_string = extract_struct(ifdef, "_IF_COUNTED_STRING_LH", "IF_COUNTED_STRING_LH")
+    phys_address = extract_struct(ifdef, "_IF_PHYSICAL_ADDRESS_LH", "IF_PHYSICAL_ADDRESS_LH")
+    in_addr = extract_struct(inaddr, r"WS\(in_addr\)", "IN_ADDR")
+    in6_addr = extract_struct(in6addr, r"WS\(in6_addr\)", "IN6_ADDR")
+
+    # The row layouts the Net-3 device serves (docs/24 §4e): ndis ifinfo,
+    # ip unicast, ip forward — extracted verbatim.
+    rows = "\n\n".join(
+        [
+            extract_plain_struct(nsi, "nsi_ndis_ifinfo_rw"),
+            extract_plain_struct(nsi, "nsi_ndis_ifinfo_dynamic"),
+            extract_plain_struct(nsi, "nsi_ndis_ifinfo_static"),
+            extract_plain_struct(nsi, "nsi_ipv4_unicast_key"),
+            extract_plain_struct(nsi, "nsi_ipv6_unicast_key"),
+            extract_plain_struct(nsi, "nsi_ip_unicast_rw"),
+            extract_plain_struct(nsi, "nsi_ip_unicast_dynamic"),
+            extract_plain_struct(nsi, "nsi_ip_unicast_static"),
+            extract_plain_struct(nsi, "nsi_ipv4_forward_key"),
+            extract_plain_struct(nsi, "nsi_ipv6_forward_key"),
+            extract_plain_struct(nsi, "nsi_ip_forward_rw"),
+            extract_plain_struct(nsi, "nsi_ipv4_forward_dynamic"),
+            extract_plain_struct(nsi, "nsi_ipv6_forward_dynamic"),
+            extract_plain_struct(nsi, "nsi_ip_forward_static"),
+        ]
+    )
+
+    # wine/nsi.h carries no C_ASSERTs of its own, so the layout pins are the
+    # strides the pinned nsi.dll/nsiproxy round-trip was MEASURED to carry
+    # (tests/ntapi/sem_nsi — iosb.Information arithmetic on the oracle:
+    # 8 + 1092 + 216 + 600 per ifinfo row) plus the field offsets the pinned
+    # consumers read (ConvertInterfaceLuidToGuid's if_guid).
+    row_asserts = """\
+_Static_assert(sizeof(NPI_MODULEID) == 24, "NPI_MODULEID size (netiodef.h layout)");
+_Static_assert(sizeof(NET_LUID) == 8, "NET_LUID is the 64-bit luid");
+_Static_assert(sizeof(IN_ADDR) == 4, "IN_ADDR size");
+_Static_assert(sizeof(IN6_ADDR) == 16, "IN6_ADDR size");
+_Static_assert(sizeof(struct nsi_ndis_ifinfo_rw) == 1092, "ifinfo rw stride (oracle-measured)");
+_Static_assert(sizeof(struct nsi_ndis_ifinfo_dynamic) == 216, "ifinfo dynamic stride (oracle-measured)");
+_Static_assert(sizeof(struct nsi_ndis_ifinfo_static) == 600, "ifinfo static stride (oracle-measured)");
+_Static_assert(offsetof(struct nsi_ndis_ifinfo_static, if_guid) == 536,
+               "if_guid offset (the ConvertInterfaceLuidToGuid read)");
+_Static_assert(sizeof(struct nsi_ipv4_unicast_key) == 16, "v4 unicast key stride");
+_Static_assert(sizeof(struct nsi_ipv6_unicast_key) == 24, "v6 unicast key stride");
+_Static_assert(sizeof(struct nsi_ip_unicast_rw) == 28, "unicast rw stride");
+_Static_assert(sizeof(struct nsi_ip_unicast_dynamic) == 8, "unicast dynamic stride");
+_Static_assert(sizeof(struct nsi_ip_unicast_static) == 8, "unicast static stride");
+_Static_assert(sizeof(struct nsi_ipv4_forward_key) == 48, "v4 forward key stride (oracle-measured)");
+_Static_assert(sizeof(struct nsi_ipv6_forward_key) == 72, "v6 forward key stride");
+_Static_assert(sizeof(struct nsi_ip_forward_rw) == 32, "forward rw stride");
+_Static_assert(sizeof(struct nsi_ipv4_forward_dynamic) == 20, "v4 forward dynamic stride");
+_Static_assert(sizeof(struct nsi_ip_forward_static) == 8, "forward static stride");
+"""
+
     scaffold = """\
 /* Win32 alias scaffold for the extracted structs; sizes pinned. */
 typedef unsigned int UINT;
+typedef ULONGLONG ULONG64;
+typedef unsigned int UINT32;
+typedef ULONG DWORD32;
 _Static_assert(sizeof(UINT) == 4, "Win32: UINT is 4 bytes");
 """
 
     return (
         BANNER.format(
             name="abi/nsi.h",
-            source="wine/include/{wine/nsi.h,netiodef.h}",
+            source="wine/include/{wine/nsi.h,netiodef.h,ifdef.h,inaddr.h,in6addr.h}",
         )
         + "#ifndef PROSKRNL_ABI_NSI_H\n"
         + "#define PROSKRNL_ABI_NSI_H\n\n"
+        + "#include <stddef.h> /* offsetof for the layout pins */\n\n"
         + '#include "abi/ntdef.h"\n'
         + '#include "abi/ntioapi.h" /* CTL_CODE, FILE_DEVICE_NETWORK */\n'
         + '#include "abi/ntpebteb.h" /* GUID */\n'
@@ -1997,6 +2099,21 @@ _Static_assert(sizeof(UINT) == 4, "Win32: UINT is 4 bytes");
         + moduleid_type
         + "\n\n"
         + moduleid
+        + "\n\n"
+        + moduleid_defs
+        + "\n/* The scaffold types the rows stand on, extracted verbatim from\n"
+        + " * wine/include/{ifdef.h,inaddr.h,in6addr.h}. */\n"
+        + if_defines
+        + "\n\n"
+        + net_luid
+        + "\ntypedef NET_LUID_LH NET_LUID;\n\n"
+        + counted_string
+        + "\ntypedef IF_COUNTED_STRING_LH IF_COUNTED_STRING;\n\n"
+        + phys_address
+        + "\ntypedef IF_PHYSICAL_ADDRESS_LH IF_PHYSICAL_ADDRESS;\n\n"
+        + in_addr
+        + "\n\n"
+        + in6_addr
         + "\n\n/* The Nsi ioctl surface, extracted from wine/include/wine/nsi.h. */\n"
         + ioctls
         + "\n\n"
@@ -2006,7 +2123,13 @@ _Static_assert(sizeof(UINT) == 4, "Win32: UINT is 4 bytes");
         + tables
         + "\n\n/* The request shapes, extracted verbatim from wine/include/wine/nsi.h. */\n"
         + structs
-        + "\n\n#endif /* PROSKRNL_ABI_NSI_H */\n"
+        + "\n\n/* The row layouts of the tables the Net-3 device serves, extracted\n"
+        + " * verbatim from wine/include/wine/nsi.h. */\n"
+        + rows
+        + "\n\n/* The layout pins: strides measured on the pinned oracle\n"
+        + " * (tests/ntapi/sem_nsi) and the offsets the pinned consumers read. */\n"
+        + row_asserts
+        + "\n#endif /* PROSKRNL_ABI_NSI_H */\n"
     )
 
 
