@@ -1136,9 +1136,24 @@ kernel32_test.exe:fiber
 #     by tests/ntapi/sem_mm/section_file_hold.c; docs/21 W16, docs/03 "What a
 #     live SECTION holds against a later OPEN".
 #
-#     WHAT IS LEFT, re-measured, summing to 38:
-#       - 16  :3208, FindFirstFile with the "*." pattern — a FAT short-name
-#         question, and the largest single item left here;
+#     WHAT WENT THIS SESSION: 16 assertions, ONE character. All sixteen
+#     :3208 wildcard failures printed "found incorrectly ' .a'" and missed
+#     NOTHING — one file, wrongly included, sixteen times. The block was
+#     right that it was a FAT short-name question and wrong about which one:
+#     it is not the "*." pattern but the 8.3 ALIAS the pattern is matched
+#     against. Every one of the sixteen masks reduces to `<` or `a<` through
+#     kernelbase's fixup_mask, and a trailing DOS_STAR can only reach an
+#     alias with NO extension. proskrnl stripped leading dots AND SPACES
+#     before choosing the extension separator, so ` .a` aliased to `A~01`
+#     (extensionless) where both NT and the oracle keep the `.A`. Leading
+#     dots only, now: fs/fat32/dir.c FatGenerateShortName, pinned by
+#     tests/ntapi/sem_file/short_names.c §7-8, docs/03 "The 8.3 alias's
+#     leading run", docs/21 W18. Verified by a line-by-line diff of the
+#     failing-assertion histogram: those sixteen removed, no other line
+#     moved, 34 todo markers before and after, and the run stops in exactly
+#     the same place — so 38 -> 22 is like-for-like over the same prefix.
+#
+#     WHAT IS LEFT, re-measured, summing to 22:
 #       - 14  succeeded-todo markers at :388/:394/:396/:398, :1409,
 #         :1557/:1561/:1578, :2087, :2132 and :3321/:3323/:3333/:3335, each a
 #         place proskrnl is MORE NT-correct than the pinned Wine the todo was
@@ -1147,17 +1162,33 @@ kernel32_test.exe:fiber
 #         pair cannot go green while proskrnl is the better of the two
 #         runners;
 #       -  3  :702 and :1006/:1007, CopyFile/CopyFile2 of a file to ITSELF,
-#         which must fail ERROR_SHARING_VIOLATION and does not. Same file
-#         opened twice, no section involved — a plain share-mode question and
-#         the cheapest item on this list;
+#         which must fail ERROR_SHARING_VIOLATION and does not. THE "plain
+#         share-mode question" THIS BLOCK USED TO CALL IT IS WRONG, and the
+#         correction is the useful part: kernelbase's copy_file
+#         (dlls/kernelbase/file.c) opens both paths and asks is_same_file(),
+#         which is TWO NtFsControlFile(FSCTL_GET_OBJECT_ID) calls compared
+#         byte-for-byte — that branch is the ONLY producer of
+#         ERROR_SHARING_VIOLATION in the whole function. proskrnl has no
+#         FSCTL_GET_OBJECT_ID at all, so the compare never happens and the
+#         copy succeeds (the log says ret=1 err=0, which is that arm and
+#         not a refused open). Read off the code and consistent with the
+#         failure text; no probe was run, so treat the mechanism as
+#         predicted rather than measured. NOTE BEFORE IMPLEMENTING: the
+#         oracle answers this fsctl for every file (st_dev+st_ino), but NT
+#         on a real FAT volume REFUSES it — the same "claims a combination
+#         NT never shows" question kernel32:volume:2022 carries for
+#         FILE_SUPPORTS_OPEN_BY_FILE_ID, and it wants the same decision
+#         first. ntdll's loader uses the same fsctl to dedup a DLL by file
+#         identity (dlls/ntdll/loader.c find_fileid_module), so the reach is
+#         wider than these three assertions;
 #       -  5  singletons: :1403, :1884, :2398, :2806, :3269.
 #
-#     AND 38 IS STILL A LOWER BOUND: the run PANICS at file.c:3338's
+#     AND 22 IS STILL A LOWER BOUND: the run PANICS at file.c:3338's
 #     CreateMailslotW and never reaches its summary line — so, like
 #     ntdll:file, this pair is gated on mailslots (docs/21 W8) and nothing
 #     past :3338 has ever been counted (docs/21 §4 trap 2). It stops in
-#     exactly the same place it did before this session, so 164 -> 38 is a
-#     like-for-like comparison of the same measured prefix.
+#     exactly the same place it did before this session, so 164 -> 38 -> 22
+#     is a like-for-like comparison of the same measured prefix.
 # TODO: Implement
 # kernel32_test.exe:file
 kernel32_test.exe:format_msg
