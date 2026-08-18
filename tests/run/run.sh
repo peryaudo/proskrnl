@@ -2869,9 +2869,35 @@ audio() {
         echo "== audio: FAIL (capture half; see $log) =="; return 1
     fi
 
+    # --- the WASAPI capture half (AUD-3, docs/23 §6c): event-driven capture
+    # through the whole PE audio stack — the seam's capture endpoint,
+    # winevsnd.drv's capture thread, the get_capture_buffer legs — on the
+    # same `none` backend, with the packet count on the verdict line as a
+    # NUMBER (docs/19 §8.4's rule).
+    make -C "$ROOT" wasapi-cap-smoke >/dev/null
+    local img4="$dir/wasapi_cap.hdd"
+    bake_audio_image "$img4" "win:$ROOT/build/modules/wasapi_cap_smoke.exe=wasapi_cap_smoke.exe"
+    sock="$dir/wasapi_cap.sock" log="$dir/wasapi_cap.log"
+    rm -f "$sock" "$log"
+    QMP_SOCK="$sock" LOG="$log" \
+        EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
+        AUDIODEV="none,id=snd0" \
+        TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
+        "$ROOT/tools/qemu.sh" "$img4" >/dev/null 2>&1 &
+    qemu_wrapper=$!
+    if ! await '\[KTEST\] audio capture (PASS|FAIL)'; then
+        audio_fail "no WASAPI capture client verdict"; return 1
+    fi
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] audio capture PASS packets=[0-9]+ frames=[0-9]+' "$log"; then
+        echo "== audio: FAIL (WASAPI capture half; see $log) =="; return 1
+    fi
+
     echo "== audio: PASS (device contract + sample-exact playback, direct and via WASAPI," \
          "$(grep -oE 'underruns=[0-9]+' "$dir/wasapi.log" | tail -1)," \
-         "$(grep -oE 'capture PASS periods=[0-9]+ pos=[0-9]+' "$log" | tail -1)) =="
+         "$(grep -oE 'capture PASS periods=[0-9]+ pos=[0-9]+' "$dir/capture.log" | tail -1)," \
+         "$(grep -oE 'capture PASS packets=[0-9]+ frames=[0-9]+' "$log" | tail -1)) =="
     return 0
 }
 

@@ -1108,6 +1108,20 @@ $(WASAPISMOKE): tests/audio/wasapi_smoke.c $(WINE_PE_DLLS)
 wasapi-smoke: $(WASAPISMOKE)
 .PHONY: wasapi-smoke
 
+# The AUD-3 WASAPI capture client: the same recipe as wasapi_smoke.exe,
+# pointed at the capture endpoint, run on the `none`-audiodev boot.
+WASAPICAPSMOKE := $(BUILD)/modules/wasapi_cap_smoke.exe
+$(WASAPICAPSMOKE): tests/audio/wasapi_cap_smoke.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=wasapi_cap_start \
+	    tests/audio/wasapi_cap_smoke.c \
+	    $(WINE_PE)/ole32/x86_64-windows/libole32.a \
+	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
+
+wasapi-cap-smoke: $(WASAPICAPSMOKE)
+.PHONY: wasapi-cap-smoke
+
 # The AUD-1 image (tests/run/run.sh audio): the standard image plus
 # aud_smoke.exe, whose presence makes smss run it as the session's
 # foreground (user/smss/session.c). The virtio-snd device and the wav
