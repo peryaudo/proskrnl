@@ -714,8 +714,32 @@ ntdll_test.exe:path
 #     other line moved — nothing was hiding behind them (docs/21 §4 trap 2 does
 #     not apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 20 (17 failed + 3 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 17,
+#     WHOSE SECURITY DESCRIPTOR A PIPE HANDLE REPORTS IS NOW BUILT: 20 -> 10,
+#     all ten of test_security_info. The cluster was one subject and it was not
+#     an npfs one: a pipe END has no descriptor of its own, it DEFERS to its
+#     PIPE (server/named_pipe.c pipe_end_get_sd/pipe_end_set_sd, both
+#     `if (pipe_end->pipe) return default_{get,set}_sd( &pipe_end->pipe->obj )`),
+#     so both ends of every instance of one name share a single blob and an end
+#     whose pipe is gone REFUSES with STATUS_PIPE_DISCONNECTED. proskrnl kept it
+#     on the FILE OBJECT, i.e. one per open handle — which passes every
+#     set-then-query-the-same-handle case and fails the moment a second end or a
+#     second instance asks, which is exactly what the ten were. Ob's object type
+#     grew a REDIRECT (OBJECT_TYPE.securityStorage: which slot, not what it
+#     says, so Se keeps its one reading of an SD) and npfs points it at the
+#     NPFS_PIPE. The create-time OBJECT_ATTRIBUTES descriptor came with it, in
+#     the arm that MINTS the pipe only — a further instance drops its own, as
+#     the oracle's `if (sd) default_set_sd(...)` sits inside "initialize it if
+#     it didn't already exist". Landed in kernel/{ob,se,io}/ + fs/npfs/pipe.c,
+#     pinned by tests/ntapi/sem_pipe/pipe_security.c (and sem_se/se_secobj.c for
+#     the create-time defaulting, which is shared with every Ob object);
+#     docs/21 W11, docs/03 "Whose security descriptor a pipe handle reports".
+#     2378 tests executed, 32 todo markers and 0 flaky before and after, and a
+#     line-by-line histogram diff shows exactly :2605/:2611/:2620/:2621/:2625/
+#     :2632/:2638/:2641/:2643/:2664 removed with no other line moved — nothing
+#     was hiding behind them (docs/21 §4 trap 2 does not apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 10 (7 failed + 3 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 7,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
@@ -762,14 +786,6 @@ ntdll_test.exe:path
 #             left untouched, which the oracle fails and proskrnl does not, so
 #             it cannot go green while proskrnl is the more NT-correct runner.
 #             NOT diagnosed further.
-#       - 10  test_security_info (:2605-:2664) — NtQuerySecurityObject on a
-#             pipe handle. Now the LARGEST cluster, and UNTRIAGED. The oracle
-#             serves it off the PIPE object (server/named_pipe.c
-#             pipe_end_get_sd: `if (pipe_end->pipe) return default_get_sd(
-#             &pipe_end->pipe->obj )`, STATUS_PIPE_DISCONNECTED otherwise), so
-#             it is a Se question asked through a pipe handle rather than an
-#             npfs one — but which of the ten are causes and which are
-#             consequences has NOT been measured.
 #       -  2  subtest_pipe_name (:2969, succeeded-todo).
 #       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
 #             (IO_STATUS_BLOCK *)0xdeadbeef) must answer

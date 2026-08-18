@@ -2409,6 +2409,53 @@ sentence had been read as a live constraint for two milestones.
 0 flaky before and after, and a line-by-line histogram diff removes exactly
 `:2849`/`:2881` with no other line moved — so `§4` trap 2 does not apply here.
 
+**WHOSE SECURITY DESCRIPTOR A PIPE HANDLE REPORTS IS DONE** (`ntdll:pipe`
+20 → **10**), and the manifest's guess about it was right for once: the ten
+assertions of `test_security_info` were ONE subject, and the subject was not
+npfs. A pipe **END has no descriptor of its own** — the oracle's
+`pipe_end_get_sd` and `pipe_end_set_sd` are both
+`if (pipe_end->pipe) return default_{get,set}_sd( &pipe_end->pipe->obj )`
+(`server/named_pipe.c`) — so both ends of every instance of one name read and
+write a single blob, and an end whose pipe is gone REFUSES with
+`STATUS_PIPE_DISCONNECTED`. proskrnl kept it on the `FILE_OBJECT`, i.e. one per
+open handle. Pinned by `tests/ntapi/sem_pipe/pipe_security.c`; `docs/03` "Whose
+security descriptor a pipe handle reports".
+
+- **The defect's shape is the one this document keeps meeting from the other
+  side: a per-handle answer to a per-SUBJECT question.** It is
+  `notify_queue.c`'s "the notification state belongs to the HANDLE, not the
+  request" (W4b) one level up, and `object_name.c`'s "the NAME belongs to the
+  PIPE, not the end" (above) asked through a different syscall. The tell is the
+  same each time — every set-then-query-*the-same-handle* case passes, and the
+  storage is only convictable by a SECOND observer. **Nine of the ten winetest
+  assertions are a second observer**; the tenth is a create-time descriptor.
+- **The fix is a REDIRECT, not a second get/set** (Art. 11).
+  `OBJECT_TYPE.securityStorage` answers *which slot*, never *what it says*, so
+  Se keeps its one capture/merge/filter path and the type that redirects gains
+  no reading of an SD; `IO_VFS_OPS.SecurityStorage` is the same question one
+  layer down, so the Io layer does not grow a per-device branch. The refusal
+  sits BELOW the handle's access check for free, because a hook is only reached
+  once the handle resolved — which is the oracle's own order
+  (`server/handle.c` resolves with the per-info-bit access, *then* calls
+  `get_sd`) and is the only thing an under-privileged query on a disconnected
+  end can tell apart.
+- **The create-time descriptor was a SECOND authority hiding behind a comment
+  claiming there was one.** `SeCaptureObjectSecurity`'s header said it was "the
+  ONE create-time SD site (G11)" and stored the caller's blob RAW, with
+  "token-defaulting of missing parts is `NtSetSecurityObject`'s job (no baked
+  create passes a partial SD)" beside it. The oracle defaults at create too —
+  `create_object`/`create_named_object` call `default_set_sd( obj, sd,
+  OWNER|GROUP|DACL|SACL )`, which is `set_sd_defaults_from_token` — and the
+  winetest's `CreateNamedPipeA(..., &sec_attr)` passes exactly the partial SD
+  the comment said nobody passes. Giving the pipe its own create-time capture
+  would have made the comment false; routing both through the merge made it
+  true. Pinned for the Ob half by `sem_se/se_secobj.c`, because that half moved
+  for every object type, not just for pipes.
+- **Nothing was hiding behind the ten** — 2378 tests executed, 32 todo markers
+  and 0 flaky before and after, and a line-by-line histogram diff removes
+  exactly `:2605`/`:2611`/`:2620`/`:2621`/`:2625`/`:2632`/`:2638`/`:2641`/
+  `:2643`/`:2664` with no other line moved, so `§4` trap 2 does not apply.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
