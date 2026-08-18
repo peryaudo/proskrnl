@@ -19,6 +19,7 @@
 #include "fs/npfs/npfs.h"
 #include "kernel/io/io.h"
 #include "kernel/syscall/uaccess.h"
+#include "kernel/se/se.h" /* the create-time security-descriptor site */
 #include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -88,6 +89,13 @@ typedef struct NPFS_PIPE
      * FSCTL_PIPE_WAIT with TimeoutSpecified == FALSE falls back to
      * (wine/server/named_pipe.c: `when = ... : pipe->timeout`). */
     LARGE_INTEGER defaultTimeout;
+
+    /* The security descriptor every end of every instance of this name shares
+     * (the oracle's `pipe->obj.sd`, which pipe_end_get_sd/pipe_end_set_sd
+     * defer to). A pooled SEP blob in Ob's own shape, written only by Se
+     * through NpfsSecurityStorage and freed with the pipe. 0 = none, which is
+     * what a create with no OBJECT_ATTRIBUTES descriptor leaves. */
+    PVOID securityDescriptor;
 } NPFS_PIPE, *PNPFS_PIPE;
 
 typedef struct NPFS_INSTANCE
@@ -254,6 +262,10 @@ static void NpfsFreePipe(PNPFS_PIPE pipe)
     if (pipe->name.Buffer != 0)
     {
         MiFreePool(pipe->name.Buffer);
+    }
+    if (pipe->securityDescriptor != 0)
+    {
+        MiFreePool(pipe->securityDescriptor);
     }
     MiFreePool(pipe);
 }
@@ -1845,6 +1857,39 @@ static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BL
     return cancelled;
 }
 
+/* Where a pipe handle's security descriptor lives (kernel/io/vfs.h
+ * IO_VFS_OPS.SecurityStorage). An END has none of its own: the oracle's
+ * pipe_end_get_sd / pipe_end_set_sd are both `if (pipe_end->pipe) return
+ * default_{get,set}_sd( &pipe_end->pipe->obj )`, so both ends of every
+ * instance of one name read and write the SAME blob — and an end with no pipe
+ * left (a client the server disconnected) refuses with
+ * STATUS_PIPE_DISCONNECTED rather than reporting an empty descriptor.
+ *
+ * `end->pipe` is exactly the oracle's `pipe_end->pipe` (see NPFS_END), so this
+ * asks the one question rather than a second spelling of it. */
+static NTSTATUS NpfsSecurityStorage(PFILE_OBJECT file, PVOID **slot)
+{
+    PNPFS_END end = file->fsContext;
+    if (end == 0)
+    {
+        /* A handle on the device or its root directory carries no pipe state,
+         * and the oracle keeps its descriptor PER OPEN: opening the device
+         * mints a fresh named_pipe_device_file / named_pipe_dir whose
+         * default_get_sd is its OWN (server/named_pipe.c named_pipe_dir_ops,
+         * named_pipe_device_file_ops). That is Ob's default, so leave it —
+         * redirecting these to the one permanent device object would make one
+         * root handle's set visible to every later one, for the life of the
+         * boot. */
+        return STATUS_SUCCESS;
+    }
+    if (end->pipe == 0)
+    {
+        return STATUS_PIPE_DISCONNECTED;
+    }
+    *slot = &end->pipe->securityDescriptor;
+    return STATUS_SUCCESS;
+}
+
 const IO_VFS_OPS NpfsVfsOps = {
     .Create = NpfsVfsCreate,
     .Cleanup = NpfsVfsCleanup,
@@ -1852,6 +1897,7 @@ const IO_VFS_OPS NpfsVfsOps = {
     .GetInfo = NpfsGetInfo,
     .QueryName = NpfsQueryName,
     .namedInObjectNamespace = TRUE,
+    .SecurityStorage = NpfsSecurityStorage,
     .Read = NpfsRead,
     .Write = NpfsWrite,
     .Flush = NpfsFlush,
@@ -2138,6 +2184,24 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
          * sem_pipe/create_refusals.c). */
         status = STATUS_ACCESS_DENIED;
         goto out_device;
+    }
+
+    /* An OBJECT_ATTRIBUTES descriptor binds to the PIPE, and only the create
+     * that MINTS one applies it: the oracle's `if (sd) default_set_sd( &pipe->
+     * obj, ... )` sits inside the "initialize it if it didn't already exist"
+     * arm (wine server/named_pipe.c, DECL_HANDLER(create_named_pipe)), so a
+     * further instance of an existing name carries its own descriptor along
+     * and drops it — otherwise any caller that can open the pipe rewrites the
+     * security every other instance is already running under. Through the one
+     * create-time site (kernel/se/secobj.c), which is also what supplies the
+     * token defaults for the parts the caller left out. */
+    if (information == FILE_CREATED && attributes->SecurityDescriptor != 0)
+    {
+        status = SeCaptureObjectSecurity(&pipe->securityDescriptor, attributes->SecurityDescriptor);
+        if (!NT_SUCCESS(status))
+        {
+            goto out_empty_pipe;
+        }
     }
 
     PNPFS_INSTANCE instance = MiAllocatePool(sizeof(NPFS_INSTANCE));

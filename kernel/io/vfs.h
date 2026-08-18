@@ -301,6 +301,25 @@ typedef struct IO_VFS_OPS
      * moves what FileNameInformation reports for them and needs its own pin. */
     BOOLEAN namedInObjectNamespace;
 
+    /* Optional: WHOSE security descriptor a handle on this device reports.
+     * A device whose files share their security with something LONGER-LIVED
+     * than the handle answers here — npfs does, because on the oracle a pipe
+     * END has no descriptor of its own and defers to its PIPE, which every
+     * end and every instance of that name shares (server/named_pipe.c
+     * pipe_end_get_sd/pipe_end_set_sd). The slot is Ob's shape and Se still
+     * does all the reading and writing of it (ob.h
+     * OBJECT_TYPE.securityStorage), so this points at storage rather than
+     * answering the question.
+     *
+     * `*slot` arrives holding this OPEN's own — the descriptor on the FILE
+     * OBJECT, which is what every device that leaves this NULL keeps and what
+     * the oracle gives a handle on the pipe DEVICE ROOT too — so a device
+     * answers only for the handles it has something else to say about. A
+     * refusal here is the caller's status: a pipe end whose pipe is gone
+     * answers STATUS_PIPE_DISCONNECTED, which is the same fact
+     * FileNameInformation already reports through a different syscall. */
+    NTSTATUS (*SecurityStorage)(struct FILE_OBJECT *file, PVOID **slot);
+
     /* The volume's identity and geometry, for the FileFsVolume/Size/
      * AttributeInformation classes. NULL = not a filesystem volume: those
      * classes are unbuilt for it and refuse with STATUS_NOT_IMPLEMENTED

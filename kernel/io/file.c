@@ -174,6 +174,26 @@ static NTSTATUS IopQueryFileObjectName(PVOID body, WCHAR *out, ULONG *nameBytes)
     return STATUS_SUCCESS;
 }
 
+/* IoFileObjectType.securityStorage: whose descriptor a FILE handle reports.
+ *
+ * Ob's default is the file object's own header, i.e. one descriptor per OPEN,
+ * which is what every device here has always had. That is wrong for a device
+ * whose files ARE something else's — a named pipe's descriptor belongs to the
+ * PIPE, shared by both ends and every instance of the name (server/named_pipe.c
+ * pipe_end_get_sd) — so the device gets the say, once, rather than Se growing a
+ * per-device branch (Art. 11). */
+static NTSTATUS IopFileObjectSecurityStorage(PVOID body, PVOID **slot)
+{
+    PFILE_OBJECT file = body;
+    if (file->device->ops->SecurityStorage != 0)
+    {
+        /* `*slot` already holds this open's own (ob.h), so a device answers
+         * only for the handles it has something else to say about. */
+        return file->device->ops->SecurityStorage(file, slot);
+    }
+    return STATUS_SUCCESS;
+}
+
 OBJECT_TYPE IoFileObjectType = {
     .name = "File",
     .validAccess = FILE_ALL_ACCESS,
@@ -181,6 +201,7 @@ OBJECT_TYPE IoFileObjectType = {
     .deleteProcedure = IopDeleteFileObject,
     .closeProcedure = IopCloseFileObject,
     .queryName = IopQueryFileObjectName,
+    .securityStorage = IopFileObjectSecurityStorage,
     /* Every file-ish get_full_name in the oracle sets this one explicitly
      * where the generic walk leaves STATUS_INFO_LENGTH_MISMATCH (ob.h). */
     .nameTooShortStatus = STATUS_BUFFER_OVERFLOW,

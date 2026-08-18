@@ -35,7 +35,19 @@ NTSTATUS NtQuerySecurityObject(HANDLE handle, SECURITY_INFORMATION securityInfor
     {
         return status;
     }
-    PSEP_SECURITY_DESCRIPTOR stored = ObpGetHeader(body)->securityDescriptor;
+    /* WHOSE descriptor this handle reports (ob.h OBJECT_TYPE.securityStorage):
+     * a pipe end has none of its own and defers to its pipe, and one with no
+     * pipe left refuses — below the access check above, which is the order the
+     * oracle has (server/handle.c DECL_HANDLER(get_security_object) resolves
+     * the handle first and calls get_sd second). */
+    PVOID *storage;
+    status = ObpSecurityStorage(body, &storage);
+    if (!NT_SUCCESS(status))
+    {
+        ObDereferenceObject(body);
+        return status;
+    }
+    PSEP_SECURITY_DESCRIPTOR stored = *storage;
 
     /* Filter the parts by the asked-for info bits; the control word passes
      * through unfiltered (plus SE_SELF_RELATIVE). */
@@ -354,8 +366,14 @@ NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInforma
         MiFreePool(incoming);
         return status;
     }
-    status = SepApplySecurityDescriptor(&ObpGetHeader(body)->securityDescriptor,
-                                        securityInformation, incoming);
+    /* WHOSE descriptor this handle writes — the same redirect the query takes,
+     * resolved after the access check above (ob.h OBJECT_TYPE.securityStorage). */
+    PVOID *storage;
+    status = ObpSecurityStorage(body, &storage);
+    if (NT_SUCCESS(status))
+    {
+        status = SepApplySecurityDescriptor(storage, securityInformation, incoming);
+    }
     ObDereferenceObject(body);
     MiFreePool(incoming);
     return status;

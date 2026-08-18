@@ -116,6 +116,40 @@ typedef struct OBJECT_TYPE
      * STATUS_INFO_LENGTH_MISMATCH. */
     NTSTATUS nameTooShortStatus;
 
+    /* Optional per-type REDIRECT for the security descriptor: WHOSE blob a
+     * handle on this object reports (Wine's object_ops.get_sd/set_sd, of
+     * which server/named_pipe.c pipe_end_get_sd is the one this exists for —
+     * `if (pipe_end->pipe) return default_get_sd( &pipe_end->pipe->obj )`).
+     *
+     * It answers WHERE the descriptor lives, not what it says: Se still does
+     * every capture, merge and filter through its one path (kernel/se/
+     * secobj.c), so a type that redirects does not grow a second reading of
+     * an SD (Art. 11). The slot is an ordinary OBJECT_HEADER.securityDescriptor
+     * -shaped `PVOID` holding a pooled SEP blob, owned and freed by whatever
+     * the slot belongs to — the object header for everything that leaves this
+     * NULL, the NPFS_PIPE for a pipe end.
+     *
+     * `*slot` arrives holding this object's OWN header slot — the answer for
+     * everything that leaves this hook NULL — so a type that redirects only
+     * some of its objects (npfs redirects a pipe END and not a handle on the
+     * device root) says so by leaving it alone. A refusal returns its status
+     * and `*slot` is then meaningless.
+     *
+     * That refusal sits BELOW the handle's access check, because the hook is
+     * only reached once the handle resolved: a pipe end whose pipe is gone
+     * answers STATUS_PIPE_DISCONNECTED, but a query that was never entitled to
+     * ask gets STATUS_ACCESS_DENIED first (server/handle.c
+     * DECL_HANDLER(get_security_object) resolves the handle with the
+     * per-info-bit access before calling get_sd).
+     *
+     * The CREATE/OPEN access check does NOT go through here, and that is the
+     * oracle's own split rather than an omission: server/token.c
+     * check_object_access reads `obj->sd` directly where
+     * DECL_HANDLER(get_security_object) goes through `ops->get_sd`. So the
+     * DACL an open is judged against is the header's, on the object being
+     * opened (kernel/ob/namespace.c). NULL = no redirect. */
+    NTSTATUS (*securityStorage)(PVOID body, PVOID **slot);
+
     /* CUI-6: the small per-type id SystemHandleInformation entries carry.
      * Types are C globals with no registry, so the id is minted lazily by
      * ObpTypeIndex — the ONE assignment site (G11). 0 = not yet minted. */
@@ -175,6 +209,13 @@ NTSTATUS ObpAllocateObject(POBJECT_TYPE type, ULONG bodySize, PVOID *body);
 /* Reference / dereference by body pointer (signatures per Wine's wdm.h). */
 void ObfReferenceObject(PVOID body);
 void ObDereferenceObject(PVOID body);
+
+/* Where this object's security descriptor is STORED — the one resolution of
+ * OBJECT_TYPE.securityStorage, so query and set cannot disagree about which
+ * blob they are talking about (Art. 11). The caller holds a reference to
+ * `body` for as long as it uses `*slot`. A type whose hook refuses returns
+ * that status and leaves `*slot` untouched. */
+NTSTATUS ObpSecurityStorage(PVOID body, PVOID **slot);
 
 /* Resolve a handle to a referenced body. type == 0 accepts any type; the
  * entry's granted access must cover desiredAccess. Caller dereferences. */
