@@ -21,7 +21,7 @@ static NTSTATUS IopDeviceControl(HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;

@@ -1929,7 +1929,7 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -2268,13 +2268,11 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
     if (!NT_SUCCESS(status))
     {
         ObDereferenceObject(file); /* cleanup/close run via the type hooks */
-        iosb->Status = status;
-        iosb->Information = 0;
+        IopWriteIosb(iosb, status, 0);
         goto out;
     }
     ObDereferenceObject(file); /* the handle keeps it alive */
-    iosb->Status = STATUS_SUCCESS;
-    iosb->Information = information;
+    IopWriteIosb(iosb, STATUS_SUCCESS, information);
     status = STATUS_SUCCESS;
     goto out;
 

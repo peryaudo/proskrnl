@@ -157,7 +157,7 @@ static NTSTATUS IopStartTransfer(HANDLE handle, HANDLE event, ACCESS_MASK needed
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -800,7 +800,7 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -876,10 +876,9 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
          * and the first draft of the pin guessed the other way: even a flush
          * that PENDED and then failed leaves it untouched. IOSB re-probed
          * after the device's parks, as below. */
-        if (NT_SUCCESS(status) && NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+        if (NT_SUCCESS(status) && NT_SUCCESS(IopProbeIosb(iosb)))
         {
-            iosb->Status = status;
-            iosb->Information = 0;
+            IopWriteIosb(iosb, status, 0);
         }
         ObDereferenceObject(file);
         return status;
@@ -897,12 +896,11 @@ static NTSTATUS IopFlushBuffers(HANDLE handle, IO_STATUS_BLOCK *iosb)
     {
         status = STATUS_SUCCESS;
     }
-    if (NT_SUCCESS(status) && NT_SUCCESS(KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *))))
+    if (NT_SUCCESS(status) && NT_SUCCESS(IopProbeIosb(iosb)))
     {
         /* IOSB re-probed after the gated writeback's parks — the
          * IopCompleteRequest convention (PR #95 review round 2, F2). */
-        iosb->Status = STATUS_SUCCESS;
-        iosb->Information = 0;
+        IopWriteIosb(iosb, STATUS_SUCCESS, 0);
     }
     ObDereferenceObject(file);
     return status;
@@ -977,7 +975,7 @@ static NTSTATUS IopSegmentedTransfer(BOOLEAN isWrite, HANDLE handle, HANDLE even
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;

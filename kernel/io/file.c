@@ -493,15 +493,16 @@ NTSTATUS IopCompleteRequest(IO_STATUS_BLOCK *iosb, HANDLE eventHandle, NTSTATUS 
      * same swallow-the-fault guard. No park separates probe and store;
      * no-op success for a KernelMode caller's kernel IOSB (uaccess.h). */
     KI_PROBE_TOKEN iosbToken;
-    if (NT_SUCCESS(KiProbeForWriteToken(iosb, sizeof(*iosb), sizeof(void *), &iosbToken)))
+    if (NT_SUCCESS(IopProbeIosbToken(iosb, &iosbToken)))
     {
-        IO_STATUS_BLOCK final;
-        final.Status = status;
-        final.Information = information;
         /* Through the token, so a park reintroduced between this probe and
          * this store is fatal here rather than a ring-0 fault unwinding past
-         * every caller's cleanup (issue #96 C). */
-        KiWriteUser(&iosbToken, iosb, &final, sizeof(final));
+         * every caller's cleanup (issue #96 C) — and field by field, for the
+         * reason IopWriteIosb spells out: bytes 4..7 are the caller's own
+         * Pointer half and the oracle never writes them. */
+        KiWriteUser(&iosbToken, iosb, &status, sizeof(status));
+        KiWriteUser(&iosbToken, (unsigned char *)iosb + offsetof(IO_STATUS_BLOCK, Information),
+                    &information, sizeof(information));
     }
     /* A failure to signal the event is DISCARDED, and the operation's own
      * status is returned. That is the oracle's behaviour -- third_party/wine
@@ -676,15 +677,16 @@ void IoMountBootVolume(void)
 static void IopWriteCreateIosb(PIO_STATUS_BLOCK iosb, NTSTATUS status, ULONG_PTR information)
 {
     KI_PROBE_TOKEN iosbToken;
-    if (NT_SUCCESS(KiProbeForWriteToken(iosb, sizeof(*iosb), sizeof(void *), &iosbToken)))
+    if (NT_SUCCESS(IopProbeIosbToken(iosb, &iosbToken)))
     {
-        IO_STATUS_BLOCK final;
-        final.Status = status;
-        final.Information = information;
         /* Through the token, so a park reintroduced between this probe and
          * this store is fatal here rather than a ring-0 fault unwinding past
-         * every caller's cleanup (issue #96 C). */
-        KiWriteUser(&iosbToken, iosb, &final, sizeof(final));
+         * every caller's cleanup (issue #96 C) — and field by field, for the
+         * reason IopWriteIosb spells out: bytes 4..7 are the caller's own
+         * Pointer half and the oracle never writes them. */
+        KiWriteUser(&iosbToken, iosb, &status, sizeof(status));
+        KiWriteUser(&iosbToken, (unsigned char *)iosb + offsetof(IO_STATUS_BLOCK, Information),
+                    &information, sizeof(information));
     }
 }
 
@@ -728,7 +730,7 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;

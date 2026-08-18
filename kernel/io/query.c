@@ -125,7 +125,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (NT_SUCCESS(status))
     {
         status = KiProbeForWrite(buffer, length, 1);
@@ -265,8 +265,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         FILE_ACCESS_INFORMATION access;
         access.AccessFlags = handleInformation.GrantedAccess;
         memcpy(buffer, &access, sizeof(access)); /* caller-aligned buffer */
-        iosb->Status = STATUS_SUCCESS;
-        iosb->Information = sizeof(access);
+        IopWriteIosb(iosb, STATUS_SUCCESS, sizeof(access));
         ObDereferenceObject(file);
         return STATUS_SUCCESS;
     }
@@ -281,8 +280,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         FILE_MODE_INFORMATION mode;
         mode.Mode = IopFileMode(file);
         memcpy(buffer, &mode, sizeof(mode)); /* caller-aligned buffer */
-        iosb->Status = STATUS_SUCCESS;
-        iosb->Information = sizeof(mode);
+        IopWriteIosb(iosb, STATUS_SUCCESS, sizeof(mode));
         ObDereferenceObject(file);
         return STATUS_SUCCESS;
     }
@@ -297,8 +295,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         FILE_IO_COMPLETION_NOTIFICATION_INFORMATION notification;
         notification.Flags = file->completionFlags;
         memcpy(buffer, &notification, sizeof(notification)); /* caller-aligned buffer */
-        iosb->Status = STATUS_SUCCESS;
-        iosb->Information = sizeof(notification);
+        IopWriteIosb(iosb, STATUS_SUCCESS, sizeof(notification));
         ObDereferenceObject(file);
         return STATUS_SUCCESS;
     }
@@ -371,8 +368,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
                                                   &pipeInformation);
         if (NT_SUCCESS(status))
         {
-            iosb->Status = status;
-            iosb->Information = pipeInformation;
+            IopWriteIosb(iosb, status, pipeInformation);
         }
         ObDereferenceObject(file);
         return status;
@@ -397,7 +393,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     status = KiProbeForWrite(buffer, length, 1);
     if (NT_SUCCESS(status))
     {
-        status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+        status = IopProbeIosb(iosb);
     }
     if (!NT_SUCCESS(status))
     {
@@ -494,7 +490,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
         status = KiProbeForWrite(buffer, length, 1);
         if (NT_SUCCESS(status))
         {
-            status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+            status = IopProbeIosb(iosb);
         }
         if (!NT_SUCCESS(status))
         {
@@ -596,8 +592,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
     }
     if (NT_SUCCESS(status) || status == STATUS_BUFFER_OVERFLOW)
     {
-        iosb->Status = status;
-        iosb->Information = information;
+        IopWriteIosb(iosb, status, information);
     }
     ObDereferenceObject(file);
     return status;
@@ -809,7 +804,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (NT_SUCCESS(status))
     {
         status = KiProbeForRead(buffer, length, 1);
@@ -828,8 +823,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
         status = IopSetRenameInformation(handle, buffer, length, informationClass);
         if (NT_SUCCESS(status))
         {
-            iosb->Status = status;
-            iosb->Information = 0;
+            IopWriteIosb(iosb, status, 0);
         }
         return status;
     }
@@ -1130,8 +1124,7 @@ NTSTATUS NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buffer
 
     if (NT_SUCCESS(status))
     {
-        iosb->Status = status;
-        iosb->Information = 0;
+        IopWriteIosb(iosb, status, 0);
     }
     ObDereferenceObject(file);
     return status;
@@ -1750,7 +1743,7 @@ NTSTATUS NtQueryDirectoryFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (NT_SUCCESS(status))
     {
         status = KiProbeForWrite(buffer, length, 1);
@@ -1991,7 +1984,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(ioStatusBlock, sizeof(*ioStatusBlock), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(ioStatusBlock);
     if (NT_SUCCESS(status) && length != 0)
     {
         status = KiProbeForWrite(buffer, length, 1);
@@ -2018,7 +2011,7 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
         /* Pinned Wine writes iosb.Status (and only Status) for a bad handle
          * on either of its paths: dlls/ntdll/unix/file.c, the early
          * `return io->Status = status` before the fd/device split. */
-        ioStatusBlock->Status = status;
+        IopWriteIosbStatus(ioStatusBlock, status);
         return status;
     }
 
@@ -2227,14 +2220,12 @@ NTSTATUS NtQueryVolumeInformationFile(HANDLE fileHandle, PIO_STATUS_BLOCK ioStat
     }
 
     ObDereferenceObject(file);
-    if (NT_SUCCESS(status) &&
-        NT_SUCCESS(KiProbeForWrite(ioStatusBlock, sizeof(*ioStatusBlock), sizeof(void *))))
+    if (NT_SUCCESS(status) && NT_SUCCESS(IopProbeIosb(ioStatusBlock)))
     {
         /* IOSB re-probed after the gated queries' parks, the
          * IopCompleteRequest convention: a vanished IOSB skips the store
          * only — the query itself happened, so its status still returns. */
-        ioStatusBlock->Status = status;
-        ioStatusBlock->Information = information;
+        IopWriteIosb(ioStatusBlock, status, information);
     }
     return status;
 }
@@ -2314,7 +2305,7 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (NT_SUCCESS(status))
     {
         status = KiProbeForRead(buffer, length, 1);
@@ -2408,8 +2399,7 @@ NTSTATUS NtSetVolumeInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID 
 
     if (NT_SUCCESS(status))
     {
-        iosb->Status = status;
-        iosb->Information = 0;
+        IopWriteIosb(iosb, status, 0);
     }
     ObDereferenceObject(file);
     return status;

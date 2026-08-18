@@ -408,7 +408,7 @@ NTSTATUS NtNotifyChangeDirectoryFile(HANDLE handle, HANDLE eventHandle, PIO_APC_
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;

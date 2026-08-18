@@ -30,6 +30,8 @@
 #include "kernel/ke/ke.h"
 #include "kernel/io/vfs.h"
 #include "kernel/mm/pagecache.h"
+#include "kernel/syscall/uaccess.h" /* IopProbeIosb below */
+#include "kernel/lib/string.h"      /* IopWriteIosb below */
 
 /* --- Device objects -------------------------------------------------------- */
 
@@ -321,6 +323,74 @@ NTSTATUS IopUnlockRange(PIO_FCB fcb, PFILE_OBJECT owner, uint64_t offset, uint64
 void IopReleaseAllLocks(PIO_FCB fcb, PFILE_OBJECT owner);
 
 /* --- helpers shared across the io department ------------------------------- */
+
+/* The ONE statement of what an IO_STATUS_BLOCK output pointer's probe
+ * requires (Art. 11): every Io service takes one, and each of them used to
+ * spell its own alignment.
+ *
+ * The block carries NO alignment requirement. The pinned oracle writes its
+ * two fields with a plain assignment through the caller's pointer and tests
+ * nothing before it (`io_status->Status = status;` — dlls/ntdll/unix/file.c
+ * NtCancelSynchronousIoFile, and the same shape in every other entry point),
+ * so a misaligned but MAPPED block is served and only an INACCESSIBLE one
+ * refuses. That is the same rule the output BUFFER already follows here
+ * (every `KiProbeForWrite(buffer, length, 1)` below, pinned by
+ * sem_file/dir_unaligned_buffer.c: NT treats it as bytes).
+ *
+ * The alignment term is not merely superfluous, it is WRONG, and the way it
+ * is wrong is an ORDERING: KiProbeForWrite tests alignment before
+ * accessibility, so an address that is neither — `(IO_STATUS_BLOCK *)
+ * 0xdeadbeef`, which `third_party/wine` dlls/ntdll/tests/pipe.c:725 asserts
+ * unguarded against NT — answered STATUS_DATATYPE_MISALIGNMENT where NT
+ * answers STATUS_ACCESS_VIOLATION. Pinned by sem_file/iosb_probe.c, whose §2
+ * measures the case that separates dropping the requirement from merely
+ * reordering the two tests. */
+static inline NTSTATUS IopProbeIosb(PIO_STATUS_BLOCK iosb)
+{
+    return KiProbeForWrite(iosb, sizeof(*iosb), 1);
+}
+
+/* Same probe, minting the staleness token the deferred writers need. */
+static inline NTSTATUS IopProbeIosbToken(PIO_STATUS_BLOCK iosb, PKI_PROBE_TOKEN token)
+{
+    return KiProbeForWriteToken(iosb, sizeof(*iosb), 1, token);
+}
+
+/* ... and the other half of the same rule: because the block may be
+ * misaligned, it is written as BYTES. A store through an `IO_STATUS_BLOCK *`
+ * inherits the caller's alignment on both fields — legal on x86 hardware but
+ * undefined C, and this build traps it (#UD), so the probe above without this
+ * turns a served call into a kernel panic. Exactly the discipline
+ * IopFillDirEntry already owes the output BUFFER
+ * (sem_file/dir_unaligned_buffer.c).
+ *
+ * TWO copies rather than one of the whole struct, and that is the contract
+ * rather than a style choice: the block opens with a UNION
+ * (`union { NTSTATUS Status; PVOID Pointer; }`, abi/ntioapi.h), so bytes 4..7
+ * belong to the caller's Pointer spelling and NOTHING writes them. The oracle
+ * assigns the two FIELDS (`io_status->Status = status; io_status->Information
+ * = 0;`), leaving those four bytes exactly as the caller left them —
+ * dlls/wow64/file.c is a live caller that fills the whole union
+ * (`IO_STATUS_BLOCK io = { .Pointer = &io32 }`). A 16-byte copy out of a
+ * staged local would both clobber them and publish four indeterminate bytes
+ * of kernel stack. Pinned by sem_file/iosb_probe.c §2, which poisons the
+ * block and asserts those four bytes survive.
+ *
+ * The Status-only form is not a convenience either: NtQueryVolumeInformationFile
+ * writes Status and leaves Information ALONE for a bad handle (the oracle's
+ * early `return io->Status = status`, dlls/ntdll/unix/file.c), so the partial
+ * write is part of the contract. */
+static inline void IopWriteIosbStatus(PIO_STATUS_BLOCK iosb, NTSTATUS status)
+{
+    memcpy(iosb, &status, sizeof(status));
+}
+
+static inline void IopWriteIosb(PIO_STATUS_BLOCK iosb, NTSTATUS status, ULONG_PTR information)
+{
+    IopWriteIosbStatus(iosb, status);
+    memcpy((unsigned char *)iosb + offsetof(IO_STATUS_BLOCK, Information), &information,
+           sizeof(information));
+}
 
 /* Resolve a file handle with an access check. Caller dereferences.
  *

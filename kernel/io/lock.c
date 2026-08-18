@@ -230,7 +230,7 @@ NTSTATUS NtUnlockFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteO
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(iosb, sizeof(*iosb), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(iosb);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -254,8 +254,7 @@ NTSTATUS NtUnlockFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PLARGE_INTEGER byteO
     }
     status = IopUnlockRange(file->fcb, file, (uint64_t)offsetValue.QuadPart,
                             (uint64_t)lengthValue.QuadPart);
-    iosb->Status = status;
-    iosb->Information = 0;
+    IopWriteIosb(iosb, status, 0);
     ObDereferenceObject(file);
     return status;
 }

@@ -420,7 +420,7 @@ static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK tar
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(ioStatus, sizeof(*ioStatus), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(ioStatus);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -453,8 +453,7 @@ static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK tar
     /* Thread-scoped (issuer != 0): success regardless; by-IOSB/all: the
      * count decides. */
     status = (issuer != 0 || cancelled != 0) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
-    ioStatus->Status = status;
-    ioStatus->Information = 0;
+    IopWriteIosb(ioStatus, status, 0);
     ObDereferenceObject(body);
     return status;
 }
@@ -638,7 +637,7 @@ NTSTATUS NtCancelSynchronousIoFile(HANDLE threadHandle, PIO_STATUS_BLOCK filterI
     {
         return STATUS_ACCESS_VIOLATION;
     }
-    NTSTATUS status = KiProbeForWrite(ioStatus, sizeof(*ioStatus), sizeof(void *));
+    NTSTATUS status = IopProbeIosb(ioStatus);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -674,8 +673,7 @@ NTSTATUS NtCancelSynchronousIoFile(HANDLE threadHandle, PIO_STATUS_BLOCK filterI
     {
         status = STATUS_NOT_FOUND;
     }
-    ioStatus->Status = status;
-    ioStatus->Information = 0;
+    IopWriteIosb(ioStatus, status, 0);
     if (body != 0)
     {
         ObDereferenceObject(body);
