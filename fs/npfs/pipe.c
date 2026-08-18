@@ -158,10 +158,28 @@ typedef struct NPFS_END
 static LIST_ENTRY NpfsPipeList;
 static PIO_DEVICE NpfsDevice;
 
-/* CUI-3: FCB for opens of the device ROOT ("\??\PIPE\" — the WaitNamedPipe
- * handle, kernelbase/sync.c WaitNamedPipeW). Root FILE_OBJECTs carry
- * fsContext == 0 as their marker. */
+/* CUI-3: FCB for opens of the device's root DIRECTORY ("\??\PIPE\" — the
+ * WaitNamedPipe handle, kernelbase/sync.c WaitNamedPipeW). Root FILE_OBJECTs
+ * carry fsContext == 0 as their marker. */
 static IO_FCB NpfsRootFcb;
+
+/* ...and the FCB for an open of the DEVICE ITSELF ("\??\PIPE", no trailing
+ * separator). Two FCBs rather than a flag, because the oracle's two spellings
+ * really are two objects — a named_pipe_device_file and a named_pipe_dir
+ * (third_party/wine server/named_pipe.c) — and they differ in what a NAME
+ * resolves to under them and in one FSCTL arm. Both still carry
+ * fsContext == 0: neither holds pipe state, so every "is this a pipe end"
+ * test in this file is unchanged. */
+static IO_FCB NpfsDeviceFcb;
+
+/* Is `file` the open of the DEVICE rather than of its root DIRECTORY?
+ * The two are told apart ONCE, at create, by the remaining name Ob hands the
+ * FS (kernel/ob/namespace.c: absent vs present-and-empty); everything below
+ * asks this instead of re-examining a path it no longer has. */
+static BOOLEAN NpfsIsDeviceFile(PFILE_OBJECT file)
+{
+    return file->fcb == &NpfsDeviceFcb;
+}
 
 /* Signalled whenever a listening instance may have APPEARED (instance
  * creation, disconnect->listening) — the wake FSCTL_PIPE_WAIT parks on
@@ -1221,17 +1239,19 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
          * STATUS_NOT_SUPPORTED. Pinned by sem_pipe/device_ioctl.c.
          *
          * FSCTL_PIPE_WAIT is the one arm where the DEVICE and its root
-         * DIRECTORY part (named_pipe_dir_ioctl serves it and tail-calls this
-         * ladder for everything else; the device itself answers
-         * STATUS_ILLEGAL_FUNCTION). proskrnl cannot tell the two spellings
-         * apart — ObpLookupName hands the FS an empty remainder for both
-         * `\Device\NamedPipe` and `\Device\NamedPipe\` — so it serves the
-         * lookup through both, which is the winetest's remaining
-         * ntdll:pipe:2787 and W7's `\??\C:` parser item, not an npfs one. */
+         * DIRECTORY part, and the shape of the parting is the point: the
+         * directory's ladder is that ONE arm plus a tail call onto the
+         * device's, so a verb reaching the switch below has already been
+         * decided not to be a directory verb. That is why the device's
+         * refusal precedes both the lookup and the buffer check the directory
+         * makes first — pinned by sem_pipe/device_root.c §2. */
+        if (code == FSCTL_PIPE_WAIT && !NpfsIsDeviceFile(file))
+        {
+            return NpfsWaitForPipe(input, inputLength);
+        }
         switch (code)
         {
         case FSCTL_PIPE_WAIT:
-            return NpfsWaitForPipe(input, inputLength);
         case FSCTL_PIPE_LISTEN:
         case FSCTL_PIPE_IMPERSONATE:
             return STATUS_ILLEGAL_FUNCTION;
@@ -1494,7 +1514,23 @@ static NTSTATUS NpfsQueryName(PFILE_OBJECT file, WCHAR *buffer, ULONG capacity, 
     PNPFS_END end = file->fsContext;
     if (end == 0)
     {
-        /* The root's volume-relative name is the bare backslash. */
+        if (NpfsIsDeviceFile(file))
+        {
+            /* The DEVICE has no volume-relative part at all: its name is the
+             * device's own, and kernel/io/file.c composes exactly that from
+             * an empty answer. The oracle says so by having the device file
+             * DEFER — named_pipe_device_file_get_full_name is a straight call
+             * onto the device's own get_full_name (server/named_pipe.c) —
+             * where named_pipe_dir_get_full_name appends the separator below.
+             * Measured through ObjectNameInformation by
+             * sem_pipe/device_root.c §6; FileNameInformation reaches the same
+             * two answers, and there the oracle is unbuilt for both roots
+             * (default_fd_get_file_info's STATUS_NOT_IMPLEMENTED default), so
+             * that direction is composed and not pinned. */
+            *lengthOut = 0;
+            return STATUS_SUCCESS;
+        }
+        /* The root DIRECTORY's volume-relative name is the bare backslash. */
         *lengthOut = sizeof(WCHAR);
         if (capacity >= sizeof(WCHAR))
         {
@@ -1628,24 +1664,27 @@ static NTSTATUS NpfsAttachClient(PNPFS_PIPE pipe, PFILE_OBJECT file, ULONG_PTR *
 
 /* The client-side NtCreateFile path.
  *
- * THREE roots reach this FS, and the oracle gives each its own lookup_name
+ * FOUR roots reach this FS, and the oracle gives each its own lookup_name
  * (wine server/named_pipe.c), which is what decides the ladder below:
  *
- *   the device's root DIRECTORY (`relativeTo` with no pipe state, or no root
- *     at all): named_pipe_dir_lookup_name forwards a non-empty name to the
- *     device's flat namespace, and answers an EMPTY one with the directory
- *     itself — whose open_file then refuses, because it has already been
- *     turned into a file object (`if (dir->fd) return no_open_file(...)`);
+ *   the device's root DIRECTORY (`relativeTo` on a root open that came from
+ *     the `\Device\NamedPipe\` spelling, or no root at all):
+ *     named_pipe_dir_lookup_name forwards a non-empty name to the device's
+ *     flat namespace, and answers an EMPTY one with the directory itself —
+ *     whose open_file then refuses, because it has already been turned into a
+ *     file object (`if (dir->fd) return no_open_file(...)`);
+ *   the DEVICE itself (`\Device\NamedPipe`, no separator): no_lookup_name,
+ *     which consumes nothing, so a non-empty name reaches open_named_object
+ *     still unparsed and is STATUS_OBJECT_NAME_NOT_FOUND — the pipe may well
+ *     EXIST, and this is not a statement about it — while a NULL name sets
+ *     STATUS_OBJECT_TYPE_MISMATCH itself;
  *   a SERVER end: pipe_server_lookup_name refuses a non-empty name outright
  *     — an end has no namespace to hold one — and resolves an empty name to
  *     the end, whose open_file IS the client open. This is the only way to
  *     reach a pipe that has no name;
- *   a CLIENT end: no_lookup_name, whose two arms give two statuses. A NULL
- *     name (the empty case) sets STATUS_OBJECT_TYPE_MISMATCH itself; a
- *     non-empty one returns without an error and leaves the name unconsumed,
- *     which open_named_object reports as STATUS_OBJECT_NAME_NOT_FOUND.
+ *   a CLIENT end: no_lookup_name again, i.e. the device's two answers.
  *
- * Pinned by sem_pipe/pipe_root.c. */
+ * Pinned by sem_pipe/pipe_root.c and sem_pipe/device_root.c. */
 static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICODE_STRING *path,
                               PFILE_OBJECT relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
                               ULONG fileAttributes, ULONG disposition, ULONG options,
@@ -1677,21 +1716,35 @@ static NTSTATUS NpfsVfsCreate(PIO_DEVICE device, PFILE_OBJECT file, const UNICOD
         ASSERT(rootEnd->pipe != 0);
         return NpfsAttachClient(rootEnd->pipe, file, information);
     }
+    if (relativeTo != 0 && NpfsIsDeviceFile(relativeTo) && path->Length != 0)
+    {
+        /* The DEVICE is not a container: no_lookup_name leaves the name
+         * unconsumed and open_named_object reports that, above any question
+         * of whether the pipe exists or of what disposition was asked for. */
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
     if (path->Length == 0)
     {
         if (relativeTo != 0)
         {
-            /* An empty name under the device's root DIRECTORY handle: the
-             * lookup resolves to that already-opened root, which refuses to
-             * be opened a second time. Not a second root handle. */
+            /* An empty name under either root handle: the lookup resolves to
+             * that already-opened root, which refuses to be opened a second
+             * time. Not a second root handle. The two spellings reach the
+             * same answer by different routes — named_pipe_dir_open_file's
+             * `if (dir->fd)` for the directory, no_lookup_name's own NULL arm
+             * for the device. */
             return STATUS_OBJECT_TYPE_MISMATCH;
         }
-        /* The device ROOT open ("\??\PIPE\") — the WaitNamedPipe handle
-         * (kernelbase/sync.c WaitNamedPipeW; wineserver models it as the
-         * named-pipe directory object). fsContext == 0 marks it; the
-         * directory shape keeps NtRead/WriteFile off it (kernel/io/rw.c). */
+        /* A device-root open. WHICH root it is, is the one thing the parse
+         * remainder still carries: `\??\PIPE\` (a present, empty remainder)
+         * is the root DIRECTORY — the WaitNamedPipe handle, kernelbase/sync.c
+         * WaitNamedPipeW, which wineserver models as the named-pipe directory
+         * object — and `\??\PIPE` (no remainder at all) is the DEVICE. Both
+         * carry fsContext == 0; the directory shape keeps NtRead/WriteFile
+         * off both (kernel/io/rw.c), as it does on the oracle, where each
+         * carries no_fd_read/no_fd_write. */
         file->fsContext = 0;
-        file->fcb = &NpfsRootFcb;
+        file->fcb = path->Buffer != 0 ? &NpfsRootFcb : &NpfsDeviceFcb;
         file->isDirectory = TRUE;
         *information = FILE_OPENED;
         return STATUS_SUCCESS;
@@ -2071,8 +2124,14 @@ NTSTATUS NtCreateNamedPipeFile(PHANDLE handleOut, ULONG desiredAccess,
         {
             return status;
         }
-        BOOLEAN reachesDevice =
-            relativeRoot != 0 && device->ops == &NpfsVfsOps && relativeRoot->fsContext == 0;
+        /* named_pipe_link_name's own question, and it is about the PARENT
+         * OBJECT rather than about the device: it folds a named_pipe_dir onto
+         * the device and refuses everything else, so the root DIRECTORY
+         * reaches the namespace and the DEVICE FILE — which is neither of the
+         * two op tables it names — does not. That is the winetest's :2810
+         * against its :2932. */
+        BOOLEAN reachesDevice = relativeRoot != 0 && device->ops == &NpfsVfsOps &&
+                                relativeRoot->fsContext == 0 && !NpfsIsDeviceFile(relativeRoot);
         if (relativeRoot != 0)
         {
             ObDereferenceObject(relativeRoot);
@@ -2315,6 +2374,7 @@ void NpfsInitialize(void)
 {
     InitializeListHead(&NpfsPipeList);
     IopInitializeFcb(&NpfsRootFcb);
+    IopInitializeFcb(&NpfsDeviceFcb);
     KeInitializeEvent(&NpfsListenersChangedEvent, NotificationEvent, FALSE);
 
     /* GetFileType(pipe) == FILE_TYPE_PIPE (Wine dlls/kernelbase/file.c

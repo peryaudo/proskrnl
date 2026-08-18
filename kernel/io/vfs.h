@@ -204,7 +204,24 @@ typedef struct IO_VFS_OPS
      * create disposition. Fills file->fsContext (the FCB) and
      * file->isDirectory; *information gets FILE_CREATED/OPENED/OVERWRITTEN.
      * Must call IoCheckShareAccess/IoSetShareAccess at the NT point: after
-     * the existing file is found, before any overwrite side effect. */
+     * the existing file is found, before any overwrite side effect.
+     *
+     * AN EMPTY `path` COMES IN TWO SPELLINGS and they are different names:
+     * `Buffer == 0` means the caller's name ended AT this device
+     * (`\Device\NamedPipe`, `\??\C:`), and a live `Buffer` with `Length == 0`
+     * means it ended at the device's terminating separator
+     * (`\Device\NamedPipe\`, `\??\C:\`). kernel/ob/namespace.c carries the
+     * distinction out of the one parse, because it exists nowhere else;
+     * docs/03 "Two spellings of a device root" has what npfs does with it.
+     * A device with nothing to say about the difference treats both as the
+     * root, which is what fs/fat32 does.
+     *
+     * SO A ZERO-LENGTH `path` IS A MARKER, NEVER A STRING. Compare its
+     * `Buffer` against 0 and do nothing else with it: the non-NULL spelling
+     * ALIASES the caller's own `ObjectName` (kernel/io/file.c captures to
+     * pool only when `Length != 0`) or a reparse buffer this call frees on
+     * the way out, and the NULL spelling makes even `Buffer + 0` a UBSan trap
+     * — which is how the FAT walk's own zero-length guard came to exist. */
     NTSTATUS(*Create)
     (struct IO_DEVICE *device, struct FILE_OBJECT *file, const UNICODE_STRING *path,
      struct FILE_OBJECT *relativeTo, ACCESS_MASK grantedAccess, ULONG shareAccess,
