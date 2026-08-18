@@ -1445,15 +1445,21 @@ kernel32_test.exe:timer
 #     that box), not kernel work — so whoever fixes their environment should
 #     un-comment it rather than wait for a milestone.
 # kernel32_test.exe:version
-# RE-MEASURED: 4 -> 1, and the ONE that is left is the todo floor below.
-#     Every failing assertion this pair has that is real work is gone for the
-#     SECOND time — the SEC_* modifier flags took it 25 -> 1, being measured
-#     past its wedge then put it back to 4, and the pseudo-handle duplication
-#     below takes it to 1 again. The verdict still reads
-#     FAIL (exit=0xc0000005) because the CRASH is untouched and belongs to
-#     another item, so the pair stays parked. Do not read "1 failure" as "one
-#     item away from green" — see WHERE IT STOPS. The history below is kept in
-#     order, oldest first.
+# AT ITS TODO FLOOR — NOT FIXABLE WHILE PROSKRNL IS THE MORE NT-CORRECT
+#     RUNNER, and there is no `TODO: Implement` line below any more. The pair
+#     runs to its own summary for the first time: 30865 tests executed, 142
+#     marked as todo, 1 skipped, **1 failure**, exit=0x1 — and that one
+#     failure is virtual.c:1465, a todo_wine that proskrnl PASSES, which
+#     winetest scores as a failure ("Test succeeded inside todo block").
+#     Nothing left in it is kernel work, so this is a category-2 block now
+#     and its deciding constraint is G9: the only edits that would turn it
+#     green are dropping the todo_wine in the pinned tree — patching the
+#     oracle to make a divergence pass, which Art. 10 forbids outright — or
+#     regressing NtAreMappedFilesTheSame to Wine's answer. Same shape as
+#     kernel32:volume:186 and kernel32:profile:229. Un-comment it if upstream
+#     ever drops that todo_wine, or if the gate is ever taught to score a
+#     succeeded todo the way winetest's own --failures reporting does; not on
+#     a milestone. The history below is kept in order, oldest first.
 #
 #     WHAT WENT, AND IT WAS ONE CAUSE FOR ALL 24. server/mapping.c
 #     get_mapping_flags is twenty lines that decide three things at once, and
@@ -1516,33 +1522,42 @@ kernel32_test.exe:timer
 #     exactly those three lines and moves no other (docs/21 §4 trap 2 does not
 #     apply here).
 #
-#     WHAT IS LEFT IS 1 FAILURE AND A CRASH, and the verdict does not move:
-#       -  1  :1465, THE FLOOR, unchanged: a todo_wine that proskrnl PASSES
-#         (NtAreMappedFilesTheSame(kernel32.dll, a mapped view) must answer
-#         STATUS_SUCCESS, proskrnl does, the oracle does not) and winetest
-#         scores a succeeded todo as a FAILURE. This pair cannot reach zero
-#         while proskrnl is the more NT-correct of the two runners, exactly as
-#         kernel32:volume:186 cannot. Easy to miss when scanning for "Test
-#         failed": it prints as "Test succeeded inside todo block".
-#       - then the same unhandled 0xc0000005, bit for bit, after :4735's
-#         single-processor skip. It is NOT the cascade this block guessed
-#         (docs/21 §4 trap 3 the other way round: the crash outlived the
-#         failures above it). DIAGNOSED, and it is the pair's next item:
-#         :4735 returns into test_stack_commit, which reserves 4 MiB, commits
-#         ONLY the top page as PAGE_GUARD, rewrites its own TEB
-#         DeallocationStack/StackBase/StackLimit at it and calls a function on
-#         it (virtual.c:2486-:2499). The oracle decides "is this a stack?"
-#         from the TEB (unix/virtual.c is_inside_thread_stack reads
-#         DeallocationStack..StackBase); kernel/mm/fault.c decides it from the
-#         kernel's own ETHREAD.stackAllocationBase/stackBase, which this
-#         synthetic stack is not inside. So the guard touch at 0x133ffd8 is
-#         answered STATUS_GUARD_PAGE_VIOLATION instead of growing the stack,
-#         and DELIVERING that exception writes one page below the guard
-#         (0x133ef40) and faults for real. Everything past it is unmeasured.
+#     THE CRASH IS GONE AND THE PAIR IS MEASURED TO ITS END. It was an
+#     unhandled 0xc0000005 after :4735's single-processor skip, and the
+#     previous revision of this block diagnosed it correctly: :4735 returns
+#     into test_stack_commit, which reserves 4 MiB, commits ONLY the top page
+#     as PAGE_GUARD, rewrites its own TEB
+#     DeallocationStack/StackBase/StackLimit at it and calls a function on it
+#     (virtual.c:2486-:2499). "Is this a stack?" is the TEB's answer and only
+#     the TEB's (unix/virtual.c is_inside_thread_stack); kernel/mm/fault.c
+#     answered it from the kernel's own ETHREAD.stackAllocationBase/stackBase,
+#     which a stack user mode invented is not inside — so the guard touch at
+#     0x133ffd8 got STATUS_GUARD_PAGE_VIOLATION instead of growth, and
+#     DELIVERING that exception wrote one page below the guard (0x133ef40) and
+#     faulted for real. fault.c now reads the faulting thread's TEB (docs/21
+#     W20, docs/03 "Which region the guard-page fault path GROWS", pinned
+#     tests/ntapi/sem_mm/teb_stack_growth.c).
 #
-#     The measurement above used the 300 s per-pair timeout in the line below.
-#     The oracle leg is green: 30936 tests executed, 140 todo, 0 failures.
-# TODO: Implement
+#     WHAT WAS BEHIND THE CRASH WAS NOTHING, which is docs/21 §4 trap 2 with
+#     the unusual answer and is worth recording as such: 1 failure before and
+#     1 after, the same single line in the failing-assertion histogram
+#     (:1465), and 142 todo markers identical per line across the two runs.
+#     Everything test_stack_commit and the rest of the module execute was
+#     already correct — the crash was the only thing standing there.
+#
+#     THE REMAINING GAP TO THE ORACLE IS COVERAGE, NOT FAILURES, and it is
+#     Art. 3: proskrnl executes 30865 tests where the oracle executes 30936,
+#     and reports 1 skip where the oracle reports 0. That skip is :4735,
+#     "single-processor system, cannot test store buffering behavior", which
+#     returns out of test_store_buffer ahead of its litmus tests — a
+#     uniprocessor kernel cannot run them. The todo counts differ for the
+#     same kind of reason: 142 vs 140 is :1465 leaving the todo column (it
+#     passes here) and :2315/:2323/:2375 entering it.
+#
+#     The measurement above used the default 300 s per-pair timeout and no
+#     longer needs anything like it: the whole leg, boot included, finishes
+#     in 9.6 s. The oracle leg is green: 30936 tests executed, 140 todo,
+#     0 failures.
 # kernel32_test.exe:virtual
 # RE-TRIAGED. FOUR failures, not the three this block used to claim, and
 #     only TWO of the four are kernel work. Re-measured from scratch; the
