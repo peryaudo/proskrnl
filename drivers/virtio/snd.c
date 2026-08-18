@@ -132,6 +132,7 @@ typedef struct VIO_SND_SLOT
     uint64_t dataPhysical; /* one frame: the period payload, either direction */
     char *data;
     uint32_t payloadBytes; /* tx: this flight's period size; rx: the harvested payload */
+    NTSTATUS rxStatus;     /* the completion the reader relays (rx only) */
     BOOLEAN inFlight;
     uint8_t index; /* slot index within the stream, for the header frame */
 } VIO_SND_SLOT;
@@ -293,6 +294,7 @@ static void VioSndHarvestRxLocked(void)
          * relayed as-is; only a used length no chain of ours can produce
          * is an error, counted and said (Art. 12). */
         uint32_t payload = 0;
+        slot->rxStatus = STATUS_SUCCESS;
         if (length >= sizeof(VIO_SND_PCM_STATUS) &&
             length - sizeof(VIO_SND_PCM_STATUS) <= stream->periodBytes)
         {
@@ -300,7 +302,12 @@ static void VioSndHarvestRxLocked(void)
         }
         else
         {
+            /* A used length no chain of ours can produce: counted, said,
+             * and RELAYED — the reader gets the error, never a 0-byte
+             * success indistinguishable from a flush (Art. 12). Dead
+             * against the pinned model (used = payload + 8 always). */
             stream->rxErrors++;
+            slot->rxStatus = STATUS_IO_DEVICE_ERROR;
             DbgPrint("virtio-snd: stream %lu rx used length %lu malformed\n",
                      (unsigned long)stream->id, (unsigned long)length);
         }
@@ -773,6 +780,7 @@ NTSTATUS VioSndReadPeriod(uint32_t streamId, void *buffer, ULONG length, ULONG *
             stream->rxDoneHead = (stream->rxDoneHead + 1) % SND_MAX_PERIODS;
             stream->rxDoneCount--;
             uint32_t payload = slot->payloadBytes;
+            NTSTATUS completion = slot->rxStatus;
             memcpy(buffer, slot->data, payload);
             if (stream->rxPrepared)
             {
@@ -786,9 +794,10 @@ NTSTATUS VioSndReadPeriod(uint32_t streamId, void *buffer, ULONG length, ULONG *
             /* payload < periodBytes (0 included) is the device's own
              * stop/release flush, relayed as a short success — never
              * padded to a full period here (Art. 12: no fabricated
-             * silence in the kernel). */
+             * silence in the kernel). A malformed completion relays the
+             * harvest's STATUS_IO_DEVICE_ERROR the same way. */
             *bytesOut = payload;
-            return STATUS_SUCCESS;
+            return completion;
         }
         if (!stream->rxPrepared)
         {
