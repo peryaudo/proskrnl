@@ -170,6 +170,42 @@ local macOS Wine.
 
 ## Status
 
+**Net-3 complete** — resolution + the acceptance fetch (`docs/02` "Net-3";
+the design is `docs/24` §4e/§4f/§6f). The acceptance is the headline:
+**an UNMODIFIED off-the-shelf tool — curl.exe with bundled LibreSSL —
+completes a TLS-1.3 HTTPS fetch over virtio-net** (`tests/run/run.sh
+net3`: slirp, a fresh test CA whose `notBefore` postdates the retired
+frozen clock — the armed docs/22 conviction — with exit-code and
+content-hash verdicts). Below it, the milestone's one fork seam:
+ws2_32's five resolver entries dispatch through superproject
+`wsresolv.dll` when no unixlib is below (level-1 dormant `WS_CALL` leg,
+hack meter 504→559 lines, oracle re-run green on the pin), and the
+resolver serves numeric literals, localhost, the machine's registry
+names, `drivers\etc\hosts` (now mkimage furniture) and a minimal
+UDP-only DNS client over ws2_32's own sockets against the lease's
+servers — the wire format convicted hermetically by the `tests/resolv`
+corpus through its transport seam (`run.sh resolvunit`). `\Device\Nsi`
+serves the three table verbs over the tables the pinned
+`GetAdaptersAddresses` was measured to read (ndis-ifinfo, ip-unicast,
+ip-forward; get-parameter for `ConvertInterfaceLuidToGuid`), from lwIP
+netif state under one identity authority — the ethernet `if_guid` IS the
+adapter's registry key name — with everything else refusing loudly
+(`sem_nsi` pins green on both runners). The resolver un-wedged
+`ws2_32:afd` past its parking crash, and the newly reached rows'
+parity round (thread-exit port exemption, accept synchronicity
+inheritance, ignored socket offsets, consume-edge READ-relatch and
+deferred half-close HUP — each pinned first) took the pair to **0
+failures on proskrnl; `ws2_32:afd` is ACTIVE in the manifest**.
+Couldn't be achieved within the milestone: `ws2_32:sock` and
+`ws2_32:protocol` stay parked with fresh triage — protocol's WSAAsync
+window block spins forever under the user32 stand-ins on both runners
+(a GUI-winetest-shelf follow-up) and its IDN rows want the live
+internet; sock shares the user32/v6 families and the long sockopt tail —
+and in-guest `GetAdaptersAddresses` still stops at dnsapi's dormant
+unixlib (its DNS legs), a seam deliberately not taken this milestone.
+What's next: the GUI path continues (docs/07), or WOW64 hardening —
+the networking path is complete.
+
 **AUD-3 complete** — capture, the audio path's last milestone (`docs/02`;
 the design is `docs/23` §4a "Capture is the mirror"). The kernel driver
 consumes rxq: PREPARE on a capture stream posts the whole slot set as rx
