@@ -642,7 +642,8 @@ $(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
 # only the disk payload is lean.
 WINESTRIP := $(BUILD)/winestrip
 WINESTRIP_NAMES := ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-                   cryptbase setupapi cfgmgr32 ws2_32 secur32 userenv hid
+                   cryptbase setupapi cfgmgr32 ws2_32 secur32 userenv hid \
+                   nsi iphlpapi dnsapi
 WINESTRIP_DLLS := $(foreach d,$(WINESTRIP_NAMES),$(WINESTRIP)/$(d).dll)
 # One explicit rule per dll (the name appears twice in the source path, which
 # a pattern rule's single stem cannot express).
@@ -733,6 +734,10 @@ $(foreach p,$(WINESTRIP_EXE_NAMES),$(eval $(call WINESTRIP_EXE_RULE,$(p))))
 winestrip: $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 .PHONY: winestrip
 
+# Defined here, above WINFILES's immediate expansion; the build rule
+# lives with the winevsnd recipe below.
+WSRESOLV := $(BUILD)/modules/wsresolv.dll
+
 WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINESTRIP)/kernel32.dll=windows/system32/kernel32.dll \
             win:$(WINESTRIP)/kernelbase.dll=windows/system32/kernelbase.dll \
@@ -768,7 +773,15 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(HELLO)=hello.exe \
             win:$(SMSS)=windows/system32/smss.exe \
             win:$(CONHOST)=windows/system32/conhost.exe \
-            win:$(M9SMOKE)=m9_smoke.exe
+            win:$(M9SMOKE)=m9_smoke.exe \
+            win:$(WSRESOLV)=windows/system32/wsresolv.dll \
+            win:$(WINESTRIP)/nsi.dll=windows/system32/nsi.dll \
+            win:$(WINESTRIP)/iphlpapi.dll=windows/system32/iphlpapi.dll \
+            win:$(WINESTRIP)/dnsapi.dll=windows/system32/dnsapi.dll \
+            win:third_party/wine/dlls/ws2_32/hosts=windows/system32/drivers/etc/hosts \
+            win:third_party/wine/dlls/ws2_32/networks=windows/system32/drivers/etc/networks \
+            win:third_party/wine/dlls/ws2_32/protocol=windows/system32/drivers/etc/protocol \
+            win:third_party/wine/dlls/ws2_32/services=windows/system32/drivers/etc/services
 
 # The same CUI userland, reachable from a provisioner OUTSIDE this Makefile:
 # tests/run/run.sh's winetest leg bakes its own image (the manifest it runs
@@ -786,7 +799,7 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
 # prefixes them (run.sh does).
 .PHONY: winfiles print-winfiles
 winfiles: $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) $(WINE_INF) \
-          $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+          $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 
 print-winfiles:
 	@printf '%s\n' $(WINFILES)
@@ -1045,7 +1058,6 @@ WSRESOLV_CFLAGS := -std=gnu11 -O2 -g0 -fno-builtin -fno-strict-aliasing -w \
                -D__WINESRC__ -DWINE_NO_LONG_TYPES -D__USE_MINGW_ANSI_STDIO=0 \
                -I$(WSRESOLV_DIR) -Ithird_party/wine/dlls/ws2_32 \
                -Ithird_party/wine/include
-WSRESOLV := $(BUILD)/modules/wsresolv.dll
 $(WSRESOLV): $(WSRESOLV_SRCS) $(WSRESOLV_DIR)/wsresolv.h $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	$(MINGW) $(WSRESOLV_CFLAGS) -shared -nostdlib -nostartfiles \
