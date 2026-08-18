@@ -3909,12 +3909,18 @@ the directory for the *calling client's* session. The session comes from the ker
 when the client attaches), not from an assumption about how many exist. The handle itself is
 still checked rather than trusted: it is duplicated out of the client with a cross-process
 `NtDuplicateObject` (`sem_ob/dup_cross_process`) and its type queried, so a handle that is
-not a live directory over there is refused. What remains a deviation is narrower and worth
-stating: proskrnl's `NtQueryObject(ObjectNameInformation)` returns an object's **leaf** name
-rather than NT's full path, so the server cannot read the session number out of the handle's
-own name and takes it from the owning process instead. That is the same answer for every
-case the boundary can distinguish, since a process's window stations live in its session's
-directory; making the name query answer full paths is NT-correct and unbuilt.
+not a live directory over there is refused. The server reads the session number off the
+owning **process** rather than out of the handle's own name — the same answer for every case
+the boundary can distinguish, since a process's window stations live in its session's
+directory.
+
+**The reason this paragraph used to give for that is stale and was left standing for two
+milestones.** It said proskrnl's `NtQueryObject(ObjectNameInformation)` "returns an object's
+leaf name rather than NT's full path", and that "making the name query answer full paths is
+NT-correct and unbuilt". It answers the full path — `ObpFullNameLength` /
+`ObpWriteFullName` walk to the root, and `docs/review-2026-07` §9 is where that landed. The
+server's choice is a design one and still defensible; the constraint it was written against
+no longer exists.
 
 **A fault inside win32u is contained at the boundary Wine has and this build does not.**
 On Wine every `NtUser*`/`NtGdi*` call crosses a syscall, and a fault taken past it does not
