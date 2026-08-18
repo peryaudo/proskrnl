@@ -5407,3 +5407,40 @@ deliberately: NT completes I/O parked on a closing socket handle with
 `STATUS_CANCELLED`; the pinned Wine answers `STATUS_HANDLES_CLOSED`
 (`ws2_32:afd test_recv` carries the NT value as `todo_wine`, so the Wine answer is
 the spec here — Art. 6). Pinned by `sem_net/afd_cancel_close.c`.
+
+## Net-3 notes (resolution, \Device\Nsi, the acceptance scope)
+
+### \Device\Nsi: icmp-echo and change-notification refuse; unbuilt tables refuse by name
+
+The pinned oracle's nsiproxy serves all five `IOCTL_NSIPROXY_WINE_*` codes;
+proskrnl's `drivers/nsi.c` builds the three TABLE verbs (enumerate-all,
+get-all-parameters, get-parameter) over exactly the tables the pinned
+`GetAdaptersAddresses` reads — ndis ifinfo, ip unicast (v4+v6), ip forward
+(v4+v6; the forward read is unconditional in
+`gateway_and_prefix_addresses_alloc`, the measured conviction docs/24 §4e's
+"grows by conviction" clause asks for). The deviations:
+
+- `IOCTL_NSIPROXY_WINE_ICMP_ECHO` and `..._CHANGE_NOTIFICATION` answer
+  `STATUS_NOT_SUPPORTED` (the oracle's own unknown-code status, pinned
+  `sem_nsi/nsi_refusal.c`), named on serial — docs/24 §5: ping is nobody's
+  dependency on the acceptance path, and a change notification on a
+  static-address machine would never fire anyway. Never
+  `STATUS_NOT_IMPLEMENTED` (Art. 12).
+- A REAL nsi table outside the served set (tcp/udp stats and connection
+  tables, ip stats/neighbour/compartment, …) answers the oracle's
+  unknown-table status `STATUS_INVALID_PARAMETER`, named on serial
+  (`nsi: unbuilt table`). Loud, specific, in the oracle's own refusal
+  shape; each table leaves the tail by the ordinary G5 route when a
+  consumer convicts it.
+- The v6 FORWARD table exists and answers zero rows (no v6 route state is
+  held — the staged-v6 record above, "Net-2 staged AF_INET6", is the
+  signature); v6 unicast answers the honest netif state (`::1`).
+
+Row VALUES no oracle pins (interface alias/description strings, the
+loopback MTU where lwIP's loop netif carries none, infinite address
+lifetimes) are authored; everything a pinned consumer joins on — luid ↔
+if_index ↔ if_guid identity, the 127.0.0.1/prefix-8/origin-Manual/
+dad-Preferred unicast row, the 127.0.0.0/8 no-gateway route — is pinned by
+`tests/ntapi/sem_nsi/` on both runners. The ethernet row's `if_guid` is
+`NetAdapterGuid` — the same MAC-derived value that names the adapter's
+`Tcpip\Parameters\Interfaces` key (one identity authority, Art. 11).
