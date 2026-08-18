@@ -518,6 +518,18 @@ static ULONG FatAttributesToNt(UCHAR fatAttributes)
  * drive-by widening is not the business of this change. */
 static NTSTATUS FatValidateNtPath(const UNICODE_STRING *path)
 {
+    if (path->Length == 0)
+    {
+        /* Nothing to validate — and the `Buffer` may be NULL, because an
+         * empty remaining name has two spellings and `\??\C:` is the one
+         * that carries no buffer at all (kernel/io/vfs.h `Create`). The
+         * arithmetic below would be `NULL + 0`, which UBSan traps and which
+         * a #UD panic in this function is otherwise unreadable as. fat32
+         * treats both spellings as the volume root; docs/03 "Two spellings
+         * of a device root" says what is missing for `\??\C:` to be the
+         * volume DEVICE instead. */
+        return STATUS_SUCCESS;
+    }
     const WCHAR *name = path->Buffer;
     const WCHAR *end = name + path->Length / sizeof(WCHAR);
     for (const WCHAR *ptr = name; ptr < end; ptr++)

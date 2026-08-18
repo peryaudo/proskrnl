@@ -3667,17 +3667,13 @@ its last instance closed — the oracle's `get_object_name` answers NULL for tha
 one too. See "How long a pipe outlives its NAME"; the guard was one disjunct
 short until the pipe's lifetime and its name's were told apart.
 
-**DEVIATION — the device and its root directory are not distinguished.**
-`\Device\NamedPipe` opened without a trailing separator is a
-`named_pipe_device_file` on the oracle and `\Device\NamedPipe\` is a
-`named_pipe_dir`; only the second is folded onto the device by
-`named_pipe_link_name`, so a NAMED create relative to the first is
-`STATUS_OBJECT_NAME_INVALID` and proskrnl answers `STATUS_SUCCESS`. Both open
-through `NpfsVfsCreate`'s root arm and carry no pipe state, because
-`ObpLookupName` hands the parse object an empty remainder for both spellings —
-the same thing that keeps `\??\C:` from being told from `\??\C:\` (`docs/21` W7,
-the `\\.\c:` blocker). It is one item and it belongs to `kernel/ob`, not to
-npfs. The consumer is `ntdll:pipe:2810`.
+**The device and its root directory ARE distinguished** — see "Two spellings of
+a device root" below, which is where the fourth root in this ladder is
+described. A NAMED create relative to a `\Device\NamedPipe` handle is
+`STATUS_OBJECT_NAME_INVALID` because that handle is not one of the two parents
+`named_pipe_link_name` accepts; a named OPEN relative to it is
+`STATUS_OBJECT_NAME_NOT_FOUND`, the CLIENT end's answer above, and for the same
+reason — `no_lookup_name` consumes nothing.
 
 ## What the named-pipe DEVICE ROOT answers to each pipe FSCTL
 
@@ -3694,7 +3690,7 @@ spellings).
 | `FSCTL_PIPE_LISTEN`, `FSCTL_PIPE_IMPERSONATE` | `STATUS_ILLEGAL_FUNCTION` | this object does not HAVE the verb |
 | `FSCTL_PIPE_DISCONNECT`, `FSCTL_PIPE_TRANSCEIVE` | `STATUS_PIPE_DISCONNECTED` | a STATE the device is not in |
 | `FSCTL_PIPE_QUERY_CLIENT_PROCESS` | `STATUS_INVALID_PARAMETER` | the ARGUMENTS — decided above any look at them |
-| `FSCTL_PIPE_WAIT` | the device: `STATUS_ILLEGAL_FUNCTION`; its root DIRECTORY: the name lookup | the one arm where the two objects part — **and the one row proskrnl does not answer**, see below |
+| `FSCTL_PIPE_WAIT` | the device: `STATUS_ILLEGAL_FUNCTION`; its root DIRECTORY: the name lookup | the one arm where the two objects part; see "Two spellings of a device root" |
 | everything else, `FSCTL_PIPE_PEEK` included | `STATUS_NOT_SUPPORTED` | `default_fd_ioctl`'s own default (`server/fd.c`) |
 
 **`FSCTL_PIPE_PEEK` is the discriminating row and it is not in the switch.** It is as
@@ -3712,12 +3708,15 @@ input and output buffer is still `STATUS_PIPE_DISCONNECTED`, and a
 to build. Both leave the caller's `IO_STATUS_BLOCK` untouched, the rule
 `sem_pipe/ioctl_event.c` pins for an ioctl refused on the spot.
 
-**DEVIATION — `FSCTL_PIPE_WAIT` is served through BOTH spellings**, so the device
-answers a lookup where the oracle answers `STATUS_ILLEGAL_FUNCTION`. That is not a
-verb gap: it is the deviation the section above records ("the device and its root
-directory are not distinguished"), reaching this table through its one arm that
-distinguishes them. The consumer is `ntdll:pipe:2787`, the sibling of that section's
-`:2810`, and the fix is the `kernel/ob` parser item both name.
+**`FSCTL_PIPE_WAIT` is the one arm the two roots do not share**, and the SHAPE of
+the split is what `NpfsDeviceControl` transcribes rather than the statuses: the
+directory's ladder is that one arm plus a tail call onto the device's
+(`named_pipe_dir_ioctl`), so the device's `STATUS_ILLEGAL_FUNCTION` sits above both
+the name lookup and the input-buffer check the directory makes first. A wait for a
+pipe that EXISTS and is LISTENING is still `STATUS_ILLEGAL_FUNCTION` through the
+device, and so is one whose buffer stops inside the name it claims — the same call
+the directory answers `STATUS_INVALID_PARAMETER`. See "Two spellings of a device
+root".
 
 **DEVIATION — the four verbs `default_fd_ioctl` answers SPECIALLY are not
 transcribed.** `FSCTL_DISMOUNT_VOLUME` is `STATUS_BAD_DEVICE_TYPE` on the oracle
@@ -3725,6 +3724,74 @@ transcribed.** `FSCTL_DISMOUNT_VOLUME` is `STATUS_BAD_DEVICE_TYPE` on the oracle
 `STATUS_OBJECT_TYPE_MISMATCH` (no `unix_name`); proskrnl folds all four into the
 `STATUS_NOT_SUPPORTED` default, which names itself on serial. Nothing baked reaches
 them and no pin asserts them.
+
+## Two spellings of a device root: `\Device\NamedPipe` is not `\Device\NamedPipe\`
+
+A name that ends AT a device and a name that ends with the device's terminating
+separator are two different names, and NT resolves them to two different objects:
+the DEVICE itself, and the device's root DIRECTORY. The oracle spells the whole
+distinction in two lines of `server/named_pipe.c`
+`named_pipe_device_lookup_name`:
+
+```c
+if (!name) return NULL;                    /* open the device itself */
+if (!name->len && name->str) { ... }       /* open the root directory */
+```
+
+`name == NULL` is `server/object.c` `lookup_named_object`'s `if (!name_tmp.len)
+ptr = NULL` — the walk consumed the whole path — while a name that is PRESENT and
+EMPTY is what a trailing separator leaves behind. So the fact is carried by a
+pointer, not by a length, and the only place it exists is the parse.
+
+**Ob carries it in the parse remainder's `Buffer`, because a `UNICODE_STRING` has
+nowhere else to put it.** `ObpLookupName`'s parse-object handoff (`kernel/ob/
+namespace.c`) now yields `Buffer == 0, Length == 0` for `\Device\NamedPipe` and a
+live `Buffer` with `Length == 0` for `\Device\NamedPipe\`. It had folded the two,
+and *where* it folded them is the lesson: the loop already computed the
+difference (`trailingEmpty`, which the symbolic-link arm needs so a reparse can
+rebuild `\??\C:\` with its separator intact) and then dropped it on the way out.
+Every filesystem sees the distinction through that one parse; a second parser
+re-examining the caller's name would be an Art. 11 failure, and this is the same
+engine Art. 11 has for names.
+
+**npfs decides it ONCE, at create, and then asks the FILE_OBJECT.** The two roots
+get two FCBs (`NpfsRootFcb`, `NpfsDeviceFcb`) — two objects, as on the oracle,
+where they are a `named_pipe_device_file` and a `named_pipe_dir` — and
+`NpfsIsDeviceFile` is what every later rule asks. Both still carry
+`fsContext == 0`, so no "is this a pipe end" test in the file changes. Three
+rules follow, all pinned by `tests/ntapi/sem_pipe/device_root.c`, and each is a
+different function's refusal:
+
+| through the DEVICE | through the root DIRECTORY | the oracle's site |
+| --- | --- | --- |
+| `FSCTL_PIPE_WAIT` → `STATUS_ILLEGAL_FUNCTION`, above the lookup AND above the buffer check | the name lookup: absent → `STATUS_OBJECT_NAME_NOT_FOUND`, listening → `STATUS_SUCCESS`, short buffer → `STATUS_INVALID_PARAMETER` | `named_pipe_dir_ioctl` (one arm, then a tail call onto `named_pipe_device_ioctl`) |
+| a NAMED create → `STATUS_OBJECT_NAME_INVALID` | the pipe is created in the device's flat namespace | `named_pipe_link_name` (accepts only the device or its directory as parent) |
+| a NAMED open → `STATUS_OBJECT_NAME_NOT_FOUND`, **whether or not the pipe exists** | the pipe opens | `no_lookup_name` leaves the name unconsumed; `open_named_object` reports that |
+| `ObjectNameInformation` → `\Device\NamedPipe` | → `\Device\NamedPipe\` | `named_pipe_device_file_get_full_name` defers to the device; `named_pipe_dir_get_full_name` appends the separator |
+
+Two things it deliberately does NOT change:
+
+- **the UNNAMED create is blind to which root it is**, and to the root's type
+  entirely — `create_named_object`'s empty-name arm allocates an unlinked pipe
+  and never reads the parent, so an event handle is still a legal root
+  ("What ROOT a named-pipe create and a pipe-relative open accept"). The
+  winetest marks that `todo_wine` at `pipe.c:2800`, i.e. NT refuses it and the
+  pinned oracle does not; Art. 6 makes the oracle the spec, so this is pinned as
+  measured and not "fixed" toward NT;
+- **every other pipe FSCTL still answers identically through both handles**
+  (`sem_pipe/device_ioctl.c` §4 runs the whole eight-row matrix twice), because
+  the directory's ladder is one arm plus a tail call. A split implemented as
+  "the device refuses more things" would pass `:2787` and fail that matrix.
+
+**DEVIATION — `fs/fat32` does not read the distinction yet.** `\??\C:` and
+`\??\C:\` both still open the volume's root directory, so
+`CreateFile("\\\\.\\c:")` is `STATUS_FILE_IS_A_DIRECTORY` (`kernel32:volume:632`).
+Nothing is missing in the parse: what is missing is a volume DEVICE object for
+the first spelling to open, plus the `IOCTL_VOLUME_*` surface behind it. That is
+`docs/21` W7's remaining half and the manifest block has the triage. The parse
+change is inert for fat32 — a zero-length remainder is a zero-length remainder
+whatever its `Buffer` — which is why this landed with npfs's consumer and no
+fat32 change.
 
 ## `FileNameInformation`'s length floor is the whole struct
 

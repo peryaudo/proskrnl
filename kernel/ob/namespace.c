@@ -370,10 +370,25 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
             remaining.Buffer += i + 1;
             remaining.Length -= (USHORT)((i + 1) * sizeof(WCHAR));
             trailingEmpty = remaining.Length == 0;
+            if (trailingEmpty)
+            {
+                /* A live Buffer beside a zero Length is the OTHER spelling of
+                 * an empty remainder (see the parse-object handoff below), so
+                 * say the length twice rather than leave MaximumLength
+                 * describing the whole original name. */
+                remaining.MaximumLength = 0;
+            }
         }
         else
         {
+            /* Nothing follows this component AT ALL, which is a different
+             * statement from the EMPTY remainder a bare trailing '\' leaves —
+             * and the difference is carried by the BUFFER, because a
+             * UNICODE_STRING has nowhere else to put it. See the parse-object
+             * handoff below for why the two must not collapse. */
+            remaining.Buffer = 0;
             remaining.Length = 0;
+            remaining.MaximumLength = 0;
         }
         if (component.Length == 0)
         {
@@ -386,9 +401,27 @@ static NTSTATUS ObpLookupName(const OBJECT_ATTRIBUTES *attributes, BOOLEAN follo
         if (child != 0 && parseType != 0 && ObpGetHeader(child)->type == parseType)
         {
             /* A parse object (M6: an Io Device): the walk stops here and the
-             * rest of the name — possibly empty, possibly a bare trailing
-             * backslash — belongs to the object's own parser (the FS).
-             * NT's ParseProcedure concept. */
+             * rest of the name belongs to the object's own parser (the FS).
+             * NT's ParseProcedure concept.
+             *
+             * THE REST MAY BE ABSENT OR MAY BE PRESENT-AND-EMPTY, and those
+             * are two different names: `\Device\NamedPipe` is the DEVICE and
+             * `\Device\NamedPipe\` is its root DIRECTORY. The oracle keeps
+             * them apart with exactly this pair of tests, one frame inside the
+             * FS (third_party/wine server/named_pipe.c
+             * named_pipe_device_lookup_name):
+             *
+             *     if (!name) return NULL;                // the device itself
+             *     if (!name->len && name->str) { ... }   // the root directory
+             *
+             * so `Buffer == 0` is that `!name` and a zero-length remainder with
+             * a live Buffer is the trailing separator. Every FS sees the
+             * distinction through the one parse; a second parser that
+             * re-examined the caller's name would be an Art. 11 failure, and a
+             * remainder that folded them would leave no way to tell at all
+             * (docs/21 W7). fat32 does not read it today — `\??\C:` still opens
+             * the volume root, because the volume DEVICE object it would open
+             * instead does not exist yet. */
             ObfReferenceObject(child);
             ObDereferenceObject(current);
             *foundBody = child;
