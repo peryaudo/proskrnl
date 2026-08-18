@@ -2534,6 +2534,65 @@ SYSTEM closes, wineserver terminates the end's queued asyncs with
 not touch that path. It is a candidate next item, and it is a code read, not a
 measurement.
 
+**The IO_STATUS_BLOCK's own probe is DONE (`ntdll:pipe` 5 → 4), and it was
+never a pipe item.** `pipe.c:725` wanted `STATUS_ACCESS_VIOLATION` for
+`NtCancelSynchronousIoFile(GetCurrentThread(), NULL, (IO_STATUS_BLOCK *)
+0xdeadbeef)` and got `STATUS_DATATYPE_MISALIGNMENT`. The block carries **no
+alignment requirement**: the oracle writes its two fields with a plain
+assignment through the caller's pointer and tests nothing before it, so a
+misaligned but MAPPED block is served and only an inaccessible one refuses.
+Every Io service had spelled its own `sizeof(void *)` alignment — 23 of them —
+and they now go through one `IopProbeIosb` (`kernel/io/io.h`), which is the
+same rule the output BUFFER already followed (`sem_file/dir_unaligned_buffer.c`
+"NT treats the buffer as bytes"). Pinned by `tests/ntapi/sem_file/iosb_probe.c`
+— oracle-green, and 35 of its assertions fail on the kernel this removes.
+
+Four things worth carrying:
+
+- **The alignment term was not merely superfluous, it was wrong by ORDERING.**
+  `KiProbeForWrite` tests alignment before accessibility, so an address that is
+  neither reports the wrong one of the two. Two fixes make `0xdeadbeef` answer
+  correctly — dropping the requirement, or just swapping the two tests — and
+  neither the winetest nor any refusal case can tell them apart. The pin's §2
+  is the case that does (misaligned **and mapped**), and it exists only because
+  the fix was chosen after asking which of the two the oracle serves.
+- **Relaxing the probe alone turns a served call into a KERNEL PANIC**, which
+  is the half that makes this an item rather than a one-line diff. Eighteen
+  sites wrote the block with `iosb->Status = ...`, and a store through an
+  `IO_STATUS_BLOCK *` inherits the caller's alignment on both fields — legal on
+  x86 hardware, undefined C, and this build traps it. The first proskrnl run of
+  the pin was a `#UD` in `NtCancelSynchronousIoFile`, not a failed assertion.
+  So the writers went through `IopWriteIosb` too. **This is
+  `sem_file/dir_unaligned_buffer.c`'s finding a second time, one operand over**
+  — the buffer learned it when a WOW64 SxS lookup handed `IopFillDirEntry` a
+  4-aligned array; the status block had never been asked.
+- **The copy-out writes the two FIELDS, not the sixteen bytes, and gate-check
+  is what said so.** The first draft staged the answer in a local
+  `IO_STATUS_BLOCK` and copied all of it out — which clobbers bytes 4..7 (the
+  upper half of the caller's `Pointer` spelling of the leading union, which
+  neither runner writes) and publishes four indeterminate bytes of kernel stack
+  at seventeen sites at once. `dlls/wow64/file.c` is a live caller that fills
+  the whole union before handing the block down. The oracle assigns the two
+  fields, so the fix is to assign two fields; `iosb_probe.c` §2 poisons the
+  block and asserts the four bytes survive, oracle-first. Two pre-existing
+  `KiWriteUser` sites in `kernel/io/file.c` had the same shape and are fixed
+  with it. **Found by reading the diff against its own stated rule, not by a
+  failing assertion** — the same provenance as W4d's two.
+- **A partial write is part of the contract, so the helper has two forms.**
+  `NtQueryVolumeInformationFile` writes `Status` and leaves `Information`
+  untouched for a bad handle (the oracle's early `return io->Status = status`),
+  which a single two-field writer would have quietly widened.
+- **The pin refuted its own first draft on a neighbouring rule, and that
+  refutation is filed rather than fixed.** A short `FilePositionInformation`
+  **set** is `STATUS_INVALID_PARAMETER_3` on the oracle — per class, at
+  `dlls/ntdll/unix/file.c:5245` and eight of its neighbours — where proskrnl
+  answers `STATUS_INFO_LENGTH_MISMATCH` from the shared `needed` gate the QUERY
+  direction correctly uses. That is a real divergence across the whole set
+  direction and it is about which status a class owes, not about the block, so
+  it is its own item (issue #219) and the pin measures the query side, where
+  both runners agree. Widening a pin to cover what it stumbled over is how an
+  item stops being bisectable (G13).
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
