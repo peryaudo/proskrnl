@@ -2965,6 +2965,56 @@ directories and the `ALLUSERSPROFILE`/`PUBLIC` variables the oracle mints from
 them (`add_registry_environment`) — i.e. seeding them describes folders that
 are not there. Art. 5: no consumer convicts them.
 
+### W18 — The 8.3 alias's leading run (**DONE — `kernel32:file` 38 → 22**)
+
+Sixteen assertions, one character, and the whole item is which leading run
+`FatGenerateShortName` (`fs/fat32/dir.c`) strips before it picks the alias's
+extension separator: **leading dots, and not leading spaces**. Pinned by
+`tests/ntapi/sem_file/short_names.c` §7-8; `docs/03` "The 8.3 alias's leading
+run" has the rule.
+
+The pair is still parked — it panics at `CreateMailslotW` (W8) exactly where
+it did before, 34 todo markers before and after — so this is a like-for-like
+38 → 22 over the same measured prefix, not a verdict that moved.
+
+Four things worth carrying:
+
+- **All sixteen failures were one file, sixteen times.** Every `:3208`
+  message read "found incorrectly ' .a'" and **missed nothing**. A cluster
+  whose every member names the same wrongly-INCLUDED item is one bug by
+  arithmetic, and reading the messages was the whole triage — the shape §4
+  trap 4 keeps asking for.
+- **The triage block named the right subject and the wrong half of it.** It
+  said "FindFirstFile with the `*.` pattern — a FAT short-name question",
+  which pointed at the MATCHER. The matcher is right: every one of the
+  sixteen masks reduces to `<` or `a<` through kernelbase's `fixup_mask`, and
+  `<` correctly refuses to reach any alias carrying a dot. What was wrong was
+  the ALIAS ` .a` was matched against. **"Short-name question" was true and
+  still sent the reader to the wrong file.**
+- **A value the two runners cannot share can still have a shared BIT, and
+  this file had recorded the opposite.** `short_names.c` said the
+  value-dependent truth-table cells "can only ever be checked by the winetest
+  pair itself", because the oracle hashes an eight-character base and FAT
+  uses a numeric tail. They agree exactly on whether the alias carries an
+  extension, which is the only property `<` reads — so the cells are
+  pinnable after all, and are. The general form: **before recording a value
+  as unpinnable, ask which PROJECTION of it the consumer actually reads.**
+- **The negative control was worth the thirty seconds.** The new section was
+  oracle-green on its first run, which is exactly what a vacuous assertion
+  looks like (§4 trap 2 in miniature). Inverting two of the cases and
+  re-running the oracle proved they were live before any kernel code was
+  written.
+
+**A correction to `kernel32:file`'s other item fell out of it.** The block
+called the CopyFile-to-itself trio "a plain share-mode question"; it is not
+one. `copy_file`'s only producer of `ERROR_SHARING_VIOLATION` is
+`is_same_file()`, i.e. two `NtFsControlFile(FSCTL_GET_OBJECT_ID)` calls
+compared byte-for-byte, and proskrnl implements no such fsctl. That is read
+off the code and consistent with the failure text (`ret=1 err=0`), not
+probed, and the manifest says so. It also is not free work: the oracle answers
+the fsctl for every file while NT on a FAT volume refuses it, which is the
+same decision `kernel32:volume:2022` is parked behind.
+
 ---
 
 ## 3. What needs a constitutional amendment
