@@ -2335,6 +2335,80 @@ rather than an npfs one — but which of the ten are causes and which are
 consequences has not been measured, and this document is not going to guess
 (§4 trap 4).
 
+**WHAT A FILE HANDLE IS CALLED IS DONE** (`ntdll:pipe` 22 → **20**, the two at
+`:2849`/`:2881`), and it is the smallest item in this section with the widest
+reach: `NtQueryObject(ObjectNameInformation)` answered SUCCESS with an EMPTY
+name for **every file handle in the system**. `IoFileObjectType` now carries
+`OBJECT_TYPE.queryName` — W12's hook applied to the fourth type, as this
+document predicted — and `docs/03` "What a FILE handle is called in the object
+namespace" has the rules. Pinned by `tests/ntapi/sem_pipe/object_name.c`.
+
+Four things worth carrying, and the first is where the design decision was:
+
+- **The composition belongs to the Io layer, not to each filesystem.** A
+  `FILE_OBJECT` is never in the Ob namespace; the DEVICE is, and everything past
+  it belongs to that device. So `IopQueryFileObjectName` is the one place that
+  concatenates the device's own name with the volume-relative path
+  `IO_VFS_OPS.QueryName` **already** builds for `FileNameInformation`, and a
+  filesystem's whole say is a boolean — `namedInObjectNamespace`. The
+  alternative, a per-FS "full name" op, would have been a second name source for
+  one fact (Art. 11) and would have let the two spellings of "what is this file
+  called" drift.
+- **A default that looks like a gap and is the measured answer.** Devices that
+  do NOT opt in keep reporting the empty name, and that is right: the oracle's
+  `no_get_full_name` (every console object carries it) returns NULL with no error
+  set, which `DECL_HANDLER(get_object_name)` turns into a zero-length reply. So
+  the hook's contract had to grow a third outcome — a name, a refusal, or "this
+  kind of object has no name" — where W12's had two, and the "a hook that
+  succeeds owes a name" assertion moved from the generic arm into
+  `CmpQueryKeyObjectName`, which is the type that can promise it.
+- **The too-short status is a property of WHICH `get_full_name` answered.** A
+  file gets `STATUS_BUFFER_OVERFLOW` where a registry key gets
+  `STATUS_INFO_LENGTH_MISMATCH` for the same mistake — every file-ish arm in the
+  oracle sets it explicitly and the generic walk does not. It is invisible except
+  for a buffer between the fixed struct's size and the full size, and the pin
+  measures exactly that band.
+- **The prefix of a DISK file's name is a runner disagreement, and saying so is
+  the honest half.** The oracle reports `\??\C:\prstest\objname.txt` (its fd's
+  captured name); proskrnl composes `\Device\HarddiskVolume1\...`, which is NT's
+  answer. A pin asserting either spelling would have been tuning to a runner, so
+  §6 pins what both satisfy — the name ends with the file's path, the directory's
+  name is the file's minus its last component, and the length protocol — and
+  `docs/03` carries the trade.
+
+**GATE-CHECK found a ring-3 panic in the first draft, and it is the fifth item
+in this document with that provenance.** The hook's length was a `USHORT`
+because `OBJECT_NAME_INFORMATION.Name.Length` is one, with an
+`ASSERT(total <= 0xffff)` and a comment reasoning about FAT depth. But a pipe's
+name is the CALLER's `ObjectName`, bounded only by `UNICODE_STRING`'s own
+`USHORT` — so 32760 characters relative to `\Device\NamedPipe` composes to
+65556 and stopped the machine. The review derived it by reading; the pin then
+measured it, and the measurement is what decided the fix. A too-small buffer had
+to keep the oracle's ordinary `STATUS_BUFFER_OVERFLOW` (65574, measured on both
+runners), so the length is a `ULONG` all the way to the fill arm and only the
+answer that cannot EXIST is refused — `STATUS_NAME_TOO_LONG`, in `kernel/ob/`
+rather than per type, because it is a property of the answer's shape. Above that
+buffer the oracle answers SUCCESS with `Length` **20**: 65556 truncated into the
+`USHORT`, i.e. a different object's name, which is why §7 is `beyond_oracle`
+against the documented `UNICODE_STRING` contract and not a divergence from
+something Wine implements. **The transferable half is the one the assert's own
+comment got wrong: a bound argued from the SHALLOWEST producer is not a bound.**
+
+**Two records this item corrects, both of which were true when written.** The
+manifest's "`:2810` and `:2787` need the device told from its root DIRECTORY"
+survives the hook untouched, and that was worth checking rather than assuming:
+proskrnl now reports `\Device\NamedPipe\` for the device root exactly as the
+oracle does, because it composes the DIRECTORY's answer — the one spelling it
+has. And `docs/03`'s GUI-2 notes still said proskrnl's
+`ObjectNameInformation` "returns an object's leaf name rather than NT's full
+path", with "making the name query answer full paths is NT-correct and unbuilt"
+beside it; it has answered the full path since `docs/review-2026-07` §9. The
+sentence had been read as a live constraint for two milestones.
+
+**Nothing was hiding behind the two** — 2378 tests executed, 32 todo markers and
+0 flaky before and after, and a line-by-line histogram diff removes exactly
+`:2849`/`:2881` with no other line moved — so `§4` trap 2 does not apply here.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
