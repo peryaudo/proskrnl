@@ -1,6 +1,6 @@
 /*
- * winevsnd stream — endpoints, render streams, the clocks, and the feeder
- * (AUD-2, docs/23 §4b).
+ * winevsnd stream — endpoints, render + capture streams, the clocks, the
+ * feeder and the capture thread (AUD-2 render, AUD-3 capture; docs/23 §4b).
  *
  * One render device per process: \Device\Snd<n> opens EXCLUSIVE (the Io
  * share engine, drivers/sndproto.h), so in-process concurrency is real —
@@ -12,6 +12,17 @@
  * timer invented). A second process's open answers STATUS_SHARING_VIOLATION,
  * surfaced as AUDCLNT_E_DEVICE_IN_USE — the recorded docs/03 deviation
  * whose named exit is audiodg-lite (HACK-008, reserved).
+ *
+ * Capture (AUD-3) is the mirror: one capture device per process, a capture
+ * thread whose blocking NtReadFile of one device period IS the capture
+ * clock, depositing into every started capture stream's ring at the
+ * stream's own rate/format (the feeder's decode/resample inverted) with
+ * held_frames saturating at the buffer — data the client does not fetch is
+ * dropped, the oracle drivers' own overrun posture (winealsa alsa_read_data
+ * caps at bufsize; mmdevapi/tests/capture.c pins pad == buffer after a
+ * sleep). The get/release_capture_buffer protocol is winealsa's, which the
+ * capture pairs pin: one mmdevapi period per GetBuffer or BUFFER_EMPTY,
+ * devpos = frames the client consumed, position = consumed + held.
  *
  * On underrun the feeder mixes what it has and leaves silence for the rest,
  * so the stream clock keeps advancing through the glitch — WASAPI's
@@ -106,6 +117,19 @@ static HANDLE feeder_thread;
 static BOOL feeder_quit;
 static BOOL feeder_stopping;
 static UINT64 underrun_count;
+
+/* The capture mirror of the dev_* and feeder_* set (AUD-3). cap_prepared
+ * tracks whether the capture device is PREPAREd (reads may flow): raised
+ * by cap_acquire, lowered by capture_stop's RELEASE — which goes out
+ * BEFORE the join because its flush is what unparks a reader blocked in
+ * NtReadFile — and by cap_release. */
+static HANDLE cap_handle;
+static int cap_streams;
+static BOOL cap_started;
+static BOOL cap_prepared;
+static HANDLE capture_thread;
+static BOOL capture_quit;
+static BOOL capture_stopping;
 
 /* The AUD-2 verdict channel: the WASAPI half of tests/run/run.sh audio reads
  * this after playback and prints the count on its [KTEST] line. */
@@ -318,6 +342,92 @@ static void dev_release(void)
     dev_started = FALSE;
 }
 
+/* The capture device, dev_acquire mirrored: same geometry, same format
+ * gate, same AUDCLNT_E_DEVICE_IN_USE deviation for a foreign holder
+ * (docs/03 "AUD-2 notes", extended to capture). Called with the lock held,
+ * by the first capture stream. */
+static HRESULT cap_acquire(void)
+{
+    SND_PCM_INFO info;
+    SND_PCM_SET_PARAMS params;
+    NTSTATUS status;
+
+    if (cap_handle) return S_OK;
+
+    probe_nodes();
+    if (cap_node < 0)
+    {
+        vsnd_report("winevsnd: no capture node - endpoint creation refused\n");
+        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
+
+    status = open_node(cap_node, &cap_handle);
+    if (status == STATUS_SHARING_VIOLATION)
+    {
+        vsnd_report("winevsnd: \\Device\\Snd%u busy - AUDCLNT_E_DEVICE_IN_USE (docs/03)\n",
+                    cap_node);
+        cap_handle = NULL;
+        return AUDCLNT_E_DEVICE_IN_USE;
+    }
+    if (status)
+    {
+        vsnd_report("winevsnd: \\Device\\Snd%u open failed (%08x)\n", cap_node, (UINT)status);
+        cap_handle = NULL;
+        return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+    }
+
+    /* The device's own claim gates the format, never this driver's habit. */
+    if (dev_ioctl(cap_handle, IOCTL_PRSSND_INFO, NULL, 0, &info, sizeof(info)) ||
+        !(info.formats & (1ull << SND_PCM_FMT_S16)) ||
+        !(info.rates & (1ull << SND_PCM_RATE_48000)) ||
+        info.channelsMin > VSND_DEV_CHANNELS || info.channelsMax < VSND_DEV_CHANNELS)
+    {
+        vsnd_report("winevsnd: \\Device\\Snd%u does not claim S16/48k/stereo - refused\n",
+                    cap_node);
+        goto fail;
+    }
+
+    params.bufferBytes = VSND_DEV_PERIOD_BYTES * VSND_DEV_PERIODS;
+    params.periodBytes = VSND_DEV_PERIOD_BYTES;
+    params.features = 0;
+    params.channels = VSND_DEV_CHANNELS;
+    params.format = SND_PCM_FMT_S16;
+    params.rate = SND_PCM_RATE_48000;
+    params.reserved = 0;
+    if (dev_ioctl(cap_handle, IOCTL_PRSSND_SET_PARAMS, &params, sizeof(params), NULL, 0))
+    {
+        vsnd_report("winevsnd: SET_PARAMS refused by \\Device\\Snd%u\n", cap_node);
+        goto fail;
+    }
+    if (dev_ioctl(cap_handle, IOCTL_PRSSND_PREPARE, NULL, 0, NULL, 0))
+    {
+        vsnd_report("winevsnd: PREPARE refused by \\Device\\Snd%u\n", cap_node);
+        goto fail;
+    }
+    cap_prepared = TRUE;
+    return S_OK;
+
+fail:
+    NtClose(cap_handle);
+    cap_handle = NULL;
+    return AUDCLNT_E_ENDPOINT_CREATE_FAILED;
+}
+
+/* Called with the lock held, after the capture thread is gone (or was
+ * never started). RELEASE also unparks a reader still blocked in
+ * NtReadFile: the kernel relays the device's flush as a short success
+ * (drivers/sndproto.h). */
+static void cap_release(void)
+{
+    if (!cap_handle) return;
+    if (cap_started) dev_ioctl(cap_handle, IOCTL_PRSSND_STOP, NULL, 0, NULL, 0);
+    if (cap_prepared) dev_ioctl(cap_handle, IOCTL_PRSSND_RELEASE, NULL, 0, NULL, 0);
+    NtClose(cap_handle);
+    cap_handle = NULL;
+    cap_started = FALSE;
+    cap_prepared = FALSE;
+}
+
 /* ---- the feeder ---------------------------------------------------------- */
 
 static float decode_sample(const struct vsnd_stream *s, UINT32 frame, UINT ch)
@@ -381,6 +491,244 @@ static BOOL mix_stream(struct vsnd_stream *s, float *acc)
     return ran_short;
 }
 
+/* ---- the capture thread (AUD-3) ------------------------------------------- */
+
+/* Encode one float sample into a client frame — decode_sample's inverse,
+ * kind by kind (S16 uses the symmetric 1/32768 scaling for the same
+ * bit-exact round-trip the render path documents). */
+static void encode_sample(enum sample_kind kind, float v, BYTE *p, UINT ch)
+{
+    switch (kind)
+    {
+    case KIND_U8:
+    {
+        int iv = (int)(v * 128.0f) + 128;
+
+        if (iv < 0) iv = 0;
+        if (iv > 255) iv = 255;
+        p[ch] = (BYTE)iv;
+        break;
+    }
+    case KIND_S16:
+    {
+        float scaled = v * 32768.0f;
+
+        if (scaled > 32767.0f) scaled = 32767.0f;
+        if (scaled < -32768.0f) scaled = -32768.0f;
+        ((short *)p)[ch] = (short)scaled;
+        break;
+    }
+    case KIND_S24:
+    case KIND_S32:
+    {
+        float scaled = v * 2147483648.0f;
+        int iv;
+
+        if (scaled >= 2147483520.0f) iv = 0x7fffff80; /* largest float < 2^31 */
+        else if (scaled < -2147483648.0f) iv = (int)0x80000000;
+        else iv = (int)scaled;
+        if (kind == KIND_S32)
+            ((int *)p)[ch] = iv;
+        else
+        {
+            BYTE *b = p + ch * 3;
+
+            b[0] = (BYTE)(iv >> 8);
+            b[1] = (BYTE)(iv >> 16);
+            b[2] = (BYTE)(iv >> 24);
+        }
+        break;
+    }
+    case KIND_F32:
+        ((float *)p)[ch] = v;
+        break;
+    }
+}
+
+/* Deposit one device period into a capture stream's ring at the stream's
+ * own rate and format — the feeder's decode/resample inverted (nearest
+ * sample, the same policy-above-the-boundary). Frames the ring cannot hold
+ * are DROPPED, held_frames saturating at the buffer: the oracle drivers'
+ * overrun posture (winealsa alsa_read_data stops reading at bufsize),
+ * pinned by mmdevapi/tests/capture.c (pad == buffer_size after a sleep
+ * with nothing released). Called with the lock held. */
+static void deposit_stream(struct vsnd_stream *s, const short *in, UINT32 in_frames)
+{
+    double step = (double)VSND_DEV_RATE / s->rate; /* device frames per client frame */
+    double pos = s->src_frac;
+
+    while ((UINT32)pos < in_frames)
+    {
+        UINT32 idx = (UINT32)pos;
+
+        if (s->held_frames < s->bufsize_frames)
+        {
+            BYTE *frame = s->local_buffer + (SIZE_T)s->wri_offs * s->block_align;
+            UINT ch;
+
+            for (ch = 0; ch < s->channels; ch++)
+            {
+                float v = 0.0f;
+
+                /* The front pair carries the device's stereo; further
+                 * channels get silence — the render downmix mirrored. A
+                 * mono client takes the device's left. */
+                if (ch < 2)
+                {
+                    UINT dev_ch = s->channels == 1 ? 0 : ch;
+
+                    v = in[idx * 2 + dev_ch] / 32768.0f * s->vols[ch];
+                }
+                encode_sample(s->kind, v, frame, ch);
+            }
+            s->wri_offs = (s->wri_offs + 1) % s->bufsize_frames;
+            s->held_frames++;
+        }
+        pos += step;
+    }
+    s->src_frac = pos - in_frames;
+}
+
+static NTSTATUS WINAPI capture_proc(void *arg)
+{
+    short in[VSND_DEV_PERIOD_FRAMES * 2];
+    IO_STATUS_BLOCK io;
+    struct vsnd_stream *s;
+    LARGE_INTEGER delay;
+    NTSTATUS status;
+    BOOL starve;
+
+    for (;;)
+    {
+        vsnd_take_lock();
+        if (capture_quit)
+        {
+            vsnd_drop_lock();
+            break;
+        }
+
+        if (!cap_started)
+        {
+            /* Idle tick: nothing is captured, but the event cadence keeps
+             * running for every capture stream that has ever started (the
+             * feeder's ever_started rule, capture's half). */
+            for (s = streams; s; s = s->next)
+                if (s->flow == eCapture && s->ever_started && s->event)
+                    NtSetEvent(s->event, NULL);
+            vsnd_drop_lock();
+            delay.QuadPart = -(LONGLONG)VSND_DEF_PERIOD;   /* one period */
+            NtDelayExecution(FALSE, &delay);
+            continue;
+        }
+        /* Once the device is STARTed the thread keeps reading even while
+         * no client stream is started, depositing into none — captured
+         * data a stopped client misses is dropped AT PACE, the oracle
+         * drivers' own shape (winealsa's timer keeps the ALSA ring
+         * draining through a client Stop). Stopping the reads instead
+         * lets the backend's rate controller accumulate the whole stopped
+         * stretch as un-granted budget (pinned tree audio/audio.c
+         * audio_rate_peek_bytes: granted = elapsed * rate - sent, up to
+         * 65536 frames) and dump it as an instant burst at the next
+         * Start — which floods the ring and fails
+         * mmdevapi/tests/capture.c's padding <= 2 * period assertion
+         * (measured: padding 11520 after 10 reads). */
+        vsnd_drop_lock();
+
+        /* The capture clock: parks in the kernel until the device completes
+         * a captured period (docs/23 §4a — the mirror). Never under the
+         * lock — a parked reader must not stall the client's GetBuffer. */
+        io.Information = 0;
+        status = NtReadFile(cap_handle, NULL, NULL, NULL, &io, in, VSND_DEV_PERIOD_BYTES,
+                            NULL, NULL);
+        starve = status || io.Information != VSND_DEV_PERIOD_BYTES;
+
+        vsnd_take_lock();
+        if (!starve)
+            for (s = streams; s; s = s->next)
+                if (s->flow == eCapture && s->started)
+                    deposit_stream(s, in, VSND_DEV_PERIOD_FRAMES);
+        for (s = streams; s; s = s->next)
+            if (s->flow == eCapture && s->ever_started && s->event)
+                NtSetEvent(s->event, NULL);
+        vsnd_drop_lock();
+
+        if (starve)
+        {
+            /* A short or refused read is the stop/release flush (teardown
+             * in flight — capture_quit decides above) — nap one period
+             * rather than hot-spin on the released device. */
+            delay.QuadPart = -(LONGLONG)VSND_DEF_PERIOD;
+            NtDelayExecution(FALSE, &delay);
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Called with the lock held (feeder_start's twin). */
+static void capture_start(void)
+{
+    LONG priority = THREAD_PRIORITY_TIME_CRITICAL;
+
+    if (capture_thread || capture_stopping) return;
+    capture_quit = FALSE;
+    if (RtlCreateUserThread(NtCurrentProcess(), NULL, FALSE, 0, 0, 0,
+                            (PRTL_THREAD_START_ROUTINE)capture_proc, NULL, &capture_thread, NULL))
+    {
+        vsnd_report("winevsnd: capture thread creation failed\n");
+        capture_thread = NULL;
+        return;
+    }
+    NtSetInformationThread(capture_thread, ThreadBasePriority, &priority, sizeof(priority));
+}
+
+/* Called with the lock held; drops it to join the capture thread. The
+ * unpark ORDER is the point: STOP + RELEASE go out BEFORE the join,
+ * because the RELEASE flush is what returns a parked NtReadFile
+ * (drivers/sndproto.h); the handle closes later, in cap_release, once no
+ * reader can be inside it. */
+static void capture_stop(void)
+{
+    HANDLE thread = capture_thread;
+
+    if (!thread) return;
+    capture_quit = TRUE;
+    capture_stopping = TRUE;
+    capture_thread = NULL;
+    if (cap_handle)
+    {
+        if (cap_started) dev_ioctl(cap_handle, IOCTL_PRSSND_STOP, NULL, 0, NULL, 0);
+        dev_ioctl(cap_handle, IOCTL_PRSSND_RELEASE, NULL, 0, NULL, 0);
+        cap_started = FALSE;
+        cap_prepared = FALSE;
+    }
+    vsnd_drop_lock();
+    NtWaitForSingleObject(thread, FALSE, NULL);
+    NtClose(thread);
+    vsnd_take_lock();
+    capture_stopping = FALSE;
+    /* A create_stream that landed while the lock was dropped found
+     * capture_start refused and the device released; re-arm both for it
+     * (the feeder_stop rationale, plus the RELEASE -> PREPARE cycle the
+     * device contract allows). The re-PREPARE must happen HERE, after the
+     * join — re-preparing while the old reader was still parked would
+     * discard its flush completions and park it forever. */
+    if (cap_streams > 0)
+    {
+        struct vsnd_stream *s;
+
+        if (cap_handle && !cap_prepared &&
+            !dev_ioctl(cap_handle, IOCTL_PRSSND_PREPARE, NULL, 0, NULL, 0))
+            cap_prepared = TRUE;
+        /* A raced stream may have Started against the released device
+         * (vsnd_start marks it and defers the device START to here). */
+        for (s = streams; s; s = s->next)
+            if (s->flow == eCapture && s->started && cap_handle && cap_prepared &&
+                !cap_started && !dev_ioctl(cap_handle, IOCTL_PRSSND_START, NULL, 0, NULL, 0))
+                cap_started = TRUE;
+        capture_start();
+    }
+}
+
 static NTSTATUS WINAPI feeder_proc(void *arg)
 {
     float acc[VSND_DEV_PERIOD_FRAMES * 2];
@@ -407,9 +755,10 @@ static NTSTATUS WINAPI feeder_proc(void *arg)
         if (!any || !dev_started)
         {
             /* Idle tick: no mixing, but the event cadence keeps running for
-             * every stream that has ever started (see ever_started). */
+             * every RENDER stream that has ever started (see ever_started;
+             * capture streams are the capture thread's to signal). */
             for (s = streams; s; s = s->next)
-                if (s->ever_started && s->event)
+                if (s->flow == eRender && s->ever_started && s->event)
                     NtSetEvent(s->event, NULL);
             vsnd_drop_lock();
             delay.QuadPart = -(LONGLONG)VSND_DEF_PERIOD;   /* one period */
@@ -446,7 +795,7 @@ static NTSTATUS WINAPI feeder_proc(void *arg)
 
         vsnd_take_lock();
         for (s = streams; s; s = s->next)
-            if (s->ever_started && s->event)
+            if (s->flow == eRender && s->ever_started && s->event)
                 NtSetEvent(s->event, NULL);
         vsnd_drop_lock();
     }
@@ -502,6 +851,7 @@ NTSTATUS vsnd_process_detach(void *args)
 
     vsnd_take_lock();
     feeder_stop();
+    capture_stop();
     for (s = streams; s; s = next)
     {
         next = s->next;
@@ -511,7 +861,9 @@ NTSTATUS vsnd_process_detach(void *args)
     }
     streams = NULL;
     dev_streams = 0;
+    cap_streams = 0;
     dev_release();
+    cap_release();
     vsnd_drop_lock();
     if (underrun_count)
         vsnd_report("winevsnd: process detach, underruns=%u\n", (UINT)underrun_count);
@@ -534,17 +886,11 @@ NTSTATUS vsnd_get_endpoint_ids(void *args)
 
     vsnd_take_lock();
     probe_nodes();
-    node = params->flow == eRender ? dev_node : -1;
-    if (params->flow == eCapture && cap_node >= 0)
-    {
-        /* AUD-3 is unbuilt: an endpoint whose every Initialize refuses is a
-         * half-truth Wine's own tests treat as a usable device (render.c's
-         * session blocks call through the interface a refused GetService
-         * never produced). Withholding it is the truthful answer -- the
-         * capture PATH does not exist yet -- and named here per Art. 12. */
-        vsnd_report("winevsnd: capture node Snd%u withheld from enumeration (AUD-3 unbuilt)\n",
-                    cap_node);
-    }
+    /* One endpoint per flow, each from the node's OWN direction claim
+     * (probe_nodes): the render node for eRender, the capture node for
+     * eCapture (AUD-3 — the withhold that stood here while capture was
+     * unbuilt is gone with the reason for it). */
+    node = params->flow == eRender ? dev_node : cap_node;
     vsnd_drop_lock();
 
     if (node >= 0)
@@ -656,12 +1002,6 @@ NTSTATUS vsnd_create_stream(void *args)
         params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
         return STATUS_SUCCESS;
     }
-    if (params->flow != eRender)
-    {
-        vsnd_report("winevsnd: create_stream(eCapture) refused (capture is AUD-3, unbuilt)\n");
-        params->result = AUDCLNT_E_ENDPOINT_CREATE_FAILED;
-        return STATUS_SUCCESS;
-    }
     if (FAILED(hr = parse_format(params->fmt, &kind)))
     {
         params->result = hr;
@@ -669,7 +1009,7 @@ NTSTATUS vsnd_create_stream(void *args)
     }
 
     vsnd_take_lock();
-    if (FAILED(hr = dev_acquire()))
+    if (FAILED(hr = params->flow == eRender ? dev_acquire() : cap_acquire()))
         return unlock_result(&params->result, hr);
 
     if (!(stream = vsnd_alloc(sizeof(*stream))))
@@ -699,15 +1039,24 @@ NTSTATUS vsnd_create_stream(void *args)
 
     stream->next = streams;
     streams = stream;
-    dev_streams++;
-    feeder_start();
+    if (params->flow == eRender)
+    {
+        dev_streams++;
+        feeder_start();
+    }
+    else
+    {
+        cap_streams++;
+        capture_start();
+    }
 
     *params->channel_count = params->fmt->nChannels;
     *params->stream = (stream_handle)(UINT_PTR)stream;
     return unlock_result(&params->result, S_OK);
 
 oom:
-    if (!dev_streams) dev_release();
+    if (params->flow == eRender && !dev_streams) dev_release();
+    if (params->flow == eCapture && !cap_streams) cap_release();
     return unlock_result(&params->result, E_OUTOFMEMORY);
 }
 
@@ -721,13 +1070,25 @@ NTSTATUS vsnd_release_stream(void *args)
     for (link = &streams; *link; link = &(*link)->next)
         if (*link == stream) break;
     if (*link) *link = stream->next;
-    dev_streams--;
-    if (!dev_streams)
+    if (stream->flow == eRender)
     {
-        feeder_stop();
-        /* Re-checked after the join dropped the lock: a concurrent
-         * create_stream may hold the device again. */
-        if (!dev_streams) dev_release();
+        dev_streams--;
+        if (!dev_streams)
+        {
+            feeder_stop();
+            /* Re-checked after the join dropped the lock: a concurrent
+             * create_stream may hold the device again. */
+            if (!dev_streams) dev_release();
+        }
+    }
+    else
+    {
+        cap_streams--;
+        if (!cap_streams)
+        {
+            capture_stop();
+            if (!cap_streams) cap_release();
+        }
     }
     vsnd_drop_lock();
 
@@ -748,14 +1109,29 @@ NTSTATUS vsnd_start(void *args)
         return unlock_result(&params->result, AUDCLNT_E_EVENTHANDLE_NOT_SET);
     if (stream->started)
         return unlock_result(&params->result, AUDCLNT_E_NOT_STOPPED);
-    if (!dev_started)
+    if (stream->flow == eRender)
     {
-        if (dev_ioctl(dev_handle, IOCTL_PRSSND_START, NULL, 0, NULL, 0))
+        if (!dev_started)
         {
-            vsnd_report("winevsnd: START refused by the device\n");
+            if (dev_ioctl(dev_handle, IOCTL_PRSSND_START, NULL, 0, NULL, 0))
+            {
+                vsnd_report("winevsnd: START refused by the device\n");
+                return unlock_result(&params->result, AUDCLNT_E_DEVICE_INVALIDATED);
+            }
+            dev_started = TRUE;
+        }
+    }
+    else if (!cap_started && cap_prepared)
+    {
+        /* The mirror; when a capture_stop join has the device released
+         * (cap_prepared FALSE), the mark below stands and capture_stop's
+         * re-arm issues the device START. */
+        if (dev_ioctl(cap_handle, IOCTL_PRSSND_START, NULL, 0, NULL, 0))
+        {
+            vsnd_report("winevsnd: capture START refused by the device\n");
             return unlock_result(&params->result, AUDCLNT_E_DEVICE_INVALIDATED);
         }
-        dev_started = TRUE;
+        cap_started = TRUE;
     }
     stream->started = TRUE;
     stream->ever_started = TRUE;
@@ -784,11 +1160,21 @@ NTSTATUS vsnd_reset(void *args)
         return unlock_result(&params->result, AUDCLNT_E_NOT_STOPPED);
     if (stream->getbuf_last)
         return unlock_result(&params->result, AUDCLNT_E_BUFFER_OPERATION_PENDING);
+    if (stream->flow == eRender)
+    {
+        stream->written_frames = 0;
+        stream->last_pos = 0;
+    }
+    else
+    {
+        /* Reset drops the held frames but the capture clock counts them
+         * as consumed (winealsa alsa_reset: written += held) — position
+         * is monotonic through a Reset. */
+        stream->written_frames += stream->held_frames;
+    }
     stream->held_frames = 0;
     stream->lcl_offs = 0;
     stream->wri_offs = 0;
-    stream->written_frames = 0;
-    stream->last_pos = 0;
     stream->src_frac = 0.0;
     return unlock_result(&params->result, S_OK);
 }
@@ -884,6 +1270,101 @@ NTSTATUS vsnd_release_render_buffer(void *args)
     stream->held_frames += written_frames;
     stream->written_frames += written_frames;
     stream->getbuf_last = 0;
+    return unlock_result(&params->result, S_OK);
+}
+
+/* The get/release_capture_buffer protocol, winealsa's exactly — the shape
+ * the capture pairs pin (mmdevapi/tests/capture.c): one mmdevapi period
+ * per GetBuffer or BUFFER_EMPTY under that, identical answers on repeat
+ * until the release, flags always 0 (discontinuity reporting is todo_wine
+ * in the pair — a FIXME the oracle's own drivers share), devpos = frames
+ * the client has consumed so far. */
+NTSTATUS vsnd_get_capture_buffer(void *args)
+{
+    struct get_capture_buffer_params *params = args;
+    struct vsnd_stream *stream = handle_get_stream(params->stream);
+    UINT32 frames;
+
+    vsnd_take_lock();
+    if (stream->getbuf_last)
+        return unlock_result(&params->result, AUDCLNT_E_OUT_OF_ORDER);
+    if (stream->held_frames < stream->period_frames)
+    {
+        *params->frames = 0;
+        return unlock_result(&params->result, AUDCLNT_S_BUFFER_EMPTY);
+    }
+    frames = stream->period_frames;
+
+    if (stream->lcl_offs + frames > stream->bufsize_frames)
+    {
+        UINT32 chunk_bytes = (stream->bufsize_frames - stream->lcl_offs) * stream->block_align;
+
+        if (stream->tmp_buffer_frames < frames)
+        {
+            vsnd_free(stream->tmp_buffer);
+            stream->tmp_buffer = vsnd_alloc((SIZE_T)frames * stream->block_align);
+            if (!stream->tmp_buffer)
+            {
+                stream->tmp_buffer_frames = 0;
+                return unlock_result(&params->result, E_OUTOFMEMORY);
+            }
+            stream->tmp_buffer_frames = frames;
+        }
+        memcpy(stream->tmp_buffer, stream->local_buffer + (SIZE_T)stream->lcl_offs * stream->block_align,
+               chunk_bytes);
+        memcpy(stream->tmp_buffer + chunk_bytes, stream->local_buffer,
+               (SIZE_T)frames * stream->block_align - chunk_bytes);
+        *params->data = stream->tmp_buffer;
+    }
+    else
+        *params->data = stream->local_buffer + (SIZE_T)stream->lcl_offs * stream->block_align;
+
+    stream->getbuf_last = frames;
+    *params->frames = frames;
+    *params->flags = 0;
+    if (params->devpos)
+        *params->devpos = stream->written_frames;
+    if (params->qpcpos)
+    {
+        LARGE_INTEGER stamp, freq;
+
+        NtQueryPerformanceCounter(&stamp, &freq);
+        *params->qpcpos = stamp.QuadPart * (INT64)10000000 / freq.QuadPart;
+    }
+    return unlock_result(&params->result, S_OK);
+}
+
+NTSTATUS vsnd_release_capture_buffer(void *args)
+{
+    struct release_capture_buffer_params *params = args;
+    struct vsnd_stream *stream = handle_get_stream(params->stream);
+    UINT32 done = params->done;
+
+    vsnd_take_lock();
+    if (!done)
+    {
+        stream->getbuf_last = 0;
+        return unlock_result(&params->result, S_OK);
+    }
+    if (!stream->getbuf_last)
+        return unlock_result(&params->result, AUDCLNT_E_OUT_OF_ORDER);
+    if ((UINT32)stream->getbuf_last != done)
+        return unlock_result(&params->result, AUDCLNT_E_INVALID_SIZE);
+
+    stream->written_frames += done;
+    stream->held_frames -= done;
+    stream->lcl_offs = (stream->lcl_offs + done) % stream->bufsize_frames;
+    stream->getbuf_last = 0;
+    return unlock_result(&params->result, S_OK);
+}
+
+NTSTATUS vsnd_get_next_packet_size(void *args)
+{
+    struct get_next_packet_size_params *params = args;
+    struct vsnd_stream *stream = handle_get_stream(params->stream);
+
+    vsnd_take_lock();
+    *params->frames = stream->held_frames < stream->period_frames ? 0 : stream->period_frames;
     return unlock_result(&params->result, S_OK);
 }
 
@@ -997,11 +1478,17 @@ NTSTATUS vsnd_get_position(void *args)
     }
 
     vsnd_take_lock();
-    /* What the feeder has consumed from the ring. Period-granularity: the
-     * legal staircase (docs/23 §4b); monotonic by clamping, the winealsa
-     * shape. The clock advances through an underrun because the feeder
+    /* Render: what the feeder has consumed from the ring. Capture: what
+     * the client consumed plus what waits in the ring (winealsa's
+     * written + held — deposits advance the clock whether or not the
+     * client fetches them). Period-granularity: the legal staircase
+     * (docs/23 §4b); monotonic by clamping, the winealsa shape. The
+     * render clock advances through an underrun because the feeder
      * consumes silence at device pace either way. */
-    position = stream->written_frames - stream->held_frames;
+    if (stream->flow == eRender)
+        position = stream->written_frames - stream->held_frames;
+    else
+        position = stream->written_frames + stream->held_frames;
     if (position < stream->last_pos)
         position = stream->last_pos;
     else
