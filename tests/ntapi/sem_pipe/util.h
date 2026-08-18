@@ -51,8 +51,33 @@ NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BL
 #ifndef FSCTL_PIPE_PEEK
 #define FSCTL_PIPE_PEEK CTL_CODE(FILE_DEVICE_NAMED_PIPE, 3, METHOD_BUFFERED, FILE_READ_DATA)
 #endif
+#ifndef FSCTL_PIPE_TRANSCEIVE
+#define FSCTL_PIPE_TRANSCEIVE                                                                      \
+    CTL_CODE(FILE_DEVICE_NAMED_PIPE, 5, METHOD_NEITHER, FILE_READ_DATA | FILE_WRITE_DATA)
+#endif
 #ifndef FSCTL_PIPE_WAIT
 #define FSCTL_PIPE_WAIT CTL_CODE(FILE_DEVICE_NAMED_PIPE, 6, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+/* The rest of the verb block, for the device-root ladder (sem_pipe/
+ * device_ioctl.c): these have no pipe-END implementation and appear only as
+ * rows in that matrix. */
+#ifndef FSCTL_PIPE_ASSIGN_EVENT
+#define FSCTL_PIPE_ASSIGN_EVENT                                                                    \
+    CTL_CODE(FILE_DEVICE_NAMED_PIPE, 0, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+#ifndef FSCTL_PIPE_QUERY_EVENT
+#define FSCTL_PIPE_QUERY_EVENT CTL_CODE(FILE_DEVICE_NAMED_PIPE, 4, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+#ifndef FSCTL_PIPE_IMPERSONATE
+#define FSCTL_PIPE_IMPERSONATE CTL_CODE(FILE_DEVICE_NAMED_PIPE, 7, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+#ifndef FSCTL_PIPE_SET_CLIENT_PROCESS
+#define FSCTL_PIPE_SET_CLIENT_PROCESS                                                              \
+    CTL_CODE(FILE_DEVICE_NAMED_PIPE, 8, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+#ifndef FSCTL_PIPE_QUERY_CLIENT_PROCESS
+#define FSCTL_PIPE_QUERY_CLIENT_PROCESS                                                            \
+    CTL_CODE(FILE_DEVICE_NAMED_PIPE, 9, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #endif
 
 /* NtCreateNamedPipeFile options + pipe info shapes (wine/include/winternl.h

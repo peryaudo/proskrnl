@@ -66,10 +66,6 @@
  */
 #include "util.h"
 
-#ifndef FSCTL_PIPE_TRANSCEIVE
-#define FSCTL_PIPE_TRANSCEIVE                                                                      \
-    CTL_CODE(FILE_DEVICE_NAMED_PIPE, 5, METHOD_NEITHER, FILE_READ_DATA | FILE_WRITE_DATA)
-#endif
 #ifndef FilePipeInformation
 #define FilePipeInformation 23
 #endif
