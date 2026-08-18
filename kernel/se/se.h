@@ -222,12 +222,19 @@ static inline ULONG SepSdTotalLength(PSEP_SECURITY_DESCRIPTOR sd)
 NTSTATUS SepCaptureSecurityDescriptor(PSECURITY_DESCRIPTOR userSd,
                                       PSEP_SECURITY_DESCRIPTOR *captured);
 
-/* CUI-6: capture an OBJECT_ATTRIBUTES security descriptor onto an object at
- * create time (`objectHeader` is a POBJECT_HEADER; the stored blob is freed
- * on object delete — the ONE create-time SD site, G11). A partial SD is
- * stored as given; token-defaulting of missing parts is NtSetSecurityObject's
- * job (no baked create passes a partial SD). No-op for a NULL descriptor. */
-NTSTATUS SeCaptureObjectSecurity(PVOID objectHeader, PSECURITY_DESCRIPTOR userSd);
+/* CUI-6: apply an OBJECT_ATTRIBUTES security descriptor at create time — the
+ * ONE create-time SD site (G11). `slot` is the stored blob's home: an object
+ * header's securityDescriptor for everything Ob creates, the NPFS_PIPE's for a
+ * named pipe (whose ends carry no descriptor of their own — ob.h
+ * OBJECT_TYPE.securityStorage). The blob is freed by whoever owns the slot.
+ *
+ * A PARTIAL descriptor is completed from the current process token, not stored
+ * as given: the oracle's create arm passes the incoming SD through the same
+ * merge a set takes, with every info bit on (server/object.c create_object /
+ * create_named_object -> default_set_sd -> set_sd_defaults_from_token), so a
+ * create naming only a group gets the token's owner and default DACL too.
+ * No-op for a NULL descriptor. */
+NTSTATUS SeCaptureObjectSecurity(PVOID *slot, PSECURITY_DESCRIPTOR userSd);
 
 /* CUI-6: the Ob create/open access authority (access.c). */
 NTSTATUS SeCheckObjectAccess(POBJECT_TYPE type, PVOID securityDescriptor, ACCESS_MASK desiredAccess,
