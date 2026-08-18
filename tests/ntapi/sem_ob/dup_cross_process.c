@@ -250,6 +250,22 @@ START_TEST(dup_cross_process)
         NtClose(weak);
     }
 
+    /* --- a pseudo SOURCE handle names the CALLER, not the source process --- */
+    /* wineserver resolves the magic handles against `current` inside
+     * get_handle_obj, before the source process's table is consulted at all
+     * (third_party/wine server/handle.c get_magic_handle), so naming the child
+     * as the source process does not make -1 mean the child. The same-process
+     * half of this subject is sem_ob/dup_pseudo.c. */
+    HANDLE pseudoDup = NULL;
+    status = NtDuplicateObject(pi.hProcess, NtCurrentProcess(), NtCurrentProcess(), &pseudoDup, 0,
+                               0, DUPLICATE_SAME_ACCESS);
+    ok(status == STATUS_SUCCESS, "pseudo source against the child -> %08lx", (unsigned long)status);
+    ok(GetProcessId(pseudoDup) == GetCurrentProcessId(),
+       "names the CALLER's process %lu, not the child's %lu",
+       (unsigned long)GetProcessId(pseudoDup), (unsigned long)pi.dwProcessId);
+    if (pseudoDup)
+        NtClose(pseudoDup);
+
     ok(WaitForSingleObject(pi.hProcess, 30000) == WAIT_OBJECT_0, "child exited");
     ok(GetExitCodeProcess(pi.hProcess, &code), "GetExitCodeProcess");
     ok(code == (CHILD_BASE | DUP_IN_SIGNALLED | DUP_OUT_SIGNALLED | DUP_CLOSE_SOURCE),
