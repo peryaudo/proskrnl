@@ -13,8 +13,30 @@
  * (KiDeliverUserApc); this file owns the queue and the wake.
  */
 #include "kernel/ke/ke.h"
+#include "kernel/ob/ob.h"
 #include "kernel/init/panic.h"
 #include "kernel/mm/pool.h"
+
+/* THE release path for a user-APC block (ke.h states the contract). A block
+ * that came out of a UserApcReserve goes back to it — which is also how the
+ * reserve becomes queueable again, so "one APC at a time" is a consequence of
+ * where the storage lives rather than a rule anybody enforces. The pinned
+ * server releases the association from the same place, apc_destroy
+ * (server/thread.c), for the same reason: every way an APC ends passes
+ * through the block's own teardown. */
+void KiFreeUserApc(PKAPC apc)
+{
+    if (apc == 0)
+    {
+        return;
+    }
+    if (apc->reserveObject != 0)
+    {
+        ObpReleaseApcReserve(apc);
+        return;
+    }
+    MiFreePool(apc);
+}
 
 BOOLEAN KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
 {
@@ -37,10 +59,7 @@ BOOLEAN KiInsertQueueUserApc(PKTHREAD thread, PKAPC apc)
          * STATUS_SUCCESS for an APC that was thrown away is the plausible
          * lie G12 exists to forbid, so the drop is reported. */
         KiReleaseDispatcherLock(flags);
-        if (apc != 0)
-        {
-            MiFreePool(apc);
-        }
+        KiFreeUserApc(apc);
         return FALSE;
     }
     if (apc == 0)
@@ -96,10 +115,12 @@ BOOLEAN KiTestAlertCurrentThread(void)
     return result;
 }
 
-/* Free every APC still queued to a thread that is exiting. The queue's
- * blocks are pool allocations owned by the queue, and nothing else can
- * release them once the thread is gone (docs/review-2026-07 §7). Called
- * from KiTerminateThread with the dispatcher lock held. */
+/* Release every APC still queued to a thread that is exiting. The blocks are
+ * owned by the queue, and nothing else can release them once the thread is
+ * gone (docs/review-2026-07 §7). Called from KiTerminateThread with the
+ * dispatcher lock held — which the release path tolerates because it only
+ * ever reaches the pool or a reserve-object dereference, neither of which
+ * takes a lock or parks. */
 void KiDrainUserApcQueue(PKTHREAD thread)
 {
     ASSERT(KiIsDispatcherLockHeld());
@@ -107,7 +128,7 @@ void KiDrainUserApcQueue(PKTHREAD thread)
     {
         PKAPC apc = CONTAINING_RECORD(thread->userApcListHead.Flink, KAPC, apcListEntry);
         RemoveEntryList(&apc->apcListEntry);
-        MiFreePool(apc);
+        KiFreeUserApc(apc);
     }
     thread->userApcPending = FALSE;
     thread->apcDeliverPending = FALSE;

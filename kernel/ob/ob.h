@@ -178,6 +178,13 @@ extern OBJECT_TYPE ObpSymbolicLinkType;
 extern OBJECT_TYPE ObpEventType;
 extern OBJECT_TYPE ObpMutantType;
 extern OBJECT_TYPE ObpSemaphoreType;
+/* docs/21 W10: the two NtAllocateReserveObject kinds. Two types over one body
+ * (server/object.c apc_reserve_ops / completion_reserve_ops differ only in
+ * their type name), because the ONE thing a caller does with a reserve is
+ * hand it to the service that consumes that kind — and the type is what
+ * separates STATUS_OBJECT_TYPE_MISMATCH from a working queue. */
+extern OBJECT_TYPE ObpApcReserveType;
+extern OBJECT_TYPE ObpIoCompletionReserveType;
 
 /* --- The object header ---------------------------------------------------- */
 
@@ -433,5 +440,29 @@ NTSTATUS ObProbeObjectAttributes(const OBJECT_ATTRIBUTES *attributes);
  * authority rather than growing its own. A NULL string succeeds; callers that
  * require one reject it themselves. */
 NTSTATUS ObProbeUnicodeStringRead(const UNICODE_STRING *string);
+
+/* --- reserve.c ------------------------------------------------------------ */
+
+struct KAPC;
+
+/* Take a UserApcReserve's pre-allocated APC block for a queue about to
+ * happen: resolve `handle` as one, mark the block in use, and hand it back
+ * with the reserve's reference held by the block itself. A reserve already
+ * carrying an APC is STATUS_INVALID_PARAMETER_2 and anything that is not a
+ * UserApcReserve is STATUS_OBJECT_TYPE_MISMATCH (server/object.c
+ * reserve_obj_associate_apc, reached from server/thread.c
+ * DECL_HANDLER(queue_apc)).
+ *
+ * The reference is what makes NtClose of the last handle safe while the APC
+ * is still queued — the block IS the object's storage, so the two cannot be
+ * separated until the block is released. */
+NTSTATUS ObpAcquireApcReserve(HANDLE handle, struct KAPC **apcOut);
+
+/* Give a reserve-backed APC block back: the binding is released and the
+ * reference the acquire took is dropped. Called ONLY by KiFreeUserApc, which
+ * is the one place a user-APC block is released whatever its storage
+ * (kernel/ke/apc.c) — the server releases the association from apc_destroy
+ * for the same reason. */
+void ObpReleaseApcReserve(struct KAPC *apc);
 
 #endif /* PROSKRNL_KERNEL_OB_OB_H */

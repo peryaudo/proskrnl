@@ -226,6 +226,9 @@ IMPLEMENTED = [
     "NtOpenTimer",
     "NtSignalAndWaitForSingleObject",
     "NtQueueApcThreadEx2",
+    # docs/21 W10: the reserve-object surface ntdll:thread stopped on.
+    "NtAllocateReserveObject",
+    "NtQueueApcThreadEx",
     "NtAlertResumeThread",
     "NtSetInformationToken",
     "NtFilterToken",
@@ -345,7 +348,8 @@ BANNER = """\
 #                        asking a thread to jump into a hostile address
 SCALAR_TYPES = {
     "ACCESS_MASK", "BOOL", "BOOLEAN", "DWORD", "EVENT_TYPE", "EXECUTION_STATE",
-    "LANGID", "LCID", "LONG", "NTSTATUS", "RTL_ATOM", "SECTION_INHERIT",
+    "LANGID", "LCID", "LONG", "MEMORY_RESERVE_OBJECT_TYPE", "NTSTATUS",
+    "RTL_ATOM", "SECTION_INHERIT",
     "SECURITY_INFORMATION", "SHUTDOWN_ACTION", "SIZE_T", "TIMER_TYPE",
     "TOKEN_TYPE", "ULONG", "ULONG_PTR", "WAIT_TYPE", "int",
 }
@@ -490,12 +494,6 @@ TORTURE_PARKED = {
         "a process-creation flag outside the three built ones is unbuilt "
         "(kernel/ps/process.c), so a saturated flag word refuses as unbuilt",
     ),
-    "NtQueueApcThreadEx2": (
-        "*",
-        "a non-NULL ApcReserve handle is unbuilt (kernel/ps/thread.c), and "
-        "the sweep has no NULL handle to offer - NULL names the caller itself "
-        "for other services",
-    ),
     "NtOpenProcess": (
         "O+",
         "a named open - any non-NULL ObjectName - is unbuilt "
@@ -540,8 +538,12 @@ def argument_kind(name: str, index: int, spelling: str) -> str:
     # Wine spells a few arguments with a parameter NAME ("HANDLE ThreadHandle");
     # drop it, and the const/whitespace noise with it.
     text = re.sub(r"\s+", " ", spelling.replace("const", " ")).strip()
-    text = re.sub(r"\s*\*", "*", text)
-    if " " in text and not text.endswith("*"):
+    # Bind any `*` to the TYPE first, so a NAMED pointer argument
+    # ("HANDLE *handle") splits the same way an unnamed one does — without
+    # this, the name comes back glued to the type and the spelling looks
+    # unclassified.
+    text = re.sub(r"\s*\*\s*", "* ", text).strip()
+    if " " in text:
         text = text.split(" ")[0]
     base = text.rstrip("*")
     pointer = text.endswith("*")
