@@ -691,15 +691,38 @@ ntdll_test.exe:path
 #     :2185/:2205/:2356/:2357/:2359/:2366/:2369 removed and no other line
 #     moved.
 #
-#     WHAT IS LEFT, per-line histogram of the 22 (19 failed + 3 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 19,
+#     WHAT A FILE HANDLE IS CALLED IS NOW BUILT: 22 -> 20, the two at :2849
+#     and :2881. Both are NtQueryObject(ObjectNameInformation) on an UNNAMED
+#     pipe end, which must be STATUS_OBJECT_PATH_INVALID; proskrnl answered
+#     SUCCESS with an EMPTY name — and did so for every FILE handle in the
+#     system, because IoFileObjectType had no OBJECT_TYPE.queryName hook and
+#     Ob's generic walk finds no name for an object that was never linked into
+#     the namespace. The DEVICE is linked; everything past it belongs to that
+#     device, so the name is composed in ONE place (kernel/io/file.c
+#     IopQueryFileObjectName: the device object's own name plus the
+#     volume-relative path the FS's QueryName already builds for
+#     FileNameInformation), and a filesystem's only say is whether its files
+#     are in a namespace at all (IO_VFS_OPS.namedInObjectNamespace, TRUE for
+#     fat32 and npfs). A device that HAS a namespace but no path for THIS file
+#     refuses; a device with no namespace answers the empty name, which is not
+#     a gap but the oracle's own no_get_full_name reply (the console objects
+#     carry it). Landed in kernel/{io/file.c,ob/{ob.h,handle.c}}, pinned by
+#     tests/ntapi/sem_pipe/object_name.c; docs/21 W11, docs/03 "What a FILE
+#     handle is called in the object namespace".
+#     2378 tests executed, 32 todo markers and 0 flaky before and after, and a
+#     line-by-line histogram diff shows exactly :2849 and :2881 removed with no
+#     other line moved — nothing was hiding behind them (docs/21 §4 trap 2 does
+#     not apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 20 (17 failed + 3 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 17,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
 #     and docs/21 §4 trap 4 says the loudest is usually the consequence:
-#       -  4  test_empty_name — what is left of the `\Device\NamedPipe`
-#             device-root surface, and it is TWO items with nothing shared
-#             between them (the ioctl ladder that was the third is built):
+#       -  2  test_empty_name — what is left of the `\Device\NamedPipe`
+#             device-root surface, and it is ONE item (the ioctl ladder and the
+#             ObjectNameInformation hook that were the other two are built):
 #               * :2810 and :2787 both need the device told from its root
 #                 DIRECTORY, and neither is an npfs item. :2810: a NAMED
 #                 create relative to a handle on `\Device\NamedPipe` (no
@@ -719,21 +742,11 @@ ntdll_test.exe:path
 #                 tell them apart; ObpLookupName hands the FS an empty
 #                 remainder for both. That is docs/21 W7's parser question —
 #                 the same one `\??\C:` vs `\??\C:\` asks, and W7's `\\.\c:`
-#                 blocker — so those two are ONE kernel/ob item.
-#               * :2849 and :2881 are NtQueryObject(ObjectNameInformation) on
-#                 an unnamed pipe end, which must be STATUS_OBJECT_PATH_INVALID
-#                 (server/named_pipe.c named_pipe_get_full_name, whose
-#                 default_get_full_name returns NULL for an object with no
-#                 name). proskrnl answers SUCCESS with an EMPTY name — and the
-#                 subject is every FILE handle, not pipes: IoFileObjectType has
-#                 no OBJECT_TYPE.queryName hook (kernel/ob/ob.h), so Ob's
-#                 generic namespace walk finds no name for any file object and
-#                 reports every one of them as nameless. That is Art. 12's
-#                 fabricated-plausible answer with no stub in it, the same
-#                 shape W12's ObjectNameInformation-on-a-key finding had, and
-#                 the fix is that document's third hook applied to the fourth
-#                 type. NOT scoped with the item above on purpose: it changes
-#                 what every file handle answers.
+#                 blocker — so those two are ONE kernel/ob item. And the
+#                 ObjectNameInformation hook above did NOT move them, which is
+#                 worth recording: proskrnl now reports `\Device\NamedPipe\`
+#                 for the device root exactly as the oracle does, because it
+#                 composes the DIRECTORY's answer — the one spelling it has.
 #       -  5  test_async_cancel_on_handle_close (:3114x4, :3111x1) — what a
 #             CLOSE does to a pended request's completion packet. All five
 #             carry the context `other_process 1, i 5` and that is the whole
