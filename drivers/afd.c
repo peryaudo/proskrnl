@@ -2106,6 +2106,13 @@ static NTSTATUS AfdSendCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
             pbuf_free(p);
         }
         sock->bound = sock->bound || err == ERR_OK; /* sendto auto-binds */
+        /* Deliver queued loopback frames before the verb returns: the
+         * peer's readiness must be observable the instant send() comes
+         * back (the oracle's loopback is synchronous — ws2_32:afd
+         * test_read_write enum-selects FD_READ right after send, and on
+         * the uniprocessor dispatcher the netd thread may not have run
+         * yet). Wire tx still belongs to netd (NetdWake below). */
+        netif_poll_all();
         NetdLeaveLwip();
         NetdWake();
         if (data != 0)
@@ -2156,6 +2163,10 @@ static NTSTATUS AfdSendCommon(PAFD_SOCKET sock, PFILE_OBJECT file, IO_CONTROL_CO
     {
         tcp_output(sock->pcb.tcp);
     }
+    /* Loopback delivery happens-before the verb returns (the UDP branch's
+     * comment): the peer's FD_READ edge is latched by the recv callback
+     * under this same seam, so the caller's very next syscall sees it. */
+    netif_poll_all();
     NetdLeaveLwip();
     NetdWake();
     if (done == length)
