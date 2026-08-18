@@ -180,6 +180,11 @@ fi
 # M10: the TEMP/TMP directory the default environment points at.
 mkdirp /windows
 mkdirp /windows/temp
+# The USERPROFILE directory the default environment points at, and the
+# ProfilesDirectory above it (kernel/ps/peb.c, kernel/cm/registry.c). On the
+# oracle wineboot creates it; there is no wineboot on a CUI image.
+mkdirp /users
+mkdirp /users/wine
 echo "mkimage: copying $LIMINE_SHARE/BOOTX64.EFI -> ::/EFI/BOOT/BOOTX64.EFI (optional)" >&2
 mcopy   -i "$IMG@@$ESP_OFF" "$LIMINE_SHARE/BOOTX64.EFI"     ::/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 

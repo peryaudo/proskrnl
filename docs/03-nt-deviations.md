@@ -840,6 +840,33 @@ boundary symbols winebuild would have emitted supplied by
     zone's plain `Std`. With the file absent the two APIs therefore answer
     different strings for the same zone, which is `kernel32:time` :990-:1008
     and is made entirely of a file the oracle's prefix has.
+- **The USER PROFILE is seeded, and it is THREE statements of one fact that
+  have to agree.** `HKLM\…\CurrentVersion\ProfileList` gets
+  `ProfilesDirectory` = `C:\users` (`REG_EXPAND_SZ`, the type and the value
+  shell32's `_SHGetProfilesValue` writes into the oracle's prefix) and, under
+  a subkey named by the fixed Se identity's SID, `ProfileImagePath` =
+  `C:\users\wine` (`REG_SZ`, wineboot's `update_user_profile`);
+  `kernel/ps/peb.c`'s default environment gets `USERPROFILE=C:\users\wine`;
+  and `tools/mkimage.sh` bakes the directory. **The three cannot be split**:
+  userenv's `GetUserProfileDirectoryW` *composes* its answer as
+  `ProfilesDirectory` + `\` + the account name, `kernel32:environ`'s
+  `test_Predefined` asserts that answer equals `%USERPROFILE%`, and the
+  account name is `WINEUSERNAME` (advapi32's `GetUserNameW` is an environment
+  read, and `LookupAccountSidW`'s RID-1000 arm calls it) — which the same
+  default environment already fixes at `wine`. Seeding the key alone would
+  have moved the pair's failure from "no profile directory" to "the two
+  disagree" and changed nothing about the count.
+  **`Flags` beside `ProfileImagePath` is deliberately absent** and so are
+  `Public`/`ProgramData` beside `ProfilesDirectory`: nothing in the baked
+  stack reads them (Art. 5), and on the oracle the last two also mint
+  `ALLUSERSPROFILE`/`PUBLIC` environment variables out of the half of ntdll
+  proskrnl replaces (`dlls/ntdll/unix/env.c` `add_registry_environment`), so
+  seeding them without the directories and the variables would describe
+  folders that are not there. Pinned by
+  `tests/ntapi/sem_reg/user_profile.c` — which accepts either string type for
+  `ProfilesDirectory` on purpose: `GetProfilesDirectoryW` expands whatever it
+  finds and no consumer reads the type, so `REG_EXPAND_SZ` above is
+  provenance rather than a contract. docs/21 W17.
 - **GlobalMemoryStatusEx's three sources answer for real** (`kernel/ps/
   query.c`): `MmNumberOfPhysicalPages`, the new
   `SystemPerformanceInformation` class, and

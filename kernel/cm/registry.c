@@ -2705,6 +2705,14 @@ static void CmpSeedBinaryValue(PCMP_KEY_NODE node, PCWSTR name, const void *data
     CmpSeedValue(node, name, REG_BINARY, data, bytes);
 }
 
+/* REG_EXPAND_SZ — the same payload as CmpSeedStringValue under a type that
+ * tells the reader to run it through ExpandEnvironmentStrings first. */
+static void CmpSeedExpandStringValue(PCMP_KEY_NODE node, PCWSTR name, PCWSTR data)
+{
+    ULONG bytes = (ULONG)(KiWideStringLength(data) + 1) * sizeof(WCHAR);
+    CmpSeedValue(node, name, REG_EXPAND_SZ, data, bytes);
+}
+
 /* --- the QEMU boot flags (HACK-006) ---------------------------------------
  *
  * One row per `-fw_cfg name=<item>,string=<decimal>` the QEMU command line
@@ -2909,6 +2917,43 @@ void CmInitialize(void)
      * when it is absent. Full HKCU population stays deferred (docs/03
      * "CUI-1 firstboot notes"); this is only the root the open needs. */
     CmpEnsureSkeletonKey(WSTR("User\\S-1-5-21-0-0-0-1000"));
+
+    /* The USER PROFILE the same identity owns. Consumer: kernel32:environ's
+     * test_Predefined, which resolves GetUserProfileDirectoryA and requires it
+     * to agree with %USERPROFILE% — and userenv composes that answer out of
+     * this key: GetProfilesDirectoryW reads `ProfilesDirectory` here and
+     * GetUserProfileDirectoryW appends the account name LookupAccountSidW
+     * gives the token's SID (third_party/wine/dlls/userenv/userenv_main.c).
+     * With the key absent the call is ERROR_FILE_NOT_FOUND and the two
+     * assertions behind it never run.
+     *
+     * On the oracle this is prefix furniture with two writers: shell32 writes
+     * `ProfilesDirectory` on first query, as the system directory's drive plus
+     * `users` and as REG_EXPAND_SZ (dlls/shell32/shellpath.c
+     * _SHGetProfilesValue, reached from wineboot's SHGetSpecialFolderPathW),
+     * and wineboot writes `ProfileImagePath` REG_SZ under a subkey named by
+     * the token's user SID (programs/wineboot/wineboot.c update_user_profile).
+     * shell32 is the GUI stack and is off every CUI image (Art. 7), so
+     * firstboot runs here and that half of it never does — which is why this
+     * is seeded rather than left to the prefix.
+     *
+     * The value has to AGREE with the default environment's USERPROFILE
+     * (kernel/ps/peb.c) and with the account name that environment's
+     * WINEUSERNAME gives, because the equality of those two answers is what
+     * the pair asserts; the three are one statement of one identity's profile
+     * and `C:\users\wine` is where they meet. `Flags` beside ProfileImagePath
+     * is deliberately absent: nothing in the baked stack reads it (Art. 5).
+     * The subkey names the SAME identity as the HKCU root above — Se mints it
+     * (kernel/se/token.c), and what holds the two spellings together is not
+     * that they were typed to match: the pin resolves the SID through
+     * RtlFormatCurrentUserKeyPath, the one path every HKCU open already goes
+     * through, so a drift is a failing assertion rather than a silent
+     * mismatch. Pinned by tests/ntapi/sem_reg/user_profile.c. */
+    seeded = CmpEnsureSkeletonKey(
+        WSTR("Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList"));
+    CmpSeedExpandStringValue(seeded, WSTR("ProfilesDirectory"), WSTR("C:\\users"));
+    seeded = CmpEnsureSkeletonKeyUnder(seeded, WSTR("S-1-5-21-0-0-0-1000"));
+    CmpSeedStringValue(seeded, WSTR("ProfileImagePath"), WSTR("C:\\users\\wine"));
 
     /* The time-zone table kernelbase resolves a zone out of. Ring 3 asks the
      * kernel for the zone (kernel/ps/query.c answers
