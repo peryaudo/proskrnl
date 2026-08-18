@@ -3065,19 +3065,72 @@ number settled it. **Trap 3 also ran backwards here**: the block called the
 is bit-for-bit unchanged with the three fixed.
 
 **The crash is diagnosed and is the pair's next item**, and it is `mm/`, not
-`ob/`. `:4735` returns into `test_stack_commit`, which reserves 4 MiB, commits
-only the top page `PAGE_GUARD`, **rewrites its own TEB**
-`DeallocationStack`/`StackBase`/`StackLimit` at it and runs a function on it
-(`virtual.c:2486-:2499`). The oracle decides "is this a stack?" from the TEB
-(`dlls/ntdll/unix/virtual.c` `is_inside_thread_stack` reads
-`DeallocationStack..StackBase`); `kernel/mm/fault.c` decides it from the
-kernel's own `ETHREAD.stackAllocationBase`/`stackBase`, which a stack user
-mode invented is not inside. So the guard touch answers
-`STATUS_GUARD_PAGE_VIOLATION` instead of growing, and DELIVERING that
-exception writes one page below the guard and faults for real. Whoever takes
-it should note that the two authorities disagree on purpose elsewhere —
-believing the TEB is believing user mode — so this is a decision about which
-one the growth path may trust, not a one-line swap.
+`ob/`. That item is W20 below, and it is DONE.
+
+### W20 — Which region the guard-page fault path GROWS (**DONE — `kernel32:virtual` reaches its summary line, and the pair is now category 2**)
+
+`kernel32:virtual`'s `0xc0000005` is gone and the pair runs to the end of the
+module for the first time: **30865 tests executed, 142 todo, 1 skipped, 1
+failure**, exit `0x1`. The one failure is the `:1465` todo floor W19 left —
+a `todo_wine` proskrnl passes — so **there is no kernel work left in this pair
+and its manifest block no longer carries `# TODO: Implement`.** The
+deciding constraint is G9: the only changes that would turn it green are
+dropping the `todo_wine` in the pinned tree (patching the oracle to make a
+divergence pass — Art. 10 forbids it) or regressing
+`NtAreMappedFilesTheSame`.
+
+The cause was exactly as W19 diagnosed it, which is worth saying because this
+document more often records the opposite: `:4735` returns into
+`test_stack_commit`, which reserves 4 MiB, commits only the top page
+`PAGE_GUARD`, **rewrites its own TEB**
+`DeallocationStack`/`StackBase`/`StackLimit` at it and runs a function there
+(`virtual.c:2486-:2499`). `MiHandleUserFault` answered "is this a stack?" from
+`ETHREAD.stackAllocationBase`/`stackBase`, so the guard touch was refused, and
+delivering that exception wrote one page below the guard and faulted for real.
+It now reads `DeallocationStack` and `Tib.StackBase` out of the FAULTING
+thread's TEB and applies the oracle's own comparison (`is_inside_thread_stack`,
+`dlls/ntdll/unix/virtual.c`: `ptr > start && ptr <= end` on the fault address
+rounded down). Pinned by `tests/ntapi/sem_mm/teb_stack_growth.c`; `docs/03`
+"Which region the guard-page fault path GROWS" has the rules.
+
+Four things worth carrying:
+
+- **"Believing the TEB is believing user mode" is true and is not an
+  objection**, which is the half W19 left open as a decision. The entire
+  action behind the growth arm is committing one page of the caller's OWN
+  address space and writing the caller's OWN TEB — both things the caller can
+  do for itself with `NtAllocateVirtualMemory`. There is no privilege on the
+  other side of the trust, so the "authority" being conceded is only a
+  process's right to say where its own stack is, which is the only definition
+  NT has of one. The generalisable form: **an authority question is only a
+  security question when the two answers differ in what the caller could have
+  done alone.**
+- **The trap-2 arithmetic came back the OTHER way, and that is a measurement,
+  not luck.** A pair that stops has not been measured, and this document's own
+  rule of thumb is that the real count is an order of magnitude above the
+  reported one. Here it is 1 → 1: the histogram has the same single line, the
+  142 todo markers are identical per line, and everything `test_stack_commit`
+  and the rest of the module execute was already correct. The crash was the
+  only thing standing there. Removing a stop is still the only way to know
+  that — the prediction was worth exactly as much as it usually is.
+- **The oracle refuted the pin's first draft, and what it refuted was the test
+  design rather than a rule.** The draft used four-page regions, so its touch
+  landed inside the oracle's GUARANTEED SPACE — `grow_thread_stack` splits on
+  `page >= start + page_size + max(TEB.GuaranteedStackBytes, 2 * page_size)`
+  and the low arm commits the guarantee and raises **`STATUS_STACK_OVERFLOW`**
+  instead of pushing another guard. The draft's handler did not answer that
+  code, so the SEH dispatcher ran, found the registration chain outside the
+  synthetic stack the TEB was claiming, and killed the process with no output
+  at all. proskrnl does not implement that arm (`docs/03`, and nothing in the
+  frontier convicts it — `test_stack_commit` stops one page above where the
+  guarantee begins); the pin's cases now sit clear of it and count the code
+  separately so they cannot drift back in.
+- **A test that lies about its own stack has to keep the lie SHORT, and the
+  reason is the kernel it is testing.** Inside the window the real stack is
+  not a stack, so any call that reaches a fresh page takes the refusal arm —
+  on a kernel that grows on demand, that is a fault whose delivery writes to
+  the page that was not committed. The pin touches the frames it will use
+  before opening the window, and asserts nothing until it has closed it.
 
 ---
 
@@ -3116,9 +3169,15 @@ Otherwise:
   here touches `docs/17` §10 step 6's one remaining door (file-backed data
   writecopy).
 - **No SMP is needed.** `docs/18` §13's four gates are not touched. Nothing
-  in the backlog is a throughput problem. The nearest thing is
-  `kernel32:virtual`'s 285-second runtime, and slowness only becomes a
-  constitutional argument when it stops a suite from reaching a verdict.
+  in the backlog is a throughput problem. The nearest thing used to be
+  `kernel32:virtual`'s 285-second runtime, and that number is stale: with its
+  wedge and its crash gone the pair finishes the whole 30865-test module
+  inside a 9.6 s boot (W20). Slowness only becomes a constitutional argument
+  when it stops a suite from reaching a verdict, and this one no longer does.
+  What SMP *would* buy here is coverage, not speed: `virtual.c:4735` skips
+  `test_store_buffer`'s litmus tests on a single-processor system, which is
+  the pair's whole 71-test gap to the oracle — a uniprocessor kernel cannot
+  run them, and that is Art. 3 working as intended rather than a defect.
 - **No second allocator is needed.** Every snapshot and ledger above comes
   from the one pool.
 - **No amendment is needed for async, and it is important to say why.**
@@ -3173,6 +3232,9 @@ Pairs and framings that will consume effort and unblock nothing.
    spinning on `pipe.c:747` at 1 failed assertion and, with the spin ended
    (W11), reports **123** across 2386 executed tests. Three for three: assume
    a stopped pair's real count is an order of magnitude above what it reports.
+   **The fourth measurement came back 1 → 1** (`kernel32:virtual`'s crash,
+   W20), so the rule of thumb is a prior and not a law — what does not change
+   is that only removing the stop can tell you which case you are in.
 
 3. **A crash is usually a cascade, not the bug — and "zero failures before
    the crash" does not make it one.** `kernel32:volume` and
@@ -3289,7 +3351,8 @@ Pairs and framings that will consume effort and unblock nothing.
 - `fs/npfs/pipe.c` — `NpfsRead` pends (W4c, done); `NpfsWrite` still blocks,
   and is the same shape if a consumer ever convicts it. **It grew the
   `IOP_PENDING_REQUEST` engine; do not add a second one.**
-- `kernel/mm/` — `virtual.c` and `section.c` (W5). **Danger zone.**
+- `kernel/mm/` — `virtual.c` and `section.c` (W5), `fault.c` (W20, done).
+  **Danger zone.**
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — **danger zone**, but no longer
   a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
   dead half is re-parked.
