@@ -1375,7 +1375,7 @@ subsystem (`NtQuerySection`, `MapViewOfFile`) that had nothing wrong with it.
 
 The remaining 12 are four small subjects and the manifest block has them.
 
-### W7 — Volume furniture (**PARTLY DONE**)
+### W7 — Volume furniture (**PARTLY DONE — the name-parser half is done and `ntdll:pipe` is now category 2**)
 
 `\DosDevices`, `\Device\MountPointManager` and the boot volume's
 `\??\Volume{...}` name have landed. `kernel32:drive` is green and
@@ -1410,14 +1410,48 @@ it names itself after; answering no parks `kernel32:volume:2022` and
 do not read the oracle's green leg as a spec for a FAT32 volume — it is a
 measurement of Wine-on-ext4.
 
+**The NAME-PARSER half is DONE**, and it landed for the other pair that wanted
+it. `ObpLookupName`'s parse-object handoff distinguishes "the walk consumed the
+whole path" (`Buffer == 0`) from "the name ended AT the device's separator"
+(a live `Buffer`, `Length == 0`) — the oracle's own `if (!name)` /
+`if (!name->len && name->str)` pair, `server/named_pipe.c`
+`named_pipe_device_lookup_name`. npfs consumes it (`ntdll:pipe` 4 → 2, both
+`test_empty_name` assertions), pinned by `tests/ntapi/sem_pipe/device_root.c`,
+recorded in `docs/03` "Two spellings of a device root".
+
+Three things worth carrying:
+
+- **The fact already existed in the loop and was dropped on the way out.**
+  `trailingEmpty` is computed for the symbolic-link arm, so a reparse can
+  rebuild `\??\C:\` with its separator intact — the walk knew the difference
+  and the RETURN did not. What this document called a parser *change* was a
+  parser *leak*, and looking for the missing computation instead of for the
+  discarded one is what would have made it a long item.
+- **It is a POINTER and not a length, so the transcription has to be the
+  oracle's.** A remainder can be absent or present-and-empty and a
+  `UNICODE_STRING` has exactly one field left to say which. An implementation
+  that reached for a new out-parameter or a flag on the FILE_OBJECT would work
+  and would put the fact in a second place; every FS reads it off the one parse
+  instead.
+- **npfs decides it ONCE, at create.** Two FCBs, two objects, mirroring the
+  oracle's two op tables — and `NpfsIsDeviceFile` is what the three consuming
+  rules ask, rather than any of them re-reading a path the handle no longer
+  has. The rules are three different functions' refusals in the oracle
+  (`named_pipe_dir_ioctl`, `named_pipe_link_name`, `no_lookup_name`), which is
+  why the create refuses `STATUS_OBJECT_NAME_INVALID` and the OPEN refuses
+  `STATUS_OBJECT_NAME_NOT_FOUND` for the same fact — and why the pin measures
+  the eight-row FSCTL matrix through both handles again: a split implemented as
+  "the device refuses more things" passes `:2787` and fails that.
+
 **The raw-device half is real kernel work, and it is bigger than its count.**
 `kernel32:volume`'s remaining `:632`/`:675` are each a `win_skip` standing in
 front of a whole test function, so the manifest's failure count hides ~31
-assertions behind two. `:632` (`\\.\c:`) is additionally **blocked on a
-name-parser change**: `kernel/ob/namespace.c` hands the FS an empty remainder
-for both `\??\C:` and `\??\C:\`, so nothing downstream can tell the volume
-device from its root directory. `:675` (`\\.\PhysicalDrive0`) needs no parser
-change but carries a pin hazard — the name exists on the oracle only because
+assertions behind two. `:632` (`\\.\c:`) is no longer blocked on the parser:
+`fs/fat32` now RECEIVES the distinction and does not read it, because there is
+no volume DEVICE object for `\??\C:` to open. Building that plus its
+`IOCTL_VOLUME_*` surface is what is left, and the parse change is inert for
+fat32 until it exists. `:675` (`\\.\PhysicalDrive0`) needs no parser change
+either but carries a pin hazard — the name exists on the oracle only because
 wineserver enumerated the *host's* disks. The manifest block has the full
 triage.
 
@@ -1526,7 +1560,7 @@ the "subtly wrong yet still runs" zone with multi-month bug latency. A
 change that makes the hang stop is not a fix; only a differential test
 convicts.
 
-### W11 — npfs (**the create/open/listen refusals are DONE**)
+### W11 — npfs (**DONE — `ntdll:pipe` is at its todo floor and is now category 2**)
 
 `ntdll:pipe`'s 19 failures were **five refusals npfs never made**, and all
 five are now implemented and pinned by
@@ -2593,6 +2627,27 @@ Four things worth carrying:
   both runners agree. Widening a pin to cover what it stumbled over is how an
   item stops being bisectable (G13).
 
+**`ntdll:pipe` IS AT ITS FLOOR (4 → 2) AND IS NOW CATEGORY 2**, which closes
+this item. The last two assertions a kernel change could reach were
+`test_empty_name`'s `:2787` and `:2810`, and both are W7's device-root parser
+item, landed there. What remains is **two `todo_wine` assertions that proskrnl
+PASSES** (`:2969`, `test_pipe_names` entries 0 and 1: `\Device\NamedPipe` and
+`\Device\NamedPipe\` as `NtCreateNamedPipeFile` NAMES). The test wants
+`STATUS_OBJECT_NAME_INVALID`, proskrnl answers exactly that, and the pinned
+oracle answers `STATUS_OBJECT_TYPE_MISMATCH` — so winetest scores both as
+"succeeded inside todo", i.e. as failures. Turning the pair green would mean
+answering `0xc0000024` where NT answers `0xc0000033`. The pair's manifest block
+lost its `TODO: Implement` for that reason, the third pair in this document to
+end that way after `kernel32:virtual` (W20) and `kernel32:profile` (W14).
+
+**The residue prints as a GREEN log**, and that is worth carrying past this
+pair: there is no "Test failed" line anywhere in the run, because both failures
+are succeeded-todos. A triage grep that counts `Test failed` reads `ntdll:pipe`
+as 0 and the summary line reads 2 — the same reading error `§4` trap 2's
+neighbour (W16) recorded from the other direction, and the reason every count in
+this document is taken from the `[KTEST]` verdict and the summary rather than
+from the assertion lines.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
@@ -3416,5 +3471,7 @@ Pairs and framings that will consume effort and unblock nothing.
   a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
   dead half is re-parked.
 - `kernel/ke/{wait,apc}.c` — W10. **Danger zone.**
-- `fs/npfs/pipe.c` — W11. `kernel/cm/registry.c` — W12, W13.
+- `fs/npfs/pipe.c` — W11, done. `kernel/cm/registry.c` — W12, W13.
+- `kernel/ob/namespace.c` — W7's parse remainder (done); the volume DEVICE
+  object the other half of W7 needs would be `kernel/io/` + `fs/fat32/`.
 - `tests/winetest/manifest.txt` — the counts and the triage, always.

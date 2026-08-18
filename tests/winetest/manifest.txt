@@ -235,8 +235,16 @@ ntdll_test.exe:large_int
 #     proskrnl involvement, so it cannot convict the kernel.
 # ntdll_test.exe:om
 ntdll_test.exe:path
-# PARTLY FIXED, FIXABLE — the 19 npfs failures are GONE and the pair now
-#     stops one item further on, which is progress with a new frontier.
+# AT ITS TODO FLOOR — NOT FIXABLE WHILE PROSKRNL IS THE MORE NT-CORRECT
+#     RUNNER, and there is no `TODO: Implement` line below any more. The pair
+#     is down to 2 failures across 2378 tests executed, and both are todo_wine
+#     assertions that proskrnl PASSES (the last section of this block has the
+#     numbers and the argument). Everything below is the history that got it
+#     there, newest section last.
+#
+#     PARTLY FIXED, FIXABLE (as it then was) — the 19 npfs failures were GONE
+#     and the pair stopped one item further on, which is progress with a new
+#     frontier.
 #     What they were: five refusals npfs did not owe anybody an answer for,
 #     all five now implemented and pinned by
 #     tests/ntapi/sem_pipe/create_refusals.c (docs/21 W11) —
@@ -823,43 +831,46 @@ ntdll_test.exe:path
 #     line-by-line histogram diff removes exactly :725 with no other line
 #     moved — nothing was hiding behind it (docs/21 §4 trap 2 does not apply).
 #
-#     WHAT IS LEFT, per-line histogram of the 4 (2 failed + 2 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 2,
-#     and one that does not drop the console's redrawn first draft of a wrapped
-#     line double-counts — docs/21 W16). These are read off the assertions and
-#     grouped by test function; except where marked DIAGNOSED none of them is,
-#     and docs/21 §4 trap 4 says the loudest is usually the consequence:
-#       -  2  test_empty_name — what is left of the `\Device\NamedPipe`
-#             device-root surface, and it is ONE item (the ioctl ladder and the
-#             ObjectNameInformation hook that were the other two are built):
-#               * :2810 and :2787 both need the device told from its root
-#                 DIRECTORY, and neither is an npfs item. :2810: a NAMED
-#                 create relative to a handle on `\Device\NamedPipe` (no
-#                 trailing backslash) must be STATUS_OBJECT_NAME_INVALID, and
-#                 proskrnl now answers SUCCESS where it used to answer
-#                 0xc0000024 — i.e. it accepts where NT refuses, having
-#                 previously refused everything (its failure MODE changed with
-#                 the relative-root item above rather than its count). :2787:
-#                 FSCTL_PIPE_WAIT on the DEVICE must be
-#                 STATUS_ILLEGAL_FUNCTION, where on the directory it is the
-#                 name lookup (OBJECT_NAME_NOT_FOUND for an absent pipe —
-#                 that half already passes); it is the ONE arm where
-#                 named_pipe_dir_ioctl does not tail-call
-#                 named_pipe_device_ioctl, and the rest of that ladder is
-#                 built (see above). Both roots open through NpfsVfsCreate's
-#                 root arm and carry no pipe state, so nothing downstream can
-#                 tell them apart; ObpLookupName hands the FS an empty
-#                 remainder for both. That is docs/21 W7's parser question —
-#                 the same one `\??\C:` vs `\??\C:\` asks, and W7's `\\.\c:`
-#                 blocker — so those two are ONE kernel/ob item. And the
-#                 ObjectNameInformation hook above did NOT move them, which is
-#                 worth recording: proskrnl now reports `\Device\NamedPipe\`
-#                 for the device root exactly as the oracle does, because it
-#                 composes the DIRECTORY's answer — the one spelling it has.
-#       -  2  subtest_pipe_name (:2969, succeeded-todo).
-#     So everything a KERNEL change can still reach in this pair is the one
-#     device-root parser item above, and it is shared with kernel32:volume.
-# TODO: Implement
+#     WHAT WENT SINCE THAT (docs/21 W7, the device-root parser item): the two
+#     test_empty_name assertions, 4 -> 2. `\Device\NamedPipe` and
+#     `\Device\NamedPipe\` are now two different objects, as they are on the
+#     oracle (named_pipe_device_file vs named_pipe_dir), and the fact that
+#     tells them apart is the one ObpLookupName used to throw away — whether
+#     ANY name remained after the device component (the oracle's
+#     `if (!name)` / `if (!name->len && name->str)`, named_pipe_device_lookup_
+#     name). Ob now hands the FS a NULL remainder for the first spelling and a
+#     present, empty one for the second; npfs marks the FILE_OBJECT with the
+#     matching FCB and asks that instead of re-reading a path it no longer has.
+#     :2787: FSCTL_PIPE_WAIT is STATUS_ILLEGAL_FUNCTION on the DEVICE, above
+#     both the name lookup and the buffer check the DIRECTORY makes first.
+#     :2810: a NAMED create relative to a device-file handle is
+#     STATUS_OBJECT_NAME_INVALID (named_pipe_link_name refuses a parent that is
+#     neither the device nor its directory), where the same call under the
+#     directory succeeds — the winetest's own :2932, which still passes.
+#     Pinned by tests/ntapi/sem_pipe/device_root.c (which also pins the named
+#     OPEN's different refusal, STATUS_OBJECT_NAME_NOT_FOUND, and the two
+#     roots' ObjectNameInformation names); docs/03 "Two spellings of a device
+#     root". 2378 tests executed and 33 todo markers before and after, and a
+#     line-by-line histogram diff removes exactly :2787 and :2810 with no other
+#     line moved — nothing was hiding behind them (docs/21 §4 trap 2 does not
+#     apply here).
+#
+#     WHAT IS LEFT IS 2, AND IT IS THE FLOOR — NOT A WORK ITEM. Both are
+#     subtest_pipe_name at :2969 (test_pipe_names entries 0 and 1,
+#     `\Device\NamedPipe` and `\Device\NamedPipe\` as NtCreateNamedPipeFile
+#     NAMES), and both are todo_wine assertions that proskrnl PASSES: the test
+#     wants STATUS_OBJECT_NAME_INVALID, proskrnl answers exactly that, and the
+#     pinned oracle answers STATUS_OBJECT_TYPE_MISMATCH — so winetest scores
+#     them as "Test succeeded inside todo block", i.e. as failures. Making the
+#     pair green would mean answering 0xc0000024 where NT answers 0xc0000033,
+#     which is tuning to an oracle annotation instead of to a contract. Same
+#     shape as kernel32:virtual:186 and kernel32:profile:229; the TODO line is
+#     gone for that reason, and this pair is now category (2). Re-open it only
+#     if the oracle's answer changes.
+#     (The summary line reports 2 failures and the serial log contains NO
+#     "Test failed" line at all — both residues print as "Test succeeded
+#     inside todo block". A grep for the former now reads this pair as green;
+#     read the summary line, as earlier revisions of this block warned.)
 # ntdll_test.exe:pipe
 ntdll_test.exe:port
 # TRIAGED, FIXABLE. 160 failures across 1042 tests, down from 172 across the
@@ -1621,11 +1632,13 @@ kernel32_test.exe:timer
 #         \??\C: to the volume's ROOT DIRECTORY, so kernelbase's implied
 #         FILE_NON_DIRECTORY_FILE makes it STATUS_FILE_IS_A_DIRECTORY, which
 #         maps to ERROR_ACCESS_DENIED. On NT \??\C: is the VOLUME DEVICE and
-#         \??\C:\ is the root directory. BLOCKED ON A NAME-PARSER CHANGE:
-#         kernel/ob/namespace.c hands the FS an EMPTY remainder for both
-#         spellings (the device-terminating '\' is consumed as the separator,
-#         :349-:371), so the FS cannot tell them apart and the distinction
-#         has to be preserved in Ob's one parse — the same engine W3 pinned.
+#         \??\C:\ is the root directory. THE NAME-PARSER HALF IS NOW DONE and
+#         this item no longer waits on it: kernel/ob/namespace.c hands the FS
+#         a NULL remainder for \??\C: and a present, EMPTY one for \??\C:\
+#         (docs/21 W7, landed for ntdll:pipe's device root and pinned there).
+#         fs/fat32 does not read the difference yet — nothing is wrong with
+#         the parse, there is simply no volume DEVICE object for the first
+#         spelling to open, and building one plus its ioctls is what is left.
 #         Opening it exposes test_disk_extents (~6 assertions,
 #         IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS).
 #       - :675, CreateFile("\\.\PhysicalDrive0") -> error 2. There is no such
