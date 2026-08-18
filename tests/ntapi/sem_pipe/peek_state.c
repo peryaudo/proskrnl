@@ -399,13 +399,12 @@ static void test_byte_type_never_overflows(void)
 
 /* §4 — a CLIENT that outlived its server still knows its pipe's TYPE.
  *
- * The oracle's client holds its own reference to the named pipe until it is
- * destroyed (server/named_pipe.c pipe_end_destroy's `if (pipe_end->pipe)
+ * Every end holds its own reference to the named pipe until it is destroyed
+ * (server/named_pipe.c pipe_end_destroy's `if (pipe_end->pipe)
  * release_object`), so the message-type overflow rule survives the server's
- * close. proskrnl drops NPFS_INSTANCE.pipe when the SERVER's handle goes —
- * the same older lifetime gap sem_pipe/pipe_file_info.c tags on
- * AllocationSize, and the only one of ntdll:pipe's peek assertions this
- * file's rules cannot reach (docs/03 "A pipe end's own file information").
+ * close. The whole of that lifetime — and what the same close DOES take away,
+ * the pipe's name — is sem_pipe/pipe_lifetime.c; this case is here because
+ * the rule it exercises is the peek ladder's.
  */
 static void test_closing_client_keeps_the_type(void)
 {
@@ -440,13 +439,10 @@ static void test_closing_client_keeps_the_type(void)
        (unsigned long)view->NamedPipeState);
     ok(view->ReadDataAvailable == 10, "closing-client peek avail %lu",
        (unsigned long)view->ReadDataAvailable);
-    todo_proskrnl
-    {
-        ok(status == STATUS_BUFFER_OVERFLOW, "closing-client truncated peek -> %08lx",
-           (unsigned long)status);
-        ok(view->MessageLength == 10, "closing-client peek message length %lu",
-           (unsigned long)view->MessageLength);
-    }
+    ok(status == STATUS_BUFFER_OVERFLOW, "closing-client truncated peek -> %08lx",
+       (unsigned long)status);
+    ok(view->MessageLength == 10, "closing-client peek message length %lu",
+       (unsigned long)view->MessageLength);
 
     NtClose(client);
 }
