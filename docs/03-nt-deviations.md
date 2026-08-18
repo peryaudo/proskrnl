@@ -3685,6 +3685,34 @@ is the same on both — the name ENDS with the file's path, a directory's name i
 its file's name minus the last component, and the whole length protocol — and
 says so rather than weakening. Pinned by `tests/ntapi/sem_pipe/object_name.c`.
 
+## A create-time security descriptor takes the same merge a set does
+
+`SeCaptureObjectSecurity` stored an `OBJECT_ATTRIBUTES.SecurityDescriptor` RAW.
+Its header claimed to be "the ONE create-time SD site (G11)" and said
+"token-defaulting of missing parts is `NtSetSecurityObject`'s job (no baked
+create passes a partial SD)" in the same breath. The oracle defaults at create
+too: `server/object.c` `create_object` and `create_named_object` both end with
+
+```c
+if (sd && !default_set_sd( obj, sd, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                                    DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION ))
+```
+
+— i.e. the same `set_sd_defaults_from_token` a `NtSetSecurityObject` runs, with
+every info bit on. So a create naming only a DACL comes back with the token's
+owner and primary group filled in, and one naming only a group gets the token's
+owner and default DACL. proskrnl now runs the same merge (`kernel/se/secobj.c`
+`SepApplySecurityDescriptor`, the one writer of a stored descriptor), and
+`SeCaptureObjectSecurity` takes the SLOT the blob lives in rather than an object
+header — which is what lets an object whose descriptor is NOT on its own header
+(a named pipe, below) use the one site instead of growing a second.
+
+The claim about partial SDs was also simply false by the time it was read:
+`CreateNamedPipeA(..., &sec_attr)` in `ntdll:pipe`'s `test_security_info`
+passes an owner-and-group SD with no DACL. Pinned by
+`tests/ntapi/sem_se/se_secobj.c`, whose discriminating case is exactly a
+partial one — an SD carrying every part is indistinguishable from a raw copy.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by

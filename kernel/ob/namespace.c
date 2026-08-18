@@ -608,7 +608,7 @@ NTSTATUS ObpCreateObjectWithHandle(POBJECT_TYPE type, ULONG bodySize,
     /* CUI-6: capture a create-time security descriptor onto the new object
      * (the create handle is granted the requested access without a self
      * ACE-check, as wineserver does; the DACL bites at open). */
-    status = SeCaptureObjectSecurity(header, attributes->SecurityDescriptor);
+    status = SeCaptureObjectSecurity(&header->securityDescriptor, attributes->SecurityDescriptor);
     if (!NT_SUCCESS(status))
     {
         ObDereferenceObject(parent);

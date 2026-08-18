@@ -151,74 +151,23 @@ NTSTATUS NtQuerySecurityObject(HANDLE handle, SECURITY_INFORMATION securityInfor
     return STATUS_SUCCESS;
 }
 
-NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInformation,
-                             PSECURITY_DESCRIPTOR descriptor)
+/* The merge (server/object.c set_sd_defaults_from_token): each part comes from
+ * the incoming SD when its info bit is set and the part is there, else from the
+ * stored SD, else (owner/group/dacl) defaults from the current process token.
+ * The control word starts from the INCOMING SD's control; stored non-PRESENT
+ * control bits do not survive a set.
+ *
+ * It is the ONE writer of a stored descriptor (Art. 11): a set and a create
+ * both land here, because the oracle's create-time arm is literally the same
+ * call with every info bit turned on (server/object.c create_object /
+ * create_named_object: `default_set_sd( obj, sd, OWNER|GROUP|DACL|SACL )`).
+ * `incoming` stays the caller's to free. */
+static NTSTATUS SepApplySecurityDescriptor(PVOID *slot, SECURITY_INFORMATION securityInformation,
+                                           PSEP_SECURITY_DESCRIPTOR incoming)
 {
-    if (descriptor == 0)
-    {
-        return STATUS_ACCESS_VIOLATION;
-    }
-
-    PSEP_SECURITY_DESCRIPTOR incoming;
-    NTSTATUS status = SepCaptureSecurityDescriptor(descriptor, &incoming);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
-
-    /* Demanding an owner/group part the SD does not carry is
-     * INVALID_SECURITY_DESCR (the unix layer's pre-check). */
-    if ((securityInformation & OWNER_SECURITY_INFORMATION) && incoming->ownerLength == 0)
-    {
-        MiFreePool(incoming);
-        return STATUS_INVALID_SECURITY_DESCR;
-    }
-    if ((securityInformation & GROUP_SECURITY_INFORMATION) && incoming->groupLength == 0)
-    {
-        MiFreePool(incoming);
-        return STATUS_INVALID_SECURITY_DESCR;
-    }
-    /* The unix layer forces the PRESENT bits for the parts being set. */
-    if (securityInformation & (SACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION))
-    {
-        incoming->control |= SE_SACL_PRESENT;
-    }
-    if (securityInformation & DACL_SECURITY_INFORMATION)
-    {
-        incoming->control |= SE_DACL_PRESENT;
-    }
-
-    /* Per-info-bit access requirements (server/handle.c set_security_object). */
-    ACCESS_MASK access = 0;
-    if (securityInformation &
-        (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION))
-    {
-        access |= WRITE_OWNER;
-    }
-    if (securityInformation & SACL_SECURITY_INFORMATION)
-    {
-        access |= ACCESS_SYSTEM_SECURITY;
-    }
-    if (securityInformation & DACL_SECURITY_INFORMATION)
-    {
-        access |= WRITE_DAC;
-    }
-    PVOID body;
-    status = ObReferenceObjectByHandle(handle, access, 0, ExGetPreviousMode(), &body, 0);
-    if (!NT_SUCCESS(status))
-    {
-        MiFreePool(incoming);
-        return status;
-    }
-    POBJECT_HEADER header = ObpGetHeader(body);
-    PSEP_SECURITY_DESCRIPTOR stored = header->securityDescriptor;
+    PSEP_SECURITY_DESCRIPTOR stored = *slot;
     PTOKEN token = SeCurrentToken();
 
-    /* The merge (server/object.c set_sd_defaults_from_token): each part
-     * comes from the incoming SD when its info bit is set and the part is
-     * there, else from the stored SD, else (owner/group/dacl) defaults from
-     * the current process token. The control word starts from the INCOMING
-     * SD's control; stored non-PRESENT control bits do not survive a set. */
     const BYTE *incomingParts = SepSdData(incoming);
     const BYTE *incomingOwner = incomingParts;
     const BYTE *incomingGroup = incomingOwner + incoming->ownerLength;
@@ -312,8 +261,6 @@ NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInforma
         MiAllocatePool(sizeof(*merged) + ownerLength + groupLength + saclLength + daclLength);
     if (merged == 0)
     {
-        ObDereferenceObject(body);
-        MiFreePool(incoming);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     merged->control = control;
@@ -336,23 +283,89 @@ NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInforma
         memcpy(cursor, dacl, daclLength);
     }
 
-    /* Ownership audit (G11): the header owns exactly one stored blob; the
-     * old one dies here, the object's delete path frees the last one. */
+    /* Ownership audit (G11): the slot owns exactly one stored blob; the old one
+     * dies here, and the slot's owner — the object header for everything that
+     * leaves OBJECT_TYPE.securityStorage NULL, the NPFS_PIPE for a pipe end —
+     * frees the last one. */
     if (stored != 0)
     {
         MiFreePool(stored);
     }
-    header->securityDescriptor = merged;
-    ObDereferenceObject(body);
-    MiFreePool(incoming);
+    *slot = merged;
     return STATUS_SUCCESS;
 }
 
-/* CUI-6: capture a create-time OBJECT_ATTRIBUTES security descriptor onto the
- * object header (se.h). The stored blob is freed by Ob on object delete. */
-NTSTATUS SeCaptureObjectSecurity(PVOID objectHeader, PSECURITY_DESCRIPTOR userSd)
+NTSTATUS NtSetSecurityObject(HANDLE handle, SECURITY_INFORMATION securityInformation,
+                             PSECURITY_DESCRIPTOR descriptor)
 {
-    POBJECT_HEADER header = objectHeader;
+    if (descriptor == 0)
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+
+    PSEP_SECURITY_DESCRIPTOR incoming;
+    NTSTATUS status = SepCaptureSecurityDescriptor(descriptor, &incoming);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    /* Demanding an owner/group part the SD does not carry is
+     * INVALID_SECURITY_DESCR (the unix layer's pre-check). */
+    if ((securityInformation & OWNER_SECURITY_INFORMATION) && incoming->ownerLength == 0)
+    {
+        MiFreePool(incoming);
+        return STATUS_INVALID_SECURITY_DESCR;
+    }
+    if ((securityInformation & GROUP_SECURITY_INFORMATION) && incoming->groupLength == 0)
+    {
+        MiFreePool(incoming);
+        return STATUS_INVALID_SECURITY_DESCR;
+    }
+    /* The unix layer forces the PRESENT bits for the parts being set. */
+    if (securityInformation & (SACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION))
+    {
+        incoming->control |= SE_SACL_PRESENT;
+    }
+    if (securityInformation & DACL_SECURITY_INFORMATION)
+    {
+        incoming->control |= SE_DACL_PRESENT;
+    }
+
+    /* Per-info-bit access requirements (server/handle.c set_security_object). */
+    ACCESS_MASK access = 0;
+    if (securityInformation &
+        (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION))
+    {
+        access |= WRITE_OWNER;
+    }
+    if (securityInformation & SACL_SECURITY_INFORMATION)
+    {
+        access |= ACCESS_SYSTEM_SECURITY;
+    }
+    if (securityInformation & DACL_SECURITY_INFORMATION)
+    {
+        access |= WRITE_DAC;
+    }
+    PVOID body;
+    status = ObReferenceObjectByHandle(handle, access, 0, ExGetPreviousMode(), &body, 0);
+    if (!NT_SUCCESS(status))
+    {
+        MiFreePool(incoming);
+        return status;
+    }
+    status = SepApplySecurityDescriptor(&ObpGetHeader(body)->securityDescriptor,
+                                        securityInformation, incoming);
+    ObDereferenceObject(body);
+    MiFreePool(incoming);
+    return status;
+}
+
+/* CUI-6: apply a create-time OBJECT_ATTRIBUTES security descriptor to the slot
+ * an object was born with (se.h). Same merge a set takes, with every info bit
+ * on, because that is exactly what the oracle's create arm does. */
+NTSTATUS SeCaptureObjectSecurity(PVOID *slot, PSECURITY_DESCRIPTOR userSd)
+{
     if (userSd == 0)
     {
         return STATUS_SUCCESS;
@@ -363,6 +376,10 @@ NTSTATUS SeCaptureObjectSecurity(PVOID objectHeader, PSECURITY_DESCRIPTOR userSd
     {
         return status;
     }
-    header->securityDescriptor = captured; /* one create-time SD site (G11) */
-    return STATUS_SUCCESS;
+    status = SepApplySecurityDescriptor(slot, /* one create-time SD site (G11) */
+                                        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+                                            DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION,
+                                        captured);
+    MiFreePool(captured);
+    return status;
 }
