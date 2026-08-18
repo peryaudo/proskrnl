@@ -1482,6 +1482,15 @@ project it does, because `docs/02` makes the winetest manifest the
 verification spine of every CUI milestone. But it is a judgement call and
 it belongs to the human.
 
+**It has now been taken once, for the smaller case (W10).** The reserve
+objects `ntdll:thread` panicked on sat in the same `docs/16` row on the same
+"no baked consumer" ground; they were built, the row moved, and the pair went
+green. That is a precedent for the *reasoning* — the winetest subtest is the
+consumer — and not for the size: reserve objects are two object types and one
+mask, where mailslots are a device, a create path and two info classes. The
+judgement the human still owns is whether the gate justifies THAT, not whether
+it justifies anything.
+
 ### W9 — The write-then-load-an-image cluster (**triage-first**)
 
 `kernel32:actctx`, `kernel32:resource`, and part of `ntdll:rtl`. All three
@@ -1493,13 +1502,14 @@ pairs.
 **I am explicitly unsure of this.** It is a pattern across three logs, not
 a diagnosis. Do not schedule the fix; schedule the triage.
 
-### W10 — The three wedges (**one of the three is DONE — and they are NOT one bug**)
+### W10 — The three wedges (**`ntdll:thread` is DONE and GREEN; the other two are NOT one bug**)
 
 `ntdll:sync`, `ntdll:thread` and `ntdll:threadpool` all hung to their
 per-pair timeout. This item used to say "they are probably one bug and
 should be triaged together". **They were measured separately and that guess
-is refuted**: `ntdll:thread`'s wedge is fixed, and the other two are
-unchanged by the fix.
+is refuted**: `ntdll:thread` took two unrelated fixes — the wedge, then the
+reserve objects behind the panic it uncovered — and is now GREEN, while the
+other two are unchanged by either.
 
 **`ntdll:thread`'s wedge — DONE.** It was
 `THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE` (0x40), and the shape is worth
@@ -1532,14 +1542,62 @@ main thread's join never returned. Fixed in `kernel/ps/thread.c` +
    its timeout — the same technique `sem_ps/suspend_process.c` already used
    for the unexempted half.
 
-**What `ntdll:thread` is now.** Not green: the pair runs on and panics at
-the missing `NtQueueApcThreadEx` (`test_NtQueueApcThreadEx`), with
-`NtAllocateReserveObject` and the `MemoryReserveObjectType*` reserve objects
-behind it. Both sit in `docs/16`'s "Superseded / legacy forms — no consumer
-in the baked stack" row, which the winetest gate now contradicts **exactly
-the way it does for mailslots (W8)** — so this pair inherits W8's judgement
-call rather than needing a new one. Everything past that panic is unmeasured
-(§4 trap 2).
+**`ntdll:thread`'s second stop — the reserve objects — is DONE, and the pair
+is GREEN and back in the gate** (49 tests executed, 0 failures, the SAME count
+on both runners). It had run on from the wedge and panicked at the missing
+`NtQueueApcThreadEx`, with `NtAllocateReserveObject` and the
+`MemoryReserveObjectType*` objects behind it. Both were in `docs/16`'s "in
+scope, unbuilt — no baked consumer" table, and W8's judgement call is what
+settled it: the winetest subtest IS the consumer (`docs/03`'s G5 policy makes
+it an oracle-pinned differential test), so the rows moved rather than the
+pairs being excluded. Built in `kernel/ob/reserve.c` + `kernel/ps/thread.c` +
+`kernel/ke/apc.c`, pinned by `tests/ntapi/sem_ps/apc_reserve.c` and the
+reserve half of `tests/ntapi/sem_port/ports.c`.
+
+Four things worth carrying:
+
+- **§4 trap 2 fired with NOTHING behind the stop, and saying so is part of the
+  measurement.** The zero failed assertions before the panic really were a
+  lower bound and really did have `test_skip_thread_attach` hidden behind them
+  — and all of it passes. That is the second such outcome after
+  `MemoryImageInformation`'s (W5), so the trap remains a prior and not a law:
+  what does not change is that only removing the stop can tell you which case
+  you are in.
+- **The flag unpacking is BEHIND the syscall boundary, which is what makes it
+  the kernel's.** `NtQueueApcThreadEx` differs from `Ex2` only in folding its
+  `QUEUE_USER_APC_*` flags into the low two bits of the reserve handle
+  (`dlls/ntdll/unix/thread.c`), and PE-side ntdll is a plain thunk into 0xd3 —
+  so the unmasked word arrives in the kernel. Two of the winetest's own
+  assertions are exactly that mask: `1` (SPECIAL) is a FLAG leaving a NULL
+  reserve and succeeding, while `0x10000` (CALLBACK_DATA_CONTEXT) survives the
+  mask whole and is read as a handle naming nothing. And its third is the mask
+  meeting the pseudo-handle table: `GetCurrentThread()` is `-2`, which masks to
+  `-4` — the current PROCESS TOKEN — so the answer is
+  `STATUS_OBJECT_TYPE_MISMATCH` about a token nobody mentioned.
+- **The reserve owns the STORAGE, not a flag beside it, and that is why "one
+  APC at a time" needs no bookkeeping.** The `KAPC` lives inside the object, so
+  `STATUS_INVALID_PARAMETER_2` on a second queue is the storage being spoken
+  for. It also decides where the block is RELEASED, which is the Art. 11 half
+  of the item: `KiFreeUserApc` is now the one place a user-APC block ends —
+  delivery, an exiting thread's drain, a terminated target, a refused queue —
+  because the pinned server has exactly one too (`apc_destroy` releases the
+  association however the APC ended). Getting that wrong is not a wrong status,
+  it is a reserve that can never be queued through again.
+- **The ORDER of the two handles is observable and it differs between the two
+  consumers of a reserve.** `queue_apc` resolves the RESERVE first and the
+  target thread second, so a bound reserve refuses even when the thread handle
+  names nothing; `add_completion` resolves the PORT first and the reserve
+  second. Both are pinned, and an implementation that picked one order for both
+  passes every other case.
+
+`NtSetIoCompletionEx` came with it, because the second reserve kind had to
+exist for the winetest's type-mismatch case: it now resolves an
+`IoCompletionReserve` **by type** where it used to accept any object at all —
+the accepted-and-dropped-input shape this document keeps finding, one argument
+over. Nothing binds a completion reserve (the pinned server pre-allocates
+nothing for it either — `struct reserve`'s `/* BYTE *memory */` is commented
+out), so the same handle posts every packet, and that is pinned rather than
+assumed.
 
 **The other two are still open, and each is now its own item.** Both were
 re-measured after the fix and neither moved:
@@ -3470,7 +3528,11 @@ Pairs and framings that will consume effort and unblock nothing.
 - `kernel/ps/usermode.c`, `arch/x86_64/*.S` — **danger zone**, but no longer
   a W6 file: W6's live half turned out to be `kernel/mm/virtual.c` and its
   dead half is re-parked.
-- `kernel/ke/{wait,apc}.c` — W10. **Danger zone.**
+- `kernel/ke/{wait,apc}.c` — W10's two open wedges. **Danger zone.**
+  `apc.c` also holds `KiFreeUserApc`, the ONE release path for a user-APC
+  block (W10's reserve half, done); `kernel/ob/reserve.c` is the other side of
+  it. Do not free a `KAPC` with `MiFreePool` — a reserve-backed block is not a
+  pool block.
 - `fs/npfs/pipe.c` — W11, done. `kernel/cm/registry.c` — W12, W13.
 - `kernel/ob/namespace.c` — W7's parse remainder (done); the volume DEVICE
   object the other half of W7 needs would be `kernel/io/` + `fs/fat32/`.

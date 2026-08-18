@@ -1017,31 +1017,18 @@ ntdll_test.exe:string
 #     one bug" is refuted for this pair.
 # TODO: Implement
 # ntdll_test.exe:sync
-# PARTLY FIXED, FIXABLE — the WEDGE IS GONE and the pair now stops on an
-#     unbuilt syscall instead, which is progress with a new frontier.
-#     What wedged it was test_thread_bypass_process_freeze
-#     (dlls/ntdll/tests/thread.c): a thread created with
-#     THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE calls NtSuspendProcess on its
-#     OWN process and is then the only thread able to call NtResumeProcess.
-#     proskrnl accepted the flag and froze that thread too, so the process
-#     could never be resumed and the main thread's join never returned — a
-#     silent 300 s deadlock with nothing on serial, because a wedge names
-#     nothing. Fixed in kernel/ps/{thread,process}.c and pinned by
-#     tests/ntapi/sem_ps/bypass_process_freeze.c (docs/21 W10).
-#     The pair now runs on to test_NtQueueApcThreadEx and PANICS at the
-#     missing NtQueueApcThreadEx (syscall 0xd3) at ~1.4 s. Zero failed
-#     assertions before it. Behind that syscall sits NtAllocateReserveObject
-#     and the reserve-object type the subtest asks for
-#     (MemoryReserveObjectTypeUserApc / IoCompletion) — both filed under
-#     docs/16 "Superseded / legacy forms — no consumer in the baked stack",
-#     a row the winetest gate now contradicts exactly the way it does for
-#     mailslots (docs/21 W8). That decision is the next thing this pair
-#     needs, not more triage.
-#     And per docs/21 §4 trap 2: everything past that panic — the rest of
-#     test_NtQueueApcThreadEx and all of test_skip_thread_attach — has never
-#     been measured. The zero above is a lower bound.
-# TODO: Implement
-# ntdll_test.exe:thread
+# GREEN since docs/21 W10 built the reserve objects: 49 tests executed, 0
+#     failures, on BOTH runners — the same count on each, so the green is not
+#     an early exit. Kept as a note rather than deleted because the pair took
+#     two stops to close and the second one is worth remembering: it wedged on
+#     THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE (fixed first), then panicked
+#     at the unbuilt NtQueueApcThreadEx (syscall 0xd3) with zero failed
+#     assertions behind it. Per docs/21 §4 trap 2 that zero was a LOWER BOUND
+#     and nothing past the panic had ever been measured — measured now, the
+#     rest of test_NtQueueApcThreadEx and all of test_skip_thread_attach pass,
+#     so this is the unusual case where removing the stop reveals nothing
+#     behind it. The trap is still a prior, not a law.
+ntdll_test.exe:thread
 # RE-MEASURED, FIXABLE — the old block ("a HANG with no output at all, not
 #     one assertion runs") is STALE and was wrong about the shape. The pair
 #     runs a long way: two ntdll threadpool fixmes (tp_object_initialize:
