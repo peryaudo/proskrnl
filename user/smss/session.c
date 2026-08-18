@@ -679,6 +679,14 @@ static const GUI_LEG SessionGuiLegs[] = {
      .tag = "audio",
      .foregroundName = "wasapi_smoke.exe"},
 
+    /* AUD-3, one layer up: event-driven WASAPI capture through mmdevapi +
+     * winevsnd.drv on the `none`-audiodev boot. Written never to return,
+     * so returning is the verdict. */
+    {.probe = WSTR("\\??\\C:\\wasapi_cap_smoke.exe"),
+     .foreground = WSTR("\\??\\C:\\wasapi_cap_smoke.exe"),
+     .tag = "audio",
+     .foregroundName = "wasapi_cap_smoke.exe"},
+
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
      * window is closed (the harness's Alt+F4 probe) or when the app dies --
