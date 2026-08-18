@@ -90,12 +90,22 @@ static void IopCloseFileObject(PEPROCESS process, PVOID body, ULONG processHandl
                                ULONG systemHandleCount)
 {
     PFILE_OBJECT file = body;
-    /* The hook now fires on EVERY close (ob.h); this type's one subject so far
-     * is the last handle in the SYSTEM. */
-    (void)process;
-    (void)processHandleCount;
+    if (file->fsContext == 0)
+    {
+        return;
+    }
     if (systemHandleCount != 1)
     {
+        /* Not the cleanup moment — but if it is the last handle THIS process
+         * can reach the file through, the requests it left parked on it are
+         * cancelled for it (kernel/io/async.c, pinned by
+         * sem_pipe/close_cancel.c). NT asks the same two counts here and so
+         * does the oracle; the terms of which requests go are the Io layer's,
+         * not this function's. */
+        if (processHandleCount == 1)
+        {
+            IopCancelProcessRequestsOnClose(file, process);
+        }
         return;
     }
     IopCleanupFileObject(file);

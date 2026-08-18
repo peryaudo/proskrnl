@@ -1816,10 +1816,9 @@ static void NpfsVfsClose(PFILE_OBJECT file)
 
 /* Cancel-complete every request on `head` the filter matches, oldest first
  * — one NtCancelIoFile cancels all of that thread's pending I/O on the
- * handle, not just the first. One statement of the filter for both queues
- * (Art. 11): `issuer` non-0 narrows to that thread, `userIosb` non-0 to the
- * one request with that IOSB VA. */
-static ULONG NpfsCancelQueue(PLIST_ENTRY head, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
+ * handle, not just the first. The filter's TERMS are the Io layer's
+ * (kernel/io/io.h IOP_CANCEL_FILTER); this walks, it does not decide. */
+static ULONG NpfsCancelQueue(PLIST_ENTRY head, const IOP_CANCEL_FILTER *filter)
 {
     ULONG cancelled = 0;
     PLIST_ENTRY entry = head->Flink;
@@ -1827,8 +1826,7 @@ static ULONG NpfsCancelQueue(PLIST_ENTRY head, PKTHREAD issuer, PIO_STATUS_BLOCK
     {
         PIOP_PENDING_REQUEST pending = CONTAINING_RECORD(entry, IOP_PENDING_REQUEST, queueEntry);
         entry = entry->Flink;
-        if ((issuer != 0 && pending->issuer != issuer) ||
-            (userIosb != 0 && pending->userIosb != userIosb))
+        if (!IopCancelFilterMatches(pending, filter))
         {
             continue;
         }
@@ -1839,20 +1837,27 @@ static ULONG NpfsCancelQueue(PLIST_ENTRY head, PKTHREAD issuer, PIO_STATUS_BLOCK
     return cancelled;
 }
 
-/* Cancel this file object's parked requests (kernel/io/async.c IopCancelIo):
- * the reads it left on its own end (CUI-8), and — only for a server handle,
- * since a client end never issues one — the instance's parked listens. */
-static ULONG NpfsCancelPending(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_BLOCK userIosb)
+/* Cancel this file object's parked requests — for NtCancelIoFile
+ * (kernel/io/async.c IopCancelIo) and for the handle-close sweep
+ * (IopCancelProcessRequestsOnClose), which differ only in the filter: the
+ * reads it left on its own end (CUI-8), and — only for a server handle, since
+ * a client end never issues one — the instance's parked listens.
+ *
+ * A parked LISTEN is queued on the INSTANCE, so a filter has to reach it too:
+ * the oracle sweeps `process->asyncs` for everything whose fd is this end,
+ * whatever queue it sits in (server/async.c), and sem_pipe/close_cancel.c §7
+ * measures a listen taking the same close as a read. */
+static ULONG NpfsCancelPending(PFILE_OBJECT file, const IOP_CANCEL_FILTER *filter)
 {
     PNPFS_END end = file->fsContext;
     if (end == 0)
     {
         return 0; /* a device-root open holds no pipe state */
     }
-    ULONG cancelled = NpfsCancelQueue(&end->pendingReadHead, issuer, userIosb);
+    ULONG cancelled = NpfsCancelQueue(&end->pendingReadHead, filter);
     if (end->isServer)
     {
-        cancelled += NpfsCancelQueue(&end->instance->pendingListenHead, issuer, userIosb);
+        cancelled += NpfsCancelQueue(&end->instance->pendingListenHead, filter);
     }
     return cancelled;
 }

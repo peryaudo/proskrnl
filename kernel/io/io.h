@@ -492,6 +492,17 @@ typedef struct IOP_PENDING_REQUEST
      * ApcRoutine (kernel/io/rw.c IopPostRequestPacket states the rule). */
     PVOID apcContext;
 
+    /* Was a completion PORT bound to the handle when this request was
+     * ISSUED? Not the same question as `file`'s port above, and the
+     * difference is measurable (sem_pipe/close_cancel.c §6): the packet's
+     * port is re-read at completion, so a bind that lands while a request is
+     * parked still gets the packet — but the handle-close sweep asks whether
+     * the request was port-bound at issue, because that is the value the
+     * oracle captured then (`create_async`'s `async->completion =
+     * fd_get_completion( fd, &async->comp_key )`, server/async.c) and
+     * `async_close_obj_handle` reads it without re-reading. */
+    BOOLEAN portBoundAtIssue;
+
     /* CUI-8: the DATA legs docs/19 §5d anticipated ("buffer/length legs
      * beside the IOSB"), grown into THIS engine rather than a fourth
      * bookkeeping shape. Their owner is the request:
@@ -533,6 +544,34 @@ typedef struct IOP_PENDING_REQUEST
  * already be probed. */
 NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request,
                                   PIOP_PENDING_REQUEST *out);
+
+/* WHICH parked requests a sweep takes. Every non-zero term must match; a zero
+ * term does not restrict. Stated once, and applied by IopCancelFilterMatches
+ * rather than by each device, so a filesystem that queues requests only has to
+ * WALK its queues — a per-FS transcription of the terms is how two of them come
+ * to disagree about one rule (Art. 11). */
+typedef struct IOP_CANCEL_FILTER
+{
+    PKTHREAD issuer;           /* NtCancelIoFile: only this thread's requests */
+    PIO_STATUS_BLOCK userIosb; /* NtCancelIoFileEx: the request with this IOSB VA */
+    struct EPROCESS *owner;    /* the handle-close sweep: only this process's */
+    /* …and, in that sweep only, the oracle's three-term predicate: the request
+     * was issued on a port-bound handle, carries an ApcContext, and carries no
+     * event (server/async.c async_close_obj_handle's `if (!async->completion ||
+     * !async->data.apc_context || async->event) continue;`). It is a property
+     * of the REQUEST, so it belongs beside the other terms rather than in the
+     * caller that happens to want it. */
+    BOOLEAN portBoundApcNoEvent;
+} IOP_CANCEL_FILTER;
+
+BOOLEAN IopCancelFilterMatches(const IOP_PENDING_REQUEST *request, const IOP_CANCEL_FILTER *filter);
+
+/* A process is closing the LAST handle it holds on `file`, and it is not the
+ * last handle in the system. Cancel-complete the requests that process left
+ * parked on it and that match the predicate above. Called from
+ * IoFileObjectType's close hook (kernel/io/file.c), which is where the oracle
+ * makes the same sweep. */
+void IopCancelProcessRequestsOnClose(PFILE_OBJECT file, struct EPROCESS *process);
 
 /* The completion-APC leg, one authority (Art. 11; the rw.c and notify.c
  * copies drifted apart on allocation timing before this): allocate the KAPC

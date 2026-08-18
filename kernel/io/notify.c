@@ -711,7 +711,7 @@ ULONG IopCancelDirectoryWatches(PFILE_OBJECT file, PKTHREAD issuer, PIO_STATUS_B
         IopCompleteDirWatch(watch, STATUS_CANCELLED, 0, 0, 0);
         cancelled++;
     }
-    /* The sweep's callers (the cancel verbs, IopCloseFileObject) never hold
+    /* The sweep's callers (the cancel verbs, IopCleanupFileObject) never hold
      * the volume gate, so the retired releases can run right here. */
     IoReapRetiredDirWatches();
     return cancelled;
