@@ -3775,6 +3775,88 @@ running under.
 Pinned by `tests/ntapi/sem_pipe/pipe_security.c` and, for the create-time
 defaulting shared with every Ob object, `tests/ntapi/sem_se/se_secobj.c`.
 
+## What CLOSING a handle does to the requests that process left parked
+
+`NtClose` used to do nothing to a parked request unless it was the last handle
+in the system, in which case the filesystem's cleanup cancel-completed
+everything on the file object. The moment in between had no answer at all: a
+process that closed **its own last handle** to a pipe end, while another
+process still held a duplicate, left its read parked forever — with the
+caller's IOSB never written and, if the handle was bound to a completion port,
+`GetQueuedCompletionStatus` waiting on a packet nobody would ever post.
+
+NT cancels there, and so does the oracle. The rule is `async_close_obj_handle`
+(`third_party/wine` `server/async.c`), which is the `close_handle` op of both
+pipe-end object types (`server/named_pipe.c` `pipe_server_ops` /
+`pipe_client_ops`) and of sockets (`server/sock.c`):
+
+```c
+if (obj->handle_count == 1 || get_obj_handle_count( process, obj ) != 1) return 1;
+LIST_FOR_EACH_ENTRY( async, &process->asyncs, struct async, process_entry )
+{
+    if (async->terminated || async->canceled || get_fd_user( async->fd ) != obj) continue;
+    if (!async->completion || !async->data.apc_context || async->event) continue;
+    cancel_async( async );
+}
+```
+
+Two counts and a three-term predicate. Every one of the five is a way an
+implementation that reads only the first sentence diverges, and
+`tests/ntapi/sem_pipe/close_cancel.c` measures each:
+
+| the handle being closed | what happens to a parked request |
+| --- | --- |
+| last in the SYSTEM | nothing here — the FS cleanup answers it (unchanged) |
+| last in this PROCESS, another process holds one | swept, if the three terms hold |
+| not the last in this process | nothing; the request completes normally later |
+| swept: port-bound at ISSUE + ApcContext + no event | `STATUS_CANCELLED`, IOSB written, packet posted |
+| no completion port bound at issue | left parked |
+| no ApcContext | left parked |
+| an event supplied | left parked |
+
+Three of those are worth stating in prose because each reads as a bug:
+
+- **An EVENT disarms the sweep.** The thing a caller is most likely to be
+  waiting on is exactly what stops the cancel, so a read issued with an event
+  survives its own process's last close and reports nothing to anybody. That is
+  the oracle's answer and the winetest's
+  (`dlls/ntdll/tests/pipe.c` `test_async_cancel_on_handle_close` runs sixteen
+  rows and exactly one reaches the cancel).
+- **"Was this request port-bound" is asked of a different INSTANT than "which
+  port gets the packet".** The packet's port is re-read at completion, so a bind
+  that lands while a request is parked still gets its packet (`docs/21` W4c,
+  `sem_pipe/pending_packet.c` §4). This predicate reads the value `create_async`
+  captured at ISSUE and never re-reads it, so the same late bind does **not**
+  arm the sweep. `IOP_PENDING_REQUEST.portBoundAtIssue` exists for that one
+  difference, and `close_cancel.c` §6 is the only thing that separates them.
+- **The two counts INCLUDE the handle being closed**, which is also NT's
+  convention for `ObjectCloseMethod`'s `ProcessHandleCount` /
+  `SystemHandleCount`. `OBJECT_TYPE.closeProcedure` now takes NT's shape and
+  fires on EVERY close for that reason; a type that only wants the
+  last-handle-in-the-system moment opens with `if (systemHandleCount != 1)
+  return;` (`kernel/ob/ob.h`), which is the statement it used to make by being
+  called nowhere else.
+
+**Where the rule STOPS is decided by which devices can PARK, not by a branch.**
+The sweep goes through `IO_VFS_OPS.CancelPending`, which only a filesystem that
+queues requests implements — so npfs is swept and fat32 is not, exactly as the
+oracle hangs the op off the pipe-end and socket types. Directory watches are
+deliberately **not** swept: `server/change.c` `dir_close_handle` releases a cache
+entry and nothing else, so a change-notify parked by a process that closes its
+last handle stays parked until the last handle in the system goes.
+
+**One divergence from NT is inherited from the oracle and is visible.** The
+cancel writes the caller's IOSB immediately; Windows leaves it untouched until
+`NtRemoveIoCompletion` delivers the packet. `ntdll:pipe:3111` wraps that
+assertion in `todo_wine_if` for precisely this, so matching NT would score a
+failure for being closer to NT — the same trade this file records for
+`DeletePending` and `docs/21` records for `STATUS_USER_APC` (Art. 6). Writing it
+late is also un-pinnable: the oracle writes it, so no G5 case could be green
+asserting otherwise, and `beyond_oracle` is barred for behaviour Wine does
+implement.
+
+Pinned by `tests/ntapi/sem_pipe/close_cancel.c`.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by

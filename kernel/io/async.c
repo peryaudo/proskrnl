@@ -212,6 +212,9 @@ NTSTATUS IopPreparePendingRequest(PFILE_OBJECT file, IO_CONTROL_CONTEXT *request
      * branch freeing a block this request also owns. */
     pending->apcBlock = request->apcBlock;
     pending->apcContext = request->apcContext;
+    /* Captured, where the packet's port is read late — io.h says why the two
+     * instants are different questions. */
+    pending->portBoundAtIssue = file->completionPort != 0;
     /* The completion PACKET leg: the port is read off the file object at
      * completion (io.h says why it is late rather than captured), so the
      * request holds the handle open for exactly as long as it can complete —
@@ -355,6 +358,51 @@ void IopCompletePendingRequest(PIOP_PENDING_REQUEST request, NTSTATUS status, UL
     MiFreePool(request);
 }
 
+/* --- the cancel sweeps (CUI-3, and the handle-close one) -------------------- */
+
+BOOLEAN IopCancelFilterMatches(const IOP_PENDING_REQUEST *request, const IOP_CANCEL_FILTER *filter)
+{
+    if (filter->issuer != 0 && request->issuer != filter->issuer)
+    {
+        return FALSE;
+    }
+    if (filter->userIosb != 0 && request->userIosb != filter->userIosb)
+    {
+        return FALSE;
+    }
+    if (filter->owner != 0 && request->owner != filter->owner)
+    {
+        return FALSE;
+    }
+    if (filter->portBoundApcNoEvent &&
+        (!request->portBoundAtIssue || request->apcContext == 0 || request->event != 0))
+    {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+void IopCancelProcessRequestsOnClose(PFILE_OBJECT file, PEPROCESS process)
+{
+    IOP_CANCEL_FILTER filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.owner = process;
+    filter.portBoundApcNoEvent = TRUE;
+    /* Only a device that PARKS requests, and only through its own queues.
+     * Directory watches are deliberately NOT swept here: the oracle hangs this
+     * rule off the two pipe-end object types and off sockets
+     * (server/named_pipe.c pipe_server_ops / pipe_client_ops close_handle,
+     * server/sock.c sock_close_handle), while a change-notify directory has a
+     * close_handle of its own that only releases a cache entry
+     * (server/change.c dir_close_handle). So "which objects owe this sweep" is
+     * exactly "which devices can park a request", and no branch here has to
+     * name a device. */
+    if (file->device->ops->CancelPending != 0)
+    {
+        file->device->ops->CancelPending(file, &filter);
+    }
+}
+
 /* --- NtCancelIoFile / NtCancelIoFileEx (CUI-3) ----------------------------- */
 
 /* services.exe's process_send_start_message drives CancelIo against a STACK
@@ -390,9 +438,13 @@ static NTSTATUS IopCancelIo(HANDLE handle, PKTHREAD issuer, PIO_STATUS_BLOCK tar
     if (ObpGetHeader(body)->type == &IoFileObjectType)
     {
         PFILE_OBJECT file = body;
+        IOP_CANCEL_FILTER filter;
+        memset(&filter, 0, sizeof(filter));
+        filter.issuer = issuer;
+        filter.userIosb = targetIosb;
         if (file->device->ops->CancelPending != 0)
         {
-            cancelled = file->device->ops->CancelPending(file, issuer, targetIosb);
+            cancelled = file->device->ops->CancelPending(file, &filter);
         }
         /* CUI-5: parked directory watches are kernel-owned — sweep them
          * here rather than through a second per-FS cancel path (Art. 11). */

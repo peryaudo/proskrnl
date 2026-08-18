@@ -18,10 +18,11 @@
 #include "kernel/mm/pagecache.h"
 #include "kernel/ps/ps.h" /* PS_IO_CHARGE (the completion's IO_COUNTERS leg) */
 
-struct FILE_OBJECT; /* kernel/io/io.h */
-struct IO_DEVICE;   /* kernel/io/io.h */
-struct KTHREAD;     /* kernel/ke/ke.h */
-struct KAPC;        /* kernel/ke/ke.h */
+struct FILE_OBJECT;       /* kernel/io/io.h */
+struct IO_DEVICE;         /* kernel/io/io.h */
+struct KTHREAD;           /* kernel/ke/ke.h */
+struct KAPC;              /* kernel/ke/ke.h */
+struct IOP_CANCEL_FILTER; /* kernel/io/io.h */
 
 /* What a DeviceControl op needs to PEND an operation (CUI-3): the caller's
  * completion event handle and IOSB, captured into an IOP_PENDING_REQUEST by
@@ -379,14 +380,19 @@ typedef struct IO_VFS_OPS
     (struct FILE_OBJECT *file, ULONG code, const void *input, ULONG inputLength, void *output,
      ULONG outputLength, ULONG_PTR *infoOut, struct IO_CONTROL_CONTEXT *request);
 
-    /* CUI-3: cancel-complete (STATUS_CANCELLED) every pending request this
-     * FILE_OBJECT issued that matches the filter — `issuer` non-0 restricts
-     * to that thread's requests (NtCancelIoFile), `userIosb` non-0 to the
-     * request with that IOSB VA (NtCancelIoFileEx; compared, never
-     * dereferenced). Returns how many were cancelled. NULL = the device
-     * never pends, so there is never anything to cancel. */
+    /* CUI-3: cancel-complete (STATUS_CANCELLED) every pending request parked
+     * on this FILE_OBJECT that matches `filter`. The device WALKS its queues;
+     * it never restates the filter's terms — IOP_CANCEL_FILTER (kernel/io/io.h)
+     * says what they are and IopCancelFilterMatches decides them, so a term
+     * added for one caller reaches every device that parks an
+     * IOP_PENDING_REQUEST (Art. 11). Parked directory WATCHES are a different
+     * record (IOP_DIR_WATCH) with its own sweep, and it still open-codes the
+     * two terms it has. Returns how many
+     * were cancelled. NULL = the device never pends, so there is never
+     * anything to cancel — which is also what decides whether it owes the
+     * handle-close sweep (kernel/io/async.c IopCancelProcessRequestsOnClose). */
     ULONG(*CancelPending)
-    (struct FILE_OBJECT *file, struct KTHREAD *issuer, PIO_STATUS_BLOCK userIosb);
+    (struct FILE_OBJECT *file, const struct IOP_CANCEL_FILTER *filter);
 
     /* FilePipeInformation / FilePipeLocalInformation (query), and
      * FilePipeInformation (set) — kernel/io/query.c routes the classes here
