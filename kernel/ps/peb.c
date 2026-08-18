@@ -308,6 +308,15 @@ static const char *const PspDefaultEnvironment[] = {
     "SystemRoot=C:\\windows",
     "TEMP=C:\\windows\\temp",
     "TMP=C:\\windows\\temp",
+    /* The user profile of the fixed Se identity. On the oracle this is
+     * written by wineboot into HKCU\Volatile Environment and picked up by the
+     * half of ntdll proskrnl REPLACES (dlls/ntdll/unix/env.c
+     * add_registry_environment), so it has to be stated here instead. It must
+     * equal ProfilesDirectory + '\' + WINEUSERNAME, because that is the answer
+     * userenv's GetUserProfileDirectoryW composes and kernel32:environ's
+     * test_Predefined asserts the two agree; the registry half is seeded in
+     * kernel/cm/registry.c and the directory baked by tools/mkimage.sh. */
+    "USERPROFILE=C:\\users\\wine",
     "windir=C:\\windows",
     /* CUI-2: advapi32's GetUserNameW is an environment read on Wine
      * (dlls/advapi32/advapi.c: GetEnvironmentVariableW(L"WINEUSERNAME")),
