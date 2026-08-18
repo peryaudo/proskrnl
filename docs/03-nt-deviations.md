@@ -3713,6 +3713,68 @@ passes an owner-and-group SD with no DACL. Pinned by
 `tests/ntapi/sem_se/se_secobj.c`, whose discriminating case is exactly a
 partial one — an SD carrying every part is indistinguishable from a raw copy.
 
+## Whose security descriptor a pipe handle reports
+
+`NtQuerySecurityObject` / `NtSetSecurityObject` read and wrote
+`OBJECT_HEADER.securityDescriptor` — the object the HANDLE names. For a named
+pipe that object is the `FILE_OBJECT`, one per open, and the descriptor is not
+the file object's: **a pipe END has none of its own and defers to its PIPE**,
+which every end and every instance of that name shares. The oracle says it in
+two lines (`server/named_pipe.c`):
+
+```c
+static struct security_descriptor *pipe_end_get_sd( struct object *obj )
+{
+    struct pipe_end *pipe_end = (struct pipe_end *) obj;
+    if (pipe_end->pipe) return default_get_sd( &pipe_end->pipe->obj );
+    set_error( STATUS_PIPE_DISCONNECTED );
+    return NULL;
+}
+```
+
+`pipe_end_set_sd` is the same function one verb over. Two consequences, and
+both are behaviour a caller can see: a group set through the server end is what
+the CLIENT end reports (and a second instance, and a client opened later, and
+the surviving end after the one that set it closed), and an end whose pipe is
+gone — a client its server disconnected — **refuses** rather than reporting an
+empty descriptor. `ntdll:pipe`'s `test_security_info` is ten assertions of the
+first and two of the second.
+
+**The mechanism is a REDIRECT, deliberately not a second get/set.**
+`OBJECT_TYPE.securityStorage` (`kernel/ob/ob.h`) answers *which slot* an
+object's descriptor lives in and never *what it says*, so Se keeps its one
+capture / merge / filter path (`kernel/se/secobj.c`) and a type that redirects
+gains no reading of an SD (Art. 11). `IO_VFS_OPS.SecurityStorage` is that
+question one layer down, so the Io layer does not grow a per-device branch
+either: `IoFileObjectType` asks the device, and a device that declines keeps
+the file object's own slot, which is what every other device has always had.
+npfs points it at the `NPFS_PIPE`, whose `end->pipe` is already the oracle's
+`pipe_end->pipe`.
+
+**The refusal sits BELOW the handle's access check**, and that ordering is the
+oracle's: `server/handle.c` `DECL_HANDLER(get_security_object)` resolves the
+handle with `READ_CONTROL` (plus `ACCESS_SYSTEM_SECURITY` for a SACL) and calls
+`get_sd` afterwards. It falls out here because a hook is reached only once
+`ObReferenceObjectByHandle` succeeded — and the only thing that can tell the two
+statuses apart is an under-privileged query on a disconnected end, which is why
+`tests/ntapi/sem_pipe/pipe_security.c` §6 asks exactly that.
+
+**The create-time descriptor goes through the one create-time site**
+("A create-time security descriptor takes the same merge a set does", above),
+which is what lets a pipe carry one at all without growing a second.
+
+**It binds ONCE, in the arm that MINTS the pipe.** A further instance of an
+existing name carries its own `OBJECT_ATTRIBUTES` descriptor along and drops it,
+because the oracle's `if (sd) default_set_sd( &pipe->obj, ... )` sits inside
+"initialize it if it didn't already exist"
+(`DECL_HANDLER(create_named_pipe)`). Applying it per instance passes the
+winetest — which never sets a *different* one on a second instance — and lets
+any caller that can open the pipe rewrite the security every other instance is
+running under.
+
+Pinned by `tests/ntapi/sem_pipe/pipe_security.c` and, for the create-time
+defaulting shared with every Ob object, `tests/ntapi/sem_se/se_secobj.c`.
+
 ## `ProcessIoCounters`: what proskrnl counts as an I/O operation
 
 `NtQueryInformationProcess(ProcessIoCounters)` reports `EPROCESS.ioCounters`, charged by

@@ -63,6 +63,20 @@ void ObDereferenceObject(PVOID body)
     MiFreePool(header);
 }
 
+NTSTATUS ObpSecurityStorage(PVOID body, PVOID **slot)
+{
+    POBJECT_HEADER header = ObpGetHeader(body);
+    /* The default goes in FIRST, so a hook that only redirects SOME of its
+     * objects says so by leaving it alone rather than having to spell the
+     * default itself — which would put Ob's header layout in a filesystem. */
+    *slot = &header->securityDescriptor;
+    if (header->type->securityStorage != 0)
+    {
+        return header->type->securityStorage(body, slot);
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NtMakePermanentObject(HANDLE handle)
 {
     /* CUI-6: the inverse of NtMakeTemporaryObject, with NO access gate — the
