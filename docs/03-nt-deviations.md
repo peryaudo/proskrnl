@@ -461,10 +461,16 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   rpcrt4's ncacn_np server loop deadlocks on a blocking listen, see the
   "CUI-3 SCM notes". On synchronous handles the original blocking behaviour
   is unchanged.
-- **`FSCTL_PIPE_TRANSCEIVE` / `FSCTL_PIPE_IMPERSONATE` are unbuilt** —
-  refused loudly (`STATUS_NOT_SUPPORTED` + a serial line), never faked.
-  `FSCTL_PIPE_PEEK` is implemented (state, available bytes, message count,
-  preview). *`FSCTL_PIPE_WAIT` is built by CUI-3* (served on the device-root
+- **`FSCTL_PIPE_IMPERSONATE` is unbuilt on a pipe END** — refused loudly
+  (`STATUS_NOT_SUPPORTED` + a serial line), never faked. *Both statements
+  below were overtaken by the winetest frontier and are corrected here rather
+  than left to read as current:* `FSCTL_PIPE_TRANSCEIVE` is built (see "What
+  `FSCTL_PIPE_TRANSCEIVE` writes, and what it refuses"), and on the DEVICE
+  ROOT `FSCTL_PIPE_IMPERSONATE` is not unbuilt either — it is
+  `STATUS_ILLEGAL_FUNCTION`, an implemented refusal (see "What the named-pipe
+  DEVICE ROOT answers to each pipe FSCTL"). `FSCTL_PIPE_PEEK` is implemented
+  (state, available bytes, message count, preview). *`FSCTL_PIPE_WAIT` is
+  built by CUI-3* (served on the device-root
   open, with `NtCreateNamedPipeFile`'s timeout parameter finally stored as
   the unspecified-timeout default; pinned `sem_pipe/pipe_wait.c`) — one
   unpinned edge: a pipe deleted MID-wait answers
@@ -3470,6 +3476,53 @@ through `NpfsVfsCreate`'s root arm and carry no pipe state, because
 the same thing that keeps `\??\C:` from being told from `\??\C:\` (`docs/21` W7,
 the `\\.\c:` blocker). It is one item and it belongs to `kernel/ob`, not to
 npfs. The consumer is `ntdll:pipe:2810`.
+
+## What the named-pipe DEVICE ROOT answers to each pipe FSCTL
+
+Every pipe verb asked of a handle that is not a pipe END goes through one switch,
+`server/named_pipe.c` `named_pipe_device_ioctl`, and its three answers do **not**
+collapse into a single "wrong object for this verb". Transcribed into
+`fs/npfs/pipe.c` `NpfsDeviceControl`'s root arm and pinned by
+`tests/ntapi/sem_pipe/device_ioctl.c`; it takes `ntdll:pipe` from **37** failed
+assertions to **29** (`pipe.c:2751`×8, four rows asked through each of the two root
+spellings).
+
+| verb | answer | what it is saying |
+| --- | --- | --- |
+| `FSCTL_PIPE_LISTEN`, `FSCTL_PIPE_IMPERSONATE` | `STATUS_ILLEGAL_FUNCTION` | this object does not HAVE the verb |
+| `FSCTL_PIPE_DISCONNECT`, `FSCTL_PIPE_TRANSCEIVE` | `STATUS_PIPE_DISCONNECTED` | a STATE the device is not in |
+| `FSCTL_PIPE_QUERY_CLIENT_PROCESS` | `STATUS_INVALID_PARAMETER` | the ARGUMENTS — decided above any look at them |
+| `FSCTL_PIPE_WAIT` | the device: `STATUS_ILLEGAL_FUNCTION`; its root DIRECTORY: the name lookup | the one arm where the two objects part — **and the one row proskrnl does not answer**, see below |
+| everything else, `FSCTL_PIPE_PEEK` included | `STATUS_NOT_SUPPORTED` | `default_fd_ioctl`'s own default (`server/fd.c`) |
+
+**`FSCTL_PIPE_PEEK` is the discriminating row and it is not in the switch.** It is as
+much a per-instance verb as `FSCTL_PIPE_LISTEN` is, so `STATUS_ILLEGAL_FUNCTION` is the
+answer a ladder grouped by MEANING gives — and proskrnl gave it. The oracle never names
+PEEK here, so it falls through to the unknown-verb default like a verb the device has
+never heard of. No winetest assertion convicts that: `pipe.c:2721` asks the same call
+and is `todo_wine` (it wants NT's `STATUS_INVALID_PARAMETER`), so the row is pinned
+because the oracle answers it, not because anything failed.
+
+**The refusals precede the arguments.** A `FSCTL_PIPE_TRANSCEIVE` carrying a legal
+input and output buffer is still `STATUS_PIPE_DISCONNECTED`, and a
+`FSCTL_PIPE_QUERY_CLIENT_PROCESS` with room for its reply is still
+`STATUS_INVALID_PARAMETER` — the opposite of what that status invites an implementation
+to build. Both leave the caller's `IO_STATUS_BLOCK` untouched, the rule
+`sem_pipe/ioctl_event.c` pins for an ioctl refused on the spot.
+
+**DEVIATION — `FSCTL_PIPE_WAIT` is served through BOTH spellings**, so the device
+answers a lookup where the oracle answers `STATUS_ILLEGAL_FUNCTION`. That is not a
+verb gap: it is the deviation the section above records ("the device and its root
+directory are not distinguished"), reaching this table through its one arm that
+distinguishes them. The consumer is `ntdll:pipe:2787`, the sibling of that section's
+`:2810`, and the fix is the `kernel/ob` parser item both name.
+
+**DEVIATION — the four verbs `default_fd_ioctl` answers SPECIALLY are not
+transcribed.** `FSCTL_DISMOUNT_VOLUME` is `STATUS_BAD_DEVICE_TYPE` on the oracle
+(`get_unix_fd` of the device's pseudo fd) and the three reparse-point verbs are
+`STATUS_OBJECT_TYPE_MISMATCH` (no `unix_name`); proskrnl folds all four into the
+`STATUS_NOT_SUPPORTED` default, which names itself on serial. Nothing baked reaches
+them and no pin asserts them.
 
 ## `FileNameInformation`'s length floor is the whole struct
 

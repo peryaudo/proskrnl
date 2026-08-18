@@ -1127,20 +1127,45 @@ static NTSTATUS NpfsDeviceControl(PFILE_OBJECT file, ULONG code, const void *inp
     PNPFS_END end = file->fsContext;
     if (end == 0)
     {
-        /* The device root serves exactly FSCTL_PIPE_WAIT; the per-instance
-         * verbs on it are illegal (wine/server/named_pipe.c
-         * named_pipe_device_ioctl: WAIT/LISTEN/IMPERSONATE ->
-         * STATUS_ILLEGAL_FUNCTION on the wrong object). */
+        /* wine/server/named_pipe.c named_pipe_device_ioctl, transcribed: the
+         * three answers do NOT collapse into one "wrong object for this
+         * verb". LISTEN and IMPERSONATE are verbs the device does not HAVE;
+         * DISCONNECT and TRANSCEIVE report a STATE it is not in; and
+         * QUERY_CLIENT_PROCESS reports its ARGUMENTS, above any look at them.
+         * Every other verb — PEEK included, which the switch never names —
+         * falls to default_fd_ioctl's own default (server/fd.c),
+         * STATUS_NOT_SUPPORTED. Pinned by sem_pipe/device_ioctl.c.
+         *
+         * FSCTL_PIPE_WAIT is the one arm where the DEVICE and its root
+         * DIRECTORY part (named_pipe_dir_ioctl serves it and tail-calls this
+         * ladder for everything else; the device itself answers
+         * STATUS_ILLEGAL_FUNCTION). proskrnl cannot tell the two spellings
+         * apart — ObpLookupName hands the FS an empty remainder for both
+         * `\Device\NamedPipe` and `\Device\NamedPipe\` — so it serves the
+         * lookup through both, which is the winetest's remaining
+         * ntdll:pipe:2787 and W7's `\??\C:` parser item, not an npfs one. */
         switch (code)
         {
         case FSCTL_PIPE_WAIT:
             return NpfsWaitForPipe(input, inputLength);
         case FSCTL_PIPE_LISTEN:
-        case FSCTL_PIPE_DISCONNECT:
-        case FSCTL_PIPE_PEEK:
+        case FSCTL_PIPE_IMPERSONATE:
             return STATUS_ILLEGAL_FUNCTION;
+        case FSCTL_PIPE_DISCONNECT:
+        case FSCTL_PIPE_TRANSCEIVE:
+            return STATUS_PIPE_DISCONNECTED;
+        case FSCTL_PIPE_QUERY_CLIENT_PROCESS:
+            return STATUS_INVALID_PARAMETER;
         default:
-            DbgPrint("npfs: unimplemented root fsctl %#lx\n", (unsigned long)code);
+            /* default_fd_ioctl's own default, which is what the matrix's
+             * three NOT_SUPPORTED rows measure. It still names itself,
+             * because this arm also swallows the four verbs
+             * default_fd_ioctl answers SPECIALLY — FSCTL_DISMOUNT_VOLUME
+             * (STATUS_BAD_DEVICE_TYPE: get_unix_fd of a pseudo fd) and the
+             * three reparse-point ones (STATUS_OBJECT_TYPE_MISMATCH: no
+             * unix_name). Neither is transcribed and nothing baked reaches
+             * them; the line is how a caller that did would be visible. */
+            DbgPrint("npfs: root fsctl %#lx not supported\n", (unsigned long)code);
             return STATUS_NOT_SUPPORTED;
         }
     }
