@@ -303,6 +303,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: tests/run/run.sh net
 
+      # The wsresolv unit corpus: the DNS wire client under canned and
+      # adversarial replies through its transport seam, plus the literal
+      # parsers and packing paths — hermetic, seconds (docs/24 §7).
+      - name: Net-3 resolver units (tests/run/run.sh resolvunit)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh resolvunit
+
+      # The Net-3 acceptance: UNMODIFIED curl.exe (bundled LibreSSL)
+      # fetches over virtio-net through slirp against the harness's
+      # fresh-CA HTTPS server — exit-code and content-hash verdicts
+      # (docs/02 "Done when"; docs/24 §6f).
+      - name: Net-3 off-the-shelf HTTPS fetch (tests/run/run.sh net3)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh net3
+
       - uses: ./.github/actions/serial-logs
         if: failure()
         with:

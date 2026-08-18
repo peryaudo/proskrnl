@@ -741,6 +741,20 @@ static const GUI_LEG SessionGuiLegs[] = {
      * tests/gui/golden/desktop.ppm pins it, so a mode change shows up as a
      * size mismatch, not a silent drift). Explorer never exits: the leg
      * parks in its message loop and the harness owns QEMU's lifetime. */
+    /* Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
+     * virtio-net"): UNMODIFIED curl.exe, bundled TLS, driven by the
+     * per-run config the harness mcopy'd to C:\net3\job.txt (the probe —
+     * absent on every other image, present only on a net3-leg boot). The
+     * config carries the URL, the test CA, the output path and a retry
+     * budget that outlasts the DHCP bind. curl EXITS, so the verdict is
+     * the leg's plain exit line ("[KTEST] net3 exit (status=0, exit=0)")
+     * — the harness reads it, ends the guest, and convicts the fetched
+     * bytes by hash from the image (tests/run/run.sh net3). */
+    {.probe = WSTR("\\??\\C:\\net3\\job.txt"),
+     .foreground = WSTR("\\??\\C:\\curl.exe"),
+     .foregroundCmdline = WSTR("curl.exe -K C:\\net3\\job.txt"),
+     .tag = "net3"},
+
     {.probe = WSTR("\\??\\C:\\gui6.flag"),
      .foreground = WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
      .foregroundCmdline = WSTR("explorer.exe /desktop=shell,1280x800 "

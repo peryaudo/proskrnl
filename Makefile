@@ -1886,6 +1886,50 @@ $(IMG_GUI5CON): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(CONHOST_GUI) 
 gui5con-img: $(IMG_GUI5CON)
 .PHONY: gui5con-img
 
+# ---------------------------------------------------------------------------
+# Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
+# virtio-net"; docs/24 Â§6f): the acceptance image. The CUI machine + the
+# GUI-2 DLL shelf (curl.exe imports user32) + the UNMODIFIED tool
+# (third_party/curlwin, tools/setup_linux.sh's pinned purchase) + the
+# api-set forwarder DLLs its UCRT imports name (generated from the
+# binary's OWN import table â tools/gen_apiset_forwarders.py; with no
+# ApiSetMap the pinned loader falls back to these literal names). The
+# per-run job (curl config, test CA, the net3.test hosts row) is mcopy'd
+# in by the run.sh net3 leg â nothing per-run is baked here, and
+# C:\net3\job.txt is the smss probe, so this leg can never fire on
+# another image.
+NET3_CURL := third_party/curlwin/bin/curl.exe
+NET3_APISETS := $(BUILD)/net3/apisets
+$(NET3_APISETS)/specs.txt: $(NET3_CURL) tools/gen_apiset_forwarders.py
+	python3 tools/gen_apiset_forwarders.py $(NET3_CURL) $(NET3_APISETS) >/dev/null
+
+# curl.exe's measured import closure beyond the CUI + GUI sets: normaliz
+# (WinIDN), wldap32 (LDAP URLs; its LDAP engine is vendored PE-side),
+# bcrypt (LibreSSL entropy; SymCrypt is vendored PE-side — the docs/02
+# scope note's "raw bcrypt works as-is"), crypt32 + its ncrypt import
+# (the fork already lets crypt32 load without a unixlib). Unstripped from
+# the pinned tree: llvm-objcopy refuses bcrypt (the FLASH_OBJCOPY note),
+# and an acceptance image buys nothing from stripping.
+NET3_DLL_NAMES := normaliz wldap32 bcrypt ncrypt crypt32
+NET3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
+             $(foreach d,$(NET3_DLL_NAMES),win:$(WINE_PE)/$(d)/x86_64-windows/$(d).dll=windows/system32/$(d).dll) \
+             $(FONTFILES) \
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+             win:$(NET3_CURL)=curl.exe
+
+IMG_NET3 := $(BUILD)/proskrnl-net3.hdd
+$(IMG_NET3): $(KERNEL) $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) \
+        $(RUNDLL32) $(WINEBOOT) $(WINE_INF) $(WIN32U) $(WINESTRIP_GUI_DLLS) \
+        $(foreach d,$(NET3_DLL_NAMES),$(WINE_PE)/$(d)/x86_64-windows/$(d).dll) \
+        $(WINESERVER_LITE) $(NET3_CURL) $(NET3_APISETS)/specs.txt \
+        $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES) $(WINE_FONTS) tools/mkimage.sh \
+        arch/x86_64/limine.conf
+	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_NET3) $(WINFILES) $(NET3FILES) \
+	    $$(cat $(NET3_APISETS)/specs.txt)
+
+net3-img: $(IMG_NET3)
+.PHONY: net3-img
 
 # ---------------------------------------------------------------------------
 # GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The payload is

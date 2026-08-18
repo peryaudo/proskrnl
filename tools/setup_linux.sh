@@ -324,6 +324,32 @@ else
         dlls/ws2_32/tests/all
 fi
 
+# --- Net-3: the acceptance tool (docs/24 Â§6f) ------------------------------
+# An UNMODIFIED off-the-shelf bundled-TLS tool: the pinned curl-for-win
+# build (LibreSSL statically linked â the docs/02 scope note: bundled TLS,
+# never schannel). Pinned by URL + sha256 the way every third_party
+# admission is pinned by a SHA; a hash mismatch is a hard stop, never a
+# silently different tool. The run.sh net3 leg REFUSES loudly when the
+# tool is absent (the netsmoke lesson).
+echo "== net3: the acceptance tool (curl-for-win, bundled LibreSSL) =="
+NET3_CURL_URL="https://curl.se/windows/dl-8.21.0_7/curl-8.21.0_7-win64-mingw.zip"
+NET3_CURL_SHA256="e469dcdb219d0eca9236b01c7e4bb34fe04af3d4036d350829178dc60f241ae4"
+if [[ -f third_party/curlwin/bin/curl.exe ]]; then
+    echo "   already present — skipping"
+else
+    mkdir -p third_party/curlwin
+    curl -fsSL -o third_party/curlwin/curlwin.zip "$NET3_CURL_URL"
+    echo "$NET3_CURL_SHA256  third_party/curlwin/curlwin.zip" | sha256sum -c - \
+        || { echo "setup_linux: curl-for-win sha256 MISMATCH — refusing"; exit 1; }
+    unzip -o -q third_party/curlwin/curlwin.zip -d third_party/curlwin
+    cp third_party/curlwin/curl-*/bin/curl.exe third_party/curlwin/bin_curl.exe 2>/dev/null || true
+    mkdir -p third_party/curlwin/bin
+    cp third_party/curlwin/curl-*/bin/curl.exe third_party/curlwin/bin/curl.exe
+    cp third_party/curlwin/curl-*/COPYING.txt third_party/curlwin/COPYING.txt
+    rm -f third_party/curlwin/curlwin.zip third_party/curlwin/bin_curl.exe
+    echo "   installed third_party/curlwin/bin/curl.exe"
+fi
+
 echo
 echo "setup_linux: done. Next:"
 echo "  make test                   # boot the kernel in QEMU, expect the [KTEST] verdict"

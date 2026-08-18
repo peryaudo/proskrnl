@@ -15,3 +15,4 @@ third_party/wine-x86_64/
 # gui5con-img stages them only when present.
 /SAFlashPlayer.exe
 /troubled_windows.swf
+/third_party/curlwin/

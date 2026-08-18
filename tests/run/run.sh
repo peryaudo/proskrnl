@@ -2619,6 +2619,128 @@ net() {
     return 0
 }
 
+# Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
+# virtio-net — content-hash and exit-code verdicts"; docs/24 §6f): the
+# harness serves HTTPS on host loopback behind a fresh test CA, the guest
+# runs UNMODIFIED curl.exe (bundled LibreSSL) against slirp's 10.0.2.2
+# host alias, and the verdicts are the tool's exit code off serial plus
+# the sha256 of the fetched bytes extracted from the image. The fetch
+# NAME (net3.test) rides a per-run hosts-file row, so the leg is
+# offline-deterministic (docs/24 §7 authorizes exactly this scoping while
+# the DNS client's wire behavior is convicted by the resolvunit corpus).
+# The certificate's notBefore is NOW — a machine still answering the
+# retired frozen-clock base date fails the handshake (docs/22's armed
+# conviction).
+net3() {
+    if ! "$ROOT/tools/qemu.sh" --probe-slirp; then
+        echo "[KTEST] netsmoke FAIL — this QEMU offers no '-netdev user' (slirp)."
+        return 1
+    fi
+    echo "[KTEST] netsmoke PASS"
+    if [[ ! -f "$ROOT/third_party/curlwin/bin/curl.exe" ]]; then
+        echo "[KTEST] net3 FAIL — third_party/curlwin/bin/curl.exe is absent."
+        echo "        Re-run tools/setup_linux.sh: the pinned acceptance tool is a"
+        echo "        purchase there (sha256-pinned), and judging this leg without"
+        echo "        it would be a silent no-op (the netsmoke lesson)."
+        return 1
+    fi
+    make -C "$ROOT" net3-img >/dev/null || { echo "== net3: FAIL (build) =="; return 1; }
+
+    local work="$BUILD/net3" off=2097152    # mkimage.sh ESP_OFF
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    # The test CA and the server's leaf: minted per run, notBefore = now.
+    openssl req -x509 -newkey rsa:2048 -keyout "$work/ca.key" -out "$work/ca.pem" \
+        -days 3 -nodes -subj "/CN=proskrnl net3 test CA" 2>/dev/null
+    openssl req -newkey rsa:2048 -keyout "$work/srv.key" -out "$work/srv.csr" \
+        -nodes -subj "/CN=net3.test" 2>/dev/null
+    printf 'subjectAltName=DNS:net3.test,IP:10.0.2.2\n' > "$work/ext.cnf"
+    openssl x509 -req -in "$work/srv.csr" -CA "$work/ca.pem" -CAkey "$work/ca.key" \
+        -CAcreateserial -out "$work/srv.pem" -days 3 -extfile "$work/ext.cnf" 2>/dev/null
+
+    # The content: unique per run, so a stale image can never answer.
+    head -c 4096 /dev/urandom > "$work/content.bin"
+    local want_hash
+    want_hash="$(sha256sum "$work/content.bin" | cut -d' ' -f1)"
+
+    # The HTTPS server, host loopback, ephemeral port.
+    python3 - "$work" > "$work/port.txt" <<'PYSRV' &
+import http.server, ssl, sys, os
+os.chdir(sys.argv[1])
+httpd = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("srv.pem", "srv.key")
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+print(httpd.server_address[1], flush=True)
+httpd.serve_forever()
+PYSRV
+    local srvpid=$!
+    # shellcheck disable=SC2064
+    trap "kill $srvpid 2>/dev/null" RETURN
+    local waited=0
+    while [[ ! -s "$work/port.txt" ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+        [[ "$waited" -gt 100 ]] && { echo "== net3: FAIL (server never bound) =="; return 1; }
+    done
+    local port
+    port="$(cat "$work/port.txt")"
+
+    # The per-run job, mcopy'd into a COPY of the image (the baked image
+    # stays virgin; the probe file exists only on this boot).
+    local img="$work/net3-run.hdd"
+    cp "$ROOT/build/proskrnl-net3.hdd" "$img"
+    cat > "$work/job.txt" <<JOB
+url = "https://net3.test:$port/content.bin"
+cacert = "C:/net3/ca.pem"
+output = "C:/net3/out.bin"
+retry = 10
+retry-delay = 2
+retry-all-errors
+silent
+show-error
+JOB
+    mcopy -o -i "$img@@$off" "::/windows/system32/drivers/etc/hosts" "$work/hosts.base" 2>/dev/null || : > "$work/hosts.base"
+    { cat "$work/hosts.base"; printf '\n10.0.2.2 net3.test\n'; } > "$work/hosts"
+    mmd -i "$img@@$off" ::/net3
+    mcopy -i "$img@@$off" "$work/job.txt" ::/net3/job.txt
+    mcopy -i "$img@@$off" "$work/ca.pem" ::/net3/ca.pem
+    mcopy -o -i "$img@@$off" "$work/hosts" ::/windows/system32/drivers/etc/hosts
+
+    # The boot: slirp + pcap (the wire's own record), guest-clocked bounds.
+    local pcap="$work/net3.pcap" netlog="$work/net3-serial.log"
+    NET_PCAP="$pcap" LOG="$netlog" TIMEOUT="${TIMEOUT:-900}" \
+        PASS_RE='\[KTEST\] net3 exit' \
+        "$ROOT/tools/qemu.sh" "$img" >"$work/net3-qemu.log" 2>&1 || true
+
+    local fails=0
+    # (a) the tool's exit code, off serial: status 0, exit 0.
+    if grep -qE '\[KTEST\] net3 exit \(status=0x0, exit=0x0\)' "$netlog"; then
+        echo "[KTEST] net3-exit PASS"
+    else
+        echo "[KTEST] net3-exit FAIL ($(grep -aE '\[KTEST\] net3' "$netlog" | head -1 | tr -d '\r'); see $netlog)"
+        fails=$((fails + 1))
+    fi
+    # (b) the fetched content, by hash, extracted from the image itself.
+    local got_hash=absent
+    if mcopy -o -i "$img@@$off" ::/net3/out.bin "$work/out.bin" 2>/dev/null; then
+        got_hash="$(sha256sum "$work/out.bin" | cut -d' ' -f1)"
+    fi
+    if [[ "$got_hash" == "$want_hash" ]]; then
+        echo "[KTEST] net3-hash PASS ($want_hash)"
+    else
+        echo "[KTEST] net3-hash FAIL (want $want_hash got $got_hash)"
+        fails=$((fails + 1))
+    fi
+    if [[ "$fails" -ne 0 ]]; then
+        echo "== net3: FAIL ($fails failing) =="
+        return 1
+    fi
+    echo "== net3: PASS (an off-the-shelf HTTPS fetch over virtio-net) =="
+    return 0
+}
+
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
 # draws a rectangle visible in a screendump; key input is readable"): boot
 # the gui image with a QMP socket and a virtio keyboard, wait for the guest
@@ -3865,6 +3987,7 @@ case "$MODE" in
     cui8)     cui8 ;;
     cui9)     cui9 ;;
     net)      net ;;
+    net3)     net3 ;;
     fatinterop) fatinterop ;;
     fatstress) fatstress ;;
     tornwrite) tornwrite ;;
@@ -3880,7 +4003,7 @@ case "$MODE" in
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
