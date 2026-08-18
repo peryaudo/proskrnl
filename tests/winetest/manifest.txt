@@ -738,8 +738,62 @@ ntdll_test.exe:path
 #     :2632/:2638/:2641/:2643/:2664 removed with no other line moved — nothing
 #     was hiding behind them (docs/21 §4 trap 2 does not apply here).
 #
-#     WHAT IS LEFT, per-line histogram of the 10 (7 failed + 3 succeeded-
-#     todo; a serial-log count that ignores the succeeded-todo lines reads 7,
+#     WHAT A CLOSE DOES TO A PARKED REQUEST IS NOW BUILT: 10 -> 5, all five of
+#     test_async_cancel_on_handle_close (:3114x4 + :3111). The residue really
+#     was ONE subject and the old block's decomposition of it was right; what
+#     it did not have was the cause, which is neither npfs's nor the packet
+#     path's. A process closing the LAST handle IT holds on a pipe end — while
+#     another process's duplicate keeps the end alive — cancels the requests it
+#     left parked there. The rule is async_close_obj_handle (server/async.c),
+#     the close_handle op of both pipe-end object types and of sockets: two
+#     counts (`obj->handle_count == 1 ||
+#     get_obj_handle_count( process, obj ) != 1` -> do nothing) and a
+#     three-term predicate (`!async->completion || !async->data.apc_context ||
+#     async->event` -> skip). That is exactly the winetest's sixteen-row matrix:
+#     only `other_process && apc_context && !event` reaches a cancel, and the
+#     fifteen rows that do not are as much of the contract as the one that
+#     does. Landed in kernel/ob/{ob.h,handle.c} + kernel/io/{io.h,async.c,
+#     file.c,vfs.h} + fs/npfs/pipe.c, pinned by
+#     tests/ntapi/sem_pipe/close_cancel.c; docs/21 W11, docs/03 "What CLOSING a
+#     handle does to the requests that process left parked".
+#     Three things it settles that no assertion in this pair asks for:
+#       * OBJECT_TYPE.closeProcedure now takes NT's OB_CLOSE_METHOD shape and
+#         fires on EVERY close, because "is this the last handle THIS PROCESS
+#         holds" has no other answer. The three other hooks (job, debug object,
+#         registry key) open with `if (systemHandleCount != 1) return;`, which
+#         is the statement they used to make by being called nowhere else.
+#       * "was this request port-bound" is asked of a DIFFERENT INSTANT than
+#         "which port gets the packet". The packet's port is re-read at
+#         completion (pending_packet.c §4), so a bind landing while a request
+#         is parked still gets a packet; this predicate reads what create_async
+#         captured at ISSUE and never re-reads, so the same late bind does NOT
+#         arm the sweep. IOP_PENDING_REQUEST.portBoundAtIssue exists for that
+#         one difference and close_cancel.c §6 is what separates them.
+#       * where the rule STOPS is decided by which devices can PARK, not by a
+#         branch: the sweep goes through IO_VFS_OPS.CancelPending, so npfs is
+#         swept and fat32 is not — and directory watches deliberately are not,
+#         because server/change.c dir_close_handle releases a cache entry and
+#         nothing else.
+#     THE OLD BLOCK'S NOTE ON :3111 WAS TRUE ABOUT THE ASSERTION AND WRONG
+#     ABOUT THE COUNT. It said the succeeded-todo "cannot go green while
+#     proskrnl is the more NT-correct runner", and that is still so — it did
+#     not go green. It stopped being a FAILURE, because the cancel writes the
+#     caller's IOSB the way the oracle does and the todo now fails as expected.
+#     Windows leaves the block untouched until NtRemoveIoCompletion, which is
+#     why the winetest wraps it in todo_wine_if; adopting the oracle's answer
+#     moved that one line FARTHER from NT and took a failure off the count for
+#     doing so. Same trade as the pipe-lifetime item's :2185 and as
+#     STATUS_USER_APC (Art. 6). So read the pair as 10 -> 6 on the fix and one
+#     more off the top for matching the oracle where it differs from NT.
+#     2378 tests executed, 0 flaky and 0 skipped before and after; the todo
+#     markers move 32 -> 33, which is exactly :3111 crossing from
+#     "succeeded inside todo" to a todo that fails, and a line-by-line
+#     histogram diff removes exactly :3111 and :3114x4 with no other line
+#     moved — so nothing was hiding behind the five (docs/21 §4 trap 2 does not
+#     apply here).
+#
+#     WHAT IS LEFT, per-line histogram of the 5 (3 failed + 2 succeeded-
+#     todo; a serial-log count that ignores the succeeded-todo lines reads 3,
 #     and one that does not drop the console's redrawn first draft of a wrapped
 #     line double-counts — docs/21 W16). These are read off the assertions and
 #     grouped by test function; except where marked DIAGNOSED none of them is,
@@ -771,21 +825,6 @@ ntdll_test.exe:path
 #                 worth recording: proskrnl now reports `\Device\NamedPipe\`
 #                 for the device root exactly as the oracle does, because it
 #                 composes the DIRECTORY's answer — the one spelling it has.
-#       -  5  test_async_cancel_on_handle_close (:3114x4, :3111x1) — what a
-#             CLOSE does to a pended request's completion packet. All five
-#             carry the context `other_process 1, i 5` and that is the whole
-#             residue: of the sixteen rows the test runs, exactly one reaches
-#             test_queued_completion (`other_process && apc_context &&
-#             !event`, which only i=5 satisfies) — a read pended with an
-#             ApcContext and no event, whose handle is DUPLICATED into a child
-#             and then closed here. The test wants a STATUS_CANCELLED packet;
-#             proskrnl queues none (:3114 `NtRemoveIoCompletion returned 102`,
-#             and the value/Status/Information rows behind it are that
-#             timeout's consequences). The other fifteen rows pass, and :3111
-#             is a succeeded-todo in the same row: it asks that the IOSB be
-#             left untouched, which the oracle fails and proskrnl does not, so
-#             it cannot go green while proskrnl is the more NT-correct runner.
-#             NOT diagnosed further.
 #       -  2  subtest_pipe_name (:2969, succeeded-todo).
 #       -  1  pipe.c:725 — NtCancelSynchronousIoFile(GetCurrentThread(), NULL,
 #             (IO_STATUS_BLOCK *)0xdeadbeef) must answer

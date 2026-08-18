@@ -2456,6 +2456,84 @@ security descriptor a pipe handle reports".
   exactly `:2605`/`:2611`/`:2620`/`:2621`/`:2625`/`:2632`/`:2638`/`:2641`/
   `:2643`/`:2664` with no other line moved, so `§4` trap 2 does not apply.
 
+**WHAT A CLOSE DOES TO A PARKED REQUEST IS DONE** (`ntdll:pipe` 10 → **5**),
+and the subject is not npfs and not the packet path: it is what the OBJECT
+MANAGER owes the Io layer at a handle close. A process that closes the last
+handle IT holds on a pipe end — while another process's duplicate keeps the end
+alive — has the requests it left parked there cancelled for it. proskrnl had an
+answer for the last handle in the SYSTEM (the filesystem's cleanup) and none at
+all for the moment in between, so the request stayed parked forever with the
+caller's IOSB unwritten and `GetQueuedCompletionStatus` waiting on a packet
+nobody would post. Landed in `kernel/ob/{ob.h,handle.c}` +
+`kernel/io/{io.h,async.c,file.c,vfs.h}` + `fs/npfs/pipe.c`, pinned by
+`tests/ntapi/sem_pipe/close_cancel.c`; `docs/03` "What CLOSING a handle does to
+the requests that process left parked".
+
+Four things worth carrying:
+
+- **`OBJECT_TYPE.closeProcedure` grew NT's own signature, and that is the whole
+  design decision.** `async_close_obj_handle` asks two counts —
+  `obj->handle_count` and `get_obj_handle_count( process, obj )`, both including
+  the handle being closed — and proskrnl's hook fired only at 1 → 0, so the
+  question "is this the last handle THIS PROCESS holds" was not merely
+  unanswered but unaskable. NT's `OB_CLOSE_METHOD` fires on every close and
+  takes exactly that pair (`ProcessHandleCount` / `SystemHandleCount`), and
+  NT's own `IopCloseFile` answers two different questions off it. So the hook
+  became NT's, and the three types that only ever wanted the last-handle moment
+  (job, debug object, registry key) now open with `if (systemHandleCount != 1)
+  return;` — **the statement they had been making by being called nowhere
+  else**. A hook whose *moment* is implied by where the engine calls it cannot
+  grow a second moment; one that is told which moment it is, can.
+- **"Was this request port-bound" and "which port gets the packet" are the same
+  field read at two different INSTANTS, and only a pin can tell them apart.**
+  W4c established that the packet's port is re-read at completion, so a bind
+  landing while a request is parked still posts (`sem_pipe/pending_packet.c`
+  §4). This predicate reads `async->completion` — what `create_async` captured
+  at ISSUE — and never re-reads it, so the same late bind does **not** arm the
+  sweep. `IOP_PENDING_REQUEST.portBoundAtIssue` exists for that one difference;
+  an implementation that reused the late read passes §1–§5 of the pin and fails
+  only §6. Sixth instance in this document of "*which* object (or instant) a
+  question is asked of" being the item's real content.
+- **Where the rule STOPS is decided by which devices can PARK, and no branch
+  names a device.** The sweep goes through `IO_VFS_OPS.CancelPending`, which
+  only a filesystem that queues requests implements — so npfs is swept and
+  fat32 is not, exactly as the oracle hangs the op off the pipe-end and socket
+  object types. Directory watches are deliberately NOT swept (`server/change.c`
+  `dir_close_handle` releases a cache entry and nothing else), and that falls
+  out of the same fact rather than out of a second rule.
+- **An EVENT disarms the sweep, which reads as a bug and is the contract.** The
+  thing a caller is most likely to be waiting on is exactly what stops the
+  cancel. Eleven of the pin's cases are negative for that reason: the winetest
+  runs sixteen rows and exactly one reaches a cancel, so the fifteen that do not
+  are as much of the rule as the one that does.
+
+**The manifest's note on `:3111` was true about the assertion and wrong about
+the count, and the distinction is the honest half of this entry.** It said the
+succeeded-todo "cannot go green while proskrnl is the more NT-correct runner",
+and it still cannot — it did not go green. It stopped being a FAILURE: the
+cancel writes the caller's IOSB the way the oracle does, so the `todo_wine_if`
+now fails as expected. Windows leaves the block untouched until
+`NtRemoveIoCompletion`. Adopting the oracle's answer moved that one line
+FARTHER from NT and took a failure off the count for doing so — the same trade
+the pipe-lifetime item's `:2185` records, and the same one `STATUS_USER_APC`
+does (Art. 6 with teeth). **Read the pair as 10 → 6 on the fix and one more off
+the top for matching the oracle where it differs from NT.**
+
+**Nothing was hiding behind the five** — 2378 tests executed, 0 flaky and 0
+skipped before and after, todo markers 32 → 33 (exactly `:3111` crossing from
+"succeeded inside todo" to a todo that fails), and a line-by-line histogram diff
+removes exactly `:3111` and `:3114`×4 with no other line moved — so `§4` trap 2
+does not apply here.
+
+**One thing this item read off the oracle and did NOT measure, recorded as a
+suspect rather than as a finding (`§4` trap 4).** When the last handle in the
+SYSTEM closes, wineserver terminates the end's queued asyncs with
+`STATUS_HANDLES_CLOSED` (`server/async.c` `free_async_queue`, reached from
+`pipe_end_destroy`), where proskrnl's `NpfsVfsCleanup` completes them
+`STATUS_CANCELLED`. No assertion in `ntdll:pipe` reaches it and this item did
+not touch that path. It is a candidate next item, and it is a code read, not a
+measurement.
+
 ### W12 — Registry (**triaged; the fold, the license furniture and the namespace rules are DONE — everything left is ONE DATA QUESTION**)
 
 `ntdll:reg`, now **156** failures across 1042 tests, down from 192 across
