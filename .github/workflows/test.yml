@@ -331,7 +331,7 @@ jobs:
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 125   # nine boots under TCG; was 110 with eight before AUD-1
+    timeout-minutes: 140   # ten boots under TCG; was 125 with nine before WOW64 audio
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -356,6 +356,19 @@ jobs:
       - name: AUD-1 sample-exact playback in a recorded WAV (tests/run/run.sh audio)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh audio
+        env:
+          TIMEOUT: "1200"
+          AUDIO_DEADLINE: "900"
+
+      # The same recording check with the client built i386 and run as a
+      # WOW64 guest: syswow64's mmdevapi + winmm + winevsnd.drv over the one
+      # \Device\Snd0 contract, with the client's own bits= on its verdict
+      # line. Beside the audio leg because it shares the audio machine and
+      # the wav backend; more memory because it brings up a second Wine
+      # stack (the wow64gui reason).
+      - name: WOW64 audio a 32-bit app through syswow64's WASAPI (tests/run/run.sh wow64aud)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh wow64aud
         env:
           TIMEOUT: "1200"
           AUDIO_DEADLINE: "900"

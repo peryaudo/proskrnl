@@ -341,6 +341,14 @@ void wasapi_start(void *peb)
             char *out = line;
             out = append_text(out, "[KTEST] audio PASS underruns=");
             out = append_number(out, underruns, 10, 0);
+            /* The client's own bitness, so a leg can tell WHICH build of
+             * this one source produced the verdict: the i386 build runs as
+             * a WOW64 guest, loads syswow64's mmdevapi and winevsnd.drv,
+             * and is the only thing that makes bits=32 appear here. An
+             * inference from which .exe the image carries would not be a
+             * measurement (docs/19 §8.4). */
+            out = append_text(out, " bits=");
+            out = append_number(out, sizeof(void *) * 8, 10, 0);
             out = append_text(out, "\r\n");
             *out = '\0';
             say(line);
