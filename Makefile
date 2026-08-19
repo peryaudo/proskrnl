@@ -1197,6 +1197,23 @@ $(WASAPISMOKE): tests/audio/wasapi_smoke.c $(WINE_PE_DLLS)
 	    $(WINE_PE)/ole32/x86_64-windows/libole32.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
+# The same client, i386 (WOW64 audio): the identical source built by the
+# i686 cross against the pinned tree's i386 import libraries, so the leg's
+# verdict compares two BITNESSES of one client rather than two clients
+# (Art. 11 — the wow64gui precedent). `_wasapi_start`, with the
+# underscore: i386 PE decorates cdecl symbols.
+WASAPISMOKE32 := $(BUILD)/modules/wasapi_smoke32.exe
+$(WASAPISMOKE32): tests/audio/wasapi_smoke.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW32) -std=c11 -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=_wasapi_start \
+	    tests/audio/wasapi_smoke.c \
+	    $(WINE_PE)/ole32/i386-windows/libole32.a \
+	    $(WINE_PE)/ntdll/i386-windows/libntdll.a -lgcc -o $@
+
+wasapi-smoke32: $(WASAPISMOKE32)
+.PHONY: wasapi-smoke32
+
 wasapi-smoke: $(WASAPISMOKE)
 .PHONY: wasapi-smoke
 
@@ -1879,6 +1896,80 @@ FLASHFILES += $(foreach f,$(FLASH_FIXTURES),win:$(f)=$(notdir $(f))) \
               win:$(FLASH_REG)=relay.reg
 endif
 
+# ---------------------------------------------------------------------------
+# The 32-bit half of the audio shelf (WOW64 audio): a guest .exe reaches
+# mmdevapi by NAME through wow64.dll's file redirector, so C:\windows\
+# system32\mmdevapi.dll resolves to the syswow64 copy — and the whole stack
+# below it must be there in i386 form too, or CoCreateInstance of the
+# MMDeviceEnumerator dies in the loader. The hive half needs nothing: the
+# 64-bit firstboot registration writes the CLSIDs once, and a 32-bit client
+# reads the same keys.
+#
+# The names are the 64-bit set minus whatever already has an i386 strip rule
+# (the base guest set, the GUI/applet set, and — only when the projector is
+# present — the flash set, which strips with the mingw objcopy for the
+# bcrypt reason above). Defining a second recipe for the same file is what
+# make warns about, and the two objcopies disagree about exactly one dll.
+WOW64_AUDIO_NAMES := $(filter-out $(WINESTRIP32_NAMES) $(WOW64_GUI_NAMES) \
+                         $(if $(FLASHPRESENT),$(FLASH_DLL_NAMES)),$(WINESTRIP_AUDIO_NAMES))
+$(foreach d,$(WOW64_AUDIO_NAMES),$(eval $(call WINESTRIP32_RULE,$(d))))
+define WINESTRIP32_ACM_RULE
+$(WINESTRIP32)/$(1).acm: $(WINE_PE)/$(1).acm/i386-windows/$(1).acm
+	@mkdir -p $$(dir $$@)
+	$$(OBJCOPY) --strip-debug $$< $$@
+endef
+$(foreach d,$(WINESTRIP_ACM_NAMES),$(eval $(call WINESTRIP32_ACM_RULE,$(d))))
+WINESTRIP32_ACM_FILES := $(foreach d,$(WINESTRIP_ACM_NAMES),$(WINESTRIP32)/$(d).acm)
+
+# winevsnd.drv, i386: the SAME sources as the 64-bit driver (Art. 11 — one
+# driver, two bitnesses), because mmdevapi LdrLoadDll's its driver into its
+# OWN process and a 32-bit mmdevapi can only load a PE32. Nothing in the
+# \Device\Snd* wire contract is pointer-shaped (drivers/sndproto.h: fixed
+# uint32/uint64 payloads with static_asserts on every size), so the kernel
+# sees one protocol from either bitness. Entry symbol decorated —
+# _DllMainCRTStartup@12 — because i386 PE decorates stdcall and the
+# undecorated 64-bit spelling links to nothing (the wow64gui rule's lesson).
+WINEVSND32 := $(BUILD)/modules/winevsnd32.drv
+$(WINEVSND32): $(VSND_SRCS) $(VSND_DIR)/winevsnd.h drivers/sndproto.h $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW32) $(VSND_CFLAGS) -shared -nostdlib -nostartfiles \
+	    -Wl,--entry=_DllMainCRTStartup@12 $(VSND_SRCS) \
+	    tests/winetest/glue/crt_sections.c \
+	    -Wl,--start-group \
+	    $(WINE_PE)/ntdll/i386-windows/libntdll.a \
+	    third_party/wine/libs/winecrt0/i386-windows/libwinecrt0.a \
+	    -Wl,--end-group -lgcc -o $@
+
+winevsnd32: $(WINEVSND32)
+.PHONY: winevsnd32
+
+# Staged under syswow64 with the 64-bit names: the redirector matches on
+# path, not on file name, so every one of these keeps the name its 64-bit
+# twin has in system32 (winevsnd32.drv is a BUILD name only).
+WOW64AUDIOFILES := $(foreach d,$(WINESTRIP_AUDIO_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
+                   $(foreach d,$(WINESTRIP_ACM_NAMES),win:$(WINESTRIP32)/$(d).acm=windows/syswow64/$(d).acm) \
+                   win:$(WINEVSND32)=windows/syswow64/winevsnd.drv
+WOW64_AUDIO_PAYLOAD := $(foreach d,$(WINESTRIP_AUDIO_NAMES),$(WINESTRIP32)/$(d).dll) \
+                       $(WINESTRIP32_ACM_FILES) $(WINEVSND32)
+
+wow64-audio-payload: $(WOW64_AUDIO_PAYLOAD)
+.PHONY: wow64-audio-payload
+
+# The whole 32-bit shelf an image that already carries THIS build's win32u
+# wants (the gui5con set, minus the stock win32u thunks that must never
+# override it — WOW64_STOCK_W32U above). run.sh's wow64aud leg bakes its
+# image from this one list rather than re-spelling it (the print-winfiles
+# drift lesson).
+WOW64SHELFFILES := $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) $(WOW64AUDIOFILES)
+WOW64_SHELF_PAYLOAD := $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) $(WOW64_AUDIO_PAYLOAD)
+
+wow64-shelf: $(WOW64_SHELF_PAYLOAD)
+.PHONY: wow64-shelf
+
+print-wow64shelffiles:
+	@printf '%s\n' $(WOW64SHELFFILES)
+.PHONY: print-wow64shelffiles
+
 GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
              $(FONTFILES) \
@@ -1890,7 +1981,7 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) \
              $(FLASHFILES) \
-             $(AUDIOFILES) $(SYSINIFILES)
+             $(AUDIOFILES) $(SYSINIFILES) $(WOW64AUDIOFILES)
 
 # 128 MiB rather than the default 64: this is the one image carrying both
 # bitnesses of the whole shelf, and the 32-bit half does not fit in what the
@@ -1912,7 +2003,7 @@ $(IMG_GUI5CON): $(KERNEL) $(WINFILES_DEPS) $(CONHOST_GUI) \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
-        $(AUDIO_PAYLOAD) $(SYSINI_STAMP) \
+        $(AUDIO_PAYLOAD) $(SYSINI_STAMP) $(WOW64_AUDIO_PAYLOAD) \
         $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)

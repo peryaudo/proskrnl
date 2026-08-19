@@ -318,7 +318,8 @@ atl100) and smss seeds `Drivers\Audio=vsnd` natively, gated on the driver
 being on the image. `tests/run/run.sh audio` now has a WASAPI half —
 the same seeded pattern, sample-exact in the recorded WAV through the
 whole stack (symmetric 1/32768 scaling makes S16 round-trip bit-exact),
-with `[KTEST] audio PASS underruns=<n>` carrying the measured count —
+with `[KTEST] audio PASS underruns=<n> bits=<n>` carrying the measured
+count and the client's own bitness —
 and the audio winetest pairs entered `manifest.txt` under the (c)
 amendment, booting their own audio image. Couldn't be achieved within
 the milestone: cross-process playback deliberately refuses
@@ -401,6 +402,18 @@ syscall path's twin, fixed a milestone earlier), a WOW64 process's
 second thread getting no 32-bit furniture at all, and
 `THREAD_CREATE_FLAGS_SKIP_LOADER_INIT` accepted and dropped. `docs/03`
 "WOW64 GUI notes" has each one and its pin.
+
+**And it hears, too.** The same interactive image carries the 32-bit half
+of the audio shelf under `syswow64` — `mmdevapi`, `winmm`, `dsound`, the
+ACM codecs, and `winevsnd.drv` built from the one driver's sources by the
+i686 cross — so a WOW64 app reaches WASAPI through the redirector the way
+it reaches `user32`. The kernel below is unchanged: `\Device\Snd0`'s wire
+contract is pointer-free by construction, so it reads the same from either
+bitness. `tests/run/run.sh wow64aud` is the acceptance — the 64-bit
+WASAPI client's own source, built i386, its samples found sample-exact in
+QEMU's recording, with the bitness on the verdict line
+(`underruns=0 bits=32`) because the image could carry either build under
+that name.
 
 **CUI-9 complete**: shared, already-relocated image masters plus
 copy-on-write — the machine no longer pays a full private copy of every

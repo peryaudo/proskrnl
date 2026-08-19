@@ -145,9 +145,13 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 #   persist 34  cui7 34  gui 32  procs 31  files 30  console 30  boot 30
 #   cui6 29  oracle 19  fatstress 19  fuzz 14  fatinterop 8  frontier 0
 #
+# wow64aud has no row yet: it is a wow64gui-class boot (the same 32-bit
+# second stack, on a bigger image), so it is scheduled beside it until a
+# run of your own measures it.
+#
 # 1165 s of legs; 150 s of wall clock. The floor is guiwtest at 114 s, so the
 # schedule is already within a third of the best any width could do.
-ALL_LEGS=(guiwtest winetest wow64gui winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
+ALL_LEGS=(guiwtest winetest wow64gui wow64aud winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui audio procs files console boot
           cui6 net oracle wow64 fatstress fuzz fatinterop frontier)
 
@@ -237,6 +241,12 @@ run_leg() {
             ;;
         gui2|gui3|gui4|gui5|gui5con|wow64gui)
             export TIMEOUT=1200 GUI_DEADLINE=900
+            cmd=("$view/tests/run/run.sh" "$leg")
+            ;;
+        wow64aud)
+            # CI's budget for this leg (.github/workflows/test.yml), so the
+            # same boot is not judged on a smaller one here.
+            export TIMEOUT=1200 AUDIO_DEADLINE=900
             cmd=("$view/tests/run/run.sh" "$leg")
             ;;
         winefbunit)

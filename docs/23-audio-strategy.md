@@ -288,6 +288,25 @@ exists for it — like Fb0, its verdicts are kmt tests (control-verb round trips
 written period completing, the park actually parking) plus the §6a artifact, the
 golden-image pattern already governing GUI.
 
+### f. The 32-bit half is the same client, measured (WOW64 audio)
+
+A WOW64 guest reaches audio through the *other* copy of the whole stack:
+`wow64.dll`'s file redirector turns its `system32\mmdevapi.dll` into
+`syswow64\mmdevapi.dll`, and the seam (§4c) `LdrLoadDll`s `winevsnd.drv` into that
+32-bit process — so the i386 driver is the same sources built by the i686 cross
+(one driver, two bitnesses), and the kernel below sees one `\Device\Snd0`
+contract because `sndproto.h` is pointer-free by construction (fixed
+`uint32`/`uint64` payloads, a `static_assert` on every size). Nothing in the hive is
+per-bitness: the 64-bit firstboot registers the CLSIDs once and the 32-bit client
+reads the same keys.
+
+The verdict is `run.sh wow64aud` — §6a's recording check with `tests/audio/
+wasapi_smoke.c` built i386 and baked under the 64-bit client's name, so smss's
+existing probe row starts it. Which bitness produced the samples is **measured, not
+inferred**: the client prints `sizeof(void *) * 8` on its own verdict line
+(`underruns=N bits=32`), because the image could carry either build under that
+name.
+
 ## 7. Risks (honest)
 
 - **The period deadline on a non-preemptible uniprocessor.** The feeder needs the

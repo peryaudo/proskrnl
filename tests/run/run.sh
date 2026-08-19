@@ -3023,6 +3023,94 @@ audio() {
     return 0
 }
 
+# WOW64 audio (docs/23 §6f; §6a's recording check, the wow64gui milestone's
+# bitness): the WASAPI half again, with the SAME source built i386 and run
+# as a WOW64 guest. A 32-bit client reaches mmdevapi by name through wow64.dll's file
+# redirector, so every dll it loads — mmdevapi, winmm, oleaut32, and
+# winevsnd.drv, which the seam LdrLoadDll's INTO the 32-bit process — is
+# syswow64's copy, while the kernel below sees one \Device\Snd0 contract
+# from either bitness (drivers/sndproto.h is pointer-free by construction).
+#
+# Its own leg rather than a fourth half of audio(): this boot needs the
+# whole 32-bit shelf on the image and twice the memory (a second Wine stack
+# that shares no image master with the 64-bit one — CUI-9 keys masters on
+# the file), and audio() is already four boots long.
+#
+# The verdict is the same recording check as the 64-bit half plus the
+# client's OWN bits= report: the image could carry either build under that
+# name, so which one produced the samples is measured, not inferred.
+wow64aud() {
+    make -C "$ROOT" wasapi-smoke32 wow64-shelf >/dev/null || return 1
+    local dir="$ROOT/build/tests"
+    local img="$dir/wow64aud.hdd"
+    local sock="$dir/wow64aud.sock" log="$dir/wow64aud.log" wav="$dir/wow64aud.wav"
+    mkdir -p "$dir"
+    rm -f "$sock" "$wav" "$log"
+
+    # The 32-bit shelf read out of the Makefile's one list (the
+    # print-winfiles drift lesson), on top of bake_audio_image's 64-bit
+    # audio machine.
+    local shelfspec shelf=()
+    while IFS= read -r shelfspec; do
+        [[ -n "$shelfspec" ]] || continue
+        shelf+=("win:$ROOT/${shelfspec#win:}")
+    done < <(make -s -C "$ROOT" print-wow64shelffiles)
+    if (( ${#shelf[@]} < 20 )); then
+        echo "run.sh: 'make print-wow64shelffiles' listed ${#shelf[@]} files — the 32-bit" \
+             "shelf is not that short" >&2
+        return 2
+    fi
+    bake_audio_image "$img" "${shelf[@]}" \
+        "win:$ROOT/build/modules/wasapi_smoke32.exe=wasapi_smoke.exe"
+
+    # smss picks the foreground by PROBE (user/smss/session.c), so the
+    # 32-bit client baked under the 64-bit one's name is started by the
+    # same row — no session leg of its own, and nothing on the image says
+    # which bitness it is. MEM is wow64gui's, for wow64gui's reason.
+    QMP_SOCK="$sock" LOG="$log" \
+        EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
+        AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
+        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${AUDIO_DEADLINE:-600}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    wow64aud_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== wow64aud: FAIL ($1; see $log) =="
+        return 1
+    }
+
+    if ! await '\[KTEST\] audio (PASS|FAIL)'; then
+        wow64aud_fail "no 32-bit client verdict"; return 1
+    fi
+    # End the guest cleanly: the wav backend patches the RIFF sizes at
+    # teardown (the audio() rationale).
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    if ! grep -qE '\[KTEST\] audio PASS underruns=[0-9]+ bits=32' "$log"; then
+        echo "== wow64aud: FAIL (no 32-bit PASS carrying an underrun count; see $log) =="
+        return 1
+    fi
+    if ! python3 "$ROOT/tests/audio/check_audio.py" --log "$log" --wav "$wav"; then
+        echo "== wow64aud: FAIL (recording does not contain what the 32-bit guest played) =="
+        return 1
+    fi
+    echo "== wow64aud: PASS (a 32-bit app played sample-exact through syswow64's WASAPI," \
+         "$(grep -oE 'underruns=[0-9]+ bits=[0-9]+' "$log" | tail -1)) =="
+    return 0
+}
+
 # GUI-2 (docs/02 "winemine.exe appears on screen"). Same shape as gui()
 # above: boot the gui2 image with a QMP socket and a virtio keyboard, wait
 # for winefb.drv to report the scanout and then a painted window,
@@ -3993,6 +4081,7 @@ case "$MODE" in
     tornwrite) tornwrite ;;
     gui)      gui ;;
     audio)    audio ;;
+    wow64aud) wow64aud ;;
     gui2)     gui2 ;;
     gui3)     gui3 ;;
     gui4)     gui4 ;;
@@ -4003,7 +4092,7 @@ case "$MODE" in
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|fatinterop|fatstress|tornwrite|gui|audio|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
