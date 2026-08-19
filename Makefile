@@ -1159,6 +1159,31 @@ print-audiofiles:
 	@printf '%s\n' $(AUDIOFILES)
 .PHONY: print-audiofiles
 
+# The %windir% .ini furniture that goes with the ACM codecs above: winmm's
+# PlaySound reaches a decoder for a non-PCM wav through system.ini's
+# [drivers32] aliases, and the baked inf drops the UpdateInis directive
+# wineboot would have written them with (tools/gen_sysini.py, which PARSES
+# them out of the pinned wine.inf's [SystemIni] rather than transcribing
+# them). run.sh's winetest audio image generates the same pair the same
+# way; this is the handle for an image the Makefile bakes.
+SYSINI_DIR := $(BUILD)/sysini
+# One recipe writes both files, so the image rule depends on a stamp rather
+# than on either file (a two-target rule would run gen_sysini twice, racing
+# under -j). The list below then names the two by hand, so the recipe
+# refuses loudly if a pin bump ever grows a third [SystemIni] file rather
+# than baking an image quietly missing it.
+SYSINI_STAMP := $(SYSINI_DIR)/.stamp
+$(SYSINI_STAMP): third_party/wine/loader/wine.inf tools/gen_sysini.py
+	@mkdir -p $(SYSINI_DIR)
+	python3 tools/gen_sysini.py $(SYSINI_DIR) >/dev/null
+	@for f in $(SYSINI_DIR)/*.ini; do \
+	    case $$(basename $$f) in win.ini|system.ini) ;; \
+	    *) echo "gen_sysini emitted $$f, which SYSINIFILES does not bake" >&2; \
+	       exit 1 ;; esac; done
+	@touch $@
+SYSINIFILES := win:$(SYSINI_DIR)/win.ini=windows/win.ini \
+               win:$(SYSINI_DIR)/system.ini=windows/system.ini
+
 # The AUD-2 acceptance client (tests/run/run.sh audio, WASAPI half): the
 # same freestanding shape as aud_smoke.exe, but importing ole32 — it plays
 # the same pattern through CoCreateInstance -> IAudioClient ->
@@ -1864,13 +1889,21 @@ GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(APPLETFILES) \
              $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) \
-             $(FLASHFILES)
+             $(FLASHFILES) \
+             $(AUDIOFILES) $(SYSINIFILES)
 
 # 128 MiB rather than the default 64: this is the one image carrying both
 # bitnesses of the whole shelf, and the 32-bit half does not fit in what the
 # 64-bit half leaves (measured — 12 MiB free before, 32 MiB wanted). The ESP
 # still starts at sector 4096, so the fixed offset every reader uses
 # (tests/run/run.sh, tools/qemu.sh) is unchanged.
+#
+# $(AUDIOFILES) rides along because this is the image `make rungui` boots
+# (the interactive machine, which now also gets a virtio-snd device — see
+# the rungui target): a shelf whose applets can open a wave device is the
+# whole point of an interactive session, and the audio wine.inf it carries
+# is $(WINE_INF_SHELL) plus mmdevapi/dsound registration, so it OVERRIDES
+# the shell copy by mcopy -o ordering (hence last in the list).
 IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
 $(IMG_GUI5CON): $(KERNEL) $(WINFILES_DEPS) $(CONHOST_GUI) \
         $(WIN32U) $(WINESTRIP_GUI_DLLS) \
@@ -1879,6 +1912,7 @@ $(IMG_GUI5CON): $(KERNEL) $(WINFILES_DEPS) $(CONHOST_GUI) \
         $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
         $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
         $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
+        $(AUDIO_PAYLOAD) $(SYSINI_STAMP) \
         $(WINE_FONTS) tools/mkimage.sh \
         arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
 	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
@@ -2219,9 +2253,20 @@ run: $(IMG_RUN)
 # scanout and a virtio keyboard + tablet: click the console, type, `exit`
 # powers the VM off. Serial stays on the terminal carrying the kernel's
 # lines (HACK-004's permanent debug role).
+#
+# NET_USER=1 / SOUND=1: the machine a human sits at gets the two devices the
+# headless legs pin their own backends for — a virtio-net NIC on slirp
+# (netd DHCPs against it with nothing to configure guest-side) and a
+# virtio-snd card on whatever audio backend the host QEMU has. Which
+# backend, and what to say when there is none, is qemu.sh's business: it is
+# the file that knows the host. The image's own half is $(AUDIOFILES) on
+# $(IMG_GUI5CON) above; the NIC needs no image payload at all.
+#
+# The keyboard and tablet are qemu.sh's GUI_DISPLAY defaults, not an
+# EXTRA_DEVICES list here — the interactive branch adds them itself.
 rungui: $(IMG_GUI5CON)
-	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} \
-	    EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" tools/qemu.sh $(IMG_GUI5CON)
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 NET_USER=1 SOUND=1 \
+	    MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI5CON)
 .PHONY: rungui
 
 # GUI-2's winemine boot, kept under its own name (rungui's old target).

@@ -198,6 +198,32 @@ if [[ "${PANIC_NOTIMPL:-1}" == 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/panic_not_implemented,string=0)
 fi
 
+# EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui
+# leg adds virtio-keyboard-pci this way so no other leg grows a device it
+# does not use. Word-split on spaces: a spec may carry comma-separated
+# properties, but no spaces.
+EXTRA_DEVICE_ARGS=()
+if [[ -n "${EXTRA_DEVICES:-}" ]]; then
+    read -ra EXTRA_DEVICE_SPECS <<< "$EXTRA_DEVICES"
+    for spec in "${EXTRA_DEVICE_SPECS[@]}"; do
+        EXTRA_DEVICE_ARGS+=(-device "$spec")
+    done
+fi
+
+# AUD-1: AUDIODEV="<spec>" appends one -audiodev — the backend an
+# EXTRA_DEVICES sound device names by id. The audio leg passes the wav
+# backend (pinned tree audio/wavaudio.c), which records what the guest
+# plays into a host WAV file: the audio analog of the QMP screendump
+# (docs/23 §6a). No other leg grows an audio backend it does not use.
+AUDIODEV_ARGS=()
+if [[ -n "${AUDIODEV:-}" ]]; then
+    AUDIODEV_ARGS=(-audiodev "$AUDIODEV")
+fi
+
+# Both are read by the interactive branch below AND by the headless
+# invocation at the end: a device an interactive session wants is spelled
+# the same way a leg spells it (Art. 11 — one spelling per thing).
+
 # INTERACTIVE=1 (make run): hand the serial wire to the terminal — QEMU
 # multiplexes its monitor onto stdio (Ctrl-A x quits, Ctrl-A c toggles the
 # monitor). No timeout, no log, no verdict: a human owns the session, and the
@@ -213,6 +239,12 @@ fi
 # only native one QEMU offers); otherwise — a build restored from the CI
 # cache predating that, or a hand-built one — the scanout is served over
 # VNC and the banner says where.
+#
+# NET_USER=1 / SOUND=1 (below): the two devices an interactive session wants
+# and no headless leg does — a NIC on slirp and a sound card on the HOST's
+# audio backend. The verdict legs pin their own backends instead (a pcap,
+# a WAV file), because a verdict must be a recorded artifact rather than
+# something that went out a speaker; interactive is the opposite case.
 if [[ -n "${INTERACTIVE:-}" ]]; then
     DISPLAY_ARGS=(-display none)
     # Stays empty on the console leg, so every expansion of it below needs
@@ -240,6 +272,69 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
     else
         echo "qemu.sh: interactive console — 'exit' at the prompt powers off; Ctrl-A x kills QEMU" >&2
     fi
+    # NET_USER=1: the same slirp backend and virtio-net-pci device the net
+    # legs boot (NET_ARGS below), minus the pcap tap — a human reads the
+    # guest's own output, not a capture file. Guest-side there is nothing to
+    # configure: netd (drivers/net/netd.c) DHCPs against slirp's built-in
+    # server the moment it binds a NIC.
+    if [[ -n "${NET_USER:-}" ]]; then
+        if "$QEMU" -netdev help 2>/dev/null | grep -qx user; then
+            INTERACTIVE_DEVICE_ARGS+=(-netdev user,id=net0 -device virtio-net-pci,netdev=net0)
+            echo "qemu.sh: networking on (slirp user-mode: guest 10.0.2.15, host 10.0.2.2)" >&2
+        else
+            echo "qemu.sh: NO slirp in this QEMU build ('-netdev user') — booting" >&2
+            echo "         WITHOUT a NIC. Rebuild the pinned QEMU with slirp" >&2
+            echo "         (apt install libslirp-dev, remove third_party/qemu/build," >&2
+            echo "         re-run tools/setup_linux.sh)." >&2
+        fi
+    fi
+    # SOUND=1: virtio-sound-pci (the device drivers/snd.c binds and every
+    # audio leg boots) on the first audio backend that both exists in this
+    # QEMU build AND actually opens on this host. Compiled in is not the
+    # same as usable — a build carrying pulseaudio on a box with no sound
+    # server running dies at device realize, which would take `make rungui`
+    # down over a speaker nobody asked for — so the candidates are probed
+    # the way find_accel probes KVM: build the device for real, halted, and
+    # see whether QEMU survives it. Order is preference among the ones that
+    # do: pipewire/pa/sdl/alsa on a Linux desktop, coreaudio/dsound on a
+    # macOS/Windows host, oss last. The probe catches a backend that fails
+    # realize outright, which is what a box with no sound server does; a
+    # backend that fails SLOWLY (a server that times out rather than
+    # refusing) would still be picked, and then the real boot says so.
+    # `none` is the floor and always works — it clocks the stream and drops
+    # the samples, so the guest's whole audio stack still runs, silently,
+    # and the banner says so. AUDIODEV names a backend explicitly and skips
+    # all of this.
+    if [[ -n "${SOUND:-}" && -z "${AUDIODEV:-}" ]]; then
+        SND_BACKEND=none
+        for candidate in pipewire pa sdl alsa coreaudio dsound oss; do
+            "$QEMU" -audiodev help 2>/dev/null | grep -qx "$candidate" || continue
+            "$QEMU" -audiodev "$candidate,id=probe" -device virtio-sound-pci,audiodev=probe \
+                    -display none -no-user-config -nodefaults -machine q35 -m 32 -S \
+                    >/dev/null 2>&1 </dev/null &
+            probe=$!
+            sleep 0.5
+            if kill -0 "$probe" 2>/dev/null; then
+                kill "$probe" 2>/dev/null || true
+                wait "$probe" 2>/dev/null || true
+                SND_BACKEND="$candidate"
+                break
+            fi
+            wait "$probe" 2>/dev/null || true
+        done
+        if [[ "$SND_BACKEND" == none ]]; then
+            echo "qemu.sh: NO usable host audio backend — the guest gets a virtio-snd" >&2
+            echo "         device on the 'none' backend (it plays, you hear nothing)." >&2
+            echo "         Check that this box has a sound server running, or rebuild" >&2
+            echo "         the pinned QEMU with a backend it does have (e.g. apt install" >&2
+            echo "         libpulse-dev, remove third_party/qemu/build, re-run" >&2
+            echo "         tools/setup_linux.sh)." >&2
+        else
+            echo "qemu.sh: sound on (virtio-snd -> $SND_BACKEND)" >&2
+        fi
+        INTERACTIVE_DEVICE_ARGS+=(-audiodev "$SND_BACKEND,id=snd0"
+                                  -device virtio-sound-pci,audiodev=snd0)
+    fi
     "$QEMU" \
         -M q35 \
         "${ACCEL_ARGS[@]}" \
@@ -249,6 +344,8 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         "${VGA_ARGS[@]}" \
         -serial mon:stdio \
         ${INTERACTIVE_DEVICE_ARGS[@]+"${INTERACTIVE_DEVICE_ARGS[@]}"} \
+        ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
+        ${AUDIODEV_ARGS[@]+"${AUDIODEV_ARGS[@]}"} \
         ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
@@ -311,28 +408,6 @@ if [[ -n "${NET_PCAP:-}" ]]; then
 fi
 if [[ -n "${NET_ECHO_PORT:-}" ]]; then
     FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/netecho,string=$NET_ECHO_PORT")
-fi
-
-# EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui
-# leg adds virtio-keyboard-pci this way so no other leg grows a device it
-# does not use. Word-split on spaces: a spec may carry comma-separated
-# properties, but no spaces.
-EXTRA_DEVICE_ARGS=()
-if [[ -n "${EXTRA_DEVICES:-}" ]]; then
-    read -ra EXTRA_DEVICE_SPECS <<< "$EXTRA_DEVICES"
-    for spec in "${EXTRA_DEVICE_SPECS[@]}"; do
-        EXTRA_DEVICE_ARGS+=(-device "$spec")
-    done
-fi
-
-# AUD-1: AUDIODEV="<spec>" appends one -audiodev — the backend an
-# EXTRA_DEVICES sound device names by id. The audio leg passes the wav
-# backend (pinned tree audio/wavaudio.c), which records what the guest
-# plays into a host WAV file: the audio analog of the QMP screendump
-# (docs/23 §6a). No other leg grows an audio backend it does not use.
-AUDIODEV_ARGS=()
-if [[ -n "${AUDIODEV:-}" ]]; then
-    AUDIODEV_ARGS=(-audiodev "$AUDIODEV")
 fi
 
 if [[ -n "${WRITE_LOG:-}" ]]; then
