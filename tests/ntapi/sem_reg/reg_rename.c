@@ -1,5 +1,11 @@
 /*
- * sem_reg/rename.c — NtRenameKey semantics (CUI-7).
+ * sem_reg/reg_rename.c — NtRenameKey semantics (CUI-7).
+ *
+ * Named reg_rename, not rename: a test is identified by its BASE name in
+ * both runners (the .exe, the [KTEST] line, the subtest filter), and
+ * sem_file/rename.c already owns `rename` — two sources of that name built
+ * to one .exe, so whichever compiled last was the only one on the volume
+ * and BOTH graded green off its single verdict line.
  *
  * Oracle behaviour pinned from the pinned tree: ntdll rejects a NULL name
  * with STATUS_ACCESS_VIOLATION and a NULL-buffer/empty name with
@@ -19,7 +25,7 @@ NTSYSAPI NTSTATUS NTAPI NtRenameKey(HANDLE, UNICODE_STRING *);
 
 static const void *base_path = W("\\Registry\\Machine\\Software\\prsk_m8_ren");
 
-START_TEST(rename)
+START_TEST(reg_rename)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
