@@ -166,17 +166,11 @@ done
 # QEMU command line (tools/qemu.sh, which arms it on every run unless
 # PANIC_NOTIMPL=0), so the image no longer varies with it and one image serves
 # both stances. See docs/10 HACK-006.
-# CUI-8 stress (docs/19 §8.1, OFF by default): CUI8_STRESS=1 bakes the
-# marker that zeroes the kernel's await drain-spin (kernel/init/main.c), so
-# every device await parks — the maximally different legal interleaving.
-# Only tests/run/run.sh cui8's stress boot sets it; a default image never
-# carries the marker, keeping the default runs' behaviour untouched.
-if [[ "${CUI8_STRESS:-0}" != 0 ]]; then
-    STRESS_FLAG="$(mktemp)"
-    echo "CUI-8 stress marker: park on every await (kernel/init/main.c)" > "$STRESS_FLAG"
-    copy "$STRESS_FLAG" ::/cui8_stress.flag
-    rm -f "$STRESS_FLAG"
-fi
+# The CUI-8 stress knob is no longer baked here either: it rides the QEMU
+# command line as well (tools/qemu.sh GUEST_STRESS=1). One image serves every
+# leg now, so the harness asks make for the image rather than baking one per
+# boot — and a marker make has no reason to rebuild for is a knob that
+# silently does nothing.
 # M10: the TEMP/TMP directory the default environment points at.
 mkdirp /windows
 mkdirp /windows/temp

@@ -260,30 +260,6 @@ static int KiRunAbiProbe(void)
     return failures;
 }
 
-/* Probe/skip on the boot volume's content: does `path` exist? The one
- * authority for every flag-file and presence probe below (G10). */
-static BOOLEAN KiBootFileExists(PCWSTR path)
-{
-    UNICODE_STRING name;
-    RtlInitUnicodeString(&name, path);
-    OBJECT_ATTRIBUTES attributes;
-    memset(&attributes, 0, sizeof(attributes));
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_CASE_INSENSITIVE;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attributes, &iosb, 0,
-                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
-    if (!NT_SUCCESS(status))
-    {
-        return FALSE;
-    }
-    NtClose(handle);
-    return TRUE;
-}
-
 /* The interactive boot (make run, make rungui): a human owns the console —
  * the test suites are skipped and the console goes straight to cmd.exe or the
  * shell (via the session manager).
@@ -332,19 +308,24 @@ static void KiConfigurePanicOnNotImplemented(void)
     }
 }
 
-/* CUI-8 stress (docs/19 §8.1): C:\cui8_stress.flag zeroes the await
- * drain-spin, so every device await parks — the maximally different legal
- * interleaving, with which every verdict must still agree (the cui8 leg
- * compares). Never baked into a default image (tools/mkimage.sh
- * CUI8_STRESS=1) — the last knob still decided by the IMAGE rather than by
- * the run, now that the interactive and panic flags ride the QEMU command
- * line (docs/10 HACK-006). KiBootFileExists is its one remaining caller. */
+/* CUI-8 stress (docs/19 §8.1): zeroes the await drain-spin, so every device
+ * await parks — the maximally different legal interleaving, with which every
+ * verdict must still agree (the cui8 leg compares). Off unless the command
+ * line asks: \Registry\Machine\Hardware\qemu "Stress" (tools/qemu.sh
+ * GUEST_STRESS=1, docs/10 HACK-006).
+ *
+ * It was a baked C:\cui8_stress.flag until one image started serving every
+ * leg. A flag FILE makes the knob a property of the media, and the harness
+ * no longer bakes media per boot: it asks make for the image, make finds the
+ * one image already up to date, and the marker the stress boot ordered is
+ * silently absent — which the cui8 leg reports as "knob never armed". A boot
+ * decision belongs on the boot's command line. */
 static void KiConfigureCui8Stress(void)
 {
-    if (KiBootFileExists(WSTR("\\??\\C:\\cui8_stress.flag")))
+    if (CmQueryQemuBootFlag(WSTR("Stress"), 0) != 0)
     {
         VioBlkSetAwaitSpinBound(0);
-        DbgPrint("[KTEST] cui8 stress knob armed (C:\\cui8_stress.flag)\n");
+        DbgPrint("[KTEST] cui8 stress knob armed (Hardware\\qemu Stress)\n");
     }
 }
 
