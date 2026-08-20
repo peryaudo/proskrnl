@@ -744,21 +744,15 @@ winestrip: $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 # lives with the winevsnd recipe below.
 WSRESOLV := $(BUILD)/modules/wsresolv.dll
 
-WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
-            win:$(WINESTRIP)/kernel32.dll=windows/system32/kernel32.dll \
-            win:$(WINESTRIP)/kernelbase.dll=windows/system32/kernelbase.dll \
-            win:$(WINESTRIP)/msvcrt.dll=windows/system32/msvcrt.dll \
-            win:$(WINESTRIP)/ucrtbase.dll=windows/system32/ucrtbase.dll \
-            win:$(WINESTRIP)/advapi32.dll=windows/system32/advapi32.dll \
-            win:$(WINESTRIP)/sechost.dll=windows/system32/sechost.dll \
-            win:$(WINESTRIP)/rpcrt4.dll=windows/system32/rpcrt4.dll \
-            win:$(WINESTRIP)/version.dll=windows/system32/version.dll \
-            win:$(WINESTRIP)/cryptbase.dll=windows/system32/cryptbase.dll \
-            win:$(WINESTRIP)/setupapi.dll=windows/system32/setupapi.dll \
-            win:$(WINESTRIP)/cfgmgr32.dll=windows/system32/cfgmgr32.dll \
-            win:$(WINESTRIP)/ws2_32.dll=windows/system32/ws2_32.dll \
-            win:$(WINESTRIP)/secur32.dll=windows/system32/secur32.dll \
-            win:$(WINESTRIP)/userenv.dll=windows/system32/userenv.dll \
+# The DLL half is DERIVED from $(WINESTRIP_NAMES) rather than re-listed:
+# the two were separate lists and they drifted, exactly the way the
+# print-winfiles note above says such pairs do. hid.dll was stripped by the
+# one and missing from the other, which nothing noticed while the guiwtest
+# image carried a hand-written DLL list of its own that happened to include
+# it. Unified onto one image, user32_test.exe could not load and the whole
+# msg gate died with STATUS_DLL_NOT_FOUND (0xc0000135). A name is now baked
+# because it is built, and there is no second place to forget it.
+WINFILES := $(foreach d,$(WINESTRIP_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
             win:$(WINESTRIP)/services.exe=windows/system32/services.exe \
             win:$(WINESTRIP)/rpcss.exe=windows/system32/rpcss.exe \
             win:$(WINESTRIP)/sc.exe=windows/system32/sc.exe \
@@ -781,9 +775,6 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(CONHOST)=windows/system32/conhost.exe \
             win:$(M9SMOKE)=m9_smoke.exe \
             win:$(WSRESOLV)=windows/system32/wsresolv.dll \
-            win:$(WINESTRIP)/nsi.dll=windows/system32/nsi.dll \
-            win:$(WINESTRIP)/iphlpapi.dll=windows/system32/iphlpapi.dll \
-            win:$(WINESTRIP)/dnsapi.dll=windows/system32/dnsapi.dll \
             win:third_party/wine/dlls/ws2_32/hosts=windows/system32/drivers/etc/hosts \
             win:third_party/wine/dlls/ws2_32/networks=windows/system32/drivers/etc/networks \
             win:third_party/wine/dlls/ws2_32/protocol=windows/system32/drivers/etc/protocol \
