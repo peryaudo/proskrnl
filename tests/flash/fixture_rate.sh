@@ -41,7 +41,7 @@ run_trial() {
     sock=$(mktemp -u /tmp/flashfx-XXXXXX.sock)
     ACCEL="$ACCELSEL" QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM=1536M TIMEOUT=1200 PASS_RE='PRSK-FLASH-NEVER' \
+        MEM=1536M TIMEOUT=1200 PASS_RE='PRSK-FLASH-NEVER' GUEST_SHELL=1 \
         "$ROOT/tools/qemu.sh" "$DIR/img.hdd" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }

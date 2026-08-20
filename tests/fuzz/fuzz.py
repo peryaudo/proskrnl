@@ -258,7 +258,15 @@ def run_proskrnl(img):
     # NtSetValueKey/NtCreateKey rewrites the whole hive file — immediate
     # writeback, Art. 3), so the default batch needs minutes, not seconds. A
     # truncated serial log reads as en-masse "proskrnl=none" divergences.
-    env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end", TIMEOUT=os.environ.get("TIMEOUT", "420"))
+    # GUEST_LEG=ntapi is what makes the session manager SWEEP C:\ntapi at all:
+    # which leg a boot runs is a QEMU command-line flag (tools/qemu.sh,
+    # HACK-006), not the presence of a directory. Without it this boot runs the
+    # plain suite, the interp never starts, and every op reads "proskrnl=none"
+    # — a whole batch of fabricated divergences. GUEST_GUI=0 keeps the console
+    # on the serial transport this log is read off.
+    env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end",
+               GUEST_GUI="0", GUEST_LEG="ntapi",
+               TIMEOUT=os.environ.get("TIMEOUT", "420"))
     subprocess.run([os.path.join(ROOT, "tools", "qemu.sh"), img], env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(log) as f:
