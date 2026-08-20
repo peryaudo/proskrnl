@@ -501,10 +501,11 @@ $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
 # M10: Wine's cmd.exe as a standalone CUI PE. The pinned tree's own PE build
 # provides the four cmd objects and the wrc-compiled resources UNMODIFIED
 # (programs/cmd/x86_64-windows, built by tools/setup_linux.sh);
-# user/wine/programs/cmd/ supplies only the glue — the CRT entry plus the five
-# user32 / four shell32 imports, stood in over ntdll/kernelbase (user32/shell32 are the M12 GUI
-# path, additive and absent here per Art. 7). Links the real ucrtbase +
-# advapi32 import libraries; both DLLs are baked (WINFILES below).
+# user/wine/programs/cmd/ supplies only the glue — the CRT entry. Its five
+# user32 and four shell32 imports were STOOD IN there while a CUI image
+# carried neither DLL; one image bakes exactly one of each now, so the real
+# import libraries are linked. ucrtbase + advapi32 likewise; every one of
+# these DLLs is baked ($(WINFILES) / $(FULLFILES) below).
 WINE_CMD := third_party/wine/programs/cmd
 CMD := $(BUILD)/modules/cmd.exe
 $(CMD): $(PROG_GLUE)/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
@@ -518,6 +519,8 @@ $(CMD): $(PROG_GLUE)/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 	    $(WINE_CMD)/x86_64-windows/batch.o $(WINE_CMD)/x86_64-windows/directory.o \
 	    $(PROG_GLUE)/cmd/proskrnl_glue.c $(BUILD)/cmd.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
+	    $(WINE_PE)/shell32/x86_64-windows/libshell32.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/advapi32/x86_64-windows/libadvapi32.a \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
@@ -528,9 +531,9 @@ $(CMD): $(PROG_GLUE)/cmd/proskrnl_glue.c $(WINE_CMD)/x86_64-windows/wcmdmain.o \
 # milestone's acceptance pair (docs/02 "a tasklist/taskkill pair works
 # against live processes"). The pinned tree's own PE build provides the
 # program objects and wrc-compiled resources UNMODIFIED; the tasklist/ and
-# taskkill/ glue supplies only the wide CRT entry and the user32 imports
-# (LoadStringW is a resource read; taskkill's window calls fail honestly —
-# its /f path does not use them). Same recipe shape as cmd.exe above.
+# taskkill/ glue supplies only the wide CRT entry; their user32 imports were
+# stood in there while a CUI image carried no user32 and are the real ones
+# now. Same recipe shape as cmd.exe above.
 WINE_TASKLIST := third_party/wine/programs/tasklist
 TASKLIST := $(BUILD)/modules/tasklist.exe
 $(TASKLIST): $(PROG_GLUE)/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windows/tasklist.o \
@@ -543,6 +546,7 @@ $(TASKLIST): $(PROG_GLUE)/tasklist/proskrnl_glue.c $(WINE_TASKLIST)/x86_64-windo
 	    $(WINE_TASKLIST)/x86_64-windows/tasklist.o $(PROG_GLUE)/tasklist/proskrnl_glue.c \
 	    $(BUILD)/tasklist.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
@@ -560,6 +564,7 @@ $(TASKKILL): $(PROG_GLUE)/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windo
 	    $(WINE_TASKKILL)/x86_64-windows/taskkill.o $(PROG_GLUE)/taskkill/proskrnl_glue.c \
 	    $(BUILD)/taskkill.res.o \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
@@ -568,8 +573,9 @@ $(TASKKILL): $(PROG_GLUE)/taskkill/proskrnl_glue.c $(WINE_TASKKILL)/x86_64-windo
 # CUI-1: Wine's rundll32.exe as a standalone PE — wineboot --init's vehicle
 # for the `setupapi,InstallHinfSection` children that apply wine.inf (ADR
 # 0008's Cm integration exercise). The pinned tree's own PE build provides
-# rundll32.o UNMODIFIED; the rundll32/ glue supplies the wide CRT entry plus
-# the four user32 imports as headless stand-ins (Art. 7: GUI path stays absent).
+# rundll32.o UNMODIFIED; the rundll32/ glue supplies the wide CRT entry. Its
+# four user32 imports were headless stand-ins there while a CUI image carried
+# no user32; the real import library is linked now.
 WINE_RUNDLL32 := third_party/wine/programs/rundll32
 RUNDLL32 := $(BUILD)/modules/rundll32.exe
 $(RUNDLL32): $(PROG_GLUE)/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
@@ -580,6 +586,7 @@ $(RUNDLL32): $(PROG_GLUE)/rundll32/proskrnl_glue.c $(WINE_RUNDLL32)/x86_64-windo
 	    $(WINE_RUNDLL32)/x86_64-windows/rundll32.o \
 	    $(PROG_GLUE)/rundll32/proskrnl_glue.c \
 	    third_party/wine/libs/winecrt0/x86_64-windows/libwinecrt0.a \
+	    $(WINE_PE)/user32/x86_64-windows/libuser32.a \
 	    $(WINE_PE)/ucrtbase/x86_64-windows/libucrtbase.a \
 	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
