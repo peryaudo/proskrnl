@@ -21,7 +21,12 @@ CLANG_TIDY   ?= $(LLVM)/clang-tidy
 
 BUILD  := build
 KERNEL := $(BUILD)/proskrnl
-IMG    := $(BUILD)/proskrnl.hdd
+
+# THE TWO IMAGES. Named up here because `all:` names one of them before the
+# rules that build them are read, and make expands a prerequisite list at the
+# moment it parses the line.
+IMG_TEST := $(BUILD)/proskrnl-test.hdd
+IMG_DEV  := $(BUILD)/proskrnl-dev.hdd
 
 # Freestanding, higher-half, no SIMD/red-zone (interrupt-safe), fixed VMA.
 # The two third_party include paths are headers only: Limine's boot protocol,
@@ -294,7 +299,7 @@ PECFLAGS := -std=c11 -mabi=sysv -ffreestanding -fno-builtin -nostdlib -nostartfi
             -O1 -g0 -Wall -Wextra -Wno-unused-parameter -I. \
             -Wl,--entry=pe_start -Wl,--dynamicbase -Wl,--pic-executable -Wl,--high-entropy-va
 
-all: $(IMG)
+all: $(IMG_TEST)
 
 # -MMD/-MP emit a .d beside each .o so a changed header rebuilds its dependents
 # (without this, editing e.g. ke.h silently left stale objects — a whole class
@@ -451,41 +456,27 @@ WSRV_DIR := user/wine/wineserver-lite
 # proskrnl-target (programs/conhost/proskrnl.{c,h}, taken when
 # __wine_unix_call_dispatcher is NULL; Art. 10 / docs/06).
 # user/wine/programs/conhost/ carries only the standalone-PE glue: entry +
-# mini-CRT (proskrnl_glue.c, shared with the windowed link) and the headless
-# user32/window.c stand-ins
-# (headless_stubs.c, this link only — the windowed CONHOST_GUI links the
-# real user32 and the real window.c instead). Built like the other native
-# PEs: mingw, no CRT, Wine import libraries.
+# mini-CRT (proskrnl_glue.c) and window.c's comctl32 delay-import forwarders
+# (window_glue.c).
+#
+# ONE binary, both consoles. There were two links from these sources — a
+# headless one whose user32/window.c references were satisfied by stand-ins
+# and a windowed one with the real ones — baked as conhost.exe on different
+# images, so which console a boot had was a property of its media. The
+# windowed link is the only one now and it picks its mode at BOOT from the
+# `gui` flag (proskrnl_glue.c conhost_wants_window, kernel/cm/registry.c).
+#
+# The pinned window.c and the wrc-compiled conhost resources are linked
+# against the real user32/gdi32/advapi32, so no '-DWINUSERAPI=': user32
+# references must stay dllimport and bind to the import library. comctl32
+# alone is NOT linked: window.c reaches it only from the config dialog, and
+# window_glue.c forwards those three entry points by hand (upstream's
+# DELAYIMPORT, done without mingw's delay-import machinery —
+# '-DWINCOMMCTRLAPI=' makes the declarations plain so the forwarders satisfy
+# them).
 WINE_CONHOST := third_party/wine/programs/conhost
 CONHOST := $(BUILD)/modules/conhost.exe
 $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
-            $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
-            $(PROG_GLUE)/conhost/proskrnl_glue.c \
-            $(PROG_GLUE)/conhost/headless_stubs.c $(WINE_PE_DLLS)
-	@mkdir -p $(dir $@)
-	$(MINGW) -std=gnu11 -fno-builtin -nostdlib -nostartfiles -O1 -g0 -Wall -DNDEBUG \
-	    -D__WINESRC__ '-D_ACRTIMP=' '-DWINUSERAPI=' \
-	    -I$(WINE_CONHOST) -Ithird_party/wine/include -Ithird_party/wine/include/msvcrt \
-	    -Wl,--entry=conhost_start \
-	    $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/proskrnl.c \
-	    $(PROG_GLUE)/conhost/proskrnl_glue.c \
-	    $(PROG_GLUE)/conhost/headless_stubs.c \
-	    $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
-	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
-	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
-
-# GUI-5: the WINDOWED conhost — the same pinned sources plus the real
-# window.c and the wrc-compiled conhost resources, linked against the real
-# user32/gdi32/advapi32 (so no '-DWINUSERAPI=': user32 references must stay
-# dllimport and bind to the import library). comctl32 alone is NOT linked:
-# window.c reaches it only from the config dialog, and window_glue.c
-# forwards those three entry points by hand (upstream's DELAYIMPORT, done
-# without mingw's delay-import machinery — '-DWINCOMMCTRLAPI=' makes the
-# declarations plain so the forwarders satisfy them). Baked as conhost.exe
-# only on images whose console is a real window (the gui5con leg, make
-# rungui); every serial-console image keeps CONHOST above.
-CONHOST_GUI := $(BUILD)/modules/conhost-gui.exe
-$(CONHOST_GUI): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
             $(WINE_CONHOST)/window.c $(WINE_CONHOST)/conhost.res \
             $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
             $(PROG_GLUE)/conhost/proskrnl_glue.c $(PROG_GLUE)/conhost/window_glue.c \
@@ -623,13 +614,31 @@ $(WINEBOOT): $(WINE_WINEBOOT)/wineboot.c $(PROG_GLUE)/wineboot/proskrnl_glue.c $
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -lgcc -o $@
 
-# CUI-1: the registry-only wine.inf (tools/filter_inf.py strips the fake-dll
-# / file-queue / self-registration directives that need source media or GUI
-# DLLs the disk does not bake; the AddReg machine-state payload is kept).
-WINE_INF := $(BUILD)/wine-proskrnl.inf
-$(WINE_INF): third_party/wine/loader/wine.inf tools/filter_inf.py
+# CUI-1: THE baked wine.inf. tools/filter_inf.py strips the fake-dll and
+# file-queue directives that need source media the disk does not have, and
+# keeps the AddReg machine-state payload; `--keep RegisterDlls` keeps
+# SELF-REGISTRATION, with mmdevapi and dsound injected into
+# [RegisterDllsSection] — CoCreateInstance of the MMDeviceEnumerator needs its
+# CLSID in the hive, which a real prefix gets from the fake-dll registrar this
+# filter drops, and mmdevapi is not in wine.inf's own RegisterDlls list.
+# Registration then runs each DLL's OWN DllRegisterServer through Wine's own
+# registrar (setupapi + atl100), never a hand-typed CLSID seed (Art. 11 / G8).
+# Of the section's 30 entries, shell32 and mmdevapi/dsound resolve; the rest
+# fail LoadLibrary and are skipped one by one (setupapi do_register_dll — a
+# skip, not an abort).
+#
+# ONE inf, where there were three (registry-only for the CUI images,
+# +RegisterDlls for the shell ones, +mmdevapi/dsound for the audio ones), each
+# staged as `windows/inf/wine.inf` on its own image family. What a boot
+# REGISTERS is now the same everywhere — which is also what the CUI-1 registry
+# differential's ORACLE half must apply: tests/run/run.sh firstboot filters the
+# prefix's inf the same way, or the guest's self-registration payload reads as
+# 122 unexpected keys the oracle never wrote (measured).
+WINE_INF_FULL := $(BUILD)/wine-proskrnl-full.inf
+$(WINE_INF_FULL): third_party/wine/loader/wine.inf tools/filter_inf.py
 	@mkdir -p $(dir $@)
-	python3 tools/filter_inf.py third_party/wine/loader/wine.inf $@
+	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll,dsound.dll \
+	    third_party/wine/loader/wine.inf $@
 
 # The baked COPIES of the pinned tree's PE dlls are debug-stripped. The
 # DWARF sections are never read on-target, and with no COW and no eviction
@@ -687,37 +696,27 @@ WOW64_HOST_NAMES := wow64 wow64cpu wow64win
 WOW64_HOST_DLLS := $(foreach d,$(WOW64_HOST_NAMES),$(WINESTRIP)/$(d).dll)
 $(foreach d,$(WOW64_HOST_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
-# win32u rides along with the trio and is NOT a GUI decision: wow64win.dll
-# is the win32u syscall thunk table and imports it unconditionally, while
-# wow64.dll's load_64bit_module TERMINATES the process if wow64win cannot
-# load (dlls/wow64/syscall.c) — so a CUI wow64 process needs it present to
-# start at all. The pinned PE win32u imports nothing but ntdll, so it is a
-# leaf that no CUI guest ever calls into.
-#
-# It is listed apart from the trio because on a GUI image it MUST NOT be
-# copied: there, system32\win32u.dll is this build's IMPLEMENTATION (the
-# $(WIN32U) link above), and the two files have the same name. Staging the
-# stock thunks after it wins the mcopy -o race and hands every 64-bit GUI
-# process a win32u whose NtUser* entry points issue syscalls at a kernel that
-# mints none — which is exactly what it did: conhost took a page fault inside
-# its first NtUserCreateWindowEx before the console window ever appeared.
-# wow64win is happy either way; the implementation exports every name it
-# imports (see WOW64_GUI_NAMES).
-WOW64_STOCK_W32U := win:$(WINESTRIP)/win32u.dll=windows/system32/win32u.dll
-$(eval $(call WINESTRIP_RULE,win32u))
+# system32\win32u.dll is NOT staged from the pinned tree, and that omission is
+# load-bearing rather than an oversight. wow64win.dll is the win32u syscall
+# thunk table and imports win32u unconditionally, while wow64.dll's
+# load_64bit_module TERMINATES the process if wow64win cannot load
+# (dlls/wow64/syscall.c) — so a wow64 process needs SOME win32u present to
+# start at all. This build's own $(WIN32U) is that file, and the pinned tree's
+# stock thunks have the same NAME: stage them and they win the mcopy -o race,
+# handing every 64-bit GUI process a win32u whose NtUser* entry points issue
+# syscalls at a kernel that mints none — which is exactly what happened when
+# a CUI image staged them and a GUI one did not: conhost took a page fault
+# inside its first NtUserCreateWindowEx before the console window appeared.
+# One image cannot hold both files, so it holds the implementation. wow64win
+# is happy either way; the implementation exports every name it imports (see
+# WOW64_GUI_NAMES).
 
-# The guest payload as mkimage `win:` specs, split so a GUI image can take
-# the halves it wants: the i386 set under syswow64, the wow64 host trio under
-# system32, and (CUI only) the stock win32u.
+# The guest payload as mkimage `win:` specs: the i386 set under syswow64 and
+# the wow64 host trio under system32.
 WOW64GUESTFILES := $(foreach d,$(WINESTRIP32_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
               $(foreach p,$(WINESTRIP32_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe)
 WOW64HOSTFILES := $(foreach d,$(WOW64_HOST_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll)
-WOW64FILES := $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64_STOCK_W32U)
 WOW64_GUEST_PAYLOAD := $(WINESTRIP32_DLLS) $(WINESTRIP32_EXES) $(WOW64_HOST_DLLS)
-WOW64_PAYLOAD := $(WOW64_GUEST_PAYLOAD) $(WINESTRIP)/win32u.dll
-
-.PHONY: wow64strip
-wow64strip: $(WOW64_PAYLOAD)
 
 # CUI-3: the SCM programs — the pinned tree's own UNMODIFIED pure-PE
 # binaries (the whoami precedent: prebuilt, no glue, no relink), baked
@@ -758,7 +757,7 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
             win:$(WINESTRIP)/sc.exe=windows/system32/sc.exe \
             win:$(RUNDLL32)=windows/system32/rundll32.exe \
             win:$(WINEBOOT)=windows/system32/wineboot.exe \
-            win:$(WINE_INF)=windows/inf/wine.inf \
+            win:$(WINE_INF_FULL)=windows/inf/wine.inf \
             win:$(WINE_NLS)/locale.nls=windows/system32/locale.nls \
             win:$(WINE_NLS)/l_intl.nls=windows/system32/l_intl.nls \
             win:$(WINE_NLS)/c_1252.nls=windows/system32/c_1252.nls \
@@ -791,32 +790,23 @@ WINFILES := win:$(WINESTRIP)/ntdll.dll=windows/system32/ntdll.dll \
 # failed with "win file missing". (The nls/etc/whoami entries are files of
 # the pinned submodule, present after checkout — not products, not listed.)
 WINFILES_DEPS := $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-                 $(WINE_INF) $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+                 $(WINE_INF_FULL) $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 
-# The same CUI userland, reachable from a provisioner OUTSIDE this Makefile:
-# tests/run/run.sh's winetest leg bakes its own image (the manifest it runs
-# is generated per run, so the recipe cannot be a plain target), and used to
-# carry its own hand-written list of the DLLs it wanted. Two lists of the
-# same userland is how the winetest image drifted into a SHORTER machine than
-# the one `make run` boots — no wineboot.exe, so no firstboot and none of
-# wine.inf's machine-state payload; no SCM, no setupapi/ws2_32/secur32/…
-# — and a differential leg whose image is not the product's measures the
-# difference (Art. 11 "one authority", the reason this is not a second list).
-#
-# `winfiles` builds the payload; `print-winfiles` prints the specs, and
-# prints NOTHING else, so a caller can read it with $( ). The paths are
-# relative to this directory, as everything in $(WINFILES) is — the caller
-# prefixes them (run.sh does).
-.PHONY: winfiles print-winfiles
-winfiles: $(WINFILES_DEPS)
-
-print-winfiles:
-	@printf '%s\n' $(WINFILES)
+# Everything $(WINFILES) references that this Makefile BUILDS is $(WINFILES_DEPS)
+# above; both images depend on it. There is no longer a `print-winfiles` for a
+# provisioner outside this Makefile to read, because there is no provisioner
+# outside this Makefile: tests/run/run.sh baked its own images, carrying its
+# own hand-written list of the DLLs it wanted, and two lists of the same
+# userland is how the winetest image drifted into a SHORTER machine than the
+# one `make run` booted — no wineboot.exe, so no firstboot and none of
+# wine.inf's machine-state payload; no SCM, no setupapi/ws2_32/secur32/…  A
+# differential leg whose image is not the product's measures the difference.
+# The lists are gone with the images (Art. 11: one authority).
 
 # kernel/lib/upcase.h is checked in (see `gen-nls`), so nothing in the build
 # would notice it drifting from the pin it was generated out of. This is what
 # notices: it re-runs only when the pinned table, the generator or the output
-# changes, and it hangs off $(IMG) rather than off the kernel because a
+# changes, and it hangs off the IMAGE rather than off the kernel because a
 # third_party/wine prerequisite must not reach `make build/proskrnl` — that
 # target is built on hosts (and in the lint job) where the tree is absent.
 UPCASE_CHECK := $(BUILD)/upcase.checked
@@ -843,10 +833,6 @@ $(TIMEZONES_CHECK): kernel/cm/timezones.h tools/gen_timezones.py \
 	@mkdir -p $(dir $@)
 	python3 tools/gen_timezones.py --check
 	@touch $@
-
-$(IMG): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(UPCASE_CHECK) \
-        $(LICENSE_CHECK) $(TIMEZONES_CHECK) tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG) $(MODULE_SPECS) $(WINFILES)
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
 # import msvcrt.dll + kernel32.dll; third-party CRT startup against the
@@ -925,48 +911,6 @@ $(MMCEILING): tests/cui/mmceiling.c
 # greps the logon SID (docs/02 CUI-2 "Done when").
 WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 
-IMG_CONSOLE := $(BUILD)/proskrnl-console.hdd
-$(IMG_CONSOLE): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(M9ECHO) \
-        $(CMD) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) $(TASKLIST) $(TASKKILL) \
-        $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) $(REGTOOL) $(WATCHAPP) $(MMCEILING) \
-        tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_CONSOLE) $(MODULE_SPECS) $(WINFILES) \
-	    win:$(M9ECHO)=m9_echo.exe \
-	    win:$(CMD)=windows/system32/cmd.exe \
-	    win:$(HELLOCRT)=hello_crt.exe \
-	    win:$(UPCASE)=upcase.exe \
-	    win:$(WHOAMI)=whoami.exe \
-	    win:$(SVCDEMO)=svcdemo.exe \
-	    win:$(LOOPER)=looper.exe \
-	    win:$(JOBTOOL)=jobtool.exe \
-	    win:$(TIMEIT)=timeit.exe \
-	    win:$(REDIRCHAIN)=redirchain.exe \
-	    win:$(RESTRICTED)=restricted.exe \
-	    win:$(REGTOOL)=regtool.exe \
-	    win:$(WATCHAPP)=watchapp.exe \
-	    win:$(MMCEILING)=mmceiling.exe \
-	    win:$(TASKLIST)=windows/system32/tasklist.exe \
-	    win:$(TASKKILL)=windows/system32/taskkill.exe
-
-console-img: $(IMG_CONSOLE)
-.PHONY: console-img
-
-# The WOW64 image (docs/02, the final milestone): the console image's
-# payload plus the syswow64 guest stack, the wow64 host trio, and the 32-bit
-# acceptance client. Its own image rather than the default one because with
-# no COW every wow64 child copies its images whole, and no other leg needs
-# to pay that.
-IMG_WOW64 := $(BUILD)/tests/wow64.hdd
-$(IMG_WOW64): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(CMD) $(HELLO32) \
-        $(WOW64_PAYLOAD) \
-        tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_WOW64) $(MODULE_SPECS) $(WINFILES) $(WOW64FILES) \
-	    win:$(CMD)=windows/system32/cmd.exe \
-	    win:$(HELLO32)=hello32.exe
-
-wow64-img: $(IMG_WOW64)
-.PHONY: wow64-img
-
 # The GUI-1 acceptance client (docs/02 "a user program maps the framebuffer
 # and draws a rectangle visible in a screendump; key input is readable").
 # ntdll only — it talks to \Device\Fb0 and \Device\Input0 through the Nt*
@@ -979,20 +923,6 @@ $(GUISMOKE): tests/gui/gui_smoke.c drivers/fbproto.h drivers/hidproto.h $(WINE_P
 	    -O1 -g0 -Wall -Wextra -I. -Wl,--entry=gui_start \
 	    tests/gui/gui_smoke.c \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
-
-# The GUI-1 image (tests/run/run.sh gui): the standard image plus
-# gui_smoke.exe, whose presence makes the boot paint the framebuffer and
-# then block forever on input (kernel/init/main.c KiRunGuiSmoke) — the host
-# screendumps it and ends the guest over QMP. No Wine userland beyond ntdll
-# is involved, so this image boots in seconds.
-IMG_GUI := $(BUILD)/proskrnl-gui.hdd
-$(IMG_GUI): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(GUISMOKE) \
-        tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI) $(MODULE_SPECS) $(WINFILES) \
-	    win:$(GUISMOKE)=gui_smoke.exe
-
-gui-img: $(IMG_GUI)
-.PHONY: gui-img
 
 # The AUD-1 acceptance client (docs/02 "a guest client plays a deterministic
 # S16 pattern and the harness finds it sample-exact in the WAV"). ntdll
@@ -1122,42 +1052,25 @@ WINESTRIP_ACM_FILES := $(foreach d,$(WINESTRIP_ACM_NAMES),$(WINESTRIP)/$(d).acm)
 winestrip-audio: $(WINESTRIP_AUDIO_DLLS)
 .PHONY: winestrip-audio
 
-# The audio images' wine.inf: registry-only PLUS self-registration, with
-# mmdevapi injected into [RegisterDllsSection] — CoCreateInstance of the
-# MMDeviceEnumerator needs its CLSID in the hive, which a real prefix gets
-# from the fake-dll registrar this filter drops, and mmdevapi is not in
-# wine.inf's own RegisterDlls list. Registration then runs mmdevapi's OWN
-# DllRegisterServer through Wine's own registrar (setupapi + atl100 — the
-# GUI-6 shell recipe), never a hand-typed CLSID seed (Art. 11 / G8). Of the
-# section's entries, exactly shell32 (when baked) and mmdevapi resolve on an
-# audio image; the rest fail LoadLibrary and are skipped one by one.
-WINE_INF_AUDIO := $(BUILD)/wine-proskrnl-audio.inf
-$(WINE_INF_AUDIO): third_party/wine/loader/wine.inf tools/filter_inf.py
-	@mkdir -p $(dir $@)
-	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll,dsound.dll \
-	    third_party/wine/loader/wine.inf $@
 
-# Everything an audio-capable image adds on top of the CUI + GUI payloads:
-# the audio DLL set, the driver, the registrar, and the registering inf
-# (overriding $(WINFILES)'s registry-only copy by mcopy -o ordering — the
-# gui5con conhost precedent). run.sh audio (WASAPI half) and the winetest
-# audio image both take this one list (Art. 11: one spelling).
+# Everything the audio stack adds on top of the CUI + GUI payloads: the audio
+# DLL set, the driver and atl100 — the actual registrar behind every Wine
+# DllRegisterServer (winecrt0's __wine_register_resources loads atl100.dll for
+# AtlCreateRegistrar; absent, mmdevapi's registration answers a silent
+# E_NOINTERFACE and its CLSID never lands in the hive). The registering inf is
+# $(WINE_INF_FULL) in $(WINFILES), one copy for every consumer.
 AUDIOFILES := $(foreach d,$(WINESTRIP_AUDIO_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
               $(foreach d,$(WINESTRIP_ACM_NAMES),win:$(WINESTRIP)/$(d).acm=windows/system32/$(d).acm) \
               win:$(WINEVSND)=windows/system32/winevsnd.drv \
               win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll \
               win:$(WINESTRIP)/shlwapi.dll=windows/system32/shlwapi.dll \
-              win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll \
-              win:$(WINE_INF_AUDIO)=windows/inf/wine.inf
+              win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll
 AUDIO_PAYLOAD := $(WINESTRIP_AUDIO_DLLS) $(WINESTRIP_ACM_FILES) $(WINEVSND) $(WINESTRIP)/atl100.dll \
-                 $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll $(WINE_INF_AUDIO)
+                 $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll
 
 audio-payload: $(AUDIO_PAYLOAD)
 .PHONY: audio-payload
 
-print-audiofiles:
-	@printf '%s\n' $(AUDIOFILES)
-.PHONY: print-audiofiles
 
 # The %windir% .ini furniture that goes with the ACM codecs above: winmm's
 # PlaySound reaches a decoder for a non-PCM wav through system.ini's
@@ -1230,20 +1143,6 @@ $(WASAPICAPSMOKE): tests/audio/wasapi_cap_smoke.c $(WINE_PE_DLLS)
 
 wasapi-cap-smoke: $(WASAPICAPSMOKE)
 .PHONY: wasapi-cap-smoke
-
-# The AUD-1 image (tests/run/run.sh audio): the standard image plus
-# aud_smoke.exe, whose presence makes smss run it as the session's
-# foreground (user/smss/session.c). The virtio-snd device and the wav
-# audiodev are the LEG's, not the image's — one image, run-time devices,
-# the HACK-006 spirit.
-IMG_AUDIO := $(BUILD)/proskrnl-audio.hdd
-$(IMG_AUDIO): $(KERNEL) $(MODULES) $(WINFILES_DEPS) $(AUDSMOKE) \
-        tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_AUDIO) $(MODULE_SPECS) $(WINFILES) \
-	    win:$(AUDSMOKE)=aud_smoke.exe
-
-audio-img: $(IMG_AUDIO)
-.PHONY: audio-img
 
 # ---------------------------------------------------------------------------
 # GUI-2 (docs/02, docs/07 route (a)): win32u as a PE, plus winefb.drv.
@@ -1543,35 +1442,15 @@ $(WINEMINE): third_party/wine/programs/winemine/x86_64-windows/winemine.exe
 WINE_FONTS := $(wildcard third_party/wine/fonts/*.ttf) $(wildcard third_party/wine/fonts/*.fon)
 FONTFILES := $(foreach f,$(WINE_FONTS),win:$(f)=windows/fonts/$(notdir $(f)))
 
-GUI2FILES := win:$(WIN32U)=windows/system32/win32u.dll \
+# The desktop stack, as ONE list. It used to be re-spelled verbatim at the
+# head of GUI2FILES, GUI3FILES, GUI4FILES, GUI5FILES, GUI5CONFILES, GUI6FILES
+# and NET3FILES — seven copies of the same four lines, which is what a
+# per-leg image costs even before the leg does anything (Art. 11).
+GUISTACKFILES := win:$(WIN32U)=windows/system32/win32u.dll \
              $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
              $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             win:$(WINEMINE)=winemine.exe
-
-# The GUI-2 image (tests/run/run.sh gui2): the standard image plus the Wine
-# GUI stack and winemine.exe, whose presence makes the boot run it
-# (user/smss/session.c). gui_smoke.exe is deliberately NOT here -- the two
-# GUI legs stay disjoint, each convicted by its own client.
-#
-# The server ships here like it does on every other win32u image (GUI-3
-# onward). Until this change it did not, and that ABSENCE was the only thing
-# keeping win32u's in-process dispatch mode alive: the mode was probed from
-# whether wineserver-lite.exe was on the volume, so this one image was the
-# sole remaining caller of an arrangement GUI-3 superseded. What the leg
-# convicts is unchanged and is why it stays -- it is the only leg running a
-# STOCK unmodified Wine applet end to end onto the scanout, where gui3/4/5
-# run purpose-built clients that report. It now convicts that over the
-# arrangement the system actually ships.
-IMG_GUI2 := $(BUILD)/proskrnl-gui2.hdd
-$(IMG_GUI2): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINEMINE) \
-        $(WINESERVER_LITE) $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI2) $(MODULE_SPECS) $(WINFILES) $(GUI2FILES)
-
-gui2-img: $(IMG_GUI2)
-.PHONY: gui2-img
+             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe
+GUISTACK_PAYLOAD := $(WIN32U) $(WINESTRIP_GUI_DLLS) $(WINESERVER_LITE) $(WINE_FONTS)
 
 # ---------------------------------------------------------------------------
 # GUI-3 (docs/02): wineserver-lite as a process, with TWO GUI clients.
@@ -1598,24 +1477,6 @@ $(BUILD)/modules/gui3%.exe: tests/gui/gui3%.c tests/ntapi/ntapi.c tests/ntapi/nt
 	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
 	    tests/gui/gui3$*.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
 
-# The gui2 payload minus winemine, plus the server and the two clients.
-GUI3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             win:$(GUI3A)=gui3a.exe \
-             win:$(GUI3B)=gui3b.exe
-
-IMG_GUI3 := $(BUILD)/proskrnl-gui3.hdd
-$(IMG_GUI3): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(GUI3A) $(GUI3B) \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI3) $(MODULE_SPECS) $(WINFILES) $(GUI3FILES)
-
-gui3-img: $(IMG_GUI3)
-.PHONY: gui3-img
 
 # GUI-4 (docs/02 "windows can be grabbed and moved; clicks reach the right
 # window"): the gui3 payload shape with two purpose-built clients whose
@@ -1632,23 +1493,6 @@ $(BUILD)/modules/gui4%.exe: tests/gui/gui4%.c tests/ntapi/ntapi.c tests/ntapi/nt
 	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
 	    tests/gui/gui4$*.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
 
-GUI4FILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             win:$(GUI4A)=gui4a.exe \
-             win:$(GUI4B)=gui4b.exe
-
-IMG_GUI4 := $(BUILD)/proskrnl-gui4.hdd
-$(IMG_GUI4): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(GUI4A) $(GUI4B) \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI4) $(MODULE_SPECS) $(WINFILES) $(GUI4FILES)
-
-gui4-img: $(IMG_GUI4)
-.PHONY: gui4-img
 
 # GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
 # exercised cross-process over the unmodified pinned server, plus the guest
@@ -1673,24 +1517,6 @@ $(FONTDIFF): tests/gdi/fontdiff.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h $(WINE
 	    -Wall -Itests/ntapi -Wl,--entry=ntapi_start \
 	    tests/gdi/fontdiff.c tests/ntapi/ntapi.c $(GUI3_LIBS) -lgcc -o $@
 
-GUI5FILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             win:$(GUI5A)=gui5a.exe \
-             win:$(GUI5B)=gui5b.exe \
-             win:$(FONTDIFF)=fontdiff.exe
-
-IMG_GUI5 := $(BUILD)/proskrnl-gui5.hdd
-$(IMG_GUI5): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(GUI5A) $(GUI5B) $(FONTDIFF) \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_GUI5) $(MODULE_SPECS) $(WINFILES) $(GUI5FILES)
-
-gui5-img: $(IMG_GUI5)
-.PHONY: gui5-img
 
 # For fun (make rungui): the pinned tree's stock applets, launchable from
 # the prompt by name (every process is minted PATH=C:\windows\system32 --
@@ -1807,41 +1633,28 @@ WOW64GUIFILES := $(foreach d,$(WOW64_GUI_NAMES),win:$(WINESTRIP32)/$(d).dll=wind
                  win:$(WINESTRIP32)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR32)).manifest \
                  win:$(WOW64GUI)=wow64gui.exe
 
-# GUI-5, the windowed conhost (tests/run/run.sh gui5con): an INTERACTIVE
-# image (GUEST_INTERACTIVE=1 on the QEMU command line, tools/qemu.sh) — the
-# full Wine userland + cmd.exe, exactly the make-run recipe — plus the GUI
-# stack, the desktop server, and the
 # ---------------------------------------------------------------------------
-# The shell payload, shared by every explorer-bearing image (gui5con below --
-# `make rungui` -- and gui6): explorer.exe at the exact path win32u's
-# auto-launch hardcodes (dlls/win32u/winstation.c get_desktop_window), whose
-# presence is also what turns the wineserver-lite desktop fixtures OFF
-# (shim.c probe_explorer); atl100, the actual registrar behind every Wine
-# DllRegisterServer (winecrt0's __wine_register_resources loads atl100.dll
-# for AtlCreateRegistrar; absent, shell32's registration answers a silent
-# E_NOINTERFACE and CLSID_ExplorerBrowser never lands in the hive); and a
-# wine.inf staged WITH its RegisterDlls directive (the shared $(WINE_INF)
-# drops it -- on a CUI disk self-registration only had GUI DLLs to miss).
-# Here shell32 IS baked and its COM classes are load-bearing: explorer's
-# file window is shell32's IExplorerBrowser, which exists only if
-# DllRegisterServer ran at firstboot. Of the section's 30 entries exactly
-# shell32.dll is on these images (measured); the rest fail LoadLibrary and
-# are skipped one by one (setupapi do_register_dll -- a skip, not an
-# abort). The inf spec overrides $(WINFILES)'s copy by mcopy -o ordering,
-# the gui5con conhost precedent below.
+# The shell payload: explorer.exe at the exact path win32u's auto-launch
+# hardcodes (dlls/win32u/winstation.c get_desktop_window), plus atl100 -- the
+# actual registrar behind every Wine DllRegisterServer (winecrt0's
+# __wine_register_resources loads atl100.dll for AtlCreateRegistrar; absent,
+# shell32's registration answers a silent E_NOINTERFACE and
+# CLSID_ExplorerBrowser never lands in the hive).
+#
+# Whether explorer OWNS the desktop is a BOOT flag now (`opt/org.proskrnl/
+# shell`, HACK-006; user/wine/wineserver-lite/common/shim.c probe_shell), not
+# whether this payload is on the volume: one image carries it either way.
+# shell32's COM classes are load-bearing on a shell boot -- explorer's file
+# window is shell32's IExplorerBrowser, which exists only if
+# DllRegisterServer ran at firstboot, which the ONE baked wine.inf
+# ($(WINE_INF_FULL)) arranges for every image.
 EXPLORER_EXE := $(WINESTRIP)/explorer.exe
 $(eval $(call WINESTRIP_EXE_RULE,explorer))
 $(eval $(call WINESTRIP_RULE,atl100))
 
-WINE_INF_SHELL := $(BUILD)/wine-proskrnl-shell.inf
-$(WINE_INF_SHELL): third_party/wine/loader/wine.inf tools/filter_inf.py
-	@mkdir -p $(dir $@)
-	python3 tools/filter_inf.py --keep RegisterDlls third_party/wine/loader/wine.inf $@
-
 SHELLFILES := win:$(EXPLORER_EXE)=windows/system32/explorer.exe \
-              win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll \
-              win:$(WINE_INF_SHELL)=windows/inf/wine.inf
-SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll $(WINE_INF_SHELL)
+              win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll
+SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll
 
 # WINDOWED conhost overriding $(WINFILES)'s headless one (same destination,
 # listed later; mkimage's mcopy -o makes the later spec win). looper.exe is
@@ -1955,61 +1768,31 @@ WOW64_AUDIO_PAYLOAD := $(foreach d,$(WINESTRIP_AUDIO_NAMES),$(WINESTRIP32)/$(d).
 wow64-audio-payload: $(WOW64_AUDIO_PAYLOAD)
 .PHONY: wow64-audio-payload
 
-# The whole 32-bit shelf an image that already carries THIS build's win32u
-# wants (the gui5con set, minus the stock win32u thunks that must never
-# override it — WOW64_STOCK_W32U above). run.sh's wow64aud leg bakes its
-# image from this one list rather than re-spelling it (the print-winfiles
-# drift lesson).
-WOW64SHELFFILES := $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) $(WOW64AUDIOFILES)
-WOW64_SHELF_PAYLOAD := $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) $(WOW64_AUDIO_PAYLOAD)
 
-wow64-shelf: $(WOW64_SHELF_PAYLOAD)
-.PHONY: wow64-shelf
 
-print-wow64shelffiles:
-	@printf '%s\n' $(WOW64SHELFFILES)
-.PHONY: print-wow64shelffiles
-
-GUI5CONFILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             win:$(CONHOST_GUI)=windows/system32/conhost.exe \
+# --- the whole userland, once ----------------------------------------------
+#
+# $(WINFILES) is the CUI machine; this is everything above it — the desktop
+# stack, the applet shelf, explorer, both bitnesses of the WOW64 shelf, and
+# the audio stack with its .ini furniture. BOTH images carry it, which is
+# what makes "which leg runs" a boot flag rather than a bake: a dozen images
+# existed whose only difference was which subset of these lists they held
+# and which client file the session manager would therefore find.
+FULLFILES := $(GUISTACKFILES) \
              win:$(CMD)=windows/system32/cmd.exe \
-             win:$(LOOPER)=looper.exe \
+             win:$(TASKLIST)=windows/system32/tasklist.exe \
+             win:$(TASKKILL)=windows/system32/taskkill.exe \
              $(APPLETFILES) \
              $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) \
-             $(FLASHFILES) \
              $(AUDIOFILES) $(SYSINIFILES) $(WOW64AUDIOFILES)
 
-# 128 MiB rather than the default 64: this is the one image carrying both
-# bitnesses of the whole shelf, and the 32-bit half does not fit in what the
-# 64-bit half leaves (measured — 12 MiB free before, 32 MiB wanted). The ESP
-# still starts at sector 4096, so the fixed offset every reader uses
-# (tests/run/run.sh, tools/qemu.sh) is unchanged.
-#
-# $(AUDIOFILES) rides along because this is the image `make rungui` boots
-# (the interactive machine, which now also gets a virtio-snd device — see
-# the rungui target): a shelf whose applets can open a wave device is the
-# whole point of an interactive session, and the audio wine.inf it carries
-# is $(WINE_INF_SHELL) plus mmdevapi/dsound registration, so it OVERRIDES
-# the shell copy by mcopy -o ordering (hence last in the list).
-IMG_GUI5CON := $(BUILD)/proskrnl-gui5con.hdd
-$(IMG_GUI5CON): $(KERNEL) $(WINFILES_DEPS) $(CONHOST_GUI) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(CMD) $(LOOPER) \
-        $(SHELL_PAYLOAD) \
-        $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
-        $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
-        $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
-        $(AUDIO_PAYLOAD) $(SYSINI_STAMP) $(WOW64_AUDIO_PAYLOAD) \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
-	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI5CON) $(WINFILES) $(GUI5CONFILES)
-
-gui5con-img: $(IMG_GUI5CON)
-.PHONY: gui5con-img
+FULL_PAYLOAD := $(GUISTACK_PAYLOAD) $(CMD) $(TASKLIST) $(TASKKILL) \
+                $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
+                $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
+                $(SHELL_PAYLOAD) \
+                $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
+                $(AUDIO_PAYLOAD) $(SYSINI_STAMP) $(WOW64_AUDIO_PAYLOAD)
 
 # ---------------------------------------------------------------------------
 # Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
@@ -2036,25 +1819,10 @@ $(NET3_APISETS)/specs.txt: $(NET3_CURL) tools/gen_apiset_forwarders.py
 # the pinned tree: llvm-objcopy refuses bcrypt (the FLASH_OBJCOPY note),
 # and an acceptance image buys nothing from stripping.
 NET3_DLL_NAMES := normaliz wldap32 bcrypt ncrypt crypt32
-NET3FILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(foreach d,$(NET3_DLL_NAMES),win:$(WINE_PE)/$(d)/x86_64-windows/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
+NET3FILES := $(foreach d,$(NET3_DLL_NAMES),win:$(WINE_PE)/$(d)/x86_64-windows/$(d).dll=windows/system32/$(d).dll) \
              win:$(NET3_CURL)=curl.exe
-
-IMG_NET3 := $(BUILD)/proskrnl-net3.hdd
-$(IMG_NET3): $(KERNEL) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(foreach d,$(NET3_DLL_NAMES),$(WINE_PE)/$(d)/x86_64-windows/$(d).dll) \
-        $(WINESERVER_LITE) $(NET3_CURL) $(NET3_APISETS)/specs.txt \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_NET3) $(WINFILES) $(NET3FILES) \
-	    $$(cat $(NET3_APISETS)/specs.txt)
-
-net3-img: $(IMG_NET3)
-.PHONY: net3-img
+NET3_PAYLOAD := $(foreach d,$(NET3_DLL_NAMES),$(WINE_PE)/$(d)/x86_64-windows/$(d).dll) \
+                $(NET3_CURL) $(NET3_APISETS)/specs.txt
 
 # ---------------------------------------------------------------------------
 # GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The payload is
@@ -2068,13 +1836,12 @@ net3-img: $(IMG_NET3)
 # comctl32's own delay import (measured: absent, the systray toolbar's
 # OpenThemeData hit the delay-load failure hook and aborted explorer -- the
 # wiring the applet-shelf comment above records).
-# gui6.flag selects the smss leg (user/smss/session.c SessionGuiLegs), which
-# launches explorer /desktop=shell,WxH with a trailing
-# `explorer.exe C:\shelf` -- the desktop, then the file window as
-# explorer's own CreateProcessW child.
-$(BUILD)/gui6.flag:
-	@mkdir -p $(BUILD)
-	@echo "gui6 leg marker (user/smss/session.c SessionGuiLegs)" > $@
+# The leg is selected by name (GUEST_LEG=gui6, user/smss/session.c
+# SessionGuiLegs): smss launches explorer /desktop=shell,WxH with a trailing
+# `explorer.exe C:\shelf` -- the desktop, then the file window as explorer's
+# own CreateProcessW child. It used to be selected by a marker FILE baked on
+# an image of its own (C:\gui6.flag), which is the arrangement the leg flag
+# replaced.
 
 # The file window's subject: a tiny baked directory whose Details view is
 # deterministic — fixed bytes, mtimes pinned by touch -t (mkimage's mcopy -m
@@ -2091,38 +1858,11 @@ $(BUILD)/shelf/desktop-notes.txt:
 	@printf 'wallpaper + taskbar: explorer.exe; this window: shell32 IExplorerBrowser.\n' > $@
 	@touch -t 202601010000.00 $@
 
-GUI6FILES := win:$(WIN32U)=windows/system32/win32u.dll \
-             $(foreach d,$(WINESTRIP_GUI_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
-             $(FONTFILES) \
-             win:$(WINESERVER_LITE)=windows/system32/wineserver-lite.exe \
-             $(SHELLFILES) \
-             win:$(WINESTRIP)/shell32.dll=windows/system32/shell32.dll \
-             win:$(WINESTRIP)/shlwapi.dll=windows/system32/shlwapi.dll \
-             win:$(WINESTRIP)/shcore.dll=windows/system32/shcore.dll \
-             win:$(WINESTRIP)/oleaut32.dll=windows/system32/oleaut32.dll \
-             win:$(WINESTRIP)/uxtheme.dll=windows/system32/uxtheme.dll \
-             win:$(WINESTRIP)/comctl32_v6.dll=$(SXS_CC_DIR)/comctl32.dll \
-             win:$(WINESTRIP)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR)).manifest \
-             win:$(BUILD)/shelf/readme.txt=shelf/readme.txt \
-             win:$(BUILD)/shelf/desktop-notes.txt=shelf/desktop-notes.txt \
-             win:$(BUILD)/gui6.flag=gui6.flag
-
-# 128 MiB like gui5con: shell32 and friends do not fit in what the base
-# payload leaves of 64. The ESP still starts at sector 4096 (fixed offset).
-IMG_GUI6 := $(BUILD)/proskrnl-gui6.hdd
-$(IMG_GUI6): $(KERNEL) $(MODULES) $(WINFILES_DEPS) \
-        $(WIN32U) $(WINESTRIP_GUI_DLLS) \
-        $(WINESERVER_LITE) $(SHELL_PAYLOAD) \
-        $(WINESTRIP)/shell32.dll $(WINESTRIP)/shlwapi.dll $(WINESTRIP)/shcore.dll \
-        $(WINESTRIP)/oleaut32.dll $(WINESTRIP)/uxtheme.dll \
-        $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
-        $(GUI6_SHELF) $(BUILD)/gui6.flag \
-        $(WINE_FONTS) tools/mkimage.sh \
-        arch/x86_64/limine.conf
-	SIZE_MB=128 tools/mkimage.sh $(KERNEL) $(IMG_GUI6) $(MODULE_SPECS) $(WINFILES) $(GUI6FILES)
-
-gui6-img: $(IMG_GUI6)
-.PHONY: gui6-img
+# Everything the gui6 leg needs beyond $(FULLFILES) (which already carries
+# explorer, the applet shelf's shell32/shlwapi/shcore/oleaut32/uxtheme and
+# the WinSxS common-controls assembly): the shelf the file window shows.
+GUI6FILES := win:$(BUILD)/shelf/readme.txt=shelf/readme.txt \
+             win:$(BUILD)/shelf/desktop-notes.txt=shelf/desktop-notes.txt
 
 # ---------------------------------------------------------------------------
 # M10 stretch (docs/02 "Ideal regression"): standalone binaries for the CUI
@@ -2284,6 +2024,188 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
     $(WTESTS)/mmdevapi_test.exe $(WTESTS)/winmm_test.exe
 .PHONY: wtests
 
+# ---------------------------------------------------------------------------
+# The tests/ntapi suite as baked binaries (docs/14): ONE PE .exe per test
+# source, CRT-less, linked against the pinned Wine import libraries so the
+# SAME binary runs under the oracle (tests/run/run.sh oracle) and on the
+# boot volume under C:\ntapi.
+#
+# Built HERE rather than by the runner script, which is what made a filtered
+# run a different IMAGE: run.sh compiled the selected subset and baked only
+# those, so the media recorded which subset had last been asked for. The
+# whole suite is baked on every test image now and the boot's `subtests`
+# filter picks (user/smss/session.c). run.sh's own build path is this rule,
+# reached through make, so there is one recipe for a test .exe (Art. 11).
+NTAPI_DIR  := tests/ntapi
+NTAPI_SRCS := $(shell find $(NTAPI_DIR) -name '*.c' ! -name ntapi.c ! -path '*/dll/*' 2>/dev/null | sort)
+NTAPI_OUT  := $(BUILD)/tests/ntapi
+NTAPI_EXES := $(foreach src,$(NTAPI_SRCS),$(NTAPI_OUT)/$(notdir $(src:.c=.exe)))
+NTAPI_LIBS := $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
+              $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
+              $(WINE_PE)/ntdll/x86_64-windows/libntdll.a
+NTAPI_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -I. -I$(NTAPI_DIR)
+
+# Base names are unique across the buckets (run.sh's filter relies on it
+# too), so one rule per source keyed on the base name is unambiguous. The
+# bucket's own headers and .inc files are prerequisites: a bucket's util.h is
+# included by every test in it and syscall/torture_matrix.inc is GENERATED,
+# so without them a regenerated matrix re-runs the previous build's .exe and
+# reports its verdict as this one's (measured, run.sh build_test).
+define NTAPI_RULE
+$(NTAPI_OUT)/$(notdir $(1:.c=.exe)): $(1) $(NTAPI_DIR)/ntapi.c $(NTAPI_DIR)/ntapi.h \
+        $(wildcard $(dir $(1))*.h) $(wildcard $(dir $(1))*.inc) $(WINE_PE_DLLS)
+	@mkdir -p $$(dir $$@)
+	$(MINGW) $(NTAPI_CFLAGS) -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=ntapi_start $(1) $(NTAPI_DIR)/ntapi.c $(NTAPI_LIBS) -lgcc -o $$@
+endef
+$(foreach src,$(NTAPI_SRCS),$(eval $(call NTAPI_RULE,$(src))))
+
+# Base names must stay unique, and this is what says so. They were not:
+# sem_reg/rename.c and sem_file/rename.c both built to rename.exe, the later
+# compile overwrote the earlier, and the ONE binary's verdict line graded
+# BOTH names green — a false green that nothing in the build noticed because
+# make merely warns about a duplicate recipe. A name collision now stops the
+# build (Art. 12: a harness must not answer plausibly either).
+NTAPI_DUP := $(strip $(shell printf '%s\n' $(notdir $(NTAPI_SRCS)) | sort | uniq -d))
+ifneq ($(NTAPI_DUP),)
+$(error tests/ntapi base names must be unique across buckets; duplicated: $(NTAPI_DUP))
+endif
+
+# The search-order probe DLL (sem_ps/dll_load.c): beside the test .exes so a
+# bare-name LoadLibrary resolves it from the application directory.
+NTAPI_HELPER := $(NTAPI_OUT)/prshelper.dll
+$(NTAPI_HELPER): $(NTAPI_DIR)/dll/prshelper.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(NTAPI_CFLAGS) -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -shared -Wl,--entry=DllMainCRTStartup $(NTAPI_DIR)/dll/prshelper.c \
+	    $(NTAPI_LIBS) -lgcc -o $@
+
+NTAPIFILES := $(foreach e,$(NTAPI_EXES),win:$(e)=ntapi/$(notdir $(e))) \
+              win:$(NTAPI_HELPER)=ntapi/prshelper.dll
+NTAPI_PAYLOAD := $(NTAPI_EXES) $(NTAPI_HELPER)
+
+ntapi-tests: $(NTAPI_PAYLOAD)
+.PHONY: ntapi-tests
+
+# ---------------------------------------------------------------------------
+# The winetest payload: the standalone module binaries above, BOTH curated
+# manifests, the FULL nls set, tzres and the .ini furniture.
+#
+# Both manifests, not one: the CUI gate (manifest.txt) and the GUI-5 trophy
+# (manifest-gui.txt) are separate lists, and the boot's leg says which of
+# them the sweep reads (user/smss/session.c SessionRun). They used to be
+# baked one at a time, each under the name `manifest.txt` on an image of its
+# own — and a run that FILTERED the gate baked a generated third file, so the
+# image on disk recorded which subset had last run.
+#
+# The CRT/codepage subtests exercise every codepage the oracle has (a missing
+# c_932.nls reads as a divergence), tzres.dll is what RegLoadMUIStringW
+# resolves the time-zone MUI_Std/MUI_Dlt strings through, and
+# %windir%\{win,system}.ini are what wineboot's [SystemIni] pass would have
+# written (the baked wine.inf drops UpdateInis — tools/gen_sysini.py).
+WTEST_MODULES := ntdll_test.exe kernel32_test.exe msvcrt_test.exe ucrtbase_test.exe \
+                 cmd.exe_test.exe ws2_32_test.exe mmdevapi_test.exe winmm_test.exe
+WTEST_EXES := $(foreach m,$(WTEST_MODULES),$(WTESTS)/$(m))
+
+# GUI-5's trophy binary is the pinned tree's OWN user32_test.exe, taken
+# unmodified (the whoami precedent: no glue, no relink).
+WTEST_USER32 := third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe
+
+WTESTFILES := $(foreach m,$(WTEST_MODULES),win:$(WTESTS)/$(m)=wtests/$(m)) \
+              win:$(WTEST_USER32)=wtests/user32_test.exe \
+              win:tests/winetest/manifest.txt=wtests/manifest.txt \
+              win:tests/winetest/manifest-gui.txt=wtests/manifest-gui.txt \
+              $(foreach f,$(wildcard $(WINE_NLS)/*.nls),win:$(f)=windows/system32/$(notdir $(f))) \
+              win:third_party/wine/dlls/tzres/x86_64-windows/tzres.dll=windows/system32/tzres.dll
+WTEST_PAYLOAD := $(WTEST_EXES) $(WTEST_USER32)
+
+# ---------------------------------------------------------------------------
+# THE TWO IMAGES (docs/08).
+#
+# `test`  every leg the harness runs, selected at boot by GUEST_LEG and
+#         GUEST_SUBTESTS (tools/qemu.sh); it carries every client, every
+#         test binary and both winetest manifests.
+# `dev`   `make run` and `make rungui`: the same userland with the test
+#         payload left off, plus the LOCAL flash projector when present.
+#
+# There were fourteen. Each existed because a leg was selected by whether
+# its client file was on the volume, so two legs could never share a bake
+# and a filtered run was a third image again; the payload lists that made
+# them drifted apart (the print-winfiles story above is one instance).
+TESTFILES := $(WINFILES) $(FULLFILES) \
+             win:$(M9ECHO)=m9_echo.exe \
+             win:$(HELLOCRT)=hello_crt.exe \
+             win:$(UPCASE)=upcase.exe \
+             win:$(WHOAMI)=whoami.exe \
+             win:$(SVCDEMO)=svcdemo.exe \
+             win:$(LOOPER)=looper.exe \
+             win:$(JOBTOOL)=jobtool.exe \
+             win:$(TIMEIT)=timeit.exe \
+             win:$(REDIRCHAIN)=redirchain.exe \
+             win:$(RESTRICTED)=restricted.exe \
+             win:$(REGTOOL)=regtool.exe \
+             win:$(WATCHAPP)=watchapp.exe \
+             win:$(MMCEILING)=mmceiling.exe \
+             win:$(HELLO32)=hello32.exe \
+             win:$(GUISMOKE)=gui_smoke.exe \
+             win:$(AUDSMOKE)=aud_smoke.exe \
+             win:$(CAPSMOKE)=cap_smoke.exe \
+             win:$(WASAPISMOKE)=wasapi_smoke.exe \
+             win:$(WASAPICAPSMOKE)=wasapi_cap_smoke.exe \
+             win:$(WASAPISMOKE32)=wasapi_smoke32.exe \
+             win:$(WINEMINE)=winemine.exe \
+             win:$(GUI3A)=gui3a.exe \
+             win:$(GUI3B)=gui3b.exe \
+             win:$(GUI4A)=gui4a.exe \
+             win:$(GUI4B)=gui4b.exe \
+             win:$(GUI5A)=gui5a.exe \
+             win:$(GUI5B)=gui5b.exe \
+             win:$(FONTDIFF)=fontdiff.exe \
+             win:$(WOW64GUI)=wow64gui.exe \
+             $(GUI6FILES) $(NET3FILES) $(WTESTFILES) $(NTAPIFILES)
+
+TEST_PAYLOAD := $(WINFILES_DEPS) $(FULL_PAYLOAD) \
+                $(M9ECHO) $(HELLOCRT) $(UPCASE) $(SVCDEMO) $(LOOPER) $(JOBTOOL) \
+                $(TIMEIT) $(REDIRCHAIN) $(RESTRICTED) $(REGTOOL) $(WATCHAPP) \
+                $(MMCEILING) $(HELLO32) \
+                $(GUISMOKE) $(AUDSMOKE) $(CAPSMOKE) $(WASAPISMOKE) $(WASAPICAPSMOKE) \
+                $(WASAPISMOKE32) \
+                $(GUI3A) $(GUI3B) $(GUI4A) $(GUI4B) $(GUI5A) $(GUI5B) $(FONTDIFF) \
+                $(WOW64GUI) $(GUI6_SHELF) $(NET3_PAYLOAD) \
+                $(WTEST_PAYLOAD) $(NTAPI_PAYLOAD)
+
+# 768 MiB: both bitnesses of the whole shelf, ~170 ntapi binaries and the
+# multi-MB winetest modules on one volume (measured; the 128 MiB the widest
+# old image used holds neither test payload). The ESP still starts at sector
+# 4096, so the fixed offset every reader uses (tests/run/run.sh, tools/qemu.sh)
+# is unchanged.
+$(IMG_TEST): $(KERNEL) $(MODULES) $(TEST_PAYLOAD) $(UPCASE_CHECK) \
+        $(LICENSE_CHECK) $(TIMEZONES_CHECK) $(NET3_APISETS)/specs.txt \
+        tests/winetest/manifest.txt tests/winetest/manifest-gui.txt \
+        tools/mkimage.sh arch/x86_64/limine.conf
+	SIZE_MB=$${SIZE_MB:-768} tools/mkimage.sh $(KERNEL) $(IMG_TEST) $(MODULE_SPECS) \
+	    $(TESTFILES) $$(cat $(NET3_APISETS)/specs.txt)
+
+test-img: $(IMG_TEST)
+.PHONY: test-img
+
+# The DEV image: the same userland, no test payload. $(FLASHFILES) is the
+# LOCAL (uncommitted) standalone Flash projector and its movie, dropped when
+# the sources are absent so the target still builds on a clean tree.
+DEVFILES := $(WINFILES) $(FULLFILES) \
+            win:$(HELLOCRT)=hello_crt.exe \
+            win:$(UPCASE)=upcase.exe \
+            win:$(LOOPER)=looper.exe \
+            $(FLASHFILES)
+
+$(IMG_DEV): $(KERNEL) $(WINFILES_DEPS) $(FULL_PAYLOAD) $(HELLOCRT) $(UPCASE) $(LOOPER) \
+        tools/mkimage.sh arch/x86_64/limine.conf \
+        $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
+	SIZE_MB=$${SIZE_MB:-256} tools/mkimage.sh $(KERNEL) $(IMG_DEV) $(DEVFILES)
+
+dev-img: $(IMG_DEV)
+.PHONY: dev-img
+
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
 # verdict grepped off the serial log by tools/qemu.sh, then kmtcheck (that
 # grep names ONE line, so every suite reporting after it needs its verdict
@@ -2293,12 +2215,12 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 # Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
 # byte-compares) on the mutated image — make stops on a failed boot, so all
 # four only judge runs whose primary verdict passed.
-test: $(IMG)
-	tools/qemu.sh $(IMG)
+test: $(IMG_TEST)
+	GUEST_GUI=0 tools/qemu.sh $(IMG_TEST)
 	tests/run/kmtcheck.sh $(BUILD)/serial.log
 	tests/run/uacheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
-	tests/run/fatcheck.sh verify test $(IMG)
+	tests/run/fatcheck.sh verify test $(IMG_TEST)
 
 # The WHOLE CI suite, on this machine, in parallel (tools/fulltest.sh): the
 # same legs .github/workflows/test.yml runs, one sandboxed view each, fanned
@@ -2315,55 +2237,42 @@ fulltest:
 # same boot under the host's QEMU instead of the pin. A divergence names a
 # suspect (spec misreading vs. QEMU behavior); it convicts nothing (Art. 6)
 # and never gates a PR. Host QEMU must still be >= 9.0 (qemu.sh enforces).
-test-hostqemu: $(IMG)
-	QEMU=qemu-system-x86_64 tools/qemu.sh $(IMG)
+test-hostqemu: $(IMG_TEST)
+	QEMU=qemu-system-x86_64 GUEST_GUI=0 tools/qemu.sh $(IMG_TEST)
 .PHONY: test-hostqemu
 
-# The interactive boot: the Wine userland + cmd.exe + the CUI apps. What makes
-# it interactive is the QEMU command line (GUEST_INTERACTIVE=1 below, read
-# through fw_cfg — kernel/init/main.c KiIsInteractiveBoot), not anything on
-# the image; the same image booted without it runs the ordinary session. No
-# m9_echo (that blocker belongs to the scripted console test) and no test boot
-# modules. Serial is your terminal: type at the prompt; `exit` powers the VM
-# off; Ctrl-A x kills QEMU.
-IMG_RUN := $(BUILD)/proskrnl-run.hdd
-$(IMG_RUN): $(KERNEL) $(WINFILES_DEPS) $(CMD) $(HELLOCRT) $(UPCASE) \
-        tools/mkimage.sh arch/x86_64/limine.conf
-	tools/mkimage.sh $(KERNEL) $(IMG_RUN) $(WINFILES) \
-	    win:$(CMD)=windows/system32/cmd.exe \
-	    win:$(HELLOCRT)=hello_crt.exe \
-	    win:$(UPCASE)=upcase.exe
+# The interactive boot on the SERIAL console: the dev image with a human at
+# the terminal. What makes it interactive, and what makes its console the
+# serial one rather than a window, is the QEMU command line — GUEST_INTERACTIVE
+# and GUEST_GUI=0, read through fw_cfg (kernel/init/main.c KiIsInteractiveBoot,
+# user/smss/smss.c SmssIsGuiBoot) — not anything on the image; the same image
+# booted without them runs the ordinary session behind a window. Type at the
+# prompt; `exit` powers the VM off; Ctrl-A x kills QEMU.
+run: $(IMG_DEV)
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUEST_GUI=0 MEM=$${MEM:-1024M} \
+	    tools/qemu.sh $(IMG_DEV)
+.PHONY: run
 
-# CUI-3: a resident SCM under no-eviction/no-COW (Art. 3) needs the same
-# provisioning the winetest leg always used.
-run: $(IMG_RUN)
-	INTERACTIVE=1 GUEST_INTERACTIVE=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_RUN)
-
-# GUI-5: the interactive command prompt — the gui5con image (windowed
-# conhost + cmd.exe over the whole GUI stack) with a host window on the
+# GUI-5: the same image with the WINDOWED console — a host window on the
 # scanout and a virtio keyboard + tablet: click the console, type, `exit`
 # powers the VM off. Serial stays on the terminal carrying the kernel's
-# lines (HACK-004's permanent debug role).
+# lines (HACK-004's permanent debug role). No GUEST_GUI here: the windowed
+# console is the default (tools/qemu.sh).
 #
 # NET_USER=1 / SOUND=1: the machine a human sits at gets the two devices the
 # headless legs pin their own backends for — a virtio-net NIC on slirp
 # (netd DHCPs against it with nothing to configure guest-side) and a
 # virtio-snd card on whatever audio backend the host QEMU has. Which
 # backend, and what to say when there is none, is qemu.sh's business: it is
-# the file that knows the host. The image's own half is $(AUDIOFILES) on
-# $(IMG_GUI5CON) above; the NIC needs no image payload at all.
+# the file that knows the host. The image's own half is $(AUDIOFILES) in
+# $(FULLFILES); the NIC needs no image payload at all.
 #
 # The keyboard and tablet are qemu.sh's GUI_DISPLAY defaults, not an
 # EXTRA_DEVICES list here — the interactive branch adds them itself.
-rungui: $(IMG_GUI5CON)
+rungui: $(IMG_DEV)
 	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 NET_USER=1 SOUND=1 \
-	    MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI5CON)
+	    MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_DEV)
 .PHONY: rungui
-
-# GUI-2's winemine boot, kept under its own name (rungui's old target).
-rungui2: $(IMG_GUI2)
-	INTERACTIVE=1 GUI_DISPLAY=1 MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_GUI2)
-.PHONY: rungui2
 
 clean:
 	rm -rf $(BUILD)

@@ -20,12 +20,11 @@
 # shard's. Nothing about a leg is made cheaper — the fan-out is the speed-up.
 #
 # WHY EVERY LEG NEEDS A SANDBOX. The legs were written to run one at a time and
-# they say so in the tree: each calls `make -C $ROOT ...` for its own image (two
-# makes in one build directory race over the same object files), several boot a
-# SHARED master image in place (`console`, `cui8` and the six GUI legs boot
-# build/proskrnl{,-console,-gui*}.hdd directly — QEMU writes into it), and six
-# more `rm -f` that master to force a virgin one before copying it, which is a
-# guaranteed corrupt read for any neighbour copying it at that moment. Widening
+# they say so in the tree: each calls `make -C $ROOT test-img` (two makes in one
+# build directory race over the same object files), `cui8` boots the master
+# image in place — QEMU writes into it — and three legs `rm -f` that master to
+# force a virgin one before copying it, which is a guaranteed corrupt read for
+# any neighbour copying it at that moment. Widening
 # every one of those into a shared-nothing design would be a rewrite of
 # tests/run/run.sh, and a rewrite of the harness is the last thing that should
 # ride along with "make the harness faster".
@@ -353,17 +352,15 @@ echo "== fulltest: ${#LEGS[@]} legs, -j$JOBS, $NPROC cores, accel=$("$ROOT/tools
 # builds a good idea).
 echo "== fulltest: build =="
 BUILD_START=$SECONDS
+# `all` is the test image, which is what every leg boots — it carries the
+# whole userland, every client and the whole ntapi/winetest payload, so this
+# ONE target replaces the eight per-leg image targets that used to be listed
+# here. The rest are what the oracle-side legs build for themselves.
 make -C "$ROOT" -j"$NPROC" \
-    all console-img gui-img gui2-img gui3-img gui4-img gui5-img gui5con-img wow64-img \
-    wtests winestrip winestrip-gui win32u wineserver-lite \
-    build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe \
-    build/modules/pe_smoke.exe build/modules/sample.dat build/modules/torn_workload.bin \
+    all ntapi-tests wtests \
+    build/modules/torn_workload.bin \
     >"$FT/logs/build.log" 2>&1 \
     || { echo "fulltest: build FAILED — see $FT/logs/build.log" >&2; tail -30 "$FT/logs/build.log" >&2; exit 1; }
-# The ntapi test .exes, fanned out here rather than one at a time inside the
-# `proskrnl` leg (run.sh prebuild).
-ORACLE_JOBS="$NPROC" "$ROOT/tests/run/run.sh" prebuild >>"$FT/logs/build.log" 2>&1 \
-    || { echo "fulltest: test .exe prebuild FAILED — see $FT/logs/build.log" >&2; tail -30 "$FT/logs/build.log" >&2; exit 1; }
 echo "== fulltest: build done ($(( SECONDS - BUILD_START ))s) =="
 
 # Phase 2: the fan-out. xargs rather than `wait -n` so this still runs on the

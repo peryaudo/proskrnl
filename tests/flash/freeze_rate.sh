@@ -2,7 +2,7 @@
 # freeze_rate.sh [N] [kvm|tcg] — measure the SAFlashPlayer startup-freeze
 # rate on the gui5con image (flash_player branch).
 #
-# Each trial boots a fresh copy of build/proskrnl-gui5con.hdd, clicks the
+# Each trial boots a fresh copy of build/proskrnl-dev.hdd, clicks the
 # console window, launches `c:\SAFlashPlayer.exe c:\troubled_windows.swf`,
 # and waits up to 8 minutes for the movie's ダウンロードの完了 dialog
 # (detected by pixel-matching the 再生 button against playbtn-ref.png at
@@ -20,7 +20,7 @@
 # (a 6-parallel batch froze 6/6 where the idle-host rate is lower). Run on
 # an otherwise idle machine for an honest number.
 #
-# Prereqs: `make gui5con-img` on this branch (bakes the .exe/.swf into the
+# Prereqs: `make dev-img` on this branch (bakes the .exe/.swf into the
 # image), python3-PIL. Artifacts per trial land in build/flash-trials/.
 set -uo pipefail
 N="${1:-3}"
@@ -28,8 +28,8 @@ ACCELSEL="${2:-kvm}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="$ROOT/tests/flash/playbtn-ref.png"
 OUT="$ROOT/build/flash-trials"
-IMG="$ROOT/build/proskrnl-gui5con.hdd"
-[ -f "$IMG" ] || { echo "build gui5con-img first"; exit 1; }
+IMG="$ROOT/build/proskrnl-dev.hdd"
+[ -f "$IMG" ] || { echo "build dev-img first"; exit 1; }
 
 run_trial() {
     local t="$1" DIR="$OUT/t$t"

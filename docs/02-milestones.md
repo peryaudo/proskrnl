@@ -786,7 +786,9 @@ committed golden table (`tests/gdi/fontdiff.golden`), re-diffed on every oracle 
 cannot go stale, and compared exactly (no epsilon) on the target.
 `tests/run/run.sh gui5con` is green: conhost is **dual-mode** — the pinned tree's `window.c`
 and resources compiled UNMODIFIED (zero fork commits, hack meter unchanged) and linked
-against the real user32/gdi32, chosen by which binary an image bakes. A windowed console
+against the real user32/gdi32, the mode chosen at BOOT by the `gui` flag
+(`opt/org.proskrnl/gui`, HACK-006). It was chosen by which of two links an image baked,
+until one image began carrying every leg's payload. A windowed console
 found on the scanout, typed into through the real input queue, `^C` reaching a busy program
 through conhost's own `map_to_ctrlevent` (the CUI-4 serial intercept out of the loop), and
 the session's files read back out of the image. `make rungui` now boots that command prompt.

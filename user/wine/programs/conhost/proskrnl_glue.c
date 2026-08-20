@@ -8,14 +8,17 @@
  * (behind !__wine_unix_call_dispatcher - Art. 10 / docs/06). This file
  * carries only what the standalone PE build lacks:
  *
- *   1. the process entry: open \Device\ConDrv\Server + the \Device\Serial0
- *      tty pair (HACK-004), then hand wmain its headless command line
+ *   1. the process entry: open \Device\ConDrv\Server and then either open a
+ *      window or take the \Device\Serial0 tty pair (HACK-004) and hand wmain
+ *      its headless command line
  *   2. the mini CRT (heap over kernel32, string/memory over own loops)
  *
- * The user32 + window.c stand-ins that used to be section 3 here live in
- * headless_stubs.c: they belong to the HEADLESS link only (the windowed
- * conhost links the real user32 and the real window.c), while this file is
- * shared by both links.
+ * There is ONE conhost binary. It used to be two links from these sources —
+ * a headless one whose user32 and window.c references were satisfied by
+ * stand-ins, and a windowed one with the real ones — baked as conhost.exe on
+ * different images, so which console a boot had was a property of its media.
+ * The windowed link is now the only one, and which mode it RUNS in is the
+ * boot's `gui` flag (kernel/cm/registry.c, tools/qemu.sh GUEST_GUI).
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -38,13 +41,58 @@
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
 
-/* Which conhost link this is, decided at LINK time: headless_stubs.c (the
- * CONHOST target) defines 0, window_glue.c (CONHOST_GUI) defines 1. The
- * baked binary — not a runtime probe — decides the mode: a disk probe here
- * would misfire on the gui3/gui4/guiwtest images, which carry the desktop
- * server but need the HEADLESS conhost (their verdicts ride the serial
- * transport). */
-extern const int conhost_has_window;
+/* Window mode or serial mode, decided at BOOT time: the volatile
+ * \Registry\Machine\Hardware\qemu "Gui" value the kernel published from the
+ * QEMU command line's fw_cfg items (kernel/cm/registry.c, HACK-006). It
+ * defaults ON — the same reading user/smss/smss.c SmssIsGuiBoot takes, and
+ * for the same reason: the windowed console over the desktop stack is the
+ * product, and a boot whose verdict rides the SERIAL transport (every
+ * scripted CUI leg, `make test`, `make run`) says so on the command line.
+ *
+ * Deliberately NOT a disk probe: every image carries the desktop server now,
+ * so "is wineserver-lite here" no longer distinguishes anything — which is
+ * exactly what a disk probe would have got wrong on the gui3/gui4/guiwtest
+ * images back when it might have been tried. */
+static int conhost_wants_window( void )
+{
+    static const WCHAR key_path[] = L"\\Registry\\Machine\\Hardware\\qemu";
+    static const WCHAR value_name[] = L"Gui";
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    HANDLE key;
+    NTSTATUS status;
+
+    name.Buffer = (WCHAR *)key_path;
+    for (name.Length = 0; key_path[name.Length / sizeof(WCHAR)]; name.Length += sizeof(WCHAR)) ;
+    name.MaximumLength = name.Length + sizeof(WCHAR);
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = NULL;
+    attr.ObjectName = &name;
+    attr.Attributes = OBJ_CASE_INSENSITIVE;
+    attr.SecurityDescriptor = NULL;
+    attr.SecurityQualityOfService = NULL;
+    if (NtOpenKey( &key, KEY_QUERY_VALUE, &attr )) return 1;  /* not a QEMU guest */
+
+    name.Buffer = (WCHAR *)value_name;
+    for (name.Length = 0; value_name[name.Length / sizeof(WCHAR)]; name.Length += sizeof(WCHAR)) ;
+    name.MaximumLength = name.Length + sizeof(WCHAR);
+
+    struct
+    {
+        KEY_VALUE_PARTIAL_INFORMATION info;
+        UCHAR tail[sizeof(ULONG)];
+    } buffer;
+    ULONG result_length = 0;
+    status = NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer, sizeof(buffer),
+                              &result_length );
+    NtClose( key );
+    if (status || buffer.info.Type != REG_DWORD || buffer.info.DataLength != sizeof(ULONG))
+        return 0;  /* the key exists, so QEMU decided: an unreadable flag is off */
+
+    ULONG value;
+    memcpy( &value, buffer.info.Data, sizeof(value) );
+    return value != 0;
+}
 
 static void display( const char *text )
 {
@@ -120,7 +168,7 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
         }
         arg_server[pos] = 0;
 
-        if (conhost_has_window)
+        if (conhost_wants_window())
         {
             /* The windowed link is a desktop-server CLIENT at image-load
              * time (user32 -> win32u connects during Ldr init). If this

@@ -38,10 +38,38 @@ void SmssSleep(ULONG milliseconds);
  * NtCreateFile status so callers can tell "not found" from a broken open. */
 int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut);
 
-/* Did the QEMU command line ask for an interactive boot? Reads
- * \Registry\Machine\Hardware\qemu "Interactive"; an absent key means we are
- * not on QEMU at all, which defaults to interactive (smss.c). */
+/* The QEMU boot flags, read out of the volatile
+ * \Registry\Machine\Hardware\qemu key the kernel published from the command
+ * line's fw_cfg items (kernel/cm/registry.c, HACK-006). An absent key means
+ * we are not on QEMU at all, which is what `whenNotQemu` answers. */
+ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu);
+
+/* The longest fw_cfg STRING the kernel publishes under that key
+ * (kernel/cm/registry.c CMP_QEMU_STRING_MAX). One number for both sides. */
+#define SMSS_QEMU_STRING_MAX 256
+
+/* The REG_SZ twin of SmssQemuFlag: copies the value into `out` (at most
+ * `outChars` including the terminator). Every failure — no QEMU, no value,
+ * a wrong type — is the EMPTY string, which is each consumer's "unspecified"
+ * (no leg = the plain boot suite; no filter = every case). */
+void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars);
+
+/* Did the QEMU command line ask for an interactive boot? Reads "Interactive";
+ * an absent key means we are not on QEMU at all, which defaults to
+ * interactive (smss.c). */
 int SmssIsInteractiveBoot(void);
+
+/* Is this a WINDOWED-console boot? Reads "Gui", which defaults ON: one image
+ * carries both arrangements, and the windowed console over the desktop stack
+ * is the product — a boot whose verdict rides the serial console says so
+ * (tools/qemu.sh GUEST_GUI=0). */
+int SmssIsGuiBoot(void);
+
+/* Does explorer own the desktop on this boot? Reads "Shell", which defaults
+ * OFF — the GUI legs run purpose-built clients over the desktop server's own
+ * fixtures (user/wine/wineserver-lite/common/shim.c probe_shell reads the
+ * same value). */
+int SmssIsShellBoot(void);
 
 /* --- launch.c: spawning over NtCreateUserProcess --------------------------- */
 
@@ -75,11 +103,11 @@ int SmssConsoleAvailable(void);
 
 /* --- session.c: the acceptance flows --------------------------------------- */
 
-/* The test session, in the historical kernel-runner order: hello/M8 chain,
- * m9_smoke/M9 (folding the kernel's ABI-probe failures passed on the
- * command line), the ntapi and winetest sweeps, m9_echo, the cmd console,
- * and the GUI legs (which park forever on GUI images). Returns the failure
- * count smss exits with. */
+/* The test session: the hello/M8 chain and m9_smoke/M9 (folding the kernel's
+ * ABI-probe failures passed on the command line) on every boot, then whatever
+ * the QEMU command line's LEG selected — the ntapi or winetest sweep, the
+ * console flows, wow64, or one of the GUI legs (which park forever). Returns
+ * the failure count smss exits with. */
 int SessionRun(int abiFailures, int registryOk);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */

@@ -1,8 +1,8 @@
 /*
- * window_glue.c - the WINDOWED conhost link's glue (GUI-5, CONHOST_GUI).
+ * window_glue.c - the conhost window path's glue (GUI-5).
  *
- * The windowed link compiles the pinned tree's real window.c and links the
- * real user32/gdi32/advapi32, so almost nothing needs standing in. What is
+ * conhost compiles the pinned tree's real window.c and links the real
+ * user32/gdi32/advapi32, so almost nothing needs standing in. What is
  * left is comctl32: window.c reaches it only from config_dialog (the
  * Properties/Defaults menu items), and upstream's own Makefile.in makes it
  * a DELAYIMPORT for exactly that reason. Mirror that semantics by hand —
@@ -10,8 +10,8 @@
  * import: mingw's delay-import helper machinery does not exist under
  * -nostdlib, and a load-time import would make conhost's startup depend on
  * a DllMain path no boot has ever exercised (the GUI-2 imm32 delay-import
- * abort is the cautionary precedent, docs/02). comctl32.dll IS baked on
- * every GUI image, so an interactively opened dialog can genuinely work;
+ * abort is the cautionary precedent, docs/02). comctl32.dll IS baked, so an
+ * interactively opened dialog can genuinely work;
  * if the load fails anyway, each forwarder refuses loudly with the API's
  * real failure shape (Art. 12).
  */
@@ -23,9 +23,6 @@
 #include <winternl.h>
 #include <prsht.h>
 #include <commctrl.h>
-
-/* This is the WINDOWED link (see proskrnl_glue.c conhost_start). */
-const int conhost_has_window = 1;
 
 static void display( const char *text )
 {

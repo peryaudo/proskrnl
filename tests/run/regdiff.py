@@ -73,6 +73,12 @@ EXCLUDED_COMPONENTS = [
 
 # (path, value name) pairs excluded from the value compare, either side.
 EXCLUDED_VALUES = [
+    # shell32's DllRegisterServer seeds the two profile directories it owns
+    # (ProgramData, Public) into ProfileList. Same reason as the
+    # FolderDescriptions subtree below: the oracle's RegisterDlls pass cannot
+    # run to completion, so self-registration output is out of scope.
+    ("machine\\software\\microsoft\\windows nt\\currentversion\\profilelist", "programdata"),
+    ("machine\\software\\microsoft\\windows nt\\currentversion\\profilelist", "public"),
     # Host-CPU identity wineboot derives from the running machine
     # (create_environment_registry_keys): differs between the oracle host
     # and QEMU's -cpu max by design.
@@ -125,7 +131,39 @@ EXCLUDED_VALUE_NAMES = [
 # scope; Windows\CurrentVersion\RunServices* are ProcessRunKeys probes).
 ALLOWED_EXTRA_SUBTREES = [
     "machine\\system\\currentcontrolset\\control\\session manager",
+    # SELF-REGISTRATION output. The baked wine.inf keeps RegisterDlls (one
+    # inf for every leg, Makefile $(WINE_INF_FULL)), so the guest's firstboot
+    # runs shell32's, mmdevapi's and dsound's own DllRegisterServer through
+    # Wine's own registrar. shell32's writes ~120 FolderDescriptions keys.
+    #
+    # The ORACLE cannot answer for those, and that is measured rather than
+    # assumed: with RegisterDlls kept, the oracle prefix's own pass has all
+    # 30 fake dlls to register instead of the three the disk carries, and it
+    # WEDGES — rundll32 sat at 0% CPU for 18 minutes inside
+    # InstallHinfSection and the leg never reached a verdict. So this payload
+    # is out of the compared scope, the way each fake dll's embedded REGINST
+    # registration is out of it on the oracle side (the header's first
+    # flank). What stays in scope is the whole AddReg machine-state payload,
+    # which is what CUI-1 is about.
+    "machine\\software\\microsoft\\windows\\currentversion\\explorer\\folderdescriptions",
+    # msacm32's DRIVER CACHE, built the first time anything enumerates the
+    # ACM codecs (dlls/msacm32/driver.c MSACM_ReadCache) — reached during
+    # firstboot through the dsound/mmdevapi registration above. Its subject
+    # is the .acm modules the image bakes; the oracle's prefix has them as
+    # fake dlls and never enumerates them, so the cache exists on one side
+    # only. A runtime writer's cache, not machine state the INF specifies.
+    "machine\\software\\microsoft\\audiocompressionmanager",
 ]
+
+# The same allowance in SUFFIX form: shell32's DllRegisterServer adds a
+# ShellFolder subkey to each CLSID it registers as a shell folder. The CLSID
+# keys themselves ARE payload (wine.inf writes them) and stay compared; the
+# ShellFolder child is self-registration output, the FolderDescriptions case
+# one level down. Written as a rule rather than as seven literal CLSIDs so a
+# wine pin that registers an eighth does not read as a divergence.
+def allowed_extra_key(path):
+    return (path.startswith("machine\\software\\classes\\clsid\\")
+            and path.endswith("\\shellfolder"))
 
 
 def excluded_key(path):
@@ -353,6 +391,8 @@ def main():
         if path in allowed or excluded_key(path):
             continue
         if any(path == p or path.startswith(p + "\\") for p in ALLOWED_EXTRA_SUBTREES):
+            continue
+        if allowed_extra_key(path):
             continue
         # keys the oracle also has are fine: same writer wrote both sides
         # (wineboot's dynamic keys land identically under both runners)

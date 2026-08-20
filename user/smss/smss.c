@@ -151,18 +151,24 @@ void SmssSleep(ULONG milliseconds)
     NtDelayExecution(FALSE, &interval);
 }
 
-/* The interactive boot, read from the same place the kernel reads it: the
- * volatile \Registry\Machine\Hardware\qemu key the kernel published from the
- * QEMU command line's fw_cfg items (kernel/cm/registry.c, HACK-006). No key
- * means no fw_cfg device, i.e. not a QEMU guest — nothing there is scraping a
- * serial log, so a human is assumed and the session goes interactive. The
- * kernel's KiIsInteractiveBoot states the same rule for its own half of the
- * boot; the two are separate address spaces, not a second authority. */
-int SmssIsInteractiveBoot(void)
+/* --- the QEMU boot flags (HACK-006) ---------------------------------------
+ *
+ * Read from the same place the kernel reads them: the volatile
+ * \Registry\Machine\Hardware\qemu key the kernel published from the QEMU
+ * command line's fw_cfg items (kernel/cm/registry.c). No key means no fw_cfg
+ * device, i.e. not a QEMU guest — nothing there is scraping a serial log, so
+ * each caller's `whenNotQemu` applies. The kernel's KiIsInteractiveBoot
+ * states the same rule for its own half of the boot; the two are separate
+ * address spaces, not a second authority.
+ *
+ * Opening the key is factored out because both the DWORD flags and the REG_SZ
+ * strings below need it, and a second open site is a second set of rules
+ * about what an absent key means (Art. 11).
+ */
+static NTSTATUS SmssOpenQemuKey(HANDLE *keyOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
-    HANDLE key;
     SmssInitUnicodeString(&name, WSTR("\\Registry\\Machine\\Hardware\\qemu"));
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
@@ -170,26 +176,36 @@ int SmssIsInteractiveBoot(void)
     attr.Attributes = OBJ_CASE_INSENSITIVE;
     attr.SecurityDescriptor = 0;
     attr.SecurityQualityOfService = 0;
-    NTSTATUS open = NtOpenKey(&key, KEY_QUERY_VALUE, &attr);
-    if (open == STATUS_OBJECT_NAME_NOT_FOUND || open == STATUS_OBJECT_PATH_NOT_FOUND)
-        return 1; /* no fw_cfg device published it: not a QEMU guest */
+    return NtOpenKey(keyOut, KEY_QUERY_VALUE, &attr);
+}
+
+/* TRUE when the open failed because the key is not there — the ONE failure
+ * that means "not a QEMU guest". Anything else is a broken registry, which
+ * must be said out loud rather than read as a default (Art. 12's spirit). */
+static int SmssQemuKeyAbsent(NTSTATUS status)
+{
+    return status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND;
+}
+
+ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu)
+{
+    HANDLE key;
+    NTSTATUS open = SmssOpenQemuKey(&key);
+    if (SmssQemuKeyAbsent(open))
+        return whenNotQemu;
     if (open != STATUS_SUCCESS)
     {
-        /* Absent is the only failure that means "not QEMU". Anything else is
-         * a broken registry, and answering it "interactive" would park a
-         * scripted leg at a prompt nobody is typing into — the loud, harmless
-         * way round is to say so and run the ordinary session. */
-        SmssPrintf("smss: HKLM\\Hardware\\qemu open failed (%x); assuming not interactive\n",
+        SmssPrintf("smss: HKLM\\Hardware\\qemu open failed (%x); reading flags as 0\n",
                    SMSS_HEX(open));
         return 0;
     }
 
-    UNICODE_STRING valueName;
-    SmssInitUnicodeString(&valueName, WSTR("Interactive"));
+    UNICODE_STRING name;
+    SmssInitUnicodeString(&name, valueName);
     UCHAR buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
     ULONG resultLength = 0;
-    NTSTATUS status = NtQueryValueKey(key, &valueName, KeyValuePartialInformation, buffer,
+    NTSTATUS status = NtQueryValueKey(key, &name, KeyValuePartialInformation, buffer,
                                       sizeof(buffer), &resultLength);
     NtClose(key);
     if (status == STATUS_OBJECT_NAME_NOT_FOUND)
@@ -199,7 +215,7 @@ int SmssIsInteractiveBoot(void)
         /* The key is volatile, not read-only, so ring 3 can have overwritten
          * the flag with anything; 0 is the safe reading, but not a silent one
          * (the kernel's CmQueryQemuBootFlag says the same). */
-        SmssPrintf("smss: HKLM\\Hardware\\qemu Interactive is not a REG_DWORD (%x); reading 0\n",
+        SmssPrintf("smss: HKLM\\Hardware\\qemu flag is not a REG_DWORD (%x); reading 0\n",
                    SMSS_HEX(status));
         return 0;
     }
@@ -207,7 +223,82 @@ int SmssIsInteractiveBoot(void)
     ULONG value;
     for (unsigned int i = 0; i < sizeof(value); i++)
         ((UCHAR *)&value)[i] = info->Data[i];
-    return value != 0;
+    return value;
+}
+
+void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
+{
+    out[0] = 0;
+    if (outChars == 0)
+        return;
+
+    HANDLE key;
+    NTSTATUS open = SmssOpenQemuKey(&key);
+    if (open != STATUS_SUCCESS)
+    {
+        if (!SmssQemuKeyAbsent(open))
+            SmssPrintf("smss: HKLM\\Hardware\\qemu open failed (%x); reading strings as \"\"\n",
+                       SMSS_HEX(open));
+        return; /* not a QEMU guest, or unreadable: the empty string */
+    }
+
+    UNICODE_STRING name;
+    SmssInitUnicodeString(&name, valueName);
+    /* One buffer for the header plus the longest string the kernel publishes
+     * (kernel/cm/registry.c CMP_QEMU_STRING_MAX) and its terminator. */
+    static UCHAR SmssQemuStringBuffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) +
+                                      (SMSS_QEMU_STRING_MAX + 1) * sizeof(WCHAR)];
+    KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)SmssQemuStringBuffer;
+    ULONG resultLength = 0;
+    NTSTATUS status = NtQueryValueKey(key, &name, KeyValuePartialInformation, SmssQemuStringBuffer,
+                                      sizeof(SmssQemuStringBuffer), &resultLength);
+    NtClose(key);
+    if (status == STATUS_OBJECT_NAME_NOT_FOUND)
+        return; /* the key exists, so QEMU decided: an absent string is empty */
+    if (status != STATUS_SUCCESS || info->Type != REG_SZ)
+    {
+        SmssPrintf("smss: HKLM\\Hardware\\qemu string is not a REG_SZ (%x); reading \"\"\n",
+                   SMSS_HEX(status));
+        return;
+    }
+
+    ULONG chars = info->DataLength / sizeof(WCHAR);
+    if (chars > outChars - 1)
+        chars = outChars - 1;
+    const WCHAR *data = (const WCHAR *)(void *)info->Data;
+    ULONG i = 0;
+    while (i < chars && data[i] != 0)
+    {
+        out[i] = data[i];
+        i++;
+    }
+    out[i] = 0;
+}
+
+/* The interactive boot: unspecified under QEMU means the ordinary scripted
+ * session, and no QEMU at all means a human (nothing off-box is scraping a
+ * serial log). */
+int SmssIsInteractiveBoot(void)
+{
+    return SmssQemuFlag(WSTR("Interactive"), 1) != 0;
+}
+
+/* The windowed console. Defaults ON — including off QEMU — because one image
+ * now carries both arrangements and the windowed one over the desktop stack
+ * is the product; a boot whose verdict rides the SERIAL console says so on
+ * the command line (tools/qemu.sh GUEST_GUI=0). */
+int SmssIsGuiBoot(void)
+{
+    return SmssQemuFlag(WSTR("Gui"), 1) != 0;
+}
+
+/* Does explorer own the desktop on this boot? Off by default: the GUI legs
+ * run purpose-built clients over the desktop server's own fixtures, and only
+ * the shell arrangement has an explorer to hand it to (the same value
+ * user/wine/wineserver-lite/common/shim.c probe_shell reads). */
+int SmssIsShellBoot(void)
+{
+    return SmssQemuFlag(WSTR("Shell"), 0) != 0;
 }
 
 int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut)
@@ -330,11 +421,11 @@ static int SmssRunFirstboot(void)
  * session's windows sat beside a dead sibling arrangement that click
  * activation then tripped over.
  *
- * Gated on the interactive flag, not on explorer's presence: the gui6 leg
- * (same shell payload, no interactive flag) launches explorer explicitly
- * with /desktop=shell,WxH and needs no routing values -- and writing them
- * there would hand firstboot's transient rundll32 children a desktop
- * auto-launch of their own, changing what its golden pinned. */
+ * Gated on the boot's flags, not on explorer's presence: the gui6 leg (same
+ * shell payload, no interactive flag) launches explorer explicitly with
+ * /desktop=shell,WxH and needs no routing values -- and writing them there
+ * would hand firstboot's transient rundll32 children a desktop auto-launch
+ * of their own, changing what its golden pinned. */
 /* Write one REG_SZ under \Registry\User\<sid> -- the fixed Se identity
  * (kernel/se/token.c); the skeleton root exists from boot
  * (kernel/cm/registry.c). NtCreateKey creates one level, so the subkey path
@@ -405,7 +496,14 @@ static void SmssShellDesktopConfig(void)
         {WSTR("Software\\Wine\\Explorer\\Desktops"), WSTR("shell"), WSTR("1280x800")},
     };
 
-    if (!SmssIsInteractiveBoot())
+    /* Gated on the SHELL flag (tools/qemu.sh GUEST_SHELL) and on the boot
+     * being interactive: these values arrange the AUTO-LAUNCH, which is the
+     * shell session a human gets. The gui6 leg is a shell boot too but not
+     * an interactive one — it launches explorer explicitly with
+     * /desktop=shell,WxH and needs no routing values, and writing them there
+     * would hand firstboot's transient rundll32 children a desktop
+     * auto-launch of their own, changing what its golden pinned. */
+    if (!SmssIsShellBoot() || !SmssIsInteractiveBoot())
         return;
     if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"), 0))
         return;
