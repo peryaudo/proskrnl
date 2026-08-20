@@ -2202,7 +2202,35 @@ cui9() {
         echo "== cui9: FAIL (no refusal: hit mmceiling's MAX_CHILDREN cap at procs=$procs; raise the cap) =="
         return 1
     fi
-    grep -E '^\[KTEST\] cui9 perproc ' "$log" | head -1 | tr -d '\r' || true
+    local perprocLine perproc
+    perprocLine="$(grep -E '^\[KTEST\] cui9 perproc ' "$log" | head -1 | tr -d '\r' || true)"
+    echo "$perprocLine"
+
+    # The SHARING pin, and the one that carries what this gate is for. The
+    # ceiling below is a product of two numbers — how much memory the boot
+    # leaves free, and what one resident process costs — and only the second
+    # is what image-master sharing decides. They parted company when the CUI
+    # boot became a desktop boot (docs/17 §1): free memory fell 466 -> 334 MB
+    # at this same 512M while the per-process cost got slightly BETTER, and
+    # the ceiling alone reported that as a regression. Pinning the per-process
+    # cost states the property directly, so a real sharing regression fails
+    # here whatever the baseline is doing.
+    local perprocFile="$ROOT/tests/cui/mmceiling_perproc_kb.txt"
+    if [[ -f "$perprocFile" ]]; then
+        perproc="$(sed -nE 's/.*kb=([0-9]+).*/\1/p' <<<"$perprocLine")"
+        local perprocMax
+        perprocMax="$(tr -dc 0-9 < "$perprocFile")"
+        if [[ -z "$perproc" ]]; then
+            echo "== cui9: FAIL (no perproc verdict line; see $log) =="
+            return 1
+        fi
+        if [[ -z "$perprocMax" || "$perproc" -gt "$perprocMax" ]]; then
+            echo "== cui9: FAIL (one resident process costs ${perproc} KiB, above the committed"
+            echo "   ceiling '${perprocMax}' — image-master sharing regressed) =="
+            return 1
+        fi
+        echo "[KTEST] cui9 perproc ok kb=$perproc max=$perprocMax"
+    fi
 
     local floorFile="$ROOT/tests/cui/mmceiling_floor.txt"
     if [[ -f "$floorFile" ]]; then

@@ -135,7 +135,17 @@ ACCEL_ARGS=(-accel "$ACCEL" -cpu "$CPU_MODEL")
 # isa-debug-exit the moment it is done, so a large default only delays how
 # fast a WEDGED run is declared dead, never a passing one.
 TIMEOUT="${TIMEOUT:-600}"
-MEM="${MEM:-256M}"        # the wtest leg provisions more (no eviction - Art. 3)
+# 384M, up from 256M: one image serving every leg means one conhost, and that
+# conhost links the real user32/gdi32 rather than CUI stand-ins — so EVERY boot
+# now brings the desktop stack up (win32u, winefb.drv, wineserver-lite, a
+# 1280x800 desktop surface) before the leg's own work starts. Measured at the
+# cui9 leg's pinned 512M console boot: available memory at the start of the
+# sweep fell from 466 MB to 334 MB. With no eviction (Art. 3) that 132 MB is
+# standing cost, not pressure the machine can work off, and at 256M it left the
+# ntapi sweep close enough to the edge to wedge one CI run mid-test. A green
+# boot still exits through isa-debug-exit the moment it is done, so a larger
+# default costs nothing but host RSS on a run that was going to pass.
+MEM="${MEM:-384M}"        # the wtest leg provisions more (no eviction - Art. 3)
 
 # cache=unsafe (and cache.no-flush=on in the blockdev leg): the guest driver
 # negotiates neither VIRTIO_BLK_F_FLUSH nor _CONFIG_WCE, so QEMU emulates a
