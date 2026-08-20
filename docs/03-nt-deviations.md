@@ -539,6 +539,28 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   its renderer emits cursor-movement/erase sequences against its screen
   model. Tests assert cooked results (the client's own verdict), never
   literal output bytes (`tests/run/console_expect.py`).
+- **Every boot brings the desktop stack up, including a serial CUI one.** One
+  image serves every leg, so there is one conhost and it links the real
+  `user32`/`gdi32` (the CUI stand-ins are gone). Whether it puts up a WINDOW is
+  a boot decision — `\Registry\Machine\Hardware\qemu` "Gui", HACK-006 — but
+  whether it LOADS the stack is not: an import table is resolved at load. So
+  `win32u`, `winefb.drv` and `wineserver-lite` come up, and a desktop is
+  created, on a boot whose only console is the serial wire.
+
+  This is resident cost, and with no eviction (Art. 3) it never comes back:
+  **132 MB**, measured at the `cui9` leg's pinned 512M console boot (466 MB
+  free before, 334 MB after — docs/17 §1, which carries the table). Nothing
+  observable at the boundary changes; what changes is how much machine is left
+  for the thing the boot was started to do, which is why `tools/qemu.sh`'s
+  default guest memory went from 256M to 384M in the same change.
+
+  Reclaiming it means conhost not IMPORTING what a serial boot will not call —
+  delay-loading `user32`/`gdi32` (95 functions across the two) or splitting
+  `window.c` into a module loaded when "Gui" says so. Both are Wine-fork
+  surface (Art. 10) rather than kernel work, and neither is a boundary
+  question, so neither is done here. Restoring the CUI-only stand-ins is not
+  the answer: two builds of one program drift, which is the failure this whole
+  change was made to end.
 
 ## M10 CUI-userland notes (CreateProcess + the DLL set + cmd.exe)
 
