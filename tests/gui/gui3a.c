@@ -135,25 +135,6 @@ START_TEST(gui3a)
     else
         ntapi_printf("[KTEST] gui3 xthread FAIL (no window)\n");
 
-    /* A fault taken INSIDE win32u must not reach the caller (docs/03 "GUI-2
-     * notes": win32u is in-process here, so the syscall boundary that
-     * contains one on Wine does not exist and glue.c rebuilds it).
-     *
-     * The trigger is a query the boundary answers today by faulting, on the
-     * oracle as much as here: the DESKTOP window belongs to no process, so
-     * dlls/win32u/class.c get_class_ptr hands back the OBJ_OTHER_PROCESS
-     * sentinel, and get_class_long_size dereferences it whenever the class
-     * carries no small icon of its own. Measured on the pinned Wine
-     * (GCLP_HICONSM there answers 0xc0000005 and the process lives on).
-     *
-     * The VERDICT is survival — that this line is reached at all — and not
-     * the value, which is Wine's bug leaking its exception code and would
-     * become a real handle the day upstream fixes it. The value is printed
-     * because a log that only says PASS cannot show which of the two it
-     * was. */
-    ntapi_printf("[KTEST] gui3 win32u fault contained PASS (desktop GCLP_HICONSM=%p)\n",
-                 (void *)GetClassLongPtrW(GetDesktopWindow(), GCLP_HICONSM));
-
     ntapi_printf("[KTEST] gui3 A ready\n");
 
     /* Park pumping. A must outlive B's checks and still be on the scanout

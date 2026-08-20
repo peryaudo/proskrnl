@@ -144,6 +144,38 @@ START_TEST(gui3b)
                  answer == (LRESULT)(0x4321u ^ GUI3_MAGIC) ? "PASS" : "FAIL",
                  (unsigned long)answer);
 
+    /* --- the syscall boundary's fault containment -------------------------
+     *
+     * A fault taken INSIDE win32u must not reach the caller (docs/03 "GUI-2
+     * notes": win32u is in-process here, so the syscall frame that contains
+     * one on Wine does not exist and glue.c rebuilds it).
+     *
+     * The trigger is a query the boundary answers today by faulting, on the
+     * oracle as much as here: asked for a window THIS process does not own,
+     * dlls/win32u/class.c get_class_ptr hands back the OBJ_OTHER_PROCESS
+     * sentinel and get_class_long_size dereferences it whenever the class
+     * carries no small icon of its own. A's window is that window — A
+     * registered a plain WNDCLASSW with no hIconSm, and it belongs to the
+     * other process by construction, which is this leg's whole subject.
+     *
+     * It used to be asked of the DESKTOP window, from A. That worked while
+     * the desktop belonged to no process at all, and stopped the moment the
+     * boot's FIRST desktop client stopped being a test client: conhost links
+     * user32 on every boot now, so it attaches before A does, and A's
+     * GetDesktopWindow() no longer resolves to an unowned window — the
+     * query returned 0 without ever reaching the dereference, so the
+     * containment path went unexercised while every gui3 verdict still
+     * passed. A window one process created and another asks about cannot
+     * drift that way.
+     *
+     * The VERDICT is survival — that this line is reached at all — and not
+     * the value, which is Wine's bug leaking its exception code and would
+     * become a real handle the day upstream fixes it. The value is printed
+     * because a log that only says PASS cannot show which of the two it
+     * was. */
+    ntapi_printf("[KTEST] gui3 win32u fault contained PASS (A's GCLP_HICONSM=%p)\n",
+                 (void *)GetClassLongPtrW(hwnd_a, GCLP_HICONSM));
+
     /* --- Z-order: one order over two processes, reorderable from here ----- */
     {
         int b_first_before, a_first_after;

@@ -2976,10 +2976,12 @@ gui3() {
     if ! await '\[KTEST\] gui3 server READY'; then
         gui3_fail "wineserver-lite never published its transport"; return 1
     fi
-    # A's fault-containment probe, before its ready marker: a win32u fault
-    # that escapes into the caller kills A silently, and the next await would
-    # then blame B for a death that was A's. Gated by name so the regression
-    # is the missing LINE, not a timeout somewhere downstream.
+    # B's fault-containment probe, before its verdict: a win32u fault that
+    # escapes into the caller kills B silently, and the next await would then
+    # read as "never reached a verdict" rather than naming the containment.
+    # Gated by name so the regression is the missing LINE, not a timeout
+    # somewhere downstream. (It was A's probe, asked of the desktop window,
+    # until conhost became the boot's first desktop client — see gui3b.c.)
     if ! await '\[KTEST\] gui3 win32u fault contained PASS'; then
         gui3_fail "a fault inside win32u reached its caller (glue.c containment)"; return 1
     fi
