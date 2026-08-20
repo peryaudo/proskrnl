@@ -553,8 +553,14 @@ check_subtests() {
 # flags would be a second authority for what a test binary is (Art. 11). The
 # output directory is the one the Makefile writes, so the oracle leg finds
 # exactly the binaries the image carries.
+#
+# The target is named RELATIVE to $ROOT, which is how every target in that
+# Makefile is spelled: make matches targets by the literal string, so an
+# absolute path is a target it has no rule for — "No rule to make target" on
+# a clean tree, and the far worse "Nothing to be done" (exit 0, nothing
+# built) on a tree where the file happens to already exist.
 build_helper_dll() {   # echoes the .dll path
-    make -C "$ROOT" "$BUILD/ntapi/prshelper.dll" >&2 || return 1
+    make -C "$ROOT" "${BUILD#"$ROOT/"}/ntapi/prshelper.dll" >&2 || return 1
     echo "$BUILD/ntapi/prshelper.dll"
 }
 
@@ -574,7 +580,7 @@ build_test() {   # $1 = .c path; echoes the .exe path
     local src="$1" name exe
     name="$(basename "${src%.c}")"
     exe="$BUILD/ntapi/$name.exe"
-    if ! make -C "$ROOT" "$exe" >&2; then
+    if ! make -C "$ROOT" "${exe#"$ROOT/"}" >&2; then
         echo "run.sh: FAILED to build $src — no verdict for '$name'" >&2
         return 1
     fi
@@ -1958,6 +1964,7 @@ cui7() {
 
     local sock2="$ROOT/build/tests/cui7-2.sock" log2="$ROOT/build/tests/cui7-2.log"
     SERIAL_SOCK="$sock2" LOG="$log2" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     qemu_wrapper=$!
     if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI7_VERIFY=1 \
@@ -2162,6 +2169,7 @@ cui9() {
 
     local sock="$ROOT/build/tests/cui9.sock" log="$ROOT/build/tests/cui9.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1200}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-900}" EXPECT_CUI9=1 \

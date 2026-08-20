@@ -262,14 +262,22 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
         return;
     }
 
+    /* KEY_VALUE_PARTIAL_INFORMATION.Data is a UCHAR[] carrying REG_SZ's
+     * UTF-16, and its alignment is the buffer's rather than the type's, so
+     * each character is assembled from its two bytes instead of read through
+     * a WCHAR pointer at an address the compiler may not assume aligned. */
     ULONG chars = info->DataLength / sizeof(WCHAR);
     if (chars > outChars - 1)
         chars = outChars - 1;
-    const WCHAR *data = (const WCHAR *)(void *)info->Data;
     ULONG i = 0;
-    while (i < chars && data[i] != 0)
+    while (i < chars)
     {
-        out[i] = data[i];
+        WCHAR c;
+        for (unsigned int b = 0; b < sizeof(c); b++)
+            ((UCHAR *)&c)[b] = info->Data[i * sizeof(WCHAR) + b];
+        if (c == 0)
+            break;
+        out[i] = c;
         i++;
     }
     out[i] = 0;

@@ -2181,16 +2181,20 @@ TEST_PAYLOAD := $(WINFILES_DEPS) $(FULL_PAYLOAD) \
                 $(WOW64GUI) $(GUI6_SHELF) $(NET3_PAYLOAD) \
                 $(WTEST_PAYLOAD) $(NTAPI_PAYLOAD)
 
-# 768 MiB: both bitnesses of the whole shelf, ~170 ntapi binaries and the
-# multi-MB winetest modules on one volume (measured; the 128 MiB the widest
-# old image used holds neither test payload). The ESP still starts at sector
-# 4096, so the fixed offset every reader uses (tests/run/run.sh, tools/qemu.sh)
-# is unchanged.
+# 320 MiB: both bitnesses of the whole shelf, ~170 ntapi binaries and the
+# multi-MB winetest modules come to 193 MB measured (`mdir -/`), and the
+# headroom is for what the GUEST writes — the hive, the firstboot payload,
+# every leg's own files. Sized rather than rounded up because EVERY leg
+# copies this file before booting it (test_image_copy), so a CI shard running
+# ten legs pays the size ten times on a runner with ~14 GB of disk.
+#
+# The ESP still starts at sector 4096, so the fixed offset every reader uses
+# (tests/run/run.sh, tools/qemu.sh) is unchanged.
 $(IMG_TEST): $(KERNEL) $(MODULES) $(TEST_PAYLOAD) $(UPCASE_CHECK) \
         $(LICENSE_CHECK) $(TIMEZONES_CHECK) $(NET3_APISETS)/specs.txt \
         tests/winetest/manifest.txt tests/winetest/manifest-gui.txt \
         tools/mkimage.sh arch/x86_64/limine.conf
-	SIZE_MB=$${SIZE_MB:-768} tools/mkimage.sh $(KERNEL) $(IMG_TEST) $(MODULE_SPECS) \
+	SIZE_MB=$${SIZE_MB:-320} tools/mkimage.sh $(KERNEL) $(IMG_TEST) $(MODULE_SPECS) \
 	    $(TESTFILES) $$(cat $(NET3_APISETS)/specs.txt)
 
 test-img: $(IMG_TEST)

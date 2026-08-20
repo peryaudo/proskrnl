@@ -35,12 +35,12 @@ static char SessionSubtests[SMSS_QEMU_STRING_MAX + 1];
  * dropped to '?' so a corrupted value cannot silently equal a leg name. */
 static void SessionReadBootString(const WCHAR *valueName, char *out, ULONG outChars)
 {
-    static WCHAR wide[SMSS_QEMU_STRING_MAX + 1];
-    SmssQemuString(valueName, wide, SMSS_QEMU_STRING_MAX + 1);
+    static WCHAR SessionBootStringWide[SMSS_QEMU_STRING_MAX + 1];
+    SmssQemuString(valueName, SessionBootStringWide, SMSS_QEMU_STRING_MAX + 1);
     ULONG i = 0;
-    while (wide[i] != 0 && i + 1 < outChars)
+    while (SessionBootStringWide[i] != 0 && i + 1 < outChars)
     {
-        out[i] = wide[i] < 0x80 ? (char)wide[i] : '?';
+        out[i] = SessionBootStringWide[i] < 0x80 ? (char)SessionBootStringWide[i] : '?';
         i++;
     }
     out[i] = 0;
@@ -645,65 +645,66 @@ static int SessionWtestPatternMatches(const char *pattern, ULONG chars, const vo
     const WTEST_PAIR_NAME *pair = context;
     /* "<exe>:<subtest>" and "<module>:<subtest>", built once into one buffer
      * each so the glob matcher sees a plain NUL-terminated name. */
-    static char full[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
-    static char shortName[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
-    static char module[WTEST_EXE_CHARS];
+    static char SessionWtestFullKey[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
+    static char SessionWtestShortKey[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
+    static char SessionWtestModule[WTEST_EXE_CHARS];
     int m = 0;
     while (pair->exe[m] != 0 && m + 1 < WTEST_EXE_CHARS)
     {
-        module[m] = pair->exe[m];
+        SessionWtestModule[m] = pair->exe[m];
         m++;
     }
-    module[m] = 0;
+    SessionWtestModule[m] = 0;
     /* Drop the "_test.exe" tail if that is how this name ends. */
     static const char tail[] = "_test.exe";
     const int tailChars = (int)sizeof(tail) - 1;
     if (m >= tailChars)
     {
         int t = 0;
-        while (t < tailChars && module[m - tailChars + t] == tail[t])
+        while (t < tailChars && SessionWtestModule[m - tailChars + t] == tail[t])
             t++;
         if (t == tailChars)
         {
             m -= tailChars;
-            module[m] = 0;
+            SessionWtestModule[m] = 0;
             /* cmd.exe_test.exe -> "cmd.exe" -> "cmd". */
             static const char dotExe[] = ".exe";
             const int dotChars = (int)sizeof(dotExe) - 1;
             if (m >= dotChars)
             {
                 int d = 0;
-                while (d < dotChars && module[m - dotChars + d] == dotExe[d])
+                while (d < dotChars && SessionWtestModule[m - dotChars + d] == dotExe[d])
                     d++;
                 if (d == dotChars)
-                    module[m - dotChars] = 0;
+                    SessionWtestModule[m - dotChars] = 0;
             }
         }
     }
 
     int c = 0;
-    for (int i = 0; pair->exe[i] != 0 && c + 1 < (int)sizeof(full); i++)
-        full[c++] = pair->exe[i];
-    full[c++] = ':';
-    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(full); i++)
-        full[c++] = pair->subtest[i];
-    full[c] = 0;
+    for (int i = 0; pair->exe[i] != 0 && c + 1 < (int)sizeof(SessionWtestFullKey); i++)
+        SessionWtestFullKey[c++] = pair->exe[i];
+    SessionWtestFullKey[c++] = ':';
+    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(SessionWtestFullKey); i++)
+        SessionWtestFullKey[c++] = pair->subtest[i];
+    SessionWtestFullKey[c] = 0;
     c = 0;
-    for (int i = 0; module[i] != 0 && c + 1 < (int)sizeof(shortName); i++)
-        shortName[c++] = module[i];
-    shortName[c++] = ':';
-    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(shortName); i++)
-        shortName[c++] = pair->subtest[i];
-    shortName[c] = 0;
+    for (int i = 0; SessionWtestModule[i] != 0 && c + 1 < (int)sizeof(SessionWtestShortKey); i++)
+        SessionWtestShortKey[c++] = SessionWtestModule[i];
+    SessionWtestShortKey[c++] = ':';
+    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(SessionWtestShortKey); i++)
+        SessionWtestShortKey[c++] = pair->subtest[i];
+    SessionWtestShortKey[c] = 0;
 
-    if (SessionGlobMatch(pattern, chars, full) || SessionGlobMatch(pattern, chars, shortName))
+    if (SessionGlobMatch(pattern, chars, SessionWtestFullKey) ||
+        SessionGlobMatch(pattern, chars, SessionWtestShortKey))
         return 1;
     for (ULONG i = 0; i < chars; i++)
     {
         if (pattern[i] == ':')
             return 0; /* a qualified pattern matches nothing but a pair */
     }
-    return SessionGlobMatch(pattern, chars, module) ||
+    return SessionGlobMatch(pattern, chars, SessionWtestModule) ||
            SessionGlobMatch(pattern, chars, pair->subtest);
 }
 
