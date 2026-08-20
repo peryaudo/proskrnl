@@ -21,7 +21,7 @@
 #                 rendered frame 1); NMI-dumped too.
 #
 # Trials run SEQUENTIALLY on purpose (freeze_rate.sh explains: parallel boots
-# load the host and bias the race). Prereqs: make gui5con-img with the
+# load the host and bias the race). Prereqs: make dev-img with the
 # fixtures present (build/flash/*.swf are baked when SAFlashPlayer.exe is).
 set -uo pipefail
 N="${1:-3}"
@@ -30,8 +30,8 @@ ACCELSEL="${3:-kvm}"
 WDBG="${4:-}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/build/flash-fixture/$FIXTURE"
-IMG="$ROOT/build/proskrnl-gui5con.hdd"
-[ -f "$IMG" ] || { echo "build gui5con-img first"; exit 1; }
+IMG="$ROOT/build/proskrnl-dev.hdd"
+[ -f "$IMG" ] || { echo "build dev-img first"; exit 1; }
 
 run_trial() {
     local t="$1" DIR="$OUT/t$t"

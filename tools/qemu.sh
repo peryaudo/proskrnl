@@ -198,6 +198,45 @@ if [[ "${PANIC_NOTIMPL:-1}" == 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/panic_not_implemented,string=0)
 fi
 
+# GUEST_GUI=0 opts OUT of the windowed console. One image carries the whole
+# userland now, so GUI-vs-CUI is a boot decision like interactivity: the
+# kernel's default for any fw_cfg-bearing boot is the windowed console over
+# the desktop stack (kernel/cm/registry.c CmpQemuBootFlags), and a leg whose
+# verdict rides the SERIAL console — every scripted CUI leg, `make test`,
+# `make run` — says so here. Only the opt-out is passed, the
+# panic_not_implemented arrangement: a hand-rolled qemu line gets the
+# product's console rather than the harness's.
+if [[ "${GUEST_GUI:-1}" == 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/gui,string=0)
+fi
+
+# GUEST_LEG=<name> names the TEST LEG the guest's session manager should run
+# (user/smss/session.c SessionRun); GUEST_SUBTESTS=<query> is the filter the
+# ntapi and winetest sweeps apply to their case lists. Both are fw_cfg
+# STRINGS rather than numbers, published as REG_SZ beside the flags above.
+#
+# They exist so a leg and a subset are properties of the BOOT rather than of
+# the media: before this, selecting a leg meant baking a different disk image
+# (its probe file present or absent) and filtering a sweep meant baking a
+# different set of test binaries — so a dozen images existed whose only
+# difference was which client the session manager would find. Unset means the
+# empty string, and each consumer's reading of empty is its own default: no
+# leg is the plain boot suite, no filter is every case.
+# GUEST_SHELL=1 hands the desktop to explorer (the shell arrangement): the
+# desktop server leaves its own fixtures off and win32u's get_desktop_window
+# auto-launches explorer, which creates and owns the desktop. Off by default —
+# the GUI legs run purpose-built clients over the fixtures.
+if [[ "${GUEST_SHELL:-0}" != 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/shell,string=1)
+fi
+
+if [[ -n "${GUEST_LEG:-}" ]]; then
+    FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/leg,string=$GUEST_LEG")
+fi
+if [[ -n "${GUEST_SUBTESTS:-}" ]]; then
+    FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/subtests,string=$GUEST_SUBTESTS")
+fi
+
 # EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui
 # leg adds virtio-keyboard-pci this way so no other leg grows a device it
 # does not use. Word-split on spaces: a spec may carry comma-separated

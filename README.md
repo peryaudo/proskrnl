@@ -505,13 +505,25 @@ waiting on it).
 
 ## Build instructions
 
+There are exactly TWO images. `build/proskrnl-test.hdd` is what every test leg
+boots: it carries the whole userland — CUI, desktop, applets, shell, both
+bitnesses of the WOW64 shelf, audio — plus every acceptance client and the
+whole ntapi/winetest payload. `build/proskrnl-dev.hdd` is the same userland
+without the test payload, for `make run` and `make rungui`.
+
+WHICH leg a boot runs is a QEMU command-line flag, not a property of the
+media: `GUEST_LEG` names the leg and `GUEST_SUBTESTS` filters the ntapi and
+winetest sweeps, both published through fw_cfg and read out of
+`HKLM\Hardware\qemu` (`kernel/cm/registry.c`, HACK-006) — the same channel
+`GUEST_INTERACTIVE`, `GUEST_GUI` (windowed vs. serial console) and
+`GUEST_SHELL` (explorer owns the desktop) ride.
+
 ```sh
 make test     # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
 make fulltest # every leg CI runs, fanned out over this machine (docs/08) — the whole verdict
 make run      # boot interactively: a cmd.exe prompt on your terminal ('exit' powers off)
 make rungui   # boot the windowed command prompt with a host window on the scanout,
               # a NIC on the host's network and a sound card on its speakers
-make rungui2  # boot the GUI-2 image instead (winemine.exe, no shell)
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
 tests/run/run.sh proskrnl query_dir   # ...or one test / a glob, while iterating (both legs)

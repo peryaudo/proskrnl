@@ -303,15 +303,26 @@ Everything normalizes to **non-interactive, finite-time, exit-code + log**:
 timeout 60 qemu-system-x86_64 \
     -display none -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -drive file=build/proskrnl.hdd,if=virtio,format=raw \
+    -drive file=build/proskrnl-test.hdd,if=virtio,format=raw \
     -no-reboot 2>&1 | tee build/serial.log
 echo "exit: $?"
 ```
 
-- **Limine boot image** — `build/proskrnl.hdd` is a FAT32 image with the Limine bootloader
+- **Limine boot image** — `build/proskrnl-test.hdd` is a FAT32 image with the Limine bootloader
   installed and the kernel (plus any test payload / FS) baked in by `tools/mkimage.sh`.
   Limine hands off in long mode, so there is no `-kernel` direct-load and no 32→64
   trampoline (ADR 0010).
+- **ONE image, and the leg is a command-line flag.** There is exactly one test image and
+  it carries every leg's payload; which leg a boot runs is `GUEST_LEG` on the QEMU command
+  line, and which cases a sweep runs is `GUEST_SUBTESTS` — both published through fw_cfg
+  as `HKLM\Hardware\qemu` values (`kernel/cm/registry.c`, HACK-006) and read by the
+  session manager (`user/smss/session.c`). Two more flags of the same kind pick the
+  arrangement rather than the leg: `GUEST_GUI` (windowed console vs. the serial one) and
+  `GUEST_SHELL` (explorer owns the desktop vs. the desktop server's own fixtures).
+  It used to be the other way round — a leg ran because its client .exe was baked on the
+  volume — and that made *fourteen* images of one userland whose payload lists drifted
+  apart, made two legs unable to share a bake, and made a FILTERED run yet another image
+  whose file on disk recorded which subset had last been asked for.
 - **isa-debug-exit** — the kernel writes a value to port 0xf4; QEMU exits with a derived
   code. In-kernel test verdicts reach the host as a process exit code.
 - **timeout + -no-reboot** — hang, panic, and success all become finite-time processes
@@ -392,11 +403,11 @@ clang-tidy halves are the part a green fulltest does not answer for.
 
 Everything about that speed-up is scheduling; the interesting part is the isolation it
 needs. The legs were written to run one at a time and say so in the tree: each calls
-`make -C $ROOT` for its own image (two makes in one build directory race over the same
-objects), several boot a **shared master image in place** (`console`, `cui8` and the six
-GUI legs boot `build/proskrnl{,-console,-gui*}.hdd` directly, and QEMU writes into what it
-boots), and six more `rm -f` that master to force a virgin one before copying it — a
-guaranteed corrupt read for any neighbour copying it at that moment. Making every one of
+`make -C $ROOT test-img` (two makes in one build directory race over the same objects),
+`cui8` and `net` boot the **shared master image in place** (`build/proskrnl-test.hdd`, and
+QEMU writes into what it boots), and three more `rm -f` that master to force a virgin one
+before copying it — a guaranteed corrupt read for any neighbour copying it at that
+moment. Making every one of
 those shared-nothing would be a rewrite of `tests/run/run.sh`, and a rewrite of the harness
 is the last thing that should ride along with *making the harness faster*.
 

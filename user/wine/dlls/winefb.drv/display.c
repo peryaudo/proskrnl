@@ -37,22 +37,44 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access, ULONG sharing 
     return handle;
 }
 
-/* Does the image carry the explorer win32u would auto-launch? The same one
- * fact wineserver-lite probes at bring-up (shim.c probe_explorer, the exact
- * path dlls/win32u/winstation.c get_desktop_window hardcodes), probed the
- * same way; it selects the desktop arrangement, and the two probes must
- * agree because they read the same volume. Cached: the answer cannot change
- * within a boot. */
-static BOOL winefb_explorer_on_image(void)
+/* Did the BOOT ask for the shell arrangement -- explorer owning the desktop?
+ * The same one fact wineserver-lite reads at bring-up (shim.c probe_shell),
+ * read the same way: the volatile \Registry\Machine\Hardware\qemu "Shell"
+ * value the kernel published from the QEMU command line (kernel/cm/registry.c,
+ * HACK-006). It selects the desktop arrangement, and the two readings must
+ * agree because they read the same value.
+ *
+ * It used to probe whether explorer.exe was ON THE VOLUME. That stopped
+ * distinguishing anything once one image carried every leg's payload.
+ * Cached: the answer cannot change within a boot. */
+static BOOL winefb_shell_boot(void)
 {
     static int cached = -1;
 
     if (cached < 0)
     {
-        HANDLE handle = open_device( L"\\??\\C:\\windows\\system32\\explorer.exe",
-                                     FILE_GENERIC_READ, FILE_SHARE_READ );
-        cached = handle != NULL;
-        if (handle) NtClose( handle );
+        UNICODE_STRING name;
+        OBJECT_ATTRIBUTES attr;
+        HANDLE key;
+        struct
+        {
+            KEY_VALUE_PARTIAL_INFORMATION info;
+            UCHAR tail[sizeof(ULONG)];
+        } buffer;
+        ULONG result_length = 0, value = 0;
+
+        RtlInitUnicodeString( &name, L"\\Registry\\Machine\\Hardware\\qemu" );
+        InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+        if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
+        {
+            RtlInitUnicodeString( &name, L"Shell" );
+            if (!NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer,
+                                  sizeof(buffer), &result_length ) &&
+                buffer.info.Type == REG_DWORD && buffer.info.DataLength == sizeof(ULONG))
+                memcpy( &value, buffer.info.Data, sizeof(value) );
+            NtClose( key );
+        }
+        cached = value != 0;
     }
     return cached;
 }
@@ -186,15 +208,15 @@ void winefb_set_desktop_window( HWND hwnd )
          * Creation order makes the session's desktop, always created last,
          * win.
          *
-         * Only on an explorer-bearing image (the same one fact the server
-         * probes at bring-up, shim.c probe_explorer): under the
-         * explorerless fixture the forced create runs this hook for EVERY
+         * Only on a SHELL boot (the same one fact the server reads at
+         * bring-up, shim.c probe_shell): under the explorerless fixture the
+         * forced create runs this hook for EVERY
          * desktop a caller lands on -- including user32:msg's temp
          * desktops, where Wine moves no input -- and the single session
          * desktop is already the input desktop by the create handler's
          * first-desktop rule, so there the switch is at best a no-op and
          * at worst a new divergence. */
-        if (winefb_explorer_on_image())
+        if (winefb_shell_boot())
             NtUserSwitchDesktop( NtUserGetThreadDesktop( GetCurrentThreadId() ));
     }
 }

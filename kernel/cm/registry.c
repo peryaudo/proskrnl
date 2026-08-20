@@ -2759,12 +2759,55 @@ static const struct
 } CmpQemuBootFlags[] = {
     {"opt/org.proskrnl/interactive", WSTR("Interactive"), 0},
     {"opt/org.proskrnl/panic_not_implemented", WSTR("PanicOnNotImplemented"), 1},
+    /* The GUI/CUI switch. One image carries both consoles' worth of userland
+     * now, so which one a boot USES is a command-line decision like every
+     * other flag here: 1 (the default) is the windowed console over the
+     * desktop stack, 0 the serial one. Defaulted ON for the same reason
+     * PanicOnNotImplemented is: the richer arrangement is the product, and
+     * dropping to the serial console has to be said out loud. */
+    {"opt/org.proskrnl/gui", WSTR("Gui"), 1},
+    /* Does EXPLORER own the desktop on this boot? Off by default: the GUI
+     * legs run purpose-built clients on the desktop server's own fixtures,
+     * and only the shell arrangement (`make rungui`, the gui5con/gui6 legs)
+     * has an explorer to hand it to. It was probed from whether explorer.exe
+     * was on the volume (user/wine/wineserver-lite/common/shim.c), which
+     * stopped distinguishing anything the moment one image carried every
+     * leg's payload — the desktop server would defer to an explorer nobody
+     * was going to launch, and every client's create_desktop failed. */
+    {"opt/org.proskrnl/shell", WSTR("Shell"), 0},
     /* Net-1 (docs/24 §6b/§4b): the host port the harness's TCP echo server
      * listens on (0 = no echo leg), and the static-configuration fallback
      * knob (skip DHCP, use slirp's fixed client address; off by default). */
     {"opt/org.proskrnl/netecho", WSTR("NetEchoPort"), 0},
     {"opt/org.proskrnl/netstatic", WSTR("NetStatic"), 0},
 };
+
+/* --- the QEMU boot STRINGS (HACK-006) -------------------------------------
+ *
+ * The same arrangement one type up: a `-fw_cfg name=<item>,string=<text>`
+ * published as one REG_SZ under the same volatile key. Numbers cannot carry
+ * these two — a leg NAME and a test-filter QUERY — and the alternative was
+ * what this replaced: baking a different disk image per leg and per filter,
+ * so which test ran was a property of the media rather than of the boot.
+ *
+ * Unspecified is the EMPTY string in both cases, and each consumer's reading
+ * of "" is its own default (user/smss/session.c: no leg = the boot suite; no
+ * filter = every case).
+ */
+static const struct
+{
+    const char *item; /* the fw_cfg item name */
+    PCWSTR valueName; /* the REG_SZ it becomes */
+} CmpQemuBootStrings[] = {
+    {"opt/org.proskrnl/leg", WSTR("Leg")},
+    {"opt/org.proskrnl/subtests", WSTR("Subtests")},
+};
+
+/* The longest fw_cfg string this kernel will publish. The leg names are one
+ * word; the filter query is a space-separated glob list, and 256 is past any
+ * command line a human types (a longer one is truncated LOUDLY below rather
+ * than silently selecting a different subset). */
+#define CMP_QEMU_STRING_MAX 256
 
 /* Parse a fw_cfg blob as a decimal ULONG. The blob carries no terminator
  * (QEMU sizes `string=` at strlen() with the NUL excluded), and a malformed
@@ -2818,6 +2861,36 @@ static void CmpSeedQemuBootFlags(void)
          * reader has to know the defaults table. */
         CmpSeedDwordValue(qemu, CmpQemuBootFlags[i].valueName, value);
         DbgPrint("cm: qemu boot flag %s=%u (%s)\n", item, (unsigned int)value,
+                 said ? "command line" : "default");
+    }
+    for (unsigned int i = 0; i < sizeof(CmpQemuBootStrings) / sizeof(CmpQemuBootStrings[0]); i++)
+    {
+        const char *item = CmpQemuBootStrings[i].item;
+        /* The blob is ASCII with no terminator of its own (QEMU sizes
+         * `string=` at strlen()), so it is widened into a NUL-terminated
+         * buffer here — REG_SZ is UTF-16 and CmpSeedStringValue takes a
+         * counted PCWSTR. */
+        char blob[CMP_QEMU_STRING_MAX + 1];
+        WCHAR wide[CMP_QEMU_STRING_MAX + 1];
+        uint32_t bytes = 0;
+        /* sizeof(blob) - 1: the item must leave room for the terminator this
+         * adds, and one too long is refused LOUDLY by KiFwCfgReadItem rather
+         * than truncated into a different filter. */
+        BOOLEAN said = KiFwCfgReadItem(item, blob, sizeof(blob) - 1, &bytes);
+        if (!said)
+        {
+            bytes = 0; /* absent, and an absent string is the empty one */
+        }
+        blob[bytes] = '\0';
+        for (uint32_t j = 0; j < bytes; j++)
+        {
+            wide[j] = (WCHAR)(unsigned char)blob[j];
+        }
+        wide[bytes] = 0;
+        /* Seeded either way, like the flags above: the key states the whole
+         * answer and no reader has to know this table. */
+        CmpSeedStringValue(qemu, CmpQemuBootStrings[i].valueName, wide);
+        DbgPrint("cm: qemu boot string %s=\"%s\" (%s)\n", item, said ? blob : "",
                  said ? "command line" : "default");
     }
 }

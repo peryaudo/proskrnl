@@ -3,16 +3,124 @@
  * smss became the session manager; the [KTEST] verdict lines are kept
  * byte-identical so the harness greps are unchanged, docs/08):
  *
- *   hello/M8 chain -> m9_smoke/M9 -> the ntapi sweep -> the winetest sweep
- *   -> m9_echo -> the cmd console -> the GUI legs.
+ *   hello/M8 chain -> m9_smoke/M9 -> the leg the boot selected.
  *
- * Every flow probes the boot volume and skips when its subject is not baked
- * — the image, not a switch, decides what runs. The GUI legs deliberately
- * never return on their images (the host screendumps live windows), so smss
- * parks with them and the kernel's end-of-boot verdict is never reached
- * there — exactly the old behavior.
+ * WHICH leg runs is a property of the BOOT, not of the media: the QEMU
+ * command line names it (tools/qemu.sh GUEST_LEG) and the kernel publishes
+ * it as \Registry\Machine\Hardware\qemu "Leg" (kernel/cm/registry.c,
+ * HACK-006). Every flow below used to probe the boot volume for its own
+ * subject and skip when it was absent, which made "which test runs" a
+ * property of which of a dozen disk images had been baked — so a leg could
+ * only be selected by rebuilding its image, and two legs could never share
+ * one. One image carries every subject now and the flag picks.
+ *
+ * The GUI legs deliberately never return (the host screendumps live
+ * windows), so smss parks with them and the kernel's end-of-boot verdict is
+ * never reached there — exactly the old behavior.
  */
 #include "user/smss/smss.h"
+
+/* --- the leg the boot selected --------------------------------------------- */
+
+/* The two REG_SZ boot strings, read ONCE at the top of SessionRun and held
+ * as ASCII: every consumer below compares them against literal names, and a
+ * per-consumer re-read would be a second reading of "unspecified". */
+static char SessionLeg[SMSS_QEMU_STRING_MAX + 1];
+static char SessionSubtests[SMSS_QEMU_STRING_MAX + 1];
+
+/* The kernel publishes what the command line carried, and a QEMU command
+ * line is ASCII (`-fw_cfg ...,string=`), so the widening the kernel did on
+ * the way in is undone here rather than every comparison being widened. A
+ * character outside ASCII cannot have come from the command line; it is
+ * dropped to '?' so a corrupted value cannot silently equal a leg name. */
+static void SessionReadBootString(const WCHAR *valueName, char *out, ULONG outChars)
+{
+    static WCHAR wide[SMSS_QEMU_STRING_MAX + 1];
+    SmssQemuString(valueName, wide, SMSS_QEMU_STRING_MAX + 1);
+    ULONG i = 0;
+    while (wide[i] != 0 && i + 1 < outChars)
+    {
+        out[i] = wide[i] < 0x80 ? (char)wide[i] : '?';
+        i++;
+    }
+    out[i] = 0;
+}
+
+/* Is the selected leg exactly `name`? The empty leg — no GUEST_LEG on the
+ * command line — is the plain boot suite and matches nothing here. */
+static int SessionLegIs(const char *name)
+{
+    int i = 0;
+    while (SessionLeg[i] != 0 && name[i] != 0 && SessionLeg[i] == name[i])
+        i++;
+    return SessionLeg[i] == 0 && name[i] == 0;
+}
+
+/* --- the subtest filter ----------------------------------------------------- */
+
+/* `*` and `?` against an ASCII name — the same glob the harness applies host
+ * side (tests/run/run.sh `selected` / `wtest_matches`), so a query means the
+ * same thing whichever leg reads it. Iterative backtracking: no recursion in
+ * a session manager whose stack is the kernel's default. */
+static int SessionGlobMatch(const char *pattern, ULONG patternChars, const char *name)
+{
+    ULONG p = 0, n = 0, starP = patternChars, starN = 0;
+    while (name[n] != 0)
+    {
+        if (p < patternChars && (pattern[p] == '?' || pattern[p] == name[n]))
+        {
+            p++;
+            n++;
+        }
+        else if (p < patternChars && pattern[p] == '*')
+        {
+            starP = p++;
+            starN = n;
+        }
+        else if (starP != patternChars)
+        {
+            p = starP + 1;
+            n = ++starN;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    while (p < patternChars && pattern[p] == '*')
+        p++;
+    return p == patternChars;
+}
+
+/* TRUE when the command line carried no filter at all — every case runs, so
+ * an unfiltered leg behaves exactly as it did before there was a filter. */
+static int SessionNoFilter(void)
+{
+    return SessionSubtests[0] == 0;
+}
+
+/* Walk the whitespace-separated patterns of the query, calling `match` for
+ * each with its length. `context` is the caller's subject. Returns non-zero
+ * as soon as one pattern says yes. */
+typedef int (*SESSION_PATTERN_TEST)(const char *pattern, ULONG chars, const void *context);
+
+static int SessionQuerySelects(SESSION_PATTERN_TEST test, const void *context)
+{
+    if (SessionNoFilter())
+        return 1;
+    ULONG i = 0;
+    while (SessionSubtests[i] != 0)
+    {
+        while (SessionSubtests[i] == ' ')
+            i++;
+        ULONG start = i;
+        while (SessionSubtests[i] != 0 && SessionSubtests[i] != ' ')
+            i++;
+        if (i > start && test(&SessionSubtests[start], i - start, context))
+            return 1;
+    }
+    return 0;
+}
 
 /* --- hello/M8: the initial chain ------------------------------------------- */
 
@@ -125,13 +233,19 @@ static int SessionFlowM9(int abiFailures)
 /* --- the ntapi single-binary test sweep (docs/14) -------------------------- */
 
 /* Every tests/ntapi test is ONE PE .exe that runs unmodified on the Wine
- * oracle and here. tests/run/run.sh proskrnl bakes them all under C:\ntapi;
- * this sweep enumerates the directory — the image, not an smss-side list,
- * decides what runs — and each test prints its own [KTEST] <name> PASS/FAIL
- * line, which the runner script greps off the serial log. Absence of
- * C:\ntapi (the `make test` image) is silent. Tests run WITHOUT a console
- * on purpose: no std handles is the harness's "running on proskrnl"
- * discriminator (tests/ntapi/ntapi.c). */
+ * oracle and here. The Makefile bakes them ALL under C:\ntapi; this sweep
+ * enumerates the directory and runs the ones the boot's filter selects, each
+ * test printing its own [KTEST] <name> PASS/FAIL line for the runner script
+ * to grep off the serial log.
+ *
+ * The FILTER is the BOOT's, not the image's: a subset run used to mean
+ * baking an image holding only the selected .exes, so the media recorded
+ * which subset had last been asked for and a partial image could be taken
+ * for the gate's. Every image carries every case now and
+ * `-fw_cfg opt/org.proskrnl/subtests` says which of them to run.
+ *
+ * Tests run WITHOUT a console on purpose: no std handles is the harness's
+ * "running on proskrnl" discriminator (tests/ntapi/ntapi.c). */
 #define NTAPI_MAX_TESTS  320 /* Net-3's sem_nsi pushed the suite past 256 */
 #define NTAPI_NAME_CHARS 64
 
@@ -247,22 +361,31 @@ static void SessionSortNtapi(NTAPI_LIST *list)
     }
 }
 
+/* The ntapi query filters BASE NAMES (`query_dir`, `se_*`) — the .exe suffix
+ * is not part of a case's name in either runner. */
+static int SessionNtapiPatternMatches(const char *pattern, ULONG chars, const void *context)
+{
+    return SessionGlobMatch(pattern, chars, (const char *)context);
+}
+
 static int SessionFlowNtapi(void)
 {
     static NTAPI_LIST SessionNtapiList; /* 12 KiB: bss, not this thread's stack */
     SessionNtapiList.count = 0;
     SessionNtapiList.overflow = 0;
     NTSTATUS status = SessionEnumerateNtapi(&SessionNtapiList);
-    if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND)
-        return 0; /* not an ntapi image */
     if (status != STATUS_SUCCESS)
     {
+        /* The leg asked for this sweep, so C:\ntapi not being there is a
+         * broken image rather than "another image" — say so instead of
+         * reporting an empty sweep as a clean one (Art. 12). */
         SmssPrintf("[KTEST] ntapi FAIL (enumerate=%x)\n", SMSS_HEX(status));
         return 1;
     }
     SessionSortNtapi(&SessionNtapiList);
 
     int failures = 0;
+    int selected = 0;
     for (int i = 0; i < SessionNtapiList.count; i++)
     {
         static WCHAR SessionNtapiPath[32 + NTAPI_NAME_CHARS];
@@ -283,6 +406,20 @@ static int SessionFlowNtapi(void)
         }
         SessionNtapiPath[n + m] = 0;
         SessionNtapiName[m] = 0;
+
+        /* The query matches the BASE name, so the ".exe" the directory entry
+         * carries is cut off before asking. */
+        static char SessionNtapiBase[NTAPI_NAME_CHARS];
+        int b = 0;
+        while (b < m - 4 && b + 1 < NTAPI_NAME_CHARS)
+        {
+            SessionNtapiBase[b] = SessionNtapiName[b];
+            b++;
+        }
+        SessionNtapiBase[b] = 0;
+        if (!SessionQuerySelects(SessionNtapiPatternMatches, SessionNtapiBase))
+            continue;
+        selected++;
 
         NTSTATUS exitStatus = 0;
         status = SmssRun(SessionNtapiPath, 0, 0, 0, &exitStatus);
@@ -309,20 +446,24 @@ static int SessionFlowNtapi(void)
                    NTAPI_MAX_TESTS);
         failures++;
     }
-    SmssPrintf("[KTEST] ntapi done tests=%d failures=%d\n", SessionNtapiList.count, failures);
+    SmssPrintf("[KTEST] ntapi done tests=%d failures=%d\n", selected, failures);
     return failures;
 }
 
 /* --- the winetest sweep (M10 stretch: docs/02 "Ideal regression") ---------- */
 
-/* tests/run/run.sh winetest bakes standalone Wine-test binaries (the pinned
- * tree's own test objects, docs/14) under C:\wtests plus a manifest of
- * <exe>:<subtest> pairs curated to be green on the oracle. Each pair runs
- * WITH a console (winetest prints through msvcrt stdout -> condrv -> conhost
- * -> serial) and its exit code — winetest's failure count — is the verdict.
- * Absence of the manifest (every other image) is silent. A pair that times
- * out cannot be reaped (no foreign terminate — docs/03), so the sweep aborts
- * rather than running more clients against a wedged console. */
+/* The Makefile bakes standalone Wine-test binaries (the pinned tree's own
+ * test objects, docs/14) under C:\wtests, beside BOTH curated manifests of
+ * <exe>:<subtest> pairs: manifest.txt (the CUI gate) and manifest-gui.txt
+ * (the GUI-5 trophy). The boot's leg picks which file this sweep reads and
+ * the boot's filter picks which of its pairs run — neither is baked, so the
+ * two gates and every subset of them share one image.
+ *
+ * Each pair runs WITH a console (winetest prints through msvcrt stdout ->
+ * condrv -> conhost -> serial) and its exit code — winetest's failure count
+ * — is the verdict. A pair that times out cannot be reaped (no foreign
+ * terminate — docs/03), so the sweep aborts rather than running more clients
+ * against a wedged console. */
 #define WTEST_MAX_PAIRS     128
 #define WTEST_EXE_CHARS     40
 #define WTEST_SUBTEST_CHARS 32
@@ -345,23 +486,23 @@ typedef struct
     int overflow;
 } WTEST_LIST, *PWTEST_LIST;
 
-/* Whole-file read into the static manifest buffer.
+/* Whole-file read into the static manifest buffer. Non-zero on success.
  *
- * Three answers, not two, and the distinction is load-bearing: 0 means the
- * file is ABSENT, which is every non-wtest image and is silent by design;
- * -1 means it is THERE and could not be read whole, which must be loud. The
- * two were one answer until the manifest's triage comments grew it past this
- * buffer — at which point the entire sweep stopped running and reported
+ * Every failure is LOUD, including the file being absent: the leg asked for
+ * this manifest by name, so a missing one is a broken image and not "another
+ * image". It used to be the silent case, and that silence is what hid the
+ * manifest outgrowing this buffer — the sweep stopped running and reported
  * itself as "not a wtest image", so all 49 pairs read FAIL with nothing on
  * serial saying why. A silent skip that looks like an absent feature is the
  * fabricated-plausible-answer shape (Art. 12) in the harness. */
-static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG *lengthOut)
+static int SessionReadWtestManifest(const WCHAR *path, unsigned char *buffer, ULONG capacity,
+                                    ULONG *lengthOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE handle;
-    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\wtests\\manifest.txt"));
+    SmssInitUnicodeString(&name, path);
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -372,8 +513,11 @@ static int SessionReadWtestManifest(unsigned char *buffer, ULONG capacity, ULONG
                                    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
                                    FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
     if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] wtest FAIL (manifest open -> %x)\n", SMSS_HEX(status));
         return 0;
-    int ok = -1;
+    }
+    int ok = 0;
     FILE_STANDARD_INFORMATION standard;
     status =
         NtQueryInformationFile(handle, &iosb, &standard, sizeof(standard), FileStandardInformation);
@@ -480,7 +624,90 @@ static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, 
     return 1;
 }
 
-static int SessionFlowWtest(void)
+/* One manifest pair, for the query filter below. */
+typedef struct
+{
+    const char *exe;     /* "ntdll_test.exe" */
+    const char *subtest; /* "env" */
+} WTEST_PAIR_NAME;
+
+/* The winetest query filters PAIRS, matching what the harness matches host
+ * side (tests/run/run.sh wtest_matches, one spelling of the rule in two
+ * languages): `<module>:<subtest>` or `<exe>:<subtest>`, and a pattern with
+ * no ':' in it matches either half on its own — so `ntdll` is a module,
+ * `printf` is a subtest of two modules, and `rtl*` is a glob over subtests.
+ *
+ * The MODULE is the exe with its shared `_test.exe` tail dropped
+ * (cmd.exe_test.exe -> cmd), computed here rather than stored: the tail is a
+ * property of how the binaries are named, not of the pair. */
+static int SessionWtestPatternMatches(const char *pattern, ULONG chars, const void *context)
+{
+    const WTEST_PAIR_NAME *pair = context;
+    /* "<exe>:<subtest>" and "<module>:<subtest>", built once into one buffer
+     * each so the glob matcher sees a plain NUL-terminated name. */
+    static char full[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
+    static char shortName[WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
+    static char module[WTEST_EXE_CHARS];
+    int m = 0;
+    while (pair->exe[m] != 0 && m + 1 < WTEST_EXE_CHARS)
+    {
+        module[m] = pair->exe[m];
+        m++;
+    }
+    module[m] = 0;
+    /* Drop the "_test.exe" tail if that is how this name ends. */
+    static const char tail[] = "_test.exe";
+    const int tailChars = (int)sizeof(tail) - 1;
+    if (m >= tailChars)
+    {
+        int t = 0;
+        while (t < tailChars && module[m - tailChars + t] == tail[t])
+            t++;
+        if (t == tailChars)
+        {
+            m -= tailChars;
+            module[m] = 0;
+            /* cmd.exe_test.exe -> "cmd.exe" -> "cmd". */
+            static const char dotExe[] = ".exe";
+            const int dotChars = (int)sizeof(dotExe) - 1;
+            if (m >= dotChars)
+            {
+                int d = 0;
+                while (d < dotChars && module[m - dotChars + d] == dotExe[d])
+                    d++;
+                if (d == dotChars)
+                    module[m - dotChars] = 0;
+            }
+        }
+    }
+
+    int c = 0;
+    for (int i = 0; pair->exe[i] != 0 && c + 1 < (int)sizeof(full); i++)
+        full[c++] = pair->exe[i];
+    full[c++] = ':';
+    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(full); i++)
+        full[c++] = pair->subtest[i];
+    full[c] = 0;
+    c = 0;
+    for (int i = 0; module[i] != 0 && c + 1 < (int)sizeof(shortName); i++)
+        shortName[c++] = module[i];
+    shortName[c++] = ':';
+    for (int i = 0; pair->subtest[i] != 0 && c + 1 < (int)sizeof(shortName); i++)
+        shortName[c++] = pair->subtest[i];
+    shortName[c] = 0;
+
+    if (SessionGlobMatch(pattern, chars, full) || SessionGlobMatch(pattern, chars, shortName))
+        return 1;
+    for (ULONG i = 0; i < chars; i++)
+    {
+        if (pattern[i] == ':')
+            return 0; /* a qualified pattern matches nothing but a pair */
+    }
+    return SessionGlobMatch(pattern, chars, module) ||
+           SessionGlobMatch(pattern, chars, pair->subtest);
+}
+
+static int SessionFlowWtest(const WCHAR *manifestPath)
 {
     static WTEST_LIST SessionWtestList; /* pairs table: bss, not this thread's stack */
     static unsigned char SessionWtestManifest[WTEST_MANIFEST_MAX];
@@ -488,18 +715,23 @@ static int SessionFlowWtest(void)
     SessionWtestList.overflow = 0;
 
     ULONG manifestLength = 0;
-    int read = SessionReadWtestManifest(SessionWtestManifest, sizeof(SessionWtestManifest),
-                                        &manifestLength);
-    if (read == 0)
-        return 0; /* not a wtest image */
-    if (read < 0)
-        return 1; /* there, unreadable — already named itself on serial */
+    if (!SessionReadWtestManifest(manifestPath, SessionWtestManifest, sizeof(SessionWtestManifest),
+                                  &manifestLength))
+        return 1; /* already named itself on serial */
     if (!SessionParseWtestManifest(SessionWtestManifest, manifestLength, &SessionWtestList))
         return 1;
 
     int failures = 0;
+    int selected = 0;
     for (int i = 0; i < SessionWtestList.count; i++)
     {
+        WTEST_PAIR_NAME pairName;
+        pairName.exe = SessionWtestList.pairs[i].exe;
+        pairName.subtest = SessionWtestList.pairs[i].subtest;
+        if (!SessionQuerySelects(SessionWtestPatternMatches, &pairName))
+            continue;
+        selected++;
+
         /* Sequential runs, one static path set. */
         static WCHAR SessionWtestPath[16 + WTEST_EXE_CHARS];
         static WCHAR SessionWtestCmdline[16 + WTEST_EXE_CHARS + 1 + WTEST_SUBTEST_CHARS];
@@ -537,7 +769,10 @@ static int SessionFlowWtest(void)
              * noise. Abort loudly — the runner sees the missing PASSes. */
             SmssPrintf("[KTEST] wtest %s:%s FAIL (timeout)\n", SessionWtestList.pairs[i].exe,
                        SessionWtestList.pairs[i].subtest);
-            failures += SessionWtestList.count - i;
+            /* Every pair still to come is unrun, and the runner grades by
+             * the absence of their PASS lines; one failure is enough to
+             * make the sweep's own count non-zero. */
+            failures++;
             break;
         }
         if (status != STATUS_SUCCESS)
@@ -564,7 +799,7 @@ static int SessionFlowWtest(void)
                    WTEST_MAX_PAIRS);
         failures++;
     }
-    SmssPrintf("[KTEST] wtest done tests=%d failures=%d\n", SessionWtestList.count, failures);
+    SmssPrintf("[KTEST] wtest done tests=%d failures=%d\n", selected, failures);
     return failures;
 }
 
@@ -608,7 +843,7 @@ static int SessionFlowCmdConsole(void)
 /* --- the GUI legs ----------------------------------------------------------- */
 
 /*
- * One shape, five images. Every GUI milestone lands the same three steps in
+ * One shape, eleven legs. Every GUI milestone lands the same three steps in
  * some subset: run a prologue to completion, spawn a client that must still
  * be on screen when the host screendumps, then run the client that reports
  * the verdict. Written out one milestone at a time, that shape became five
@@ -617,18 +852,19 @@ static int SessionFlowCmdConsole(void)
  * is new. It is a table now: the shape is stated once, and a new leg is a
  * row.
  *
- * `probe` is the image file that SELECTS the leg -- the image decides what
- * runs, not a switch (the file's own convention) -- and every path is a
- * verbatim [KTEST] tag away from the lines the harness greps, which are
- * unchanged byte for byte.
+ * `leg` is the NAME the QEMU command line selects the row by (GUEST_LEG).
+ * It was the leg's client file, present on the leg's own image and absent
+ * everywhere else, which is what made eleven images of the same userland
+ * exist; every path here is a verbatim [KTEST] tag away from the lines the
+ * harness greps, which are unchanged byte for byte.
  *
- * None of these return on their own image: the host has to screendump live
- * windows, so the leg parks in `foreground` and the boot's end-of-boot
- * verdict is deliberately never reached (see SessionRun).
+ * None of these return: the host has to screendump live windows, so the leg
+ * parks in `foreground` and the boot's end-of-boot verdict is deliberately
+ * never reached (see SessionRun).
  */
 typedef struct
 {
-    const WCHAR *probe;             /* on the volume => this is the leg's image */
+    const char *leg;                /* the GUEST_LEG name that selects this row */
     const WCHAR *prologue;          /* run to completion first, or NULL */
     const WCHAR *background;        /* spawned and left up for the screendump, or NULL */
     const WCHAR *foreground;        /* run last; the leg parks here */
@@ -647,7 +883,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * rectangle visible in a screendump"): gui_smoke.exe opens \Device\Fb0
      * and \Device\Input0, paints, and parks in a blocking read. It is
      * written never to return, so returning is the verdict. */
-    {.probe = WSTR("\\??\\C:\\gui_smoke.exe"),
+    {.leg = "gui",
      .foreground = WSTR("\\??\\C:\\gui_smoke.exe"),
      .tag = "gui",
      .foregroundName = "gui_smoke.exe"},
@@ -656,7 +892,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * aud_smoke.exe negotiates \Device\Snd0 and plays through blocking
      * period writes, then parks -- the host reads the recorded WAV back.
      * Written never to return, so returning is the verdict. */
-    {.probe = WSTR("\\??\\C:\\aud_smoke.exe"),
+    {.leg = "audio",
      .foreground = WSTR("\\??\\C:\\aud_smoke.exe"),
      .tag = "audio",
      .foregroundName = "aud_smoke.exe"},
@@ -665,7 +901,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * node by its own direction claim and blocking-reads silence periods
      * from the `none` audiodev's cadence. Written never to return, so
      * returning is the verdict. */
-    {.probe = WSTR("\\??\\C:\\cap_smoke.exe"),
+    {.leg = "capture",
      .foreground = WSTR("\\??\\C:\\cap_smoke.exe"),
      .tag = "audio",
      .foregroundName = "cap_smoke.exe"},
@@ -674,7 +910,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * through the whole PE audio stack — CoCreateInstance -> IAudioClient
      * over mmdevapi + winevsnd.drv — with the underrun count on its
      * verdict line. Written never to return, so returning is the verdict. */
-    {.probe = WSTR("\\??\\C:\\wasapi_smoke.exe"),
+    {.leg = "wasapi",
      .foreground = WSTR("\\??\\C:\\wasapi_smoke.exe"),
      .tag = "audio",
      .foregroundName = "wasapi_smoke.exe"},
@@ -682,24 +918,33 @@ static const GUI_LEG SessionGuiLegs[] = {
     /* AUD-3, one layer up: event-driven WASAPI capture through mmdevapi +
      * winevsnd.drv on the `none`-audiodev boot. Written never to return,
      * so returning is the verdict. */
-    {.probe = WSTR("\\??\\C:\\wasapi_cap_smoke.exe"),
+    {.leg = "wasapicap",
      .foreground = WSTR("\\??\\C:\\wasapi_cap_smoke.exe"),
      .tag = "audio",
      .foregroundName = "wasapi_cap_smoke.exe"},
+
+    /* AUD-2, i386 (docs/23 §6f): the SAME source as wasapi_smoke.exe built
+     * by the i686 cross, run as a WOW64 guest. Its own row and its own file
+     * name, so which BITNESS the leg ran is stated rather than inferred —
+     * the 32-bit client used to be baked OVER the 64-bit one's name because
+     * the foreground was picked by probing for that name. Written never to
+     * return, so returning is the verdict. */
+    {.leg = "wasapi32",
+     .foreground = WSTR("\\??\\C:\\wasapi_smoke32.exe"),
+     .tag = "audio",
+     .foregroundName = "wasapi_smoke32.exe"},
 
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
      * window is closed (the harness's Alt+F4 probe) or when the app dies --
      * either way the exit code is the diagnosis. */
-    {.probe = WSTR("\\??\\C:\\winemine.exe"),
-     .foreground = WSTR("\\??\\C:\\winemine.exe"),
-     .tag = "gui2"},
+    {.leg = "gui2", .foreground = WSTR("\\??\\C:\\winemine.exe"), .tag = "gui2"},
 
     /* GUI-3 (docs/02 "two GUI processes run at once"): wineserver-lite
      * (already started before firstboot -- smss.c) with two GUI clients above
      * it. gui3a is fire-and-forget (its window must still be up for the
      * screendumps); gui3b prints the verdict and parks. */
-    {.probe = WSTR("\\??\\C:\\gui3a.exe"),
+    {.leg = "gui3",
      .background = WSTR("\\??\\C:\\gui3a.exe"),
      .foreground = WSTR("\\??\\C:\\gui3b.exe"),
      .tag = "gui3"},
@@ -708,7 +953,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * arrangement with overlapping windows, driven by the harness through
      * the tablet and keyboard. Both clients park pumping forever; the leg
      * owns QEMU's lifetime. */
-    {.probe = WSTR("\\??\\C:\\gui4a.exe"),
+    {.leg = "gui4",
      .background = WSTR("\\??\\C:\\gui4a.exe"),
      .foreground = WSTR("\\??\\C:\\gui4b.exe"),
      .tag = "gui4"},
@@ -720,7 +965,7 @@ static const GUI_LEG SessionGuiLegs[] = {
      * releasing any exclusively-opened input device its winefb instance won
      * -- before gui5a starts and becomes the leg's input host (docs/03 GUI-4
      * notes). */
-    {.probe = WSTR("\\??\\C:\\gui5a.exe"),
+    {.leg = "gui5",
      .prologue = WSTR("\\??\\C:\\fontdiff.exe"),
      .background = WSTR("\\??\\C:\\gui5a.exe"),
      .foreground = WSTR("\\??\\C:\\gui5b.exe"),
@@ -750,12 +995,12 @@ static const GUI_LEG SessionGuiLegs[] = {
      * the leg's plain exit line ("[KTEST] net3 exit (status=0, exit=0)")
      * — the harness reads it, ends the guest, and convicts the fetched
      * bytes by hash from the image (tests/run/run.sh net3). */
-    {.probe = WSTR("\\??\\C:\\net3\\job.txt"),
+    {.leg = "net3",
      .foreground = WSTR("\\??\\C:\\curl.exe"),
      .foregroundCmdline = WSTR("curl.exe -K C:\\net3\\job.txt"),
      .tag = "net3"},
 
-    {.probe = WSTR("\\??\\C:\\gui6.flag"),
+    {.leg = "gui6",
      .foreground = WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
      .foregroundCmdline = WSTR("explorer.exe /desktop=shell,1280x800 "
                                "C:\\windows\\system32\\explorer.exe C:\\shelf"),
@@ -763,12 +1008,15 @@ static const GUI_LEG SessionGuiLegs[] = {
      .foregroundName = "explorer.exe"},
 };
 
-static void SessionFlowGui(void)
+/* Non-zero when a row matched the boot's leg — the caller convicts an
+ * unknown leg name rather than letting it read as "no leg". A row that runs
+ * usually never returns (see the table's note). */
+static int SessionFlowGui(void)
 {
     /* Kept for the process's lifetime on purpose: the background client must
      * still be running when the host takes its screendumps, so its handles
-     * are never closed. One pair is enough -- the probes are disjoint, so at
-     * most one leg runs per image. */
+     * are never closed. One pair is enough -- a boot names ONE leg, so at
+     * most one row runs. */
     static HANDLE SessionGuiBackground, SessionGuiBackgroundThread;
 
     for (unsigned int i = 0; i < sizeof(SessionGuiLegs) / sizeof(SessionGuiLegs[0]); i++)
@@ -777,8 +1025,8 @@ static void SessionFlowGui(void)
         NTSTATUS exitStatus = 0;
         NTSTATUS status;
 
-        if (!SmssFileExists(leg->probe, 0))
-            continue; /* not this leg's image */
+        if (!SessionLegIs(leg->leg))
+            continue; /* not the leg this boot asked for */
 
         if (leg->prologue)
         {
@@ -794,7 +1042,7 @@ static void SessionFlowGui(void)
             if (status != STATUS_SUCCESS)
             {
                 SmssPrintf("[KTEST] %s A FAIL (create=%x)\n", leg->tag, SMSS_HEX(status));
-                return;
+                return 1;
             }
         }
 
@@ -808,23 +1056,20 @@ static void SessionFlowGui(void)
         else
             SmssPrintf("[KTEST] %s exit (status=%x, exit=%x)\n", leg->tag, SMSS_HEX(status),
                        SMSS_HEX(exitStatus));
-        return;
+        return 1;
     }
+    return 0;
 }
 
 /* The WOW64 acceptance (docs/02 "a 32-bit CUI app runs"): hello32.exe is an
  * ordinary 32-bit Win32 console program, so a PASS here means the whole
  * chain worked — the kernel built a WOW64 process, the 64-bit ntdll found
  * WowTebOffset set and loaded wow64.dll, wow64cpu far-jumped into compat
- * mode, and every syscall the guest made came back through it. Present only
- * on the wow64 image (Makefile IMG_WOW64); absence is silent, as with every
- * other image-specific flow. */
+ * mode, and every syscall the guest made came back through it. Selected by
+ * the wow64 leg; the client is on every image. */
 static int SessionFlowWow64(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\hello32.exe");
-    if (!SmssFileExists(path, 0))
-        return 0; /* not the wow64 image */
-
     NTSTATUS exitStatus = 0;
     NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
     if (status != STATUS_SUCCESS)
@@ -842,31 +1087,58 @@ static int SessionFlowWow64(void)
 
 int SessionRun(int abiFailures, int registryOk)
 {
+    SessionReadBootString(WSTR("Leg"), SessionLeg, sizeof(SessionLeg));
+    SessionReadBootString(WSTR("Subtests"), SessionSubtests, sizeof(SessionSubtests));
+    SmssPrintf("smss: leg=\"%s\" subtests=\"%s\"\n", SessionLeg, SessionSubtests);
+
+    /* The boot suite: on every leg, because it is what says the machine
+     * this leg's verdict was measured on came up at all. */
     int failures = 0;
     failures += SessionFlowM8(registryOk);
     failures += SessionFlowM9(abiFailures);
 
-    /* The ntapi image only (tests/run/run.sh proskrnl). Absence is silent. */
-    failures += SessionFlowNtapi();
-
-    /* The wtest image only (tests/run/run.sh winetest). Absence is silent. */
-    failures += SessionFlowWtest();
-
-    /* Console-mode image only: block on the interactive echo (the M9
-     * acceptance's other half). AFTER the M9 verdict so the runner knows
-     * the boot suite is already green. Then the interactive cmd session. */
-    failures += SessionFlowM9Echo();
-
-    /* The wow64 image only. Before the interactive cmd flow, which blocks. */
-    failures += SessionFlowWow64();
-
-    failures += SessionFlowCmdConsole();
-
-    /* GUI images only: deliberately LAST and deliberately never returning —
-     * the host has to see the painted frames in screendumps, so the guest
-     * must not tear the windows down or power off underneath them. Every
-     * verdict above has already printed by this point. */
-    SessionFlowGui();
+    /* Then exactly one leg. The order below is the historical one, so a leg
+     * that used to share an image with another still reports in the same
+     * place on serial. */
+    if (SessionLegIs("ntapi"))
+    {
+        failures += SessionFlowNtapi();
+    }
+    else if (SessionLegIs("wtest"))
+    {
+        failures += SessionFlowWtest(WSTR("\\??\\C:\\wtests\\manifest.txt"));
+    }
+    else if (SessionLegIs("guiwtest"))
+    {
+        /* GUI-5's trophy gate: the same sweep over its own curated list
+         * (tests/winetest/manifest-gui.txt), which is baked beside the CUI
+         * one rather than over it. */
+        failures += SessionFlowWtest(WSTR("\\??\\C:\\wtests\\manifest-gui.txt"));
+    }
+    else if (SessionLegIs("console"))
+    {
+        /* Block on the interactive echo (the M9 acceptance's other half),
+         * AFTER the M9 verdict so the runner knows the boot suite is already
+         * green; then the interactive cmd session. */
+        failures += SessionFlowM9Echo();
+        failures += SessionFlowCmdConsole();
+    }
+    else if (SessionLegIs("wow64"))
+    {
+        failures += SessionFlowWow64();
+    }
+    else
+    {
+        /* Either a GUI leg (the table above) or the empty leg, which is the
+         * boot suite and nothing else. A leg NAME this build does not know
+         * must not read as the empty one: the run would report a healthy
+         * boot for a test that never ran (Art. 12). */
+        if (SessionLeg[0] != 0 && !SessionFlowGui())
+        {
+            SmssPrintf("[KTEST] leg FAIL (no leg named \"%s\")\n", SessionLeg);
+            failures++;
+        }
+    }
 
     return failures;
 }

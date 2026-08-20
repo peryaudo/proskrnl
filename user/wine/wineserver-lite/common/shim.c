@@ -80,10 +80,10 @@
  * is hard to find later (Art. 12). */
 int prsk_trace_requests = 0;
 
-/* No explorer.exe on the image => the GUI-2 desktop fixtures are on.
- * Probed once at bring-up (probe_explorer); the one switch all three
- * fixture sites share (request_forces_desktop and the sites keying off
- * it -- see the comment there). */
+/* The boot did NOT ask for the shell => the GUI-2 desktop fixtures are on.
+ * Read once at bring-up (probe_shell); the one switch all three fixture
+ * sites share (request_forces_desktop and the sites keying off it -- see
+ * the comment there). */
 static int prsk_no_explorer = 1;
 
 struct thread *current = NULL;
@@ -816,33 +816,50 @@ static LONG CALLBACK report_exception( EXCEPTION_POINTERS *info )
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* Does the image carry the explorer win32u would launch?  Probed once, for
- * the exact path dlls/win32u/winstation.c get_desktop_window hardcodes.
- * Present, the GUI-2 desktop fixtures are off and the stock arrangement
- * runs: the first client's get_desktop_window comes back empty, win32u
- * launches explorer, explorer creates and owns the desktop. Absent, they
- * stay on (request_forces_desktop above). The answer is printed either way:
- * an image mis-baked for its leg is found from the serial log, not from
- * which of two desktop arrangements happens to limp further (Art. 12). */
-static void probe_explorer(void)
+/* Did the BOOT ask for the shell arrangement?  The volatile
+ * \Registry\Machine\Hardware\qemu "Shell" value the kernel published from
+ * the QEMU command line (kernel/cm/registry.c, HACK-006; tools/qemu.sh
+ * GUEST_SHELL).  Asked for, the GUI-2 desktop fixtures are off and the stock
+ * arrangement runs: the first client's get_desktop_window comes back empty,
+ * win32u launches explorer at the exact path dlls/win32u/winstation.c
+ * get_desktop_window hardcodes, and explorer creates and owns the desktop.
+ * Not asked for, the fixtures stay on (request_forces_desktop above).
+ *
+ * This was probed from whether explorer.exe was ON THE VOLUME, and that
+ * stopped distinguishing anything the moment one image carried every leg's
+ * payload: the server deferred to an explorer no leg but the shell ones was
+ * going to launch, and every client's create_desktop failed c0000008.  The
+ * answer is printed either way: a boot mis-flagged for its leg is found from
+ * the serial log, not from which of two desktop arrangements happens to limp
+ * further (Art. 12). */
+static void probe_shell(void)
 {
+    static const WCHAR key_path[] = L"\\Registry\\Machine\\Hardware\\qemu";
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-
-    RtlInitUnicodeString( &name, L"\\??\\C:\\windows\\system32\\explorer.exe" );
-    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
-    if (!NtCreateFile( &handle, FILE_GENERIC_READ, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
-                       FILE_SHARE_READ, FILE_OPEN,
-                       FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 ))
+    HANDLE key;
+    struct
     {
-        NtClose( handle );
-        prsk_no_explorer = 0;
+        KEY_VALUE_PARTIAL_INFORMATION info;
+        UCHAR tail[sizeof(ULONG)];
+    } buffer;
+    ULONG result_length = 0, value = 0;
+
+    RtlInitUnicodeString( &name, (WCHAR *)key_path );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+    if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
+    {
+        RtlInitUnicodeString( &name, L"Shell" );
+        if (!NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer, sizeof(buffer),
+                              &result_length ) &&
+            buffer.info.Type == REG_DWORD && buffer.info.DataLength == sizeof(ULONG))
+            memcpy( &value, buffer.info.Data, sizeof(value) );
+        NtClose( key );
     }
+    prsk_no_explorer = !value;
     prsk_log( "[KTEST] wineserver-lite: %s\n",
-              prsk_no_explorer ? "no explorer.exe; GUI-2 desktop fixtures on"
-                               : "explorer.exe present; the desktop belongs to it" );
+              prsk_no_explorer ? "no shell; GUI-2 desktop fixtures on"
+                               : "shell boot; the desktop belongs to explorer" );
 }
 
 static int server_bringup(void)
@@ -854,7 +871,7 @@ static int server_bringup(void)
     NtQuerySystemTime( &now );
     server_start_time = now.QuadPart;
     set_current_time();
-    probe_explorer();
+    probe_shell();
 
     RtlAddVectoredExceptionHandler( TRUE, report_exception );
 

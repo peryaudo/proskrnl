@@ -547,54 +547,36 @@ check_subtests() {
     echo "== $MODE: subset run (${SUBTESTS[*]}) — NOT the gate; run unfiltered for a verdict =="
 }
 
-# The search-order probe DLL (sem_ps/dll_load.c): built beside the test
-# .exes so a bare-name LoadLibrary resolves it from the application
-# directory. CRT-less like everything else here.
+# The search-order probe DLL (sem_ps/dll_load.c) and the per-test .exes are
+# built by the MAKEFILE (`ntapi-tests`, one rule per source), not here: the
+# image bakes the whole suite, so a second compiler invocation with its own
+# flags would be a second authority for what a test binary is (Art. 11). The
+# output directory is the one the Makefile writes, so the oracle leg finds
+# exactly the binaries the image carries.
 build_helper_dll() {   # echoes the .dll path
-    local dll="$BUILD/ntapi/prshelper.dll"
-    if [[ ! -f "$dll" || "$NTAPI/dll/prshelper.c" -nt "$dll" ]]; then
-        "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-            -shared -Wl,--entry=DllMainCRTStartup "$NTAPI/dll/prshelper.c" \
-            "${WINE_LIBS[@]}" -lgcc -o "$dll" >&2
-    fi
-    echo "$dll"
+    make -C "$ROOT" "$BUILD/ntapi/prshelper.dll" >&2 || return 1
+    echo "$BUILD/ntapi/prshelper.dll"
 }
 
-# Build one test into build/tests/ntapi/<name>.exe: no CRT (-nostdlib, entry
-# ntapi_start in ntapi.c), the pinned Wine import libs, -lgcc for the mingw
-# helpers the compiler may emit (___chkstk_ms). Skips work when up to date.
+# Build one test and echo its .exe path. Delegating to make also keeps the
+# staleness rules in one place — a bucket's util.h and the GENERATED
+# syscall/torture_matrix.inc are prerequisites there, and a stale .exe
+# reporting the previous build's verdict as this one's is the failure that
+# rule exists to prevent (measured: a stale ptr_torture.exe reported a panic
+# the current generated table no longer produces).
 #
-# The stale .exe is DELETED before the compiler runs, and a compile failure is
-# fatal to the whole run. Neither is belt-and-braces: `oracle`/`proskrnl` are
-# invoked as `... || fails=...` at the bottom of this file, which suppresses
-# `set -e` throughout their bodies, so without the explicit check a test that
-# fails to compile silently re-ran the PREVIOUS build's .exe and printed
-# green. That is the same fabricated-plausible-answer failure Art. 12 forbids
-# in the kernel, in the harness that judges it.
-#
-# The staleness test covers the harness AND the test's own bucket — every .h
-# and .inc beside it. A bucket's util.h is included by every test in it, and
-# tests/ntapi/syscall/torture_matrix.inc is GENERATED (gen_syscalls.py), so
-# without this a regenerated matrix or an edited util.h re-runs the previous
-# build's .exe and reports its verdict as this one's. Measured, not
-# hypothetical: a stale ptr_torture.exe reported a panic that the current
-# generated table no longer produces.
+# A compile failure is fatal to the whole run rather than silently re-running
+# the previous build's .exe: `oracle`/`proskrnl` are invoked as
+# `... || fails=...` at the bottom of this file, which suppresses `set -e`
+# throughout their bodies. That is the same fabricated-plausible-answer
+# failure Art. 12 forbids in the kernel, in the harness that judges it.
 build_test() {   # $1 = .c path; echoes the .exe path
-    local src="$1" name exe dep stale=0
+    local src="$1" name exe
     name="$(basename "${src%.c}")"
     exe="$BUILD/ntapi/$name.exe"
-    for dep in "$src" "$NTAPI/ntapi.c" "$NTAPI/ntapi.h" \
-               "$(dirname "$src")"/*.h "$(dirname "$src")"/*.inc; do
-        [[ -f "$dep" && "$dep" -nt "$exe" ]] && stale=1
-    done
-    if [[ ! -f "$exe" || "$stale" -eq 1 ]]; then
-        rm -f "$exe"
-        if ! "$CC_ORACLE" $CFLAGS_COMMON -ffreestanding -fno-builtin -nostdlib -nostartfiles \
-            -Wl,--entry=ntapi_start "$src" "$NTAPI/ntapi.c" \
-            "${WINE_LIBS[@]}" -lgcc -o "$exe" >&2; then
-            echo "run.sh: FAILED to build $src — no verdict for '$name'" >&2
-            return 1
-        fi
+    if ! make -C "$ROOT" "$exe" >&2; then
+        echo "run.sh: FAILED to build $src — no verdict for '$name'" >&2
+        return 1
     fi
     echo "$exe"
 }
@@ -729,35 +711,15 @@ oracle_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
     return "$rc"
 }
 
-# Build every test .exe, run nothing (see the header). Same round-robin
-# fan-out as the oracle leg, and the same build_test — one authority for how a
-# test .exe is produced, so a prebuilt tree and a leg-built one are the same
-# tree. A build failure is fatal here for the reason it is fatal there: a
-# missing .exe must never be silently re-supplied by a previous build.
-prebuild_worker() {   # $1 = index, $2 = stride, $3.. = the .c paths
-    local i="$1" stride="$2"; shift 2
-    local srcs=("$@") rc=0
-    while (( i < ${#srcs[@]} )); do
-        build_test "${srcs[$i]}" >/dev/null || rc=1
-        i=$(( i + stride ))
-    done
-    return "$rc"
-}
-
+# Build every test .exe, run nothing (see the header). One `make -j` over the
+# suite: the Makefile owns the recipe and the staleness rules, so a prebuilt
+# tree and a leg-built one are the same tree. A build failure is fatal here
+# for the reason it is fatal in build_test — a missing .exe must never be
+# silently re-supplied by a previous build.
 prebuild() {
-    mkdir -p "$BUILD/ntapi"
-    build_helper_dll >/dev/null
-    local srcs=() src w pids=() pid rc=0
+    local srcs=() src
     while read -r src; do srcs+=("$src"); done < <(all_sources)
-    local jobs="$ORACLE_JOBS"
-    (( jobs > ${#srcs[@]} )) && jobs=${#srcs[@]}
-    (( jobs < 1 )) && jobs=1
-    for (( w = 0; w < jobs; w++ )); do
-        prebuild_worker "$w" "$jobs" "${srcs[@]}" &
-        pids+=("$!")
-    done
-    for pid in "${pids[@]}"; do wait "$pid" || rc=1; done
-    if (( rc )); then
+    if ! make -C "$ROOT" -j"$ORACLE_JOBS" ntapi-tests >&2; then
         echo "run.sh: a test failed to build — the prebuilt tree is incomplete" >&2
         return 1
     fi
@@ -867,112 +829,68 @@ oracle() {
     return $(( fails > 0 ? 1 : 0 ))
 }
 
-# The WOW64 guest payload, as mkimage `win:` specs appended to `specs`: the
-# i386 Wine set under syswow64 plus the three x86_64 DLLs that IMPLEMENT
-# wow64 (host code, so system32 beside ntdll — where wow64.dll's
-# load_64bit_module looks) and win32u, which wow64win imports
-# unconditionally. Same file list as the Makefile's WOW64FILES; both legs
-# that can spawn a 32-bit child call this.
-add_wow64_payload() {
-    make -C "$ROOT" wow64strip >/dev/null || exit 1
-    local d
-    for d in ntdll kernel32 kernelbase msvcrt ucrtbase version; do
-        specs+=("win:$ROOT/build/winestrip32/$d.dll=windows/syswow64/$d.dll")
-    done
-    for d in cmd msinfo32; do
-        specs+=("win:$ROOT/build/winestrip32/$d.exe=windows/syswow64/$d.exe")
-    done
-    for d in wow64 wow64cpu wow64win win32u; do
-        specs+=("win:$ROOT/build/winestrip/$d.dll=windows/system32/$d.dll")
-    done
+# --- the ONE test image -----------------------------------------------------
+#
+# Every leg below boots the SAME disk image and says on the QEMU command line
+# which leg it is (GUEST_LEG) and, for the two sweeps, which subset
+# (GUEST_SUBTESTS) — tools/qemu.sh publishes both through fw_cfg and the
+# session manager reads them (user/smss/session.c).
+#
+# There were fourteen images. A leg was selected by whether its client file
+# was on the volume, so every leg needed a bake of its own, two legs could
+# never share one, and a FILTERED run was yet another image — build/tests/
+# proskrnl-subset.hdd, wtest-subset.hdd — that a later run or a human could
+# mistake for the gate's. The payload lists that made them drifted apart, and
+# a differential leg whose image is not the product's measures the difference
+# (the print-winfiles story in the Makefile is one instance of the cost).
+#
+# A leg that MUTATES the volume still copies it first: `make test` boots the
+# image in place, and a leg reading a virgin hive must not be handed that
+# boot's leavings.
+test_image() {   # echoes the path of the freshly built test image
+    # ALWAYS rebuild, never just "build it if missing": these are regression
+    # gates, and judging a stale kernel against fresh test sources reports the
+    # previous build's verdict as this one's. make is incremental, so the cost
+    # is nil when nothing changed.
+    make -C "$ROOT" test-img >&2 || exit 1
+    echo "$ROOT/build/proskrnl-test.hdd"
 }
 
+# A private COPY of it, under the caller's name, for a leg that mutates the
+# volume or reads it back afterwards.
+test_image_copy() {   # $1 = destination path; echoes it
+    local src
+    src="$(test_image)" || exit 1
+    mkdir -p "$(dirname "$1")"
+    cp "$src" "$1"
+    echo "$1"
+}
 
-# Bake the SAME .exes into a disk image under C:\ntapi beside the Wine PE
-# userland (ntdll/kernel32/kernelbase + the NLS tables), boot it, and read
-# each test's own [KTEST] <name> PASS line off the serial log. The session
-# manager (user/smss/session.c, launched by the kernel at end of boot)
-# sweeps C:\ntapi, runs every .exe as a console-less Wine process, and
-# prints '[KTEST] ntapi done' when the sweep finishes — the boot's stop
-# condition here.
+# Boot the ntapi sweep and read each test's own [KTEST] <name> PASS line off
+# the serial log. The session manager (user/smss/session.c, launched by the
+# kernel at end of boot) sweeps C:\ntapi, runs the selected .exes as
+# console-less Wine processes, and prints '[KTEST] ntapi done' when the sweep
+# finishes — the boot's stop condition here.
 #
-# A filtered run bakes ONLY the named .exes, so the sweep — and the boot —
-# is as short as the subset. Its image and serial log carry their own names:
-# build/tests/proskrnl.hdd is the GATE's image, and a partial one must never
-# be mistaken for it (or feed a later fatcheck/ftrace as if it were).
+# A filtered run passes its query to the GUEST, so the sweep — and the boot —
+# is as short as the subset while the image stays the gate's. Its serial log
+# still carries its own name: a partial run's log must never be mistaken for
+# the gate's (or feed a later fatcheck/ftrace as if it were).
 proskrnl() {
     check_subtests
-    local kernel img
-    kernel="$ROOT/build/proskrnl"
-    img="$ROOT/build/tests/proskrnl.hdd"
-    local tag=""
-    if (( ${#SUBTESTS[@]} )); then
-        tag="-subset"
-        img="$ROOT/build/tests/proskrnl-subset.hdd"
-    fi
-    mkdir -p "$BUILD/ntapi"
-
-    # ALWAYS rebuild, never just "build it if missing": the proskrnl leg is
-    # the regression gate, and judging a stale kernel against fresh test
-    # sources reports the previous build's verdict as this one's. make is
-    # incremental, so the cost is nil when nothing changed.
-    make -C "$ROOT" >/dev/null || exit 1
-
-    # The M5 RAM-disk seed files (built by make with the kernel): kmt's
-    # image/file section tests read them; they are data, never run.
-    local specs=() names=()
-    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
-        [[ -f "$seed" ]] && specs+=("$seed=initrd")
-    done
-    # The machine the tests run on is the machine `make run` boots: the
-    # Makefile's own $(WINFILES), read from it rather than re-listed here
-    # (Makefile `print-winfiles`, and the winetest leg reads the same list).
-    # This leg's own list had been ten DLLs, smss and the nls subset — no
-    # wineboot.exe, so smss skipped firstboot (user/smss/smss.c) and every
-    # ntapi pin was measured against a registry that had never seen
-    # wine.inf's machine-state payload, on a volume with no SCM and none of
-    # setupapi/cfgmgr32/ws2_32/secur32/userenv/hid. A pin taken on a machine
-    # the product does not have is pinning the harness.
-    # $(WINFILES) carries the debug-STRIPPED staging copies of the DLLs (with
-    # no COW and no eviction the -g mingw builds' DWARF triples every mapped
-    # image copy — Makefile winestrip), smss (which drives the sweep: it is
-    # what enumerates C:\ntapi and spawns each test through
-    # NtCreateUserProcess), conhost, and the nls subset.
-    make -C "$ROOT" winfiles >/dev/null || exit 1
-    local winspec winfiles=()
-    while IFS= read -r winspec; do
-        [[ -n "$winspec" ]] || continue
-        winfiles+=("win:$ROOT/${winspec#win:}")   # $(WINFILES) paths are $ROOT-relative
-    done < <(make -s -C "$ROOT" print-winfiles)
-    if (( ${#winfiles[@]} < 20 )); then
-        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
-             "userland is not that short; the image would be missing most of it" >&2
-        exit 2
-    fi
-    specs+=("${winfiles[@]}")
-    specs+=("win:$(build_helper_dll)=ntapi/prshelper.dll")
-    while read -r src; do
-        local name exe
-        name="$(basename "${src%.c}")"
-        exe="$(build_test "$src")" || exit 1
-        specs+=("win:$exe=ntapi/$name.exe")
-        names+=("$name")
-    done < <(all_tests)
-    add_wow64_payload
-    # The 64-bit control arm of the wow64 pins spawns system32\cmd.exe, so
-    # the image needs a 64-bit cmd beside the 32-bit one.
-    make -C "$ROOT" build/modules/cmd.exe >/dev/null || exit 1
-    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-
-    SIZE_MB="${SIZE_MB:-256}" "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+    local img tag=""
+    (( ${#SUBTESTS[@]} )) && tag="-subset"
+    img="$(test_image_copy "$ROOT/build/tests/proskrnl$tag.hdd")" || exit 1
 
     local log="$ROOT/build/tests/proskrnl$tag-serial.log"
     LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=ntapi GUEST_SUBTESTS="${SUBTESTS[*]-}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # The symbolized sidecar (proskrnl-serial.sym.log) is qemu.sh's job now —
     # every leg gets one (Art. 9); the verdict greps stay on the raw log.
-    local fails=0
+    local fails=0 src name names=()
+    while read -r src; do names+=("$(basename "${src%.c}")"); done < <(all_tests)
     for name in "${names[@]}"; do
         if grep -qE "^\[KTEST\] $name PASS$" "$log" 2>/dev/null; then
             echo "[KTEST] $name PASS"
@@ -1038,77 +956,6 @@ wtest_is_audio() {   # $1 = exe
     esac
 }
 
-# The audio-capable guest (AUD-2): the winetest CUI machine plus the GUI
-# stack the audio DLLs import plus `make print-audiofiles` — the audio DLL
-# set, winevsnd.drv, atl100 and the registering wine.inf (which overrides
-# $(WINFILES)'s registry-only copy by mcopy -o ordering). One bake
-# authority shared by the audio leg's WASAPI half and the winetest audio
-# partition (Art. 11).
-bake_audio_image() {   # $1 = image path; $2.. = extra specs
-    local img="$1"; shift
-    local kernel="$ROOT/build/proskrnl"
-    make -C "$ROOT" >/dev/null || exit 1
-    make -C "$ROOT" winfiles winestrip winestrip-gui winestrip-audio audio-payload \
-        win32u wineserver-lite build/modules/cmd.exe >/dev/null || exit 1
-
-    local specs=() seed
-    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
-        [[ -f "$seed" ]] && specs+=("$seed=initrd")
-    done
-    local winspec winfiles=()
-    while IFS= read -r winspec; do
-        [[ -n "$winspec" ]] || continue
-        winfiles+=("win:$ROOT/${winspec#win:}")
-    done < <(make -s -C "$ROOT" print-winfiles)
-    if (( ${#winfiles[@]} < 20 )); then
-        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
-             "userland is not that short; the image would be missing most of it" >&2
-        exit 2
-    fi
-    specs+=("${winfiles[@]}")
-    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-    # The GUI stack the audio DLLs sit on (the guiwtest set).
-    local dll
-    for dll in user32 gdi32 comctl32 imm32 ole32 combase coml2; do
-        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
-    done
-    specs+=("win:$ROOT/build/modules/win32u.dll=windows/system32/win32u.dll")
-    specs+=("win:$ROOT/build/modules/wineserver-lite.exe=windows/system32/wineserver-lite.exe")
-    local fontfile
-    for fontfile in "$ROOT"/third_party/wine/fonts/*.ttf "$ROOT"/third_party/wine/fonts/*.fon; do
-        specs+=("win:$fontfile=windows/fonts/$(basename "$fontfile")")
-    done
-    local nlsfile
-    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
-        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
-    done
-    # %windir%\{win,system}.ini, the CUI wtest image's reason plus one of
-    # this image's own: system.ini's [drivers32] carries the msacm codec
-    # aliases (wine.inf writes them through UpdateInis, which the baked inf
-    # drops), and without them PlaySound cannot find a decoder for any
-    # non-PCM wav (winmm:wave measured 7 failures on exactly that).
-    python3 "$ROOT/tools/gen_sysini.py" "$BUILD/wtests/sysini" >/dev/null
-    local inifile
-    for inifile in "$BUILD/wtests/sysini"/*.ini; do
-        specs+=("win:$inifile=windows/$(basename "$inifile")")
-    done
-    # The audio payload, read from the Makefile's one list rather than
-    # re-spelled here (the print-winfiles drift lesson).
-    local audiospec audiofiles=()
-    while IFS= read -r audiospec; do
-        [[ -n "$audiospec" ]] || continue
-        audiofiles+=("win:$ROOT/${audiospec#win:}")
-    done < <(make -s -C "$ROOT" print-audiofiles)
-    if (( ${#audiofiles[@]} < 4 )); then
-        echo "run.sh: 'make print-audiofiles' listed ${#audiofiles[@]} files — the audio" \
-             "payload is not that short" >&2
-        exit 2
-    fi
-    specs+=("${audiofiles[@]}")
-    specs+=("$@")
-    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
-}
-
 # The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
 # own test suite"): the manifest of <test_exe>:<subtest> pairs
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
@@ -1131,9 +978,9 @@ winetest() {
     # manifest line may carry the optional third field (the per-pair timeout,
     # user/smss/session.c), and both the oracle argv and the kernel's verdict
     # line are <exe>:<subtest> only — splitting once here is what keeps the
-    # timeout out of them. wtestLines keeps the line verbatim for the baked
-    # subset manifest, so the timeout survives to the runner that honors it.
-    local wtestExes=() wtestSubs=() wtestKeys=() wtestLines=()
+    # timeout out of them. The manifest FILE is baked verbatim, so the
+    # timeout reaches the runner that honors it without passing through here.
+    local wtestExes=() wtestSubs=() wtestKeys=()
     local line
     while IFS= read -r line; do
         line="${line%$'\r'}"
@@ -1141,7 +988,7 @@ winetest() {
         local exe="${line%%:*}" rest="${line#*:}"
         local sub="${rest%%:*}"
         wtestExes+=("$exe"); wtestSubs+=("$sub")
-        wtestKeys+=("$exe:$sub"); wtestLines+=("$line")
+        wtestKeys+=("$exe:$sub")
     done < "$manifest"
     if [[ ${#wtestKeys[@]} -eq 0 ]]; then
         echo "== winetest: manifest empty ==" >&2
@@ -1166,18 +1013,18 @@ winetest() {
                 exit 2
             fi
         done
-        local selExes=() selSubs=() selKeys=() selLines=()
+        local selExes=() selSubs=() selKeys=()
         for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
             for pat in "${SUBTESTS[@]}"; do
                 if wtest_matches "$pat" "${wtestExes[i]}" "${wtestSubs[i]}"; then
                     selExes+=("${wtestExes[i]}"); selSubs+=("${wtestSubs[i]}")
-                    selKeys+=("${wtestKeys[i]}"); selLines+=("${wtestLines[i]}")
+                    selKeys+=("${wtestKeys[i]}")
                     break
                 fi
             done
         done
         wtestExes=("${selExes[@]}"); wtestSubs=("${selSubs[@]}")
-        wtestKeys=("${selKeys[@]}"); wtestLines=("${selLines[@]}")
+        wtestKeys=("${selKeys[@]}")
         echo "== winetest: subset run (${SUBTESTS[*]}, ${#wtestKeys[@]} pairs)" \
              "— NOT the gate; run unfiltered for a verdict =="
     fi
@@ -1210,179 +1057,68 @@ winetest() {
         echo "== winetest: oracle leg skipped (WTEST_NO_ORACLE) — kernel side only =="
     fi
 
-    # --- proskrnl leg (the REGRESSION gate) ---
-    # The pairs PARTITION by exe onto two guests (docs/23 §6c): the audio
-    # modules boot the audio-capable image (bake_audio_image) with the
-    # virtio-snd device on the QEMU command line; every other pair boots the
-    # CUI machine exactly as before. Each image gets a manifest filtered to
-    # ITS pairs — a pair must never be swept on an image that cannot host
-    # its imports — and a subset run boots its OWN images (the proskrnl
-    # leg's rule): the gate's wtest.hdd must never be left holding a
-    # partial manifest, where a later run — or a human reading the file —
-    # would take it for the full sweep.
-    local kernel img imgAudio baked bakedAudio
-    kernel="$ROOT/build/proskrnl"
-    local w cuiIdx=() audIdx=()
-    for ((w = 0; w < ${#wtestKeys[@]}; w++)); do
-        if wtest_is_audio "${wtestExes[w]}"; then audIdx+=("$w"); else cuiIdx+=("$w"); fi
-    done
-    img="$ROOT/build/tests/wtest.hdd"
-    imgAudio="$ROOT/build/tests/wtest-audio.hdd"
-    if (( ${#SUBTESTS[@]} )); then
-        img="$ROOT/build/tests/wtest-subset.hdd"
-        imgAudio="$ROOT/build/tests/wtest-audio-subset.hdd"
-    fi
-    mkdir -p "$BUILD/wtests"
-    baked="$BUILD/wtests/manifest-cui.txt"
-    bakedAudio="$BUILD/wtests/manifest-audio.txt"
-    {
-        echo "# GENERATED by tests/run/run.sh winetest — the CUI-image half of"
-        echo "# tests/winetest/manifest.txt (the audio pairs boot their own image)."
-        for w in ${cuiIdx[@]+"${cuiIdx[@]}"}; do printf '%s\n' "${wtestLines[$w]}"; done
-    } > "$baked"
-    {
-        echo "# GENERATED by tests/run/run.sh winetest — the audio-image half of"
-        echo "# tests/winetest/manifest.txt (docs/23 §6c)."
-        for w in ${audIdx[@]+"${audIdx[@]}"}; do printf '%s\n' "${wtestLines[$w]}"; done
-    } > "$bakedAudio"
-    make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
-    make -C "$ROOT" winfiles build/modules/cmd.exe >/dev/null
-
-    # The image is the FULL CUI machine `make run` boots — the Makefile's own
-    # $(WINFILES), read from it rather than re-listed here (Makefile
-    # `print-winfiles`; the drift that motivated it is written up there) —
-    # plus what only this leg needs: the test binaries and the manifest under
-    # C:\wtests, the full nls set, tzres and the .ini furniture below. Its
-    # own list had been the run.sh proskrnl set: ten DLLs, smss and conhost,
-    # and no wineboot.exe — so smss skipped firstboot (user/smss/smss.c) and
-    # the sweep ran on a machine whose registry had never seen wine.inf's
-    # payload, with no SCM, no setupapi/ws2_32/secur32/userenv/hid beside the
-    # test binaries that import them, and none of the WOW64 host trio the
-    # Makefile stages. Every one of those is a difference between the gate's
-    # machine and the product's, and a differential leg can only spend such a
-    # difference as a divergence.
-    #
-    # $(WINFILES) already carries smss, conhost and the nls subset; cmd.exe
-    # is added the way the `make run` image adds it (%COMSPEC%, and the cmd
-    # tests' own subject). The M5 seed modules keep the in-kernel M6 suite
-    # green on this image too, and the FULL nls set goes in on top of the
-    # subset — the CRT/codepage subtests exercise every codepage the oracle
-    # has (a missing c_932.nls reads as a divergence).
-    local specs=()
-    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
-        [[ -f "$seed" ]] && specs+=("$seed=initrd")
-    done
-    # A make that fails here would hand the loop an EMPTY list and bake the
-    # short machine again silently — the exact failure this reading of
-    # $(WINFILES) exists to end — so the count is checked, not assumed.
-    local winspec winfiles=()
-    while IFS= read -r winspec; do
-        [[ -n "$winspec" ]] || continue
-        winfiles+=("win:$ROOT/${winspec#win:}")   # $(WINFILES) paths are $ROOT-relative
-    done < <(make -s -C "$ROOT" print-winfiles)
-    if (( ${#winfiles[@]} < 20 )); then
-        echo "run.sh: 'make print-winfiles' listed ${#winfiles[@]} files — the CUI" \
-             "userland is not that short; the image would be missing most of it" >&2
-        exit 2
-    fi
-    specs+=("${winfiles[@]}")
-    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-    local nlsfile
-    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
-        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
-    done
-    # tzres.dll — the resource-only DLL the time-zone table's MUI_Std/MUI_Dlt
-    # values point at ("@tzres.dll,-22000"). Both GetDynamicTimeZoneInformation
-    # and GetTimeZoneInformationForYear resolve those through RegLoadMUIStringW
-    # against %windir%\system32 (dlls/kernelbase/locale.c), but they disagree
-    # about the FAILURE: the first ignores the error and leaves the raw
-    # "@tzres.dll,-N" in place, the second falls back to the zone's plain
-    # `Std`/`Dlt`. So with the file absent the two APIs answer different
-    # strings for the same zone, which is kernel32:time :990-:1008 — a
-    # divergence made entirely of a file the oracle's prefix has and the baked
-    # image did not (the win.ini story below, one directory up). Taken from the
-    # pinned tree unstripped: it is pure resources, with no unixlib half for
-    # `winestrip` to remove.
-    specs+=("win:$ROOT/third_party/wine/dlls/tzres/x86_64-windows/tzres.dll=windows/system32/tzres.dll")
-    # %windir%\{win,system}.ini, for the same reason the nls set goes in.
-    # This image DOES run firstboot now (wineboot.exe is in $(WINFILES)), and
-    # that still does not write them: the baked wine.inf is the registry-only
-    # filter (tools/filter_inf.py), which drops `UpdateInis=` because
-    # SetupInstallFromInfSectionW runs it BEFORE the AddReg pass and its
-    # failure would take the whole machine-state payload down with it — so
-    # [SystemIni] is the one part of wineboot's work no proskrnl image gets,
-    # while the ORACLE leg runs in a wineprefix that has it.
-    # Measured: without win.ini, kernel32:profile's NULL-filename cases
-    # (profile.c:95/:101, which read win.ini through GetPrivateProfileIntA,
-    # and :229's todo_wine on GetLastError) diverge on the file's absence
-    # rather than on anything the kernel does. Generated from the pinned
-    # wine.inf's own [SystemIni] payload, never hand-typed
-    # (tools/gen_sysini.py; --check proves it byte-identical to a prefix).
-    python3 "$ROOT/tools/gen_sysini.py" "$BUILD/wtests/sysini" >/dev/null
-    # And self-checked whenever the oracle leg has already materialised the
-    # prefix: byte-identical to what wineboot wrote there, so a wine pin that
-    # edits [SystemIni] cannot drift the two legs apart unnoticed.
+    # %windir%\{win,system}.ini are baked by the Makefile ($(SYSINIFILES),
+    # generated from the pinned wine.inf's own [SystemIni] payload by
+    # tools/gen_sysini.py — never hand-typed). Self-checked HERE whenever the
+    # oracle leg has already materialised the prefix: byte-identical to what
+    # wineboot wrote there, so a wine pin that edits [SystemIni] cannot drift
+    # the two legs apart unnoticed. Measured, not hypothetical — without
+    # win.ini, kernel32:profile's NULL-filename cases diverge on the file's
+    # absence rather than on anything the kernel does.
     if [[ -f "$WINEPREFIX/drive_c/windows/win.ini" ]]; then
         python3 "$ROOT/tools/gen_sysini.py" --check "$WINEPREFIX" >/dev/null
     fi
-    local inifile
-    for inifile in "$BUILD/wtests/sysini"/*.ini; do
-        specs+=("win:$inifile=windows/$(basename "$inifile")")
-    done
-    # Only the exes THIS image's manifest names — an unfiltered run bakes
-    # all five CUI modules, a subset bakes just what it will run, which is
-    # the ntapi leg's property too: a subset's image is as short as the
-    # subset. The audio exes ride the audio image below, never this one.
-    local bakedExes=" "
-    for w in ${cuiIdx[@]+"${cuiIdx[@]}"}; do
-        [[ "$bakedExes" == *" ${wtestExes[$w]} "* ]] || bakedExes+="${wtestExes[$w]} "
-    done
-    # shellcheck disable=SC2086  -- deliberate split on a list we just built
-    for exe in $bakedExes; do
-        specs+=("win:$ROOT/build/wtests/$exe=wtests/$exe")
-    done
-    specs+=("win:$baked=wtests/manifest.txt")
-    # ntdll:wow64 spawns 32-bit children out of syswow64, so the winetest
-    # image carries the same guest payload the ntapi leg does.
-    add_wow64_payload
 
-    # MB-scale test binaries: a bigger volume than the 64 MB default. And
+    # --- proskrnl leg (the REGRESSION gate) ---
+    # The pairs PARTITION by exe onto two BOOTS (docs/23 §6c): the audio
+    # modules need the virtio-snd device on the QEMU command line, every
+    # other pair does not. Same image both times — the audio payload is on
+    # it either way; what differs is the DEVICE and the filter each boot is
+    # given. They used to be two bakes, each carrying a manifest generated
+    # for its half, and a subset run generated a third; the file on the media
+    # therefore recorded which subset had last been asked for, where a later
+    # run or a human reading it would take it for the full sweep.
+    local img log logAudio tag=""
+    (( ${#SUBTESTS[@]} )) && tag="-subset"
+    local w cuiKeys=() audKeys=()
+    for ((w = 0; w < ${#wtestKeys[@]}; w++)); do
+        if wtest_is_audio "${wtestExes[w]}"; then audKeys+=("${wtestKeys[w]}")
+        else cuiKeys+=("${wtestKeys[w]}"); fi
+    done
+    img="$(test_image_copy "$ROOT/build/tests/wtest$tag.hdd")" || exit 1
+    log="$ROOT/build/tests/wtest$tag-serial.log"
+    logAudio="$ROOT/build/tests/wtest-audio$tag-serial.log"
+
+    # The GUEST filter is the exact pair list this boot must run — the keys
+    # themselves, not the user's query: the CUI/audio partition is the
+    # harness's decision and has to reach the guest as a decision, and a
+    # `<module>:<subtest>` key is a pattern that matches exactly its own pair
+    # (user/smss/session.c SessionWtestPatternMatches).
+    #
     # 1 GiB of guest RAM: no eviction (Art. 3) means the page cache holds
     # every test binary's pages for the whole sweep — memory is provisioned,
     # not managed.
-    local log="$ROOT/build/tests/wtest-serial.log"
-    local logAudio="$ROOT/build/tests/wtest-audio-serial.log"
-    if (( ${#SUBTESTS[@]} )); then
-        log="$ROOT/build/tests/wtest-subset-serial.log"
-        logAudio="$ROOT/build/tests/wtest-audio-subset-serial.log"
-    fi
-    if (( ${#cuiIdx[@]} )); then
-        SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+    if (( ${#cuiKeys[@]} )); then
         LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
+            GUEST_GUI=0 GUEST_LEG=wtest GUEST_SUBTESTS="${cuiKeys[*]}" \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     fi
 
-    if (( ${#audIdx[@]} )); then
-        # The audio guest: virtio-snd backed by the null audiodev — the
-        # pairs assert the WASAPI clocks and shapes, not the recording (the
-        # WAV verdict is the audio leg's, §6a). Its manifest and exes ride
-        # as extra specs on the shared bake.
-        local audioSpecs=("win:$bakedAudio=wtests/manifest.txt")
-        local exe2 bakedAudioExes=" "
-        for w in "${audIdx[@]}"; do
-            exe2="${wtestExes[$w]}"
-            [[ "$bakedAudioExes" == *" $exe2 "* ]] && continue
-            bakedAudioExes+="$exe2 "
-            audioSpecs+=("win:$ROOT/build/wtests/$exe2=wtests/$exe2")
-        done
-        bake_audio_image "$imgAudio" "${audioSpecs[@]}"
+    if (( ${#audKeys[@]} )); then
+        # The audio boot: virtio-snd backed by the null audiodev — the pairs
+        # assert the WASAPI clocks and shapes, not the recording (the WAV
+        # verdict is the audio leg's, §6a). Its own copy of the image so the
+        # two boots' hive mutations cannot interleave.
+        local imgAudio
+        imgAudio="$(test_image_copy "$ROOT/build/tests/wtest-audio$tag.hdd")" || exit 1
         LOG="$logAudio" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
+            GUEST_GUI=0 GUEST_LEG=wtest GUEST_SUBTESTS="${audKeys[*]}" \
             EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" AUDIODEV="none,id=snd0" \
             "$ROOT/tools/qemu.sh" "$imgAudio" >/dev/null 2>&1 || true
     fi
 
     # No ^ anchor: conhost cursor escapes may share the verdict's line (the
-    # run.sh console precedent). Each pair is graded from ITS image's log.
+    # run.sh console precedent). Each pair is graded from ITS boot's log.
     local vlog
     for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
         if wtest_is_audio "${wtestExes[i]}"; then vlog="$logAudio"; else vlog="$log"; fi
@@ -1520,7 +1256,6 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
 # ratchet the file down in the commit that earned it. 0 is the milestone's
 # end state.
 guiwtest() {
-    local manifest="$ROOT/tests/winetest/manifest-gui.txt"
     local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
     local budget
     budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]')"
@@ -1537,48 +1272,18 @@ guiwtest() {
     local oracleFail=0
     guiwtest_oracle "$testexe" || oracleFail=1
 
-    local kernel img
-    kernel="$ROOT/build/proskrnl"
-    img="$ROOT/build/tests/guiwtest.hdd"
-    make -C "$ROOT" >/dev/null || exit 1   # always: see the ntapi leg's note
-    make -C "$ROOT" winestrip winestrip-gui win32u wineserver-lite \
-        build/modules/cmd.exe build/modules/conhost.exe build/modules/smss.exe >/dev/null
-
-    # The winetest image recipe (DLLs, nls, conhost, cmd, the M5 seeds that
-    # keep the in-kernel M6 suite green) plus the GUI stack the msg module
-    # lives on, plus hid/imm32/setupapi (msg.c's own imports) — all from the
-    # same stripped set.
-    local specs=()
-    local seed
-    for seed in "$ROOT/build/modules/pe_smoke.exe" "$ROOT/build/modules/sample.dat"; do
-        [[ -f "$seed" ]] && specs+=("$seed=initrd")
-    done
-    for dll in ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost rpcrt4 version \
-               cryptbase setupapi cfgmgr32 hid user32 gdi32 comctl32 imm32 ole32 combase coml2; do
-        specs+=("win:$ROOT/build/winestrip/$dll.dll=windows/system32/$dll.dll")
-    done
-    specs+=("win:$ROOT/build/modules/win32u.dll=windows/system32/win32u.dll")
-    specs+=("win:$ROOT/build/modules/wineserver-lite.exe=windows/system32/wineserver-lite.exe")
-    local nlsfile
-    for nlsfile in "$ROOT"/third_party/wine/nls/*.nls; do
-        specs+=("win:$nlsfile=windows/system32/$(basename "$nlsfile")")
-    done
-    local fontfile
-    for fontfile in "$ROOT"/third_party/wine/fonts/*.ttf "$ROOT"/third_party/wine/fonts/*.fon; do
-        specs+=("win:$fontfile=windows/fonts/$(basename "$fontfile")")
-    done
-    specs+=("win:$ROOT/build/modules/smss.exe=windows/system32/smss.exe")
-    specs+=("win:$ROOT/build/modules/conhost.exe=windows/system32/conhost.exe")
-    specs+=("win:$ROOT/build/modules/cmd.exe=windows/system32/cmd.exe")
-    specs+=("win:$testexe=wtests/user32_test.exe")
-    specs+=("win:$manifest=wtests/manifest.txt")
-
-    SIZE_MB=256 "$ROOT/tools/mkimage.sh" "$kernel" "$img" "${specs[@]}" >/dev/null
+    # The test image carries user32_test.exe and BOTH manifests; the leg name
+    # picks manifest-gui.txt (user/smss/session.c SessionRun). It used to bake
+    # an image of its own, whose payload was a hand-copied subset of the
+    # winetest image's — the kind of second list that drifts.
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/guiwtest.hdd")" || exit 1
 
     # 2 GiB: no COW and this boot holds the server, conhost, a multi-MB
     # test binary and its spawned children resident at once.
     local log="$ROOT/build/tests/guiwtest-serial.log"
     LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
+        GUEST_GUI=0 GUEST_LEG=guiwtest \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # msg.c's own assertion text, replayed out of the console screen diff
@@ -1903,25 +1608,26 @@ fuzz() { "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 # — and the volatile key's absence — on boot 2, when the kernel has reloaded
 # the hive the first boot wrote.
 persist() {
-    # A VIRGIN image: build/proskrnl.hdd may already carry a seeded hive from
-    # an earlier `make test` (m8_persist runs on every boot), which would make
-    # boot 1 verify instead of seed. Rebuilding the image resets the disk.
-    rm -f "$ROOT/build/proskrnl.hdd"
-    make -C "$ROOT" >/dev/null || exit 1
-    local img="$ROOT/build/tests/persist.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl.hdd" "$img"
+    # A VIRGIN image: the test image may already carry a seeded hive from an
+    # earlier `make test` (m8_persist runs on every boot), which would make
+    # boot 1 verify instead of seed. Rebuilding it resets the disk, and this
+    # leg gets its own copy so the two boots are the only writers.
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/persist.hdd")" || exit 1
 
     local log1="$ROOT/build/tests/persist1.log" log2="$ROOT/build/tests/persist2.log"
     # Boot 1 of a virgin image runs the whole CUI-1 firstboot INF pass
     # (minutes under TCG); boot 2 skips it via wineboot's timestamp check.
-    LOG="$log1" TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    LOG="$log1" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: seeded' "$log1" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log1"; then
         echo "== persist: FAIL (boot 1 did not seed; see $log1) =="
         return 1
     fi
-    LOG="$log2" TIMEOUT="${TIMEOUT:-900}" "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+    LOG="$log2" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q 'm8_persist: verified' "$log2" || \
        ! grep -qE '^\[KTEST\] module /m8_persist.bin PASS' "$log2" || \
        ! grep -qE '^\[KTEST\] M8 PASS' "$log2"; then
@@ -1948,9 +1654,10 @@ persist() {
 # failed heap round trip) is a distinct failure rather than a silent pass.
 wow64() {
     mkdir -p "$BUILD"
-    make -C "$ROOT" wow64-img >/dev/null || exit 1
-    local img="$ROOT/build/tests/wow64.hdd" log="$BUILD/wow64.log"
+    local img log="$BUILD/wow64.log"
+    img="$(test_image_copy "$ROOT/build/tests/wow64.hdd")" || exit 1
     LOG="$log" PASS_RE="\[KTEST\] wow64 hello32.exe PASS" TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=wow64 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q "\[KTEST\] wow64 hello32.exe PASS" "$log"; then
         echo "[KTEST] wow64-smoke FAIL (no 32-bit PASS marker; see $log)"
@@ -1973,12 +1680,11 @@ firstboot() {
     mkdir -p "$BUILD"
 
     # --- proskrnl leg: virgin image (the persist() pattern), one boot ---
-    rm -f "$ROOT/build/proskrnl.hdd"
-    make -C "$ROOT" >/dev/null || exit 1
-    local img="$BUILD/firstboot.hdd"
-    cp "$ROOT/build/proskrnl.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$BUILD/firstboot.hdd")" || exit 1
     local log="$BUILD/firstboot.log"
-    LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-900}" \
+    LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
     if ! grep -q "\[KTEST\] firstboot PASS" "$log"; then
         echo "[KTEST] firstboot-diff FAIL (boot did not reach firstboot PASS; see $log)"
@@ -1999,9 +1705,15 @@ firstboot() {
     # --- oracle leg: wineboot --init in a fresh prefix under the pinned wine ---
     # BOTH sides apply the IDENTICAL filtered INF, so the differential
     # isolates the kernel's Cm/setupapi boundary from the directive families
-    # tools/filter_inf.py documents as out of scope (their registry effect —
-    # RegisterDlls self-registration — is neither applied on proskrnl nor
-    # comparable). The filtered INF is staged as input data over the pinned
+    # tools/filter_inf.py documents as out of scope — including RegisterDlls,
+    # whose registry effect the guest now DOES apply (the baked inf keeps the
+    # directive) and the oracle cannot: with it kept here, the prefix's own
+    # pass has all 30 fake dlls to register instead of the three the disk
+    # carries and WEDGES (rundll32 at 0% CPU for 18 minutes inside
+    # InstallHinfSection, measured). Self-registration output is therefore
+    # out of the compared scope, spelled out in regdiff.py's exclusion list
+    # the way every other documented delta is.
+    # The filtered INF is staged as input data over the pinned
     # tree's loader/wine.inf for the duration of this one prefix init (the
     # loader's WINEBUILDDIR always wins over the environment, so the file is
     # the only staging point); the byte-identical original is restored even
@@ -2043,7 +1755,7 @@ firstboot() {
 
     # --- the differential ---
     if python3 "$ROOT/tests/run/regdiff.py" "$hive" "$prefix/system.reg" \
-        "$ROOT/build/wine-proskrnl.inf"; then
+        "$ROOT/build/wine-proskrnl-full.inf"; then
         echo "[KTEST] firstboot-diff PASS"
         echo "== firstboot: PASS =="
         return 0
@@ -2060,14 +1772,14 @@ firstboot() {
 # the docs/08 shape — the expect script tees the wire into the log the
 # verdict grep reads.
 console() {
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/proskrnl-console.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/console.hdd")" || exit 1
     local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
-    mkdir -p "$ROOT/build/tests"
 
     # CUI-3: a resident SCM under no-eviction/no-COW needs the winetest
     # leg's provisioning.
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" \
@@ -2096,17 +1808,16 @@ console() {
 scm() {
     # A VIRGIN console image (the persist() pattern): a hive seeded by an
     # earlier console run could already carry SvcDemo and break the create.
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/tests/scm.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/scm.hdd")" || exit 1
 
     local boot sock log qemu_wrapper
     for boot in 1 2; do
         sock="$ROOT/build/tests/scm$boot.sock"
         log="$ROOT/build/tests/scm$boot.log"
         SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+            GUEST_GUI=0 GUEST_LEG=console \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
         qemu_wrapper=$!
         if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_SCM="$boot" \
@@ -2135,14 +1846,13 @@ procs() {
     # by the guest, so its mtime outruns the modules and make would skip the
     # rebuild — the acceptance would then run against an image missing the
     # very programs it types.
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/tests/procs.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/procs.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/procs.sock" log="$ROOT/build/tests/procs.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_PROCS=1 \
@@ -2165,14 +1875,13 @@ procs() {
 # shape), asserting each file's content through its post-rename name.
 files() {
     # A VIRGIN console image (the procs() pattern).
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/tests/files.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/files.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/files.sock" log="$ROOT/build/tests/files.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_FILES=1 \
@@ -2194,14 +1903,13 @@ files() {
 # image driven by console_expect.py, which types the three baked tools and
 # greps their markers off the serial log.
 cui6() {
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/tests/cui6.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/cui6.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui6.sock" log="$ROOT/build/tests/cui6.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI6=1 \
@@ -2227,14 +1935,13 @@ cui6() {
 # through ring-3 NtShutdownSystem(ShutdownPowerOff) - the clean QEMU exit
 # is the live shutdown arm's verdict.
 cui7() {
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null
-    local img="$ROOT/build/tests/cui7.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/cui7.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui7.sock" log="$ROOT/build/tests/cui7.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
+        GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
     if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-600}" EXPECT_CUI7=1 \
@@ -2324,8 +2031,8 @@ cui8() {
     local kmtlog="$BUILD/cui8-kmt-serial.log"
     local attempt
     for attempt in 1 2; do
-        LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" \
-            "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" \
+        LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
+            "$ROOT/tools/qemu.sh" "$(test_image)" \
             >"$BUILD/cui8-kmt-qemu.log" 2>&1 || true
         [[ -s "$kmtlog" ]] && break
         echo "cui8: empty serial log from the kmt boot (attempt $attempt);" \
@@ -2449,11 +2156,9 @@ cui8() {
 # fails HERE, as a machine verdict, not in a semantic test (docs/17 §8
 # "the one failure mode no semantic test catches").
 cui9() {
-    rm -f "$ROOT/build/proskrnl-console.hdd"
-    make -C "$ROOT" console-img >/dev/null || exit 1
-    local img="$ROOT/build/tests/cui9.hdd"
-    mkdir -p "$ROOT/build/tests"
-    cp "$ROOT/build/proskrnl-console.hdd" "$img"
+    rm -f "$ROOT/build/proskrnl-test.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/cui9.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui9.sock" log="$ROOT/build/tests/cui9.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1200}" \
@@ -2550,8 +2255,8 @@ net() {
     for attempt in 1 2; do
         rm -f "$pcap"
         NET_PCAP="$pcap" NET_ECHO_PORT="$echoport" LOG="$netlog" \
-            TIMEOUT="${TIMEOUT:-900}" \
-            "$ROOT/tools/qemu.sh" "$ROOT/build/proskrnl.hdd" \
+            TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
+            "$ROOT/tools/qemu.sh" "$(test_image)" \
             >"$BUILD/net-qemu.log" 2>&1 || true
         [[ -s "$netlog" ]] && break
         echo "net: empty serial log (attempt $attempt); see $BUILD/net-qemu.log" >&2
@@ -2644,7 +2349,7 @@ net3() {
         echo "        it would be a silent no-op (the netsmoke lesson)."
         return 1
     fi
-    make -C "$ROOT" net3-img >/dev/null || { echo "== net3: FAIL (build) =="; return 1; }
+    test_image >/dev/null || { echo "== net3: FAIL (build) =="; return 1; }
 
     local work="$BUILD/net3" off=2097152    # mkimage.sh ESP_OFF
     rm -rf "$work"
@@ -2689,8 +2394,8 @@ PYSRV
 
     # The per-run job, mcopy'd into a COPY of the image (the baked image
     # stays virgin; the probe file exists only on this boot).
-    local img="$work/net3-run.hdd"
-    cp "$ROOT/build/proskrnl-net3.hdd" "$img"
+    local img
+    img="$(test_image_copy "$work/net3-run.hdd")" || return 1
     cat > "$work/job.txt" <<JOB
 url = "https://net3.test:$port/content.bin"
 cacert = "C:/net3/ca.pem"
@@ -2711,7 +2416,7 @@ JOB
     # The boot: slirp + pcap (the wire's own record), guest-clocked bounds.
     local pcap="$work/net3.pcap" netlog="$work/net3-serial.log"
     NET_PCAP="$pcap" LOG="$netlog" TIMEOUT="${TIMEOUT:-900}" \
-        PASS_RE='\[KTEST\] net3 exit' \
+        PASS_RE='\[KTEST\] net3 exit' GUEST_GUI=0 GUEST_LEG=net3 \
         "$ROOT/tools/qemu.sh" "$img" >"$work/net3-qemu.log" 2>&1 || true
 
     local fails=0
@@ -2755,8 +2460,8 @@ JOB
 # QEMU: the pixels are rendered by its device model and the key is injected
 # by its input layer, neither of which the kernel controls (Art. 6).
 gui() {
-    make -C "$ROOT" gui-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui.sock" log="$dir/gui.log" ppm="$dir/gui.ppm"
     mkdir -p "$dir"
@@ -2785,6 +2490,7 @@ gui() {
     # minutes instead of fifteen.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui input PASS' \
+        GUEST_GUI=0 GUEST_LEG=gui \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2857,9 +2563,9 @@ gui() {
 # the oracle is QEMU: the WAV is written by its audio backend from what its
 # device model consumed, neither of which the kernel controls (Art. 6).
 audio() {
-    make -C "$ROOT" audio-img >/dev/null
-    local img="$ROOT/build/proskrnl-audio.hdd"
     local dir="$ROOT/build/tests"
+    local img
+    img="$(test_image_copy "$dir/audio.hdd")" || exit 1
     local sock="$dir/audio.sock" log="$dir/audio.log" wav="$dir/audio.wav"
     mkdir -p "$dir"
     # The gui() rationale: a previous run's markers or recording must not
@@ -2874,6 +2580,7 @@ audio() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        GUEST_GUI=0 GUEST_LEG=audio \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2927,15 +2634,15 @@ audio() {
     # counter as a NUMBER (docs/19 §8.4's rule): 0 on an unloaded host, the
     # measured glitch count on a starved TCG runner — reported either way,
     # asserted never (docs/23 §6d).
-    make -C "$ROOT" wasapi-smoke >/dev/null
-    local img2="$dir/wasapi.hdd"
-    bake_audio_image "$img2" "win:$ROOT/build/modules/wasapi_smoke.exe=wasapi_smoke.exe"
+    local img2
+    img2="$(test_image_copy "$dir/wasapi.hdd")" || return 1
     sock="$dir/wasapi.sock" log="$dir/wasapi.log" wav="$dir/wasapi.wav"
     rm -f "$sock" "$wav" "$log"
     QMP_SOCK="$sock" LOG="$log" \
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        GUEST_GUI=0 GUEST_LEG=wasapi \
         "$ROOT/tools/qemu.sh" "$img2" >/dev/null 2>&1 &
     qemu_wrapper=$!
     if ! await '\[KTEST\] audio (PASS|FAIL)'; then
@@ -2962,15 +2669,15 @@ audio() {
     # capture node by its own direction claim and blocking-reads full
     # periods of zeros; the verdict asserts content and accounting, never
     # cadence speed (docs/19 §11c).
-    make -C "$ROOT" cap-smoke >/dev/null
-    local img3="$dir/capture.hdd"
-    bake_audio_image "$img3" "win:$ROOT/build/modules/cap_smoke.exe=cap_smoke.exe"
+    local img3
+    img3="$(test_image_copy "$dir/capture.hdd")" || return 1
     sock="$dir/capture.sock" log="$dir/capture.log"
     rm -f "$sock" "$log"
     QMP_SOCK="$sock" LOG="$log" \
         EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
         AUDIODEV="none,id=snd0" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
+        GUEST_GUI=0 GUEST_LEG=capture \
         "$ROOT/tools/qemu.sh" "$img3" >/dev/null 2>&1 &
     qemu_wrapper=$!
     # The kmt SND suite runs here too — same device, third backend shape —
@@ -2996,15 +2703,15 @@ audio() {
     # winevsnd.drv's capture thread, the get_capture_buffer legs — on the
     # same `none` backend, with the packet count on the verdict line as a
     # NUMBER (docs/19 §8.4's rule).
-    make -C "$ROOT" wasapi-cap-smoke >/dev/null
-    local img4="$dir/wasapi_cap.hdd"
-    bake_audio_image "$img4" "win:$ROOT/build/modules/wasapi_cap_smoke.exe=wasapi_cap_smoke.exe"
+    local img4
+    img4="$(test_image_copy "$dir/wasapi_cap.hdd")" || return 1
     sock="$dir/wasapi_cap.sock" log="$dir/wasapi_cap.log"
     rm -f "$sock" "$log"
     QMP_SOCK="$sock" LOG="$log" \
         EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
         AUDIODEV="none,id=snd0" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
+        GUEST_GUI=0 GUEST_LEG=wasapicap \
         "$ROOT/tools/qemu.sh" "$img4" >/dev/null 2>&1 &
     qemu_wrapper=$!
     if ! await '\[KTEST\] audio capture (PASS|FAIL)'; then
@@ -3040,37 +2747,23 @@ audio() {
 # client's OWN bits= report: the image could carry either build under that
 # name, so which one produced the samples is measured, not inferred.
 wow64aud() {
-    make -C "$ROOT" wasapi-smoke32 wow64-shelf >/dev/null || return 1
     local dir="$ROOT/build/tests"
-    local img="$dir/wow64aud.hdd"
-    local sock="$dir/wow64aud.sock" log="$dir/wow64aud.log" wav="$dir/wow64aud.wav"
+    local img sock="$dir/wow64aud.sock" log="$dir/wow64aud.log" wav="$dir/wow64aud.wav"
     mkdir -p "$dir"
     rm -f "$sock" "$wav" "$log"
+    img="$(test_image_copy "$dir/wow64aud.hdd")" || return 1
 
-    # The 32-bit shelf read out of the Makefile's one list (the
-    # print-winfiles drift lesson), on top of bake_audio_image's 64-bit
-    # audio machine.
-    local shelfspec shelf=()
-    while IFS= read -r shelfspec; do
-        [[ -n "$shelfspec" ]] || continue
-        shelf+=("win:$ROOT/${shelfspec#win:}")
-    done < <(make -s -C "$ROOT" print-wow64shelffiles)
-    if (( ${#shelf[@]} < 20 )); then
-        echo "run.sh: 'make print-wow64shelffiles' listed ${#shelf[@]} files — the 32-bit" \
-             "shelf is not that short" >&2
-        return 2
-    fi
-    bake_audio_image "$img" "${shelf[@]}" \
-        "win:$ROOT/build/modules/wasapi_smoke32.exe=wasapi_smoke.exe"
-
-    # smss picks the foreground by PROBE (user/smss/session.c), so the
-    # 32-bit client baked under the 64-bit one's name is started by the
-    # same row — no session leg of its own, and nothing on the image says
-    # which bitness it is. MEM is wow64gui's, for wow64gui's reason.
+    # The 32-bit client has a LEG of its own (`wasapi32`) and is baked under
+    # its own name. It used to be baked over the 64-bit one's name, because
+    # the session manager picked its foreground by probing for that name and
+    # a second row could not be selected — so nothing on the image said which
+    # bitness was about to run, which is exactly what this leg measures. MEM
+    # is wow64gui's, for wow64gui's reason.
     QMP_SOCK="$sock" LOG="$log" \
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
+        GUEST_GUI=0 GUEST_LEG=wasapi32 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3152,8 +2845,8 @@ assert_contained_faults() {   # $1 = log, $2 = expected count, $3 = leg name
 }
 
 gui2() {
-    make -C "$ROOT" gui2-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui2.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui2.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui2.sock" log="$dir/gui2.log" ppm="$dir/gui2.ppm"
     mkdir -p "$dir"
@@ -3169,6 +2862,7 @@ gui2() {
     # the wedged-run backstop.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='PRSK-GUI2-NEVER' \
+        GUEST_GUI=0 GUEST_LEG=gui2 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3230,8 +2924,8 @@ gui2() {
 # behaviour, and the pixels proving both windows really reached the scanout
 # (tests/gui/check_gui3.py).
 gui3() {
-    make -C "$ROOT" gui3-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui3.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui3.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui3.sock" log="$dir/gui3.log" ppm="$dir/gui3.ppm"
     mkdir -p "$dir"
@@ -3241,6 +2935,7 @@ gui3() {
     # (the server plus two clients), each copying the images it maps.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI3-NEVER' \
+        GUEST_GUI=0 GUEST_LEG=gui3 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3302,8 +2997,8 @@ gui3() {
 # parked on background) and after it (the window moved; what it uncovered
 # was repaired). tests/gui/check_gui4.py grades both halves.
 gui4() {
-    make -C "$ROOT" gui4-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui4.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui4.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui4.sock" log="$dir/gui4.log"
     local ppm1="$dir/gui4-before.ppm" ppm2="$dir/gui4-after.ppm" ppm3="$dir/gui4-cursor.ppm"
@@ -3312,6 +3007,7 @@ gui4() {
 
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI4-NEVER' \
+        GUEST_GUI=0 GUEST_LEG=gui4 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3463,8 +3159,8 @@ gui4() {
 # DEVICE no process draws a cursor at all (cursor.c winefb_pointer_present),
 # so the fills are pristine by construction rather than by timing.
 gui5() {
-    make -C "$ROOT" gui5-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui5.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui5.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui5.sock" log="$dir/gui5.log" ppm="$dir/gui5.ppm"
     mkdir -p "$dir"
@@ -3474,6 +3170,7 @@ gui5() {
     # (the server, fontdiff, then the two clients).
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5-NEVER' \
+        GUEST_GUI=0 GUEST_LEG=gui5 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3566,8 +3263,8 @@ gui5() {
 # The guest powers itself off (`exit` -> cmd exits -> smss exits -> KiQemuExit),
 # so unlike the other gui legs QEMU's end is awaited, not quit.
 gui5con() {
-    make -C "$ROOT" gui5con-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui5con.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui5con.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui5con.sock" log="$dir/gui5con.log"
     local ppm1="$dir/gui5con-before.ppm" ppm2="$dir/gui5con-after.ppm"
@@ -3579,7 +3276,7 @@ gui5con() {
     # off $log, so GUEST_INTERACTIVE is set and INTERACTIVE is not.
     QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' GUEST_SHELL=1 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3719,8 +3416,8 @@ gui5con() {
 # is still on the scanout when the dump is taken), so the leg ends QEMU — the
 # gui3/gui4 arrangement, not gui5con's `exit`.
 wow64gui() {
-    make -C "$ROOT" gui5con-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui5con.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/wow64gui.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/wow64gui.sock" log="$dir/wow64gui.log"
     local ppm1="$dir/wow64gui-before.ppm" ppm2="$dir/wow64gui-after.ppm"
@@ -3733,7 +3430,7 @@ wow64gui() {
     # on top of a session that has the whole GUI userland up.
     QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' \
+        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' GUEST_SHELL=1 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3842,8 +3539,8 @@ wow64gui() {
 # settled-frame rule) and writes them to tests/gui/golden/desktop.ppm, to be
 # committed WITH the change that moved the pixels.
 gui6() {
-    make -C "$ROOT" gui6-img >/dev/null
-    local img="$ROOT/build/proskrnl-gui6.hdd"
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/gui6.hdd")" || exit 1
     local dir="$ROOT/build/tests"
     local sock="$dir/gui6.sock" log="$dir/gui6.log" ppm="$dir/gui6.ppm"
     local golden="$ROOT/tests/gui/golden/desktop.ppm"
@@ -3855,6 +3552,7 @@ gui6() {
     # maps.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-2048M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI6-NEVER' \
+        GUEST_GUI=0 GUEST_LEG=gui6 GUEST_SHELL=1 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 

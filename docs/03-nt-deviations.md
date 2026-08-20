@@ -1040,20 +1040,33 @@ which applies `wine.inf`'s machine-state payload through
   destination *before* reading the absent source — deletes the baked
   system32), `CopyFiles`/`DelFiles`/`RenFiles` (the file queue fails on absent
   source media and aborts `SetupInstallFromInfSectionW` before its AddReg
-  pass), `RegisterDlls` (self-registration loads GUI DLLs not baked),
+  pass),
   `UpdateInis` (`SPINST_INIFILES` runs *before* `SPINST_REGISTRY`;
   `BaseInstall` opens with `UpdateInis=SystemIni`, and a failure there returns
   FALSE before its ~500-line AddReg ever runs), and `ProfileItems` (Start Menu
   shortcuts via shell32). All `AddReg`/`DelReg` and the `.Services` sections
   are kept. The INF is input data staged by the image builder — no Wine
   PE-side change.
+
+  `RegisterDlls` was a sixth dropped family — self-registration loads DLLs a
+  CUI disk did not bake — and is **kept** since one image began carrying every
+  leg's payload: shell32's COM classes are what explorer's file window is
+  (GUI-6) and mmdevapi's are what `CoCreateInstance` of the MMDeviceEnumerator
+  needs (AUD-2), and both are injected into `[RegisterDllsSection]` rather than
+  hand-seeded as CLSIDs (Art. 11 / G8). Of the section's 30 entries exactly
+  shell32, mmdevapi and dsound resolve on the disk; the rest fail
+  `LoadLibrary` and are skipped one by one (`setupapi do_register_dll` — a
+  skip, not an abort). There were three baked infs, one per image family; there
+  is one.
 - **The registry differential** (`tests/run/run.sh firstboot`, the milestone's
   Art. 6 conviction gate) boots a virgin image, pulls the SYSTEM hive off the
   FAT volume, and compares it against a fresh oracle prefix initialized with
   the SAME filtered INF, staged over the pinned tree's `loader/wine.inf` for
   that one prefix init (restored after; `--keep WineFakeDlls`, because fake
   dlls write no registry but a prefix without them cannot launch any
-  non-bootstrap process, and on the host their sources exist). The compared
+  non-bootstrap process, and on the host their sources exist; `RegisterDlls`
+  is NOT kept there, and its output is out of the compared scope in
+  consequence — see the exclusion note below). The compared
   scope is derived FROM the filtered INF itself (`tests/run/regdiff.py`
   parses the reachable AddReg sections): every payload key/value must match
   exactly on both sides, and the hive must contain nothing beyond payload +
@@ -1061,6 +1074,28 @@ which applies `wine.inf`'s machine-state payload through
   dll's embedded REGINST registration resource, wineserver furniture) stays
   out of scope by construction; every other exclusion is written down in
   `regdiff.py` and here.
+- **Self-registration output is out of the compared scope**, and that is
+  measured rather than assumed. The guest's firstboot now runs shell32's,
+  mmdevapi's and dsound's own `DllRegisterServer` (the kept `RegisterDlls`
+  above), which writes ~120 `Explorer\FolderDescriptions` keys plus
+  `ProfileList`'s `ProgramData`/`Public` — all absent from the oracle prefix,
+  reading as 122 "unexpected key/value" divergences in the extras sweep.
+  Keeping the directive on the ORACLE side to make the two payloads identical
+  does not work: the prefix has all 30 fake dlls to register instead of the
+  three the disk carries, and its `InstallHinfSection` **wedges** (rundll32 at
+  0% CPU for 18 minutes, no verdict). So the payload is excluded by name in
+  `regdiff.py`, the mirror of the oracle-only REGINST exclusion above. What
+  stays in scope is the whole `AddReg` machine-state payload, which is what
+  CUI-1 is about — including every CLSID key `wine.inf` writes; only the
+  `ShellFolder` child shell32's registrar adds to seven of them is out (as a
+  suffix RULE, so a pin that registers an eighth is not a divergence).
+  `Software\Microsoft\AudioCompressionManager` goes with them for a
+  neighbouring reason: it is msacm32's driver CACHE, built the first time
+  anything enumerates the baked `.acm` codecs (`MSACM_ReadCache`, reached
+  through the dsound/mmdevapi registration), and the oracle's prefix has
+  those modules as fake dlls it never enumerates. With the four families
+  excluded the differential is **0 divergences** on a 195-key / 345-value
+  scope.
 - **The baked PE dlls are debug-stripped copies** (Makefile `winestrip`).
   Not an optimization: with no COW and no eviction (Art. 3) every mapped
   image is copied whole per process, and toolchains that emit large DWARF
@@ -1483,7 +1518,7 @@ The milestone's own deviations (docs/02 CUI-6; the pins live in
 ## CUI-7 Cm-2/Mm-2/system notes (hive attach, write-watch, the furniture)
 
 The milestone's own deviations (docs/02 CUI-7; the pins live in
-`tests/ntapi/sem_reg/{rename,notify,save_load,restore_setinfo}.c`,
+`tests/ntapi/sem_reg/{reg_rename,notify,save_load,restore_setinfo}.c`,
 `sem_mm/{alloc_ex,map_ex,write_watch,flush_lock}.c` and
 `sem_ps/{locale,set_time,shutdown}.c`). The buildable id surface is complete:
 202/264, every remaining `KI_SYSCALL_MISSING` row an out-of-scope decision
@@ -4472,14 +4507,16 @@ without `force` returns empty until explorer creates the desktop — win32u answ
 *launching* `C:\windows\system32\explorer.exe` itself (`dlls/win32u/winstation.c
 get_desktop_window`) — and every app process sees the windows' user entries carry a foreign
 pid, which is what routes win32u onto its `WND_DESKTOP` special cases. Since GUI-6 that is
-the shipping arrangement on any image that carries `explorer.exe` — the gui6 image, and
-the gui5con image (`make rungui`, plus its gui5con/wow64gui legs), whose clients are
+the shipping arrangement on any boot that asks for the SHELL (`opt/org.proskrnl/shell`,
+HACK-006 — it was "any image that carries `explorer.exe`" until one image carried every
+leg's payload) — the gui6 leg, and `make rungui` with its gui5con/wow64gui legs, whose
+clients are
 routed onto explorer's desktop by registry (`HKCU\Software\Wine\Explorer
 "Desktop"="shell"`, the configuration a Wine user sets for a virtual desktop — written
 natively by smss before the first client connects; a GUI-process writer was the first
 cut's defect, `user/smss/smss.c SmssShellDesktopConfig`): the fixture sites are all off, explorer creates
-and owns the desktop, and the entries are foreign because they are. On an image *without*
-explorer — the CUI images and the earlier GUI legs' (gui2..gui5, guiwtest), kept
+and owns the desktop, and the entries are foreign because they are. On a boot that does *not* ask for the
+shell — every CUI leg and the earlier GUI legs (gui2..gui5, guiwtest), kept
 explorerless by decision at GUI-6: one extra process boot and the shell32 closure on four
 images bought nothing those legs convict — win32u's launch would fail and its
 force-fallback re-enter both convicted

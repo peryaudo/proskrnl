@@ -135,12 +135,17 @@ tests/run/run.sh proskrnl query_dir           # bake+boot ONLY that .exe
 tests/run/run.sh proskrnl 'se_*' handle_life  # globs and several names are fine
 ```
 
-Because the image decides what runs, the proskrnl leg needs no kernel-side filter: a
-subset run bakes only the named `.exe`s, so the sweep — and the boot — is as short as the
-subset. It writes its own image and log (`build/tests/proskrnl-subset.hdd`,
-`proskrnl-subset-serial.log`) so a partial image can never be mistaken for the gate's,
-and it runs the structural FAT oracles only (the full leg's per-test expectations do not
-hold when only some tests ran).
+The filter reaches the GUEST: the query goes on the QEMU command line as
+`-fw_cfg opt/org.proskrnl/subtests`, the kernel publishes it as
+`HKLM\Hardware\qemu` `Subtests` (HACK-006), and the session manager's sweep applies the
+same glob rule the harness applies host side (`user/smss/session.c`
+`SessionQuerySelects`) — so the sweep, and the boot, is as short as the subset while the
+IMAGE stays the gate's. It used to be the image that decided: a subset run baked only the
+named `.exe`s, so the media recorded which subset had last been asked for and
+`build/tests/proskrnl-subset.hdd` was a second image the gate's could be confused with.
+The subset run still writes its own copy and log (`build/tests/proskrnl-subset.hdd`,
+`proskrnl-subset-serial.log`) — a boot mutates what it boots — and runs the structural FAT
+oracles only (the full leg's per-test expectations do not hold when only some tests ran).
 
 A subset run is for **iteration, never for a verdict** — it says so on stdout, and the
 gates in `docs/CONTRIBUTING.md` are the unfiltered runs. A pattern matching nothing is an
@@ -157,10 +162,16 @@ tests/run/run.sh winetest printf         # that subtest wherever it exists (msvc
 tests/run/run.sh winetest 'rtl*' cmd     # globs and several patterns are fine
 ```
 
-Here the filter is a **generated manifest**: the selected lines are written to
-`build/tests/wtests/manifest-subset.txt` and that is what the image bakes as
-`C:\wtests\manifest.txt`, so the kernel-side sweep runs exactly the subset — the same
-"the image decides what runs" property the ntapi leg has. Its own image and log
+Here the filter is the same `subtests` boot string, carrying the selected PAIR NAMES: a
+`<module>:<subtest>` key is a pattern that matches exactly its own pair, so the harness's
+CUI/audio partition — which needs two boots, one with a virtio-snd device — reaches the
+guest as a decision rather than as two baked manifests. Both curated manifests
+(`manifest.txt`, and `manifest-gui.txt` for the `guiwtest` trophy) are baked verbatim on
+every image and the boot's `leg` picks which one the sweep reads.
+
+It used to be a **generated manifest**: the selected lines were written out and baked as
+`C:\wtests\manifest.txt`, so a filtered run produced a third image whose file on disk
+recorded which subset had last been asked for. The subset run's own copy and log
 (`build/tests/wtest-subset.hdd`, `wtest-subset-serial.log`) keep it clear of the gate's,
 and the same typo rule applies (the error lists all 83 known pairs). This is the way to
 work a red pair without paying for the whole sweep: the manifest lists the entire non-GUI

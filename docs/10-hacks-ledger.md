@@ -185,29 +185,49 @@ the two runners by construction.
 ## HACK-006: `\Registry\Machine\Hardware\qemu` (the QEMU boot flags)
 
 ```
-Status:     active (four values: "Interactive", "PanicOnNotImplemented", and since
-            Net-1 "NetEchoPort" and "NetStatic" — the harness echo server's host
-            port and the skip-DHCP static-address fallback, docs/24 §6b/§4b)
+Status:     active (seven values. DWORD: "Interactive", "PanicOnNotImplemented",
+            "Gui" (windowed console vs. serial, default ON), "Shell" (explorer owns
+            the desktop, default OFF), and since Net-1 "NetEchoPort" and "NetStatic"
+            — the harness echo server's host port and the skip-DHCP static-address
+            fallback, docs/24 §6b/§4b. REG_SZ: "Leg" (which test leg the session
+            manager runs) and "Subtests" (the ntapi/winetest sweep filter))
 Introduced: (this change — moving the boot switches off the image)
 Not in NT:  NT builds HKLM\HARDWARE at boot from firmware, and boot options arrive from
             the loader as HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions. NT has
             no `qemu` key, because NT has no fw_cfg device to read.
-Reason:     A boot knob has to live somewhere, and every existing one is BAKED INTO THE
+Reason:     A boot knob has to live somewhere, and every existing one was BAKED INTO THE
             IMAGE (a marker file the kernel probes for). That means one image variation
             per knob combination — the interactive boot was a whole second 64 MiB image
             differing from the default by one zero-byte file. Reading the knob off the
             QEMU command line instead makes it a property of the RUN, so one image serves
             both, and QEMU's fw_cfg device is the only channel that carries a command-line
             string to a guest booted from a disk image (`-append` needs `-kernel`).
+
+            The key's growth to seven values is that same argument carried to its end.
+            Selecting a TEST LEG was the largest remaining marker-file probe: a leg ran
+            because its client .exe was on the volume, so every leg needed a bake of its
+            own (fourteen images), two legs could never share one, and FILTERING a sweep
+            was a further image again — the media recorded which subset had last been
+            asked for. "Leg" and "Subtests" are strings rather than numbers because
+            neither a leg name nor a glob query is a number; "Gui" and "Shell" are the
+            two remaining probes of the same shape (which conhost binary was baked;
+            whether explorer.exe was on the volume), and both stopped distinguishing
+            anything the moment one image carried every leg's payload.
 Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
-            kernel/cm/registry.c (CmpSeedQemuBootFlags + CmQueryQemuBootFlag) ;
+            kernel/cm/registry.c (CmpSeedQemuBootFlags — the DWORD table, the
+            REG_SZ table and CmQueryQemuBootFlag) ;
             the consumers that used to probe for a marker file
             (kernel/init/main.c KiIsInteractiveBoot and
             KiConfigurePanicOnNotImplemented, user/smss/smss.c
-            SmssIsInteractiveBoot) ; tools/qemu.sh (GUEST_INTERACTIVE,
-            PANIC_NOTIMPL, NET_ECHO_PORT) ; the Net-1 consumers
-            (tests/kmt/net_smoke.c NetEchoPort, drivers/net/netd.c
-            NetStatic)
+            SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsShellBoot,
+            user/smss/session.c SessionRun's leg dispatch and the two sweeps'
+            filters, user/wine/programs/conhost/proskrnl_glue.c
+            conhost_wants_window, user/wine/wineserver-lite/common/shim.c
+            probe_shell, user/wine/dlls/winefb.drv/display.c
+            winefb_shell_boot) ; tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI,
+            GUEST_SHELL, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
+            NET_ECHO_PORT) ; the Net-1 consumers (tests/kmt/net_smoke.c
+            NetEchoPort, drivers/net/netd.c NetStatic)
 Retirement: when proskrnl boots something other than QEMU often enough to want a real
             boot-options channel — at which point the values move to SystemStartOptions
             parsed from a Limine cmdline, and the readers change but the callers do not.
