@@ -3608,10 +3608,11 @@ gui6() {
 
     await_or_fail '\[KTEST\] gui3 server READY' \
         "wineserver-lite never published its transport" || return 1
-    # The probe's own answer: mis-baked image (no explorer) is named, not
-    # diagnosed from which desktop arrangement limped further.
-    await_or_fail '\[KTEST\] wineserver-lite: explorer\.exe present' \
-        "the server never saw explorer.exe on the image" || return 1
+    # The server's own answer: a boot mis-flagged for this leg (GUEST_SHELL
+    # unset, so the desktop fixtures stay on and explorer never owns the
+    # desktop) is NAMED, not diagnosed from which arrangement limped further.
+    await_or_fail '\[KTEST\] wineserver-lite: shell boot' \
+        "the server was not told this is a shell boot (GUEST_SHELL)" || return 1
     # Firstboot can auto-launch an explorer of its own (wineboot's rundll32
     # creates windows; win32u answers with the stock launch), and its
     # Default-desktop paint satisfies the generic markers below — so anchor
