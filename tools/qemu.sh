@@ -230,6 +230,15 @@ if [[ "${GUEST_SHELL:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/shell,string=1)
 fi
 
+# CUI-8 stress (docs/19 8.1): zero the kernel's device await drain-spin so
+# every await parks. Off by default; tests/run/run.sh cui8 asks for it on the
+# boots whose whole point is the maximally different legal interleaving. It
+# used to be a marker file baked into the image (CUI8_STRESS), which is not a
+# property a boot can choose once one image serves every leg.
+if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
+fi
+
 if [[ -n "${GUEST_LEG:-}" ]]; then
     FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/leg,string=$GUEST_LEG")
 fi

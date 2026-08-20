@@ -2780,6 +2780,13 @@ static const struct
      * knob (skip DHCP, use slirp's fixed client address; off by default). */
     {"opt/org.proskrnl/netecho", WSTR("NetEchoPort"), 0},
     {"opt/org.proskrnl/netstatic", WSTR("NetStatic"), 0},
+    /* CUI-8 stress (docs/19 8.1): zero the device await drain-spin so EVERY
+     * await parks. Off by default; only tests/run/run.sh cui8's stress boot
+     * asks for it. It was the last knob still decided by the IMAGE (a baked
+     * C:\cui8_stress.flag), which stopped working the moment one image
+     * served every leg: the harness asks make for the image, make finds it
+     * up to date, and the marker the stress boot ordered is never baked. */
+    {"opt/org.proskrnl/stress", WSTR("Stress"), 0},
 };
 
 /* --- the QEMU boot STRINGS (HACK-006) -------------------------------------

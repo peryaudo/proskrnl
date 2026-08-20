@@ -2035,11 +2035,15 @@ cui8() {
     # EMPTY serial log means QEMU never launched the guest — an infra
     # flake, not a verdict — so that one case retries once, with the
     # launcher's own output kept for the post-mortem.
-    local kmtlog="$BUILD/cui8-kmt-serial.log"
+    local kmtlog="$BUILD/cui8-kmt-serial.log" kmtimg
+    # A COPY: this boot writes to the volume (firstboot alone creates half of
+    # C:\), and the master is the image every OTHER leg copies from. Booting
+    # it in place hands the next leg a volume that has already been lived in.
+    kmtimg="$(test_image_copy "$BUILD/cui8-kmt.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
         LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
-            "$ROOT/tools/qemu.sh" "$(test_image)" \
+            "$ROOT/tools/qemu.sh" "$kmtimg" \
             >"$BUILD/cui8-kmt-qemu.log" 2>&1 || true
         [[ -s "$kmtlog" ]] && break
         echo "cui8: empty serial log from the kmt boot (attempt $attempt);" \
@@ -2063,7 +2067,7 @@ cui8() {
     fi
 
     # (b) throttled boundary run, with the skip leg forbidden. Two knobs
-    # together, each carrying half the guarantee: CUI8_STRESS zeroes the
+    # together, each carrying half the guarantee: GUEST_STRESS zeroes the
     # await spin so EVERY await parks BY CONSTRUCTION — the spin's wall
     # time scales with host speed while a throttle is absolute, so on a
     # slower runner the spin can absorb the whole throttled latency and no
@@ -2081,7 +2085,7 @@ cui8() {
     # missing log, which every check below treats as FAIL.
     local sublog="$BUILD/proskrnl-subset-serial.log"
     rm -f "$sublog"
-    CUI8_STRESS=1 DRIVE_THROTTLE=$((4 * 1024 * 1024)) TIMEOUT=1200 \
+    GUEST_STRESS=1 DRIVE_THROTTLE=$((4 * 1024 * 1024)) TIMEOUT=1200 \
         "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-throttled-serial.log" 2>/dev/null || true
     if grep -q '\[KTEST\] progress_during_io PASS' "$sublog" &&
@@ -2128,10 +2132,13 @@ cui8() {
         fails=$((fails + 1))
     fi
 
-    # (d) the stress boot: CUI8_STRESS=1 bakes the marker that zeroes the
-    # await spin, so EVERY await parks — same verdicts required.
+    # (d) the stress boot: GUEST_STRESS=1 puts the knob that zeroes the await
+    # spin on the guest's command line, so EVERY await parks — same verdicts
+    # required. It was a marker baked into the image until one image served
+    # every leg: the harness stopped baking per boot, so a knob the BAKE
+    # carried stopped being a knob at all (it read as "never armed").
     rm -f "$sublog"
-    CUI8_STRESS=1 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    GUEST_STRESS=1 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-stress-serial.log" 2>/dev/null || true
     if ! grep -q 'cui8 stress knob armed' "$sublog" 2>/dev/null; then
         echo "[KTEST] cui8-stress FAIL (knob never armed; see $BUILD/cui8-stress-serial.log)"
@@ -2258,13 +2265,16 @@ net() {
     # The boot. TCG on a loaded runner makes DHCP+echo slow, never
     # different (every in-guest bound is guest-clocked); an EMPTY serial
     # log is the launch-infra flake, retried once (the cui8 pattern).
-    local pcap="$BUILD/net.pcap" netlog="$BUILD/net-serial.log"
+    local pcap="$BUILD/net.pcap" netlog="$BUILD/net-serial.log" netimg
+    # Its own copy, like every other leg that boots: this one writes the DHCP
+    # lease into the hive, and the master is what the next leg copies from.
+    netimg="$(test_image_copy "$BUILD/net.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
         rm -f "$pcap"
         NET_PCAP="$pcap" NET_ECHO_PORT="$echoport" LOG="$netlog" \
             TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
-            "$ROOT/tools/qemu.sh" "$(test_image)" \
+            "$ROOT/tools/qemu.sh" "$netimg" \
             >"$BUILD/net-qemu.log" 2>&1 || true
         [[ -s "$netlog" ]] && break
         echo "net: empty serial log (attempt $attempt); see $BUILD/net-qemu.log" >&2

@@ -185,9 +185,10 @@ the two runners by construction.
 ## HACK-006: `\Registry\Machine\Hardware\qemu` (the QEMU boot flags)
 
 ```
-Status:     active (seven values. DWORD: "Interactive", "PanicOnNotImplemented",
+Status:     active (eight values. DWORD: "Interactive", "PanicOnNotImplemented",
             "Gui" (windowed console vs. serial, default ON), "Shell" (explorer owns
-            the desktop, default OFF), and since Net-1 "NetEchoPort" and "NetStatic"
+            the desktop, default OFF), "Stress" (CUI-8: park on every device await,
+            default OFF, docs/19 §8.1), and since Net-1 "NetEchoPort" and "NetStatic"
             — the harness echo server's host port and the skip-DHCP static-address
             fallback, docs/24 §6b/§4b. REG_SZ: "Leg" (which test leg the session
             manager runs) and "Subtests" (the ntapi/winetest sweep filter))
@@ -212,7 +213,11 @@ Reason:     A boot knob has to live somewhere, and every existing one was BAKED 
             neither a leg name nor a glob query is a number; "Gui" and "Shell" are the
             two remaining probes of the same shape (which conhost binary was baked;
             whether explorer.exe was on the volume), and both stopped distinguishing
-            anything the moment one image carried every leg's payload.
+            anything the moment one image carried every leg's payload. "Stress" is the last
+            marker file of all, and it shows why leaving one behind does not work: the
+            harness stopped baking an image per boot, so a knob the BAKE carried was
+            silently never armed — make found the one image up to date and the boot that
+            ordered the marker ran without it.
 Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             kernel/cm/registry.c (CmpSeedQemuBootFlags — the DWORD table, the
             REG_SZ table and CmQueryQemuBootFlag) ;
@@ -224,8 +229,9 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             filters, user/wine/programs/conhost/proskrnl_glue.c
             conhost_wants_window, user/wine/wineserver-lite/common/shim.c
             probe_shell, user/wine/dlls/winefb.drv/display.c
-            winefb_shell_boot) ; tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI,
-            GUEST_SHELL, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
+            winefb_shell_boot, kernel/init/main.c KiConfigureCui8Stress) ;
+            tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI, GUEST_SHELL,
+            GUEST_STRESS, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
             NET_ECHO_PORT) ; the Net-1 consumers (tests/kmt/net_smoke.c
             NetEchoPort, drivers/net/netd.c NetStatic)
 Retirement: when proskrnl boots something other than QEMU often enough to want a real
@@ -286,9 +292,13 @@ discipline — a hand-rolled `qemu` line (docs/08's own recipe) would have lost 
 silently, and losing it is invisible because the run still passes. `PANIC_NOTIMPL=0` now
 passes `string=0` to say otherwise out loud.
 
-Two flags have moved: `interactive` and `panic_not_implemented`. `C:\cui8_stress.flag` is
-still image-baked — it is set by exactly one leg and is the least of the three; the
-remaining image variations want their own look.
+Nothing is image-baked any more. `C:\cui8_stress.flag` was the last marker file left
+behind — set by exactly one leg, and judged the least of the three — and it stopped
+working the moment one image served every leg: the harness asks `make` for the image
+instead of baking one per boot, `make` finds the single image up to date, and the marker
+the stress boot ordered is never written. The leg reported it honestly ("knob never
+armed"), which is the only reason it was not a silent hole in the CUI-8 conviction. It is
+`Stress` on the command line now.
 
 ---
 
