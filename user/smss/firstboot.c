@@ -33,10 +33,94 @@ static const WCHAR FirstbootEnvironment[] = WSTR("COMSPEC=C:\\windows\\system32\
                                                  "WINEDATADIR=\\??\\C:\\windows\\inf\0"
                                                  "windir=C:\\windows\0");
 
+/* A boot with no DESKTOP applies the registry-only inf.
+ *
+ * wine.inf's [RegisterDllsSection] is COM self-registration: setupapi runs
+ * each DLL's DllRegisterServer, which needs an apartment, which needs a
+ * message window. On a CUI-only boot there is no desktop to put one on, so
+ * every entry fails its way through CreateWindow, CoMarshalInterface and an
+ * rpcss that will not start — ~150 processes and the whole boot budget, to
+ * register the shell's classes on a machine with no shell.
+ *
+ * Both payloads are baked (Makefile WINE_INF_FULL / WINE_INF_CUI); this
+ * installs the one this boot means. Idempotent by SIZE: wineboot's freshness
+ * check keys on wine.inf's mtime, so rewriting it every boot would re-run the
+ * whole prefix update on boots that had already done it.
+ */
+static void FirstbootInstallInf(void)
+{
+    if (SmssIsGuiBoot())
+        return; /* the full payload is what the image already carries */
+
+    static UCHAR FirstbootInfBuffer[128 * 1024];
+    HANDLE src = 0, dst = 0;
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+
+    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\inf\\wine-cui.inf"));
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = 0;
+    attr.ObjectName = &name;
+    attr.Attributes = OBJ_CASE_INSENSITIVE;
+    attr.SecurityDescriptor = 0;
+    attr.SecurityQualityOfService = 0;
+    NTSTATUS status = NtCreateFile(&src, FILE_GENERIC_READ, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
+                                   FILE_SHARE_READ, FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] firstboot FAIL (no wine-cui.inf, %x)\n", SMSS_HEX(status));
+        return;
+    }
+    status = NtReadFile(src, 0, 0, 0, &iosb, FirstbootInfBuffer, sizeof(FirstbootInfBuffer), 0, 0);
+    ULONG bytes = (ULONG)iosb.Information;
+    NtClose(src);
+    if (status != STATUS_SUCCESS || bytes == 0 || bytes == sizeof(FirstbootInfBuffer))
+    {
+        SmssPrintf("[KTEST] firstboot FAIL (wine-cui.inf read %x, %u bytes)\n", SMSS_HEX(status),
+                   (unsigned int)bytes);
+        return;
+    }
+
+    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\inf\\wine.inf"));
+    status = NtCreateFile(&dst, FILE_GENERIC_READ, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
+                          FILE_SHARE_READ, FILE_OPEN,
+                          FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (status == STATUS_SUCCESS)
+    {
+        FILE_STANDARD_INFORMATION info;
+        NTSTATUS query =
+            NtQueryInformationFile(dst, &iosb, &info, sizeof(info), FileStandardInformation);
+        NtClose(dst);
+        if (query == STATUS_SUCCESS && info.EndOfFile.QuadPart == (LONGLONG)bytes)
+            return; /* already the CUI payload: leave the mtime alone */
+    }
+
+    status = NtCreateFile(&dst, FILE_GENERIC_WRITE, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL, 0,
+                          FILE_OVERWRITE_IF, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                          0, 0);
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] firstboot FAIL (wine.inf open for write %x)\n", SMSS_HEX(status));
+        return;
+    }
+    status = NtWriteFile(dst, 0, 0, 0, &iosb, FirstbootInfBuffer, bytes, 0, 0);
+    NtClose(dst);
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] firstboot FAIL (wine.inf write %x)\n", SMSS_HEX(status));
+        return;
+    }
+    SmssPrintf("smss: firstboot: CUI-only boot, installed the registry-only inf (%u bytes)\n",
+               (unsigned int)bytes);
+}
+
 NTSTATUS FirstbootRun(void)
 {
     NTSTATUS status;
 
+    FirstbootInstallInf();
     SmssSay("smss: firstboot: running wineboot --init\n");
 
     UNICODE_STRING image, cmdline, curdir;
