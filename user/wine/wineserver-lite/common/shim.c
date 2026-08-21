@@ -51,6 +51,8 @@
 #include "winbase.h"
 #include "winternl.h"
 #include "ntuser.h"
+
+#include "../../common/bootflag.h"
 #include "ddk/wdm.h"
 
 #include "object.h"
@@ -834,29 +836,10 @@ static LONG CALLBACK report_exception( EXCEPTION_POINTERS *info )
  * further (Art. 12). */
 static void probe_shell(void)
 {
-    static const WCHAR key_path[] = L"\\Registry\\Machine\\Hardware\\qemu";
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    HANDLE key;
-    struct
-    {
-        KEY_VALUE_PARTIAL_INFORMATION info;
-        UCHAR tail[sizeof(ULONG)];
-    } buffer;
-    ULONG result_length = 0, value = 0;
-
-    RtlInitUnicodeString( &name, (WCHAR *)key_path );
-    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
-    if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
-    {
-        RtlInitUnicodeString( &name, L"Shell" );
-        if (!NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer, sizeof(buffer),
-                              &result_length ) &&
-            buffer.info.Type == REG_DWORD && buffer.info.DataLength == sizeof(ULONG))
-            memcpy( &value, buffer.info.Data, sizeof(value) );
-        NtClose( key );
-    }
-    prsk_no_explorer = !value;
+    /* Absent key = not a QEMU guest, where the GUI-2 fixtures are the
+     * arrangement, so the default is OFF — the one thing that legitimately
+     * differs between this key's three askers (user/wine/common/bootflag.h). */
+    prsk_no_explorer = !prsk_qemu_boot_flag( L"Shell", 0 );
     prsk_log( "[KTEST] wineserver-lite: %s\n",
               prsk_no_explorer ? "no shell; GUI-2 desktop fixtures on"
                                : "shell boot; the desktop belongs to explorer" );

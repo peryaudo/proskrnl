@@ -18,6 +18,8 @@
 #include "wine/debug.h"
 #include "wine/server.h"
 
+#include "../../common/bootflag.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
 struct winefb_scanout winefb_scanout;
@@ -49,33 +51,13 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access, ULONG sharing 
  * Cached: the answer cannot change within a boot. */
 static BOOL winefb_shell_boot(void)
 {
+    /* Cached: the flag cannot change within a boot, and this is asked on the
+     * display path. Absent key = not a QEMU guest, where the GUI-2 fixtures
+     * are the arrangement, so the default is OFF (user/wine/common/bootflag.h
+     * carries the rest of the rule and the two other askers of this key). */
     static int cached = -1;
 
-    if (cached < 0)
-    {
-        UNICODE_STRING name;
-        OBJECT_ATTRIBUTES attr;
-        HANDLE key;
-        struct
-        {
-            KEY_VALUE_PARTIAL_INFORMATION info;
-            UCHAR tail[sizeof(ULONG)];
-        } buffer;
-        ULONG result_length = 0, value = 0;
-
-        RtlInitUnicodeString( &name, L"\\Registry\\Machine\\Hardware\\qemu" );
-        InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
-        if (!NtOpenKey( &key, KEY_QUERY_VALUE, &attr ))
-        {
-            RtlInitUnicodeString( &name, L"Shell" );
-            if (!NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer,
-                                  sizeof(buffer), &result_length ) &&
-                buffer.info.Type == REG_DWORD && buffer.info.DataLength == sizeof(ULONG))
-                memcpy( &value, buffer.info.Data, sizeof(value) );
-            NtClose( key );
-        }
-        cached = value != 0;
-    }
+    if (cached < 0) cached = prsk_qemu_boot_flag( L"Shell", 0 ) != 0;
     return cached;
 }
 
