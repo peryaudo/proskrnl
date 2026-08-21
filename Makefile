@@ -647,6 +647,24 @@ $(WINE_INF_FULL): third_party/wine/loader/wine.inf tools/filter_inf.py
 	python3 tools/filter_inf.py --keep RegisterDlls --add-register mmdevapi.dll,dsound.dll \
 	    third_party/wine/loader/wine.inf $@
 
+# ...and the registry-only one, for a boot with no DESKTOP. Self-registration
+# is COM registration: setupapi runs each DLL's DllRegisterServer, which needs
+# an apartment, which needs a message window. A CUI-only boot (`Gui`=0) has no
+# desktop, so every one of the section's entries fails its way through
+# CreateWindow, CoMarshalInterface and an rpcss that will not start — measured
+# at ~150 processes and the whole boot budget, on a machine that has no shell
+# to register the shell's classes FOR.
+#
+# This is the registry-only inf the CUI images carried before the images were
+# unified; merging the three into one moved self-registration onto boots that
+# had never done it. One image still, and both payloads are on it — what the
+# BOOT applies is chosen by smss (user/smss/firstboot.c), which is the same
+# rule as everything else here: the boot decides, the media carries.
+WINE_INF_CUI := $(BUILD)/wine-proskrnl-cui.inf
+$(WINE_INF_CUI): third_party/wine/loader/wine.inf tools/filter_inf.py
+	@mkdir -p $(dir $@)
+	python3 tools/filter_inf.py third_party/wine/loader/wine.inf $@
+
 # The baked COPIES of the pinned tree's PE dlls are debug-stripped. The
 # DWARF sections are never read on-target, and with no COW and no eviction
 # (Art. 3) every mapped image is copied whole per process — the mingw-gcc
@@ -759,6 +777,7 @@ WINFILES := $(foreach d,$(WINESTRIP_NAMES),win:$(WINESTRIP)/$(d).dll=windows/sys
             win:$(RUNDLL32)=windows/system32/rundll32.exe \
             win:$(WINEBOOT)=windows/system32/wineboot.exe \
             win:$(WINE_INF_FULL)=windows/inf/wine.inf \
+            win:$(WINE_INF_CUI)=windows/inf/wine-cui.inf \
             win:$(WINE_NLS)/locale.nls=windows/system32/locale.nls \
             win:$(WINE_NLS)/l_intl.nls=windows/system32/l_intl.nls \
             win:$(WINE_NLS)/c_1252.nls=windows/system32/c_1252.nls \
@@ -788,7 +807,7 @@ WINFILES := $(foreach d,$(WINESTRIP_NAMES),win:$(WINESTRIP)/$(d).dll=windows/sys
 # failed with "win file missing". (The nls/etc/whoami entries are files of
 # the pinned submodule, present after checkout — not products, not listed.)
 WINFILES_DEPS := $(HELLO) $(SMSS) $(CONHOST) $(M9SMOKE) $(RUNDLL32) $(WINEBOOT) \
-                 $(WINE_INF_FULL) $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
+                 $(WINE_INF_FULL) $(WINE_INF_CUI) $(WSRESOLV) $(WINE_PE_DLLS) $(WINESTRIP_DLLS) $(WINESTRIP_EXES)
 
 # Everything $(WINFILES) references that this Makefile BUILDS is $(WINFILES_DEPS)
 # above; both images depend on it. There is no longer a `print-winfiles` for a
