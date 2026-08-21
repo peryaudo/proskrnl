@@ -57,7 +57,7 @@ static BOOL winefb_shell_boot(void)
      * carries the rest of the rule and the two other askers of this key). */
     static int cached = -1;
 
-    if (cached < 0) cached = prsk_qemu_boot_flag( L"Shell", 0 ) != 0;
+    if (cached < 0) cached = prsk_qemu_boot_flag( L"ShellBoot", 0 ) != 0;
     return cached;
 }
 

@@ -34,9 +34,6 @@ void SmssSay(const char *ascii);
 void SmssPrintf(const char *fmt, ...);
 void SmssInitUnicodeString(UNICODE_STRING *str, const WCHAR *wide);
 void SmssSleep(ULONG milliseconds);
-/* Existence probe on the boot volume; *statusOut (optional) gets the raw
- * NtCreateFile status so callers can tell "not found" from a broken open. */
-int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut);
 
 /* The QEMU boot flags, read out of the volatile
  * \Registry\Machine\Hardware\qemu key the kernel published from the command
@@ -72,6 +69,10 @@ int SmssIsGuiBoot(void);
  * fixtures (user/wine/wineserver-lite/common/shim.c probe_shell reads the
  * same value). */
 int SmssIsShellBoot(void);
+
+/* Publish SmssIsShellBoot's answer for the PE side (the desktop server and
+ * winefb.drv). Call before any win32u client starts. */
+void SmssPublishShellBoot(void);
 
 /* --- launch.c: spawning over NtCreateUserProcess --------------------------- */
 
@@ -111,6 +112,15 @@ int SmssConsoleAvailable(void);
  * console flows, wow64, or one of the GUI legs (which park forever). Returns
  * the failure count smss exits with. */
 int SessionRun(int abiFailures, int registryOk);
+
+/* Read the `Leg`/`Subtests` boot strings, once. Idempotent: the shell
+ * derivation below asks before the servers start, SessionRun asks again at
+ * the top of the test session. */
+void SessionLoadBootStrings(void);
+
+/* Does the selected leg pin the explorerless desktop (GUI-2's fixtures)?
+ * The one exception to "a GUI boot has a shell" — see session.c. */
+int SessionIsDesktopFixtureLeg(void);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */
 void SessionInteractive(void);

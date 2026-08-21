@@ -210,10 +210,19 @@ Reason:     A boot knob has to live somewhere, and every existing one was BAKED 
             own (fourteen images), two legs could never share one, and FILTERING a sweep
             was a further image again — the media recorded which subset had last been
             asked for. "Leg" and "Subtests" are strings rather than numbers because
-            neither a leg name nor a glob query is a number; "Gui" and "Shell" are the
-            two remaining probes of the same shape (which conhost binary was baked;
-            whether explorer.exe was on the volume), and both stopped distinguishing
-            anything the moment one image carried every leg's payload. "Stress" is the last
+            neither a leg name nor a glob query is a number; "Gui" is the last probe
+            of the same shape (which conhost binary was baked), and it stopped
+            distinguishing anything the moment one image carried every leg's payload.
+
+            What is NOT here is as much the point. "Shell" was a third flag, and an
+            arrangement asked for by name is one every caller can forget: it
+            defaulted to the EXCEPTION (the explorerless GUI-2 desktop), so `make
+            rungui` came up without the shell it had always had and nothing said so.
+            Whether explorer owns the desktop, and whether conhost puts up a window,
+            are CONSEQUENCES of two facts a boot already states — is there a desktop,
+            and is a human at it — so smss derives them once and publishes the
+            answers here for the three PE modules that read them. A derived value is
+            a value nobody can forget to pass. "Stress" is the last
             marker file of all, and it shows why leaving one behind does not work: the
             harness stopped baking an image per boot, so a knob the BAKE carried was
             silently never armed — make found the one image up to date and the boot that
@@ -224,13 +233,15 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             the consumers that used to probe for a marker file
             (kernel/init/main.c KiIsInteractiveBoot and
             KiConfigurePanicOnNotImplemented, user/smss/smss.c
-            SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsShellBoot,
+            SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsShellBoot /
+            SmssConsoleWantsWindow / SmssPublishShellBoot,
             user/smss/session.c SessionRun's leg dispatch and the two sweeps'
             filters, user/wine/programs/conhost/proskrnl_glue.c
             conhost_wants_window, user/wine/wineserver-lite/common/shim.c
             probe_shell, user/wine/dlls/winefb.drv/display.c
-            winefb_shell_boot, kernel/init/main.c KiConfigureCui8Stress) ;
-            tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI, GUEST_SHELL,
+            winefb_shell_boot, all three through the one reader
+            user/wine/common/bootflag.h, kernel/init/main.c KiConfigureCui8Stress) ;
+            tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI,
             GUEST_STRESS, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
             NET_ECHO_PORT) ; the Net-1 consumers (tests/kmt/net_smoke.c
             NetEchoPort, drivers/net/netd.c NetStatic)
