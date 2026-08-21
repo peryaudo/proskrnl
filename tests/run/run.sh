@@ -857,26 +857,14 @@ oracle() {
 # (Makefile IMG_TEST_WARM). Every leg copies THIS, because wineboot --init on
 # the whole userland is ~90s here and nearer four minutes on a CI runner --
 # per leg, when a leg's own image was small enough for that not to show.
-test_image() {   # $1 = "cui" for the CUI-warmed one; echoes the path
+test_image() {   # echoes the path of the freshly built, warmed test image
     # ALWAYS rebuild, never just "build it if missing": these are regression
     # gates, and judging a stale kernel against fresh test sources reports the
     # previous build's verdict as this one's. make is incremental, so the cost
     # is nil when nothing changed -- and the warm-up boot is a make rule, so
     # it re-runs when, and only when, the image is rebuilt.
-    #
-    # Two warm images, because the first boot's two inf payloads cost
-    # differently (Makefile IMG_TEST_WARM / IMG_TEST_WARM_CUI). A leg asks for
-    # the one matching what it BOOTS. Defaulting to the full one is deliberate:
-    # a CUI leg given it is CORRECT and merely slower, where a GUI leg given
-    # the CUI-warmed one would find the prefix initialised and skip the COM
-    # registrations it needs. A forgotten "cui" costs time; it cannot lie.
-    if [ "${1-}" = cui ]; then
-        make -C "$ROOT" test-img-warm-cui >&2 || exit 1
-        echo "$ROOT/build/proskrnl-test-warm-cui.hdd"
-    else
-        make -C "$ROOT" test-img-warm >&2 || exit 1
-        echo "$ROOT/build/proskrnl-test-warm.hdd"
-    fi
+    make -C "$ROOT" test-img-warm >&2 || exit 1
+    echo "$ROOT/build/proskrnl-test-warm.hdd"
 }
 
 # The VIRGIN one, for the three legs that need a machine whose disk has never
@@ -891,9 +879,9 @@ test_image_virgin() {   # echoes the path of the freshly built test image
 
 # A private COPY of it, under the caller's name, for a leg that mutates the
 # volume or reads it back afterwards.
-test_image_copy() {   # $1 = destination path, $2 = "cui" if the leg boots Gui=0
+test_image_copy() {   # $1 = destination path; echoes it
     local src
-    src="$(test_image "${2-}")" || exit 1
+    src="$(test_image)" || exit 1
     mkdir -p "$(dirname "$1")"
     cp "$src" "$1"
     echo "$1"
@@ -921,7 +909,7 @@ proskrnl() {
     check_subtests
     local img tag=""
     (( ${#SUBTESTS[@]} )) && tag="-subset"
-    img="$(test_image_copy "$ROOT/build/tests/proskrnl$tag.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/proskrnl$tag.hdd")" || exit 1
 
     local log="$ROOT/build/tests/proskrnl$tag-serial.log"
     LOG="$log" PASS_RE="\[KTEST\] ntapi done" TIMEOUT="${TIMEOUT:-900}" \
@@ -1142,7 +1130,7 @@ winetest() {
         # Its copy is made HERE, not above: an audio-only subset run
         # (`run.sh winetest mmdevapi`) selects no CUI pair and would otherwise
         # copy 320 MB it never boots — the audio arm already does it this way.
-        img="$(test_image_copy "$ROOT/build/tests/wtest$tag.hdd" cui)" || exit 1
+        img="$(test_image_copy "$ROOT/build/tests/wtest$tag.hdd")" || exit 1
         LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
             GUEST_GUI=0 GUEST_LEG=wtest GUEST_SUBTESTS="${cuiKeys[*]}" \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
@@ -1710,7 +1698,7 @@ persist() {
 wow64() {
     mkdir -p "$BUILD"
     local img log="$BUILD/wow64.log"
-    img="$(test_image_copy "$ROOT/build/tests/wow64.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/wow64.hdd")" || exit 1
     LOG="$log" PASS_RE="\[KTEST\] wow64 hello32.exe PASS" TIMEOUT="${TIMEOUT:-900}" \
         GUEST_GUI=0 GUEST_LEG=wow64 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
@@ -1827,7 +1815,7 @@ firstboot() {
 # verdict grep reads.
 console() {
     local img
-    img="$(test_image_copy "$ROOT/build/tests/console.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/console.hdd")" || exit 1
     local sock="$ROOT/build/tests/console.sock" log="$ROOT/build/tests/console.log"
 
     # CUI-3: a resident SCM under no-eviction/no-COW needs the winetest
@@ -1864,7 +1852,7 @@ scm() {
     # service -- the SvcDemo this leg creates is still absent. (This used to
     # rm the master, because `make test` booted it in place; it copies now.)
     local img
-    img="$(test_image_copy "$ROOT/build/tests/scm.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/scm.hdd")" || exit 1
 
     local boot sock log qemu_wrapper
     for boot in 1 2; do
@@ -1900,7 +1888,7 @@ procs() {
     # rewritten by the guest, so its mtime outran the modules and make would
     # skip the rebuild -- but nothing boots the build output any more.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/procs.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/procs.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/procs.sock" log="$ROOT/build/tests/procs.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
@@ -1928,7 +1916,7 @@ procs() {
 files() {
     # The procs() pattern: a copy of the warm image, nothing to reset.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/files.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/files.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/files.sock" log="$ROOT/build/tests/files.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
@@ -1955,7 +1943,7 @@ files() {
 # greps their markers off the serial log.
 cui6() {
     local img
-    img="$(test_image_copy "$ROOT/build/tests/cui6.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/cui6.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui6.sock" log="$ROOT/build/tests/cui6.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
@@ -1986,7 +1974,7 @@ cui6() {
 # is the live shutdown arm's verdict.
 cui7() {
     local img
-    img="$(test_image_copy "$ROOT/build/tests/cui7.hdd" cui)" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/cui7.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui7.sock" log="$ROOT/build/tests/cui7.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=1024M TIMEOUT="${TIMEOUT:-900}" \
@@ -2082,7 +2070,7 @@ cui8() {
     # A COPY: this boot writes to the volume (firstboot alone creates half of
     # C:\), and the master is the image every OTHER leg copies from. Booting
     # it in place hands the next leg a volume that has already been lived in.
-    kmtimg="$(test_image_copy "$BUILD/cui8-kmt.hdd" cui)" || exit 1
+    kmtimg="$(test_image_copy "$BUILD/cui8-kmt.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
         LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
@@ -2340,7 +2328,7 @@ net() {
     local pcap="$BUILD/net.pcap" netlog="$BUILD/net-serial.log" netimg
     # Its own copy, like every other leg that boots: this one writes the DHCP
     # lease into the hive, and the master is what the next leg copies from.
-    netimg="$(test_image_copy "$BUILD/net.hdd" cui)" || exit 1
+    netimg="$(test_image_copy "$BUILD/net.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
         rm -f "$pcap"
