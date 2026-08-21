@@ -257,7 +257,13 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
         return; /* the key exists, so QEMU decided: an absent string is empty */
     if (status != STATUS_SUCCESS || info->Type != REG_SZ)
     {
-        SmssPrintf("smss: HKLM\\Hardware\\qemu string is not a REG_SZ (%x); reading \"\"\n",
+        /* STATUS_BUFFER_OVERFLOW here means the kernel published a string
+         * longer than SMSS_QEMU_STRING_MAX, i.e. the two caps have drifted —
+         * named separately because reading it as "" means "no filter", which
+         * is a DIFFERENT run rather than a missing one. */
+        SmssPrintf("smss: HKLM\\Hardware\\qemu %s (%x); reading \"\"\n",
+                   status == STATUS_BUFFER_OVERFLOW ? "string is longer than this build's cap"
+                                                    : "string is not a REG_SZ",
                    SMSS_HEX(status));
         return;
     }

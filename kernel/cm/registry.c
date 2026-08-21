@@ -2810,11 +2810,18 @@ static const struct
     {"opt/org.proskrnl/subtests", WSTR("Subtests")},
 };
 
-/* The longest fw_cfg string this kernel will publish. The leg names are one
- * word; the filter query is a space-separated glob list, and 256 is past any
- * command line a human types (a longer one is truncated LOUDLY below rather
- * than silently selecting a different subset). */
-#define CMP_QEMU_STRING_MAX 256
+/* The longest fw_cfg string this kernel will publish. A leg name is one word,
+ * but the filter query is a space-separated list the HARNESS builds, not one
+ * a human types: the winetest gate sends the exact `<exe>:<subtest>` pair
+ * list its boot must run, which is 1270 bytes at the current manifest. 256
+ * was sized for the typed case and the gate quietly outgrew it — the item
+ * was refused, the seeding read the refusal as "unspecified", and an empty
+ * filter means EVERY case, so both winetest boots swept the whole manifest
+ * instead of their half. 4096 is past the manifest's foreseeable growth;
+ * beyond it the read is now FATAL (arch/x86_64/fwcfg.c) rather than a
+ * different subset, and tools/qemu.sh refuses to build such a command line
+ * in the first place, naming the item. */
+#define CMP_QEMU_STRING_MAX 4096
 
 /* Parse a fw_cfg blob as a decimal ULONG. The blob carries no terminator
  * (QEMU sizes `string=` at strlen() with the NUL excluded), and a malformed
@@ -2877,27 +2884,30 @@ static void CmpSeedQemuBootFlags(void)
          * `string=` at strlen()), so it is widened into a NUL-terminated
          * buffer here — REG_SZ is UTF-16 and CmpSeedStringValue takes a
          * counted PCWSTR. */
-        char blob[CMP_QEMU_STRING_MAX + 1];
-        WCHAR wide[CMP_QEMU_STRING_MAX + 1];
+        /* static: 4 KiB + 8 KiB is not a kernel stack frame. This runs once,
+         * on the boot path, single-threaded (Art. 3). */
+        static char CmpQemuStringBlob[CMP_QEMU_STRING_MAX + 1];
+        static WCHAR CmpQemuStringWide[CMP_QEMU_STRING_MAX + 1];
         uint32_t bytes = 0;
-        /* sizeof(blob) - 1: the item must leave room for the terminator this
-         * adds, and one too long is refused LOUDLY by KiFwCfgReadItem rather
-         * than truncated into a different filter. */
-        BOOLEAN said = KiFwCfgReadItem(item, blob, sizeof(blob) - 1, &bytes);
+        /* sizeof(...) - 1: the item must leave room for the terminator this
+         * adds, and one too long PANICS in KiFwCfgReadItem rather than
+         * arriving here as a different filter. */
+        BOOLEAN said =
+            KiFwCfgReadItem(item, CmpQemuStringBlob, sizeof(CmpQemuStringBlob) - 1, &bytes);
         if (!said)
         {
             bytes = 0; /* absent, and an absent string is the empty one */
         }
-        blob[bytes] = '\0';
+        CmpQemuStringBlob[bytes] = '\0';
         for (uint32_t j = 0; j < bytes; j++)
         {
-            wide[j] = (WCHAR)(unsigned char)blob[j];
+            CmpQemuStringWide[j] = (WCHAR)(unsigned char)CmpQemuStringBlob[j];
         }
-        wide[bytes] = 0;
+        CmpQemuStringWide[bytes] = 0;
         /* Seeded either way, like the flags above: the key states the whole
          * answer and no reader has to know this table. */
-        CmpSeedStringValue(qemu, CmpQemuBootStrings[i].valueName, wide);
-        DbgPrint("cm: qemu boot string %s=\"%s\" (%s)\n", item, said ? blob : "",
+        CmpSeedStringValue(qemu, CmpQemuBootStrings[i].valueName, CmpQemuStringWide);
+        DbgPrint("cm: qemu boot string %s=\"%s\" (%s)\n", item, said ? CmpQemuStringBlob : "",
                  said ? "command line" : "default");
     }
 }

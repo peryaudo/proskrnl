@@ -45,8 +45,10 @@ int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut);
 ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu);
 
 /* The longest fw_cfg STRING the kernel publishes under that key
- * (kernel/cm/registry.c CMP_QEMU_STRING_MAX). One number for both sides. */
-#define SMSS_QEMU_STRING_MAX 256
+ * (kernel/cm/registry.c CMP_QEMU_STRING_MAX). One number for both sides —
+ * a smaller one here would read a value the kernel published in full as the
+ * empty string, which for the sweep filter means "every case". */
+#define SMSS_QEMU_STRING_MAX 4096
 
 /* The REG_SZ twin of SmssQemuFlag: copies the value into `out` (at most
  * `outChars` including the terminator). Every failure — no QEMU, no value,
