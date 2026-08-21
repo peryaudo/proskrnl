@@ -43,12 +43,11 @@
 int __cdecl wmain( int argc, WCHAR *argv[] );
 
 /* Window mode or serial mode, decided at BOOT time: the volatile
- * \Registry\Machine\Hardware\qemu "Gui" value the kernel published from the
- * QEMU command line's fw_cfg items (kernel/cm/registry.c, HACK-006). It
- * defaults ON — the same reading user/smss/smss.c SmssIsGuiBoot takes, and
- * for the same reason: the windowed console over the desktop stack is the
- * product, and a boot whose verdict rides the SERIAL transport (every
- * scripted CUI leg, `make test`, `make run`) says so on the command line.
+ * \Registry\Machine\Hardware\qemu "ConsoleWindow" value, which smss DERIVES
+ * from the boot's `Gui` and `Interactive` flags and publishes before this
+ * process starts (user/smss/smss.c SmssConsoleWantsWindow). A window needs a
+ * desktop to sit on and a human to read it; every scripted leg takes its
+ * verdict off the serial transport, the desktop legs included.
  *
  * Deliberately NOT a disk probe: every image carries the desktop server now,
  * so "is wineserver-lite here" no longer distinguishes anything — which is
@@ -60,7 +59,7 @@ static int conhost_wants_window( void )
      * windowed one, so the default there is ON — the `whenNotQemu` argument,
      * which is the only thing that legitimately differs between the three
      * askers of this key (user/wine/common/bootflag.h). */
-    return prsk_qemu_boot_flag( L"Gui", 1 ) != 0;
+    return prsk_qemu_boot_flag( L"ConsoleWindow", 1 ) != 0;
 }
 
 static void display( const char *text )

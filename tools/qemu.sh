@@ -232,13 +232,11 @@ fi
 # difference was which client the session manager would find. Unset means the
 # empty string, and each consumer's reading of empty is its own default: no
 # leg is the plain boot suite, no filter is every case.
-# GUEST_SHELL=1 hands the desktop to explorer (the shell arrangement): the
-# desktop server leaves its own fixtures off and win32u's get_desktop_window
-# auto-launches explorer, which creates and owns the desktop. Off by default —
-# the GUI legs run purpose-built clients over the fixtures.
-if [[ "${GUEST_SHELL:-0}" != 0 ]]; then
-    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/shell,string=1)
-fi
+# There is no GUEST_SHELL: whether explorer owns the desktop is DERIVED from
+# GUEST_GUI and GUEST_LEG by smss (user/smss/smss.c SmssIsShellBoot) and
+# published as HKLM\Hardware\qemu ShellBoot. A GUI boot has a shell, the way
+# a Windows session does; the explorerless desktop is GUI-2's pinned
+# experiment, so GUEST_LEG=gui2 is how you ask for it.
 
 # CUI-8 stress (docs/19 8.1): zero the kernel's device await drain-spin so
 # every await parks. Off by default; tests/run/run.sh cui8 asks for it on the

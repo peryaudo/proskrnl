@@ -162,14 +162,28 @@ NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console, ULONG t
 /* wineserver-lite (HACK-003) is a system service, not a GUI app: it must be
  * running before ANYTHING that loads win32u, because every such process is
  * one of its clients. Started first, fire-and-forget: the handles are kept
- * forever because the process never exits. Probe/skip on the image file, so
- * this is a no-op on every serverless image. */
+ * forever because the process never exits.
+ *
+ * Only on a GUI boot. `Gui=0` is CUI-ONLY, not headless-with-a-desktop: there
+ * is no desktop, so there is nothing for a desktop server to serve, and a
+ * user32 call that would create a window FAILS at runtime (the client half
+ * reads the same flag -- user/wine/wineserver-lite/client/call.c
+ * transport_init -- so it neither waits for the server nor falls back
+ * in-process). The gate used to be a probe for the file on the volume, from
+ * when a CUI image simply did not carry the server; one image carries it
+ * either way now, so the file stopped distinguishing anything and the BOOT
+ * decides. */
 void SmssStartWineServer(void)
 {
+    if (!SmssIsGuiBoot())
+    {
+        SmssSay("smss: CUI-only boot; no desktop server\n");
+        return;
+    }
+    /* No probe: on a GUI boot the server is REQUIRED, so a missing file is a
+     * bringup failure to say out loud (SmssSpawn below), not a reason to
+     * quietly come up without a desktop. */
     static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe");
-    if (!SmssFileExists(path, 0))
-        return; /* no server on this image: win32u stays in-process */
-
     static HANDLE SmssWineServerProcess, SmssWineServerThread;
     NTSTATUS status = SmssSpawn(path, 0, 0, &SmssWineServerProcess, &SmssWineServerThread);
     if (status != STATUS_SUCCESS)
@@ -217,15 +231,15 @@ static int SmssConsoleServerAttached(void)
 
 /* Start the M9 console server: conhost, pumping the kernel ConDrv transport
  * with the COM1 serial tty behind it (HACK-004). Fire-and-forget — conhost
- * outlives every console client. Absent conhost.exe (the hermetic test
- * images) is not an error: console requests then fail fast and nothing here
- * blocks. */
+ * outlives every console client.
+ *
+ * No probe: one image carries conhost.exe on every boot, so "is it there"
+ * decides nothing, and skipping silently on its absence would turn a broken
+ * bake into a boot with no console rather than into a failure anyone
+ * reads. SmssSpawn says so out loud instead. */
 void SmssStartConhost(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\conhost.exe");
-    if (!SmssFileExists(path, 0))
-        return;
-
     static HANDLE SmssConhostProcess, SmssConhostThread;
     NTSTATUS status = SmssSpawn(path, 0, 0, &SmssConhostProcess, &SmssConhostThread);
     if (status != STATUS_SUCCESS)

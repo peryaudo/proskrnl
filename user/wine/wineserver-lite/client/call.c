@@ -12,17 +12,30 @@
  *
  * Until GUI-2's image was re-pointed at the server there was a SECOND mode:
  * the DLL dispatched into its own copy of the state machine when no
- * wineserver-lite.exe was on the boot volume. It is gone, and the absence of
- * a server is now simply fatal. A silent fall back would be the worst
- * outcome available -- a second process would quietly become a second writer
- * of the session mapping and a second owner of the window tree, and the
- * damage would surface as corrupted windows much later (Art. 12: refuse
- * loudly) -- and keeping a mode no shipping image selected meant every GUI
- * change had to be correct in an arrangement nothing ran.
+ * wineserver-lite.exe was on the boot volume. It is gone and stays gone. A
+ * silent fall back would be the worst outcome available -- a second process
+ * would quietly become a second writer of the session mapping and a second
+ * owner of the window tree, and the damage would surface as corrupted
+ * windows much later (Art. 12: refuse loudly) -- and keeping a mode no
+ * shipping image selected meant every GUI change had to be correct in an
+ * arrangement nothing ran.
  *
- * The invariant this leaves: an image carrying win32u.dll carries
- * wineserver-lite.exe. Nothing probes for it -- a violation is a loud
- * bringup failure on the first client, which is the enforcement.
+ * What decides whether there IS a server is the BOOT, not the image. One
+ * image carries both win32u.dll and wineserver-lite.exe, so "is the server
+ * on the volume" stopped distinguishing anything; `Gui` does (HACK-006,
+ * kernel/cm/registry.c). The two regimes:
+ *
+ *   Gui=1   the desktop boot. A server is expected, this waits for it, and
+ *           its absence is a loud bringup failure on the first client.
+ *   Gui=0   the CUI-only boot. There is no server BY DESIGN -- smss does not
+ *           start one (user/smss/launch.c) -- so this does not wait for one
+ *           and does not look for one. wine_server_call answers
+ *           STATUS_UNSUCCESSFUL, i.e. a user32 call that would create a
+ *           window FAILS at runtime, which is what CUI-only means. It is not
+ *           headless: nothing draws anywhere, and nothing pretends to.
+ *
+ * Neither regime falls back in-process. The difference is only whether the
+ * absence of a server is a defect or the arrangement.
  */
 
 #include <assert.h>
@@ -42,6 +55,8 @@
 #include "request.h"
 #include "wine/server_protocol.h"
 #include "wine/server.h"
+
+#include "../../common/bootflag.h"
 
 #include "prsk_request_table.h"
 #include "transport.h"
@@ -253,6 +268,16 @@ static unsigned int slot_call( unsigned int index, enum prsk_slot_op op,
 /* Attach to the server once, for the whole process. */
 static int transport_init(void)
 {
+    /* Asked BEFORE wait_for_server, and this is the whole reason the flag has
+     * to reach the client rather than only smss: waiting is 400 x 50 ms, so a
+     * CUI boot that merely failed to start a server would stall EVERY
+     * win32u-linking process for twenty seconds before failing anyway. A boot
+     * that says Gui=0 is not missing its server, it has none. */
+    if (!prsk_qemu_boot_flag( L"Gui", 1 ))
+    {
+        prsk_log( "[KTEST] wineserver-lite: CUI-only boot; no desktop, window calls will fail\n" );
+        return 0;
+    }
     if (!wait_for_server() || !open_transport())
     {
         prsk_log( "[KTEST] gui3 server ABSENT FAIL\n" );

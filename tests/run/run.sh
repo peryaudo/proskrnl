@@ -1292,7 +1292,7 @@ guiwtest() {
     # test binary and its spawned children resident at once.
     local log="$ROOT/build/tests/guiwtest-serial.log"
     LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
-        GUEST_GUI=0 GUEST_LEG=guiwtest \
+        GUEST_LEG=guiwtest \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # msg.c's own assertion text, replayed out of the console screen diff
@@ -2539,7 +2539,7 @@ gui() {
     # minutes instead of fifteen.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui input PASS' \
-        GUEST_GUI=0 GUEST_LEG=gui \
+        GUEST_LEG=gui \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2629,7 +2629,7 @@ audio() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
-        GUEST_GUI=0 GUEST_LEG=audio \
+        GUEST_LEG=audio \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2691,7 +2691,7 @@ audio() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
-        GUEST_GUI=0 GUEST_LEG=wasapi \
+        GUEST_LEG=wasapi \
         "$ROOT/tools/qemu.sh" "$img2" >/dev/null 2>&1 &
     qemu_wrapper=$!
     if ! await '\[KTEST\] audio (PASS|FAIL)'; then
@@ -2726,7 +2726,7 @@ audio() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
         AUDIODEV="none,id=snd0" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
-        GUEST_GUI=0 GUEST_LEG=capture \
+        GUEST_LEG=capture \
         "$ROOT/tools/qemu.sh" "$img3" >/dev/null 2>&1 &
     qemu_wrapper=$!
     # The kmt SND suite runs here too — same device, third backend shape —
@@ -2760,7 +2760,7 @@ audio() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" \
         AUDIODEV="none,id=snd0" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio capture PASS' \
-        GUEST_GUI=0 GUEST_LEG=wasapicap \
+        GUEST_LEG=wasapicap \
         "$ROOT/tools/qemu.sh" "$img4" >/dev/null 2>&1 &
     qemu_wrapper=$!
     if ! await '\[KTEST\] audio capture (PASS|FAIL)'; then
@@ -2812,7 +2812,7 @@ wow64aud() {
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
         MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] audio PASS' \
-        GUEST_GUI=0 GUEST_LEG=wasapi32 \
+        GUEST_LEG=wasapi32 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2911,7 +2911,7 @@ gui2() {
     # the wedged-run backstop.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='PRSK-GUI2-NEVER' \
-        GUEST_GUI=0 GUEST_LEG=gui2 \
+        GUEST_LEG=gui2 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -2984,7 +2984,7 @@ gui3() {
     # (the server plus two clients), each copying the images it maps.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI3-NEVER' \
-        GUEST_GUI=0 GUEST_LEG=gui3 \
+        GUEST_LEG=gui3 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3058,7 +3058,7 @@ gui4() {
 
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI4-NEVER' \
-        GUEST_GUI=0 GUEST_LEG=gui4 \
+        GUEST_LEG=gui4 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3221,7 +3221,7 @@ gui5() {
     # (the server, fontdiff, then the two clients).
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5-NEVER' \
-        GUEST_GUI=0 GUEST_LEG=gui5 \
+        GUEST_LEG=gui5 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3327,7 +3327,7 @@ gui5con() {
     # off $log, so GUEST_INTERACTIVE is set and INTERACTIVE is not.
     QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' GUEST_SHELL=1 \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3481,7 +3481,7 @@ wow64gui() {
     # on top of a session that has the whole GUI userland up.
     QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
-        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' GUEST_SHELL=1 \
+        MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3603,7 +3603,7 @@ gui6() {
     # maps.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-2048M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI6-NEVER' \
-        GUEST_GUI=0 GUEST_LEG=gui6 GUEST_SHELL=1 \
+        GUEST_LEG=gui6 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
@@ -3651,11 +3651,11 @@ gui6() {
 
     await_or_fail '\[KTEST\] gui3 server READY' \
         "wineserver-lite never published its transport" || return 1
-    # The server's own answer: a boot mis-flagged for this leg (GUEST_SHELL
+    # The server's own answer: a boot that did not derive the shell
     # unset, so the desktop fixtures stay on and explorer never owns the
     # desktop) is NAMED, not diagnosed from which arrangement limped further.
     await_or_fail '\[KTEST\] wineserver-lite: shell boot' \
-        "the server was not told this is a shell boot (GUEST_SHELL)" || return 1
+        "the server did not derive a shell boot (smss ShellBoot)" || return 1
     # Firstboot can auto-launch an explorer of its own (wineboot's rundll32
     # creates windows; win32u answers with the stock launch), and its
     # Default-desktop paint satisfies the generic markers below — so anchor

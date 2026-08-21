@@ -46,6 +46,19 @@ static void SessionReadBootString(const WCHAR *valueName, char *out, ULONG outCh
     out[i] = 0;
 }
 
+/* Read the two boot strings once, whoever asks first. SessionRun wants them
+ * at the top of the test session; SessionIsDesktopFixtureLeg is asked much
+ * earlier, before the servers start, because whether this boot HAS a shell
+ * is a property of the leg (below). */
+void SessionLoadBootStrings(void)
+{
+    static int SessionBootStringsLoaded;
+    if (SessionBootStringsLoaded)
+        return;
+    SessionBootStringsLoaded = 1;
+    SessionLoadBootStrings();
+}
+
 /* Is the selected leg exactly `name`? The empty leg — no GUEST_LEG on the
  * command line — is the plain boot suite and matches nothing here. */
 static int SessionLegIs(const char *name)
@@ -54,6 +67,34 @@ static int SessionLegIs(const char *name)
     while (SessionLeg[i] != 0 && name[i] != 0 && SessionLeg[i] == name[i])
         i++;
     return SessionLeg[i] == 0 && name[i] == 0;
+}
+
+/* Does this leg want the desktop WITHOUT a shell owning it?
+ *
+ * A GUI boot has a shell, the way a Windows session does: explorer creates
+ * and owns the desktop window and every app sees it as foreign because it
+ * IS foreign. That is the arrangement `make rungui` and every GUI gate runs.
+ *
+ * GUI-2 is the exception, and the only one: its milestone pinned the
+ * explorerless desktop — the server forces desktop creation for whoever asks
+ * first (user/wine/wineserver-lite/common/shim.c request_forces_desktop) —
+ * and that arrangement is what its golden was measured against. It is
+ * EXPERIMENTAL: nothing outside this leg selects it, and the way to run it
+ * is GUEST_LEG=gui2, not a flag of its own. The flag it used to be (`Shell`)
+ * was a third thing a boot had to be told, defaulting to the exception. */
+static int SessionIsDesktopFixtureLegName(const char *leg)
+{
+    const char *fixture = "gui2";
+    int i = 0;
+    while (leg[i] != 0 && fixture[i] != 0 && leg[i] == fixture[i])
+        i++;
+    return leg[i] == 0 && fixture[i] == 0;
+}
+
+int SessionIsDesktopFixtureLeg(void)
+{
+    SessionLoadBootStrings();
+    return SessionIsDesktopFixtureLegName(SessionLeg);
 }
 
 /* --- the subtest filter ----------------------------------------------------- */
@@ -133,24 +174,9 @@ static int SessionFlowM8(int registryOk)
     int failures = registryOk ? 0 : 1;
     static const WCHAR path[] = WSTR("\\??\\C:\\hello.exe");
 
-    /* An image without the windows/ tree carries no hello.exe either; skip
-     * cleanly there. Every image baked from Makefile $(WINFILES) ships it —
-     * `make test`, and the ntapi/wtest gate images since they are baked from
-     * that same list — so a load failure on it IS a FAIL, not a skip. */
-    NTSTATUS probe;
-    if (!SmssFileExists(path, &probe))
-    {
-        if (probe == STATUS_OBJECT_NAME_NOT_FOUND || probe == STATUS_OBJECT_PATH_NOT_FOUND)
-        {
-            SmssSay("[KTEST] module hello.exe SKIP (not on the boot volume)\n");
-        }
-        else
-        {
-            SmssPrintf("[KTEST] module hello.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
-            failures++;
-        }
-    }
-    else
+    /* No probe: one image carries hello.exe on every boot, so a missing one
+     * is a broken bake to FAIL on, not a case to skip. The probe dated from
+     * when an image without the windows/ tree was a thing a boot could be. */
     {
         NTSTATUS exitStatus = 0;
         NTSTATUS status = SmssRun(path, 0, 0, 0, &exitStatus);
@@ -187,20 +213,9 @@ static int SessionFlowM9(int abiFailures)
     int failures = 0;
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_smoke.exe");
 
-    NTSTATUS probe;
-    if (!SmssFileExists(path, &probe))
-    {
-        if (probe == STATUS_OBJECT_NAME_NOT_FOUND || probe == STATUS_OBJECT_PATH_NOT_FOUND)
-        {
-            SmssSay("[KTEST] module m9_smoke.exe SKIP (not on the boot volume)\n");
-        }
-        else
-        {
-            SmssPrintf("[KTEST] module m9_smoke.exe FAIL (probe=%x)\n", SMSS_HEX(probe));
-            failures++;
-        }
-    }
-    else if (!SmssConsoleAvailable())
+    /* No probe: one image carries m9_smoke.exe on every boot, so a missing
+     * one is a broken bake to FAIL on, not a case to skip. */
+    if (!SmssConsoleAvailable())
     {
         SmssSay("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
         failures++;
@@ -813,9 +828,10 @@ static int SessionFlowWtest(const WCHAR *manifestPath)
 static int SessionFlowM9Echo(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_echo.exe");
-    if (!SmssFileExists(path, 0))
-        return 0; /* not a console-mode image */
-
+    /* No probe: SessionRun reaches this only on the `console` leg, so the
+     * boot has already said it wants this. The probe was how a boot told
+     * console-mode images from plain ones back when that was a property of
+     * the media. */
     NTSTATUS exitStatus = 0;
     NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
     int pass = status == STATUS_SUCCESS && exitStatus == 0;
@@ -829,9 +845,8 @@ static int SessionFlowM9Echo(void)
  * console-mode image (probe/skip on hello_crt.exe, its subject). */
 static int SessionFlowCmdConsole(void)
 {
-    if (!SmssFileExists(WSTR("\\??\\C:\\hello_crt.exe"), 0))
-        return 0; /* not a console-mode image */
-
+    /* No probe, for the same reason as M9Echo above: the `console` leg is
+     * what selects this now. */
     SmssSay("[KTEST] cmd interactive start\n");
     NTSTATUS exitStatus = 0;
     NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
@@ -1088,8 +1103,7 @@ static int SessionFlowWow64(void)
 
 int SessionRun(int abiFailures, int registryOk)
 {
-    SessionReadBootString(WSTR("Leg"), SessionLeg, sizeof(SessionLeg));
-    SessionReadBootString(WSTR("Subtests"), SessionSubtests, sizeof(SessionSubtests));
+    SessionLoadBootStrings();
     SmssPrintf("smss: leg=\"%s\" subtests=\"%s\"\n", SessionLeg, SessionSubtests);
 
     /* The boot suite: on every leg, because it is what says the machine

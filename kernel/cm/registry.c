@@ -2766,15 +2766,13 @@ static const struct
      * PanicOnNotImplemented is: the richer arrangement is the product, and
      * dropping to the serial console has to be said out loud. */
     {"opt/org.proskrnl/gui", WSTR("Gui"), 1},
-    /* Does EXPLORER own the desktop on this boot? Off by default: the GUI
-     * legs run purpose-built clients on the desktop server's own fixtures,
-     * and only the shell arrangement (`make rungui`, the gui5con/gui6 legs)
-     * has an explorer to hand it to. It was probed from whether explorer.exe
-     * was on the volume (user/wine/wineserver-lite/common/shim.c), which
-     * stopped distinguishing anything the moment one image carried every
-     * leg's payload — the desktop server would defer to an explorer nobody
-     * was going to launch, and every client's create_desktop failed. */
-    {"opt/org.proskrnl/shell", WSTR("Shell"), 0},
+    /* Whether EXPLORER owns the desktop is NOT here: it is derived from `Gui`
+     * and `Leg` by smss and published beside these as `ShellBoot`
+     * (user/smss/smss.c SmssIsShellBoot). A GUI boot has a shell; the
+     * explorerless desktop is GUI-2's pinned experiment and its leg selects
+     * it. As a flag of its own it was a third thing every caller had to
+     * remember, defaulting to the exception — which is how `make rungui`
+     * came up without the shell it had always had. */
     /* Net-1 (docs/24 §6b/§4b): the host port the harness's TCP echo server
      * listens on (0 = no echo leg), and the static-configuration fallback
      * knob (skip DHCP, use slirp's fixed client address; off by default). */

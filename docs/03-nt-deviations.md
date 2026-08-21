@@ -4529,19 +4529,20 @@ without `force` returns empty until explorer creates the desktop — win32u answ
 *launching* `C:\windows\system32\explorer.exe` itself (`dlls/win32u/winstation.c
 get_desktop_window`) — and every app process sees the windows' user entries carry a foreign
 pid, which is what routes win32u onto its `WND_DESKTOP` special cases. Since GUI-6 that is
-the shipping arrangement on any boot that asks for the SHELL (`opt/org.proskrnl/shell`,
-HACK-006 — it was "any image that carries `explorer.exe`" until one image carried every
-leg's payload) — the gui6 leg, and `make rungui` with its gui5con/wow64gui legs, whose
-clients are
+the shipping arrangement on any boot that HAS a shell — which, since the images were
+unified, is every GUI boot: `ShellBoot` is derived from `Gui` and the leg by smss
+(HACK-006, `user/smss/smss.c SmssIsShellBoot`), not asked for by name. It was "any image
+that carries `explorer.exe`" until one image carried every leg's payload, and then briefly
+a flag of its own defaulting to the exception, which is how `make rungui` lost the shell it
+had always had. So: the gui6 leg, `make rungui`, gui5con/wow64gui, and now the gui/gui3/
+gui4/gui5/guiwtest/audio legs too, whose clients are
 routed onto explorer's desktop by registry (`HKCU\Software\Wine\Explorer
 "Desktop"="shell"`, the configuration a Wine user sets for a virtual desktop — written
 natively by smss before the first client connects; a GUI-process writer was the first
 cut's defect, `user/smss/smss.c SmssShellDesktopConfig`): the fixture sites are all off, explorer creates
-and owns the desktop, and the entries are foreign because they are. On a boot that does *not* ask for the
-shell — every CUI leg and the earlier GUI legs (gui2..gui5, guiwtest), kept
-explorerless by decision at GUI-6: one extra process boot and the shell32 closure on four
-images bought nothing those legs convict — win32u's launch would fail and its
-force-fallback re-enter both convicted
+and owns the desktop, and the entries are foreign because they are. On a boot without a shell — the `gui2` leg, the one that
+pins this arrangement, plus every CUI boot, which has no desktop at all — win32u's launch
+would fail and its force-fallback re-enter both convicted
 failure modes below, so there the GUI-2 fixture stays, keyed on one probe
 (`shim.c prsk_no_explorer`, the explorer path win32u hardcodes, answer printed on serial):
 the shim sets `force` on every `get_desktop_window` (the same server path the forcing

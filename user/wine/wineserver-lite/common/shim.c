@@ -839,7 +839,11 @@ static void probe_shell(void)
     /* Absent key = not a QEMU guest, where the GUI-2 fixtures are the
      * arrangement, so the default is OFF — the one thing that legitimately
      * differs between this key's three askers (user/wine/common/bootflag.h). */
-    prsk_no_explorer = !prsk_qemu_boot_flag( L"Shell", 0 );
+    /* `ShellBoot` is smss's DERIVED answer (user/smss/smss.c
+     * SmssIsShellBoot): a GUI boot has a shell, except on the leg that pins
+     * the explorerless desktop. It is not the old command-line `Shell`
+     * flag, which is gone. */
+    prsk_no_explorer = !prsk_qemu_boot_flag( L"ShellBoot", 0 );
     prsk_log( "[KTEST] wineserver-lite: %s\n",
               prsk_no_explorer ? "no shell; GUI-2 desktop fixtures on"
                                : "shell boot; the desktop belongs to explorer" );

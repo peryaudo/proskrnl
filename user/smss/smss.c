@@ -306,37 +306,80 @@ int SmssIsGuiBoot(void)
     return SmssQemuFlag(WSTR("Gui"), 1) != 0;
 }
 
-/* Does explorer own the desktop on this boot? Off by default: the GUI legs
- * run purpose-built clients over the desktop server's own fixtures, and only
- * the shell arrangement has an explorer to hand it to (the same value
- * user/wine/wineserver-lite/common/shim.c probe_shell reads). */
+/* Does explorer own the desktop on this boot?
+ *
+ * DERIVED, not a flag of its own. A GUI boot has a shell, the way a Windows
+ * session does; the explorerless desktop is GUI-2's pinned experiment and
+ * its own leg selects it (SessionIsDesktopFixtureLeg). It used to be a third
+ * fw_cfg DWORD defaulting OFF, so the NORMAL arrangement was the one every
+ * caller had to remember to ask for -- and `make rungui` forgot. */
 int SmssIsShellBoot(void)
 {
-    return SmssQemuFlag(WSTR("Shell"), 0) != 0;
+    return SmssIsGuiBoot() && !SessionIsDesktopFixtureLeg();
 }
 
-int SmssFileExists(const WCHAR *ntPath, NTSTATUS *statusOut)
+/* Does conhost put up a WINDOW, or stay on the serial transport?
+ *
+ * Derived too, from the same two facts. A window needs a desktop to put it
+ * on (`Gui`), and it needs a human at the machine (an INTERACTIVE boot).
+ * Every scripted leg reads its verdict off the serial log, the desktop legs
+ * included -- gui6 photographs the Wine desktop, and a console window would
+ * be in the picture -- so the boots that want the windowed console are
+ * exactly the interactive ones (gui5con and wow64gui drive it through QMP
+ * with GUEST_INTERACTIVE=1; `make rungui` is a human). No list of leg names
+ * is needed to say that. */
+int SmssConsoleWantsWindow(void)
+{
+    return SmssIsGuiBoot() && SmssIsInteractiveBoot();
+}
+
+/* Publish both derived answers where the PE side reads its boot facts: the
+ * volatile HKLM\Hardware\qemu the kernel seeded from fw_cfg. They sit beside
+ * those values but are NOT of them -- the kernel publishes what the command
+ * line SAID, smss publishes what it MEANS -- and both names differ from the
+ * `Shell`/`Gui` a stale reader would look for, so such a reader finds
+ * nothing rather than a plausible answer. */
+void SmssPublishShellBoot(void)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
-    IO_STATUS_BLOCK iosb;
-    HANDLE handle;
-    SmssInitUnicodeString(&name, ntPath);
+    HANDLE key = 0;
+    SmssInitUnicodeString(&name, WSTR("\\Registry\\Machine\\Hardware\\qemu"));
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
     attr.Attributes = OBJ_CASE_INSENSITIVE;
     attr.SecurityDescriptor = 0;
     attr.SecurityQualityOfService = 0;
-    NTSTATUS status = NtCreateFile(&handle, FILE_GENERIC_READ, &attr, &iosb, 0,
-                                   FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
-    if (statusOut != 0)
-        *statusOut = status;
+    NTSTATUS status = NtOpenKey(&key, KEY_SET_VALUE, &attr);
     if (status != STATUS_SUCCESS)
-        return 0;
-    NtClose(handle);
-    return 1;
+        return; /* not a QEMU guest: nothing publishes, nothing reads */
+
+    static const struct
+    {
+        const WCHAR *name;
+        int (*answer)(void);
+    } derived[] = {
+        {WSTR("ShellBoot"), SmssIsShellBoot},
+        {WSTR("ConsoleWindow"), SmssConsoleWantsWindow},
+    };
+    for (unsigned int i = 0; i < sizeof(derived) / sizeof(derived[0]); i++)
+    {
+        ULONG value = derived[i].answer() ? 1 : 0;
+        UNICODE_STRING valueName;
+        SmssInitUnicodeString(&valueName, derived[i].name);
+        status = NtSetValueKey(key, &valueName, 0, REG_DWORD, &value, sizeof(value));
+        if (status != STATUS_SUCCESS)
+        {
+            SmssPrintf("[KTEST] bootderive FAIL (write=%x)\n", SMSS_HEX(status));
+            NtClose(key);
+            return;
+        }
+    }
+    NtClose(key);
+    SmssPrintf("smss: gui=%u shell=%u conwindow=%u\n", (unsigned int)(SmssIsGuiBoot() != 0),
+               (unsigned int)(SmssIsShellBoot() != 0),
+               (unsigned int)(SmssConsoleWantsWindow() != 0));
 }
 
 RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;
@@ -400,8 +443,9 @@ static int SmssRegistryReachable(void)
  * .update-timestamp freshness check makes non-first boots near-instant. */
 static int SmssRunFirstboot(void)
 {
-    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\wineboot.exe"), 0))
-        return 0;
+    /* No probe: one image carries wineboot.exe on every boot. Skipping
+     * firstboot because a file is missing would produce a machine with no
+     * registry population and no explanation. */
     NTSTATUS exitStatus = FirstbootRun();
     if (exitStatus != 0)
     {
@@ -517,9 +561,9 @@ static void SmssShellDesktopConfig(void)
      * /desktop=shell,WxH and needs no routing values, and writing them there
      * would hand firstboot's transient rundll32 children a desktop
      * auto-launch of their own, changing what its golden pinned. */
+    /* No probe: one image carries explorer.exe on every boot, so its
+     * presence decides nothing. SmssIsShellBoot does. */
     if (!SmssIsShellBoot() || !SmssIsInteractiveBoot())
-        return;
-    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"), 0))
         return;
 
     for (unsigned int i = 0; i < sizeof(values) / sizeof(values[0]); i++)
@@ -545,9 +589,11 @@ static void SmssShellDesktopConfig(void)
  * routing's precedent. */
 static void SmssAudioDriverConfig(void)
 {
-    if (!SmssFileExists(WSTR("\\??\\C:\\windows\\system32\\winevsnd.drv"), 0))
-        return;
-
+    /* No probe: one image carries winevsnd.drv on every boot. Whether the
+     * machine HAS a sound device is a QEMU command-line question, and
+     * mmdevapi honestly enumerating zero endpoints on a boot without
+     * virtio-snd is the right answer either way -- naming the driver here
+     * does not conjure one. */
     NTSTATUS status =
         SmssWriteUserValue(WSTR("Software\\Wine\\Drivers"), WSTR("Audio"), WSTR("vsnd"));
     if (status != STATUS_SUCCESS)
@@ -574,6 +620,10 @@ void SmssStart(void *pebArg)
      * win32u attach (winstation_init reads the registry), so the values
      * have to be in the hive before the first client and cannot wait for
      * firstboot. */
+    /* Before the servers: conhost, the desktop server and winefb.drv all
+     * read the derived values, and the server is the first client's first
+     * stop. */
+    SmssPublishShellBoot();
     SmssStartWineServer();
     SmssShellDesktopConfig();
     SmssAudioDriverConfig();
