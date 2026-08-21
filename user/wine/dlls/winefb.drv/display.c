@@ -18,7 +18,7 @@
 #include "wine/debug.h"
 #include "wine/server.h"
 
-#include "../../common/bootflag.h"
+#include "proskrnl_bootflag.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
@@ -53,7 +53,7 @@ static BOOL winefb_shell_boot(void)
 {
     /* Cached: the flag cannot change within a boot, and this is asked on the
      * display path. Absent key = not a QEMU guest, where the GUI-2 fixtures
-     * are the arrangement, so the default is OFF (user/wine/common/bootflag.h
+     * are the arrangement, so the default is OFF (third_party/wine/include/proskrnl_bootflag.h
      * carries the rest of the rule and the two other askers of this key). */
     static int cached = -1;
 

@@ -33,7 +33,7 @@
 #include "ntuser_private.h"
 #include "wine/debug.h"
 
-#include "../../common/bootflag.h"
+#include "proskrnl_bootflag.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 
