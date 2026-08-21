@@ -2234,6 +2234,38 @@ $(IMG_TEST): $(KERNEL) $(MODULES) $(TEST_PAYLOAD) $(UPCASE_CHECK) \
 test-img: $(IMG_TEST)
 .PHONY: test-img
 
+# THE WARM TEST IMAGE: $(IMG_TEST) with its first boot already paid.
+#
+# wineboot --init applies wine.inf's whole machine-state payload -- the
+# registry, the fake DLLs, the COM self-registration -- and stamps
+# C:\windows\.update-timestamp so later boots skip it. On this box that pass
+# is ~90 seconds against ~23 for a boot that skips it, and on a CI runner it
+# is nearer four minutes.
+#
+# One image serving every leg is what makes paying it ONCE possible. It also
+# made NOT paying it once expensive: before, each leg had its own small bake
+# and so its own small firstboot; now every leg would firstboot the whole
+# userland, which took the CI critical path from ~27 minutes to ~47.
+#
+# Warmed on a GUI boot, because that is the payload that is a superset: the
+# CUI-only boot's registry-only inf (user/smss/firstboot.c) is the same file
+# with [RegisterDllsSection] dropped, and a boot that finds the prefix already
+# initialised installs nothing at all.
+#
+# $(IMG_TEST) itself is never booted -- neither here (the copy is) nor by
+# `test` below -- so it stays virgin for the three legs that need a machine
+# whose disk has never run: run.sh firstboot and cui9 measure a first boot,
+# and persist needs boot 1 to SEED the hive the warm-up boot would already
+# have seeded. That is also why six legs no longer rm this file first.
+IMG_TEST_WARM := $(BUILD)/proskrnl-test-warm.hdd
+$(IMG_TEST_WARM): $(IMG_TEST)
+	cp $(IMG_TEST) $@.tmp
+	LOG=$(BUILD)/warm-serial.log tools/qemu.sh $@.tmp
+	mv $@.tmp $@
+
+test-img-warm: $(IMG_TEST_WARM)
+.PHONY: test-img-warm
+
 # The DEV image: the same userland, no test payload. $(FLASHFILES) is the
 # LOCAL (uncommitted) standalone Flash projector and its movie, dropped when
 # the sources are absent so the target still builds on a clean tree.
@@ -2260,12 +2292,13 @@ dev-img: $(IMG_DEV)
 # Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
 # byte-compares) on the mutated image — make stops on a failed boot, so all
 # four only judge runs whose primary verdict passed.
-test: $(IMG_TEST)
-	GUEST_GUI=0 tools/qemu.sh $(IMG_TEST)
+test: $(IMG_TEST_WARM)
+	cp $(IMG_TEST_WARM) $(BUILD)/test-run.hdd
+	GUEST_GUI=0 tools/qemu.sh $(BUILD)/test-run.hdd
 	tests/run/kmtcheck.sh $(BUILD)/serial.log
 	tests/run/uacheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
-	tests/run/fatcheck.sh verify test $(IMG_TEST)
+	tests/run/fatcheck.sh verify test $(BUILD)/test-run.hdd
 
 # The WHOLE CI suite, on this machine, in parallel (tools/fulltest.sh): the
 # same legs .github/workflows/test.yml runs, one sandboxed view each, fanned

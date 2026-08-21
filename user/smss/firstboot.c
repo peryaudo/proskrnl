@@ -33,6 +33,29 @@ static const WCHAR FirstbootEnvironment[] = WSTR("COMSPEC=C:\\windows\\system32\
                                                  "WINEDATADIR=\\??\\C:\\windows\\inf\0"
                                                  "windir=C:\\windows\0");
 
+/* Has wineboot already initialised this prefix? See FirstbootInstallInf. */
+static int FirstbootPrefixIsInitialised(void)
+{
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK iosb;
+    HANDLE file = 0;
+    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\.update-timestamp"));
+    attr.Length = sizeof(attr);
+    attr.RootDirectory = 0;
+    attr.ObjectName = &name;
+    attr.Attributes = OBJ_CASE_INSENSITIVE;
+    attr.SecurityDescriptor = 0;
+    attr.SecurityQualityOfService = 0;
+    NTSTATUS status = NtCreateFile(&file, FILE_GENERIC_READ, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
+                                   FILE_SHARE_READ, FILE_OPEN,
+                                   FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    if (status != STATUS_SUCCESS)
+        return 0;
+    NtClose(file);
+    return 1;
+}
+
 /* A boot with no DESKTOP applies the registry-only inf.
  *
  * wine.inf's [RegisterDllsSection] is COM self-registration: setupapi runs
@@ -51,6 +74,24 @@ static void FirstbootInstallInf(void)
 {
     if (SmssIsGuiBoot())
         return; /* the full payload is what the image already carries */
+
+    /* Nothing to choose on a prefix that is already initialised.
+     *
+     * This is not a boot decision read off the volume (smss makes none —
+     * SmssIsGuiBoot above is the decision); it is the same idempotence
+     * wineboot itself keeps, asked one step earlier. wineboot's freshness
+     * check keys on wine.inf's MTIME, so swapping the payload under an
+     * already-updated prefix would re-run the whole prefix update to install
+     * a subset of what that prefix already has -- ~90 seconds on this box, on
+     * every CUI boot of an image whose first boot was a GUI one. That is
+     * exactly the arrangement the harness now uses: one image, warmed once
+     * (Makefile IMG_TEST_WARM), copied per leg.
+     *
+     * \.update-timestamp is wineboot's own stamp, written at the end of the
+     * update (programs/wineboot/wineboot.c update_wineprefix), so its
+     * presence means the payload in the hive is the FULL one. */
+    if (FirstbootPrefixIsInitialised())
+        return;
 
     static UCHAR FirstbootInfBuffer[128 * 1024];
     HANDLE src = 0, dst = 0;
