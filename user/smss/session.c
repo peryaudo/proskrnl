@@ -79,9 +79,9 @@ static int SessionLegIs(const char *name)
 
 /* Is this leg ABOUT the shell — explorer owning the desktop?
  *
- * A machine a human sits at has a shell, so every INTERACTIVE boot gets one
- * (`make rungui`, and the gui5con/wow64gui/flash legs that drive a real
- * session through QMP). A scripted GUI gate is a different thing: it runs a
+ * A machine a human sits at has a shell, so an interactive desktop boot whose
+ * console is NOT on the serial transport gets one (`make rungui`). A scripted
+ * GUI gate is a different thing: it runs a
  * purpose-built client against the compositor, the message path or the
  * clipboard, and explorer on the desktop is scenery its golden was never
  * measured against — so those legs keep the server's own desktop fixtures
@@ -92,6 +92,35 @@ static int SessionLegIs(const char *name)
  * explorer owning the desktop, photographed against
  * tests/gui/golden/desktop.ppm. A leg whose subject is the shell asks for the
  * shell; nothing else does. */
+/* The one leg whose subject is a CONSOLE WINDOW: GUI-5's conhost dual-mode
+ * gate, which locates the window on the scanout, clicks it, types into it and
+ * compares its pixels.
+ *
+ * This is the last boot decision that reads a leg NAME, and it is here rather
+ * than in a flag because there is no flag that could carry it: this machine
+ * has exactly ONE console -- smss creates it at startup and `ConsoleWindow`
+ * picks its destination -- so a boot has a serial console or a windowed one,
+ * never both. `Serial`=1 would leave this leg no window to drive, and
+ * `Serial`=0 alone is indistinguishable from `make rungui`, which must land
+ * on the shell. Every OTHER leg that wanted a prompt moved to `Serial`=1.
+ *
+ * The exit is a second console, not a cleverer derivation: give smss a way to
+ * open one on the desktop while its own stays on serial, and this row goes. */
+static int SessionIsWindowedConsoleLegName(const char *leg)
+{
+    const char *consoleLeg = "gui5con";
+    int i = 0;
+    while (leg[i] != 0 && consoleLeg[i] != 0 && leg[i] == consoleLeg[i])
+        i++;
+    return leg[i] == 0 && consoleLeg[i] == 0;
+}
+
+int SessionIsWindowedConsoleLeg(void)
+{
+    SessionLoadBootStrings(); /* asked before SessionRun: nothing else has */
+    return SessionIsWindowedConsoleLegName(SessionLeg);
+}
+
 static int SessionIsShellIntegrationLegName(const char *leg)
 {
     const char *shellLeg = "gui6";
@@ -1026,6 +1055,18 @@ static const GUI_LEG SessionGuiLegs[] = {
      .foregroundCmdline = WSTR("curl.exe -K C:\\net3\\job.txt"),
      .tag = "net3"},
 
+    /* WOW64 GUI (docs/23): a 32-bit Win32 client on the SAME desktop the
+     * 64-bit stack serves. It used to be typed at a windowed cmd -- which is
+     * why it used to need an interactive boot and a leg NAME to be told from
+     * `make rungui` -- but the console was only ever the way to start it, and
+     * a leg row starts a client without one. `Serial`=1 now, like every other
+     * scripted GUI gate: its verdicts are serial lines and the picture the
+     * host takes is the CLIENT's window. */
+    {.leg = "wow64gui",
+     .foreground = WSTR("\\??\\C:\\wow64gui.exe"),
+     .tag = "wow64gui",
+     .foregroundName = "wow64gui.exe"},
+
     {.leg = "gui6",
      .foreground = WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
      .foregroundCmdline = WSTR("explorer.exe /desktop=shell,1280x800 "
@@ -1179,16 +1220,18 @@ void SessionInteractive(void)
      * Opening cmd.exe on top of that is a serial-console habit: there, the
      * console is the only way in, so smss has to hand it over.
      *
-     * A scripted boot that drives a CONSOLE session says so by naming its
-     * leg (gui5con and wow64gui type into the windowed cmd; the Flash
-     * fixtures start the projector from one), and those take the cmd path
-     * below. `make rungui` names no leg and lands on the desktop; `make run`
-     * has no desktop to land on and takes the console either way.
+     * A scripted boot that drives a CONSOLE session says so with `Serial`,
+     * which is what SmssIsShellBoot subtracts -- the Flash fixtures start the
+     * projector from a prompt and read their verdicts off that transport.
+     * `make rungui` asks for no such thing and lands on the desktop; `make
+     * run` has no desktop to land on and takes the console either way. GUI-5's
+     * console-window leg is the one that still needs its NAME to be told from
+     * `make rungui`, and SmssIsShellBoot is where that is said.
      *
      * Blocking on explorer is the park: the desktop shell does not exit, and
      * when it does the session is over and the kernel powers the VM off —
      * the same contract `exit` has in the console session. */
-    if (SmssIsShellBoot() && SessionLegName()[0] == 0)
+    if (SmssIsShellBoot())
     {
         SmssSay("\nproskrnl: interactive desktop - explorer is the launcher\n\n");
         NTSTATUS exitStatus = 0;

@@ -39,15 +39,33 @@ run_trial() {
     cp "$IMG" "$DIR/img.hdd"
     local sock log="$DIR/serial.log"
     sock=$(mktemp -u /tmp/flashfx-XXXXXX.sock)
-    ACCEL="$ACCELSEL" QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 GUEST_LEG=flash \
+    local sersock fifo
+    sersock=$(mktemp -u /tmp/flashfx-ser-XXXXXX.sock)
+    fifo="$DIR/type.fifo"; rm -f "$fifo"; mkfifo "$fifo"
+    ACCEL="$ACCELSEL" QMP_SOCK="$sock" SERIAL_SOCK="$sersock" LOG="$log" \
+        GUEST_INTERACTIVE=1 GUEST_SERIAL=1 \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM=1536M TIMEOUT=1200 PASS_RE='PRSK-FLASH-NEVER' \
         "$ROOT/tools/qemu.sh" "$DIR/img.hdd" >/dev/null 2>&1 &
     local qemu_wrapper=$!
+    # The prompt is on the SERIAL transport now (GUEST_SERIAL=1), so
+    # something must hold that socket open, tee it into $log for the greps
+    # below, and carry the lines this trial types. QMP stays, for the
+    # screendumps -- this trial needs the console AND the monitor, which is
+    # what serial_drive.py exists for.
+    while [ ! -S "$sersock" ]; do
+        kill -0 "$qemu_wrapper" 2>/dev/null \
+            || { echo "trial$t: ERROR (qemu died before its console)"; return 1; }
+        sleep 1
+    done
+    python3 "$ROOT/tests/run/serial_drive.py" "$sersock" "$log" "$fifo" &
+    local serial_driver=$!
+    type_line() { printf '%s\n' "$1" > "$fifo"; }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
     fail() {
         echo "trial$t: ERROR ($1)"
         qmp quit >/dev/null 2>&1 || true
+        kill "$serial_driver" 2>/dev/null || true
         wait "$qemu_wrapper" 2>/dev/null || true
         return 1
     }
@@ -63,39 +81,13 @@ run_trial() {
     await 'starting cmd\.exe' || { fail "cmd never started"; return; }
     await '\[KTEST\] gui2 input READY' || { fail "no keyboard reader"; return; }
     await '\[KTEST\] gui4 mouse READY' || { fail "no pointer reader"; return; }
-    local located="" deadline=$((SECONDS + 300))
-    while ((SECONDS < deadline)); do
-        qmp screendump "$DIR/boot.ppm" >/dev/null 2>&1 || true
-        if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
-                --log "$log" --ppm "$DIR/boot.ppm" 2>/dev/null); then break; fi
-        located=""
-        kill -0 "$qemu_wrapper" 2>/dev/null || { fail "QEMU died"; return; }
-        sleep 3
-    done
-    [ -n "$located" ] || { fail "no console window"; return; }
-    local cx cy w h maxx maxy
-    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
-    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
-    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    px() { echo $(( ($1 * maxx + w - 2) / (w - 1) )); }
-    py() { echo $(( ($1 * maxy + h - 2) / (h - 1) )); }
-    qmp absmove "$(px "$cx")" "$(py "$cy")" >/dev/null
-    sleep 1
-    qmp button left down >/dev/null && qmp button left up >/dev/null
-    sleep 2
     if [ -n "$WDBG" ]; then
-        qmp type "regedit /S c:\\relay.reg
-" >/dev/null
+        type_line 'regedit /S c:\relay.reg'
         sleep 3
-        qmp type "set WINEDEBUG=$WDBG
-" >/dev/null
+        type_line "set WINEDEBUG=$WDBG"
         sleep 1
     fi
-    qmp type "c:\\SAFlashPlayer.exe c:\\$FIXTURE.swf
-" >/dev/null
+    type_line "c:\\SAFlashPlayer.exe c:\\$FIXTURE.swf"
     local launched=$SECONDS curve="" idx="" last="" prev="" at2="" at10=""
     for tp in 2 5 10 20 26 30 45 60; do
         while ((SECONDS - launched < tp)); do sleep 1; done
