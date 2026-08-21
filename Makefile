@@ -2266,31 +2266,6 @@ $(IMG_TEST_WARM): $(IMG_TEST)
 test-img-warm: $(IMG_TEST_WARM)
 .PHONY: test-img-warm
 
-# The CUI-only warm image: the same first boot, applying the registry-only
-# inf a CUI-only boot applies (user/smss/firstboot.c FirstbootInstallInf).
-#
-# There are two because the two payloads cost differently: the full one runs
-# wine.inf's [RegisterDllsSection] -- COM self-registration through setupapi
-# and rundll32 children -- and the registry-only one does not. ~3m50 against
-# ~1m30 here. A shard whose legs are all CUI (`boot`, `cui-a`) was paying the
-# GUI price for a boot that will never put up a window.
-#
-# NOT a payload variant, which is the thing this branch removed: one bake,
-# one userland, two boots of it. The warm image a leg copies is decided by
-# what that leg BOOTS -- `Gui`=0 takes this one -- and getting it wrong costs
-# only time in the direction that matters: a CUI leg on the GUI-warm image is
-# correct (it just paid more), while a GUI leg on THIS one would find the
-# prefix already initialised and skip the registrations it needs. That is why
-# tests/run/run.sh defaults to the full one and asks for this by name.
-IMG_TEST_WARM_CUI := $(BUILD)/proskrnl-test-warm-cui.hdd
-$(IMG_TEST_WARM_CUI): $(IMG_TEST)
-	cp $(IMG_TEST) $@.tmp
-	GUEST_GUI=0 LOG=$(BUILD)/warm-cui-serial.log tools/qemu.sh $@.tmp
-	mv $@.tmp $@
-
-test-img-warm-cui: $(IMG_TEST_WARM_CUI)
-.PHONY: test-img-warm-cui
-
 # The DEV image: the same userland, no test payload. $(FLASHFILES) is the
 # LOCAL (uncommitted) standalone Flash projector and its movie, dropped when
 # the sources are absent so the target still builds on a clean tree.
@@ -2317,8 +2292,8 @@ dev-img: $(IMG_DEV)
 # Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
 # byte-compares) on the mutated image — make stops on a failed boot, so all
 # four only judge runs whose primary verdict passed.
-test: $(IMG_TEST_WARM_CUI)
-	cp $(IMG_TEST_WARM_CUI) $(BUILD)/test-run.hdd
+test: $(IMG_TEST_WARM)
+	cp $(IMG_TEST_WARM) $(BUILD)/test-run.hdd
 	GUEST_GUI=0 tools/qemu.sh $(BUILD)/test-run.hdd
 	tests/run/kmtcheck.sh $(BUILD)/serial.log
 	tests/run/uacheck.sh $(BUILD)/serial.log
