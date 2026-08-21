@@ -37,6 +37,7 @@
  * macro win32u's transport probe uses. Names only — the wire structs need
  * Wine's protocol types, which conhost does not carry. */
 #define PRSK_TRANSPORT_NAMES_ONLY
+#include "../../common/bootflag.h"
 #include "../../wineserver-lite/common/transport.h"
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
@@ -55,43 +56,11 @@ int __cdecl wmain( int argc, WCHAR *argv[] );
  * images back when it might have been tried. */
 static int conhost_wants_window( void )
 {
-    static const WCHAR key_path[] = L"\\Registry\\Machine\\Hardware\\qemu";
-    static const WCHAR value_name[] = L"Gui";
-    UNICODE_STRING name;
-    OBJECT_ATTRIBUTES attr;
-    HANDLE key;
-    NTSTATUS status;
-
-    name.Buffer = (WCHAR *)key_path;
-    for (name.Length = 0; key_path[name.Length / sizeof(WCHAR)]; name.Length += sizeof(WCHAR)) ;
-    name.MaximumLength = name.Length + sizeof(WCHAR);
-    attr.Length = sizeof(attr);
-    attr.RootDirectory = NULL;
-    attr.ObjectName = &name;
-    attr.Attributes = OBJ_CASE_INSENSITIVE;
-    attr.SecurityDescriptor = NULL;
-    attr.SecurityQualityOfService = NULL;
-    if (NtOpenKey( &key, KEY_QUERY_VALUE, &attr )) return 1;  /* not a QEMU guest */
-
-    name.Buffer = (WCHAR *)value_name;
-    for (name.Length = 0; value_name[name.Length / sizeof(WCHAR)]; name.Length += sizeof(WCHAR)) ;
-    name.MaximumLength = name.Length + sizeof(WCHAR);
-
-    struct
-    {
-        KEY_VALUE_PARTIAL_INFORMATION info;
-        UCHAR tail[sizeof(ULONG)];
-    } buffer;
-    ULONG result_length = 0;
-    status = NtQueryValueKey( key, &name, KeyValuePartialInformation, &buffer, sizeof(buffer),
-                              &result_length );
-    NtClose( key );
-    if (status || buffer.info.Type != REG_DWORD || buffer.info.DataLength != sizeof(ULONG))
-        return 0;  /* the key exists, so QEMU decided: an unreadable flag is off */
-
-    ULONG value;
-    memcpy( &value, buffer.info.Data, sizeof(value) );
-    return value != 0;
+    /* Absent key = not a QEMU guest, and the product's console is the
+     * windowed one, so the default there is ON — the `whenNotQemu` argument,
+     * which is the only thing that legitimately differs between the three
+     * askers of this key (user/wine/common/bootflag.h). */
+    return prsk_qemu_boot_flag( L"Gui", 1 ) != 0;
 }
 
 static void display( const char *text )
