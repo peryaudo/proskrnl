@@ -56,7 +56,15 @@ void SessionLoadBootStrings(void)
     if (SessionBootStringsLoaded)
         return;
     SessionBootStringsLoaded = 1;
+    SessionReadBootString(WSTR("Leg"), SessionLeg, sizeof(SessionLeg));
+    SessionReadBootString(WSTR("Subtests"), SessionSubtests, sizeof(SessionSubtests));
+}
+
+/* The leg this boot read, for whoever wants to SAY which one. */
+const char *SessionLegName(void)
+{
     SessionLoadBootStrings();
+    return SessionLeg;
 }
 
 /* Is the selected leg exactly `name`? The empty leg — no GUEST_LEG on the

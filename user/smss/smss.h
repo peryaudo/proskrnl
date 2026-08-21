@@ -118,6 +118,9 @@ int SessionRun(int abiFailures, int registryOk);
  * the top of the test session. */
 void SessionLoadBootStrings(void);
 
+/* The leg this boot read, for diagnostics. */
+const char *SessionLegName(void);
+
 /* Does the selected leg pin the explorerless desktop (GUI-2's fixtures)?
  * The one exception to "a GUI boot has a shell" — see session.c. */
 int SessionIsDesktopFixtureLeg(void);

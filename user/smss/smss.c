@@ -385,8 +385,12 @@ void SmssPublishShellBoot(void)
         }
     }
     NtClose(key);
-    SmssPrintf("smss: gui=%u shell=%u conwindow=%u\n", (unsigned int)(SmssIsGuiBoot() != 0),
-               (unsigned int)(SmssIsShellBoot() != 0),
+    /* The INPUTS beside the answers: a derived value whose derivation cannot
+     * be read off the log is one nobody can check. leg="" here is what sent
+     * me chasing a guiwtest boot that had been given GUEST_LEG=guiwtest. */
+    SmssPrintf("smss: gui=%u interactive=%u leg=\"%s\" -> shell=%u conwindow=%u\n",
+               (unsigned int)(SmssIsGuiBoot() != 0), (unsigned int)(SmssIsInteractiveBoot() != 0),
+               SessionLegName(), (unsigned int)(SmssIsShellBoot() != 0),
                (unsigned int)(SmssConsoleWantsWindow() != 0));
 }
 
