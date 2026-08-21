@@ -1118,10 +1118,21 @@ winetest() {
         # assert the WASAPI clocks and shapes, not the recording (the WAV
         # verdict is the audio leg's, §6a). Its own copy of the image so the
         # two boots' hive mutations cannot interleave.
+        #
+        # A GUI boot, unlike the CUI arm above: these modules import
+        # user32/ole32 for real (wtest_is_audio's note), so they need a
+        # desktop server — before the images were unified this arm booted
+        # bake_audio_image, which staged the whole GUI stack for exactly that
+        # reason. On the CUI machine winmm's capture/mixer/timer pairs fail
+        # and win32u faults through a null session
+        # (destroy_thread_windows -> next_thread_user_object).
+        # GUEST_SERIAL=1 because the verdict is still a serial line: PASS_RE
+        # greps this log, so the console must not move into a window — the
+        # guiwtest leg's arrangement, and the same PASS_RE.
         local imgAudio
         imgAudio="$(test_image_copy "$ROOT/build/tests/wtest-audio$tag.hdd")" || exit 1
         LOG="$logAudio" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
-            GUEST_GUI=0 GUEST_LEG=wtest GUEST_SUBTESTS="${audKeys[*]}" \
+            GUEST_SERIAL=1 GUEST_LEG=wtest GUEST_SUBTESTS="${audKeys[*]}" \
             EXTRA_DEVICES="virtio-sound-pci,audiodev=snd0" AUDIODEV="none,id=snd0" \
             "$ROOT/tools/qemu.sh" "$imgAudio" >/dev/null 2>&1 || true
     fi
