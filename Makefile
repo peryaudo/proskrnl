@@ -2271,8 +2271,16 @@ run: $(IMG_DEV)
 #
 # The keyboard and tablet are qemu.sh's GUI_DISPLAY defaults, not an
 # EXTRA_DEVICES list here — the interactive branch adds them itself.
+# GUEST_SHELL=1: this is the SHELL arrangement — explorer owns the desktop
+# and win32u's get_desktop_window launches it. It used to be a property of
+# the media (rungui booted the gui5con image, which carried explorer.exe, and
+# the server probed for the file), and one image carrying explorer made that
+# probe stop distinguishing anything, so it is a boot flag now. Without it
+# here a `make rungui` boot gets the GUI-2 desktop fixtures instead and
+# SmssShellDesktopConfig writes no HKCU\Software\Wine\Explorer routing —
+# which is the arrangement `make run` wants, not this one.
 rungui: $(IMG_DEV)
-	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 NET_USER=1 SOUND=1 \
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 GUEST_SHELL=1 NET_USER=1 SOUND=1 \
 	    MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_DEV)
 .PHONY: rungui
 
