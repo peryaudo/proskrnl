@@ -2474,9 +2474,18 @@ JOB
     mcopy -o -i "$img@@$off" "$work/hosts" ::/windows/system32/drivers/etc/hosts
 
     # The boot: slirp + pcap (the wire's own record), guest-clocked bounds.
+    #
+    # A GUI boot: curl's TLS path goes through a COM apartment, and an
+    # apartment needs a message window -- on the CUI machine ole32's
+    # apartment_createwindowifneeded fails 1411 (ERROR_CLASS_DOES_NOT_EXIST)
+    # over and over and the tool never reaches its exit line. Before the
+    # images were unified this leg booted $(IMG_NET3), which staged
+    # $(WIN32U), $(WINESTRIP_GUI_DLLS) and wineserver-lite for exactly that
+    # reason. GUEST_SERIAL=1 because the verdict is a serial line: PASS_RE
+    # greps this log for the exit status, so the console must stay on serial.
     local pcap="$work/net3.pcap" netlog="$work/net3-serial.log"
     NET_PCAP="$pcap" LOG="$netlog" TIMEOUT="${TIMEOUT:-900}" \
-        PASS_RE='\[KTEST\] net3 exit' GUEST_GUI=0 GUEST_LEG=net3 \
+        PASS_RE='\[KTEST\] net3 exit' GUEST_SERIAL=1 GUEST_LEG=net3 \
         "$ROOT/tools/qemu.sh" "$img" >"$work/net3-qemu.log" 2>&1 || true
 
     local fails=0
