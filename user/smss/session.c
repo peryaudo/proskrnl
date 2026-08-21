@@ -1173,6 +1173,32 @@ int SessionRun(int abiFailures, int registryOk)
  * an interactive boot has no runner watching a timeout. */
 void SessionInteractive(void)
 {
+    /* A SHELL session does not get a console opened FOR it. explorer IS the
+     * launcher — that is what a shell is — so a human lands on the desktop
+     * and starts what they want from it, exactly as they would on Windows.
+     * Opening cmd.exe on top of that is a serial-console habit: there, the
+     * console is the only way in, so smss has to hand it over.
+     *
+     * A scripted boot that drives a CONSOLE session says so by naming its
+     * leg (gui5con and wow64gui type into the windowed cmd; the Flash
+     * fixtures start the projector from one), and those take the cmd path
+     * below. `make rungui` names no leg and lands on the desktop; `make run`
+     * has no desktop to land on and takes the console either way.
+     *
+     * Blocking on explorer is the park: the desktop shell does not exit, and
+     * when it does the session is over and the kernel powers the VM off —
+     * the same contract `exit` has in the console session. */
+    if (SmssIsShellBoot() && SessionLegName()[0] == 0)
+    {
+        SmssSay("\nproskrnl: interactive desktop - explorer is the launcher\n\n");
+        NTSTATUS exitStatus = 0;
+        NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
+                                  WSTR("explorer.exe /desktop=shell,1280x800"), 0, 0, &exitStatus);
+        if (status != STATUS_SUCCESS)
+            SmssPrintf("proskrnl: explorer.exe failed to start (%x)\n", SMSS_HEX(status));
+        return;
+    }
+
     SmssSay("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
     NTSTATUS exitStatus = 0;
     NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
