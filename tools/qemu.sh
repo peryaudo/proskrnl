@@ -232,6 +232,15 @@ fi
 # difference was which client the session manager would find. Unset means the
 # empty string, and each consumer's reading of empty is its own default: no
 # leg is the plain boot suite, no filter is every case.
+# GUEST_SERIAL=1 keeps the console on the SERIAL transport on a boot that has
+# a desktop, instead of putting conhost in a window on it. Every scripted GUI
+# leg wants this: its verdict is a string in the serial log, and a windowed
+# console would also be in the picture gui6 photographs. A no-op when
+# GUEST_GUI=0 — that boot has nowhere to put a window.
+if [[ "${GUEST_SERIAL:-0}" != 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/serial,string=1)
+fi
+
 # There is no GUEST_SHELL: whether explorer owns the desktop is DERIVED from
 # GUEST_GUI and GUEST_LEG by smss (user/smss/smss.c SmssIsShellBoot) and
 # published as HKLM\Hardware\qemu ShellBoot. A GUI boot has a shell, the way

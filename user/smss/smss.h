@@ -70,6 +70,9 @@ int SmssIsGuiBoot(void);
  * same value). */
 int SmssIsShellBoot(void);
 
+/* Does this boot keep its console on the serial transport? (`Serial`) */
+int SmssIsSerialBoot(void);
+
 /* Publish SmssIsShellBoot's answer for the PE side (the desktop server and
  * winefb.drv). Call before any win32u client starts. */
 void SmssPublishShellBoot(void);
@@ -121,9 +124,9 @@ void SessionLoadBootStrings(void);
 /* The leg this boot read, for diagnostics. */
 const char *SessionLegName(void);
 
-/* Does the selected leg pin the explorerless desktop (GUI-2's fixtures)?
- * The one exception to "a GUI boot has a shell" — see session.c. */
-int SessionIsDesktopFixtureLeg(void);
+/* Is the selected leg ABOUT the shell (GUI-6)? The one scripted leg that
+ * wants explorer owning the desktop — see session.c. */
+int SessionIsShellIntegrationLeg(void);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */
 void SessionInteractive(void);

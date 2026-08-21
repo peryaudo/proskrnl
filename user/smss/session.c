@@ -77,32 +77,34 @@ static int SessionLegIs(const char *name)
     return SessionLeg[i] == 0 && name[i] == 0;
 }
 
-/* Does this leg want the desktop WITHOUT a shell owning it?
+/* Is this leg ABOUT the shell — explorer owning the desktop?
  *
- * A GUI boot has a shell, the way a Windows session does: explorer creates
- * and owns the desktop window and every app sees it as foreign because it
- * IS foreign. That is the arrangement `make rungui` and every GUI gate runs.
+ * A machine a human sits at has a shell, so every INTERACTIVE boot gets one
+ * (`make rungui`, and the gui5con/wow64gui/flash legs that drive a real
+ * session through QMP). A scripted GUI gate is a different thing: it runs a
+ * purpose-built client against the compositor, the message path or the
+ * clipboard, and explorer on the desktop is scenery its golden was never
+ * measured against — so those legs keep the server's own desktop fixtures
+ * (user/wine/wineserver-lite/common/shim.c request_forces_desktop), where the
+ * desktop is created for whoever asks first.
  *
- * GUI-2 is the exception, and the only one: its milestone pinned the
- * explorerless desktop — the server forces desktop creation for whoever asks
- * first (user/wine/wineserver-lite/common/shim.c request_forces_desktop) —
- * and that arrangement is what its golden was measured against. It is
- * EXPERIMENTAL: nothing outside this leg selects it, and the way to run it
- * is GUEST_LEG=gui2, not a flag of its own. The flag it used to be (`Shell`)
- * was a third thing a boot had to be told, defaulting to the exception. */
-static int SessionIsDesktopFixtureLegName(const char *leg)
+ * GUI-6 is the exception, because GUI-6 IS the shell: its milestone is Wine's
+ * explorer owning the desktop, photographed against
+ * tests/gui/golden/desktop.ppm. A leg whose subject is the shell asks for the
+ * shell; nothing else does. */
+static int SessionIsShellIntegrationLegName(const char *leg)
 {
-    const char *fixture = "gui2";
+    const char *shellLeg = "gui6";
     int i = 0;
-    while (leg[i] != 0 && fixture[i] != 0 && leg[i] == fixture[i])
+    while (leg[i] != 0 && shellLeg[i] != 0 && leg[i] == shellLeg[i])
         i++;
-    return leg[i] == 0 && fixture[i] == 0;
+    return leg[i] == 0 && shellLeg[i] == 0;
 }
 
-int SessionIsDesktopFixtureLeg(void)
+int SessionIsShellIntegrationLeg(void)
 {
     SessionLoadBootStrings();
-    return SessionIsDesktopFixtureLegName(SessionLeg);
+    return SessionIsShellIntegrationLegName(SessionLeg);
 }
 
 /* --- the subtest filter ----------------------------------------------------- */
