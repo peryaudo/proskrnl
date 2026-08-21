@@ -1817,10 +1817,25 @@ $(NET3_APISETS)/specs.txt: $(NET3_CURL) tools/gen_apiset_forwarders.py
 # the pinned tree: llvm-objcopy refuses bcrypt (the FLASH_OBJCOPY note),
 # and an acceptance image buys nothing from stripping.
 NET3_DLL_NAMES := normaliz wldap32 bcrypt ncrypt crypt32
+# Dropped when the tool is absent, the $(FLASHPRESENT) way: curl.exe is a
+# sha256-pinned PURCHASE tools/setup_linux.sh downloads into a gitignored
+# directory, and it has no rule here. Baking it into $(TESTFILES)
+# unconditionally made EVERY image build — so `make test` and every leg —
+# die on a fresh or offline tree with a bare "No rule to make target
+# 'third_party/curlwin/bin/curl.exe'". It is one leg's payload, and that
+# leg (tests/run/run.sh net3) already refuses loudly by name when the file
+# is missing, which is where the demand belongs.
+NET3PRESENT := $(wildcard $(NET3_CURL))
+NET3_APISET_SPECS := $(if $(NET3PRESENT),$(NET3_APISETS)/specs.txt)
+ifneq ($(NET3PRESENT),)
 NET3FILES := $(foreach d,$(NET3_DLL_NAMES),win:$(WINE_PE)/$(d)/x86_64-windows/$(d).dll=windows/system32/$(d).dll) \
              win:$(NET3_CURL)=curl.exe
 NET3_PAYLOAD := $(foreach d,$(NET3_DLL_NAMES),$(WINE_PE)/$(d)/x86_64-windows/$(d).dll) \
                 $(NET3_CURL) $(NET3_APISETS)/specs.txt
+else
+NET3FILES :=
+NET3_PAYLOAD :=
+endif
 
 # ---------------------------------------------------------------------------
 # GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The payload is
@@ -2181,12 +2196,15 @@ TEST_PAYLOAD := $(WINFILES_DEPS) $(FULL_PAYLOAD) \
 #
 # The ESP still starts at sector 4096, so the fixed offset every reader uses
 # (tests/run/run.sh, tools/qemu.sh) is unchanged.
+# $(NET3_APISET_SPECS) is empty on a tree without the curl purchase (the
+# $(NET3PRESENT) guard above), so the image builds without the Net-3 payload
+# rather than dying on a missing target; run.sh net3 is what refuses.
 $(IMG_TEST): $(KERNEL) $(MODULES) $(TEST_PAYLOAD) $(UPCASE_CHECK) \
-        $(LICENSE_CHECK) $(TIMEZONES_CHECK) $(NET3_APISETS)/specs.txt \
+        $(LICENSE_CHECK) $(TIMEZONES_CHECK) $(NET3_APISET_SPECS) \
         tests/winetest/manifest.txt tests/winetest/manifest-gui.txt \
         tools/mkimage.sh arch/x86_64/limine.conf
 	SIZE_MB=$${SIZE_MB:-320} tools/mkimage.sh $(KERNEL) $(IMG_TEST) $(MODULE_SPECS) \
-	    $(TESTFILES) $$(cat $(NET3_APISETS)/specs.txt)
+	    $(TESTFILES) $$(cat $(NET3_APISET_SPECS) /dev/null)
 
 test-img: $(IMG_TEST)
 .PHONY: test-img
