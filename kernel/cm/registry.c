@@ -2766,6 +2766,12 @@ static const struct
      * PanicOnNotImplemented is: the richer arrangement is the product, and
      * dropping to the serial console has to be said out loud. */
     {"opt/org.proskrnl/gui", WSTR("Gui"), 1},
+    /* Where the CONSOLE goes on a boot that HAS a desktop: 0 (default) puts
+     * conhost in a window on it, 1 keeps it on the serial transport. Off by
+     * default because the windowed console is the product; a scripted leg
+     * that reads its verdict off the serial log says so. A no-op when
+     * `Gui` is 0 — that boot has nowhere to put a window. */
+    {"opt/org.proskrnl/serial", WSTR("Serial"), 0},
     /* Whether EXPLORER owns the desktop is NOT here: it is derived from `Gui`
      * and `Leg` by smss and published beside these as `ShellBoot`
      * (user/smss/smss.c SmssIsShellBoot). A GUI boot has a shell; the

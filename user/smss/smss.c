@@ -316,29 +316,49 @@ int SmssIsGuiBoot(void)
 
 /* Does explorer own the desktop on this boot?
  *
- * DERIVED, not a flag of its own. A GUI boot has a shell, the way a Windows
- * session does; the explorerless desktop is GUI-2's pinned experiment and
- * its own leg selects it (SessionIsDesktopFixtureLeg). It used to be a third
- * fw_cfg DWORD defaulting OFF, so the NORMAL arrangement was the one every
- * caller had to remember to ask for -- and `make rungui` forgot. */
+ * DERIVED, not a flag of its own. A machine a human sits at has a shell, so
+ * an INTERACTIVE desktop boot gets one; and GUI-6, whose whole subject is
+ * Wine's explorer owning the desktop, asks for one by being that leg
+ * (SessionIsShellIntegrationLeg). Every other scripted GUI gate runs a
+ * purpose-built client on the server's own desktop fixtures, which is what
+ * its golden was measured against.
+ *
+ * It used to be a flag, and a flag is a thing every caller can forget:
+ * defaulting OFF, it meant `make rungui` came up without the shell it had
+ * always had. Derived, the answer follows from what the boot already is. */
+/* Does this boot keep its console on the SERIAL transport? A no-op without a
+ * desktop (see SmssConsoleWantsWindow). */
+int SmssIsSerialBoot(void)
+{
+    return SmssQemuFlag(WSTR("Serial"), 0) != 0;
+}
+
 int SmssIsShellBoot(void)
 {
-    return SmssIsGuiBoot() && !SessionIsDesktopFixtureLeg();
+    return SmssIsGuiBoot() && (SmssIsInteractiveBoot() || SessionIsShellIntegrationLeg());
 }
 
 /* Does conhost put up a WINDOW, or stay on the serial transport?
  *
- * Derived too, from the same two facts. A window needs a desktop to put it
- * on (`Gui`), and it needs a human at the machine (an INTERACTIVE boot).
- * Every scripted leg reads its verdict off the serial log, the desktop legs
- * included -- gui6 photographs the Wine desktop, and a console window would
- * be in the picture -- so the boots that want the windowed console are
- * exactly the interactive ones (gui5con and wow64gui drive it through QMP
- * with GUEST_INTERACTIVE=1; `make rungui` is a human). No list of leg names
- * is needed to say that. */
+ * A window needs a desktop to put it on, so `Gui`=0 has nowhere to put one
+ * and `Serial` is a no-op there. On a boot that HAS a desktop the windowed
+ * console is the default -- it is the product -- and a leg whose verdict is
+ * a string in the serial log says so with `Serial` (every scripted GUI gate
+ * does; gui6 additionally would have a console window in the picture it
+ * photographs).
+ *
+ * Not derived from `Interactive`, though it nearly could be: today every
+ * boot wanting the windowed console happens to be interactive, but "is a
+ * human here" and "where does the console go" are different questions, and
+ * a derivation cannot express a windowed console on a scripted boot.
+ *
+ * TODO: `Gui`=0 with `Serial`=0 is the third destination -- a framebuffer
+ * terminal, conhost drawing the console on the scanout with no desktop under
+ * it. Unbuilt: that boot takes the serial transport today, which is why
+ * `Serial` reads as a no-op rather than a refusal there. */
 int SmssConsoleWantsWindow(void)
 {
-    return SmssIsGuiBoot() && SmssIsInteractiveBoot();
+    return SmssIsGuiBoot() && !SmssIsSerialBoot();
 }
 
 /* Publish both derived answers where the PE side reads its boot facts: the

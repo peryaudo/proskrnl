@@ -214,15 +214,23 @@ Reason:     A boot knob has to live somewhere, and every existing one was BAKED 
             of the same shape (which conhost binary was baked), and it stopped
             distinguishing anything the moment one image carried every leg's payload.
 
-            What is NOT here is as much the point. "Shell" was a third flag, and an
+            What is NOT here is as much the point. "Shell" was a flag, and an
             arrangement asked for by name is one every caller can forget: it
-            defaulted to the EXCEPTION (the explorerless GUI-2 desktop), so `make
-            rungui` came up without the shell it had always had and nothing said so.
-            Whether explorer owns the desktop, and whether conhost puts up a window,
-            are CONSEQUENCES of two facts a boot already states — is there a desktop,
-            and is a human at it — so smss derives them once and publishes the
-            answers here for the three PE modules that read them. A derived value is
-            a value nobody can forget to pass. "Stress" is the last
+            defaulted OFF, so `make rungui` came up without the shell it had always
+            had and nothing said so. Whether explorer owns the desktop is a
+            CONSEQUENCE of what the boot already is — a human's session has a shell,
+            and so does the one leg whose subject IS the shell (GUI-6) — so smss
+            derives it once and publishes the answer here for the three PE modules
+            that read it. A derived value is a value nobody can forget to pass.
+
+            "Serial" is a flag rather than a derivation, for the opposite reason: the
+            console's DESTINATION is a third axis, not a consequence. Today every
+            boot wanting the windowed console happens to be interactive, so it could
+            be derived from "Interactive" — but "is a human here" and "where does the
+            console go" are different questions, and no derivation can express a
+            windowed console on a scripted boot. It also has a third state coming
+            (the framebuffer terminal, TODO in user/smss/smss.c), which no boolean
+            derived from the other two could carry. "Stress" is the last
             marker file of all, and it shows why leaving one behind does not work: the
             harness stopped baking an image per boot, so a knob the BAKE carried was
             silently never armed — make found the one image up to date and the boot that
@@ -233,15 +241,15 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             the consumers that used to probe for a marker file
             (kernel/init/main.c KiIsInteractiveBoot and
             KiConfigurePanicOnNotImplemented, user/smss/smss.c
-            SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsShellBoot /
-            SmssConsoleWantsWindow / SmssPublishShellBoot,
+            SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsSerialBoot /
+            SmssIsShellBoot / SmssConsoleWantsWindow / SmssPublishShellBoot,
             user/smss/session.c SessionRun's leg dispatch and the two sweeps'
             filters, user/wine/programs/conhost/proskrnl_glue.c
             conhost_wants_window, user/wine/wineserver-lite/common/shim.c
             probe_shell, user/wine/dlls/winefb.drv/display.c
             winefb_shell_boot, all three through the one reader
             user/wine/common/bootflag.h, kernel/init/main.c KiConfigureCui8Stress) ;
-            tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI,
+            tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI, GUEST_SERIAL,
             GUEST_STRESS, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
             NET_ECHO_PORT) ; the Net-1 consumers (tests/kmt/net_smoke.c
             NetEchoPort, drivers/net/netd.c NetStatic)
