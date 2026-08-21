@@ -37,7 +37,7 @@
  * macro win32u's transport probe uses. Names only — the wire structs need
  * Wine's protocol types, which conhost does not carry. */
 #define PRSK_TRANSPORT_NAMES_ONLY
-#include "../../common/bootflag.h"
+#include "proskrnl_bootflag.h"
 #include "../../wineserver-lite/common/transport.h"
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
@@ -58,7 +58,7 @@ static int conhost_wants_window( void )
     /* Absent key = not a QEMU guest, and the product's console is the
      * windowed one, so the default there is ON — the `whenNotQemu` argument,
      * which is the only thing that legitimately differs between the three
-     * askers of this key (user/wine/common/bootflag.h). */
+     * askers of this key (third_party/wine/include/proskrnl_bootflag.h). */
     return prsk_qemu_boot_flag( L"ConsoleWindow", 1 ) != 0;
 }
 

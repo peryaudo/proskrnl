@@ -480,7 +480,8 @@ $(CONHOST): $(WINE_CONHOST)/conhost.c $(WINE_CONHOST)/conhost.h \
             $(WINE_CONHOST)/window.c $(WINE_CONHOST)/conhost.res \
             $(WINE_CONHOST)/proskrnl.c $(WINE_CONHOST)/proskrnl.h \
             $(PROG_GLUE)/conhost/proskrnl_glue.c $(PROG_GLUE)/conhost/window_glue.c \
-            $(WSRV_DIR)/common/transport.h user/wine/common/bootflag.h $(WINE_PE_DLLS)
+            $(WSRV_DIR)/common/transport.h third_party/wine/include/proskrnl_bootflag.h \
+            $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-windres -J res -O coff $(WINE_CONHOST)/conhost.res \
 	    $(BUILD)/conhost.res.o
@@ -1269,10 +1270,12 @@ $(FT_SYMS): $(WINE_W32U)/freetype.c tools/gen_freetype_syms.py
 	@mkdir -p $(dir $@)
 	python3 tools/gen_freetype_syms.py $(WINE_W32U)/freetype.c $@
 
-# user/wine/common/bootflag.h: the one PE-side reader of a Hardware\qemu boot
-# flag (Art. 11), included by winefb.drv/display.c and wineserver-lite's
-# shim.c. Named here because these rules carry no -MMD depfiles.
-$(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS) user/wine/common/bootflag.h
+# proskrnl_bootflag.h: the one PE-side reader of a Hardware\qemu boot flag
+# (Art. 11). It lives in the WINE tree because win32u asks too and that tree
+# has to build standalone under the oracle's own configure/make; every rule
+# here already carries -Ithird_party/wine/include. Named as a prerequisite
+# because these rules carry no -MMD depfiles.
+$(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS) third_party/wine/include/proskrnl_bootflag.h
 	@mkdir -p $(dir $@)
 	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
 	    -Iuser/wine/dlls/winefb.drv -c $< -o $@

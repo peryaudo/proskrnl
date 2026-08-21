@@ -52,7 +52,7 @@
 #include "winternl.h"
 #include "ntuser.h"
 
-#include "../../common/bootflag.h"
+#include "proskrnl_bootflag.h"
 #include "ddk/wdm.h"
 
 #include "object.h"
@@ -838,7 +838,7 @@ static void probe_shell(void)
 {
     /* Absent key = not a QEMU guest, where the GUI-2 fixtures are the
      * arrangement, so the default is OFF — the one thing that legitimately
-     * differs between this key's three askers (user/wine/common/bootflag.h). */
+     * differs between this key's three askers (third_party/wine/include/proskrnl_bootflag.h). */
     /* `ShellBoot` is smss's DERIVED answer (user/smss/smss.c
      * SmssIsShellBoot): a GUI boot has a shell, except on the leg that pins
      * the explorerless desktop. It is not the old command-line `Shell`

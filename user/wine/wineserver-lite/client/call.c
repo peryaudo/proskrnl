@@ -56,7 +56,7 @@
 #include "wine/server_protocol.h"
 #include "wine/server.h"
 
-#include "../../common/bootflag.h"
+#include "proskrnl_bootflag.h"
 
 #include "prsk_request_table.h"
 #include "transport.h"
