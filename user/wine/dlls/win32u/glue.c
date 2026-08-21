@@ -33,6 +33,8 @@
 #include "ntuser_private.h"
 #include "wine/debug.h"
 
+#include "../../common/bootflag.h"
+
 WINE_DEFAULT_DEBUG_CHANNEL(win32u);
 
 NTSTATUS WINAPI prsk_NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status );
@@ -646,8 +648,21 @@ BOOL WINAPI prsk_win32u_entry( HINSTANCE instance, DWORD reason, void *reserved 
                 (ULONG_PTR)instance + nt->OptionalHeader.SizeOfImage;
             RtlAddVectoredExceptionHandler( TRUE, prsk_contain_win32u_fault );
         }
-        if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
-        winefb_init();
+        /* Only a boot WITH a desktop brings the desktop up. On a CUI-only
+         * boot (`Gui`=0) there is no server by design and no scanout to
+         * map: winefb_init would open \Device\Fb0 and map a 1280x800
+         * view in EVERY process that links win32u, which on a firstboot
+         * whose INF pass spawns ~150 rundll32 children is hundreds of
+         * megabytes of framebuffer views for a desktop nobody can see —
+         * measured: the guest ran out of memory, kernelbase's global
+         * handle table VirtualAlloc started failing, and processes
+         * crashed. And the absence of a server is not a FAILURE here, so
+         * it does not get the marker that means one. */
+        if (prsk_qemu_boot_flag( L"Gui", 1 ))
+        {
+            if (!prsk_transport_startup()) winefb_report( "[KTEST] gui2 server FAIL\n" );
+            winefb_init();
+        }
     }
     else if (reason == DLL_THREAD_DETACH)
     {
