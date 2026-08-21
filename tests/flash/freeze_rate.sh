@@ -39,7 +39,7 @@ run_trial() {
     # AF_UNIX limit depending on where the tree is checked out.
     local sock log="$DIR/serial.log"
     sock=$(mktemp -u /tmp/flashfr-XXXXXX.sock)
-    ACCEL="$ACCELSEL" QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 \
+    ACCEL="$ACCELSEL" QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 GUEST_LEG=flash \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM=1536M TIMEOUT=1200 PASS_RE='PRSK-FLASH-NEVER' \
         "$ROOT/tools/qemu.sh" "$DIR/img.hdd" >/dev/null 2>&1 &
