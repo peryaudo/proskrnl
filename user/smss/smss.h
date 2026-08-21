@@ -127,6 +127,7 @@ const char *SessionLegName(void);
 /* Is the selected leg ABOUT the shell (GUI-6)? The one scripted leg that
  * wants explorer owning the desktop — see session.c. */
 int SessionIsShellIntegrationLeg(void);
+int SessionIsWindowedConsoleLeg(void);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */
 void SessionInteractive(void);

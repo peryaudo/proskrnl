@@ -3529,7 +3529,7 @@ wow64gui() {
     # stack whose images share nothing with the 64-bit one already resident
     # (CUI-9 masters are keyed on the file, and syswow64's are other files),
     # on top of a session that has the whole GUI userland up.
-    QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 GUEST_LEG=wow64gui \
+    QMP_SOCK="$sock" LOG="$log" GUEST_SERIAL=1 GUEST_LEG=wow64gui \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-2048M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-WOW64GUI-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
@@ -3552,46 +3552,23 @@ wow64gui() {
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
 
-    await '\[KTEST\] gui5con conhost mode=window' || { wow64gui_fail "the windowed conhost never picked window mode"; return 1; }
-    await 'starting cmd\.exe' || { wow64gui_fail "the interactive cmd never started"; return 1; }
     await '\[KTEST\] gui2 input READY' || { wow64gui_fail "no keyboard reader"; return 1; }
     await '\[KTEST\] gui4 mouse READY' || { wow64gui_fail "no pointer reader"; return 1; }
 
-    # The console window, found on the scanout the way gui5con finds it. The
-    # dump that finds it is also the BEFORE dump: nothing has been typed yet,
-    # so the client's colour must be absent from it.
-    local located="" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
-    while ((SECONDS < deadline)); do
-        qmp screendump "$ppm1" >/dev/null 2>&1 || true
-        if located=$(python3 "$ROOT/tests/gui/check_gui5con.py" --locate \
-                --log "$log" --ppm "$ppm1" 2>/dev/null); then
-            break
-        fi
-        located=""
-        kill -0 "$qemu_wrapper" 2>/dev/null || { wow64gui_fail "QEMU died while waiting for the window"; return 1; }
-        sleep 3
-    done
-    [ -n "$located" ] || { wow64gui_fail "no console window ever appeared on the scanout"; return 1; }
-    local cx cy w h maxx maxy
-    cx=$(sed -E 's/.*center=([0-9]+),[0-9]+$/\1/' <<<"$located")
-    cy=$(sed -E 's/.*center=[0-9]+,([0-9]+)$/\1/' <<<"$located")
-    w=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    h=$(grep -oE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxx=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    maxy=$(grep -oE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
-    if [ -z "$w" ] || [ -z "$maxx" ]; then
-        wow64gui_fail "could not parse guest geometry"; return 1
-    fi
+    # The BEFORE dump, and it is a RACE now: smss starts the client itself
+    # (session.c's GUI leg table) instead of waiting to be typed at, so this
+    # has to happen before the client paints. No sleep, and the paint marker
+    # is checked either side of the dump -- a dump taken too late would fail
+    # later as "already the client's colour", which names the wrong defect.
+    # (This leg used to locate a console window, click it and TYPE the
+    # client's path -- an interactive boot and a leg name, to start one
+    # program. The console was never its subject.)
+    grep -q '\[KTEST\] wow64gui painted' "$log" \
+        && { wow64gui_fail "the client painted before the BEFORE dump"; return 1; }
+    qmp screendump "$ppm1" >/dev/null 2>&1 || { wow64gui_fail "screendump 1 failed"; return 1; }
+    grep -q '\[KTEST\] wow64gui painted' "$log" \
+        && { wow64gui_fail "the client painted while the BEFORE dump was taken"; return 1; }
 
-    # One activation click in the console window (the gui5con arithmetic), so
-    # the typing below reaches it.
-    qmp absmove $(( (cx * maxx + w - 2) / (w - 1) )) $(( (cy * maxy + h - 2) / (h - 1) ))
-    sleep 1
-    qmp button left down && qmp button left up
-    sleep 2
-
-    qmp type 'c:\wow64gui.exe
-'
     await '\[KTEST\] wow64gui painted' || { wow64gui_fail "the 32-bit client never painted"; return 1; }
     # The paint marker is the client's; the flush that carries those pixels to
     # the scanout is the driver's and comes after it.

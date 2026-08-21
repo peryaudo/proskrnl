@@ -335,7 +335,25 @@ int SmssIsSerialBoot(void)
 
 int SmssIsShellBoot(void)
 {
-    return SmssIsGuiBoot() && (SmssIsInteractiveBoot() || SessionIsShellIntegrationLeg());
+    /* `Serial` is what separates the two interactive desktop boots. A human at
+     * the machine reads the console off the screen, so their session is the
+     * shell: explorer owns the desktop and IS the launcher. A boot that asks
+     * for the console on the SERIAL transport is asking for a console session
+     * -- something off-box is driving it and reading its verdicts -- and a
+     * shell would leave that driver with no prompt to type at.
+     *
+     * GUI-6 is not subject to that: its whole milestone is Wine's explorer
+     * owning the desktop, photographed against a golden, and it takes its
+     * verdict off the serial log like every scripted leg.
+     *
+     * GUI-5's console-window leg is the one exception in the other direction,
+     * and the only boot decision left that reads a leg name: it needs the
+     * prompt AND the window, which `Serial` cannot express while a boot has
+     * just one console (SessionIsWindowedConsoleLeg says why). */
+    if (SessionIsWindowedConsoleLeg())
+        return 0;
+    return SmssIsGuiBoot() &&
+           ((SmssIsInteractiveBoot() && !SmssIsSerialBoot()) || SessionIsShellIntegrationLeg());
 }
 
 /* Does conhost put up a WINDOW, or stay on the serial transport?
