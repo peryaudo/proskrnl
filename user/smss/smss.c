@@ -254,7 +254,15 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
                                       sizeof(SmssQemuStringBuffer), &resultLength);
     NtClose(key);
     if (status == STATUS_OBJECT_NAME_NOT_FOUND)
-        return; /* the key exists, so QEMU decided: an absent string is empty */
+    {
+        /* The key exists, so QEMU decided and an absent string is the empty
+         * one — but SAY which value was absent. Silence here reads exactly
+         * like a value that was there and empty, and those mean different
+         * things: the first is a boot that never asked, the second a boot
+         * that asked for nothing. */
+        SmssPrintf("smss: HKLM\\Hardware\\qemu has no such value; reading \"\"\n");
+        return;
+    }
     if (status != STATUS_SUCCESS || info->Type != REG_SZ)
     {
         /* STATUS_BUFFER_OVERFLOW here means the kernel published a string
