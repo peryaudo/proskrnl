@@ -133,9 +133,7 @@ jobs:
   boot:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 90   # was 60: the one test image carries the whole
-                          # userland, so every boot here runs the full
-                          # firstboot INF pass with self-registration
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -148,7 +146,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: make test
         env:
-          TIMEOUT: "900"
+          TIMEOUT: "600"
 
       # One deterministic batch (seed 1, 64 programs, anon-name policy — the
       # documented clean green gate): random Nt* sequences, oracle vs kernel.
@@ -204,14 +202,11 @@ jobs:
   ntapi:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 120  # was 90: every leg now boots ONE image that carries
-                          # the whole userland, so each of this shard's boots
-                          # runs the full firstboot INF pass (including
-                          # self-registration) instead of a payload trimmed to
-                          # its leg. Was 60 before AUD-2, when the winetest
-                          # sweep became two boots (the audio pairs need a
-                          # virtio-snd device, docs/23 §6c), and the first cap
-                          # hit killed the job mid-boot at exactly :60.
+    timeout-minutes: 90   # was 60 before AUD-2: the winetest sweep is two
+                          # boots now (the audio pairs need a virtio-snd
+                          # device, docs/23 §6c), and the first cap hit killed
+                          # the job mid-boot at exactly :60 (the gui shard's
+                          # "was 110 with eight boots" precedent)
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party

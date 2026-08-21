@@ -850,14 +850,29 @@ oracle() {
 # a differential leg whose image is not the product's measures the difference
 # (the print-winfiles story in the Makefile is one instance of the cost).
 #
-# A leg that MUTATES the volume still copies it first: `make test` boots the
-# image in place, and a leg reading a virgin hive must not be handed that
-# boot's leavings.
-test_image() {   # echoes the path of the freshly built test image
+# Every leg still copies before booting: legs mutate the volume, and one
+# leg's leavings must not become the next one's starting state.
+#
+# The WARM test image: the one image, its first boot already paid once
+# (Makefile IMG_TEST_WARM). Every leg copies THIS, because wineboot --init on
+# the whole userland is ~90s here and nearer four minutes on a CI runner --
+# per leg, when a leg's own image was small enough for that not to show.
+test_image() {   # echoes the path of the freshly built, warmed test image
     # ALWAYS rebuild, never just "build it if missing": these are regression
     # gates, and judging a stale kernel against fresh test sources reports the
     # previous build's verdict as this one's. make is incremental, so the cost
-    # is nil when nothing changed.
+    # is nil when nothing changed -- and the warm-up boot is a make rule, so
+    # it re-runs when, and only when, the image is rebuilt.
+    make -C "$ROOT" test-img-warm >&2 || exit 1
+    echo "$ROOT/build/proskrnl-test-warm.hdd"
+}
+
+# The VIRGIN one, for the three legs that need a machine whose disk has never
+# run: firstboot and cui9 measure a first boot, persist needs boot 1 to seed a
+# hive the warm-up boot would already have seeded. Nothing boots this file, so
+# it needs no `rm -f` to be trusted -- it is a build output, not a machine's
+# disk. Six legs used to rm it for exactly that reason.
+test_image_virgin() {   # echoes the path of the freshly built test image
     make -C "$ROOT" test-img >&2 || exit 1
     echo "$ROOT/build/proskrnl-test.hdd"
 }
@@ -867,6 +882,14 @@ test_image() {   # echoes the path of the freshly built test image
 test_image_copy() {   # $1 = destination path; echoes it
     local src
     src="$(test_image)" || exit 1
+    mkdir -p "$(dirname "$1")"
+    cp "$src" "$1"
+    echo "$1"
+}
+
+test_image_virgin_copy() {   # $1 = destination path; echoes it
+    local src
+    src="$(test_image_virgin)" || exit 1
     mkdir -p "$(dirname "$1")"
     cp "$src" "$1"
     echo "$1"
@@ -1628,13 +1651,13 @@ fuzz() { "$ROOT/tests/fuzz/fuzz.py" "$@"; }
 # — and the volatile key's absence — on boot 2, when the kernel has reloaded
 # the hive the first boot wrote.
 persist() {
-    # A VIRGIN image: the test image may already carry a seeded hive from an
-    # earlier `make test` (m8_persist runs on every boot), which would make
-    # boot 1 verify instead of seed. Rebuilding it resets the disk, and this
-    # leg gets its own copy so the two boots are the only writers.
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # A VIRGIN image: m8_persist runs on EVERY boot, the warm-up boot
+    # included, so a warmed image already carries the hive this leg's boot 1
+    # is supposed to seed -- boot 1 would verify instead. This leg gets its
+    # own copy of the untouched build output, so its two boots are the only
+    # writers.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/persist.hdd")" || exit 1
+    img="$(test_image_virgin_copy "$ROOT/build/tests/persist.hdd")" || exit 1
 
     local log1="$ROOT/build/tests/persist1.log" log2="$ROOT/build/tests/persist2.log"
     # Boot 1 of a virgin image runs the whole CUI-1 firstboot INF pass
@@ -1699,10 +1722,9 @@ wow64() {
 firstboot() {
     mkdir -p "$BUILD"
 
-    # --- proskrnl leg: virgin image (the persist() pattern), one boot ---
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # --- proskrnl leg: virgin image, one boot ---
     local img
-    img="$(test_image_copy "$BUILD/firstboot.hdd")" || exit 1
+    img="$(test_image_virgin_copy "$BUILD/firstboot.hdd")" || exit 1
     local log="$BUILD/firstboot.log"
     LOG="$log" PASS_RE="\[KTEST\] firstboot PASS" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
@@ -1826,9 +1848,9 @@ console() {
 # asserts the SCM AUTO-started SvcDemo from the persisted registry before
 # cmd ever prompted, and the proof file grew (EXPECT_SCM=2).
 scm() {
-    # A VIRGIN console image (the persist() pattern): a hive seeded by an
-    # earlier console run could already carry SvcDemo and break the create.
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # The warm image is a plain boot's leavings, and a plain boot creates no
+    # service -- the SvcDemo this leg creates is still absent. (This used to
+    # rm the master, because `make test` booted it in place; it copies now.)
     local img
     img="$(test_image_copy "$ROOT/build/tests/scm.hdd")" || exit 1
 
@@ -1862,11 +1884,9 @@ scm() {
 # EXPECT_PROCS block in console_expect.py types the session and asserts the
 # markers, ^C included (the serial socket is bidirectional — docs/08).
 procs() {
-    # A VIRGIN console image (the scm() pattern): a booted image is REWRITTEN
-    # by the guest, so its mtime outruns the modules and make would skip the
-    # rebuild — the acceptance would then run against an image missing the
-    # very programs it types.
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # No rm: the mtime hazard it guarded against is gone. A booted image is
+    # rewritten by the guest, so its mtime outran the modules and make would
+    # skip the rebuild -- but nothing boots the build output any more.
     local img
     img="$(test_image_copy "$ROOT/build/tests/procs.hdd")" || exit 1
 
@@ -1894,8 +1914,7 @@ procs() {
 # cross-directory move, and a move /Y replace (the write-tmp-then-rename
 # shape), asserting each file's content through its post-rename name.
 files() {
-    # A VIRGIN console image (the procs() pattern).
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # The procs() pattern: a copy of the warm image, nothing to reset.
     local img
     img="$(test_image_copy "$ROOT/build/tests/files.hdd")" || exit 1
 
@@ -1923,7 +1942,6 @@ files() {
 # image driven by console_expect.py, which types the three baked tools and
 # greps their markers off the serial log.
 cui6() {
-    rm -f "$ROOT/build/proskrnl-test.hdd"
     local img
     img="$(test_image_copy "$ROOT/build/tests/cui6.hdd")" || exit 1
 
@@ -1955,7 +1973,6 @@ cui6() {
 # through ring-3 NtShutdownSystem(ShutdownPowerOff) - the clean QEMU exit
 # is the live shutdown arm's verdict.
 cui7() {
-    rm -f "$ROOT/build/proskrnl-test.hdd"
     local img
     img="$(test_image_copy "$ROOT/build/tests/cui7.hdd")" || exit 1
 
@@ -2184,9 +2201,10 @@ cui8() {
 # fails HERE, as a machine verdict, not in a semantic test (docs/17 §8
 # "the one failure mode no semantic test catches").
 cui9() {
-    rm -f "$ROOT/build/proskrnl-test.hdd"
+    # Virgin: the ceiling is only comparable against the numbers docs/17 §1
+    # records, and those were measured on a boot that firstboots.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/cui9.hdd")" || exit 1
+    img="$(test_image_virgin_copy "$ROOT/build/tests/cui9.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui9.sock" log="$ROOT/build/tests/cui9.log"
     SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1200}" \
