@@ -249,11 +249,30 @@ if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
 fi
 
+# The kernel's CMP_QEMU_STRING_MAX (kernel/cm/registry.c), mirrored here so a
+# value the guest cannot take is caught BEFORE the boot, naming the item,
+# rather than as the guest-side panic that now backs it. Refusing loudly is
+# the whole point: this cap was 256 and the winetest gate's pair list grew to
+# 1270 bytes, the guest read the refusal as "unspecified", and an empty filter
+# means EVERY case — so both boots swept the whole manifest and the gate still
+# greened. A harness that cannot say what it wants must not run anyway.
+QEMU_STRING_MAX=4096
+fwcfg_string() {   # $1 = item name, $2 = value
+    if (( ${#2} > QEMU_STRING_MAX )); then
+        echo "qemu.sh: $1 is ${#2} bytes, past the guest's $QEMU_STRING_MAX-byte cap" >&2
+        echo "         (kernel/cm/registry.c CMP_QEMU_STRING_MAX). The guest would have to" >&2
+        echo "         refuse it, and a refused filter is not a missing one — it is a" >&2
+        echo "         different run. Shorten the value or raise both caps together." >&2
+        exit 2
+    fi
+    FWCFG_ARGS+=(-fw_cfg "name=$1,string=$2")
+}
+
 if [[ -n "${GUEST_LEG:-}" ]]; then
-    FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/leg,string=$GUEST_LEG")
+    fwcfg_string opt/org.proskrnl/leg "$GUEST_LEG"
 fi
 if [[ -n "${GUEST_SUBTESTS:-}" ]]; then
-    FWCFG_ARGS+=(-fw_cfg "name=opt/org.proskrnl/subtests,string=$GUEST_SUBTESTS")
+    fwcfg_string opt/org.proskrnl/subtests "$GUEST_SUBTESTS"
 fi
 
 # EXTRA_DEVICES="<spec> [<spec>...]" appends one -device per spec; the gui

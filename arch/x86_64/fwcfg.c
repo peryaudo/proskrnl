@@ -14,6 +14,7 @@
 #include "arch/x86_64/fwcfg.h"
 
 #include "arch/x86_64/io.h"
+#include "kernel/init/panic.h"
 #include "kernel/lib/dbgprint.h"
 
 /* fw_cfg.rst "Register Locations", x86/x86_64. The selector is 16-bit and
@@ -146,12 +147,22 @@ BOOLEAN KiFwCfgReadItem(const char *name, void *buffer, uint32_t bufferSize, uin
         }
         if (size > bufferSize)
         {
-            /* Named, not silently dropped: an item that exists but does not
-             * fit is a caller/command-line mistake, and reading it as absent
-             * would look exactly like never having passed it. */
+            /* FATAL, not a refusal the caller can shrug off. An item that
+             * exists but does not fit is a command-line mistake, and every
+             * way of reporting it in the return value reads as ABSENT — which
+             * is indistinguishable from never having passed it, so the caller
+             * applies its "unspecified" default and the boot runs something
+             * other than what it was told to. That is exactly what happened:
+             * the winetest gate's pair list was 1270 bytes against a 256-byte
+             * cap, this printed its line, and the guest swept EVERY pair
+             * because an empty filter means no filter (Art. 12 — a refusal
+             * must not become a plausible answer downstream). Callers size
+             * their buffer for the value they expect; none probes for a size,
+             * and there is no return value that could tell one from the
+             * other. */
             DbgPrint("fwcfg: %s is %u bytes, too big for the caller's %u\n", name,
                      (unsigned int)size, (unsigned int)bufferSize);
-            return FALSE;
+            KiPanic("fw_cfg item too big for its caller");
         }
         /* Selecting resets the data offset to zero (fw_cfg.rst "Selector
          * Register"), which is what abandons the directory walk here. */
