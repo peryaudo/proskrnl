@@ -1091,7 +1091,6 @@ winetest() {
         if wtest_is_audio "${wtestExes[w]}"; then audKeys+=("${wtestKeys[w]}")
         else cuiKeys+=("${wtestKeys[w]}"); fi
     done
-    img="$(test_image_copy "$ROOT/build/tests/wtest$tag.hdd")" || exit 1
     log="$ROOT/build/tests/wtest$tag-serial.log"
     logAudio="$ROOT/build/tests/wtest-audio$tag-serial.log"
 
@@ -1105,6 +1104,10 @@ winetest() {
     # every test binary's pages for the whole sweep — memory is provisioned,
     # not managed.
     if (( ${#cuiKeys[@]} )); then
+        # Its copy is made HERE, not above: an audio-only subset run
+        # (`run.sh winetest mmdevapi`) selects no CUI pair and would otherwise
+        # copy 320 MB it never boots — the audio arm already does it this way.
+        img="$(test_image_copy "$ROOT/build/tests/wtest$tag.hdd")" || exit 1
         LOG="$log" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
             GUEST_GUI=0 GUEST_LEG=wtest GUEST_SUBTESTS="${cuiKeys[*]}" \
             "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
