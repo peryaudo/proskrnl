@@ -275,7 +275,9 @@ static int transport_init(void)
      * that says Gui=0 is not missing its server, it has none. */
     if (!prsk_qemu_boot_flag( L"Gui", 1 ))
     {
-        prsk_log( "[KTEST] wineserver-lite: CUI-only boot; no desktop, window calls will fail\n" );
+        /* No [KTEST]: that prefix is for machine verdicts (docs/15), and this
+         * is a statement about the arrangement, printed once per process. */
+        prsk_log( "wineserver-lite: CUI-only boot; no desktop, window calls will fail\n" );
         return 0;
     }
     if (!wait_for_server() || !open_transport())
