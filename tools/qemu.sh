@@ -88,6 +88,22 @@ if [[ "$IMG" == "--probe-slirp" ]]; then
     "$QEMU" -netdev help 2>/dev/null | grep -qx user
     exit $?
 fi
+
+# From here on this invocation is a BOOT, so the log becomes THIS run's the
+# moment that is known -- not at the launch below.
+#
+# It used to be truncated beside the QEMU command line, hundreds of lines
+# down, and every refusal in between (a bad ACCEL, an over-cap fw_cfg item)
+# exits without ever reaching it. A leg swallows both the status and the
+# message ("$img" >/dev/null 2>&1 || true) and then greps the log, so a
+# refused boot let it read the PREVIOUS run's verdicts and report every case
+# PASS. That is the shape of the fw_cfg-cap incident this branch already
+# fixed once: loud here, silent at the verdict.
+#
+# The two query modes above return before this: they are not boots and must
+# not destroy a log the caller is still reading.
+mkdir -p "$(dirname "$LOG")"
+: > "$LOG"
 # +invtsc under KVM: tell the guest its TSC is invariant, which is what makes
 # QEMU publish the hypervisor timing leaf (CPUID 0x40000010, TSC kHz + APIC bus
 # kHz). The kernel asks for that leaf before it will fall back to measuring
@@ -135,14 +151,18 @@ ACCEL_ARGS=(-accel "$ACCEL" -cpu "$CPU_MODEL")
 # isa-debug-exit the moment it is done, so a large default only delays how
 # fast a WEDGED run is declared dead, never a passing one.
 TIMEOUT="${TIMEOUT:-600}"
-# 384M, up from 256M: one image serving every leg means one conhost, and that
-# conhost links the real user32/gdi32 rather than CUI stand-ins — so EVERY boot
-# now brings the desktop stack up (win32u, winefb.drv, wineserver-lite, a
-# 1280x800 desktop surface) before the leg's own work starts. Measured at the
-# cui9 leg's pinned 512M console boot: available memory at the start of the
-# sweep fell from 466 MB to 334 MB. With no eviction (Art. 3) that 132 MB is
-# standing cost, not pressure the machine can work off, and at 256M it left the
-# ntapi sweep close enough to the edge to wedge one CI run mid-test. A green
+# 384M, up from 256M: one image serving every leg costs ~120 MB of standing
+# footprint on the boot, measured at the cui9 leg's pinned 512M console boot --
+# available memory at the start of the sweep fell from 466 MB on main to ~340
+# MB. With no eviction (Art. 3) that is standing cost, not pressure the machine
+# can work off, and at 256M it left the ntapi sweep close enough to the edge to
+# wedge one CI run mid-test.
+#
+# This used to say the cost was the desktop stack (one conhost linking the real
+# user32/gdi32, so "EVERY boot" brought up win32u/winefb.drv/wineserver-lite).
+# That is false for a CUI boot: win32u gates its startup on `Gui` and smss
+# starts no desktop server there, yet the footprint is still ~120 MB. What it
+# actually is has not been separated -- docs/17 §1 records the open question. A green
 # boot still exits through isa-debug-exit the moment it is done, so a larger
 # default costs nothing but host RSS on a run that was going to pass.
 MEM="${MEM:-384M}"        # the wtest leg provisions more (no eviction - Art. 3)
@@ -254,6 +274,15 @@ fi
 # property a boot can choose once one image serves every leg.
 if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
+fi
+
+# GUEST_USERLAND=0 says this image is a hermetic kernel fixture, not the
+# product: it carries a client and the DLLs that client needs, and no conhost
+# or wineboot for smss to start. Only tests/fuzz/fuzz.py bakes such an image.
+# Only the opt-out is passed, the panic_not_implemented arrangement -- a
+# hand-rolled qemu line boots the product's userland.
+if [[ "${GUEST_USERLAND:-1}" == 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/userland,string=0)
 fi
 
 # The kernel's CMP_QEMU_STRING_MAX (kernel/cm/registry.c), mirrored here so a
@@ -436,8 +465,6 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
     exit 0
 fi
 PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
-mkdir -p "$(dirname "$LOG")"
-: > "$LOG"
 
 # M9 (docs/02): the interactive-console loop swaps the serial log file for a
 # unix socket the runner types into (tests/run/console_expect.py), which
