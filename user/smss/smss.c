@@ -187,8 +187,26 @@ static int SmssQemuKeyAbsent(NTSTATUS status)
     return status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND;
 }
 
+/* The value name, narrowed for a message: SmssPrintf has no wide %s, and a
+ * flag message that cannot say WHICH value it is about reads identically for
+ * every value under the key -- the ambiguity these messages exist to remove.
+ * The names are short ASCII by construction (this file and the kernel's
+ * tables are their only writers); anything else is dropped to '?'. */
+static const char *SmssNarrowValueName(const WCHAR *valueName, char *out, unsigned int outChars)
+{
+    unsigned int i = 0;
+    while (valueName[i] != 0 && i + 1 < outChars)
+    {
+        out[i] = valueName[i] < 0x80 ? (char)valueName[i] : '?';
+        i++;
+    }
+    out[i] = '\0';
+    return out;
+}
+
 ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu)
 {
+    char narrowName[32];
     HANDLE key;
     NTSTATUS open = SmssOpenQemuKey(&key);
     if (SmssQemuKeyAbsent(open))
@@ -215,7 +233,8 @@ ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu)
         /* The key is volatile, not read-only, so ring 3 can have overwritten
          * the flag with anything; 0 is the safe reading, but not a silent one
          * (the kernel's CmQueryQemuBootFlag says the same). */
-        SmssPrintf("smss: HKLM\\Hardware\\qemu flag is not a REG_DWORD (%x); reading 0\n",
+        SmssPrintf("smss: HKLM\\Hardware\\qemu %s is not a REG_DWORD (%x); reading 0\n",
+                   SmssNarrowValueName(valueName, narrowName, sizeof(narrowName)),
                    SMSS_HEX(status));
         return 0;
     }
@@ -228,6 +247,7 @@ ULONG SmssQemuFlag(const WCHAR *valueName, ULONG whenNotQemu)
 
 void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
 {
+    char narrowName[32];
     out[0] = 0;
     if (outChars == 0)
         return;
@@ -260,7 +280,8 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
          * like a value that was there and empty, and those mean different
          * things: the first is a boot that never asked, the second a boot
          * that asked for nothing. */
-        SmssPrintf("smss: HKLM\\Hardware\\qemu has no such value; reading \"\"\n");
+        SmssPrintf("smss: HKLM\\Hardware\\qemu has no %s value; reading \"\"\n",
+                   SmssNarrowValueName(valueName, narrowName, sizeof(narrowName)));
         return;
     }
     if (status != STATUS_SUCCESS || info->Type != REG_SZ)
@@ -269,9 +290,10 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars)
          * longer than SMSS_QEMU_STRING_MAX, i.e. the two caps have drifted —
          * named separately because reading it as "" means "no filter", which
          * is a DIFFERENT run rather than a missing one. */
-        SmssPrintf("smss: HKLM\\Hardware\\qemu %s (%x); reading \"\"\n",
-                   status == STATUS_BUFFER_OVERFLOW ? "string is longer than this build's cap"
-                                                    : "string is not a REG_SZ",
+        SmssPrintf("smss: HKLM\\Hardware\\qemu %s %s (%x); reading \"\"\n",
+                   SmssNarrowValueName(valueName, narrowName, sizeof(narrowName)),
+                   status == STATUS_BUFFER_OVERFLOW ? "is longer than this build's cap"
+                                                    : "is not a REG_SZ",
                    SMSS_HEX(status));
         return;
     }
