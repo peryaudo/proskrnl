@@ -314,6 +314,17 @@ int SmssIsGuiBoot(void)
     return SmssQemuFlag(WSTR("Gui"), 1) != 0;
 }
 
+/* Does this boot have a Windows USERLAND to bring up -- a conhost to start, a
+ * prefix for wineboot to initialise? The product image does; a hermetic kernel
+ * fixture (tests/fuzz/fuzz.py bakes ntdll/kernel32/kernelbase, the NLS tables,
+ * smss and one client) does not, and says so on the command line rather than
+ * being probed for, because "the file is absent" is the same bytes for a
+ * fixture that never had one and a product bake that lost one. */
+int SmssHasUserland(void)
+{
+    return SmssQemuFlag(WSTR("Userland"), 1) != 0;
+}
+
 /* Does explorer own the desktop on this boot?
  *
  * DERIVED, not a flag of its own. A machine a human sits at has a shell, so
@@ -346,10 +357,16 @@ int SmssIsShellBoot(void)
      * owning the desktop, photographed against a golden, and it takes its
      * verdict off the serial log like every scripted leg.
      *
-     * GUI-5's console-window leg is the one exception in the other direction,
-     * and the only boot decision left that reads a leg name: it needs the
-     * prompt AND the window, which `Serial` cannot express while a boot has
-     * just one console (SessionIsWindowedConsoleLeg says why). */
+     * GUI-5's console-window leg is the one exception in the other direction:
+     * it needs the prompt AND the window, which `Serial` cannot express while
+     * a boot has just one console (SessionIsWindowedConsoleLeg says why).
+     *
+     * Two leg names are read here, not one -- gui5con to subtract it and gui6
+     * to add it -- and they are the only boot decisions left anywhere that
+     * read one. Both retire the same way: give smss a console it can open on
+     * the desktop while its own stays on serial, and gui5con becomes an
+     * ordinary `Serial`=1 leg; make the shell a thing a leg RUNS rather than a
+     * property of the session, and gui6 does too. */
     if (SessionIsWindowedConsoleLeg())
         return 0;
     return SmssIsGuiBoot() &&
@@ -493,9 +510,16 @@ static int SmssRegistryReachable(void)
  * .update-timestamp freshness check makes non-first boots near-instant. */
 static int SmssRunFirstboot(void)
 {
-    /* No probe: one image carries wineboot.exe on every boot. Skipping
-     * firstboot because a file is missing would produce a machine with no
-     * registry population and no explanation. */
+    /* No probe: the PRODUCT image carries wineboot.exe on every boot, so a
+     * missing one is a broken bake and must fail loudly rather than yield a
+     * machine with no registry population and no explanation. A hermetic
+     * kernel fixture has no prefix to initialise and says so with `Userland`
+     * -- it is a boot fact, not something the volume can be asked. */
+    if (!SmssHasUserland())
+    {
+        SmssSay("smss: no Windows userland on this boot; firstboot skipped\n");
+        return 0;
+    }
     NTSTATUS exitStatus = FirstbootRun();
     if (exitStatus != 0)
     {
@@ -604,7 +628,8 @@ static void SmssShellDesktopConfig(void)
         {WSTR("Software\\Wine\\Explorer\\Desktops"), WSTR("shell"), WSTR("1280x800")},
     };
 
-    /* Gated on the SHELL flag (tools/qemu.sh GUEST_SHELL) and on the boot
+    /* Gated on the DERIVED ShellBoot (SmssIsShellBoot; there is no
+     * GUEST_SHELL -- tools/qemu.sh says so) and on the boot
      * being interactive: these values arrange the AUTO-LAUNCH, which is the
      * shell session a human gets. The gui6 leg is a shell boot too but not
      * an interactive one — it launches explorer explicitly with

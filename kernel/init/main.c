@@ -206,6 +206,16 @@ static int KiRunM7Modules(void)
     }
     if (ran == 0)
     {
+        /* Nothing ran. On the PRODUCT image that is a broken bake and a
+         * vacuous PASS would hide it (Art. 12). A hermetic kernel fixture
+         * carries no M7 modules at all and says so on the command line --
+         * tests/fuzz/fuzz.py bakes one client and the DLLs it needs -- so
+         * there is nothing to refuse over. The BOOT knows which it is. */
+        if (CmQueryQemuBootFlag(WSTR("Userland"), 1) == 0)
+        {
+            DbgPrint("[KTEST] M7 SKIP (no Windows userland on this boot)\n");
+            return 0;
+        }
         DbgPrint("[KTEST] M7 no module ran\n");
         return 1;
     }
@@ -254,6 +264,13 @@ static int KiRunAbiProbe(void)
     }
     if (ran == 0)
     {
+        /* See KiRunM7Modules: a hermetic kernel fixture carries no ABI probe
+         * and says so, where the product image losing one is a broken bake. */
+        if (CmQueryQemuBootFlag(WSTR("Userland"), 1) == 0)
+        {
+            DbgPrint("[KTEST] ABI SKIP (no Windows userland on this boot)\n");
+            return 0;
+        }
         DbgPrint("[KTEST] ABI no probe ran\n");
         return 1;
     }

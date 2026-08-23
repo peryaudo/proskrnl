@@ -264,13 +264,28 @@ def run_proskrnl(img):
     # plain suite, the interp never starts, and every op reads "proskrnl=none"
     # — a whole batch of fabricated divergences. GUEST_GUI=0 keeps the console
     # on the serial transport this log is read off.
+    # GUEST_USERLAND=0: this image is a hermetic kernel fixture -- ntdll,
+    # kernel32, kernelbase, the NLS tables, smss and the interp, and nothing
+    # else. Without it smss starts conhost and runs wineboot --init, neither
+    # of which is on the volume, and every boot ends with three [KTEST] FAIL
+    # lines and a non-zero exit that this leg's [FUZZ] grep cannot see.
     env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end",
-               GUEST_GUI="0", GUEST_LEG="ntapi",
+               GUEST_GUI="0", GUEST_LEG="ntapi", GUEST_USERLAND="0",
                TIMEOUT=os.environ.get("TIMEOUT", "420"))
     subprocess.run([os.path.join(ROOT, "tools", "qemu.sh"), img], env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(log) as f:
-        return f.read().replace("\r", "")
+        text = f.read().replace("\r", "")
+    # The boot's OWN health, not just the [FUZZ] lines this leg grades on.
+    # Reading only [FUZZ] is how three per-boot [KTEST] FAILs went unnoticed
+    # for the life of a branch: a broken guest looked identical to a healthy
+    # one on the channel nobody read.
+    broken = [ln for ln in text.splitlines()
+              if ln.startswith("[KTEST] ") and " FAIL" in ln]
+    if broken:
+        raise SystemExit("fuzz: the guest reported failures before the batch:\n  "
+                         + "\n  ".join(broken[:10]))
+    return text
 
 
 def _which(prog):

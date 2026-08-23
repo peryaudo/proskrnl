@@ -233,13 +233,22 @@ static int SmssConsoleServerAttached(void)
  * with the COM1 serial tty behind it (HACK-004). Fire-and-forget — conhost
  * outlives every console client.
  *
- * No probe: one image carries conhost.exe on every boot, so "is it there"
- * decides nothing, and skipping silently on its absence would turn a broken
- * bake into a boot with no console rather than into a failure anyone
- * reads. SmssSpawn says so out loud instead. */
+ * No probe: the PRODUCT image carries conhost.exe on every boot, so "is it
+ * there" decides nothing, and skipping silently on its absence would turn a
+ * broken bake into a boot with no console rather than into a failure anyone
+ * reads. SmssSpawn says so out loud instead.
+ *
+ * A hermetic kernel fixture carries no conhost and no console clients; it says
+ * so with `Userland` on the command line, because the volume cannot tell that
+ * apart from a product bake that lost the file. */
 void SmssStartConhost(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\conhost.exe");
+    if (!SmssHasUserland())
+    {
+        SmssSay("smss: no Windows userland on this boot; conhost skipped\n");
+        return;
+    }
     static HANDLE SmssConhostProcess, SmssConhostThread;
     NTSTATUS status = SmssSpawn(path, 0, 0, &SmssConhostProcess, &SmssConhostThread);
     if (status != STATUS_SUCCESS)
