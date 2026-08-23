@@ -73,6 +73,13 @@ const char *SessionLegName(void)
  * command line — is the plain boot suite and matches nothing here. */
 static int SessionLegIs(const char *name)
 {
+    /* Load first, like every other reader of SessionLeg. It is correct today
+     * without this only because it is static and every caller runs after
+     * SessionRun's load -- and "a leg-name reader consulted before the load"
+     * is precisely the defect that made SmssIsShellBoot publish 1 and then
+     * evaluate 0, so the next early caller written with this function would
+     * reproduce it exactly. Idempotent (SessionBootStringsLoaded). */
+    SessionLoadBootStrings();
     int i = 0;
     while (SessionLeg[i] != 0 && name[i] != 0 && SessionLeg[i] == name[i])
         i++;
