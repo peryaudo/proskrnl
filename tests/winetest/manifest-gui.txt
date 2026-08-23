@@ -29,6 +29,6 @@
 # notes" records the whole policy.
 #
 # <exe>:<subtest>[:<timeout_s>] — the third field is the per-pair timeout
-# (kernel/init/main.c KiWtestParseManifest); one whole msg run outlasts the
+# (user/smss/session.c SessionParseWtestManifest); one whole msg run outlasts the
 # 300 s default under TCG.
 user32_test.exe:msg:3000

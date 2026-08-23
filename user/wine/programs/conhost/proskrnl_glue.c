@@ -17,8 +17,8 @@
  * a headless one whose user32 and window.c references were satisfied by
  * stand-ins, and a windowed one with the real ones — baked as conhost.exe on
  * different images, so which console a boot had was a property of its media.
- * The windowed link is now the only one, and which mode it RUNS in is the
- * boot's `gui` flag (kernel/cm/registry.c, tools/qemu.sh GUEST_GUI).
+ * That link is now the only one, and which mode it RUNS in is the boot's
+ * derived `ConsoleWindow` (= `Gui && !Serial`; user/smss/smss.c).
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -138,17 +138,18 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
 
         if (conhost_wants_window())
         {
-            /* The windowed link is a desktop-server CLIENT at image-load
-             * time (user32 -> win32u connects during Ldr init). If this
-             * binary was baked on an image without the server, win32u went
-             * in-process and this conhost would become the desktop's OWNER
-             * — the split-brain user/wine/wineserver-lite/client/call.c names. Refuse
-             * loudly instead of running wrong (G12). */
+            /* conhost is a desktop-server CLIENT at image-load time (user32
+             * -> win32u connects during Ldr init). Every image carries the
+             * server now, so this check is no longer about the media -- it is
+             * the G12 refusal for a broken bake: without the server win32u
+             * would go in-process and this conhost would become the desktop's
+             * OWNER, the split-brain user/wine/wineserver-lite/client/call.c
+             * names. Refuse loudly instead of running wrong. */
             HANDLE srv_image = open_device( PRSK_SRV_IMAGE, FILE_READ_ATTRIBUTES );
             if (!srv_image)
             {
                 display( "[KTEST] gui5con conhost FAIL "
-                         "(windowed link on an image without wineserver-lite)\n" );
+                         "(no wineserver-lite on this volume: a broken bake)\n" );
                 ExitProcess( 1 );
             }
             NtClose( srv_image );

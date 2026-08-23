@@ -1080,7 +1080,11 @@ which applies `wine.inf`'s machine-state payload through
   shell32, mmdevapi and dsound resolve on the disk; the rest fail
   `LoadLibrary` and are skipped one by one (`setupapi do_register_dll` — a
   skip, not an abort). There were three baked infs, one per image family; there
-  is one.
+  are two, and which one a boot installs is the `Gui` flag rather than the
+  media: a boot with a desktop keeps the full payload, and a CUI-only boot
+  swaps in the registry-only one (`user/smss/firstboot.c FirstbootInstallInf`),
+  because `[RegisterDllsSection]` on a machine with no desktop is ~150
+  processes failing their way through `CreateWindow`.
 - **The registry differential** (`tests/run/run.sh firstboot`, the milestone's
   Art. 6 conviction gate) boots a virgin image, pulls the SYSTEM hive off the
   FAT volume, and compares it against a fresh oracle prefix initialized with
@@ -5577,7 +5581,7 @@ scope: its protocol engine is GnuTLS behind secur32's unixlib seam, which is
 null-dispatched on proskrnl (the boot's own
 `err:secur32:SECUR32_initSchannelSP no schannel support` line is that fact,
 loud). Raw bcrypt works as-is — the pinned tree vendors SymCrypt PE-side
-(`libs/symcrypt`), and `bcrypt.dll` rides the net3 image for LibreSSL's
+(`libs/symcrypt`), and `bcrypt.dll` is baked for LibreSSL's
 `BCryptGenRandom` entropy. The certificate chain the acceptance validates is
 the tool's own (`--cacert` against the harness's fresh CA, `notBefore` = the
 run's wall clock), which is what finally convicts a fake SystemTime — a

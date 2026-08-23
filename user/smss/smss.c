@@ -325,6 +325,13 @@ int SmssHasUserland(void)
     return SmssQemuFlag(WSTR("Userland"), 1) != 0;
 }
 
+/* Does this boot keep its console on the SERIAL transport? A no-op without a
+ * desktop (see SmssConsoleWantsWindow). */
+int SmssIsSerialBoot(void)
+{
+    return SmssQemuFlag(WSTR("Serial"), 0) != 0;
+}
+
 /* Does explorer own the desktop on this boot?
  *
  * DERIVED, not a flag of its own. A machine a human sits at has a shell, so
@@ -337,13 +344,6 @@ int SmssHasUserland(void)
  * It used to be a flag, and a flag is a thing every caller can forget:
  * defaulting OFF, it meant `make rungui` came up without the shell it had
  * always had. Derived, the answer follows from what the boot already is. */
-/* Does this boot keep its console on the SERIAL transport? A no-op without a
- * desktop (see SmssConsoleWantsWindow). */
-int SmssIsSerialBoot(void)
-{
-    return SmssQemuFlag(WSTR("Serial"), 0) != 0;
-}
-
 int SmssIsShellBoot(void)
 {
     /* `Serial` is what separates the two interactive desktop boots. A human at
