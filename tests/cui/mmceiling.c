@@ -62,7 +62,14 @@ static void serial_out(const char *text)
     display(&string);
 }
 
-static ULONGLONG avail_mb(void)
+/* `ok` is an OUT parameter and not a sentinel return, because 0 is a perfectly
+ * good reading here: this program spawns until creation is refused, so the
+ * last sample of a healthy sweep is exactly "under 1 MiB available". A caller
+ * that cannot tell that from a failed query treats the sweep's own success
+ * condition as an error -- which is what it did, failing cui9 on
+ * `availmb=0` while procs=242 and err=STATUS_NO_MEMORY said the machine had
+ * behaved correctly. */
+static ULONGLONG avail_mb(int *ok)
 {
     MEMORYSTATUSEX status;
     memset(&status, 0, sizeof(status));
@@ -71,8 +78,10 @@ static ULONGLONG avail_mb(void)
     {
         printf("mmceiling-memstatus-FAIL (%lu)\n", GetLastError());
         fflush(stdout);
+        *ok = 0;
         return 0;
     }
+    *ok = 1;
     return status.ullAvailPhys >> 20;
 }
 
@@ -97,15 +106,16 @@ int main(int argc, char **argv)
     int resident = 0;
     DWORD refuseError = 0;
     ULONGLONG first = 0, last = 0;
-    /* avail_mb() returns 0 on a failed query, which is indistinguishable from
-     * a real reading unless it is tracked separately. It matters because a
-     * lost FIRST sample used to be replaced silently by a later, smaller one,
-     * shrinking (first - last) and UNDERSTATING the per-process cost -- on the
-     * pin this gate now rests on, that is a sharing regression sliding under
-     * the ceiling. Track both facts and refuse to derive the number instead. */
+    /* A lost FIRST sample used to be replaced silently by a later, smaller
+     * one, shrinking (first - last) and UNDERSTATING the per-process cost --
+     * on the pin this gate now rests on, that is a sharing regression sliding
+     * under the ceiling. So the first reading is marked as taken rather than
+     * inferred from its value, and a failed QUERY (avail_mb's `ok`, never its
+     * value) suppresses the derivation entirely. */
     int firstSet = 0, samplesFailed = 0;
 
-    printf("mmceiling-start availmb=%llu\n", (unsigned long long)avail_mb());
+    int startOk = 0;
+    printf("mmceiling-start availmb=%llu\n", (unsigned long long)avail_mb(&startOk));
     fflush(stdout);
 
     while (resident < MAX_CHILDREN)
@@ -151,8 +161,9 @@ int main(int argc, char **argv)
 
         children[resident] = pi.hProcess;
         resident++;
-        ULONGLONG mb = avail_mb();
-        if (mb == 0)
+        int sampleOk = 0;
+        ULONGLONG mb = avail_mb(&sampleOk);
+        if (!sampleOk)
             samplesFailed = 1;
         if (!firstSet)
         {
