@@ -11,17 +11,17 @@
 #                     each; the log is replayed in source order afterwards, so
 #                     a parallel run reads exactly like a sequential one.
 #
-#   run.sh proskrnl   Bake the SAME .exes (plus the Wine PE userland) into a
-#                     disk image under C:\ntapi and boot it: the kernel's
-#                     ntapi runner (kernel/init/main.c) sweeps the directory
-#                     and runs each test. This is the REGRESSION gate: it must
-#                     stay all-green as the boundary is implemented.
+#   run.sh proskrnl   Boot a copy of the one test image, which carries the SAME
+#                     .exes under C:\ntapi, and let the session manager's ntapi
+#                     sweep (user/smss/session.c SessionFlowNtapi) run each
+#                     one. This is the REGRESSION gate: it must stay all-green
+#                     as the boundary is implemented.
 #
 #   Both legs take optional <subtest> arguments — a test's base name, or a
 #   glob over base names — to run a SUBSET while iterating:
 #
 #       run.sh oracle   query_dir          # one test under the oracle
-#       run.sh proskrnl query_dir          # bake+boot only that one .exe
+#       run.sh proskrnl query_dir          # boot, but RUN only that one .exe
 #       run.sh proskrnl 'se_*' handle_life # globs and several names are fine
 #
 #   A subset run is for ITERATION, never for a verdict: the gates above are
@@ -45,10 +45,10 @@
 #                         run.sh winetest printf          # msvcrt + ucrtbase
 #                         run.sh winetest 'rtl*' cmd      # globs and lists
 #
-#                     Same rules as above: iteration only (the subset boots
-#                     its own image, build/tests/wtest-subset.hdd, so it can
-#                     never be mistaken for the gate's), and a pattern that
-#                     matches no pair is an error.
+#                     Same rules as above: iteration only (the subset boots its
+#                     own COPY, build/tests/wtest-subset.hdd, and writes its own
+#                     log, so it can never be mistaken for the gate's), and a
+#                     pattern that matches no pair is an error.
 #
 #                     WTEST_NO_ORACLE=1 skips the oracle half while iterating
 #                     on the kernel side of a pair whose oracle verdict you
@@ -56,14 +56,13 @@
 #                     is both legs, always.
 #
 #   run.sh prebuild   Build every test .exe and run NOTHING. It is a build
-#                     step, never a verdict: it exists so a caller that runs
-#                     the two ntapi legs in separate sandboxes
-#                     (tools/fulltest.sh) pays the ~165 mingw compiles once,
-#                     fanned out over $ORACLE_JOBS, instead of once per leg —
-#                     the `proskrnl` leg builds them one at a time, and at
-#                     ~1.2 s each that is three minutes of the leg's clock.
-#                     Both legs then find their .exes up to date and behave
-#                     exactly as they always did.
+#                     step, never a verdict. It was written when the `proskrnl`
+#                     leg compiled its own .exes one at a time and each sandbox
+#                     paid the ~165 mingw compiles again; both halves of that
+#                     are gone -- the Makefile owns the compiles (one rule per
+#                     case) and the leg bakes nothing -- so nothing in the
+#                     pipeline calls this any more. It is kept as a hand tool
+#                     for warming a tree before an offline session.
 #
 # Verdict protocol: each test emits one machine-greppable line
 #     [KTEST] <name> PASS
@@ -417,7 +416,9 @@ ORACLE_OUT="$BUILD/ntapi/out"   # per-case captured output; oracle() owns it
 # with the runner's orphan list as the only surviving evidence. That is
 # precisely how sem_file/io_teardown cost two 60-minute jobs (issue #118).
 # The winetest leg has had per-pair timeouts since it was written (the
-# manifest's optional third field); the ntapi legs had none. The proskrnl leg
+# manifest's optional third field, honoured GUEST-side by
+# user/smss/session.c -- its oracle half is bounded only by the leg); the
+# ntapi legs had none. The proskrnl leg
 # needs none — its cases run inside a boot qemu.sh already bounds with $TIMEOUT.
 #
 # 180 s is a BACKSTOP, not a budget: the whole leg, every case over every
@@ -584,9 +585,9 @@ build_helper_dll() {   # echoes the .dll path
 # the current generated table no longer produces).
 #
 # A compile failure is fatal to the whole run rather than silently re-running
-# the previous build's .exe: `oracle`/`proskrnl` are invoked as
-# `... || fails=...` at the bottom of this file, which suppresses `set -e`
-# throughout their bodies. That is the same fabricated-plausible-answer
+# the previous build's .exe. It has to be said here rather than left to
+# `set -e`: the per-case calls inside `oracle` are written `... || fails=...`,
+# and every command on the left of a `||` runs with errexit suppressed. That is the same fabricated-plausible-answer
 # failure Art. 12 forbids in the kernel, in the harness that judges it.
 build_test() {   # $1 = .c path; echoes the .exe path
     local src="$1" name exe
@@ -1015,7 +1016,8 @@ wtest_matches() {   # $1 = pattern, $2 = exe, $3 = subtest
     return 1
 }
 
-# Which pairs boot the audio image rather than the CUI one (docs/23 §6c):
+# Which pairs need the AUDIO machine rather than the CUI one -- a virtio-snd
+# device and a Gui=1 boot, not a different image (docs/23 §6c):
 # the audio test modules import user32/ole32/winmm for REAL (message
 # windows, COM apartments), so their pairs cannot run on the CUI machine —
 # the manifest header's audio amendment to rule (c).
@@ -2550,8 +2552,8 @@ PYSRV
     local port
     port="$(cat "$work/port.txt")"
 
-    # The per-run job, mcopy'd into a COPY of the image (the baked image
-    # stays virgin; the probe file exists only on this boot).
+    # The per-run job, mcopy'd into this leg's own COPY -- the masters are
+    # never written to, and job.txt exists only on this boot's volume.
     local img
     img="$(test_image_copy "$work/net3-run.hdd")" || return 1
     cat > "$work/job.txt" <<JOB
@@ -2620,8 +2622,8 @@ JOB
 }
 
 # The GUI-1 acceptance (docs/02 "a user program maps the framebuffer and
-# draws a rectangle visible in a screendump; key input is readable"): boot
-# the gui image with a QMP socket and a virtio keyboard, wait for the guest
+# draws a rectangle visible in a screendump; key input is readable"): boot a
+# copy of the warm image with a QMP socket and a virtio keyboard, wait for the guest
 # to report what it painted, screendump the scanout and check the pixels
 # against that report, then press a key and watch it come back out of
 # \Device\Input0.
@@ -2646,9 +2648,10 @@ gui() {
     # The guest never powers itself off (it must hold the painted frame for
     # the screendump), so this leg always ends the guest itself.
     #
-    # The budget is gui2's below, and for its reason: this leg boots a
-    # VIRGIN image, so the marker it waits for is behind the whole firstboot
-    # INF pass, and that pass is minutes on a host without KVM. It used to
+    # The budget is gui2's below, and it is now SLACK rather than a size: it
+    # was measured when this leg booted a virgin image and the marker sat
+    # behind the whole firstboot INF pass (minutes without KVM). The leg copies
+    # the warm image now, which has already paid that pass. It used to
     # be 300/180 -- sized when the seeded registry was one time-zone row
     # rather than the whole 139-zone table, which grew the hive 63 KiB ->
     # 237 KiB and, since every mutation rewrites the hive whole
@@ -2721,7 +2724,7 @@ gui() {
 # AUD-1 (docs/02 "a guest client plays a deterministic S16 pattern and the
 # harness finds it sample-exact in the WAV that QEMU's -audiodev wav
 # recorded"; docs/23 §6a). The gui() shape with the WAV as the screendump:
-# boot the audio image with a virtio-snd device backed by the wav audiodev,
+# boot a copy of the warm image with a virtio-snd device backed by the wav audiodev,
 # wait for the kmt SND suite's verdict (the device contract) and the
 # client's play verdict, end the guest over QMP so the recording closes
 # cleanly, and check the WAV against what the guest said it played.
@@ -2747,8 +2750,9 @@ audio() {
 
     # The guest never powers itself off (the client parks so the host owns
     # the recording's tail), so this leg always ends the guest itself. The
-    # budget is gui()'s, for gui()'s reason: a virgin image puts the verdict
-    # behind the whole firstboot INF pass.
+    # budget is gui()'s, for gui()'s reason -- and, like gui()'s, it is slack
+    # now: it was sized for a virgin boot's firstboot INF pass, which the warm
+    # image these legs copy has already paid.
     QMP_SOCK="$sock" LOG="$log" \
         EXTRA_DEVICES="virtio-sound-pci,audiodev=wav0" \
         AUDIODEV="wav,id=wav0,path=$wav,out.frequency=48000,out.channels=2,out.format=s16" \
@@ -2978,7 +2982,7 @@ wow64aud() {
 }
 
 # GUI-2 (docs/02 "winemine.exe appears on screen"). Same shape as gui()
-# above: boot the gui2 image with a QMP socket and a virtio keyboard, wait
+# above: boot a copy of the warm image with a QMP socket and a virtio keyboard, wait
 # for winefb.drv to report the scanout and then a painted window,
 # screendump, and check the picture against what the guest said.
 #
@@ -3578,15 +3582,15 @@ gui5con() {
     return 0
 }
 
-# The WOW64 GUI acceptance (docs/02 WOW64 + docs/07): a 32-bit .exe, typed at
-# the same windowed console a person would type it at, puts a window on the
-# desktop the 64-bit applets share.
+# The WOW64 GUI acceptance (docs/02 WOW64 + docs/07): a 32-bit .exe puts a
+# window on the same desktop the 64-bit applets share. (It used to be TYPED at
+# a windowed console -- an interactive boot and a leg name, to start one
+# program. The console was never its subject.)
 #
-# It runs on the gui5con image, which since this change carries both bitnesses
-# of the GUI shelf, because that IS the thing under test: `make rungui` is the
-# session, and the leg is that session driven by the harness instead of by
-# hand. No image of its own — a second one would be a second payload list to
-# keep in step, and the interactive one is the one that must not rot.
+# It boots a copy of the one test image, which carries both bitnesses of the
+# GUI shelf. There is no image of its own and no console window on this boot:
+# smss starts the client from the GUI leg table, and the console is on serial
+# (GUEST_SERIAL=1 below).
 #
 # The verdict is check_wow64gui.py's three halves (bitness, geometry, pixels);
 # everything here is choreography. Note what makes it a WOW64 verdict rather
@@ -3767,9 +3771,10 @@ gui6() {
 
     await_or_fail '\[KTEST\] gui3 server READY' \
         "wineserver-lite never published its transport" || return 1
-    # The server's own answer: a boot that did not derive the shell
-    # unset, so the desktop fixtures stay on and explorer never owns the
-    # desktop) is NAMED, not diagnosed from which arrangement limped further.
+    # The server's own answer, printed at bring-up. A boot that failed to
+    # derive the shell would keep the GUI-2 desktop fixtures on and explorer
+    # would never own the desktop -- and this await NAMES that, instead of
+    # leaving it to be diagnosed from which arrangement limped further.
     await_or_fail '\[KTEST\] wineserver-lite: shell boot' \
         "the server did not derive a shell boot (smss ShellBoot)" || return 1
     # Firstboot can auto-launch an explorer of its own (wineboot's rundll32

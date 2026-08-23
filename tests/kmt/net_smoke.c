@@ -9,9 +9,9 @@
  * the pcap, and put one distinctive frame on the wire so the pcap has
  * content to find.
  *
- * Runs only when a NIC exists (the net leg's image); silently absent
- * everywhere else — the fat_interop shape, so no other leg's [KTEST]
- * stream moves.
+ * Runs only when a NIC exists (VioNetIsPresent -- i.e. the QEMU command line,
+ * not the image); silently absent everywhere else — the fat_interop shape, so
+ * no other leg's [KTEST] stream moves.
  */
 #include "tests/kmt/kmt.h"
 #include "drivers/virtio/net.h"

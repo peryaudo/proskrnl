@@ -187,9 +187,9 @@ the hack-meter delta. Under real Wine the dispatcher is non-NULL, the legs are d
 and `run.sh oracle` green on the bumped pin is the dormancy proof.
 
 Driver selection is the registry mechanism mmdevapi already reads
-(`Software\Wine\Drivers`, value `Audio`): the image sets `Audio=vsnd`, the same way
-the Graphics key selects winefb. The winealsa/winepulse PE modules are not on the
-image, so nothing else even loads.
+(`Software\Wine\Drivers`, value `Audio`): smss writes `Audio=vsnd` at bring-up
+(`SmssAudioDriverConfig`), the same way the Graphics key selects winefb. The
+winealsa/winepulse PE modules are not on the image, so nothing else even loads.
 
 ### d. Cross-process playback: staged, like the desktop-state question was
 
@@ -301,11 +301,11 @@ per-bitness: the 64-bit firstboot registers the CLSIDs once and the 32-bit clien
 reads the same keys.
 
 The verdict is `run.sh wow64aud` — §6a's recording check with `tests/audio/
-wasapi_smoke.c` built i386 and baked under the 64-bit client's name, so smss's
-existing probe row starts it. Which bitness produced the samples is **measured, not
-inferred**: the client prints `sizeof(void *) * 8` on its own verdict line
-(`underruns=N bits=32`), because the image could carry either build under that
-name.
+wasapi_smoke.c` built i386, baked as `wasapi_smoke32.exe` and started by its own
+`wasapi32` leg row. (It was first baked under the 64-bit client's name so an existing
+probe row would start it; one image carries both, so the leg name selects instead.)
+Which bitness produced the samples is **measured, not inferred**: the client prints
+`sizeof(void *) * 8` on its own verdict line (`underruns=N bits=32`).
 
 ## 7. Risks (honest)
 

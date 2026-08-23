@@ -1,12 +1,14 @@
 /* tests/clients/m9_echo.c — the M9 interactive-echo client (docs/02 "Done when":
  * input typed into the serial console echoes through conhost).
  *
- * Baked only into the console-mode image (make console-img / run.sh
- * console): it BLOCKS on console input, which the plain headless loop must
- * never do. The runner (tests/run/console_expect.py) waits for the ready
- * marker, types "ping\r" into the QEMU serial socket, watches conhost's
- * line-discipline echo come back, and then sees the cooked line arrive
- * here through ReadFile on the console input handle.
+ * Run only on the `console` leg: it BLOCKS on console input, which the plain
+ * headless loop must never do. (It used to be kept off every other image
+ * instead; the leg name is what holds it back now.)
+ *
+ * The runner (tests/run/console_expect.py) waits for the ready marker, types
+ * "ping\r" into the QEMU serial socket, watches conhost's line-discipline echo
+ * come back, and then sees the cooked line arrive here through ReadFile on the
+ * console input handle.
  *
  * User clients follow the test-code conventions (Wine style, docs/15
  * exemption). Exit code 0 = PASS.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # freeze_rate.sh [N] [kvm|tcg] — measure the SAFlashPlayer startup-freeze
-# rate on the gui5con image (flash_player branch).
+# rate on the DEV image (flash_player branch).
 #
-# Each trial boots a fresh copy of build/proskrnl-dev.hdd, clicks the
-# console window, launches `c:\SAFlashPlayer.exe c:\troubled_windows.swf`,
+# Each trial boots a fresh copy of build/proskrnl-dev.hdd, types at its
+# serial prompt, launches `c:\SAFlashPlayer.exe c:\troubled_windows.swf`,
 # and waits up to 8 minutes for the movie's ダウンロードの完了 dialog
 # (detected by pixel-matching the 再生 button against playbtn-ref.png at
 # crop (240,215)-(295,240) of the 640x480 screendump):
@@ -103,6 +103,7 @@ run_trial() {
     # the deleted click-the-console-window path.
     type_line 'c:\SAFlashPlayer.exe c:\troubled_windows.swf'
     local found="" launched=$SECONDS
+    local deadline
     deadline=$((SECONDS + 480))
     while ((SECONDS < deadline)); do
         qmp screendump "$DIR/f.ppm" >/dev/null 2>&1 || true

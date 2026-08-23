@@ -4,8 +4,9 @@
 # trial's progress curve.
 #
 # The proskrnl half of the tests/flash differential (the oracle half is
-# oracle_fixture.sh). Each trial boots a fresh copy of the gui5con image,
-# clicks the console window, optionally sets WINEDEBUG (relay tracing needs
+# oracle_fixture.sh). Each trial boots a fresh copy of the DEV image
+# (build/proskrnl-dev.hdd), types at its serial prompt, optionally sets
+# WINEDEBUG (relay tracing needs
 # c:\relay.reg imported first — the trial does that with regedit /S whenever
 # a WINEDEBUG value is given), launches
 #   c:\SAFlashPlayer.exe c:\<FIXTURE>.swf

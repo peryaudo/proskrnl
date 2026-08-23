@@ -836,7 +836,8 @@ the connect-time winstation/desktop inheritance GUI-3 had left for this mileston
 verdict is the exact-match golden (`check_gui6.py`; re-bless with
 `GUI6_BLESS=1 tests/run/run.sh gui6`); its file window shows a baked, timestamp-pinned
 `C:\shelf`, not `C:\`, so the picture never moves with build artifacts. `make rungui`
-gets the same desktop: the gui5con image carries the shell payload too, with clients
+gets the same desktop, because it derives `ShellBoot` the same way (an interactive,
+non-serial GUI boot), with clients
 routed onto desktop "shell" by Wine's own virtual-desktop registry configuration
 (written natively by smss before the first client; explorer then auto-launches with the
 taskbar). The furniture that actually bit, GUI-2-style, was small
@@ -896,9 +897,9 @@ an i686 mingw console program that reaches the kernel only the way any Win32 app
 — **and** `ntdll_test.exe:wow64` is green on both legs. Both hold.
 
 **And the GUI half, since:** `make rungui` carries both bitnesses of the applet shelf, so
-a 32-bit Win32 GUI app runs in the interactive session — `tests/run/run.sh wow64gui` is
-its acceptance (a 32-bit client typed at the windowed console, its window graded on the
-scanout, its bitness taken from the kernel). Nothing new is built for it: the guest's
+a 32-bit Win32 GUI app shares the desktop with the 64-bit ones — `tests/run/run.sh
+wow64gui` is its acceptance (a 32-bit client started by smss from the GUI leg table, its
+window graded on the scanout, its bitness taken from the kernel). Nothing new is built for it: the guest's
 `user32`/`gdi32` import the pinned tree's STOCK i386 `win32u.dll`, whose syscalls
 `wow64cpu` catches and `wow64.dll` routes through `wow64win.dll` into the same 64-bit
 `win32u.dll` this build already ships. The four defects it convicted — none of them

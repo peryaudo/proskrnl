@@ -3,7 +3,8 @@
 
     check_wow64gui.py --log <serial.log> --before <before.ppm> --after <after.ppm>
 
-A 32-bit .exe, typed at the windowed console, put a window on the desktop.
+A 32-bit .exe, started by smss from the GUI leg table, put a window on the
+desktop the 64-bit clients share.
 Three things have to hold together, and each is checked against what the
 GUEST declared on serial rather than against a number written here:
 
@@ -47,10 +48,11 @@ CLIENT_ASSERT = re.compile(r"\[ASSERT\] [^\n]*wow64gui\.c:\d+[^\n]*")
 # A solid fill, so the floor is high; the frame is borderless (WS_POPUP), so
 # the whole rectangle is the client area.
 MIN_DOMINANT = 0.95
-# Before the client ran, its colour must be essentially absent. Not zero:
-# the desktop carries a console window full of antialiased glyphs, and a
-# lone stray pixel is not what this is looking for — a painted 360x240 block
-# is 86400 of them.
+# Before the client ran, its colour must be essentially absent. Not zero,
+# because a lone stray pixel is not what this is looking for — a painted
+# 360x240 block is 86400 of them. (The tolerance was sized when the desktop
+# also carried a console window full of antialiased glyphs; this boot's
+# console is on serial, so the margin is only wider now.)
 MAX_BEFORE = 0.01
 
 

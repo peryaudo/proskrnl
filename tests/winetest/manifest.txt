@@ -58,11 +58,12 @@
 #       proskrnl involvement cannot convict the kernel (Art. 6), so it
 #       cannot sit in a differential gate.
 #
-#   (c) the pair's subject is only reachable on the GUI image — it needs a
-#       DLL whose imports pull in user32/gdi32, so running it here would
-#       mean putting the GUI stack on the CUI volume (G7). This is the same
-#       reason user32 is out of this file; such a pair belongs in
-#       manifest-gui.txt when that image can carry it, not here. The
+#   (c) the pair's subject needs a GUI BOOT — a DLL whose imports pull in
+#       user32/gdi32, which on a Gui=0 boot has no desktop to reach. (This
+#       used to be a property of the media: the GUI stack was not on the CUI
+#       volume. One image carries it now; what a parked (c) pair lacks is a
+#       Gui=1 boot.) This is the same reason user32 is out of this file; such
+#       a pair belongs in manifest-gui.txt, not here. The
 #       exclusion must name the specific dependency and show that the
 #       failures downstream of it convict nothing — a pair that ALSO fails
 #       for a kernel reason stays in and stays red.
@@ -71,12 +72,11 @@
 #       winmm_test.exe) are the exception to (c)'s "belongs in
 #       manifest-gui.txt". Their pairs live in THIS manifest — the audio
 #       milestones' done-when counts against it — but the runner partitions
-#       them onto their own audio image (run.sh wtest_is_audio /
-#       bake_audio_image: the CUI machine + the GUI stack the audio DLLs
-#       import + the audio payload + the virtio-snd device on the QEMU
-#       command line). The CUI wtest image stays byte-identical to the
-#       pre-audio one (G7); a pair from any other module never boots the
-#       audio image.
+#       them onto their own BOOT (run.sh wtest_is_audio): a Gui=1 boot with
+#       the virtio-snd device on the QEMU command line, against the CUI arm's
+#       Gui=0 one. Both arms boot copies of the same image; only the flags and
+#       the devices differ, and a pair from any other module never joins the
+#       audio arm.
 #
 # Every oracle-side measurement below was taken as an ORDINARY USER under a
 # UTF-8 locale, which the runner now enforces (tests/run/run.sh): before that

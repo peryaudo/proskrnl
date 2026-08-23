@@ -1,12 +1,14 @@
 /*
- * gui4a.c - the lower window of GUI-4's pair, and the input host.
+ * gui4a.c - the lower window of GUI-4's pair.
  *
  * A puts up a borderless window with a solid known colour and parks
- * pumping. It starts first, so its winefb.drv wins the exclusive opens of
- * \Device\Input0 and \Device\Input1 and hosts the reader threads for the
- * whole leg (docs/03 GUI-4 notes: the reader lives in whichever GUI
- * process attempts first) -- the leg's `mouse READY` marker comes from
- * this process.
+ * pumping. It used to be the leg's input HOST as well -- starting first, its
+ * winefb.drv won the exclusive opens of \Device\Input0/\Device\Input1 and
+ * ran the reader threads. That is no longer A's by construction: conhost
+ * links the real user32 on every Gui boot and can win them first. It does not
+ * change what the leg sees, because the reader posts to the foreground window
+ * and the server routes globally (docs/03 GUI-4 notes) -- only WHICH process
+ * prints `mouse READY`.
  *
  * Everything A reports is for the harness to sequence against
  * (tests/run/run.sh gui4): a click landing in its client area, a
@@ -15,8 +17,9 @@
  * in the overlap must NOT reach here -- check_gui4.py greps for exactly
  * that.
  *
- * Verdicts go out as [KTEST] lines on serial (NtDisplayString); there is
- * no console on these images.
+ * Verdicts go out as [KTEST] lines on serial (NtDisplayString). The boot's
+ * one console is on the serial transport too (GUEST_SERIAL=1), not in a
+ * window that could land in this leg's screendumps.
  */
 
 #include "ntapi.h"

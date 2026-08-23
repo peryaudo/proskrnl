@@ -90,7 +90,7 @@ static const char *const cursor_image[CURSOR_H] =
 /* Whether this session has a pointer device at all, set by input.c in
  * every process: the reader that won \Device\Input1's exclusive open, and
  * every process that lost it, learned the same fact from the same open.
- * A process with no pointer device draws no cursor -- the gui5 image is
+ * A process with no pointer device draws no cursor -- the gui5 BOOT is
  * keyboard-only, and an arrow parked at the desktop's initial (0,0) there
  * would be exactly the fixed picture of a lie this file refused to draw
  * before the mouse existed. */
