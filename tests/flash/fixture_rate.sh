@@ -102,13 +102,18 @@ run_trial() {
     # start until after this point. Waiting for them deadlocked the trial for
     # 300 s and then failed it as "no keyboard reader"; they were leftovers of
     # the deleted click-the-console-window path.
+    # A failed type is a failed TRIAL, never a measurement: without the fail
+    # here, a dead serial driver or a timed-out fifo write left the trial
+    # running with nothing ever typed, and the empty progress curve below
+    # graded it NOSTART/FROZEN -- an infra failure counted into the freeze
+    # rate, the one statistic this fixture exists to measure.
     if [ -n "$WDBG" ]; then
-        type_line 'regedit /S c:\relay.reg'
+        type_line 'regedit /S c:\relay.reg' || { fail "typing failed"; return; }
         sleep 3
-        type_line "set WINEDEBUG=$WDBG"
+        type_line "set WINEDEBUG=$WDBG" || { fail "typing failed"; return; }
         sleep 1
     fi
-    type_line "c:\\SAFlashPlayer.exe c:\\$FIXTURE.swf"
+    type_line "c:\\SAFlashPlayer.exe c:\\$FIXTURE.swf" || { fail "typing failed"; return; }
     local launched=$SECONDS curve="" idx="" last="" prev="" at2="" at10=""
     for tp in 2 5 10 20 26 30 45 60; do
         while ((SECONDS - launched < tp)); do sleep 1; done
