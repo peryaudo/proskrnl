@@ -86,7 +86,10 @@ static int SessionLegIs(const char *name)
     return SessionLeg[i] == 0 && name[i] == 0;
 }
 
-/* Is this leg ABOUT the shell — explorer owning the desktop?
+/* --- the two leg-name boot decisions ----------------------------------------
+ *
+ * Both of the following answer a question smss ASKS from SmssIsShellBoot, so
+ * the reasoning they share sits here once rather than in either body.
  *
  * A machine a human sits at has a shell, so an interactive desktop boot whose
  * console is NOT on the serial transport gets one (`make rungui`). A scripted
@@ -112,7 +115,9 @@ static int SessionLegIs(const char *name)
  * picks its destination -- so a boot has a serial console or a windowed one,
  * never both. `Serial`=1 would leave this leg no window to drive, and
  * `Serial`=0 alone is indistinguishable from `make rungui`, which must land
- * on the shell. Every OTHER leg that wanted a prompt moved to `Serial`=1.
+ * on the shell. (A CUI leg that wants a prompt does not need `Serial` at all
+ * -- with `Gui`=0 the console is on serial already and the flag is a no-op;
+ * `Serial`=1 is how a leg that HAS a desktop asks for the same thing.)
  *
  * The exit is a second console, not a cleverer derivation: give smss a way to
  * open one on the desktop while its own stays on serial, and this row goes. */
@@ -186,6 +191,10 @@ static int SessionGlobMatch(const char *pattern, ULONG patternChars, const char 
  * an unfiltered leg behaves exactly as it did before there was a filter. */
 static int SessionNoFilter(void)
 {
+    /* Load first, for SessionLegIs's reason: an unloaded SessionSubtests reads
+     * as "no filter", i.e. EVERY case, which is the silent-widening direction.
+     * Correct today only because every caller runs after SessionRun's load. */
+    SessionLoadBootStrings();
     return SessionSubtests[0] == 0;
 }
 

@@ -130,10 +130,17 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 # The rest are the same shape: one path or deadline, shared by everything. Host
 # toolchain selection ($QEMU, $WINE, $CC_ORACLE, $ACCEL) is deliberately NOT in
 # this list — that is a choice about the machine, not about a leg.
-unset WINEPREFIX LOG PASS_RE TIMEOUT GRACE MEM GUI_DEADLINE \
-      QMP_SOCK SERIAL_SOCK WRITE_LOG DRIVE_THROTTLE EXTRA_DEVICES \
-      INTERACTIVE GUI_DISPLAY WTEST_NO_ORACLE FONTDIFF_REFRESH \
-      NET_PCAP NET_ECHO_PORT
+# The GUEST_* flags are in the list for a reason of their own: they are BOOT
+# decisions now, not paths, and a leg that leaves one to its default (net3's
+# GUEST_GUI, every CUI leg's GUEST_STRESS) silently inherits whatever the
+# caller exported. That is how an exported GUEST_GUI=0 would reproduce net3's
+# 900s wedge inside a fulltest run and look like the leg's own defect.
+unset WINEPREFIX LOG PASS_RE TIMEOUT GRACE MEM GUI_DEADLINE AUDIO_DEADLINE \
+      EXPECT_DEADLINE QMP_SOCK SERIAL_SOCK WRITE_LOG DRIVE_THROTTLE \
+      EXTRA_DEVICES INTERACTIVE GUI_DISPLAY WTEST_NO_ORACLE FONTDIFF_REFRESH \
+      NET_PCAP NET_ECHO_PORT \
+      GUEST_LEG GUEST_SUBTESTS GUEST_GUI GUEST_SERIAL GUEST_INTERACTIVE \
+      GUEST_STRESS GUEST_USERLAND
 
 NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 
@@ -153,9 +160,13 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 #
 # 1165 s of legs; 150 s of wall clock. The floor is guiwtest at 114 s, so the
 # schedule is already within a third of the best any width could do.
+# net3 and resolvunit are in the list because CI runs them (test.yml, the cui-b
+# shard) and "prove it with make fulltest" must not be a weaker gate than CI.
+# net3 drops out on its own when the pinned curl.exe is absent (the leg refuses
+# loudly before building anything).
 ALL_LEGS=(guiwtest winetest wow64gui wow64aud winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui audio procs files console boot
-          cui6 net oracle wow64 fatstress fuzz fatinterop frontier)
+          cui6 net net3 resolvunit oracle wow64 fatstress fuzz fatinterop frontier)
 
 usage() {
     cat >&2 <<EOF

@@ -149,7 +149,16 @@ EOF
         echo "$wrapper"
         return 0
     done
-    echo "wine"
+    # NOT a fallback to the host's `wine`. abi/ is generated from the pinned
+    # tree and the oracle's answers ARE the spec (CLAUDE.md: never use a distro
+    # wine for the oracle; version divergence corrupts it), so a missing pinned
+    # build is a setup failure to say out loud, not a different wine to answer
+    # with quietly. Callers that only want a PE runner (nothing here does) can
+    # still pass WINE= explicitly.
+    echo "run.sh: no pinned wine at third_party/wine/wine64 (or wine)." >&2
+    echo "        Run tools/setup_linux.sh, or tools/fetch_third_party.sh in an" >&2
+    echo "        ephemeral container. The host's wine is NOT the oracle." >&2
+    return 1
 }
 : "${WINE:=$(find_wine)}"                  # runner for the .exe when not on Windows
 
@@ -1326,7 +1335,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
 # GUI-5's trophy gate (docs/02 "the real trophy: run Wine's
 # user32/tests/msg.c"): the pinned tree's own user32_test.exe, whole msg
 # module, over the full GUI stack — win32u, wineserver-lite, winefb, the
-# windowed message machinery — swept by the same kernel wtest runner the
+# windowed message machinery — swept by the same session-manager wtest runner the
 # CUI manifest uses (per-pair timeout via the manifest's third field).
 #
 # TWO HALVES since the oracle gained a display driver: guiwtest_oracle above
@@ -1396,6 +1405,20 @@ guiwtest() {
     # hung, panicked or timed-out boot — was therefore unreachable: the leg
     # exited 1 having printed nothing about why, which is the single worst
     # moment to say nothing. Found by tracing a deliberately truncated run.
+    # And the sweep must have REACHED ITS END having selected exactly this one
+    # pair. The verdict line alone does not say that: `[KTEST] wtest done
+    # tests=<n>` is the only statement of how many pairs the boot actually ran,
+    # and a run that ended early or selected nothing is the shape a count
+    # nobody cross-checked hides (docs/03 M10 winetest notes).
+    local sweptLine swept
+    sweptLine="$(grep -aE '^\[KTEST\] wtest done ' "$log" | tail -1 | tr -d '\r' || true)"
+    swept="$(sed -nE 's/.*tests=([0-9]+).*/\1/p' <<<"$sweptLine")"
+    if [[ "$swept" != "1" ]]; then
+        echo "== guiwtest: FAIL (the manifest-gui sweep reported tests='${swept:-none}'," \
+             "expected the one msg pair; see $log) =="
+        return 1
+    fi
+
     local verdict failures
     verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1 || true)"
     if [[ -z "$verdict" ]]; then
@@ -1778,6 +1801,20 @@ firstboot() {
         echo "[KTEST] firstboot-diff FAIL (boot did not reach firstboot PASS; see $log)"
         return 1
     fi
+    # The boot must have INSTALLED the registry-only inf, not merely reached
+    # PASS. This leg's whole subject is a CUI-only first boot, and on any disk
+    # whose prefix is already stamped -- a warm image copied here by mistake --
+    # FirstbootInstallInf correctly does nothing, wineboot correctly skips, and
+    # `firstboot PASS` is printed over a hive a GUI boot wrote. regdiff would
+    # then compare that hive with its self-registration output already excused
+    # by the exclusion list below, and report 0 divergences. Unlike `persist`,
+    # the wrong image here is a silent GREEN, which is why the leg asks the
+    # guest what it did rather than only whether it survived.
+    if ! grep -q 'installed the registry-only inf' "$log"; then
+        echo "[KTEST] firstboot-diff FAIL (the boot installed no registry-only inf --"
+        echo "   this is not a virgin CUI first boot; see $log)"
+        return 1
+    fi
     # The external FAT oracle BEFORE the hive extraction below: a FAT-corrupt
     # image should fail loudly here, not feed a torn hive to regdiff.
     if ! "$ROOT/tests/run/fatcheck.sh" verify firstboot "$img"; then
@@ -1793,14 +1830,15 @@ firstboot() {
     # --- oracle leg: wineboot --init in a fresh prefix under the pinned wine ---
     # BOTH sides apply the IDENTICAL filtered INF, so the differential
     # isolates the kernel's Cm/setupapi boundary from the directive families
-    # tools/filter_inf.py documents as out of scope — including RegisterDlls,
-    # whose registry effect the guest now DOES apply (the baked inf keeps the
-    # directive) and the oracle cannot: with it kept here, the prefix's own
-    # pass has all 30 fake dlls to register instead of the three the disk
-    # carries and WEDGES (rundll32 at 0% CPU for 18 minutes inside
-    # InstallHinfSection, measured). Self-registration output is therefore
-    # out of the compared scope, spelled out in regdiff.py's exclusion list
-    # the way every other documented delta is.
+    # tools/filter_inf.py documents as out of scope — including RegisterDlls.
+    # The ORACLE cannot keep it: with it kept here the prefix's own pass has
+    # all 30 fake dlls to register instead of the three a disk carries, and it
+    # WEDGES (rundll32 at 0% CPU for 18 minutes inside InstallHinfSection,
+    # measured). The GUEST does not apply it either on this leg — a CUI boot
+    # installs $(WINE_INF_CUI), which drops the directive — so the two sides
+    # agree by construction here; self-registration output stays out of the
+    # compared scope in regdiff.py for the GUI hives this tool is also pointed
+    # at by hand.
     # The filtered INF is staged as input data over the pinned
     # tree's loader/wine.inf for the duration of this one prefix init (the
     # loader's WINEBUILDDIR always wins over the environment, so the file is
@@ -1891,8 +1929,10 @@ console() {
 # cmd.exe — sc query RpcSs over \pipe\svcctl, sc start RpcSs (a real
 # service process), sc create + start SvcDemo (tests/cui/svcdemo.c), the
 # proof line in C:\svcdemo.log (console_expect.py EXPECT_SCM=1). Boot 2
-# asserts the SCM AUTO-started SvcDemo from the persisted registry before
-# cmd ever prompted, and the proof file grew (EXPECT_SCM=2).
+# asserts the SCM AUTO-started SvcDemo from the persisted registry -- nothing
+# types a start, so the autostart is what is convicted; console_expect.py POLLS
+# for it rather than assuming it beat cmd's prompt, which nothing serializes --
+# and that the proof file grew (EXPECT_SCM=2).
 scm() {
     # The warm image is a plain boot's leavings, and a plain boot creates no
     # service -- the SvcDemo this leg creates is still absent. (This used to
@@ -2297,11 +2337,22 @@ cui9() {
         return 1
     fi
     echo "$ceilingLine"
-    # err=0 means mmceiling filled its MAX_CHILDREN array without a refusal:
-    # the reported procs is the harness cap, not the machine's ceiling.
+    # err=0 means the loop ended without a refusal, and the client itself says
+    # WHICH of the two ways that happened: capped=1 is "the MAX_CHILDREN array
+    # filled" (raise the cap), capped=0 with err=0 is a child that died on load
+    # reporting success -- a different defect, and the message used to name the
+    # wrong one for it.
     err="$(sed -nE 's/.*err=([0-9]+).*/\1/p' <<<"$ceilingLine")"
+    local capped
+    capped="$(sed -nE 's/.*capped=([0-9]+).*/\1/p' <<<"$ceilingLine")"
     if [[ -z "$err" || "$err" -eq 0 ]]; then
-        echo "== cui9: FAIL (no refusal: hit mmceiling's MAX_CHILDREN cap at procs=$procs; raise the cap) =="
+        if [[ "$capped" == 1 ]]; then
+            echo "== cui9: FAIL (no refusal: hit mmceiling's MAX_CHILDREN cap at procs=$procs;" \
+                 "raise the cap) =="
+        else
+            echo "== cui9: FAIL (the spawn loop ended with no refusal and no cap at" \
+                 "procs=$procs -- a child exited 0 without running; see $log) =="
+        fi
         return 1
     fi
     local perprocLine perproc
@@ -2380,13 +2431,17 @@ net() {
         return 1
     fi
     echo "[KTEST] netsmoke PASS"
-    make -C "$ROOT" >/dev/null || exit 1
+    make -C "$ROOT" >/dev/null || return 1
 
     # The echo server: host loopback, ephemeral port, killed with the leg.
     local portfile="$BUILD/netecho.port"
     rm -f "$portfile"
     python3 "$ROOT/tests/run/netecho.py" "$portfile" &
     local echopid=$!
+    # RETURN fires on a `return`, not on an `exit` -- and every helper this leg
+    # calls below ends in `|| return 1` for exactly that reason, so the trap is
+    # reached. Kept as a belt: an EXIT trap here would fight the file-level one
+    # (the uacheck sweep), so the rule is that nothing in this function exits.
     # shellcheck disable=SC2064
     trap "kill $echopid 2>/dev/null" RETURN
     local waited=0
@@ -2822,11 +2877,20 @@ audio() {
         GUEST_SERIAL=1 GUEST_LEG=wasapi \
         "$ROOT/tools/qemu.sh" "$img2" >/dev/null 2>&1 &
     qemu_wrapper=$!
+    # The device's own verdict first, as on the direct arm above: without it
+    # nothing INDEPENDENT of the PE stack says virtio-snd came up on this boot,
+    # so a driver regression would be diagnosed through mmdevapi.
+    if ! await '\[KTEST\] SND (PASS|FAIL)'; then
+        audio_fail "the kmt SND suite never reported on the WASAPI boot"; return 1
+    fi
     if ! await '\[KTEST\] audio (PASS|FAIL)'; then
         audio_fail "no WASAPI client verdict"; return 1
     fi
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] SND PASS' "$log"; then
+        echo "== audio: FAIL (WASAPI boot: kmt SND suite; see $log) =="; return 1
+    fi
     if ! grep -qE '\[KTEST\] audio PASS underruns=[0-9]+' "$log"; then
         echo "== audio: FAIL (WASAPI half: no PASS carrying an underrun count; see $log) =="
         return 1
@@ -2891,11 +2955,17 @@ audio() {
         GUEST_SERIAL=1 GUEST_LEG=wasapicap \
         "$ROOT/tools/qemu.sh" "$img4" >/dev/null 2>&1 &
     qemu_wrapper=$!
+    if ! await '\[KTEST\] SND (PASS|FAIL)'; then
+        audio_fail "the kmt SND suite never reported on the WASAPI capture boot"; return 1
+    fi
     if ! await '\[KTEST\] audio capture (PASS|FAIL)'; then
         audio_fail "no WASAPI capture client verdict"; return 1
     fi
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
+    if ! grep -qE '\[KTEST\] SND PASS' "$log"; then
+        echo "== audio: FAIL (WASAPI capture boot: kmt SND suite; see $log) =="; return 1
+    fi
     if ! grep -qE '\[KTEST\] audio capture PASS packets=[0-9]+ frames=[0-9]+' "$log"; then
         echo "== audio: FAIL (WASAPI capture half; see $log) =="; return 1
     fi
@@ -3352,8 +3422,9 @@ gui5() {
     mkdir -p "$dir"
     rm -f "$sock" "$ppm" "$log"
 
-    # gui3's sizing reasoning: no COW and four Wine processes across the leg
-    # (the server, fontdiff, then the two clients).
+    # gui3's sizing reasoning: no COW and five Wine processes across the leg
+    # (conhost, the server, fontdiff, then the two clients -- conhost brings up
+    # the desktop stack too, on every Gui boot).
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-1536M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5-NEVER' \
         GUEST_SERIAL=1 GUEST_LEG=gui5 \
@@ -3620,19 +3691,31 @@ wow64gui() {
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 
+    # Two DISTINCT failures, named apart. The shared await() shape returns 1
+    # both when QEMU died and when the deadline ran out, and the caller then
+    # reports the marker's name -- so a guest that panicked reads as "no
+    # keyboard reader" and a slow host reads the same way. This leg is the one
+    # whose timing was actually in question, so it says which happened.
+    awaitWhy=""
     await() {
         local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        awaitWhy=""
         while ((SECONDS < deadline)); do
             grep -qE "$pattern" "$log" 2>/dev/null && return 0
-            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            if ! kill -0 "$qemu_wrapper" 2>/dev/null; then
+                awaitWhy=" -- QEMU exited before the marker appeared"
+                return 1
+            fi
             sleep 1
         done
+        awaitWhy=" -- deadline ${GUI_DEADLINE:-900}s expired with QEMU still running"
         return 1
     }
     wow64gui_fail() {
         python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
         wait "$qemu_wrapper" 2>/dev/null || true
-        echo "== wow64gui: FAIL ($1; see $log) =="
+        echo "== wow64gui: FAIL ($1${awaitWhy}; see $log) =="
+        awaitWhy=""
         return 1
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
@@ -3963,7 +4046,7 @@ case "$MODE" in
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

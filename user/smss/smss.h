@@ -65,10 +65,12 @@ int SmssIsInteractiveBoot(void);
 int SmssIsGuiBoot(void);
 int SmssHasUserland(void);
 
-/* Does explorer own the desktop on this boot? Reads "Shell", which defaults
- * OFF — the GUI legs run purpose-built clients over the desktop server's own
- * fixtures (user/wine/wineserver-lite/common/shim.c probe_shell reads the
- * same value). */
+/* Does explorer own the desktop on this boot? DERIVED from `Gui`, `Interactive`,
+ * `Serial` and the leg name -- there is no `Shell` flag -- and published as
+ * `ShellBoot` for the PE side, which is what
+ * user/wine/wineserver-lite/common/shim.c probe_shell reads. The scripted GUI
+ * legs derive 0 and run purpose-built clients over the desktop server's own
+ * fixtures. */
 int SmssIsShellBoot(void);
 
 /* Does this boot keep its console on the serial transport? (`Serial`) */

@@ -131,10 +131,16 @@ EXCLUDED_VALUE_NAMES = [
 # scope; Windows\CurrentVersion\RunServices* are ProcessRunKeys probes).
 ALLOWED_EXTRA_SUBTREES = [
     "machine\\system\\currentcontrolset\\control\\session manager",
-    # SELF-REGISTRATION output. The baked wine.inf keeps RegisterDlls (one
-    # inf for every leg, Makefile $(WINE_INF_FULL)), so the guest's firstboot
-    # runs shell32's, mmdevapi's and dsound's own DllRegisterServer through
-    # Wine's own registrar. shell32's writes ~120 FolderDescriptions keys.
+    # SELF-REGISTRATION output. $(WINE_INF_FULL) keeps RegisterDlls, so a GUI
+    # first boot runs shell32's, mmdevapi's and dsound's own DllRegisterServer
+    # through Wine's own registrar; shell32's writes ~120 FolderDescriptions
+    # keys. The `firstboot` leg is a CUI boot and applies $(WINE_INF_CUI),
+    # which drops the directive -- so on that leg these subtrees are EMPTY on
+    # both sides and the allowance is dormant. It is kept because it is the
+    # documented statement of what is out of scope, and because this file is
+    # also pointed at hives from GUI boots by hand. The leg does not lean on
+    # it: run.sh firstboot requires the guest to say it installed the
+    # registry-only inf, so a full-inf hive cannot arrive here and be excused.
     #
     # The ORACLE cannot answer for those, and that is measured rather than
     # assumed: with RegisterDlls kept, the oracle prefix's own pass has all

@@ -1269,12 +1269,18 @@ $(FT_SYMS): $(WINE_W32U)/freetype.c tools/gen_freetype_syms.py
 # proskrnl_bootflag.h: the one PE-side reader of a Hardware\qemu boot flag
 # (Art. 11). It lives in the WINE tree because win32u asks too and that tree
 # has to build standalone under the oracle's own configure/make; every rule
-# here already carries -Ithird_party/wine/include. Named as a prerequisite
-# because these rules carry no -MMD depfiles.
+# here already carries -Ithird_party/wine/include.
+#
+# $(DEPFLAGS) rather than a hand-listed header, for the reason the kernel rules
+# carry it (see DEPFLAGS above): these objects ARE the compositor unit suite's
+# code under test, and without depfiles a change to winefb.h rebuilt the mocks
+# and not compose.o/blit.o -- winefbunit then reported PASS for the previous
+# build, in the one leg fast enough to be run constantly.
 $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS) third_party/wine/include/proskrnl_bootflag.h
 	@mkdir -p $(dir $@)
-	$(MINGW) $(W32U_CFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
+	$(MINGW) $(W32U_CFLAGS) $(DEPFLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) -I$(WSRV_DIR)/common \
 	    -Iuser/wine/dlls/winefb.drv -c $< -o $@
+-include $(patsubst user/wine/%.c,$(W32U_BUILD)/glue/%.d,$(W32U_GLUE_SRCS))
 
 # The compositor unit suite (tests/run/run.sh winefbunit): the SAME
 # compose.o/blit.o the win32u.dll link uses, a mocked seam for everything
@@ -1644,13 +1650,16 @@ $(WOW64GUI): tests/gui/wow64gui.c tests/ntapi/ntapi.c tests/ntapi/ntapi.h $(WINE
 	    -Wall -Itests/ntapi -Wl,--entry=_ntapi_start \
 	    tests/gui/wow64gui.c tests/ntapi/ntapi.c $(WOW64GUI_LIBS) -lgcc -o $@
 
-WOW64_GUI_PAYLOAD := $(WOW64_GUI_DLLS) $(WOW64_APPLET_EXES) $(WOW64GUI) \
+# $(WOW64GUI) is NOT here and not in the file list below: it is the acceptance
+# CLIENT, not part of the 32-bit shelf, and this list rides $(FULLFILES) onto
+# the dev image too. It was baked twice -- once here, once in $(TESTFILES) --
+# which put a test binary on the product image and made two specs for one file.
+WOW64_GUI_PAYLOAD := $(WOW64_GUI_DLLS) $(WOW64_APPLET_EXES) \
                      $(WINESTRIP32)/comctl32_v6.dll $(WINESTRIP32)/common-controls.manifest
 WOW64GUIFILES := $(foreach d,$(WOW64_GUI_NAMES),win:$(WINESTRIP32)/$(d).dll=windows/syswow64/$(d).dll) \
                  $(foreach p,$(WOW64_APPLET_EXE_NAMES),win:$(WINESTRIP32)/$(p).exe=windows/syswow64/$(p).exe) \
                  win:$(WINESTRIP32)/comctl32_v6.dll=$(SXS_CC_DIR32)/comctl32.dll \
-                 win:$(WINESTRIP32)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR32)).manifest \
-                 win:$(WOW64GUI)=wow64gui.exe
+                 win:$(WINESTRIP32)/common-controls.manifest=windows/winsxs/manifests/$(notdir $(SXS_CC_DIR32)).manifest
 
 # ---------------------------------------------------------------------------
 # The shell payload: explorer.exe at the exact path win32u's auto-launch
@@ -1687,8 +1696,7 @@ SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll
 # image when absent, so the target still builds on a clean tree.
 #
 # The projector is a PE32 (COFF machine 0x14c), so it runs ONLY through the
-# WOW64 shelf above — which is why this rides on the wow64-enabled gui5con
-# image and not on GUI-2's. Its import table names 13 DLLs; the 32-bit
+# WOW64 shelf above — which the dev image it rides on carries. Its import table names 13 DLLs; the 32-bit
 # mirror ($(WOW64_GUI_NAMES)) already stages nine, and the four it adds
 # (crypt32, wininet, winmm, wsock32) pull the closure below. Staged under
 # the same $(FLASHPRESENT) guard as the sources, so a tree without them
@@ -2072,6 +2080,13 @@ wtests: $(WTESTS)/ntdll_test.exe $(WTESTS)/kernel32_test.exe $(WTESTS)/msvcrt_te
 # reached through make, so there is one recipe for a test .exe (Art. 11).
 NTAPI_DIR  := tests/ntapi
 NTAPI_SRCS := $(shell find $(NTAPI_DIR) -name '*.c' ! -name ntapi.c ! -path '*/dll/*' 2>/dev/null | sort)
+# The `find` is silenced, so a failure (a missing tree, a permission error)
+# yields an EMPTY list -- no per-exe rules, a `ntapi-tests` phony with no
+# prerequisites, and on a tree that still has yesterday's .exe files every case
+# runs the previous build's binary and grades green. Refuse instead.
+ifeq ($(strip $(NTAPI_SRCS)),)
+$(error no ntapi test sources found under $(NTAPI_DIR) -- the suite cannot be empty)
+endif
 NTAPI_OUT  := $(BUILD)/tests/ntapi
 NTAPI_EXES := $(foreach src,$(NTAPI_SRCS),$(NTAPI_OUT)/$(notdir $(src:.c=.exe)))
 NTAPI_LIBS := $(WINE_PE)/kernel32/x86_64-windows/libkernel32.a \
@@ -2273,6 +2288,14 @@ $(IMG_TEST_WARM): $(IMG_TEST)
 	tests/run/kmtcheck.sh $(BUILD)/warm-serial.log
 	tests/run/uacheck.sh $(BUILD)/warm-serial.log
 	tests/run/symcheck.sh $(BUILD)/warm-serial.sym.log
+	# The external FAT oracle on the warm image, BEFORE it is published and
+	# before the strip below removes the artifacts it checks. Every leg copies
+	# this volume, and qemu.sh's grace path SIGKILLs QEMU GRACE seconds after
+	# the verdict appears -- so without this a torn write at power-off would be
+	# published as the master and every leg would inherit it. `test` is the
+	# right scope here: this boot is the plain boot suite, the same one
+	# `make test` runs.
+	tests/run/fatcheck.sh verify test $@.tmp
 	# Strip the kmt6 artifacts the warm boot just made, so every consumer's
 	# fatcheck still convicts ITS OWN boot. m6_io opens them FILE_OPEN_IF /
 	# FILE_OVERWRITE_IF ("keeps reruns on an already-seeded image green"), so

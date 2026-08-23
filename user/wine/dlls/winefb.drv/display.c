@@ -56,7 +56,9 @@ static BOOL winefb_shell_boot(void)
     /* Cached: the flag cannot change within a boot, and this is asked on the
      * display path. Absent key = not a QEMU guest, where the GUI-2 fixtures
      * are the arrangement, so the default is OFF (third_party/wine/include/proskrnl_bootflag.h
-     * carries the rest of the rule and the two other askers of this key). */
+     * carries the rest of the rule; wineserver-lite's probe_shell is the only
+     * other asker of THIS key, though conhost and win32u ask the same way for
+     * `ConsoleWindow` and `Gui`). */
     static int cached = -1;
 
     if (cached < 0) cached = prsk_qemu_boot_flag( L"ShellBoot", 0 ) != 0;
