@@ -1,8 +1,7 @@
 /*
- * gui5a.c - GUI-5's clipboard owner, and the input host.
+ * gui5a.c - GUI-5's clipboard owner.
  *
- * A starts first (so its winefb.drv hosts the input readers for the leg,
- * the gui4 arrangement) and becomes the clipboard owner BEFORE printing its
+ * A starts first and becomes the clipboard owner BEFORE printing its
  * ready marker: an immediate payload in a registered format, plus a DELAYED
  * CF_UNICODETEXT (SetClipboardData with NULL) that the server will come
  * asking for when B reads it -- the WM_RENDERFORMAT round trip is the
@@ -13,7 +12,8 @@
  *
  * The window itself is a disjoint solid fill (no overlap: compositing is
  * gui4's pinned job); its pixels only prove A is really on the scanout.
- * Verdicts go out as [KTEST] lines on serial; there is no console.
+ * Verdicts go out as [KTEST] lines on serial, where this boot's one console
+ * is too (GUEST_SERIAL=1) -- never in a window over the leg's pixels.
  */
 
 #include "ntapi.h"

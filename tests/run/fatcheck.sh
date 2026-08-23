@@ -173,9 +173,10 @@ case "$LEG" in
         ;;
     proskrnl-subset|wtest|console|churn|fatinterop|tornwrite)
         # proskrnl-subset is `run.sh proskrnl <subtest>`: the image carries
-        # only the named tests, so the full leg's per-test expectations
-        # (prstest, the sampled binaries) do not hold — the structural
-        # oracles do, and they are what convict a corrupt volume.
+        # every case (one image now), but only the named ones RAN, so the full
+        # leg's per-test expectations (prstest, the sampled binaries) do not
+        # hold — the structural oracles do, and they are what convict a
+        # corrupt volume.
         # Structure varies per leg; the two structural oracles always apply.
         fsck_check
         sweep_check

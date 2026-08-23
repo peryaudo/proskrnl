@@ -248,7 +248,8 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             conhost_wants_window, user/wine/wineserver-lite/common/shim.c
             probe_shell, user/wine/dlls/winefb.drv/display.c
             winefb_shell_boot, all three through the one reader
-            user/wine/common/bootflag.h, kernel/init/main.c KiConfigureCui8Stress) ;
+            third_party/wine/include/proskrnl_bootflag.h,
+            kernel/init/main.c KiConfigureCui8Stress) ;
             tools/qemu.sh (GUEST_INTERACTIVE, GUEST_GUI, GUEST_SERIAL,
             GUEST_STRESS, GUEST_LEG, GUEST_SUBTESTS, PANIC_NOTIMPL,
             NET_ECHO_PORT) ; the Net-1 consumers (tests/kmt/net_smoke.c

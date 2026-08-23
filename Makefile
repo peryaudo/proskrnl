@@ -430,9 +430,10 @@ $(M9SMOKE): tests/clients/m9_smoke.c $(WINE_PE_DLLS)
 	    $(WINE_PE)/kernelbase/x86_64-windows/libkernelbase.a \
 	    $(WINE_PE)/ntdll/x86_64-windows/libntdll.a -o $@
 
-# The M9 interactive-echo client: baked ONLY into the console-mode image
-# below (it blocks on console input, which the plain headless loop must
-# never do).
+# The M9 interactive-echo client. It blocks on console input, so it must not
+# run on a boot nobody is typing at -- which used to be arranged by keeping it
+# off every other image and is now the `console` leg name (user/smss/session.c
+# SessionFlowM9Echo). It is baked on the one test image like everything else.
 M9ECHO := $(BUILD)/modules/m9_echo.exe
 $(M9ECHO): tests/clients/m9_echo.c $(WINE_PE_DLLS)
 	@mkdir -p $(dir $@)
@@ -854,7 +855,7 @@ $(TIMEZONES_CHECK): kernel/cm/timezones.h tools/gen_timezones.py \
 
 # M10: the MSVC-stand-in CUI apps — plain mingw with its FULL CRT (they
 # import msvcrt.dll + kernel32.dll; third-party CRT startup against the
-# baked Wine userland). Only the console image carries them.
+# baked Wine userland). On the test image and the dev image both.
 HELLOCRT := $(BUILD)/modules/hello_crt.exe
 $(HELLOCRT): tests/cui/hello_crt.c
 	@mkdir -p $(dir $@)
@@ -918,15 +919,10 @@ $(MMCEILING): tests/cui/mmceiling.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -O1 -g0 -Wall -o $@ $<
 
-# The M9 interactive-console image (tests/run/run.sh console): the standard
-# image plus m9_echo.exe, whose presence makes the boot block on console
-# input after the M9 verdict (kernel/init/main.c KiRunM9Echo) — and, M10,
-# cmd.exe plus the CUI apps for the interactive cmd session that follows
-# (KiRunCmdConsole).
 # CUI-2 acceptance: the pinned tree's own UNMODIFIED whoami.exe — a real
-# tool whose startup path is OpenProcessToken + GetTokenInformation. It
-# lands on the console image; console_expect.py runs `whoami /logonid` and
-# greps the logon SID (docs/02 CUI-2 "Done when").
+# tool whose startup path is OpenProcessToken + GetTokenInformation.
+# console_expect.py runs `whoami /logonid` on the `console` leg and greps the
+# logon SID (docs/02 CUI-2 "Done when").
 WHOAMI := third_party/wine/programs/whoami/x86_64-windows/whoami.exe
 
 # The GUI-1 acceptance client (docs/02 "a user program maps the framebuffer
@@ -1819,16 +1815,16 @@ FULL_PAYLOAD := $(GUISTACK_PAYLOAD) $(CMD) $(TASKLIST) $(TASKKILL) \
 
 # ---------------------------------------------------------------------------
 # Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
-# virtio-net"; docs/24 §6f): the acceptance image. The CUI machine + the
+# virtio-net"; docs/24 §6f): the Net-3 payload. The CUI machine + the
 # GUI-2 DLL shelf (curl.exe imports user32) + the UNMODIFIED tool
 # (third_party/curlwin, tools/setup_linux.sh's pinned purchase) + the
 # api-set forwarder DLLs its UCRT imports name (generated from the
 # binary's OWN import table — tools/gen_apiset_forwarders.py; with no
 # ApiSetMap the pinned loader falls back to these literal names). The
 # per-run job (curl config, test CA, the net3.test hosts row) is mcopy'd
-# in by the run.sh net3 leg — nothing per-run is baked here, and
-# C:\net3\job.txt is the smss probe, so this leg can never fire on
-# another image.
+# in by the run.sh net3 leg — nothing per-run is baked here. (C:\net3\job.txt
+# used to be the smss PROBE that kept this flow off other images; the leg name
+# selects it now and the file is only curl's input.)
 NET3_CURL := third_party/curlwin/bin/curl.exe
 NET3_APISETS := $(BUILD)/net3/apisets
 $(NET3_APISETS)/specs.txt: $(NET3_CURL) tools/gen_apiset_forwarders.py
@@ -1840,7 +1836,7 @@ $(NET3_APISETS)/specs.txt: $(NET3_CURL) tools/gen_apiset_forwarders.py
 # scope note's "raw bcrypt works as-is"), crypt32 + its ncrypt import
 # (the fork already lets crypt32 load without a unixlib). Unstripped from
 # the pinned tree: llvm-objcopy refuses bcrypt (the FLASH_OBJCOPY note),
-# and an acceptance image buys nothing from stripping.
+# and the one test image buys nothing from stripping these five.
 NET3_DLL_NAMES := normaliz wldap32 bcrypt ncrypt crypt32
 # Dropped when the tool is absent, the $(FLASHPRESENT) way: curl.exe is a
 # sha256-pinned PURCHASE tools/setup_linux.sh downloads into a gitignored

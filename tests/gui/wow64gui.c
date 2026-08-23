@@ -32,8 +32,9 @@
 static const WCHAR class_w[] = {'P', 'R', 'S', 'K', 'W', 'o', 'w', '6', '4', 0};
 static const WCHAR title_w[] = {'w', 'o', 'w', '6', '4', 'g', 'u', 'i', 0};
 
-/* Deliberately clear of the console window the leg types into (which starts
- * at the top-left corner) and of the desktop's own background colour. */
+/* Deliberately clear of the desktop's own background colour, and of the
+ * top-left corner where a console window would sit if this boot had one (it
+ * does not: the leg runs GUEST_SERIAL=1). */
 #define W_X     420
 #define W_Y     420
 #define W_W     360
@@ -73,11 +74,11 @@ START_TEST(wow64gui)
     ULONG_PTR peb32 = 0;
     NTSTATUS status;
 
-    /* Unlike the other GUI clients this one is launched FROM the console
-     * window, so it inherits std handles and the harness's runner probe
-     * (ntapi.h: "no std output handle == proskrnl") would send every line
-     * into that window instead of the serial log the leg greps. Say where
-     * we are outright. */
+    /* Say where we are outright rather than letting the runner probe
+     * (ntapi.h: "no std output handle == proskrnl") decide. It is smss that
+     * starts this client now, like every other GUI client, so the probe would
+     * get the right answer -- but the marker the leg greps must not depend on
+     * how this process happened to be launched. */
     ntapi_ctx.on_proskrnl = 1;
 
     status = NtQueryInformationProcess(GetCurrentProcess(), PS_PROCESS_WOW64_INFORMATION, &peb32,

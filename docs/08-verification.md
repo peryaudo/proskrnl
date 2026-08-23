@@ -438,10 +438,11 @@ Two knobs carry judgement rather than taste:
   single leg is 114 s (`guiwtest`), and `-j8` lands the whole suite in **150 s** — no width
   can do better than ~120 s, and buying that last 20% with a saturated box would be paying
   in false reds.
-- **`tests/run/run.sh prebuild`** builds the ~165 ntapi test `.exe`s once, fanned out,
-  before the legs start. It is a build step and produces no verdict — it exists because the
-  `proskrnl` leg builds them one at a time, and at ~1.2 s each that is three minutes on the
-  leg's clock, paid again in every sandbox that needs them.
+- **`tests/run/run.sh prebuild`** builds the ~165 ntapi test `.exe`s once, fanned out. It
+  is a build step and produces no verdict. It was written when the `proskrnl` leg compiled
+  them one at a time and every sandbox paid the compiles again; both halves are gone — the
+  Makefile owns the compiles (one rule per case) and the leg bakes nothing — so nothing in
+  the pipeline calls it any more. It survives as a hand tool for warming a tree.
 
 **Do not touch the tree while it runs.** The views symlink the sources, so an edit mid-run
 reaches every leg at once — and that includes editing `run.sh` or `fulltest.sh` themselves,

@@ -467,13 +467,13 @@ comctl32's delay import — absent, explorer aborts in the systray
 toolbar) and atl100.dll (the registrar behind every
 `DllRegisterServer` — absent, wine.inf's `RegisterDllsSection` ran to a
 silent `E_NOINTERFACE` and shell32's CLSIDs never landed in the hive).
-`make rungui` gets the same desktop: the gui5con image carries the
-shell payload too, its clients routed onto desktop "shell" by Wine's
-own virtual-desktop registry configuration (written natively by smss
-before the first client), so the windowed prompt, the applets it
-launches, and the WOW64 clients all live on the explorer desktop with
-its taskbar.
-**Not yet:** the gui2..gui5 and guiwtest images stay explorerless by
+`make rungui` gets the same desktop: it is an interactive, non-serial
+GUI boot, which is exactly what `ShellBoot` derives, so its clients are
+routed onto desktop "shell" by Wine's own virtual-desktop registry
+configuration (written natively by smss before the first client) and
+the windowed prompt, the applets it launches, and the WOW64 clients all
+live on the explorer desktop with its taskbar.
+**Not yet:** the gui2..gui5 and guiwtest BOOTS stay explorerless by
 decision (docs/03 "GUI-2 notes"), so the fixture survives as their
 fallback and the two desktop-ownership `user32:msg` assertions stay in
 `msg-budget.txt`'s bound; `CLSID_ShellWindows` registration

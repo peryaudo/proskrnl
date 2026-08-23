@@ -138,10 +138,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
 
-      # CI boots a VIRGIN image every time, so the boot runs the full CUI-1
-      # firstboot INF pass ("minutes under TCG" — see run.sh persist), which
-      # qemu.sh's 30s default kill would cut short; the timeout is only a
-      # backstop — a green boot exits via isa-debug-exit as soon as it's done.
+      # `make test` boots a copy of the WARM image, but building that image
+      # runs the virgin warm-up boot first, and THAT pays the full firstboot
+      # INF pass ("minutes under TCG"). So this step still needs the generous
+      # budget; it is only a backstop — a green boot exits via isa-debug-exit
+      # as soon as it's done. (The warm-up rule carries its own TIMEOUT.)
       - name: make test (QEMU boot, [KTEST] verdict on serial)
         if: ${{ !cancelled() }}
         run: make test
@@ -267,8 +268,8 @@ jobs:
         with:
           shard: cui-a
 
-  # 90 for the same reason the gui job below carries it: five legs that each
-  # boot a virgin image through the firstboot INF pass, measured at 52m32s
+  # 90 for the same reason the gui job below carries it: legs that pay the
+  # virgin warm-up boot's firstboot INF pass once per shard, measured at 52m32s
   # against a 60 cap, and an overrun here loses every leg's verdict at once
   # rather than reporting the one that was slow.
   cui-b:
@@ -352,7 +353,8 @@ jobs:
       # screendump. The guest plays a deterministic S16 pattern through
       # \Device\Snd0 and the harness finds it sample-exact in the WAV that
       # QEMU's wav audiodev recorded (docs/23 §6a). Rides this shard because
-      # it is the same virgin-image full-firstboot boot the GUI legs pay.
+      # it is the same GUI machine the legs above boot, off the same warm
+      # image the shard has already built.
       - name: AUD-1 sample-exact playback in a recorded WAV (tests/run/run.sh audio)
         if: ${{ !cancelled() }}
         run: tests/run/run.sh audio
@@ -363,8 +365,9 @@ jobs:
       # The same recording check with the client built i386 and run as a
       # WOW64 guest: syswow64's mmdevapi + winmm + winevsnd.drv over the one
       # \Device\Snd0 contract, with the client's own bits= on its verdict
-      # line. Beside the audio leg because it shares the audio machine and
-      # the wav backend; more memory because it brings up a second Wine
+      # line. Beside the audio leg because it asks for the same audio machine
+      # (virtio-snd on the command line) and the wav backend; more memory
+      # because it brings up a second Wine
       # stack (the wow64gui reason).
       - name: WOW64 audio a 32-bit app through syswow64's WASAPI (tests/run/run.sh wow64aud)
         if: ${{ !cancelled() }}

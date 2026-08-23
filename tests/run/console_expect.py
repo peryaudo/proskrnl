@@ -27,9 +27,9 @@ def main() -> int:
         return 2
     sock_path, log_path = sys.argv[1], sys.argv[2]
 
-    # The console image's virgin boot includes the CUI-1 firstboot INF pass
-    # (minutes under TCG) before conhost ever speaks; the runner passes a
-    # matching budget.
+    # The budget is generous because a VIRGIN boot puts the CUI-1 firstboot
+    # INF pass (minutes under TCG) in front of conhost's first word. The legs
+    # that copy the warm image skip that pass, so for them it is only slack.
     deadline = time.monotonic() + float(os.environ.get("EXPECT_DEADLINE", "150"))
     sock = None
     while time.monotonic() < deadline:

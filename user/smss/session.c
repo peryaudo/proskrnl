@@ -105,8 +105,9 @@ static int SessionLegIs(const char *name)
  * gate, which locates the window on the scanout, clicks it, types into it and
  * compares its pixels.
  *
- * This is the last boot decision that reads a leg NAME, and it is here rather
- * than in a flag because there is no flag that could carry it: this machine
+ * One of the two boot decisions that read a leg NAME (GUI-6's shell
+ * integration, just above, is the other). It is here rather than in a flag
+ * because there is no flag that could carry it: this machine
  * has exactly ONE console -- smss creates it at startup and `ConsoleWindow`
  * picks its destination -- so a boot has a serial console or a windowed one,
  * never both. `Serial`=1 would leave this leg no window to drive, and
@@ -883,10 +884,10 @@ static int SessionFlowWtest(const WCHAR *manifestPath)
 
 /* --- the console-mode flows ------------------------------------------------- */
 
-/* The M9 interactive-echo client when (and only when) the image carries it —
- * the console-mode image (Makefile console-img). It blocks on console input
- * until the runner types a line into the serial socket, so the plain image
- * must never include it; absence is silent. */
+/* The M9 interactive-echo client, run when (and only when) the boot asks for
+ * the `console` leg. It blocks on console input until the runner types a line
+ * into the serial socket, so no other leg may reach it -- which used to be
+ * arranged by keeping it off every other image, and is now the leg name. */
 static int SessionFlowM9Echo(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_echo.exe");
@@ -902,9 +903,10 @@ static int SessionFlowM9Echo(void)
     return pass ? 0 : 1;
 }
 
-/* The M10 acceptance (docs/02): an INTERACTIVE cmd.exe on the serial
- * console, driven by tests/run/console_expect.py. Present only on the
- * console-mode image (probe/skip on hello_crt.exe, its subject). */
+/* The M10 acceptance (docs/02): a cmd.exe on the serial console driven by
+ * tests/run/console_expect.py -- the `console` leg's second half. (It is not
+ * an `Interactive` boot in the fw_cfg sense: that flag means a human owns the
+ * console, and this one is typed at by a script.) */
 static int SessionFlowCmdConsole(void)
 {
     /* No probe, for the same reason as M9Echo above: the `console` leg is
@@ -1014,8 +1016,8 @@ static const GUI_LEG SessionGuiLegs[] = {
 
     /* GUI-2 (docs/02 "winemine.exe appears on screen"): the whole Wine GUI
      * stack painting through winefb.drv onto \Device\Fb0. Reached when the
-     * window is closed (the harness's Alt+F4 probe) or when the app dies --
-     * either way the exit code is the diagnosis. */
+     * app dies; the leg itself screendumps and quits QEMU rather than closing
+     * the window, so in practice returning here IS the diagnosis. */
     {.leg = "gui2", .foreground = WSTR("\\??\\C:\\winemine.exe"), .tag = "gui2"},
 
     /* GUI-3 (docs/02 "two GUI processes run at once"): wineserver-lite
@@ -1041,8 +1043,11 @@ static const GUI_LEG SessionGuiLegs[] = {
      * fontdiff is the prologue for two reasons: its metric lines must land
      * un-interleaved with the clients' output, and it must have EXITED --
      * releasing any exclusively-opened input device its winefb instance won
-     * -- before gui5a starts and becomes the leg's input host (docs/03 GUI-4
-     * notes). */
+     * -- before gui5a starts (docs/03 GUI-4 notes). Which process ends up
+     * HOSTING the readers is no longer gui5a's by construction: conhost links
+     * the real user32 on every Gui boot and can win the exclusive opens
+     * first. The readers post to the foreground window and the server routes
+     * globally, so the leg's markers appear either way. */
     {.leg = "gui5",
      .prologue = WSTR("\\??\\C:\\fontdiff.exe"),
      .background = WSTR("\\??\\C:\\gui5a.exe"),
@@ -1066,11 +1071,12 @@ static const GUI_LEG SessionGuiLegs[] = {
      * parks in its message loop and the harness owns QEMU's lifetime. */
     /* Net-3 (docs/02 "an off-the-shelf tool completes an HTTPS fetch over
      * virtio-net"): UNMODIFIED curl.exe, bundled TLS, driven by the
-     * per-run config the harness mcopy'd to C:\net3\job.txt (the probe —
-     * absent on every other image, present only on a net3-leg boot). The
+     * per-run config the harness mcopy'd to C:\net3\job.txt. (That file used
+     * to be the PROBE that selected this flow; the leg name selects it now,
+     * and the file is only curl's input.) The
      * config carries the URL, the test CA, the output path and a retry
      * budget that outlasts the DHCP bind. curl EXITS, so the verdict is
-     * the leg's plain exit line ("[KTEST] net3 exit (status=0, exit=0)")
+     * the leg's plain exit line ("[KTEST] net3 exit (status=0x0, exit=0x0)")
      * — the harness reads it, ends the guest, and convicts the fetched
      * bytes by hash from the image (tests/run/run.sh net3). */
     {.leg = "net3",
@@ -1156,7 +1162,9 @@ static int SessionFlowGui(void)
  * chain worked — the kernel built a WOW64 process, the 64-bit ntdll found
  * WowTebOffset set and loaded wow64.dll, wow64cpu far-jumped into compat
  * mode, and every syscall the guest made came back through it. Selected by
- * the wow64 leg; the client is on every image. */
+ * the wow64 leg; the client is on the TEST image (not the dev one, which
+ * carries no test payload -- there its absence is a loud create failure,
+ * which is the right answer for a leg asked of the wrong image). */
 static int SessionFlowWow64(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\hello32.exe");

@@ -109,18 +109,16 @@ tests/run/run.sh winetest   # the M10 stretch gate: the full non-GUI sweep of Wi
 tests/run/run.sh firstboot  # the CUI-1 gate: boot a virgin image, diff the firstboot
                             # SYSTEM hive against a fresh oracle prefix (regdump/regdiff)
 tests/run/run.sh prebuild   # build every test .exe and run NOTHING — a build step with no
-                            # verdict, for a caller that runs the legs in separate
-                            # sandboxes (`make fulltest`, docs/08) and wants the ~165
-                            # mingw compiles paid once, fanned out, instead of per leg
+                            # verdict. Nothing in the pipeline calls it any more (the
+                            # Makefile owns the compiles); a hand tool for warming a tree
 ```
 
-Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl image is the
-full CUI machine `make run` boots — the Makefile's own `$(WINFILES)`, read through
-`make print-winfiles` rather than re-listed in `run.sh`, so `wineboot --init` runs at
-firstboot here too and a pin is taken against the machine the product has — plus every test
-under `C:\ntapi\`, the helper DLL and the WOW64 payload; the session manager's sweep
-(`user/smss/session.c`) runs whatever is there — **the image, not a baked-in list,
-decides what runs** — and ends with
+Both modes share one build of each `.exe` (`build/tests/ntapi/`). The proskrnl leg boots a
+copy of the one test image, whose payload the Makefile owns in a single list, so
+`wineboot --init` has run on it (in the warm-up boot) and a pin is taken against the
+machine the product has — plus every test under `C:\ntapi\`, the helper DLL and the WOW64
+payload. The session manager's sweep (`user/smss/session.c`) runs whatever is there,
+filtered by `GUEST_SUBTESTS`, and ends with
 `[KTEST] ntapi done tests=<n> failures=<n>`, the boot's stop condition. Both modes collect
 `[KTEST] … PASS/FAIL` lines and exit non-zero if any test fails.
 
@@ -131,7 +129,7 @@ buckets), or a glob over base names:
 
 ```
 tests/run/run.sh oracle   query_dir           # one test under the oracle
-tests/run/run.sh proskrnl query_dir           # bake+boot ONLY that .exe
+tests/run/run.sh proskrnl query_dir           # boot, but RUN only that .exe
 tests/run/run.sh proskrnl 'se_*' handle_life  # globs and several names are fine
 ```
 
@@ -173,7 +171,7 @@ It used to be a **generated manifest**: the selected lines were written out and 
 `C:\wtests\manifest.txt`, so a filtered run produced a third image whose file on disk
 recorded which subset had last been asked for. The subset run's own copy and log
 (`build/tests/wtest-subset.hdd`, `wtest-subset-serial.log`) keep it clear of the gate's,
-and the same typo rule applies (the error lists all 83 known pairs). This is the way to
+and the same typo rule applies (the error lists every known pair). This is the way to
 work a red pair without paying for the whole sweep: the manifest lists the entire non-GUI
 surface, so an unfiltered run is long by design.
 
@@ -279,12 +277,12 @@ lists every subtest of ntdll, kernel32, msvcrt, ucrtbase and programs/cmd — th
 surface — so the leg measures the frontier rather than the part already crossed; advapi32 and
 user32 are out (`docs/03` "M10 winetest notes").
 
-Its image is the **full CUI machine `make run` boots** — the Makefile's own `$(WINFILES)`,
-read by the leg through `make print-winfiles` instead of re-listed in `run.sh` (one list, one
-authority), so `wineboot --init` runs at firstboot and the sweep meets `wine.inf`'s
-machine-state registry payload, the SCM binaries and the WOW64 payload the product has —
-plus what only this leg needs: the wtest binaries and manifest under `C:\wtests`, the full NLS
-set, `tzres.dll` and the `win.ini`/`system.ini` furniture (`tools/gen_sysini.py`).
+It boots a copy of the one test image — the Makefile owns its payload as a single list
+(one list, one authority), so `wineboot --init` has run on it and the sweep meets
+`wine.inf`'s machine-state registry payload, the SCM binaries and the WOW64 payload the
+product has, alongside what this leg reads: the wtest binaries and both manifests under
+`C:\wtests`, the full NLS set, `tzres.dll` and the `win.ini`/`system.ini` furniture
+(`tools/gen_sysini.py`).
 
 (`tests/ntapi/syscall/`'s generated STUBS are no longer part of the ntapi build; they
 remain for the M4/M5-era flat boot modules under `tests/boot/`. The directory does hold one

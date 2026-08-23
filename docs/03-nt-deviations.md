@@ -810,10 +810,11 @@ boundary symbols winebuild would have emitted supplied by
   `setupapi`/`cfgmgr32`/`ws2_32`/`secur32`/`userenv`/`hid` beside test
   binaries that import them. A differential leg can only spend such a
   difference as a divergence — the win.ini finding below is one that was
-  chased down to exactly this cause — so the image now bakes the Makefile's
-  own `$(WINFILES)` (read through `make print-winfiles`; one list, one
-  authority, Art. 11) plus this leg's own payload: the wtest binaries and
-  manifest, the full nls set, tzres, the .ini furniture, and the WOW64 guest
+  chased down to exactly this cause — so the one image the leg boots carries
+  the Makefile's own `$(WINFILES)` (one list, one authority, Art. 11; the
+  `make print-winfiles` hand-off that let run.sh bake its own image is gone
+  with the per-leg images) plus this leg's payload: the wtest binaries and
+  manifests, the full nls set, tzres, the .ini furniture, and the WOW64 guest
   set `ntdll:wow64` spawns children out of.
   `[SystemIni]` remains the one part of `wineboot --init` no proskrnl image
   gets — `tools/filter_inf.py` drops `UpdateInis=` (its failure on absent
@@ -4540,8 +4541,12 @@ than being asked for by name (HACK-006, `user/smss/smss.c SmssIsShellBoot`): an
 INTERACTIVE desktop boot, because a machine a human sits at has a shell, plus the gui6
 leg, because GUI-6's subject IS the shell. It was "any image that carries `explorer.exe`"
 until one image carried every leg's payload, and then briefly a flag of its own defaulting
-OFF, which is how `make rungui` lost the shell it had always had. So: the gui6 leg,
-`make rungui`, gui5con/wow64gui and the flash legs, whose clients are
+OFF, which is how `make rungui` lost the shell it had always had. So: the gui6 leg and
+`make rungui` — and those two only. gui5con is subtracted by name (`SmssIsShellBoot`
+returns 0 for it: its subject is the console WINDOW, which the shell's explorer would take
+the desktop away from), and wow64gui and the flash fixtures are `Serial`=1 boots, which is
+the "something off-box is driving this" case a shell has no prompt for. On a shell boot the
+clients are
 routed onto explorer's desktop by registry (`HKCU\Software\Wine\Explorer
 "Desktop"="shell"`, the configuration a Wine user sets for a virtual desktop — written
 natively by smss before the first client connects; a GUI-process writer was the first
@@ -4550,8 +4555,9 @@ and owns the desktop, and the entries are foreign because they are. On a boot wi
 audio legs), which runs a purpose-built client against the compositor or the message path
 and whose golden was measured with no explorer on the desktop, plus every CUI boot, which
 has no desktop at all — win32u's launch would fail and its force-fallback re-enter both
-convicted failure modes below, so there the GUI-2 fixture stays, keyed on one probe
-(`shim.c prsk_no_explorer`, the explorer path win32u hardcodes, answer printed on serial):
+convicted failure modes below, so there the GUI-2 fixture stays, keyed on one flag
+(`shim.c prsk_no_explorer`, the negation of the derived `ShellBoot`; it used to PROBE for
+the explorer path win32u hardcodes — the answer is printed on serial either way):
 the shim sets `force` on every `get_desktop_window` (the same server path the forcing
 caller takes) and then clears the owner ids on the two entries so they read as foreign
 (`shim.c detach_user_entry`; the server side is already detached,
@@ -4568,7 +4574,8 @@ is the same repair X11DRV makes when it finds the rects uninitialized. The two
 `user32:msg` assertions this fixture costs (`SetFocus`/`SetForegroundWindow` on the
 desktop window: no owning thread ⇒ `ERROR_INVALID_HANDLE` where Wine's explorer-owned
 desktop answers `ERROR_ACCESS_DENIED`) remain in `tests/winetest/msg-budget.txt`'s bound —
-they flip only on an explorer-bearing guiwtest image, which the decision above declined.
+they flip only on a guiwtest boot that DERIVES `ShellBoot`=1, which the decision above
+declined (the payload is on the volume either way now; it is the flag that decides).
 
 **`HKU\<sid>` exists from boot.** win32u's `font_init` opens
 `\Registry\User\S-1-5-21-0-0-0-1000` (the fixed Se identity) and loads no fonts at all when
@@ -5018,10 +5025,11 @@ difference from the measured count):
   window has **no owning thread** — GUI-2's forced-foreign fixture again. Wine answers
   `ERROR_ACCESS_DENIED` because the desktop belongs to explorer, a different input queue;
   we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. GUI-6 built exactly that
-  arrangement — on an explorer-bearing image the fixture is off and the desktop has a real
-  owner — but the guiwtest image was kept explorerless by decision (GUI-2 notes above), so
-  the pair stays in the bound: it flips the day the guiwtest image gains explorer, and the
-  divergence is a recorded fixture cost, not a papered-over unknown.
+  arrangement — on a shell boot the fixture is off and the desktop has a real owner — but
+  the guiwtest boot was kept explorerless by decision (GUI-2 notes above), so the pair
+  stays in the bound: it flips the day that leg derives `ShellBoot`=1 (a flag, not a
+  payload, since one image), and the divergence is a recorded fixture cost, not a
+  papered-over unknown.
 - *Up to twelve assertions are decided by emulated-machine speed, not by semantics,* and
   they are the reason the budget is a ceiling rather than a measurement.
   `test_PeekMessage3` sets a 100 ms timer, never kills it, and then asserts **seven** times
