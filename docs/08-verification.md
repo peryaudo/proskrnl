@@ -334,7 +334,11 @@ echo "exit: $?"
   `0` is CUI-only, where a user32 call that would create a window fails) and `GUEST_SERIAL`
   (on a boot that has one, keep the console on the serial transport). Whether explorer owns
   the desktop is NOT a flag: smss derives it from those and publishes it as `ShellBoot`,
-  because as a flag of its own it was a third thing every caller had to remember.
+  because as a flag of its own it was a third thing every caller had to remember. Nor is
+  "does this volume carry a Windows userland": the hermetic kernel fixtures name a fixture
+  leg (`fuzz`), and the KERNEL derives `Userland` from it at seed time — it needs the
+  answer before smss starts, since its own M7 module runner and ABI probe would otherwise
+  refuse loudly at finding nothing to run (`kernel/cm/registry.c CmpNoUserlandLegs`).
   It used to be the other way round — a leg ran because its client .exe was baked on the
   volume — and that made *fourteen* images of one userland whose payload lists drifted
   apart, made two legs unable to share a bake, and made a FILTERED run yet another image

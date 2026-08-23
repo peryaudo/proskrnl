@@ -297,14 +297,6 @@ if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
 fi
 
-# GUEST_USERLAND=0 says this image is a hermetic kernel fixture, not the
-# product: it carries a client and the DLLs that client needs, and no conhost
-# or wineboot for smss to start. Only tests/fuzz/fuzz.py bakes such an image.
-# Only the opt-out is passed, the panic_not_implemented arrangement -- a
-# hand-rolled qemu line boots the product's userland.
-if [[ "${GUEST_USERLAND:-1}" == 0 ]]; then
-    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/userland,string=0)
-fi
 
 # The kernel's CMP_QEMU_STRING_MAX (kernel/cm/registry.c), mirrored here so a
 # value the guest cannot take is caught BEFORE the boot, naming the item,

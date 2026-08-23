@@ -239,8 +239,9 @@ static int SmssConsoleServerAttached(void)
  * reads. SmssSpawn says so out loud instead.
  *
  * A hermetic kernel fixture carries no conhost and no console clients; it says
- * so with `Userland` on the command line, because the volume cannot tell that
- * apart from a product bake that lost the file. */
+ * so by NAMING a fixture leg, from which the kernel derives `Userland`
+ * (kernel/cm/registry.c CmpNoUserlandLegs) -- the volume cannot tell a fixture
+ * that never had the file apart from a product bake that lost it. */
 void SmssStartConhost(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\conhost.exe");

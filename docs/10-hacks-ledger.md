@@ -191,15 +191,20 @@ Status:     active (nine values the KERNEL seeds from the command line, plus two
             "Gui" (does this boot have a desktop at all, default ON),
             "Serial" (on a boot that has one, keep the console on the serial
             transport, default OFF), "Stress" (CUI-8: park on every device
-            await, default OFF, docs/19 §8.1), "Userland" (is there a Windows
-            userland on this volume — 0 for the hermetic kernel fixtures,
-            default ON), and since Net-1 "NetEchoPort" and "NetStatic" — the
+            await, default OFF, docs/19 §8.1), and since Net-1 "NetEchoPort"
+            and "NetStatic" — the
             harness echo server's host port and the skip-DHCP static-address
             fallback, docs/24 §6b/§4b. REG_SZ: "Leg" (which test leg the session
             manager runs) and "Subtests" (the ntapi/winetest sweep filter).
-            There is no "Shell" flag: whether explorer owns the desktop is
-            DERIVED by smss and published beside these as "ShellBoot", with
-            "ConsoleWindow" beside it — user/smss/smss.c SmssPublishShellBoot)
+            Three more values are DERIVED and published beside these rather
+            than passed: "Userland" (does this boot's volume carry a Windows
+            userland — 0 for the hermetic kernel fixtures, from the leg name;
+            the KERNEL derives it, because its own M7/ABI runners need the
+            answer before smss starts — kernel/cm/registry.c
+            CmpNoUserlandLegs), and "ShellBoot" + "ConsoleWindow" (does
+            explorer own the desktop, and where the console goes; smss derives
+            those — user/smss/smss.c SmssPublishShellBoot). There is no
+            "Shell" flag and no "Userland" flag)
 Introduced: (this change — moving the boot switches off the image)
 Not in NT:  NT builds HKLM\HARDWARE at boot from firmware, and boot options arrive from
             the loader as HKLM\SYSTEM\CurrentControlSet\Control\SystemStartOptions. NT has

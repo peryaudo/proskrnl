@@ -208,9 +208,11 @@ static int KiRunM7Modules(void)
     {
         /* Nothing ran. On the PRODUCT image that is a broken bake and a
          * vacuous PASS would hide it (Art. 12). A hermetic kernel fixture
-         * carries no M7 modules at all and says so on the command line --
-         * tests/fuzz/fuzz.py bakes one client and the DLLs it needs -- so
-         * there is nothing to refuse over. The BOOT knows which it is. */
+         * carries no M7 modules at all -- tests/fuzz/fuzz.py bakes one client
+         * and the DLLs it needs -- so there is nothing to refuse over. The
+         * BOOT knows which it is: `Userland` is derived from the leg name at
+         * seed time (kernel/cm/registry.c CmpNoUserlandLegs), so this reads
+         * the same one answer smss does. */
         if (CmQueryQemuBootFlag(WSTR("Userland"), 1) == 0)
         {
             DbgPrint("[KTEST] M7 SKIP (no Windows userland on this boot)\n");

@@ -317,9 +317,14 @@ int SmssIsGuiBoot(void)
 /* Does this boot have a Windows USERLAND to bring up -- a conhost to start, a
  * prefix for wineboot to initialise? The product image does; a hermetic kernel
  * fixture (tests/fuzz/fuzz.py bakes ntdll/kernel32/kernelbase, the NLS tables,
- * smss and one client) does not, and says so on the command line rather than
- * being probed for, because "the file is absent" is the same bytes for a
- * fixture that never had one and a product bake that lost one. */
+ * smss and one client) does not.
+ *
+ * Not probed for, because "the file is absent" is the same bytes for a fixture
+ * that never had one and a product bake that LOST one -- and not a flag of its
+ * own either. It is DERIVED from the leg name and published beside it by the
+ * kernel (kernel/cm/registry.c CmpNoUserlandLegs), which has to know first:
+ * the M7 module runner and the ABI probe are kernel-side and run before smss
+ * starts. One derivation, published as a value, read here. */
 int SmssHasUserland(void)
 {
     return SmssQemuFlag(WSTR("Userland"), 1) != 0;
@@ -512,8 +517,9 @@ static int SmssRunFirstboot(void)
     /* No probe: the PRODUCT image carries wineboot.exe on every boot, so a
      * missing one is a broken bake and must fail loudly rather than yield a
      * machine with no registry population and no explanation. A hermetic
-     * kernel fixture has no prefix to initialise and says so with `Userland`
-     * -- it is a boot fact, not something the volume can be asked. */
+     * kernel fixture has no prefix to initialise, and the boot says so by
+     * naming a fixture leg (`Userland`, derived) -- a boot fact, not something
+     * the volume can be asked. */
     if (!SmssHasUserland())
     {
         SmssSay("smss: no Windows userland on this boot; firstboot skipped\n");
