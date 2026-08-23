@@ -15,6 +15,23 @@
 set -uo pipefail
 
 IMG="${1:?usage: qemu.sh <hdd> | qemu.sh --print-accel}"
+
+# The MASTERS are never booted, and that is enforced here rather than left to
+# every caller remembering it. QEMU writes into what it boots, so a boot of
+# build/proskrnl-test.hdd makes the "virgin" image firstboot/cui9/persist copy
+# a lived-in one, and a boot of the warm master hands `scm` a volume where its
+# `sc create SvcDemo` has already run. Both used to be prevented by `rm -f`
+# lines in the legs; those went when the copies came in, and this replaces
+# them. The warm rule boots its own .tmp, and `make test` a copy.
+case "$(basename -- "$IMG")" in
+    proskrnl-test.hdd|proskrnl-test-warm.hdd)
+        echo "qemu.sh: refusing to boot the master image $IMG." >&2
+        echo "         Boot a copy: the legs go through tests/run/run.sh" >&2
+        echo "         test_image_copy / test_image_virgin_copy, and the warm" >&2
+        echo "         rule boots its own .tmp before publishing it." >&2
+        exit 2
+        ;;
+esac
 LOG="${LOG:-build/serial.log}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -164,7 +181,11 @@ TIMEOUT="${TIMEOUT:-600}"
 # starts no desktop server there, yet the footprint is still ~120 MB. What it
 # actually is has not been separated -- docs/17 §1 records the open question. A green
 # boot still exits through isa-debug-exit the moment it is done, so a larger
-# default costs nothing but host RSS on a run that was going to pass.
+# default costs nothing but host RSS on a run that was going to pass -- which
+# is also why the FS fixture legs (fatinterop/fatstress/tornwrite), whose
+# synthetic volumes carry no userland at all and can be 36 MiB, simply inherit
+# it rather than being given a smaller one of their own: with no eviction,
+# unused guest RAM is page cache, not a cost the fixture pays.
 MEM="${MEM:-384M}"        # the wtest leg provisions more (no eviction - Art. 3)
 
 # cache=unsafe (and cache.no-flush=on in the blockdev leg): the guest driver
