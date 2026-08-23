@@ -102,8 +102,9 @@ sgdisk "$IMG" \
 # holds) is otherwise indistinguishable from a slow one. -o: a later spec for
 # the same destination OVERWRITES (mtools' default is an INTERACTIVE clash
 # prompt, invisible with stderr captured) — the override is a feature: the
-# gui5con image lists $(WINFILES) and then swaps in the windowed conhost by
-# naming the same destination again, and every copy is announced above.
+# override let an image list $(WINFILES) and then swap a file in by naming the
+# same destination again -- how the console images used to get their own
+# conhost -- and every copy is announced above.
 # -m: the FAT entry keeps the SOURCE's mtime rather than the bake moment, so
 # a file whose mtime the build pins (the gui6 shelf, touch -t) lists with
 # the same date on every image ever baked — the golden desktop.ppm shows a

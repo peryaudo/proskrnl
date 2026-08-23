@@ -28,7 +28,7 @@
  * fontconfig is deliberately NOT enabled -- on either side. It is a
  * font-discovery service for unix desktops; with SONAME_LIBFONTCONFIG
  * undefined, freetype.c falls back to scanning the fonts directory, which is
- * where the gui images bake Wine's own font files. Enabling it in the oracle
+ * where the image bakes Wine's own font files. Enabling it in the oracle
  * would let host fonts into the spec, which is why the configure line pins it
  * off rather than leaving it to autodetection.
  *

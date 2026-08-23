@@ -54,6 +54,12 @@ def parse_last(pattern, text, what, path):
     match = None
     for match in pattern.finditer(text):
         pass  # keep the last: a leg may boot more than once
+    # "The last one" is safe because the gui2 boot puts up exactly ONE window:
+    # it runs Serial=1, so conhost takes the serial branch and creates no
+    # window surface, and the leg names a single client. Were a second surface
+    # ever to flush after winemine's, this would grade the wrong rect -- and
+    # fail loudly on the pixels rather than pass, which is why it stays a
+    # comment and not a check.
     if match is None:
         sys.exit(f"check_window: no '{what}' marker in {path}")
     return match.groupdict()
