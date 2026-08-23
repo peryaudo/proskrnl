@@ -88,7 +88,19 @@ MODE="${1:-}"
 SUBTESTS=()
 case "$MODE" in oracle|proskrnl|winetest) SUBTESTS=("${@:2}") ;; esac
 
-: "${CC_ORACLE:=x86_64-w64-mingw32-gcc}"   # override for a different mingw
+# The mingw for the three helper .exes this file still compiles itself
+# (fontsmoke/fontdiff/audiosmoke). It is NOT the compiler for the 165 ntapi
+# cases any more -- those come from the Makefile's own rule, i.e. $(MINGW).
+# Overriding this therefore builds ONE leg with two compilers, which is two
+# authorities for what a test binary is (Art. 11), so it is refused unless
+# $(MINGW) is overridden to match.
+: "${CC_ORACLE:=x86_64-w64-mingw32-gcc}"
+if [[ "$CC_ORACLE" != "x86_64-w64-mingw32-gcc" && "${MINGW:-}" != "$CC_ORACLE" ]]; then
+    echo "run.sh: CC_ORACLE=$CC_ORACLE compiles only the helper .exes; the ntapi cases" >&2
+    echo "        come from the Makefile (\$(MINGW)). Set MINGW=$CC_ORACLE too, or the" >&2
+    echo "        leg builds its binaries with two different compilers." >&2
+    exit 2
+fi
 
 # The oracle wine: PREFER the pinned third_party/wine build (built in-tree by
 # tools/setup_linux.sh) so the oracle can never diverge from the Wine version
@@ -591,7 +603,14 @@ build_test() {   # $1 = .c path; echoes the .exe path
 # spec-checked off-target here — the same binary the one test image bakes
 # must behave under the oracle (docs/06 one-tree discipline).
 oracle_cmd_standalone() {
-    make -C "$ROOT" build/modules/cmd.exe >/dev/null
+    # The build's status is CHECKED. This branch relinked cmd against the real
+    # user32/shell32 import libs; if that link breaks, an unchecked make leaves
+    # the PREVIOUS build/modules/cmd.exe on disk and this function happily
+    # prints `cmd-standalone PASS` for a binary the tree can no longer build.
+    if ! make -C "$ROOT" build/modules/cmd.exe >/dev/null; then
+        echo "[KTEST] cmd-standalone FAIL (build/modules/cmd.exe did not build)"
+        return 1
+    fi
     local cmdexe="$ROOT/build/modules/cmd.exe" cmdout
     cmdout="$(cd "$BUILD" && "$WINE" "$cmdexe" /c \
         "echo smoke-echo & echo smoke-data > cmdsmoke.txt & type cmdsmoke.txt & echo ren-data > cmdren.txt & ren cmdren.txt cmdren2.txt & type cmdren2.txt & del cmdsmoke.txt & del cmdren2.txt" \
@@ -934,6 +953,22 @@ proskrnl() {
             fails=$((fails + 1))
         fi
     done
+    # The sweep must have REACHED ITS END, and on the unfiltered gate it must
+    # have run every case the host expected. Per-case greps alone cannot say
+    # this: a sweep that died halfway reports the cases it reached as PASS and
+    # the rest as FAIL, which reads as "N regressions" rather than "the boot
+    # stopped" -- and a guest-side filter that selected fewer cases than the
+    # host listed would report the difference as failures too.
+    local doneLine swept
+    doneLine="$(grep -aE '^\[KTEST\] ntapi done ' "$log" 2>/dev/null | tail -1 | tr -d '\r' || true)"
+    swept="$(sed -nE 's/.*tests=([0-9]+).*/\1/p' <<<"$doneLine")"
+    if [[ -z "$swept" ]]; then
+        echo "[KTEST] ntapi-sweep FAIL (the sweep never reached its end; see $log)"
+        fails=$((fails + 1))
+    elif (( ${#SUBTESTS[@]} == 0 )) && [[ "$swept" != "${#names[@]}" ]]; then
+        echo "[KTEST] ntapi-sweep FAIL (the guest ran $swept cases, the tree has ${#names[@]})"
+        fails=$((fails + 1))
+    fi
     # The external FAT oracle on the mutated image (docs/08): the kernel's
     # writes must parse under implementations that have never met fs/fat32/.
     "$ROOT/tests/run/fatcheck.sh" verify "proskrnl$tag" "$img" || fails=$((fails + 1))
@@ -1307,7 +1342,10 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
 guiwtest() {
     local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
     local budget
-    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]')"
+    # `|| true` for the reason the oracle half's identical pipeline carries one:
+    # under `set -o pipefail` a missing or comment-only budget file makes grep
+    # exit 1 and kills the leg before the message below can name the cause.
+    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
     if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
         echo "== guiwtest: msg-budget.txt holds no number ==" >&2
         return 2
@@ -2277,33 +2315,42 @@ cui9() {
     # the ceiling alone reported that as a regression. Pinning the per-process
     # cost states the property directly, so a real sharing regression fails
     # here whatever the baseline is doing.
+    #
+    # The pin file's ABSENCE is a failure, not a skip. Both checks used to be
+    # `if [[ -f ]]`, so deleting either committed number turned this gate
+    # green -- the one edit most likely to accompany a regression somebody
+    # wanted to get past.
     local perprocFile="$ROOT/tests/cui/mmceiling_perproc_kb.txt"
-    if [[ -f "$perprocFile" ]]; then
-        perproc="$(sed -nE 's/.*kb=([0-9]+).*/\1/p' <<<"$perprocLine")"
-        local perprocMax
-        perprocMax="$(tr -dc 0-9 < "$perprocFile")"
-        if [[ -z "$perproc" ]]; then
-            echo "== cui9: FAIL (no perproc verdict line; see $log) =="
-            return 1
-        fi
-        if [[ -z "$perprocMax" || "$perproc" -gt "$perprocMax" ]]; then
-            echo "== cui9: FAIL (one resident process costs ${perproc} KiB, above the committed"
-            echo "   ceiling '${perprocMax}' — image-master sharing regressed) =="
-            return 1
-        fi
-        echo "[KTEST] cui9 perproc ok kb=$perproc max=$perprocMax"
+    if [[ ! -f "$perprocFile" ]]; then
+        echo "== cui9: FAIL (the committed per-process pin $perprocFile is missing) =="
+        return 1
     fi
+    perproc="$(sed -nE 's/.*kb=([0-9]+).*/\1/p' <<<"$perprocLine")"
+    local perprocMax
+    perprocMax="$(tr -dc 0-9 < "$perprocFile")"
+    if [[ -z "$perproc" ]]; then
+        echo "== cui9: FAIL (no perproc verdict line; see $log) =="
+        return 1
+    fi
+    if [[ -z "$perprocMax" || "$perproc" -gt "$perprocMax" ]]; then
+        echo "== cui9: FAIL (one resident process costs ${perproc} KiB, above the committed"
+        echo "   ceiling '${perprocMax}' — image-master sharing regressed) =="
+        return 1
+    fi
+    echo "[KTEST] cui9 perproc ok kb=$perproc max=$perprocMax"
 
     local floorFile="$ROOT/tests/cui/mmceiling_floor.txt"
-    if [[ -f "$floorFile" ]]; then
-        local floor
-        floor="$(tr -dc 0-9 < "$floorFile")"
-        if [[ -z "$floor" || "$procs" -lt "$floor" ]]; then
-            echo "== cui9: FAIL (ceiling procs=$procs below the committed floor '$floor') =="
-            return 1
-        fi
-        echo "[KTEST] cui9 floor ok procs=$procs floor=$floor"
+    if [[ ! -f "$floorFile" ]]; then
+        echo "== cui9: FAIL (the committed floor $floorFile is missing) =="
+        return 1
     fi
+    local floor
+    floor="$(tr -dc 0-9 < "$floorFile")"
+    if [[ -z "$floor" || "$procs" -lt "$floor" ]]; then
+        echo "== cui9: FAIL (ceiling procs=$procs below the committed floor '$floor') =="
+        return 1
+    fi
+    echo "[KTEST] cui9 floor ok procs=$procs floor=$floor"
     echo "== cui9: PASS (ceiling procs=$procs) =="
     return 0
 }
@@ -2358,9 +2405,12 @@ net() {
     local pcap="$BUILD/net.pcap" netlog="$BUILD/net-serial.log" netimg
     # Its own copy, like every other leg that boots: this one writes the DHCP
     # lease into the hive, and the master is what the next leg copies from.
-    netimg="$(test_image_copy "$BUILD/net.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
+        # The copy is INSIDE the loop: attempt 1 boots this volume and writes
+        # its DHCP lease into the hive, so a retry over the same file is a
+        # second boot of a lived-in disk rather than a repeat of the trial.
+        netimg="$(test_image_copy "$BUILD/net.hdd")" || return 1
         rm -f "$pcap"
         NET_PCAP="$pcap" NET_ECHO_PORT="$echoport" LOG="$netlog" \
             TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \

@@ -123,10 +123,18 @@ static int FirstbootPrefixIsInitialised(void)
  * check keys on wine.inf's mtime, so rewriting it every boot would re-run the
  * whole prefix update on boots that had already done it.
  */
-static void FirstbootInstallInf(void)
+/* 0 on success (including "nothing to do"), nonzero when the swap was needed
+ * and FAILED. The failure has to reach FirstbootRun: every one of the paths
+ * below used to print `[KTEST] firstboot FAIL (...)` and `return` from a void
+ * function, after which FirstbootRun carried on and could print `[KTEST]
+ * firstboot PASS` for the same boot -- and the harness greps for PASS. Worse
+ * than a false green on its own: wineboot then applies the FULL inf on a
+ * desktopless boot, which is the ~150-process flail this swap exists to
+ * prevent. */
+static int FirstbootInstallInf(void)
 {
     if (SmssIsGuiBoot())
-        return; /* the full payload is what the image already carries */
+        return 0; /* the full payload is what the image already carries */
 
     /* Nothing to choose on a prefix that is already initialised.
      *
@@ -141,10 +149,14 @@ static void FirstbootInstallInf(void)
      * (Makefile IMG_TEST_WARM), copied per leg.
      *
      * \.update-timestamp is wineboot's own stamp, written at the end of the
-     * update (programs/wineboot/wineboot.c update_wineprefix), so its
-     * presence means the payload in the hive is the FULL one. */
+     * update (programs/wineboot/wineboot.c update_wineprefix), and the
+     * predicate above is wineboot's own -- the stamp's VALUE against wine.inf's
+     * mtime, not the file's mere presence. It says the prefix is current with
+     * whatever inf was installed when it ran, which on a warm image is the
+     * full one and on this leg's own boot 1 is the CUI one; either way there
+     * is nothing left for this function to install. */
     if (FirstbootPrefixIsInitialised())
-        return;
+        return 0;
 
     static UCHAR FirstbootInfBuffer[128 * 1024];
     HANDLE src = 0, dst = 0;
@@ -165,7 +177,7 @@ static void FirstbootInstallInf(void)
     if (status != STATUS_SUCCESS)
     {
         SmssPrintf("[KTEST] firstboot FAIL (no wine-cui.inf, %x)\n", SMSS_HEX(status));
-        return;
+        return 1;
     }
     status = NtReadFile(src, 0, 0, 0, &iosb, FirstbootInfBuffer, sizeof(FirstbootInfBuffer), 0, 0);
     ULONG bytes = (ULONG)iosb.Information;
@@ -174,7 +186,7 @@ static void FirstbootInstallInf(void)
     {
         SmssPrintf("[KTEST] firstboot FAIL (wine-cui.inf read %x, %u bytes)\n", SMSS_HEX(status),
                    (unsigned int)bytes);
-        return;
+        return 1;
     }
 
     SmssInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\inf\\wine.inf"));
@@ -188,7 +200,7 @@ static void FirstbootInstallInf(void)
             NtQueryInformationFile(dst, &iosb, &info, sizeof(info), FileStandardInformation);
         NtClose(dst);
         if (query == STATUS_SUCCESS && info.EndOfFile.QuadPart == (LONGLONG)bytes)
-            return; /* already the CUI payload: leave the mtime alone */
+            return 0; /* already the CUI payload: leave the mtime alone */
     }
 
     status = NtCreateFile(&dst, FILE_GENERIC_WRITE, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL, 0,
@@ -197,24 +209,26 @@ static void FirstbootInstallInf(void)
     if (status != STATUS_SUCCESS)
     {
         SmssPrintf("[KTEST] firstboot FAIL (wine.inf open for write %x)\n", SMSS_HEX(status));
-        return;
+        return 1;
     }
     status = NtWriteFile(dst, 0, 0, 0, &iosb, FirstbootInfBuffer, bytes, 0, 0);
     NtClose(dst);
     if (status != STATUS_SUCCESS)
     {
         SmssPrintf("[KTEST] firstboot FAIL (wine.inf write %x)\n", SMSS_HEX(status));
-        return;
+        return 1;
     }
     SmssPrintf("smss: firstboot: CUI-only boot, installed the registry-only inf (%u bytes)\n",
                (unsigned int)bytes);
+    return 0;
 }
 
 NTSTATUS FirstbootRun(void)
 {
     NTSTATUS status;
 
-    FirstbootInstallInf();
+    if (FirstbootInstallInf() != 0)
+        return 0x43;
     SmssSay("smss: firstboot: running wineboot --init\n");
 
     UNICODE_STRING image, cmdline, curdir;

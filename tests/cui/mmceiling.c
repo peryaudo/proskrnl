@@ -97,6 +97,13 @@ int main(int argc, char **argv)
     int resident = 0;
     DWORD refuseError = 0;
     ULONGLONG first = 0, last = 0;
+    /* avail_mb() returns 0 on a failed query, which is indistinguishable from
+     * a real reading unless it is tracked separately. It matters because a
+     * lost FIRST sample used to be replaced silently by a later, smaller one,
+     * shrinking (first - last) and UNDERSTATING the per-process cost -- on the
+     * pin this gate now rests on, that is a sharing regression sliding under
+     * the ceiling. Track both facts and refuse to derive the number instead. */
+    int firstSet = 0, samplesFailed = 0;
 
     printf("mmceiling-start availmb=%llu\n", (unsigned long long)avail_mb());
     fflush(stdout);
@@ -145,9 +152,12 @@ int main(int argc, char **argv)
         children[resident] = pi.hProcess;
         resident++;
         ULONGLONG mb = avail_mb();
-        if (first == 0)
+        if (mb == 0)
+            samplesFailed = 1;
+        if (!firstSet)
         {
             first = mb;
+            firstSet = 1;
         }
         last = mb;
         printf("mmceiling-spawn-%d availmb=%llu\n", resident, (unsigned long long)mb);
@@ -167,7 +177,13 @@ int main(int argc, char **argv)
              resident, (unsigned long)refuseError, capped, (unsigned long long)first,
              (unsigned long long)last);
     serial_out(line);
-    if (resident > 1 && first > last)
+    if (samplesFailed)
+    {
+        /* No number rather than a wrong one (Art. 12): run.sh cui9 fails the
+         * leg on a missing perproc line. */
+        serial_out("[KTEST] cui9 perproc unavailable (GlobalMemoryStatusEx failed)\n");
+    }
+    else if (resident > 1 && first > last)
     {
         snprintf(line, sizeof(line), "[KTEST] cui9 perproc kb=%llu\n",
                  (unsigned long long)((first - last) * 1024 / (ULONGLONG)(resident - 1)));
