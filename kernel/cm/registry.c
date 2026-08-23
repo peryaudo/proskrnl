@@ -2791,19 +2791,12 @@ static const struct
      * served every leg: the harness asks make for the image, make finds it
      * up to date, and the marker the stress boot ordered is never baked. */
     {"opt/org.proskrnl/stress", WSTR("Stress"), 0},
-    /* Does this image carry a WINDOWS USERLAND at all? 1 (the default) is the
-     * product image, where smss starts conhost and runs wineboot --init and a
-     * missing binary is a broken bake it must refuse loudly over. 0 is a
-     * hermetic kernel fixture -- tests/fuzz/fuzz.py bakes ntdll, kernel32,
-     * kernelbase, the NLS tables, smss and one client, and nothing else -- so
-     * there is no conhost and no wineboot to start, and saying so is the point.
-     *
-     * It is a flag rather than smss probing for the files because those are
-     * the same bytes: "conhost.exe is absent" reads identically for a fixture
-     * that never carried one and for a product image whose bake dropped it,
-     * and skipping silently turns the second into a boot with no console
-     * instead of a failure (Art. 12). The BOOT knows which it is; the volume
-     * does not. */
+    /* "Does this volume carry a Windows userland" is NOT here either: like
+     * `ShellBoot` above it is DERIVED, from `Leg` (CmpNoUserlandLegs below,
+     * which carries the reasoning), and published beside these as `Userland`.
+     * A `-fw_cfg opt/org.proskrnl/userland` on the command line is read by
+     * nothing -- the boot already says what it is by naming its leg, and a
+     * second knob saying the same thing could only ever disagree with it. */
 };
 
 /* --- the QEMU boot STRINGS (HACK-006) -------------------------------------
