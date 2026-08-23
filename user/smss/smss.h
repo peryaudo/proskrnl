@@ -63,6 +63,7 @@ int SmssIsInteractiveBoot(void);
  * is the product — a boot whose verdict rides the serial console says so
  * (tools/qemu.sh GUEST_GUI=0). */
 int SmssIsGuiBoot(void);
+int SmssHasUserland(void);
 
 /* Does explorer own the desktop on this boot? Reads "Shell", which defaults
  * OFF — the GUI legs run purpose-built clients over the desktop server's own

@@ -47,9 +47,11 @@ static void SessionReadBootString(const WCHAR *valueName, char *out, ULONG outCh
 }
 
 /* Read the two boot strings once, whoever asks first. SessionRun wants them
- * at the top of the test session; SessionIsDesktopFixtureLeg is asked much
- * earlier, before the servers start, because whether this boot HAS a shell
- * is a property of the leg (below). */
+ * at the top of the test session; SessionIsWindowedConsoleLeg and
+ * SessionIsShellIntegrationLeg are asked much earlier, before the servers
+ * start, because whether this boot HAS a shell is a property of the leg
+ * (below). Every reader of SessionLeg calls this first -- the one that did
+ * not is what published ShellBoot=1 on a boot that then evaluated 0. */
 void SessionLoadBootStrings(void)
 {
     static int SessionBootStringsLoaded;
@@ -213,9 +215,16 @@ static int SessionFlowM8(int registryOk)
     int failures = registryOk ? 0 : 1;
     static const WCHAR path[] = WSTR("\\??\\C:\\hello.exe");
 
-    /* No probe: one image carries hello.exe on every boot, so a missing one
-     * is a broken bake to FAIL on, not a case to skip. The probe dated from
-     * when an image without the windows/ tree was a thing a boot could be. */
+    /* No probe: the PRODUCT image carries hello.exe on every boot, so a
+     * missing one is a broken bake to FAIL on, not a case to skip. The probe
+     * this replaced dated from when an image without the windows/ tree was a
+     * thing a boot could be -- and one still is, so the BOOT says so
+     * (`Userland`) instead of the flow guessing from the volume. */
+    if (!SmssHasUserland())
+    {
+        SmssSay("smss: no Windows userland on this boot; M8 skipped\n");
+        return failures;
+    }
     {
         NTSTATUS exitStatus = 0;
         NTSTATUS status = SmssRun(path, 0, 0, 0, &exitStatus);
@@ -252,8 +261,15 @@ static int SessionFlowM9(int abiFailures)
     int failures = 0;
     static const WCHAR path[] = WSTR("\\??\\C:\\m9_smoke.exe");
 
-    /* No probe: one image carries m9_smoke.exe on every boot, so a missing
-     * one is a broken bake to FAIL on, not a case to skip. */
+    /* No probe: the PRODUCT image carries m9_smoke.exe on every boot, so a
+     * missing one is a broken bake to FAIL on, not a case to skip. A hermetic
+     * kernel fixture carries neither it nor the conhost it drives, and says so
+     * on the command line rather than being probed for. */
+    if (!SmssHasUserland())
+    {
+        SmssSay("smss: no Windows userland on this boot; M9 skipped\n");
+        return failures;
+    }
     if (!SmssConsoleAvailable())
     {
         SmssSay("[KTEST] module m9_smoke.exe FAIL (no conhost)\n");
