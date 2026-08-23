@@ -2804,7 +2804,6 @@ static const struct
      * and skipping silently turns the second into a boot with no console
      * instead of a failure (Art. 12). The BOOT knows which it is; the volume
      * does not. */
-    {"opt/org.proskrnl/userland", WSTR("Userland"), 1},
 };
 
 /* --- the QEMU boot STRINGS (HACK-006) -------------------------------------
@@ -2867,6 +2866,49 @@ static ULONG CmpParseQemuBootFlag(const char *item, const char *text, ULONG byte
     return value;
 }
 
+/* The leg names whose IMAGE carries no Windows userland: ntdll, smss and one
+ * client, nothing else (tests/fuzz/fuzz.py bakes such a volume). Everything
+ * smss would otherwise do on a product image -- start conhost, run wineboot,
+ * run the M8/M9 acceptance clients -- has nothing to act on there, and the
+ * kernel's own M7/ABI module runners have no modules to find.
+ *
+ * DERIVED from `Leg`, not a flag of its own. A flag is a thing every caller
+ * can forget, and this one has exactly one caller: the boot already says what
+ * it is, and a second knob saying the same thing can only ever disagree with
+ * it (the reasoning that made `ShellBoot` derived -- user/smss/smss.c).
+ *
+ * Derived HERE rather than in smss because the kernel needs the answer first
+ * (kernel/init/main.c runs the M7 modules and the ABI probe before smss
+ * starts), and one derivation published as a value is one authority (Art. 11)
+ * -- two readers deriving it from `Leg` themselves would be two. */
+static const char *const CmpNoUserlandLegs[] = {"fuzz"};
+
+/* The leg name as it arrived, kept narrow for the derivation above. One word
+ * (the REG_SZ the readers use is seeded from the same blob). */
+static char CmpQemuBootLeg[64];
+
+static BOOLEAN CmpAsciiEquals(const char *a, const char *b)
+{
+    while (*a != 0 && *a == *b)
+    {
+        a++;
+        b++;
+    }
+    return (BOOLEAN)(*a == 0 && *b == 0);
+}
+
+static ULONG CmpDeriveUserland(const char *leg)
+{
+    for (unsigned int i = 0; i < sizeof(CmpNoUserlandLegs) / sizeof(CmpNoUserlandLegs[0]); i++)
+    {
+        if (CmpAsciiEquals(leg, CmpNoUserlandLegs[i]))
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void CmpSeedQemuBootFlags(void)
 {
     /* HKLM\HARDWARE exists on every boot, QEMU or not. */
@@ -2927,7 +2969,24 @@ static void CmpSeedQemuBootFlags(void)
         CmpSeedStringValue(qemu, CmpQemuBootStrings[i].valueName, CmpQemuStringWide);
         DbgPrint("cm: qemu boot string %s=\"%s\" (%s)\n", item, said ? CmpQemuStringBlob : "",
                  said ? "command line" : "default");
+        if (CmpAsciiEquals(item, "opt/org.proskrnl/leg"))
+        {
+            ULONG n = 0;
+            while (n < sizeof(CmpQemuBootLeg) - 1 && CmpQemuStringBlob[n] != 0)
+            {
+                CmpQemuBootLeg[n] = CmpQemuStringBlob[n];
+                n++;
+            }
+            CmpQemuBootLeg[n] = '\0';
+        }
     }
+
+    /* Seeded beside its input, like everything above, so no reader has to know
+     * the rule -- and so the value smss reads is the one the kernel acted on. */
+    ULONG userland = CmpDeriveUserland(CmpQemuBootLeg);
+    CmpSeedDwordValue(qemu, WSTR("Userland"), userland);
+    DbgPrint("cm: qemu derived Userland=%u (from Leg=\"%s\")\n", (unsigned int)userland,
+             CmpQemuBootLeg);
 }
 
 ULONG CmQueryQemuBootFlag(PCWSTR valueName, ULONG whenNotQemu)

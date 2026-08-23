@@ -258,19 +258,24 @@ def run_proskrnl(img):
     # NtSetValueKey/NtCreateKey rewrites the whole hive file — immediate
     # writeback, Art. 3), so the default batch needs minutes, not seconds. A
     # truncated serial log reads as en-masse "proskrnl=none" divergences.
-    # GUEST_LEG=ntapi is what makes the session manager SWEEP C:\ntapi at all:
+    # GUEST_LEG=fuzz is what makes the session manager SWEEP C:\ntapi at all:
     # which leg a boot runs is a QEMU command-line flag (tools/qemu.sh,
     # HACK-006), not the presence of a directory. Without it this boot runs the
     # plain suite, the interp never starts, and every op reads "proskrnl=none"
-    # — a whole batch of fabricated divergences. GUEST_GUI=0 keeps the console
-    # on the serial transport this log is read off.
-    # GUEST_USERLAND=0: this image is a hermetic kernel fixture -- ntdll,
-    # kernel32, kernelbase, the NLS tables, smss and the interp, and nothing
-    # else. Without it smss starts conhost and runs wineboot --init, neither
-    # of which is on the volume, and every boot ends with three [KTEST] FAIL
-    # lines and a non-zero exit that this leg's [FUZZ] grep cannot see.
+    # — a whole batch of fabricated divergences.
+    #
+    # `fuzz` rather than `ntapi`, though it runs the same sweep, because the
+    # leg name is also what says this image is a HERMETIC KERNEL FIXTURE --
+    # ntdll, kernel32, kernelbase, the NLS tables, smss and the interp, and
+    # nothing else. The kernel derives `Userland`=0 from it
+    # (kernel/cm/registry.c CmpNoUserlandLegs) and everything that would look
+    # for a userland stands down: conhost, wineboot --init, the M8/M9 clients,
+    # the M7 module runner, the ABI probe. Without that this boot ends with
+    # [KTEST] FAIL lines and a non-zero exit that this leg's [FUZZ] grep cannot
+    # see. GUEST_GUI=0 keeps the console on the serial transport this log is
+    # read off.
     env = dict(os.environ, LOG=log, PASS_RE=r"\[FUZZ\] batch end",
-               GUEST_GUI="0", GUEST_LEG="ntapi", GUEST_USERLAND="0",
+               GUEST_GUI="0", GUEST_LEG="fuzz",
                TIMEOUT=os.environ.get("TIMEOUT", "420"))
     subprocess.run([os.path.join(ROOT, "tools", "qemu.sh"), img], env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

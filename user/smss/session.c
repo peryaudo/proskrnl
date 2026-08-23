@@ -236,7 +236,8 @@ static int SessionFlowM8(int registryOk)
      * missing one is a broken bake to FAIL on, not a case to skip. The probe
      * this replaced dated from when an image without the windows/ tree was a
      * thing a boot could be -- and one still is, so the BOOT says so
-     * (`Userland`) instead of the flow guessing from the volume. */
+     * (`Userland`, derived from the leg name -- kernel/cm/registry.c) instead
+     * of the flow guessing from the volume. */
     if (!SmssHasUserland())
     {
         SmssSay("smss: no Windows userland on this boot; M8 skipped\n");
@@ -1206,7 +1207,12 @@ int SessionRun(int abiFailures, int registryOk)
     /* Then exactly one leg. The order below is the historical one, so a leg
      * that used to share an image with another still reports in the same
      * place on serial. */
-    if (SessionLegIs("ntapi"))
+    /* `fuzz` runs the same sweep as `ntapi` and is a separate NAME because it
+     * is a separate MACHINE: a hermetic fixture volume carrying ntdll, smss
+     * and the interpreter, from which the kernel derives `Userland`=0. Sharing
+     * the name would mean the product regression gate and the fuzzer's boot
+     * could not be told apart by the one thing that says what a boot is. */
+    if (SessionLegIs("ntapi") || SessionLegIs("fuzz"))
     {
         failures += SessionFlowNtapi();
     }

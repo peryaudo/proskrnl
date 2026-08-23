@@ -516,9 +516,12 @@ media: `GUEST_LEG` names the leg and `GUEST_SUBTESTS` filters the ntapi and
 winetest sweeps, both published through fw_cfg and read out of
 `HKLM\Hardware\qemu` (`kernel/cm/registry.c`, HACK-006) — the same channel
 `GUEST_INTERACTIVE`, `GUEST_GUI` (does the boot have a desktop at all) and
-`GUEST_SERIAL` (where the console goes on a boot that has one) ride. Whether
-explorer owns the desktop is not a flag: smss DERIVES it from those and
-publishes it as `ShellBoot`.
+`GUEST_SERIAL` (where the console goes on a boot that has one) ride. Two
+things are NOT flags, because the boot already says them: whether explorer
+owns the desktop is derived by smss and published as `ShellBoot`, and whether
+this volume carries a Windows userland at all is derived from the leg name by
+the kernel and published as `Userland` — the hermetic kernel fixtures name a
+fixture leg, and everything that would look for a userland stands down.
 
 ```sh
 make test     # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass
