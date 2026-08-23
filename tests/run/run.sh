@@ -883,9 +883,10 @@ oracle() {
 # leg's leavings must not become the next one's starting state.
 #
 # The WARM test image: the one image, its first boot already paid once
-# (Makefile IMG_TEST_WARM). Every leg copies THIS, because wineboot --init on
-# the whole userland is ~90s here and nearer four minutes on a CI runner --
-# per leg, when a leg's own image was small enough for that not to show.
+# (Makefile IMG_TEST_WARM). Every leg copies this EXCEPT the three that measure
+# a first boot (test_image_virgin_copy below), because wineboot --init on the
+# whole userland is ~90s here and nearer four minutes on a CI runner -- per
+# leg, when a leg's own image was small enough for that not to show.
 test_image() {   # echoes the path of the freshly built, warmed test image
     # ALWAYS rebuild, never just "build it if missing": these are regression
     # gates, and judging a stale kernel against fresh test sources reports the
@@ -3561,9 +3562,12 @@ gui5con() {
     mkdir -p "$dir"
     rm -f "$sock" "$ppm1" "$ppm2" "$log"
 
-    # An interactive GUEST (the shell session smss starts only for a human)
-    # under a headless HOST: this leg types through QMP and reads its verdict
-    # off $log, so GUEST_INTERACTIVE is set and INTERACTIVE is not.
+    # An interactive GUEST under a headless HOST: this leg types through QMP
+    # and reads its verdict off $log, so GUEST_INTERACTIVE is set and
+    # INTERACTIVE is not. `Interactive` here buys the WINDOWED console, not the
+    # shell -- SmssIsShellBoot subtracts this leg by name, so it is the one
+    # interactive boot that is explicitly NOT a shell boot, and SessionRun
+    # takes the cmd.exe branch precisely because of that.
     QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 GUEST_LEG=gui5con \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \

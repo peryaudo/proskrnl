@@ -503,11 +503,10 @@ static int SmssRegistryReachable(void)
 
 /* CUI-1 firstboot: run `wineboot --init` (firstboot.c) so wine.inf's
  * machine-state registry payload is applied before anything else uses the
- * hive. Probe/skip on the image content: images without wineboot.exe — the
- * driver/filesystem images, which carry no Wine userland at all — skip
- * silently; every image with the CUI userland runs it, because every one of
- * them is baked from the same Makefile $(WINFILES). wineboot's own
- * .update-timestamp freshness check makes non-first boots near-instant. */
+ * hive. A boot with no Windows userland at all -- the hermetic kernel
+ * fixtures -- skips it, and says so with `Userland` rather than being probed
+ * for (SmssHasUserland). wineboot's own .update-timestamp freshness check
+ * makes non-first boots near-instant. */
 static int SmssRunFirstboot(void)
 {
     /* No probe: the PRODUCT image carries wineboot.exe on every boot, so a
