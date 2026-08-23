@@ -1055,20 +1055,23 @@ winetest() {
     make -C "$ROOT" wtests >/dev/null
     mkdir -p "$BUILD/wtests"
 
-    # Parse into PARALLEL arrays rather than carrying raw lines around: a
-    # manifest line may carry the optional third field (the per-pair timeout,
-    # user/smss/session.c), and both the oracle argv and the kernel's verdict
-    # line are <exe>:<subtest> only — splitting once here is what keeps the
-    # timeout out of them. The manifest FILE is baked verbatim, so the
-    # timeout reaches the runner that honors it without passing through here.
-    local wtestExes=() wtestSubs=() wtestKeys=()
+    # Parse into PARALLEL arrays rather than carrying raw lines around: both
+    # the oracle argv and the kernel's verdict line are <exe>:<subtest> only,
+    # and splitting once here is what keeps the third field out of them.
+    #
+    # That third field — the per-pair timeout — is kept, not discarded. It used
+    # to be honoured GUEST-side only (user/smss/session.c), so a pair that
+    # WEDGED under the oracle had no bound at all and consumed the whole leg;
+    # the same shape as issue #118, in the half of the gate that runs first.
+    local wtestExes=() wtestSubs=() wtestKeys=() wtestSecs=()
     local line
     while IFS= read -r line; do
         line="${line%$'\r'}"
         [[ -z "$line" || "$line" == \#* ]] && continue
         local exe="${line%%:*}" rest="${line#*:}"
-        local sub="${rest%%:*}"
-        wtestExes+=("$exe"); wtestSubs+=("$sub")
+        local sub="${rest%%:*}" secs="${rest#*:}"
+        [[ "$secs" == "$rest" || -z "$secs" ]] && secs=""
+        wtestExes+=("$exe"); wtestSubs+=("$sub"); wtestSecs+=("$secs")
         wtestKeys+=("$exe:$sub")
     done < "$manifest"
     if [[ ${#wtestKeys[@]} -eq 0 ]]; then
@@ -1126,8 +1129,17 @@ winetest() {
         for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
             local exe="${wtestExes[i]}" sub="${wtestSubs[i]}"
             local olog="$BUILD/wtests/${exe}.${sub}.oracle.log"
+            # The manifest's own per-pair bound, the one the guest honours,
+            # applied here too. It is a BACKSTOP, not a budget: the manifest's
+            # numbers are sized for a TCG guest and host wine is far quicker,
+            # and a pair naming none gets 900 s so a 26-way `make fulltest` box
+            # cannot turn slowness into a red. `timeout` exits 124, which takes
+            # the FAIL branch and names the pair -- a wedge that fails one pair
+            # loudly beats one that eats the leg.
+            local secs="${wtestSecs[i]:-900}"
             # scratch cwd: the cmd tests write test.cmd/test.out where they run
-            if (cd "$BUILD/wtests" && "$WINE" "$ROOT/build/wtests/$exe" "$sub") >"$olog" 2>&1; then
+            if (cd "$BUILD/wtests" && timeout "$secs" "$WINE" "$ROOT/build/wtests/$exe" "$sub") \
+                >"$olog" 2>&1; then
                 echo "[KTEST] wtest-oracle ${wtestKeys[i]} PASS"
             else
                 echo "[KTEST] wtest-oracle ${wtestKeys[i]} FAIL (see $olog)"
@@ -2719,9 +2731,18 @@ gui() {
     # is how long a KVM developer waits on a genuinely WEDGED guest -- 97 s
     # is the measured KVM cost here, so 600 s still refuses a wedge in ten
     # minutes instead of fifteen.
+    # GUEST_GUI=0, deliberately. GUI-1's client is ntdll-only: it maps
+    # \Device\Fb0 itself and opens \Device\Input0 EXCLUSIVELY (gui_smoke.c),
+    # and neither device needs a desktop. On a Gui=1 boot conhost links the
+    # real user32, so win32u runs winefb_init in it too -- and the day anything
+    # on such a boot creates a window surface, winefb.drv starts its input
+    # reader and takes \Device\Input1/Input0 first (blit.c winefb_start_input;
+    # \Device\Input0 does enforce sharing, drivers/hid.c). This leg would then
+    # go red for an arrangement it has no stake in. Gui=0 removes the coupling
+    # rather than relying on nothing creating a surface.
     QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" \
         TIMEOUT="${TIMEOUT:-900}" PASS_RE='\[KTEST\] gui input PASS' \
-        GUEST_SERIAL=1 GUEST_LEG=gui \
+        GUEST_GUI=0 GUEST_LEG=gui \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
 

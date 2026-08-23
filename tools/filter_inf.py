@@ -36,8 +36,8 @@ initial process's null dll-load-path never falls back to builtins), while
 the directive writes no registry - so keeping it changes no compared state.
 
 --add-register appends `11,,<dll>,1` entries to [RegisterDllsSection] (with
---keep RegisterDlls so the directive survives). AUD-2's audio images need
-mmdevapi's COM classes in the hive, and mmdevapi is NOT in wine.inf's own
+--keep RegisterDlls so the directive survives). AUD-2 needs mmdevapi's COM
+classes in the hive, and mmdevapi is NOT in wine.inf's own
 RegisterDlls list - in a real prefix its CLSID lands via the fake-dll
 registrar (WINE_REGISTRY resources), a path this filter drops. Injecting
 the entry runs the DLL's own DllRegisterServer through Wine's own

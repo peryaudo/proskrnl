@@ -197,7 +197,8 @@ one of which (mtools) already builds every disk image. The FS test battery there
 lets the kernel grade its own homework:
 
 - **`tests/run/fatcheck.sh`** runs after every disk-mutating boot (`make test`, the
-  `run.sh` `proskrnl`/`persist`/`firstboot` legs): `fsck.fat -n` (dosfstools) on the
+  warm-image rule that every leg copies from, the `run.sh`
+  `proskrnl`/`persist`/`firstboot` legs): `fsck.fat -n` (dosfstools) on the
   dd-extracted partition, the invariant sweeper below, and mtools byte-compares — files
   the kernel wrote are extracted with `mcopy` and compared against host-side truth, and
   files the kernel only read (ntdll.dll, the baked test binaries) must come back
@@ -208,6 +209,18 @@ lets the kernel grade its own homework:
   length consistent with each dirent's size, no lost clusters, LFN runs
   ordered/complete/checksummed. The FSInfo free count is advisory by deviation
   (docs/03) — a stale count warns, a clobbered signature fails.
+
+**What a warm image costs this oracle, and what keeps it honest.** `make test` boots a
+COPY of `$(IMG_TEST_WARM)` rather than a virgin volume, so most of what `fatcheck` asks
+for on the `test` scope was already written by the warm-up boot rather than by the boot
+under judgement — and `tests/kmt/m6_io.c` opens its artifacts `FILE_OPEN_IF` /
+`FILE_OVERWRITE_IF` ("keeps reruns on an already-seeded image green"), so a boot whose
+disk writes never landed would pass on the warm-up's bytes. Two things stop that: the
+warm rule DELETES `::/kmt6` before publishing, so every consumer's `fatcheck` convicts
+its own boot's writes; and the warm image is itself fatchecked before the `mv`, so the
+volume every leg copies has met the external oracle once. What is deliberately left is
+the hive — `firstboot` wrote it, and carrying it is the entire point of the warm
+image.
 
 GPL tools serve as *test oracles* only; no code flows into the kernel (docs/11).
 
