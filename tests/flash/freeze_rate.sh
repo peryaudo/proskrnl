@@ -101,7 +101,12 @@ run_trial() {
     # start until after this point. Waiting for them deadlocked the trial for
     # 300 s and then failed it as "no keyboard reader"; they were leftovers of
     # the deleted click-the-console-window path.
-    type_line 'c:\SAFlashPlayer.exe c:\troubled_windows.swf'
+    # A failed type is a failed TRIAL, never a measurement: without the fail
+    # here, a dead serial driver or a timed-out fifo write left the trial
+    # waiting 480 s for a dialog nothing was ever asked to open, and the
+    # miss graded it FROZEN -- an infra failure counted into the freeze
+    # rate, the one statistic this fixture exists to measure.
+    type_line 'c:\SAFlashPlayer.exe c:\troubled_windows.swf' || { fail "typing failed"; return; }
     local found="" launched=$SECONDS
     local deadline
     deadline=$((SECONDS + 480))
