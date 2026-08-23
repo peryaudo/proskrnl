@@ -60,7 +60,22 @@ run_trial() {
     done
     python3 "$ROOT/tests/run/serial_drive.py" "$sersock" "$log" "$fifo" &
     local serial_driver=$!
-    type_line() { printf '%s\n' "$1" > "$fifo"; }
+    # CR, not LF. conhost maps a received '\n' to key_press(VK_RETURN,
+    # LEFT_CTRL_PRESSED) (programs/conhost/conhost.c), and the ctrl keymap has
+    # no VK_RETURN -- so the byte is INSERTED into the line instead of
+    # submitting it and nothing ever runs. console_expect.py sends \r in all
+    # of its sends for exactly this reason; the QMP path this replaced sent
+    # the `ret` key, which is also Enter and not a linefeed.
+    #
+    # Bounded, because a write to a fifo blocks until a reader appears: if the
+    # driver died (or the guest went away and took it with it) an unbounded
+    # write wedges the whole trial loop forever instead of failing it.
+    type_line() {
+        kill -0 "$serial_driver" 2>/dev/null \
+            || { echo "trial$t: ERROR (the serial driver is gone)"; return 1; }
+        timeout 30 sh -c 'printf "%s\r" "$1" > "$2"' _ "$1" "$fifo" \
+            || { echo "trial$t: ERROR (typing '"'"'$1'"'"' timed out)"; return 1; }
+    }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
     fail() {
         echo "trial$t: ERROR ($1)"
@@ -79,8 +94,13 @@ run_trial() {
         return 1
     }
     await 'starting cmd\.exe' || { fail "cmd never started"; return; }
-    await '\[KTEST\] gui2 input READY' || { fail "no keyboard reader"; return; }
-    await '\[KTEST\] gui4 mouse READY' || { fail "no pointer reader"; return; }
+    # No input-READY awaits. Those markers come from winefb.drv's reader
+    # threads, which start at the first window surface -- and on this boot
+    # (Gui=1, Serial=1) conhost takes the serial branch and creates none, no
+    # explorer runs, and the only GUI client is the projector, which cannot
+    # start until after this point. Waiting for them deadlocked the trial for
+    # 300 s and then failed it as "no keyboard reader"; they were leftovers of
+    # the deleted click-the-console-window path.
     if [ -n "$WDBG" ]; then
         type_line 'regedit /S c:\relay.reg'
         sleep 3
@@ -128,7 +148,8 @@ EOF
     echo "trial$t: $verdict --$curve (dump in $DIR/serial.log)"
     qmp quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
-    rm -f "$DIR/img.hdd" "$sock"
+    kill "$serial_driver" 2>/dev/null || true
+    rm -f "$DIR/img.hdd" "$sock" "$sersock" "$fifo"
 }
 
 played=0 froze=0 crawled=0 errs=0
