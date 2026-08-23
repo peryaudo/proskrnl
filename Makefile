@@ -2258,9 +2258,27 @@ test-img: $(IMG_TEST)
 # and persist needs boot 1 to SEED the hive the warm-up boot would already
 # have seeded. That is also why six legs no longer rm this file first.
 IMG_TEST_WARM := $(BUILD)/proskrnl-test-warm.hdd
+# The warm-up is the only VIRGIN boot left in `make test`, and it is judged
+# like every other boot rather than by its verdict grep alone. Without the
+# three checks below, a kernel-suite FAIL, an [ASSERT], or a ring-0 fault on a
+# user address occurring during the firstboot/INF pass is invisible: smss
+# prints M9 PASS independently of the kmt suites, so the grep is satisfied and
+# the image is published. That pass is exactly the code this boot exists to
+# run, and nothing else in `make test` runs it any more.
 $(IMG_TEST_WARM): $(IMG_TEST)
 	cp $(IMG_TEST) $@.tmp
 	LOG=$(BUILD)/warm-serial.log tools/qemu.sh $@.tmp
+	tests/run/kmtcheck.sh $(BUILD)/warm-serial.log
+	tests/run/uacheck.sh $(BUILD)/warm-serial.log
+	tests/run/symcheck.sh $(BUILD)/warm-serial.sym.log
+	# Strip the kmt6 artifacts the warm boot just made, so every consumer's
+	# fatcheck still convicts ITS OWN boot. m6_io opens them FILE_OPEN_IF /
+	# FILE_OVERWRITE_IF ("keeps reruns on an already-seeded image green"), so
+	# leaving them here would let a boot whose disk writes never landed pass
+	# the external FAT oracle on the warm-up's bytes -- fatcheck exists
+	# precisely so the kernel cannot grade its own homework (docs/08). The
+	# hive stays: firstboot wrote it, that IS what this image is for.
+	MTOOLS_SKIP_CHECK=1 mdeltree -i $@.tmp@@2097152 ::/kmt6 >/dev/null 2>&1 || true  # 4096*512, tools/mkimage.sh ESP_OFF
 	mv $@.tmp $@
 
 test-img-warm: $(IMG_TEST_WARM)
@@ -2315,8 +2333,15 @@ fulltest:
 # same boot under the host's QEMU instead of the pin. A divergence names a
 # suspect (spec misreading vs. QEMU behavior); it convicts nothing (Art. 6)
 # and never gates a PR. Host QEMU must still be >= 9.0 (qemu.sh enforces).
+# Boots a COPY, like every other consumer. Booting $(IMG_TEST) itself would
+# warm and mutate the one file three legs depend on never having been a
+# running machine's disk (run.sh firstboot, cui9, persist) -- and make would
+# not rebuild it afterwards, since a booted image's mtime outruns its
+# prerequisites. This target was the last in-place booter of a master.
 test-hostqemu: $(IMG_TEST)
-	QEMU=qemu-system-x86_64 GUEST_GUI=0 tools/qemu.sh $(IMG_TEST)
+	cp $(IMG_TEST) $(BUILD)/test-hostqemu.hdd
+	QEMU=qemu-system-x86_64 GUEST_GUI=0 LOG=$(BUILD)/hostqemu-serial.log \
+	    tools/qemu.sh $(BUILD)/test-hostqemu.hdd
 .PHONY: test-hostqemu
 
 # The interactive boot on the SERIAL console: the dev image with a human at
