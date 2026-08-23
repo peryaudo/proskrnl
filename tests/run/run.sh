@@ -1851,6 +1851,12 @@ firstboot() {
     # agree by construction here; self-registration output stays out of the
     # compared scope in regdiff.py for the GUI hives this tool is also pointed
     # at by hand.
+    # regdiff below is handed $(WINE_INF_FULL) -- the inf the ORACLE applied.
+    # The guest applied $(WINE_INF_CUI), and the two differ only in directive
+    # lines (RegisterDlls, --add-register); regdiff reads AddReg= only, so the
+    # scope is the same set either way. It is the oracle's copy because the
+    # oracle's prefix is what the scope has to cover.
+    #
     # The filtered INF is staged as input data over the pinned
     # tree's loader/wine.inf for the duration of this one prefix init (the
     # loader's WINEBUILDDIR always wins over the environment, so the file is
@@ -1904,7 +1910,7 @@ firstboot() {
 }
 
 # The M9 interactive-console acceptance (docs/02 "input typed into the
-# serial console echoes through conhost"): boot the console-mode image with
+# serial console echoes through conhost"): boot a copy of the warm image with
 # the serial wire on a unix socket, let console_expect.py type "ping" and
 # assert conhost's echo, the cooked line, and the M9 verdict. The loop keeps
 # the docs/08 shape — the expect script tees the wire into the log the
@@ -2329,11 +2335,17 @@ cui9() {
     img="$(test_image_virgin_copy "$ROOT/build/tests/cui9.hdd")" || exit 1
 
     local sock="$ROOT/build/tests/cui9.sock" log="$ROOT/build/tests/cui9.log"
-    SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1200}" \
+    # The budgets are sized for a VIRGIN boot: this leg measures a first boot,
+    # so unlike every warm-image leg it pays the whole firstboot INF pass
+    # INSIDE its own clock, on a 320 MiB image, before mmceiling starts
+    # spawning. They were carried over from when this leg booted the small
+    # console image and are raised here rather than left to be discovered as a
+    # TCG flake.
+    SERIAL_SOCK="$sock" LOG="$log" MEM=512M TIMEOUT="${TIMEOUT:-1800}" \
         GUEST_GUI=0 GUEST_LEG=console \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
-    if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-900}" EXPECT_CUI9=1 \
+    if ! EXPECT_DEADLINE="${EXPECT_DEADLINE:-1500}" EXPECT_CUI9=1 \
         python3 "$ROOT/tests/run/console_expect.py" "$sock" "$log"; then
         wait "$qemu_wrapper" 2>/dev/null || true
         echo "== cui9: FAIL (see $log) =="
@@ -3873,6 +3885,11 @@ gui6() {
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
 
+    # These awaits grep the WHOLE log, so a marker printed before the anchor
+    # below still satisfies one: they order the WAIT, not the match. That is
+    # fine here because the verdict is the exact pixel compare, which a
+    # firstboot-era Default-desktop frame cannot pass -- but it is why no
+    # marker in this leg is treated as evidence of ordering by itself.
     await_or_fail '\[KTEST\] gui3 server READY' \
         "wineserver-lite never published its transport" || return 1
     # The server's own answer, printed at bring-up. A boot that failed to

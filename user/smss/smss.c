@@ -530,7 +530,7 @@ static int SmssRunFirstboot(void)
     return 0;
 }
 
-/* GUI-6, the interactive shell session (`make rungui`, the gui5con image):
+/* GUI-6, and the interactive shell session `make rungui` gives a human:
  * route every GUI client onto explorer's desktop by machine state rather
  * than plumbing. Two values -- HKCU\Software\Wine\Explorer
  * "Desktop"="shell" and Explorer\Desktops "shell"="1280x800", the
