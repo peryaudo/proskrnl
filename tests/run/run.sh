@@ -879,19 +879,25 @@ test_image_virgin() {   # echoes the path of the freshly built test image
 
 # A private COPY of it, under the caller's name, for a leg that mutates the
 # volume or reads it back afterwards.
+# The copy's status is CHECKED, and that is not defensive noise: the function
+# echoes a path, so without this its exit status is `echo`'s and a failed cp
+# (a full disk is the realistic one) leaves the PREVIOUS run's image at $1 and
+# reports success. Legs that read files back off the volume -- gui5con's
+# out.txt/ctrl.txt are the verdict's other half -- would then grade a stale
+# image that already contains a passing run.
 test_image_copy() {   # $1 = destination path; echoes it
     local src
     src="$(test_image)" || exit 1
-    mkdir -p "$(dirname "$1")"
-    cp "$src" "$1"
+    mkdir -p "$(dirname "$1")" || return 1
+    cp "$src" "$1" || { echo "test_image_copy: cp $src -> $1 failed" >&2; return 1; }
     echo "$1"
 }
 
 test_image_virgin_copy() {   # $1 = destination path; echoes it
     local src
     src="$(test_image_virgin)" || exit 1
-    mkdir -p "$(dirname "$1")"
-    cp "$src" "$1"
+    mkdir -p "$(dirname "$1")" || return 1
+    cp "$src" "$1" || { echo "test_image_virgin_copy: cp $src -> $1 failed" >&2; return 1; }
     echo "$1"
 }
 
@@ -2073,7 +2079,7 @@ cui8() {
     kmtimg="$(test_image_copy "$BUILD/cui8-kmt.hdd")" || exit 1
     local attempt
     for attempt in 1 2; do
-        LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 \
+        LOG="$kmtlog" TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 GUEST_STRESS=0 \
             "$ROOT/tools/qemu.sh" "$kmtimg" \
             >"$BUILD/cui8-kmt-qemu.log" 2>&1 || true
         [[ -s "$kmtlog" ]] && break
@@ -2119,7 +2125,13 @@ cui8() {
     GUEST_STRESS=1 DRIVE_THROTTLE=$((4 * 1024 * 1024)) TIMEOUT=1200 \
         "$0" proskrnl progress_during_io >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-throttled-serial.log" 2>/dev/null || true
+    # The knob is CHECKED here, not just on the stress stage below. This
+    # stage's whole premise is "every await parks by construction"; if the
+    # flag stops arming on this boot it silently reverts to the spin absorbing
+    # the throttled latency -- which is exactly how the stage first failed in
+    # CI, and exactly what a dead knob looked like for the life of a branch.
     if grep -q '\[KTEST\] progress_during_io PASS' "$sublog" &&
+        grep -q 'cui8 stress knob armed' "$sublog" &&
         ! grep -q 'progress_during_io.c.*no scheduling point' "$sublog"; then
         echo "[KTEST] cui8-throttled-progress PASS"
     else
@@ -2147,15 +2159,33 @@ cui8() {
     # this leg since, so the mismatch showed up the first time it ran.)
     local detFilter='blk depth|blk irq|blk idle|timer PASS|sweep PASS|cui8 stress knob|^\[KTEST\] sched '
     local detSubset=(file_coherence_mt read_write async_inline cancel_data_io io_teardown)
+    # GUEST_STRESS=0 explicitly on the BASELINE boots. They inherit the
+    # caller's environment, so `GUEST_STRESS=1 tests/run/run.sh cui8` would
+    # compare a stress boot against a stress baseline and report "verdicts
+    # identical" trivially -- the same self-comparison the dead knob produced.
     rm -f "$sublog"
-    "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    GUEST_STRESS=0 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-1-serial.log" 2>/dev/null || true
     cui8_det_lines "$sublog" "$detFilter" > "$BUILD/cui8-det-1.txt"
     rm -f "$sublog"
-    "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
+    GUEST_STRESS=0 "$0" proskrnl "${detSubset[@]}" >/dev/null 2>&1 || true
     cp -f "$sublog" "$BUILD/cui8-det-2-serial.log" 2>/dev/null || true
     cui8_det_lines "$sublog" "$detFilter" > "$BUILD/cui8-det-2.txt"
-    if [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
+    # Non-empty is NOT enough: every boot prints the whole kmt suite, so both
+    # files are non-empty even when the five selected ntapi cases never ran --
+    # determinism would then compare kmt lines with kmt lines and green on a
+    # sweep that did not happen. Require one verdict line per selected case.
+    local detSeen name
+    detSeen=0
+    for name in "${detSubset[@]}"; do
+        grep -qE "^\[KTEST\] $name (PASS|FAIL)" "$BUILD/cui8-det-1-serial.log" 2>/dev/null \
+            && detSeen=$((detSeen + 1))
+    done
+    if [[ "$detSeen" != "${#detSubset[@]}" ]]; then
+        echo "[KTEST] cui8-determinism FAIL (only $detSeen of ${#detSubset[@]} selected cases" \
+             "reported; see $BUILD/cui8-det-1-serial.log)"
+        fails=$((fails + 1))
+    elif [[ -s "$BUILD/cui8-det-1.txt" ]] && cmp -s "$BUILD/cui8-det-1.txt" "$BUILD/cui8-det-2.txt"; then
         echo "[KTEST] cui8-determinism PASS ($(wc -l < "$BUILD/cui8-det-1.txt") verdict lines)"
     else
         echo "[KTEST] cui8-determinism FAIL (diff $BUILD/cui8-det-1.txt $BUILD/cui8-det-2.txt)"
@@ -2501,9 +2531,15 @@ JOB
     # $(WIN32U), $(WINESTRIP_GUI_DLLS) and wineserver-lite for exactly that
     # reason. GUEST_SERIAL=1 because the verdict is a serial line: PASS_RE
     # greps this log for the exit status, so the console must stay on serial.
+    #
+    # GUEST_GUI=1 is written out rather than left to the kernel default,
+    # because this leg wedged for 900s on every head where it ran when it was
+    # demoted to Gui=0, and nothing scrubs GUEST_* from a caller's environment
+    # (tools/fulltest.sh unsets NET_PCAP and friends, not these). An exported
+    # GUEST_GUI=0 would reproduce that wedge silently.
     local pcap="$work/net3.pcap" netlog="$work/net3-serial.log"
     NET_PCAP="$pcap" LOG="$netlog" TIMEOUT="${TIMEOUT:-900}" \
-        PASS_RE='\[KTEST\] net3 exit' GUEST_SERIAL=1 GUEST_LEG=net3 \
+        PASS_RE='\[KTEST\] net3 exit' GUEST_GUI=1 GUEST_SERIAL=1 GUEST_LEG=net3 \
         "$ROOT/tools/qemu.sh" "$img" >"$work/net3-qemu.log" 2>&1 || true
 
     local fails=0
@@ -3051,7 +3087,14 @@ gui3() {
     # Gated by name so the regression is the missing LINE, not a timeout
     # somewhere downstream. (It was A's probe, asked of the desktop window,
     # until conhost became the boot's first desktop client — see gui3b.c.)
-    if ! await '\[KTEST\] gui3 win32u fault contained PASS'; then
+    # The DISCRIMINATING form, not the bare prefix. gui3b prints "contained
+    # PASS" whether or not anything faulted -- it is a survival line -- and
+    # assert_contained_faults below counts contained faults ANYWHERE in the
+    # boot. Pinning the subject's own returned status makes the count
+    # attributable: without it one contained AV in conhost or a server
+    # satisfies ==1 while the probe silently returned 0, which is a weaker
+    # copy of the subject-loss this leg was just fixed for.
+    if ! await "\[KTEST\] gui3 win32u fault contained PASS \(A's GCLP_HICONSM=0xc0000005\)"; then
         gui3_fail "a fault inside win32u reached its caller (glue.c containment)"; return 1
     fi
     if ! await '\[KTEST\] gui3 verdict (PASS|FAIL)'; then
@@ -3543,19 +3586,27 @@ wow64gui() {
     await '\[KTEST\] gui2 input READY' || { wow64gui_fail "no keyboard reader"; return 1; }
     await '\[KTEST\] gui4 mouse READY' || { wow64gui_fail "no pointer reader"; return 1; }
 
-    # The BEFORE dump, and it is a RACE now: smss starts the client itself
+    # The BEFORE dump, and it is a RACE: smss starts the client itself
     # (session.c's GUI leg table) instead of waiting to be typed at, so this
-    # has to happen before the client paints. No sleep, and the paint marker
-    # is checked either side of the dump -- a dump taken too late would fail
-    # later as "already the client's colour", which names the wrong defect.
+    # has to happen before the client's pixels reach the scanout.
+    #
+    # The guard greps the FLUSH, not `wow64gui painted`. The paint marker is
+    # the client saying it drew; the flush is winefb.drv saying those pixels
+    # went to the framebuffer, and it comes FIRST -- on the recorded run,
+    # `gui2 window rect=...` at log line 270 against `painted` at 274. Guarding
+    # on `painted` leaves a window in which a dump already contains the
+    # client's colour and passes anyway, which is the "already the client's
+    # colour" misdiagnosis this guard exists to prevent.
+    #
     # (This leg used to locate a console window, click it and TYPE the
     # client's path -- an interactive boot and a leg name, to start one
     # program. The console was never its subject.)
-    grep -q '\[KTEST\] wow64gui painted' "$log" \
-        && { wow64gui_fail "the client painted before the BEFORE dump"; return 1; }
+    local flushRe='\[KTEST\] gui2 window rect=420,420,360x240'
+    grep -q "$flushRe" "$log" \
+        && { wow64gui_fail "the client's pixels reached the scanout before the BEFORE dump"; return 1; }
     qmp screendump "$ppm1" >/dev/null 2>&1 || { wow64gui_fail "screendump 1 failed"; return 1; }
-    grep -q '\[KTEST\] wow64gui painted' "$log" \
-        && { wow64gui_fail "the client painted while the BEFORE dump was taken"; return 1; }
+    grep -q "$flushRe" "$log" \
+        && { wow64gui_fail "the client's pixels reached the scanout during the BEFORE dump"; return 1; }
 
     await '\[KTEST\] wow64gui painted' || { wow64gui_fail "the 32-bit client never painted"; return 1; }
     # The paint marker is the client's; the flush that carries those pixels to
