@@ -2282,9 +2282,22 @@ IMG_TEST_WARM := $(BUILD)/proskrnl-test-warm.hdd
 # and under tools/fulltest.sh every leg's view runs this rule concurrently on
 # a loaded TCG box (fulltest.sh unsets TIMEOUT and exports none for it). A
 # warm-up killed at 600s fails the leg that was only trying to copy it.
+#
+# Every GUEST_* flag is written out, not left to its default: tools/qemu.sh
+# reads them from the environment, so an ambient export would otherwise ride
+# into THIS boot — the one every leg copies. An exported GUEST_GUI=0 (the
+# very variable `make test` and `make run` use) would silently warm the
+# master with the registry-only inf, and every GUI/audio/shell leg would then
+# inherit a hive with no shell32/mmdevapi self-registration; an exported
+# GUEST_LEG or GUEST_INTERACTIVE wedges the warm-up to its whole TIMEOUT.
+# The same leak class net3 pins GUEST_GUI=1 against and tools/fulltest.sh
+# scrubs — but the scrub protects only fulltest runs, so the rule pins its
+# own boot.
 $(IMG_TEST_WARM): $(IMG_TEST)
 	cp $(IMG_TEST) $@.tmp
-	LOG=$(BUILD)/warm-serial.log TIMEOUT=1800 tools/qemu.sh $@.tmp
+	GUEST_GUI=1 GUEST_SERIAL=0 GUEST_STRESS=0 GUEST_INTERACTIVE= \
+	    GUEST_LEG= GUEST_SUBTESTS= INTERACTIVE= \
+	    LOG=$(BUILD)/warm-serial.log TIMEOUT=1800 tools/qemu.sh $@.tmp
 	tests/run/kmtcheck.sh $(BUILD)/warm-serial.log
 	tests/run/uacheck.sh $(BUILD)/warm-serial.log
 	tests/run/symcheck.sh $(BUILD)/warm-serial.sym.log
@@ -2335,9 +2348,14 @@ dev-img: $(IMG_DEV)
 # Art. 9) and the external FAT oracle (fsck.fat + fatsweep + mtools
 # byte-compares) on the mutated image — make stops on a failed boot, so all
 # four only judge runs whose primary verdict passed.
+# The whole GUEST_* set is pinned, not just GUEST_GUI: the flags are read
+# from the environment (the warm rule's note above), and an exported
+# GUEST_LEG or GUEST_STRESS would otherwise change what this boot runs.
 test: $(IMG_TEST_WARM)
 	cp $(IMG_TEST_WARM) $(BUILD)/test-run.hdd
-	GUEST_GUI=0 tools/qemu.sh $(BUILD)/test-run.hdd
+	GUEST_GUI=0 GUEST_SERIAL=0 GUEST_STRESS=0 GUEST_INTERACTIVE= \
+	    GUEST_LEG= GUEST_SUBTESTS= INTERACTIVE= \
+	    tools/qemu.sh $(BUILD)/test-run.hdd
 	tests/run/kmtcheck.sh $(BUILD)/serial.log
 	tests/run/uacheck.sh $(BUILD)/serial.log
 	tests/run/symcheck.sh $(BUILD)/serial.sym.log
@@ -2365,7 +2383,9 @@ fulltest:
 # prerequisites. This target was the last in-place booter of a master.
 test-hostqemu: $(IMG_TEST)
 	cp $(IMG_TEST) $(BUILD)/test-hostqemu.hdd
-	QEMU=qemu-system-x86_64 GUEST_GUI=0 LOG=$(BUILD)/hostqemu-serial.log \
+	QEMU=qemu-system-x86_64 GUEST_GUI=0 GUEST_SERIAL=0 GUEST_STRESS=0 \
+	    GUEST_INTERACTIVE= GUEST_LEG= GUEST_SUBTESTS= INTERACTIVE= \
+	    LOG=$(BUILD)/hostqemu-serial.log \
 	    tools/qemu.sh $(BUILD)/test-hostqemu.hdd
 .PHONY: test-hostqemu
 
