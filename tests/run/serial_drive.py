@@ -11,8 +11,14 @@ conversation cannot express "type this, now screendump, now type that".
 
 So: read the socket forever and tee it into <log>, exactly as
 console_expect.py does, so the caller's existing greps and tools/qemu.sh's
-verdict grep are unchanged; and send anything that appears on <fifo>, so the
-caller types with a plain `echo 'dir' > "$fifo"`.
+verdict grep are unchanged; and send anything that appears on <fifo>.
+
+The caller writes a line TERMINATED WITH CR, not LF: conhost's line editor
+submits on VK_RETURN, and a received '\n' arrives as VK_RETURN with
+LEFT_CTRL_PRESSED, which misses the only keymap carrying VK_RETURN and gets
+inserted into the line as a character instead. Whatever the caller writes is
+forwarded verbatim, so getting that wrong looks exactly like a guest that
+ignored the command.
 
 One process holds the connection because a QEMU socket chardev serves one
 client at a time -- a second connection would be refused, which is why the
@@ -24,6 +30,7 @@ end of a run.
 import os
 import socket
 import sys
+import time
 import threading
 
 
@@ -33,8 +40,28 @@ def main():
         return 2
     sock_path, log_path, fifo_path = sys.argv[1:4]
 
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(sock_path)
+    # Retry the connect, and say so if it never lands. The caller's readiness
+    # test is "the socket file exists", which becomes true at QEMU's bind() --
+    # a connect() landing before listen() is refused. Exiting silently there
+    # is worse than the failed trial it causes: the caller's next write to the
+    # fifo blocks in open(O_WRONLY) waiting for a reader that will never come,
+    # and the whole trial loop wedges with no output. console_expect.py:34-44
+    # retries for the same reason.
+    deadline = 60
+    sock = None
+    for _ in range(deadline * 4):
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(sock_path)
+            break
+        except OSError:
+            sock.close()
+            sock = None
+            time.sleep(0.25)
+    if sock is None:
+        print("serial_drive: cannot connect to %s after %ds" % (sock_path, deadline),
+              file=sys.stderr)
+        return 1
 
     if not os.path.exists(fifo_path):
         os.mkfifo(fifo_path)
