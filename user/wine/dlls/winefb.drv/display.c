@@ -41,10 +41,12 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access, ULONG sharing 
 
 /* Did the BOOT ask for the shell arrangement -- explorer owning the desktop?
  * The same one fact wineserver-lite reads at bring-up (shim.c probe_shell),
- * read the same way: the volatile \Registry\Machine\Hardware\qemu "Shell"
- * value the kernel published from the QEMU command line (kernel/cm/registry.c,
- * HACK-006). It selects the desktop arrangement, and the two readings must
- * agree because they read the same value.
+ * read the same way: the volatile \Registry\Machine\Hardware\qemu
+ * "ShellBoot" value -- smss's DERIVED answer (user/smss/smss.c
+ * SmssIsShellBoot), published beside the flags the kernel seeded from the
+ * command line (HACK-006) rather than being one of them. There is no `Shell`
+ * flag and no GUEST_SHELL. It selects the desktop arrangement, and the two
+ * readings must agree because they read the same value.
  *
  * It used to probe whether explorer.exe was ON THE VOLUME. That stopped
  * distinguishing anything once one image carried every leg's payload.

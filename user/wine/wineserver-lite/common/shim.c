@@ -819,9 +819,11 @@ static LONG CALLBACK report_exception( EXCEPTION_POINTERS *info )
 }
 
 /* Did the BOOT ask for the shell arrangement?  The volatile
- * \Registry\Machine\Hardware\qemu "Shell" value the kernel published from
- * the QEMU command line (kernel/cm/registry.c, HACK-006; tools/qemu.sh
- * GUEST_SHELL).  Asked for, the GUI-2 desktop fixtures are off and the stock
+ * \Registry\Machine\Hardware\qemu "ShellBoot" value -- smss's DERIVED
+ * answer (user/smss/smss.c SmssIsShellBoot), published beside the flags the
+ * kernel seeded from the command line rather than being one of them.  There is
+ * no `Shell` flag and no GUEST_SHELL; tools/qemu.sh says so outright.
+ * Set, the GUI-2 desktop fixtures are off and the stock
  * arrangement runs: the first client's get_desktop_window comes back empty,
  * win32u launches explorer at the exact path dlls/win32u/winstation.c
  * get_desktop_window hardcodes, and explorer creates and owns the desktop.

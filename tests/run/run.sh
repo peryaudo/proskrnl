@@ -588,7 +588,7 @@ build_test() {   # $1 = .c path; echoes the .exe path
 }
 
 # M10: the standalone cmd.exe (Wine's cmd objects + user/wine/programs/cmd glue) is
-# spec-checked off-target here — the same binary the console image bakes
+# spec-checked off-target here — the same binary the one test image bakes
 # must behave under the oracle (docs/06 one-tree discipline).
 oracle_cmd_standalone() {
     make -C "$ROOT" build/modules/cmd.exe >/dev/null
@@ -1886,7 +1886,7 @@ scm() {
 
 # CUI-4 acceptance (docs/02 "a tasklist/taskkill pair works against live
 # processes; Ctrl+C interrupts a loop under cmd.exe; a job-object-using build
-# tool completes"). One interactive boot over the console image: the
+# tool completes"). One CUI boot driving the leg's serial prompt: the
 # EXPECT_PROCS block in console_expect.py types the session and asserts the
 # markers, ^C included (the serial socket is bidirectional — docs/08).
 procs() {
@@ -1915,8 +1915,8 @@ procs() {
 }
 
 # CUI-5 acceptance (docs/02 "move/ren work under cmd.exe; a
-# write-tmp-then-rename tool completes"). One interactive boot over the
-# console image: the EXPECT_FILES block in console_expect.py types a ren, a
+# write-tmp-then-rename tool completes"). One CUI boot driving the leg's
+# serial prompt: the EXPECT_FILES block in console_expect.py types a ren, a
 # cross-directory move, and a move /Y replace (the write-tmp-then-rename
 # shape), asserting each file's content through its post-rename name.
 files() {
@@ -1944,7 +1944,7 @@ files() {
 
 # The CUI-6 acceptance (docs/02 "a handle-inheritance redirect chain
 # round-trips; a timeit-style tool reads real process/thread times; a
-# restricted-token launch works"): the files() shape — a virgin console
+# restricted-token launch works"): the files() shape — a copy of the warm
 # image driven by console_expect.py, which types the three baked tools and
 # greps their markers off the serial log.
 cui6() {
@@ -1971,7 +1971,7 @@ cui6() {
 
 # The CUI-7 acceptance (docs/02 "reg save/load round-trips and survives
 # reboot; an app on the VirtualAlloc2/write-watch path runs"): two boots of
-# one console image. Boot 1 drives regtool (seed -> RegSaveKey ->
+# one image copy. Boot 1 drives regtool (seed -> RegSaveKey ->
 # RegLoadKey/verify/RegUnLoadKey -> RegNotifyChangeKeyValue) and watchapp
 # (VirtualAlloc2 placement + write-watch + kernel-write marking) under a
 # live cmd.exe, then exits cleanly. Boot 2 verifies both the seeded key and
@@ -2026,8 +2026,8 @@ cui7() {
 #
 # A determinism verdict is about what the kernel DECIDED, and an identity —
 # a pid, a handle value, a cookie — is minted from a counter, so it says
-# only how many were minted before it. The ntapi image runs `wineboot
-# --init` at firstboot (it is the `make run` image now), firstboot's
+# only how many were minted before it. These boots copy the WARM image, whose
+# firstboot is already paid -- but the rewrite stays, because firstboot's
 # transient rundll32 children are not all reaped at a fixed point, and so
 # hello.exe's deliberate access violation — kernel/ps/usermode.c names every
 # exception it hands to user mode, pid included — reported `pid=336` on one
@@ -2061,7 +2061,7 @@ cui8_det_diff() {   # $1, $2 = the two extracted verdict files
 # guaranteed and the test's tolerant skip leg is forbidden; (c) the docs/19
 # §8.1 determinism check — two identical boots must produce identical
 # [KTEST] verdict lines; (d) the stress boot — every await parks (the
-# aggressiveness knob, off on every default image) and the verdicts must
+# aggressiveness knob, off unless the boot asks for it) and the verdicts must
 # still MATCH the default run's, or the drain knob leaked into observable
 # behaviour and took the project's most valuable property with it.
 cui8() {
@@ -2271,8 +2271,8 @@ cui9() {
     # The SHARING pin, and the one that carries what this gate is for. The
     # ceiling below is a product of two numbers — how much memory the boot
     # leaves free, and what one resident process costs — and only the second
-    # is what image-master sharing decides. They parted company when the CUI
-    # boot became a desktop boot (docs/17 §1): free memory fell 466 -> 334 MB
+    # is what image-master sharing decides. They parted company when one image
+    # started serving every leg (docs/17 §1): free memory fell 466 -> ~340 MB
     # at this same 512M while the per-process cost got slightly BETTER, and
     # the ceiling alone reported that as a regression. Pinning the per-process
     # cost states the property directly, so a real sharing regression fails
