@@ -116,10 +116,11 @@ Retirement: if/when route (b) moves desktop state into kernel/win32k.
 
 ```
 Status:     active, PERMANENT by decision (GUI-5). Since GUI-5 conhost is dual-mode:
-            the windowed link (CONHOST_GUI — real window.c, input from the real input
-            queue, exactly NT's shape) is the console on images that carry the desktop
-            server, and this entry no longer covers those. The serial backend remains
-            the console on every CUI image and stays indefinitely as a debug channel —
+            ONE binary, linking the real window.c and taking input from the real input
+            queue (exactly NT's shape), which puts the console in a WINDOW when the
+            boot derives `ConsoleWindow` (= `Gui && !Serial`) — this entry no longer
+            covers that mode. The serial backend is the console on every other boot
+            and stays indefinitely as a debug channel —
             a serial console that works while the whole GUI stack is broken is a
             debugging capability deliberately kept (decided at GUI-5 planning; it also
             carries the entire CUI test surface: console/scm/procs/winetest legs).

@@ -18,7 +18,8 @@
  *
  * Verdicts go out as [KTEST] lines on serial (NtDisplayString, the same sink
  * the kernel's own verdicts use); the harness greps them and the screendump
- * checks the pixels. There is no console on these images.
+ * checks the pixels. This boot's one console is on serial (GUEST_SERIAL=1),
+ * never in a window over the pixels being graded.
  */
 
 #include "ntapi.h"

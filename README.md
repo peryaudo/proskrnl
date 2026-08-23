@@ -392,7 +392,7 @@ import the pinned tree's stock i386 `win32u.dll` (pure syscall thunks),
 `wow64win.dll`, and `wow64win` calls the SAME 64-bit `win32u.dll` this
 build already ships. Nothing was minted for it; one desktop authority,
 one more door. `tests/run/run.sh wow64gui` is the acceptance: a 32-bit
-client typed at the windowed console, its window found on QEMU's
+client started by smss from the GUI leg table, its window found on QEMU's
 screendump, its bitness confirmed by asking the kernel
 (`ProcessWow64Information`) rather than by trusting the file. It cost
 four defects, all older than the feature and none of them 32-bit in
