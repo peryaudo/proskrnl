@@ -178,6 +178,14 @@ case "$LEG" in
         # hold — the structural oracles do, and they are what convict a
         # corrupt volume.
         # Structure varies per leg; the two structural oracles always apply.
+        #
+        # For churn/fatinterop/tornwrite these two are NOT the leg's verdict and
+        # must never be read as one: both pass on an EMPTY volume. What convicts
+        # each of those legs is its own content gate, driven from host-side
+        # truth -- fatgen.py verifies every manifest entry, churn_verify.py
+        # fails on a log with no [CHURN] dump, tornreplay.py compares the
+        # replayed partition against --final. This runs beside them, not for
+        # them.
         fsck_check
         sweep_check
         ;;

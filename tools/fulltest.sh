@@ -32,6 +32,14 @@
 # tests/run/run.sh, and a rewrite of the harness is the last thing that should
 # ride along with "make the harness faster".
 #
+# WHAT THE SANDBOX COSTS. Each view excludes *.hdd, so every leg re-bakes the
+# 320 MiB image AND re-runs the warm-up boot inside its own view: the "paid
+# once" the Makefile talks about holds per CI shard (one checkout, sequential
+# legs), not per fulltest leg. That is the price of shared-nothing here and it
+# is bought deliberately -- each leg then gets a master no neighbour can be
+# mid-write on. The warm rule carries its own generous TIMEOUT for exactly this
+# reason: N of those boots run concurrently on one TCG box.
+#
 # So each leg gets a VIEW instead: a directory whose entries are symlinks to
 # this tree's (kernel/, tests/, third_party/, Makefile, …) and whose build/ is a
 # real copy of the build outputs. $ROOT resolves to the view, so a leg's makes,
