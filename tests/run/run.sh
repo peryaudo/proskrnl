@@ -393,6 +393,18 @@ case "$MODE" in
     oracle|fuzz|firstboot|winefbunit|resolvunit|guiwtest) RUNS_WINE=1 ;;
     winetest) [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_WINE=1 ;;
 esac
+# find_wine's refusal cannot stop the run from where it fires: inside
+# `: "${WINE:=$(find_wine)}"` a command substitution's exit status is
+# discarded, so on a tree without the pinned build WINE arrives as the EMPTY
+# string and the leg would run every case against an empty command -- exit
+# 127 per case, ~170 reds that read as divergences, long after find_wine's
+# message scrolled by. Refuse HERE, where the mode is known: a leg that never
+# runs wine (proskrnl, the console legs) still works on a wineless tree, and
+# one that does stops before fabricating verdicts.
+if (( RUNS_WINE )) && [[ -z "$WINE" ]]; then
+    echo "run.sh: mode '$MODE' needs the oracle wine and none was found (see above)." >&2
+    exit 2
+fi
 if [[ "$(id -u)" -eq 0 && -z "${ORACLE_ALLOW_ROOT:-}" ]]; then
     case "$RUNS_ORACLE" in
         1)
