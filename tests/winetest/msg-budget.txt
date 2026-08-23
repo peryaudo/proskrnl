@@ -3,6 +3,14 @@
 # the same commit as the fix that earned it (G13); the leg fails on any
 # count above it, and on any CRASH exit regardless of the number.
 #
+# THE MACHINE UNDER IT MOVED, and the number has not been re-measured. There
+# is one conhost now and it links the real user32/gdi32, so it is a desktop-
+# server client at image load and connects BEFORE the test does; and the boot
+# has been through the full wine.inf. Neither can produce a false green -- a
+# ceiling only ever fails upward -- but if this leg goes red without a code
+# change, re-measure and ratchet rather than assuming a regression, and note
+# in the same commit which half of the stable list moved.
+#
 # Because the count's volatile part tracks machine speed (below), CI treats
 # this leg as ADVISORY on pull requests and BLOCKING on main — the `msg`
 # shard and the `all-green` job in .github/workflows/test.yml, reasoned out
