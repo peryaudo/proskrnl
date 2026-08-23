@@ -410,6 +410,15 @@ def main():
 
     print("regdiff: scope %d keys / %d values; %d divergence(s)"
           % (len(scope_keys), len(scope_values), divergences))
+    # An EMPTY scope is a failure, not a clean run. "0 divergences" over 0 keys
+    # is what a truncated, unreadable or wrong-path INF produces, and it grades
+    # identically to a real green -- the differential comparing nothing with
+    # nothing. Nothing else in this tool notices.
+    if not scope_keys or not scope_values:
+        print("regdiff: FAIL - the INF yielded an empty comparison scope "
+              "(%d keys / %d values); nothing was compared" %
+              (len(scope_keys), len(scope_values)))
+        return 1
     return 1 if divergences else 0
 
 

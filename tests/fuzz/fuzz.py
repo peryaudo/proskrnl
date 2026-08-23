@@ -525,6 +525,14 @@ def main():
     new = report(oracle, prosk, baseline)
     print("\n== fuzz: %d programs, names=%s, %d oracle / %d proskrnl lines, %d NEW divergence(s) ==" %
           (args.programs, args.names, len(oracle), len(prosk), len(new)))
+    # Two empty traces diff clean. That is the shape of "neither side ran" --
+    # a --programs 0, an oracle that died before its first call, an interpreter
+    # that never reached the blob -- and it is indistinguishable from a green
+    # batch unless it is said out loud (Art. 12).
+    if not oracle or not prosk:
+        print("!! fuzz FAIL: a side produced NO [FUZZ] lines (oracle=%d, proskrnl=%d); "
+              "nothing was compared" % (len(oracle), len(prosk)))
+        return 1
     if not new:
         return 0
 

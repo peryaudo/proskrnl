@@ -2265,9 +2265,15 @@ IMG_TEST_WARM := $(BUILD)/proskrnl-test-warm.hdd
 # prints M9 PASS independently of the kmt suites, so the grep is satisfied and
 # the image is published. That pass is exactly the code this boot exists to
 # run, and nothing else in `make test` runs it any more.
+#
+# TIMEOUT is written out below rather than left at qemu.sh's 600s default:
+# this is the one VIRGIN boot left, so it pays the whole firstboot INF pass,
+# and under tools/fulltest.sh every leg's view runs this rule concurrently on
+# a loaded TCG box (fulltest.sh unsets TIMEOUT and exports none for it). A
+# warm-up killed at 600s fails the leg that was only trying to copy it.
 $(IMG_TEST_WARM): $(IMG_TEST)
 	cp $(IMG_TEST) $@.tmp
-	LOG=$(BUILD)/warm-serial.log tools/qemu.sh $@.tmp
+	LOG=$(BUILD)/warm-serial.log TIMEOUT=1800 tools/qemu.sh $@.tmp
 	tests/run/kmtcheck.sh $(BUILD)/warm-serial.log
 	tests/run/uacheck.sh $(BUILD)/warm-serial.log
 	tests/run/symcheck.sh $(BUILD)/warm-serial.sym.log
