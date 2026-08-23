@@ -20,11 +20,14 @@
 # shard's. Nothing about a leg is made cheaper — the fan-out is the speed-up.
 #
 # WHY EVERY LEG NEEDS A SANDBOX. The legs were written to run one at a time and
-# they say so in the tree: each calls `make -C $ROOT test-img` (two makes in one
-# build directory race over the same object files), `cui8` boots the master
-# image in place — QEMU writes into it — and three legs `rm -f` that master to
-# force a virgin one before copying it, which is a guaranteed corrupt read for
-# any neighbour copying it at that moment. Widening
+# they say so in the tree: each calls `make -C $ROOT test-img-warm` (two makes
+# in one build directory race over the same object files, and that target BOOTS
+# QEMU to warm the image), and legs copy the masters while a neighbour's make
+# may be rewriting them, which is a corrupt read for whoever is copying at that
+# moment. (This paragraph used to say `cui8` booted the master in place and
+# that three legs `rm -f`'d it. Neither is true: cui8 copies, and no leg
+# removes a master -- nothing boots one, which is the invariant
+# test_image_virgin_copy rests on.) Widening
 # every one of those into a shared-nothing design would be a rewrite of
 # tests/run/run.sh, and a rewrite of the harness is the last thing that should
 # ride along with "make the harness faster".

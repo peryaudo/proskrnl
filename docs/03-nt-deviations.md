@@ -4425,9 +4425,9 @@ reach the caller: ntdll's unix half catches it and makes the *call* return the e
 (`dlls/ntdll/unix/signal_x86_64.c handle_syscall_fault` — `RAX_sig = rec->ExceptionCode;
 RIP_sig = __wine_syscall_dispatcher_return`). That containment is observable, not internal:
 
-    GetClassLongPtrW( GetDesktopWindow(), GCLP_HICONSM )
+    GetClassLongPtrW( <a window owned by ANOTHER process>, GCLP_HICONSM )
 
-faults inside win32u **on the pinned oracle too** — the desktop window belongs to no process,
+faults inside win32u **on the pinned oracle too** — the window belongs to a different process,
 so `dlls/win32u/class.c get_class_ptr` hands back the `OBJ_OTHER_PROCESS` sentinel and
 `get_class_long_size` dereferences it whenever the class carries no small icon — and the
 oracle answers the caller `0xc0000005` and keeps running (measured, two processes and one).
@@ -4442,8 +4442,14 @@ faulting instruction is inside win32u itself (a fault in a user-mode callback ru
 user32/the app and is left to the SEH chain that owns it), and it declines if the unwind
 cannot land outside win32u, so a containment that cannot name its destination never happens.
 Every contained fault is still reported on serial: it is a defect somewhere in win32u, just
-not the caller's death. Pinned by `tests/gui/gui3a.c` ("win32u fault contained"), whose
-verdict is SURVIVAL and not the value — the value is Wine's bug leaking its exception code,
+not the caller's death. Pinned by `tests/gui/gui3b.c` ("win32u fault contained"), which asks about
+**A's** window — another process's by construction. It used to ask about the DESKTOP window,
+which faulted only while that window belonged to no process; once conhost linked the real
+user32 it became the boot's first desktop client and owned it, so the query returned 0
+without ever reaching the dereference and the leg contained zero faults while every gui3
+verdict passed. The leg awaits the discriminating form of the marker (the subject's own
+`0xc0000005`), because the containment COUNT alone is satisfied by any contained fault on the
+boot. The verdict is SURVIVAL and not the value — the value is Wine's bug leaking its exception code,
 and it becomes a real handle the day upstream fixes it.
 
 **Security is the kernel's, not a second engine's.** The in-process server's

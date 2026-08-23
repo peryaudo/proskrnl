@@ -317,8 +317,11 @@ echo "exit: $?"
   line, and which cases a sweep runs is `GUEST_SUBTESTS` — both published through fw_cfg
   as `HKLM\Hardware\qemu` values (`kernel/cm/registry.c`, HACK-006) and read by the
   session manager (`user/smss/session.c`). Two more flags of the same kind pick the
-  arrangement rather than the leg: `GUEST_GUI` (windowed console vs. the serial one) and
-  `GUEST_SHELL` (explorer owns the desktop vs. the desktop server's own fixtures).
+  arrangement rather than the leg: `GUEST_GUI` (does this boot have a desktop at all --
+  `0` is CUI-only, where a user32 call that would create a window fails) and `GUEST_SERIAL`
+  (on a boot that has one, keep the console on the serial transport). Whether explorer owns
+  the desktop is NOT a flag: smss derives it from those and publishes it as `ShellBoot`,
+  because as a flag of its own it was a third thing every caller had to remember.
   It used to be the other way round — a leg ran because its client .exe was baked on the
   volume — and that made *fourteen* images of one userland whose payload lists drifted
   apart, made two legs unable to share a bake, and made a FILTERED run yet another image
@@ -403,11 +406,12 @@ clang-tidy halves are the part a green fulltest does not answer for.
 
 Everything about that speed-up is scheduling; the interesting part is the isolation it
 needs. The legs were written to run one at a time and say so in the tree: each calls
-`make -C $ROOT test-img` (two makes in one build directory race over the same objects),
-`cui8` and `net` boot the **shared master image in place** (`build/proskrnl-test.hdd`, and
-QEMU writes into what it boots), and three more `rm -f` that master to force a virgin one
-before copying it — a guaranteed corrupt read for any neighbour copying it at that
-moment. Making every one of
+`make -C $ROOT test-img-warm` (two makes in one build directory race over the same
+objects, and that target BOOTS QEMU to warm the image), and legs copy the masters while a
+neighbour's make may be rewriting them — a corrupt read for whoever is copying at that
+moment. (Earlier this said `cui8` and `net` booted the master in place and that three legs
+`rm -f`'d it. Both stopped being true when the images were unified: every leg copies, and
+**nothing** boots a master — the invariant `test_image_virgin_copy` rests on.) Making every one of
 those shared-nothing would be a rewrite of `tests/run/run.sh`, and a rewrite of the harness
 is the last thing that should ride along with *making the harness faster*.
 

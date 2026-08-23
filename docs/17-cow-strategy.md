@@ -58,24 +58,33 @@ refusal now surfacing as plain `ERROR_NOT_ENOUGH_MEMORY` from process creation. 
 `cui9` leg ratchets a committed floor (`tests/cui/mmceiling_floor.txt`), so a sharing
 regression fails as a machine verdict, not a semantic test.
 
-**Re-measured when the CUI boot became a desktop boot (the two-image change).** One image
-now serves every leg, so there is one conhost and it links the real `user32`/`gdi32`
-rather than CUI stand-ins — which means every boot brings the desktop stack up
-(`win32u`, `winefb.drv`, `wineserver-lite`, a 1280x800 desktop surface) before the leg's
-own work starts. At the same pinned 512M console boot, measured on the same host:
+**Re-measured for the one-image change.** At the same pinned 512M console boot, on the
+same host:
 
-| | `main` (CUI conhost) | one image (desktop conhost) |
-|---|---|---|
-| available memory at sweep start | 466 MB | 334 MB |
-| ceiling | 318 processes | 232 processes |
-| **per resident process** | **1505 KB** | **1480 KB** |
+| | `main` | one image (first measured) | one image (HEAD) |
+|---|---|---|---|
+| available memory at sweep start | 466 MB | 334 MB | 348 MB |
+| ceiling | 318 processes | 232 processes | 242 processes |
+| **per resident process** | **1505 KB** | **1480 KB** | **1478 KB** |
 
-The 132 MB is standing cost, not pressure — with no eviction (Art. 3) nothing works it
-off, and it is identical on a virgin image and on one that has already firstbooted (both
-334 MB), so it is what the boot LOADS, not residue the boot leaves. Sharing did not
-regress: the per-process cost is what image-master sharing decides and it got slightly
-better. The ceiling is a product of the two numbers and only reports their product, which
-is why the floor alone read a baseline shift as a regression.
+The ~120 MB is standing cost, not pressure — with no eviction (Art. 3) nothing works it
+off, and it is identical on a virgin image and on one that has already firstbooted, so it
+is what the boot LOADS, not residue the boot leaves. Sharing did not regress: the
+per-process cost is what image-master sharing decides and it got slightly better. The
+ceiling is a product of the two numbers and only reports their product, which is why the
+floor alone read a baseline shift as a regression.
+
+**What the standing cost is NOT.** It was first recorded here as the desktop stack —
+one conhost linking the real `user32`/`gdi32`, so "every boot brings up `win32u`,
+`winefb.drv`, `wineserver-lite` and a 1280x800 surface". That explanation is wrong for the
+boot this leg measures and was wrong within the same branch: `user/wine/dlls/win32u/glue.c`
+gates `prsk_transport_startup()`/`winefb_init()` on `Gui`, and `user/smss/launch.c` starts
+no desktop server on a CUI-only boot — and `cui9` boots `GUEST_GUI=0`. The cost is
+therefore something the CUI boot loads regardless of the desktop, and it survived those
+commits (348 MB at HEAD against 334 MB when first measured, versus main's 466 MB).
+**Naming it is unfinished work**; the candidates not yet separated are the larger image's
+own footprint, the fuller `wine.inf` payload in the hive, and the wider staged userland.
+The pin stands on the measurement, not on the story.
 
 So the floor drops to 180 with the same ~78% margin it had, and the property it was
 standing in for is pinned directly beside it: `tests/cui/mmceiling_perproc_kb.txt` caps

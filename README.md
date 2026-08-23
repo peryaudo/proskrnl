@@ -515,8 +515,10 @@ WHICH leg a boot runs is a QEMU command-line flag, not a property of the
 media: `GUEST_LEG` names the leg and `GUEST_SUBTESTS` filters the ntapi and
 winetest sweeps, both published through fw_cfg and read out of
 `HKLM\Hardware\qemu` (`kernel/cm/registry.c`, HACK-006) — the same channel
-`GUEST_INTERACTIVE`, `GUEST_GUI` (windowed vs. serial console) and
-`GUEST_SHELL` (explorer owns the desktop) ride.
+`GUEST_INTERACTIVE`, `GUEST_GUI` (does the boot have a desktop at all) and
+`GUEST_SERIAL` (where the console goes on a boot that has one) ride. Whether
+explorer owns the desktop is not a flag: smss DERIVES it from those and
+publishes it as `ShellBoot`.
 
 ```sh
 make test     # build the image, boot headless in QEMU, verify proskrnl's kernel-mode tests pass

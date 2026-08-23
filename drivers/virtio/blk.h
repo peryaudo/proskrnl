@@ -91,7 +91,8 @@ void VioBlkResetDepthStats(void);
  * CUI-8 suite holds the in-flight window open with it so progress and
  * cancellation are verdicts, not races. Returns the PREVIOUS bound: a
  * test must restore THAT, never the compile-time VIO_BLK_AWAIT_SPINS — a
- * stress boot (kernel/init/main.c cui8_stress.flag) configures 0 at boot,
+ * stress boot (kernel/init/main.c KiConfigureCui8Stress, from the
+ * Hardware\qemu `Stress` flag) configures 0 at boot,
  * and a test restoring the default silently de-stressed every later test
  * on the image built to park on every await. Nothing outside tests and
  * the boot-time stress arm may touch this. */
