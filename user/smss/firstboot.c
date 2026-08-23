@@ -33,14 +33,14 @@ static const WCHAR FirstbootEnvironment[] = WSTR("COMSPEC=C:\\windows\\system32\
                                                  "WINEDATADIR=\\??\\C:\\windows\\inf\0"
                                                  "windir=C:\\windows\0");
 
-/* Has wineboot already initialised this prefix? See FirstbootInstallInf. */
-static int FirstbootPrefixIsInitialised(void)
+/* Open a file under \??\C: for reading; 0 if it is not there. */
+static HANDLE FirstbootOpenRead(const WCHAR *ntPath)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     HANDLE file = 0;
-    SmssInitUnicodeString(&name, WSTR("\\??\\C:\\windows\\.update-timestamp"));
+    SmssInitUnicodeString(&name, ntPath);
     attr.Length = sizeof(attr);
     attr.RootDirectory = 0;
     attr.ObjectName = &name;
@@ -50,10 +50,63 @@ static int FirstbootPrefixIsInitialised(void)
     NTSTATUS status = NtCreateFile(&file, FILE_GENERIC_READ, &attr, &iosb, 0, FILE_ATTRIBUTE_NORMAL,
                                    FILE_SHARE_READ, FILE_OPEN,
                                    FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+    return status == STATUS_SUCCESS ? file : 0;
+}
+
+/* Has wineboot already initialised this prefix?
+ *
+ * This must be wineboot's OWN predicate, not an approximation of it, because
+ * the two decide the same thing one after the other: if smss thinks the prefix
+ * is fresh and wineboot disagrees, smss swaps an inf wineboot then ignores; if
+ * smss thinks it is initialised and wineboot disagrees, wineboot runs the FULL
+ * RegisterDlls pass on a boot that has no desktop to register against -- the
+ * ~150-process flail the registry-only payload exists to prevent.
+ *
+ * wineboot's rule (programs/wineboot/wineboot.c update_wineprefix ->
+ * update_timestamp): the prefix is current when C:\windows\.update-timestamp
+ * holds the decimal mtime of wine.inf. Testing only that the stamp EXISTS is
+ * weaker in exactly the case that matters -- a stamp left by a different inf.
+ */
+static int FirstbootPrefixIsInitialised(void)
+{
+    IO_STATUS_BLOCK iosb;
+    HANDLE inf = FirstbootOpenRead(WSTR("\\??\\C:\\windows\\inf\\wine.inf"));
+    if (inf == 0)
+        return 0; /* no payload to be current with */
+    FILE_BASIC_INFORMATION basic;
+    NTSTATUS status =
+        NtQueryInformationFile(inf, &iosb, &basic, sizeof(basic), FileBasicInformation);
+    NtClose(inf);
     if (status != STATUS_SUCCESS)
         return 0;
-    NtClose(file);
-    return 1;
+
+    /* NT time (100 ns since 1601) -> the unix seconds wineboot compares.
+     * 116444736000000000 is the 1601->1970 delta; see RtlTimeToSecondsSince1970
+     * in the pinned tree (dlls/ntdll/time.c), which is this same constant. */
+    LONGLONG unixSeconds = (basic.LastWriteTime.QuadPart - 116444736000000000LL) / 10000000LL;
+
+    HANDLE stamp = FirstbootOpenRead(WSTR("\\??\\C:\\windows\\.update-timestamp"));
+    if (stamp == 0)
+        return 0;
+    char text[64];
+    status = NtReadFile(stamp, 0, 0, 0, &iosb, text, sizeof(text) - 1, 0, 0);
+    NtClose(stamp);
+    if (status != STATUS_SUCCESS)
+        return 0;
+    text[iosb.Information < sizeof(text) ? iosb.Information : sizeof(text) - 1] = 0;
+
+    /* wineboot writes "disable" to pin a prefix; honour it the same way. */
+    const char *disable = "disable";
+    int i = 0;
+    while (disable[i] != 0 && text[i] == disable[i])
+        i++;
+    if (disable[i] == 0)
+        return 1;
+
+    LONGLONG stamped = 0;
+    for (i = 0; text[i] >= '0' && text[i] <= '9'; i++)
+        stamped = stamped * 10 + (text[i] - '0');
+    return i != 0 && stamped == unixSeconds;
 }
 
 /* A boot with no DESKTOP applies the registry-only inf.
