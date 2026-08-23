@@ -3814,9 +3814,10 @@ wow64gui() {
     return 0
 }
 
-# GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The image
-# carries explorer.exe, which flips wineserver-lite's desktop fixtures off
-# (shim.c probe_explorer): smss runs `explorer /desktop=shell,1280x800` with
+# GUI-6 (docs/02 "Desktop"): Wine's explorer owns the desktop. The boot
+# derives ShellBoot=1 from its leg name (GUEST_LEG=gui6 below; user/smss/smss.c
+# SmssIsShellBoot), which flips wineserver-lite's desktop fixtures off
+# (shim.c probe_shell): smss runs `explorer /desktop=shell,1280x800` with
 # a trailing `explorer.exe C:\shelf`, so explorer creates and owns the desktop —
 # wallpaper rectangle, taskbar-mode systray — and its own CreateProcessW
 # child puts the file window over it, landing on desktop "shell" through

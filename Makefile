@@ -1,6 +1,6 @@
 # proskrnl — kernel build + thin superbuild (ADR 0009). Boot: Limine (ADR 0010).
 #
-#   make            build the bootable image (build/proskrnl.hdd)
+#   make            build the bootable test image (build/proskrnl-test.hdd)
 #   make test       build + boot in QEMU, check the [KTEST] verdict on serial
 #   make fulltest   every leg CI runs, fanned out over this box (tools/fulltest.sh)
 #   make run        build + boot the interactive image: cmd.exe on your terminal
@@ -766,12 +766,13 @@ WSRESOLV := $(BUILD)/modules/wsresolv.dll
 
 # The DLL half is DERIVED from $(WINESTRIP_NAMES) rather than re-listed:
 # the two were separate lists and they drifted, exactly the way the
-# print-winfiles note above says such pairs do. hid.dll was stripped by the
-# one and missing from the other, which nothing noticed while the guiwtest
-# image carried a hand-written DLL list of its own that happened to include
-# it. Unified onto one image, user32_test.exe could not load and the whole
-# msg gate died with STATUS_DLL_NOT_FOUND (0xc0000135). A name is now baked
-# because it is built, and there is no second place to forget it.
+# print-winfiles note below (beside WINFILES_DEPS) says such pairs do.
+# hid.dll was stripped by the one and missing from the other, which nothing
+# noticed while the guiwtest image carried a hand-written DLL list of its
+# own that happened to include it. Unified onto one image, user32_test.exe
+# could not load and the whole msg gate died with STATUS_DLL_NOT_FOUND
+# (0xc0000135). A name is now baked because it is built, and there is no
+# second place to forget it.
 WINFILES := $(foreach d,$(WINESTRIP_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
             win:$(WINESTRIP)/services.exe=windows/system32/services.exe \
             win:$(WINESTRIP)/rpcss.exe=windows/system32/rpcss.exe \
