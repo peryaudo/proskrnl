@@ -54,26 +54,50 @@ void KiInitializeTimerList(void)
     KiTickTsc = KiReadTimestampCounter();
 }
 
-/* How far into the current tick we are, in 100 ns units — 0 .. one tick short
- * of the next one. The tick is what the clock IS; this only subdivides it, so
- * that the precise system time Windows promises under 1 us
- * (GetSystemTimePreciseAsFileTime, learn.microsoft.com) is not quantised to
- * the scheduler's 1 ms (docs/03 "Sub-tick system time").
+/* How far the fraction below may interpolate past the last accounted tick.
+ * NOT one tick, and NOT unbounded — both ends of the range are load-bearing:
+ *
+ *   - One tick (the original clamp) FROZE the query clock for as long as a
+ *     clock interrupt was late: on a loaded CI host the LAPIC tick lags
+ *     whole milliseconds behind the TSC, every query in that window answered
+ *     the same saturated value, and the first tick after it published the
+ *     whole catch-up as one >= 1 ms step — exactly the step kernel32:time's
+ *     time.c:843 (and sem_ps/precise_time.c's verbatim pin of it) reject.
+ *   - Unbounded (or the tick side's one-second catch-up bound) would let the
+ *     query run arbitrarily far ahead of the tick-granular USD page during a
+ *     stall, and the one boundary assertion pointing the query-vs-page
+ *     direction the other way tolerates only 50 ms of it:
+ *     third_party/wine/dlls/ntdll/tests/time.c:457 excuses
+ *     `NtQuerySystemTime > USD SystemTime` only inside
+ *     `todo_wine_if(t1 - t2 < 50 * TICKSPERMSEC)` (docs/03 "Sub-tick
+ *     system time").
+ *
+ * So: 40 ticks — the query clock rides through every late-tick window CI has
+ * actually produced (single-digit milliseconds) with 10 ms of margin under
+ * the 50 ms tolerance. A tick later than THIS still saturates the fraction,
+ * and the step out of that window trips time.c:843 only past 41 ms of
+ * lateness — a regime the one-tick clamp entered at two. */
+#define KI_MAX_FRACTION_TICKS 40ULL
+
+/* How far past the last accounted tick we are, in 100 ns units. The tick is
+ * what the clock IS; this only subdivides it, so that the precise system time
+ * Windows promises under 1 us (GetSystemTimePreciseAsFileTime,
+ * learn.microsoft.com) is not quantised to the scheduler's 1 ms (docs/03
+ * "Sub-tick system time").
  *
  * Two properties carry the whole design, and both come from the CLAMP rather
  * than from the TSC being trustworthy:
  *
- *   - Monotone. The result is strictly less than one tick, so the reading can
- *     never reach the value the next tick will publish, however fast the TSC
- *     runs relative to the LAPIC.
- *   - Bounded error. A TSC that drifts (a processor without an invariant TSC
- *     changing P-state, say) only ever mis-places a reading INSIDE its own
- *     tick, because the next tick re-bases it. The worst case is the accuracy
- *     the clock already had before interpolation.
+ *   - Monotone. Tick base plus fraction together measure one TSC delta from
+ *     one base: KiUpdateClock folds whole ticks of that delta into the base
+ *     (KiTicksElapsed) and re-bases the remainder into the fraction, so the
+ *     sum is continuous across the tick and a reading never steps back.
+ *   - Bounded error. A TSC that lies mis-places a reading by at most the
+ *     clamp (40 ms) before the next tick re-bases it.
  *
  * Clamping in TSC units rather than after the conversion is also what keeps
- * the multiply from overflowing: delta is below one millisecond's worth of
- * cycles by the time it is scaled. */
+ * the multiply from overflowing: delta is below 40 ms worth of cycles by the
+ * time it is scaled. */
 static uint64_t KiTickFraction(void)
 {
     ASSERT(KiIsDispatcherLockHeld());
@@ -86,9 +110,9 @@ static uint64_t KiTickFraction(void)
         return 0; /* before KiInitializeClock: the tick is all there is */
     }
     uint64_t delta = KiReadTimestampCounter() - KiTickTsc;
-    if (delta >= rate)
+    if (delta >= rate * KI_MAX_FRACTION_TICKS)
     {
-        return KI_100NS_PER_TICK - 1;
+        return KI_MAX_FRACTION_TICKS * KI_100NS_PER_TICK - 1;
     }
     return (delta * KI_100NS_PER_TICK) / rate;
 }
@@ -371,13 +395,14 @@ void KiUpdateClock(BOOLEAN interruptedUser)
      * stay in the fraction; assigning `now` here would round them away once
      * per millisecond, which is the same leak in miniature that advancing by
      * one tick per interrupt was in the large. When the bound in KiTicksElapsed
-     * capped the advance, the leftover exceeds a whole tick and the fraction
-     * saturates (KiTickFraction's clamp) until the following ticks catch up.
+     * capped the advance, the leftover exceeds a whole tick and stays visible
+     * through the fraction (up to its own KI_MAX_FRACTION_TICKS clamp) until
+     * the following ticks catch up.
      *
      * THE BASE MUST NEVER PASS `now`. KiTickFraction subtracts it from a later
      * TSC read as UNSIGNED, so a base in the future does not read as a small
      * negative offset — it underflows to something enormous, trips the clamp,
-     * and pins the fraction at one tick short of the next tick for as long as
+     * and pins the fraction at its bound for as long as
      * the condition lasts. That is exactly what the "interrupt arrived early"
      * case above produces if its invented tick is also allowed to advance the
      * base: measured, as sem_ps/perf_counter and sem_ps/precise_time going red

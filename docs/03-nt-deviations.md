@@ -650,13 +650,15 @@ first (Art. 5). Wrinkles worth remembering:
   Windows documents it as precise to under a microsecond. Pinned by
   `tests/ntapi/sem_ps/precise_time.c`; it is what took `kernel32:time` green.
   - **The divergence this creates, stated plainly: on NT `NtQuerySystemTime`
-    IS the shared page, and here it runs up to one tick AHEAD of it.** The
+    IS the shared page, and here it runs AHEAD of it — by up to one tick
+    while the tick is on schedule, by up to the late time while a clock
+    interrupt is delayed (capped at `KI_MAX_FRACTION_TICKS` = 40 ms).** The
     page stays tick-granular — a mirror published once per tick cannot be
     refreshed by writing an interpolated value into it — so the two readings
     no longer coincide, and `GetSystemTimeAsFileTime`, the *coarse* getter on
     Windows, is sub-tick here because Wine routes it to the same syscall
     (`dlls/kernelbase/file.c`). What makes the trade acceptable is that the
-    gap has a bound (one tick) and a direction (query ≥ page), and every
+    gap has a bound and a direction (query ≥ page), and every
     ordering the boundary asserts wants that direction: `sem_ps/time.c`, and
     `ntdll:time`'s `time.c:460`. The one assertion pointing the OTHER way is
     `ntdll:time`'s `time.c:458` — `NtQuerySystemTime <= USD SystemTime` —
@@ -671,11 +673,24 @@ first (Art. 5). Wrinkles worth remembering:
     Windows arrangement —
     a page carrying the QPC baseline so user mode interpolates for itself —
     and that is a KUSER_SHARED_DATA layout item, not this one.
-  - **Only the clamp is load-bearing, not the TSC's quality.** The fraction is
-    capped one unit short of a whole tick, so a reading can never reach the
-    value the next tick will publish however fast or drifty the counter is,
-    and each tick re-bases it — the worst case is the accuracy the clock had
-    before interpolation. No invariant-TSC test is made, and none is needed.
+  - **Only the clamp is load-bearing, not the TSC's quality.** The fraction
+    is capped at `KI_MAX_FRACTION_TICKS` (40 ticks), and each tick re-bases
+    it by the whole ticks it publishes (`KiTicksElapsed`), so tick + fraction
+    is one continuous measurement of one TSC delta — monotone across the
+    tick — and a lying counter mis-places a reading by at most 40 ms before
+    the next tick corrects it. The cap used to be a single tick, which FROZE
+    the query clock whenever a clock interrupt was late (a loaded CI host
+    delivers ticks milliseconds late): every query in the window answered
+    the same saturated value and the catch-up tick then published the
+    backlog as one ≥ 1 ms step — the recurring `kernel32:time` `time.c:843`
+    CI flake. Convicted deterministically by `tests/kmt/m2_dispatcher.c`
+    `test_query_time_spans_late_ticks`, which holds the tick off and
+    requires the query clock to keep moving. 40 and not more because of the
+    50 ms `todo_wine_if` ceiling above: the query-ahead-of-page gap must
+    stay inside `time.c:458`'s tolerance arm even mid-stall, so the fraction
+    stops 10 ms short of it, and a tick later than 40 ms re-enters the
+    freeze-then-step regime only past 41 ms of lateness — where the old
+    clamp entered it at two. No invariant-TSC test is made, and none is needed.
   - **`NtQueryPerformanceCounter` inherits the resolution** (it is interrupt
     time, `kernel/ps/query.c`), which is what its 10 MHz reported frequency
     had been claiming all along.
