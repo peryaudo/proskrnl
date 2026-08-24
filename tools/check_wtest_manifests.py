@@ -19,10 +19,12 @@ So this asks the pin, not a reviewer:
   * which subtests each module HAS comes from the pinned tree's own
     dlls/<mod>/tests/Makefile.in: every .c in SOURCES except the helper DLLs
     (a .c with a matching .spec is a runtime-loaded module, not a subtest).
-  * which manifest a pair may live in: a GUI module's pairs are always the GUI
-    leg's; a CUI module's are the CUI leg's unless its triage moved it to the
-    GUI list for needing a desktop (manifest.txt's rule (c)), which is the
-    pair's call and not this script's.
+  * which manifest a pair may live in: manifest.txt's PLACEMENT RULE decides
+    it — a pair that CAN pass on the CUI leg's machines belongs there, one
+    that CANNOT belongs in the GUI list. That is a triage judgement about a
+    machine, so this script does not attempt it; what it enforces is the
+    mechanical half, which cannot drift: a user32 pair is never in the CUI
+    list, and every pair is declared exactly once.
 
 Then: every pair exists in exactly one manifest, every pair a manifest names
 exists in the tree, and every ACTIVE line parses under the shared grammar
