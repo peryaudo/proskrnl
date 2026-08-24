@@ -4924,21 +4924,25 @@ manifest line").
   TARGET, and the oracle is a host program, not the target — and the same argument, made
   one milestone earlier about fonts, is what GUI-3 had to reverse to stop the oracle
   answering metric questions from no font backend at all (docs/06 "One tree, three roles").
-- **The two halves are graded against different numbers, deliberately.** The oracle half
-  (`winetest_gui_oracle`) ratchets against `tests/winetest/msg-budget-oracle.txt`, the kernel
-  half against the msg pair's own budget field in `manifest-gui.txt`, and the two are not
-  comparable: the second is a
-  ceiling over *our* divergences plus a machine-speed band, the first a ceiling over
-  unmodified Wine running its own suite, where nothing is ours and every unit is either a
-  stale tag in the suite or a harness fault. **Measured, the oracle answers 1** — three
-  consecutive runs, byte-identical (32082 tests executed, 234 marked as todo, 3 skipped,
-  1 failure, ~83 s), and the one is always `msg.c:5730`, `ShowWindow(SW_SHOWMAXIMIZED)`
-  succeeding inside a `todo_wine` block. That is Wine's stale tag, not a divergence of
-  ours — and it is the first thing the new half paid for, because the kernel budget's
-  stable list attributes one of *proskrnl's* 17 to that same tag and had no way to prove
-  it. The kernel budget is unchanged by this (proskrnl fails it too, so the ceiling still
-  has to cover it); what changed is that the entry now has a measurement behind it instead
-  of an argument.
+- **Only the kernel half is budgeted; the oracle half is demanded green.** The kernel
+  half grades against the msg pair's own budget field in `manifest-gui.txt` — a ceiling
+  over *our* divergences plus a machine-speed band. The oracle half has no ceiling at all,
+  for the reason the CUI leg has never had one: a budget is a ceiling over what is OURS,
+  and on unmodified Wine running its own suite nothing is.
+
+  It briefly had one. **Measured, the oracle answered 1** — three consecutive runs,
+  byte-identical (32082 tests executed, 234 marked as todo, 3 skipped, 1 failure, ~83 s),
+  always `msg.c:5730`, `ShowWindow(SW_SHOWMAXIMIZED)` reporting `marked "todo_wine" but
+  succeeds`. That measurement is what the oracle half was added to get, and what it
+  established is that the tag is stale in the SUITE rather than a divergence of ours:
+  `ok_sequence` only says "succeeds" when the whole sequence matched, and it matched on
+  both halves. So the fix went where the tag lives — a commit on the fork's
+  `proskrnl-target` branch turning that call's `todo` argument off (upstreamable; it is
+  test source, so no shipped Wine code moves). That is not "patching Wine to make a
+  divergence pass" (G9's prohibition), because there is no divergence: it is the ordinary
+  retirement of a tag that a stock Wine satisfies. The kernel budget drops with it, 17 →
+  16, by derivation rather than measurement — the term leaves the ceiling's arithmetic —
+  and the next measured run is what confirms it.
 - **The count is read from winetest's summary line, cross-checked against the exit
   status.** msg spawns ~21 children and each prints its own summary; the parent's is the
   last (it waits on them) and its count is also its exit status, so the leg parses the
@@ -5069,14 +5073,17 @@ fixed, pinned, or convicted by a green leg:
   The frame must therefore be dirtied by one of the other two `PAINT_NONCLIENT` setters,
   `init_window_info` or `set_window_info(GWL_STYLE)`; logging both in the shim is how the
   first trace was got, and that is the thread to pull next.
-- *Two are `todo_wine` tags that are stale on proskrnl* — winetest counts a test that
+- *One is a `todo_wine` tag that is stale on proskrnl* — winetest counts a test that
   *succeeds* inside a todo block as a failure (`winetest_failures + winetest_todo_failures`
-  is the exit status), so these are cases where **we are right and Wine is not**:
-  `ShowWindow(SW_SHOWMAXIMIZED)` on an overlapped window produces the message sequence
-  Windows produces (msg.c:5730 marks the whole sequence todo), and a 500 ms wait for a
-  window proc completes here where Wine times out (msg.c:18349). Neither is fixable in this
-  tree: the fix is upstream in Wine, and editing msg.c to make the number smaller would be
-  fixing the oracle instead of the kernel (G9).
+  is the exit status), so it is a case where **we are right and Wine is not**: a 500 ms
+  wait for a window proc completes here where Wine times out (msg.c:18349). It is not
+  fixable in this tree, and the line between that and the tag that WAS fixed is the whole
+  point. `msg.c:18349` is stale *for us* — unmodified Wine still fails that wait — so
+  editing it would be fixing the oracle instead of the kernel (G9). `msg.c:5730` was stale
+  for **both**: the oracle half measured stock Wine satisfying it too, which makes it a
+  defect in the suite rather than a divergence of ours, and it is retired on the fork's
+  `proskrnl-target` branch (upstreamable). A measurement of the oracle is what tells the
+  two apart; without one, they look identical.
 
 Running 32-bit apps via WOW64 is **NT's real mechanism**, so it adds nothing to the hacks
 ledger. Kernel cost is a few hundred lines (GDT compat descriptors, an
